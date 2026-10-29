@@ -1,0 +1,12 @@
+-- Files on a task (visits-and-task-categories plan, slice 12): an attachment may now belong to a
+-- TASK. The files belong to the task alone, never to the job, lead or customer it is linked to.
+--
+-- ONE value. A Postgres enum value can never be removed, so the smallest irreversible step is the
+-- safer one. Bare ADD VALUE IF NOT EXISTS, following 20260828130000_automation_task_assigned_trigger:
+-- idempotent, portable to vanilla Postgres, and nothing in this file uses the new value, so it is
+-- safe inside the transaction the deploy step wraps it in. Additive only: no backfill, no RLS
+-- change (attachments already carries its tenant_isolation policy), nothing destructive.
+--
+-- The orphan sweep derives its owned path segments from this enum, so `<org>/task/<id>/...`
+-- objects are covered automatically once the generated client knows the value.
+ALTER TYPE "AttachmentEntity" ADD VALUE IF NOT EXISTS 'TASK';

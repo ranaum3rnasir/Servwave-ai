@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <!-- viewport-fit=cover lets the page run under the notch, status bar and home indicator; the top bar,
+         the drawer and every fixed bottom bar pad for them with env(safe-area-inset-*) (mobile slice 52).
+         interactive-widget=resizes-content makes Chrome on Android shrink the layout itself when the
+         keyboard opens, so a sticky footer sits above it; iOS ignores the key and the keyboard-inset
+         hook lifts the footer there instead (mobile slice 54). -->
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
+    <!-- The header colour (the --app token). The manifest's theme_color matches. -->
+    <meta name="theme-color" content="#ffffff" />
+    <!-- Light only: stops a browser-forced dark mode from inverting the UI. -->
+    <meta name="color-scheme" content="only light" />
+    <title>ServWave</title>
+    <!-- Fonts are ours (src/design-system/fonts.css), swap-displayed, and the faces that paint the
+         first screen are fetched now, in parallel with the stylesheet (mobile slice 61). -->
+    <link rel="preload" href="/fonts/figtree-latin-5.3.0.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="preload" href="/fonts/manrope-latin-5.3.0.woff2" as="font" type="font/woff2" crossorigin />
+  </head>
+  <body class="bg-app font-sans text-text-primary antialiased">
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

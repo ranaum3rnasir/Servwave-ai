@@ -1,0 +1,862 @@
+COMPREHENSIVE CRM FEATURE CATALOG
+All Features with Competitor Winners + AI/Advanced Features
+For CTO & Senior Product Manager
+SECTION 1: CUSTOMER MANAGEMENT
+1.1 Customer Data Management
+Feature	Winner
+Customer profile storage	Jobber
+Contact & location tracking (multiple contacts/locations per customer)	HCP / FieldPulse
+Service history view (internal)	Jobber
+Customer search & filtering	ServiceTitan
+Duplicate prevention (phone/email detection)	Jobber
+Custom customer fields	FieldPulse
+Customer segmentation (for marketing)	ServiceTitan
+Customer lifetime value tracking (LTV)	ServiceTitan
+1.2 Customer Communication
+Feature	Winner
+Email tracking & logging	FieldPulse / Workiz
+SMS/text integration (two-way)	Workiz / HCP
+Customer notes (internal)	Jobber
+Communication history timeline	FieldPulse
+Automated follow-up sequences	Jobber
+Email templates	HCP
+SMS templates	Workiz
+Call logging	ServiceTitan
+Message status tracking (read/seen)	Workiz
+1.3 Customer Portal / Self-Service
+Feature	Winner
+Customer web portal (hub)	Jobber (Client Hub)
+Online appointment booking	HCP
+Customer invoice viewing	Jobber
+Customer quote/estimate approval	Jobber
+Customer online payment	Jobber
+Customer service history view	FieldPulse
+Customer receipt viewing	Jobber
+Customer referral links	Jobber
+Customer portal permission controls	ServiceTitan
+SECTION 2: JOB MANAGEMENT
+2.1 Job Creation & Setup
+Feature	Winner
+Job creation form	Jobber
+Pre-built service types	Jobber
+Custom service types	FieldPulse
+Job type categorization	ServiceTitan
+Job description/notes	Jobber
+Customer assignment to job	Jobber
+Address auto-fill from customer	Jobber
+Manual address entry	Jobber
+Job date & time selection	Jobber
+Recurring job setup	ServiceTitan
+Job reminders to technician	HCP
+2.2 Job Status & Workflow
+Feature	Winner
+Granular job status tracking	ServiceTitan
+Status: Pending	Jobber
+Status: Assigned	Jobber
+Status: In Progress	Jobber
+Status: Completed	Jobber
+Status: Invoiced	Jobber
+Status: Paid	Jobber
+Configurable status transitions	ServiceTitan
+Job completion timestamp	Jobber
+Job time tracking (per job)	ServiceTitan
+2.3 Job Editing & Management
+Feature	Winner
+Edit job details	Jobber
+Edit/reassign technician	Jobber
+Edit job date/time (reschedule)	Jobber
+Delete/archive job	Jobber
+Job notes (ongoing)	Jobber
+Job attachments (files/docs)	FieldPulse
+Job tags/labels	ServiceTitan
+Bulk job operations	ServiceTitan
+Job history / change log	ServiceTitan
+2.4 Job Templates & Recipes
+Feature	Winner
+Pre-built job templates	ServiceTitan
+Custom job "recipes"	FieldPulse
+Template customization	FieldPulse
+One-click job creation from template	ServiceTitan
+SECTION 3: SCHEDULING & DISPATCH
+3.1 Calendar Views
+Feature	Winner
+Week calendar view	Jobber
+Day calendar view	ServiceTitan
+Month calendar view	ServiceTitan
+Technician color coding	Jobber
+Time slot display	Jobber
+Unassigned job pool	Jobber
+Real-time calendar refresh	Jobber
+Calendar printing	ServiceTitan
+3.2 Dispatch & Assignment
+Feature	Winner
+Drag-and-drop job assignment	Jobber
+Technician availability view	ServiceTitan
+Conflict detection (double-booking)	ServiceTitan
+Skill-based matching suggestions	ServiceTitan
+Auto-assignment rules	ServiceTitan
+Manual assignment (single click)	Jobber
+Bulk assignment	ServiceTitan
+Easy job reassignment	Jobber
+3.3 Route Optimization
+Feature	Winner
+Route suggestion (minimize drive time)	Jobber
+One-click route optimization	Jobber
+Route map view	HCP / Jobber
+Travel time calculation	ServiceTitan
+Geolocation-based routing	Jobber
+Route printing	Jobber
+3.4 Technician Scheduling
+Feature	Winner
+Technician availability hours	Jobber
+Technician break time management	ServiceTitan
+Technician capacity (max jobs/day)	ServiceTitan
+Technician skill tracking	ServiceTitan
+Technician location tracking (GPS)	ServiceTitan / Jobber
+Technician shift management	ServiceTitan
+Vacation/time-off blocking	Jobber
+3.5 Appointment Reminders
+Feature	Winner
+Automated technician reminder	HCP
+Automated customer reminder	Jobber
+Customer SMS reminder	Workiz / HCP
+Customer email reminder	Jobber
+Customizable reminder timing	ServiceTitan
+No-show tracking	HCP
+SECTION 4: MOBILE APP – TECHNICIAN WORKFLOW
+4.1 Core Mobile Workflow
+Feature	Winner
+Mobile app availability (iOS & Android)	Jobber
+"Today's jobs" list	Jobber
+Mobile job details view	Jobber
+Job status update from app	Jobber
+Auto completion timestamp on mobile	Jobber
+Job notes from field	Jobber
+Photo capture (in-app camera)	Jobber
+Multiple photos (before/after)	Jobber
+Photo management / organization	FieldPulse
+4.2 Field Technician Tools
+Feature	Winner
+One-tap call to customer	Jobber
+One-tap navigation to address	Jobber
+GPS navigation integration	Jobber
+Customer address display	Jobber
+Customer phone display	Jobber
+Time clock in/out	ServiceTitan
+Travel time tracking	ServiceTitan
+Break tracking	ServiceTitan
+Offline mode (core workflow)	ServiceTitan
+Sync when back online	ServiceTitan
+4.3 Signatures & Documents
+Feature	Winner
+Signature capture on device	Jobber
+Signature storage with job	Jobber
+Signature on invoice	Jobber
+Document signing (general docs)	FieldPulse
+Work order signature	ServiceTitan
+Photo signature backup	Jobber
+4.4 Mobile Forms & Custom Data
+Feature	Winner
+Work order form (detailed)	ServiceTitan
+Custom job fields on mobile	FieldPulse
+Conditional fields (show/hide)	FieldPulse
+Required fields enforcement	FieldPulse
+Photo annotations	WePro
+Measurement capture via photos	WePro
+Field validation (real-time)	ServiceTitan
+4.5 Mobile Payments (On-Device)
+Feature	Winner
+Card reader (Stripe/Square)	Jobber
+Tap-to-pay on device	Jobber
+On-device payment confirmation	Jobber
+Payment processing (settlement speed)	Jobber
+Multiple payment methods in app	ServiceTitan
+Payment receipt via text/email	Jobber
+Tip capture on mobile	HCP
+4.6 Mobile UX & Non-Functional Attributes
+Capability	Winner
+Native mobile feel / UX	Jobber
+Loading speed & responsiveness	Jobber
+Offline capability depth	ServiceTitan
+Accessibility (screen reader, etc.)	ServiceTitan
+Overall tech adoption rate	Jobber
+SECTION 5: INVOICING
+5.1 Invoice Creation
+Feature	Winner
+Auto-create invoice from completed job	Jobber
+Auto-create invoice from approved estimate	Jobber
+Manual invoice creation (office)	Jobber
+Invoice template selection	HCP
+Professional formatting	Jobber
+Company logo inclusion	Jobber
+Invoice number auto-generation	Jobber
+Custom invoice number format	ServiceTitan
+5.2 Invoice Line Items
+Feature	Winner
+Service description lines	Jobber
+Quantity entry	Jobber
+Unit price entry	Jobber
+Line total auto-calc	Jobber
+Material/parts line items	ServiceTitan
+Labor line items	ServiceTitan
+Discount line items	ServiceTitan
+Tax calculation	ServiceTitan
+Subtotal display	Jobber
+Tax display	Jobber
+Final total display	Jobber
+5.3 Invoice Customization
+Feature	Winner
+Custom invoice fields	FieldPulse
+Deep custom branding	ServiceTitan
+Custom message/terms	Jobber
+Bank account / remittance display	ServiceTitan
+Logo positioning & layout	ServiceTitan
+Color scheme / brand colors	ServiceTitan
+5.4 Invoice Distribution
+Feature	Winner
+Email invoice to customer	Jobber
+SMS invoice link	Workiz
+Invoice in customer portal	Jobber
+PDF generation	Jobber
+Print invoice	Jobber
+Physical mail option	ServiceTitan
+Batch email invoices	Jobber
+Invoice delivery confirmation	ServiceTitan
+5.5 Invoice Tracking
+Feature	Winner
+Invoice status (Sent / Viewed / Paid)	Jobber
+Payment status (paid/unpaid/overdue)	Jobber
+Payment date tracking	Jobber
+Days to payment metric	Jobber
+Overdue invoice alerts	Jobber
+Invoice aging report	ServiceTitan
+Invoice PDF storage	Jobber
+Invoice history (edits)	Jobber
+SECTION 6: PAYMENT PROCESSING
+6.1 Payment Methods
+Feature	Winner
+Credit card payments	Jobber
+Debit card payments	Jobber
+ACH/bank transfer	ServiceTitan
+Check payments tracking	ServiceTitan
+Cash payments tracking	HCP
+Mobile wallets (Apple Pay / Google Pay)	ServiceTitan
+Payment plans / financing	ServiceTitan
+6.2 On-Device Payment Collection
+Feature	Winner
+Stripe terminal reader	Jobber
+Square reader	Jobber
+Mobile tap-to-pay	Jobber
+Contactless payment	Jobber
+Instant payment confirmation	Jobber
+Tech-initiated payment collection	Jobber
+6.3 Payment Automation
+Feature	Winner
+Auto-capture payment from invoice	Jobber
+Payment reminders	Jobber
+Recurring payment setup	ServiceTitan
+Payment retry logic	ServiceTitan
+Late payment fees (auto-add)	ServiceTitan
+6.4 Payment Settlement & Reconciliation
+Feature	Winner
+Daily deposits	Jobber
+Next-day payouts	Jobber
+Weekly payouts	HCP
+Transparent payment fees	Jobber
+Payout account configuration	Jobber
+Payment history overview	Jobber
+Payment reconciliation vs invoices	ServiceTitan
+6.5 Online Payments
+Feature	Winner
+Customer self-pay online	Jobber
+Payment link in invoice email	Jobber
+Payment link in SMS	Workiz
+Payment link validity window	ServiceTitan
+Recurring payment link / auto-pay	ServiceTitan
+SECTION 7: ESTIMATES / QUOTES
+7.1 Estimate Creation
+Feature	Winner
+Mobile estimate creation (on-site)	Jobber
+Office estimate creation	Jobber
+Quick estimate builder	WePro
+Estimate form UX	Jobber
+Service selection from list	Jobber
+Quantity entry	Jobber
+Unit price (from pricebook/custom)	Jobber
+Labor estimate (hours × rate)	ServiceTitan
+Material estimate (parts, materials)	ServiceTitan
+Estimate total auto-calculation	Jobber
+Time to create (<3 mins)	WePro
+7.2 Estimate Customization
+Feature	Winner
+Add notes to estimate	Jobber
+Photo attachments on estimates	WePro
+Measurement capture in estimate	WePro
+Discount options	ServiceTitan
+Deposit upfront amount	HCP
+Tax calculation	ServiceTitan
+Custom estimate fields	FieldPulse
+7.3 Estimate Tiering & Options
+Feature	Winner
+Good/Better/Best options	ServiceTitan
+Three-tier pricing	Jobber
+Multiple options per customer	ServiceTitan
+Comparison view (side-by-side)	ServiceTitan
+Recommended tier (AI-based)	WePro
+Upsell suggestions	ServiceTitan
+7.4 Estimate Sending & Approval
+Feature	Winner
+Email estimate to customer	Jobber
+SMS estimate link	Workiz
+Estimate in customer portal	Jobber
+One-tap approval button	Jobber
+Rejection option	Jobber
+Valid-until date	Jobber
+Auto-follow-up if no response	Jobber
+Approval notification to office	Jobber
+7.5 Estimate-to-Job / Invoice Conversion
+Feature	Winner
+Auto-create job from approved estimate	Jobber
+Auto-create invoice from approved estimate	Jobber
+Schedule job at approval time	Jobber
+Pre-fill invoice from estimate	Jobber
+Link estimate ↔ job	Jobber
+Conversion status tracking	Jobber
+7.6 Pricebook Integration to Estimates
+Feature	Winner
+Pricebook creation	ServiceTitan
+Service list management	Jobber
+Service customization in pricebook	ServiceTitan
+Pricing by service type	ServiceTitan
+Price tiers by customer type	ServiceTitan
+Quick-select items from pricebook	Jobber
+Price override by tech	Jobber
+Price validity date	ServiceTitan
+Seasonal pricing	ServiceTitan
+7.7 Estimate Analytics
+Feature	Winner
+Conversion rate (estimates → jobs)	Jobber
+Estimates sent count	Jobber
+Estimates pending	Jobber
+Estimates approved	Jobber
+Estimates rejected	Jobber
+Average estimate value	Jobber
+Conversion by technician	ServiceTitan
+Conversion by service type	ServiceTitan
+Estimate age	Jobber
+Estimated vs actual (variance)	ServiceTitan
+SECTION 8: REPORTING & ANALYTICS
+8.1 Revenue Reports
+Feature	Winner
+Daily revenue	Jobber
+Weekly revenue	Jobber
+Monthly revenue	Jobber
+Revenue by technician	Jobber
+Revenue by service type	ServiceTitan
+Revenue vs goal	Jobber
+Revenue trend (up/down)	ServiceTitan
+Year-over-year comparison	ServiceTitan
+Next-period revenue forecast	ServiceTitan
+8.2 Job Reports
+Feature	Winner
+Jobs completed	Jobber
+Jobs in progress	Jobber
+Jobs pending	Jobber
+Jobs by status breakdown	Jobber
+Average job value	Jobber
+Job duration	ServiceTitan
+First-time fix rate (FTFR)	ServiceTitan
+Repeat visit analysis	ServiceTitan
+No-show rate	HCP
+Job profitability	ServiceTitan
+8.3 Technician Reports
+Feature	Winner
+Technician leaderboard	Jobber
+Revenue by tech	Jobber
+Jobs completed by tech	ServiceTitan
+Average job value per tech	ServiceTitan
+FTFR by technician	ServiceTitan
+Efficiency score per tech	ServiceTitan
+Customer satisfaction by tech	ServiceTitan
+Payroll by technician	ServiceTitan
+8.4 Financial Reports
+Feature	Winner
+Labor cost	ServiceTitan
+Labor cost % of revenue	ServiceTitan
+Material cost	ServiceTitan
+Profitability by job	ServiceTitan
+Profitability by service type	ServiceTitan
+Gross margin	ServiceTitan
+Cash flow analysis	ServiceTitan
+Invoiced vs collected	ServiceTitan
+Accounts payable	ServiceTitan
+Accounts receivable	ServiceTitan
+DSO (Days Sales Outstanding)	ServiceTitan
+8.5 Dashboards & Insights
+Feature	Winner
+Daily dashboard overview	Jobber
+Revenue widget	Jobber
+Jobs widget	Jobber
+Alerts/notifications widget	Jobber
+Mobile dashboard	HCP
+Customizable dashboard layout	ServiceTitan
+Real-time data updates	Jobber
+Goal tracking	Jobber
+Color-coded status indicators	Jobber
+8.6 Report Builder & Customization
+Feature	Winner
+Pre-built reports library	ServiceTitan
+Custom report builder	ServiceTitan
+Scheduled report delivery	ServiceTitan
+Report delivery via email	ServiceTitan
+CSV/Excel export	ServiceTitan
+Advanced report filtering	ServiceTitan
+Drill-down from summary to detail	ServiceTitan
+Date range selection	Jobber
+Comparison periods	ServiceTitan
+Forecasting tools	ServiceTitan
+8.7 Customer Insights
+Feature	Winner
+Customer acquisition cost (CAC)	ServiceTitan
+Customer lifetime value (LTV)	ServiceTitan
+Repeat customer rate	Jobber
+Revenue per customer	Jobber
+Customer segmentation	ServiceTitan
+Churn analysis	ServiceTitan
+Retention rate	ServiceTitan
+Referral source tracking	ServiceTitan
+SECTION 9: SECURITY & COMPLIANCE
+9.1 Authentication & Access Control
+Feature	Winner
+Email + password login	Jobber
+Two-factor authentication	ServiceTitan
+Role-based access control	Jobber
+Admin role	Jobber
+Dispatcher role	Jobber
+Technician role	Jobber
+Viewer/read-only role	Jobber
+Custom roles & permissions	ServiceTitan
+Password complexity requirements	Jobber
+Password expiration policies	ServiceTitan
+Session timeout	Jobber
+Login attempt limits	ServiceTitan
+9.2 Data Encryption & Protection
+Feature	Winner
+HTTPS everywhere	Jobber
+SSL certificates	Jobber
+Data encryption at rest	ServiceTitan
+Database encryption	ServiceTitan
+API encryption (TLS)	ServiceTitan
+Password hashing	Jobber
+PCI compliance	Jobber
+Payment tokenization	Jobber
+9.3 Backups & Disaster Recovery
+Feature	Winner
+Automated daily backups	Jobber
+Multiple backup locations	ServiceTitan
+Backup restoration	ServiceTitan
+Defined RTO (Recovery Time Objective)	ServiceTitan
+Defined RPO (Recovery Point Objective)	ServiceTitan
+Documented disaster recovery plan	ServiceTitan
+9.4 Auditing & Compliance
+Feature	Winner
+Audit logging (user actions)	ServiceTitan
+Change tracking	ServiceTitan
+User action history	ServiceTitan
+Data deletion audit trail	ServiceTitan
+Compliance reporting	ServiceTitan
+GDPR compliance	ServiceTitan
+CCPA compliance	ServiceTitan
+SOC 2 certification	ServiceTitan
+HIPAA compliance (where applicable)	ServiceTitan
+9.5 Multi-Tenancy & Data Isolation
+Feature	Winner
+Data isolation between tenants	ServiceTitan
+No data mixing across customers	Jobber
+Tenant-specific encryption keys	ServiceTitan
+Per-tenant audit trail	ServiceTitan
+SECTION 10: INTEGRATIONS
+10.1 Accounting
+Feature	Winner
+QuickBooks Desktop integration	ServiceTitan
+QuickBooks Online integration	Jobber
+Auto-sync invoices to QuickBooks	Jobber
+Auto-sync payments to QuickBooks	Jobber
+Xero integration	ServiceTitan
+Wave integration	ServiceTitan
+FreshBooks integration	ServiceTitan
+Manual QuickBooks sync	Jobber
+Two-way QuickBooks sync	ServiceTitan
+10.2 Payment Processing Integrations
+Feature	Winner
+Stripe integration	Jobber
+Square integration	Jobber
+Authorize.net integration	ServiceTitan
+PayPal integration	ServiceTitan
+10.3 Lead & CRM Integrations
+Feature	Winner
+Angi integration	Workiz
+Thumbtack integration	Workiz
+Google Local Services Ads	Workiz / HCP
+Salesforce CRM integration	ServiceTitan
+HubSpot CRM integration	ServiceTitan
+Zapier integration	Jobber
+10.4 Marketing & Analytics Integrations
+Feature	Winner
+Twilio SMS	Workiz
+SendGrid email	ServiceTitan
+Mailchimp	ServiceTitan
+Google Analytics	ServiceTitan
+Facebook Ads integration	ServiceTitan
+10.5 Mapping & GPS
+Feature	Winner
+Google Maps integration	Jobber
+Mapbox integration	ServiceTitan
+10.6 API & Custom Integration
+Feature	Winner
+Public REST API	ServiceTitan
+Webhook support	ServiceTitan
+API documentation quality	ServiceTitan
+OAuth for API auth	ServiceTitan
+API rate limiting	ServiceTitan
+SECTION 11: TECHNICAL PLATFORM
+11.1 Platform & Infrastructure
+Feature	Winner
+Cloud-based SaaS	Jobber
+Web app (browser-based)	Jobber
+Native iOS app	Jobber
+Native Android app	Jobber
+Desktop app	ServiceTitan
+On-premises option	ServiceTitan
+API-first architecture	ServiceTitan
+Uptime guarantee (SLA)	ServiceTitan
+11.2 Scalability & Performance
+Feature	Winner
+Single-location readiness	Jobber
+Multi-location readiness	ServiceTitan
+Technician scaling to 1000s	ServiceTitan
+High job volume support (100k+ jobs)	ServiceTitan
+Database performance at scale	ServiceTitan
+Query optimization	ServiceTitan
+Caching layer	ServiceTitan
+Load balancing	ServiceTitan
+11.3 Customization & Extensibility
+Feature	Winner
+Custom fields (global)	FieldPulse
+Custom workflows (no-code)	FieldPulse
+Custom reports	ServiceTitan
+Custom roles & permissions	ServiceTitan
+Conditional logic (if/then rules)	FieldPulse
+Custom branding / white-label	ServiceTitan
+Custom domain	ServiceTitan
+Webhooks	ServiceTitan
+Plugin/add-on architecture	ServiceTitan
+11.4 Data Management
+Feature	Winner
+Data import tools	ServiceTitan
+Bulk operations (edit many records)	ServiceTitan
+Data export (CSV/Excel)	ServiceTitan
+Bulk delete	ServiceTitan
+Data deduplication	ServiceTitan
+Data validation	ServiceTitan
+Data cleanup tools	ServiceTitan
+Migration tools from other systems	ServiceTitan
+SECTION 12: SUPPORT, TRAINING & DOCUMENTATION
+12.1 Training & Onboarding
+Feature	Winner
+Video tutorials (short demos)	Jobber
+Knowledge base / help center	Jobber
+In-app help	Jobber
+Onboarding wizard	Jobber
+Training webinars	ServiceTitan
+Training academy	ServiceTitan
+Certification program	ServiceTitan
+Templates & best-practice guides	Jobber
+12.2 Customer Support
+Feature	Winner
+Phone support quality	Jobber
+Email support	Jobber
+Live chat support	Jobber
+Ticketing system	ServiceTitan
+Support hours (coverage)	Jobber
+1-on-1 product coaching	Jobber
+Community forum	ServiceTitan
+Response time	Jobber
+First-contact resolution	Jobber
+12.3 Documentation
+Feature	Winner
+User guides	ServiceTitan
+Admin guides	ServiceTitan
+API documentation	ServiceTitan
+Integration guides	ServiceTitan
+Best-practice content	Jobber
+FAQs	Jobber
+Video library	Jobber
+Blog/resource center	Jobber
+SECTION 13: WORKFLOW AUTOMATION
+13.1 Automated Tasks
+Feature	Winner
+Auto-create invoice on job completion	Jobber
+Auto-send invoice	Jobber
+Auto-send reminder (invoice / appointment)	Jobber
+Auto-generate receipt on payment	Jobber
+Auto-create follow-up task	Jobber
+Auto-assign job (rules-based)	ServiceTitan
+Auto-reschedule no-show	ServiceTitan
+Auto-request customer review	Workiz
+Auto-create quote follow-up	Jobber
+13.2 Workflow Customization
+Feature	Winner
+Visual custom workflow builder	FieldPulse
+Conditional workflows (if/then)	FieldPulse
+Multi-step workflows	FieldPulse
+Approval workflows	ServiceTitan
+Escalation rules	ServiceTitan
+Assignment rules	ServiceTitan
+Status-based actions	ServiceTitan
+SECTION 14: ADVANCED / PHASE-2+ FEATURES
+14.1 SMS & Text Messaging (Advanced)
+Feature	Winner
+Send SMS to customer (core)	Workiz
+Receive SMS replies into system	Workiz
+SMS templates	Workiz
+SMS scheduling	ServiceTitan
+Two-way SMS conversation UI	Workiz
+Low SMS cost	HCP
+14.2 Inventory Management
+Feature	Winner
+Van inventory	ServiceTitan
+Warehouse inventory	ServiceTitan
+Parts tracking	ServiceTitan
+Stock levels	ServiceTitan
+Low stock alerts	ServiceTitan
+Reordering automation	ServiceTitan
+Part cost tracking	ServiceTitan
+Parts usage history	ServiceTitan
+14.3 Marketing & Lead Generation
+Feature	Winner
+Angi integration	Workiz
+Thumbtack integration	Workiz
+Google Local Services integration	Workiz / HCP
+Review request automation	Workiz
+Email campaigns (bulk)	ServiceTitan
+SMS campaigns (bulk)	ServiceTitan
+Marketing ROI tracking	ServiceTitan
+Lead scoring	ServiceTitan
+Pipeline management (sales pipeline)	HCP
+Referral program tracking	ServiceTitan
+14.4 Equipment & Asset Management
+Feature	Winner
+Equipment registry (per site/customer)	ServiceTitan
+Equipment service history	ServiceTitan
+Service schedules (maintenance)	ServiceTitan
+Warranty tracking	ServiceTitan
+Asset tags / IDs	ServiceTitan
+14.5 Advanced Scheduling (beyond core)
+Feature	Winner
+Recurring services / maintenance contracts	ServiceTitan
+Route optimization (global)	Jobber
+Travel time calculation	ServiceTitan
+Skill matching	ServiceTitan
+Workload balancing	ServiceTitan
+Preference matching (tech/customer)	ServiceTitan
+14.6 Advanced Financial Features
+Feature	Winner
+Job costing	ServiceTitan
+Labor costing	ServiceTitan
+Margin analysis per job	ServiceTitan
+Overall profitability analysis	ServiceTitan
+Cash flow reports	ServiceTitan
+Custom payment terms	ServiceTitan
+Late fees	ServiceTitan
+Recurring revenue / subscriptions	ServiceTitan
+🤖 SECTION 15: AI-POWERED FEATURES
+15.1 Existing Competitor AI Features
+WePro's Current AI Capabilities
+Feature	Implementation	Value Proposition
+AI Estimate Builder	Pre-built templates + AI suggestions	Creates estimates 50–70% faster
+AI Price Suggestions	ML-based pricing recommendations	Intelligent pricing based on market data
+AI Service Bundling	Recommends service combinations	Increases average ticket value
+Margin Guardrails	Alerts if estimate is unprofitable	Protects profit margins automatically
+Photo-based Estimation	Photos with measurements as estimate input	Reduces manual data entry
+Existing Gaps & Opportunities in Market
+No major CRM competitor currently offers:
+
+Conversational AI assistant within the app
+
+AI-powered dispatch optimization
+
+AI customer service automation
+
+Natural language commands to perform CRM actions
+
+Predictive job recommendations
+
+This is your competitive edge.
+
+15.2 PROPOSED: AI-Powered Office / Operations Features
+15.2.1 AI Chat Assistant (Internal – Office/Dispatch)
+Feature Name: “CRM Co-Pilot” (or any branding, e.g. “OptiMax Assistant”)
+
+Capability	Description	Example Use Case
+Natural Language Commands	Type commands in plain English, AI executes them	“Schedule all unassigned plumbing jobs to John for tomorrow”
+Smart Job Creation	“Create a new job for Smith residence, HVAC maintenance, 2 hours, $400”	Office user talks to AI to create jobs faster
+Intelligent Dispatch	“Assign jobs to minimize drive time for our techs today”	AI optimizes route + assignments with one command
+Data Lookup	“Show me revenue by tech for last month”	Instead of clicking through reports, just ask
+Status Updates	“Mark all jobs for John as in progress”	Bulk updates via natural language
+Quick Alerts	“Who has jobs after 5pm today?”	AI queries the data instantly
+Workflow Suggestions	AI proactively suggests actions: “You have 3 unassigned jobs and tech Sarah is free”	Reduces manual decision-making
+Context-Aware Help	If user struggles with a task, AI offers step-by-step guidance	Reduces support tickets
+MVP Scope:
+
+Estimate & job creation
+
+Dispatch assistance
+
+Dashboard/data queries
+
+Workflow automation triggers
+
+Phase 2 Scope:
+
+Complex filtering & analytics
+
+Predictive recommendations
+
+Training/coaching mode
+
+15.2.2 AI Estimate Optimizer
+Capability	Description	Value
+Auto-Generate Good/Better/Best	Based on job type, customer history, market data	Techs don’t have to manually tier pricing
+Competitive Pricing Intel	Suggests pricing based on local market + service type	Helps price competitively
+Margin Protection	Alerts if estimate is unprofitable	Prevents leaving money on the table
+Upsell Recommendations	“Customers in this area also purchase X service”	AI recommends 1–2 upsells per estimate
+One-Click Estimate	AI-generated estimates from photo + basic info	Sub-2-minute estimate creation
+Confidence Score	Shows confidence of estimate accuracy	Tells tech if estimate needs review
+Market Position:
+
+Match WePro’s speed (50–70% faster)
+
+Beat WePro on UX & customization
+
+15.2.3 AI Scheduling & Dispatch Optimizer
+Capability	Description	Value
+Predictive Capacity	ML predicts which techs will have capacity gaps	Suggests hiring or scheduling proactively
+Skill-Match Routing	Knows which tech is best for each job type	Improves FTFR (first-time fix rate)
+Commute Optimization	Real-time traffic, predicts drive time	More accurate scheduling
+No-Show Prediction	Flags jobs likely to be missed based on pattern	Proactive rescheduling
+Dynamic Rescheduling	If a job cancels, AI auto-offers to customers on waiting list	Fills gaps automatically
+Workload Balancing	Spreads work fairly across techs	Improves morale & efficiency
+Customer Preference Learning	“This customer always books with John”	Respects customer preferences
+Competitive Advantage:
+
+Beats ServiceTitan’s basic optimization
+
+Beats Jobber’s more manual optimization
+
+15.2.5 AI Lead Scoring & Prioritization
+Capability	Description	Value
+Lead Quality Scoring	ML predicts which leads will convert & have high LTV	Prioritize follow-up on best leads
+Urgency Detection	Analyzes communication patterns to detect hot leads	“This customer seems urgent, call them first”
+Best Contact Method	Predicts whether to call/SMS/email based on customer behavior	Higher conversion
+Propensity to Upsell	Identifies which customers likely to buy additional services	Target upsells smartly
+Churn Risk Detection	Flags customers at risk of leaving	Proactive retention campaigns
+15.2.5 AI Invoice & Collections Assistant
+Capability	Description	Value
+Smart Collection Reminder	ML predicts best time to remind customer	Higher payment speed
+Payment Term Recommendation	Suggests optimal payment terms by customer type	Balances risk & conversion
+Late Payment Prediction	Flags invoices likely to go unpaid	Allows proactive intervention
+Dispute Detection	Flags invoices likely to be disputed	Prevents bad debt
+Auto-Payment Scheduling	Suggests recurring auto-pay to customers	Improves DSO
+15.3 PROPOSED: AI-Powered Customer-Facing Features
+15.3.1 AI Customer Support Chatbot
+Feature Name: “SmartSupport Bot” (for customer portal)
+
+Capability	Description	Example
+24/7 Availability	AI answers customer questions anytime	Customer asks “When will my job be done?” at 11pm
+FAQ Resolution	Handles common questions without human involvement	“How do I pay my invoice?”
+Job Status Updates	Customer asks about their appointment/job status	“Where’s my technician?” → shows live tech location (if enabled)
+Appointment Rescheduling	AI offers available time slots based on tech availability	Customer: “I need to move my appointment to Wednesday”
+Payment Reminders	Friendly payment reminders via chat	“Your invoice is due in 3 days. Pay now?”
+Service Recommendations	Suggests related services based on history	“You haven’t had your HVAC serviced in 12 months. Schedule now?”
+Escalation Logic	If AI can’t help, escalates to human with context	Complex billing → hands to office staff
+Feedback Collection	After job completion, AI asks for feedback	Reduces manual survey work
+Referral Invitations	Invites satisfied customers to refer friends	“Know anyone who needs a plumber?”
+MVP Scope:
+
+FAQ resolution
+
+Job status lookup
+
+Basic appointment rescheduling
+
+Payment reminders
+
+Phase 2:
+
+Complex troubleshooting
+
+Advanced rescheduling logic
+
+Referral campaigns
+
+Sentiment analysis (detect upset customers)
+
+15.3.2 AI Booking Assistant
+Capability	Description	Value
+Conversational Booking	“I need an AC repair Tuesday afternoon” → AI books	More natural than form-based booking
+Smart Availability	Learns customer preferences & tech availability	Suggests best time slots first
+Dynamic Pricing	Offers discount for off-peak times	“Book Wednesday at 10am? Save $50”
+Multi-Service Bundling	“While we’re there, need your furnace checked?”	Increases ticket value
+Deposit Collection	Requests deposit to confirm booking	Reduces no-shows
+Cancellation Handling	Customer cancels → AI offers alternatives	Minimizes lost revenue
+15.4 PROPOSED: AI-Powered Analytics & Insights
+15.4.1 AI Predictive Analytics Dashboard
+Capability	Description	Value
+Revenue Prediction	ML forecasts next month’s revenue	Better planning
+Seasonality Detection	Predicts seasonal demand patterns	Staffing & marketing optimization
+Growth Recommendations	“You should hire 2 more techs to meet 2027 demand”	Guides hiring
+Price Optimization	Suggests price increases based on demand & competition	Maximizes profit
+Service Demand Forecast	“HVAC demand spiking in winter”	Times marketing campaigns
+Customer Retention Insights	“These 5 customers are at risk of leaving”	Targeted retention campaigns
+Technician Performance Trends	“John’s productivity is declining”	Early intervention
+15.4.2 AI Anomaly Detection
+Capability	Description	Value
+Unusual Invoice Patterns	Flags invoices very different from similar jobs	Catches errors early
+Technician Behavior Change	Flags sudden drop in productivity	May indicate issues
+Customer Behavior Change	Detects reduced service frequency	Risk of churn
+Fraud Detection	Flags suspicious payment patterns	Security
+Data Quality Issues	Alerts missing/inconsistent data	Data integrity
+15.5 PROPOSED: AI-Powered Mobile Tech Features
+15.5.1 AI Job Guidance (Mobile)
+Capability	Description	Value
+Smart Job Instructions	AI generates step-by-step instructions from job details	Reduces errors
+Troubleshooting Guide	If job incomplete, AI suggests fixes	Improves FTFR
+Safety Alerts	“This system had 5 issues in past year, may need full replacement”	Enables consultative selling
+Customer History Briefing	AI summarizes history when tech arrives	Better customer experience
+Parts Availability Check	AI predicts common parts needed before arrival	Reduces extra trips
+15.5.2 AI Estimate Generation from Photos
+Capability	Description	Value
+Photo Analysis	Tech takes photos → AI identifies work	Faster estimates
+Measurement Extraction	AI reads measurements from photos	Less manual measuring
+Price Lookup	Auto-populates estimate with pricebook items	One-click estimates
+Damage Assessment	Analyzes damage to estimate repair scope	More accurate
+Confidence Score	Flags estimates needing manual review	Quality control
+15.6 PROPOSED: AI-Powered Compliance & Reporting
+Capability	Description	Value
+Auto-Report Generation	AI generates monthly/quarterly reports	Saves 5–10 hours/month
+Compliance Monitoring	Alerts on potential violations	Reduces risk
+Tax Preparation	Organizes data for tax filing	Easier accounting
+Audit Trail Summarization	Explains data changes in plain English	Compliance readiness
+15.7 PROPOSED: AI Quality Assurance & Continuous Improvement
+Capability	Description	Value
+Work Quality Prediction	Predicts which jobs will result in callbacks	Proactive QA
+Customer Satisfaction Prediction	Predicts likelihood of bad reviews	Proactive outreach
+Technician Training Gaps	Identifies skill gaps	Targeted training
+Process Inefficiencies	Finds workflow bottlenecks	Operational optimization
+15.8 PROPOSED: AI Internal Communication & Knowledge
+Capability	Description	Value
+Smart Notifications	Learns user behavior; only alerts what matters	Reduces noise
+Smart Summaries	Summarizes long histories into key points	Faster ramp-up
+Knowledge Base Auto-Generation	Extracts lessons into KB articles	Self-updating docs
+Translation	Spanish/multilingual support for techs/customers	More inclusive

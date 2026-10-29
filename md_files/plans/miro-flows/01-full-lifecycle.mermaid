@@ -1,0 +1,118 @@
+---
+title: "ALPHA CRM \u2014 Full Standard Lifecycle"
+---
+flowchart TD
+    %% ── LEAD PHASE ──────────────────────────────────────────────
+    START(["Customer calls / walks in / web inquiry"])
+    START --> L_CREATE["Office creates Lead\n(name, phone, email, address,\nservice request, notes)"]
+    L_CREATE --> L_NEW[/"Lead status: NEW"/]
+
+    L_NEW --> L_ASSIGN["Dispatcher assigns Lead\nto Sales rep"]
+    L_ASSIGN --> L_CONTACTED[/"Lead status: CONTACTED"/]
+
+    L_CONTACTED --> L_DECIDE{"Sales rep\nassesses need"}
+    L_DECIDE -- "Not a fit / No response" --> L_LOST[/"Lead status: LOST"/]
+    L_LOST --> LOST_END(["Lead closed \u2014 Lost"])
+
+    L_DECIDE -- "Schedule walkthrough /\nprepare estimate" --> L_ESTIMATING[/"Lead status: ESTIMATING"/]
+
+    %% ── ESTIMATE PHASE ──────────────────────────────────────────
+    L_ESTIMATING --> E_CREATE["Sales creates Estimate\n(line items: service, qty, unit price,\ntax, discount, notes, photos)"]
+    E_CREATE --> E_DRAFT[/"Estimate status: DRAFT"/]
+
+    E_DRAFT --> E_REVIEW{"Internal review\nby Sales / Manager"}
+    E_REVIEW -- "Needs changes" --> E_EDIT["Edit line items,\nadjust pricing / scope"]
+    E_EDIT --> E_DRAFT
+
+    E_REVIEW -- "Ready to send" --> E_SEND["Send estimate via email\n(Resend \u2192 public link)"]
+    E_SEND --> E_SENT[/"Estimate status: SENT"/]
+
+    E_SENT --> CUST_VIEW["Customer opens\nestimate link"]
+    CUST_VIEW --> CUST_DECIDE{"Customer\ndecision"}
+
+    CUST_DECIDE -- "No response\n(past expiry date)" --> E_EXPIRED[/"Estimate status: EXPIRED\n(lazy check on page load)"/]
+    E_EXPIRED --> EXPIRED_END(["Estimate expired \u2014\nfollow up or close lead"])
+
+    CUST_DECIDE -- "Declines" --> E_DECLINED[/"Estimate status: DECLINED"/]
+    E_DECLINED --> DECLINE_NEXT{"Create\nanother estimate?"}
+    DECLINE_NEXT -- "Yes" --> E_CREATE
+    DECLINE_NEXT -- "No" --> L_LOST
+
+    CUST_DECIDE -- "Approves\n(draws signature on canvas)" --> E_APPROVED[/"Estimate status: APPROVED\n(only 1 per lead at a time)"/]
+
+    E_APPROVED --> L_WON[/"Lead status: WON"/]
+
+    %% ── DEPOSIT PHASE ────────────────────────────────────────────
+    L_WON --> D_REQUEST["Office sends Deposit Request\n(Stripe payment link via email)"]
+    D_REQUEST --> D_REQUESTED[/"Deposit status: REQUESTED"/]
+
+    D_REQUESTED --> CUST_PAY["Customer pays deposit\nvia Stripe"]
+    CUST_PAY --> D_PAID[/"Deposit status: PAID"/]
+
+    %% ── DEPOSIT GATE ─────────────────────────────────────────────
+    D_PAID --> GATE{"HARD GATE\nDeposit paid?"}
+    GATE -- "No \u2014 blocked" --> D_REQUESTED
+    GATE -- "Yes" --> J_CREATE
+
+    %% ── JOB PHASE ────────────────────────────────────────────────
+    J_CREATE["Office clicks 'Create Job'\n(auto-populates from estimate:\nscope, location, customer)"]
+    J_CREATE --> J_UNASSIGNED[/"Job status: UNASSIGNED\n(JOB-YYYY-NNNN)"/]
+
+    J_UNASSIGNED --> J_ASSIGN["Dispatcher assigns\ntechnician + time window\non calendar"]
+    J_ASSIGN --> J_SCHEDULED[/"Job status: SCHEDULED"/]
+
+    J_SCHEDULED --> J_REASSIGN{"Needs\nreassignment?"}
+    J_REASSIGN -- "Yes" --> J_UNASSIGNED
+    J_REASSIGN -- "No" --> J_DISPATCH["Dispatcher confirms dispatch\n(tech gets notification)"]
+    J_DISPATCH --> J_DISPATCHED[/"Job status: DISPATCHED"/]
+
+    %% ── FIELD EXECUTION ──────────────────────────────────────────
+    J_DISPATCHED --> TECH_START["Technician taps 'Start'\non mobile"]
+    TECH_START --> J_INPROGRESS[/"Job status: IN_PROGRESS"/]
+
+    J_INPROGRESS --> TECH_WORK["Technician performs work\n(adds notes, photos from field)"]
+    TECH_WORK --> TECH_COMPLETE["Technician taps 'Mark Complete'\n(completion notes required)"]
+    TECH_COMPLETE --> J_COMPLETED[/"Job status: COMPLETED"/]
+
+    %% ── CANCEL PATH (any status) ─────────────────────────────────
+    J_UNASSIGNED & J_SCHEDULED & J_DISPATCHED & J_INPROGRESS -.-> J_CANCEL
+    J_CANCEL["Cancel job\n(reason required)"] -.-> J_CANCELLED[/"Job status: CANCELLED"/]
+    J_CANCELLED -.-> CANCEL_END(["Job cancelled"])
+
+    %% ── INVOICING PHASE ──────────────────────────────────────────
+    J_COMPLETED --> I_GENERATE["Generate Invoice from job\n(auto-populate line items,\napply deposit as credit)\nINV-YYYY-NNNN"]
+    I_GENERATE --> I_DRAFT[/"Invoice status: DRAFT"/]
+
+    I_DRAFT --> I_REVIEW["Office reviews invoice\n(amount due = total \u2212 deposit)"]
+    I_REVIEW --> I_SEND["Send invoice via email\n(Resend \u2192 payment link)"]
+    I_SEND --> I_SENT[/"Invoice status: SENT"/]
+
+    %% ── PAYMENT PHASE ────────────────────────────────────────────
+    I_SENT --> PAY_METHOD{"Payment\nmethod"}
+    PAY_METHOD -- "Online" --> PAY_STRIPE["Customer pays via\nStripe payment link"]
+    PAY_METHOD -- "Cash / Check" --> PAY_MANUAL["Office records manual\npayment in system"]
+
+    PAY_STRIPE --> I_PAID[/"Invoice status: PAID"/]
+    PAY_MANUAL --> I_PAID
+
+    I_PAID --> RECEIPT["Receipt confirmation\nsent to customer"]
+    RECEIPT --> DONE(["LIFECYCLE COMPLETE"])
+
+    %% ── STYLING ──────────────────────────────────────────────────
+    classDef status fill:#DBEAFE,stroke:#2563EB,color:#1E40AF
+    classDef gate fill:#FEE2E2,stroke:#DC2626,color:#991B1B
+    classDef action fill:#F0FDF4,stroke:#16A34A,color:#166534
+    classDef terminal fill:#F3F4F6,stroke:#6B7280,color:#374151
+    classDef decision fill:#FEF3C7,stroke:#D97706,color:#92400E
+    classDef customer fill:#EDE9FE,stroke:#7C3AED,color:#5B21B6
+
+    class L_NEW,L_CONTACTED,L_ESTIMATING,L_WON,L_LOST status
+    class E_DRAFT,E_SENT,E_APPROVED,E_DECLINED,E_EXPIRED status
+    class D_REQUESTED,D_PAID status
+    class J_UNASSIGNED,J_SCHEDULED,J_DISPATCHED,J_INPROGRESS,J_COMPLETED,J_CANCELLED status
+    class I_DRAFT,I_SENT,I_PAID status
+    class GATE gate
+    class L_CREATE,L_ASSIGN,E_CREATE,E_EDIT,E_SEND,D_REQUEST,J_CREATE,J_ASSIGN,J_DISPATCH,TECH_START,TECH_WORK,TECH_COMPLETE,I_GENERATE,I_REVIEW,I_SEND,J_CANCEL,PAY_STRIPE,PAY_MANUAL,RECEIPT action
+    class LOST_END,EXPIRED_END,CANCEL_END,DONE terminal
+    class L_DECIDE,E_REVIEW,CUST_DECIDE,DECLINE_NEXT,J_REASSIGN,PAY_METHOD decision
+    class CUST_VIEW,CUST_PAY customer

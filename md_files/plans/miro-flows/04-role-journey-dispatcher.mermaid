@@ -1,0 +1,63 @@
+---
+title: "ALPHA CRM \u2014 Dispatcher Journey"
+---
+flowchart TD
+    LOGIN(["Dispatcher logs in"])
+
+    LOGIN --> DASHBOARD["DASHBOARD\n\u2022 Jobs Today count\n\u2022 Unassigned jobs queue\n\u2022 Today's schedule overview\n\u2022 Pending actions"]
+
+    DASHBOARD --> WHAT{"Dispatcher's\nprimary task"}
+
+    %% ── LEAD ASSIGNMENT ──────────────────────────────────────────
+    WHAT -- "Assign incoming leads" --> LEADS["LEADS LIST\nFilter: status = NEW / Unassigned"]
+    LEADS --> LEAD_ASSIGN["Open lead \u2192\nAssign to Sales rep\nfrom dropdown"]
+    LEAD_ASSIGN --> LEAD_DONE["Lead now CONTACTED\nSales rep notified"]
+
+    %% ── SCHEDULE & ASSIGN JOBS ───────────────────────────────────
+    WHAT -- "Schedule jobs" --> CALENDAR["SCHEDULER\nWeek / Day / Month view"]
+
+    CALENDAR --> UNASSIGNED["LEFT SIDEBAR:\nUnassigned Jobs Queue\n(list of jobs needing\ntech + time)"]
+
+    UNASSIGNED --> PICK_JOB["Click unassigned job"]
+    PICK_JOB --> ASSIGN_FORM["Assignment form:\n\u2022 Select technician\n\u2022 Pick date\n\u2022 Set time window\n  (start \u2013 end)\n\u2022 Add dispatch notes"]
+    ASSIGN_FORM --> SAVE_ASSIGN["Save assignment"]
+    SAVE_ASSIGN --> J_SCHEDULED[/"Job: UNASSIGNED \u2192 SCHEDULED\nAppears on calendar grid"/]
+
+    %% ── DISPATCH CONFIRMATION ────────────────────────────────────
+    J_SCHEDULED --> DISPATCH_CHECK{"Ready to\ndispatch?"}
+    DISPATCH_CHECK -- "Conflict / issue" --> REASSIGN["Reassign:\n\u2022 Change tech\n\u2022 Move time slot\n\u2022 Return to UNASSIGNED"]
+    REASSIGN --> UNASSIGNED
+
+    DISPATCH_CHECK -- "All clear" --> CONFIRM_DISPATCH["Confirm dispatch\n(click 'Dispatch' button)"]
+    CONFIRM_DISPATCH --> J_DISPATCHED[/"Job: SCHEDULED \u2192 DISPATCHED\nTech receives notification"/]
+
+    %% ── MONITOR ACTIVE JOBS ──────────────────────────────────────
+    WHAT -- "Monitor progress" --> MONITOR["CALENDAR VIEW\n\u2022 Color-coded job cards:\n  \ud83d\udfe2 In Progress\n  \ud83d\udfe1 Scheduled\n  \ud83d\udd35 Dispatched\n  \u2705 Completed\n\u2022 Visual conflict detection"]
+
+    MONITOR --> MONITOR_ACTIONS{"Issue spotted?"}
+    MONITOR_ACTIONS -- "Tech running late" --> NOTIFY["Contact tech /\nreassign if needed"]
+    MONITOR_ACTIONS -- "Customer cancels" --> CANCEL_JOB["Cancel job\n(reason required)\n\u2192 Free up tech's slot"]
+    MONITOR_ACTIONS -- "No issues" --> CONTINUE(["Continue monitoring"])
+
+    %% ── HANDLE URGENT REQUESTS ───────────────────────────────────
+    WHAT -- "Emergency call" --> URGENT["Create Urgent Job\n\u2022 Customer info\n\u2022 Urgency reason\n\u2022 Assign available tech\n  (check calendar for gaps)"]
+    URGENT --> URGENT_SCHEDULED[/"Urgent Job: SCHEDULED\nTech notified immediately"/]
+
+    %% ── END-OF-DAY REVIEW ────────────────────────────────────────
+    WHAT -- "End-of-day" --> EOD["Review tomorrow's schedule:\n\u2022 Check for gaps\n\u2022 Verify all assigned\n\u2022 Note any unassigned jobs\n  carrying over"]
+
+    %% ── STYLING ──────────────────────────────────────────────────
+    classDef page fill:#DBEAFE,stroke:#2563EB,color:#1E40AF
+    classDef status fill:#E0E7FF,stroke:#4F46E5,color:#3730A3
+    classDef action fill:#F0FDF4,stroke:#16A34A,color:#166534
+    classDef decision fill:#FEF3C7,stroke:#D97706,color:#92400E
+    classDef terminal fill:#F3F4F6,stroke:#6B7280,color:#374151
+    classDef urgent fill:#FEE2E2,stroke:#DC2626,color:#991B1B
+
+    class DASHBOARD,LEADS,CALENDAR,MONITOR page
+    class J_SCHEDULED,J_DISPATCHED status
+    class LEAD_ASSIGN,LEAD_DONE,PICK_JOB,ASSIGN_FORM,SAVE_ASSIGN,REASSIGN,CONFIRM_DISPATCH,NOTIFY,CANCEL_JOB,EOD action
+    class WHAT,DISPATCH_CHECK,MONITOR_ACTIONS decision
+    class LOGIN,CONTINUE terminal
+    class URGENT,URGENT_SCHEDULED urgent
+    class UNASSIGNED page

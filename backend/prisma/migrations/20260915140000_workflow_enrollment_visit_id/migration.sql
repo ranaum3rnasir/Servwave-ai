@@ -1,0 +1,68 @@
+-- Per-visit automation enrollment (spec
+-- md_files/specs/scheduling/2026-09-14-per-visit-automation-enrollment.md, D1/D2).
+--
+-- An enrollment records WHICH VISIT it is about. Three cron sweeps already emit one candidate per
+-- visit - BEFORE_JOB_START, the job.scheduled_start anchor and the lead.walkthrough_scheduled_at
+-- anchor - and all three then threw the visit row away and named only the parent. At execution
+-- time the loader re-derived "which trip" from that parent (the earliest upcoming live visit for a
+-- job, the earliest live one for a lead), so on any job or lead with more than one trip the
+-- customer was told the FIRST trip's date, time, address, crew and crew phone numbers, whichever
+-- trip had actually enrolled the reminder.
+--
+-- IT IS A COLUMN, NOT A DERIVATION (D1). The value has to survive a WAIT of arbitrary length and
+-- be readable by rearmAnchoredWaits, which runs outside any step. Deriving it from occurrence_key
+-- is not available: that key stays a bare ISO date (D3), because stopIf.ts and terminalStale.ts
+-- compare it against someDate.toISOString() and, on a mismatch, return a stale REASON rather than
+-- erroring - so a widened format would quietly terminate every anchored wait in every
+-- organisation, with nothing red anywhere.
+--
+-- NO FOREIGN KEY, DELIBERATELY (D2). This matches the model's own idiom - `entity_id` is already a
+-- bare UUID with no relation, because an enrollment is polymorphic across job, lead, invoice,
+-- estimate and task - and it is the only referential behaviour that is correct here:
+--
+--   * RESTRICT would block the office from deleting a visit while any enrollment referenced it.
+--     Enrollments are long-lived, so a routine action starts failing for an invisible reason.
+--   * SET NULL would silently revert the enrollment to per-entity resolution - which IS the defect.
+--     A deleted Thursday visit would make the reminder quietly describe Tuesday again.
+--   * CASCADE would delete the enrollment row, taking the dedupe guard and the run-count ledger
+--     with it, so re-creating a visit at the same time would re-fire a reminder already sent.
+--
+-- With no FK, "the visit is gone" becomes a legible terminal state instead of a silent fallback:
+-- the loader returns null and the enrollment finishes STOPPED with a reason naming the visit (D4).
+--
+-- NO INDEX, DELIBERATELY. Nothing looks an enrollment up BY visit. The column is only ever read as
+-- a field of a row already fetched by id, so an index would be write cost against no read - the
+-- inverse of 20260913130000_workflow_enrollments_entity_index, which exists because the dashboard
+-- really does query on (entity_type, entity_id).
+--
+-- PURE EXPAND, so the deploy overlap is safe in both directions. Prisma enumerates its BUILD-TIME
+-- column list on every select-less query, so a DROP during the overlap 500s the instance still
+-- running the old client (see 20260831120000_drop_manual_comm_outcome's header at length). ADDING
+-- is the inverse and is invisible to that instance - it simply never names the new column - while
+-- the new instance reads NULL on every row written by the old one, which is exactly the "no visit
+-- recorded" case it already handles as today's per-entity behaviour.
+--
+-- That same column enumeration is why this has to land BEFORE the code that reads it, which is the
+-- ordering the release step already gives us: advanceEnrollment's findUnique is select-less, so the
+-- NEW client names `visit_id` on every enrollment it loads. Schema first, instance second - the
+-- ordinary direction for an additive change here, and the reason expand is the only half that is
+-- safe to ship on its own.
+--
+-- NO BACK-FILL (D10). A live enrollment created before this ships has no visit id and cannot get
+-- one: the information was never recorded, and inferring it from occurrence_key would be guessing
+-- at precisely the ambiguity that causes the bug (two visits at the same minute on one parent).
+-- Those rows keep today's behaviour until they finish, and the window is short - these triggers
+-- fire within offset_minutes of their anchor.
+--
+-- IDEMPOTENT: the single add is IF NOT EXISTS. PORTABLE: plain DDL, no Supabase-only objects, no
+-- auth.* helpers, no TO authenticated / anon / service_role - so it runs unchanged in all three
+-- places: CI's vanilla postgres:16, Render's `prisma migrate deploy`, and by hand.
+--
+-- NO RLS CHANGE. `workflow_enrollments` already carries the canonical tenant_isolation policy on
+-- organization_id; a new column is inside that policy's reach automatically, and the visit is not
+-- what the policy filters on. Tenant-scoping of `visit_id` itself is an APPLICATION check on READ:
+-- the parent is fetched with its tenant clause and the trip is then resolved among THAT parent's
+-- own visits, so an id belonging to another organisation is simply absent and stops the
+-- enrollment - the same answer as a deleted one.
+
+ALTER TABLE "workflow_enrollments" ADD COLUMN IF NOT EXISTS "visit_id" UUID;

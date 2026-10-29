@@ -1,0 +1,10 @@
+{
+  "compilerOptions": {
+    "composite": true,
+    "skipLibCheck": true,
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "allowSyntheticDefaultImports": true
+  },
+  "include": ["vite.config.ts", "pwa-manifest.ts", "public-page-routing.ts", "vendor-chunks.ts", "public-entry-build.ts", "public-early-script.ts"]
+}

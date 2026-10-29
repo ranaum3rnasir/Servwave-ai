@@ -1,0 +1,43 @@
+# Secret scan for what the snapshot mirror publishes to the outside mobile team
+# (.github/workflows/snapshot-mirror.yml). Stricter than .gitleaks.toml: no folder is skipped,
+# because everything scanned here leaves this repo. Any finding blocks the publish.
+title = "Snapshot publish gate"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "hardcoded-password"
+description = "Hard-coded password literal"
+regex = '''(?i)\b[a-z_]*pass(?:word|wd|phrase)?['"]?\s*[:=]\s*(?:[^'"\n;]*?(?:\|\||\?\?)\s*)?['"]([^'"\s{}$<>]{6,})['"]'''
+secretGroup = 1
+keywords = ["pass"]
+
+  [rules.allowlist]
+  description = "Fake credentials inside automated tests only"
+  paths = [
+    '''(^|/)__tests__/''',
+    '''\.(test|spec)\.[cm]?[jt]sx?$''',
+  ]
+
+# The generic "looks like a key" detector fires on made-up values in automated tests (fake
+# reply tokens, sk_test_... placeholders). Excused for test files only; every other detector,
+# including the real-key ones, still scans tests.
+[[rules]]
+id = "generic-api-key"
+  [[rules.allowlists]]
+  description = "Fake values inside automated tests"
+  paths = [
+    '''(^|/)__tests__/''',
+    '''\.(test|spec)\.[cm]?[jt]sx?$''',
+  ]
+
+[allowlist]
+description = "Confirmed false positives only. Never add a real value."
+regexes = [
+  # npm script that sets a feature flag, not a key (frontend/package.json).
+  '''E2E_TEST_DOORS=true''',
+  # Automation template slugs (backend/src/services/automations/catalog.ts).
+  '''estimate-follow-up-\d+d''',
+  '''walkthrough-reminder-\d+d''',
+]

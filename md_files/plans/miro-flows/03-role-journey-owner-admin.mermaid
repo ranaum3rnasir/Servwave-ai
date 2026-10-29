@@ -1,0 +1,63 @@
+---
+title: "ALPHA CRM \u2014 Owner / Admin Journey"
+---
+flowchart TD
+    LOGIN(["Owner logs in"])
+
+    LOGIN --> DASHBOARD["DASHBOARD\n\u2022 Revenue MTD\n\u2022 Open Leads count\n\u2022 Jobs Today count\n\u2022 Unread / Pending items\n\u2022 Jobs-today timeline\n\u2022 Recent activity feed"]
+
+    DASHBOARD --> WHAT{"What does the\nOwner need to do?"}
+
+    %% ── LEAD MANAGEMENT ──────────────────────────────────────────
+    WHAT -- "Manage pipeline" --> LEADS_LIST["LEADS LIST\nView all leads + KPI strip\n(Total, Unassigned, New This Week,\nWon, Lost)"]
+    LEADS_LIST --> LEAD_ACTIONS{"Lead action"}
+    LEAD_ACTIONS -- "Create" --> LEAD_CREATE["Create new lead\n(name, phone, email,\naddress, service request)"]
+    LEAD_ACTIONS -- "View / Edit" --> LEAD_DETAIL["Lead Detail page\n\u2022 Update status\n\u2022 Assign to Sales rep\n\u2022 Add notes\n\u2022 Schedule walkthrough\n\u2022 View linked estimates"]
+    LEAD_ACTIONS -- "Review" --> LEAD_FILTER["Filter by status,\nassignee, date range"]
+
+    %% ── CUSTOMER MANAGEMENT ──────────────────────────────────────
+    WHAT -- "Customer records" --> CUST_LIST["CUSTOMERS LIST\nSearch, filter, view profiles"]
+    CUST_LIST --> CUST_ACTIONS{"Customer action"}
+    CUST_ACTIONS -- "View" --> CUST_DETAIL["Customer Detail\n\u2022 Full service history timeline\n  (leads, estimates, jobs, invoices)\n\u2022 Multiple contacts\n\u2022 Multiple service locations"]
+    CUST_ACTIONS -- "Create" --> CUST_CREATE["Create customer\n(duplicate detection\non phone/email)"]
+
+    %% ── ESTIMATE OVERSIGHT ───────────────────────────────────────
+    WHAT -- "Review estimates" --> EST_LIST["ESTIMATES LIST\nKPI strip: Draft, Sent, Approved,\nDeclined, Expired + Win Rate"]
+    EST_LIST --> EST_ACTIONS{"Estimate action"}
+    EST_ACTIONS -- "Create" --> EST_CREATE["Create estimate\nfrom lead or customer"]
+    EST_ACTIONS -- "Review" --> EST_DETAIL["Estimate Detail\n\u2022 Line items, totals, margin\n\u2022 Internal cost view (toggle)\n\u2022 Send to customer\n\u2022 Track approval status"]
+    EST_ACTIONS -- "Send deposit" --> DEP_REQUEST["Send deposit request\n(after customer approves)"]
+
+    %% ── JOB OVERSIGHT ────────────────────────────────────────────
+    WHAT -- "Monitor jobs" --> JOB_LIST["JOBS LIST\nView all jobs by status"]
+    JOB_LIST --> JOB_ACTIONS{"Job action"}
+    JOB_ACTIONS -- "Create from estimate" --> JOB_CREATE["Create Job\n(after deposit paid \u2014 hard gate)"]
+    JOB_ACTIONS -- "Create urgent" --> JOB_URGENT["Create Urgent Job\n(bypass estimate/deposit)"]
+    JOB_ACTIONS -- "View" --> JOB_DETAIL["Job Detail\n\u2022 Status, assigned tech\n\u2022 Schedule, scope notes\n\u2022 Timeline of changes\n\u2022 Cancel with reason"]
+
+    %% ── SCHEDULING ───────────────────────────────────────────────
+    WHAT -- "View schedule" --> CALENDAR["SCHEDULER / CALENDAR\nWeek / Day / Month view\n\u2022 See all tech schedules\n\u2022 Unassigned jobs sidebar\n\u2022 Color-coded by status\n\u2022 Conflict detection (visual)"]
+
+    %% ── INVOICING & PAYMENTS ─────────────────────────────────────
+    WHAT -- "Finances" --> INVOICE_LIST["INVOICES LIST\nDraft, Sent, Paid, Overdue"]
+    INVOICE_LIST --> INV_ACTIONS{"Invoice action"}
+    INV_ACTIONS -- "Generate" --> INV_CREATE["Generate from completed job\n(deposit auto-applied)"]
+    INV_ACTIONS -- "Send" --> INV_SEND["Send invoice email\nwith payment link"]
+    INV_ACTIONS -- "Record payment" --> PAY_RECORD["Record manual payment\n(cash/check)"]
+
+    %% ── REPORTS ──────────────────────────────────────────────────
+    WHAT -- "Reporting" --> REPORTS["REPORTS\n\u2022 Pipeline: leads by status, funnel\n\u2022 Deposits: awaiting, collected, conversion\n\u2022 Operations: jobs by status, workload\n\u2022 Finance: outstanding invoices,\n  aging buckets (0-7/8-30/31-60/60+)\n\u2022 Usage: cycle-time averages"]
+
+    %% ── SETTINGS ─────────────────────────────────────────────────
+    WHAT -- "Settings" --> SETTINGS["SETTINGS\n\u2022 Company profile\n\u2022 User management\n  (invite, deactivate, roles)\n\u2022 Tax rate\n\u2022 Payment terms\n\u2022 Estimate validity days\n\u2022 Price Book management"]
+
+    %% ── STYLING ──────────────────────────────────────────────────
+    classDef page fill:#DBEAFE,stroke:#2563EB,color:#1E40AF
+    classDef action fill:#F0FDF4,stroke:#16A34A,color:#166534
+    classDef decision fill:#FEF3C7,stroke:#D97706,color:#92400E
+    classDef terminal fill:#F3F4F6,stroke:#6B7280,color:#374151
+
+    class DASHBOARD,LEADS_LIST,CUST_LIST,EST_LIST,JOB_LIST,CALENDAR,INVOICE_LIST,REPORTS,SETTINGS page
+    class LEAD_CREATE,LEAD_DETAIL,LEAD_FILTER,CUST_DETAIL,CUST_CREATE,EST_CREATE,EST_DETAIL,DEP_REQUEST,JOB_CREATE,JOB_URGENT,JOB_DETAIL,INV_CREATE,INV_SEND,PAY_RECORD action
+    class WHAT,LEAD_ACTIONS,CUST_ACTIONS,EST_ACTIONS,JOB_ACTIONS,INV_ACTIONS decision
+    class LOGIN terminal

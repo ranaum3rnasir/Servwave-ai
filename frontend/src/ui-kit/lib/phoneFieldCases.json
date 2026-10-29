@@ -1,0 +1,27 @@
+{
+  "_comment": "Mobile slice 36. What the phone input emits for a given keystroke result, and how a stored number is shown. Read by frontend src/__tests__/input-guards/phone-field.test.tsx (the input really emits these) and backend src/__tests__/phone-input-resave.test.ts (every save endpoint accepts them, stores the same bytes as before, and inbound call/SMS matching still finds the customer). One table, so the two sides cannot drift.",
+  "typing": [
+    { "case": "10-digit US number", "prev": "", "next": "5125550147", "format": "us", "emits": "(512) 555-0147", "before": "(512) 555-0147" },
+    { "case": "10-digit US number, already punctuated", "prev": "", "next": "(512) 555-0147", "format": "us", "emits": "(512) 555-0147", "before": "(512) 555-0147" },
+    { "case": "+1 number", "prev": "+1 512 555 014", "next": "+1 512 555 0147", "format": "us", "emits": "(512) 555-0147", "before": "(151) 255-5014" },
+    { "case": "+1 number, pasted bare", "prev": "", "next": "+15125550147", "format": "us", "emits": "(512) 555-0147", "before": "(151) 255-5014" },
+    { "case": "1 and ten digits (country code without the plus)", "prev": "(151) 255-5014", "next": "(151) 255-50147", "format": "us", "emits": "(512) 555-0147", "before": "(151) 255-5014" },
+    { "case": "number with an extension typed into the number box", "prev": "(512) 555-0147", "next": "(512) 555-0147 x214", "format": "us", "emits": "(512) 555-0147", "before": "(512) 555-0147" },
+    { "case": "number with an extension, pasted", "prev": "", "next": "512-555-0147 x214", "format": "us", "emits": "(512) 555-0147", "before": "(512) 555-0147" },
+    { "case": "an eleventh digit after a full US number is ignored, as before", "prev": "(512) 555-0147", "next": "(512) 555-01473", "format": "us", "emits": "(512) 555-0147", "before": "(512) 555-0147" },
+    { "case": "international number typed with a plus", "prev": "+44 7700 90012", "next": "+44 7700 900123", "format": "us", "emits": "+44 7700 900123", "before": "(447) 700-9001" },
+    { "case": "a lone plus is kept so an international number can be typed", "prev": "", "next": "+", "format": "us", "emits": "+", "before": "" },
+    { "case": "editing a stored number of more than ten digits keeps every digit", "prev": "447700900123", "next": "4477009001234", "format": "us", "emits": "4477009001234", "before": "(447) 700-9001" },
+    { "case": "as-typed field: 10-digit US number", "prev": "", "next": "5125550147", "format": "as-typed", "emits": "5125550147", "before": "5125550147" },
+    { "case": "as-typed field: +1 number", "prev": "", "next": "+1 (512) 555-0147", "format": "as-typed", "emits": "+1 (512) 555-0147", "before": "+1 (512) 555-0147" },
+    { "case": "as-typed field: dial string with an extension", "prev": "", "next": "5125550147,,214#", "format": "as-typed", "emits": "5125550147,,214#", "before": "5125550147,,214#" }
+  ],
+  "stored": [
+    { "case": "customer phone, US digits", "stored": "5125550147", "shows": "(512) 555-0147" },
+    { "case": "customer phone, international digits", "stored": "447700900123", "shows": "447700900123" },
+    { "case": "customer phone, more than ten digits", "stored": "5125550147214", "shows": "5125550147214" },
+    { "case": "international number stored with its plus", "stored": "+44 20 7946 0958", "shows": "+44 20 7946 0958" },
+    { "case": "a short number is shown as before", "stored": "5550147", "shows": "(555) 014-7" },
+    { "case": "nothing stored", "stored": null, "shows": "" }
+  ]
+}

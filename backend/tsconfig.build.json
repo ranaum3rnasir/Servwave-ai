@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "exclude": [
+    "node_modules",
+    "dist",
+    "src/__tests__/**",
+    "src/**/__tests__/**",
+    "src/seed.ts",
+    "src/seed-tax-rates.ts",
+    "src/seed-technician.ts",
+    "src/seed-org-b.ts",
+    "src/scripts/**"
+  ]
+}

@@ -1,0 +1,22 @@
+-- #2029 slice 1, SECOND HALF — drop the retired line-item photo table.
+--
+-- HOLD THIS BACK. It must NOT ship in the same PR as the code removal, and it is deliberately
+-- not in backend/prisma/migrations/ for exactly that reason.
+--
+-- Render applies pending migrations as the NEW instance boots, while the OLD instance is still
+-- serving. Until the code removal is live, that old instance's estimateDetailSelect still asks
+-- for `line_items.photos`, so dropping the table underneath it 500s every estimate detail read
+-- for the whole overlap window — the hottest estimate path there is.
+--
+-- Sequence:
+--   1. Ship the code removal (commit 5dc6368b5). The Prisma model is gone, nothing queries the
+--      table, and the table simply sits there unused. The CI drift gate is `prisma migrate
+--      status`, which compares the LEDGER and not the schema, so it stays green with the model
+--      removed and the table present.
+--   2. Once that deploy is live on staging AND prod, move this file to
+--      backend/prisma/migrations/<timestamp>_drop_estimate_line_item_photos/migration.sql
+--      and ship it.
+--
+-- Both photo tables are empty in production, so there is no data to migrate.
+
+DROP TABLE IF EXISTS "estimate_line_item_photos";

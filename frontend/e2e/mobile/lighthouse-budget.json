@@ -1,0 +1,36 @@
+{
+  "_comment": "Slice 62, PERF-03: Lighthouse mobile, median of the runs. `enforce` fails the sweep; `report` prints the miss in the report and passes, and names the slice that owns the fix. First measured 2026-10-04 on staging: public estimate LCP 4.1 s, public invoice 3.6 s, technician landing 9.3 s, all over 2.5 s, so all three start in `report` with slice 61 (fast first paint on phones), whose acceptance criteria are exactly this budget. Slice 61 landed (staging #2479) and the pages were re-measured on 2026-10-05: public estimate 3.3 s, public invoice 3.3 s, technician landing 8.5 s. All are still over 2.5 s, so all stay in `report`, with the ceilings brought down to that measurement plus headroom for noise; the owner flips a page to `enforce` when it measures under 2.5 s. Slice 61 round 1 (staging fix, 2026-10-06; the scheduler's chunk starts beside the sign-in check, one sign-in request instead of two, six dialogs out of its first download): public estimate 3.47 s, public invoice 3.47 s, technician landing 7.6 s (8.5 s measured the same way, back to back, before the change), so the technician ceiling comes down to 9 s; the target is still not met on any of the three. Slice 61 round 3 (staging fix, 2026-10-06; the customer's page is built on its own, 3 scripts instead of 37, and its document request starts before its scripts arrive): public estimate 2.28 s and public invoice 2.26 s, both under 2.5 s, so both are `enforce` now; the technician landing page measured 7.29 s (7.6 s before), still over 2.5 s with the target out of reach for the staff entry (see the measurements doc), so its ceiling comes down to 8 s and it stays in `report`. Tighten, never loosen. `ceiling` is the most a report-mode page may measure (its first measurement plus headroom for noise): over it the sweep FAILS even in report mode, so a page cannot get worse while its owner works. Lower the ceiling as the page improves.",
+  "budget": {
+    "lcpMs": 2500,
+    "cls": 0.1
+  },
+  "runs": 3,
+  "pages": [
+    {
+      "id": "public-estimate-open",
+      "label": "Public estimate (open)",
+      "state": "public-estimate-open",
+      "mode": "enforce",
+      "owner": "61"
+    },
+    {
+      "id": "public-invoice-open",
+      "label": "Public invoice (open)",
+      "state": "public-invoice-open",
+      "mode": "enforce",
+      "owner": "61"
+    },
+    {
+      "id": "technician-landing",
+      "label": "Technician landing (scheduler, signed in as a technician)",
+      "path": "/schedule",
+      "signedIn": true,
+      "mode": "report",
+      "owner": "61",
+      "ceiling": {
+        "lcpMs": 8000,
+        "cls": 0.1
+      }
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+-- #2029 slice 1, SECOND HALF — drop the retired line-item photo table.
+--
+-- This is the deliberately-held-back half of the retirement. It was kept out of
+-- backend/prisma/migrations/ until the code removal was live, because Render applies pending
+-- migrations as the NEW instance boots while the OLD one is still serving: dropping the table
+-- underneath an instance whose estimateDetailSelect still asked for `line_items.photos` would
+-- have 500'd every estimate detail read for the whole overlap window.
+--
+-- That precondition is now met. The code removal is live on staging and reached production on
+-- 2026-09-18 in merge b92a28fdb (PR #2200). The Prisma model is gone from schema.prisma, the
+-- upload route is gone from estimate.routes.ts, the frontend call site is gone, and the table has
+-- been orphaned since that deploy.
+--
+-- CORRECTION TO THE HELD-BACK NOTE. The original said "Both photo tables are empty in
+-- production, so there is no data to migrate." That is no longer true and it should not be
+-- repeated. Production now holds ONE row, in the DEMO organisation
+-- (00000000-0000-0000-0000-000000000001), uploaded 2026-09-16 23:04 against estimate L00038-2 —
+-- a 157KB test image from before the retirement deployed. It is QA data, not a customer's, and
+-- dropping it loses nothing. Staging holds zero rows.
+--
+-- The row's Storage object is NOT removed by this migration and will be left orphaned in the
+-- org-assets bucket:
+--   00000000-0000-0000-0000-000000000001/estimate_line_item/8f657ae7-20e8-4624-986b-afa3e9382405/
+-- It is listed here so that it is on the record rather than discovered later.
+--
+-- NOT AFFECTED: `estimate_scope_photos` is the live table this retirement kept, and the
+-- price-book catalog image path (#2045) never used this table — a line's "+" upload fills the
+-- CATALOG item's image through POST /api/price-book/items/:id/image, which is why retiring this
+-- one takes nothing away from QA row 002.
+
+DROP TABLE IF EXISTS "estimate_line_item_photos";

@@ -1,0 +1,10 @@
+{
+  "_readme": [
+    "Targeted specs the full sweep (slice 62) found failing on the staging base itself, with nothing to do with the change being promoted.",
+    "A failing row is covered only when an entry matches its spec file, its title (when given), its device project (when listed) AND a piece of its error text; any other failure still fails the sweep.",
+    "Every entry names an owner and says what fails. The report lists them under 'Known failing specs'; fixing the spec or the page deletes the entry, and the report says when one passed this run.",
+    "Gate states (gate.spec.ts) are not listed here: their known offenders are recorded per check and device in allowlist.json.",
+    "Never add an entry to make a run green: add it only with the error text, from a run on a clean staging commit."
+  ],
+  "entries": []
+}

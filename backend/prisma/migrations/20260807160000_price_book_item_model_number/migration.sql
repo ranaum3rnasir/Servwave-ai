@@ -1,0 +1,24 @@
+-- Model number on catalog/inventory items (Ran's 2026-08-07 scope call).
+--
+-- The Add Item dialog exposed neither of the two identifiers a contractor
+-- actually reads off a box. `mpn` (manufacturer part number) already existed
+-- as a column - populated by CSV import, searched by the Items filter, and
+-- matched by the barcode scanner - but was never rendered as a form field, so
+-- there was no way to type one. That half needs no migration; only the UI.
+--
+-- The model number had no home at all, hence this column. It is deliberately
+-- its own field rather than folded into `mpn`: a manufacturer's part number
+-- and its model number differ routinely (MUL-T-LOCK sells model "MT5+" under
+-- part "114"), and both get quoted back to vendors on a PO.
+--
+-- Nullable with no default and no backfill - existing rows simply have no
+-- model number on record, which is the truth. No unique constraint: model
+-- numbers repeat across variants of the same product line.
+--
+-- IDEMPOTENT: ADD COLUMN IF NOT EXISTS, so a re-run on the shared staging DB
+--   is a no-op.
+-- PORTABLE: vanilla postgres:16 (the CI migration-check job) - a nullable text
+--   column, no Supabase-specific objects. price_book_items already carries its
+--   tenant RLS policy and adding a column does not alter it.
+
+ALTER TABLE "price_book_items" ADD COLUMN IF NOT EXISTS "model_number" TEXT;

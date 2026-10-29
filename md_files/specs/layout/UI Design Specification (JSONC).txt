@@ -1,0 +1,127 @@
+{
+  "project": "ALPHA - FSM Dashboard",
+  "design_system": {
+    "colors": {
+      "palettes": {
+        // Main brand color used for active states, charts, icons, and primary buttons
+        "primary": {
+          "base": "#2563EB", // Royal Blue
+          "light": "#60A5FA",
+          "dark": "#1E40AF",
+          "subtle_bg": "#EFF6FF" // Very light blue for backgrounds behind icons
+        },
+        // Accent color used for 'Hot' badges, 'Compose' buttons, and key call-to-actions
+        "secondary": {
+          "base": "#F43F5E", // Rose/Salmon
+          "light": "#FB7185",
+          "dark": "#E11D48"
+        }
+      },
+      "neutrals": {
+        "white": "#FFFFFF",
+        "background_light": "#F3F4F6", // Light gray background for the main app area
+        "background_dark": "#111827",  // Dark mode main background
+        "surface_light": "#FFFFFF",     // Card background light
+        "surface_dark": "#1F2937",      // Card background dark
+        "text_primary": "#1F2937",      // Dark gray for headings
+        "text_secondary": "#6B7280",    // Medium gray for subtitles/meta
+        "border": "#E5E7EB"
+      },
+      "status": {
+        "success": "#10B981", // Green (Growth trends, Online status)
+        "danger": "#EF4444",  // Red (Negative trends, Errors)
+        "warning": "#F59E0B", // Amber (Labels, 'Hot' tags)
+        "info": "#3B82F6"     // Blue (Standard info tags)
+      }
+    },
+    "typography": {
+      "font_family": "'Inter', 'Roboto', sans-serif",
+      "weights": {
+        "regular": 400,
+        "medium": 500,
+        "semibold": 600,
+        "bold": 700
+      },
+      "sizes": {
+        "h1": "1.5rem",   // Page titles (e.g., 'Sales')
+        "h2": "1.25rem",  // Card titles
+        "h3": "1.125rem", // Section headers
+        "body": "0.875rem", // Standard text
+        "small": "0.75rem"  // Labels, meta data
+      }
+    },
+    "layout": {
+      "grid": {
+        "gap": "1.5rem", // Standard gap between cards
+        "container": "fluid" // Full width with padding
+      },
+      "radius": {
+        "default": "0.75rem", // 12px for cards and large containers
+        "small": "0.375rem",  // 6px for inputs and small buttons
+        "pill": "9999px"      // For badges and rounded buttons
+      },
+      "shadows": {
+        "card": "0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06)",
+        "hover": "0 10px 15px -3px rgba(0, 0, 0, 0.1)"
+      }
+    }
+  },
+  "components": {
+    "sidebar": {
+      "width": "260px",
+      "background": "surface_light",
+      "states": {
+        "active_item": "primary.subtle_bg + primary.base text",
+        "hover_item": "neutrals.background_light"
+      },
+      "elements": [
+        "Logo Area (Top Left)",
+        "Navigation Groups (Dashboard, Applications, Layouts, Components)",
+        "Collapsible Sub-menus (Accordion style)"
+      ]
+    },
+    "header": {
+      "height": "64px",
+      "background": "transparent or surface_light",
+      "elements": [
+        "Hamburger Menu (Mobile only)",
+        "Page Title/Breadcrumbs",
+        "Right Actions: Language Flag, Search, Notification Bell (with badge), User Avatar"
+      ]
+    },
+    "cards": {
+      "metric_card": {
+        "layout": "flex-row",
+        "content": ["Label", "Value", "Trend Indicator (Icon + %)", "Mini Chart/Icon"],
+        "style": "bg-white rounded-xl p-6 shadow-sm"
+      },
+      "chart_card": {
+        "layout": "flex-col",
+        "header": ["Title", "Sort Dropdown (Yearly/Monthly)", "Legend"],
+        "body": "Canvas area for charts"
+      }
+    },
+    "charts": {
+      "line_chart": {
+        "stroke": "smooth",
+        "fill": "gradient (primary.base to transparent)",
+        "grid_lines": "dashed light-gray"
+      },
+      "bar_chart": {
+        "radius": "top-corners rounded",
+        "width": "medium"
+      },
+      "donut_chart": {
+        "cutout": "75%",
+        "legend_position": "bottom or right"
+      }
+    }
+  },
+  "responsive_breakpoints": {
+    "sm": "640px",  // Mobile: Stacked layout, hidden sidebar
+    "md": "768px",  // Tablet: Sidebar collapses to icons
+    "lg": "1024px", // Laptop: 2-column grid for metrics
+    "xl": "1280px", // Desktop: 4-column grid for metrics, full sidebar
+    "2xl": "1536px" // Large Desktop: Expanded layouts
+  }
+}

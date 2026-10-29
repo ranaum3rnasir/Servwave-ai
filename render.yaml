@@ -1,0 +1,39 @@
+# Render Blueprint — ServWave TEST/DEMO backend.
+# Independent of the live B&G prod service. Points at the alpha-crm-staging DB.
+# Region MUST stay co-located with Supabase us-east-1 (Virginia) — never split
+# regions (see CLAUDE.md "Hosting region" learning: cross-region cost ~70ms/RTT).
+services:
+  - type: web
+    name: servwave-demo-api
+    runtime: node
+    region: virginia
+    plan: free            # free spins down after ~15m idle (~50s cold start). Bump to "starter" ($7/mo) to keep warm for testers.
+    branch: servwave
+    rootDir: .
+    autoDeployTrigger: commit
+    buildCommand: npm install && npm run build:backend
+    # migrate deploy uses DIRECT_URL (5432). Then boot the compiled server.
+    startCommand: cd backend && npx prisma migrate deploy && node dist/index.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: TAX_RATE
+        value: "0.0875"
+      - key: EMAIL_FROM
+        value: no-reply@servwave.com
+      # --- secrets / per-env (set via dashboard prompt or `render` API) ---
+      - key: DATABASE_URL              # staging pooler 6543 + &sslmode=require
+        sync: false
+      - key: DIRECT_URL                # staging direct 5432 + ?sslmode=require
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: FRONTEND_URL              # set to the Vercel URL after frontend is created
+        sync: false
+      - key: CORS_ALLOWED_ORIGINS      # same Vercel URL
+        sync: false

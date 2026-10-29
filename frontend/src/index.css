@@ -1,0 +1,103 @@
+/* Fonts are ours and never block the first paint: see design-system/fonts.css (mobile slice 61).
+   Manrope is the default face, Figtree the v2 shell's, Caveat the typed-signature script. */
+@import "./design-system/fonts.css";
+
+/* ServWave design-system tokens — single source of truth. Must load BEFORE the
+   @tailwind layers so the var()-based theme is resolvable. */
+@import "./design-system/tokens.css";
+
+/* v2 presentation layer tokens (CRM UI kit). Loads after tokens.css and
+   defines only names tokens.css does not own. Remove this line and
+   tokens-v2.css to roll the v2 layer back. */
+@import "./design-system/tokens-v2.css";
+
+/* The v2 application shell (topbar / sidebar / canvas). Loads AFTER the token
+   files so every var() it reads is already defined, and before the Tailwind
+   layers so a utility at a call site can still win over a shell rule. Every
+   selector in it is namespaced under the shell's own classes, so nothing here
+   reaches the legacy layer. */
+@import "./ui-kit/components/layout/shell.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+/* Safe areas (mobile slice 52). The viewport meta says viewport-fit=cover, so a page runs under the
+   status bar, the notch and the home indicator. A page that owns the whole screen (sign-in, the
+   public estimate and invoice) puts this on its root, so its scroller starts below them and its
+   content stays off a notch held sideways. The shell frame, sheets, dialogs and the fixed bottom
+   bars pad for the insets in their own places. Every inset is 0 where there is none. */
+@layer utilities {
+  .pad-safe {
+    padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px)
+      env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px);
+  }
+}
+
+/* The on-screen keyboard (mobile slice 54). `useKeyboardInset` (mounted once, in App) writes these on
+   the root as inline styles; the defaults here are what a page without the hook, a desktop and a
+   closed keyboard all see, so nothing that reads them changes until a keyboard is really open.
+     --keyboard-inset   px of the bottom edge the keyboard covers (zero where the layout itself
+                        resized with the keyboard, so a footer is never lifted twice)
+     --visible-height   the height the user can see
+     --keyboard-open    1 while a keyboard is up
+     --safe-bottom      the home-indicator inset, dropped to 0 while the keyboard covers it */
+:root {
+  --keyboard-inset: 0px;
+  --visible-height: 100dvh;
+  --keyboard-open: 0;
+  --safe-bottom: calc(env(safe-area-inset-bottom, 0px) * (1 - var(--keyboard-open, 0)));
+}
+
+/* Hide native number-input spinner arrows app-wide (cent-stepping spinners
+   on price/qty fields are wrong UX — values are typed, not stepped). */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* Search fields (kind="search", mobile slice 23) get the phone keyboard's
+   Search key from type="search". The browser's own clear button is hidden so a
+   field that just became type="search" looks exactly as it did; the fields that
+   want a clear button draw their own (SearchInput). */
+input[type="search"]::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
+/* Reduced motion, app-wide (mobile slice 16, A11Y-05). Global on purpose: it
+   used to be scoped to the shell (`.app *` in shell.css), and every dialog,
+   sheet, popover and toast portals to <body>, outside `.app`, so none of them
+   obeyed it. Also covers the public and sign-in pages, which have no shell.
+   `none` rather than a near-zero duration: Radix's Presence reads a computed
+   animation name of `none` as "nothing to wait for" and unmounts a closing
+   overlay at once, and nothing in the app waits on an animationend or
+   transitionend event. framer-motion is set to follow the same setting at the
+   app root (App.tsx), and Collapse reads it itself. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition: none !important;
+    animation: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Utility class used by <SignatureField> and any signed-doc preview. */
+.sig-script {
+  font-family: "Caveat", "Brush Script MT", "Lucida Handwriting", cursive;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}

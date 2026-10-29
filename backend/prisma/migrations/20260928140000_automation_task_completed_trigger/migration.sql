@@ -1,0 +1,11 @@
+-- "Task is done": a task's status moved into DONE, and the people waiting on it should be told
+-- by email or text (visits-and-task-categories plan, slice 14).
+--
+-- ONE value, for the reason the TASK_CREATED migration states: a Postgres enum value can never
+-- be removed, so the smaller irreversible step is the safer one. "Task is cancelled" lands as its
+-- own value in its own migration with the slice that dispatches it.
+--
+-- Bare ADD VALUE IF NOT EXISTS, following 20260828150000_automation_task_deleted_trigger: it is
+-- idempotent, portable to vanilla Postgres, and nothing in this file uses the new value, so it is
+-- safe inside the transaction the deploy step wraps it in. No backfill, nothing destructive.
+ALTER TYPE "AutomationTriggerType" ADD VALUE IF NOT EXISTS 'TASK_COMPLETED';

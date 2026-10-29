@@ -1,0 +1,190 @@
+{
+  "components/communication/inbox/ComposeWindow.tsx": {
+    "grid-cols-6": 1
+  },
+  "components/communication/phone/CallFlows.tsx": {
+    "grid-cols-2": 1
+  },
+  "components/communication/phone/CallMaskingView.tsx": {
+    "grid-cols-2": 1
+  },
+  "components/communication/phone/CallsView.tsx": {
+    "grid-cols-2": 3
+  },
+  "components/communication/phone/NumbersView.tsx": {
+    "grid-cols-2": 1
+  },
+  "components/communication/phone/SmsInboxView.tsx": {
+    "grid-cols-12": 1
+  },
+  "components/communication/phone/Softphone.tsx": {
+    "grid-cols-3": 1
+  },
+  "components/communication/phone/TrainingView.tsx": {
+    "grid-cols-2": 1
+  },
+  "components/communication/phone/shared.tsx": {
+    "grid-cols-2": 1
+  },
+  "components/crm/AttachmentSection.tsx": {
+    "grid-cols-2": 2
+  },
+  "components/crm/CustomerPickerWithCreate.tsx": {
+    "grid-cols-2": 2
+  },
+  "components/crm/LineItemsEditor.tsx": {
+    "grid-cols-2": 1
+  },
+  "components/inventory/AddItemDialog.tsx": {
+    "grid-cols-12": 3
+  },
+  "components/inventory/AddLocationDialog.tsx": {
+    "grid-cols-2": 1
+  },
+  "components/inventory/ApprovalDetailDialog.tsx": {
+    "grid-cols-12": 1,
+    "grid-cols-2": 2
+  },
+  "components/inventory/CreateStageDialog.tsx": {
+    "grid-cols-12": 1
+  },
+  "components/inventory/NewApprovalRequestDialog.tsx": {
+    "grid-cols-12": 1,
+    "grid-cols-2": 1
+  },
+  "components/inventory/ScanDialog.tsx": {
+    "grid-cols-3": 1
+  },
+  "components/inventory/StageDetailDialog.tsx": {
+    "grid-cols-12": 1,
+    "grid-cols-2": 2
+  },
+  "components/inventory/TransferDialog.tsx": {
+    "grid-cols-2": 1
+  },
+  "components/inventory/VendorDetailDialog.tsx": {
+    "grid-cols-12": 2
+  },
+  "components/jobs/AssignJobDialog.tsx": {
+    "grid-cols-2": 1
+  },
+  "components/jobs/AttachmentsTabBody.tsx": {
+    "grid-cols-2": 4
+  },
+  "components/jobs/items/PriceBookPicker.tsx": {
+    "grid-cols-2": 2
+  },
+  "components/jobs/overview/JobFilesCard.tsx": {
+    "grid-cols-2": 1
+  },
+  "components/schedule/ScheduleTimeFields.tsx": {
+    "grid-cols-2": 1
+  },
+  "components/timeclock/StoreLocationPicker.tsx": {
+    "grid-cols-2": 1
+  },
+  "components/workflows/WaitForm.tsx": {
+    "grid-cols-2": 2
+  },
+  "components/workflows/trigger/SubjectPicker.tsx": {
+    "grid-cols-2": 1
+  },
+  "features/estimate-workspace/components/AiImagePanel.tsx": {
+    "grid-cols-2": 3
+  },
+  "pages/CustomerDetailPage.tsx": {
+    "grid-cols-2": 2
+  },
+  "pages/CustomerFormPage.tsx": {
+    "grid-cols-6": 2
+  },
+  "pages/JobFormPage.tsx": {
+    "grid-cols-2": 1,
+    "grid-cols-3": 1
+  },
+  "pages/MarketingAnalyticsPage.tsx": {
+    "grid-cols-2": 1,
+    "grid-cols-5": 1
+  },
+  "pages/inventory/PriceBookPage.tsx": {
+    "grid-cols-4": 1
+  },
+  "pages/reports/CampaignRoiReport.tsx": {
+    "grid-cols-2": 1
+  },
+  "pages/reports/EstimateConversionReport.tsx": {
+    "grid-cols-2": 1
+  },
+  "pages/reports/ExpensesReport.tsx": {
+    "grid-cols-2": 1
+  },
+  "pages/reports/JobsReport.tsx": {
+    "grid-cols-2": 2
+  },
+  "pages/reports/LeadsReport.tsx": {
+    "grid-cols-2": 1
+  },
+  "pages/reports/PaymentsReport.tsx": {
+    "grid-cols-2": 1
+  },
+  "pages/reports/SalesReport.tsx": {
+    "grid-cols-2": 1
+  },
+  "pages/reports/WeeklyRepDiagnostic.tsx": {
+    "grid-cols-3": 1
+  },
+  "pages/service-plans/ServicePlansPage.tsx": {
+    "grid-cols-2": 3
+  },
+  "pages/settings/UsersTeamsPage.tsx": {
+    "grid-cols-2": 1
+  },
+  "pages/v2/_shared/planBuilderDialog.tsx": {
+    "grid-cols-2": 1
+  },
+  "pages/v2/_shared/recurrenceBuilder.tsx": {
+    "grid-cols-7": 1
+  },
+  "pages/v2/automations/components/trigger/subjectPicker.tsx": {
+    "grid-cols-2": 1
+  },
+  "pages/v2/automations/components/waitForm.tsx": {
+    "grid-cols-2": 2
+  },
+  "pages/v2/customers/CustomerDetailPage.tsx": {
+    "grid-cols-2": 2
+  },
+  "pages/v2/jobs/JobDetailPage.tsx": {
+    "grid-cols-2": 1
+  },
+  "pages/v2/reports/components/fieldsPicker.tsx": {
+    "grid-cols-2": 1
+  },
+  "pages/v2/reports/reports/CampaignRoiReport.tsx": {
+    "grid-cols-2": 1
+  },
+  "pages/v2/reports/reports/EstimateConversionReport.tsx": {
+    "grid-cols-2": 1
+  },
+  "pages/v2/reports/reports/ExpensesReport.tsx": {
+    "grid-cols-2": 1
+  },
+  "pages/v2/reports/reports/JobsReport.tsx": {
+    "grid-cols-2": 1
+  },
+  "pages/v2/reports/reports/PaymentsReport.tsx": {
+    "grid-cols-2": 1
+  },
+  "pages/v2/reports/reports/WeeklyRepDiagnostic.tsx": {
+    "grid-cols-3": 1
+  },
+  "pages/v2/schedule/SchedulePage.tsx": {
+    "grid-cols-2": 1
+  },
+  "pages/v2/service-plans/components/planDetailSheet.tsx": {
+    "grid-cols-2": 1
+  },
+  "pages/v2/settings/UsersTeamsPage.tsx": {
+    "grid-cols-2": 1
+  }
+}

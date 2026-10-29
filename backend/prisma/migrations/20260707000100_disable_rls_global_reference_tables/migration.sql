@@ -1,0 +1,21 @@
+-- The 20260703000100_tenant_rls migration explicitly excludes state_tax_rates
+-- and stripe_events from RLS ("global, no org column") and never enables RLS
+-- on them. Something outside that migration (most likely a one-click "Enable
+-- RLS" from Supabase's dashboard Security Advisor) enabled + FORCEd RLS on
+-- both tables anyway, with zero policies attached.
+--
+-- A table with RLS enabled and forced but no policy denies ALL rows to ANY
+-- role that isn't BYPASSRLS — including the app's own connection, contrary
+-- to the tenant_rls migration's assumption that today's role bypasses RLS.
+-- This silently broke:
+--   - state_tax_rates: GET /api/state-tax-rates always returned [], which
+--     broke the estimate form's "Tax Rate (by State)" dropdown for every
+--     role, including ADMIN (RLS is enforced below the app's RBAC layer).
+--   - stripe_events: webhook idempotency/dedup lookups always returned no
+--     rows, risking duplicate webhook processing.
+--
+-- Restores both tables to the state the tenant_rls migration always
+-- intended: no RLS. Idempotent (DISABLE is a no-op if already disabled) and
+-- portable (plain ALTER TABLE, no Supabase-specific role).
+ALTER TABLE "state_tax_rates" DISABLE ROW LEVEL SECURITY;
+ALTER TABLE "stripe_events" DISABLE ROW LEVEL SECURITY;

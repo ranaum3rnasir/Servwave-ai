@@ -1,0 +1,92 @@
+---
+title: "ALPHA CRM \u2014 Urgent Job Flow (Bypass Estimate & Deposit)"
+---
+flowchart TD
+    %% ── TRIGGER ──────────────────────────────────────────────────
+    TRIGGER(["Emergency call comes in\n(e.g. burst pipe, no heat, electrical hazard)"])
+
+    TRIGGER --> WHO{"Who creates\nthe urgent job?"}
+
+    %% ── PATH A: OFFICE CREATES ───────────────────────────────────
+    WHO -- "Office / Dispatcher" --> OFF_CREATE["Office clicks '+ New Urgent Job'\nfrom Jobs page"]
+    OFF_CREATE --> OFF_FORM["Fill minimal form:\n\u2022 Customer (existing or new)\n\u2022 Service location\n\u2022 Urgency reason (required)\n\u2022 Brief description\n\u2022 Assign technician"]
+    OFF_FORM --> OFF_CONFIRM{"Confirmation dialog:\n'Create urgent job?\nNo estimate or deposit\nwill be required.'"}
+    OFF_CONFIRM -- "Cancel" --> CANCELLED_OFF(["Cancelled"])
+    OFF_CONFIRM -- "Confirm" --> J_CREATED
+
+    %% ── PATH B: TECHNICIAN CREATES (MOBILE) ─────────────────────
+    WHO -- "Technician\n(already in field)" --> TECH_CREATE["Tech taps '+ New Urgent Job'\non mobile home screen"]
+    TECH_CREATE --> TECH_CONFIRM{"Confirmation:\n'Create urgent job?\nYou can add charges\nduring the job.'"}
+    TECH_CONFIRM -- "Cancel" --> CANCELLED_TECH(["Cancelled"])
+    TECH_CONFIRM -- "Confirm" --> TECH_FORM["Fill mobile form:\n\u2022 Customer info (name, phone, address)\n\u2022 Urgency reason\n\u2022 Service description"]
+    TECH_FORM --> J_CREATED
+
+    %% ── JOB CREATED (SKIP ESTIMATE + DEPOSIT) ───────────────────
+    J_CREATED[/"Urgent Job Created\nJOB-YYYY-NNNN\n(no linked estimate,\nno deposit required)"/]
+
+    J_CREATED --> J_STATUS{"Created by\nwhom?"}
+    J_STATUS -- "Office (with tech assigned)" --> J_SCHEDULED[/"Job status: SCHEDULED\n(tech + time assigned)"/]
+    J_STATUS -- "Technician (self-assigned)" --> J_INPROGRESS[/"Job status: IN_PROGRESS\n(auto-started)"/]
+
+    J_SCHEDULED --> J_DISPATCH["Dispatcher confirms\n(tech gets notification)"]
+    J_DISPATCH --> J_DISPATCHED[/"Job status: DISPATCHED"/]
+    J_DISPATCHED --> TECH_START["Tech taps 'Start'"]
+    TECH_START --> J_INPROGRESS
+
+    %% ── FIELD WORK + CHARGES ─────────────────────────────────────
+    J_INPROGRESS --> FIELD_WORK["Technician performs\nemergency repair"]
+
+    FIELD_WORK --> ADD_CHARGES["Tech adds charges on mobile:\n\u2022 Service line items\n  (description, qty, price)\n\u2022 Materials used\n\u2022 Labor hours\n\u2022 Notes & photos"]
+
+    ADD_CHARGES --> MORE_CHARGES{"More charges\nto add?"}
+    MORE_CHARGES -- "Yes" --> ADD_CHARGES
+    MORE_CHARGES -- "No" --> TECH_COMPLETE
+
+    TECH_COMPLETE["Tech taps 'Mark Complete'\n(completion notes required)"]
+    TECH_COMPLETE --> J_COMPLETED[/"Job status: COMPLETED"/]
+
+    %% ── INVOICING (NO DEPOSIT CREDIT) ────────────────────────────
+    J_COMPLETED --> I_GENERATE["Generate Invoice\n(from job charges \u2014\nNO deposit credit to apply)\nINV-YYYY-NNNN"]
+    I_GENERATE --> I_DRAFT[/"Invoice status: DRAFT"/]
+
+    I_DRAFT --> PAY_TIMING{"Payment\ntiming?"}
+
+    %% ── ON-SITE PAYMENT ──────────────────────────────────────────
+    PAY_TIMING -- "Collect on-site\n(before tech leaves)" --> ONSITE_PAY{"On-site\npayment method"}
+    ONSITE_PAY -- "Card" --> STRIPE_ONSITE["Customer pays via\nStripe link on tech's phone"]
+    ONSITE_PAY -- "Cash / Check" --> MANUAL_ONSITE["Tech records manual payment"]
+    STRIPE_ONSITE --> I_PAID
+    MANUAL_ONSITE --> I_PAID
+
+    %% ── LATER PAYMENT ────────────────────────────────────────────
+    PAY_TIMING -- "Send invoice later\n(customer will pay remotely)" --> I_SEND["Office reviews & sends\ninvoice via email"]
+    I_SEND --> I_SENT[/"Invoice status: SENT"/]
+    I_SENT --> REMOTE_PAY{"Customer pays"}
+    REMOTE_PAY -- "Online (Stripe)" --> STRIPE_REMOTE["Pay via Stripe\npayment link"]
+    REMOTE_PAY -- "Cash / Check" --> MANUAL_REMOTE["Office records\nmanual payment"]
+    STRIPE_REMOTE --> I_PAID
+    MANUAL_REMOTE --> I_PAID
+
+    %% ── COMPLETION ───────────────────────────────────────────────
+    I_PAID[/"Invoice status: PAID"/]
+    I_PAID --> RECEIPT["Receipt sent\nto customer"]
+    RECEIPT --> DONE(["URGENT JOB COMPLETE"])
+
+    %% ── KEY DIFFERENCES CALLOUT ──────────────────────────────────
+    NOTE["KEY DIFFERENCES FROM STANDARD FLOW:\n\u2022 No estimate created\n\u2022 No deposit required (no gate)\n\u2022 Tech can add charges during job\n\u2022 Tech can self-create + self-start\n\u2022 On-site payment option available\n\u2022 Invoice has no deposit credit"]
+
+    %% ── STYLING ──────────────────────────────────────────────────
+    classDef status fill:#DBEAFE,stroke:#2563EB,color:#1E40AF
+    classDef urgent fill:#FEF3C7,stroke:#D97706,color:#92400E
+    classDef action fill:#F0FDF4,stroke:#16A34A,color:#166534
+    classDef terminal fill:#F3F4F6,stroke:#6B7280,color:#374151
+    classDef decision fill:#FEF3C7,stroke:#D97706,color:#92400E
+    classDef note fill:#FFF7ED,stroke:#EA580C,color:#9A3412
+    classDef customer fill:#EDE9FE,stroke:#7C3AED,color:#5B21B6
+
+    class J_CREATED,J_SCHEDULED,J_DISPATCHED,J_INPROGRESS,J_COMPLETED urgent
+    class I_DRAFT,I_SENT,I_PAID status
+    class OFF_CREATE,OFF_FORM,TECH_CREATE,TECH_FORM,J_DISPATCH,TECH_START,FIELD_WORK,ADD_CHARGES,TECH_COMPLETE,I_GENERATE,I_SEND,STRIPE_ONSITE,MANUAL_ONSITE,STRIPE_REMOTE,MANUAL_REMOTE,RECEIPT action
+    class CANCELLED_OFF,CANCELLED_TECH,DONE terminal
+    class WHO,OFF_CONFIRM,TECH_CONFIRM,J_STATUS,MORE_CHARGES,PAY_TIMING,ONSITE_PAY,REMOTE_PAY decision
+    class NOTE note

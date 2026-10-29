@@ -1,0 +1,151 @@
+Phase 0 — MVP
+Lead (manual entry) → Estimate(s) → 1 Approved → Deposit Paid → Office clicks “Create Job” → Job → Complete → Invoice → Payment
+
+Leads (manual entry):
+
+Manual lead creation (pipeline basics)
+
+You didn’t list “lead” as its own section, so treat it as a lightweight “pre-customer record” that later becomes a customer + estimate. (This is an MVP design decision, not in the catalog.)
+
+Estimates:
+
+Create estimates (mobile + office), quick UX, line items, totals
+
+Notes + photo attachments (strong field need)
+
+Send by email/SMS link, one-tap approval, approval notifications
+
+Multiple estimates per lead (MVP rule: only one can be “Approved” at a time)
+
+Deposit (Mode A gating):
+
+Deposit upfront amount on estimate (request + record payment)
+
+Hard rule: deposit paid → office manually clicks Create Job (your choice)
+
+Job management:
+
+Create job (from estimate), job notes, customer assignment, date/time, attachments
+
+Core statuses: Pending/Assigned/In Progress/Completed (+ your internal “scheduled” state)
+
+Scheduling:
+
+Week view calendar + unassigned job pool + manual assignment
+
+Mobile tech workflow
+
+Today’s jobs, job details, status updates, notes, photos
+
+Invoicing:
+
+Invoice from completed job + pro formatting + numbering + PDF
+
+Payments:
+
+Online payment link in invoice (card payments at minimum)
+
+Payment status tracking (sent/viewed/paid, overdue optional)
+
+Basic Reports & Analytics
+
+0.2 Customer basics (just enough to operate)
+
+Customer profiles + multiple locations/contacts + service history internal view
+
+Search/filtering + duplicate prevention (phone/email)
+
+0.3 “Help-through” features (MVP-minimum, but real)
+
+These aren’t “nice-to-have” — they prevent your own team from hating the tool.
+
+In-app help entry point (link to docs), basic FAQs / quick start guides (lightweight)
+
+A tiny onboarding checklist (company setup, add techs, create first lead/estimate)
+
+
+Explicitly NOT in MVP:
+
+Data import/export, migration tooling (push to Phase 1.5)
+
+Phase 1.5 — “Go-to-market readiness” (needed before onboarding external SMBs at scale)
+1.5.1 Switching kit (migration + data hygiene)
+
+CSV import (customers + open jobs/invoices at minimum)
+
+CSV export (customers, jobs, invoices, payments)
+
+Dedupe + validation (basic)
+
+1.5.2 Support & onboarding foundation
+
+Knowledge base, short video tutorials, onboarding wizard (lean version)
+
+Phase 2 — Retention add-ons (make the product feel “complete” to customers)
+2.1 Customer portal + self-serve (high retention)
+
+Customer portal, invoice viewing, estimate approval, online payments, receipts
+
+2.2 Communication add-ons (reduce office workload)
+
+Two-way SMS + templates + message status tracking
+
+Email templates + tracking/logging
+
+2.3 Reminders
+
+Customer reminders (email/SMS) + customizable timing
+
+Phase 3 — “Estimating is the weapon” (your differentiation layer)
+3.1 Quote sophistication
+
+Good/Better/Best options, comparison view, upsell suggestions
+
+3.2 Pricebook (start simple, then deepen)
+
+Service list management + quick-select items
+
+Then later: tiers by customer type, seasonal pricing
+
+3.3 Estimate analytics (sales performance)
+
+Conversion rate, estimate aging, by tech/service type (later in Phase 3)
+
+Phase 4 — Operations scale (when you have real volume and complexity)
+4.1 Advanced dispatch + optimization
+
+Conflict detection, skill matching suggestions, auto-assignment rules
+
+Route optimization + map view + travel time
+
+4.2 Workforce management
+
+Availability, shifts, vacation/time off, capacity limits, GPS tracking
+
+Report builder, scheduled delivery, drilldowns, forecasting
+
+Phase 5 — Platform + Integrations ecosystem (unlock partnerships + mid-market)
+5.1 Accounting + integrations
+
+QuickBooks online sync (invoices + payments) and later two-way sync
+
+Zapier, Twilio/SendGrid, maps integrations
+
+5.2 Public API + webhooks
+
+Public REST API, webhooks, OAuth, rate limiting
+
+Phase 6 — AI (only after workflow data is clean)
+
+Your catalog is clear: AI can be a competitive edge, but it depends on having structured data + consistent workflows.
+Phase 6A (internal productivity AI)
+
+“CRM Co-Pilot” for office commands + data lookup (create jobs/estimates faster)
+
+Phase 6B (estimate AI)
+
+AI-assisted estimate creation, photo-based estimation, margin guardrails
+
+Phase 6C (dispatch AI)
+
+Smarter dispatch suggestions, capacity prediction

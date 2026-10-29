@@ -1,0 +1,23 @@
+-- Outgoing business email is OFF for every NEW org, matching phone: /onboard-org
+-- writes `feature_overrides: {"phone": false}` on every onboard regardless of
+-- plan, because speaking to a customer under the org's name is a deliberate
+-- step rather than something acquired by being created.
+--
+-- DEFAULT ONLY - deliberately no UPDATE of existing rows. A column default
+-- never rewrites what is already stored, so no org that is currently sending
+-- stops sending because of this migration. On staging that keeps ServWave Test
+-- enabled and every other org disabled, exactly as set.
+--
+-- Prod consequence, and why this is not handled here: `email_sending_enabled`
+-- does not exist in prod yet. When the email programme is promoted, the ORIGINAL
+-- add-column migration (20260707140000) runs first and adds the column with its
+-- own `DEFAULT true`, so every existing prod org lands as ENABLED before this
+-- migration narrows the default for future orgs. Turning those existing prod
+-- orgs off is therefore a deliberate cutover step, not a migration - a blanket
+-- UPDATE here would also flip staging, undoing the per-org state above.
+-- See md_files/plans/email/2026-08-09-email-programme-promotion-readiness.md,
+-- phase C.
+--
+-- Idempotent: setting a default twice is a no-op, and the shared staging
+-- database may see this migration more than once.
+ALTER TABLE "organizations" ALTER COLUMN "email_sending_enabled" SET DEFAULT false;

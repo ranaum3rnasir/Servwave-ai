@@ -1,0 +1,94 @@
+---
+title: "ALPHA CRM \u2014 Technician Mobile Journey"
+---
+flowchart TD
+    LOGIN(["Technician logs in\n(mobile browser)"])
+
+    LOGIN --> HOME["MOBILE HOME SCREEN\n\u2022 Today's Jobs list\n  (time-ordered cards)\n\u2022 Job count badge\n\u2022 '+ New Urgent Job' button\n  (prominent, always visible)"]
+
+    HOME --> WHAT{"What does the\ntech need to do?"}
+
+    %% ── STANDARD JOB FLOW ────────────────────────────────────────
+    WHAT -- "Work assigned job" --> JOB_CARD["Tap job card\nfrom today's list"]
+    JOB_CARD --> JOB_DETAIL["JOB DETAIL (Mobile)\n\u2022 Job # & status badge\n\u2022 Customer name\n\u2022 Service location address\n\u2022 Scheduled time window\n\u2022 Scope notes from estimate\n\u2022 Contact info"]
+
+    JOB_DETAIL --> CONTACT{"Need to contact\ncustomer?"}
+    CONTACT -- "Call" --> TAP_CALL["Tap phone number\n\u2192 native dialer opens"]
+    CONTACT -- "Navigate" --> TAP_NAV["Tap address\n\u2192 maps app opens\n  with directions"]
+    CONTACT -- "No" --> START_READY
+
+    TAP_CALL --> START_READY
+    TAP_NAV --> START_READY
+
+    START_READY{"Ready to\nstart work?"}
+    START_READY -- "Not yet\n(traveling)" --> WAIT(["Wait / travel to site"])
+    WAIT --> START_READY
+    START_READY -- "Yes, on site" --> TAP_START
+
+    TAP_START["Tap 'Start Job' button"]
+    TAP_START --> J_INPROGRESS[/"Job: DISPATCHED \u2192 IN_PROGRESS\n(timestamp recorded)"/]
+
+    %% ── DURING THE JOB ──────────────────────────────────────────
+    J_INPROGRESS --> WORK["Perform service work"]
+    WORK --> FIELD_ACTIONS{"Field actions\nduring job"}
+
+    FIELD_ACTIONS -- "Add note" --> ADD_NOTE["Type note about\nwork performed,\nissues found, etc."]
+    ADD_NOTE --> FIELD_ACTIONS
+
+    FIELD_ACTIONS -- "Add photo" --> ADD_PHOTO["Capture photo\nfrom device camera\n(before/after, damage, etc.)"]
+    ADD_PHOTO --> FIELD_ACTIONS
+
+    FIELD_ACTIONS -- "Done working" --> COMPLETE_FORM
+
+    %% ── JOB COMPLETION ───────────────────────────────────────────
+    COMPLETE_FORM["Tap 'Mark Complete'\n\u2022 Completion notes (required)\n\u2022 Optional: customer signature\n  (draw on canvas)"]
+    COMPLETE_FORM --> J_COMPLETED[/"Job: IN_PROGRESS \u2192 COMPLETED\n(timestamp recorded,\noffice notified)"/]
+
+    J_COMPLETED --> NEXT{"More jobs\ntoday?"}
+    NEXT -- "Yes" --> HOME
+    NEXT -- "No" --> DAY_DONE(["Day complete"])
+
+    %% ── URGENT JOB FLOW (TECH-INITIATED) ─────────────────────────
+    WHAT -- "Emergency call\nwhile in field" --> URGENT_TAP["Tap '+ New Urgent Job'"]
+    URGENT_TAP --> URGENT_CONFIRM{"Confirmation:\n'Create urgent job?\nYou can add charges\nduring the job.'"}
+    URGENT_CONFIRM -- "Cancel" --> HOME
+    URGENT_CONFIRM -- "Create" --> URGENT_FORM
+
+    URGENT_FORM["Fill mobile form:\n\u2022 Customer name & phone\n\u2022 Service address\n\u2022 Urgency reason\n\u2022 Brief description"]
+    URGENT_FORM --> URGENT_CREATED[/"Urgent Job Created\n(auto-assigned to self,\nauto-started IN_PROGRESS)"/]
+
+    URGENT_CREATED --> URGENT_WORK["Perform emergency repair"]
+    URGENT_WORK --> URGENT_CHARGES["Add charges on mobile:\n\u2022 Service line items\n  (description, qty, price)\n\u2022 Materials used\n\u2022 Labor hours"]
+    URGENT_CHARGES --> MORE{"More charges?"}
+    MORE -- "Yes" --> URGENT_CHARGES
+    MORE -- "No" --> URGENT_COMPLETE
+
+    URGENT_COMPLETE["Tap 'Mark Complete'\n(completion notes required)"]
+    URGENT_COMPLETE --> URGENT_DONE[/"Urgent Job: COMPLETED\nInvoice can be generated"/]
+
+    URGENT_DONE --> ONSITE_PAY{"Collect payment\non-site?"}
+    ONSITE_PAY -- "Yes (card)" --> STRIPE_PAY["Show Stripe link\non tech's phone\n\u2192 Customer pays"]
+    ONSITE_PAY -- "Yes (cash/check)" --> MANUAL_PAY["Record manual payment"]
+    ONSITE_PAY -- "No, invoice later" --> LEAVE(["Leave for office\nto handle invoicing"])
+
+    STRIPE_PAY --> PAID(["Payment collected\non site"])
+    MANUAL_PAY --> PAID
+
+    %% ── NOTIFICATIONS ────────────────────────────────────────────
+    WHAT -- "Check notifications" --> NOTIF["NOTIFICATION BELL\n\u2022 New job assigned\n\u2022 Job rescheduled\n\u2022 Schedule change\n\u2022 Job cancelled"]
+
+    %% ── STYLING ──────────────────────────────────────────────────
+    classDef page fill:#DBEAFE,stroke:#2563EB,color:#1E40AF
+    classDef status fill:#E0E7FF,stroke:#4F46E5,color:#3730A3
+    classDef action fill:#F0FDF4,stroke:#16A34A,color:#166534
+    classDef decision fill:#FEF3C7,stroke:#D97706,color:#92400E
+    classDef terminal fill:#F3F4F6,stroke:#6B7280,color:#374151
+    classDef urgent fill:#FEE2E2,stroke:#DC2626,color:#991B1B
+
+    class HOME,JOB_DETAIL,NOTIF page
+    class J_INPROGRESS,J_COMPLETED status
+    class JOB_CARD,TAP_CALL,TAP_NAV,TAP_START,WORK,ADD_NOTE,ADD_PHOTO,COMPLETE_FORM action
+    class WHAT,CONTACT,START_READY,FIELD_ACTIONS,NEXT,URGENT_CONFIRM,MORE,ONSITE_PAY decision
+    class LOGIN,DAY_DONE,WAIT,LEAVE,PAID terminal
+    class URGENT_TAP,URGENT_FORM,URGENT_CREATED,URGENT_WORK,URGENT_CHARGES,URGENT_COMPLETE,URGENT_DONE urgent
+    class STRIPE_PAY,MANUAL_PAY action

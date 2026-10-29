@@ -1,0 +1,29 @@
+-- Drop the SALES `export Customer` default grant from EXISTING organizations (018, Sales-Role QA).
+--
+-- WHY: GET /api/customers/export is an unpaginated download of the whole customer book —
+--   name, company, every phone and email, and the primary service address — bounded only by a
+--   defensive 50,000-row cap. SALES keeps `read` and `update` on Customer (a rep works records
+--   one at a time through the UI); it loses only the one-click bulk dump, which is a departing
+--   rep's contact list. DISPATCHER KEEPS its explicit `export Customer` grant (it already has
+--   unscoped read across customers, leads and jobs, so the file tells it nothing it could not
+--   page through) and ADMIN keeps the capability through `manage all`, which needs no row.
+--   Matches the updated DEFAULT_GRANTS (lib/permissions/defaultGrants.ts).
+--
+-- Effective grants are the persisted role_permissions rows the ability layer reads at request
+-- time, so editing defaultGrants.ts only changes NEW orgs; this migration catches EXISTING ones.
+-- The route guard is canDo('export','Customer'), so removing the row makes SALES 403 on the
+-- endpoint. The endpoint itself is unchanged — same columns, filters, row cap, rate limit and
+-- audit record for the roles that keep it.
+--
+-- ORDERING: must run AFTER 20260707130000_sync_role_permission_defaults, which re-inserts the
+--   full DEFAULT_GRANTS set for every org — on a fresh CI database a lower timestamp would
+--   delete the row and then have it immediately re-created, and the fix would silently not
+--   apply. The 20260828140000 timestamp guarantees the order on CI and on the hosted DB alike.
+--
+-- Matches on the FULL TRIPLE (role, subject, action). Deleting by role+subject alone would take
+-- SALES's `read` and `update` Customer rows with it.
+--
+-- IDEMPOTENT + re-runnable: a re-run matches nothing once applied. Portable: plain DELETE, no
+-- Supabase-only objects (no auth.* helpers, no TO authenticated/anon/service_role).
+DELETE FROM role_permissions
+WHERE role = 'SALES' AND subject = 'Customer' AND action = 'export';

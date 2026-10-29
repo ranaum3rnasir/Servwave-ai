@@ -1,0 +1,23 @@
+{
+  "components/communication/phone/CallFlows.tsx": {
+    "min-w-[760px]": 1
+  },
+  "components/communication/phone/CallGroups.tsx": {
+    "min-w-[640px]": 1
+  },
+  "components/communication/phone/NumbersView.tsx": {
+    "min-w-[1040px]": 1
+  },
+  "components/communication/phone/TrainingView.tsx": {
+    "min-w-[820px]": 1
+  },
+  "components/jobs/items/TotalsFooter.tsx": {
+    "w-[340px]": 1
+  },
+  "components/tasks/TaskDetailDrawer.tsx": {
+    "w-[440px]": 1
+  },
+  "pages/reports/_shared.tsx": {
+    "min-w-[680px]": 1
+  }
+}

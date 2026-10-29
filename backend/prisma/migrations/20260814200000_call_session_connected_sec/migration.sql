@@ -1,0 +1,13 @@
+-- CallSession.connected_sec — CTM's `duration` (ring + queue + IVR + talk).
+--
+-- duration_sec holds CTM's `talk_time`, the conversation only, and the Calls
+-- list is right to keep showing that. But CTM invoices on the connected clock,
+-- so the plan allowance has to meter on it: across 160 live calls talk_time was
+-- lower on 130 and higher on none (a 13.6% under-count), and of the calls that
+-- rang unanswered CTM billed 26 out of 26 while talk_time read zero.
+--
+-- Nullable with no backfill on purpose. Recovering the connected clock for
+-- historical rows would mean re-fetching every call from the CTM API; instead
+-- billableSecondsOf() falls back to duration_sec when connected_sec is NULL, so
+-- existing history keeps counting (slightly low) rather than dropping to zero.
+ALTER TABLE "call_sessions" ADD COLUMN IF NOT EXISTS "connected_sec" INTEGER;

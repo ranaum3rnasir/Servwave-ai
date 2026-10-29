@@ -1,0 +1,98 @@
+---
+title: "ALPHA CRM \u2014 Customer External Journey"
+---
+flowchart TD
+    %% ── ENTRY POINT ──────────────────────────────────────────────
+    NEED(["Customer has a\nservice need"])
+    NEED --> CONTACT{"How they\nreach you"}
+    CONTACT -- "Phone call" --> CALL["Calls your office\n\u2192 Office creates Lead"]
+    CONTACT -- "Walk-in" --> WALKIN["Visits office\n\u2192 Office creates Lead"]
+    CONTACT -- "Web inquiry\n(future)" --> WEB["Submits form\n\u2192 Auto-creates Lead"]
+
+    CALL & WALKIN & WEB --> WAITING["Customer waits\nfor follow-up"]
+
+    %% ── CONTACTED ────────────────────────────────────────────────
+    WAITING --> CONTACTED["Sales rep reaches out\n(phone / email)\n\u2022 Discusses service need\n\u2022 Schedules walkthrough\n  if needed"]
+
+    CONTACTED --> WALKTHROUGH{"Walkthrough\nneeded?"}
+    WALKTHROUGH -- "Yes" --> SITE_VISIT["Sales visits property\n\u2022 Assesses scope\n\u2022 Takes measurements\n\u2022 Notes & photos"]
+    WALKTHROUGH -- "No" --> EST_PREP["Sales prepares\nestimate remotely"]
+
+    SITE_VISIT --> EST_PREP
+
+    %% ── ESTIMATE REVIEW ──────────────────────────────────────────
+    EST_PREP --> EMAIL_RECV["Customer receives\nestimate email\n(from Resend)"]
+
+    EMAIL_RECV --> OPEN_LINK["Customer clicks link\nin email"]
+    OPEN_LINK --> PUBLIC_PAGE["PUBLIC ESTIMATE PAGE\n(no login required)\n\u2022 Company branding\n\u2022 Line items breakdown\n  (service, qty, unit price)\n\u2022 Subtotal, tax, discount\n\u2022 Grand total\n\u2022 Notes & attached photos\n\u2022 Terms & conditions"]
+
+    PUBLIC_PAGE --> CUST_DECIDE{"Customer\ndecision"}
+
+    CUST_DECIDE -- "Needs clarification" --> ASK["Calls / emails back\nwith questions\n\u2192 May trigger revised estimate"]
+    ASK --> EMAIL_RECV
+
+    CUST_DECIDE -- "Declines" --> DECLINED["Clicks 'Decline'\n(or simply doesn't respond)"]
+    DECLINED --> DECLINED_END(["Estimate declined\nor expired"])
+
+    CUST_DECIDE -- "Approves" --> SIGN["APPROVAL FLOW:\n1. Clicks 'Approve' button\n2. Signature canvas appears\n3. Draws signature\n   (finger on mobile /\n   mouse on desktop)\n4. Confirms approval"]
+    SIGN --> APPROVED[/"Estimate: APPROVED\nCustomer sees confirmation"/]
+
+    %% ── DEPOSIT PAYMENT ──────────────────────────────────────────
+    APPROVED --> DEP_EMAIL["Customer receives\ndeposit request email\n(Stripe payment link)"]
+
+    DEP_EMAIL --> DEP_CLICK["Customer clicks\npayment link"]
+    DEP_CLICK --> STRIPE_PAGE["STRIPE CHECKOUT\n\u2022 Deposit amount shown\n\u2022 Enter card details\n\u2022 Pay securely"]
+    STRIPE_PAGE --> DEP_PAID[/"Deposit: PAID\nConfirmation shown +\nemail receipt"/]
+
+    %% ── WAITING FOR SERVICE ──────────────────────────────────────
+    DEP_PAID --> WAIT_SCHED["Customer waits\nfor scheduling\n(gets notified when\njob is scheduled)"]
+
+    WAIT_SCHED --> NOTIF_SCHED["Receives notification:\n'Your service is scheduled\nfor [date] [time window]'"]
+
+    %% ── SERVICE DAY ──────────────────────────────────────────────
+    NOTIF_SCHED --> SERVICE_DAY["SERVICE DAY\n\u2022 Technician arrives\n\u2022 Performs work\n\u2022 Customer may sign\n  on completion"]
+
+    SERVICE_DAY --> JOB_DONE["Job completed\n(tech marks done)"]
+
+    %% ── INVOICE & PAYMENT ────────────────────────────────────────
+    JOB_DONE --> INV_EMAIL["Customer receives\ninvoice email\n\u2022 Shows line items\n\u2022 Deposit credit applied\n\u2022 Remaining balance due\n\u2022 Payment link included"]
+
+    INV_EMAIL --> PAY_METHOD{"Payment\nmethod"}
+    PAY_METHOD -- "Online" --> PAY_ONLINE["Clicks Stripe link\n\u2192 Pays remaining balance"]
+    PAY_METHOD -- "Cash / Check" --> PAY_OFFLINE["Pays technician\nor mails check"]
+
+    PAY_ONLINE --> RECEIPT["Receives payment receipt\nvia email"]
+    PAY_OFFLINE --> RECEIPT
+
+    RECEIPT --> DONE(["SERVICE COMPLETE\nCustomer record updated\nwith full history"])
+
+    %% ── URGENT FLOW (CUSTOMER PERSPECTIVE) ───────────────────────
+    NEED --> EMERGENCY{"Is it an\nemergency?"}
+    EMERGENCY -- "Yes" --> EMERGENCY_CALL["Calls office:\n'Emergency! Need help now!'"]
+    EMERGENCY_CALL --> TECH_ARRIVES["Technician dispatched\n\u2192 arrives on-site"]
+    TECH_ARRIVES --> EMERGENCY_WORK["Tech performs\nemergency repair"]
+    EMERGENCY_WORK --> EMERGENCY_PAY{"Pay now\nor later?"}
+    EMERGENCY_PAY -- "On-site (card)" --> PAY_ONSITE["Pays via tech's phone\n(Stripe link)"]
+    EMERGENCY_PAY -- "On-site (cash)" --> PAY_CASH["Pays cash"]
+    EMERGENCY_PAY -- "Invoice later" --> INV_EMAIL
+    PAY_ONSITE --> RECEIPT
+    PAY_CASH --> RECEIPT
+
+    %% ── STYLING ──────────────────────────────────────────────────
+    classDef customer fill:#EDE9FE,stroke:#7C3AED,color:#5B21B6
+    classDef external fill:#DBEAFE,stroke:#2563EB,color:#1E40AF
+    classDef action fill:#F0FDF4,stroke:#16A34A,color:#166534
+    classDef decision fill:#FEF3C7,stroke:#D97706,color:#92400E
+    classDef terminal fill:#F3F4F6,stroke:#6B7280,color:#374151
+    classDef status fill:#E0E7FF,stroke:#4F46E5,color:#3730A3
+    classDef urgent fill:#FEE2E2,stroke:#DC2626,color:#991B1B
+    classDef payment fill:#DCFCE7,stroke:#16A34A,color:#166534
+
+    class NEED,WAITING,CONTACTED,ASK,WAIT_SCHED customer
+    class PUBLIC_PAGE,STRIPE_PAGE external
+    class CALL,WALKIN,WEB,SITE_VISIT,EST_PREP,EMAIL_RECV,OPEN_LINK,SIGN,DEP_EMAIL,DEP_CLICK,NOTIF_SCHED,SERVICE_DAY,JOB_DONE,INV_EMAIL action
+    class CONTACT,CUST_DECIDE,WALKTHROUGH,PAY_METHOD,EMERGENCY,EMERGENCY_PAY decision
+    class DECLINED_END,DONE terminal
+    class APPROVED,DEP_PAID status
+    class EMERGENCY_CALL,TECH_ARRIVES,EMERGENCY_WORK urgent
+    class PAY_ONLINE,PAY_OFFLINE,PAY_ONSITE,PAY_CASH,RECEIPT payment

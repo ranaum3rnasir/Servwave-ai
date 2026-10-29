@@ -1,0 +1,621 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { Route, Routes } from 'react-router-dom';
+import { toast } from '@/ui-kit/components/ui/sonner';
+import { renderWithProviders } from '@/__tests__/helpers';
+import api from '@/lib/axios';
+import { useAuthStore } from '@/stores/auth.store';
+import { useAiCenterStore } from '@/stores/aiCenterStore';
+import { AI_AGENTS } from '@/lib/ai-center/agents';
+import { AiCenterModal } from './AiCenterModal';
+
+vi.mock('@/ui-kit/components/ui/sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+
+function signIn(user: Record<string, unknown>) {
+  vi.mocked(useAuthStore).mockImplementation(((selector: (s: Record<string, unknown>) => unknown) =>
+    selector({ user, isAuthenticated: true })) as never);
+}
+const NO_SPIDER = { id: 'u1', role: 'ADMIN', org_is_demo: false, org_features: ['leads'] };
+const SPIDER_COMPANY = { id: 'u1', role: 'ADMIN', org_is_demo: true, org_features: ['leads', 'spider'] };
+const STATUS = '/api/ai-farm/spider/status';
+const mockApi = vi.mocked(api);
+const ON = { isActive: true, isSetUp: true };
+const OFF = { isActive: false, isSetUp: true };
+const NEVER_SET_UP = { isActive: false, isSetUp: false };
+const ON_NOT_SET_UP = { isActive: true, isSetUp: false };
+/** A server whose switch moves when it is saved: the status route reads back what was put. */
+function spiderServer(initial: { isActive: boolean; isSetUp: boolean }) {
+  let state = { ...initial };
+  spiderSwitch(state);
+  mockApi.get.mockImplementation(async (url: string) => (url === STATUS ? { data: state } : { data: {} }));
+  mockApi.put.mockImplementation(async (_url: string, body?: unknown) => {
+    state = { ...state, isActive: (body as { isActive: boolean }).isActive };
+    return { data: state };
+  });
+}
+/** What the Spider status route answers: a state, an error, or nothing yet. */
+function spiderSwitch(answer: { isActive: boolean; isSetUp: boolean } | 'error' | 'never') {
+  mockApi.get.mockImplementation((url: string) => {
+    if (url !== STATUS) return Promise.resolve({ data: {} });
+    if (answer === 'never') return new Promise(() => {});
+    if (answer === 'error') return Promise.reject(new Error('unavailable'));
+    return Promise.resolve({ data: answer });
+  });
+}
+
+/** Opens the catalog straight on one agent, the way a job page's AI tile does. */
+function openOn(agentId: string) {
+  useAiCenterStore.getState().openModal(agentId);
+  renderWithProviders(<AiCenterModal />);
+  return screen.getByRole('dialog', { name: AI_AGENTS.find((a) => a.id === agentId)!.name });
+}
+
+function setReducedMotion(reduce: boolean) {
+  vi.mocked(window.matchMedia).mockImplementation(
+    (query: string) =>
+      ({
+        matches: reduce && query.includes('prefers-reduced-motion'),
+        media: query,
+        onchange: null,
+        addListener: vi.fn(),
+        removeListener: vi.fn(),
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      }) as unknown as MediaQueryList,
+  );
+}
+
+// A controllable IntersectionObserver: the test decides when the video slot is on screen.
+type IOCallback = (entries: Array<Pick<IntersectionObserverEntry, 'isIntersecting' | 'target'>>) => void;
+let observers: Array<{ cb: IOCallback; targets: Element[]; disconnected: boolean }> = [];
+class FakeIntersectionObserver {
+  private record: (typeof observers)[number];
+  constructor(cb: IOCallback) {
+    this.record = { cb, targets: [], disconnected: false };
+    observers.push(this.record);
+  }
+  observe(el: Element) {
+    this.record.targets.push(el);
+  }
+  unobserve() {}
+  disconnect() {
+    this.record.disconnected = true;
+  }
+  takeRecords() {
+    return [];
+  }
+}
+function setOnScreen(isIntersecting: boolean) {
+  act(() => {
+    for (const o of observers) {
+      if (!o.disconnected) o.cb(o.targets.map((target) => ({ isIntersecting, target })));
+    }
+  });
+}
+function setTabHidden(hidden: boolean) {
+  Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => (hidden ? 'hidden' : 'visible') });
+  act(() => {
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+}
+
+beforeEach(() => {
+  mockApi.get.mockReset();
+  mockApi.put.mockReset();
+  mockApi.get.mockResolvedValue({ data: {} });
+  vi.mocked(toast.success).mockClear();
+  vi.mocked(toast.error).mockClear();
+  signIn(NO_SPIDER);
+  setReducedMotion(false);
+  observers = [];
+  vi.stubGlobal('IntersectionObserver', FakeIntersectionObserver);
+  useAiCenterStore.setState({ open: false, focusAgentId: null });
+});
+afterEach(() => {
+  setReducedMotion(false);
+  setTabHidden(false);
+  vi.unstubAllGlobals();
+});
+
+const heroOf = (slot: HTMLElement, motion: 'still' | 'loop') =>
+  slot.querySelector<HTMLImageElement>(`img[data-motion="${motion}"]`);
+
+describe('AgentDetailModal: the video slot', () => {
+  it("plays the animal's loop while on screen, marked as a feature video still to come, with no player", () => {
+    const dialog = openOn('jordan');
+    const slot = within(dialog).getByTestId('agent-video-slot');
+    // The still is there first; the loop joins once the slot is on screen.
+    expect(heroOf(slot, 'still')?.getAttribute('src')).toBe('/ai-center/agents/still/jordan.jpg');
+    expect(heroOf(slot, 'loop')).toBeNull();
+    setOnScreen(true);
+    expect(slot).toHaveAttribute('data-playing', 'true');
+    expect(heroOf(slot, 'loop')?.getAttribute('src')).toBe('/ai-center/agents/loop/jordan.webp');
+    expect(within(slot).getByText('Feature video coming soon')).toBeInTheDocument();
+    // Nothing plays until a video exists: no play button, no <video>.
+    expect(within(slot).queryByRole('button')).toBeNull();
+    expect(dialog.querySelector('video')).toBeNull();
+  });
+
+  it('stops the loop when the slot scrolls away or the tab is hidden', () => {
+    const slot = within(openOn('jordan')).getByTestId('agent-video-slot');
+    setOnScreen(true);
+    expect(heroOf(slot, 'loop')).not.toBeNull();
+    setOnScreen(false);
+    expect(heroOf(slot, 'loop')).toBeNull();
+    setOnScreen(true);
+    setTabHidden(true);
+    expect(heroOf(slot, 'loop')).toBeNull();
+    setTabHidden(false);
+    expect(heroOf(slot, 'loop')).not.toBeNull();
+  });
+
+  it('shows only the still frame under reduced motion', () => {
+    setReducedMotion(true);
+    const slot = within(openOn('jordan')).getByTestId('agent-video-slot');
+    setOnScreen(true);
+    expect(slot).toHaveAttribute('data-playing', 'false');
+    expect(heroOf(slot, 'still')?.getAttribute('src')).toBe('/ai-center/agents/still/jordan.jpg');
+    expect(heroOf(slot, 'loop')).toBeNull();
+  });
+
+  it('keeps the still when the loop fails to load', () => {
+    const slot = within(openOn('jordan')).getByTestId('agent-video-slot');
+    setOnScreen(true);
+    fireEvent.error(heroOf(slot, 'loop')!);
+    expect(heroOf(slot, 'loop')).toBeNull();
+    expect(heroOf(slot, 'still')).toHaveClass('opacity-100');
+  });
+
+  it('gives the Master Agent, which has no loop, its still portrait', () => {
+    const slot = within(openOn('master')).getByTestId('agent-video-slot');
+    setOnScreen(true);
+    expect(heroOf(slot, 'still')?.getAttribute('src')).toBe('/ai-center/agents/master.png');
+    expect(heroOf(slot, 'loop')).toBeNull();
+  });
+});
+
+describe('AgentDetailModal: header and story', () => {
+  it('shows the role without "AI" and in sentence case, and the tagline, intro and points', () => {
+    const jordan = AI_AGENTS.find((a) => a.id === 'jordan')!;
+    const dialog = openOn('jordan');
+    expect(within(dialog).getByText('Estimate follow-up')).toBeInTheDocument();
+    expect(within(dialog).queryByText(jordan.role)).toBeNull();
+    expect(within(dialog).getByText(jordan.tagline)).toBeInTheDocument();
+    expect(within(dialog).getByText(jordan.longDescription[0]!)).toBeInTheDocument();
+    // The intro is a paragraph; the other six are the dotted list.
+    const items = within(dialog).getAllByRole('listitem').filter((li) => !li.closest('section'));
+    expect(items.map((li) => li.textContent)).toEqual(jordan.longDescription.slice(1));
+  });
+});
+
+describe('AgentDetailModal: an agent the company cannot use', () => {
+  it('shows "Coming soon" under the role, no control row, and a booking call', () => {
+    const dialog = openOn('mike');
+    const statuses = dialog.querySelectorAll('[data-agent-status]');
+    expect(statuses).toHaveLength(1);
+    expect(statuses[0]).toHaveTextContent('Coming soon');
+    expect(dialog.querySelector('[data-agent-control-row]')).toBeNull();
+    expect(within(dialog).queryByRole('switch')).toBeNull();
+    expect(within(dialog).getByText('Close', { selector: 'button' })).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Book a call about Border Collie' })).toBeInTheDocument();
+    expect(within(dialog).queryByText(/in development/i)).toBeNull();
+  });
+
+  it('keeps Spider as "Coming soon" with a booking call for a company without Spider, and asks nothing', async () => {
+    const dialog = openOn('spider');
+    expect(within(dialog).getByText('Coming soon')).toBeInTheDocument();
+    expect(within(dialog).getByText('Book a call about Spider')).toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: /Open Spider|Set up Spider/ })).toBeNull();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(mockApi.get.mock.calls.filter(([u]) => String(u).includes('/spider/'))).toHaveLength(0);
+  });
+
+  it('leaves every other agent "Coming soon" in a Spider company', () => {
+    signIn(SPIDER_COMPANY);
+    const dialog = openOn('mike');
+    expect(within(dialog).getByText('Coming soon')).toBeInTheDocument();
+    expect(dialog.querySelector('[data-agent-control-row]')).toBeNull();
+    expect(within(dialog).getByText('Book a call about Border Collie')).toBeInTheDocument();
+  });
+});
+
+// Ran, 14 Oct (controls design, pop-up option A): a control row under the header says where the
+// agent stands; an Admin switches it right there. No status tag in the header any more.
+describe('AgentDetailModal: the control row', () => {
+  const row = (dialog: HTMLElement) => dialog.querySelector<HTMLElement>('[data-agent-control-row]');
+
+  it('an Admin sees "Spider is on", "Watching your open leads" and the switch on, above the video', async () => {
+    signIn(SPIDER_COMPANY);
+    spiderSwitch(ON);
+    const dialog = openOn('spider');
+    const sw = await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' });
+    expect(sw).toBeChecked();
+    expect(within(row(dialog)!).getByText('Spider is on')).toBeInTheDocument();
+    expect(sw).toHaveAccessibleDescription('Watching your open leads');
+    // On / Off is written beside the track.
+    expect(sw).toHaveTextContent('On');
+    // The row sits above the video slot, and nothing in the header claims a status.
+    const slot = within(dialog).getByText('Feature video coming soon');
+    expect(row(dialog)!.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(dialog.querySelector('[data-agent-status]')).toBeNull();
+    expect(within(dialog).queryByRole('link')).toBeNull();
+    expect(within(dialog).queryByText(/Active/)).toBeNull();
+  });
+
+  // A stray Space on open must not flip the switch, and no focus ring is drawn round the frame.
+  it('opens with focus on the header, not on the switch or the frame; Tab then reaches the switch', async () => {
+    signIn(SPIDER_COMPANY);
+    spiderSwitch(ON);
+    const user = userEvent.setup();
+    const dialog = openOn('spider');
+    const sw = await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' });
+    const header = dialog.querySelector<HTMLElement>('[data-agent-detail-header]')!;
+    await waitFor(() => expect(header).toHaveFocus());
+    expect(header).toHaveAttribute('tabindex', '-1');
+    expect(header).toHaveClass('outline-none');
+    await user.tab();
+    expect(sw).toHaveFocus();
+  });
+
+  it('an Admin sees "Spider is off" and "No new lead alerts are going out" with the switch off', async () => {
+    signIn(SPIDER_COMPANY);
+    spiderSwitch(OFF);
+    const dialog = openOn('spider');
+    const sw = await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' });
+    expect(sw).not.toBeChecked();
+    expect(sw).toHaveTextContent('Off');
+    expect(within(row(dialog)!).getByText('Spider is off')).toBeInTheDocument();
+    expect(within(row(dialog)!).getByText('No new lead alerts are going out')).toBeInTheDocument();
+  });
+
+  // Ran, 14 Oct: the switch always works for an Admin, set up or not. It says whether Spider is
+  // applied; setting it up comes after, from the footer, while it is on.
+  it('an Admin at a company that never set Spider up gets a working switch, off, saying to turn it on first', async () => {
+    signIn(SPIDER_COMPANY);
+    spiderSwitch(NEVER_SET_UP);
+    const dialog = openOn('spider');
+    const sw = await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' });
+    expect(within(row(dialog)!).getByText('Spider is off')).toBeInTheDocument();
+    expect(sw).toHaveAccessibleDescription('Turn it on, then choose the statuses to watch');
+    expect(sw).not.toBeChecked();
+    expect(sw).not.toHaveAttribute('aria-disabled');
+    expect(sw).toHaveTextContent('Off');
+    expect(within(dialog).queryByText(/not set up yet/)).toBeNull();
+  });
+
+  it('an Admin with Spider on but never set up sees "Spider is on" and what is left to do, in amber', async () => {
+    signIn(SPIDER_COMPANY);
+    spiderSwitch(ON_NOT_SET_UP);
+    const dialog = openOn('spider');
+    const sw = await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' });
+    expect(sw).toBeChecked();
+    expect(sw).toHaveTextContent('On');
+    expect(sw).not.toHaveAttribute('aria-disabled');
+    expect(within(row(dialog)!).getByText('Spider is on')).toBeInTheDocument();
+    expect(sw).toHaveAccessibleDescription('Choose the statuses to watch so it can start');
+    // Applied, not working yet: the amber of the card's "On, not set up yet", not the green of a working agent.
+    expect(row(dialog)).toHaveAttribute('data-agent-set-up', 'false');
+    expect(row(dialog)).toHaveClass('border-warning-border');
+    expect(row(dialog)).not.toHaveClass('border-success-border');
+  });
+
+  it('keeps the green row for an agent that is on and set up', async () => {
+    signIn(SPIDER_COMPANY);
+    spiderSwitch(ON);
+    const dialog = openOn('spider');
+    await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' });
+    expect(row(dialog)).toHaveClass('border-success-border');
+    expect(row(dialog)).toHaveAttribute('data-agent-set-up', 'true');
+  });
+
+  it.each([
+    ['on', ON, 'Spider is on', 'Watching your open leads', 'on'],
+    ['off', OFF, 'Spider is off', 'No new lead alerts are going out', 'off'],
+    ['on but never set up', ON_NOT_SET_UP, 'Spider is on', 'An Admin has not set it up yet', 'on'],
+    ['off and never set up', NEVER_SET_UP, 'Spider is off', 'An Admin has not set it up yet', 'off'],
+  ] as const)('someone who is not an Admin sees the %s lines and a read-only chip, no switch', async (_l, answer, title, detail, chip) => {
+    signIn({ ...SPIDER_COMPANY, role: 'SALES' });
+    spiderSwitch(answer);
+    const dialog = openOn('spider');
+    expect(await within(dialog).findByText(title)).toBeInTheDocument();
+    expect(within(row(dialog)!).getByText(detail)).toBeInTheDocument();
+    expect(row(dialog)!.querySelector(`[data-agent-chip="${chip}"]`)).not.toBeNull();
+    expect(within(dialog).queryByRole('switch')).toBeNull();
+  });
+
+  it('holds the row with a placeholder of the same height while the switch is read', () => {
+    signIn(SPIDER_COMPANY);
+    spiderSwitch('never');
+    const dialog = openOn('spider');
+    expect(row(dialog)).toHaveAttribute('data-agent-control-row', 'loading');
+    expect(row(dialog)).toHaveClass('min-h-[58px]');
+    expect(row(dialog)!.textContent).toBe('');
+    expect(within(dialog).queryByRole('switch')).toBeNull();
+  });
+
+  it('claims nothing when the switch cannot be read', async () => {
+    signIn(SPIDER_COMPANY);
+    spiderSwitch('error');
+    const dialog = openOn('spider');
+    await waitFor(() => expect(row(dialog)).toBeNull());
+    for (const words of ['Spider is on', 'Spider is off', 'On', 'Off']) {
+      expect(within(dialog).queryByText(words)).toBeNull();
+    }
+    expect(within(dialog).queryByRole('switch')).toBeNull();
+  });
+});
+
+describe('AgentDetailModal: switching Spider on and off', () => {
+  it('turning on saves at once, with no question and no toast; the status line announces it', async () => {
+    signIn(SPIDER_COMPANY);
+    spiderServer(OFF);
+    const user = userEvent.setup();
+    const dialog = openOn('spider');
+    await user.click(await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' }));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(mockApi.put).toHaveBeenCalledWith('/api/ai-farm/spider/status', { isActive: true }, expect.anything());
+    const line = await within(dialog).findByText('Spider is on');
+    // A polite live region, so a screen reader hears the change without a toast.
+    expect(line).toHaveAttribute('role', 'status');
+    await waitFor(() => expect(within(dialog).getByRole('switch', { name: 'Switch Spider on or off' })).not.toHaveAttribute('aria-busy'));
+    // The switch is its own confirmation: no success toast covering the pop-up on a phone.
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it('turning off asks first, with focus on "Keep it on", which keeps it on', async () => {
+    signIn(SPIDER_COMPANY);
+    spiderSwitch(ON);
+    const user = userEvent.setup();
+    const dialog = openOn('spider');
+    await user.click(await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' }));
+    const confirm = await screen.findByRole('alertdialog', { name: 'Turn off Spider?' });
+    expect(within(confirm).getByText(/Spider stops watching your leads and sends no new alerts\. Your statuses, time limits and who gets alerted are all kept\./)).toBeInTheDocument();
+    expect(within(confirm).getByText('When you turn it back on, time in a status counts from that moment.')).toBeInTheDocument();
+    const keep = within(confirm).getByRole('button', { name: 'Keep it on' });
+    await waitFor(() => expect(keep).toHaveFocus());
+    await user.click(keep);
+    await waitFor(() => expect(screen.queryByRole('alertdialog')).toBeNull());
+    expect(mockApi.put).not.toHaveBeenCalled();
+    expect(within(dialog).getByRole('switch', { name: 'Switch Spider on or off' })).toBeChecked();
+  });
+
+  it('"Turn off" saves Spider off', async () => {
+    signIn(SPIDER_COMPANY);
+    spiderServer(ON);
+    const user = userEvent.setup();
+    const dialog = openOn('spider');
+    await user.click(await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' }));
+    const confirm = await screen.findByRole('alertdialog', { name: 'Turn off Spider?' });
+    await user.click(within(confirm).getByRole('button', { name: 'Turn off' }));
+    expect(mockApi.put).toHaveBeenCalledWith('/api/ai-farm/spider/status', { isActive: false }, expect.anything());
+    expect(await within(dialog).findByRole('status')).toHaveTextContent('Spider is off');
+    await waitFor(() => expect(within(dialog).getByRole('switch', { name: 'Switch Spider on or off' })).not.toHaveAttribute('aria-busy'));
+    expect(toast.success).not.toHaveBeenCalled();
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  // Nothing to lose: an agent that was never set up does no work, so it switches straight off.
+  it('turning off an agent that was never set up switches straight off, with no question', async () => {
+    signIn(SPIDER_COMPANY);
+    spiderServer(ON_NOT_SET_UP);
+    const user = userEvent.setup();
+    const dialog = openOn('spider');
+    await user.click(await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' }));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(mockApi.put).toHaveBeenCalledWith('/api/ai-farm/spider/status', { isActive: false }, expect.anything());
+    expect(await within(dialog).findByRole('status')).toHaveTextContent('Spider is off');
+    expect(within(dialog).getByText('Turn it on, then choose the statuses to watch')).toBeInTheDocument();
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
+  it('turning on an agent that was never set up saves at once, and the row says what is left to do', async () => {
+    signIn(SPIDER_COMPANY);
+    spiderServer(NEVER_SET_UP);
+    const user = userEvent.setup();
+    const dialog = openOn('spider');
+    await user.click(await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' }));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(mockApi.put).toHaveBeenCalledWith('/api/ai-farm/spider/status', { isActive: true }, expect.anything());
+    expect(await within(dialog).findByRole('status')).toHaveTextContent('Spider is on');
+    // Switching on never claims it is set up, before or after the server answers.
+    expect(within(dialog).getByText('Choose the statuses to watch so it can start')).toBeInTheDocument();
+    await waitFor(() => expect(within(dialog).getByRole('switch', { name: 'Switch Spider on or off' })).not.toHaveAttribute('aria-busy'));
+    expect(within(dialog).getByText('Choose the statuses to watch so it can start')).toBeInTheDocument();
+  });
+
+  it('moves the switch at once with a spinner, and back again with the server\'s sentence when the save fails', async () => {
+    signIn(SPIDER_COMPANY);
+    spiderSwitch(OFF);
+    let fail: (e: unknown) => void = () => {};
+    mockApi.put.mockImplementation(() => new Promise((_res, rej) => { fail = rej; }));
+    const user = userEvent.setup();
+    const dialog = openOn('spider');
+    const sw = await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' });
+    await user.click(sw);
+    // Optimistic: on straight away, saving.
+    await waitFor(() => expect(sw).toBeChecked());
+    expect(sw).toHaveAttribute('aria-busy', 'true');
+    expect(sw.querySelector('[data-slot="switch-spinner"]')).not.toBeNull();
+    fail(Object.assign(new Error('400'), {
+      response: {
+        status: 400,
+        data: {
+          error: 'Validation failed',
+          details: [{ field: 'isActive', message: 'Spider could not be switched on just now' }],
+        },
+      },
+    }));
+    await waitFor(() => expect(sw).not.toBeChecked());
+    expect(toast.error).toHaveBeenCalledWith('Spider could not be switched on just now');
+    expect(String(vi.mocked(toast.error).mock.calls[0]![0])).not.toMatch(/isActive/);
+    expect(within(dialog).getByText('Spider is off')).toBeInTheDocument();
+  });
+
+  it('re-reads the status and the Spider settings once a save settles', async () => {
+    signIn(SPIDER_COMPANY);
+    spiderServer(OFF);
+    const user = userEvent.setup();
+    const dialog = openOn('spider');
+    await user.click(await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' }));
+    await waitFor(() => expect(mockApi.get.mock.calls.filter(([u]) => u === STATUS).length).toBeGreaterThanOrEqual(2));
+  });
+});
+
+describe('AgentDetailModal: the footer for an agent the company can use', () => {
+  function openRouted(agentId: string) {
+    useAiCenterStore.getState().openModal(agentId);
+    renderWithProviders(
+      <Routes>
+        <Route path="/" element={<AiCenterModal />} />
+        <Route path="/spider" element={<div>Spider page</div>} />
+      </Routes>,
+    );
+    return screen.getByRole('dialog', { name: AI_AGENTS.find((a) => a.id === agentId)!.name });
+  }
+
+  it('an Admin with Spider on gets Close and "Open Spider", which closes the farm and opens its page', async () => {
+    signIn(SPIDER_COMPANY);
+    spiderSwitch(ON);
+    const user = userEvent.setup();
+    const dialog = openRouted('spider');
+    await within(dialog).findByText('Spider is on');
+    expect(within(dialog).getByText('Close', { selector: 'button' })).toBeInTheDocument();
+    await user.click(within(dialog).getByRole('button', { name: 'Open Spider' }));
+    expect(await screen.findByText('Spider page')).toBeInTheDocument();
+    expect(useAiCenterStore.getState().open).toBe(false);
+  });
+
+  it('an Admin with Spider off gets a locked "Open Spider" that does nothing, and a "Turn it on" that does', async () => {
+    signIn(SPIDER_COMPANY);
+    spiderServer(OFF);
+    const user = userEvent.setup();
+    const dialog = openRouted('spider');
+    const locked = await within(dialog).findByRole('button', { name: 'Open Spider' });
+    expect(locked).toHaveAttribute('aria-disabled', 'true');
+    expect(locked).toHaveAccessibleDescription('Spider is off. Turn it on to open it.');
+    locked.focus();
+    expect(locked).toHaveFocus();
+    await user.click(locked);
+    expect(screen.queryByText('Spider page')).toBeNull();
+    expect(useAiCenterStore.getState().open).toBe(true);
+    expect(mockApi.put).not.toHaveBeenCalled();
+
+    await user.click(within(dialog).getByRole('button', { name: 'Turn it on' }));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(mockApi.put).toHaveBeenCalledWith('/api/ai-farm/spider/status', { isActive: true }, expect.anything());
+    // Once on, the footer opens Spider.
+    const open = await within(dialog).findByRole('button', { name: 'Open Spider' });
+    await waitFor(() => expect(open).not.toHaveAttribute('aria-disabled'));
+  });
+
+  // Ran, 14 Oct: "The whole idea of it being off is that it's greyed out." Set up included.
+  it('an Admin with Spider off and never set up gets a locked "Set up Spider", and "Turn it on" unlocks it', async () => {
+    signIn(SPIDER_COMPANY);
+    spiderServer(NEVER_SET_UP);
+    const user = userEvent.setup();
+    const dialog = openRouted('spider');
+    const locked = await within(dialog).findByRole('button', { name: 'Set up Spider' });
+    expect(locked).toHaveAttribute('aria-disabled', 'true');
+    expect(locked).toHaveAttribute('data-agent-locked');
+    expect(locked).toHaveAccessibleDescription('Spider is off. Turn it on to set it up.');
+    expect(locked.querySelector('svg.lucide-lock')).not.toBeNull();
+    // Still in the tab order, and does nothing.
+    locked.focus();
+    expect(locked).toHaveFocus();
+    await user.click(locked);
+    expect(screen.queryByText('Spider page')).toBeNull();
+    expect(useAiCenterStore.getState().open).toBe(true);
+    expect(mockApi.put).not.toHaveBeenCalled();
+    expect(within(dialog).queryByRole('button', { name: 'Open Spider' })).toBeNull();
+
+    await user.click(within(dialog).getByRole('button', { name: 'Turn it on' }));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(mockApi.put).toHaveBeenCalledWith('/api/ai-farm/spider/status', { isActive: true }, expect.anything());
+    // On: the same button is the way in, still "Set up" because nothing is set up yet.
+    const setUp = await within(dialog).findByRole('button', { name: 'Set up Spider' });
+    await waitFor(() => expect(setUp).not.toHaveAttribute('aria-disabled'));
+    expect(setUp).not.toHaveAttribute('data-agent-locked');
+  });
+
+  it('an Admin with Spider on but never set up gets an active "Set up Spider", which opens its page', async () => {
+    signIn(SPIDER_COMPANY);
+    spiderSwitch(ON_NOT_SET_UP);
+    const user = userEvent.setup();
+    const dialog = openRouted('spider');
+    const setUp = await within(dialog).findByRole('button', { name: 'Set up Spider' });
+    expect(setUp).not.toHaveAttribute('aria-disabled');
+    expect(within(dialog).queryByText(/Turn it on to/)).toBeNull();
+    await user.click(setUp);
+    expect(await screen.findByText('Spider page')).toBeInTheDocument();
+    expect(useAiCenterStore.getState().open).toBe(false);
+  });
+
+  it.each([
+    ['on', ON, 'Spider is on for your company. You get its alerts when you are on watch.'],
+    ['off', OFF, 'An Admin turns Spider on or off. You will get its alerts once it is on.'],
+    ['on but never set up', ON_NOT_SET_UP, 'Spider is on for your company. You will get its alerts once an Admin sets it up.'],
+    ['off and never set up', NEVER_SET_UP, 'An Admin turns Spider on or off. You will get its alerts once it is on.'],
+  ] as const)('someone who is not an Admin gets one note and no button while Spider is %s', async (_l, answer, note) => {
+    signIn({ ...SPIDER_COMPANY, role: 'TECHNICIAN' });
+    spiderSwitch(answer);
+    const dialog = openOn('spider');
+    expect(await within(dialog).findByText(note)).toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: /Open Spider|Set up Spider|Book a call/ })).toBeNull();
+  });
+});
+
+describe('AgentDetailModal: Works with', () => {
+  it("lists the animals Spider's copy names and the ServWave modules it works in", () => {
+    const dialog = openOn('spider');
+    const section = within(dialog).getByRole('region', { name: 'Works with' });
+    const agents = within(section).getByRole('list', { name: 'Agents' });
+    const chips = within(agents).getAllByRole('button');
+    ['Falcon', 'Dolphin', 'Woodpecker', 'Badger'].forEach((name, i) => expect(chips[i]).toHaveAccessibleName(name));
+    expect(chips).toHaveLength(4);
+    const modules = within(section).getByRole('list', { name: 'ServWave modules' });
+    expect(within(modules).getAllByRole('listitem').map((li) => li.textContent)).toEqual([
+      'Leads',
+      'Phone',
+      'Text messages',
+    ]);
+  });
+
+  it('opens the named animal when its chip is clicked', () => {
+    const dialog = openOn('spider');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Woodpecker' }));
+    const next = screen.getByRole('dialog', { name: 'Woodpecker' });
+    expect(within(next).getByText('Estimate follow-up')).toBeInTheDocument();
+    expect(within(next).getByText('Book a call about Woodpecker')).toBeInTheDocument();
+  });
+
+  it('shows only modules for an agent whose copy names no other animal', () => {
+    const dialog = openOn('mike');
+    const section = within(dialog).getByRole('region', { name: 'Works with' });
+    expect(within(section).queryByRole('list', { name: 'Agents' })).toBeNull();
+    expect(within(section).getByText('Schedule')).toBeInTheDocument();
+  });
+});
+
+describe('AgentDetailModal: deep link and booking', () => {
+  it('a job tile deep link opens the right agent and then clears', () => {
+    const dialog = openOn('iris');
+    expect(within(dialog).getByText('Call note taker')).toBeInTheDocument();
+    expect(useAiCenterStore.getState().focusAgentId).toBeNull();
+  });
+
+  it('Close returns to the catalog', () => {
+    const dialog = openOn('mike');
+    // Two ways out, the corner X and the footer's Close; the footer one is the text button.
+    fireEvent.click(within(dialog).getByText('Close', { selector: 'button' }));
+    expect(screen.queryByRole('dialog', { name: 'Border Collie' })).toBeNull();
+    expect(screen.getByRole('dialog', { name: 'AI Agentic Farm' })).toBeInTheDocument();
+  });
+
+  it('Book a call hands over to the booking flow', () => {
+    const dialog = openOn('mike');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Book a call about Border Collie' }));
+    expect(screen.queryByRole('dialog', { name: 'Border Collie' })).toBeNull();
+  });
+});

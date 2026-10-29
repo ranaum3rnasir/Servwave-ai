@@ -1,0 +1,266 @@
+[
+  {
+    "name": "Blue",
+    "token": "info",
+    "seed": "#3B82F6",
+    "note": "Job default",
+    "today": {
+      "bg": "#EBF3FE",
+      "fg": "#3B82F6",
+      "r": 3.28
+    },
+    "surface": "#E8F1FF",
+    "border": "#3B82F6",
+    "aa": {
+      "fg": "#2068D9",
+      "r": 4.56
+    },
+    "aaa": {
+      "fg": "#004AB2",
+      "r": 7.04
+    },
+    "ring": 4.41
+  },
+  {
+    "name": "Status blue",
+    "token": "status-blue",
+    "seed": "#2563C9",
+    "note": "",
+    "today": {
+      "bg": "#E9EFFA",
+      "fg": "#2563C9",
+      "r": 4.92
+    },
+    "surface": "#E8F1FF",
+    "border": "#2563C9",
+    "aa": {
+      "fg": "#2563C9",
+      "r": 4.98
+    },
+    "aaa": {
+      "fg": "#0649AD",
+      "r": 7.2
+    },
+    "ring": 4.41
+  },
+  {
+    "name": "Ocean",
+    "token": "ocean-700",
+    "seed": "#123F50",
+    "note": "",
+    "today": {
+      "bg": "#E7ECEE",
+      "fg": "#123F50",
+      "r": 9.51
+    },
+    "surface": "#E1F4FC",
+    "border": "#123F50",
+    "aa": {
+      "fg": "#123F50",
+      "r": 10.01
+    },
+    "aaa": {
+      "fg": "#123F50",
+      "r": 10.01
+    },
+    "ring": 4.44
+  },
+  {
+    "name": "Sage",
+    "token": "sage-700",
+    "seed": "#2F7D5D",
+    "note": "",
+    "today": {
+      "bg": "#EAF2EF",
+      "fg": "#2F7D5D",
+      "r": 4.38
+    },
+    "surface": "#DBF8E9",
+    "border": "#2F7D5D",
+    "aa": {
+      "fg": "#2C7B5B",
+      "r": 4.55
+    },
+    "aaa": {
+      "fg": "#005D40",
+      "r": 7.05
+    },
+    "ring": 4.45
+  },
+  {
+    "name": "Green",
+    "token": "status-green",
+    "seed": "#0D9668",
+    "note": "",
+    "today": {
+      "bg": "#E7F4F0",
+      "fg": "#0D9668",
+      "r": 3.34
+    },
+    "surface": "#D3FBE6",
+    "border": "#0D9668",
+    "aa": {
+      "fg": "#007E56",
+      "r": 4.54
+    },
+    "aaa": {
+      "fg": "#005D3F",
+      "r": 7.09
+    },
+    "ring": 4.47
+  },
+  {
+    "name": "Light sage",
+    "token": "sage-500",
+    "seed": "#6BAA8F",
+    "note": "",
+    "today": {
+      "bg": "#F0F6F4",
+      "fg": "#6BAA8F",
+      "r": 2.48
+    },
+    "surface": "#DEF7EB",
+    "border": "#59977D",
+    "aa": {
+      "fg": "#3A785F",
+      "r": 4.62
+    },
+    "aaa": {
+      "fg": "#195B44",
+      "r": 7.1
+    },
+    "ring": 4.45
+  },
+  {
+    "name": "Amber",
+    "token": "amber-700",
+    "seed": "#B45309",
+    "note": "Walkthrough default",
+    "today": {
+      "bg": "#F8EEE6",
+      "fg": "#B45309",
+      "r": 4.38
+    },
+    "surface": "#FFECE2",
+    "border": "#B45309",
+    "aa": {
+      "fg": "#B15002",
+      "r": 4.57
+    },
+    "aaa": {
+      "fg": "#843A00",
+      "r": 7.09
+    },
+    "ring": 4.39
+  },
+  {
+    "name": "Status amber",
+    "token": "status-amber",
+    "seed": "#C07C14",
+    "note": "",
+    "today": {
+      "bg": "#F9F2E8",
+      "fg": "#C07C14",
+      "r": 3.08
+    },
+    "surface": "#FFEDD9",
+    "border": "#BE7A11",
+    "aa": {
+      "fg": "#996000",
+      "r": 4.56
+    },
+    "aaa": {
+      "fg": "#724600",
+      "r": 7.09
+    },
+    "ring": 4.39
+  },
+  {
+    "name": "Indigo",
+    "token": "indigo-600",
+    "seed": "#5B6DFF",
+    "note": "Service plan default",
+    "today": {
+      "bg": "#EFF0FF",
+      "fg": "#5B6DFF",
+      "r": 3.67
+    },
+    "surface": "#EBF0FF",
+    "border": "#5B6DFF",
+    "aa": {
+      "fg": "#4E5CEC",
+      "r": 4.54
+    },
+    "aaa": {
+      "fg": "#373ACA",
+      "r": 7.04
+    },
+    "ring": 4.41
+  },
+  {
+    "name": "Purple",
+    "token": "status-purple",
+    "seed": "#7048C4",
+    "note": "",
+    "today": {
+      "bg": "#F1EDF9",
+      "fg": "#7048C4",
+      "r": 5.33
+    },
+    "surface": "#F0EDFF",
+    "border": "#7048C4",
+    "aa": {
+      "fg": "#7048C4",
+      "r": 5.35
+    },
+    "aaa": {
+      "fg": "#5E33AE",
+      "r": 7.13
+    },
+    "ring": 4.37
+  },
+  {
+    "name": "Olive",
+    "token": "olive-700",
+    "seed": "#5A5A2E",
+    "note": "",
+    "today": {
+      "bg": "#EEEEEA",
+      "fg": "#5A5A2E",
+      "r": 6.17
+    },
+    "surface": "#F1F2DE",
+    "border": "#5A5A2E",
+    "aa": {
+      "fg": "#5A5A2E",
+      "r": 6.3
+    },
+    "aaa": {
+      "fg": "#535327",
+      "r": 7.02
+    },
+    "ring": 4.42
+  },
+  {
+    "name": "Slate",
+    "token": "status-slate",
+    "seed": "#5B6B73",
+    "note": "",
+    "today": {
+      "bg": "#EFF0F1",
+      "fg": "#5B6B73",
+      "r": 4.85
+    },
+    "surface": "#EAF1F5",
+    "border": "#5B6B73",
+    "aa": {
+      "fg": "#5B6B73",
+      "r": 4.85
+    },
+    "aaa": {
+      "fg": "#43525A",
+      "r": 7.1
+    },
+    "ring": 4.4
+  }
+]

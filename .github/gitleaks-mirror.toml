@@ -1,0 +1,20 @@
+# Secret scan for the full-repo mirror (.github/workflows/dev-ai-farm-mirror.yml). Same rules as the
+# snapshot gate, applied to the whole tree, plus the files below, which hold fake example values
+# (test logins in e2e helpers and planning docs, a made-up key in a code-review checklist, and a
+# public page key inside a pasted Google Calendar page). Confirmed false positives only. Never add
+# a real value.
+title = "Dev mirror publish gate"
+
+[extend]
+path = ".github/gitleaks-publish.toml"
+
+[allowlist]
+description = "Known example values"
+paths = [
+  '''(^|/)\.claude/skills/e2e-testing-patterns/resources/implementation-playbook\.md$''',
+  '''(^|/)\.claude/skills/code-review-checklist/SKILL\.md$''',
+  '''(^|/)frontend/e2e/helpers/api-helpers\.ts$''',
+  '''(^|/)md_files/plans/security/2026-07-16-single-org-email-guard-implementation-plan\.md$''',
+  '''(^|/)md_files/plans/testing/e2e-workflow-tests-plan\.md$''',
+  '''(^|/)md_files/plans/scheduler/google_calendar_daily_view_html\.txt$''',
+]

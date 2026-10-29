@@ -1,0 +1,13 @@
+{
+  "_readme": [
+    "Pages the full sweep (slice 62) found rendering the app's error screen for the throwaway org.",
+    "They are skipped by the gate, shown as BROKEN in every sweep report, and stay product defects: fixing the page means deleting its entry.",
+    "Never add a page here to make a run green; add it only with the error text and a reproduction."
+  ],
+  "entries": {
+    "report-estimate-conversion": {
+      "reason": "TypeError: Cannot read properties of undefined (reading 'count') at EstimateConversionReport.tsx:642 (`s?.open.count`: the stats object has no `open` for this org)",
+      "owner": "Reports (not a mobile slice)"
+    }
+  }
+}

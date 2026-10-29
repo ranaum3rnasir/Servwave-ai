@@ -1,0 +1,64 @@
+title = "ALPHA CRM gitleaks config"
+
+# Extends the default ruleset — all ~100 built-in detectors apply.
+[extend]
+useDefault = true
+
+# ─── No passwords in the code, EVER (2026-10-19) ────────────────────────────────
+# A seed script once shipped four real customer passwords in plaintext, and they reached an
+# outside team's copy of this repo. Any password literal assigned in code fails the scan.
+# Passwords come from the environment or a secret store, never from a file in this repo.
+[[rules]]
+id = "hardcoded-password"
+description = "Hard-coded password literal"
+regex = '''(?i)\b[a-z_]*pass(?:word|wd|phrase)?['"]?\s*[:=]\s*(?:[^'"\n;]*?(?:\|\||\?\?)\s*)?['"]([^'"\s{}$<>]{6,})['"]'''
+secretGroup = 1
+keywords = ["pass"]
+
+  [rules.allowlist]
+  description = "Fake credentials inside automated tests only"
+  paths = [
+    '''(^|/)__tests__/''',
+    '''\.(test|spec)\.[cm]?[jt]sx?$''',
+    '''(^|/)e2e/''',
+  ]
+
+# Project-specific allowlist for known-fake fixtures and third-party content.
+# Add entries here only after a scan surfaces a confirmed false positive.
+[allowlist]
+description = "Known-fake test fixtures and placeholder values"
+paths = [
+  # Reference docs and plans — may contain fake-key examples for documentation
+  '''.*md_files/.*''',
+  '''.*docs/.*''',
+  '''.*\.claude/.*''',
+  # Backend test fixtures
+  '''backend/\.env\.example''',
+  '''backend/src/__tests__/.*\.ts''',
+  '''e2e/.*\.ts''',
+  # Saved third-party HTML (Google Calendar, etc.) — contains vendor's own keys
+  '''.*google_calendar.*\.txt''',
+  # Transient worktree leak from commit afec74f (cleaned up in e590094)
+  '''.*worktrees/.*''',
+]
+regexes = [
+  # Documented fake placeholders in .env.example
+  '''re_your_key_here''',
+  # Educational "what not to do" example used in code-review-checklist skill
+  '''sk_live_abc123xyz''',
+  # Google's own embedded API keys in saved Google Calendar HTML
+  '''AIzaSyA7GKm43l8WNxlLTjsldq9z9n80CL6KW4U''',
+  '''AIzaSyBZRP7cCToy-e-K5WdeIr944LZw4ZaxNV0''',
+  # Automation Center template identifiers (AutomationTemplate.key in
+  # backend/src/services/automations/catalog.ts) — a static vocabulary of
+  # hyphenated slugs, never secrets. generic-api-key trips on `key: '…-Nd'`.
+  '''estimate-follow-up-\d+d''',
+  '''walkthrough-reminder-\d+d''',
+  # Transient CI-workflow leak from commit 2c9efd055 (cleaned up in 607512078,
+  # chore/node-22-runtime) — fake INVITE_TOKEN_SECRET/MFA_TOKEN_ENC_KEY values
+  # inline in .github/workflows/ci.yml, never real secrets. gitleaks scans
+  # every commit's patch, so the introducing commit still trips the scan even
+  # though the values were removed one commit later.
+  '''ci-placeholder-invite-secret-0123456789''',
+  '''ci-placeholder-mfa-enc-key-0123456789''',
+]

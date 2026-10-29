@@ -1,0 +1,202 @@
+# Phase 0 — MVP (Replacement-ready core + basic reporting)
+
+**MVP goal:** Your team can run the full workflow inside the new system while dual-running (old CRM in parallel), with manual lead entry, one-way comms, deposit required before job creation, and office manually clicks “Create Job.”
+
+## Operating workflow (Phase 0)
+
+**Lead (manual entry) → Estimate(s) → 1 Approved → Deposit Paid → Office clicks “Create Job” → Job → Complete → Invoice → Payment**
+
+---
+
+## 0.1 Users & Roles
+
+### Roles (minimum)
+- **Owner/Admin:** full access + settings  
+- **Office Manager:** leads, estimates, deposits, jobs, schedule, invoices, payments, reports  
+- **Technician:** assigned jobs only + customer contact info for those jobs  
+
+### Must-have controls
+- Invite/deactivate users  
+- Basic permission enforcement (no advanced RBAC yet)
+
+---
+
+## 0.2 Leads (Manual Only)
+
+**Purpose:** get every opportunity into the pipeline quickly.
+
+### Capabilities
+- Create lead manually (one-by-one fields)  
+- Lead fields (MVP): name, phone/email, address, service request/job info, notes  
+- Lead statuses: **New → Contacted → Estimating → Won → Lost**  
+- Convert lead to customer (either explicit conversion or “customer created automatically when lead is created”)
+
+### Non-goals (Phase 0)
+- Web forms, lead sources integrations, automated lead capture
+
+---
+
+## 0.3 Customers (Light CRM)
+
+**Purpose:** single record of truth + history.
+
+### Capabilities
+- Customer profile (contacts + one or more service locations)  
+- Notes  
+- Search  
+- History timeline: linked leads, estimates, jobs, invoices, payments
+
+---
+
+## 0.4 Estimates (Core + “win area”)
+
+**Purpose:** fast quoting that actually closes.
+
+### Capabilities
+- Create estimate from lead/customer  
+- Line items (service, qty, unit price), totals, taxes/discounts  
+- Attachments (photos) + notes  
+- Estimate statuses: **Draft → Sent → Approved / Declined / Expired**  
+- Multiple estimates per lead, but enforce only one Approved at a time  
+- Send estimate via email/SMS link (one-way only)  
+- Customer approval (simple approve flow)
+
+### Non-goals (Phase 0)
+- Good/Better/Best, deep pricebook, AI-assisted estimating
+
+---
+
+## 0.5 Deposits (Mode A, gating Job creation)
+
+**Purpose:** enforce commitment before operational work starts.
+
+### Capabilities
+- Deposit can be requested only after estimate is Approved  
+- Customer pays deposit via payment link  
+- Deposit status: **Requested → Paid**  
+- Hard gate: no job can be created until deposit is paid  
+- Deposit recorded and carried forward as credit later (applied to final invoice)
+
+---
+
+## 0.6 Job Creation & Management (Manual Create Job)
+
+**Purpose:** execute delivery with minimal complexity.
+
+### Capabilities
+- Office clicks Create Job after deposit paid (manual control)  
+- Job auto-populates from estimate (scope/line items/notes/photos)  
+- Job statuses: **Unassigned → Scheduled → In Progress → Completed**  
+- Job details: customer/location, scope, internal notes, attachments  
+- Assign one or more technicians (start with one if you want to simplify)
+
+---
+
+## 0.7 Scheduling & Dispatch (Simple but dependable)
+
+**Purpose:** office can plan the week without chaos.
+
+### Capabilities
+- Calendar (week view)  
+- Unassigned jobs queue  
+- Assign tech + time window  
+- In-app notification to technician on assignment/changes  
+
+### Non-goals (Phase 0)
+- Route optimization, skill matching, auto-assignment
+
+---
+
+## 0.8 Technician Experience (Mobile-first essentials)
+
+**Purpose:** tech can complete work without calling the office.
+
+### Capabilities
+- Today’s jobs list + job detail view  
+- Update job status  
+- Add notes + photos  
+- Completion confirmation (signature is recommended; can be optional if you want to cut)
+
+### Non-goals (Phase 0)
+- Offline mode, time clock, GPS tracking
+
+---
+
+## 0.9 Invoicing
+
+**Purpose:** bill quickly and consistently.
+
+### Capabilities
+- Generate invoice from completed job  
+- Apply deposit as credit automatically  
+- Invoice statuses: **Draft → Sent → Paid** (Partial optional)  
+- Send invoice via email/SMS link (one-way)
+
+---
+
+## 0.10 Payments (One-way)
+
+**Purpose:** get paid + track cash.
+
+### Capabilities
+- Online payment via invoice link  
+- Payment recorded  
+- Receipt confirmation
+
+---
+
+## 0.11 Basic Reporting & Analytics (Phase 0)
+
+**Principle:** reports are mostly filtered list views + a few totals, not a complex dashboard.
+
+### A) Pipeline & Sales (Leads/Estimates)
+- Leads by status (New/Contacted/Estimating/Won/Lost)  
+- Won vs Lost (count + $ based on approved estimates)  
+- Estimate funnel: Draft → Sent → Approved/Declined  
+- Estimate aging list: “Estimates sent but not approved after X days”
+
+### B) Deposit tracking (critical for your gating model)
+- Approved estimates awaiting deposit (action list)  
+- Deposits collected (total by date range)  
+- Deposit-to-job conversion queue: “Deposit paid, job not created yet” (office action list)
+
+### C) Operations (Jobs/Scheduling)
+- Jobs by status (Unassigned/Scheduled/In Progress/Completed)  
+- Unassigned jobs queue (action list)  
+- Jobs scheduled today / next 7 days  
+- Technician workload snapshot (jobs per tech today/this week)
+
+### D) Finance (Invoices/Payments)
+- Outstanding invoices list  
+- Invoice aging buckets (basic: 0–7 / 8–30 / 31–60 / 60+)  
+- Payments received (day/week/month totals)
+
+### E) MVP “Are we switching?” usage signals
+**Counts over time:**
+- Leads created  
+- Estimates sent  
+- Deposits paid  
+- Jobs completed  
+- Invoices paid  
+
+**Simple cycle-time averages (optional but valuable):**
+- Approved → Deposit paid (avg days)  
+- Completed → Paid (avg days)
+
+### MVP reporting UX (recommended)
+- One Reports page with tiles + date range filter  
+- Each tile links to a filtered list (no heavy BI)  
+- No export required in Phase 0 (consistent with your decision)
+
+---
+
+## Phase 0 explicit exclusions (for scope control)
+- Import/export & migrations  
+- Two-way SMS / inbox  
+- Customer portal  
+- Automations/workflow builder  
+- Route optimization, GPS, offline mode  
+- Inventory, equipment assets  
+- Advanced custom report builder / forecasting  
+- Integrations marketplace / API  
+- AI

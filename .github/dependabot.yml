@@ -1,0 +1,113 @@
+version: 2
+# Dependabot reads THIS config only from the default branch (main), but each
+# `updates` entry can point its PRs at a different branch via `target-branch`.
+# We keep both `main` (default) and `staging` current by duplicating each
+# ecosystem entry: the default entries (no target-branch) open PRs against main
+# on Monday; the mirror entries (target-branch: staging) open PRs against
+# staging on Tuesday, so the two batches don't land at once. Security updates
+# (from vulnerability alerts) always target main only — that's a Dependabot
+# rule and can't be redirected.
+updates:
+  # ── npm → main (default) ──────────────────────────────────────────────
+  # npm — this is an npm-workspaces monorepo with a SINGLE hoisted root
+  # package-lock.json, so one "/" entry updates the root, backend, and frontend
+  # manifests together (the documented config for npm workspaces). Adding
+  # separate /backend and /frontend entries would look for lockfiles that do
+  # not exist there.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+    groups:
+      # Batch low-risk minor/patch bumps into one PR to cut review noise;
+      # major bumps still open individually.
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    # Each of these broke CI on its major bump (Backend/Frontend build+tests,
+    # RLS tests, or the Vercel builds) and needs its own scoped upgrade
+    # project, not a drive-by merge. Remove an entry here once that upgrade
+    # is planned and ready to tackle — Dependabot will reopen it.
+    # stripe and zod are deliberately ABSENT: their major upgrades are in
+    # flight as #2003 and #2005. Re-add both once those land, or Dependabot
+    # will auto-close the open PRs.
+    ignore:
+      - dependency-name: "express"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@prisma/client"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "prisma"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "recharts"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "tailwindcss"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "react"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "react-dom"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/react"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@types/react-dom"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "vite"
+        update-types: ["version-update:semver-major"]
+
+  # ── npm → staging (mirror) ────────────────────────────────────────────
+  # Volume note: this mirror deliberately does NOT duplicate main's per-package
+  # major ignores. It ignores EVERY major instead, so staging receives exactly
+  # one grouped minor/patch PR a week and never a second copy of a major that is
+  # already open against main. Majors are a scoped upgrade project, reviewed once
+  # on main. Net cost of the mirror: +1 PR/week, not double.
+  #
+  # This also covers the case the mirror exists for: security patches ship as
+  # minor/patch releases and ride the grouped PR (multer 2.2.0 -> 2.3.0 came in
+  # main's grouped #2116). Dependabot's own SECURITY updates still only ever
+  # target the default branch - that is a Dependabot rule and cannot be mirrored.
+  - package-ecosystem: "npm"
+    directory: "/"
+    target-branch: "staging"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+    groups:
+      minor-and-patch:
+        update-types:
+          - "minor"
+          - "patch"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # ── github-actions → main (default) ───────────────────────────────────
+  # Keep the pinned GitHub Actions (checkout, setup-node, gitleaks) current -
+  # stale actions are their own supply-chain risk.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels:
+      - "dependencies"
+      - "ci"
+
+  # ── github-actions → staging (mirror) ─────────────────────────────────
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    target-branch: "staging"
+    schedule:
+      interval: "weekly"
+      day: "tuesday"
+    labels:
+      - "dependencies"
+      - "ci"
