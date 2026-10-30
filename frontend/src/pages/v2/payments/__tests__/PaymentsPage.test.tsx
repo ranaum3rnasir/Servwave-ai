@@ -65,7 +65,8 @@ function Where() {
   return <div data-testid="search">{search}</div>;
 }
 
-const OWNER = buildAbility(catalogToggle('Manage payout account').grants.map((g) => ({ action: g.action, subject: g.subject }) as never));
+// The Payments page draws its totals and amounts for a person who sees prices (P11).
+const OWNER = buildAbility([...catalogToggle('Manage payout account').grants.map((g) => ({ action: g.action, subject: g.subject }) as never), { action: 'read', subject: 'Prices' } as never]);
 
 function open(entry = '/payments', ability = OWNER) {
   return renderWithProviders(<><PaymentsPage /><Where /></>, { initialEntries: [entry], ability });

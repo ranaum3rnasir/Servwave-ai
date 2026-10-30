@@ -18,12 +18,12 @@ import { validateSwitchSet } from '../lib/permissions/switches/validate';
 
 /** The labels of the Leads and Jobs rows this slice adds, as the slice states them. */
 const LEAD_ROW_LABELS = [
-  'View leads', 'Create leads', 'Edit leads', 'Delete leads', 'Show Leads page', 'Export leads',
+  'View leads', 'Create leads', 'Edit leads', 'Delete leads', 'Export leads',
   'Log contact attempts', 'Mark leads lost', 'Reopen leads', 'Book walkthroughs', 'Perform walkthroughs',
   'Edit record ID numbers (leads)', 'Alert me about every lead',
 ];
 const JOB_ROW_LABELS = [
-  'View jobs', 'Create jobs', 'Edit jobs', 'Delete jobs', 'Show Jobs page', 'Export jobs',
+  'View jobs', 'Create jobs', 'Edit jobs', 'Delete jobs', 'Export jobs',
   'Edit job and lead contact details', 'Assign work to other people', 'Schedule visits', 'Mark on my way',
   'Mark arrived', 'Office review', 'Close jobs', 'Close jobs with money owed', 'Cancel jobs',
   'Reopen Done jobs', 'Change locked jobs', 'Edit record ID numbers (jobs)', 'Alert me about every job',
@@ -32,13 +32,13 @@ const JOB_ROW_LABELS = [
 const keyOfLabel = (label: string) => SWITCH_CATALOG.find((s) => s.label === label)?.key;
 
 describe('the Leads and Jobs scope switches', () => {
-  it('are choices between Attached, Team, Location and All, in the Data Scope group', () => {
+  it('are choices between Attached, Team and All, in the Data Scope group', () => {
     for (const key of ['leads_scope', 'jobs_scope']) {
       const entry = findSwitch(key)!;
       expect(entry, key).toBeDefined();
       expect(entry.module).toBe('Data Scope');
       expect(entry.kind).toBe('choice');
-      expect(entry.choices).toEqual(['attached', 'team', 'location', 'all']);
+      expect(entry.choices).toEqual(['attached', 'team', 'all']);
       expect(entry.requires).toEqual([]);
     }
   });
@@ -64,9 +64,8 @@ describe('the Leads and Jobs rows', () => {
     const rows: Record<string, [boolean, boolean, boolean, boolean]> = {
       'View leads': [true, true, true, true],
       'Create leads': [true, true, true, true],
-      'Edit leads': [true, true, true, false],
+      'Edit leads': [true, true, true, true],
       'Delete leads': [true, true, true, false],
-      'Show Leads page': [true, true, true, true],
       'Export leads': [true, true, false, false],
       'Log contact attempts': [true, true, true, false],
       'Mark leads lost': [true, true, true, false],
@@ -78,9 +77,8 @@ describe('the Leads and Jobs rows', () => {
       'Alert me about every lead': [true, false, false, false],
       'View jobs': [true, true, true, true],
       'Create jobs': [true, false, true, true],
-      'Edit jobs': [true, false, true, false],
+      'Edit jobs': [true, false, true, true],
       'Delete jobs': [true, false, false, false],
-      'Show Jobs page': [true, true, true, true],
       'Export jobs': [true, true, false, false],
       'Edit job and lead contact details': [true, true, true, true],
       'Assign work to other people': [true, false, true, false],
@@ -146,8 +144,8 @@ describe('the catalog validator', () => {
     expect(jobs.some((v) => v.switchKey === 'create_jobs' && v.needs.includes('view_jobs'))).toBe(true);
   });
 
-  it('applies the row rule to Show, Create, Edit, Delete and Export, and each switch Requires beyond it', () => {
-    const rowRule = ['show_leads_page', 'create_leads', 'edit_leads', 'delete_leads', 'export_leads'];
+  it('applies the row rule to Create, Edit, Delete and Export, and each switch Requires beyond it', () => {
+    const rowRule = ['create_leads', 'edit_leads', 'delete_leads', 'export_leads'];
     const violated = validateSwitchSet(without(base(), 'view_leads')).map((v) => v.switchKey);
     for (const key of rowRule) expect(violated, key).toContain(key);
     // A switch with its own Requires (Log contact attempts) is held to it too.
@@ -155,7 +153,7 @@ describe('the catalog validator', () => {
   });
 
   it('accepts a switch whose Requires is nothing with its row\'s View off', () => {
-    const set = without(base(), 'view_jobs', 'create_jobs', 'edit_jobs', 'delete_jobs', 'show_jobs_page', 'export_jobs',
+    const set = without(base(), 'view_jobs', 'create_jobs', 'edit_jobs', 'delete_jobs', 'export_jobs',
       'assign_work_to_others', 'schedule_visits', 'mark_on_my_way', 'mark_arrived', 'office_review', 'close_jobs',
       'close_jobs_with_money_owed', 'cancel_jobs', 'reopen_done_jobs', 'change_locked_jobs', 'edit_job_record_ids', 'alert_every_job',
       'assign_people_to_jobs', 'start_and_finish_visits', 'update_any_visit_status', 'complete_jobs', 'duplicate_jobs', 'edit_job_line_items');
@@ -167,7 +165,7 @@ describe('the catalog validator', () => {
 
   it('holds Edit job and lead contact details to View jobs or View leads, at least one', () => {
     const noJobs = without(base(), 'view_jobs');
-    expect(validateSwitchSet(without(noJobs, 'create_jobs', 'edit_jobs', 'delete_jobs', 'show_jobs_page', 'export_jobs',
+    expect(validateSwitchSet(without(noJobs, 'create_jobs', 'edit_jobs', 'delete_jobs', 'export_jobs',
       'assign_work_to_others', 'schedule_visits', 'mark_on_my_way', 'mark_arrived', 'office_review', 'close_jobs',
       'close_jobs_with_money_owed', 'cancel_jobs', 'reopen_done_jobs', 'change_locked_jobs', 'edit_job_record_ids', 'alert_every_job',
       'assign_people_to_jobs', 'start_and_finish_visits', 'update_any_visit_status', 'complete_jobs', 'duplicate_jobs', 'edit_job_line_items'))).toEqual([]);
@@ -180,6 +178,19 @@ describe('the catalog validator', () => {
     expect(validateSwitchSet({ ...base(), leads_scope: true }).some((v) => v.switchKey === 'leads_scope')).toBe(true);
     expect(validateSwitchSet({ ...base(), view_leads: 'all' }).some((v) => v.switchKey === 'view_leads')).toBe(true);
     expect(validateSwitchSet({ ...base(), not_a_switch: true }).some((v) => v.switchKey === 'not_a_switch')).toBe(true);
+  });
+
+  it('offers no Location choice on any scope switch, and refuses a stored Location value with a plain message', () => {
+    const scoped = SWITCH_CATALOG.filter((s) => s.kind === 'choice' && s.choices?.includes('attached'));
+    expect(scoped.length).toBeGreaterThan(0);
+    for (const s of scoped) {
+      expect(s.choices, s.key).toEqual(['attached', 'team', 'all']);
+      expect(s.keptValues ?? [], s.key).not.toContain('location');
+    }
+    for (const key of ['leads_scope', 'jobs_scope']) {
+      const violation = validateSwitchSet({ ...base(), [key]: 'location' }).find((v) => v.switchKey === key);
+      expect(violation?.message, key).toBe(`${findSwitch(key)!.label} cannot be set to "location". Choose one of: attached, team, all.`);
+    }
   });
 
   it('accepts every choice the catalog offers', () => {
@@ -197,9 +208,8 @@ describe('the catalog validator', () => {
 const ESTIMATE_ROWS: Record<string, [boolean, boolean, boolean, boolean]> = {
   'View estimates': [true, true, true, true],
   'Create estimates': [true, true, true, true],
-  'Edit estimates': [true, true, false, false],
+  'Edit estimates': [true, true, true, true],
   'Delete estimates': [true, true, false, false],
-  'Show Estimates page': [true, true, true, true],
   'Export estimates': [true, true, false, false],
   'Approve estimates': [true, true, true, true],
   'Decline estimates': [true, true, true, true],
@@ -211,7 +221,6 @@ const INVOICE_ROWS: Record<string, [boolean, boolean, boolean, boolean]> = {
   'View invoices': [true, true, true, false],
   'Edit invoices': [true, false, true, false],
   'Delete invoices': [true, false, false, false],
-  'Show Invoices page': [true, true, false, false],
   'Export invoices': [true, true, false, false],
   'Void invoices': [true, false, false, false],
   'Apply credits': [true, false, false, false],
@@ -222,17 +231,22 @@ const INVOICE_ROWS: Record<string, [boolean, boolean, boolean, boolean]> = {
   'Alert me about every invoice and payment': [true, false, false, false],
 };
 
-describe('the Estimates scope and Invoices scope switches', () => {
-  it('are Data Scope choices between Attached, Team, Location and All, with "Through own leads" kept but never offered', () => {
-    for (const key of ['estimates_scope', 'invoices_scope', 'jobs_scope']) {
+describe('the Jobs scope and Leads scope switches, which estimates and invoices follow (P6)', () => {
+  it('are Data Scope choices between Attached, Team and All, with "Through own leads" kept on Jobs but never offered', () => {
+    for (const key of ['jobs_scope', 'leads_scope']) {
       const entry = findSwitch(key)!;
       expect(entry, key).toBeDefined();
       expect(entry.module).toBe('Data Scope');
       expect(entry.kind).toBe('choice');
-      expect(entry.choices).toEqual(['attached', 'team', 'location', 'all']);
-      expect(entry.keptValues).toEqual(['through_own_leads']);
+      expect(entry.choices).toEqual(['attached', 'team', 'all']);
       expect(entry.requires).toEqual([]);
     }
+    expect(findSwitch('jobs_scope')!.keptValues).toEqual(['through_own_leads']);
+  });
+
+  it('has no Estimates scope and no Invoices scope: a document follows the scope of its lead or job', () => {
+    expect(findSwitch('estimates_scope')).toBeUndefined();
+    expect(findSwitch('invoices_scope')).toBeUndefined();
   });
 
   it('holds the kept value on no other scope: Leads scope does not accept it', () => {
@@ -240,18 +254,14 @@ describe('the Estimates scope and Invoices scope switches', () => {
     expect(validateSwitchSet({ ...presetSwitchSet('ADMIN'), leads_scope: 'through_own_leads' }).some((v) => v.switchKey === 'leads_scope')).toBe(true);
   });
 
-  it('gives Sales Through own leads on Jobs, Estimates and Invoices, Dispatcher All, Technician Attached', () => {
-    for (const key of ['jobs_scope', 'estimates_scope', 'invoices_scope']) {
-      expect(findSwitch(key)!.presets, key).toEqual({ ADMIN: 'all', SALES: 'through_own_leads', DISPATCHER: 'all', TECHNICIAN: 'attached' });
-    }
+  it('gives Sales Through own leads on Jobs, Dispatcher All, Technician Attached', () => {
+    expect(findSwitch('jobs_scope')!.presets).toEqual({ ADMIN: 'all', SALES: 'through_own_leads', DISPATCHER: 'all', TECHNICIAN: 'attached' });
   });
 
   it('explains the kept value in plain words wherever the scope is shown', () => {
-    for (const key of ['jobs_scope', 'estimates_scope', 'invoices_scope']) {
-      const help = findSwitch(key)!.keptValueHelp?.through_own_leads;
-      expect(help?.label, key).toBe('Through own leads');
-      expect(help?.meaning, key).toMatch(/lead/i);
-    }
+    const help = findSwitch('jobs_scope')!.keptValueHelp?.through_own_leads;
+    expect(help?.label).toBe('Through own leads');
+    expect(help?.meaning).toMatch(/lead/i);
   });
 });
 

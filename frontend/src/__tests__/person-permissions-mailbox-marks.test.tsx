@@ -51,7 +51,7 @@ const MANAGER_ONLY = buildAbility([
 
 function open(user: ReturnType<typeof person>, set = personSet(), ability = MANAGER_AND_EDITOR) {
   mockApi.get.mockImplementation((url: string) => {
-    if (url === '/api/permission-switches/me') return Promise.resolve({ data: { admin_box: false, values: { manage_roles_and_permissions: true, show_users_teams_page: true }, rules: [] } });
+    if (url === '/api/permission-switches/me') return Promise.resolve({ data: { admin_box: false, values: { manage_roles_and_permissions: true, view_users: true }, rules: [] } });
     if (url === '/api/permission-switches/catalog') return Promise.resolve({ data: FIXTURE_CATALOG });
     if (url === '/api/roles') return Promise.resolve({ data: [{ role: 'DISPATCHER', label: 'Dispatcher', fullAccess: false, editable: true, userCount: 1, type: 'system' }] });
     if (url === '/api/users') return Promise.resolve({ data: { users: [user] } });

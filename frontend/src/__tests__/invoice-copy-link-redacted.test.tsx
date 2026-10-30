@@ -119,6 +119,22 @@ describe('InvoiceDetailPage — Copy Link control when public_token is redacted'
     expect(mockApi.post).not.toHaveBeenCalledWith(expect.stringContaining('/payment-link'));
   });
 
+  it('does not offer the payment link at all to a person without See prices: the link opens the customer\'s priced page (H6)', async () => {
+    // The server leaves the token out for this person; the menu must not blame the customer for it.
+    const invoice = baseInvoice();
+    delete (invoice as { public_token?: string }).public_token;
+    setupMocks(invoice);
+    const user = userEvent.setup();
+    const noPrices = buildAbility([{ action: 'manage', subject: 'all' }, { action: 'read', subject: 'Prices', inverted: true }]);
+
+    renderWithProviders(<InvoiceDetailPage />, { ability: noPrices });
+
+    await user.click(await screen.findByRole('button', { name: 'More actions' }));
+    await screen.findByRole('menuitem', { name: /print/i });
+    expect(screen.queryByRole('menuitem', { name: /link|not available/i })).not.toBeInTheDocument();
+    expect(mockApi.post).not.toHaveBeenCalledWith(expect.stringContaining('/payment-link'));
+  });
+
   it('copies the existing link (no mutation call) when public_token is present', async () => {
     const invoice = baseInvoice({ public_token: 'tok-1997' });
     setupMocks(invoice);

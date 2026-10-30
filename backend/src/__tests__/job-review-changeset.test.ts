@@ -366,7 +366,7 @@ describe('M8 the review change-set', () => {
   });
 
   describe('costs', () => {
-    it('keeps prices and drops costs from the summary for a person without See financial data', () => {
+    it('keeps prices and drops costs from the summary for a person without See costs', () => {
       const withoutCosts = build({ mayCosts: false }).summary;
       expect(withoutCosts.lines).toEqual([{ name: 'Spring', quantity: 2, unit_price: 100, line_total: 200 }]);
       expect('total_cost' in withoutCosts).toBe(false);

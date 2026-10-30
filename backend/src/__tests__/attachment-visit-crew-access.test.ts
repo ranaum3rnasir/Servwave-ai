@@ -44,12 +44,12 @@ describe('S8 behaviour 7 - job attachment access follows the access resolver', (
     expect(res.status).toBe(200);
   });
 
-  it('refuses a technician the job\'s scope does not reach', async () => {
+  it('answers not found for a technician the job\'s scope does not reach', async () => {
     mockAuthAs('technician');
     mockPrisma.job.findFirst.mockImplementation(resolverFor(null));
 
     const res = await request(app).get(`/api/attachments/JOB/${JOB_ID}`).set(authHeader('technician'));
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 });
 
@@ -69,12 +69,12 @@ describe('S8 behaviour 16 - lead attachment access follows the access resolver',
     expect(res.status).toBe(200);
   });
 
-  it('refuses a SALES user the lead\'s scope does not reach', async () => {
+  it('answers not found for a SALES user the lead\'s scope does not reach', async () => {
     mockAuthAs('sales');
     mockPrisma.lead.findFirst.mockImplementation(resolverFor(null));
 
     const res = await request(app).get(`/api/attachments/LEAD/${LEAD_ID}`).set(authHeader('sales'));
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it('lets a TECHNICIAN the lead\'s scope reaches read the attachments', async () => {
@@ -85,12 +85,12 @@ describe('S8 behaviour 16 - lead attachment access follows the access resolver',
     expect(res.status).toBe(200);
   });
 
-  it('refuses a TECHNICIAN the lead\'s scope does not reach', async () => {
+  it('answers not found for a TECHNICIAN the lead\'s scope does not reach', async () => {
     mockAuthAs('technician');
     mockPrisma.lead.findFirst.mockImplementation(resolverFor(null));
 
     const res = await request(app).get(`/api/attachments/LEAD/${LEAD_ID}`).set(authHeader('technician'));
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 });
 

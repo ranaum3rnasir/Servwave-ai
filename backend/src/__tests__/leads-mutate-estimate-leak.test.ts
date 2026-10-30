@@ -35,8 +35,6 @@ const mockPrisma = prisma as unknown as {
   };
   timelineEvent: { create: ReturnType<typeof vi.fn> };
   tagAssignment: { findMany: ReturnType<typeof vi.fn> };
-  rolePermission: { findMany: ReturnType<typeof vi.fn> };
-  userPermissionOverride: { findMany: ReturnType<typeof vi.fn> };
   // Walkthrough-as-entity redesign, PR-B2: updateWalkthrough now resolves the CURRENT (D15)
   // visit via findCurrentWalkthroughForLead before writing, and wraps its write in a
   // $transaction (dual-writing the Walkthrough row alongside the legacy Lead columns).
@@ -86,9 +84,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   clearPermissionCache();
   (prisma.tagAssignment.findMany as any).mockResolvedValue([]);
-  (prisma.rolePermission.findMany as any).mockResolvedValue([]);
   // Default: no per-user overrides (resetAllMocks cleared the setup default); tests opt in.
-  (prisma.userPermissionOverride.findMany as any).mockResolvedValue([]);
   (prisma.timelineEvent.create as any).mockResolvedValue({});
   // Walkthrough-as-entity redesign, PR-B2: default to "no current visit" so
   // updateWalkthrough's extra Walkthrough-row write is a no-op unless a test opts in.
@@ -155,9 +151,6 @@ describe('PATCH /api/leads/:id — estimate monetary leak (#233 / F-012, write p
   it('strips estimate total_amount for a TECHNICIAN granted update Lead but no read Estimate', async () => {
     mockAuthAs('technician');
     // Per-user own-scoped `update Lead` allow override → reaches the PATCH route guard.
-    mockPrisma.userPermissionOverride.findMany.mockResolvedValue([
-      { action: 'update', subject: 'Lead', effect: 'allow' },
-    ]);
     mockPrisma.lead.findUnique.mockResolvedValue(existingForTechnician());
     mockPrisma.lead.findFirst.mockResolvedValue({ id: LEAD_FIXTURE.id });
     mockPrisma.lead.update.mockResolvedValue(leadWithEstimate([TEST_USERS.technician.id]));

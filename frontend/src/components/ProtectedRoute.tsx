@@ -4,13 +4,15 @@ import NotAuthorizedPage from '@/components/NotAuthorizedPage';
 
 interface ProtectedRouteProps {
   allowedRoles?: Array<'ADMIN' | 'SALES' | 'DISPATCHER' | 'TECHNICIAN'>;
+  // Only an Admin (the flag on the person, never the role name) passes.
+  adminOnly?: boolean;
   // When true, a role-check failure renders NotAuthorizedPage instead of bouncing to "/" — for
   // an in-app deep-link (e.g. a sidebar-hidden, API-403'd route) so the user sees why, rather
   // than being silently redirected. The unauthenticated case always still bounces to /login.
   fallback?: boolean;
 }
 
-export default function ProtectedRoute({ allowedRoles, fallback }: ProtectedRouteProps) {
+export default function ProtectedRoute({ allowedRoles, adminOnly, fallback }: ProtectedRouteProps) {
   const { isAuthenticated, isLoading, user } = useAuthStore();
 
   if (isLoading) {
@@ -25,7 +27,7 @@ export default function ProtectedRoute({ allowedRoles, fallback }: ProtectedRout
     return <Navigate to="/login" replace />;
   }
 
-  if (allowedRoles && user && !allowedRoles.includes(user.role)) {
+  if ((allowedRoles && user && !allowedRoles.includes(user.role)) || (adminOnly && user?.is_admin !== true)) {
     return fallback ? <NotAuthorizedPage /> : <Navigate to="/" replace />;
   }
 

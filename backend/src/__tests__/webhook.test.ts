@@ -960,7 +960,7 @@ describe('POST /api/webhooks/stripe', () => {
           priority: 'FEED',
           needs_action: false,
           dedup_key: `billing.payouts_pending_first_payment:${directOrg.id}`,
-          title: "You've collected $1,250.00. Add your bank account to get paid out.",
+          title: "You've collected a payment. Add your bank account to get paid out.",
         }),
       }));
     });

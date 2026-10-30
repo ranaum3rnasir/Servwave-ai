@@ -30,6 +30,7 @@ import { cpSync, mkdtempSync, readdirSync, rmSync, copyFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { PrismaClient } from '@prisma/client';
+import { deployFrom } from './migration-deploy-support';
 
 const url = process.env.TEST_DATABASE_URL;
 const suite = url ? describe : describe.skip;
@@ -93,12 +94,8 @@ suite('payment ledger states migration (real database)', () => {
       if (which === 'before' && entry !== 'migration_lock.toml' && entry >= MIGRATION) continue;
       cpSync(join(source, entry), join(dir, 'migrations', entry), { recursive: true });
     }
-    const run = spawnSync(process.execPath, [PRISMA_CLI, 'migrate', 'deploy', '--schema', join(dir, 'schema.prisma')], {
-      cwd: dir,
-      env: { ...process.env, DATABASE_URL: dbUrl, DIRECT_URL: dbUrl },
-      encoding: 'utf8',
-    });
-    if (run.status !== 0) throw new Error(`migrate deploy failed:\n${run.stdout}\n${run.stderr}`);
+    // The shared deploy gives the database the stub auth helpers first (see migration-deploy-support).
+    deployFrom(dbUrl, dir);
   }
 
   /** Writes an org, a user, a customer and an invoice in the old shape; returns their ids. */

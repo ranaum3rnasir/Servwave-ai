@@ -88,11 +88,11 @@ suite('owner payment notifications (real database)', () => {
     });
     const user = randomUUID();
     await db.user.create({
-      data: { id: user, organization_id: org, email: `admin-${tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN' },
+      data: { id: user, organization_id: org, email: `admin-${tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN', is_admin: true },
     });
     // A second active admin and an inactive one: the email goes to active admins only.
     await db.user.create({
-      data: { id: randomUUID(), organization_id: org, email: `admin2-${tag}@example.test`, first_name: 'Second', last_name: 'Admin', role: 'ADMIN' },
+      data: { id: randomUUID(), organization_id: org, email: `admin2-${tag}@example.test`, first_name: 'Second', last_name: 'Admin', role: 'ADMIN', is_admin: true },
     });
     await db.user.create({
       data: { id: randomUUID(), organization_id: org, email: `gone-${tag}@example.test`, first_name: 'Gone', last_name: 'Admin', role: 'ADMIN', is_active: false },
@@ -176,11 +176,12 @@ suite('owner payment notifications (real database)', () => {
       await vi.waitFor(async () => expect(await f.notices('billing.bank_payment_started')).toHaveLength(1));
       const [notice] = await f.notices('billing.bank_payment_started');
       expect(notice.title).toBe(`Bank payment started for INV-${f.tag} — Pat Payer`);
-      expect(notice.body).toContain('$500.00');
+      expect(notice.body).toBe('It usually takes a few business days to clear.');
       await vi.waitFor(() => expect(f.ownerEmails()).toHaveLength(2));
       expect(f.ownerEmails().map((m) => m.to).sort()).toEqual([...f.adminEmails].sort());
       expect(f.ownerEmails()[0]).toMatchObject({ subject: notice.title, actionUrl: `http://localhost:5173/invoices/${f.invoice}` });
-      expect(f.ownerEmails()[0].lines.join(' ')).toContain('$500.00');
+      expect(f.ownerEmails()[0].lines.join(' ')).not.toContain('$500.00');
+      expect(f.ownerEmails()[0].lines.join(' ')).toContain('It usually takes a few business days to clear.');
     });
 
     it('clearing notifies the owner once; the same outcome again (another event id) notifies nobody, owner or customer', async () => {
@@ -216,7 +217,7 @@ suite('owner payment notifications (real database)', () => {
       await vi.waitFor(async () => expect(await f.notices('billing.bank_payment_failed')).toHaveLength(1));
       const [notice] = await f.notices('billing.bank_payment_failed');
       expect(notice).toMatchObject({ priority: 'INTERRUPT', needs_action: true, title: `Bank payment failed for INV-${f.tag} — Pat Payer` });
-      expect(notice.body).toBe('Amount: $500.00. No money moved. We emailed the customer a link to pay again.');
+      expect(notice.body).toBe('No money moved. We emailed the customer a link to pay again.');
       const mails = f.ownerEmails().filter((m) => m.subject === notice.title);
       expect(mails.map((m) => m.to).sort()).toEqual([...f.adminEmails].sort());
     });
@@ -298,7 +299,7 @@ suite('owner payment notifications (real database)', () => {
       await vi.waitFor(async () => expect(await f.notices('billing.disputed')).toHaveLength(1));
       const [notice] = await f.notices('billing.disputed');
       expect(notice.title).toBe(`Payment disputed for INV-${f.tag} — Pat Payer`);
-      expect(notice.body).toBe('Amount: $300.00. Reason: Fraudulent. Respond by October 20, 2026.');
+      expect(notice.body).toBe('Reason: Fraudulent. Respond by October 20, 2026.');
       await vi.waitFor(() => expect(f.ownerEmails()).toHaveLength(2));
       expect(f.ownerEmails().map((m) => m.to).sort()).toEqual([...f.adminEmails].sort());
       // Slice 33b: the bell and the email both open the disputes tab, where the owner answers.
@@ -328,7 +329,7 @@ suite('owner payment notifications (real database)', () => {
 
       await vi.waitFor(async () => expect(await f.notices('billing.chargeback')).toHaveLength(1));
       const [notice] = await f.notices('billing.chargeback');
-      expect(notice.body).toBe('Amount: $300.00 was taken back from your ServWave Payments balance.');
+      expect(notice.body).toBe('This payment was taken back from your ServWave Payments balance.');
       await vi.waitFor(() => expect(f.ownerEmails().filter((m) => m.subject === notice.title)).toHaveLength(2));
     });
 
@@ -346,7 +347,7 @@ suite('owner payment notifications (real database)', () => {
       expect(alertsWhenEmailing).toBe(0);
       const [notice] = await f.notices('billing.chargeback');
       expect(notice.data).toMatchObject({ variant: 'bank_return', cleared: 'yes', customer_notice: 'sent' });
-      expect(notice.body).toBe('Amount: $300.00 was taken back from your ServWave Payments balance. The invoice is open again and we emailed the customer a link to pay again.');
+      expect(notice.body).toBe('This payment was taken back from your ServWave Payments balance. The invoice is open again and we emailed the customer a link to pay again.');
     });
 
     it('a lost and a closed dispute also open the disputes tab', async () => {
@@ -374,7 +375,7 @@ suite('owner payment notifications (real database)', () => {
       await vi.waitFor(async () => expect(await f.notices('billing.dispute_closed')).toHaveLength(1));
       const [notice] = await f.notices('billing.dispute_closed');
       expect(notice.title).toBe(`Dispute won for INV-${f.tag} — Pat Payer`);
-      expect(notice.body).toBe('Amount: $300.00. It was decided in your favor and the payment stands.');
+      expect(notice.body).toBe('It was decided in your favor and the payment stands.');
       await vi.waitFor(() => expect(f.ownerEmails().filter((m) => m.subject === notice.title)).toHaveLength(2));
     });
 
@@ -423,7 +424,7 @@ suite('owner payment notifications (real database)', () => {
       await vi.waitFor(async () => expect(await f.notices('billing.disputed')).toHaveLength(1));
       const [notice] = await f.notices('billing.disputed');
       expect(notice.title).toBe(`Bank returned the payment for INV-${f.tag} — Pat Payer`);
-      expect(notice.body).toBe('The bank took back $300.00. Reason: Insufficient funds.');
+      expect(notice.body).toBe('The bank took back this payment. Reason: Insufficient funds.');
       await vi.waitFor(() => expect(f.ownerEmails()).toHaveLength(2));
       for (const mail of f.ownerEmails()) expect(`${mail.subject} ${mail.lines.join(' ')}`).not.toMatch(VENDOR_NAMES);
     });
@@ -466,7 +467,7 @@ suite('owner payment notifications (real database)', () => {
       await vi.waitFor(async () => expect(await f.notices('billing.refund_failed')).toHaveLength(1));
       const [notice] = await f.notices('billing.refund_failed');
       expect(notice).toMatchObject({ priority: 'INTERRUPT', needs_action: true, title: `Refund failed for INV-${f.tag} — Pat Payer` });
-      expect(notice.body).toBe('A bank refund of $40.00 to Pat Payer failed. The money is back in your ServWave Payments balance and the customer still needs to be repaid.');
+      expect(notice.body).toBe('A bank refund to Pat Payer failed. The money is back in your ServWave Payments balance and the customer still needs to be repaid.');
       await vi.waitFor(() => expect(f.ownerEmails()).toHaveLength(2));
       expect(f.ownerEmails().map((m) => m.to).sort()).toEqual([...f.adminEmails].sort());
       expect(f.ownerEmails()[0]).toMatchObject({ subject: notice.title, lines: [notice.body], actionUrl: `http://localhost:5173/invoices/${f.invoice}` });
@@ -479,7 +480,7 @@ suite('owner payment notifications (real database)', () => {
       await failedEvent();
 
       await vi.waitFor(async () => expect(await f.notices('billing.refund_failed')).toHaveLength(1));
-      expect((await f.notices('billing.refund_failed'))[0].body).toMatch(/^A refund of \$40\.00 to Pat Payer failed\./);
+      expect((await f.notices('billing.refund_failed'))[0].body).toMatch(/^A refund to Pat Payer failed\./);
     });
 
     it('a refund sent for a payment needing attention that fails tells the owner too', async () => {
@@ -504,7 +505,7 @@ suite('owner payment notifications (real database)', () => {
       });
 
       await vi.waitFor(async () => expect(await f.notices('billing.refund_failed')).toHaveLength(1));
-      expect((await f.notices('billing.refund_failed'))[0].body).toBe('A bank refund of $50.00 to Pat Payer failed. The money is back in your ServWave Payments balance and the customer still needs to be repaid.');
+      expect((await f.notices('billing.refund_failed'))[0].body).toBe('A bank refund to Pat Payer failed. The money is back in your ServWave Payments balance and the customer still needs to be repaid.');
       await vi.waitFor(() => expect(f.ownerEmails()).toHaveLength(2));
     });
 
@@ -521,14 +522,14 @@ suite('owner payment notifications (real database)', () => {
   // ---- money that could not be applied ------------------------------------------------------
 
   describe('a card payment', () => {
-    it('payment received shows its amount (slice 33b)', async () => {
+    it('payment received names no amount (M4: a bell shows no figure to anyone)', async () => {
       const f = await fixture({ total: 500 });
 
       await f.deliver('checkout.session.completed', f.session({ payment_status: 'paid', payment_method_types: ['card'], amount_total: 50000 }));
 
       await vi.waitFor(async () => expect(await f.notices('billing.payment_received')).toHaveLength(1));
       const [notice] = await f.notices('billing.payment_received');
-      expect(notice.body).toBe('Amount: $500.00');
+      expect(notice.body).toBeNull();
     });
   });
 

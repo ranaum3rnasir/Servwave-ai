@@ -48,7 +48,7 @@ const ALL_OFF: Record<string, SwitchValue> = Object.fromEntries(
 );
 
 /** What opening the job and its invoices takes. */
-const OPENING = { view_jobs: true, jobs_scope: 'all', view_invoices: true, invoices_scope: 'all' };
+const OPENING = { view_jobs: true, jobs_scope: 'all', view_invoices: true, leads_scope: 'all' };
 
 const MONEY_OWED_WORDS = 'Money is still owed on this job. Only someone allowed to close jobs with money owed can mark it Done.';
 
@@ -67,7 +67,7 @@ suite('mark Done (real database)', () => {
   async function personWith(org: string, values: Record<string, SwitchValue>, base: Role = 'DISPATCHER') {
     const key = `job-mark-done-role-${++sequence}`;
     const role = await fx.addCustomRole(org, key, base);
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...values }, actorId: null, reason: 'manual' });
+    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, see_prices: true, ...values }, actorId: null, reason: 'manual' });
     const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
     return Object.assign(person, { api: () => fx.signedInAs(person) });
   }
@@ -296,7 +296,8 @@ suite('mark Done (real database)', () => {
       expect(closed.status).toBe(200);
       expect((await jobOf(job.id)).status).toBe('DONE');
       const entry = (await events(job.id))[0]!;
-      expect(entry.description).toMatch(/\$100\.00 still owed/);
+      expect(entry.description).toMatch(/marked Done with money still owed/);
+      expect((entry.metadata as { owed_amount?: number }).owed_amount).toBe(100);
       expect(entry.metadata).toMatchObject({ owed_amount: 100 });
     });
 
@@ -359,6 +360,96 @@ suite('mark Done (real database)', () => {
       await priceJob(s, job.id, 90);
 
       expect((await markDone(await me.api(), job.id)).status).toBe(200);
+    });
+  });
+
+  // Pre-PR review CR-1: a person without See prices is never shown what is owed, so they cannot confirm a figure. They confirm
+  // that money is owed instead ("Mark Done, balance still owed"), and no answer to them names an amount.
+  describe('money owed, for a person without See prices (CR-1)', () => {
+    const blindOwedCloser = (org: string) => owedCloser(org, { see_prices: false });
+    const markDoneBlind = (api: Api, jobId: string, body: object) => api.post(`/api/jobs/${jobId}/mark-done`, body);
+    const DOLLARS = /\$\s?\d/;
+
+    it('closes the job once they confirm that money is owed, without a figure', async () => {
+      const s = await fx.newOrg();
+      const me = await blindOwedCloser(s.org);
+      const job = await readyJob(s);
+      await invoiceOn(s, job.id, { total: 100 });
+
+      const res = await markDoneBlind(await me.api(), job.id, { confirmed_without_amount: true });
+
+      expect(res.status).toBe(200);
+      expect((await jobOf(job.id)).status).toBe('DONE');
+      expect((await events(job.id))[0]!.description).toMatch(/marked Done with money still owed/);
+    });
+
+    it('still asks them to confirm: a press with no confirmation is refused, and the refusal names no amount', async () => {
+      const s = await fx.newOrg();
+      const me = await blindOwedCloser(s.org);
+      const job = await readyJob(s);
+      await invoiceOn(s, job.id, { total: 100 });
+
+      const res = await markDoneBlind(await me.api(), job.id, {});
+
+      expect(res.status).toBe(409);
+      expect(res.body.code).toBe('MARK_DONE_AMOUNT');
+      expect(res.body.error).not.toMatch(DOLLARS);
+      expect(res.body).not.toHaveProperty('amount_owed');
+      expect((await jobOf(job.id)).status).toBe('READY_TO_CLOSE');
+    });
+
+    it('a figure they could not have seen (the 0 the old screen sent) is refused without naming the amount owed', async () => {
+      const s = await fx.newOrg();
+      const me = await blindOwedCloser(s.org);
+      const job = await readyJob(s);
+      await invoiceOn(s, job.id, { total: 100 });
+
+      const res = await markDone(await me.api(), job.id, 0);
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).not.toMatch(DOLLARS);
+      expect(JSON.stringify(res.body)).not.toContain('100');
+      expect((await jobOf(job.id)).status).toBe('READY_TO_CLOSE');
+    });
+
+    it('the figure-free confirmation is theirs alone: a person who can see prices must still confirm the amount', async () => {
+      const s = await fx.newOrg();
+      const me = await owedCloser(s.org);
+      const job = await readyJob(s);
+      await invoiceOn(s, job.id, { total: 100 });
+
+      const res = await markDoneBlind(await me.api(), job.id, { confirmed_without_amount: true });
+
+      expect(res.status).toBe(409);
+      expect(res.body.code).toBe('MARK_DONE_AMOUNT');
+      expect((await jobOf(job.id)).status).toBe('READY_TO_CLOSE');
+    });
+
+    it('without Close jobs with money owed they are refused, and the refusal names no amount', async () => {
+      const s = await fx.newOrg();
+      const me = await closer(s.org, { see_prices: false });
+      const job = await readyJob(s);
+      await invoiceOn(s, job.id, { total: 100 });
+
+      const res = await markDoneBlind(await me.api(), job.id, { confirmed_without_amount: true });
+
+      expect(res.status).toBe(403);
+      expect(res.body.code).toBe('JOB_MONEY_OWED');
+      expect(JSON.stringify(res.body)).not.toMatch(DOLLARS);
+      expect(res.body).not.toHaveProperty('amount_owed');
+      expect((await jobOf(job.id)).status).toBe('READY_TO_CLOSE');
+    });
+
+    it('the job page asks them to confirm (and carries no amount)', async () => {
+      const s = await fx.newOrg();
+      const me = await blindOwedCloser(s.org);
+      const job = await readyJob(s);
+      await invoiceOn(s, job.id, { total: 100 });
+
+      const answer = await answerOf(await me.api(), job.id);
+
+      expect(answer.ready_to_close).toMatchObject({ mark_done: 'offered', confirm_amount: true });
+      expect(answer.ready_to_close).not.toHaveProperty('amount_owed');
     });
   });
 

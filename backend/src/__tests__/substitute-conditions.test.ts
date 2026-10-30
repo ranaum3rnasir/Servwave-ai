@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { substituteConditions } from '../lib/permissions/substituteConditions';
 
-const ctx = { userId: 'u1', teamId: 't1', locationId: 'l1' };
+const ctx = { userId: 'u1', teamId: 't1' };
 
 describe('substituteConditions', () => {
   it('substitutes userId into the M2M crew shape', () => {
@@ -9,19 +9,19 @@ describe('substituteConditions', () => {
       lead_assignees: { some: { user_id: 'u1' } },
     });
   });
-  it('substitutes teamId and locationId in the nested crew→user relation', () => {
+  it('substitutes teamId in the nested crew→user relation', () => {
     expect(substituteConditions({ assignees: { some: { user: { department_id: '{{teamId}}' } } } }, ctx)).toEqual({
       assignees: { some: { user: { department_id: 't1' } } },
     });
-    expect(substituteConditions({ assignees: { some: { user: { location_id: '{{locationId}}' } } } }, ctx)).toEqual({
-      assignees: { some: { user: { location_id: 'l1' } } },
-    });
   });
-  it('substitutes null when team/location absent', () => {
+  it('no longer knows a location token: there is no location scope', () => {
+    expect(() => substituteConditions({ assignees: { some: { user: { location_id: '{{locationId}}' } } } }, ctx)).toThrow(/Unknown token/);
+  });
+  it('substitutes null when team absent', () => {
     expect(
       substituteConditions(
         { assignees: { some: { user: { department_id: '{{teamId}}' } } } },
-        { userId: 'u1', teamId: null, locationId: null },
+        { userId: 'u1', teamId: null },
       ),
     ).toEqual({ assignees: { some: { user: { department_id: null } } } });
   });

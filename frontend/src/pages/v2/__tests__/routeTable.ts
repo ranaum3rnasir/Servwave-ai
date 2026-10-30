@@ -113,6 +113,8 @@ function guardOf(expression: string): string | null {
   if (name === 'ProtectedRoute') {
     const roles = [...expression.matchAll(/'([A-Z_]+)'/g)].map((m) => m[1]!).sort();
     const fallback = /\bfallback\b/.test(expression);
+    // Admin is the flag on the person (P15): an `adminOnly` route is keyed by that, not by a role name.
+    if (/\badminOnly\b/.test(expression)) return `ProtectedRoute(adminOnly, fallback=${fallback})`;
     return `ProtectedRoute(roles=${roles.length ? roles.join('|') : 'ANY'}, fallback=${fallback})`;
   }
   if (name === 'RequireFeature') {

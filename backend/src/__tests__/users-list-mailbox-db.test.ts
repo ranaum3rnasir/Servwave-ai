@@ -2,7 +2,8 @@
    Roles & Permissions, PRD 10, slice S10.25 - GET /api/users carries each user's mailbox (the Email column) and
    whether their own switches close the Email page ("Can't read: Email page is off for this person").
 
-   Through the route the Users page calls, as a person on a custom role, against a real migrated database
+   Through the route the Users page calls, as an Admin on a custom role (since M3, ticket 29, only an Admin gets the
+   full people record; everyone else gets names only, see permission-people-names-only-db), against a real migrated database
    (TEST_DATABASE_URL); the suite skips when it is unset. Expected values are written out by hand, and the
    built-in presets are read from the catalog. Every org it creates is removed again.
    ========================================================================== */
@@ -80,7 +81,11 @@ suite('GET /api/users: the Email column and the "Can\'t read" mark (real databas
     return box;
   }
 
-  const READER = ['view_users', 'access_communication', 'show_email'];
+  /** Who reads the Users page: an Admin (the flag on a person on a custom role, so no role name decides anything). */
+  async function adminReader(org: string) {
+    const role = await fx.addCustomRole(org, `ulm-adm-${randomUUID().slice(0, 8)}`, 'DISPATCHER');
+    return fx.addUser(org, 'reader', 'DISPATCHER', { customRoleId: role.id, isAdmin: true });
+  }
   type Row = { id: string; mailbox: { status: string; address: string | null; address_suffix: string | null } | null; email_page_closed: boolean };
   const rowsOf = (body: { users: Row[] }) => new Map(body.users.map((u) => [u.id, u]));
 
@@ -89,7 +94,7 @@ suite('GET /api/users: the Email column and the "Can\'t read" mark (real databas
     // The company's frozen part: the dialogs show it, fixed, beside the name part an admin types.
     const part = `acme${randomUUID().slice(0, 6).replace(/[0-9]/g, 'x')}`;
     await db.organization.update({ where: { id: w.org }, data: { email_sender_local_part: part } });
-    const reader = await personWith(w.org, READER, 'reader');
+    const reader = await adminReader(w.org);
     const a = await fx.addUser(w.org, 'withaddr', 'DISPATCHER');
     const b = await fx.addUser(w.org, 'needs', 'DISPATCHER');
     const c = await fx.addUser(w.org, 'nobox', 'DISPATCHER');
@@ -114,7 +119,7 @@ suite('GET /api/users: the Email column and the "Can\'t read" mark (real databas
 
   it('marks a user whose OWN switches turn Show Email or Access Communication off, and not a user on any built-in preset', async () => {
     const w = await world();
-    const reader = await personWith(w.org, READER, 'reader');
+    const reader = await adminReader(w.org);
     const bothOn = await personWith(w.org, ['access_communication', 'show_email'], 'bothon');
     const showOff = await personWith(w.org, ['access_communication'], 'showoff');
     // Show Email needs Access Communication, so turning Access Communication off turns Show Email off with it.
@@ -132,7 +137,7 @@ suite('GET /api/users: the Email column and the "Can\'t read" mark (real databas
 
   it('follows a per-person change, and the mark goes when both switches are on again', async () => {
     const w = await world();
-    const reader = await personWith(w.org, READER, 'reader');
+    const reader = await adminReader(w.org);
     const person = await personWith(w.org, ['access_communication', 'show_email'], 'flip');
     const api = await fx.signedInAs(reader);
 
@@ -145,9 +150,11 @@ suite('GET /api/users: the Email column and the "Can\'t read" mark (real databas
 
   it('reads the addresses and the switches in a constant number of queries however many users the page holds', async () => {
     const w = await world();
-    const reader = await personWith(w.org, READER, 'reader');
+    const reader = await adminReader(w.org);
     // The reader has an address too, so the address read has rows (and its second statement) in both measurements.
     await withMailbox(w.org, reader, `rd.${randomUUID().slice(0, 6).replace(/[0-9]/g, 'x')}`);
+    // And one person who is not an Admin, so the switch reads (skipped for a page of Admins only) run in both measurements.
+    await personWith(w.org, ['access_communication', 'show_email'], 'staff');
     const api = await fx.signedInAs(reader);
     // The fewest statements of three calls: a sign-in cache refresh or other background work on a busy machine can
     // add some to one call, and never takes any away.
@@ -173,7 +180,7 @@ suite('GET /api/users: the Email column and the "Can\'t read" mark (real databas
   it('shows no mailbox and no mark in a company without the Email plan feature', async () => {
     const w = await world();
     await db.organization.update({ where: { id: w.org }, data: { feature_overrides: { email: false } } });
-    const reader = await personWith(w.org, ['view_users']);
+    const reader = await adminReader(w.org);
     const person = await personWith(w.org, [], 'closed');
     await withMailbox(w.org, person, `c.${randomUUID().slice(0, 6).replace(/[0-9]/g, 'x')}`);
     const api = await fx.signedInAs(reader);

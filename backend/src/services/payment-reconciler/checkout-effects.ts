@@ -381,7 +381,7 @@ async function afterPaymentBooked(booked: BookedPayment, invoice: CheckoutInvoic
       where: { invoice: { organization_id: organization.id }, method: 'CARD', voided_at: null, stripe_account_id: account },
     });
     if (priorCardPayments === 1) {
-      // Told like the other payments-account alerts: the holders of Company settings, else Manage roles and permissions (S06.29).
+      // Told like the other payments-account alerts: the company's Admins (S06.29).
       await alertSwitchHolders({
         verb: 'billing.payouts_pending_first_payment',
         organizationId: organization.id,
@@ -451,7 +451,6 @@ async function afterPaymentBooked(booked: BookedPayment, invoice: CheckoutInvoic
         to: est.creator.email,
         estimateNumber: est.estimate_number,
         customerName: depCustName,
-        depositAmount: amount,
         paymentMethod: 'Credit Card',
       }).catch(() => {});
     }

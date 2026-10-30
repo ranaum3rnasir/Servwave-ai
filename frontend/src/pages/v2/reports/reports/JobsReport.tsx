@@ -186,7 +186,7 @@ const COLUMNS: ColumnSpec[] = [
   { key: 'tip', label: 'Tip', width: 100, min: 90, align: 'right', render: (j) => <span className="text-muted-foreground tabular-nums">{j.tip ? money0(j.tip) : '-'}</span>, csv: (j) => String(j.tip), sort: (j) => j.tip },
 ];
 
-// The margin and cost columns. The server leaves these keys off a row for a person without See financial data, so the
+// The margin and cost columns. The server leaves these keys off a row for a person without See costs, so the
 // page offers no column for them (a column would draw "$NaN").
 const COST_COLUMN_KEYS = ['itemCost', 'laborCost', 'cardExpenses', 'techExpenses', 'profit'];
 

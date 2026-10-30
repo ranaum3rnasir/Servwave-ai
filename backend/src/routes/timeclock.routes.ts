@@ -7,7 +7,7 @@ import * as tc from '../controllers/timeclock.controller';
 const router = Router();
 
 // Every timeclock route is authenticated + ability-loaded. Clock-ins are open to every signed-in person; the org
-// timesheet views (punches and overtime reviews with ?scope=org) check See everyone's timesheets in the controller.
+// timesheet views (punches and overtime reviews with ?scope=org) check Timesheets scope in the controller.
 router.use(authenticate, attachAbility);
 
 // ─── Punches ───────────────────────────────────────────

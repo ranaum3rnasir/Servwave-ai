@@ -2,11 +2,18 @@
    Roles & Permissions, PRD 8, slice S08.24 - a missed call, a voicemail or an inbound text is never silent.
 
    When the lookup that names the people of the alert (S08.22 for calls, S08.23 for texts) finds NOBODY after the access filter - no
-   one on the record, nobody on Communication scope "All", nobody linked to the company number, nobody the reply names - the
-   holders of Manage roles and permissions are told, with the reason line "Nobody is linked to this number and nobody sees every call
-   and text.", the company number and the time in the COMPANY's zone. A holder who cannot read the conversation under their scope is
-   told in a second alert that carries no caller details and no text preview. When there is no such holder either, one log line is
-   written (the alert, the call or conversation, the company; nothing of the customer).
+   one on the record, nobody on Communication scope "All", nobody linked to the company number, nobody the reply names - the net
+   under it tells the company's active Admins (the holders of Manage roles and permissions until that switch retired, AL-18). When
+   there is no active Admin either, one log line is written (the alert, the call or conversation, the company; nothing of the
+   customer).
+
+   Since AL-18 an Admin is the flag on the person, and an Admin holds every switch at its widest, Communication scope All included.
+   So whenever the company has an active Admin, the lookup itself already names them and the ordinary alert, with the caller's
+   details, reaches them: the call or text is never silent while an Admin is active. The net's own alerts (the reason line, the
+   second alert without caller details for a holder who could not read the conversation) can no longer be reached, because the
+   only time the lookup finds nobody is when the company has no active Admin, and then the net finds nobody too. The cases about
+   those two alerts are gone with the switch; what is proved here is the rule as it now stands: the Admins are always told, a
+   non-Admin is never the fallback, and a company with nobody to tell leaves one log line.
 
    Every case drives the REAL call or text ingest entry point with a synthetic payload (no call is placed, no text is sent), the way
    the webhook does: the alert is handed over by `afterCommit` and run once the row is stored. People are on custom roles built from
@@ -40,17 +47,15 @@ const suite = realClient ? describe : describe.skip;
 
 /** The line from PRD 8, word for word. It is typed here on purpose: the code's own constant is not the source of truth. */
 const REASON_LINE = 'Nobody is linked to this number and nobody sees every call and text.';
-/** The caller and what they wrote: none of it may reach a holder who cannot read the conversation. */
+/** The caller and what they wrote: none of it may reach the server's log. */
 const CALLER = '+15557770188';
 const CALLER_PARTS = ['7770188', '777-0188', '777 0188'];
 const CUSTOMER_NAME = 'Pat Payer';
 const TEXT_WORDS = 'Gate code is 9931';
-/** The company number the cases use, as the app shows it, and the instant and the company's zone the time is judged in. */
+/** The company number the cases use, as the app shows it, and the instant and the company's zone. */
 const COMPANY_E164 = '+15555550142';
 const COMPANY_SHOWN = '(555) 555-0142';
-/** 2:05 AM on 13 October in UTC is 7:05 PM on the 12th in Los Angeles: the day and the hour both tell the zones apart. */
 const AT = new Date(Date.UTC(2026, 9, 13, 2, 5, 0));
-const AT_SHOWN = 'October 12, 2026 at 7:05 PM';
 const ZONE = 'America/Los_Angeles';
 
 type Kind = 'call' | 'text';
@@ -122,25 +127,27 @@ suite('a missed call, a voicemail or an inbound text is never silent (real datab
   ): Promise<Member> {
     const base: Role = 'TECHNICIAN';
     const key = `never-silent-role-${++sequence}`;
+    // `is_admin: true` makes the person an Admin (the flag, AL-18): it is not a switch, so it never reaches the role.
+    const { is_admin: asAdmin, ...switchValues } = values;
     const role = await fx.addCustomRole(org, key, base);
     const all = {
       view_jobs: true, jobs_scope: 'attached', view_leads: true, leads_scope: 'attached',
-      access_communication: true, view_communication: true, communication_scope: 'linked_to_me',
-      see_main_line_when_no_number: false, ...values,
+      access_communication: true, view_communication: true, communication_scope: 'attached',
+      see_main_line_when_no_number: false, ...switchValues,
     };
     await setRoleSwitchValues({ organizationId: org, roleKey: key, values: all, actorId: null, reason: 'manual' });
-    const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
+    const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id, isAdmin: asAdmin === true });
     for (const phone_number_id of opts.numbers ?? []) await db.userPhoneNumber.create({ data: { user_id: person.id, phone_number_id } });
     if (opts.inactive) await db.user.update({ where: { id: person.id }, data: { is_active: false } });
     return Object.assign(person, { base });
   }
 
-  /** A holder of Manage roles and permissions (View users is the switch it needs), on Linked to me unless the case says otherwise. */
-  const manager = (org: string, values: Record<string, boolean | string> = {}, opts: { inactive?: boolean } = {}) =>
-    personWith(org, { view_users: true, manage_roles_and_permissions: true, ...values }, opts);
-
-  /** A manager whose own place lets them open the job the case ties the conversation to (jobs seen company-wide), but who is not on All. */
-  const managerWhoReadsJobs = (org: string) => manager(org, { jobs_scope: 'all' });
+  /**
+   * An Admin (the flag, AL-18) on a custom role whose own switches say Linked to me unless the case says otherwise: the switches do
+   * not narrow an Admin, who holds every switch at its widest.
+   */
+  const anAdmin = (org: string, values: Record<string, boolean | string> = {}, opts: { inactive?: boolean } = {}) =>
+    personWith(org, { is_admin: true, ...values }, opts);
 
   async function addNumber(org: string, opts: { orgDefault?: boolean; e164?: string } = {}) {
     const id = randomUUID();
@@ -230,58 +237,51 @@ suite('a missed call, a voicemail or an inbound text is never silent (real datab
   const rowFor = (rows: Row[], person: { id: string }) => rows.find((r) => r.recipients.some((x) => x.recipient_id === person.id));
   const everythingOf = (row: Row) => JSON.stringify([row.title, row.body, row.data, row.object_label]);
 
-  /** What nobody who may not read the conversation may see in the alert: the caller, the customer, the words. */
-  function expectNoCallerDetails(row: Row, kind: Kind) {
-    const all = everythingOf(row);
-    for (const secret of [CUSTOMER_NAME, ...CALLER_PARTS, ...(kind === 'text' ? [TEXT_WORDS, '9931'] : [])]) {
-      expect(all, `the alert must not carry "${secret}"`).not.toContain(secret);
-    }
-    expect(row.object_label).toBeNull();
-    expect(all).not.toContain('undefined');
-  }
-
-  /** The line that says what happened on which company number and when, and why the person is being told. */
-  function expectTheNeutralFacts(row: Row, kind: Kind) {
-    const all = everythingOf(row);
-    expect(all).toContain(REASON_LINE);
-    expect(all).toContain(COMPANY_SHOWN);
-    expect(all).toContain(AT_SHOWN);
+  /** The ordinary alert: the caller's details and, for a text, its words; no reason line, since nobody had to be found for it. */
+  function expectTheOrdinaryAlert(row: Row, kind: Kind) {
+    expect(row.title).toContain(CUSTOMER_NAME);
+    if (kind === 'text') expect(row.body).toContain(TEXT_WORDS);
+    expect(everythingOf(row)).not.toContain(REASON_LINE);
+    expect(everythingOf(row)).not.toContain('Nobody is linked');
     // Nothing a person reads names the phone service.
-    expect(all).not.toMatch(/ctm|calltracking|supabase|render/i);
-    expect(row.title).toMatch(kind === 'call' ? /^Missed call/ : /^New text/);
+    expect(everythingOf(row)).not.toMatch(/ctm|calltracking|supabase|render/i);
   }
 
   for (const kind of ['call', 'text'] as const) {
     const door = doors[kind];
 
     describe(kind === 'call' ? 'a missed call' : 'an inbound text', () => {
-      // ─── Criterion 1: nobody linked, nobody on All: the Manage roles and permissions holders ───────
+      // ─── An active Admin is always told: the net never has to reach for anyone else ───────────────
 
-      it('on a number nobody is linked to, tied to no record, with nobody on All, tells the Manage roles and permissions holders with the reason line, the company number and the time in the company zone', async () => {
+      it('on a number nobody is linked to, tied to no record, with nobody else on All, tells every active Admin, whatever their Communication switches, with the ordinary alert and no reason line', async () => {
         const { org } = await quietCompany();
         const number = await addNumber(org, { e164: COMPANY_E164 });
         const people = {
-          managerA: await manager(org),
-          managerB: await manager(org, NO_SECTION),
-          notAManager: await personWith(org, {}),
-          deactivatedManager: await manager(org, {}, { inactive: true }),
+          adminA: await anAdmin(org),
+          // An Admin whose own switches would shut the section: the switches do not narrow an Admin.
+          adminB: await anAdmin(org, NO_SECTION),
+          notAnAdmin: await personWith(org, {}),
+          deactivatedAdmin: await anAdmin(org, {}, { inactive: true }),
         };
         const stranger = await quietCompany({ keepAdmin: true });
-        const strangersManager = await manager(stranger.org);
+        const strangersAdmin = await anAdmin(stranger.org);
 
         const { sid } = await door.arrive(org, number, {});
         const rows = await rowsOf(kind, org, sid);
 
         const told = toldBy(rows);
-        expect(told.has(people.managerA.id)).toBe(true);
-        // The never-silent net does not depend on the Communication switches: a manager who cannot use the section is told too.
-        expect(told.has(people.managerB.id)).toBe(true);
-        expect(told.has(people.notAManager.id)).toBe(false);
-        expect(told.has(people.deactivatedManager.id)).toBe(false);
-        expect(told.has(strangersManager.id)).toBe(false);
+        expect(told.has(people.adminA.id)).toBe(true);
+        expect(told.has(people.adminB.id)).toBe(true);
+        // A non-Admin is never the fallback.
+        expect(told.has(people.notAnAdmin.id)).toBe(false);
+        expect(told.has(people.deactivatedAdmin.id)).toBe(false);
+        expect(told.has(strangersAdmin.id)).toBe(false);
         expect(told.has(stranger.admin.id)).toBe(false);
-        for (const person of [people.managerA, people.managerB]) {
-          expectTheNeutralFacts(rowFor(rows, person)!, kind);
+        // One alert, the ordinary one, under the event's own key: the net added nothing.
+        expect(rows).toHaveLength(1);
+        expect(rows[0]!.dedup_key).toBe(`ctm:${sid}:${door.keyPart}`);
+        expectTheOrdinaryAlert(rows[0]!, kind);
+        for (const person of [people.adminA, people.adminB]) {
           // Each person is told once.
           expect(rows.flatMap((r) => r.recipients).filter((r) => r.recipient_id === person.id)).toHaveLength(1);
         }
@@ -289,65 +289,52 @@ suite('a missed call, a voicemail or an inbound text is never silent (real datab
         for (const row of rows) expect(row.object_type).toBe(kind === 'call' ? 'CALL' : 'MESSAGE_THREAD');
       }, 240_000);
 
-      it('with ONE active person on All, tells only that person: no fallback, no reason line, and the managers are not told', async () => {
+      it('with one other active person on All, tells that person and the Admins, and nobody else, with no reason line', async () => {
         const { org } = await quietCompany();
         const number = await addNumber(org, { e164: COMPANY_E164 });
         const holderOfAll = await personWith(org, { communication_scope: 'all' });
-        const managerA = await manager(org);
+        const adminA = await anAdmin(org);
         const linkedElsewhere = await personWith(org, {}, { numbers: [(await addNumber(org)).id] });
 
         const { sid } = await door.arrive(org, number, {});
         const rows = await rowsOf(kind, org, sid);
 
         expect(rows).toHaveLength(1);
-        expect([...toldBy(rows)]).toEqual([holderOfAll.id]);
-        expect(toldBy(rows).has(managerA.id)).toBe(false);
+        expect([...toldBy(rows)].sort()).toEqual([holderOfAll.id, adminA.id].sort());
         expect(toldBy(rows).has(linkedElsewhere.id)).toBe(false);
         expect(everythingOf(rows[0]!)).not.toContain('Nobody is linked');
         expect(rows[0]!.dedup_key).toBe(`ctm:${sid}:${door.keyPart}`);
       }, 240_000);
 
-      it('adds nobody while someone qualifies: a person linked to the number is told, the managers are not, and there is no reason line', async () => {
+      it('adds nobody while someone qualifies: a person linked to the number is told with the Admins, and there is no reason line', async () => {
         const { org } = await quietCompany();
         const number = await addNumber(org, { e164: COMPANY_E164 });
         const linked = await personWith(org, {}, { numbers: [number.id] });
-        const managerA = await manager(org);
+        const adminA = await anAdmin(org);
+        const bystander = await personWith(org, {});
 
         const { sid } = await door.arrive(org, number, {});
         const rows = await rowsOf(kind, org, sid);
 
-        expect([...toldBy(rows)]).toEqual([linked.id]);
+        expect([...toldBy(rows)].sort()).toEqual([linked.id, adminA.id].sort());
+        expect(toldBy(rows).has(bystander.id)).toBe(false);
         expect(rows.map((r) => everythingOf(r)).join()).not.toContain('Nobody is linked');
-        expect(toldBy(rows).has(managerA.id)).toBe(false);
       }, 240_000);
 
-      it('names the time in the company zone, not the server\'s, and the number as the app shows it', async () => {
-        const { org } = await quietCompany();
-        // The number the app shows is the stored display form when there is one.
-        const id = randomUUID();
-        await db.phoneNumber.create({ data: { id, organization_id: org, e164: COMPANY_E164, formatted: '(555) 555-0142', label: 'run-shown', status: 'active' } });
-        const managerA = await manager(org);
-
-        const { sid } = await door.arrive(org, { id, e164: COMPANY_E164 }, {});
-        const row = rowFor(await rowsOf(kind, org, sid), managerA)!;
-
-        expect(everythingOf(row)).toContain(AT_SHOWN);
-        // The server runs in UTC, where the same instant is the next morning: that must not be the time named.
-        expect(everythingOf(row)).not.toContain('October 13, 2026');
-        expect(everythingOf(row)).not.toContain('2:05 AM');
-        expect(everythingOf(row)).not.toContain(COMPANY_E164);
-      }, 240_000);
+      // The cases about what the net's own alert says (the company number as the app shows it, the time in the company's zone) and
+      // about the second alert without caller details went with the Manage roles and permissions switch (AL-18): the net's alerts
+      // can no longer be reached, because an active Admin is on All and the ordinary alert reaches them first.
 
       it('keeps its kind\'s priority: a missed call interrupts and asks for a call back, a text is a feed item', async () => {
         const { org } = await quietCompany();
         const number = await addNumber(org, { e164: COMPANY_E164 });
-        const managerA = await manager(org);
-        const managerB = await manager(org, NO_SECTION);
+        const adminA = await anAdmin(org);
+        const adminB = await anAdmin(org, NO_SECTION);
 
         const { sid } = await door.arrive(org, number, {});
         const rows = await rowsOf(kind, org, sid);
 
-        const mine = rows.flatMap((r) => r.recipients).filter((r) => [managerA.id, managerB.id].includes(r.recipient_id));
+        const mine = rows.flatMap((r) => r.recipients).filter((r) => [adminA.id, adminB.id].includes(r.recipient_id));
         expect(mine).toHaveLength(2);
         for (const r of mine) {
           expect(r.priority).toBe(kind === 'call' ? 'INTERRUPT' : 'FEED');
@@ -359,137 +346,42 @@ suite('a missed call, a voicemail or an inbound text is never silent (real datab
         }
       }, 240_000);
 
-      // ─── Criterion 2: a holder who cannot read it gets no caller details and no preview ──────
-
-      it('gives a holder who cannot read the conversation no caller name, number, customer or text, in any field of the stored row or the bell\'s answer', async () => {
-        const { org } = await quietCompany();
-        const number = await addNumber(org, { e164: COMPANY_E164 });
-        const cannotRead = await manager(org);
-        const noSection = await manager(org, NO_SECTION);
-
-        const { sid } = await door.arrive(org, number, {});
-        const rows = await rowsOf(kind, org, sid);
-
-        for (const person of [cannotRead, noSection]) {
-          const row = rowFor(rows, person)!;
-          expectNoCallerDetails(row, kind);
-          expectTheNeutralFacts(row, kind);
-          expect(row.data).not.toHaveProperty('preview');
-          expect(row.data).not.toHaveProperty('customer_name');
-          expect(row.data).not.toHaveProperty('caller_number');
-          // The bell's own answer for that person carries nothing more.
-          const api = await fx.signedInAs(person);
-          const answer = await api.get('/api/notifications');
-          expect(answer.status).toBe(200);
-          // The bell lists a person's own recipient rows, so an item is known by that row's id.
-          const mineId = row.recipients.find((r) => r.recipient_id === person.id)!.id;
-          const item = (answer.body.items as Array<{ id: string }>).find((i) => i.id === mineId);
-          expect(item, 'the alert is in their bell').toBeDefined();
-          const shown = JSON.stringify(item);
-          for (const secret of [CUSTOMER_NAME, ...CALLER_PARTS, '9931']) expect(shown).not.toContain(secret);
-          expect(shown).toContain(REASON_LINE);
-        }
-      }, 240_000);
-
-      it('gives a holder who CAN read the conversation the normal details, in an alert of their own that the others never receive', async () => {
-        const { org, customer } = await quietCompany();
-        const number = await addNumber(org, { e164: COMPANY_E164 });
-        // Tied to a job nobody is on: the lookup finds nobody. A manager who sees every job can open it.
-        const job = await fx.addJob(org, customer, {});
-        const reads = await managerWhoReadsJobs(org);
-        const cannotRead = await manager(org);
-
-        const { sid } = await door.arrive(org, number, { jobId: job.id });
-        const rows = await rowsOf(kind, org, sid);
-
-        expect(rows).toHaveLength(2);
-        const withDetails = rowFor(rows, reads)!;
-        const redacted = rowFor(rows, cannotRead)!;
-        expect(withDetails.id).not.toBe(redacted.id);
-        expect(withDetails.recipients.map((r) => r.recipient_id)).toEqual([reads.id]);
-        expect(redacted.recipients.map((r) => r.recipient_id)).toEqual([cannotRead.id]);
-        // The reader gets what any reader of the conversation gets, and still why they are being told, and the number and time.
-        expect(withDetails.title).toContain(CUSTOMER_NAME);
-        if (kind === 'text') expect(withDetails.body).toContain(TEXT_WORDS);
-        expectTheNeutralFacts(withDetails, kind);
-        // The other cannot read it and gets none of it.
-        expectNoCallerDetails(redacted, kind);
-        expectTheNeutralFacts(redacted, kind);
-        // The two rows have their own keys, both under the event's.
-        expect(new Set(rows.map((r) => r.dedup_key)).size).toBe(2);
-        for (const row of rows) expect(row.dedup_key!.startsWith(`ctm:${sid}:${door.keyPart}`)).toBe(true);
-      }, 240_000);
-
-      it('writes only the redacted alert when no holder can read it, and only the full one when every holder can', async () => {
-        const none = await quietCompany();
-        const noneNumber = await addNumber(none.org, { e164: COMPANY_E164 });
-        const a = await manager(none.org);
-        const all = await quietCompany();
-        const allNumber = await addNumber(all.org, { e164: COMPANY_E164 });
-        const allJob = await fx.addJob(all.org, all.customer, {});
-        const b = await managerWhoReadsJobs(all.org);
-
-        const noneRows = await rowsOf(kind, none.org, (await door.arrive(none.org, noneNumber, {})).sid);
-        const allSid = (await door.arrive(all.org, allNumber, { jobId: allJob.id })).sid;
-        const allRows = await rowsOf(kind, all.org, allSid);
-
-        expect(noneRows).toHaveLength(1);
-        expectNoCallerDetails(noneRows[0]!, kind);
-        expect(toldBy(noneRows).has(a.id)).toBe(true);
-        expect(allRows).toHaveLength(1);
-        expect(allRows[0]!.title).toContain(CUSTOMER_NAME);
-        expect(toldBy(allRows).has(b.id)).toBe(true);
-      }, 240_000);
-
-      it('is the control: with someone on All the same call or text carries the caller\'s details, so the redaction above can fail', async () => {
-        const { org } = await quietCompany();
-        const number = await addNumber(org, { e164: COMPANY_E164 });
-        await personWith(org, { communication_scope: 'all' });
-
-        const { sid } = await door.arrive(org, number, {});
-        const [row] = await rowsOf(kind, org, sid);
-
-        expect(row!.title).toContain(CUSTOMER_NAME);
-        if (kind === 'text') expect(row!.body).toBe(TEXT_WORDS);
-      }, 240_000);
-
-      it('covers every empty answer: a conversation tied to a job whose people cannot read it, with nobody on All, is not silent either', async () => {
+      it('covers every empty answer: a conversation tied to a job whose people cannot read it reaches the Admins, not the job\'s people', async () => {
         const { org, customer } = await quietCompany();
         const number = await addNumber(org, { e164: COMPANY_E164 });
         const crewNoJobs = await personWith(org, withDependantsOff(['view_jobs']));
         const job = await fx.addJob(org, customer, { crew: [crewNoJobs.id], soldBy: crewNoJobs.id });
-        const managerA = await manager(org);
+        const adminA = await anAdmin(org);
 
         const { sid } = await door.arrive(org, number, { jobId: job.id });
         const rows = await rowsOf(kind, org, sid);
 
         expect(toldBy(rows).has(crewNoJobs.id)).toBe(false);
-        expect(toldBy(rows).has(managerA.id)).toBe(true);
-        expect(everythingOf(rowFor(rows, managerA)!)).toContain(REASON_LINE);
+        expect(toldBy(rows).has(adminA.id)).toBe(true);
+        expectTheOrdinaryAlert(rowFor(rows, adminA)!, kind);
       }, 240_000);
 
-      it('is the only path that tells a person the access filter would drop, and it tells them only the redacted alert', async () => {
+      it('tells by no path a person the access filter drops, while an Admin is told whatever their own Communication switches say', async () => {
         const { org } = await quietCompany();
         const number = await addNumber(org, { e164: COMPANY_E164 });
-        // Linked to the number but unable to use the section: the filter drops them from the normal alert. They are no one.
+        // Linked to the number but unable to use the section: the filter drops them from the alert. They are no one.
         const linkedNoAccess = await personWith(org, withDependantsOff(['access_communication']), { numbers: [number.id] });
-        // A manager who cannot use the section: reached by the net, with no details.
-        const managerNoAccess = await manager(org, NO_SECTION);
+        const adminNoSection = await anAdmin(org, NO_SECTION);
 
         const { sid } = await door.arrive(org, number, {});
         const rows = await rowsOf(kind, org, sid);
 
         expect(toldBy(rows).has(linkedNoAccess.id)).toBe(false);
-        expect(toldBy(rows).has(managerNoAccess.id)).toBe(true);
-        expectNoCallerDetails(rowFor(rows, managerNoAccess)!, kind);
+        expect(toldBy(rows).has(adminNoSection.id)).toBe(true);
+        expectTheOrdinaryAlert(rowFor(rows, adminNoSection)!, kind);
       }, 240_000);
 
-      // ─── Criterion 3: a chain that still finds nobody is logged once, with no customer content ──
+      // ─── A chain that still finds nobody is logged once, with no customer content ──────────────
 
-      it('writes exactly one log line when there is no Manage roles and permissions holder either, carrying the alert, the id and the company and nothing of the customer', async () => {
+      it('writes exactly one log line when there is no active Admin either, carrying the alert, the id and the company and nothing of the customer', async () => {
         const { org } = await quietCompany();
         const number = await addNumber(org, { e164: COMPANY_E164 });
-        await manager(org, {}, { inactive: true });
+        await anAdmin(org, {}, { inactive: true });
         await personWith(org, {});
         const warn = watchLog();
 
@@ -529,7 +421,7 @@ suite('a missed call, a voicemail or an inbound text is never silent (real datab
       it('logs nothing when somebody was told', async () => {
         const { org } = await quietCompany();
         const number = await addNumber(org, { e164: COMPANY_E164 });
-        await manager(org);
+        await anAdmin(org);
         const warn = watchLog();
 
         await door.arrive(org, number, {});
@@ -539,12 +431,12 @@ suite('a missed call, a voicemail or an inbound text is never silent (real datab
 
       // ─── Duplicates, privacy of the rows ───────────────────────────────────────────────────────
 
-      it('writes nothing twice when the event is delivered again, whether one alert or two went out', async () => {
+      it('writes nothing twice when the event is delivered again', async () => {
         const { org, customer } = await quietCompany();
         const number = await addNumber(org, { e164: COMPANY_E164 });
         const job = await fx.addJob(org, customer, {});
-        await managerWhoReadsJobs(org);
-        await manager(org);
+        await anAdmin(org);
+        await anAdmin(org, { jobs_scope: 'all' });
         const sid = `${kind === 'call' ? 'CA' : 'MSG'}-s0824-${randomUUID().slice(0, 12)}`;
 
         await door.arrive(org, number, { sid, jobId: job.id });
@@ -553,28 +445,17 @@ suite('a missed call, a voicemail or an inbound text is never silent (real datab
         await door.arrive(org, number, { sid });
         const after = await rowsOf(kind, org, sid);
 
-        expect(first).toHaveLength(2);
+        expect(first).toHaveLength(1);
+        expect(first.flatMap((r) => r.recipients)).toHaveLength(2);
         expect(after.map((r) => r.id).sort()).toEqual(first.map((r) => r.id).sort());
         expect(after.flatMap((r) => r.recipients).length).toBe(first.flatMap((r) => r.recipients).length);
       }, 240_000);
 
-      it('writes nothing twice when only the redacted alert went out', async () => {
-        const { org } = await quietCompany();
-        const number = await addNumber(org, { e164: COMPANY_E164 });
-        await manager(org);
-        const sid = `${kind === 'call' ? 'CA' : 'MSG'}-s0824-${randomUUID().slice(0, 12)}`;
-
-        await door.arrive(org, number, { sid });
-        await door.arrive(org, number, { sid });
-
-        expect(await rowsOf(kind, org, sid)).toHaveLength(1);
-      }, 240_000);
-
-      it('does not add the fallback to an event the normal path already told, even if a redelivery would find nobody', async () => {
+      it('does not add anyone to an event already told, even if a redelivery would find nobody else', async () => {
         const { org } = await quietCompany();
         const number = await addNumber(org, { e164: COMPANY_E164 });
         const linked = await personWith(org, {}, { numbers: [number.id] });
-        await manager(org);
+        const adminA = await anAdmin(org);
         const sid = `${kind === 'call' ? 'CA' : 'MSG'}-s0824-${randomUUID().slice(0, 12)}`;
 
         await door.arrive(org, number, { sid });
@@ -583,13 +464,13 @@ suite('a missed call, a voicemail or an inbound text is never silent (real datab
 
         const rows = await rowsOf(kind, org, sid);
         expect(rows).toHaveLength(1);
-        expect([...toldBy(rows)]).toEqual([linked.id]);
+        expect([...toldBy(rows)].sort()).toEqual([linked.id, adminA.id].sort());
       }, 240_000);
 
-      it('does not write the ordinary alert on a redelivery once the fallback has told the managers, even if somebody has been linked since', async () => {
+      it('does not write a second alert on a redelivery once the Admins were told, even if somebody has been linked since', async () => {
         const { org } = await quietCompany();
         const number = await addNumber(org, { e164: COMPANY_E164 });
-        const managerA = await manager(org);
+        const adminA = await anAdmin(org);
         const sid = `${kind === 'call' ? 'CA' : 'MSG'}-s0824-${randomUUID().slice(0, 12)}`;
 
         await door.arrive(org, number, { sid });
@@ -598,16 +479,16 @@ suite('a missed call, a voicemail or an inbound text is never silent (real datab
 
         const rows = await rowsOf(kind, org, sid);
         expect(rows).toHaveLength(1);
-        expect([...toldBy(rows)]).toEqual([managerA.id]);
+        expect([...toldBy(rows)]).toEqual([adminA.id]);
       }, 240_000);
 
-      it('lets only the person an alert was written for read it: a non-recipient finds the redacted alert by no route', async () => {
+      it('lets only the person an alert was written for read it: a non-recipient finds the alert by no route', async () => {
         const { org } = await quietCompany();
         const number = await addNumber(org, { e164: COMPANY_E164 });
-        const recipient = await manager(org);
-        const bystander = await manager(org);
+        const recipient = await anAdmin(org);
+        const bystander = await anAdmin(org);
         const outsider = await personWith(org, {});
-        // The second manager is on the alert too (every manager is). Take them off it to make them a bystander by hand.
+        // The second Admin is on the alert too (every Admin is). Take them off it to make them a bystander by hand.
         const { sid } = await door.arrive(org, number, {});
         const [row] = await rowsOf(kind, org, sid);
         const mine = row!.recipients.find((r) => r.recipient_id === recipient.id)!;
@@ -619,7 +500,6 @@ suite('a missed call, a voicemail or an inbound text is never silent (real datab
           expect(theirs.status).toBe(200);
           expect(JSON.stringify(theirs.body)).not.toContain(row!.id);
           expect(JSON.stringify(theirs.body)).not.toContain(mine.id);
-          expect(JSON.stringify(theirs.body)).not.toContain(REASON_LINE);
           for (const id of [row!.id, mine.id]) {
             for (const verb of ['read', 'act', 'dismiss'] as const) {
               expect((await api.patch(`/api/notifications/${id}/${verb}`)).status, `${verb} ${id}`).toBe(404);
@@ -635,7 +515,7 @@ suite('a missed call, a voicemail or an inbound text is never silent (real datab
       it('raises no alert and no log for an event that is suppressed (a backfill)', async () => {
         const { org } = await quietCompany();
         const number = await addNumber(org, { e164: COMPANY_E164 });
-        await manager(org);
+        await anAdmin(org);
         const warn = watchLog();
 
         const { sid } = await door.arrive(org, number, { suppress: true });
@@ -647,7 +527,7 @@ suite('a missed call, a voicemail or an inbound text is never silent (real datab
       it('raises no alert and no log for a caller on the blocked list: a blocked event never becomes a fallback alert', async () => {
         const { org, admin } = await quietCompany();
         const number = await addNumber(org, { e164: COMPANY_E164 });
-        await manager(org);
+        await anAdmin(org);
         await db.blockedNumber.create({
           data: { organization_id: org, number: CALLER, reason: 'spam', blocked_at: new Date(), blocked_by: 'run', blocked_by_id: admin.id },
         });
@@ -667,52 +547,21 @@ suite('a missed call, a voicemail or an inbound text is never silent (real datab
     const { org, customer } = await quietCompany();
     const number = await addNumber(org, { e164: COMPANY_E164 });
     const job = await fx.addJob(org, customer, {});
-    const reads = await managerWhoReadsJobs(org);
-    const cannotRead = await manager(org);
+    const adminA = await anAdmin(org);
 
     const { sid } = await doors.call.arrive(org, number, { status: 'voicemail', jobId: job.id });
     const rows = await rowsOf('call', org, sid);
 
-    const redacted = rowFor(rows, cannotRead)!;
-    expect(redacted.title).toMatch(/^Voicemail/);
-    expect(redacted.title).not.toMatch(/^Missed call/);
-    expectNoCallerDetails(redacted, 'call');
-    expect(everythingOf(redacted)).toContain(REASON_LINE);
-    expect(everythingOf(redacted)).toContain(COMPANY_SHOWN);
-    expect(everythingOf(redacted)).toContain(AT_SHOWN);
-    expect(rowFor(rows, reads)!.title).toMatch(/^Voicemail — Pat Payer/);
-    for (const row of rows) {
-      expect(row.priority).toBe('INTERRUPT');
-      expect(row.needs_action).toBe(true);
+    const row = rowFor(rows, adminA)!;
+    expect(row.title).toMatch(/^Voicemail — Pat Payer/);
+    expect(row.title).not.toMatch(/^Missed call/);
+    expect(everythingOf(row)).not.toContain(REASON_LINE);
+    for (const r of rows) {
+      expect(r.priority).toBe('INTERRUPT');
+      expect(r.needs_action).toBe(true);
     }
   }, 240_000);
 
-  it('carries the preview of a text only in the alert of a holder who can read it, never in the redacted one', async () => {
-    const { org, customer } = await quietCompany();
-    const number = await addNumber(org, { e164: COMPANY_E164 });
-    const job = await fx.addJob(org, customer, {});
-    const reads = await managerWhoReadsJobs(org);
-    const cannotRead = await manager(org);
-
-    const { sid } = await doors.text.arrive(org, number, { jobId: job.id });
-    const rows = await rowsOf('text', org, sid);
-
-    expect(rowFor(rows, reads)!.body).toContain(TEXT_WORDS);
-    expect(JSON.stringify(rowFor(rows, reads)!.data)).toContain(TEXT_WORDS);
-    const redacted = rowFor(rows, cannotRead)!;
-    expect(everythingOf(redacted)).not.toContain(TEXT_WORDS);
-    expect(redacted.data).not.toHaveProperty('preview');
-  }, 240_000);
-
-  it('names the main line as the company number when that is the number nobody covers', async () => {
-    const { org } = await quietCompany();
-    const main = await addNumber(org, { e164: COMPANY_E164, orgDefault: true });
-    // The fallback for a person with no number of their own is off for everyone here, so nobody covers the main line either.
-    const managerA = await manager(org);
-
-    const { sid } = await doors.call.arrive(org, main, {});
-    const row = rowFor(await rowsOf('call', org, sid), managerA)!;
-
-    expect(everythingOf(row)).toContain(COMPANY_SHOWN);
-  }, 240_000);
+  // The case about a text's preview in the net's second alert went with the Manage roles and permissions switch (AL-18); the
+  // ordinary alert's preview is checked by expectTheOrdinaryAlert above.
 });

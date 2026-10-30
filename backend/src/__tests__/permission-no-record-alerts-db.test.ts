@@ -4,8 +4,9 @@
    The payments-account alerts (payments active, payouts enabled, more information needed, payments paused, payments disconnected,
    connect your bank), Invite accepted, Low stock, Item on backorder, Purchase order partly received, Staging has no area and a stock
    approval request used to go to "every Admin" (and every Dispatcher for the stock ones) by role. Now each goes to the active holders
-   of its own switch (Company settings; Invite users; Create purchase orders; Edit stock), else the holders of Manage roles and
-   permissions with a line saying what nobody could do. There is no lane 1, no Dispatcher step and no copy: a person who holds an
+   of its own switch (Create purchase orders; Edit stock), or the Admins themselves for the payments account (Company settings retired, 36b, M17), else the company's Admins with a line saying what nobody
+   could do. Invite accepted goes to the Admins themselves: inviting people is the Admin flag's alone (AL-18). An Admin holds every
+   switch, so an Admin is always found among a step's holders and the "nobody could" line is only reached with no active Admin. There is no lane 1, no Dispatcher step and no copy: a person who holds an
    "Alert me about every ..." switch is not told, an Admin-role person with the switch off is not told, and the person who did it
    never is. Nobody comes from a role name.
 
@@ -43,12 +44,13 @@ const { realClient } = vi.hoisted(() => {
 vi.mock('../lib/prisma', () => ({ prisma: realClient }));
 
 import { switchFixture, type Person } from './permission-switches-fixture';
+import { ADMINS } from '../lib/permissions/switchHolders';
 import { setRoleSwitchValues } from '../lib/permissions/switches/store';
 import { SWITCH_CATALOG, type SwitchValue } from '../lib/permissions/switches/catalog';
 import { logger } from '../lib/logger';
 import { supabaseAdmin } from '../lib/supabase';
 import * as email from '../lib/email';
-import { signInviteToken } from '../lib/invite-token';
+import { issueInviteToken } from '../lib/invite-link';
 import { CURRENT_TERMS_VERSION, TERMS_URL, PRIVACY_URL } from '../lib/legal';
 import { reviewAttentionSettled } from '../services/notifications/reviewAttentionQueue';
 
@@ -67,8 +69,10 @@ function withRequires(key: string, into: Record<string, SwitchValue> = {}): Reco
   return into;
 }
 
-const MANAGE = 'manage_roles_and_permissions';
-const managerValues = { ...withRequires(MANAGE) };
+// The last fallback is the company's Admins (AL-18): a manager here is an Admin, by the flag.
+const managerValues: Record<string, SwitchValue> = { is_admin: true };
+/** What makes a person a holder of a door's step: its switch and what that needs, or the Admin flag for a step that is the Admins. */
+const holderValues = (step: string): Record<string, SwitchValue> => (step === ADMINS ? { is_admin: true } : withRequires(step));
 const COPY_SWITCHES = ['alert_every_lead', 'alert_every_job', 'alert_every_estimate', 'alert_every_invoice'];
 const copyValues = Object.fromEntries(COPY_SWITCHES.flatMap((k) => Object.entries(withRequires(k))));
 
@@ -134,9 +138,11 @@ suite('the alerts that have no record (real database)', () => {
   /** A person on a fresh custom role holding exactly these switch values (every other switch off). */
   async function personWith(org: string, values: Record<string, SwitchValue>, base: Role = 'DISPATCHER'): Promise<Person> {
     const key = `no-record-role-${++sequence}`;
+    // `is_admin: true` makes the person an Admin (the flag, AL-18): it is not a switch, so it never reaches the role.
+    const { is_admin: asAdmin, ...switchValues } = values;
     const role = await fx.addCustomRole(org, key, base);
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...values }, actorId: null, reason: 'manual' });
-    return fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
+    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...switchValues }, actorId: null, reason: 'manual' });
+    return fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id, isAdmin: asAdmin === true });
   }
 
   /** A company with nobody but built people, so only they can be alerted. */
@@ -174,7 +180,7 @@ suite('the alerts that have no record (real database)', () => {
   }
 
   const accountDoor = (verb: string, priority: Priority, needsAction: boolean): Door => ({
-    verb, step: 'company_settings', stepWords: 'change company settings', priority, needsAction, actorValues: null,
+    verb, step: ADMINS, stepWords: 'change company settings', priority, needsAction, actorValues: null,
     fire: async (c) => {
       const { sendAccountNotices } = await import('../lib/payments-notifications.js');
       await sendAccountNotices([{ verb, organizationId: c.org, dedup: `acct_${randomUUID()}`, emailAdmins: false }], 'Acme Doors');
@@ -189,7 +195,7 @@ suite('the alerts that have no record (real database)', () => {
     accountDoor('billing.payments_disconnected', 'INTERRUPT', true),
     {
       // The first card payment on the connected account, through the checkout effects every payment event ends in.
-      verb: 'billing.payouts_pending_first_payment', step: 'company_settings', stepWords: 'change company settings', priority: 'FEED', needsAction: false, actorValues: null,
+      verb: 'billing.payouts_pending_first_payment', step: ADMINS, stepWords: 'change company settings', priority: 'FEED', needsAction: false, actorValues: null,
       fire: async (c) => {
         const { runCheckoutEffects, CHECKOUT_INVOICE_SELECT } = await import('../services/payment-reconciler/checkout-effects.js');
         const job = await fx.addJob(c.org, c.customer, { status: 'SCHEDULED' });
@@ -211,14 +217,15 @@ suite('the alerts that have no record (real database)', () => {
     },
     {
       // Both routes that finish an invitation (a password, or Google). The person who accepted is the actor.
-      verb: 'team.invite_accepted', step: 'invite_users', stepWords: 'invite users', priority: 'FEED', needsAction: false, actorValues: {},
+      verb: 'team.invite_accepted', step: ADMINS, stepWords: 'invite users', priority: 'FEED', needsAction: false, actorValues: {},
       fire: async (c) => {
         const invitee = c.actor!;
-        await db.user.update({ where: { id: invitee.id }, data: { has_login: false } });
+        // The person's one live invite, as an admin's invitation makes it.
+        const inviteToken = await issueInviteToken(invitee);
         vi.mocked(supabaseAdmin.auth.admin.createUser).mockResolvedValue({ data: { user: { id: randomUUID() } }, error: null } as never);
         const app = (await import('../app.js')).default as never;
         const res = await request(app).post('/api/auth/accept-invite')
-          .send({ token: signInviteToken(invitee.id, invitee.email), password: 'sup3rsecret99', accepted_terms: true });
+          .send({ token: inviteToken, password: 'sup3rsecret99', accepted_terms: true });
         expect(res.status, JSON.stringify(res.body)).toBe(200);
         await reviewAttentionSettled();
       },
@@ -294,7 +301,7 @@ suite('the alerts that have no record (real database)', () => {
     let actor: Person | null = null;
     let api: Api | null = null;
     if (door.actorValues) {
-      actor = await personWith(world.org, { ...door.actorValues, ...(actorHoldsStep ? withRequires(door.step) : {}) });
+      actor = await personWith(world.org, { ...door.actorValues, ...(actorHoldsStep ? holderValues(door.step) : {}) });
       api = await fx.signedInAs(actor);
     }
     return { ...world, actor, api };
@@ -303,27 +310,27 @@ suite('the alerts that have no record (real database)', () => {
   const fireIn = (door: Door, c: Awaited<ReturnType<typeof setUp>>) => door.fire({ org: c.org, customer: c.customer, actor: c.actor, api: c.api });
 
   describe.each(doors.map((d) => [d.verb, d] as const))('%s', (verb, door) => {
-    it('tells the active holders of its switch on custom roles, and nobody else, with no copies and no why line', async () => {
+    it('tells the active holders of its switch, an Admin included, and nobody else, with no copies and no why line', async () => {
       const c = await setUp(door);
-      const holderA = await personWith(c.org, withRequires(door.step));
-      const holderB = await personWith(c.org, withRequires(door.step), 'TECHNICIAN');
-      // Not told: the switch is off for an Admin-role person, a Dispatcher-role person, a manager (only the last resort), and a
-      // person who holds every "Alert me about every ..." switch.
+      const holderA = await personWith(c.org, holderValues(door.step));
+      const holderB = await personWith(c.org, holderValues(door.step), 'TECHNICIAN');
+      // Not told: the switch is off for an Admin-role person, a Dispatcher-role person, and a person who holds every "Alert me about
+      // every ..." switch. An Admin (the flag) holds every switch, so they are a holder of every step and told.
       const adminSwitchOff = await personWith(c.org, {}, 'ADMIN');
       const dispatcherRole = await personWith(c.org, {}, 'DISPATCHER');
       const manager = await personWith(c.org, managerValues);
       const follower = await personWith(c.org, copyValues);
       // Not told: a holder who was deactivated, and a holder in another company.
-      const gone = await personWith(c.org, withRequires(door.step));
+      const gone = await personWith(c.org, holderValues(door.step));
       await db.user.update({ where: { id: gone.id }, data: { is_active: false } });
       const other = await quietOrg();
-      const stranger = await personWith(other.org, withRequires(door.step));
+      const stranger = await personWith(other.org, holderValues(door.step));
 
       await fireIn(door, c);
 
       const got = await reached(c.org, verb);
-      expect(got.map((r) => r.id).sort(), 'the holders of the switch').toEqual([holderA.id, holderB.id].sort());
-      for (const who of [adminSwitchOff, dispatcherRole, manager, follower, gone]) expect(got.map((r) => r.id)).not.toContain(who.id);
+      expect(got.map((r) => r.id).sort(), 'the holders of the switch, an Admin among them').toEqual([holderA.id, holderB.id, manager.id].sort());
+      for (const who of [adminSwitchOff, dispatcherRole, follower, gone]) expect(got.map((r) => r.id)).not.toContain(who.id);
       expect(await reached(other.org, verb), 'another company is never told').toEqual([]);
       expect(stranger.id).toBeTruthy();
       for (const r of got) {
@@ -334,7 +341,7 @@ suite('the alerts that have no record (real database)', () => {
       if (door.actorValues && door.skipsActor !== false) expect(got.map((r) => r.id)).not.toContain(c.actor!.id);
     }, 60_000);
 
-    it('goes to the Manage roles and permissions holders with a line naming what nobody could do, when nobody holds the switch', async () => {
+    it('reaches the Admins, as holders of the step, when nobody on a custom role holds the switch, with no "nobody can" line', async () => {
       const c = await setUp(door);
       const managerA = await personWith(c.org, managerValues);
       const managerB = await personWith(c.org, managerValues, 'SALES');
@@ -349,7 +356,8 @@ suite('the alerts that have no record (real database)', () => {
       expect(got.map((r) => r.id).sort()).toEqual([managerA.id, managerB.id].sort());
       for (const who of [adminSwitchOff, follower, gone]) expect(got.map((r) => r.id)).not.toContain(who.id);
       for (const r of got) {
-        expect(r.body, 'the why line names the missing switch').toContain(`Nobody can ${door.stepWords}.`);
+        // An Admin holds the step's switch, so the chain stops at the step: nothing says nobody could.
+        expect(r.body).not.toContain(`Nobody can ${door.stepWords}.`);
         expect(r.priority).toBe(door.priority);
         expect(r.needsAction).toBe(door.needsAction);
       }
@@ -371,8 +379,8 @@ suite('the alerts that have no record (real database)', () => {
 
     it('never tells the person who did it, and a person found by both steps gets one alert', async () => {
       const c = await setUp(door, true);
-      const both = await personWith(c.org, { ...withRequires(door.step), ...managerValues });
-      const holder = await personWith(c.org, withRequires(door.step));
+      const both = await personWith(c.org, { ...holderValues(door.step), ...managerValues });
+      const holder = await personWith(c.org, holderValues(door.step));
 
       await fireIn(door, c);
 
@@ -390,27 +398,21 @@ suite('the alerts that have no record (real database)', () => {
   // ── a retried event ──────────────────────────────────────────────────────────
 
   describe('a retried event (the processor sends it again)', () => {
-    it('keeps its key on the first alert and produces nothing the second time, also when the managers cover', async () => {
+    it('keeps its key on the first alert and produces nothing the second time', async () => {
       const { alertSwitchHolders } = await import('../services/notifications/noRecordAlerts.js');
-      const covered = await quietOrg();
-      const manager = await personWith(covered.org, managerValues);
-      const held = await quietOrg();
-      const holder = await personWith(held.org, withRequires('company_settings'));
+      const one = await quietOrg();
+      const admin = await personWith(one.org, managerValues);
       const args = (org: string, key: string) => ({
         verb: 'billing.payments_paused' as const, organizationId: org, actorId: null,
         object: { type: 'ORGANIZATION', id: org, label: 'Acme Doors' }, dedupKey: key,
       });
 
-      expect(await alertSwitchHolders(args(held.org, 'paused:1'))).toEqual([holder.id]);
-      expect(await alertSwitchHolders(args(held.org, 'paused:1')), 'replay of an alert that went to the holders').toEqual([]);
-      expect(await alertSwitchHolders(args(covered.org, 'paused:1'))).toEqual([manager.id]);
-      expect(await alertSwitchHolders(args(covered.org, 'paused:1')), 'replay of an alert the managers covered').toEqual([]);
-      // The holders appear after the first covered alert; the retry still produces nothing (the event was already told).
-      await db.permissionRoleSwitch.deleteMany({ where: { organization_id: covered.org } });
-      await personWith(covered.org, withRequires('company_settings'));
-      expect(await alertSwitchHolders(args(covered.org, 'paused:1'))).toEqual([]);
-      expect(await db.notification.count({ where: { organization_id: covered.org, verb: 'billing.payments_paused' } })).toBe(1);
-      expect(await db.notification.count({ where: { organization_id: held.org, verb: 'billing.payments_paused' } })).toBe(1);
+      expect(await alertSwitchHolders(args(one.org, 'paused:1'))).toEqual([admin.id]);
+      expect(await alertSwitchHolders(args(one.org, 'paused:1')), 'replay of an alert that went to the Admins').toEqual([]);
+      // A second Admin appearing afterwards does not make the retry tell anyone: the event was already told.
+      await personWith(one.org, managerValues);
+      expect(await alertSwitchHolders(args(one.org, 'paused:1'))).toEqual([]);
+      expect(await db.notification.count({ where: { organization_id: one.org, verb: 'billing.payments_paused' } })).toBe(1);
     }, 60_000);
   });
 
@@ -424,10 +426,10 @@ suite('the alerts that have no record (real database)', () => {
     });
     const sentTo = () => vi.mocked(email.sendOwnerPaymentNoticeEmail).mock.calls.map((c) => c[0].to).sort();
 
-    it('goes to the Access Billing holders who can open the invoice, not to Admin-role people, the Dispatcher or the copy holders', async () => {
+    it('goes to the Access Billing holders who can open the invoice, an Admin included, not to Admin-role people, the Dispatcher or the copy holders', async () => {
       const { notifyOwners } = await import('../lib/owner-payment-notices.js');
       const { org, customer } = await quietOrg();
-      const opens = { view_jobs: true, jobs_scope: 'all', view_invoices: true, invoices_scope: 'all' };
+      const opens = { view_jobs: true, jobs_scope: 'all', view_invoices: true, leads_scope: 'all' };
       const biller = await personWith(org, { ...withRequires('access_billing'), ...opens });
       const noInvoice = await personWith(org, withRequires('access_billing'));
       const adminSwitchOff = await personWith(org, opens, 'ADMIN');
@@ -441,14 +443,15 @@ suite('the alerts that have no record (real database)', () => {
       await notifyOwners(notice(org, invoice.id, `dispute:${randomUUID()}`));
 
       const addressOf = async (p: Person) => p.email;
-      expect(sentTo()).toEqual([await addressOf(biller)]);
-      for (const who of [noInvoice, adminSwitchOff, dispatcher, follower, manager]) expect(sentTo()).not.toContain(who.email);
+      // An Admin (the flag) holds Access Billing and opens every invoice.
+      expect(sentTo()).toEqual([await addressOf(biller), await addressOf(manager)].sort());
+      for (const who of [noInvoice, adminSwitchOff, dispatcher, follower]) expect(sentTo()).not.toContain(who.email);
     }, 60_000);
 
-    it('goes to the Manage roles and permissions holders when nobody who can open the invoice holds Access Billing, and to nobody on a replay', async () => {
+    it('goes to the Admins when nobody else who can open the invoice holds Access Billing, and to nobody on a replay', async () => {
       const { notifyOwners } = await import('../lib/owner-payment-notices.js');
       const { org, customer } = await quietOrg();
-      const manager = await personWith(org, { ...managerValues, view_invoices: true, invoices_scope: 'all', view_jobs: true, jobs_scope: 'all' });
+      const manager = await personWith(org, { ...managerValues, view_invoices: true, leads_scope: 'all', view_jobs: true, jobs_scope: 'all' });
       await personWith(org, {}, 'ADMIN');
       const job = await fx.addJob(org, customer, { status: 'SCHEDULED' });
       const invoice = await fx.addInvoice(org, customer, { jobId: job.id });
@@ -478,37 +481,37 @@ suite('the alerts that have no record (real database)', () => {
       expect(sentTo(), 'nobody was told in the bell, so nobody is emailed').toEqual([]);
     }, 60_000);
 
-    it('puts the payments account action-needed email in the hands of the Company settings holders, else the managers', async () => {
+    it('puts the payments account action-needed email in the hands of the Admins alone, and a replay emails nobody', async () => {
       const { sendAccountNotices } = await import('../lib/payments-notifications.js');
-      const held = await quietOrg();
-      const holder = await personWith(held.org, withRequires('company_settings'));
-      const adminSwitchOff = await personWith(held.org, {}, 'ADMIN');
       const covered = await quietOrg();
       const manager = await personWith(covered.org, managerValues);
+      // Holds every switch a person can, yet is no Admin: not emailed (setting up the company is the Admin flag's alone, 36b).
+      const everything = Object.fromEntries(SWITCH_CATALOG.filter((s) => s.kind === 'toggle').map((s) => [s.key, true]));
+      const widest = await personWith(covered.org, everything);
+      const adminSwitchOff = await personWith(covered.org, {}, 'ADMIN');
       const recipients = () => vi.mocked(email.sendPaymentsActionNeededEmail).mock.calls.map((c) => c[0].to).sort();
-
-      vi.mocked(email.sendPaymentsActionNeededEmail).mockClear();
-      await sendAccountNotices([{ verb: 'billing.payments_action_needed', organizationId: held.org, dedup: `a:${randomUUID()}`, emailAdmins: true }], 'Acme Doors');
-      expect(recipients()).toEqual([holder.email]);
-      expect(recipients()).not.toContain(adminSwitchOff.email);
 
       vi.mocked(email.sendPaymentsActionNeededEmail).mockClear();
       const key = `a:${randomUUID()}`;
       await sendAccountNotices([{ verb: 'billing.payments_action_needed', organizationId: covered.org, dedup: key, emailAdmins: true }], 'Acme Doors');
       expect(recipients()).toEqual([manager.email]);
+      expect(recipients()).not.toContain(widest.email);
+      expect(recipients()).not.toContain(adminSwitchOff.email);
       vi.mocked(email.sendPaymentsActionNeededEmail).mockClear();
       await sendAccountNotices([{ verb: 'billing.payments_action_needed', organizationId: covered.org, dedup: key, emailAdmins: true }], 'Acme Doors');
-      expect(recipients(), 'a replay of an alert the managers covered emails nobody').toEqual([]);
+      expect(recipients(), 'a replay of an alert the Admins were told emails nobody').toEqual([]);
     }, 60_000);
   });
 
   // ── the second invite door ───────────────────────────────────────────────────
 
-  it('tells the Invite users holders when an invitation is finished with Google, and not when a returning person signs in', async () => {
+  it('tells the Admins when an invitation is finished with Google, and not when a returning person signs in', async () => {
     const world = await quietOrg();
-    const holder = await personWith(world.org, withRequires('invite_users'));
+    const holder = await personWith(world.org, { is_admin: true });
     const invitee = await fx.addUser(world.org, 'google-invitee', 'TECHNICIAN');
-    await db.user.update({ where: { id: invitee.id }, data: { has_login: false } });
+    // The person's one live invite, as an admin's invitation makes it (it gives them has_login when it is sent; a person without it
+    // is refused at Google, H2 ticket 22). Finishing it is what makes the first Google sign-in the invitation's acceptance.
+    await issueInviteToken(invitee);
     // The consent the invite page records before it hands off to Google.
     await db.termsAcceptance.create({
       data: { user_id: invitee.id, user_email: invitee.email, organization_id: world.org, terms_version: CURRENT_TERMS_VERSION, terms_url: TERMS_URL, privacy_url: PRIVACY_URL },
@@ -521,7 +524,6 @@ suite('the alerts that have no record (real database)', () => {
     expect((await reached(world.org, 'team.invite_accepted')).map((r) => r.id)).toEqual([holder.id]);
 
     await db.notification.deleteMany({ where: { organization_id: world.org, verb: 'team.invite_accepted' } });
-    await db.user.update({ where: { id: invitee.id }, data: { has_login: true } });
     const again = await (await fx.signedInAs(invitee)).post('/api/auth/google/finalize');
     expect(again.status).toBe(200);
     await reviewAttentionSettled();

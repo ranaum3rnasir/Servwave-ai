@@ -83,13 +83,13 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
 
   let sequence = 0;
   const allOff = Object.fromEntries(SWITCH_CATALOG.filter((s) => s.kind === 'toggle').map((s) => [s.key, false]));
-  const ALL_SCOPES = { leads_scope: 'all', jobs_scope: 'all', estimates_scope: 'all', invoices_scope: 'all' };
+  const ALL_SCOPES = { leads_scope: 'all', jobs_scope: 'all' };
 
   /** A person on a fresh custom role made from blank, holding exactly these switch values and every other toggle off. */
   async function personWith(org: string, values: Record<string, boolean | string>, opts: { departmentId?: string } = {}): Promise<Person> {
     const key = `dash-role-${++sequence}`;
     await fx.addCustomRole(org, key, 'TECHNICIAN', { madeFromBlank: true, copyGrants: false });
-    await fx.setRoleSwitches(org, key, { ...allOff, ...values });
+    await fx.setRoleSwitches(org, key, { ...allOff, see_prices: true, ...values });
     const role = await db.customRole.findFirstOrThrow({ where: { organization_id: org, key } });
     return fx.addUser(org, `p${sequence}`, 'TECHNICIAN', { customRoleId: role.id, departmentId: opts.departmentId });
   }
@@ -128,10 +128,10 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
 
     it('returns exactly the tiles the catalog says the switches unlock, each with a category, mode and label', async () => {
       const { org } = await newOrg();
-      const values = { view_jobs: true, view_leads: true, view_invoices: true, jobs_scope: 'attached', leads_scope: 'all', invoices_scope: 'all' };
+      const values = { view_jobs: true, view_leads: true, view_invoices: true, jobs_scope: 'attached', leads_scope: 'all' };
       const person = await personWith(org, values);
       const answer = await dashboardOf(person);
-      const expected = eligibleTiles({ ...presetValues(null), ...allOff, ...values } as Record<string, SwitchValue>);
+      const expected = eligibleTiles({ ...presetValues(null), ...allOff, see_prices: true, ...values } as Record<string, SwitchValue>);
       expect(answer.tiles.map((t) => t.id)).toEqual(expected.map((t) => t.id));
       expect(answer.tiles).toEqual(expected);
       expect(Object.keys(answer.data).sort()).toEqual(expected.map((t) => t.id).filter((id) => !['service_areas', 'recent_calls'].includes(id)).sort());
@@ -175,10 +175,10 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
       const { org } = await newOrg();
       const department = await fx.addDepartment(org, 'crew');
       const base = { view_invoices: true };
-      const without = await dashboardOf(await personWith(org, { ...base, invoices_scope: 'all' }));
+      const without = await dashboardOf(await personWith(org, { ...base, jobs_scope: 'all', leads_scope: 'all' }));
       expect(tile(without, 'kpi.ar')).toMatchObject({ category: 'invoices_and_payments', mode: 'own', label: 'Yours' });
       const modeFor = async (scope: string, opts: { departmentId?: string } = {}) =>
-        tile(await dashboardOf(await personWith(org, { ...base, see_company_figures: true, invoices_scope: scope }, opts)), 'kpi.ar');
+        tile(await dashboardOf(await personWith(org, { ...base, see_company_figures: true, jobs_scope: scope, leads_scope: scope }, opts)), 'kpi.ar');
       expect(await modeFor('all')).toMatchObject({ mode: 'company', label: null });
       expect(await modeFor('attached')).toMatchObject({ mode: 'scope', label: 'Yours' });
       expect(await modeFor('team', { departmentId: department })).toMatchObject({ mode: 'scope', label: 'Your team' });
@@ -427,7 +427,7 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
   describe('lists show only records the person can open', () => {
     it('leaves an overdue invoice the person cannot open off Needs Attention, and keeps one on their own job', async () => {
       const { org, customer, admin } = await newOrg();
-      const me = await personWith(org, { view_jobs: true, view_invoices: true, jobs_scope: 'attached', invoices_scope: 'attached' });
+      const me = await personWith(org, { view_jobs: true, view_invoices: true, jobs_scope: 'attached', leads_scope: 'attached' });
       const mineJob = await fx.addJob(org, customer, { crew: [me.id] });
       const otherJob = await fx.addJob(org, customer, { crew: [admin.id] });
       const overdue = async (jobId: string) => {
@@ -492,7 +492,7 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
 
       it('keeps them away when View invoices is on but the invoices scope does not reach the invoice', async () => {
         const { org, customer, admin } = await newOrg();
-        const me = await personWith(org, { view_jobs: true, view_invoices: true, jobs_scope: 'attached', invoices_scope: 'attached' });
+        const me = await personWith(org, { view_jobs: true, view_invoices: true, jobs_scope: 'attached', leads_scope: 'attached' });
         const other = await fx.addUser(org, 'othercrew', 'TECHNICIAN');
         const job = await fx.addJob(org, customer, { crew: [me.id, other.id] });
         // The invoice sits on a job the person is on, but a different one: the scope keys on the invoice's own attachment.
@@ -510,16 +510,16 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
 
       it('lists each mirror once, and drops the invoice\'s own entry beside it, for a person who can open the invoice', async () => {
         const { org, customer, admin } = await newOrg();
-        const me = await personWith(org, { view_jobs: true, view_invoices: true, jobs_scope: 'attached', invoices_scope: 'all' });
+        const me = await personWith(org, { view_jobs: true, view_invoices: true, jobs_scope: 'attached' });
         await mirroredWorld(org, customer, admin, me);
         expect(await descriptionsOf(me)).toEqual(['mirror-invoice-file', 'mirror-invoice-line', 'mirror-payment', 'plain-job-note']);
       });
 
-      it('shows the mirrors to the person who made the invoice while attached to its job, with View invoices off', async () => {
+      it('keeps the mirrors from the person who made the invoice while attached to its job, with View invoices off (P7)', async () => {
         const { org, customer, admin } = await newOrg();
         const me = await personWith(org, { view_jobs: true, jobs_scope: 'attached' });
         await mirroredWorld(org, customer, admin, me, me);
-        expect(await descriptionsOf(me)).toEqual(['mirror-invoice-file', 'mirror-invoice-line', 'mirror-payment', 'plain-job-note']);
+        expect(await descriptionsOf(me)).toEqual(['plain-job-note']);
       });
 
       it('lists a pair once in the Admin box too, and still shows everything else', async () => {
@@ -535,7 +535,7 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
       const base = { view_tasks: true };
       const assignee = await personWith(org, base);
       const stranger = await personWith(org, base);
-      const everything = await personWith(org, { ...base, see_all_tasks: true });
+      const everything = await personWith(org, { ...base, tasks_scope: 'all' });
       const task = await db.task.create({
         data: { organization_id: org, task_number: `T-${randomUUID().slice(0, 6)}`, title: 'Review', assignee_ids: [assignee.id], created_by: admin.id },
       });
@@ -641,7 +641,7 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
     const UNSCHEDULED = 'unscheduled_jobs';
     type Row = { id: string; job_number: string; title: string; address: string; age_days: number; link: string };
     type UnscheduledData = { count: number; jobs: Row[] };
-    const JOBS = { view_jobs: true, show_jobs_page: true, jobs_scope: 'all' };
+    const JOBS = { view_jobs: true, jobs_scope: 'all' };
     const dataOf = (answer: Answer) => answer.data[UNSCHEDULED] as UnscheduledData;
     /** Book a trip the way the office does, so the server derives the job's status from its visits. */
     async function bookVisit(org: string, admin: Person, jobId: string) {
@@ -755,14 +755,12 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
       expect(answer.jobs.map((r) => r.age_days)).toEqual([7, 6, 5, 4, 3]);
     });
 
-    it('sends View all (the Jobs list, filtered to Unscheduled) only with View jobs and Show Jobs page, and the rows open the job either way', async () => {
+    it('sends View all (the Jobs list, filtered to Unscheduled) with View jobs alone (no Show page switch exists), and the rows open the job', async () => {
       const { org, customer } = await newOrg();
       const job = await fx.addJob(org, customer, { status: 'UNSCHEDULED' });
       const open = await dashboardOf(await personWith(org, JOBS));
       expect((tile(open, UNSCHEDULED) as Tile & { link: string | null }).link).toBe('/jobs?status=UNSCHEDULED');
-      const noPage = await dashboardOf(await personWith(org, { ...JOBS, show_jobs_page: false }));
-      expect((tile(noPage, UNSCHEDULED) as Tile & { link: string | null }).link).toBeNull();
-      expect(dataOf(noPage).jobs.map((r) => [r.id, r.link])).toEqual([[job.id, `/jobs/${job.id}`]]);
+      expect(dataOf(open).jobs.map((r) => [r.id, r.link])).toEqual([[job.id, `/jobs/${job.id}`]]);
     });
 
     it('gives a person with nothing waiting a normal empty answer', async () => {
@@ -777,7 +775,7 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
     type Row = { id: string; job_number: string; title: string; address: string; age_days: number; link: string };
     type QueueData = { count: number; jobs: Row[] };
     // Office review requires View jobs (the switch catalog refuses a set that holds it without), so a holder always reads jobs.
-    const HOLDER = { view_jobs: true, show_jobs_page: true, jobs_scope: 'all', office_review: true };
+    const HOLDER = { view_jobs: true, jobs_scope: 'all', office_review: true };
     const dataOf = (answer: Answer) => answer.data[QUEUE] as QueueData;
     const linkOfTile = (answer: Answer) => (tile(answer, QUEUE) as (Tile & { link: string | null }) | undefined)?.link;
     /** What the Jobs menu shows this person: the queue rule's own endpoint. */
@@ -796,7 +794,7 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
       expect(tile(holder, QUEUE)).toMatchObject({ category: 'office_review', mode: 'company', label: null });
       expect(holder.categories.find((c) => c.id === 'office_review')?.label).toBe('Office review');
 
-      const without = await personWith(org, { view_jobs: true, show_jobs_page: true, jobs_scope: 'all' });
+      const without = await personWith(org, { view_jobs: true, jobs_scope: 'all' });
       const answer = await dashboardOf(without);
       expect(tile(answer, QUEUE)).toBeUndefined();
       expect(answer.data[QUEUE]).toBeUndefined();
@@ -906,7 +904,7 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
       expect(answer.jobs.map((r) => r.age_days)).toEqual([7, 6, 5, 4, 3]);
     });
 
-    it('sends View all (the Jobs list filtered to Office review) only with View jobs and Show Jobs page, and the Jobs list it opens holds exactly the jobs the tile counts', async () => {
+    it('sends View all (the Jobs list filtered to Office review) with View jobs alone, and the Jobs list it opens holds exactly the jobs the tile counts', async () => {
       const { org, customer } = await newOrg();
       const job = await fx.addJob(org, customer, { status: 'OFFICE_REVIEW' });
       await fx.addJob(org, customer, { status: 'IN_PROGRESS' });
@@ -921,9 +919,7 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
       expect((list.body.data ?? list.body.jobs).map((j: { id: string }) => j.id)).toEqual([job.id]);
       expect(list.body.pagination?.total ?? list.body.total).toBe(dataOf(open).count);
 
-      const noPage = await dashboardOf(await personWith(org, { ...HOLDER, show_jobs_page: false }));
-      expect(linkOfTile(noPage)).toBeNull();
-      expect(dataOf(noPage).jobs.map((r) => [r.id, r.link])).toEqual([[job.id, `/jobs/${job.id}?panel=review`]]);
+      expect(dataOf(open).jobs.map((r) => [r.id, r.link])).toEqual([[job.id, `/jobs/${job.id}?panel=review`]]);
     });
 
     it('gives a person with nothing waiting a normal empty answer', async () => {
@@ -938,7 +934,7 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
     type Oldest = { id: string; lead_number: string; title: string; age_days: number; link: string };
     type MissingData = { count: number; oldest: Oldest | null };
     type Item = { id: string; type: string; title: string; meta: string; badge: string; link: string | null };
-    const LEADS = { view_leads: true, show_leads_page: true, leads_scope: 'all' };
+    const LEADS = { view_leads: true, leads_scope: 'all' };
     const ATTACHED = { ...LEADS, leads_scope: 'attached' };
     const dataOf = (answer: Answer) => answer.data[MISSING] as MissingData;
     const itemOf = (answer: Answer) => (answer.data.needs_attention as Item[]).find((i) => i.type === 'missing_lead_owner');
@@ -1078,7 +1074,7 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
       // A Technician base with Can be a dispatcher on, so no base-role check can produce this answer.
       const key = `mlo-creator-${++sequence}`;
       await fx.addCustomRole(org, key, 'TECHNICIAN', { madeFromBlank: true, copyGrants: false });
-      await fx.setRoleSwitches(org, key, { ...allOff, ...ATTACHED, create_leads: true, can_own_leads: false, can_be_dispatcher: true });
+      await fx.setRoleSwitches(org, key, { ...allOff, see_prices: true, ...ATTACHED, edit_leads: true, create_leads: true, can_own_leads: false, can_be_dispatcher: true });
       const role = await db.customRole.findFirstOrThrow({ where: { organization_id: org, key } });
       const creator = await fx.addUser(org, `mlo-creator-p${sequence}`, 'TECHNICIAN', { customRoleId: role.id });
 
@@ -1129,7 +1125,7 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
       }
     });
 
-    it('sends the tile and the item to the Leads list filtered to No owner with View leads and Show Leads page, else to the oldest lead, and that list holds exactly the leads counted', async () => {
+    it('sends the tile and the item to the Leads list filtered to No owner with View leads alone, and that list holds exactly the leads counted', async () => {
       const { org, customer } = await newOrg();
       const oldest = await fx.addLead(org, customer);
       await openedSince(oldest.id, 3);
@@ -1145,10 +1141,7 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
       expect((list.body.leads as Array<{ id: string }>).map((l) => l.id).sort()).toEqual([oldest.id, second.id].sort());
       expect(list.body.pagination.total).toBe(dataOf(open).count);
 
-      const noPage = await dashboardOf(await personWith(org, { ...LEADS, show_leads_page: false }));
-      expect(linkOfTile(noPage)).toBeNull();
-      expect(itemOf(noPage)?.link).toBe(`/leads/${oldest.id}`);
-      expect(dataOf(noPage).oldest?.link).toBe(`/leads/${oldest.id}`);
+      expect(dataOf(open).oldest?.link).toBe(`/leads/${oldest.id}`);
     });
 
     it('gives a person with nothing missing a normal empty answer and no item', async () => {
@@ -1174,8 +1167,8 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
     type Soonest = { id: string; kind: 'job' | 'lead'; number: string; title: string; starts_at: string; starts_label: string; until: string; link: string };
     type CrewData = { count: number; soonest: Soonest | null };
     type Item = { id: string; type: string; severity: string; title: string; meta: string; badge: string; link: string | null };
-    const JOBS = { view_jobs: true, show_jobs_page: true, access_schedule: true, jobs_scope: 'all' };
-    const JOBS_AND_LEADS = { ...JOBS, view_leads: true, show_leads_page: true, leads_scope: 'all' };
+    const JOBS = { view_jobs: true, access_schedule: true, jobs_scope: 'all' };
+    const JOBS_AND_LEADS = { ...JOBS, view_leads: true, leads_scope: 'all' };
     const ATTACHED = { ...JOBS_AND_LEADS, jobs_scope: 'attached', leads_scope: 'attached' };
     const NO_CREW_LINK = '/schedule?filter=no_crew';
     const dataOf = (answer: Answer) => answer.data[MISSING] as CrewData;
@@ -1434,7 +1427,7 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
   describe('Jobs this month (S09.16)', () => {
     const TILE = 'jobs_this_month';
     type MonthData = { jobs: number; finished: number; still_to_do: number };
-    const JOBS = { view_jobs: true, show_jobs_page: true, jobs_scope: 'all' };
+    const JOBS = { view_jobs: true, jobs_scope: 'all' };
     const ATTACHED = { ...JOBS, jobs_scope: 'attached' };
     const dataOf = (answer: Answer) => answer.data[TILE] as MonthData;
     const linkOfTile = (answer: Answer) => (tile(answer, TILE) as (Tile & { link: string | null }) | undefined)?.link;
@@ -1466,7 +1459,7 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
 
     it('is a Jobs tile that View jobs unlocks under every Jobs scope, and is neither sent nor computed without it, even when asked for by id', async () => {
       const { org } = await newOrg();
-      for (const scope of ['attached', 'team', 'location', 'all']) {
+      for (const scope of ['attached', 'team', 'all']) {
         const answer = await dashboardOf(await personWith(org, { ...JOBS, jobs_scope: scope }));
         expect(tile(answer, TILE), scope).toMatchObject({ category: 'jobs' });
       }
@@ -1584,12 +1577,9 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
       expect(dataOf(await dashboardOf(me, `?tiles=${TILE}`))).toEqual({ jobs: 0, finished: 0, still_to_do: 0 });
     });
 
-    it('carries the Jobs list address only with View jobs and Show Jobs page, and is still sent without it', async () => {
+    it('carries the Jobs list address with View jobs alone', async () => {
       const { org } = await newOrg();
       expect(linkOfTile(await dashboardOf(await personWith(org, JOBS)))).toBe('/jobs');
-      const hidden = await dashboardOf(await personWith(org, { ...JOBS, show_jobs_page: false }));
-      expect(tile(hidden, TILE)).toBeDefined();
-      expect(linkOfTile(hidden)).toBeNull();
     });
 
     it('is computed for a person whose saved layout shows it, and left out of the read when the layout hides it', async () => {
@@ -1611,7 +1601,7 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
   describe('Completed jobs value (S09.17)', () => {
     const TILE = 'completed_jobs_value';
     type Value = { jobs: number; value: number };
-    const JOBS = { view_jobs: true, show_jobs_page: true, jobs_scope: 'all' };
+    const JOBS = { view_jobs: true, jobs_scope: 'all' };
     /** The company's figures: See company figures on, so the Jobs scope decides (here All: every job). */
     const COMPANY = { ...JOBS, see_company_figures: true };
     const dataOf = (answer: Answer) => answer.data[TILE] as Value;
@@ -1647,7 +1637,7 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
     it('is a Job value tile that View jobs unlocks, and is neither sent nor computed without it, even when asked for by id', async () => {
       const { org } = await newOrg();
       expect(tile(await read(await personWith(org, JOBS)), TILE)).toMatchObject({ category: 'job_value' });
-      const without = await personWith(org, { view_leads: true, view_invoices: true, see_financial_data: true, see_company_figures: true, ...ALL_SCOPES });
+      const without = await personWith(org, { view_leads: true, view_invoices: true, see_costs: true, see_company_figures: true, ...ALL_SCOPES });
       expect(tile(await dashboardOf(without), TILE)).toBeUndefined();
       const byId = await read(without);
       expect(byId.tiles).toEqual([]);
@@ -1694,9 +1684,9 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
         expect(tile(answer, TILE)).toMatchObject({ mode: 'own', label: 'Yours' });
       });
 
-      it('needs no See financial data and no View invoices: the job\'s price shows to whoever can open the job', async () => {
+      it('needs no See costs and no View invoices: the job\'s price shows to whoever can open the job', async () => {
         const { org, customer } = await newOrg();
-        const me = await personWith(org, { ...OWN, see_financial_data: false, view_invoices: false });
+        const me = await personWith(org, { ...OWN, see_costs: false, view_invoices: false });
         await finished(org, customer, 75, { crew: [me.id] });
         expect(await figureOf(me)).toEqual({ jobs: 1, value: 75 });
       });
@@ -1747,21 +1737,6 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
         const answer = await read(me);
         expect(dataOf(answer)).toEqual({ jobs: 2, value: 300 });
         expect(tile(answer, TILE)).toMatchObject({ mode: 'scope', label: 'Your team' });
-      });
-
-      it('covers the jobs at the person\'s location, labelled "Your location", under Location', async () => {
-        const { org, customer } = await newOrg();
-        const here = await fx.addLocation(org, 'North');
-        const there = await fx.addLocation(org, 'South');
-        const me = await personWith(org, { ...JOBS, see_company_figures: true, jobs_scope: 'location' });
-        await db.user.update({ where: { id: me.id }, data: { location_id: here } });
-        const near = await fx.addUser(org, 'near', 'TECHNICIAN', { locationId: here });
-        const far = await fx.addUser(org, 'far', 'TECHNICIAN', { locationId: there });
-        await finished(org, customer, 60, { crew: [near.id] });
-        await finished(org, customer, 700, { crew: [far.id] });
-        const answer = await read(me);
-        expect(dataOf(answer)).toEqual({ jobs: 1, value: 60 });
-        expect(tile(answer, TILE)).toMatchObject({ mode: 'scope', label: 'Your location' });
       });
     });
 
@@ -1886,12 +1861,9 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
     });
 
     describe('where it leads', () => {
-      it('carries the Jobs list with the Completed this month filter only with View jobs and Show Jobs page, and is still sent without it', async () => {
+      it('carries the Jobs list with the Completed this month filter with View jobs alone', async () => {
         const { org } = await newOrg();
         expect(linkOfTile(await read(await personWith(org, COMPANY)))).toBe('/jobs?completed_this_month=true');
-        const hidden = await read(await personWith(org, { ...JOBS, show_jobs_page: false }));
-        expect(tile(hidden, TILE)).toBeDefined();
-        expect(linkOfTile(hidden)).toBeNull();
       });
     });
 
@@ -1911,7 +1883,7 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
 
   describe('Close Rate over Won and Lost (S09.15)', () => {
     type CloseRate = { rate: number; won: number; lost: number; vs_last_period_pp: number };
-    const LEADS = { view_leads: true, show_leads_page: true, leads_scope: 'all' };
+    const LEADS = { view_leads: true, leads_scope: 'all' };
     const ATTACHED = { ...LEADS, leads_scope: 'attached' };
     const DAY = 86_400_000;
     const ago = (days: number) => new Date(Date.now() - days * DAY);
@@ -2149,7 +2121,7 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
       await lead(org, customer, 'LOST', { closedDaysAgo: 4, reason: 'Duplicate' });
       await migrated(org, customer, 90, 3);
       await lead(org, customer, 'WON', { closedDaysAgo: 40 });
-      const me = await personWith(org, { ...LEADS, view_invoices: true, see_company_figures: true, invoices_scope: 'all' });
+      const me = await personWith(org, { ...LEADS, view_invoices: true, see_company_figures: true, jobs_scope: 'all', leads_scope: 'all' });
       const together = await dashboardOf(me, '?tiles=kpi.close_rate,smart_insights');
       const nudge = (answer: Answer) => answer.data.smart_insights.find((i: { id: string }) => i.id === 'pipeline_nudge');
       // 1 of 3 now (33%) against 1 of 1 before (100%).
@@ -2298,12 +2270,12 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
       await fx.addCustomRole(org, key, 'TECHNICIAN', { madeFromBlank: true, copyGrants: false });
       const role = await db.customRole.findFirstOrThrow({ where: { organization_id: org, key } });
       const setSwitches = async (next: Record<string, boolean | string>) => {
-        await fx.setRoleSwitches(org, key, { ...allOff, ...next });
+        await fx.setRoleSwitches(org, key, { ...allOff, see_prices: true, ...next });
         // A person's own stored switches were copied onto them when the role was given, so clear those too.
         await db.permissionUserSwitch.deleteMany({ where: { user_id: me.id } });
         clearSwitchCacheForUser(me.id);
       };
-      await fx.setRoleSwitches(org, key, { ...allOff, ...values });
+      await fx.setRoleSwitches(org, key, { ...allOff, see_prices: true, ...values });
       const me = await fx.addUser(org, `layout-p${sequence}`, 'TECHNICIAN', { customRoleId: role.id, basedOnRoleKey: key });
       return { me, setSwitches };
     }
@@ -2511,7 +2483,7 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
         const role = await fx.addCustomRole(org, key, 'DISPATCHER');
         const me = await fx.addUser(org, `append-narrowed-${sequence}`, 'DISPATCHER', { customRoleId: role.id });
         const setSwitches = async (values: Record<string, boolean | string>) => {
-          await fx.setRoleSwitches(org, key, { ...allOff, ...values });
+          await fx.setRoleSwitches(org, key, { ...allOff, see_prices: true, ...values });
           await db.permissionUserSwitch.deleteMany({ where: { user_id: me.id } });
           clearSwitchCacheForUser(me.id);
         };
@@ -2769,7 +2741,7 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
         const key = 'reset-narrowed';
         const role = await fx.addCustomRole(org, key, 'DISPATCHER');
         const me = await fx.addUser(org, 'reset-narrowed', 'DISPATCHER', { customRoleId: role.id });
-        await fx.setRoleSwitches(org, key, { ...allOff, view_jobs: true, jobs_scope: 'all' });
+        await fx.setRoleSwitches(org, key, { ...allOff, see_prices: true, view_jobs: true, jobs_scope: 'all' });
         await db.permissionUserSwitch.deleteMany({ where: { user_id: me.id } });
         clearSwitchCacheForUser(me.id);
         const mayHave = new Set((await dashboardOf(me)).tiles.map((t) => t.id));
@@ -2886,7 +2858,7 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
         await fx.addCustomRole(org, key, 'TECHNICIAN', { madeFromBlank: true, copyGrants: false });
         const role = await db.customRole.findFirstOrThrow({ where: { organization_id: org, key } });
         const setSwitches = (values: Record<string, boolean | string>) =>
-          fx.setRoleSwitches(org, key, { ...allOff, ...values });
+          fx.setRoleSwitches(org, key, { ...allOff, see_prices: true, ...values });
         await setSwitches({ view_jobs: true, jobs_scope: 'all' });
         const me = await fx.addUser(org, `carry-p${sequence}`, 'TECHNICIAN', { customRoleId: role.id, basedOnRoleKey: key });
         await db.permissionUserSwitch.deleteMany({ where: { user_id: me.id } });
@@ -2991,8 +2963,9 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
     const TILE = 'estimates_to_send';
     type Row = { id: string; estimate_number: string; title: string; total: number; link: string };
     type Figure = { count: number; estimates: Row[] };
-    const VIEW = { view_estimates: true, show_estimates_page: true, estimates_scope: 'all' };
-    const ATTACHED = { ...VIEW, estimates_scope: 'attached' };
+    // A document is reached through the lead or job it hangs off, which takes View leads and View jobs (ticket 33, story 50).
+    const VIEW = { view_estimates: true, view_leads: true, view_jobs: true, jobs_scope: 'all', leads_scope: 'all' };
+    const ATTACHED = { ...VIEW, jobs_scope: 'attached', leads_scope: 'attached' };
     const dataOf = (answer: Answer) => answer.data[TILE] as Figure;
     const read = async (person: Person) => dashboardOf(person, `?tiles=${TILE}`);
     const figureOf = async (person: Person) => dataOf(await read(person));
@@ -3028,14 +3001,14 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
       expect(byId.data).toEqual({});
     });
 
-    it('shows nothing on the home page to a person with View estimates off who made a draft, though the estimate itself still opens', async () => {
+    it('shows nothing on the home page to a person with View estimates off who made a draft, and the estimate does not open either', async () => {
       const { org, customer } = await newOrg();
-      const me = await personWith(org, { ...VIEW, view_estimates: false, show_estimates_page: false });
+      const me = await personWith(org, { ...VIEW, view_estimates: false });
       const mine = await draft(org, customer, me.id);
       const answer = await read(me);
       expect(answer.tiles).toEqual([]);
       expect(answer.data).toEqual({});
-      expect((await (await fx.signedInAs(me)).get(`/api/estimates/${mine.id}`)).status).toBe(200);
+      expect((await (await fx.signedInAs(me)).get(`/api/estimates/${mine.id}`)).status).toBe(403);
     });
 
     it('says so plainly when there is no draft: a zero count and no rows', async () => {
@@ -3046,8 +3019,9 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
     it('lists the person\'s own draft, and the draft leaves the tile once it is sent through the real send route', async () => {
       const { org, customer } = await newOrg();
       await db.customer.update({ where: { id: customer }, data: { email: `customer-${org.slice(0, 8)}@example.test` } });
-      // Estimates scope Attached with nothing attached: the only way this person reaches the estimate is that they made it.
-      const me = await personWith(org, ATTACHED);
+      // Estimates scope Attached with nothing attached: the only way this person reaches the estimate is that they made it
+      // for a customer alone. Sending it takes Edit estimates, which the person holds explicitly.
+      const me = await personWith(org, { ...ATTACHED, edit_estimates: true });
       // The send goes out from the sender's own mailbox (PRD 10, S10.12).
       await fx.addUserMailbox(org, me);
       const mine = await draft(org, customer, me.id);
@@ -3126,7 +3100,7 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
         const onTeam = await draft(org, customer, admin.id, { leadId: teamLead.id });
         const elsewhere = await draft(org, customer, admin.id);
         expect((await figureOf(me)).count).toBe(2);
-        const narrow = await personWith(org, { ...VIEW, estimates_scope: 'team' }, { departmentId: team });
+        const narrow = await personWith(org, { ...VIEW, jobs_scope: 'team', leads_scope: 'team' }, { departmentId: team });
         expect(numbersOf(await figureOf(narrow))).toEqual([onTeam.number]);
         expect(numbersOf(await figureOf(me)).sort()).toEqual([onTeam.number, elsewhere.number].sort());
       });
@@ -3171,9 +3145,9 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
         expect(row.total).toBe(Number(page.body.estimate.total_amount));
       });
 
-      it('shows the total to a person with neither See company figures nor See financial data, and carries no cost, margin, sum or contact detail', async () => {
+      it('shows the total to a person with neither See company figures nor See costs, and carries no cost, margin, sum or contact detail', async () => {
         const { org, customer, admin } = await newOrg();
-        const me = await personWith(org, { ...VIEW, see_company_figures: false, see_financial_data: false });
+        const me = await personWith(org, { ...VIEW, see_company_figures: false, see_costs: false });
         await db.customer.update({ where: { id: customer }, data: { email: 'private@example.test', phone: '5550100' } });
         await draft(org, customer, admin.id, { total: 99 });
         await draft(org, customer, admin.id, { total: 1 });
@@ -3207,17 +3181,14 @@ suite('GET /api/dashboard answers each signed-in person from the records they ca
     });
 
     describe('where it leads', () => {
-      it('carries the Estimates list filtered to Draft only with View estimates and Show Estimates page, and is still sent without it', async () => {
+      it('carries the Estimates list filtered to Draft with View estimates alone', async () => {
         const { org } = await newOrg();
         expect(linkOfTile(await dashboardOf(await personWith(org, VIEW)))).toBe('/estimates?status=DRAFT');
-        const hidden = await dashboardOf(await personWith(org, { ...VIEW, show_estimates_page: false }));
-        expect(tile(hidden, TILE)).toBeDefined();
-        expect(linkOfTile(hidden)).toBeNull();
       });
 
-      it('still gives each row its estimate to open when Show Estimates page is off', async () => {
+      it('gives each row its estimate to open', async () => {
         const { org, customer, admin } = await newOrg();
-        const me = await personWith(org, { ...VIEW, show_estimates_page: false });
+        const me = await personWith(org, { ...VIEW });
         const made = await draft(org, customer, admin.id);
         expect((await figureOf(me)).estimates[0]!.link).toBe(`/estimates/${made.id}`);
       });

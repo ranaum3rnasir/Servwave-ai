@@ -85,8 +85,9 @@ const mockPrisma = prisma as unknown as Record<string, any>;
 
 /** The pool refusal, pinned as a literal — importing the constant would assert a string equals itself. */
 const SELF_ONLY = 'You can only put yourself on a walkthrough.';
-/** The row-scope refusal, which every door produces from `canAccessRow`. */
-const ROW_REFUSAL = 'Insufficient permissions';
+/** The row-scope refusal: every door answers a lead out of reach as not found. */
+// A lead out of the person's reach answers exactly like a missing one (ticket 33).
+const ROW_REFUSAL = 'Lead not found';
 
 const REP = TEST_USERS.sales;
 /** A real, active, in-org user who is NOT the rep. */
@@ -206,9 +207,6 @@ function wireTx() {
 /** Sign in, with grants answered PER ROLE so one role's rows are never handed to another. */
 function signInAsRep() {
   mockAuthAs('sales');
-  mockPrisma.rolePermission.findMany.mockImplementation((args: { where: { role: string } }) =>
-    Promise.resolve(DEFAULT_GRANTS.filter((g) => g.role === args.where.role)),
-  );
   clearPermissionCache();
 }
 
@@ -366,7 +364,7 @@ describe('the rep reschedules a walkthrough they booked (story 6)', () => {
 
     const res = await schedule([REP.id], MOVED_TO);
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(res.body.error).toBe(ROW_REFUSAL);
     expectNothingWritten();
   });
@@ -471,7 +469,7 @@ describe('the rep books a SECOND visit on the same lead (story 7)', () => {
 
     const res = await bookAdditionalVisit([REP.id], SECOND_VISIT_AT);
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(res.body.error).toBe(ROW_REFUSAL);
     expectNothingWritten();
   });
@@ -514,11 +512,11 @@ describe('the rep unschedules and cancels on their own lead (story 12)', () => {
     onLead(leadRow('CONTACTED', TEST_USERS.admin.id));
 
     const un = await unschedule();
-    expect(un.status).toBe(403);
+    expect(un.status).toBe(404);
     expect(un.body.error).toBe(ROW_REFUSAL);
 
     const cx = await cancelWalkthrough('any reason');
-    expect(cx.status).toBe(403);
+    expect(cx.status).toBe(404);
     expect(cx.body.error).toBe(ROW_REFUSAL);
 
     expectNothingWritten();
@@ -609,7 +607,7 @@ describe.each(['WON', 'LOST'])(
 
       const res = await schedule([REP.id], MOVED_TO);
 
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(404);
       expect(res.body.error).toBe(ROW_REFUSAL);
       expectNothingWritten();
     });

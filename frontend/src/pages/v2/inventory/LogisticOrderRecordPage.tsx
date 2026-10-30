@@ -14,8 +14,8 @@ import { useRecordVisit } from '../pageBreadcrumbs';
 /**
  * /inventory/logistic-orders/:orderId - ONE logistic order, opened from its alert (or a link on a job).
  *
- * A record route, like a job's or a purchase order's: it carries no list or Show guard, because Show Logistic Orders page
- * hides the list page and its menu entry, not the order. The page asks the server; View logistic orders is the only thing
+ * A record route, like a job's or a purchase order's: it carries no list guard, because the order opens whatever the
+ * list switches say. The page asks the server; View logistic orders is the only thing
  * that opens an order. Without it the page never asks, and a refusal or a missing order draws the same plain not-found
  * state, so the screen says nothing about whether the order exists. The order is the list's own sheet: what a person may
  * do to it is the server's `actions` list for them and this order.

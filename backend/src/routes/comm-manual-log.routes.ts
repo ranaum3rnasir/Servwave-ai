@@ -1,9 +1,10 @@
-import { Router } from 'express';
+import { Router, type Request, type Response } from 'express';
 import { authenticate } from '../middleware/authenticate';
 import { attachAbility } from '../middleware/attachAbility';
 import { canDo } from '../middleware/canGuard';
 import { validate } from '../middleware/validate';
 import * as ctrl from '../controllers/comm-manual-log.controller';
+import { markRouteCheck } from '../middleware/routeCheck';
 
 const router = Router();
 
@@ -85,8 +86,8 @@ router.delete('/manual-log/:id', canDo('log_past', 'Communication'), ctrl.delete
 
 // Terminate this router's own prefixes - see comm-email.routes.ts for why an unmatched path of
 // ours must not fall through into a phone gate.
-router.all([...MANUAL_LOG_PREFIXES, '/manual-log/*'], (_req, res) => {
+router.all([...MANUAL_LOG_PREFIXES, '/manual-log/*'], markRouteCheck('closed', (_req: Request, res: Response) => {
   res.status(404).json({ error: 'Not found' });
-});
+}));
 
 export default router;

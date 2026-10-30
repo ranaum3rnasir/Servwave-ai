@@ -103,20 +103,20 @@ describe('defineAbilityFor — real ability build', () => {
   const grantsFor = (role: string) => DEFAULT_GRANTS.filter((g) => g.role === role);
 
   it('ADMIN reaches it via manage-all, with no explicit row', () => {
-    expect(defineAbilityFor({ id: 'u1', role: 'ADMIN' }, []).can(ACTION, SUBJECT)).toBe(true);
+    expect(defineAbilityFor({ is_admin: true, id: 'u1', role: 'ADMIN' }, []).can(ACTION, SUBJECT)).toBe(true);
   });
 
   it('DISPATCHER and TECHNICIAN hold it from DEFAULT_GRANTS alone', () => {
-    expect(defineAbilityFor({ id: 'u2', role: 'DISPATCHER' }, grantsFor('DISPATCHER')).can(ACTION, SUBJECT)).toBe(true);
-    expect(defineAbilityFor({ id: 'u3', role: 'TECHNICIAN' }, grantsFor('TECHNICIAN')).can(ACTION, SUBJECT)).toBe(true);
+    expect(defineAbilityFor({ is_admin: false, id: 'u2', role: 'DISPATCHER' }, grantsFor('DISPATCHER')).can(ACTION, SUBJECT)).toBe(true);
+    expect(defineAbilityFor({ is_admin: false, id: 'u3', role: 'TECHNICIAN' }, grantsFor('TECHNICIAN')).can(ACTION, SUBJECT)).toBe(true);
   });
 
   it('SALES does not', () => {
-    expect(defineAbilityFor({ id: 'u4', role: 'SALES' }, grantsFor('SALES')).can(ACTION, SUBJECT)).toBe(false);
+    expect(defineAbilityFor({ is_admin: false, id: 'u4', role: 'SALES' }, grantsFor('SALES')).can(ACTION, SUBJECT)).toBe(false);
   });
 
   it('SALES still holds read Communication — the record tab is unaffected', () => {
-    expect(defineAbilityFor({ id: 'u5', role: 'SALES' }, grantsFor('SALES')).can('read', SUBJECT)).toBe(true);
+    expect(defineAbilityFor({ is_admin: false, id: 'u5', role: 'SALES' }, grantsFor('SALES')).can('read', SUBJECT)).toBe(true);
   });
 });
 

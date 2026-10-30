@@ -64,7 +64,7 @@ function jpegBuf(size = 1024): Buffer {
 function mockEstimateEditorWhoMayCreateCatalogItems() {
   mockAuthAs('sales');
   // Adding to the catalog is the Create price book items switch (Roles & Permissions S01.9), off in the Sales preset.
-  mockRoleSwitches({ create_price_book_items: true });
+  mockRoleSwitches({ edit_price_book_items: true, create_price_book_items: true });
   clearPermissionCache();
 }
 
@@ -160,7 +160,10 @@ describe('create a catalog item from an estimate, then fill its picture', () => 
     expect(fill.body.item).toMatchObject({ id: NEW_ITEM_ID, image_url: written.image_url });
   });
 
-  it('refuses the same principal at the REPLACE sibling — the fill route is what makes this flow possible', async () => {
+  it('refuses a principal without Edit price book items at the REPLACE sibling — Create requires Edit now, so the fill route serves the estimate flow', async () => {
+    // Create price book items requires Edit price book items (AL-04), so "create without edit" cannot be held any more; the
+    // REPLACE sibling is still refused to a person who holds neither.
+    mockRoleSwitches({ edit_price_book_items: false, create_price_book_items: false });
     mockPrisma.priceBookItem.findUnique.mockResolvedValue({
       id: NEW_ITEM_ID,
       image_url: null,

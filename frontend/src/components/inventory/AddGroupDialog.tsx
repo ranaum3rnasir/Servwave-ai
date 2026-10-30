@@ -20,7 +20,7 @@ import { FormField } from "@/components/patterns/FormField";
 import { EmptyState } from "@/components/ui/empty-state";
 import { formatCurrency } from "@/lib/utils";
 import { useAppAbility } from "@/contexts/AbilityContext";
-import { canSeePricing as canSeePricingAbility } from "@/lib/ability";
+import { canSeePricing as canSeePricingAbility, canSeePrices as canSeePricesAbility } from "@/lib/ability";
 import {
   PROFITABILITY_NOTE,
   calculateProfitability,
@@ -69,8 +69,15 @@ export function AddGroupDialog({
   items,
 }: Props) {
   const isEdit = !!editGroup;
-  // The shared "See financial data" gate, not a local re-check (SRVW-140).
-  const canSeePricing = canSeePricingAbility(useAppAbility());
+  // The shared "See costs" gate, not a local re-check (SRVW-140).
+  const ability = useAppAbility();
+  const canSeePricing = canSeePricingAbility(ability);
+  // Ruling 7 (Ran, 2026-10-29): without See prices the editor shows no price line of any kind. The prices are not in the answer,
+  // and a missing price must never be drawn as "$0.00".
+  const canSeePrices = canSeePricesAbility(ability);
+  // Margin and markup are worked out from the sell price, and their hint asks for one: a person who cannot see or enter a sell
+  // price is not shown them (pre-PR review, parked item). Their cost column stays.
+  const canSeeProfitability = canSeePricing && canSeePrices;
   const [form, setForm] = useState<{
     name: string;
     description: string;
@@ -439,7 +446,7 @@ export function AddGroupDialog({
           </div>
         </div>
 
-        {form.groupType === "flat_rate" && (
+        {form.groupType === "flat_rate" && canSeePrices && (
           <FormField
             label="Flat-rate price (optional override)"
             hint={
@@ -548,7 +555,7 @@ export function AddGroupDialog({
                           {it.customerName ?? it.name}
                         </div>
                         <div className="text-[10px] text-text-secondary">
-                          {it.sku} · ${(it.listPrice ?? it.sellPrice ?? 0).toFixed(2)}
+                          {canSeePrices ? `${it.sku} · $${(it.listPrice ?? it.sellPrice ?? 0).toFixed(2)}` : it.sku}
                         </div>
                       </div>
                     </button>
@@ -575,10 +582,10 @@ export function AddGroupDialog({
                 <tr>
                   <th className="px-2 py-1.5">Item</th>
                   <th className="px-2 py-1.5 w-20 text-right">Qty</th>
-                  <th className="px-2 py-1.5 w-24 text-right">Price</th>
+                  {canSeePrices && <th className="px-2 py-1.5 w-24 text-right">Price</th>}
                   {canSeePricing && <th className="px-2 py-1.5 w-24 text-right">Cost</th>}
-                  {canSeePricing && <th className="px-2 py-1.5 w-28 text-right">Profitability</th>}
-                  <th className="px-2 py-1.5 w-20 text-right">Amount</th>
+                  {canSeeProfitability && <th className="px-2 py-1.5 w-28 text-right">Profitability</th>}
+                  {canSeePrices && <th className="px-2 py-1.5 w-20 text-right">Amount</th>}
                   <th className="px-2 py-1.5 w-8"></th>
                 </tr>
               </thead>
@@ -586,7 +593,7 @@ export function AddGroupDialog({
                 {form.lines.length === 0 && (
                   <tr>
                     <td
-                      colSpan={canSeePricing ? 7 : 5}
+                      colSpan={3 + (canSeePrices ? 2 : 0) + (canSeePricing ? 1 : 0) + (canSeeProfitability ? 1 : 0)}
                       className="px-3 py-8 text-center text-xs text-text-secondary"
                     >
                       <EmptyState title='No lines yet - search above to add Price Book items, or click "Free-form line" for one-off charges.' />
@@ -600,7 +607,7 @@ export function AddGroupDialog({
                     : undefined;
                   const profitability = lineProfitability(line);
                   // The cost and profitability cells are drawn only for a
-                  // viewer with "See financial data" (S07.17), so the note may
+                  // viewer with "See costs" (S07.17), so the note may
                   // invite them into the cost field.
                   const profitabilityNote = PROFITABILITY_NOTE[profitability.state];
                   return (
@@ -657,35 +664,37 @@ export function AddGroupDialog({
                           className="px-1.5 py-1 text-right"
                         />
                       </td>
-                      <td className="px-2 py-1.5">
-                        <Input
-                          kind="money"
-                          step="0.01"
-                          min="0"
-                          value={
-                            line.priceOverride != null
-                              ? line.priceOverride
-                              : linePrice(line) || ""
-                          }
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            updateLine(line.id, {
-                              priceOverride: v === "" ? undefined : Number(v),
-                            });
-                          }}
-                          placeholder={
-                            !isFreeForm && referencedItem
-                              ? `${(referencedItem.listPrice ?? referencedItem.sellPrice ?? 0).toFixed(2)}`
-                              : "0.00"
-                          }
-                          className="px-1.5 py-1 text-right"
-                          title={
-                            !isFreeForm
-                              ? "Override the item's list price for this bundle. Leave blank to use the item's current price."
-                              : ""
-                          }
-                        />
-                      </td>
+                      {canSeePrices && (
+                        <td className="px-2 py-1.5">
+                          <Input
+                            kind="money"
+                            step="0.01"
+                            min="0"
+                            value={
+                              line.priceOverride != null
+                                ? line.priceOverride
+                                : linePrice(line) || ""
+                            }
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              updateLine(line.id, {
+                                priceOverride: v === "" ? undefined : Number(v),
+                              });
+                            }}
+                            placeholder={
+                              !isFreeForm && referencedItem
+                                ? `${(referencedItem.listPrice ?? referencedItem.sellPrice ?? 0).toFixed(2)}`
+                                : "0.00"
+                            }
+                            className="px-1.5 py-1 text-right"
+                            title={
+                              !isFreeForm
+                                ? "Override the item's list price for this bundle. Leave blank to use the item's current price."
+                                : ""
+                            }
+                          />
+                        </td>
+                      )}
                       {canSeePricing && (
                         <>
                           <td className="px-2 py-1.5">
@@ -712,6 +721,10 @@ export function AddGroupDialog({
                               className="px-1.5 py-1 text-right"
                             />
                           </td>
+                        </>
+                      )}
+                      {canSeeProfitability && (
+                        <>
                           {/* Margin and markup side by side, each under its full
                               word. A line with no cost shows an em dash, never a
                               confident 100% invented out of missing data, and
@@ -741,9 +754,11 @@ export function AddGroupDialog({
                           </td>
                         </>
                       )}
-                      <td className="px-2 py-1.5 text-right text-sm tabular-nums font-medium text-text-primary">
-                        ${lineAmount(line).toFixed(2)}
-                      </td>
+                      {canSeePrices && (
+                        <td className="px-2 py-1.5 text-right text-sm tabular-nums font-medium text-text-primary">
+                          ${lineAmount(line).toFixed(2)}
+                        </td>
+                      )}
                       <td className="px-2 py-1.5">
                         <Button
                           variant="ghost"
@@ -761,10 +776,10 @@ export function AddGroupDialog({
                   );
                 })}
               </tbody>
-              {form.lines.length > 0 && (
+              {form.lines.length > 0 && canSeePrices && (
                 <tfoot className="border-t border-border bg-background-light/60 text-sm">
                   <tr>
-                    <td colSpan={5} className="px-2 py-1.5 text-right text-text-secondary">
+                    <td colSpan={canSeePricing ? 5 : 3} className="px-2 py-1.5 text-right text-text-secondary">
                       Subtotal (sum of lines)
                     </td>
                     <td className="px-2 py-1.5 text-right tabular-nums font-semibold text-text-primary">
@@ -774,7 +789,7 @@ export function AddGroupDialog({
                   </tr>
                   <tr>
                     <td
-                      colSpan={5}
+                      colSpan={canSeePricing ? 5 : 3}
                       className="px-2 py-1.5 text-right text-[11px] uppercase tracking-wide text-primary"
                     >
                       Customer sees ({form.groupType === "flat_rate" ? "flat rate" : "itemized"})

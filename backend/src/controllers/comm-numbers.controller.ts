@@ -23,8 +23,8 @@ import { canSeePhoneNumberRouting } from '../lib/permissions/enforce';
 /**
  * Numbers platform (master plan §4 comm-numbers row, slice 7).
  *
- * READ/PATCH are plain Communication grants; search/buy/register-byo are gated
- * canDo('update','Organization') — the repo's ADMIN idiom (addendum §A.2:
+ * READ/PATCH are plain Communication grants; search/buy/register-byo are Admin-only
+ * (requireAdminTo, the Admin flag: ticket 36; addendum §A.2:
  * DISPATCHER holds create-Communication, so a Communication gate would let a
  * dispatcher spend money). Search responses are price-stripped server-side:
  * numbers are "included in the plan" — CTM's per-number cost is a platform
@@ -119,7 +119,7 @@ async function requireCtmAccount(req: Request, res: Response): Promise<string | 
 
 export async function listNumbers(req: Request, res: Response) {
   try {
-    // Communication scope (M11): "All" lists every number, "Linked to me" the numbers linked to the person (the main
+    // Communication scope (M11): "All" lists every number, Attached the numbers linked to the person (the main
     // line too, when the fallback covers them).
     const rows = await prisma.phoneNumber.findMany({
       where: { ...tenantWhere(req), ...(await numbersInSectionWhereForReq(req)) },

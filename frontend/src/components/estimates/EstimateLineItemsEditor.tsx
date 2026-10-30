@@ -94,6 +94,7 @@ import { ScopePresetPicker, type ScopePreset } from '@/features/estimate-workspa
 import { toast } from '@/components/ui/use-toast';
 import { extractApiError } from '@/lib/utils';
 import { areSelectionsLocked } from '@/lib/estimates/selectionLock';
+import { useCanSeePrices } from '@/contexts/AbilityContext';
 
 /**
  * Runtime-only widening — mirrors `AddLineDialog.tsx`'s own local `LineUpdatePatch`.
@@ -720,6 +721,12 @@ export function EstimateScopeOfWorkCard({ estimate, canManage, canSeePricing }: 
   // "Use preset" — opens the existing ScopePresetPicker; picking one ADDS a new scope block
   // (never replaces the array) via the same addMutation the header "+ Add" button uses.
   const [presetPickerOpen, setPresetPickerOpen] = useState(false);
+  // Presets are priced scopes: applying one writes a selling price and saving one stores it. A person without See prices is never
+  // offered either (M4, Ran 2026-10-28, "builders see prices"): not the "Use preset" button, not the picker, not "Save as preset".
+  // Editing an estimate already needs See prices on the server (the Edit estimates switch requires it), so this is the same rule
+  // stated where the screen is drawn, not a second one.
+  const seesPrices = useCanSeePrices();
+  const canUsePresets = canManage && seesPrices;
   const applyPreset = (preset: ScopePreset) => {
     setPresetPickerOpen(false);
     addMutation.mutate({
@@ -742,9 +749,9 @@ export function EstimateScopeOfWorkCard({ estimate, canManage, canSeePricing }: 
         onUpdate={handleUpdate}
         onDelete={handleDelete}
         onReorder={handleReorder}
-        onUsePreset={canManage ? () => setPresetPickerOpen(true) : undefined}
+        onUsePreset={canUsePresets ? () => setPresetPickerOpen(true) : undefined}
         onSaveAsPreset={
-          canManage ? (scope) => savePresetMutation.mutate(scopeToPresetPayload(scope)) : undefined
+          canUsePresets ? (scope) => savePresetMutation.mutate(scopeToPresetPayload(scope)) : undefined
         }
         renderPhotos={(scope) =>
           // The backfilled legacy draft (see file header) isn't a real persisted scope row yet —
@@ -760,6 +767,7 @@ export function EstimateScopeOfWorkCard({ estimate, canManage, canSeePricing }: 
           )
         }
       />
+      {canUsePresets && (
       <ScopePresetPicker
         open={presetPickerOpen}
         currentScope={scopes[0]?.body ?? ''}
@@ -779,6 +787,7 @@ export function EstimateScopeOfWorkCard({ estimate, canManage, canSeePricing }: 
         }}
         onClose={() => setPresetPickerOpen(false)}
       />
+      )}
     </>
   );
 }

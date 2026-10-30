@@ -20,7 +20,10 @@ import { AuthAlert, AuthCard, AuthDivider } from './components/authPanel';
 import { BrandLockup } from './components/brandLockup';
 import { v2Path } from '../uiV2';
 
-type Phase = 'loading' | 'ready' | 'invalid';
+type Phase = 'loading' | 'ready' | 'invalid' | 'failed';
+
+/** The server's answer for a used, replaced, cancelled or past-its-week link (security finding H2). */
+const INVITE_EXPIRED_CODE = 'invite_expired';
 
 /**
  * /v2/accept-invite - the CRM-kit rebuild of `pages/AcceptInvitePage.tsx`.
@@ -60,6 +63,8 @@ export default function AcceptInvitePage() {
   const [agreed, setAgreed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // Bumped by "Try again" so a failed load (a network or server problem) can be re-run without a page reload.
+  const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
     let active = true;
@@ -78,13 +83,16 @@ export default function AcceptInvitePage() {
         setPhone(formatPhone(info.phone));
         setPhase('ready');
       })
-      .catch(() => {
-        if (active) setPhase('invalid');
+      .catch((err: unknown) => {
+        if (!active) return;
+        // "Expired" only when the server said the link is dead; a network or server failure is not the link's fault.
+        const code = (err as { response?: { data?: { code?: string } } } | null)?.response?.data?.code;
+        setPhase(code === INVITE_EXPIRED_CODE ? 'invalid' : 'failed');
       });
     return () => {
       active = false;
     };
-  }, [token]);
+  }, [token, attempt]);
 
   // Same rule the API enforces, scoped to what was actually typed. Blank is not
   // rejected: the field is optional, and a blank box means "leave what is
@@ -165,10 +173,31 @@ export default function AcceptInvitePage() {
             <p className="text-muted-foreground text-center text-sm">Loading your invitation…</p>
           )}
 
+          {phase === 'failed' && (
+            <div className="text-center">
+              <p className="text-muted-foreground mb-4 text-sm">
+                We couldn&apos;t load this invitation. Please try again.
+              </p>
+              <Button
+                size="sm"
+                onClick={() => {
+                  setPhase('loading');
+                  setAttempt((n) => n + 1);
+                }}
+              >
+                Try again
+              </Button>
+            </div>
+          )}
+
           {phase === 'invalid' && (
             <div className="text-center">
-              <p className="text-destructive mb-4 text-sm">
-                This invitation link is invalid or has expired.
+              {/* One answer for every dead link: used, replaced by a newer invite, cancelled, or past its week. */}
+              <p role="heading" aria-level={2} className="text-destructive mb-1 text-sm font-semibold">
+                This link has expired
+              </p>
+              <p className="text-muted-foreground mb-4 text-sm">
+                Ask your admin to send you a new invite.
               </p>
               <Button variant="link" size="sm" onClick={() => navigate(v2Path('/login'))}>
                 Go to sign in

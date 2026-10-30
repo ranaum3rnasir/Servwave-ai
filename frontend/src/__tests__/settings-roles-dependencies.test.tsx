@@ -83,15 +83,17 @@ describe('Settings > Roles, a requirement turned off', () => {
   });
 });
 
-describe('Settings > Roles, the eligibility switches', () => {
-  it('draws a role with Create leads and Create jobs on and all three eligibility switches off with no note and no grey, and saves it unchanged', async () => {
+describe('Settings > Roles, the eligibility settings', () => {
+  it('draws a role with Create leads and Create jobs on and all three eligibility settings off with no note and no grey, does not draw the settings, and saves it unchanged', async () => {
     const user = userEvent.setup();
     const eligibility = ['can_own_leads', 'can_be_dispatcher', 'can_be_on_crew'];
     const values: SwitchSet = { ...everythingOn(), ...Object.fromEntries(eligibility.map((k) => [k, false])) };
     serve(values);
     renderWithProviders(<RolesPage />);
 
-    for (const key of ['create_leads', 'create_jobs', ...eligibility]) expect(await toggleOf(key)).toBeEnabled();
+    for (const key of ['create_leads', 'create_jobs']) expect(await toggleOf(key)).toBeEnabled();
+    // They are per-person settings (P1): edited on the person's profile, never drawn on the Roles page.
+    for (const key of eligibility) expect(screen.queryByRole('switch', { name: catalogSwitch(key).label })).toBeNull();
     expect(screen.queryAllByText(/^Requires /)).toHaveLength(0);
 
     await user.click(await toggleOf('show_phone'));

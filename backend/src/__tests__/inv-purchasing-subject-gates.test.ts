@@ -14,7 +14,6 @@ import { clearPermissionCache } from '../lib/permissions/permissionCache';
 // permission-purchasing-db.test.ts (what each answer carries).
 
 const mockPrisma = prisma as unknown as {
-  rolePermission: { findMany: ReturnType<typeof vi.fn> };
   purchaseOrder: { findMany: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn>; count: ReturnType<typeof vi.fn> };
   purchaseOrderLine: { findMany: ReturnType<typeof vi.fn> };
   jobStageLine: { findMany: ReturnType<typeof vi.fn> };
@@ -86,10 +85,9 @@ describe('Create, Edit and Delete purchase orders open one verb each', () => {
     mockPrisma.purchaseOrder.create.mockResolvedValue(PURCHASE_ORDER_FIXTURE);
   });
 
-  it('Create purchase orders opens the create route and nothing that edits or deletes', async () => {
-    const asCreator = personWith({ view_purchase_orders: true, create_purchase_orders: true });
+  it('Create purchase orders opens the create route and nothing that deletes (Create requires Edit, so the edit route is open too)', async () => {
+    const asCreator = personWith({ view_purchase_orders: true, edit_purchase_orders: true, create_purchase_orders: true });
     expect((await request(app).post('/api/inventory/purchase-orders').set(asCreator).send(PO_PAYLOAD)).status).toBe(201);
-    expect((await request(app).patch(`/api/inventory/purchase-orders/${RES_ID}`).set(asCreator).send({})).status).toBe(403);
     expect((await request(app).delete(`/api/inventory/purchase-orders/${RES_ID}`).set(asCreator)).status).toBe(403);
   });
 
@@ -162,8 +160,9 @@ describe('Create, Edit and Delete vendors open one verb each', () => {
 
   it('the vendor upsert needs Create vendors without an id and Edit vendors with one', async () => {
     mockPrisma.vendor.findFirst.mockResolvedValue(null);
-    const creator = personWith({ view_vendors: true, create_vendors: true });
-    expect((await request(app).post('/api/inventory/vendors').set(creator).send({ id: RES_ID, notes: 'x' })).status).toBe(403);
+    // Create requires Edit (AL-04), so a creator is past the gate with an id too: the vendor named by it does not exist.
+    const creator = personWith({ view_vendors: true, edit_vendors: true, create_vendors: true });
+    expect((await request(app).post('/api/inventory/vendors').set(creator).send({ id: RES_ID, notes: 'x' })).status).toBe(404);
     const editor = personWith({ view_vendors: true, edit_vendors: true });
     expect((await request(app).post('/api/inventory/vendors').set(editor).send({ name: 'New' })).status).toBe(403);
     // Past the gate into the handler: the vendor named by the id does not exist.
@@ -177,11 +176,6 @@ describe('stored role-permission rows decide nothing', () => {
   it('a stale read row does not open the purchase orders to a person with View purchase orders off', async () => {
     mockAuthAs('sales');
     mockRoleSwitches({ view_purchase_orders: false });
-    mockPrisma.rolePermission.findMany.mockResolvedValue([
-      ...DEFAULT_GRANTS.filter((g) => g.role === 'SALES'),
-      { role: 'SALES', action: 'read', subject: 'PurchaseOrder' },
-      { role: 'SALES', action: 'read', subject: 'Vendor' },
-    ]);
     mockPrisma.purchaseOrder.findMany.mockResolvedValue([]);
     const res = await request(app).get('/api/inventory/purchase-orders').set(authHeader('sales'));
     expect(res.status).toBe(403);

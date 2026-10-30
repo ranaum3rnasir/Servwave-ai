@@ -44,6 +44,7 @@ import type { DepositType } from '@/lib/deposit';
 import { canAutoFocus } from '@/ui-kit/lib/autoFocus';
 import { SendingAsLine } from '@/components/communication/inbox/ComposeWindow';
 import { useHandSender } from '@/components/communication/useHandSender';
+import { useIsAdmin } from '@/lib/useIsAdmin';
 
 interface SendEstimateDialogProps {
   open: boolean;
@@ -121,6 +122,7 @@ export function SendEstimateDialog({
   sentMethods = null,
   onSuccess,
 }: SendEstimateDialogProps) {
+  const isAdmin = useIsAdmin();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const { data: org } = useOrganization();
@@ -637,8 +639,7 @@ export function SendEstimateDialog({
 
                     {orgAcceptedMethods.length === 0 && (
                       <p className="text-xs text-danger">
-                        No payment methods accepted by your organization. Update
-                        them in Organization Settings.
+                        No payment methods accepted by your organization.{isAdmin && ' Update them in Organization Settings.'}
                       </p>
                     )}
 

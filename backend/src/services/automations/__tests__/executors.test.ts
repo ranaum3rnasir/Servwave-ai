@@ -1109,21 +1109,20 @@ describe('executeAction - SEND_SMS addressed to staff', () => {
     expect(res.detail).toBe('Text delivery failed \u00b7 Text delivery to Ann Lee failed');
   });
 
-  // The run-history preview is what an admin reads to see WHAT went out. It must be a
-  // body a handset really received - not a rendering nobody got.
-  it('previews the text the customer actually received, merge fields resolved', async () => {
+  // Run history names no part of the text (M4, Ran 2026-10-28, "just the subject"): the Activity tab is read by anyone who can
+  // open Automations, and a body can carry a figure or a private link. The handset still gets the whole message.
+  it('says only "Text message sent" in run history, while the customer receives the full text', async () => {
     const res = await executeAction(
       rule('SEND_SMS', { recipients: ['customer'], body: 'Hi {{customer.first_name}}, see you soon' }),
       bundle(),
     );
 
     expect(res.status).toBe('SENT');
-    expect(res.detail).toBe('Hi Sarah, see you soon');
-    // The invariant, not just the string: the preview IS what left the building.
-    expect(mockCtmClient.sendSms.mock.calls[0][1].msg).toBe(res.detail);
+    expect(res.detail).toBe('Text message sent');
+    expect(mockCtmClient.sendSms.mock.calls[0][1].msg).toBe('Hi Sarah, see you soon');
   });
 
-  it('previews a staff fan-out with one of the bodies that was really sent', async () => {
+  it('says the same for a staff fan-out, and every handset still got the body', async () => {
     const res = await executeAction(
       rule('SEND_SMS', { recipients: ['assigned_team'], body: 'A note from {{org.name}}' }),
       bundle({ assignees: [uA, uB] }),
@@ -1132,10 +1131,7 @@ describe('executeAction - SEND_SMS addressed to staff', () => {
     expect(res.status).toBe('SENT');
     const bodies = mockCtmClient.sendSms.mock.calls.map((c: any[]) => c[1].msg);
     expect(bodies).toEqual(['A note from Blue Ridge Plumbing', 'A note from Blue Ridge Plumbing']);
-    // Still the first DELIVERED body rather than a re-render nobody got - the bodies no
-    // longer differ, but the preview must keep coming from what was actually dispatched.
-    expect(res.detail).toBe('A note from Blue Ridge Plumbing');
-    expect(bodies).toContain(res.detail);
+    expect(res.detail).toBe('Text message sent');
   });
 });
 

@@ -1,5 +1,13 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
-import { matchByPhone, normalizeNAPhone, type IdentityMatch } from '../comms-identity';
+import { normalizeNAPhone, type IdentityMatch } from '../comms-identity';
+
+/**
+ * Who a number belongs to, for the door that is asking (re-audit NV-vp3-1). The webhook, with nobody signed in, passes the
+ * company-wide resolver (`matchByPhone`); a signed-in person's compose passes `matchByPhoneInReach`, so a number whose
+ * customer they cannot open keys a conversation of its own, filed on nobody, and never joins or reveals that customer's.
+ * Taken from the caller so this shared helper never decides reach itself (permission-phone-match-reach-guard.test.ts).
+ */
+export type IdentifyNumber = (rawNumber: string) => Promise<IdentityMatch | null>;
 
 /**
  * The ONE SMS thread-identity rule (slice H7): given a counterpart phone
@@ -73,9 +81,10 @@ export async function findOrCreateSmsThreadByNumber(
   db: Db,
   orgId: string,
   rawNumber: string,
+  identify: IdentifyNumber,
   opts: FindOrCreateSmsThreadOptions = {},
 ): Promise<SmsThreadResolution> {
-  const match = rawNumber ? await matchByPhone(db, orgId, rawNumber) : null;
+  const match = rawNumber ? await identify(rawNumber) : null;
 
   // Staff are resolved LAST and only on a total miss, so customer, lead and
   // vendor keying is reached exactly as it is today.
@@ -121,8 +130,9 @@ export async function smsThreadExistsForNumber(
   db: Db,
   orgId: string,
   rawNumber: string,
+  identify: IdentifyNumber,
 ): Promise<boolean> {
-  const match = rawNumber ? await matchByPhone(db, orgId, rawNumber) : null;
+  const match = rawNumber ? await identify(rawNumber) : null;
   const titleKey = normalizeNAPhone(rawNumber) ?? (rawNumber || 'unknown');
   const thread = await db.messageThread.findFirst({
     where: match?.customerId

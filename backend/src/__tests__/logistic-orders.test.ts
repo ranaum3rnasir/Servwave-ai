@@ -970,7 +970,6 @@ function mockSalesConditionedLoActions(actions: string[]) {
     ...base,
     ...actions.map((action) => ({ role: 'SALES', action, subject: 'LogisticOrder', conditions: OWN_VIA_JOB_CONDITION })),
   ];
-  mockPrisma.rolePermission.findMany.mockResolvedValue(rows);
   clearPermissionCache();
 }
 

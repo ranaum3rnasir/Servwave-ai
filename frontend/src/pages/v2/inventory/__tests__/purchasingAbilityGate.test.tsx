@@ -213,7 +213,7 @@ describe('#2043 — PODetailDialog "Close PO" status action (R3)', () => {
 describe('#2043 — PODetailDialog staged PO (non-regression)', () => {
   it('a writer on a staged PO still sees the disabled primary action and the Staging pointer', async () => {
     const staged = po({ status: 'ordered', stagedAsJobStageId: 'stage-1' });
-    seedMySwitches({ view_stock: true, show_stock_page: true });
+    seedMySwitches({ view_stock: true });
     renderDialog(staged, updateOnlyAbility());
 
     const disabledBtn = screen.getByRole('button', { name: /received via staging/i });

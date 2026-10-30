@@ -31,6 +31,7 @@ import { randomUUID } from 'crypto';
 import { demoVisitsForLeadStatus } from './lib/demo-walkthrough-visits';
 import { demoLeadDispatcherId, demoPeopleForSlot } from './lib/demo-people-on-records';
 import { seedListRows } from './lib/org-list-rows';
+import { setFirstOwner } from './lib/users/first-owner';
 
 dotenv.config();
 
@@ -42,6 +43,10 @@ const FORBIDDEN_ORG_IDS = new Set<string>([
 ]);
 
 const CHUNK = 500;
+
+// The demo company is set up for the account `npm run seed` (src/seed.ts) creates: that person is its Owner (AL-16) when it
+// has none yet. Never "the oldest Admin": that rule lived only in migration M11.
+const DEMO_OWNER_EMAIL = 'admin@servwave.com';
 
 // ── Tiny seeded PRNG so a given "now" deterministically reproduces the dataset ─
 let _seed = 0xc0ffee;
@@ -220,9 +225,9 @@ async function main() {
     // ── 1. Load existing staff (we never create users) ─────────────────────
     const users = await prisma.user.findMany({
       where: { organization_id: orgId },
-      select: { id: true, role: true, first_name: true, last_name: true },
+      select: { id: true, role: true, is_admin: true, first_name: true, last_name: true },
     });
-    const admins = users.filter((u) => u.role === 'ADMIN');
+    const admins = users.filter((u) => u.is_admin);
     const sales = users.filter((u) => u.role === 'SALES');
     const dispatchers = users.filter((u) => u.role === 'DISPATCHER');
     const techs = users.filter((u) => u.role === 'TECHNICIAN');
@@ -240,6 +245,19 @@ async function main() {
     }
     const anyUser = admins[0] ?? users[0];
     const creatorId = anyUser.id;
+
+    // Every company has an Owner (AL-16). The demo company keeps the one it has; with none, the seed admin becomes it.
+    if (!org.owner_user_id) {
+      const seedAdmin = await prisma.user.findFirst({
+        where: { organization_id: orgId, email: DEMO_OWNER_EMAIL, is_admin: true, is_active: true },
+        select: { id: true },
+      });
+      if (!seedAdmin) {
+        throw new Error(`The demo company has no Owner and no active Admin ${DEMO_OWNER_EMAIL} to make one. Run \`npm run seed\` first.`);
+      }
+      await setFirstOwner(prisma, orgId, seedAdmin.id);
+      console.log(`Demo company Owner: ${DEMO_OWNER_EMAIL}`);
+    }
 
     // ── 2. FK-SAFE WIPE (Alpha org only) ───────────────────────────────────
     // Order derived from live FK delete-rules (RESTRICT children first). Comms/

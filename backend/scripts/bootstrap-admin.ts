@@ -19,9 +19,8 @@ import { supabaseAdmin } from '../src/lib/supabase';
 import { prisma } from '../src/lib/prisma';
 import { runUnscoped } from '../src/lib/tenant-context';
 import { issueUserMailbox } from '../src/lib/mailbox/register';
-import { signInviteToken } from '../src/lib/invite-token';
-import { sendUserInviteEmail } from '../src/lib/email';
-import { env } from '../src/config/env';
+import { setFirstOwner } from '../src/lib/users/first-owner';
+import { sendInviteLink } from '../src/lib/invite-link';
 
 const args = process.argv.slice(2);
 const arg = (f: string) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : undefined; };
@@ -84,27 +83,23 @@ async function main() {
             first_name: first,
             last_name: last,
             role: Role.ADMIN,
+            is_admin: true,
             organization_id: orgId,
             has_login: true,
           },
           select: { id: true, email: true, first_name: true, organization_id: true },
         });
         await issueUserMailbox(tx, { id: created.id, organization_id: orgId, first_name: first, last_name: last });
+        // The person the company is set up for is its Owner (AL-16), in the same write as their account.
+        await setFirstOwner(tx, orgId, created.id);
         return created;
       });
 
-      // Dispatch the branded set-password invite (mirrors dispatchInvite).
-      const token = signInviteToken(user.id, user.email);
-      const inviteUrl = `${env.FRONTEND_URL}/accept-invite?token=${encodeURIComponent(token)}`;
-      const emailSent = await sendUserInviteEmail({
-        to: user.email,
-        firstName: user.first_name,
-        inviteUrl,
-        organizationId: user.organization_id,
-      });
+      // Dispatch the branded set-password invite: the person's one live invite, made after their row exists (H2).
+      const { inviteUrl, emailSent } = await sendInviteLink(user);
 
       console.log(`\n✅ First admin created for ${org.name}`);
-      console.log(`   Email:       ${user.email} (ADMIN, has_login)`);
+      console.log(`   Email:       ${user.email} (ADMIN, Owner, has_login)`);
       console.log(`   Invite sent: ${emailSent ? 'yes' : 'NO — send the URL below manually'}`);
       console.log(`   Invite URL:  ${inviteUrl}`);
       console.log(`\n   The admin sets their password via that link, then adds the rest of the team in-app.\n`);

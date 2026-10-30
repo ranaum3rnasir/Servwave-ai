@@ -64,6 +64,7 @@ import { useFormFlow } from '@/ui-kit/lib/formFlow';
 import { useLeaveGuard } from '@/hooks/useLeaveGuard';
 import { dayAndTimeToIso, useScheduleTimezone } from '@/lib/schedule-tz';
 import { leadOffers, type LeadAction } from './components/leadShared';
+import { useNoOptionsLabel } from '@/lib/useIsAdmin';
 
 type SearchCustomer = PickCustomer;
 type ServiceLocation = ServiceLocationOption;
@@ -162,6 +163,7 @@ function CreateLeadForm({
   preselectedCustomerId?: string | null;
   prefillPhone?: string | null;
 }) {
+  const noOptions = useNoOptionsLabel();
   const { data: org } = useOrganization();
   // Owner picker (#389) - owner-eligible users only; the backend eligible_for
   // filter mirrors the create-time eligibility guard.
@@ -667,7 +669,7 @@ function CreateLeadForm({
                           ? jobTypeOptions.map((t) => ({ value: t, label: t }))
                           : [{
                             value: '__none__',
-                            label: ability.can('update', 'Organization') ? 'No options - add below' : 'No options - add in Settings',
+                            label: ability.can('update', 'Organization') ? 'No options - add below' : 'No options',
                             disabled: true,
                           }]),
                         ...(ability.can('update', 'Organization')
@@ -708,7 +710,7 @@ function CreateLeadForm({
                       options={
                         sourceOptions.length > 0
                           ? sourceOptions.map((s) => ({ value: s, label: s }))
-                          : [{ value: '__none__', label: 'No options - add in Settings', disabled: true }]
+                          : [{ value: '__none__', label: noOptions, disabled: true }]
                       }
                     />
                   </div>
@@ -888,6 +890,7 @@ function EditLeadForm({
   navigate: ReturnType<typeof useNavigate>;
   queryClient: ReturnType<typeof useQueryClient>;
 }) {
+  const noOptions = useNoOptionsLabel();
   const { data: org } = useOrganization();
   const ability = useAppAbility();
   const addJobType = useAddJobType();
@@ -1100,7 +1103,7 @@ function EditLeadForm({
                           ? jobTypeOptions.map((t) => ({ value: t, label: t }))
                           : [{
                             value: '__none__',
-                            label: ability.can('update', 'Organization') ? 'No options - add below' : 'No options - add in Settings',
+                            label: ability.can('update', 'Organization') ? 'No options - add below' : 'No options',
                             disabled: true,
                           }]),
                         ...(ability.can('update', 'Organization')
@@ -1142,7 +1145,7 @@ function EditLeadForm({
                         options={
                           sourceOptions.length > 0
                             ? sourceOptions.map((s) => ({ value: s, label: s }))
-                            : [{ value: '__none__', label: 'No options - add in Settings', disabled: true }]
+                            : [{ value: '__none__', label: noOptions, disabled: true }]
                         }
                       />
                     </div>

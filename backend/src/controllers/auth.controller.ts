@@ -2,12 +2,17 @@ import { Request, Response } from 'express';
 import { z } from 'zod';
 import { supabaseAdmin, supabaseAuth } from '../lib/supabase';
 import { prisma } from '../lib/prisma';
+import { ownerOfCompany } from '../lib/users/owner';
+import { isSuperUser } from '../lib/permissions/effectiveRole';
 import { logger } from '../lib/logger';
 import { abilityForUser } from '../lib/permissions/enforce';
-import { resolveAppUser } from '../lib/auth-user';
+import { computeSwitchesStamp } from '../lib/permissions/switches/stamp';
+import { resolveAppUser, signInRefusal, stillMaySignIn } from '../lib/auth-user';
+import { removeProviderAccount } from '../lib/auth-provider-login';
 import { emailSchema } from '../lib/email-schema';
 import { clearTokenCache } from '../middleware/authenticate';
 import { verifyInviteToken } from '../lib/invite-token';
+import { INVITE_EXPIRED_BODY, isLiveInvite, consumeInvite, finishInvite, restoreInvite, retireInvite } from '../lib/invite-link';
 import { generateCode, hashCode, verifyCode, encryptRefreshToken, decryptRefreshToken } from '../lib/mfa-otp';
 import { sendMfaCodeEmail } from '../lib/email';
 import { emit } from '../services/notifications/notificationService';
@@ -47,11 +52,13 @@ function userPayload(user: {
   first_name: string;
   last_name: string;
   role: string;
+  is_admin: boolean;
   organization_id: string;
   org_is_demo: boolean;
   org_is_spider_pilot: boolean;
   org_plan: string;
   org_features: string[];
+  org_owner_user_id: string | null;
   has_login: boolean;
   phone?: string | null;
   phone_ext?: string | null;
@@ -62,6 +69,8 @@ function userPayload(user: {
     first_name: user.first_name,
     last_name: user.last_name,
     role: user.role,
+    // Whether the person is an Admin (P15): the screens ask this, never the role name.
+    is_admin: user.is_admin,
     organization_id: user.organization_id,
     // Demo-org flag drives the frontend's mock-first Reports gating.
     org_is_demo: user.org_is_demo,
@@ -69,6 +78,9 @@ function userPayload(user: {
     org_is_spider_pilot: user.org_is_spider_pilot,
     org_plan: user.org_plan,
     org_features: user.org_features,
+    // Who the company's Owner is (AL-16): the Users page marks them and keeps their remove actions off. Null when it has none.
+    // An Admin's alone (re-audit N18): nobody else opens that page, and the id would name the Owner to anyone.
+    ...(user.is_admin ? { org_owner_user_id: user.org_owner_user_id } : {}),
     // Personnel staff-mgmt (PR #218): carry self-service profile fields so the
     // frontend auth store hydrates a real phone / has_login on every login path
     // (plain + MFA-verify). googleFinalize builds its own payload inline.
@@ -220,7 +232,10 @@ export async function login(req: Request, res: Response) {
       return;
     }
 
-    if (!user.is_active) {
+    // The one sign-in check (H2). A revoked person whose login the provider still accepted is answered exactly as a login
+    // the provider no longer has: the same words a wrong password gets.
+    const refusal = signInRefusal(user);
+    if (refusal) {
       void logAudit({
         req,
         action: 'login.failed',
@@ -229,9 +244,10 @@ export async function login(req: Request, res: Response) {
         orgId: user.organization_id,
         actorId: user.id,
         actorEmail: user.email,
-        metadata: { reason: 'deactivated' },
+        metadata: { reason: refusal === 'deactivated' ? 'deactivated' : 'login_revoked' },
       });
-      res.status(403).json({ error: 'Account is deactivated' });
+      if (refusal === 'deactivated') res.status(403).json({ error: 'Account is deactivated' });
+      else res.status(401).json({ error: 'Invalid email or password' });
       return;
     }
 
@@ -271,6 +287,8 @@ export async function login(req: Request, res: Response) {
       return;
     }
 
+    // Signed in: an invite link still out for this person is finished (H2: a copy of the email opens nothing any more).
+    await retireInvite(user.id);
     res.json({
       user: userPayload(user),
       session: sessionPayload(data.session),
@@ -357,13 +375,16 @@ export async function mfaVerify(req: Request, res: Response) {
       email: undefined,
       email_confirmed_at: undefined,
     });
-    if (!user || !user.is_active) {
+    // The one sign-in check (H2): revoked or deactivated while the code was out gets the same generic refusal.
+    if (!user || signInRefusal(user)) {
       res.status(401).json({ error: 'Invalid or expired code' });
       return;
     }
 
     // Burn the row so the parked token can never be replayed.
     await prisma.mfaEmailChallenge.delete({ where: { id: challengeId } });
+    // Signed in: an invite link still out for this person is finished (H2).
+    await retireInvite(user.id);
 
     res.json({
       user: userPayload(user),
@@ -643,6 +664,16 @@ export async function refresh(req: Request, res: Response) {
       return;
     }
 
+    // The one sign-in check (H2): a refresh is a new session, so a revoked or deactivated person gets none, answered as a
+    // refresh token the provider no longer honours.
+    const user = data.user ? await resolveAppUser(data.user) : null;
+    if (!user || signInRefusal(user)) {
+      res.status(401).json({ error: 'Invalid refresh token' });
+      return;
+    }
+    // Still signed in: an invite link still out for this person is finished (H2).
+    await retireInvite(user.id);
+
     res.json({
       session: {
         access_token: data.session.access_token,
@@ -663,6 +694,7 @@ export async function refresh(req: Request, res: Response) {
 async function loadAbilityRules(user: {
   id: string;
   role: string;
+  is_admin: boolean;
   organization_id: string;
   // SRVW-138: present for a custom-role user; selected together, always.
   custom_role_id?: string | null;
@@ -684,8 +716,17 @@ export async function me(req: Request, res: Response) {
   const { auth_id: _authId, ...user } = req.user!;
   // No data dependency between the two - resolve concurrently rather than paying both round
   // trips in sequence on a path every authenticated request/refresh hits.
-  const [abilityRules, avatar_url] = await Promise.all([loadAbilityRules(user), resolveMyAvatarUrl(user.id)]);
-  res.json({ user: { ...user, avatar_url }, abilityRules });
+  const admin = isSuperUser(user);
+  const [abilityRules, avatar_url, switches_version, org_owner_user_id] = await Promise.all([
+    loadAbilityRules(user),
+    resolveMyAvatarUrl(user.id),
+    // P17: the same stamp the response header carries, so a client that reads the body has it too.
+    computeSwitchesStamp(user).catch(() => null),
+    // Who the company's Owner is (AL-16), read from the database, never the cached session. An Admin's alone (N18): only the
+    // Users page reads it, and nobody else opens that page.
+    admin ? ownerOfCompany(user.organization_id) : Promise.resolve(null),
+  ]);
+  res.json({ user: { ...user, avatar_url, ...(admin ? { org_owner_user_id } : {}) }, abilityRules, switches_version });
 }
 
 /**
@@ -767,15 +808,17 @@ export async function getInvite(req: Request, res: Response) {
   const token = typeof req.body?.token === 'string' ? req.body.token : '';
   const payload = verifyInviteToken(token);
   if (!payload) {
-    res.status(400).json({ error: 'This invitation link is invalid or has expired.' });
+    res.status(400).json(INVITE_EXPIRED_BODY);
     return;
   }
   const user = await prisma.user.findUnique({
     where: { id: payload.uid },
-    select: { email: true, first_name: true, is_active: true, phone: true, phone_ext: true },
+    select: { email: true, first_name: true, is_active: true, has_login: true, password_hash: true, phone: true, phone_ext: true },
   });
-  if (!user || !user.is_active) {
-    res.status(400).json({ error: 'This invitation is no longer valid.' });
+  // Only the person's one live invite opens the page: used, replaced, revoked and never-issued links all say "expired". A revoked or
+  // deactivated person's link opens nothing (the one sign-in check, H2).
+  if (!user || signInRefusal(user) || user.email !== payload.email || !isLiveInvite(payload, user.password_hash)) {
+    res.status(400).json(INVITE_EXPIRED_BODY);
     return;
   }
   // phone/phone_ext are here so the accept page can PREFILL what the admin
@@ -810,7 +853,7 @@ export async function acceptInvite(req: Request, res: Response) {
   }
   const payload = verifyInviteToken(parsed.data.token);
   if (!payload) {
-    res.status(400).json({ error: 'This invitation link is invalid or has expired.' });
+    res.status(400).json(INVITE_EXPIRED_BODY);
     return;
   }
 
@@ -819,10 +862,16 @@ export async function acceptInvite(req: Request, res: Response) {
   try {
     const appUser = await prisma.user.findUnique({
       where: { id: payload.uid },
-      select: { id: true, email: true, is_active: true, first_name: true, last_name: true, organization_id: true },
+      select: {
+        id: true, email: true, is_active: true, has_login: true, password_hash: true, first_name: true, last_name: true,
+        organization_id: true,
+      },
     });
-    if (!appUser || !appUser.is_active || appUser.email !== payload.email) {
-      res.status(400).json({ error: 'This invitation is no longer valid.' });
+    if (
+      !appUser || signInRefusal(appUser) || appUser.email !== payload.email ||
+      !isLiveInvite(payload, appUser.password_hash)
+    ) {
+      res.status(400).json(INVITE_EXPIRED_BODY);
       return;
     }
 
@@ -839,23 +888,62 @@ export async function acceptInvite(req: Request, res: Response) {
       return;
     }
 
-    const { data, error } = await supabaseAdmin.auth.admin.createUser({
-      email: payload.email,
-      password: parsed.data.password,
-      email_confirm: true,
-    });
+    // Use the link up BEFORE the login is made: of any number of simultaneous uses exactly one gets past this line.
+    if (!(await consumeInvite(appUser.id, payload))) {
+      res.status(400).json(INVITE_EXPIRED_BODY);
+      return;
+    }
+
+    let created: Awaited<ReturnType<typeof supabaseAdmin.auth.admin.createUser>>;
+    try {
+      created = await supabaseAdmin.auth.admin.createUser({
+        email: payload.email,
+        password: parsed.data.password,
+        email_confirm: true,
+      });
+    } catch (providerErr) {
+      // The call itself blew up (network, timeout). We can't know whether the provider made the login before it failed, so the
+      // link is put back: a retry either makes the login, or finds one already there and answers 409 "already set up", which
+      // is the same safe state as the path below (the link stays live for consent, and Google sign-in finishes it).
+      await restoreInvite(appUser.id, payload);
+      throw providerErr;
+    }
+    const { data, error } = created;
 
     if (error || !data.user) {
       const code = (error as { code?: string } | null)?.code;
       const message = error?.message ?? '';
       if (code === 'email_exists' || /already.*(registered|exists)/i.test(message)) {
+        // The login already exists (onboarding made it, or they used Google first), so no password can be set. The link stays
+        // live: it is still the only way they can accept the terms (/accept-invite/terms) that Google sign-in requires, and
+        // the Google sign-in is what finishes it. A retry here just answers this again, so no second login can be made.
+        await restoreInvite(appUser.id, payload);
         res.status(409).json({ error: 'This account is already set up. Please sign in — you can also use "Sign in with Google".' });
         return;
       }
       logger.error('Accept invite createUser error:', error);
+      // The login was not made, so the person may try again with the same link.
+      await restoreInvite(appUser.id, payload);
       res.status(400).json({ error: 'Could not set your password. Please try again.' });
       return;
     }
+
+    // The provider call is slow, and an Admin may have revoked or deactivated this person while it ran (H2). Re-read them under
+    // a lock: if they may no longer sign in, the login just made is removed again and the link opens nothing. Revoke and
+    // deactivate change the row before they look for the login at the provider, so whichever comes first, none survives.
+    if (!(await stillMaySignIn(appUser.id))) {
+      try {
+        await removeProviderAccount(data.user.id);
+      } catch (removeErr) {
+        // Still refused at every door (signInRefusal); the leftover account is logged for support.
+        logger.error('Accept invite: could not remove a login made for a person revoked meanwhile', { userId: appUser.id, removeErr });
+      }
+      res.status(400).json(INVITE_EXPIRED_BODY);
+      return;
+    }
+
+    // The login exists: the link's used-up mark has done its job.
+    await finishInvite(appUser.id, payload);
 
     // Only once the login exists. A 409 above (the account was already set up)
     // must leave the row exactly as it was rather than half-apply the form.
@@ -906,7 +994,7 @@ export async function acceptInvite(req: Request, res: Response) {
   }
 
   // Left for after the response (S06.29): it is sent once the response has gone out with a success status, so it never blocks or
-  // leaks into the try/catch, and a request that failed part-way alerts nobody. It goes to the holders of Invite users.
+  // leaks into the try/catch, and a request that failed part-way alerts nobody. It goes to the Admins.
   if (invitedAlert) queueNoRecordAlert(invitedAlert);
 }
 
@@ -941,16 +1029,20 @@ export async function acceptInviteTerms(req: Request, res: Response) {
   }
   const payload = verifyInviteToken(parsed.data.token);
   if (!payload) {
-    res.status(400).json({ error: 'This invitation link is invalid or has expired.' });
+    res.status(400).json(INVITE_EXPIRED_BODY);
     return;
   }
   try {
     const appUser = await prisma.user.findUnique({
       where: { id: payload.uid },
-      select: { id: true, email: true, is_active: true, organization_id: true },
+      select: { id: true, email: true, is_active: true, has_login: true, password_hash: true, organization_id: true },
     });
-    if (!appUser || !appUser.is_active || appUser.email !== payload.email) {
-      res.status(400).json({ error: 'This invitation is no longer valid.' });
+    // Recording consent does not use the link up (the person still has to sign in with Google); the sign-in does.
+    if (
+      !appUser || signInRefusal(appUser) || appUser.email !== payload.email ||
+      !isLiveInvite(payload, appUser.password_hash)
+    ) {
+      res.status(400).json(INVITE_EXPIRED_BODY);
       return;
     }
 
@@ -1017,7 +1109,9 @@ export async function googleFinalize(req: Request, res: Response) {
       return;
     }
 
-    if (!appUser.is_active) {
+    // The one sign-in check (H2), before anyone is signed in.
+    const refusal = signInRefusal(appUser);
+    if (refusal === 'deactivated') {
       void logAudit({
         req,
         action: 'oauth.google_rejected',
@@ -1029,6 +1123,30 @@ export async function googleFinalize(req: Request, res: Response) {
         metadata: { reason: 'deactivated' },
       });
       res.status(403).json({ code: 'ACCOUNT_DISABLED', error: 'Account is deactivated' });
+      return;
+    }
+    if (refusal === 'no_login') {
+      // Revoked: they hold no login, so the account this Google sign-in made (or kept) at the provider is removed, exactly
+      // as for an unknown account, and they are answered the same way.
+      try {
+        await removeProviderAccount(data.user.id);
+      } catch (removeErr) {
+        logger.error('Google finalize: could not remove the login of a revoked person', { userId: appUser.id, removeErr });
+      }
+      void logAudit({
+        req,
+        action: 'oauth.google_rejected',
+        resourceType: 'User',
+        resourceId: appUser.id,
+        orgId: appUser.organization_id,
+        actorId: appUser.id,
+        actorEmail: appUser.email,
+        metadata: { reason: 'login_revoked' },
+      });
+      res.status(403).json({
+        code: 'NOT_AUTHORIZED',
+        error: 'This Google account is not authorized. Contact your administrator.',
+      });
       return;
     }
 
@@ -1090,18 +1208,26 @@ export async function googleFinalize(req: Request, res: Response) {
       return;
     }
 
+    // The account is open: an invite link still out for this person is finished (H2, single use). Finishing one is also what makes
+    // this the person's first sign-in: an invitation gives them has_login when it is SENT, so has_login can't say it (and a person
+    // without it was refused above).
+    const finishedInvite = await retireInvite(appUser.id);
+
     const user = {
       id: appUser.id,
       email: appUser.email,
       first_name: appUser.first_name,
       last_name: appUser.last_name,
       role: appUser.role,
+      is_admin: appUser.is_admin,
       has_login: appUser.has_login,
       organization_id: appUser.organization_id,
       org_is_demo: appUser.org_is_demo,
       org_is_spider_pilot: appUser.org_is_spider_pilot,
       org_plan: appUser.org_plan,
       org_features: appUser.org_features,
+      // An Admin's alone (N18), as on every sign-in answer.
+      ...(appUser.is_admin ? { org_owner_user_id: appUser.org_owner_user_id } : {}),
       department_id: appUser.department_id,
       location_id: appUser.location_id,
       phone: appUser.phone,
@@ -1110,10 +1236,9 @@ export async function googleFinalize(req: Request, res: Response) {
 
     const abilityRules = await loadAbilityRules(user);
 
-    // Only emit on the FIRST finalization (genuine invite acceptance). Returning
-    // users (has_login already true) do not re-emit — the dedupKey alone would
-    // suppress duplicates, but the guard is the authoritative first-time signal.
-    if (!appUser.has_login) {
+    // Only emit on the FIRST finalization (genuine invite acceptance): the one that finished a live invite. Returning users do not
+    // re-emit — the dedupKey alone would suppress duplicates, but the finished invite is the authoritative first-time signal.
+    if (finishedInvite) {
       queueNoRecordAlert({
         verb: 'team.invite_accepted',
         organizationId: appUser.organization_id,
@@ -1132,7 +1257,7 @@ export async function googleFinalize(req: Request, res: Response) {
       orgId: appUser.organization_id,
       actorId: appUser.id,
       actorEmail: appUser.email,
-      metadata: { first_time: !appUser.has_login },
+      metadata: { first_time: finishedInvite },
     });
     res.json({ user, abilityRules });
   } catch (err) {

@@ -21,7 +21,7 @@ import { createClient } from '@supabase/supabase-js';
 const url = process.env.SUPABASE_URL;
 const anon = process.env.SUPABASE_ANON_KEY;
 const enabled = process.env.RUN_ANON_LOCKOUT_TEST === '1' && !!url && !!anon;
-const SENSITIVE_TABLES = ['users', 'payments', 'role_permissions', 'invoices'] as const;
+const SENSITIVE_TABLES = ['users', 'payments', 'invoices'] as const;
 
 describe.skipIf(!enabled)('anon PostgREST lockout (live project)', () => {
   // Only constructed when enabled, so a skipped run never touches createClient with no URL.

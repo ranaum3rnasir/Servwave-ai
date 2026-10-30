@@ -134,7 +134,7 @@ export function InboxRail({
               <Button
                 variant="ghost"
                 size="sm"
-                title={`Email ${m.email}`}
+                title={`Email ${m.name}`}
                 onClick={() => onEmailMember(m)}
                 className="h-auto w-full justify-start gap-2 px-1.5 py-1.5 text-left"
               >
@@ -143,7 +143,7 @@ export function InboxRail({
                   <span className="text-foreground block truncate text-[12px] font-medium">
                     {m.name}
                   </span>
-                  <span className="block truncate text-[10px] font-normal">{m.role}</span>
+                  {m.role && <span className="block truncate text-[10px] font-normal">{m.role}</span>}
                 </span>
                 <Mail />
               </Button>

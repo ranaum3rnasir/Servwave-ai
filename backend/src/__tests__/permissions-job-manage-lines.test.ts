@@ -80,7 +80,7 @@ describe('DEFAULT_GRANTS - manage_lines Job covers the same roles as update Job'
   // Per-role assertions through the real ability builder, so the proof does not depend on the
   // shape of DEFAULT_GRANTS alone. Every role that can edit line items TODAY still can.
   function abilityFor(role: 'ADMIN' | 'DISPATCHER' | 'TECHNICIAN' | 'SALES') {
-    return defineAbilityFor({ id: 'test-user', role }, DEFAULT_GRANTS.filter((g) => g.role === role));
+    return defineAbilityFor({ is_admin: role === 'ADMIN', id: 'test-user', role }, DEFAULT_GRANTS.filter((g) => g.role === role));
   }
 
   it.each(['ADMIN', 'DISPATCHER', 'TECHNICIAN', 'SALES'] as const)(

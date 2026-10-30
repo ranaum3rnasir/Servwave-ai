@@ -29,7 +29,6 @@ const mockPrisma = prisma as unknown as {
   brand: { findFirst: ReturnType<typeof vi.fn>; findMany: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn>; updateMany: ReturnType<typeof vi.fn>; deleteMany: ReturnType<typeof vi.fn> };
   vendor: { findFirst: ReturnType<typeof vi.fn> };
   itemGroup: { findFirst: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn>; deleteMany: ReturnType<typeof vi.fn> };
-  rolePermission: { findMany: ReturnType<typeof vi.fn> };
   user: { findUnique: ReturnType<typeof vi.fn> };
 };
 
@@ -197,7 +196,7 @@ describe('POST /api/price-book/categories', () => {
 
   it('allows SALES given Create price book items to create categories', async () => {
     mockAuthAs('sales');
-    mockRoleSwitches({ create_price_book_items: true });
+    mockRoleSwitches({ edit_price_book_items: true, create_price_book_items: true });
     mockPrisma.priceBookCategory.findFirst.mockResolvedValue(null);
     mockPrisma.priceBookCategory.create.mockResolvedValue({ ...CATEGORY_FIXTURE, name: 'New Category' });
 
@@ -1186,12 +1185,9 @@ describe('price-book cost stripping (P0 §D7)', () => {
 
   const grantTechPriceBookRead = () => {
     clearPermissionCache();
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { role: 'TECHNICIAN', action: 'read', subject: 'PriceBook' },
-    ]);
   };
 
-  it('list strips unit_cost for a reader without See financial data, keeps the prices (selling and list)', async () => {
+  it('list strips unit_cost for a reader without See costs, keeps the prices (selling and list)', async () => {
     mockAuthAs('technician');
     grantTechPriceBookRead();
     mockPrisma.priceBookItem.findMany.mockResolvedValue([ROW]);
@@ -1223,7 +1219,7 @@ describe('price-book cost stripping (P0 §D7)', () => {
     expect(res.body.data[0].list_price).toBe(200);
   });
 
-  it('search strips unit_cost for a reader without See financial data', async () => {
+  it('search strips unit_cost for a reader without See costs', async () => {
     mockAuthAs('technician');
     grantTechPriceBookRead();
     mockPrisma.priceBookItem.findMany.mockResolvedValue([

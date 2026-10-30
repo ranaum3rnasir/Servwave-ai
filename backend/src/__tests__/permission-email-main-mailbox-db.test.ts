@@ -2,7 +2,7 @@
    Roles & Permissions, PRD 10, slice S10.8 - who reads the main mailbox, and what they see in it.
 
    "Reads the main mailbox" = the people linked to it on the Sender Address page and the people on Communication scope
-   All; while nobody ACTIVE is linked, the holders of Manage roles and permissions. Under "Linked to me" the main mailbox
+   All; while nobody ACTIVE is linked, the Admins (the holders of Manage roles and permissions until AL-18). Under "Linked to me" the main mailbox
    lists only conversations started in it after go-live: not record conversations, not migrated ones, not ones moved in
    from a leaver's mailbox, and not vendor-tied ones for a person without View vendors. Under All it lists everything in it.
    The list, the single read, mark read, reply, the attachment link, the counts and the menu badge share one rule.
@@ -89,18 +89,20 @@ suite('the main mailbox is read by its linked people, by M11\'s rule (real datab
     base: Role = 'DISPATCHER',
   ): Promise<Person & Who> {
     const key = `mmb-role-${++sequence}`;
+    // `is_admin: true` makes the person an Admin (the flag, AL-18): it is not a switch, so it never reaches the role.
+    const { is_admin: asAdmin, ...switchValues } = values;
     const role = await fx.addCustomRole(org, key, base);
     await setRoleSwitchValues({
       organizationId: org, roleKey: key,
       values: {
         view_jobs: true, jobs_scope: 'attached', view_leads: true, leads_scope: 'attached', view_customers: true,
-        view_estimates: true, estimates_scope: 'attached', view_invoices: true, invoices_scope: 'attached',
-        access_communication: true, show_email: true, view_communication: true, communication_scope: 'linked_to_me',
-        ...values,
+        view_estimates: true, view_invoices: true,
+        access_communication: true, show_email: true, view_communication: true, communication_scope: 'attached',
+        ...switchValues,
       },
       actorId: null, reason: 'manual',
     });
-    const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
+    const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id, isAdmin: asAdmin === true });
     return Object.assign(person, { api: () => fx.signedInAs(person) });
   }
 
@@ -181,7 +183,9 @@ suite('the main mailbox is read by its linked people, by M11\'s rule (real datab
     return res.body.email as number;
   };
 
-  const MANAGE_ROLES = { manage_roles_and_permissions: true };
+  // The people who read it while nobody active is linked were the holders of Manage roles and permissions; since AL-18 that is
+  // the Admins, who read every mailbox anyway.
+  const ADMIN = { is_admin: true };
 
   describe('who reads it, under "Linked to me"', () => {
     it('lists post-go-live main mailbox mail to a linked person, and not to a person who is not linked', async () => {
@@ -211,9 +215,9 @@ suite('the main mailbox is read by its linked people, by M11\'s rule (real datab
       expect((await mailboxList(stranger)).total_unread).toBe(0);
     });
 
-    it('lists the main mailbox\'s mail to a holder of Manage roles and permissions while nobody is linked, and to nobody else', async () => {
+    it('lists the main mailbox\'s mail to an Admin while nobody is linked, and to nobody else', async () => {
       const { org, customer, main } = await newOrg();
-      const holder = await personWith(org, MANAGE_ROLES);
+      const holder = await personWith(org, ADMIN);
       const stranger = await personWith(org, {});
       const mail = await addConversation(org, main, customer);
 
@@ -224,39 +228,21 @@ suite('the main mailbox is read by its linked people, by M11\'s rule (real datab
       expect(await listed(stranger)).not.toContain(mail.first);
     });
 
-    it('stops reading it for a holder of Manage roles and permissions once somebody active is linked', async () => {
+    it('keeps an Admin reading it once somebody active is linked: an Admin reads every mailbox', async () => {
       const { org, customer, main } = await newOrg();
-      const holder = await personWith(org, MANAGE_ROLES);
+      const admin = await personWith(org, ADMIN);
       const linked = await personWith(org, {});
       const mail = await addConversation(org, main, customer);
-      expect(await listed(holder)).toContain(mail.first);
-
       await link(org, main, linked);
 
-      expect(await listed(holder)).not.toContain(mail.first);
-      expect(await opens(holder, mail.first)).toBe(false);
-      expect((await mailboxList(holder)).main).toBeNull();
-      expect(await badge(holder)).toBe(0);
+      expect(await listed(admin)).toContain(mail.first);
+      expect(await opens(admin, mail.first)).toBe(true);
       expect(await listed(linked)).toContain(mail.first);
     });
 
-    it('does not count a deactivated linked person: the holders of Manage roles and permissions read it again', async () => {
+    it('lets a linked person who is also an Admin read it', async () => {
       const { org, customer, main } = await newOrg();
-      const holder = await personWith(org, MANAGE_ROLES);
-      const leaver = await personWith(org, {});
-      await link(org, main, leaver);
-      const mail = await addConversation(org, main, customer);
-      expect(await listed(holder)).not.toContain(mail.first);
-
-      await db.user.update({ where: { id: leaver.id }, data: { is_active: false }, select: { id: true } });
-
-      expect(await listed(holder)).toContain(mail.first);
-      expect(await opens(holder, mail.first)).toBe(true);
-    });
-
-    it('lets a linked person who also holds Manage roles and permissions read it as linked', async () => {
-      const { org, customer, main } = await newOrg();
-      const both = await personWith(org, MANAGE_ROLES);
+      const both = await personWith(org, ADMIN);
       await link(org, main, both);
       const mail = await addConversation(org, main, customer);
       expect(await listed(both)).toContain(mail.first);
@@ -308,15 +294,18 @@ suite('the main mailbox is read by its linked people, by M11\'s rule (real datab
       expect((await mailboxList(reader, `?selected=${main}`)).selected_unread).toBe(1);
     });
 
-    it('still reaches a migrated conversation through the ways PRD 8 allows: assigned to the person, or through a record they can open', async () => {
-      const { org, customer, main } = await newOrg();
+    it('reaches a migrated conversation only through a record the person can open, never through being assigned it (M1)', async () => {
+      const { org, admin, customer, main } = await newOrg();
       const reader = await personWith(org, {});
       await link(org, main, reader);
       const job = await fx.addJob(org, customer, { crew: [reader.id] });
-      const assigned = await addConversation(org, main, customer, { origin: 'migrated', assignedTo: reader.id });
+      const otherJob = await fx.addJob(org, customer, { crew: [admin.id] });
+      // Assigned to the reader, its message on a job they are not on: nothing about it is theirs but the assignment.
+      const assigned = await addConversation(org, main, customer, { origin: 'migrated', assignedTo: reader.id, messages: [{ direction: 'in', jobId: otherJob.id }] });
       const onMyJob = await addConversation(org, main, customer, { origin: 'migrated', messages: [{ direction: 'in', jobId: job.id }] });
       const ids = await listed(reader);
-      expect(ids).toContain(assigned.first);
+      expect(ids).not.toContain(assigned.first);
+      expect(await opens(reader, assigned.first)).toBe(false);
       expect(ids).not.toContain(onMyJob.first);
       expect(await opens(reader, onMyJob.first)).toBe(true);
     });
@@ -392,7 +381,7 @@ suite('the main mailbox is read by its linked people, by M11\'s rule (real datab
   });
 
   describe('unlinking', () => {
-    it('takes effect on the very next request, and the person keeps what is assigned to them or what they wrote in', async () => {
+    it('takes effect on the very next request, and the person keeps nothing that was only assigned to them or written in by them (M1)', async () => {
       const { org, customer, main } = await newOrg();
       const reader = await personWith(org, {});
       const colleague = await personWith(org, {});
@@ -406,10 +395,10 @@ suite('the main mailbox is read by its linked people, by M11\'s rule (real datab
       await db.mailboxReader.deleteMany({ where: { user_id: reader.id } });
 
       const after = await listed(reader);
-      expect(after).not.toContain(mail.first);
-      expect(await opens(reader, mail.first)).toBe(false);
-      expect(after).toEqual(expect.arrayContaining([assigned.first, ...wroteIn.ids]));
-      expect(await opens(reader, assigned.first)).toBe(true);
+      for (const id of [mail.first, assigned.first, ...wroteIn.ids]) {
+        expect(after, id).not.toContain(id);
+        expect(await opens(reader, id), id).toBe(false);
+      }
       expect((await mailboxList(reader)).main).toBeNull();
       // Picking the main mailbox no longer works: the page falls back to the person's own.
       const fallback = await mailboxList(reader, `?selected=${main}`);
@@ -418,11 +407,11 @@ suite('the main mailbox is read by its linked people, by M11\'s rule (real datab
     });
 
     it('goes through the Sender Address routes the same way: unlink, then the next request sees nothing', async () => {
-      const { org, customer, main } = await newOrg();
-      const settings = await personWith(org, { company_settings: true });
+      const { org, customer, main, admin } = await newOrg();
       const reader = await personWith(org, {});
       const mail = await addConversation(org, main, customer);
-      const s = await settings.api();
+      // Adding and removing a reader is an Admin's alone (M8, D3).
+      const s = await fx.signedInAs(admin);
       expect((await s.put(`/api/organization/email-sender/readers/${reader.id}`)).status).toBe(200);
       expect(await listed(reader)).toContain(mail.first);
       expect((await s.delete(`/api/organization/email-sender/readers/${reader.id}`)).status).toBe(200);
@@ -493,7 +482,9 @@ suite('the main mailbox is read by its linked people, by M11\'s rule (real datab
       // reads a mailbox, one read that settles whether any held reply points at a record conversation (none here, so no reach is
       // worked out): 7 -> 9. A person who reads no mailbox has nothing to count and is asked nothing (6 stays 6). The badge is
       // untouched: held mail is never unread mail.
-      expect(after).toEqual({ readerList: 9, readerBadge: 9, strangerList: 6, strangerBadge: 9 });
+      // Ticket 37 adds ONE read to every signed-in request: the person's access stamp, read from the database so a change made
+      // on another server is seen at once (lib/permissions/accessStamp.ts). 9 -> 10, 6 -> 7.
+      expect(after).toEqual({ readerList: 10, readerBadge: 10, strangerList: 7, strangerBadge: 10 });
       expect(await badge(reader)).toBe(31);
       // The badge is the same few reads whether the person reads the main mailbox or not (the reader adds none).
       expect(after.readerBadge).toBe(after.strangerBadge);

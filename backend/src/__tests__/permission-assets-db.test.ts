@@ -1,6 +1,6 @@
 /* =============================================================================
-   Roles & Permissions, PRD 7, slice S07.1 - assets: a person sees only the assets they hold unless
-   See all assets is on.
+   Roles & Permissions, PRD 7, slice S07.1 - assets follow Assets scope (P6): Attached the assets the person holds,
+   Team the assets held by anyone in their department, All every asset.
 
    Everything goes through the public interface: the asset routes, called as people on custom roles (never a
    built-in role name) holding exactly the switch values under test. Real migrated database
@@ -29,7 +29,7 @@ import { setRoleSwitchValues } from '../lib/permissions/switches/store';
 
 const suite = realClient ? describe : describe.skip;
 
-suite('assets follow See all assets (real database)', () => {
+suite('assets follow Assets scope (real database)', () => {
   const db = realClient as PrismaClient;
   const fx = switchFixture(db, async () => (await import('../app.js')).default as never);
   // Loading the whole app is slow on a loaded machine.
@@ -62,11 +62,12 @@ suite('assets follow See all assets (real database)', () => {
     org: string,
     values: Record<string, boolean | string>,
     base: Role = 'DISPATCHER',
+    departmentId?: string,
   ): Promise<Person & { api: () => Promise<Api> }> {
     const key = `assets-role-${++sequence}`;
     const role = await fx.addCustomRole(org, key, base);
     await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { view_stock: true, ...values }, actorId: null, reason: 'manual' });
-    const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
+    const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id, departmentId });
     return Object.assign(person, { api: () => fx.signedInAs(person) });
   }
 
@@ -89,10 +90,10 @@ suite('assets follow See all assets (real database)', () => {
 
   const idsOf = (body: { data: { id: string }[] }) => body.data.map((a) => a.id).sort();
 
-  describe('with See all assets off', () => {
+  describe('on Assets scope Attached', () => {
     it('lists only the assets the person holds, for any role, and the count and pages agree with the rows', async () => {
       for (const base of ['TECHNICIAN', 'SALES', 'DISPATCHER'] as const) {
-        const { me, mine } = await orgWithAssets({ see_all_assets: false }, base);
+        const { me, mine } = await orgWithAssets({ assets_scope: 'attached' }, base);
         const api = await me.api();
 
         const list = await api.get('/api/inventory/assets');
@@ -111,7 +112,7 @@ suite('assets follow See all assets (real database)', () => {
     });
 
     it('does not let the holder filter or search reach a colleague\'s asset', async () => {
-      const { me, colleague } = await orgWithAssets({ see_all_assets: false });
+      const { me, colleague } = await orgWithAssets({ assets_scope: 'attached' });
       const api = await me.api();
       const byColleague = await api.get(`/api/inventory/assets?assigned_user_id=${colleague.id}`);
       expect(byColleague.status).toBe(200);
@@ -122,7 +123,7 @@ suite('assets follow See all assets (real database)', () => {
     });
 
     it('answers "not found" on detail and on events for a colleague\'s asset and for one nobody holds, and opens the person\'s own', async () => {
-      const { me, mine, theirs, shelf } = await orgWithAssets({ see_all_assets: false });
+      const { me, mine, theirs, shelf } = await orgWithAssets({ assets_scope: 'attached' });
       const api = await me.api();
       for (const id of [theirs, shelf]) {
         expect((await api.get(`/api/inventory/assets/${id}`)).status, 'detail').toBe(404);
@@ -133,7 +134,7 @@ suite('assets follow See all assets (real database)', () => {
     });
 
     it('hides an asset once it is no longer held (retired or handed on)', async () => {
-      const { me, mine } = await orgWithAssets({ see_all_assets: false });
+      const { me, mine } = await orgWithAssets({ assets_scope: 'attached' });
       const api = await me.api();
       await db.asset.update({ where: { id: mine[0]! }, data: { assigned_user_id: null, status: 'RETIRED' } });
       const list = await api.get('/api/inventory/assets');
@@ -142,10 +143,33 @@ suite('assets follow See all assets (real database)', () => {
     });
   });
 
-  describe('with See all assets on', () => {
+  describe('on Assets scope Team', () => {
+    it('lists and opens the assets anyone in the department holds, not another department\'s, and nothing without a department (P3)', async () => {
+      const { org } = await newOrg();
+      const north = await fx.addDepartment(org, 'North');
+      const south = await fx.addDepartment(org, 'South');
+      const me = await personWith(org, { assets_scope: 'team' }, 'DISPATCHER', north);
+      const mate = await fx.addUser(org, `mate${++sequence}`, 'TECHNICIAN', { departmentId: north });
+      const stranger = await fx.addUser(org, `stranger${++sequence}`, 'TECHNICIAN', { departmentId: south });
+      const mine = await addAsset(org, 'My drill', me.id);
+      const mates = await addAsset(org, 'Mate saw', mate.id);
+      const strangers = await addAsset(org, 'Stranger saw', stranger.id);
+      const shelf = await addAsset(org, 'Shelf lift', null);
+      const api = await me.api();
+
+      expect(idsOf((await api.get('/api/inventory/assets')).body)).toEqual([mine, mates].sort());
+      expect((await api.get(`/api/inventory/assets/${mates}`)).status).toBe(200);
+      for (const id of [strangers, shelf]) expect((await api.get(`/api/inventory/assets/${id}`)).status).toBe(404);
+
+      const loner = await (await personWith(org, { assets_scope: 'team' })).api();
+      expect(idsOf((await loner.get('/api/inventory/assets')).body)).toEqual([]);
+    });
+  });
+
+  describe('on Assets scope All', () => {
     it('lists every asset in the company and opens any of them, for any role', async () => {
       for (const base of ['TECHNICIAN', 'SALES', 'DISPATCHER'] as const) {
-        const { me, mine, theirs, shelf } = await orgWithAssets({ see_all_assets: true }, base);
+        const { me, mine, theirs, shelf } = await orgWithAssets({ assets_scope: 'all' }, base);
         const api = await me.api();
         const list = await api.get('/api/inventory/assets');
         expect(idsOf(list.body), base).toEqual([...mine, theirs, shelf].sort());
@@ -156,8 +180,8 @@ suite('assets follow See all assets (real database)', () => {
     });
 
     it('never shows another company\'s assets', async () => {
-      const a = await orgWithAssets({ see_all_assets: true });
-      const b = await orgWithAssets({ see_all_assets: true });
+      const a = await orgWithAssets({ assets_scope: 'all' });
+      const b = await orgWithAssets({ assets_scope: 'all' });
       const list = await (await a.me.api()).get('/api/inventory/assets');
       expect(idsOf(list.body)).not.toContain(b.theirs);
       expect((await (await a.me.api()).get(`/api/inventory/assets/${b.theirs}`)).status).toBe(404);
@@ -166,7 +190,7 @@ suite('assets follow See all assets (real database)', () => {
 
   describe('asset writes keep their own stock switches', () => {
     it('refuses add, edit and delete without Create, Edit and Delete stock, and lets each in with its switch', async () => {
-      const { org, me: none } = await orgWithAssets({ see_all_assets: true, create_stock: false, edit_stock: false, delete_stock: false });
+      const { org, me: none } = await orgWithAssets({ assets_scope: 'all', create_stock: false, edit_stock: false, delete_stock: false });
       const asset = await addAsset(org, 'Writable', null);
       const readOnly = await none.api();
       expect((await readOnly.post('/api/inventory/assets', { name: 'New' })).status).toBe(403);
@@ -174,11 +198,11 @@ suite('assets follow See all assets (real database)', () => {
       expect((await readOnly.post(`/api/inventory/assets/${asset}/note`, { note: 'Hi' })).status).toBe(403);
       expect((await readOnly.delete(`/api/inventory/assets/${asset}`)).status).toBe(403);
 
-      const creator = await (await personWith(org, { see_all_assets: true, create_stock: true })).api();
+      const creator = await (await personWith(org, { assets_scope: 'all', edit_stock: true, create_stock: true })).api();
       expect((await creator.post('/api/inventory/assets', { name: 'New' })).status).toBe(201);
-      const editor = await (await personWith(org, { see_all_assets: true, edit_stock: true })).api();
+      const editor = await (await personWith(org, { assets_scope: 'all', edit_stock: true })).api();
       expect((await editor.patch(`/api/inventory/assets/${asset}`, { name: 'Renamed' })).status).toBe(200);
-      const deleter = await (await personWith(org, { see_all_assets: true, delete_stock: true })).api();
+      const deleter = await (await personWith(org, { assets_scope: 'all', delete_stock: true })).api();
       expect((await deleter.delete(`/api/inventory/assets/${asset}`)).status).toBe(200);
     });
   });

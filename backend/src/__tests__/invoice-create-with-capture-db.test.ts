@@ -190,14 +190,15 @@ suite('create an invoice for an unapplied payment (real database)', () => {
     await db.user.create({ data: { id: rep.id, organization_id: f.org, email: rep.email, first_name: 'Rae', last_name: 'Rep', role: 'SALES' } });
     await setRoleSwitchValues({
       organizationId: f.org, roleKey: 'SALES', actorId: null, reason: 'manual',
-      values: { invoices_scope: 'attached', refund_payments: true, view_payments: true, create_invoices: true, standalone_invoices: true },
+      values: { jobs_scope: 'attached', leads_scope: 'attached', refund_payments: true, view_payments: true, edit_invoices: true, create_invoices: true, standalone_invoices: true },
     });
     clearPermissionCache(f.org);
 
     const res = await create(signedInAs(app, rep), f, capture.id);
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe('Insufficient permissions');
+    // An item outside the caller's reach answers exactly like one that does not exist (ticket 33).
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Payment not found');
     expect(await invoicesOf(f.org)).toHaveLength(0);
     expect((await capRow(capture.id)).status).toBe('OPEN');
     // The same switches without the item are an ordinary invoice, so the refusal is about the item.

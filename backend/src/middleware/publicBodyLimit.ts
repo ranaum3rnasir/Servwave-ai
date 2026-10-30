@@ -1,4 +1,5 @@
 import express, { Request, Response, NextFunction, RequestHandler } from 'express';
+import { markRouteCheck } from './routeCheck';
 
 /**
  * Tighter JSON body ceilings for the unauthenticated routes (GHSA-mrhx-c7xc-m3w5 hardening).
@@ -61,7 +62,7 @@ export function publicBodyLimit(): RequestHandler {
   const parsers = new Map<string, RequestHandler>(
     [...new Set(PUBLIC_BODY_LIMITS.map((r) => r.limit))].map((limit) => [limit, express.json({ limit })]),
   );
-  return (req: Request, res: Response, next: NextFunction) => {
+  return markRouteCheck('step', (req: Request, res: Response, next: NextFunction) => {
     const limit = publicBodyLimitFor(req.path);
     if (!limit) return next();
     parsers.get(limit)!(req, res, (err?: unknown) => {
@@ -72,5 +73,5 @@ export function publicBodyLimit(): RequestHandler {
       }
       next(err);
     });
-  };
+  });
 }

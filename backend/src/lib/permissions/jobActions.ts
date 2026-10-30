@@ -29,15 +29,15 @@ import type { JobStatus } from '@prisma/client';
  *   delete             Delete jobs
  *   duplicate          Duplicate jobs
  *   create_invoice     Create invoices
- *   create_estimate    Create estimates                a person whose Estimates scope is narrower than All may create
+ *   create_estimate    Create estimates                a person whose reach over estimates is narrower than All may create
  *                                                      one only on a job they are on the crew of
  *   renumber           Edit record ID numbers (jobs)
  *   edit_line_items    Edit job line items             the Items tab's add, change and remove of lines and scopes, on
  *                                                      any job the person can open (creating or selling grants nothing)
  *   apply_discount     Apply discounts                 the job's discount; a discount is a pricing write, so the person
  *                                                      must also hold edit_line_items
- *   add_note           Add notes
- *   upload_attachment  Upload attachments
+ *   add_note           Add notes, or Edit jobs (a note is the job's own data)
+ *   upload_attachment  Edit jobs (an upload is the job's own data)
  *   log_communication  Log past communications
  *   office_review      Office review                   only on a job in Office review (S06.8): the banner's Review button and
  *                                                      the review panel
@@ -121,6 +121,8 @@ const JOB_VERB: Partial<Record<JobAction, Action>> = {
   renumber: 'renumber',
   edit_line_items: 'manage_lines',
   add_note: 'add_note',
+  // Uploads are the job's own data (P10): the job's Edit adds them, there is no attachments switch.
+  upload_attachment: 'update',
   office_review: 'office_review',
   finish_review: 'office_review',
   mark_done: 'close',
@@ -130,7 +132,6 @@ const JOB_VERB: Partial<Record<JobAction, Action>> = {
 const OTHER_ABILITY: Partial<Record<JobAction, { action: Action; subject: Subject }>> = {
   create_invoice: { action: 'create', subject: 'Invoice' },
   create_estimate: { action: 'create', subject: 'Estimate' },
-  upload_attachment: { action: 'create', subject: 'Attachment' },
   log_communication: { action: 'log_past', subject: 'Communication' },
 };
 
@@ -294,12 +295,15 @@ async function mayTake(req: Request, job: { id: string } & NonNullable<JobWithVi
   }
   const verb = JOB_VERB[action];
   if (verb) {
-    return req.ability!.can(verb, 'Job' as Subject) && canActOnRow(req, 'Job', prisma.job, job.id, verb);
+    const held = req.ability!.can(verb, 'Job' as Subject) && (await canActOnRow(req, 'Job', prisma.job, job.id, verb));
+    // A note is the job's own data (P10): the job's Edit adds one too, beside the Add notes switch.
+    if (!held && action === 'add_note') return mayTake(req, job, 'edit');
+    return held;
   }
   const needs = OTHER_ABILITY[action]!;
   if (!req.ability!.can(needs.action, needs.subject)) return false;
   if (action !== 'create_estimate') return true;
-  // An estimate made from a job: a person whose Estimates scope is narrower than All may do it only on a job they are crewed on.
+  // An estimate made from a job: a person whose reach over estimates is narrower than All may do it only on a job they are crewed on.
   const narrowed = Object.keys(await scopeWhereForReq(req, 'Estimate')).length > 0;
   return !narrowed || (await onCrew(req, job));
 }

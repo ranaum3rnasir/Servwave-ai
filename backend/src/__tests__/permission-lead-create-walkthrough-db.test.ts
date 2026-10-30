@@ -88,7 +88,7 @@ suite('the new-lead form books a real walkthrough (real database)', () => {
 
   /** A creator who may create leads and be on a crew, with the walkthrough-related switches given. */
   const creatorWith = (org: string, values: Record<string, boolean> = {}, base: Role = 'TECHNICIAN') =>
-    personWith(org, { view_leads: true, create_leads: true, can_be_on_crew: true, ...values }, base);
+    personWith(org, { view_leads: true, edit_leads: true, create_leads: true, can_be_on_crew: true, ...values }, base);
 
   describe('a time with performers', () => {
     it('books a walkthrough visit at that time with those performers on it, whoever the creator is', async () => {

@@ -4,6 +4,7 @@ import { attachAbility } from '../middleware/attachAbility';
 import { canDo } from '../middleware/canGuard';
 import { validate } from '../middleware/validate';
 import * as ctrl from '../controllers/task.controller';
+import { answerOutOfReachAsMissing, reachableTask } from '../lib/permissions/outOfReachIsMissing';
 
 const router = Router();
 
@@ -25,5 +26,9 @@ router.post('/:id/comments', canDo('update', 'Task'), validate(ctrl.commentSchem
 router.post('/:id/subtasks', canDo('update', 'Task'), validate(ctrl.subtaskCreateSchema), ctrl.addSubtask);
 router.patch('/:id/subtasks/:subtaskId', canDo('update', 'Task'), validate(ctrl.subtaskUpdateSchema), ctrl.updateSubtask);
 router.delete('/:id/subtasks/:subtaskId', canDo('update', 'Task'), ctrl.deleteSubtask);
+
+// Ticket 33: a record out of the person's reach answers exactly like a missing one on every route above that names its id
+// (lib/permissions/outOfReachIsMissing.ts). Keep this after the last route.
+answerOutOfReachAsMissing(router, { param: 'id', notFound: 'Task not found', reaches: reachableTask });
 
 export default router;

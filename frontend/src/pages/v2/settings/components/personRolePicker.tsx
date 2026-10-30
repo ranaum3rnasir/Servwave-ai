@@ -17,22 +17,36 @@ export function PersonRolePicker({
   value,
   onValueChange,
   className,
+  disabled,
+  adminRolesOff = false,
   'aria-label': ariaLabel,
+  'aria-describedby': describedBy,
 }: {
   roles: RoleSummary[];
   /** The key of the role the person holds. */
   value: string;
   onValueChange: (role: string) => void;
   className?: string;
+  disabled?: boolean;
+  /** Keep the roles that make their holder an Admin listed but off: making an Admin is the Owner's alone (ticket 26). */
+  adminRolesOff?: boolean;
   'aria-label': string;
+  'aria-describedby'?: string;
 }) {
-  const options = useMemo(() => roleOptions(roles), [roles]);
+  const options = useMemo(() => {
+    const all = roleOptions(roles);
+    if (!adminRolesOff) return all;
+    const makesAdmin = new Set(roles.filter((r) => r.fullAccess).map((r) => r.role));
+    return all.map((o) => (makesAdmin.has(o.value) ? { ...o, disabled: true } : o));
+  }, [roles, adminRolesOff]);
   return (
     <SelectField
       aria-label={ariaLabel}
+      aria-describedby={describedBy}
       className={className}
       value={value}
       onValueChange={onValueChange}
+      disabled={disabled}
       options={options}
       placeholder="Choose a role"
       searchPlaceholder="Search roles"

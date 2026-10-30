@@ -167,9 +167,6 @@ beforeEach(() => {
   vi.setSystemTime(PINNED_NOW);
   clearPermissionCache();
   mockAuthAs('admin');
-  mockPrisma.rolePermission.findMany.mockImplementation((args: { where: { role: string } }) =>
-    Promise.resolve(DEFAULT_GRANTS.filter((g) => g.role === args.where.role)),
-  );
   mockPrisma.organization.findUnique.mockResolvedValue(ORG_ROW);
   mockPrisma.job.findUnique.mockResolvedValue(jobRow());
   mockPrisma.job.findFirst.mockResolvedValue(jobRowForContext());

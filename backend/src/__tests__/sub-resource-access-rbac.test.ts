@@ -67,8 +67,8 @@ describe('GET /api/leads/:id/notes — per-row RBAC', () => {
 
     const res = await request(app).get(`/api/leads/${LEAD_ID}/notes`).set(authHeader('sales'));
 
-    expect(res.status).toBe(403);
-    expect(res.body).toEqual({ error: 'Insufficient permissions' });
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Lead not found' });
     expect(mockPrisma.note.findMany).not.toHaveBeenCalled();
   });
 
@@ -93,8 +93,8 @@ describe('GET /api/leads/:id/notes — per-row RBAC', () => {
 
     const res = await request(app).get(`/api/leads/${LEAD_ID}/notes`).set(authHeader('technician'));
 
-    expect(res.status).toBe(403);
-    expect(res.body).toEqual({ error: 'Insufficient permissions' });
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Lead not found' });
     expect(mockPrisma.note.findMany).not.toHaveBeenCalled();
   });
 
@@ -140,8 +140,8 @@ describe('POST /api/leads/:id/notes — per-row RBAC', () => {
       .set(authHeader('sales'))
       .send({ content: 'sneaky cross-user note' });
 
-    expect(res.status).toBe(403);
-    expect(res.body).toEqual({ error: 'Insufficient permissions' });
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Lead not found' });
     expect(mockPrisma.note.create).not.toHaveBeenCalled();
   });
 

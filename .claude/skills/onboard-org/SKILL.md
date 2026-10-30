@@ -1,6 +1,6 @@
 ---
 name: onboard-org
-description: "Stand up a brand-new customer organization end-to-end: collect real org data, provision the org row + RBAC grants + app settings + payment methods via reviewed SQL over Supabase MCP, verify the state tax row, then create the first admin (who then adds the rest of the team). Prod requires a typed confirmation. Use when the user wants to onboard a new organization, provision a new customer/tenant, or set up a new company on a plan."
+description: "Stand up a brand-new customer organization end-to-end: collect real org data, provision the org row + app settings + payment methods via reviewed SQL over Supabase MCP, verify the state tax row, then create the first admin (who then adds the rest of the team). Prod requires a typed confirmation. Use when the user wants to onboard a new organization, provision a new customer/tenant, or set up a new company on a plan."
 user_invocable: true
 ---
 

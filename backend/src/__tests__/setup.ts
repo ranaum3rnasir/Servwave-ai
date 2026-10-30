@@ -46,7 +46,9 @@ vi.mock('../lib/supabase', () => {
       createUser: vi.fn(),
       deleteUser: vi.fn(),
       updateUserById: vi.fn(),
-      listUsers: vi.fn(),
+      // The provider holds no login unless a test says otherwise: an invite clears one left behind for its address, and a
+      // permanent delete removes the person's, before either goes ahead (pre-PR review fixes, SR-5).
+      listUsers: vi.fn().mockResolvedValue({ data: { users: [], nextPage: null }, error: null }),
       signOut: vi.fn(),
       // Password reset (slice 04): mints the recovery token; the provider sends nothing.
       generateLink: vi.fn(),
@@ -234,7 +236,10 @@ vi.mock('../lib/reconcile-stripe-fees', () => ({
 // Mock numbering allocator — controllers use this to generate per-org sequence numbers.
 // Default returns deterministic L00001/E00001/J00001/I00001 strings; numbering.test.ts
 // re-mocks per-test with vi.mocked() for specific allocator behavior.
-vi.mock('../lib/numbering', () => ({
+// The rest of the module is the real one (importOriginal): the logistic-order create picks its anchor with pickAnchor and
+// mints its number with allocateAnchoredNumber, and a mock without them answered every order create with a 500.
+vi.mock('../lib/numbering', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/numbering')>()),
   allocateNumber: vi.fn().mockImplementation((_tx: unknown, entity: string) => {
     const prefix = entity[0].toUpperCase();
     return Promise.resolve(`${prefix}00001`);
@@ -340,6 +345,8 @@ vi.mock('../lib/email', () => ({
   sendMfaCodeEmail: vi.fn().mockResolvedValue(undefined),
   // Password reset (slice 04): resolves true when the mail provider accepted the message.
   sendPasswordResetEmail: vi.fn().mockResolvedValue(true),
+  // Ticket 25 (M6) - the Owner's email when someone becomes or stops being an Admin.
+  sendAdminChangeAlertEmail: vi.fn().mockResolvedValue(true),
   sendAutomationEmail: vi.fn().mockResolvedValue({ status: 'sent' }),
   // P2 item 6: the PO sender resolves with the transmitted content so the
   // controller can persist the exact subject/html into InventoryEmail.
@@ -382,6 +389,23 @@ vi.mock('../lib/logger', () => ({
 }));
 
 // Mock prisma with all methods used by controllers
+// The access stamp (ticket 37) is read from the database on every signed-in request, so the sign-in and switch caches see a
+// change made on any server. A suite with this file's mocked database has no person rows to read it from: its stamp is
+// answered as "unchanged", the way the caches behaved for it before ticket 37 (the in-process clears and the TTL). A suite on a
+// real database (its own vi.mock of ../lib/prisma) gets the real stamp; the behaviour itself is proven there
+// (permission-access-two-servers-db.test.ts and its siblings).
+vi.mock('../lib/permissions/accessStamp', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../lib/permissions/accessStamp')>();
+  const { prisma } = await import('../lib/prisma.js');
+  const mockedDatabase = vi.isMockFunction((prisma as { $queryRaw?: unknown } | undefined)?.$queryRaw);
+  if (!mockedDatabase) return real;
+  return {
+    ...real,
+    signInStampOf: () => 'mocked-database',
+    readAccessStamp: async () => ({ signIn: 'mocked-database', switches: 'mocked-database' }),
+  };
+});
+
 vi.mock('../lib/prisma', () => ({
   prisma: {
     customer: {
@@ -1003,30 +1027,8 @@ vi.mock('../lib/prisma', () => ({
       findFirst: vi.fn(),
       upsert: vi.fn(),
     },
-    rolePermission: {
-      findMany: vi.fn().mockResolvedValue([]),
-      findUnique: vi.fn(),
-      create: vi.fn(),
-      createMany: vi.fn(),
-      update: vi.fn(),
-      delete: vi.fn(),
-      deleteMany: vi.fn(),
-      upsert: vi.fn(),
-    },
     // ─── Per-user permission overrides (RBAC Phase 2) ───
     // findMany defaults to [] so every request that merges overrides sees "none" by default.
-    userPermissionOverride: {
-      findMany: vi.fn().mockResolvedValue([]),
-      findFirst: vi.fn(),
-      findUnique: vi.fn(),
-      create: vi.fn(),
-      createMany: vi.fn(),
-      update: vi.fn(),
-      upsert: vi.fn(),
-      delete: vi.fn(),
-      deleteMany: vi.fn(),
-      count: vi.fn(),
-    },
     // ─── Roles & Permissions switch store (M2) ───
     // findMany defaults to [] so every request that resolves a person's switches sees "no stored
     // values" and falls back to the built-in preset of the role. helpers.mockAuthAs re-establishes it.
@@ -1349,9 +1351,8 @@ vi.mock('../lib/prisma', () => ({
     },
     // ─── Tasks (B1 model, B2 API) ───
     task: {
-      // Defaults to "this org has no tasks". Every user-deactivation route now sweeps the task
-      // people-arrays (lib/tasks/deactivation.ts), so an unstubbed findMany would otherwise hand
-      // `undefined` to suites that have nothing to do with tasks.
+      // Defaults to "this org has no tasks", so an unstubbed findMany does not hand `undefined` to suites that
+      // have nothing to do with tasks.
       findMany: vi.fn().mockResolvedValue([]),
       findFirst: vi.fn(),
       findUnique: vi.fn(),

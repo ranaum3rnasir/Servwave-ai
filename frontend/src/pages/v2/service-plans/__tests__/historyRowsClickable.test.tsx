@@ -16,7 +16,7 @@ import ServicePlansPage from '../ServicePlansPage';
  * `planId` field rather than parsing or reusing the composite row key.
  */
 
-vi.mock('@/lib/api/users', () => ({ useUsers: () => ({ data: [] }) }));
+vi.mock('@/lib/api/users', () => ({ usePeople: () => ({ data: [] }) }));
 
 const mockApi = vi.mocked(api);
 

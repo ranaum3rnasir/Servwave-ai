@@ -11,6 +11,8 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import { BUILT_IN_ROLES, SWITCH_CATALOG, findSwitch } from '../lib/permissions/switches/catalog';
 import { PRESET_MIGRATION_NAME, planQuery, planStepsFromSql } from '../lib/permissions/switches/presetMigration';
+import { followUpPresetMove, retiredByFollowUp } from '../lib/permissions/switches/presetMigrationDrift';
+import { renamedSwitchKey } from '../lib/permissions/switches/presetMigrationRenames';
 
 const FILE = join(__dirname, '..', '..', 'prisma', 'migrations', PRESET_MIGRATION_NAME, 'migration.sql');
 const sql = readFileSync(FILE, 'utf8');
@@ -28,10 +30,20 @@ describe('the preset migration file', () => {
     const carried = carriedPresets();
     expect(carried.length).toBeGreaterThan(0);
     for (const { role, switchKey, value } of carried) {
-      const entry = findSwitch(switchKey);
+      // A switch a later migration retired on purpose (AL-08 replaced the four See-all toggles by scope switches) is gone.
+      if (retiredByFollowUp(switchKey)) {
+        expect(findSwitch(switchKey), `${switchKey} is retired`).toBeUndefined();
+        continue;
+      }
+      // A switch a later migration renamed (See financial data became See costs) is carried to the new key.
+      const entry = findSwitch(renamedSwitchKey(switchKey) ?? switchKey);
       expect(entry, `${switchKey} is in the catalog`).toBeDefined();
       expect(BUILT_IN_ROLES as readonly string[]).toContain(role);
-      expect(value, `${role} ${switchKey}`).toEqual(entry!.presets[role as (typeof BUILT_IN_ROLES)[number]]);
+      const now = entry!.presets[role as (typeof BUILT_IN_ROLES)[number]];
+      // The applied migration is frozen. Where a LATER migration moved a built-in preset (AL-04, Create requires Edit), the
+      // catalog holds the new value and this file the value it wrote; the follow-up carries the stored rows across.
+      const move = followUpPresetMove(role, switchKey, now);
+      expect(value, `${role} ${switchKey}`).toEqual(move ? move.was : now);
     }
   });
 

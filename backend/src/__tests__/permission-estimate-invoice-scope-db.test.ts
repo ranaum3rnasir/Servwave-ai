@@ -1,10 +1,10 @@
 /* =============================================================================
-   Roles & Permissions, PRD 1, slice S01.3 - estimates and invoices open by Data Scope, with the kept
-   "Through own leads" value.
+   Roles & Permissions, PRD 1, slice S01.3 and P6 - estimates and invoices open by the Jobs scope and the Leads scope, with
+   the kept "Through own leads" value on Jobs.
 
    Everything goes through the public interface: the catalog read, the role store, and the estimate and
-   invoice routes, called as people on custom roles (never a built-in role name) whose Estimates scope and
-   Invoices scope are the switch values under test. Real migrated database (TEST_DATABASE_URL); the suite
+   invoice routes, called as people on custom roles (never a built-in role name) whose Leads scope and
+   Jobs scope are the switch values under test; estimates and invoices have no scope of their own. Real migrated database (TEST_DATABASE_URL); the suite
    skips when it is unset. Every org it creates is removed again.
    ========================================================================== */
 
@@ -85,7 +85,7 @@ suite('estimates and invoices open by Data Scope (real database)', () => {
   const listedEstimates = (api: Api) => listed(api, '/api/estimates', 'estimates');
   const listedInvoices = (api: Api) => listed(api, '/api/invoices', 'invoices');
 
-  describe('Attached on Estimates scope', () => {
+  describe('Attached on the Leads and Jobs scope, for estimates', () => {
     type Path = {
       name: string;
       attach: (org: string, customer: string, me: Person, admin: Person) => Promise<{ id: string; detach: () => Promise<unknown> }>;
@@ -143,7 +143,7 @@ suite('estimates and invoices open by Data Scope (real database)', () => {
 
     it.each(paths)('lets a person on Attached open the estimate and see it listed when they are $name, and hides it on the next request once they are not', async (path) => {
       const { org, customer, admin } = await fx.newOrg();
-      const me = await personWith(org, { estimates_scope: 'attached' });
+      const me = await personWith(org, { jobs_scope: 'attached', leads_scope: 'attached' });
       const api = await me.api();
       const decoy = await fx.addEstimate(org, customer, admin.id);
       const attached = await path.attach(org, customer, me, admin);
@@ -152,27 +152,27 @@ suite('estimates and invoices open by Data Scope (real database)', () => {
       const ids = await listedEstimates(api);
       expect(ids).toContain(attached.id);
       expect(ids).not.toContain(decoy.id);
-      expect((await api.get(`/api/estimates/${decoy.id}`)).status).toBe(403);
+      expect((await api.get(`/api/estimates/${decoy.id}`)).status).toBe(404);
 
       await attached.detach();
 
-      expect((await api.get(`/api/estimates/${attached.id}`)).status).toBe(403);
+      expect((await api.get(`/api/estimates/${attached.id}`)).status).toBe(404);
       expect(await listedEstimates(api)).not.toContain(attached.id);
     });
 
     it('does not let the person who created an estimate open it when they are on nothing', async () => {
       const { org, customer } = await fx.newOrg();
-      const me = await personWith(org, { estimates_scope: 'attached' });
+      const me = await personWith(org, { jobs_scope: 'attached', leads_scope: 'attached' });
       const lead = await fx.addLead(org, customer, {});
       const estimate = await fx.addEstimate(org, customer, me.id, { leadId: lead.id });
       const api = await me.api();
 
-      expect((await api.get(`/api/estimates/${estimate.id}`)).status).toBe(403);
+      expect((await api.get(`/api/estimates/${estimate.id}`)).status).toBe(404);
       expect(await listedEstimates(api)).not.toContain(estimate.id);
     });
   });
 
-  describe('Attached on Invoices scope', () => {
+  describe('Attached on the Jobs scope, for invoices', () => {
     type Path = {
       name: string;
       attach: (org: string, customer: string, me: Person) => Promise<{ id: string; detach: () => Promise<unknown> }>;
@@ -224,7 +224,7 @@ suite('estimates and invoices open by Data Scope (real database)', () => {
 
     it.each(paths)('lets a person on Attached open the invoice and see it listed when they are $name, and hides it on the next request once they are not', async (path) => {
       const { org, customer } = await fx.newOrg();
-      const me = await personWith(org, { invoices_scope: 'attached' });
+      const me = await personWith(org, { jobs_scope: 'attached', leads_scope: 'attached' });
       const api = await me.api();
       const decoy = await fx.addInvoice(org, customer);
       const attached = await path.attach(org, customer, me);
@@ -233,17 +233,17 @@ suite('estimates and invoices open by Data Scope (real database)', () => {
       const ids = await listedInvoices(api);
       expect(ids).toContain(attached.id);
       expect(ids).not.toContain(decoy.id);
-      expect((await api.get(`/api/invoices/${decoy.id}`)).status).toBe(403);
+      expect((await api.get(`/api/invoices/${decoy.id}`)).status).toBe(404);
 
       await attached.detach();
 
-      expect((await api.get(`/api/invoices/${attached.id}`)).status).toBe(403);
+      expect((await api.get(`/api/invoices/${attached.id}`)).status).toBe(404);
       expect(await listedInvoices(api)).not.toContain(attached.id);
     });
 
     it('does not let a person on the lead\'s walkthrough crew only open the invoice of the converted job, and lets them open a deposit invoice that has no job yet', async () => {
       const { org, customer } = await fx.newOrg();
-      const walker = await personWith(org, { invoices_scope: 'attached', jobs_scope: 'attached', estimates_scope: 'attached' });
+      const walker = await personWith(org, { leads_scope: 'attached', jobs_scope: 'attached' });
       const lead = await fx.addLead(org, customer, { walkthroughCrew: [walker.id] });
       const crew = await fx.addUser(org, `crew${++sequence}`, 'TECHNICIAN');
       const job = await fx.addJob(org, customer, { fromLead: lead.id, crew: [crew.id] });
@@ -252,7 +252,7 @@ suite('estimates and invoices open by Data Scope (real database)', () => {
       const depositInvoice = await fx.addInvoice(org, customer, { estimateId: depositEstimate.id });
       const api = await walker.api();
 
-      expect((await api.get(`/api/invoices/${jobInvoice.id}`)).status).toBe(403);
+      expect((await api.get(`/api/invoices/${jobInvoice.id}`)).status).toBe(404);
       expect(await listedInvoices(api)).not.toContain(jobInvoice.id);
       expect((await api.get(`/api/invoices/${depositInvoice.id}`)).status).toBe(200);
       expect(await listedInvoices(api)).toContain(depositInvoice.id);
@@ -260,13 +260,13 @@ suite('estimates and invoices open by Data Scope (real database)', () => {
 
     it('does not let the person who created an invoice open it when they are on nothing', async () => {
       const { org, customer } = await fx.newOrg();
-      const me = await personWith(org, { invoices_scope: 'attached' });
+      const me = await personWith(org, { jobs_scope: 'attached', leads_scope: 'attached' });
       // On a job the person is not on (an invoice for a customer alone stays its creator's for good: S01.4).
       const someoneElsesJob = await fx.addJob(org, customer, { crew: [(await fx.addUser(org, `crew${++sequence}`, 'TECHNICIAN')).id] });
       const invoice = await fx.addInvoice(org, customer, { jobId: someoneElsesJob.id, createdBy: me.id });
       const api = await me.api();
 
-      expect((await api.get(`/api/invoices/${invoice.id}`)).status).toBe(403);
+      expect((await api.get(`/api/invoices/${invoice.id}`)).status).toBe(404);
       expect(await listedInvoices(api)).not.toContain(invoice.id);
     });
   });
@@ -275,9 +275,8 @@ suite('estimates and invoices open by Data Scope (real database)', () => {
     it('reach estimates and invoices with someone attached in the person\'s department or location, and nothing for a person with neither', async () => {
       const { org, customer, admin } = await fx.newOrg();
       const [mine, theirs] = [await fx.addDepartment(org, 'mine'), await fx.addDepartment(org, 'theirs')];
-      const [here, there] = [await fx.addLocation(org, 'here'), await fx.addLocation(org, 'there')];
-      const teammate = await fx.addUser(org, 'mate', 'TECHNICIAN', { departmentId: mine, locationId: here });
-      const stranger = await fx.addUser(org, 'away', 'TECHNICIAN', { departmentId: theirs, locationId: there });
+      const teammate = await fx.addUser(org, 'mate', 'TECHNICIAN', { departmentId: mine });
+      const stranger = await fx.addUser(org, 'away', 'TECHNICIAN', { departmentId: theirs });
       const mateJob = await fx.addJob(org, customer, { crew: [teammate.id] });
       const strangerJob = await fx.addJob(org, customer, { crew: [stranger.id] });
       const mateEstimate = await fx.addEstimate(org, customer, admin.id, { jobId: mateJob.id });
@@ -285,8 +284,8 @@ suite('estimates and invoices open by Data Scope (real database)', () => {
       const mateInvoice = await fx.addInvoice(org, customer, { jobId: mateJob.id });
       const strangerInvoice = await fx.addInvoice(org, customer, { jobId: strangerJob.id });
 
-      for (const [scope, opts] of [['team', { departmentId: mine }], ['location', { locationId: here }]] as const) {
-        const me = await personWith(org, { estimates_scope: scope, invoices_scope: scope }, opts);
+      for (const [scope, opts] of [['team', { departmentId: mine }]] as const) {
+        const me = await personWith(org, { jobs_scope: scope, leads_scope: scope }, opts);
         const api = await me.api();
         const estimates = await listedEstimates(api);
         expect(estimates, scope).toContain(mateEstimate.id);
@@ -294,12 +293,12 @@ suite('estimates and invoices open by Data Scope (real database)', () => {
         const invoices = await listedInvoices(api);
         expect(invoices, scope).toContain(mateInvoice.id);
         expect(invoices, scope).not.toContain(strangerInvoice.id);
-        expect((await api.get(`/api/estimates/${strangerEstimate.id}`)).status, scope).toBe(403);
-        expect((await api.get(`/api/invoices/${strangerInvoice.id}`)).status, scope).toBe(403);
+        expect((await api.get(`/api/estimates/${strangerEstimate.id}`)).status, scope).toBe(404);
+        expect((await api.get(`/api/invoices/${strangerInvoice.id}`)).status, scope).toBe(404);
       }
 
-      for (const scope of ['team', 'location']) {
-        const nobody = await personWith(org, { estimates_scope: scope, invoices_scope: scope });
+      for (const scope of ['team']) {
+        const nobody = await personWith(org, { jobs_scope: scope, leads_scope: scope });
         const api = await nobody.api();
         expect(await listedEstimates(api), scope).toEqual([]);
         expect(await listedInvoices(api), scope).toEqual([]);
@@ -327,10 +326,10 @@ suite('estimates and invoices open by Data Scope (real database)', () => {
       expect(await listedEstimates(api)).toEqual([job.estimateId]);
       expect(await listedInvoices(api)).toEqual([invoice.id]);
 
-      expect((await api.get(`/api/jobs/${strangerJob.id}`)).status).toBe(403);
-      expect((await api.get(`/api/estimates/${strangerJob.estimateId}`)).status).toBe(403);
-      expect((await api.get(`/api/estimates/${unrelated.id}`)).status).toBe(403);
-      expect((await api.get(`/api/invoices/${strangerInvoice.id}`)).status).toBe(403);
+      expect((await api.get(`/api/jobs/${strangerJob.id}`)).status).toBe(404);
+      expect((await api.get(`/api/estimates/${strangerJob.estimateId}`)).status).toBe(404);
+      expect((await api.get(`/api/estimates/${unrelated.id}`)).status).toBe(404);
+      expect((await api.get(`/api/invoices/${strangerInvoice.id}`)).status).toBe(404);
     });
 
     it('refuses a lead-less estimate the person created on a job they are not attached to', async () => {
@@ -340,11 +339,11 @@ suite('estimates and invoices open by Data Scope (real database)', () => {
       const estimate = await fx.addEstimate(org, customer, seller.id, { jobId: someoneElsesJob.id });
       const api = await seller.api();
 
-      expect((await api.get(`/api/estimates/${estimate.id}`)).status).toBe(403);
+      expect((await api.get(`/api/estimates/${estimate.id}`)).status).toBe(404);
       expect(await listedEstimates(api)).not.toContain(estimate.id);
     });
 
-    it('does not reach a deposit invoice with no job: it follows the invoice\'s job\'s estimate\'s lead only', async () => {
+    it('reaches a deposit invoice with no job through its estimate\'s lead, the way the Leads scope reaches that lead', async () => {
       const { org, customer } = await fx.newOrg();
       const seller = await personWith(org, {}, { base: 'SALES', name: 'seller' });
       const lead = await fx.addLead(org, customer, { assignees: [seller.id] });
@@ -353,7 +352,7 @@ suite('estimates and invoices open by Data Scope (real database)', () => {
       const api = await seller.api();
 
       expect((await api.get(`/api/estimates/${estimate.id}`)).status).toBe(200);
-      expect((await api.get(`/api/invoices/${deposit.id}`)).status).toBe(403);
+      expect((await api.get(`/api/invoices/${deposit.id}`)).status).toBe(200);
     });
   });
 
@@ -363,7 +362,7 @@ suite('estimates and invoices open by Data Scope (real database)', () => {
       const off = Object.fromEntries(
         standingOn('view_estimates').filter((key) => findSwitch(key)!.module === 'Estimates').map((key) => [key, false]),
       );
-      const me = await personWith(org, { ...off, view_estimates: false, estimates_scope: 'all' });
+      const me = await personWith(org, { ...off, view_estimates: false, jobs_scope: 'all', leads_scope: 'all' });
       const lead = await fx.addLead(org, customer, { assignees: [me.id] });
       const estimate = await fx.addEstimate(org, customer, admin.id, { leadId: lead.id });
       const api = await me.api();
@@ -381,7 +380,7 @@ suite('estimates and invoices open by Data Scope (real database)', () => {
       const off = Object.fromEntries(
         standingOn('view_invoices').filter((key) => findSwitch(key)!.module === 'Invoices').map((key) => [key, false]),
       );
-      const me = await personWith(org, { ...off, view_invoices: false, invoices_scope: 'all' });
+      const me = await personWith(org, { ...off, view_invoices: false, jobs_scope: 'all', leads_scope: 'all' });
       const job = await fx.addJob(org, customer, { crew: [me.id] });
       const invoice = await fx.addInvoice(org, customer, { jobId: job.id });
       const api = await me.api();
@@ -443,8 +442,8 @@ suite('estimates and invoices open by Data Scope (real database)', () => {
       expect(res.status).toBe(200);
       const byKey = Object.fromEntries((res.body.switches as { key: string }[]).map((s) => [s.key, s])) as Record<string, Record<string, unknown>>;
 
-      for (const key of ['jobs_scope', 'estimates_scope', 'invoices_scope']) {
-        expect(byKey[key], key).toMatchObject({ kind: 'choice', module: 'Data Scope', choices: ['attached', 'team', 'location', 'all'] });
+      for (const key of ['jobs_scope']) {
+        expect(byKey[key], key).toMatchObject({ kind: 'choice', module: 'Data Scope', choices: ['attached', 'team', 'all'] });
         expect(byKey[key]!.choices, key).not.toContain('through_own_leads');
         expect(validateSwitchSet({ ...presetSwitchSet('ADMIN'), [key]: 'through_own_leads' }), key).toEqual([]);
         // The plain name and meaning PRD 2 shows beside the real choices.
@@ -456,14 +455,14 @@ suite('estimates and invoices open by Data Scope (real database)', () => {
     const store = (org: string, roleKey: string, values: Record<string, boolean | string>, copiedFromHolder = false) =>
       setRoleSwitchValues({ organizationId: org, roleKey, values, actorId: null, reason: 'manual', copiedFromHolder });
 
-    it.each(['jobs_scope', 'estimates_scope', 'invoices_scope'])('refuses a write that sets it on %s for a role that does not already hold it', async (key) => {
+    it.each(['jobs_scope'])('refuses a write that sets it on %s for a role that does not already hold it', async (key) => {
       const { org } = await fx.newOrg();
       const role = await fx.addCustomRole(org, `no-hold-${key}`, 'DISPATCHER');
       await expect(store(org, role.key, { [key]: 'through_own_leads' })).rejects.toThrow(/Through own leads/);
       expect(await db.permissionRoleSwitch.count({ where: { organization_id: org, role_key: role.key } })).toBe(0);
     });
 
-    it.each(['jobs_scope', 'estimates_scope', 'invoices_scope'])('accepts it on %s for a role that holds it, and then never again once it has been changed', async (key) => {
+    it.each(['jobs_scope'])('accepts it on %s for a role that holds it, and then never again once it has been changed', async (key) => {
       const { org } = await fx.newOrg();
       const role = await fx.addCustomRole(org, `hold-${key}`, 'SALES');
       await expect(store(org, role.key, { [key]: 'through_own_leads' })).resolves.toMatchObject({ [key]: 'through_own_leads' });
@@ -474,7 +473,7 @@ suite('estimates and invoices open by Data Scope (real database)', () => {
     it('accepts it when the whole set is copied from a holder', async () => {
       const { org } = await fx.newOrg();
       const role = await fx.addCustomRole(org, 'copy-of-sales', 'DISPATCHER');
-      await expect(store(org, role.key, { jobs_scope: 'through_own_leads', estimates_scope: 'through_own_leads', invoices_scope: 'through_own_leads' }, true)).resolves.toMatchObject({ jobs_scope: 'through_own_leads', estimates_scope: 'through_own_leads', invoices_scope: 'through_own_leads' });
+      await expect(store(org, role.key, { jobs_scope: 'through_own_leads' }, true)).resolves.toMatchObject({ jobs_scope: 'through_own_leads' });
     });
 
     it('refuses it on Leads even when the whole set is copied', async () => {
@@ -487,15 +486,15 @@ suite('estimates and invoices open by Data Scope (real database)', () => {
   describe('Approve estimates and Decline estimates', () => {
     it('lets a person with both on approve or decline an estimate they can open, and refuses one they cannot', async () => {
       const { org, customer, admin } = await fx.newOrg();
-      const me = await personWith(org, { estimates_scope: 'attached', approve_estimates: true, decline_estimates: true });
+      const me = await personWith(org, { jobs_scope: 'attached', leads_scope: 'attached', approve_estimates: true, decline_estimates: true });
       const lead = await fx.addLead(org, customer, { assignees: [me.id] });
       const mine = await fx.addEstimate(org, customer, admin.id, { leadId: lead.id });
       const theirs = await fx.addEstimate(org, customer, admin.id);
       await db.estimate.updateMany({ where: { id: { in: [mine.id, theirs.id] } }, data: { status: 'SENT' } });
       const api = await me.api();
 
-      expect((await api.post(`/api/estimates/${theirs.id}/approve-internal`, {})).status).toBe(403);
-      expect((await api.post(`/api/estimates/${theirs.id}/decline-internal`, { lost_reason: 'Went elsewhere' })).status).toBe(403);
+      expect((await api.post(`/api/estimates/${theirs.id}/approve-internal`, {})).status).toBe(404);
+      expect((await api.post(`/api/estimates/${theirs.id}/decline-internal`, { lost_reason: 'Went elsewhere' })).status).toBe(404);
       expect((await api.post(`/api/estimates/${mine.id}/decline-internal`, { lost_reason: 'PRICE' })).status).toBe(200);
       await db.estimate.update({ where: { id: mine.id }, data: { status: 'SENT' } });
       expect((await api.post(`/api/estimates/${mine.id}/approve-internal`, {})).status).toBe(200);
@@ -503,7 +502,7 @@ suite('estimates and invoices open by Data Scope (real database)', () => {
 
     it('refuses both when they are off', async () => {
       const { org, customer, admin } = await fx.newOrg();
-      const me = await personWith(org, { estimates_scope: 'all', approve_estimates: false, decline_estimates: false });
+      const me = await personWith(org, { jobs_scope: 'all', leads_scope: 'all', approve_estimates: false, decline_estimates: false });
       const estimate = await fx.addEstimate(org, customer, admin.id);
       const api = await me.api();
 
@@ -602,8 +601,8 @@ suite('estimates and invoices open by Data Scope (real database)', () => {
     const mine = (s: { module: string }) => ['Estimates', 'Invoices', 'Data Scope'].includes(s.module);
 
     it('has a row for every server check the catalog lists for an Estimates or Invoices switch, and no switch is left unaccounted for', () => {
-      // Apply discounts is S01.1's row, See financial data is S01.15's and See company figures is S01.16's, each proved in its own suite.
-      const listed = SWITCH_CATALOG.filter((s) => mine(s) && !['apply_discounts', 'see_financial_data', 'see_company_figures'].includes(s.key)).flatMap((s) => s.serverChecks.map((c) => `${s.key}:${c}`));
+      // Apply discounts is S01.1's row, proved in its own suite. The three money switches are their own group (Money), proved in theirs.
+      const listed = SWITCH_CATALOG.filter((s) => mine(s) && !['apply_discounts'].includes(s.key)).flatMap((s) => s.serverChecks.map((c) => `${s.key}:${c}`));
       expect(probes.map((p) => `${p.switchKey}:${p.check}`).sort()).toEqual([...listed].sort());
       for (const s of SWITCH_CATALOG.filter(mine)) expect(s.serverChecks.length > 0 || Boolean(s.pending), s.key).toBe(true);
       // The pending ones are listed in the table as pending, with who builds them.
@@ -616,9 +615,8 @@ suite('estimates and invoices open by Data Scope (real database)', () => {
 
     it('lets each check in with its switch on and refuses it with the switch off, for a custom role', async () => {
       const { org, customer, admin } = await fx.newOrg();
-      const me = await personWith(org, { estimates_scope: 'all', invoices_scope: 'all' }, { name: 'table' });
+      const me = await personWith(org, { jobs_scope: 'all', leads_scope: 'all' }, { name: 'table' });
       // Duplicating an estimate is a grant of its own (not a switch yet); the person holds it so that only the switch decides.
-      await db.rolePermission.create({ data: { organization_id: org, role: me.roleKey, action: 'duplicate', subject: 'Estimate' } });
       clearPermissionCache(org);
       const api = await me.api();
       const roleSwitches = async (values: Record<string, SwitchValue>) =>

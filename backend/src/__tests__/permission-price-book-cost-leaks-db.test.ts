@@ -1,7 +1,7 @@
 /* =============================================================================
    Roles & Permissions, PRD 1 (costs, prices and company figures) and PRD 7 (View price book alone never
    reaches stock): the Price Book's item-group lines, brands, items and CSV import keep cost data - unit
-   cost, a group line's cost, a brand's default markup - away from a person without See financial data, on
+   cost, a group line's cost, a brand's default markup - away from a person without See costs, on
    the way OUT and on the way IN.
 
    Out: the key is left out of the answer (never zero, never null). In: a cost or markup SENT by such a person
@@ -41,7 +41,7 @@ const keyOf = (label: string) => SWITCH_CATALOG.find((s) => s.label === label)!.
 const VIEW_PRICE_BOOK = keyOf('View price book');
 const CREATE_PRICE_BOOK = keyOf('Create price book items');
 const EDIT_PRICE_BOOK = keyOf('Edit price book items');
-const SEE_FINANCIAL_DATA = keyOf('See financial data');
+const SEE_FINANCIAL_DATA = keyOf('See costs');
 
 /** Figures nothing else on the test records can equal. */
 const LINE_COST_A = 12.34;
@@ -64,7 +64,7 @@ function allKeys(value: unknown, out = new Set<string>()): Set<string> {
   return out;
 }
 
-suite('the Price Book keeps cost data from a person without See financial data (real database)', () => {
+suite('the Price Book keeps cost data from a person without See costs (real database)', () => {
   const db = realClient as PrismaClient;
   const fx = switchFixture(db, async () => (await import('../app.js')).default as never);
   const orgs: string[] = [];
@@ -116,7 +116,7 @@ suite('the Price Book keeps cost data from a person without See financial data (
     const role = await fx.addCustomRole(org, key, 'DISPATCHER', { madeFromBlank: true, copyGrants: false });
     await setRoleSwitchValues({
       organizationId: org, roleKey: key,
-      values: { [VIEW_PRICE_BOOK]: true, [CREATE_PRICE_BOOK]: true, [EDIT_PRICE_BOOK]: true, ...values },
+      values: { [VIEW_PRICE_BOOK]: true, [CREATE_PRICE_BOOK]: true, [EDIT_PRICE_BOOK]: true, see_prices: true, ...values },
       actorId: null, reason: 'manual',
     });
     const person = await fx.addUser(org, `pbc${sequence}`, 'DISPATCHER', { customRoleId: role.id });
@@ -130,7 +130,7 @@ suite('the Price Book keeps cost data from a person without See financial data (
       .sort((a, b) => (a ?? Infinity) - (b ?? Infinity));
 
   describe('item groups', () => {
-    it('the list answer carries no line cost without See financial data, and carries it with', async () => {
+    it('the list answer carries no line cost without See costs, and carries it with', async () => {
       const { org } = await world();
       const without = (await (await personWith(org)).get('/api/inventory/item-groups')).body;
       expect(without.itemGroups[0].lines).toHaveLength(2);
@@ -191,7 +191,7 @@ suite('the Price Book keeps cost data from a person without See financial data (
       expect(await costsOf(res.body.itemGroup.id)).toEqual([null]);
     });
 
-    it('with See financial data the cost is returned and saved as before', async () => {
+    it('with See costs the cost is returned and saved as before', async () => {
       const { org, group } = await world();
       const api = await personWith(org, { [SEE_FINANCIAL_DATA]: true });
       const read = (await api.get('/api/inventory/item-groups')).body.itemGroups[0];
@@ -205,7 +205,7 @@ suite('the Price Book keeps cost data from a person without See financial data (
   });
 
   describe('brands', () => {
-    it('the read carries no default markup without See financial data, and carries it with', async () => {
+    it('the read carries no default markup without See costs, and carries it with', async () => {
       const { org } = await world();
       const without = (await (await personWith(org)).get('/api/inventory/brands')).body;
       expect(without.brands).toHaveLength(1);
@@ -237,7 +237,7 @@ suite('the Price Book keeps cost data from a person without See financial data (
       expect(stored.default_markup_pct).toBeNull();
     });
 
-    it('with See financial data the markup is saved as before', async () => {
+    it('with See costs the markup is saved as before', async () => {
       const { org, brand } = await world();
       const api = await personWith(org, { [SEE_FINANCIAL_DATA]: true });
       const res = await api.post('/api/price-book/brands', { id: brand, name: 'Brandy', defaultMarkupPct: 1.9 });
@@ -274,7 +274,7 @@ suite('the Price Book keeps cost data from a person without See financial data (
       expect(stored.name).toBe('Renamed null');
     });
 
-    it('with See financial data the cost is stored and returned as before', async () => {
+    it('with See costs the cost is stored and returned as before', async () => {
       const { org, item } = await world();
       const api = await personWith(org, { [SEE_FINANCIAL_DATA]: true });
       const created = await api.post('/api/price-book/items', newItem({ unit_cost: 55.55 }));
@@ -304,7 +304,7 @@ suite('the Price Book keeps cost data from a person without See financial data (
       expect((await db.priceBookItem.findFirstOrThrow({ where: { organization_id: org, sku } })).unit_cost).toBeNull();
     });
 
-    it('a CSV import with See financial data stores the cost as before', async () => {
+    it('a CSV import with See costs stores the cost as before', async () => {
       const { org, item } = await world();
       const api = await personWith(org, { [SEE_FINANCIAL_DATA]: true });
       const existing = await db.priceBookItem.findUniqueOrThrow({ where: { id: item } });

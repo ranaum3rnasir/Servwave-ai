@@ -103,7 +103,7 @@ const adminAbility = () =>
   ]);
 // Cost/margin are gated on the SAME frontend ability check as the backend's canSeePricing gate.
 // SRVW-140 - that check is now ability.can('read', 'Pricing'), the grant the Roles UI
-// "See financial data" switch writes, NOT 'Invoice' (which is about invoice RECORDS).
+// "See costs" switch writes, NOT 'Invoice' (which is about invoice RECORDS).
 const pricingAbility = () =>
   buildAbility([
     { action: 'update', subject: 'Invoice' },

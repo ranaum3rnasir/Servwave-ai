@@ -60,12 +60,12 @@ const REOPEN_FIRST = 'Reopen this job first';
 
 /** What opening the job, its invoices and its files takes, with no action switch on. */
 const OPENING = {
-  view_jobs: true, jobs_scope: 'all', create_jobs: true, view_attachments: true,
-  view_invoices: true, invoices_scope: 'all', view_customers: true,
+  view_jobs: true, jobs_scope: 'all', edit_jobs: true, create_jobs: true,
+  view_invoices: true, leads_scope: 'all', view_customers: true,
 };
 
 /** The role of criterion 1: the four ordinary switches of the five changes, and neither key to the lock. */
-const WITHOUT_THE_KEY = { ...OPENING, delete_attachments: true, edit_jobs: true, edit_job_and_lead_contact_details: true, delete_others_notes: true };
+const WITHOUT_THE_KEY = { ...OPENING, edit_jobs: true, edit_invoices: true, edit_job_and_lead_contact_details: true };
 
 const SCHEDULING = { schedule_visits: true, assign_people_to_jobs: true, assign_work_to_others: true, edit_jobs: true };
 
@@ -103,7 +103,7 @@ suite('the lock through Office review, Ready to close and Done (real database)',
   async function personWith(org: string, values: Record<string, SwitchValue>, base: Role = 'DISPATCHER') {
     const key = `close-out-lock-role-${++sequence}`;
     const role = await fx.addCustomRole(org, key, base);
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...values }, actorId: null, reason: 'manual' });
+    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, see_prices: true, ...values }, actorId: null, reason: 'manual' });
     const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
     return Object.assign(person, { api: () => fx.signedInAs(person) });
   }
@@ -186,7 +186,7 @@ suite('the lock through Office review, Ready to close and Done (real database)',
 
       it('takes a note and a file from a person with Add notes and Upload attachments', async () => {
         const s = await setup(status);
-        const me = await personWith(s.org, { ...OPENING, add_notes: true, upload_attachments: true });
+        const me = await personWith(s.org, { ...OPENING, add_notes: true, });
         const api = await me.api();
         const note = await api.post(`/api/jobs/${s.job.id}/notes`, { content: 'seen on the closed-out job' });
         expect(note.status).toBe(201);

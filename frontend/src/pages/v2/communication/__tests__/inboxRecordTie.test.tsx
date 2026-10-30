@@ -28,7 +28,7 @@ const ROWS: Email[] = [
 ];
 
 const LIST: MailboxList = {
-  scope: 'linked_to_me', selected: 'mine', selected_label: null, selected_unread: 3, total_unread: 3,
+  scope: 'attached', selected: 'mine', selected_label: null, selected_unread: 3, total_unread: 3,
   mine: { id: 'box-mine', unread: 3 }, held: [], main: null, people: null,
 };
 

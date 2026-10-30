@@ -58,7 +58,7 @@ function holdMailboxes(...ids: string[]) {
 function signInNarrow(extra: Record<string, boolean | string> = {}) {
   mockAuthAs('dispatcher');
   mockRoleSwitches({
-    communication_scope: 'linked_to_me', see_main_line_when_no_number: false, view_jobs: true, jobs_scope: 'attached', ...extra,
+    communication_scope: 'attached', see_main_line_when_no_number: false, view_jobs: true, jobs_scope: 'attached', ...extra,
   });
 }
 
@@ -175,9 +175,9 @@ describe('GET /communication/emails/:id', () => {
   });
 
   it('opens a customer-only email for a person who can open that customer, and not for one with View customers off', async () => {
-    mockRoleSwitches({ communication_scope: 'linked_to_me', view_customers: true, customers_scope: 'all' });
+    mockRoleSwitches({ communication_scope: 'attached', view_customers: true, customers_scope: 'all' });
     expect(await opens(CUSTOMER_ONLY)).toBe(true);
-    mockRoleSwitches({ communication_scope: 'linked_to_me', view_customers: false });
+    mockRoleSwitches({ communication_scope: 'attached', view_customers: false });
     expect(await opens(CUSTOMER_ONLY)).toBe(false);
   });
 
@@ -216,14 +216,35 @@ describe('what a conversation action needs: the conversation must be readable', 
     expect(matchesWhere(IN_MY_BOX, capturedWhere(mockPrisma.email.findFirst as Mock))).toBe(true);
   });
 
-  it('PATCH /emails/threads/:id/assign reaches a conversation only when one of its messages is readable', async () => {
-    mockPrisma.emailThread.updateMany.mockResolvedValue({ count: 0 });
-    await request(app).patch(`/api/communication/emails/threads/${THREAD_ID}/assign`).set(authHeader('dispatcher')).send({ user_id: null });
-    const where = capturedWhere(mockPrisma.emailThread.updateMany as Mock);
-    const thread = (messages: Row[]) => ({ id: THREAD_ID, organization_id: ALPHA_ORG_ID, emails: messages });
-    expect(matchesWhere(thread([IN_MY_BOX]), where)).toBe(true);
-    expect(matchesWhere(thread([MY_JOB_OUTSIDE]), where)).toBe(true);
-    expect(matchesWhere(thread([IN_COLLEAGUE_BOX, OTHER_JOB_OUTSIDE]), where)).toBe(false);
+  // Re-audit N16: a conversation is changed as a whole only when it is the person's (in a mailbox they hold or read, or a record
+  // conversation they open). One readable message of a conversation in a colleague's mailbox is not enough.
+  const thread = (mailbox: string, messages: Row[]) => ({ id: THREAD_ID, organization_id: ALPHA_ORG_ID, mailbox_id: mailbox, emails: messages });
+
+  it('PATCH /emails/threads/:id/assign reaches only a conversation that is the person\'s, and answers 404 before writing anything otherwise', async () => {
+    // The caller's own reach is asked first (M1: before the assignee is looked at), so a miss writes nothing.
+    mockPrisma.emailThread.findFirst.mockResolvedValue(null);
+    const res = await request(app).patch(`/api/communication/emails/threads/${THREAD_ID}/assign`).set(authHeader('dispatcher')).send({ user_id: null });
+    expect(res.status).toBe(404);
+    expect(mockPrisma.emailThread.updateMany).not.toHaveBeenCalled();
+    const where = capturedWhere(mockPrisma.emailThread.findFirst as Mock);
+    expect(matchesWhere(thread(MY_BOX, [IN_MY_BOX]), where)).toBe(true);
+    expect(matchesWhere(thread(COLLEAGUE_BOX, [MY_JOB_OUTSIDE]), where)).toBe(false);
+    expect(matchesWhere(thread(COLLEAGUE_BOX, [IN_COLLEAGUE_BOX, OTHER_JOB_OUTSIDE]), where)).toBe(false);
+  });
+
+  it('PATCH /emails/threads/:id/archive and /snooze write only a conversation that is the person\'s', async () => {
+    for (const [action, body] of [['archive', { archived: true }], ['snooze', { snoozed_until: null }]] as const) {
+      mockPrisma.emailThread.updateMany.mockClear();
+      mockPrisma.emailThread.updateMany.mockResolvedValue({ count: 0 });
+      const res = await request(app).patch(`/api/communication/emails/threads/${THREAD_ID}/${action}`).set(authHeader('dispatcher')).send(body);
+      expect(res.status, action).toBe(404);
+      // The write itself carries the reach filter: a conversation with nothing readable in it is never written.
+      const where = capturedWhere(mockPrisma.emailThread.updateMany as Mock);
+      expect(where.id, action).toBe(THREAD_ID);
+      expect(matchesWhere(thread(MY_BOX, [IN_MY_BOX]), where), action).toBe(true);
+      expect(matchesWhere(thread(COLLEAGUE_BOX, [MY_JOB_OUTSIDE]), where), action).toBe(false);
+      expect(matchesWhere(thread(COLLEAGUE_BOX, [IN_COLLEAGUE_BOX, OTHER_JOB_OUTSIDE]), where), action).toBe(false);
+    }
   });
 
   it('a reply resolves its conversation only when the conversation is readable', async () => {
@@ -289,7 +310,7 @@ describe('GET /communication/unread-counts', () => {
 
   it('issues no email count for a company without email', async () => {
     mockAuthAs('dispatcher', { plan: 'PRO', feature_overrides: { email: false } });
-    mockRoleSwitches({ communication_scope: 'linked_to_me' });
+    mockRoleSwitches({ communication_scope: 'attached' });
     await request(app).get('/api/communication/unread-counts').set(authHeader('dispatcher'));
     expect(mockPrisma.email.count).not.toHaveBeenCalled();
   });

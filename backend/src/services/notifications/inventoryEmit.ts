@@ -29,7 +29,7 @@ function todayUtc(): string {
 /**
  * inventory.stock_approval_requested
  * Fire after the StockApproval row is persisted.
- * Recipients (S06.29): the holders of Edit stock, else the holders of Manage roles and permissions; INTERRUPT + needs_action
+ * Recipients (S06.29): the holders of Edit stock, else the Admins; INTERRUPT + needs_action
  * (APPROVE_STOCK). Neither PRD 6 nor PRD 7 has a row for it, so it is told like its nearest sibling (see noRecordAlerts.ts).
  * data.approval_id is needed by the inline action button on the notification.
  */
@@ -54,7 +54,7 @@ export function emitStockApprovalRequested(
  * Fire only on a DOWNWARD CROSSING: prevOnHand >= min AND newOnHand < min.
  * actorId is null (system-detected).
  * dedupKey is daily — re-fires each new calendar day (UTC).
- * Recipients (S06.29): the holders of Create purchase orders, else the holders of Manage roles and permissions; FEED. It is raised from
+ * Recipients (S06.29): the holders of Create purchase orders, else the Admins; FEED. It is raised from
  * inside the stock movement's transaction, so it is only queued here and sent once the response is out (and never for a movement that
  * rolled back); the holders are read once for all the crossings of a request.
  */
@@ -89,7 +89,7 @@ export function emitLowStockIfCrossing(
 /**
  * inventory.po_partial
  * Fire when the PO status resolves to 'partial' after a receipt.
- * Recipients (S06.29): the holders of Create purchase orders, else the holders of Manage roles and permissions; FEED.
+ * Recipients (S06.29): the holders of Create purchase orders, else the Admins; FEED.
  */
 export function emitPoPartial(
   organizationId: string,
@@ -111,7 +111,7 @@ export function emitPoPartial(
  * inventory.backorder
  * Fire when an item's status flips TO 'on_backorder'.
  * On create-with-backorder, prevStatus is undefined/null — also a flip.
- * Recipients (S06.29): the holders of Create purchase orders, else the holders of Manage roles and permissions; FEED.
+ * Recipients (S06.29): the holders of Create purchase orders, else the Admins; FEED.
  */
 export function emitBackorderIfFlipped(
   organizationId: string,
@@ -149,7 +149,7 @@ export function emitStagingReady(organizationId: string, actorId: string, stageI
  * inventory.staging_no_area
  * Fire when a stage write sets status to complete or ready_for_pickup AND staged_area is null.
  * Dismissible; no auto-clear v1.
- * Recipients (S06.29): the holders of Edit stock, else the holders of Manage roles and permissions; FEED.
+ * Recipients (S06.29): the holders of Edit stock, else the Admins; FEED.
  */
 export function emitStagingNoAreaIfNeeded(
   organizationId: string,

@@ -29,6 +29,7 @@ import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { tenantWhere } from '../lib/tenant';
+import { canReachCustomer, canReachJob, canReachLead, jobReachWhere, leadReachWhere } from '../lib/permissions/targetReach';
 import { validationFailure } from '../middleware/validate';
 import { getRequestOrgTimezone } from '../lib/timezone';
 import { orgWallClockToInstant, orgWallClockOf } from '../lib/orgDayRange';
@@ -397,7 +398,11 @@ function resolveOccurredAtOr400(res: Response, wallClock: string, timeZone: stri
 }
 
 /**
- * Resolve the anchor the body names, TENANT-SCOPED. Answers false having already sent the 404.
+ * Resolve the anchor the body names, TENANT-SCOPED and REACH-SCOPED. Answers false having already sent the 404.
+ *
+ * Reach (security finding M2): the person must be able to OPEN the lead, job or customer they log onto, through
+ * the same reach layer the record's own routes use. A record outside it answers the very 404 a missing one does,
+ * so the answer confirms nothing, and nothing is written (this runs before any write, on create and on update).
  *
  * Shared by create and update because it is the same rule on both, and it is the one rule in this
  * file with a security consequence: an identifier belonging to another organisation is a 404 and
@@ -412,10 +417,7 @@ async function resolveAnchorOr404(
   body: { lead_id?: string; job_id?: string; customer_id?: string },
 ): Promise<boolean> {
   if (body.lead_id) {
-    const lead = await prisma.lead.findFirst({
-      where: { id: body.lead_id, ...tenantWhere(req) },
-      select: { id: true },
-    });
+    const lead = await prisma.lead.findFirst({ where: await leadReachWhere(req, body.lead_id), select: { id: true } });
     if (!lead) {
       res.status(404).json({ error: 'Lead not found' });
       return false;
@@ -424,28 +426,32 @@ async function resolveAnchorOr404(
   }
   // The CUSTOMER branch (#2021), resolved under the same tenancy clause as the two above and
   // answering the same 404 for another organisation's id. It grants no visibility of its own: a
-  // row-restricted user reaches exactly the customers they could already reach, because the id
-  // has to be one they were shown in the first place.
+  // row-restricted user reaches exactly the customers they could already reach (M2: checked here,
+  // not assumed from "the id has to be one they were shown").
   if (body.customer_id) {
-    const customer = await prisma.customer.findFirst({
-      where: { id: body.customer_id, ...tenantWhere(req) },
-      select: { id: true },
-    });
-    if (!customer) {
+    if (!(await canReachCustomer(req, body.customer_id))) {
       res.status(404).json({ error: 'Customer not found' });
       return false;
     }
     return true;
   }
-  const job = await prisma.job.findFirst({
-    where: { id: body.job_id!, ...tenantWhere(req) },
-    select: { id: true },
-  });
+  const job = await prisma.job.findFirst({ where: await jobReachWhere(req, body.job_id!), select: { id: true } });
   if (!job) {
     res.status(404).json({ error: 'Job not found' });
     return false;
   }
   return true;
+}
+
+/** Can the person open the record this STORED entry hangs off (its lead, job or customer)? An entry with none is not theirs. */
+async function entryAnchorInReach(
+  req: Request,
+  entry: { lead_id: string | null; job_id: string | null; customer_id: string | null },
+): Promise<boolean> {
+  if (entry.lead_id) return canReachLead(req, entry.lead_id);
+  if (entry.job_id) return canReachJob(req, entry.job_id);
+  if (entry.customer_id) return canReachCustomer(req, entry.customer_id);
+  return false;
 }
 
 /**
@@ -773,9 +779,12 @@ function mayModifyEntry(req: Request, entry: { logged_by: string }): boolean {
  *   404 — no such entry IN THIS ORGANISATION. A cross-tenant id is indistinguishable from a
  *   nonexistent one, so the caller learns nothing about another organisation's data.
  *
- *   403 — the entry is right there in the requester's own organisation and they can already read
- *   it on the timeline. Pretending it does not exist would be a lie they can disprove by
- *   scrolling; "you may not change this" is the true answer.
+ *   404 also — the entry hangs off a lead, job or customer the requester cannot open (M2). They cannot
+ *   see it on any timeline either, so it is answered like a missing entry.
+ *
+ *   403 — the entry is right there in the requester's own organisation, on a record they can open, and
+ *   they can already read it on the timeline. Pretending it does not exist would be a lie they can
+ *   disprove by scrolling; "you may not change this" is the true answer.
  */
 async function loadModifiableEntry(
   req: Request,
@@ -793,6 +802,13 @@ async function loadModifiableEntry(
     where: { id, ...tenantWhere(req) },
   })) as ManualLogRow | null;
   if (!entry) {
+    res.status(404).json({ error: 'Entry not found' });
+    return null;
+  }
+  // The entry's CURRENT anchor must be a record the person can open (M2). An entry on a lead, job or customer outside
+  // their reach answers exactly like a missing one, before the logger-or-editor rule, so it can be neither read, moved
+  // off its record (which would release the lead it reached) nor deleted by someone who holds the edit switch.
+  if (!(await entryAnchorInReach(req, entry))) {
     res.status(404).json({ error: 'Entry not found' });
     return null;
   }

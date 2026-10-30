@@ -139,11 +139,11 @@ suite('jobs and leads open by Data Scope (real database)', () => {
       const listed = await listedJobs(api);
       expect(listed).toContain(attached.id);
       expect(listed).not.toContain(decoy.id);
-      expect((await api.get(`/api/jobs/${decoy.id}`)).status).toBe(403);
+      expect((await api.get(`/api/jobs/${decoy.id}`)).status).toBe(404);
 
       await attached.detach();
 
-      expect((await api.get(`/api/jobs/${attached.id}`)).status).toBe(403);
+      expect((await api.get(`/api/jobs/${attached.id}`)).status).toBe(404);
       expect(await listedJobs(api)).not.toContain(attached.id);
     });
 
@@ -157,7 +157,7 @@ suite('jobs and leads open by Data Scope (real database)', () => {
       for (const person of [assignee, walker]) {
         const api = await person.api();
         expect((await api.get(`/api/leads/${lead.id}`)).status).toBe(200);
-        expect((await api.get(`/api/jobs/${job.id}`)).status).toBe(403);
+        expect((await api.get(`/api/jobs/${job.id}`)).status).toBe(404);
         expect(await listedJobs(api)).not.toContain(job.id);
       }
     });
@@ -171,7 +171,7 @@ suite('jobs and leads open by Data Scope (real database)', () => {
 
       // The live walk job -> estimate -> lead -> Owner is no longer part of access.
       expect((await api.get(`/api/leads/${lead.id}`)).status).toBe(200);
-      expect((await api.get(`/api/jobs/${job.id}`)).status).toBe(403);
+      expect((await api.get(`/api/jobs/${job.id}`)).status).toBe(404);
       expect(await listedJobs(api)).not.toContain(job.id);
 
       // Stored on the job, the same person opens it; clearing it closes it again on the next request.
@@ -179,7 +179,7 @@ suite('jobs and leads open by Data Scope (real database)', () => {
       expect((await api.get(`/api/jobs/${job.id}`)).status).toBe(200);
       expect(await listedJobs(api)).toContain(job.id);
       await db.job.update({ where: { id: job.id }, data: { salesperson_id: null } });
-      expect((await api.get(`/api/jobs/${job.id}`)).status).toBe(403);
+      expect((await api.get(`/api/jobs/${job.id}`)).status).toBe(404);
     });
 
     it('keeps a person who is Sold By and also on the crew attached after Sold By is cleared', async () => {
@@ -198,7 +198,7 @@ suite('jobs and leads open by Data Scope (real database)', () => {
       const job = await fx.addJob(org, customer, { createdBy: creator.id });
       const api = await creator.api();
 
-      expect((await api.get(`/api/jobs/${job.id}`)).status).toBe(403);
+      expect((await api.get(`/api/jobs/${job.id}`)).status).toBe(404);
       expect(await listedJobs(api)).not.toContain(job.id);
     });
   });
@@ -250,11 +250,11 @@ suite('jobs and leads open by Data Scope (real database)', () => {
       const listed = await listedLeads(api);
       expect(listed).toContain(attached.id);
       expect(listed).not.toContain(decoy.id);
-      expect((await api.get(`/api/leads/${decoy.id}`)).status).toBe(403);
+      expect((await api.get(`/api/leads/${decoy.id}`)).status).toBe(404);
 
       await attached.detach();
 
-      expect((await api.get(`/api/leads/${attached.id}`)).status).toBe(403);
+      expect((await api.get(`/api/leads/${attached.id}`)).status).toBe(404);
       expect(await listedLeads(api)).not.toContain(attached.id);
     });
 
@@ -264,18 +264,17 @@ suite('jobs and leads open by Data Scope (real database)', () => {
       const lead = await fx.addLead(org, customer, { createdBy: creator.id });
       const api = await creator.api();
 
-      expect((await api.get(`/api/leads/${lead.id}`)).status).toBe(403);
+      expect((await api.get(`/api/leads/${lead.id}`)).status).toBe(404);
       expect(await listedLeads(api)).not.toContain(lead.id);
     });
   });
 
-  describe('Team and Location', () => {
-    it('reach jobs and leads with someone attached in the person\'s department or location', async () => {
+  describe('Team', () => {
+    it('reaches jobs and leads with someone attached in the person\'s department', async () => {
       const { org, customer } = await fx.newOrg();
       const [mine, theirs] = [await fx.addDepartment(org, 'mine'), await fx.addDepartment(org, 'theirs')];
-      const [here, there] = [await fx.addLocation(org, 'here'), await fx.addLocation(org, 'there')];
-      const teammate = await fx.addUser(org, 'mate', 'TECHNICIAN', { departmentId: mine, locationId: here });
-      const stranger = await fx.addUser(org, 'away', 'TECHNICIAN', { departmentId: theirs, locationId: there });
+      const teammate = await fx.addUser(org, 'mate', 'TECHNICIAN', { departmentId: mine });
+      const stranger = await fx.addUser(org, 'away', 'TECHNICIAN', { departmentId: theirs });
       const jobOfMate = await fx.addJob(org, customer, { crew: [teammate.id] });
       const jobOfStranger = await fx.addJob(org, customer, { crew: [stranger.id] });
       const dispatchedByMate = await fx.addJob(org, customer, { dispatcher: teammate.id });
@@ -283,33 +282,33 @@ suite('jobs and leads open by Data Scope (real database)', () => {
       const leadOfStranger = await fx.addLead(org, customer, { assignees: [stranger.id] });
       const leadDispatchedByMate = await fx.addLead(org, customer, { dispatcher: teammate.id });
 
-      for (const [scope, opts] of [['team', { departmentId: mine }], ['location', { locationId: here }]] as const) {
+      for (const [scope, opts] of [['team', { departmentId: mine }]] as const) {
         const me = await personWith(org, { jobs_scope: scope, leads_scope: scope }, opts);
         const api = await me.api();
         const jobs = await listedJobs(api);
         expect(jobs, scope).toEqual(expect.arrayContaining([jobOfMate.id, dispatchedByMate.id]));
         expect(jobs, scope).not.toContain(jobOfStranger.id);
         expect((await api.get(`/api/jobs/${jobOfMate.id}`)).status).toBe(200);
-        expect((await api.get(`/api/jobs/${jobOfStranger.id}`)).status).toBe(403);
+        expect((await api.get(`/api/jobs/${jobOfStranger.id}`)).status).toBe(404);
         const leads = await listedLeads(api);
         expect(leads, scope).toEqual(expect.arrayContaining([leadOfMate.id, leadDispatchedByMate.id]));
         expect(leads, scope).not.toContain(leadOfStranger.id);
       }
     });
 
-    it('reach nothing for a person with no department or location, even a record with nobody in one', async () => {
+    it('reaches nothing for a person with no department, even a record with nobody in one', async () => {
       const { org, customer } = await fx.newOrg();
       const nobody = await fx.addUser(org, 'nodept', 'TECHNICIAN');
       const job = await fx.addJob(org, customer, { crew: [nobody.id] });
       const lead = await fx.addLead(org, customer, { assignees: [nobody.id] });
 
-      for (const scope of ['team', 'location']) {
+      for (const scope of ['team']) {
         const me = await personWith(org, { jobs_scope: scope, leads_scope: scope });
         const api = await me.api();
         expect(await listedJobs(api), scope).toEqual([]);
         expect(await listedLeads(api), scope).toEqual([]);
-        expect((await api.get(`/api/jobs/${job.id}`)).status, scope).toBe(403);
-        expect((await api.get(`/api/leads/${lead.id}`)).status, scope).toBe(403);
+        expect((await api.get(`/api/jobs/${job.id}`)).status, scope).toBe(404);
+        expect((await api.get(`/api/leads/${lead.id}`)).status, scope).toBe(404);
       }
     });
   });
@@ -317,7 +316,7 @@ suite('jobs and leads open by Data Scope (real database)', () => {
   describe('View off', () => {
     it('refuses every detail read of jobs and returns an empty list, not a 403', async () => {
       const { org, customer } = await fx.newOrg();
-      const me = await personWith(org, { view_jobs: false, create_jobs: false, edit_jobs: false, delete_jobs: false, show_jobs_page: false, export_jobs: false,
+      const me = await personWith(org, { view_jobs: false, create_jobs: false, edit_jobs: false, delete_jobs: false, export_jobs: false,
         assign_work_to_others: false, schedule_visits: false, mark_on_my_way: false, mark_arrived: false, office_review: false,
         close_jobs: false, close_jobs_with_money_owed: false, cancel_jobs: false, reopen_done_jobs: false, change_locked_jobs: false,
         edit_job_record_ids: false, alert_every_job: false,
@@ -336,7 +335,7 @@ suite('jobs and leads open by Data Scope (real database)', () => {
 
     it('refuses every detail read of leads and returns an empty list, not a 403', async () => {
       const { org, customer } = await fx.newOrg();
-      const me = await personWith(org, { view_leads: false, create_leads: false, edit_leads: false, delete_leads: false, show_leads_page: false,
+      const me = await personWith(org, { view_leads: false, create_leads: false, edit_leads: false, delete_leads: false,
         export_leads: false, assign_people_to_leads: false, change_lead_status_by_hand: false, log_contact_attempts: false, mark_leads_lost: false, reopen_leads: false, book_walkthroughs: false,
         perform_walkthroughs: false, edit_lead_record_ids: false, alert_every_lead: false, leads_scope: 'all' });
       const lead = await fx.addLead(org, customer, { assignees: [me.id], owner: me.id });
@@ -452,7 +451,7 @@ suite('jobs and leads open by Data Scope (real database)', () => {
 
     it('lists nothing, with no error, when View jobs is off', async () => {
       const { org, customer } = await fx.newOrg();
-      const me = await personWith(org, { view_jobs: false, create_jobs: false, edit_jobs: false, delete_jobs: false, show_jobs_page: false, export_jobs: false,
+      const me = await personWith(org, { view_jobs: false, create_jobs: false, edit_jobs: false, delete_jobs: false, export_jobs: false,
         assign_work_to_others: false, schedule_visits: false, mark_on_my_way: false, mark_arrived: false, office_review: false,
         close_jobs: false, close_jobs_with_money_owed: false, cancel_jobs: false, reopen_done_jobs: false, change_locked_jobs: false,
         edit_job_record_ids: false, alert_every_job: false,
@@ -516,7 +515,7 @@ suite('jobs and leads open by Data Scope (real database)', () => {
       expect(res.status).toBe(200);
       const byKey = Object.fromEntries((res.body.switches as { key: string }[]).map((s) => [s.key, s])) as Record<string, Record<string, unknown>>;
       for (const key of ['leads_scope', 'jobs_scope']) {
-        expect(byKey[key]).toMatchObject({ kind: 'choice', module: 'Data Scope', choices: ['attached', 'team', 'location', 'all'] });
+        expect(byKey[key]).toMatchObject({ kind: 'choice', module: 'Data Scope', choices: ['attached', 'team', 'all'] });
       }
       // The kept value is Sales' stored preset; it is never among the options a screen offers.
       expect(byKey['jobs_scope']!.choices).not.toContain('through_own_leads');
@@ -558,11 +557,11 @@ suite('jobs and leads open by Data Scope (real database)', () => {
       whenOff?: (res: { status: number; body?: unknown }, me: Person, other: Person) => void;
     };
     // Edit leads off takes Change lead status by hand with it (that switch needs Edit leads on).
-    const LEADS_OFF = { edit_leads: false, change_lead_status_by_hand: false };
+    const LEADS_OFF = { edit_leads: false, create_leads: false, change_lead_status_by_hand: false }; // Create requires Edit (AL-04)
     const probes: Probe[] = [
       { switchKey: 'view_leads', check: 'lead-list', isList: 'leads', run: (api) => api.get('/api/leads') },
       { switchKey: 'view_leads', check: 'lead-detail', run: async (api, org, customer) => api.get(`/api/leads/${(await fx.addLead(org, customer)).id}`) },
-      { switchKey: 'create_leads', check: 'lead-create', run: (api, _org, customer) => api.post('/api/leads', { customer_id: customer, service_request: 'New lead' }) },
+      { switchKey: 'create_leads', check: 'lead-create', also: { edit_leads: true }, run: (api, _org, customer) => api.post('/api/leads', { customer_id: customer, service_request: 'New lead' }) },
       { switchKey: 'delete_leads', check: 'lead-delete', run: async (api, org, customer) => api.delete(`/api/leads/${(await fx.addLead(org, customer)).id}`) },
       { switchKey: 'assign_people_to_leads', check: 'lead-reassign', run: async (api, org, customer, me) => api.post(`/api/leads/${(await fx.addLead(org, customer)).id}/assign`, { assigned_to: me.id }) },
       {
@@ -587,7 +586,7 @@ suite('jobs and leads open by Data Scope (real database)', () => {
       { switchKey: 'perform_walkthroughs', check: 'lead-walkthrough-perform', run: async (api, org, customer) => api.post(`/api/leads/${(await fx.addLead(org, customer)).id}/walkthrough/complete`, {}) },
       { switchKey: 'view_jobs', check: 'job-list', isList: 'jobs', run: (api) => api.get('/api/jobs') },
       { switchKey: 'view_jobs', check: 'job-detail', run: async (api, org, customer) => api.get(`/api/jobs/${(await fx.addJob(org, customer)).id}`) },
-      { switchKey: 'create_jobs', check: 'job-create', run: (api) => api.post('/api/jobs', {}) },
+      { switchKey: 'create_jobs', check: 'job-create', also: { edit_jobs: true }, run: (api) => api.post('/api/jobs', {}) },
       { switchKey: 'delete_jobs', check: 'job-delete', run: async (api, org, customer) => api.delete(`/api/jobs/${(await fx.addJob(org, customer)).id}`) },
       { switchKey: 'assign_work_to_others', check: 'crew-other-person', also: { assign_people_to_jobs: true }, run: async (api, org, customer) => {
           const other = await fx.addUser(org, `crew${++sequence}`, 'TECHNICIAN');
@@ -621,7 +620,7 @@ suite('jobs and leads open by Data Scope (real database)', () => {
       // Not crew on the visit: only this switch lets the step in.
       { switchKey: 'update_any_visit_status', check: 'job-status-step-any-visit', also: { mark_on_my_way: true }, run: async (api, org, customer, _me, other) => api.post(`/api/jobs/${(await fx.addJob(org, customer, { crew: [other.id] })).id}/en-route`, {}) },
       { switchKey: 'complete_jobs', check: 'job-complete', run: async (api, org, customer) => api.post(`/api/jobs/${(await fx.addJob(org, customer, { status: 'IN_PROGRESS' })).id}/complete`, {}) },
-      { switchKey: 'duplicate_jobs', check: 'job-duplicate', also: { create_jobs: true }, run: async (api, org, customer) => api.post(`/api/jobs/${(await fx.addJob(org, customer)).id}/duplicate`, {}) },
+      { switchKey: 'duplicate_jobs', check: 'job-duplicate', also: { edit_jobs: true, create_jobs: true }, run: async (api, org, customer) => api.post(`/api/jobs/${(await fx.addJob(org, customer)).id}/duplicate`, {}) },
       { switchKey: 'edit_job_line_items', check: 'job-line-write', run: async (api, org, customer) => api.post(`/api/jobs/${(await fx.addJob(org, customer)).id}/line-items`, { description: 'Hinge', quantity: 1, unit_price: 10 }) },
       // Slice S01.11 - Edit leads and Edit jobs gate the update route and the tag and sub-status routes; notes follow Add notes.
       { switchKey: 'edit_leads', check: 'lead-update', run: async (api, org, customer) => api.patch(`/api/leads/${(await fx.addLead(org, customer)).id}`, { service_request: 'Edited' }) },
@@ -637,14 +636,14 @@ suite('jobs and leads open by Data Scope (real database)', () => {
       { switchKey: 'edit_lead_record_ids', check: 'lead-renumber', run: async (api, org, customer) => api.post(`/api/leads/${(await fx.addLead(org, customer)).id}/number/preview`, { number: 'L-9001' }) },
       { switchKey: 'edit_job_record_ids', check: 'job-renumber', run: async (api, org, customer) => api.post(`/api/jobs/${(await fx.addJob(org, customer)).id}/number/preview`, { number: 'J-9001' }) },
       // Slice S05.7 - a job-only phone or email: Edit job and lead contact details OR Edit jobs lets the add in, so each row keeps the other off.
-      { switchKey: 'edit_job_and_lead_contact_details', check: 'job-contact-entry-add', also: { edit_jobs: false }, run: async (api, org, customer) => api.post(`/api/jobs/${(await fx.addJob(org, customer)).id}/contact-entries`, { kind: 'EMAIL', value: 'probe@example.test' }) },
+      { switchKey: 'edit_job_and_lead_contact_details', check: 'job-contact-entry-add', also: { edit_jobs: false, create_jobs: false, duplicate_jobs: false }, run: async (api, org, customer) => api.post(`/api/jobs/${(await fx.addJob(org, customer)).id}/contact-entries`, { kind: 'EMAIL', value: 'probe@example.test' }) },
       { switchKey: 'edit_jobs', check: 'job-contact-entry-add', also: { edit_job_and_lead_contact_details: false }, run: async (api, org, customer) => api.post(`/api/jobs/${(await fx.addJob(org, customer)).id}/contact-entries`, { kind: 'EMAIL', value: 'probe@example.test' }) },
       // Slice S05.8 - replacing one of the customer's values for this job only: the same two switches, either one is enough.
-      { switchKey: 'edit_job_and_lead_contact_details', check: 'job-contact-entry-change', also: { edit_jobs: false }, run: async (api, org, customer) => api.post(`/api/jobs/${(await fx.addJob(org, customer)).id}/contact-entries/change`, { kind: 'EMAIL', replaces: 'probe-old@example.test', value: 'probe-new@example.test' }) },
+      { switchKey: 'edit_job_and_lead_contact_details', check: 'job-contact-entry-change', also: { edit_jobs: false, create_jobs: false, duplicate_jobs: false }, run: async (api, org, customer) => api.post(`/api/jobs/${(await fx.addJob(org, customer)).id}/contact-entries/change`, { kind: 'EMAIL', replaces: 'probe-old@example.test', value: 'probe-new@example.test' }) },
       { switchKey: 'edit_jobs', check: 'job-contact-entry-change', also: { edit_job_and_lead_contact_details: false }, run: async (api, org, customer) => api.post(`/api/jobs/${(await fx.addJob(org, customer)).id}/contact-entries/change`, { kind: 'EMAIL', replaces: 'probe-old@example.test', value: 'probe-new@example.test' }) },
       // Slice S05.9 - correcting or removing an entry, whoever added it: the same two switches, either one is enough.
-      { switchKey: 'edit_job_and_lead_contact_details', check: 'job-contact-entry-correct', also: { edit_jobs: false }, run: async (api, org, customer) => api.patch(`/api/jobs/${(await fx.addJob(org, customer)).id}/contact-entries/${randomUUID()}`, { label: 'Probe' }) },
-      { switchKey: 'edit_job_and_lead_contact_details', check: 'job-contact-entry-remove', also: { edit_jobs: false }, run: async (api, org, customer) => api.delete(`/api/jobs/${(await fx.addJob(org, customer)).id}/contact-entries/${randomUUID()}`) },
+      { switchKey: 'edit_job_and_lead_contact_details', check: 'job-contact-entry-correct', also: { edit_jobs: false, create_jobs: false, duplicate_jobs: false }, run: async (api, org, customer) => api.patch(`/api/jobs/${(await fx.addJob(org, customer)).id}/contact-entries/${randomUUID()}`, { label: 'Probe' }) },
+      { switchKey: 'edit_job_and_lead_contact_details', check: 'job-contact-entry-remove', also: { edit_jobs: false, create_jobs: false, duplicate_jobs: false }, run: async (api, org, customer) => api.delete(`/api/jobs/${(await fx.addJob(org, customer)).id}/contact-entries/${randomUUID()}`) },
       { switchKey: 'edit_jobs', check: 'job-contact-entry-correct', also: { edit_job_and_lead_contact_details: false }, run: async (api, org, customer) => api.patch(`/api/jobs/${(await fx.addJob(org, customer)).id}/contact-entries/${randomUUID()}`, { label: 'Probe' }) },
       { switchKey: 'edit_jobs', check: 'job-contact-entry-remove', also: { edit_job_and_lead_contact_details: false }, run: async (api, org, customer) => api.delete(`/api/jobs/${(await fx.addJob(org, customer)).id}/contact-entries/${randomUUID()}`) },
       // Slice S05.13 - a lead's own phone, email, name and company: the same two switches let a phone or email in (so each row keeps the
@@ -691,7 +690,6 @@ suite('jobs and leads open by Data Scope (real database)', () => {
       }
       // The pending ones are listed in the table as pending, with who builds them.
       const pending = SWITCH_CATALOG.filter((s) => ['Leads', 'Jobs'].includes(s.module) && s.serverChecks.length === 0);
-      expect(pending.map((s) => s.key)).toEqual(expect.arrayContaining(['show_jobs_page']));
       // S06.15 built the two cancel checks; Cancel jobs is not pending any more.
       expect(pending.map((s) => s.key)).not.toContain('cancel_jobs');
       // S06.16 built the Reopen check; Reopen Done jobs is not pending any more.

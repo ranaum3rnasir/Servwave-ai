@@ -101,7 +101,7 @@ suite('the inbound-text alert and the conversation read agree (real database)', 
       organizationId: org, roleKey: key, actorId: null, reason: 'manual',
       values: {
         view_jobs: true, jobs_scope: 'attached', view_leads: true, leads_scope: 'attached',
-        access_communication: true, view_communication: true, communication_scope: 'linked_to_me',
+        access_communication: true, view_communication: true, communication_scope: 'attached',
         see_main_line_when_no_number: false, ...values,
       },
     });

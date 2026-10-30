@@ -13,15 +13,18 @@ import { compileSwitchGrants } from '../lib/permissions/switches/store';
 const rows = SWITCH_CATALOG.filter((s) => s.label === 'See company figures');
 
 describe('the See company figures switch', () => {
-  it('is one on/off switch in the Data Scope group, standing on its own, with help text that says company-wide money', () => {
+  it('is one on/off switch in the Money group, standing on See prices, with help text that says company-wide money', () => {
     expect(rows).toHaveLength(1);
     const entry = rows[0]!;
-    expect(entry.module).toBe('Data Scope');
+    expect(entry.module).toBe('Money');
     expect(entry.kind).toBe('toggle');
-    expect(entry.requires).toEqual([]);
+    expect(entry.requires).toEqual(['see_prices']);
     expect(entry.requiresAny ?? []).toEqual([]);
     expect(entry.helpText).toMatch(/company-wide/i);
     expect(entry.helpText).toMatch(/revenue/i);
+    // The activity feed names no figure in its words (M16), so the help text must not promise one hidden from it.
+    expect(entry.helpText).not.toMatch(/dollar amounts/i);
+    expect(entry.helpText).toMatch(/activity feed reads the same for everyone/i);
     expect(entry.helpText).not.toMatch(/\b(stripe|twilio|supabase|render|ctm|calltrackingmetrics|resend)\b/i);
   });
 
@@ -30,10 +33,10 @@ describe('the See company figures switch', () => {
     expect(BUILT_IN_ROLES.map((role) => entry.presets[role])).toEqual([true, false, false, false]);
   });
 
-  it('compiles into its own grant, apart from the one See financial data holds', () => {
+  it('compiles into its own grant, apart from the one See costs holds', () => {
     expect(rows[0]!.grants.map((g) => `${g.action}:${g.subject}`)).toEqual(['read:CompanyFigures']);
     for (const g of rows[0]!.grants) expect(g.scoped).toBeUndefined();
-    const financial = SWITCH_CATALOG.find((s) => s.label === 'See financial data')!;
+    const financial = SWITCH_CATALOG.find((s) => s.label === 'See costs')!;
     expect(financial.grants.map((g) => `${g.action}:${g.subject}`)).not.toContain('read:CompanyFigures');
   });
 
@@ -50,7 +53,7 @@ describe('the See company figures switch', () => {
       new Set([
         'dashboard-company-figures',
         'dashboard-scoreboard-revenue',
-        'dashboard-activity-amounts',
+        'dashboard-activity-unchanged',
         'report-revenue-totals',
         'report-payment-fees-totals',
         'report-estimate-conversion-totals',
@@ -62,9 +65,10 @@ describe('the See company figures switch', () => {
     expect(entry.serverChecks.length).toBe(new Set(entry.serverChecks).size);
   });
 
-  it('sits ahead of See financial data, which stays the last line of the Data Scope block', () => {
-    const labels = SWITCH_CATALOG.filter((s) => s.module === 'Data Scope').map((s) => s.label);
-    expect(labels.indexOf('See company figures')).toBe(labels.indexOf('See financial data') - 1);
+  it('sits in the Money group after See prices, which it needs', () => {
+    const labels = SWITCH_CATALOG.filter((s) => s.module === 'Money').map((s) => s.label);
+    expect(labels.indexOf('See prices')).toBe(0);
+    expect(labels.indexOf('See company figures')).toBeGreaterThan(labels.indexOf('See prices'));
   });
 
   it('passes the catalog validator in every built-in preset', () => {

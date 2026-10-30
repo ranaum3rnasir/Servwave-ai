@@ -7,6 +7,7 @@ import { canActOnRow } from './enforce';
 import { JOB_CLOSE_OUT_REFUSED, statusDoorAnswer, statusDoorRefusal, type StatusDoor } from '../job-close-out';
 import { jobWindowMoved, resolveJobScheduleWindow, statedWindowMoves, type RawStatedWindow } from '../job-schedule-projection';
 import { isLiveVisit } from '../visit-status';
+import { CANONICAL_ID, isOtherSpellingOfId } from '../ids/canonicalId';
 
 /**
  * The closed-job answer for every door that sets a job's status (Roles & Permissions, PRD 6, S06.17 and S06.18).
@@ -72,14 +73,16 @@ export function isAllowedBackwardMove(res: Response): boolean {
   return res.locals?.[BACKWARD_MOVE_ALLOWED] === true;
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Fail closed (security review, side finding): a uuid in any spelling but the canonical one names no job, so it is refused
+ * here, never let through to a handler whose own lookup would still find the job by that spelling. */
+const NOT_FOUND = (res: Response, what: 'Job' | 'Visit') => res.status(404).json({ error: `${what} not found` });
 
 /**
  * Route guard for a door that sets the job's status: asks M7 and refuses with its words, for Done and Cancelled (the Reopen
  * rule, for everyone), for job-level Arrived in Office review and Ready to close, and for a backward move out of review from a
  * person who cannot complete jobs. When M7 allows a backward move it flags the response so the lock guard behind it stands
- * aside. It sits after the route's own switch guard and BEFORE the lock guard. A malformed id or a job that is not there falls
- * through to the handler, which answers as it always has.
+ * aside. It sits after the route's own switch guard and BEFORE the lock guard. A uuid in another spelling answers 404 "Job not
+ * found"; a malformed id or a job that is not there falls through to the handler, which answers as it always has.
  *
  * `onlyWhenWindowMoves` is for the assign route, which serves two doors: a window that moves the job (the calendar drag, the
  * reschedule from the job) sets Scheduled, and a crew-only assign changes the crew and never the status, so that one stays
@@ -89,7 +92,11 @@ export function refuseStatusDoorOnClosedJob(opts: { door: StatusDoor; onlyWhenWi
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
       const id = String(req.params.id ?? '');
-      if (!UUID.test(id)) {
+      if (isOtherSpellingOfId(id)) {
+        NOT_FOUND(res, 'Job');
+        return;
+      }
+      if (!CANONICAL_ID.test(id)) {
         next();
         return;
       }
@@ -142,7 +149,11 @@ export function refuseVisitMoveOnClosedJob() {
     try {
       const id = String(req.params.id ?? '');
       const visitId = String(req.params.visitId ?? '');
-      if (!UUID.test(id) || !UUID.test(visitId)) {
+      if (isOtherSpellingOfId(id) || isOtherSpellingOfId(visitId)) {
+        NOT_FOUND(res, isOtherSpellingOfId(id) ? 'Job' : 'Visit');
+        return;
+      }
+      if (!CANONICAL_ID.test(id) || !CANONICAL_ID.test(visitId)) {
         next();
         return;
       }
@@ -184,7 +195,15 @@ export function refuseJobEditMoveOnClosedJob() {
     try {
       const id = String(req.params.id ?? '');
       const body = (req.body ?? {}) as RawStatedWindow;
-      if (!UUID.test(id) || body.scheduled_start === undefined) {
+      if (isOtherSpellingOfId(id)) {
+        NOT_FOUND(res, 'Job');
+        return;
+      }
+      if (!CANONICAL_ID.test(id)) {
+        next();
+        return;
+      }
+      if (body.scheduled_start === undefined) {
         next();
         return;
       }

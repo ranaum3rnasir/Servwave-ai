@@ -30,7 +30,6 @@ const mockPrisma = prisma as unknown as {
     count: ReturnType<typeof vi.fn>;
   };
   tagAssignment: { findMany: ReturnType<typeof vi.fn> };
-  rolePermission: { findMany: ReturnType<typeof vi.fn> };
 };
 
 // Build a FRESH lead carrying an embedded estimate with monetary data on every call.
@@ -59,7 +58,6 @@ beforeEach(() => {
   // Tag enrichment runs on the list payload (withTagsMany); default to no tags.
   (prisma.tagAssignment.findMany as any).mockResolvedValue([]);
   // attachAbility loads grants for non-ADMIN; default empty (mockAuthAs sets role grants).
-  (prisma.rolePermission.findMany as any).mockResolvedValue([]);
   // The list handler fires 6 count queries (total + stats); one resolver covers all.
   mockPrisma.lead.count.mockResolvedValue(1);
 });

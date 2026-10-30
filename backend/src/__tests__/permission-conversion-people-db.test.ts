@@ -88,6 +88,7 @@ suite('converting a lead copies its Owner and Dispatcher to the job (real databa
       org,
       {
         create_jobs: true,
+        edit_jobs: true,
         view_estimates: true,
         assign_people_to_jobs: opts.assign,
         can_own_leads: opts.canOwn ?? false,

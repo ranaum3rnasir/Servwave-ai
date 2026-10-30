@@ -93,7 +93,7 @@ suite('"No owner" under Leads scope Attached (real database)', () => {
     const { resolveSwitches } = await import('../lib/permissions/switches/store.js');
     const preset = SWITCH_CATALOG.find((s) => s.key === 'leads_scope')!.presets.SALES;
     const stored = await db.user.findUniqueOrThrow({ where: { id: viewer.id }, include: { custom_role: true } });
-    const values = await resolveSwitches({ id: viewer.id, organization_id: org, role: stored.role, custom_role: stored.custom_role });
+    const values = await resolveSwitches({ is_admin: stored.is_admin, id: viewer.id, organization_id: org, role: stored.role, custom_role: stored.custom_role });
     expect(values.leads_scope).toBe(preset);
     expect(values.leads_scope).toBe('attached');
   });

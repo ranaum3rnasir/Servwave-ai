@@ -2,7 +2,7 @@ import { AlertTriangle, ArrowRightLeft, Pencil, PackagePlus, Trash2, X } from 'l
 
 import { ItemIdentifiers } from '@/components/inventory/ItemIdentifiers';
 import { useAppAbility } from '@/contexts/AbilityContext';
-import { canSeePricing } from '@/lib/ability';
+import { canSeePricing, canSeePrices as canSeePricesAbility } from '@/lib/ability';
 import { totalOnHand, type Item, type Location, type Movement } from '@/lib/api/inventory';
 import { formatCurrency } from '@/lib/utils';
 import { cn } from '@/ui-kit/lib/utils';
@@ -74,8 +74,9 @@ export function ItemDetailPanel({
   const canDeletePriceBook = ability.can('delete', 'PriceBook');
   // S07.12 - the movement history is the Activity tab's data, one click away, so it follows the same switch.
   const canSeeActivity = ability.can('see_inventory_activity', 'Inventory');
-  // S07.15 - the unit cost is company cost: it follows See financial data, and is left out rather than shown as a dash.
+  // S07.15 - the unit cost is company cost: it follows See costs, and is left out rather than shown as a dash.
   const canSeeCosts = canSeePricing(ability);
+  const canSeePrices = canSeePricesAbility(ability);
 
   return (
     <Card className="gap-0">
@@ -106,7 +107,7 @@ export function ItemDetailPanel({
               value={item.unitCost != null ? formatCurrency(item.unitCost) : '-'}
             />
           )}
-          <Stat label="Sell Price" value={formatCurrency(item.sellPrice)} />
+          {canSeePrices && <Stat label="Sell Price" value={formatCurrency(item.sellPrice)} />}
         </div>
       </CardContent>
 
@@ -205,7 +206,7 @@ export function ItemDetailPanel({
         )}
         <div className="flex w-full gap-2">
           {/* #2043 - this is the read-only requester's only entry point into
-              the item detail (cost and margin follow See financial data
+              the item detail (cost and margin follow See costs
               inside it, S07.17). Always renders; the label distinguishes the mode. */}
           <Button variant="outline" size="sm" className="flex-1" onClick={onEdit}>
             <Pencil />{canUpdatePriceBook ? 'Edit' : 'View'}

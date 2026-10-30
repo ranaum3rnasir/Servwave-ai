@@ -2,8 +2,8 @@
  * addressNeededAlert.ts - the "address needed" bell (Roles & Permissions, PRD 10, S10.3).
  *
  * A user mailbox created without an address (the user's first.last was already taken, or they have no usable name)
- * rings the new user and, once, every ACTIVE holder of Edit users, found by M6's switch-holder lookup and never by a
- * role name. The two get different words, so they go out as two alerts. Each is keyed to the mailbox, so a repeated
+ * rings the new user and, once, every ACTIVE Admin (setting a user's address is user management, the Admin flag's alone since
+ * AL-18), never found by a role name. The two get different words, so they go out as two alerts. Each is keyed to the mailbox, so a repeated
  * call writes nothing more. In-app only.
  *
  * Called after the transaction that made the user and the mailbox has committed, never inside it: the alert writer
@@ -12,11 +12,8 @@
  */
 
 import { logger } from '../../lib/logger';
-import { activeSwitchHolders } from '../../lib/permissions/switchHolders';
+import { activeAdmins } from '../../lib/permissions/switchHolders';
 import { emit } from './notificationService';
-
-/** The switch whose holders set a user's address. */
-export const EDIT_USERS_SWITCH = 'edit_users';
 
 /** Where each bell opens: the new user's own mail page, the Users page for the people who set the address. */
 const EMAIL_PAGE_PATH = '/communication/inbox';
@@ -40,7 +37,7 @@ export async function alertAddressNeeded(args: {
       dedupKey: `mailbox.address_needed:${mailboxId}`,
     });
 
-    const holders = (await activeSwitchHolders(organizationId, EDIT_USERS_SWITCH)).filter((id) => id !== userId);
+    const holders = (await activeAdmins(organizationId)).filter((id) => id !== userId);
     if (!holders.length) return;
     await emit({
       verb: 'mailbox.address_needed_admin',

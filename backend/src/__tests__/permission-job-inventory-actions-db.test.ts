@@ -3,7 +3,7 @@
 
    The server half: the logistic order's own answer carries the list of actions this person may take on it now
    (`actions`), the records opened from a job open on View alone (Show is display only), and the material cost
-   figure reaches only a person who holds both View purchase orders and See financial data.
+   figure reaches only a person who holds both View purchase orders and See costs.
 
    Everything goes through the routes, called as people on custom roles (never a built-in role name) holding
    exactly the switch values under test. Real migrated database (TEST_DATABASE_URL); the suite skips when it is
@@ -89,7 +89,7 @@ suite('job page inventory actions follow switches (real database)', () => {
         leads_scope: 'attached', jobs_scope: 'attached', view_jobs: true, view_leads: true, view_logistic_orders: true,
         create_logistic_orders: false, edit_logistic_orders: false, delete_logistic_orders: false,
         approve_logistic_orders: false, process_logistic_orders: false, cancel_logistic_orders: false,
-        view_purchase_orders: false, create_purchase_orders: false, see_financial_data: false,
+        view_purchase_orders: false, create_purchase_orders: false, see_costs: false,
         // The pickup mark has its own list entries (permission-logistic-order-pickup-db.test.ts); these cases are about the others.
         pick_up_staged_items: false, record_pickup_for_someone_else: false,
         ...values,
@@ -133,8 +133,9 @@ suite('job page inventory actions follow switches (real database)', () => {
     // rules, never derived from the code under test.
     const table: Array<[string, Record<string, boolean>, OrderStatus, string[]]> = [
       ['nothing', {}, 'DRAFT', []],
-      ['Create alone, on a draft', { create_logistic_orders: true }, 'DRAFT', ['submit']],
-      ['Create alone, on a submitted order', { create_logistic_orders: true }, 'PENDING_APPROVAL', []],
+      // Create requires Edit (AL-04), so Create is never held alone: the person holds Edit as well, and Edit is listed with it.
+      ['Create with the Edit it requires, on a draft', { edit_logistic_orders: true, create_logistic_orders: true }, 'DRAFT', ['submit', 'edit']],
+      ['Create with the Edit it requires, on a submitted order', { edit_logistic_orders: true, create_logistic_orders: true }, 'PENDING_APPROVAL', ['edit']],
       ['Edit, Cancel and Delete, on a draft', { edit_logistic_orders: true, cancel_logistic_orders: true, delete_logistic_orders: true }, 'DRAFT', ['cancel', 'edit', 'delete']],
       ['Approve alone, on a submitted order', { approve_logistic_orders: true }, 'PENDING_APPROVAL', ['approve']],
       ['Approve alone, on a draft', { approve_logistic_orders: true }, 'DRAFT', []],
@@ -191,16 +192,17 @@ suite('job page inventory actions follow switches (real database)', () => {
     it('carries the list on the answers to create, submit and approve as well', async () => {
       const { org, customer } = await newOrg();
       const stock = await addStockedItem(org);
-      const me = await personWith(org, { create_logistic_orders: true, approve_logistic_orders: true });
+      const me = await personWith(org, { edit_logistic_orders: true, create_logistic_orders: true, approve_logistic_orders: true });
       const job = await fx.addJob(org, customer, { crew: [me.id] });
       const api = await me.api();
       const made = await api.post('/api/logistic-orders', { job_id: job.id, lines: [{ item_id: stock.item, qty: 1, from_location_id: stock.location }] });
       expect(made.status).toBe(201);
-      expect(made.body.actions).toEqual(['submit']);
+      // Edit is held too (Create requires it, AL-04), so it is listed alongside what the order's state allows.
+      expect(made.body.actions).toEqual(['submit', 'edit']);
       const submitted = await api.post(`/api/logistic-orders/${made.body.id}/submit`);
-      expect(submitted.body.actions).toEqual(['approve']);
+      expect(submitted.body.actions).toEqual(['approve', 'edit']);
       const approved = await api.post(`/api/logistic-orders/${made.body.id}/approve`);
-      expect(approved.body.actions).toEqual([]);
+      expect(approved.body.actions).toEqual(['edit']);
     });
 
     it('does not put an action list on the order list rows (no query per order)', async () => {
@@ -217,10 +219,10 @@ suite('job page inventory actions follow switches (real database)', () => {
   });
 
   describe('a record opened from the job', () => {
-    it('opens on View alone, with every Show switch off, and not at all with View off', async () => {
+    it('opens on View alone, and not at all with View off', async () => {
       const { org, customer, admin } = await newOrg();
       const stock = await addStockedItem(org);
-      const viewer = await personWith(org, { show_logistic_orders_page: false, show_purchase_orders_page: false });
+      const viewer = await personWith(org, {});
       const blind = await personWith(org, { view_logistic_orders: false });
       const job = await fx.addJob(org, customer, { crew: [viewer.id, blind.id] });
       const order = await addOrder(org, admin.id, job.id, 'DRAFT', stock);
@@ -247,7 +249,7 @@ suite('job page inventory actions follow switches (real database)', () => {
 
     it('opens a purchase order on View purchase orders alone, and not with it off', async () => {
       const { org, customer } = await newOrg();
-      const viewer = await personWith(org, { view_purchase_orders: true, show_purchase_orders_page: false });
+      const viewer = await personWith(org, { view_purchase_orders: true });
       const blind = await personWith(org, { view_purchase_orders: false });
       const job = await fx.addJob(org, customer, { crew: [viewer.id, blind.id] });
       const po = await db.purchaseOrder.create({
@@ -275,10 +277,10 @@ suite('job page inventory actions follow switches (real database)', () => {
       return job;
     }
 
-    it('reaches a person with View purchase orders and See financial data, and carries no figure for one without See financial data', async () => {
+    it('reaches a person with View purchase orders and See costs, and carries no figure for one without See costs', async () => {
       const { org, customer } = await newOrg();
-      const both = await personWith(org, { view_purchase_orders: true, see_financial_data: true });
-      const poOnly = await personWith(org, { view_purchase_orders: true, see_financial_data: false });
+      const both = await personWith(org, { view_purchase_orders: true, see_costs: true });
+      const poOnly = await personWith(org, { view_purchase_orders: true, see_costs: false });
       const job = await jobWithPurchasedMaterial(org, customer, [both.id, poOnly.id]);
 
       const withBoth = await (await both.api()).get(`/api/inventory/jobs/${job.id}/material-cost`);
@@ -291,9 +293,9 @@ suite('job page inventory actions follow switches (real database)', () => {
       expect(withoutCosts.body.lineCount).toBe(1);
     });
 
-    it('is refused with View purchase orders off, even with See financial data on', async () => {
+    it('is refused with View purchase orders off, even with See costs on', async () => {
       const { org, customer } = await newOrg();
-      const costsOnly = await personWith(org, { view_purchase_orders: false, see_financial_data: true });
+      const costsOnly = await personWith(org, { view_purchase_orders: false, see_costs: true });
       const job = await jobWithPurchasedMaterial(org, customer, [costsOnly.id]);
       const res = await (await costsOnly.api()).get(`/api/inventory/jobs/${job.id}/material-cost`);
       expect(res.status).toBe(403);
@@ -301,7 +303,7 @@ suite('job page inventory actions follow switches (real database)', () => {
 
     it('is not on the job answer or its financials for anyone', async () => {
       const { org, customer } = await newOrg();
-      const both = await personWith(org, { view_purchase_orders: true, see_financial_data: true });
+      const both = await personWith(org, { view_purchase_orders: true, see_costs: true });
       const job = await jobWithPurchasedMaterial(org, customer, [both.id]);
       const api = await both.api();
       for (const path of [`/api/jobs/${job.id}`, `/api/jobs/${job.id}/financials`]) {

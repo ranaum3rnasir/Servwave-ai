@@ -17,6 +17,7 @@ import { mockAuthAs, authHeader, TEST_USERS, ESTIMATE_FIXTURE } from './helpers'
 
 const mockPrisma = prisma as unknown as {
   estimate: { findUnique: ReturnType<typeof vi.fn>; findFirst: ReturnType<typeof vi.fn> };
+  lead: { findFirst: ReturnType<typeof vi.fn> };
   estimateScopePhoto: { findMany: ReturnType<typeof vi.fn>; createMany: ReturnType<typeof vi.fn> };
   $transaction: ReturnType<typeof vi.fn>;
 };
@@ -56,6 +57,8 @@ function copiedRowPaths(): string[] {
 
 describe('POST /api/estimates/:id/duplicate', () => {
   beforeEach(() => {
+    // The lead the copy lands on is read once for its reach (M2).
+    mockPrisma.lead.findFirst.mockResolvedValue({ id: ESTIMATE_FIXTURE.lead_id, customer_id: null, service_location_id: null, customer: { tax_exempt: false } });
     mockPrisma.estimate.findUnique.mockResolvedValue({
       lead_id: ESTIMATE_FIXTURE.lead_id,
       scope_notes: null,

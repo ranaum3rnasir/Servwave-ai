@@ -90,13 +90,13 @@ describe('SwitchSetEditor, collapsible groups', () => {
     expect(screen.queryByText(/\d+ of \d+ on/)).toBeNull();
   });
 
-  it('collapses the Data Scope block the same way, counting its switches', async () => {
+  it('collapses the Money block the same way, counting its switches', async () => {
     const user = userEvent.setup();
     const values = presetSet('SALES');
     draw(values);
-    const keys = FIXTURE_LAYOUT.dataScope.filter((k) => catalogSwitch(k).kind === 'toggle');
-    await user.click(groupToggle('Data Scope'));
-    const region = screen.getByRole('region', { name: 'Data Scope' });
+    const keys = FIXTURE_LAYOUT.money.map((m) => m.key).filter((k) => catalogSwitch(k).kind === 'toggle');
+    await user.click(groupToggle('Money'));
+    const region = screen.getByRole('region', { name: 'Money' });
     await waitFor(() => expect(within(region).queryAllByRole('switch')).toHaveLength(0));
     expect(within(region).getByText(`${onCount(keys, values)} of ${keys.length} on`)).toBeInTheDocument();
   });

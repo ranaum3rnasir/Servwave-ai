@@ -1,21 +1,18 @@
 #!/usr/bin/env npx tsx
 /**
- * Provision a new tenant: org row → DEFAULT_GRANTS seed → plan/trial → checklist.
+ * Provision a new tenant: org row → plan/trial → checklist.
  *
  * Usage:
  *   npx tsx backend/scripts/create-org.ts --name "Acme Plumbing" \
  *     --email admin@acme.com --state TX --plan PRO [--trial]
  *
- * The DEFAULT_GRANTS seed is the point of this script: a fresh org has ZERO
- * RolePermission rows, so every non-admin 403s until they are seeded. The vault
- * flags it as the easiest step to forget, with a symptom that looks like a bug.
+ * A fresh org needs no permission rows: what a person may do comes from their switches, and the
+ * four built-in roles take their values from the switch catalog's presets.
  */
 import crypto from 'crypto';
-import { Prisma } from '@prisma/client';
 import { prisma } from '../src/lib/prisma';
 import { runUnscoped } from '../src/lib/tenant-context';
 import { createCompanyWithMainMailbox } from '../src/lib/mailbox/register';
-import { DEFAULT_GRANTS } from '../src/lib/permissions/defaultGrants';
 import { seedStarterTaskCategories, STARTER_TASK_CATEGORIES } from '../src/lib/tasks/categories';
 import { seedListRows } from '../src/lib/org-list-rows';
 import { orgFeatures, effectivePlan } from '../src/lib/entitlements/resolve';
@@ -89,23 +86,6 @@ async function main() {
       trial_ends_at,
     });
 
-    // Conditions carry the row-scope templates (OWN_LEAD, OWN_JOB, …). Dropping
-    // them silently grants org-wide access — 25 of 143 grants are affected.
-    // Mapper copied from src/lib/e2e-org.ts:79.
-    await prisma.rolePermission.createMany({
-      data: DEFAULT_GRANTS.map((g) => {
-        const conditions = (g as { conditions?: Record<string, unknown> }).conditions;
-        return {
-          organization_id: orgId,
-          role: g.role,
-          action: g.action,
-          subject: g.subject,
-          conditions: conditions == null ? Prisma.JsonNull : (conditions as Prisma.InputJsonValue),
-        };
-      }),
-      skipDuplicates: true,
-    });
-
     // Every new organization starts with the three starter task categories.
     await seedStarterTaskCategories(prisma, orgId);
     // ...and the job type and source lists as rows, copied from the organization's own column defaults.
@@ -113,7 +93,6 @@ async function main() {
   });
 
   const source = { plan, trial_ends_at, feature_overrides: {} };
-  const scoped = DEFAULT_GRANTS.filter((g) => (g as { conditions?: unknown }).conditions).length;
 
   console.log(`\n✅ Organization created`);
   console.log(`   ID:        ${orgId}`);
@@ -121,7 +100,6 @@ async function main() {
   console.log(`   Plan:      ${plan}${trial ? ` (trialing SCALE until ${trial_ends_at!.toISOString().slice(0, 10)})` : ''}`);
   console.log(`   Effective: ${effectivePlan(source)}`);
   console.log(`   Features:  ${orgFeatures(source).join(', ')}`);
-  console.log(`   Grants:    ${DEFAULT_GRANTS.length} seeded (${scoped} row-scoped)`);
   console.log(`   Task categories: ${STARTER_TASK_CATEGORIES.map((c) => c.name).join(', ')}`);
 
   console.log(`\n📋 Go-live checklist — NOT done by this script:`);

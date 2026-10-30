@@ -15,7 +15,7 @@ const pageQuery = (req: Request) => ({
 });
 
 /**
- * The Sender Address page's "People who read the main mailbox" (PRD 10, S10.8). Every route is Company settings behind
+ * The Sender Address page's "People who read the main mailbox" (PRD 10, S10.8). Every route is Admin-only (it was Company settings until 36b) behind
  * the Email plan feature, like the page; who actually reads the main mailbox is M11's rule (communicationScope.ts).
  */
 

@@ -6,7 +6,7 @@ import { toggleColumnSort } from '@/lib/tableSort';
 import { Download, Plus, Receipt } from 'lucide-react';
 
 import api from '@/lib/axios';
-import { useAppAbility } from '@/contexts/AbilityContext';
+import { useAppAbility, useCanSeePrices } from '@/contexts/AbilityContext';
 import { customerDisplayName } from '@/lib/customer-name';
 import { formatExactInstant } from '@/lib/format-date';
 import { toCSV, downloadCSV } from '@/lib/inventory/csv';
@@ -51,7 +51,7 @@ import { useRecordVisit } from '../pageBreadcrumbs';
 import { AppliedFilterBar } from '../_shared/appliedFilters';
 import { FilterPopover, facetSelectionCount } from '../_shared/filterPopover';
 import {
-  buildInvoiceColumns, toInvoiceExportRow, DEFAULT_COLUMN_VISIBILITY,
+  buildInvoiceColumns, toInvoiceExportRow, DEFAULT_COLUMN_VISIBILITY, INVOICE_PRICE_COLUMN_IDS,
   type InvoiceListItem,
 } from './invoicesColumns';
 
@@ -127,7 +127,14 @@ export default function InvoicesPage() {
   // here. Page still snaps back to 1 on the keystroke itself.
   const search = useDebounce(searchInput, 300);
 
-  const { value, setValue, listParams: filterParams } = useFilterState(invoicesRegistry);
+  // P11: without See prices the server leaves every price out, so the list draws no place for one.
+  const canSeePrices = useCanSeePrices();
+  // Stable between renders (useFilterState's registry contract): rebuilt only when See prices changes.
+  const registry = useMemo(
+    () => invoicesRegistry.filter((facet) => canSeePrices || (facet.key !== 'total' && facet.key !== 'balance')),
+    [canSeePrices],
+  );
+  const { value, setValue, listParams: filterParams } = useFilterState(registry);
 
   // SRVW-58 - the org's tag vocabulary for the Tags facet, this registry's only
   // dynamic `optionSource`.
@@ -297,8 +304,8 @@ export default function InvoicesPage() {
   }, []);
 
   const columns = useMemo(
-    () => buildInvoiceColumns(sorting, toggleSort, openJob, timeZone),
-    [sorting, toggleSort, openJob, timeZone],
+    () => buildInvoiceColumns(sorting, toggleSort, openJob, timeZone).filter((c) => canSeePrices || !INVOICE_PRICE_COLUMN_IDS.has(String(c.id))),
+    [sorting, toggleSort, openJob, timeZone, canSeePrices],
   );
 
   // NOTE on "Clear all": the legacy page owned that button and cleared the
@@ -310,8 +317,8 @@ export default function InvoicesPage() {
 
   // Drives whether the applied-chip bar renders at all.
   const hasActiveFilters = useMemo(
-    () => invoicesRegistry.some((facet) => facetSelectionCount(value[facet.key]) > 0),
-    [value],
+    () => registry.some((facet) => facetSelectionCount(value[facet.key]) > 0),
+    [registry, value],
   );
 
   // --- Clickable KPIs ------------------------------------------------------
@@ -372,7 +379,7 @@ export default function InvoicesPage() {
   const today = () => new Date().toISOString().split('T')[0];
   const exportRows = (list: InvoiceListItem[], filename: string) => {
     if (!list.length) return;
-    downloadCSV(toCSV(list.map((inv) => toInvoiceExportRow(inv, timeZone))), filename);
+    downloadCSV(toCSV(list.map((inv) => toInvoiceExportRow(inv, timeZone, canSeePrices))), filename);
   };
 
   const handleExportCurrentPage = () => exportRows(rows, `invoices-page${page}-${today()}.csv`);
@@ -400,23 +407,27 @@ export default function InvoicesPage() {
       />
 
       <StatCardGroup className="mb-4">
-        <StatCard
-          label="Due"
-          value={formatCurrency(Number(stats?.due?.total ?? 0))}
-          loading={isLoading}
-          active={dueKpiActive}
-          onClick={() => handleStatusKpi(['SENT', 'PARTIAL'], dueKpiActive)}
-        />
+        {canSeePrices && (
+          <StatCard
+            label="Due"
+            value={formatCurrency(Number(stats?.due?.total ?? 0))}
+            loading={isLoading}
+            active={dueKpiActive}
+            onClick={() => handleStatusKpi(['SENT', 'PARTIAL'], dueKpiActive)}
+          />
+        )}
         {/* Overdue is the one tile that carries a rail: money past its due date
             is the only figure on this row that means "act now". */}
-        <StatCard
-          label="Overdue"
-          value={formatCurrency(Number(stats?.overdue?.total ?? 0))}
-          tone="red"
-          loading={isLoading}
-          active={overdueKpiActive}
-          onClick={handleOverdueKpi}
-        />
+        {canSeePrices && (
+          <StatCard
+            label="Overdue"
+            value={formatCurrency(Number(stats?.overdue?.total ?? 0))}
+            tone="red"
+            loading={isLoading}
+            active={overdueKpiActive}
+            onClick={handleOverdueKpi}
+          />
+        )}
         {/* Bug #21 / #594 - the completed-but-unbilled count opens an in-page
             modal listing those jobs. It is NOT a filter of this list, so it
             never lights up as an active KPI. */}
@@ -432,19 +443,21 @@ export default function InvoicesPage() {
             org could hold six figures in deposits and see it nowhere. This tile
             is that number, and clicking it filters the list to the rows behind
             it. */}
-        <StatCard
-          label="Deposits Held"
-          value={formatCurrency(Number(stats?.deposits_held ?? 0))}
-          loading={isLoading}
-          active={depositsKpiActive}
-          onClick={handleDepositsKpi}
-        />
+        {canSeePrices && (
+          <StatCard
+            label="Deposits Held"
+            value={formatCurrency(Number(stats?.deposits_held ?? 0))}
+            loading={isLoading}
+            active={depositsKpiActive}
+            onClick={handleDepositsKpi}
+          />
+        )}
       </StatCardGroup>
 
       {hasActiveFilters && (
         <AppliedFilterBar
           className="mb-3"
-          registry={invoicesRegistry}
+          registry={registry}
           value={value}
           onChange={handleFilterChange}
           resolveOptions={resolveOptions}
@@ -485,7 +498,7 @@ export default function InvoicesPage() {
               actions={
                 <>
                   <FilterPopover
-                    registry={invoicesRegistry}
+                    registry={registry}
                     value={value}
                     onChange={handleFilterChange}
                     resolveOptions={resolveOptions}

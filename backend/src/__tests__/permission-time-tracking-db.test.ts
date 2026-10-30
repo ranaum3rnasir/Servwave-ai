@@ -25,6 +25,7 @@ const { realClient } = vi.hoisted(() => {
 vi.mock('../lib/prisma', () => ({ prisma: realClient }));
 
 import { switchFixture, type Person } from './permission-switches-fixture';
+import { clearSwitchCacheForUser } from '../lib/permissions/switches/cache';
 import { setRoleSwitchValues } from '../lib/permissions/switches/store';
 import { SWITCH_CATALOG } from '../lib/permissions/switches/catalog';
 import { VERB_RULES } from '../services/notifications/templates';
@@ -32,7 +33,7 @@ import { reviewAttentionSettled } from '../services/notifications/reviewAttentio
 
 const suite = realClient ? describe : describe.skip;
 
-const SEE_ALL = 'see_everyones_timesheets';
+const SEE_ALL = 'timesheets_scope';
 // A work zone in Austin and a person a long way from it.
 const STORE = { lat: 30.2672, lng: -97.7431 };
 const FAR_AWAY = { lat: 40.7128, lng: -74.006 };
@@ -190,7 +191,7 @@ suite('Time tracking follows switches and no longer checks where a clock-in happ
     });
   });
 
-  describe("org timesheets open with See everyone's timesheets", () => {
+  describe('org timesheets open on a Timesheets scope wider than Attached', () => {
     async function twoPeopleWithHours(org: string) {
       const a = await fx.addUser(org, `a${++sequence}`, 'TECHNICIAN');
       const b = await fx.addUser(org, `b${++sequence}`, 'SALES');
@@ -206,10 +207,10 @@ suite('Time tracking follows switches and no longer checks where a clock-in happ
     }
 
     for (const base of ['TECHNICIAN', 'SALES', 'DISPATCHER', 'ADMIN'] as const) {
-      it(`lets a custom role based on ${base} open everyone's punches and overtime reviews with the switch on, with their locations`, async () => {
+      it(`lets a custom role based on ${base} open everyone's punches and overtime reviews on All, with their locations`, async () => {
         const { org } = await newOrg();
         const { a, b } = await twoPeopleWithHours(org);
-        const viewer = await personWith(org, { [SEE_ALL]: true }, { base });
+        const viewer = await personWith(org, { [SEE_ALL]: 'all' }, { base });
         const api = await viewer.api();
 
         const punches = await api.get('/api/timeclock/punches?scope=org');
@@ -223,17 +224,17 @@ suite('Time tracking follows switches and no longer checks where a clock-in happ
         expect(reviews.body.reviews.map((r: { user_id: string }) => r.user_id).sort()).toEqual([a.id, b.id].sort());
       });
 
-      it(`refuses a custom role based on ${base} the org views with the switch off, and still shows them their own`, async () => {
+      it(`refuses a custom role based on ${base} the org views on Attached, and still shows them their own`, async () => {
         const { org } = await newOrg();
         const { a } = await twoPeopleWithHours(org);
-        const viewer = await personWith(org, { [SEE_ALL]: false }, { base });
+        const viewer = await personWith(org, { [SEE_ALL]: 'attached' }, { base });
         const api = await viewer.api();
         await db.timeEntry.create({ data: { organization_id: org, user_id: viewer.id, type: 'IN', ts: new Date(), lat: 5, lng: 6, status: 'IN_ZONE' } });
 
         expect((await api.get('/api/timeclock/punches?scope=org')).status).toBe(403);
         expect((await api.get('/api/timeclock/ot-reviews?scope=org')).status).toBe(403);
 
-        // Their own timesheet is open to everyone, with or without the switch, and holds nobody else's.
+        // Their own timesheet is open to everyone, on any scope, and holds nobody else's.
         const own = await api.get('/api/timeclock/punches');
         expect(own.status).toBe(200);
         expect(own.body.punches.map((p: { userId: string }) => p.userId)).toEqual([viewer.id]);
@@ -244,24 +245,61 @@ suite('Time tracking follows switches and no longer checks where a clock-in happ
     }
   });
 
+  describe('on Timesheets scope Team', () => {
+    it('opens the org views to the punches and overtime reviews of the people in the department, and to no one else\'s, nothing without a department', async () => {
+      const { org } = await newOrg();
+      const { a, b } = await (async () => {
+        const north = await fx.addDepartment(org, 'North');
+        const south = await fx.addDepartment(org, 'South');
+        const a = await fx.addUser(org, `a${++sequence}`, 'TECHNICIAN', { departmentId: north });
+        const b = await fx.addUser(org, `b${++sequence}`, 'SALES', { departmentId: south });
+        const at = new Date('2026-09-01T13:00:00Z');
+        for (const [person, lat] of [[a, 10], [b, 20]] as const) {
+          await db.timeEntry.create({ data: { organization_id: org, user_id: person.id, type: 'IN', ts: at, lat, lng: lat, status: 'IN_ZONE' } });
+          await db.timeClockOtReview.create({
+            data: { organization_id: org, user_id: person.id, period_key: '2026-W36', state: 'APPROVED', reviewed_by: person.id, reviewed_at: at },
+          });
+        }
+        return { a, b, north };
+      })();
+      const north = (await db.user.findUniqueOrThrow({ where: { id: a.id } })).department_id!;
+      const viewer = await personWith(org, { [SEE_ALL]: 'team' }, { base: 'DISPATCHER' });
+      await db.user.update({ where: { id: viewer.id }, data: { department_id: north } });
+      clearSwitchCacheForUser(viewer.id);
+      const api = await viewer.api();
+
+      const punches = await api.get('/api/timeclock/punches?scope=org');
+      expect(punches.status).toBe(200);
+      expect(punches.body.punches.map((p: { userId: string }) => p.userId)).toEqual([a.id]);
+      const reviews = await api.get('/api/timeclock/ot-reviews?scope=org');
+      expect(reviews.body.reviews.map((r: { user_id: string }) => r.user_id)).toEqual([a.id]);
+      expect(b.id).not.toBe(a.id);
+
+      const loner = await personWith(org, { [SEE_ALL]: 'team' }, { base: 'DISPATCHER' });
+      const none = await (await loner.api()).get('/api/timeclock/punches?scope=org');
+      expect(none.status).toBe(200);
+      expect(none.body.punches).toEqual([]);
+    });
+  });
+
   describe('the route-level enforcement table', () => {
     const probes: Array<{ check: string; call: (api: Api) => ReturnType<Api['get']> }> = [
       { check: 'timesheet-punches-org', call: (api) => api.get('/api/timeclock/punches?scope=org') },
       { check: 'timesheet-ot-reviews-org', call: (api) => api.get('/api/timeclock/ot-reviews?scope=org') },
     ];
 
-    it("has a probe for every server check the Time tracking group lists, and none for a check it does not list", () => {
-      const listed = SWITCH_CATALOG.filter((s) => s.module === 'Time tracking').flatMap((s) => s.serverChecks.map((c) => `${s.key}:${c}`));
-      expect(probes.map((p) => `${SEE_ALL}:${p.check}`).sort()).toEqual(listed.sort());
+    it('has a probe for each org view, and the scope switch lists no server check of its own (it narrows these two routes by value)', () => {
+      expect(SWITCH_CATALOG.filter((s) => s.module === 'Time tracking').flatMap((s) => s.serverChecks)).toEqual([]);
+      expect(probes.map((p) => p.check).sort()).toEqual(['timesheet-ot-reviews-org', 'timesheet-punches-org']);
     });
 
     for (const probe of probes) {
-      it(`${probe.check}: let in with ${SEE_ALL} on, refused with it off`, async () => {
+      it(`${probe.check}: let in on All, refused on Attached`, async () => {
         const { org } = await newOrg();
-        const on = await personWith(org, { [SEE_ALL]: true });
-        expect((await probe.call(await on.api())).status, 'with the switch on').toBe(200);
-        const off = await personWith(org, { [SEE_ALL]: false });
-        expect((await probe.call(await off.api())).status, 'with the switch off').toBe(403);
+        const on = await personWith(org, { [SEE_ALL]: 'all' });
+        expect((await probe.call(await on.api())).status, 'on All').toBe(200);
+        const off = await personWith(org, { [SEE_ALL]: 'attached' });
+        expect((await probe.call(await off.api())).status, 'on Attached').toBe(403);
       });
     }
   });

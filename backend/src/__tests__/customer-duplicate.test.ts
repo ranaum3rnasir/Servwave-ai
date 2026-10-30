@@ -14,7 +14,7 @@ function makeClient(customers: unknown[]) {
 // #2041 — the readable verdict now reads `req.customerScope` (attachCustomerScope, never
 // simulated by this bare stub); `{}` is what an ADMIN's unconditional scope resolves to.
 const permissiveReq = {
-  ability: defineAbilityFor({ id: 'admin-1', role: 'ADMIN' }, []),
+  ability: defineAbilityFor({ is_admin: true, id: 'admin-1', role: 'ADMIN' }, []),
   customerScope: {},
 } as unknown as Request;
 

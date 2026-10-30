@@ -22,10 +22,10 @@ const ASSIGN_TASK: Grant = { action: 'assign', subject: 'Task' };
 const READ_LEAD: Grant = { action: 'read', subject: 'Lead' };
 
 function abilityFor(
-  user: { id: string; role: string; custom_role_id?: string | null },
+  user: { id: string; role: string; is_admin?: boolean; custom_role_id?: string | null },
   grants: Grant[] = [],
 ) {
-  return defineAbilityFor(user, grants);
+  return defineAbilityFor({ is_admin: user.role === 'ADMIN' && !user.custom_role_id, ...user }, grants);
 }
 
 describe('resolveAssigneePool — the grant, not the role', () => {

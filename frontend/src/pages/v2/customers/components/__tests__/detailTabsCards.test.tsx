@@ -12,7 +12,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, within, fireEvent } from '@testing-library/react';
 
 import { MEDIA } from '@/ui-kit/lib/breakpoints';
-import { renderWithProviders as render } from '@/__tests__/helpers';
+import { renderWithProviders, seesPrices } from '@/__tests__/helpers';
+
+// Est. Value, totals and Amount Due are prices, so every tab here is drawn for a person who holds See prices (P11).
+const render = (ui: Parameters<typeof renderWithProviders>[0]) => renderWithProviders(ui, { ability: seesPrices });
 import { projectCustomerSchedule } from '@/lib/customers/customerSchedule';
 
 import {

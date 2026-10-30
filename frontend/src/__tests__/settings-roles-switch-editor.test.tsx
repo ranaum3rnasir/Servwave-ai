@@ -14,7 +14,7 @@ import RolesPage from '@/pages/v2/settings/RolesPage';
 import { useSettingsGuard } from '@/stores/settingsGuard.store';
 import type { SettingsSaver } from '@/lib/settings/types';
 import type { BuiltInRoleKey, RoleSwitchSet } from '@/lib/api/permissionSwitches';
-import { FIXTURE_CATALOG, FIXTURE_LAYOUT, FIXTURE_SWITCHES, catalogSwitch, presetSet } from './support/permissionCatalogFixture';
+import { FIXTURE_CATALOG, FIXTURE_LAYOUT, FIXTURE_DRAWN_SWITCHES, FIXTURE_SWITCHES, catalogSwitch, presetSet } from './support/permissionCatalogFixture';
 
 const mockApi = vi.mocked(api);
 
@@ -69,18 +69,18 @@ beforeEach(() => {
 describe('Settings > Roles, the roles list', () => {
   it('lists every role of the company with the number of people on it', async () => {
     renderWithProviders(<RolesPage />);
-    for (const r of ROLES) {
+    // Every role but the Administrator entry, which is not a role on this page (Admin is a flag on the person).
+    for (const r of ROLES.filter((x) => !x.fullAccess)) {
       const button = await screen.findByRole('button', { name: new RegExp(r.label.replace(/[()]/g, '.')) });
       expect(within(button).getByText(String(r.userCount))).toBeInTheDocument();
     }
   });
 
-  it('shows the built-in Administrator role as one Full access box with no switches and nothing to save', async () => {
+  it('does not list the Administrator entry: Admin is a flag on the person, not a role to edit here', async () => {
     renderWithProviders(<RolesPage />);
-    expect(await screen.findByText('Full access')).toBeInTheDocument();
-    expect(screen.queryAllByRole('switch')).toHaveLength(0);
-    expect(screen.queryByRole('region', { name: 'Data Scope' })).toBeNull();
-    expect(saver.isDirty).toBe(false);
+    await screen.findByRole('button', { name: /^Sales/ });
+    expect(screen.queryByRole('button', { name: /^Administrator/ })).toBeNull();
+    expect(screen.queryByText('Full access')).toBeNull();
   });
 });
 
@@ -90,8 +90,8 @@ describe('Settings > Roles, a role picked', () => {
     await openRole(/^Dispatcher/);
     const preset = presetSet('DISPATCHER');
     await screen.findByRole('switch', { name: catalogSwitch('view_customers').label });
-    expect(FIXTURE_SWITCHES.length).toBeGreaterThan(0);
-    for (const s of FIXTURE_SWITCHES) {
+    expect(FIXTURE_DRAWN_SWITCHES.length).toBeGreaterThan(0);
+    for (const s of FIXTURE_DRAWN_SWITCHES) {
       expect(screen.getByRole('button', { name: `About ${s.label}` }), s.label).toBeInTheDocument();
       if (s.kind === 'toggle') {
         expect(screen.getByRole('switch', { name: s.label }).getAttribute('aria-checked'), s.label).toBe(String(preset[s.key]));
@@ -119,13 +119,13 @@ describe('Settings > Roles, a role picked', () => {
   it('says changes apply to people given the role from now on', async () => {
     renderWithProviders(<RolesPage />);
     await openRole(/^Sales/);
-    expect(await screen.findByText(/Changes apply to people you give this role from now on\. People already on it keep their own switches\./)).toBeInTheDocument();
+    expect(await screen.findByText(/Changes reach everyone on this role, except people who hold their own value for a switch\./)).toBeInTheDocument();
   });
 
   it('retires the Sensitive list, the Job Milestones list, the grid and the separate Data Scope tab', async () => {
     renderWithProviders(<RolesPage />);
     await openRole(/^Sales/);
-    await screen.findByRole('region', { name: 'Data Scope' });
+    await screen.findByRole('region', { name: 'Money' });
     expect(screen.queryByText('Sensitive')).toBeNull();
     expect(screen.queryByText('Job Milestones')).toBeNull();
     // The only tabs are the editor and the Change log (S02.12): Data Scope is not a tab of its own.
@@ -137,7 +137,7 @@ describe('Settings > Roles, a role picked', () => {
   it('names no vendor anywhere on the page', async () => {
     const { container } = renderWithProviders(<RolesPage />);
     await openRole(/^Sales/);
-    await screen.findByRole('region', { name: 'Data Scope' });
+    await screen.findByRole('region', { name: 'Money' });
     expect(container.textContent).not.toMatch(/\b(CTM|CallTracking|Supabase|Render|Stripe|Twilio|Resend|Vercel)\b/i);
   });
 });
@@ -161,6 +161,22 @@ describe('Settings > Roles, editing and saving', () => {
     expect(mockApi.put).toHaveBeenCalledWith('/api/roles/SALES/permissions', { values: { [key]: !was } });
     await waitFor(() => expect(saver.isDirty).toBe(false));
     expect(screen.getByRole('switch', { name: label }).getAttribute('aria-checked')).toBe(String(!was));
+  });
+
+  it('tells the admin how many people a save reached and how many keep their own value, and the line goes when the role is edited again', async () => {
+    const user = userEvent.setup();
+    renderWithProviders(<RolesPage />);
+    await openRole(/^Sales/);
+    const key = 'reopen_leads';
+    await user.click(await screen.findByRole('switch', { name: catalogSwitch(key).label }));
+    await waitFor(() => expect(saver.isDirty).toBe(true));
+    mockApi.put.mockResolvedValue({ data: { ...roleSet('SALES', { ...presetSet('SALES'), [key]: !presetSet('SALES')[key] }), reaches: 3, keep_own: 1 } });
+    await saver.save();
+
+    expect(await screen.findByRole('status')).toHaveTextContent('Reaches 3 people; 1 keeps their own value.');
+    await user.click(screen.getByRole('switch', { name: catalogSwitch(key).label }));
+    await waitFor(() => expect(saver.isDirty).toBe(true));
+    expect(screen.queryByText(/Reaches 3 people/)).toBeNull();
   });
 
   it('sends a changed choice as the value the server stores', async () => {
@@ -235,7 +251,7 @@ describe('Settings > Roles, Data Scope in each scoped row', () => {
   it('draws a scope control in each scoped row and the "Follows the leads and jobs" line on the rows that have none', async () => {
     renderWithProviders(<RolesPage />);
     await openRole(/^Dispatcher/);
-    await screen.findByRole('region', { name: 'Data Scope' });
+    await screen.findByRole('region', { name: 'Money' });
     const rows = FIXTURE_LAYOUT.groups.flatMap((g) => g.modules);
     for (const scoped of rows.filter((m) => m.scope)) {
       expect(within(screen.getByRole('group', { name: scoped.label })).getByRole('radiogroup', { name: catalogSwitch(scoped.scope!).label })).toBeInTheDocument();

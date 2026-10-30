@@ -2,7 +2,7 @@ import type { BuiltInRoleKey, CatalogLayout, CatalogSwitch, SwitchCatalog, Switc
 
 /**
  * A catalog in the shape the server's catalog read answers, small enough to read and wide enough to hold every kind
- * of place a switch can sit: the Data Scope block, a full first line, a switch nested under a line and under
+ * of place a switch can sit: the Money row, a full first line, a switch nested under a line and under
  * another extra, a scope choice on its row, a plain choice, a list, a module with no View (Settings, Pages), a
  * group heading over two modules (Inventory), and the two switches registered on the company record.
  *
@@ -20,7 +20,7 @@ function toggle(key: string, module: string, label: string, p: Record<BuiltInRol
 const ON = presets(true, true, true, true);
 const ADMIN_ONLY = presets(true, false, false, false);
 
-const SCOPE = ['attached', 'team', 'location', 'all'];
+const SCOPE = ['attached', 'team', 'all'];
 
 export const FIXTURE_SWITCHES: CatalogSwitch[] = [
   { key: 'leads_scope', module: 'Data Scope', label: 'Leads scope', helpText: 'Help for Leads scope.', kind: 'choice', choices: SCOPE, requires: [], presets: presets('all', 'attached', 'all', 'attached') },
@@ -29,29 +29,19 @@ export const FIXTURE_SWITCHES: CatalogSwitch[] = [
     keptValueHelp: { through_own_leads: { label: 'Through own leads', meaning: 'Jobs that come from a lead you are the Owner of.' } },
     presets: presets('all', 'through_own_leads', 'all', 'attached'),
   },
-  {
-    key: 'estimates_scope', module: 'Data Scope', label: 'Estimates scope', helpText: 'Help for Estimates scope.', kind: 'choice', choices: SCOPE, requires: [],
-    keptValueHelp: { through_own_leads: { label: 'Through own leads', meaning: 'Estimates that come from a lead you are the Owner of.' } },
-    presets: presets('all', 'through_own_leads', 'all', 'attached'),
-  },
-  {
-    key: 'invoices_scope', module: 'Data Scope', label: 'Invoices scope', helpText: 'Help for Invoices scope.', kind: 'choice', choices: SCOPE, requires: [],
-    keptValueHelp: { through_own_leads: { label: 'Through own leads', meaning: 'Invoices that come from a lead you are the Owner of.' } },
-    presets: presets('all', 'through_own_leads', 'all', 'attached'),
-  },
-  toggle('see_company_figures', 'Data Scope', 'See company figures', presets(true, false, false, false)),
-  toggle('see_financial_data', 'Data Scope', 'See financial data', presets(true, true, false, false)),
+  toggle('see_prices', 'Money', 'See prices', ON),
+  toggle('see_costs', 'Money', 'See costs', presets(true, true, false, false), ['see_prices']),
+  toggle('see_company_figures', 'Money', 'See company figures', presets(true, false, false, false), ['see_prices']),
 
   toggle('view_customers', 'Customers', 'View customers', ON),
   toggle('create_customers', 'Customers', 'Create customers', presets(true, true, false, false), ['view_customers']),
   toggle('edit_customers', 'Customers', 'Edit customers', ON, ['view_customers']),
   toggle('delete_customers', 'Customers', 'Delete customers', ADMIN_ONLY, ['view_customers']),
-  toggle('show_customers_page', 'Customers', 'Show Customers page', ON, ['view_customers']),
   toggle('export_customers', 'Customers', 'Export customers', ADMIN_ONLY, ['view_customers']),
   toggle('change_customer_created_date', 'Customers', 'Change customer created date', ADMIN_ONLY, ['edit_customers']),
 
   toggle('view_estimates', 'Estimates', 'View estimates', ON),
-  toggle('create_estimates', 'Estimates', 'Create estimates', ON, ['view_estimates']),
+  toggle('create_estimates', 'Estimates', 'Create estimates', ON, ['view_estimates', 'see_prices']),
 
   toggle('view_leads', 'Leads', 'View leads', ON),
   toggle('create_leads', 'Leads', 'Create leads', ON, ['view_leads']),
@@ -66,7 +56,7 @@ export const FIXTURE_SWITCHES: CatalogSwitch[] = [
   toggle('assign_people_to_jobs', 'Jobs', 'Assign people to jobs', presets(true, false, true, false), ['view_jobs']),
 
   toggle('view_invoices', 'Invoices', 'View invoices', ON),
-  toggle('record_payments', 'Invoices', 'Record payments', presets(true, true, true, false)),
+  toggle('record_payments', 'Invoices', 'Record payments', presets(true, true, true, false), ['see_prices']),
   toggle('view_payments', 'Invoices', 'View payments and payouts', ADMIN_ONLY),
   {
     key: 'allowed_payment_methods', module: 'Invoices', label: 'Allowed payment methods', helpText: 'Help for Allowed payment methods.',
@@ -77,7 +67,7 @@ export const FIXTURE_SWITCHES: CatalogSwitch[] = [
   toggle('edit_stock', 'Stock', 'Edit stock', presets(true, false, true, false), ['view_stock']),
   toggle('pick_up_staged_items', 'Stock', 'Pick up staged items', presets(true, false, true, true)),
   toggle('record_pickup_for_someone_else', 'Stock', 'Record pickup for someone else', presets(true, false, true, false)),
-  { key: 'inventory_view', module: 'Stock', label: 'Inventory view', helpText: 'Help for Inventory view.', kind: 'choice', choices: ['counter', 'field'], requires: [], presets: presets('counter', 'counter', 'counter', 'field') },
+  { key: 'inventory_view', module: 'Stock', label: 'Inventory view', helpText: 'Help for Inventory view.', kind: 'choice', choices: ['counter', 'field'], requires: [], setting: true, presets: presets('counter', 'counter', 'counter', 'field') },
   toggle('view_purchase_orders', 'Purchase Orders', 'View purchase orders', ON),
   toggle('view_logistic_orders', 'Logistic Orders', 'View logistic orders', ON),
   toggle('approve_logistic_orders', 'Logistic Orders', 'Approve logistic orders', ADMIN_ONLY, ['view_logistic_orders']),
@@ -91,12 +81,11 @@ export const FIXTURE_SWITCHES: CatalogSwitch[] = [
   toggle('export_call_log', 'Communication', 'Export call log', ADMIN_ONLY, ['access_communication']),
   toggle('show_phone', 'Communication', 'Show Phone', ON, ['access_communication']),
   toggle('show_email', 'Communication', 'Show Email', ON, ['access_communication']),
-  { key: 'communication_scope', module: 'Communication', label: 'Communication scope', helpText: 'Help for Communication scope.', kind: 'choice', choices: ['linked_to_me', 'all'], requires: [], presets: presets('all', 'linked_to_me', 'all', 'linked_to_me') },
+  { key: 'communication_scope', module: 'Communication', label: 'Communication scope', helpText: 'Help for Communication scope.', kind: 'choice', choices: ['attached', 'team', 'all'], requires: [], presets: presets('all', 'attached', 'all', 'attached') },
 
-  toggle('can_own_leads', 'Users', 'Can own leads / be Sold By', presets(true, true, false, true)),
-  toggle('can_be_dispatcher', 'Users', 'Can be a dispatcher', presets(true, false, true, false)),
-  toggle('can_be_on_crew', 'Users', 'Can be on a crew', presets(true, false, true, true)),
-  toggle('company_settings', 'Settings', 'Company settings', ADMIN_ONLY),
+  { ...toggle('can_own_leads', 'Users', 'Can own leads / be Sold By', presets(true, true, false, true)), setting: true },
+  { ...toggle('can_be_dispatcher', 'Users', 'Can be a dispatcher', presets(true, false, true, false)), setting: true },
+  { ...toggle('can_be_on_crew', 'Users', 'Can be on a crew', presets(true, false, true, true)), setting: true },
   toggle('manage_payout_account', 'Settings', 'Manage payout account', ADMIN_ONLY),
 
   toggle('access_schedule', 'Pages', 'Access Schedule', ON),
@@ -105,13 +94,19 @@ export const FIXTURE_SWITCHES: CatalogSwitch[] = [
 ];
 
 export const FIXTURE_LAYOUT: CatalogLayout = {
-  dataScope: ['see_company_figures', 'see_financial_data'],
+  money: [
+    { key: 'see_prices', parent: null },
+    { key: 'see_costs', parent: 'see_prices' },
+    { key: 'see_company_figures', parent: 'see_prices' },
+  ],
+  // The per-person settings: in the catalog, never drawn by the switch editor, edited on the person's profile.
+  settings: ['can_own_leads', 'can_be_dispatcher', 'can_be_on_crew', 'inventory_view'],
   groups: [
     {
       label: 'Customers',
       modules: [{
         module: 'Customers', label: 'Customers', scope: null, scopeNote: 'Follows the leads and jobs this person can open.',
-        lines: ['view_customers', 'create_customers', 'edit_customers', 'delete_customers', 'show_customers_page', 'export_customers'],
+        lines: ['view_customers', 'create_customers', 'edit_customers', 'delete_customers', 'export_customers'],
         extras: [{ key: 'change_customer_created_date', parent: 'edit_customers' }],
       }],
     },
@@ -130,7 +125,7 @@ export const FIXTURE_LAYOUT: CatalogLayout = {
     {
       label: 'Estimates',
       modules: [{
-        module: 'Estimates', label: 'Estimates', scope: 'estimates_scope', scopeNote: null,
+        module: 'Estimates', label: 'Estimates', scope: null, scopeNote: 'Follows the leads and jobs this person can open.',
         lines: ['view_estimates', 'create_estimates'], extras: [],
       }],
     },
@@ -145,7 +140,7 @@ export const FIXTURE_LAYOUT: CatalogLayout = {
     {
       label: 'Invoices and payments',
       modules: [{
-        module: 'Invoices', label: 'Invoices', scope: 'invoices_scope', scopeNote: null,
+        module: 'Invoices', label: 'Invoices', scope: null, scopeNote: 'Follows the leads and jobs this person can open.',
         lines: ['view_invoices'],
         extras: [{ key: 'record_payments', parent: null }, { key: 'view_payments', parent: null }, { key: 'allowed_payment_methods', parent: null }],
       }],
@@ -155,7 +150,7 @@ export const FIXTURE_LAYOUT: CatalogLayout = {
       modules: [
         {
           module: 'Stock', label: 'Stock', scope: null, scopeNote: null, lines: ['view_stock', 'edit_stock'],
-          extras: [{ key: 'pick_up_staged_items', parent: null }, { key: 'record_pickup_for_someone_else', parent: null }, { key: 'inventory_view', parent: null }],
+          extras: [{ key: 'pick_up_staged_items', parent: null }, { key: 'record_pickup_for_someone_else', parent: null }],
         },
         {
           module: 'Purchase Orders', label: 'Purchase Orders', scope: null, scopeNote: 'Follows the leads and jobs this person can open.',
@@ -170,7 +165,7 @@ export const FIXTURE_LAYOUT: CatalogLayout = {
     {
       label: 'Communication',
       modules: [{
-        module: 'Communication', label: 'Communication', scope: null, scopeNote: null,
+        module: 'Communication', label: 'Communication', scope: 'communication_scope', scopeNote: null,
         lines: ['view_communication'],
         extras: [
           { key: 'contact_customers', parent: null },
@@ -181,7 +176,6 @@ export const FIXTURE_LAYOUT: CatalogLayout = {
           { key: 'show_phone', parent: 'access_communication' },
           { key: 'show_email', parent: 'access_communication' },
           { key: 'export_call_log', parent: 'access_communication' },
-          { key: 'communication_scope', parent: null },
         ],
       }],
     },
@@ -189,10 +183,10 @@ export const FIXTURE_LAYOUT: CatalogLayout = {
       label: 'Team and settings',
       modules: [{
         module: 'Users', label: 'Users', scope: null, scopeNote: null, lines: [],
-        extras: [{ key: 'can_own_leads', parent: null }, { key: 'can_be_dispatcher', parent: null }, { key: 'can_be_on_crew', parent: null }],
+        extras: [],
       }, {
         module: 'Settings', label: 'Settings', scope: null, scopeNote: null, lines: [],
-        extras: [{ key: 'company_settings', parent: null }, { key: 'manage_payout_account', parent: null }],
+        extras: [{ key: 'manage_payout_account', parent: null }],
       }],
     },
     {
@@ -204,6 +198,9 @@ export const FIXTURE_LAYOUT: CatalogLayout = {
     },
   ],
 };
+
+/** The switches the Permissions editor draws: every catalog entry that is not a per-person setting. */
+export const FIXTURE_DRAWN_SWITCHES: CatalogSwitch[] = FIXTURE_SWITCHES.filter((s) => !s.setting);
 
 export const FIXTURE_CATALOG: SwitchCatalog = { switches: FIXTURE_SWITCHES, layout: FIXTURE_LAYOUT };
 

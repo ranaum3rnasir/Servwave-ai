@@ -23,7 +23,7 @@ const ROW = {
   organization_id: 'org-1',
   department_id: null,
   location_id: null,
-  organization: { is_demo: false, plan: 'SCALE', trial_ends_at: null, feature_overrides: {} },
+  organization: { is_demo: false, plan: 'SCALE', trial_ends_at: null, feature_overrides: {}, owner_user_id: 'owner-id' },
 };
 
 // Shape resolveAppUser returns: the org relation flattened to org_is_demo, plus
@@ -46,6 +46,8 @@ const APP_USER = {
   location_id: null,
   org_is_demo: false,
   org_is_spider_pilot: false,
+  // The company's Owner (AL-16), flattened from the organization relation.
+  org_owner_user_id: 'owner-id',
   org_plan: 'SCALE',
   org_features: [
     'customers', 'jobs', 'estimates', 'invoices', 'payments',
@@ -126,6 +128,8 @@ describe('resolveAppUser', () => {
 
     expect(result).toEqual({
       ...APP_USER,
+      // No relation, no Owner: nobody stands in.
+      org_owner_user_id: null,
       org_plan: 'STARTER',
       org_features: [
         'customers', 'jobs', 'estimates', 'invoices', 'payments',

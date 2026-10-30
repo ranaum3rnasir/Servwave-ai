@@ -103,9 +103,12 @@ suite('job Sold By backfill migration (real database)', () => {
     });
     const user = async (name: string, active = true) => {
       const id = randomUUID();
-      await db.user.create({
-        data: { id, organization_id: org, email: `${name}-${tag}@example.test`, first_name: name, last_name: 'Tester', role: 'SALES', is_active: active },
-      });
+  // Raw insert: this database holds only the migrations before the one under test, and the client's insert would name later columns (users.is_admin).
+      await db.$executeRawUnsafe(
+        `INSERT INTO users (id, organization_id, email, first_name, last_name, role, is_active, updated_at)
+         VALUES ($1::uuid, $2::uuid, $3, $4, 'Tester', 'SALES'::"Role", $5, now())`,
+        id, org, `${name}-${tag}@example.test`, name, active,
+      );
       return id;
     };
     const [ownerA, ownerB, planSeller, existing, retired] = [

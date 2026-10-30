@@ -1,3 +1,4 @@
+import { ignorePriceQuery } from '../lib/permissions/prices';
 import { Request, Response } from 'express';
 import { z } from 'zod';
 import { Prisma } from '@prisma/client';
@@ -7,7 +8,9 @@ import { parsePagination, buildPaginationMeta, parseSortParams, respondInvalidSo
 import { INV_CATALOG_ITEM_SORT_FIELDS, PRICE_BOOK_ITEM_SORT_FIELDS } from '../lib/sortFields';
 import { tenantWhere } from '../lib/tenant';
 import { logAudit } from '../lib/audit';
-import { canSeeCosts, canSeeVendors } from '../lib/permissions/enforce';
+import { canSeeCosts, canSeePrices, canSeeVendors } from '../lib/permissions/enforce';
+import { dropPriceColumns, pricesToSave } from '../lib/permissions/priceWrites';
+import { validationFailure } from '../middleware/validate';
 import { resolvedCatalogItemFields } from '../lib/catalog/item-resolution';
 import { emitBackorderIfFlipped } from '../services/notifications/inventoryEmit';
 // Brand/item-group reads stay on inv-catalog; the write handlers moved here (P0 §D2)
@@ -86,10 +89,9 @@ export const createItemSchema = z.object({
   unit_price: z.number().min(0).optional(),
   taxable: z.boolean().optional(),
   ...itemSupersetFields,
-}).refine((b) => b.unit_price != null || b.sell_price != null, {
-  message: 'unit_price or sell_price is required',
-  path: ['unit_price'],
 });
+// A price is required of a person who sees prices. A person without See prices has no price on the form and sends none: the
+// item starts at 0 and the prices are set by someone who can see them (pricesToSave).
 
 export const updateItemSchema = z.object({
   name: z.string().min(1).max(200).optional(),
@@ -189,8 +191,9 @@ async function guardItemFks(req: Request, res: Response): Promise<boolean> {
 }
 
 // Cost stripping (P0 §D7, S01.15): unit_cost is internal cost/margin data, gated by the canSeeCosts
-// (`read Pricing`, "See financial data") predicate. unit_price/sell_price/list_price are prices - the
-// price book's list price among them - and are NEVER stripped.
+// (`read Pricing`, "See costs") predicate. unit_price/sell_price/list_price are prices - the
+// price book's list price among them - which this cost rule leaves alone: a person without See prices has them
+// left out by the price-blind filter instead.
 //
 // `unitCost` is the RESOLVED answer for the same concept (lib/catalog/item-resolution) and
 // is stripped with the raw column it answers for — a resolved field left in place, or
@@ -410,6 +413,7 @@ export async function deleteCategory(req: Request, res: Response) {
 
 export async function listItems(req: Request, res: Response) {
   try {
+    ignorePriceQuery(req);
     const { page, limit, skip } = parsePagination(req.query as { page?: string; limit?: string });
     const sort = parseSortParams(req.query as any, PRICE_BOOK_ITEM_SORT_FIELDS, 'sort_order', 'asc');
     if (!sort.ok) {
@@ -481,7 +485,7 @@ export async function listItems(req: Request, res: Response) {
  * The Price Book page's own item list (S07.16): the camelCase catalog shape the inventory grid reads,
  * minus its stock side, so a person with View price book alone can open the page without View stock.
  * Archived items stay out unless `include_archived=true`, as on the grid it replaces. Cost needs
- * See financial data and the vendor name needs View vendors; neither is ever sent as an empty value.
+ * See costs and the vendor name needs View vendors; neither is ever sent as an empty value.
  */
 export async function listCatalogItems(req: Request, res: Response) {
   try {
@@ -593,6 +597,11 @@ export async function createItem(req: Request, res: Response) {
 
     if (!(await guardItemFks(req, res))) return;
 
+    if (canSeePrices(req) && body.unit_price == null && body.sell_price == null) {
+      res.status(400).json(validationFailure([{ field: 'unit_price', message: 'unit_price or sell_price is required' }]));
+      return;
+    }
+
     // Price mirror rule (P0 §D1): the catalog selling price lives in BOTH
     // unit_price (legacy NOT-NULL column, read by estimates/invoices) and
     // sell_price (inventory vocabulary). Whichever side the client sends is
@@ -607,10 +616,12 @@ export async function createItem(req: Request, res: Response) {
         image_url: body.image_url ?? null,
         type: body.type ?? typeForKind(body.kind),
         category_id: body.category_id ?? null,
-        // A cost sent by a person without See financial data is dropped, not stored (S01.15's rule for lines).
+        // A cost sent by a person without See costs is dropped, not stored (S01.15's rule for lines).
         unit_cost: canSeeCosts(req) ? body.unit_cost ?? null : null,
-        unit_price: unitPrice as number,
-        sell_price: sellPrice,
+        // Without See prices the price sent (if any) is dropped and the item starts at 0 (unit_price is NOT NULL).
+        unit_price: 0,
+        sell_price: 0,
+        ...pricesToSave(req, 'PriceBookItem', { unit_price: unitPrice as number, sell_price: sellPrice, list_price: body.list_price ?? null }),
         taxable: body.taxable ?? true,
         sku: body.sku ?? null,
         mpn: body.mpn ?? null,
@@ -622,7 +633,6 @@ export async function createItem(req: Request, res: Response) {
         trade: body.trade ?? null,
         kind: normalizeKind(body.kind),
         uom: body.uom ?? null,
-        list_price: body.list_price ?? null,
         serialized: body.serialized ?? false,
         hazmat: body.hazmat ?? false,
         status: body.status ?? null,
@@ -700,9 +710,11 @@ export async function updateItem(req: Request, res: Response) {
 
     if (!(await guardItemFks(req, res))) return;
 
-    // A cost sent by a person without See financial data is dropped before the write, so it is never stored
+    // A cost sent by a person without See costs is dropped before the write, so it is never stored
     // and a save from the stripped form (which has no cost to send) cannot blank the stored one.
     if (!canSeeCosts(req)) delete body.unit_cost;
+    // The same for a price: the stripped form has none to send, so a save from it leaves the stored prices as they are.
+    dropPriceColumns(req, 'PriceBookItem', body as Record<string, unknown>);
 
     // Explicit data build (no raw req.body passthrough) — needed for the price
     // mirror rule. Keys are already column names.
@@ -857,7 +869,7 @@ export async function upsertBrand(req: Request, res: Response) {
       description: body.description ?? null, default_markup_pct: body.defaultMarkupPct ?? null,
       default_vendor_id: body.defaultVendorId ?? null, is_active: body.isActive ?? true,
     };
-    // The default markup is margin data. Without See financial data a markup sent is ignored: a new brand
+    // The default markup is margin data. Without See costs a markup sent is ignored: a new brand
     // gets none and a saved one keeps what is stored (the key stays out of the update).
     if (!canSeeCosts(req)) delete data.default_markup_pct;
     if (!withVendor) delete data.default_vendor_id;
@@ -1125,33 +1137,38 @@ export const upsertItemGroupSchema = z.object({
   })).optional(),
 });
 
-type StoredGroupLine = { id: string; item_id: string | null; name: string; cost_override: Prisma.Decimal | null };
+type StoredGroupLine = { id: string; item_id: string | null; name: string; cost_override: Prisma.Decimal | null; price_override: Prisma.Decimal | null };
 
 /**
- * The cost each sent line is saved with. With See financial data it is the cost sent. Without it a cost
- * sent is ignored and each line keeps the cost already stored for it, found by the id the read gave it, or
- * (for a client that did not send ids) by the item and name; a line that matches nothing stored has none.
- * The save replaces every line, so this is the only thing standing between a stripped read and a blanked cost.
+ * The cost and the price each sent line is saved with. With See costs the cost is the one sent, and with See prices the price is
+ * the one sent. Without one, the value sent is ignored and each line keeps the one already stored for it, found by the id the
+ * read gave it, or (for a client that did not send ids) by the item and name; a line that matches nothing stored has none.
+ * The save replaces every line, so this is the only thing standing between a stripped read and a blanked cost or price
+ * (the price columns are listed in PRICE_BOOK_PRICE_COLUMNS).
  */
-function lineCostsToSave(
+function lineValuesToSave(
   req: Request,
   sent: NonNullable<z.infer<typeof upsertItemGroupSchema>['lines']>,
   stored: StoredGroupLine[],
-): Array<Prisma.Decimal | number | null> {
-  if (canSeeCosts(req)) return sent.map((l) => l.costOverride ?? null);
+): Array<{ cost: Prisma.Decimal | number | null; price: Prisma.Decimal | number | null }> {
+  const seesCosts = canSeeCosts(req);
+  const seesPrices = canSeePrices(req);
   const unclaimed = new Map(stored.map((l) => [l.id, l]));
-  const matched: Array<StoredGroupLine | undefined> = sent.map((l) => {
+  const matched: Array<StoredGroupLine | undefined> = seesCosts && seesPrices ? [] : sent.map((l) => {
     const byId = l.id ? unclaimed.get(l.id) : undefined;
     if (byId) unclaimed.delete(byId.id);
     return byId;
   });
   return sent.map((l, i) => {
     let line = matched[i];
-    if (!line) {
+    if (!line && !(seesCosts && seesPrices)) {
       line = [...unclaimed.values()].find((s) => s.item_id === (l.itemId ?? null) && s.name === l.name);
       if (line) unclaimed.delete(line.id);
     }
-    return line?.cost_override ?? null;
+    return {
+      cost: seesCosts ? l.costOverride ?? null : line?.cost_override ?? null,
+      price: seesPrices ? l.priceOverride ?? null : line?.price_override ?? null,
+    };
   });
 }
 
@@ -1161,15 +1178,17 @@ export async function upsertItemGroup(req: Request, res: Response) {
     const body = req.body as z.infer<typeof upsertItemGroupSchema>;
     const baseData: any = {
       name: body.name, description: body.description ?? null, photo_url: body.photoUrl ?? null,
-      group_type: body.groupType, flat_rate_price_override: body.flatRatePriceOverride ?? null,
+      group_type: body.groupType,
+      // Without See prices the flat rate sent is dropped: an update leaves the stored one, a create starts without one.
+      ...pricesToSave(req, 'ItemGroup', { flat_rate_price_override: body.flatRatePriceOverride ?? null }),
       is_active: body.isActive ?? true,
     };
     const buildLines = (stored: StoredGroupLine[]) => {
       const sent = body.lines ?? [];
-      const costs = lineCostsToSave(req, sent, stored);
+      const values = lineValuesToSave(req, sent, stored);
       return sent.map((l, i) => ({
         item_id: l.itemId ?? null, name: l.name, quantity: l.quantity,
-        price_override: l.priceOverride ?? null, cost_override: costs[i],
+        price_override: values[i]!.price, cost_override: values[i]!.cost,
         notes: l.notes ?? null, organization_id: orgId,
       }));
     };
@@ -1180,12 +1199,13 @@ export async function upsertItemGroup(req: Request, res: Response) {
       if (!exists) { res.status(404).json({ error: 'Item group not found' }); return; }
       let linesCreate: ReturnType<typeof buildLines> | undefined;
       if (body.lines !== undefined) {
-        // Read the stored costs before the lines are replaced: a person without See financial data keeps them.
-        const stored = canSeeCosts(req)
+        // Read the stored costs and prices before the lines are replaced: a person without See costs keeps the costs,
+        // and a person without See prices keeps the prices.
+        const stored = canSeeCosts(req) && canSeePrices(req)
           ? []
           : await prisma.itemGroupLine.findMany({
               where: { group_id: body.id, ...tenantWhere(req) },
-              select: { id: true, item_id: true, name: true, cost_override: true },
+              select: { id: true, item_id: true, name: true, cost_override: true, price_override: true },
             });
         linesCreate = buildLines(stored);
         await prisma.itemGroupLine.deleteMany({ where: { group_id: body.id, ...tenantWhere(req) } });
@@ -1269,6 +1289,8 @@ const importRowSchema = z.object({
   sellPrice: z.number().min(0),
   vendor: z.string().max(200).nullable().optional(),
 });
+// Without See prices the file's price column is not read: the sheet need not carry one, and a price in it changes nothing.
+const importRowSchemaWithoutPrices = importRowSchema.extend({ sellPrice: z.unknown().optional() });
 
 /**
  * Import field -> the COLUMN HEADING the operator sees, matching
@@ -1356,6 +1378,7 @@ export async function importItems(req: Request, res: Response) {
     const orgId = req.user!.organization_id;
     const rows = (req.body as { items: unknown[] }).items;
     const seesCosts = canSeeCosts(req);
+    const seesPrices = canSeePrices(req);
     // Vendors are matched by name, which answers "does this vendor exist": without View vendors a vendor
     // column is not read at all - no lookup, no warning, nothing linked.
     const seesVendors = canSeeVendors(req);
@@ -1443,7 +1466,7 @@ export async function importItems(req: Request, res: Response) {
     // Deliberately NO wrapping transaction and no Promise.all: rows are
     // independent, processed in order, and one failure never aborts the batch.
     for (let index = 0; index < rows.length; index++) {
-      const parsed = importRowSchema.safeParse(rows[index]);
+      const parsed = (seesPrices ? importRowSchema : importRowSchemaWithoutPrices).safeParse(rows[index]);
       if (!parsed.success) {
         const issue = parsed.error.issues[0];
         errors.push({
@@ -1479,10 +1502,10 @@ export async function importItems(req: Request, res: Response) {
               ...(categoryId ? { category_id: categoryId } : {}),
               ...(vendorId ? { vendor_id: vendorId } : {}),
               uom: row.uom ?? null,
-              // Without See financial data a cost in the file is ignored and the stored cost stays.
+              // Without See costs a cost in the file is ignored and the stored cost stays.
               ...(seesCosts ? { unit_cost: row.unitCost ?? null } : {}),
-              unit_price: row.sellPrice,
-              sell_price: row.sellPrice,
+              // Without See prices the stored price stays whatever the file says.
+              ...pricesToSave(req, 'PriceBookItem', { unit_price: row.sellPrice as number, sell_price: row.sellPrice as number }),
             },
           });
           updated++;
@@ -1499,8 +1522,10 @@ export async function importItems(req: Request, res: Response) {
               vendor_id: vendorId ?? null,
               uom: row.uom ?? null,
               unit_cost: seesCosts ? row.unitCost ?? null : null,
-              unit_price: row.sellPrice,
-              sell_price: row.sellPrice,
+              // Without See prices a new item starts at 0 (unit_price is NOT NULL), whatever the file says.
+              unit_price: 0,
+              sell_price: 0,
+              ...pricesToSave(req, 'PriceBookItem', { unit_price: row.sellPrice as number, sell_price: row.sellPrice as number }),
               organization_id: orgId,
             },
           });

@@ -127,7 +127,7 @@ function mapCategory(row: any) {
 // Exported: price-book.controller reuses these for the moved brand/item-group
 // write handlers (P0 §D2) — the read side (list*) stays here.
 // The default markup is margin data: it rides on the answer only for a requester who can see costs
-// (canSeeCosts, "See financial data"), and is left out otherwise - the key absent, never 0 or null.
+// (canSeeCosts, "See costs"), and is left out otherwise - the key absent, never 0 or null.
 // The default vendor id follows View vendors the same way.
 export function mapBrand(row: any, req: Request) {
   const brand = {
@@ -166,8 +166,9 @@ export function mapUomOption(row: any) {
   };
 }
 
-// A line's cost is cost data like an item's: it rides on the answer only with See financial data
-// (canSeeCosts), and the key is left out otherwise. priceOverride is a price and is never stripped.
+// A line's cost is cost data like an item's: it rides on the answer only with See costs
+// (canSeeCosts), and the key is left out otherwise. priceOverride is a price: it is left out for a person without
+// See prices (the price-blind filter), not by this cost rule.
 function mapItemGroupLine(row: any, req: Request) {
   const line = {
     id: row.id as string,
@@ -198,7 +199,8 @@ export function mapItemGroup(row: any, req: Request) {
 
 // ─── Cost stripping (P0 §D7, S01.15) ────────────────────
 // unitCost is internal cost/margin data — visible only to a requester who can see costs
-// (canSeeCosts, "See financial data"). sellPrice and listPrice are prices and are NEVER stripped.
+// (canSeeCosts, "See costs"). sellPrice and listPrice are prices: they are left out for a person without See prices
+// (the price-blind filter), not by this cost rule.
 function stripMappedItemCost<T extends Record<string, unknown>>(item: T, req: Request): T {
   if (canSeeCosts(req)) return item;
   const out: Record<string, unknown> = { ...item };

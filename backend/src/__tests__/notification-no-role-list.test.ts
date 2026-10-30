@@ -94,14 +94,15 @@ describe('no alert recipient is computed from a role name', () => {
     const alert = read('services/notifications').filter((f) => f.path === 'services/notifications/emailReplyAlerts.ts');
     expect(alert).toHaveLength(1);
     expect(alert[0]!.text).toMatch(/readersOfConversation\(/);
-    expect(alert[0]!.text).toMatch(/MANAGE_ROLES_SWITCH/);
+    // Its last fallback is the company's Admins, by the Admin flag (AL-18), never a role name.
+    expect(alert[0]!.text).toMatch(/people\.filter\(isSuperUser\)/);
     expect(findRoleBasedRecipients(alert)).toEqual([]);
   });
 
-  it('has the call and text fallback (S08.24) name the holders of a switch, never a role', () => {
+  it('has the call and text fallback (S08.24) name the company\'s Admins by the flag, never a role', () => {
     const fallback = read('services/notifications').filter((f) => f.path === 'services/notifications/conversationAlertFallback.ts');
     expect(fallback).toHaveLength(1);
-    expect(fallback[0]!.text).toMatch(/activeSwitchHolders\(organizationId, MANAGE_ROLES_SWITCH\)/);
+    expect(fallback[0]!.text).toMatch(/activeAdmins\(organizationId\)/);
     expect(findRoleBasedRecipients(fallback)).toEqual([]);
   });
 
@@ -121,14 +122,13 @@ describe('no alert recipient is computed from a role name', () => {
       'lib/owner-payment-notices.ts', 'lib/payments-notifications.ts', 'lib/unapplied-capture.ts',
       'services/payment-reconciler/checkout-effects.ts', 'services/payment-reconciler/index.ts',
       'controllers/auth.controller.ts', 'controllers/inv-po.controller.ts', 'controllers/inv-stages.controller.ts',
-      'controllers/inv-stock.controller.ts', 'controllers/price-book.controller.ts', 'lib/tasks/deactivation.ts',
+      'controllers/inv-stock.controller.ts', 'controllers/price-book.controller.ts',
       'controllers/resend-webhook.controller.ts',
     ];
     const files = paths.map((p) => ({ path: p, text: readFileSync(join(SRC, p), 'utf8') }));
     const hits = findRoleBasedRecipients(files);
-    // deactivation.ts picks the longest-serving active Admin to INHERIT a deactivated person's tasks (an assignment, not an alert
-    // list: the alert goes to the new assignee). auth.controller reads roles to sign people in, not to choose who is told.
-    expect(hits.filter((h) => !h.startsWith('lib/tasks/deactivation.ts') && !h.startsWith('controllers/auth.controller.ts'))).toEqual([]);
+    // auth.controller reads roles to sign people in, not to choose who is told.
+    expect(hits.filter((h) => !h.startsWith('controllers/auth.controller.ts'))).toEqual([]);
   });
 });
 
@@ -140,11 +140,12 @@ describe('automation recipients are unchanged', () => {
     organizationId: 'org-1', entity: 'job', customer: null, assignees: [], watchers: [], dispatcher: null, salesperson: null, creator: null, eventRecipient: null,
   });
 
-  it.each([['all_admins', 'ADMIN'], ['all_dispatchers', 'DISPATCHER']] as const)('%s still means the active people on the %s role', async (key, role) => {
+  // "All admins" is the people with the Admin flag (P15); "all dispatchers" is still the active people on the Dispatcher role.
+  it.each([['all_admins', { is_admin: true }], ['all_dispatchers', { role: 'DISPATCHER' }]] as const)('%s still means the active people it always meant', async (key, who) => {
     (prisma.user.findMany as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([{ id: 'u1', email: 'u1@example.test', first_name: 'A', last_name: 'B', phone: null }]);
     const audience = await resolveAudience(key, ctx());
     expect(audience.users.map((u) => u.id)).toEqual(['u1']);
-    expect(prisma.user.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { organization_id: 'org-1', role, is_active: true } }));
+    expect(prisma.user.findMany).toHaveBeenCalledWith(expect.objectContaining({ where: { organization_id: 'org-1', ...who, is_active: true } }));
   });
 });
 

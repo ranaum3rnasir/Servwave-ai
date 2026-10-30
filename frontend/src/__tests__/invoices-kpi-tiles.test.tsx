@@ -15,8 +15,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 
 import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
+import { renderWithProviders, seesPrices } from './helpers';
 
+// The tiles are totals, so the row is drawn for a person who holds See prices (P11).
 const mockApi = vi.mocked(api);
 
 const STATS = {
@@ -59,7 +60,7 @@ const tileLabels = () =>
 
 describe('the Invoices KPI row', () => {
   it('shows exactly four tiles, so the xl:grid-cols-4 row does not wrap', async () => {
-    renderWithProviders(<InvoicesPage />);
+    renderWithProviders(<InvoicesPage />, { ability: seesPrices });
 
     await waitFor(() => {
       expect(screen.getByText('Due', { selector: 'span' })).toBeInTheDocument();
@@ -69,7 +70,7 @@ describe('the Invoices KPI row', () => {
   });
 
   it('no longer offers the "Unsent Drafts" tile', async () => {
-    renderWithProviders(<InvoicesPage />);
+    renderWithProviders(<InvoicesPage />, { ability: seesPrices });
 
     await waitFor(() => {
       expect(screen.getByText('Due', { selector: 'span' })).toBeInTheDocument();
@@ -79,7 +80,7 @@ describe('the Invoices KPI row', () => {
   });
 
   it('still renders Deposits Held, which the removal was making room for', async () => {
-    renderWithProviders(<InvoicesPage />);
+    renderWithProviders(<InvoicesPage />, { ability: seesPrices });
 
     await waitFor(() => {
       expect(screen.getByText('Deposits Held', { selector: 'span' })).toBeInTheDocument();

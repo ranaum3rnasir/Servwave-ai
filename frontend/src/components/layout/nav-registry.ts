@@ -41,13 +41,13 @@ export interface NavChild {
 
 /**
  * Which switches decide whether a destination's menu entry shows (Roles & Permissions S02.19, S02.20). Read from the
- * person's resolved switches, never from the compiled rules, because Show and Access are display-only values the rules
- * do not carry. A destination with no gate still follows its `action` and `subject`.
+ * person's resolved switches, never from the compiled rules, because Access is a display-only value the rules do not
+ * carry. A destination with no gate still follows its `action` and `subject`.
  *
  *   always   every person has it, whatever they hold (the Dashboard: their home page, with no switch)
- *   record   a record module's list page: its View switch AND its Show switch are both on. With `unless` named, the
- *            entry is also hidden while that other entry (its own View AND Show) shows: the Logistic Orders child
- *            gives way to the Stock entry, which already leads to the Inventory page and its Logistic Orders tab.
+ *   record   a record module's list page: its View switch is on (the sidebar follows View, P1). With `unless` named, the
+ *            entry is also hidden while that other entry (its own View) shows: the Logistic Orders child gives way
+ *            to the Stock entry, which already leads to the Inventory page and its Logistic Orders tab.
  *   page     a page that is not one record type: its Access switch is on
  *   show     a sub-page of a section (Phone, Text, Email): its Show switch is on
  *   group    an expandable group, which has no switch of its own: it shows when at least one of its children that has a
@@ -57,14 +57,13 @@ export interface NavChild {
  */
 export type NavGate =
   | { kind: 'always' }
-  | { kind: 'record'; view: string; show: string; unless?: { view: string; show: string } }
+  | { kind: 'record'; view: string; unless?: { view: string } }
   | { kind: 'page'; access: string }
   | { kind: 'show'; show: string }
   | { kind: 'group'; access?: string };
 
 const always: NavGate = { kind: 'always' };
-const record = (view: string, show: string, unless?: { view: string; show: string }): NavGate =>
-  ({ kind: 'record', view, show, unless });
+const record = (view: string, unless?: { view: string }): NavGate => ({ kind: 'record', view, unless });
 const page = (access: string): NavGate => ({ kind: 'page', access });
 const showOf = (show: string): NavGate => ({ kind: 'show', show });
 const group = (access?: string): NavGate => ({ kind: 'group', access });
@@ -219,32 +218,32 @@ export function resolveNavHref(dest: NavDestination, access: NavAccess): string 
 export const NAV_REGISTRY: NavDestination[] = [
   { key: 'dashboard',     label: 'Dashboard',      icon: BarChart3,       href: '/',                     action: 'read',   subject: 'Dashboard',     home: 'Page', gate: always },
   { key: 'schedule',      label: 'Schedule',       icon: CalendarDays,    href: '/schedule',             action: 'read',   subject: 'Job',           home: 'Page', gate: page('access_schedule') },
-  { key: 'tasks',         label: 'Tasks',          icon: ClipboardList,   href: '/tasks',                action: 'read',   subject: 'Task',          home: 'Page', gate: record('view_tasks', 'show_tasks_page') },
-  { key: 'leads',         label: 'Leads',          icon: Filter,          href: '/leads',                action: 'read',   subject: 'Lead',          home: 'Page', gate: record('view_leads', 'show_leads_page'), feature: 'leads' },
-  { key: 'jobs',          label: 'Jobs',           icon: Briefcase,       href: '/jobs',                 action: 'read',   subject: 'Job',           home: 'Page', gate: record('view_jobs', 'show_jobs_page') },
-  { key: 'clients',       label: 'Customers',      icon: User,            href: '/customers',            action: 'read',   subject: 'Customer',      home: 'Page', gate: record('view_customers', 'show_customers_page') },
-  { key: 'estimates',     label: 'Estimates',      icon: FileText,        href: '/estimates',            action: 'read',   subject: 'Estimate',      home: 'Page', gate: record('view_estimates', 'show_estimates_page') },
-  { key: 'invoices',      label: 'Invoices',       icon: Receipt,         href: '/invoices',             action: 'read',   subject: 'Invoice',       home: 'Page', gate: record('view_invoices', 'show_invoices_page') },
-  { key: 'payments',      label: 'Payments',       icon: CircleDollarSign, href: '/payments',            action: 'view_payments', subject: 'Organization', home: 'Page', gate: record('view_payments', 'show_payments_page') },
-  { key: 'service-plans', label: 'Service Plans',  icon: Repeat,          href: '/service-plans',        action: 'read',   subject: 'ServicePlan',   home: 'Page', gate: record('view_service_plans', 'show_service_plans_page'), feature: 'service_plans' },
+  { key: 'tasks',         label: 'Tasks',          icon: ClipboardList,   href: '/tasks',                action: 'read',   subject: 'Task',          home: 'Page', gate: record('view_tasks') },
+  { key: 'leads',         label: 'Leads',          icon: Filter,          href: '/leads',                action: 'read',   subject: 'Lead',          home: 'Page', gate: record('view_leads'), feature: 'leads' },
+  { key: 'jobs',          label: 'Jobs',           icon: Briefcase,       href: '/jobs',                 action: 'read',   subject: 'Job',           home: 'Page', gate: record('view_jobs') },
+  { key: 'clients',       label: 'Customers',      icon: User,            href: '/customers',            action: 'read',   subject: 'Customer',      home: 'Page', gate: record('view_customers') },
+  { key: 'estimates',     label: 'Estimates',      icon: FileText,        href: '/estimates',            action: 'read',   subject: 'Estimate',      home: 'Page', gate: record('view_estimates') },
+  { key: 'invoices',      label: 'Invoices',       icon: Receipt,         href: '/invoices',             action: 'read',   subject: 'Invoice',       home: 'Page', gate: record('view_invoices') },
+  { key: 'payments',      label: 'Payments',       icon: CircleDollarSign, href: '/payments',            action: 'view_payments', subject: 'Organization', home: 'Page', gate: record('view_payments') },
+  { key: 'service-plans', label: 'Service Plans',  icon: Repeat,          href: '/service-plans',        action: 'read',   subject: 'ServicePlan',   home: 'Page', gate: record('view_service_plans'), feature: 'service_plans' },
   // Automation Center — icon per the ServWave board mapping (automation → Zap in servwave-icons).
-  { key: 'automations',   label: 'Automations',    icon: Zap,             href: '/automations',          action: 'read',   subject: 'Automation',    home: 'Page', gate: record('view_automations', 'show_automations_page'), feature: 'automations' },
+  { key: 'automations',   label: 'Automations',    icon: Zap,             href: '/automations',          action: 'read',   subject: 'Automation',    home: 'Page', gate: record('view_automations'), feature: 'automations' },
   // feature: 'inventory' - /inventory/price-book is inside <RequireFeature feature="inventory">
   // in App.tsx and PriceBookPage reads the Scale-gated /api/inventory/* catalog hooks. Without
   // this key the row rendered unlocked on Starter/Pro and bounced to /upgrade on click; it now
   // locks with a plan badge like every other gated module.
-  { key: 'pricebook',     label: 'Price Book',     icon: Tag,             href: '/inventory/price-book', action: 'read',   subject: 'Inventory',     home: 'Inventory', gate: record('view_price_book', 'show_price_book_page'), feature: 'inventory' },
+  { key: 'pricebook',     label: 'Price Book',     icon: Tag,             href: '/inventory/price-book', action: 'read',   subject: 'Inventory',     home: 'Inventory', gate: record('view_price_book'), feature: 'inventory' },
   { key: 'billing',       label: 'Billing',        icon: Hourglass,       href: '/reports/unpaid-invoices', action: 'read', subject: 'Report', home: 'Reports · Unpaid Invoices', gate: page('access_billing') },
   { key: 'reports',       label: 'Reports',        icon: LineChart,       href: '/reports',              action: 'read',   subject: 'Report',        home: 'Page', gate: page('access_reports') },
   { key: 'inventory',     label: 'Inventory',      icon: Boxes,           href: '/inventory',            action: 'read',   subject: 'Inventory',     home: 'Page', gate: group(), feature: 'inventory',
     children: [
-      { key: 'inv-stock',      label: 'Stock',           icon: Package,      href: '/inventory',                action: 'read', subject: 'Inventory',     gate: record('view_stock', 'show_stock_page') },
-      { key: 'inv-pricebook',  label: 'Price Book',      icon: Tag,          href: '/inventory/price-book',     action: 'read', subject: 'Inventory',     gate: record('view_price_book', 'show_price_book_page') },
-      { key: 'inv-pos',        label: 'Purchase Orders', icon: ShoppingCart, href: '/inventory/purchase-orders', action: 'read', subject: 'PurchaseOrder', gate: record('view_purchase_orders', 'show_purchase_orders_page') },
-      { key: 'inv-vendors',    label: 'Vendors',         icon: Truck,        href: '/inventory/vendors',        action: 'read', subject: 'Vendor',        gate: record('view_vendors', 'show_vendors_page') },
+      { key: 'inv-stock',      label: 'Stock',           icon: Package,      href: '/inventory',                action: 'read', subject: 'Inventory',     gate: record('view_stock') },
+      { key: 'inv-pricebook',  label: 'Price Book',      icon: Tag,          href: '/inventory/price-book',     action: 'read', subject: 'Inventory',     gate: record('view_price_book') },
+      { key: 'inv-pos',        label: 'Purchase Orders', icon: ShoppingCart, href: '/inventory/purchase-orders', action: 'read', subject: 'PurchaseOrder', gate: record('view_purchase_orders') },
+      { key: 'inv-vendors',    label: 'Vendors',         icon: Truck,        href: '/inventory/vendors',        action: 'read', subject: 'Vendor',        gate: record('view_vendors') },
       // Only for a person who can open the Logistic Orders tab but whose Stock entry is hidden: when Stock shows, it
       // already leads to the Inventory page and that tab, so there is no second entry.
-      { key: 'inv-logistic-orders', label: 'Logistic Orders', icon: ClipboardList, href: '/inventory/logistic-orders', action: 'read', subject: 'LogisticOrder', gate: record('view_logistic_orders', 'show_logistic_orders_page', { view: 'view_stock', show: 'show_stock_page' }) },
+      { key: 'inv-logistic-orders', label: 'Logistic Orders', icon: ClipboardList, href: '/inventory/logistic-orders', action: 'read', subject: 'LogisticOrder', gate: record('view_logistic_orders', { view: 'view_stock' }) },
       // Children are not DEFAULT_LAYOUT_KEYS entries → no layout-version bump.
     ] },
   // Communication is TWO entitlements, not one. The CTM phone system (calls,
@@ -331,8 +330,8 @@ export function navEntryShows(
         (child.gate?.kind === 'record' || child.gate?.kind === 'show') && navEntryShows(child, can, values),
     );
   }
-  if (gate.unless && values[gate.unless.view] === true && values[gate.unless.show] === true) return false;
-  return values[gate.view] === true && values[gate.show] === true;
+  if (gate.unless && values[gate.unless.view] === true) return false;
+  return values[gate.view] === true;
 }
 
 export function getDestination(key: string): NavDestination | undefined {

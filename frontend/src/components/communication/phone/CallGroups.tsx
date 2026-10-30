@@ -46,7 +46,7 @@ import { useScheduleTimezone, formatInstant } from '@/lib/schedule-tz';
 
 /* ─────────────────────────── Roster helpers ─────────────────────────── */
 
-type GroupPerson = { id: string; name: string; subtitle: string };
+type GroupPerson = { id: string; name: string; subtitle?: string };
 
 const memberKey = (personId: string, device: GroupDevice) => `${personId}|${device}`;
 
@@ -357,7 +357,7 @@ function GroupModal({
                       <span className="truncate text-[13px] font-semibold text-text-primary">
                         {p.name}
                       </span>
-                      <span className="truncate text-[11px] text-text-secondary">{p.subtitle}</span>
+                      {p.subtitle && <span className="truncate text-[11px] text-text-secondary">{p.subtitle}</span>}
                     </span>
                   </span>
                   <span className="flex flex-shrink-0 gap-2">

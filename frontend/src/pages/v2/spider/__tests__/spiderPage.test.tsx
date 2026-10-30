@@ -35,7 +35,7 @@ function signIn(user: Record<string, unknown>) {
   vi.mocked(useAuthStore).mockImplementation(((selector: (s: Record<string, unknown>) => unknown) =>
     selector({ user, isAuthenticated: true })) as never);
 }
-const ADMIN = { id: 'u1', role: 'ADMIN', organization_id: 'o1', org_is_demo: true, org_features: ['leads', 'spider'] };
+const ADMIN = { id: 'u1', role: 'ADMIN', is_admin: true, organization_id: 'o1', org_is_demo: true, org_features: ['leads', 'spider'] };
 
 const NOW = Date.now();
 const ago = (ms: number) => new Date(NOW - ms).toISOString();
@@ -130,7 +130,7 @@ const LEADS_BODY = [
   { ...LEAD_BASE, id: 'lead-booked', lead_number: 'L00046', status: 'WALKTHROUGH_SCHEDULED', created_at: ago(9 * DAY), contacted_at: ago(8 * DAY), walkthrough_first_booked_at: ago(7 * DAY) },
 ];
 const USERS = [
-  { id: 'u1', first_name: 'Ada', last_name: 'Admin', email: 'ada@example.test', role: 'ADMIN' },
+  { id: 'u1', first_name: 'Ada', last_name: 'Admin', email: 'ada@example.test', role: 'ADMIN', is_admin: true },
   { id: 'u2', first_name: 'Rita', last_name: 'Rep', email: 'rita@example.test', role: 'SALES' },
 ];
 
@@ -1302,7 +1302,7 @@ describe('the AI Center', () => {
 
   it('tells a non-Admin how they hear from Spider, with no switch and no button to its page', async () => {
     spiderSwitch = { isActive: false, isSetUp: true };
-    signIn({ ...ADMIN, role: 'SALES' });
+    signIn({ ...ADMIN, role: 'SALES', is_admin: false });
     useAiCenterStore.setState({ focusAgentId: 'spider' });
     renderWithProviders(<AiCenterModal />);
     const dialog = await spiderDialog('Spider is off');

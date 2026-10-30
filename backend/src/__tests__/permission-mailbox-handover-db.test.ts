@@ -4,7 +4,7 @@
    Every case goes through the REAL routes: the deactivate action (DELETE /api/users/:id), the user update that sets a user
    inactive (PATCH /api/users/:id), the reactivation, the Email page's reads, and the REAL signed delivery webhook for mail to
    a leaver's address (only the call that fetches the received message from the provider is replaced, so nothing is sent or
-   received from this machine). The person who deactivates holds Edit users and NOT Delete users, on a custom role (never a
+   received from this machine). The person who deactivates is an Admin (the flag; managing people is theirs alone, AL-18) on a custom role (never a
    built-in role name).
 
    What is proved, each against the real tables:
@@ -122,18 +122,20 @@ suite('deactivating hands the mailbox on (real database, real routes and webhook
   /** A person on a fresh custom role holding exactly the switch values under test, with the Email page open. */
   async function personWith(org: string, values: Record<string, boolean | string> = {}, base: Role = 'DISPATCHER'): Promise<Who> {
     const key = `ho-role-${++sequence}`;
+    // `is_admin: true` makes the person an Admin (the flag, AL-18): it is not a switch, so it never reaches the role.
+    const { is_admin: asAdmin, ...switchValues } = values;
     const role = await fx.addCustomRole(org, key, base);
     await setRoleSwitchValues({
       organizationId: org, roleKey: key,
       values: {
         view_jobs: true, jobs_scope: 'attached', view_leads: true, leads_scope: 'attached', view_customers: true,
-        view_estimates: true, estimates_scope: 'attached', view_invoices: true, invoices_scope: 'attached',
-        access_communication: true, show_email: true, view_communication: true, communication_scope: 'linked_to_me',
-        ...values,
+        view_estimates: true, view_invoices: true,
+        access_communication: true, show_email: true, view_communication: true, communication_scope: 'attached',
+        ...switchValues,
       },
       actorId: null, reason: 'manual',
     });
-    const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
+    const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id, isAdmin: asAdmin === true });
     return Object.assign(person, { api: () => fx.signedInAs(person) });
   }
 
@@ -169,7 +171,7 @@ suite('deactivating hands the mailbox on (real database, real routes and webhook
   }
 
   /**
-   * A company with its main mailbox and main address; the person who deactivates (Edit users on, Delete users off); two people
+   * A company with its main mailbox and main address; the person who deactivates (an Admin); two people
    * who read the main mailbox (one with Invoices View on, one with it off, both on the job's crew); a leaver with a mailbox and
    * an address who holds a started conversation and an invoice conversation; and a control conversation started in main.
    */
@@ -182,7 +184,7 @@ suite('deactivating hands the mailbox on (real database, real routes and webhook
     await db.mailbox.create({ data: { id: main, organization_id: org, kind: 'main', status: 'active' } });
     await db.mailboxAddress.create({ data: { local_part: `main-${tag}`, organization_id: org, mailbox_id: main, is_primary: true } });
 
-    const editor = await personWith(org, { view_users: true, edit_users: true, delete_users: false });
+    const editor = await personWith(org, { view_users: true, is_admin: true });
     const reader = await personWith(org);
     const noInvoices = await personWith(org, withDependantsOff(['view_invoices']));
     const wide = await personWith(org, { communication_scope: 'all' });
@@ -277,7 +279,7 @@ suite('deactivating hands the mailbox on (real database, real routes and webhook
   }
 
   describe.each(PATHS)('$name', (path) => {
-    it('with no target hands the mailbox to the main mailbox, for a holder of Edit users without Delete users', async () => {
+    it('with no target hands the mailbox to the main mailbox, for an Admin', async () => {
       const w = await world();
       const res = await path.call(await w.editor.api(), w.leaver.id);
 
@@ -424,7 +426,7 @@ suite('deactivating hands the mailbox on (real database, real routes and webhook
   });
 
   describe('a mailbox handed to a person', () => {
-    it('stays handed when a holder of Edit users changes its address: only a mailbox waiting for an address becomes active', async () => {
+    it('stays handed when an Admin changes its address: only a mailbox waiting for an address becomes active', async () => {
       const w = await world();
       const heir = await personWith(w.org);
       await db.organization.update({ where: { id: w.org }, data: { email_sender_local_part: `co${w.tag.replace(/[0-9]/g, 'x')}` }, select: { id: true } });
@@ -439,7 +441,7 @@ suite('deactivating hands the mailbox on (real database, real routes and webhook
   });
 
   describe('reactivating', () => {
-    it('works for a holder of Edit users without Delete users, and leaves the merged mailbox\'s lineage: whose mailbox was merged where (S10.23 gives the address to a fresh mailbox)', async () => {
+    it('works for an Admin, and leaves the merged mailbox\'s lineage: whose mailbox was merged where (S10.23 gives the address to a fresh mailbox)', async () => {
       const w = await world();
       const api = await w.editor.api();
       expect((await api.delete(`/api/users/${w.leaver.id}`)).status).toBe(200);

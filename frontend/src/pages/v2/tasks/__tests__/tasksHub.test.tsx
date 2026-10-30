@@ -73,7 +73,7 @@ const SERVER_TASK_ROW = {
 function setRole(role: string) {
   const mocked = useAuthStore as unknown as ReturnType<typeof vi.fn>;
   mocked.mockImplementation((selector: (state: unknown) => unknown) =>
-    selector({ user: { id: 'u1', role }, isAuthenticated: true, isLoading: false, error: null }),
+    selector({ user: { id: 'u1', role, is_admin: role === 'ADMIN' }, isAuthenticated: true, isLoading: false, error: null }),
   );
 }
 

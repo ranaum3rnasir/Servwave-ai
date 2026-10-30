@@ -17,7 +17,7 @@ import { needsReviewCountsForReq, needsReviewVisibilityForReq } from './needsRev
  * promises a conversation the list will not show.
  *
  * The cost does not grow with the number of mailboxes in the company, nor with the mail in them, for the hosted database's
- * one connection: under "Linked to me" a count for the section, one for "My mailbox" and one per mailbox the
+ * one connection: under Attached a count for the section, one for "My mailbox" and one per mailbox the
  * person holds (before: every unread row of the section, loaded and folded in memory), under All one grouped count for every
  * mailbox, one total, one "My mailbox" count and the page of people. Nothing is asked per mailbox of the company.
  */
@@ -109,7 +109,7 @@ function nameMatches(search: string): Where {
 
 /** The list while the company's Email plan feature is off (PRD 10, S10.6): nothing to pick, nothing counted, nothing read. */
 const HIDDEN_MAILBOX_LIST: MailboxListAnswer = {
-  scope: 'linked_to_me', selected: 'mine', selected_label: null, selected_unread: 0, total_unread: 0,
+  scope: 'attached', selected: 'mine', selected_label: null, selected_unread: 0, total_unread: 0,
   mine: { id: null, unread: 0 }, held: [], main: null, needs_review: { selected: 0, total: 0 }, people: null,
 };
 
@@ -161,10 +161,10 @@ export async function mailboxListForReq(req: Request, query: MailboxListQuery): 
       limit,
     };
   } else {
-    // Under "Linked to me": a count for the section, for "My mailbox" and for each mailbox held (a handful),
+    // Under Attached: a count for the section, for "My mailbox" and for each mailbox held (a handful),
     // never the unread rows themselves, so the reads follow the mailboxes the person holds, not the mail in them.
     const inSection = { ...tenantWhere(req), AND: [section.where], ...unread };
-    // The main mailbox is one more mailbox to count for a person who reads it (a link, or Manage roles and permissions while
+    // The main mailbox is one more mailbox to count for a person who reads it (a link, or being an Admin while
     // nobody is linked), and none for a person who does not.
     const mainBox = section.mailboxes.main;
     const boxes = mainBox ? [...section.mailboxes.held, mainBox] : section.mailboxes.held;

@@ -276,14 +276,14 @@ export interface CompletedJobsValue {
  *
  * The jobs are `ctx.money('Job')`, the same rule every money tile uses: the person's own set without See company figures
  * (whatever their Jobs scope), the Jobs scope's set with it. A job shared by a crew counts in full for each member. Under
- * Attached, Team or Location a service plan's visit job is left out when the person's only link is the Sold By copied from
+ * Attached or Team a service plan's visit job is left out when the person's only link is the Sold By copied from
  * the plan. One aggregate answers both figures.
  */
 export async function completedJobsValue(ctx: DashContext): Promise<CompletedJobsValue> {
   const reach = await ctx.money('Job');
   const mode = ctx.modeOf('completed_jobs_value');
   const scope = mode === 'own' ? 'attached' : ctx.values[SCOPE_SWITCH_KEY.Job];
-  const ownWork = scope === 'attached' || scope === 'team' || scope === 'location' ? jobsOfOwnWorkWhere(scope, ctx.req.user!) : {};
+  const ownWork = scope === 'attached' || scope === 'team' ? jobsOfOwnWorkWhere(scope, ctx.req.user!) : {};
   const agg = await prisma.job.aggregate({
     where: withScope<Prisma.JobWhereInput>(
       { ...ctx.orgWhere, status: { in: [...COMPLETED_OR_LATER_JOB_STATUSES] }, completed_at: orgMonthWindow(ctx.timeZone, ctx.b.now) },
@@ -308,8 +308,8 @@ export interface EstimatesToSend {
 
 /**
  * Estimates still to send: the draft estimates the person can open, the oldest first, with the count over all of them. What
- * the person can open is `ctx.scope('Estimate')`, the row scope the Estimates list is built from: the Estimates scope's
- * reach plus the estimates the person made (the creator rule, which that scope already holds), so there is one answer to "which
+ * the person can open is `ctx.scope('Estimate')`, the row scope the Estimates list is built from: the reach the Leads and Jobs
+ * scopes give plus the estimates the person made for a customer alone, so there is one answer to "which
  * estimates can this person open". "Draft" is the status Draft and nothing else: a sent estimate leaves, and so does one that
  * was won, declined, expired, archived or superseded; an estimate recalled to draft for a revision is a draft again.
  *

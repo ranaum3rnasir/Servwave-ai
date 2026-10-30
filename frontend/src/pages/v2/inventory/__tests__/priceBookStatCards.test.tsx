@@ -22,7 +22,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, within } from '@testing-library/react';
 
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderWithProviders, seesPrices } from '@/__tests__/helpers';
 
 const hoisted = vi.hoisted(() => {
   function item(n: number, sku: string, name: string, opts: { photoUrl?: string; sellPrice?: number } = {}) {
@@ -95,7 +95,7 @@ beforeEach(() => {
 });
 
 async function renderPriceBook() {
-  const utils = renderWithProviders(<PriceBookPage />, { initialEntries: ['/inventory/price-book'] });
+  const utils = renderWithProviders(<PriceBookPage />, { initialEntries: ['/inventory/price-book'], ability: seesPrices });
   expect(await screen.findByText('Mortise Cylinder')).toBeInTheDocument();
   return utils;
 }

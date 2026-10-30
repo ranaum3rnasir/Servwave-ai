@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { TEST_USERS, mockAuthAs, mockRoleSwitches, authHeader, attachedInvoiceWhere, JOB_FIXTURE, INVOICE_FIXTURE, ownLeadsInvoiceWhere, creatorInvoiceWhere } from './helpers';
+import { TEST_USERS, mockAuthAs, mockRoleSwitches, authHeader, attachedInvoiceWhere, JOB_FIXTURE, INVOICE_FIXTURE, salesInvoiceArms, ownDocumentsInvoiceWhere } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 // B3-BUG-1 - a technician who is given View invoices (Attached) can LIST / GET / EXPORT the invoices of the jobs they
@@ -10,10 +10,9 @@ import { clearPermissionCache } from '../lib/permissions/permissionCache';
 // Invoices scope), which the SQL scope and the ability both read, so the two agree.
 
 // Attached: an invoice on a job the person is crew, Sold By or Dispatcher of, or a job-less one through its estimate.
-const OWN_INVOICE_SCOPE = { OR: attachedInvoiceWhere(TEST_USERS.technician.id) };
-// The creator rule adds the invoices the person made, on top of whatever the scope reaches.
-const OWN_OR_CREATED = [OWN_INVOICE_SCOPE, creatorInvoiceWhere(TEST_USERS.technician.id)];
-const ONLY_CREATED = [creatorInvoiceWhere(TEST_USERS.technician.id)];
+const OWN_INVOICE_SCOPE = attachedInvoiceWhere(TEST_USERS.technician.id);
+// Their own adds the invoices the person made for a customer alone, on top of whatever the scope reaches (P7).
+const OWN_OR_CREATED = [...OWN_INVOICE_SCOPE, ownDocumentsInvoiceWhere(TEST_USERS.technician.id)];
 
 const mockPrisma = prisma as unknown as {
   invoice: {
@@ -25,12 +24,11 @@ const mockPrisma = prisma as unknown as {
   };
   payment: { aggregate: ReturnType<typeof vi.fn> };
   job: { count: ReturnType<typeof vi.fn> };
-  rolePermission: { findMany: ReturnType<typeof vi.fn> };
 };
 
 function grantTechViewInvoices() {
   // View invoices is off in the Technician preset; turn it on, reaching the invoices of attached jobs.
-  mockRoleSwitches({ view_invoices: true, invoices_scope: 'attached' });
+  mockRoleSwitches({ view_invoices: true, jobs_scope: 'attached', leads_scope: 'attached' });
 }
 
 // Pull the `where` the controller handed to a list/count/findFirst mock.
@@ -69,7 +67,8 @@ describe('GET /api/invoices (LIST) — granted-tech own-scope (B3-BUG-1)', () =>
     const res = await request(app).get('/api/invoices').set(authHeader('technician'));
 
     expect(res.status).toBe(200);
-    expect(whereOf(mockPrisma.invoice.findMany).OR).toEqual(ONLY_CREATED);
+    // View is the single gate (P7): with it off, not even an invoice the person made is reached.
+    expect(whereOf(mockPrisma.invoice.findMany).id).toEqual({ in: [] });
   });
 
   it('ADMIN unchanged: no row-scope restriction (org-wide list)', async () => {
@@ -92,7 +91,7 @@ describe('GET /api/invoices (LIST) — granted-tech own-scope (B3-BUG-1)', () =>
     expect(res.status).toBe(200);
     const where = whereOf(mockPrisma.invoice.findMany);
     // The invoices whose job's estimate's lead has them as an assignee.
-    expect(where.OR).toEqual([ownLeadsInvoiceWhere(TEST_USERS.sales.id), creatorInvoiceWhere(TEST_USERS.sales.id)]);
+    expect(where.OR).toEqual([...salesInvoiceArms(TEST_USERS.sales.id), ownDocumentsInvoiceWhere(TEST_USERS.sales.id)]);
     expect(where).not.toHaveProperty('id', { in: [] });
   });
 });
@@ -101,7 +100,7 @@ describe('GET /api/invoices/export — granted-tech own-scope (B3-BUG-1)', () =>
   it('granted tech: export where is scoped to their OWN job invoices', async () => {
     mockAuthAs('technician');
     // View invoices and the download (its own switch, Export invoices) are both off in the Technician preset.
-    mockRoleSwitches({ view_invoices: true, invoices_scope: 'attached', export_invoices: true });
+    mockRoleSwitches({ view_invoices: true, jobs_scope: 'attached', leads_scope: 'attached', export_invoices: true });
 
     const res = await request(app).get('/api/invoices/export').set(authHeader('technician'));
 
@@ -150,7 +149,7 @@ describe('GET /api/invoices/:id (GET) — granted-tech own-scope via canAccessRo
       .get(`/api/invoices/${INVOICE_FIXTURE.id}`)
       .set(authHeader('technician'));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     // Still queried with the real own-job scope (the bug-fixed path), not skipped.
     expect(whereOf(mockPrisma.invoice.findFirst).OR).toEqual(OWN_OR_CREATED);
   });
@@ -158,7 +157,7 @@ describe('GET /api/invoices/:id (GET) — granted-tech own-scope via canAccessRo
   it('strict (un-granted) tech: blocked at the read route guard (403), invoice never loaded', async () => {
     mockAuthAs('technician');
     mockPrisma.invoice.findUnique.mockResolvedValue({ ...INVOICE_FIXTURE });
-    mockPrisma.invoice.findFirst.mockResolvedValue(null); // not an invoice this technician made
+    mockPrisma.invoice.findFirst.mockResolvedValue(null);
 
     const res = await request(app)
       .get(`/api/invoices/${INVOICE_FIXTURE.id}`)

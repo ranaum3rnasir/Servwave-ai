@@ -6,6 +6,7 @@ import { useAppAbility } from '@/contexts/AbilityContext';
 import { useFeature } from '@/lib/entitlements';
 import { switchOn, useMySwitches } from '@/lib/api/mySwitches';
 import { useSettingsGuard } from '@/stores/settingsGuard.store';
+import { useAuthStore } from '@/stores/auth.store';
 import type { AppAction, AppSubject } from '@/lib/ability';
 
 import { Button } from '@/ui-kit/components/ui/button';
@@ -34,6 +35,9 @@ interface NavItem {
   // A switch the person must hold (from their own resolved switches) to see the entry, for a page whose switch
   // is display only and so has no rule to read.
   switchKey?: string;
+  // Shown to Admins only (the flag on the signed-in person), whatever their switches: user and role management (AL-18), the phone
+  // service and numbers (ticket 36), and the setup of the company (36b, M17). `orAction` adds a second door for a row that has one.
+  adminOnly?: boolean;
   // A second CASL pair that ALSO shows the entry, for a page that serves a narrower audience
   // part of what it holds - e.g. ServWave Payments, whose payout card belongs to whoever holds
   // Manage payout account even without Edit company settings.
@@ -57,7 +61,8 @@ const NO_SAVER: SettingsSaver = { save: () => {}, discard: () => {}, isDirty: fa
 /**
  * Copied from the legacy `SettingsLayout.NAV` row for row - the labels are the
  * e2e selector surface (`getByRole('link', { name: 'Roles & Permissions' })`
- * and friends), the CASL pairs decide who sees each entry, and `commGated` /
+ * and friends), the CASL pairs decide who sees each entry that is not `adminOnly` (an `adminOnly` entry follows the
+ * Admin flag), and `commGated` /
  * `emailGated` decide which entries an entitlement hides. Renaming a label or
  * loosening a pair here is a behaviour change, not a restyle.
  *
@@ -70,38 +75,42 @@ const NO_SAVER: SettingsSaver = { save: () => {}, discard: () => {}, isDirty: fa
  */
 const NAV: NavItem[] = [
   { to: 'profile', label: 'My Profile', group: 'ACCOUNT', always: true },
-  { to: 'company', label: 'Company Profile', group: 'ORGANIZATION', action: 'read', subject: 'Organization' },
-  { to: 'branding', label: 'Branding & Templates', group: 'ORGANIZATION', action: 'read', subject: 'Organization' },
+  // Setting up the company is the Admin flag's alone (36b, M17: the Company settings switch retired): nobody else sees these tabs,
+  // whatever their switches or rules. Locations has its own switch and stays on it.
+  { to: 'company', label: 'Company Profile', group: 'ORGANIZATION', adminOnly: true },
+  { to: 'branding', label: 'Branding & Templates', group: 'ORGANIZATION', adminOnly: true },
   { to: 'locations', label: 'Locations', group: 'ORGANIZATION', action: 'read', subject: 'Location' },
-  // Follows Show Users & Teams page, not Edit users (PRD 2, S02.5).
-  { to: 'users', label: 'Users & Teams', group: 'PEOPLE & ACCESS', switchKey: 'show_users_teams_page' },
-  // Follows Manage roles and permissions; nobody else sees the tab, not even read-only (PRD 2, S02.5).
-  { to: 'roles', label: 'Roles & Permissions', group: 'PEOPLE & ACCESS', action: 'manage_roles', subject: 'Role' },
-  { to: 'security', label: 'Login & Security', group: 'PEOPLE & ACCESS', action: 'read', subject: 'Organization' },
+  // User and role management is Admin-only (AL-18): nobody else sees these two tabs, whatever their switches.
+  { to: 'users', label: 'Users & Teams', group: 'PEOPLE & ACCESS', adminOnly: true },
+  { to: 'roles', label: 'Roles & Permissions', group: 'PEOPLE & ACCESS', adminOnly: true },
+  // Every person's own sign-in (their password and email code) lives here, so the row is everyone's. The company's two-step policy
+  // on the page is drawn for an Admin alone.
+  { to: 'security', label: 'Login & Security', group: 'PEOPLE & ACCESS', always: true },
   // Configuration only (payments go-live P8): the attention list and the payments area live on the Payments page.
   // Whoever holds only Manage payout account still reaches the payout card, so that switch shows the row too.
-  { to: 'servwave-payments', label: 'ServWave Payments', group: 'ADVANCED', action: 'update', subject: 'Organization', orAction: 'manage_payout_account', orSubject: 'Organization' },
+  { to: 'servwave-payments', label: 'ServWave Payments', group: 'ADVANCED', adminOnly: true, orAction: 'manage_payout_account', orSubject: 'Organization' },
   // The org-owned lists (job types, sources, tags, task categories). Every change on it saves on its own.
-  { to: 'lists', label: 'Lists', group: 'ADVANCED', action: 'update', subject: 'Organization' },
+  { to: 'lists', label: 'Lists', group: 'ADVANCED', adminOnly: true },
   // SRVW-112 - the CASL pair matches the backend write gate on /api/job-sub-statuses.
-  { to: 'job-sub-statuses', label: 'Job Sub-Statuses', group: 'ADVANCED', action: 'update', subject: 'Organization' },
+  { to: 'job-sub-statuses', label: 'Job Sub-Statuses', group: 'ADVANCED', adminOnly: true },
   // Decline-reasons slice B - the CASL pair matches the WRITE gate on /api/lost-reason-options.
   // Placed beside the other per-org vocabulary list (Job Sub-Statuses) rather than folded into
   // Lists: it is the same kind of settings surface that one is, and that page's lists
   // are a different shape entirely (string arrays on the organisation row, saved through the save bar).
-  { to: 'decline-reasons', label: 'Estimate Decline Reasons', group: 'ADVANCED', action: 'update', subject: 'Organization' },
+  { to: 'decline-reasons', label: 'Estimate Decline Reasons', group: 'ADVANCED', adminOnly: true },
   // Roles & Permissions S06.14 - the job twin of the row above; the CASL pair matches the WRITE gate on /api/job-cancel-reasons.
-  { to: 'job-cancel-reasons', label: 'Job Cancel Reasons', group: 'ADVANCED', action: 'update', subject: 'Organization' },
+  { to: 'job-cancel-reasons', label: 'Job Cancel Reasons', group: 'ADVANCED', adminOnly: true },
   // Org-owned tax rates: same CASL pair as the other org-list pages, matching
   // the write gate on /api/org-tax-rates.
-  { to: 'tax-rates', label: 'Tax Rates', group: 'ADVANCED', action: 'update', subject: 'Organization' },
-  { to: 'phone-sms', label: 'Phone & SMS', group: 'ADVANCED', action: 'update', subject: 'Organization' },
-  { to: 'phone-numbers', label: 'Caller ID', group: 'ADVANCED', action: 'update', subject: 'Organization', commGated: true },
+  { to: 'tax-rates', label: 'Tax Rates', group: 'ADVANCED', adminOnly: true },
+  // The phone service and phone numbers are an Admin's alone (M8, D3): nobody else sees these two tabs, whatever their switches.
+  { to: 'phone-sms', label: 'Phone & SMS', group: 'ADVANCED', adminOnly: true },
+  { to: 'phone-numbers', label: 'Caller ID', group: 'ADVANCED', adminOnly: true, commGated: true },
   // Email slice 10 (guided domain verification).
-  { to: 'email-sender', label: 'Sender Address', group: 'ADVANCED', action: 'update', subject: 'Organization', emailGated: true },
-  { to: 'inventory', label: 'Inventory', group: 'ADVANCED', action: 'update', subject: 'Organization' },
+  { to: 'email-sender', label: 'Sender Address', group: 'ADVANCED', adminOnly: true, emailGated: true },
+  { to: 'inventory', label: 'Inventory', group: 'ADVANCED', adminOnly: true },
   // Per-org scheduler event colours (2026-09-15). Same CASL pair: it writes PATCH /api/organization.
-  { to: 'schedule-colors', label: 'Schedule Colors', group: 'ADVANCED', action: 'update', subject: 'Organization' },
+  { to: 'schedule-colors', label: 'Schedule Colors', group: 'ADVANCED', adminOnly: true },
   // Custom Fields (SRVW-114) is deliberately absent. Its tables and definitions
   // API ship dormant, but nobody has exercised the feature in a real org, so it is
   // not offered in the 2026-08-17 release. Restore this row together with the
@@ -113,10 +122,10 @@ const NAV: NavItem[] = [
  *
  * ROUTED tabs, not local state: each nav row is a `NavLink` onto a real nested
  * child route, so `/settings/roles` deep-links and every guard still applies
- * per tab. The routes themselves carry NO role guard - that is App.tsx's shape
- * and it is reproduced exactly. Only the nav LIST is CASL-filtered, so a
- * technician who types a settings URL still mounts the page and still degrades
- * into the API's own 403-driven empty state, with no redirect and no toast.
+ * per tab. The pages with a door of their own (My Profile, Login & Security, Locations, ServWave Payments) carry NO
+ * route guard; every other page sits under one RequireAdmin (pages/v2/routes/settings.routes.tsx), so a person who is
+ * not an Admin and types its address gets nothing drawn and no reads made. The nav LIST is filtered the same way: an
+ * `adminOnly` row follows the Admin flag, any other row its CASL pair.
  *
  * The four mechanisms of the unsaved-changes guard (#113) are carried across
  * whole: the zustand store, `beforeunload`, `popstate` with a seeded history
@@ -124,6 +133,7 @@ const NAV: NavItem[] = [
  */
 export default function SettingsLayout() {
   const ability = useAppAbility();
+  const isAdmin = useAuthStore((s) => s.user?.is_admin === true);
   const canComm = useFeature('phone');
   const canEmail = useFeature('email');
   // Undefined while loading or when the read fails: every switch counts as off.
@@ -219,10 +229,14 @@ export default function SettingsLayout() {
 
   const visible = NAV.filter(
     (n) =>
-      (n.always ||
-        (n.switchKey && switchOn(mine?.values, n.switchKey)) ||
-        (n.action && n.subject && ability.can(n.action, n.subject)) ||
-        (n.orAction && n.orSubject && ability.can(n.orAction, n.orSubject))) &&
+      (n.adminOnly
+        // An Admin-only row is the flag's alone; the one exception is a row that names a second door of its own (ServWave Payments,
+        // which the payout switch also opens).
+        ? isAdmin || Boolean(n.orAction && n.orSubject && ability.can(n.orAction, n.orSubject))
+        : n.always ||
+          (n.switchKey && switchOn(mine?.values, n.switchKey)) ||
+          (n.action && n.subject && ability.can(n.action, n.subject)) ||
+          (n.orAction && n.orSubject && ability.can(n.orAction, n.orSubject))) &&
       (!n.commGated || canComm) &&
       (!n.emailGated || canEmail),
   );

@@ -1,15 +1,15 @@
 /**
- * Roles & Permissions S07.1 - the Assets tab follows See all assets and the stock write switches.
+ * Roles & Permissions S07.1 - the Assets tab follows Assets scope and the stock write switches.
  *
  * Mounted through the v2 `InventoryPage` like `assetsView.test.tsx`, with the inventory seam mocked directly. The
- * abilities are built from the switches the server compiles them from (read, create, update, delete Inventory and
- * see_all_assets), never from a role name: the page reads only the ability.
+ * abilities are built from the switches the server compiles them from (read, create, update, delete Inventory), and the
+ * Assets scope is read from the person's own switches, never from a role name.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderWithProviders, seedMySwitches } from '@/__tests__/helpers';
 import { buildAbility, type AbilityRule } from '@/lib/ability';
 import InventoryPage from '@/pages/v2/inventory/InventoryPage';
 
@@ -74,31 +74,32 @@ vi.mock('@/lib/api/logisticOrders', async (importOriginal) => {
 
 vi.mock('@/lib/api/users', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/api/users')>();
-  return { ...actual, useUsers: () => ({ data: [], isLoading: false, isError: false }) };
+  return { ...actual, usePeople: () => ({ data: [], isLoading: false, isError: false }) };
 });
 
 const held = (...rules: AbilityRule[]) => buildAbility([{ action: 'read', subject: 'Inventory' }, ...rules]);
 
-function renderAssets(rules: AbilityRule[]) {
+function renderAssets(rules: AbilityRule[], scope: 'attached' | 'team' | 'all' = 'attached') {
+  seedMySwitches({ assets_scope: scope });
   return renderWithProviders(<InventoryPage />, {
     initialEntries: ['/inventory/assets'],
     ability: held(...rules),
   });
 }
 
-describe('Assets tab - See all assets', () => {
+describe('Assets tab - Assets scope', () => {
   beforeEach(() => {
     h.state.rows = [h.OWN_ASSET];
   });
 
-  it('shows the holder filter and the Assignee column with See all assets on', async () => {
-    renderAssets([{ action: 'see_all_assets', subject: 'Inventory' }]);
+  it.each(['all', 'team'] as const)('shows the holder filter and the Assignee column on %s', async (scope) => {
+    renderAssets([], scope);
     await screen.findByText('Hammer Drill');
     expect(screen.getByLabelText('Filter by assignee')).toBeInTheDocument();
     expect(within(screen.getByRole('table')).getByText('Assignee')).toBeInTheDocument();
   });
 
-  it('hides the holder filter and the Assignee column with See all assets off (every row is the viewer\'s)', async () => {
+  it('hides the holder filter and the Assignee column on Attached (every row is the viewer\'s)', async () => {
     renderAssets([]);
     await screen.findByText('Hammer Drill');
     expect(screen.queryByLabelText('Filter by assignee')).not.toBeInTheDocument();
@@ -107,40 +108,38 @@ describe('Assets tab - See all assets', () => {
     expect(within(screen.getByRole('table')).getByText('SN-100')).toBeInTheDocument();
   });
 
-  it('says "No assets assigned to you" when the scoped list is empty, and the other copy with See all assets on', async () => {
+  it('says "No assets assigned to you" when the scoped list is empty, and the other copy on All', async () => {
     h.state.rows = [];
     const off = renderAssets([]);
     expect(await screen.findByText('No assets assigned to you')).toBeInTheDocument();
     off.unmount();
 
-    renderAssets([{ action: 'see_all_assets', subject: 'Inventory' }]);
+    renderAssets([], 'all');
     expect(await screen.findByText(/No assets yet/)).toBeInTheDocument();
     expect(screen.queryByText('No assets assigned to you')).not.toBeInTheDocument();
   });
 });
 
 describe('Assets tab - the write controls follow Create, Edit and Delete stock', () => {
-  const see = { action: 'see_all_assets', subject: 'Inventory' } as const;
-
   beforeEach(() => {
     h.state.rows = [h.OWN_ASSET];
   });
 
   it('offers Add asset with Create stock only, and nothing on the row', async () => {
-    renderAssets([see, { action: 'create', subject: 'Inventory' }]);
+    renderAssets([{ action: 'create', subject: 'Inventory' }]);
     await screen.findByText('Hammer Drill');
     expect(screen.getByRole('button', { name: /New Asset/ })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /More actions for Hammer Drill/ })).not.toBeInTheDocument();
   });
 
   it('offers no Add asset without Create stock', async () => {
-    renderAssets([see, { action: 'update', subject: 'Inventory' }, { action: 'delete', subject: 'Inventory' }]);
+    renderAssets([{ action: 'update', subject: 'Inventory' }, { action: 'delete', subject: 'Inventory' }]);
     await screen.findByText('Hammer Drill');
     expect(screen.queryByRole('button', { name: /New Asset/ })).not.toBeInTheDocument();
   });
 
   it('offers edit, assign or transfer, return, retire, note with Edit stock only, and no delete', async () => {
-    renderAssets([see, { action: 'update', subject: 'Inventory' }]);
+    renderAssets([{ action: 'update', subject: 'Inventory' }]);
     await screen.findByText('Hammer Drill');
     await userEvent.click(screen.getByRole('button', { name: 'More actions for Hammer Drill' }));
     const menu = within(await screen.findByRole('menu'));
@@ -151,7 +150,7 @@ describe('Assets tab - the write controls follow Create, Edit and Delete stock',
   });
 
   it('offers only delete with Delete stock only', async () => {
-    renderAssets([see, { action: 'delete', subject: 'Inventory' }]);
+    renderAssets([{ action: 'delete', subject: 'Inventory' }]);
     await screen.findByText('Hammer Drill');
     await userEvent.click(screen.getByRole('button', { name: 'More actions for Hammer Drill' }));
     const menu = within(await screen.findByRole('menu'));
@@ -162,7 +161,7 @@ describe('Assets tab - the write controls follow Create, Edit and Delete stock',
   });
 
   it('offers the photo and edit controls on the detail panel with Edit stock only', async () => {
-    renderAssets([see, { action: 'update', subject: 'Inventory' }]);
+    renderAssets([{ action: 'update', subject: 'Inventory' }]);
     await userEvent.click(await screen.findByText('Hammer Drill'));
     await screen.findByText('History');
     expect(screen.getByRole('button', { name: /Edit/ })).toBeInTheDocument();
@@ -170,7 +169,7 @@ describe('Assets tab - the write controls follow Create, Edit and Delete stock',
   });
 
   it('hides the photo chooser in the Add asset dialog with Create stock only (the photo upload needs Edit stock)', async () => {
-    renderAssets([see, { action: 'create', subject: 'Inventory' }]);
+    renderAssets([{ action: 'create', subject: 'Inventory' }]);
     await screen.findByText('Hammer Drill');
     await userEvent.click(screen.getByRole('button', { name: /New Asset/ }));
     await screen.findByLabelText('Asset notes');
@@ -178,7 +177,7 @@ describe('Assets tab - the write controls follow Create, Edit and Delete stock',
   });
 
   it('offers the photo chooser in the Add asset dialog with Create and Edit stock', async () => {
-    renderAssets([see, { action: 'create', subject: 'Inventory' }, { action: 'update', subject: 'Inventory' }]);
+    renderAssets([{ action: 'create', subject: 'Inventory' }, { action: 'update', subject: 'Inventory' }]);
     await screen.findByText('Hammer Drill');
     await userEvent.click(screen.getByRole('button', { name: /New Asset/ }));
     await screen.findByLabelText('Asset notes');
@@ -186,7 +185,7 @@ describe('Assets tab - the write controls follow Create, Edit and Delete stock',
   });
 
   it('offers the photo chooser in the Edit asset dialog with Edit stock only', async () => {
-    renderAssets([see, { action: 'update', subject: 'Inventory' }]);
+    renderAssets([{ action: 'update', subject: 'Inventory' }]);
     await screen.findByText('Hammer Drill');
     await userEvent.click(screen.getByRole('button', { name: 'More actions for Hammer Drill' }));
     await userEvent.click(await screen.findByRole('menuitem', { name: /Edit/ }));

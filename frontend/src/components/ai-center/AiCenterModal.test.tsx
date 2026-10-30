@@ -14,9 +14,9 @@ import { useQuery } from '@tanstack/react-query';
 
 const STATUS = '/api/ai-farm/spider/status';
 
-function signIn(user: { org_is_demo: boolean; org_is_spider_pilot?: boolean; org_features?: string[]; role?: string }) {
+function signIn(user: { org_is_demo: boolean; org_is_spider_pilot?: boolean; org_features?: string[]; role?: string; is_admin?: boolean }) {
   vi.mocked(useAuthStore).mockImplementation((selector: (s: any) => unknown) =>
-    selector({ user: { id: 'u1', role: 'ADMIN', ...user }, isAuthenticated: true }),
+    selector({ user: { id: 'u1', role: 'ADMIN', is_admin: true, ...user }, isAuthenticated: true }),
   );
 }
 const setDemoOrg = (isDemo: boolean) => signIn({ org_is_demo: isDemo });
@@ -229,8 +229,9 @@ function fakeEntry(overrides: Partial<LiveAgent> = {}): LiveAgent {
 
 // SPEC-5: a real (non-demo) company on the server's Spider pilot list gets what a demo company gets.
 describe('a company on the Spider pilot list', () => {
-  const signInPilot = (role = 'ADMIN') =>
-    signIn({ org_is_demo: false, org_is_spider_pilot: true, org_features: ['leads', 'spider'], role });
+  // Admin is the flag on the person (P15), so a non-Admin pilot user carries is_admin: false.
+  const signInPilot = (role = 'ADMIN', is_admin = true) =>
+    signIn({ org_is_demo: false, org_is_spider_pilot: true, org_features: ['leads', 'spider'], role, is_admin });
 
   it('an Admin sees Spider Off on the card and the switch in its pop-up, never "Coming soon" or the booking call', async () => {
     signInPilot();
@@ -245,7 +246,7 @@ describe('a company on the Spider pilot list', () => {
   });
 
   it('a Sales user sees the status and the staff note, and no switch', async () => {
-    signInPilot('SALES');
+    signInPilot('SALES', false);
     spiderStatus(ON);
     useAiCenterStore.setState({ focusAgentId: 'spider' });
     renderWithProviders(<AiCenterModal />);

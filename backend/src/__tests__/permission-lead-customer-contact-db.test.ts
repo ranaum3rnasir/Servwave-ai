@@ -120,14 +120,14 @@ suite('the lead detail carries the customer contact set (real database)', () => 
     expect(res.body.lead.customer.emails).toHaveLength(2);
   });
 
-  it('answers forbidden to a person who is not on the lead, and not found for another company or a missing id', async () => {
+  it('answers not found to a person who is not on the lead, the same as for another company or a missing id', async () => {
     const { org, customer } = await fx.newOrg();
     await fillContactSet(customer);
     const me = await personWith(org, { view_customers: false, leads_scope: 'attached' });
     const lead = await fx.addLead(org, customer, {});
 
     const refused = await (await fx.signedInAs(me)).get(`/api/leads/${lead.id}`);
-    expect(refused.status).toBe(403);
+    expect(refused.status).toBe(404);
     expect(JSON.stringify(refused.body)).not.toContain('example.test');
 
     const other = await fx.newOrg();

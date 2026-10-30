@@ -90,7 +90,7 @@ suite('refunds recorded once, keyed on the refund id (real database)', () => {
       },
     });
     await db.user.create({
-      data: { id: user, organization_id: org, email: `admin-${tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN' },
+      data: { id: user, organization_id: org, email: `admin-${tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN', is_admin: true },
     });
     await db.customer.create({
       data: { id: customer, organization_id: org, customer_number: `C-${tag}`, kind: 'PERSON', segment: 'RESIDENTIAL', first_name: 'Pat', last_name: 'Payer' },
@@ -492,7 +492,7 @@ suite('refunds recorded once, keyed on the refund id (real database)', () => {
     await f.deliver('refund.updated', f.refundObject(landing, 3000, 'succeeded', false));
     const rows = await history(f.invoice);
     expect(rows).toHaveLength(1);
-    expect(rows[0].description).toBe('Refund of $30.00 made outside ServWave recorded');
+    expect(rows[0].description).toBe('Refund made outside ServWave recorded');
     expect((await db.invoice.findUniqueOrThrow({ where: { id: f.invoice } })).refunded_at).not.toBeNull();
 
     const failing = `re_pay08_outf_${tag}`;

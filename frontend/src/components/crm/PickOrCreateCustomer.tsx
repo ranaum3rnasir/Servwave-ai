@@ -7,6 +7,7 @@ import { EmptyState } from '@/components/ui/empty-state';
 import { FormField } from '@/components/patterns/FormField';
 import { Phone, Mail } from 'lucide-react';
 import { formatPhone } from '@/lib/utils';
+import { useAppAbility } from '@/contexts/AbilityContext';
 import {
   DuplicateCustomerDialog,
   isRedactedMatch,
@@ -162,6 +163,8 @@ export function PickOrCreateCustomer({
   onDismissDuplicate,
   isOverriding = false,
 }: PickOrCreateCustomerProps) {
+  // A new customer typed into a lead, job or invoice form is a Create customers action (A7); without it the form only attaches an existing one.
+  const mayAddCustomer = useAppAbility().can('create', 'Customer');
   const [showDropdown, setShowDropdown] = useState(false);
   const [activeSearchField, setActiveSearchField] = useState<CustomerContactField | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -337,6 +340,9 @@ export function PickOrCreateCustomer({
           )}
         </div>
       </div>
+      {!mayAddCustomer && !selectedCustomer && (
+        <p className="-mt-2 text-xs text-text-secondary">Choose an existing customer. Adding a new one needs permission to create customers.</p>
+      )}
       {required && (
         <p className="-mt-2 text-xs text-text-secondary">Provide a phone number or an email above.</p>
       )}

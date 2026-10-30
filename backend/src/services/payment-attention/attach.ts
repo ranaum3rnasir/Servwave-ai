@@ -178,7 +178,12 @@ export interface BookInput {
   /** The item's resolution note once booked, given the invoice's number. */
   note: (invoiceNumber: string) => string;
   /** The invoice history line saying who put the money there. */
-  history: (invoiceNumber: string, amount: string, who: string) => string;
+  history: (invoiceNumber: string, who: string) => string;
+  /**
+   * Whether the person may see prices: a refusal names the invoice's balance and the payment's amount only then
+   * (re-audit P2-2, `canSeePrices`).
+   */
+  figures: boolean;
 }
 
 export interface Booked {
@@ -222,8 +227,10 @@ export async function bookCaptureOnInvoice(tx: Prisma.TransactionClient, input: 
   if (amountCents > payableCents) {
     throw new AttachRefusal(
       409, 'INVOICE_BALANCE_BELOW_PAYMENT',
-      `Only ${usd(payableCents)} is due on ${invoice.invoice_number}, less than this ${usd(amountCents)} payment.`,
-      { balance: payableCents / 100, amount: amountCents / 100 },
+      input.figures
+        ? `Only ${usd(payableCents)} is due on ${invoice.invoice_number}, less than this ${usd(amountCents)} payment.`
+        : `This payment is more than is due on ${invoice.invoice_number}.`,
+      input.figures ? { balance: payableCents / 100, amount: amountCents / 100 } : {},
     );
   }
   const paysInFull = amountCents === dueCents;
@@ -265,8 +272,8 @@ export async function bookCaptureOnInvoice(tx: Prisma.TransactionClient, input: 
       entity_type: 'INVOICE',
       entity_id: invoiceId,
       event_type: 'PAYMENT_ATTACHED',
-      description: input.history(invoice.invoice_number, usd(amountCents), input.actor.name),
-      metadata: { unapplied_capture_id: capture.id, payment_id: booked.paymentId },
+      description: input.history(invoice.invoice_number, input.actor.name),
+      metadata: { unapplied_capture_id: capture.id, payment_id: booked.paymentId, amount: amountCents / 100 },
       created_by: input.actor.id,
     },
   });
@@ -335,7 +342,7 @@ export interface BookedRefund {
  */
 export async function bookRefundOnInvoice(
   tx: Prisma.TransactionClient,
-  input: { organizationId: string; captureId: string; invoiceId: string; actor: { id: string; name: string } },
+  input: { organizationId: string; captureId: string; invoiceId: string; actor: { id: string; name: string }; figures: boolean },
 ): Promise<BookedRefund> {
   const { organizationId, invoiceId, captureId } = input;
   await tx.$executeRaw`SELECT id FROM invoices WHERE id = ${invoiceId}::uuid AND organization_id = ${organizationId}::uuid FOR UPDATE`;
@@ -359,7 +366,9 @@ export async function bookRefundOnInvoice(
   });
   const payment = payments.find((p) => toCents(p.amount) - committedRefundCents(p.refunds) >= amountCents);
   if (!payment) {
-    throw new AttachRefusal(409, 'NO_PAYMENT_FOR_REFUND', `${invoice.invoice_number} has no payment with ${usd(amountCents)} left to refund. Choose another invoice.`);
+    // The refund's amount is a figure: a person without See prices is told there is not enough, not how much (P2-2).
+    const left = input.figures ? usd(amountCents) : 'enough';
+    throw new AttachRefusal(409, 'NO_PAYMENT_FOR_REFUND', `${invoice.invoice_number} has no payment with ${left} left to refund. Choose another invoice.`);
   }
   await tx.refund.create({
     data: {
@@ -392,8 +401,8 @@ export async function bookRefundOnInvoice(
       entity_type: 'INVOICE',
       entity_id: invoiceId,
       event_type: 'INVOICE_REFUNDED',
-      description: `Refund of ${usd(amountCents)} recorded on this invoice by ${input.actor.name}`,
-      metadata: { unapplied_capture_id: captureId, payment_id: payment.id },
+      description: `Refund recorded on this invoice by ${input.actor.name}`,
+      metadata: { unapplied_capture_id: captureId, payment_id: payment.id, amount: amountCents / 100 },
       created_by: input.actor.id,
     },
   });

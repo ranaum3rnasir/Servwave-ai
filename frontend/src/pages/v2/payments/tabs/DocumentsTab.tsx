@@ -43,7 +43,9 @@ export default function DocumentsTab(_props: PaymentsTabProps) {
   const timeZone = useScheduleTimezone();
   const queryClient = useQueryClient();
   const orgId = useAuthStore((s) => s.user?.organization_id);
-  const canUpload = useAppAbility().can('create', 'Attachment');
+  // A document is the own data of the invoice, job or customer it goes on (P10), so the Edit of one of them uploads it.
+  const ability = useAppAbility();
+  const canUpload = ability.can('update', 'Invoice') || ability.can('update', 'Job') || ability.can('update', 'Customer');
   const connected = useStripeStatus().data?.connected === true;
 
   const [page, setPage] = useState(1);

@@ -384,9 +384,9 @@ describe('LODetailSheet — stock activity link', () => {
       { action: 'see_inventory_activity', subject: 'Inventory' },
     ]);
 
-  // The activity route sits behind the Stock page's pair (View stock and Show Stock page), so the link needs both.
+  // The activity route sits behind the Stock page's View stock, so the link needs it.
   beforeEach(() => {
-    seedMySwitches({ view_stock: true, show_stock_page: true });
+    seedMySwitches({ view_stock: true });
   });
 
   it('a PROCESSED order links to its stock activity when the person sees inventory activity', async () => {
@@ -410,8 +410,8 @@ describe('LODetailSheet — stock activity link', () => {
     expect(screen.queryByRole('link', { name: /view stock activity/i })).toBeNull();
   });
 
-  it('shows no stock-activity link when Show Stock page is off, as the route would bounce the person to their dashboard', async () => {
-    seedMySwitches({ view_stock: true, show_stock_page: false });
+  it('shows no stock-activity link when View stock is off, as the route would bounce the person to their dashboard', async () => {
+    seedMySwitches({ view_stock: false });
     renderSheet(makeDetail({ status: 'PROCESSED', processedAt: ISO }), activityReader());
     await screen.findByText('LO00001');
     expect(screen.queryByRole('link', { name: /view stock activity/i })).toBeNull();

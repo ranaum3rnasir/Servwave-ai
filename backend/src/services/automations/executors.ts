@@ -20,6 +20,7 @@ import { sendAutomationEmail, esc, type EmailDispatchResult } from '../../lib/em
 import type { AutomationEntity } from './automationEntity';
 import { renderMergeFields } from './renderMergeFields';
 import { fallbacksFor } from './mergeFieldFallbacks';
+import { staffWithoutSeePrices, withoutPriceFields } from './priceMergeFields';
 import { recordOutboundSms, type OutboundSmsCounterparty } from './smsRecord';
 import type { CtmSmsFailureReason, CtmSmsSendResult } from '../../lib/ctm/sendSms';
 import {
@@ -336,14 +337,19 @@ async function sendEmailAction(config: NormalizedConfig, bundle: ExecutionBundle
     };
   }
 
+  // M4 (ticket 35): a teammate without See prices is sent the same email with the fields that render a price, or the
+  // customer's private link, left empty. The customer (any address of theirs) is sent it as it has always been.
+  const blind = await staffWithoutSeePrices(bundle.organizationId, { emails: recipients });
   const dispatched: { address: string; result: EmailDispatchResult }[] = [];
   for (const to of recipients) {
+    const lower = to.toLowerCase();
+    const ctxFor = blind.emails.has(lower) && !customerAddresses.has(lower) ? withoutPriceFields(bundle.mergeCtx) : bundle.mergeCtx;
     const result = await sendAutomationEmail({
       organizationId: bundle.organizationId,
       to,
-      subject: renderMergeFields(config.subject ?? '', bundle.mergeCtx, { html: false, fallbacks: config.fallbacks }),
-      text: renderMergeFields(config.body, bundle.mergeCtx, { html: false, fallbacks: config.fallbacks }),
-      html: toHtmlFragment(config.body, bundle.mergeCtx, config.fallbacks),
+      subject: renderMergeFields(config.subject ?? '', ctxFor, { html: false, fallbacks: config.fallbacks }),
+      text: renderMergeFields(config.body, ctxFor, { html: false, fallbacks: config.fallbacks }),
+      html: toHtmlFragment(config.body, ctxFor, config.fallbacks),
       org: {
         id: bundle.organizationId,
         name: bundle.org.name,
@@ -370,12 +376,12 @@ async function sendEmailAction(config: NormalizedConfig, bundle: ExecutionBundle
   const sent = dispatched.filter((d) => d.result.status === 'sent');
   const audienceOutcomes = emailAudienceOutcomes(resolved, dispatched, bundle.entityRef.type);
   if (sent.length > 0) {
-    // The same subject every address received: nothing in a rendered send varies
-    // by recipient any more, so this is a re-render of the identical string
-    // rather than a separate, blanked one.
+    // Run history is read by anyone who opens Automations, whatever they may see (M4, Ran 2026-10-28): the subject it
+    // records is rendered without the fields that render a price or carry the customer's private link, for everyone (CR-20).
+    // The emails themselves were rendered above, each for its own recipient.
     const summarySubject = renderMergeFields(
       config.subject ?? '',
-      bundle.mergeCtx,
+      withoutPriceFields(bundle.mergeCtx),
       { html: false, fallbacks: config.fallbacks },
     );
     return {
@@ -441,6 +447,9 @@ function emailAudienceOutcomes(
     return { ...base, outcome, summary: problems.join(' · ') || 'No one to email' };
   });
 }
+
+/** What run history says of a text step that went out. Also what the Activity route answers for a text step stored before this existed. */
+export const TEXT_SENT_DETAIL = 'Text message sent';
 
 // ── SEND_SMS ──────────────────────────────────────────────────────────────────
 // The audience half mirrors sendEmailAction above, step for step (build the context,
@@ -581,18 +590,23 @@ async function sendSmsAction(config: NormalizedConfig, bundle: ExecutionBundle):
     };
   }
 
+  // M4 (ticket 35): a teammate without See prices is texted the message with the price fields left empty.
+  const blind = await staffWithoutSeePrices(bundle.organizationId, {
+    ids: targets.flatMap((t) => (t.to.type === 'user' ? [t.to.userId] : [])),
+  });
   const dispatched: TextDispatch[] = [];
   for (const target of targets) {
-    // Rendered inside the loop though every handset now receives the SAME string: the one
-    // merge field whose value differed per recipient was removed on 2026-09-15 (see `BASE`
-    // in catalog.ts). Kept here rather than hoisted because the loop is a DISPATCH loop -
+    const ctxFor = target.to.type === 'user' && blind.ids.has(target.to.userId) ? withoutPriceFields(bundle.mergeCtx) : bundle.mergeCtx;
+    // Rendered inside the loop because the string can differ by handset: a price-blind teammate's copy has its price
+    // fields blanked (`ctxFor`). (The one merge field whose value differed per recipient was removed on 2026-09-15,
+    // see `BASE` in catalog.ts.) Kept here rather than hoisted because the loop is a DISPATCH loop -
     // one delivery row, one counterparty, one provider result per handset - and the text a
     // given handset received is recorded from `dispatched` below. A hoist would save one
     // string substitution per recipient and would have to be undone by the first merge
     // field that varies again.
     const body = renderMergeFields(
       config.body,
-      bundle.mergeCtx,
+      ctxFor,
       { html: false, fallbacks: config.fallbacks },
     );
     const { delivery } = await recordOutboundSms({
@@ -620,22 +634,15 @@ async function sendSmsAction(config: NormalizedConfig, bundle: ExecutionBundle):
   const audienceOutcomes = textAudienceOutcomes(audiences, dispatched, bundle.entityRef.type);
 
   if (sent.length > 0) {
-    // Run history previews the message that ACTUALLY left the building, so this is a body
-    // some handset really received - never a re-render nobody got. Every body in a fan-out
-    // is now identical, so the choice of representative no longer matters; `targets` is
-    // still built in a fixed order - the customer first, then staff in resolution order -
-    // so the first DELIVERED one is stable rather than arbitrary if that ever changes
-    // again. On a customer-addressed step this is exactly the text the customer read,
-    // which is what this line has always shown.
-    const preview = sent[0].body;
+    // Run history names no part of the message (M4, Ran 2026-10-28): the Activity tab is read by anyone who can open
+    // Automations, and a text body can carry a figure or a customer's private link. An email step shows its subject; a text
+    // step shows this neutral line, and WHO it reached is the recipient summary beside it.
     return {
       status: 'SENT',
       recipientSummary,
       detail: allReasons.length
         ? `Sent to ${sent.length} · skipped: ${allReasons.join('; ')}`
-        : preview.length > 120
-          ? `${preview.slice(0, 117)}…`
-          : preview,
+        : TEXT_SENT_DETAIL,
       audienceOutcomes,
     };
   }

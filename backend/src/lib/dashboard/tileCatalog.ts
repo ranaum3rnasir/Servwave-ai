@@ -61,11 +61,11 @@ export const CATEGORY_UNLOCKED_BY: Record<TileCategory, readonly string[]> = {
   company_figures: ['see_company_figures'],
   office_review: ['office_review'],
   communication: ['access_communication'],
-  costs: ['see_financial_data'],
+  costs: ['see_costs'],
   each_record: [],
 };
 
-/** Which Data Scope switch decides a tile's money: Invoices scope for invoices and payments, Jobs scope for job value. */
+/** Which Data Scope switches decide a tile's money: the Jobs and Leads scope for invoices and payments (P6), Jobs scope for job value. */
 type MoneyKind = 'invoices' | 'jobs' | 'stages';
 
 export interface TileDef {
@@ -130,7 +130,7 @@ export const TILE_CATALOG: readonly TileDef[] = [
 ];
 
 export type TileMode = 'company' | 'scope' | 'own';
-export type TileLabel = 'Yours' | 'Your team' | 'Your location';
+export type TileLabel = 'Yours' | 'Your team';
 export type SwitchValues = Record<string, SwitchValue>;
 
 export interface EligibleTile {
@@ -146,18 +146,22 @@ const on = (values: SwitchValues, key: string) => values[key] === true;
 
 /** Is the person's set of switches enough to have this tile at all? */
 export function isTileEligible(tile: TileDef, values: SwitchValues): boolean {
+  // P11: a tile of money is a sum of prices, so it takes the class of what it sums and needs See prices.
+  if (tile.money && !on(values, 'see_prices')) return false;
   if (!CATEGORY_UNLOCKED_BY[tile.category].every((key) => on(values, key))) return false;
   if (tile.anyOf && !tile.anyOf.some((key) => on(values, key))) return false;
   return (tile.alsoNeeds ?? []).every((key) => on(values, key));
 }
 
 /** The Data Scope switch behind each View switch, for the tiles whose parts read several kinds of record. */
-const SCOPE_OF_VIEW: Record<string, string> = {
+const SCOPE_OF_VIEW: Record<string, string | undefined> = {
   view_jobs: SCOPE_SWITCH_KEY.Job,
   view_leads: SCOPE_SWITCH_KEY.Lead,
-  view_estimates: SCOPE_SWITCH_KEY.Estimate,
-  view_invoices: SCOPE_SWITCH_KEY.Invoice,
 };
+
+/** The scopes an estimate or invoice follows (P6), and the View switches of those two kinds. */
+const DOCUMENT_SCOPE_KEYS = [SCOPE_SWITCH_KEY.Job, SCOPE_SWITCH_KEY.Lead];
+const DOCUMENT_VIEWS = ['view_estimates', 'view_invoices'];
 
 /** The scope switches whose value decides how wide a count tile reaches. */
 function countScopeKeys(tile: TileDef, values: SwitchValues): string[] {
@@ -167,11 +171,12 @@ function countScopeKeys(tile: TileDef, values: SwitchValues): string[] {
     case 'office_review':
       return [SCOPE_SWITCH_KEY.Job];
     case 'leads': return [SCOPE_SWITCH_KEY.Lead];
-    case 'estimates': return [SCOPE_SWITCH_KEY.Estimate];
-    case 'invoices_and_payments': return [SCOPE_SWITCH_KEY.Invoice];
+    // Estimates and invoices follow the Jobs and Leads scope (P6).
+    case 'estimates':
+    case 'invoices_and_payments': return DOCUMENT_SCOPE_KEYS;
     case 'communication': return ['communication_scope'];
     case 'each_record':
-      return (tile.anyOf ?? []).filter((v) => on(values, v) && SCOPE_OF_VIEW[v]).map((v) => SCOPE_OF_VIEW[v]!);
+      return (tile.anyOf ?? []).filter((v) => on(values, v)).flatMap((v) => (DOCUMENT_VIEWS.includes(v) ? DOCUMENT_SCOPE_KEYS : SCOPE_OF_VIEW[v] ? [SCOPE_OF_VIEW[v]!] : []));
     default: return [];
   }
 }
@@ -179,14 +184,13 @@ function countScopeKeys(tile: TileDef, values: SwitchValues): string[] {
 /** A scope value narrower than "everything" labels a figure by who it covers. */
 function labelForScopes(scopes: SwitchValue[]): TileLabel {
   if (scopes.some((s) => s === 'team')) return 'Your team';
-  if (scopes.some((s) => s === 'location')) return 'Your location';
   return 'Yours';
 }
 
 /**
  * The mode and label of an eligible tile (PRD 9, the mode table).
  *  - A money tile without See company figures is the person's own money, "Yours", whatever the scope.
- *  - With it, the tile's scope decides: All is the company (no label); Team and Location are that scope, labelled so;
+ *  - With it, the tile's scope decides: All is the company (no label); Team is that scope, labelled so;
  *    Attached and Through own leads are the person's records, "Yours".
  *  - A count tile follows its Data Scope and carries no label. A Company figures tile is the whole company.
  */
@@ -195,7 +199,7 @@ export function tileModeAndLabel(tile: TileDef, values: SwitchValues): { mode: T
   if (tile.money) {
     if (!on(values, 'see_company_figures')) return { mode: 'own', label: 'Yours' };
     const keys = tile.money === 'invoices'
-      ? [SCOPE_SWITCH_KEY.Invoice]
+      ? DOCUMENT_SCOPE_KEYS
       : tile.money === 'jobs'
         ? [SCOPE_SWITCH_KEY.Job]
         : countScopeKeys(tile, values);
@@ -217,6 +221,9 @@ export function eligibleTiles(values: SwitchValues): EligibleTile[] {
     link: tile.target ? clickTarget(tile.target, values, tile.targetQuery) : null,
   }));
 }
+
+/** The tiles that are a sum of prices (P11): a person without See prices is not offered any of them. */
+export const MONEY_TILE_IDS: readonly string[] = TILE_CATALOG.filter((t) => t.money).map((t) => t.id);
 
 export function findTile(id: string): TileDef | undefined {
   return TILE_CATALOG.find((t) => t.id === id);

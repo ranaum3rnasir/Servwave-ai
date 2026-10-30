@@ -5,6 +5,8 @@ import { logger } from '../lib/logger';
 import { logAudit } from '../lib/audit';
 import { runUnscoped } from '../lib/tenant-context';
 import { tenantWhere } from '../lib/tenant';
+import { refuseUnlessOwnerFor, refuseUnlessOwnerForPerson } from '../lib/users/owner';
+import { canonicalUserId } from '../lib/users/sameUserId';
 import { setUserNamePart, type UserAddressSet } from '../lib/mailbox/register';
 import { HANDOVER_TARGET_REFUSED, moveMailbox, resolveHandoverTarget } from '../lib/mailbox/handover';
 
@@ -26,7 +28,7 @@ const REFUSALS: Record<Exclude<UserAddressSet, { ok: true }>['reason'], { status
 
 /**
  * PUT /api/users/:id/mailbox-address - set or change the NAME PART of a user's mailbox address (PRD 10, S10.25). The
- * route puts it behind the company's Email plan feature and Edit users. The admin types only the name part: the server
+ * route puts it behind the Admin flag and the company's Email plan feature. The admin types only the name part: the server
  * builds the address from it, the company's frozen company part and the environment's mailbox domain, through the
  * register, which holds its lock and refuses a taken, malformed or reserved name part. A change leaves the old address
  * in the register, still delivering to the same mailbox; a set on a mailbox in "address needed" activates it. The
@@ -34,7 +36,9 @@ const REFUSALS: Record<Exclude<UserAddressSet, { ok: true }>['reason'], { status
  */
 export async function setMailboxAddress(req: Request, res: Response) {
   try {
-    const userId = String(req.params.id);
+    const userId = canonicalUserId(String(req.params.id));
+    // An Admin's mailbox address is the Owner's to change (ticket 26).
+    if (await refuseUnlessOwnerForPerson(req, res, userId)) return;
     // The register spans every company, hence the unscoped run; the person's own company is passed explicitly.
     const result = await runUnscoped(() =>
       setUserNamePart(prisma, {
@@ -67,18 +71,20 @@ export const moveMailboxSchema = z.object({ handover_to: z.string().min(1).max(1
 
 /**
  * PUT /api/users/:id/mailbox-handover - hand a LEAVER's mailbox to another person or to the main mailbox, later (PRD 10,
- * S10.22). The route puts it behind the company's Email plan feature and Edit users. The person in the path is the mailbox's
+ * S10.22). The route puts it behind the Admin flag and the company's Email plan feature. The person in the path is the mailbox's
  * owner; they must already be deactivated (a mailbox in use is not moved from under its owner). Conversations and addresses
  * go with it, the previous holder loses it on their next request, and the mail is kept. Written to the audit trail.
  */
 export async function moveUserMailbox(req: Request, res: Response) {
   try {
-    const ownerId = String(req.params.id);
-    const owner = await prisma.user.findFirst({ where: { id: ownerId, ...tenantWhere(req) }, select: { id: true, is_active: true } });
+    const ownerId = canonicalUserId(String(req.params.id));
+    const owner = await prisma.user.findFirst({ where: { id: ownerId, ...tenantWhere(req) }, select: { id: true, is_active: true, is_admin: true } });
     if (!owner) {
       res.status(404).json({ error: 'User not found' });
       return;
     }
+    // Moving a (deactivated) Admin's mailbox is the Owner's alone (ticket 26).
+    if (await refuseUnlessOwnerFor(req, res, owner)) return;
     if (owner.is_active) {
       res.status(409).json({ error: "Only a deactivated person's mailbox can be handed on." });
       return;

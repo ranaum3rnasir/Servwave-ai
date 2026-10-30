@@ -11,7 +11,7 @@ import {
 import {
   RecurrenceBuilder, recurrenceToPayload, DEFAULT_RECURRENCE, type RecurrenceValue,
 } from '@/components/service-plans/RecurrenceBuilder';
-import { useUsers } from '@/lib/api/users';
+import { usePeople } from '@/lib/api/users';
 import { Button } from '@/components/ui/button';
 import { Card } from '@/components/ui/card';
 import { StatusBadge } from '@/components/data/status-badge';
@@ -156,7 +156,7 @@ export function PlanBuilderDialog({ open, onOpenChange, presetCustomerId, preset
   presetCustomerLabel?: string;
 }) {
   const create = useCreateServicePlan();
-  const { data: users } = useUsers();
+  const { data: users } = usePeople();
   const { toast } = useToast();
   const qc = useQueryClient();
 
@@ -419,7 +419,7 @@ export function PlanDetailSheet({ id, onClose }: { id: string | null; onClose: (
   const del = useDeleteServicePlan();
   const schedule = useScheduleVisit();
   const updatePlan = useUpdateServicePlan();
-  const { data: users } = useUsers();
+  const { data: users } = usePeople();
   const { toast } = useToast();
 
   // Plan start dates and visit times mean the ORG's clock, never the viewer's browser.

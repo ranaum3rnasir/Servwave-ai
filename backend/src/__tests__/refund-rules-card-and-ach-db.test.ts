@@ -83,7 +83,7 @@ suite('refund rules for card and bank payments (real database)', () => {
       },
     });
     await db.user.create({
-      data: { id: user, organization_id: org, email: `admin-${tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN' },
+      data: { id: user, organization_id: org, email: `admin-${tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN', is_admin: true },
     });
     await db.customer.create({
       data: { id: customer, organization_id: org, customer_number: `C-${tag}`, kind: 'PERSON', segment: 'RESIDENTIAL', first_name: 'Pat', last_name: 'Payer' },
@@ -878,7 +878,7 @@ suite('refund rules for card and bank payments (real database)', () => {
       expect(Number(invoice.amount_due)).toBe(300);
       // The owner reads it in the invoice's history, in ServWave's words.
       const [entry] = await db.timelineEvent.findMany({ where: { entity_id: f.invoice, event_type: 'PAYMENT_CANCELED' } });
-      expect(entry.description).toBe('Bank payment of $300.00 canceled before it cleared');
+      expect(entry.description).toBe('Bank payment canceled before it cleared');
 
       // The processor's own "failed" event for the cancelled debit then changes nothing.
       const again = await f.api.post(`/api/invoices/${f.invoice}/cancel-bank-payment`, { payment_id: f.payments[0].id });

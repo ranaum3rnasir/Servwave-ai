@@ -29,8 +29,9 @@ vi.mock('@/pages/v2/settings/settingsBar', () => ({
   }),
 }));
 
+// The server still answers with the Administrator entry; the page does not list it, because Admin is a flag on the person.
+const ADMIN = { role: 'ADMIN', label: 'Administrator (Owner)', fullAccess: true, editable: false, userCount: 1, type: 'system' };
 const BUILT_IN = [
-  { role: 'ADMIN', label: 'Administrator (Owner)', fullAccess: true, editable: false, userCount: 1, type: 'system' },
   { role: 'SALES', label: 'Sales', fullAccess: false, editable: true, userCount: 3, type: 'system' },
   { role: 'DISPATCHER', label: 'Dispatcher', fullAccess: false, editable: true, userCount: 2, type: 'system' },
   { role: 'TECHNICIAN', label: 'Technician', fullAccess: false, editable: true, userCount: 5, type: 'system' },
@@ -83,7 +84,7 @@ const originalScrollIntoView = Element.prototype.scrollIntoView;
 beforeEach(() => {
   vi.clearAllMocks();
   useSettingsGuard.setState({ isDirty: false, pendingLeave: null });
-  serve([...BUILT_IN, ...customRoles(120)]);
+  serve([ADMIN, ...BUILT_IN, ...customRoles(120)]);
 });
 afterEach(() => {
   window.matchMedia = originalMatchMedia;
@@ -110,7 +111,7 @@ describe('Roles list below xl: one picker', () => {
     expect(roleButtons).toHaveLength(0);
   });
 
-  it('lists the four built-in roles first, then the custom roles by name, each with its count', async () => {
+  it('lists the three editable built-in roles first, then the custom roles by name, each with its count, and never the Administrator entry', async () => {
     windowWidth(900);
     const user = userEvent.setup();
     renderWithProviders(<RolesPage />);
@@ -124,6 +125,7 @@ describe('Roles list below xl: one picker', () => {
       }),
     ];
     expect(options).toEqual(expected);
+    expect(options.join(' ')).not.toMatch(/Administrator/);
   });
 
   it('narrows to the roles whose name matches what is typed in the search box', async () => {
@@ -230,7 +232,7 @@ describe('Roles list from xl: the side column', () => {
 
   it('has no search box for a company with eight roles or fewer', async () => {
     windowWidth(1400);
-    serve([...BUILT_IN, ...customRoles(4)]);
+    serve([ADMIN, ...BUILT_IN, ...customRoles(4)]);
     renderWithProviders(<RolesPage />);
     await screen.findByRole('group', { name: 'Roles' });
     expect(screen.queryByRole('searchbox', { name: 'Search roles' })).toBeNull();

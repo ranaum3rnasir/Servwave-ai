@@ -33,7 +33,7 @@ export async function seedOrg(db: Db, orgs: string[], withAccount = true): Promi
       ...(withAccount ? { stripe_account_id: account, accepted_payment_methods: ['CARD'] } : {}),
     },
   });
-  await db.user.create({ data: { id: admin.id, organization_id: org, email: admin.email, first_name: 'Test', last_name: 'Admin', role: 'ADMIN' } });
+  await db.user.create({ data: { id: admin.id, organization_id: org, email: admin.email, first_name: 'Test', last_name: 'Admin', role: 'ADMIN', is_admin: true } });
   await db.customer.create({
     data: { id: customer, organization_id: org, customer_number: `C-${tag}`, kind: 'PERSON', segment: 'RESIDENTIAL', first_name: 'Pat', last_name: 'Payer', email: `pat-${tag}@example.test` },
   });
@@ -129,7 +129,7 @@ export async function cleanupOrgs(db: Db, orgs: string[]): Promise<void> {
     for (const table of ['permission_change_log', 'permission_role_switches', 'timeline_events', 'notifications', 'invoices', 'visit_assignees', 'visits', 'jobs']) {
       await quietly(db.$executeRawUnsafe(`DELETE FROM ${table} WHERE organization_id = '${org}'`));
     }
-    await quietly(db.$executeRawUnsafe(`DELETE FROM audit_logs WHERE org_id = '${org}'`));
+    // audit_logs is not cleared: the database refuses any delete there (M14, ticket 25), and its rows hold no foreign key.
     for (const table of ['customers', 'users']) {
       await quietly(db.$executeRawUnsafe(`DELETE FROM ${table} WHERE organization_id = '${org}'`));
     }

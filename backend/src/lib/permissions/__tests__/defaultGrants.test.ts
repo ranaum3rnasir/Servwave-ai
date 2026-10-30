@@ -11,12 +11,12 @@ const NON_ADMIN_ROLES = ['SALES', 'DISPATCHER', 'TECHNICIAN'] as const;
 describe('DEFAULT_GRANTS — create Communication baseline', () => {
   it.each(NON_ADMIN_ROLES)('%s can create Communication', (role) => {
     const grants = DEFAULT_GRANTS.filter((g) => g.role === role);
-    const ability = defineAbilityFor({ id: 'u1', role }, grants);
+    const ability = defineAbilityFor({ is_admin: false, id: 'u1', role }, grants);
     expect(ability.can('create', 'Communication')).toBe(true);
   });
 
   it('ADMIN (superuser manage-all) can create Communication', () => {
-    const ability = defineAbilityFor({ id: 'a1', role: 'ADMIN' }, []);
+    const ability = defineAbilityFor({ is_admin: true, id: 'a1', role: 'ADMIN' }, []);
     expect(ability.can('create', 'Communication')).toBe(true);
   });
 

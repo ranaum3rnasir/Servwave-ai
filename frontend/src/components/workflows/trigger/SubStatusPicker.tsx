@@ -22,6 +22,7 @@ import { Link } from 'react-router-dom';
 import { AlertTriangle } from 'lucide-react';
 import { useJobSubStatuses } from '@/lib/api/jobSubStatuses';
 import { STATUS_REGISTRY } from '@/design-system/status-registry';
+import { useIsAdmin } from '@/lib/useIsAdmin';
 
 export interface SubStatusPickerProps {
   value?: string;
@@ -29,6 +30,7 @@ export interface SubStatusPickerProps {
 }
 
 export default function SubStatusPicker({ value, onPick }: SubStatusPickerProps) {
+  const isAdmin = useIsAdmin();
   const { data: subStatuses } = useJobSubStatuses();
   const options = subStatuses ?? [];
 
@@ -41,12 +43,14 @@ export default function SubStatusPicker({ value, onPick }: SubStatusPickerProps)
           <p className="mt-0.5 text-xs leading-relaxed text-text-secondary">
             This trigger has no label to watch until your org adds one.
           </p>
-          <Link
-            to="/settings/job-sub-statuses"
-            className="mt-1.5 inline-block text-xs font-semibold text-primary hover:underline"
-          >
-            Go to Settings → Job Sub-Statuses
-          </Link>
+          {isAdmin && (
+            <Link
+              to="/settings/job-sub-statuses"
+              className="mt-1.5 inline-block text-xs font-semibold text-primary hover:underline"
+            >
+              Go to Settings → Job Sub-Statuses
+            </Link>
+          )}
         </div>
       </div>
     );

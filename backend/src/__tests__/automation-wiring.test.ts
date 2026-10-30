@@ -74,10 +74,6 @@ beforeEach(() => {
   // the stub runs that callback against the same mocked client.
   mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => fn(mockPrisma));
   mockPrisma.invoice.findFirst.mockResolvedValue(null);
-  mockPrisma.rolePermission.findMany.mockImplementation(
-    (args: { where: { organization_id: string; role: string } }) =>
-      Promise.resolve(DEFAULT_GRANTS.filter((g) => g.role === args.where.role)),
-  );
   mockPrisma.job.findFirst.mockResolvedValue({ id: JOB_FIXTURE.id });
   mockPrisma.timelineEvent.create.mockResolvedValue({});
   mockPrisma.tagAssignment.findMany.mockResolvedValue([]);

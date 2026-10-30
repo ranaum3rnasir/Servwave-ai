@@ -82,9 +82,6 @@ suite('lead Owner and walkthrough crew writes follow slot eligibility (real data
   /** The stored grants a built-in role has in a real company (a new test company has none until they are written). */
   async function seedBuiltInRole(org: string, role: 'SALES' | 'DISPATCHER') {
     for (const g of DEFAULT_GRANTS.filter((x) => x.role === role)) {
-      await db.rolePermission.create({
-        data: { organization_id: org, role, action: g.action, subject: g.subject, conditions: (g.conditions ?? undefined) as never },
-      });
     }
     clearPermissionCache(org);
   }

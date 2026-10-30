@@ -499,7 +499,7 @@ describe('GET /api/invoices/:id/timeline', () => {
 
     const res = await request(app).get(`/api/invoices/${INVOICE_ID}/timeline`).set(authHeader('sales'));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockPrisma.timelineEvent.findMany).not.toHaveBeenCalled();
   });
 });

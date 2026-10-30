@@ -89,9 +89,8 @@ describe('loadExecutionBundle - task', () => {
   });
 
   it('drops an id that no longer resolves rather than producing an email-less recipient', async () => {
-    // The arrays are bare Postgres uuid[] with no foreign key, so a deactivated user's id can
-    // sit in one until lib/tasks/deactivation.ts rewrites it - and the row a sweep missed is
-    // exactly the row an automation must not choke on.
+    // The arrays are bare Postgres uuid[] with no foreign key, and deactivating a person leaves their id in them (P19):
+    // the id of someone who has left is exactly what an automation must not choke on.
     mockPrisma.task.findFirst.mockResolvedValue(
       taskRow({ assignee_ids: [ANN.id, 'ghost-id', BOB.id], watcher_ids: ['ghost-id'] }),
     );

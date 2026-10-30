@@ -178,7 +178,6 @@ beforeEach(() => {
   (prisma.recordContactEntry.findMany as any).mockResolvedValue([]);
   // attachAbility middleware queries rolePermission for non-ADMIN users;
   // return empty grants so non-ADMIN requests without explicit mock get 403.
-  (prisma.rolePermission.findMany as any).mockResolvedValue([]);
   // Walkthrough-as-entity redesign, PR-B2: several handlers (updateWalkthrough, cancelLead,
   // markLost, unscheduleWalkthrough, completeWalkthrough, cancelWalkthrough) now wrap their
   // lead update + walkthrough update + timeline write in a $transaction. Default the
@@ -1804,7 +1803,7 @@ describe('GET /api/leads/:id', () => {
       .get(`/api/leads/${LEAD_FIXTURE.id}`)
       .set(authHeader('sales'));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 });
 
@@ -1942,7 +1941,7 @@ describe('PATCH /api/leads/:id', () => {
       .set(authHeader('sales'))
       .send({ service_request: 'Updated' });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it('returns 404 for non-existent lead', async () => {
@@ -1997,7 +1996,6 @@ describe('PATCH/contact with NESTED Team scope (#106 P1 — must not 500)', () =
         return Promise.resolve(match ? { ...match, organization: TEST_ORG } : null);
       },
     );
-    (prisma.rolePermission.findMany as any).mockResolvedValue(SALES_TEAM_GRANTS);
   }
 
   it('base update: owner-by-team → 200 (NOT 500 — canAccessRow probe matches)', async () => {
@@ -2027,7 +2025,7 @@ describe('PATCH/contact with NESTED Team scope (#106 P1 — must not 500)', () =
       .set(authHeader('sales'))
       .send({ service_request: 'Updated via team' });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockPrisma.lead.update).not.toHaveBeenCalled();
   });
 
@@ -2061,7 +2059,7 @@ describe('PATCH/contact with NESTED Team scope (#106 P1 — must not 500)', () =
       .get(`/api/leads/${LEAD_FIXTURE.id}`)
       .set(authHeader('sales'));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it('updateWalkthrough: owner-by-team → 200 (NOT 500 — canAccessRow probe matches)', async () => {
@@ -2359,11 +2357,6 @@ describe('POST /api/leads/:id/assign', () => {
     // loadGrantsFor will call rolePermission.findMany for the SALES target user.
     // mockAuthAs('dispatcher') already set up a rolePermission mock for DISPATCHER.
     // Override to return SALES default grants when looking up target user grants.
-    (prisma.rolePermission.findMany as any).mockImplementation(
-      (args: { where: { organization_id: string; role: string } }) => {
-        return Promise.resolve(DEFAULT_GRANTS.filter(g => g.role === args.where.role));
-      }
-    );
     wireAssignTx({ ...LEAD_FIXTURE, commission_owner_id: TEST_USERS.sales.id });
 
     const res = await request(app)
@@ -2399,7 +2392,7 @@ describe('POST /api/leads/:id/assign', () => {
       .set(authHeader('sales'))
       .send({ assigned_to: TEST_USERS.sales.id });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     // No reassignment performed.
     expect(tx.txLeadUpdate).not.toHaveBeenCalled();
     expect(tx.txLeadAssigneeDeleteMany).not.toHaveBeenCalled();
@@ -2613,7 +2606,7 @@ describe('POST /api/leads/:id/walkthrough (notes/duration update)', () => {
       .set(authHeader('sales'))
       .send({ walkthrough_notes: 'Test' });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it('returns 404 when lead not found', async () => {
@@ -2978,7 +2971,7 @@ describe('POST /api/leads/:id/mark-lost', () => {
       .set(authHeader('sales'))
       .send({ lost_reason: 'Customer cancelled' });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it('returns 404 when lead not found', async () => {
@@ -3178,7 +3171,7 @@ describe('GET /api/leads/:id/timeline', () => {
       .get(`/api/leads/${LEAD_FIXTURE.id}/timeline`)
       .set(authHeader('sales'));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 });
 
@@ -3237,8 +3230,8 @@ describe('POST /api/leads/:id/notes', () => {
       .set(authHeader('technician'))
       .send({ content: 'Technician note' });
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe('Insufficient permissions');
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Lead not found');
     expect(mockPrisma.note.create).not.toHaveBeenCalled();
   });
 });
@@ -3915,8 +3908,10 @@ describe('POST /api/leads/:id/tags (edge cases)', () => {
   // Phase B (technician redesign): tagging a lead is gated canDo('update','Lead'); a technician no
   // longer holds general `update Lead` by default (only `perform_walkthrough`), so the route guard
   // blocks the request before the controller — adding tags is not a default tech ability.
-  it('blocks a strict TECHNICIAN from adding tags by default (no update Lead grant → 403)', async () => {
+  // AL-04: the Technician preset holds Edit leads now, so "strict" is a technician it was turned off for (Create leads goes with it).
+  it('blocks a strict TECHNICIAN from adding tags (Edit leads off → no update Lead grant → 403)', async () => {
     mockAuthAs('technician');
+    mockRoleSwitches({ edit_leads: false, create_leads: false });
     mockPrisma.lead.findFirst.mockResolvedValue(null);
 
     const res = await request(app)
@@ -3958,8 +3953,9 @@ describe('DELETE /api/leads/:id/tags/:tagId', () => {
   // Phase B (technician redesign): removing a lead tag is gated canDo('update','Lead'); without
   // the general `update Lead` grant (now a per-user toggle), a strict technician is blocked at the
   // route guard.
-  it('blocks a strict TECHNICIAN from removing tags by default (no update Lead grant → 403)', async () => {
+  it('blocks a strict TECHNICIAN from removing tags (Edit leads off → no update Lead grant → 403)', async () => {
     mockAuthAs('technician');
+    mockRoleSwitches({ edit_leads: false, create_leads: false });
     mockPrisma.lead.findFirst.mockResolvedValue(null);
 
     const res = await request(app)
@@ -4027,10 +4023,6 @@ describe('POST /api/leads/:id/walkthrough/schedule', () => {
   beforeEach(() => {
     // loadGrantsFor() calls rolePermission.findMany for the performer user.
     // Return grants by role so perform Walkthrough is correctly resolved.
-    (prisma.rolePermission.findMany as any).mockImplementation(
-      (args: { where: { organization_id: string; role: string } }) =>
-        Promise.resolve(DEFAULT_GRANTS.filter(g => g.role === args.where.role))
-    );
     // Performer validation default
     (prisma.user.findUnique as any).mockImplementation(
       (args: { where: { id: string } }) => {
@@ -4350,7 +4342,7 @@ describe('POST /api/leads/:id/walkthrough/complete', () => {
       .set(authHeader('sales'))
       .send({});
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   // MV-RBAC-19: authorization must run BEFORE the business-state check, or an unowned lead's
@@ -4370,7 +4362,7 @@ describe('POST /api/leads/:id/walkthrough/complete', () => {
       .set(authHeader('sales'))
       .send({});
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it('allows a performer (TECHNICIAN) to complete via OWN_WALKTHROUGH', async () => {
@@ -4487,7 +4479,7 @@ describe('POST /api/leads/:id/walkthrough/cancel', () => {
       .set(authHeader('sales'))
       .send({ cancelled_reason: 'Test' });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 });
 
@@ -5306,7 +5298,7 @@ describe('DELETE /api/leads/:id (casual delete)', () => {
     const otherRes = await request(app)
       .delete(`/api/leads/${LEAD_FIXTURE.id}`)
       .set(authHeader('sales'));
-    expect(otherRes.status).toBe(403);
+    expect(otherRes.status).toBe(404);
   });
 
   it('returns 403 for TECHNICIAN', async () => {
@@ -5472,10 +5464,6 @@ describe('POST /api/leads/:id/walkthrough/performers', () => {
 
   beforeEach(() => {
     // loadGrantsFor() calls rolePermission.findMany for performer validation.
-    (prisma.rolePermission.findMany as any).mockImplementation(
-      (args: { where: { organization_id: string; role: string } }) =>
-        Promise.resolve(DEFAULT_GRANTS.filter(g => g.role === args.where.role))
-    );
     // validatePerformers calls prisma.user.findUnique per performer id.
     (prisma.user.findUnique as any).mockImplementation(
       (args: { where: { id: string } }) => {

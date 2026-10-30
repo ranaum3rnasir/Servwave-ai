@@ -25,8 +25,12 @@ const { realClient } = vi.hoisted(() => {
 vi.mock('../lib/prisma', () => ({ prisma: realClient }));
 
 import { switchFixture, type Person } from './permission-switches-fixture';
+import { withDependantsOff } from './support/switchDependants';
 import { setRoleSwitchValues } from '../lib/permissions/switches/store';
 import { SWITCH_CATALOG, findSwitch } from '../lib/permissions/switches/catalog';
+
+/** Edit jobs and Edit leads off with everything that needs them (Create, Duplicate, Standalone, ...). */
+const NO_JOB_LEAD_EDIT = withDependantsOff(['edit_jobs', 'edit_leads', 'create_jobs', 'create_leads', 'change_lead_status_by_hand']);
 
 const suite = realClient ? describe : describe.skip;
 
@@ -66,7 +70,7 @@ suite('tasks, attachments and notes follow switches (real database)', () => {
   async function personWith(
     org: string,
     values: Record<string, boolean | string>,
-    opts: { base?: Role; name?: string; extraGrants?: { action: string; subject: string }[] } = {},
+    opts: { base?: Role; name?: string; extraGrants?: { action: string; subject: string }[]; departmentId?: string } = {},
   ): Promise<Person & { api: () => Promise<Api> }> {
     const key = `tan-role-${++sequence}`;
     const base = opts.base ?? 'DISPATCHER';
@@ -76,7 +80,7 @@ suite('tasks, attachments and notes follow switches (real database)', () => {
       values: { leads_scope: 'all', jobs_scope: 'all', view_jobs: true, view_leads: true, ...values },
       actorId: null, reason: 'manual',
     });
-    const person = await fx.addUser(org, opts.name ?? `p${sequence}`, base, { customRoleId: role.id });
+    const person = await fx.addUser(org, opts.name ?? `p${sequence}`, base, { customRoleId: role.id, departmentId: opts.departmentId });
     return Object.assign(person, { api: () => fx.signedInAs(person) });
   }
 
@@ -117,7 +121,7 @@ suite('tasks, attachments and notes follow switches (real database)', () => {
       const lead = await fx.addLead(org, customer);
 
       for (const base of ['TECHNICIAN', 'SALES', 'DISPATCHER', 'ADMIN'] as const) {
-        const person = await personWith(org, { add_notes: true, edit_jobs: false, edit_leads: false, change_lead_status_by_hand: false }, { base });
+        const person = await personWith(org, { add_notes: true, ...NO_JOB_LEAD_EDIT }, { base });
         const api = await person.api();
         const onJob = await api.post(`/api/jobs/${job.id}/notes`, { content: `job note from ${base}` });
         expect(onJob.status, `${base} job note`).toBe(201);
@@ -129,18 +133,23 @@ suite('tasks, attachments and notes follow switches (real database)', () => {
       }
     });
 
-    it('refuses a note without Add notes even with Edit jobs and Edit leads on', async () => {
+    it('adds a note by the record\'s Edit even with Add notes off (a note is the record\'s own data), and refuses one with neither', async () => {
       const { org, customer } = await newOrg();
       const job = await fx.addJob(org, customer);
       const lead = await fx.addLead(org, customer);
 
       for (const base of ['TECHNICIAN', 'SALES', 'DISPATCHER', 'ADMIN'] as const) {
-        const person = await personWith(org, { add_notes: false, edit_jobs: true, edit_leads: true }, { base });
-        const api = await person.api();
-        expect((await api.post(`/api/jobs/${job.id}/notes`, { content: 'nope' })).status, `${base} job note`).toBe(403);
-        expect((await api.post(`/api/leads/${lead.id}/notes`, { content: 'nope' })).status, `${base} lead note`).toBe(403);
+        const editor = await personWith(org, { add_notes: false, edit_jobs: true, edit_leads: true }, { base });
+        const api = await editor.api();
+        expect((await api.post(`/api/jobs/${job.id}/notes`, { content: 'by the Edit' })).status, `${base} job note`).toBe(201);
+        expect((await api.post(`/api/leads/${lead.id}/notes`, { content: 'by the Edit' })).status, `${base} lead note`).toBe(201);
+
+        const neither = await personWith(org, { add_notes: false, ...NO_JOB_LEAD_EDIT }, { base });
+        const refused = await neither.api();
+        expect((await refused.post(`/api/jobs/${job.id}/notes`, { content: 'nope' })).status, `${base} job note`).toBe(403);
+        expect((await refused.post(`/api/leads/${lead.id}/notes`, { content: 'nope' })).status, `${base} lead note`).toBe(403);
       }
-      expect(await db.note.count({ where: { organization_id: org } })).toBe(0);
+      expect(await db.note.count({ where: { organization_id: org, content: 'nope' } })).toBe(0);
     });
 
     it('refuses a note on a job the person cannot open, with Add notes on', async () => {
@@ -148,27 +157,27 @@ suite('tasks, attachments and notes follow switches (real database)', () => {
       const elsewhere = await fx.addJob(org, customer);
       const person = await personWith(org, { add_notes: true, jobs_scope: 'attached', leads_scope: 'attached' });
       const api = await person.api();
-      expect((await api.post(`/api/jobs/${elsewhere.id}/notes`, { content: 'nope' })).status).toBe(403);
+      expect((await api.post(`/api/jobs/${elsewhere.id}/notes`, { content: 'nope' })).status).toBe(404);
 
       const crewJob = await fx.addJob(org, customer, { crew: [person.id] });
       expect((await api.post(`/api/jobs/${crewJob.id}/notes`, { content: 'on my job' })).status).toBe(201);
     });
   });
 
-  describe('See all tasks', () => {
-    it('lists and opens a task the person is neither assignee nor watcher on, and without it does not', async () => {
+  describe('Tasks scope', () => {
+    it('lists and opens a task the person is neither assignee nor watcher on with All, and with Attached does not', async () => {
       const { org, admin } = await newOrg();
       const someoneElses = await addTask(org, admin.id);
 
       for (const base of ['DISPATCHER', 'ADMIN', 'SALES'] as const) {
-        const without = await personWith(org, { see_all_tasks: false }, { base });
+        const without = await personWith(org, { tasks_scope: 'attached' }, { base });
         const noApi = await without.api();
         const list = await noApi.get('/api/tasks');
         expect(list.status, `${base} list without`).toBe(200);
         expect(JSON.stringify(list.body), `${base} list without`).not.toContain(someoneElses);
-        expect((await noApi.get(`/api/tasks/${someoneElses}`)).status, `${base} open without`).toBe(403);
+        expect((await noApi.get(`/api/tasks/${someoneElses}`)).status, `${base} open without`).toBe(404);
 
-        const withSwitch = await personWith(org, { see_all_tasks: true }, { base });
+        const withSwitch = await personWith(org, { tasks_scope: 'all' }, { base });
         const api = await withSwitch.api();
         const all = await api.get('/api/tasks');
         expect(all.status, `${base} list with`).toBe(200);
@@ -177,9 +186,33 @@ suite('tasks, attachments and notes follow switches (real database)', () => {
       }
     });
 
-    it('still shows a person the tasks they are assignee or watcher on without the switch', async () => {
+    it('on Team lists and opens the tasks anyone in the department is assignee or watcher of, not another department\'s, and nothing without a department (P6, P3)', async () => {
       const { org, admin } = await newOrg();
-      const person = await personWith(org, { see_all_tasks: false });
+      const north = await fx.addDepartment(org, 'North');
+      const south = await fx.addDepartment(org, 'South');
+      const me = await personWith(org, { tasks_scope: 'team' }, { departmentId: north });
+      const mate = await fx.addUser(org, 'mate', 'TECHNICIAN', { departmentId: north });
+      const stranger = await fx.addUser(org, 'stranger', 'TECHNICIAN', { departmentId: south });
+      const assignedToMate = await addTask(org, admin.id, { assignees: [mate.id] });
+      const watchedByMate = await addTask(org, admin.id, { assignees: [admin.id], watchers: [mate.id] });
+      const strangers = await addTask(org, admin.id, { assignees: [stranger.id] });
+      const api = await me.api();
+      const body = JSON.stringify((await api.get('/api/tasks')).body);
+      expect(body).toContain(assignedToMate);
+      expect(body).toContain(watchedByMate);
+      expect(body).not.toContain(strangers);
+      expect((await api.get(`/api/tasks/${assignedToMate}`)).status).toBe(200);
+      expect((await api.get(`/api/tasks/${strangers}`)).status).toBe(404);
+
+      const loner = await personWith(org, { tasks_scope: 'team' });
+      const none = JSON.stringify((await (await loner.api()).get('/api/tasks')).body);
+      expect(none).not.toContain(assignedToMate);
+      expect((await (await loner.api()).get(`/api/tasks/${assignedToMate}`)).status).toBe(404);
+    });
+
+    it('still shows a person the tasks they are assignee or watcher on on Attached', async () => {
+      const { org, admin } = await newOrg();
+      const person = await personWith(org, { tasks_scope: 'attached' });
       const mine = await addTask(org, admin.id, { assignees: [person.id] });
       const watching = await addTask(org, admin.id, { assignees: [admin.id], watchers: [person.id] });
       const api = await person.api();
@@ -188,7 +221,7 @@ suite('tasks, attachments and notes follow switches (real database)', () => {
       expect(JSON.stringify(list.body)).toContain(watching);
     });
 
-    it('answers the linked-record task list and summary for a record the person cannot open only with the switch', async () => {
+    it('answers the linked-record task list and summary for a record the person cannot open only on All', async () => {
       const { org, customer, admin } = await newOrg();
       const job = await fx.addJob(org, customer);
       const linked = await addTask(org, admin.id, { linked: { type: 'JOB', id: job.id } });
@@ -196,12 +229,12 @@ suite('tasks, attachments and notes follow switches (real database)', () => {
       const closed = { jobs_scope: 'attached', leads_scope: 'attached' };
 
       for (const base of ['DISPATCHER', 'ADMIN'] as const) {
-        const without = await personWith(org, { ...closed, see_all_tasks: false }, { base });
+        const without = await personWith(org, { ...closed, tasks_scope: 'attached' }, { base });
         const noApi = await without.api();
         expect((await noApi.get(`/api/tasks?${query}`)).status, `${base} list without`).toBe(403);
         expect((await noApi.get(`/api/tasks/summary?${query}`)).status, `${base} summary without`).toBe(403);
 
-        const withSwitch = await personWith(org, { ...closed, see_all_tasks: true }, { base });
+        const withSwitch = await personWith(org, { ...closed, tasks_scope: 'all' }, { base });
         const api = await withSwitch.api();
         const list = await api.get(`/api/tasks?${query}`);
         expect(list.status, `${base} list with`).toBe(200);
@@ -212,7 +245,7 @@ suite('tasks, attachments and notes follow switches (real database)', () => {
       }
     });
 
-    it('leaves a task\'s file events out of the activity feed for a person without the switch (PRD 9: the task rule)', async () => {
+    it('leaves a task\'s file events out of the activity feed for a person not on All (PRD 9: the task rule)', async () => {
       const { org, admin } = await newOrg();
       const task = await addTask(org, admin.id);
       await db.timelineEvent.create({
@@ -225,14 +258,14 @@ suite('tasks, attachments and notes follow switches (real database)', () => {
       for (const base of ['DISPATCHER', 'ADMIN'] as const) {
         // An Admin-based custom role stores no grants of its own, so it is given the dashboard to open.
         const dashboard = base === 'ADMIN' ? { extraGrants: [{ action: 'read', subject: 'Dashboard' }] } : {};
-        const without = await personWith(org, { see_all_tasks: false }, { base, ...dashboard });
+        const without = await personWith(org, { tasks_scope: 'attached' }, { base, ...dashboard });
         const hidden = await (await without.api()).get('/api/dashboard');
         expect(hidden.status, `${base} without`).toBe(200);
         // The person is not on the task and has no linked record to open it through: the event itself is not theirs to see.
         expect(JSON.stringify(hidden.body.data.recent_activity), `${base} without`).not.toContain('salary-review');
         expect(hidden.body.data.recent_activity, `${base} without`).toEqual([]);
 
-        const withSwitch = await personWith(org, { see_all_tasks: true }, { base, ...dashboard });
+        const withSwitch = await personWith(org, { tasks_scope: 'all' }, { base, ...dashboard });
         const shown = await (await withSwitch.api()).get('/api/dashboard');
         expect(shown.status, `${base} with`).toBe(200);
         expect(JSON.stringify(shown.body.data.recent_activity), `${base} with`).toContain('salary-review.pdf');
@@ -240,51 +273,59 @@ suite('tasks, attachments and notes follow switches (real database)', () => {
     });
   });
 
-  describe('Attachments', () => {
-    it('lets a person without Delete attachments delete their own file on a record they can open, and refuses someone else\'s', async () => {
-      const { org, customer, admin } = await newOrg();
-      const job = await fx.addJob(org, customer);
-
-      for (const base of ['TECHNICIAN', 'SALES', 'DISPATCHER'] as const) {
-        const person = await personWith(org, { delete_attachments: false }, { base });
-        const api = await person.api();
-        const mine = await addFile(org, { type: 'JOB', id: job.id }, person.id);
-        const theirs = await addFile(org, { type: 'JOB', id: job.id }, admin.id);
-
-        expect((await api.delete(`/api/attachments/job/${job.id}/${theirs}`)).status, `${base} someone else's`).toBe(403);
-        expect(await filesLeft(theirs), `${base} someone else's`).toBe(1);
-        expect((await api.delete(`/api/attachments/job/${job.id}/${mine}`)).status, `${base} own`).toBe(200);
-        expect(await filesLeft(mine), `${base} own`).toBe(0);
-      }
-    });
-
-    it('lets a person with Delete attachments delete anyone\'s file on a record they can open', async () => {
+  describe('Attachments (the record\'s own data, P10)', () => {
+    it('lets a person with the record\'s Edit delete anyone\'s file, and refuses a person without it, their own file included', async () => {
       const { org, customer, admin } = await newOrg();
       const job = await fx.addJob(org, customer);
       for (const base of ['TECHNICIAN', 'SALES', 'DISPATCHER'] as const) {
-        const person = await personWith(org, { delete_attachments: true }, { base });
+        const editor = await personWith(org, { edit_jobs: true }, { base });
+        const viewer = await personWith(org, NO_JOB_LEAD_EDIT, { base });
         const theirs = await addFile(org, { type: 'JOB', id: job.id }, admin.id);
-        expect((await (await person.api()).delete(`/api/attachments/job/${job.id}/${theirs}`)).status, base).toBe(200);
-        expect(await filesLeft(theirs), base).toBe(0);
+        const mine = await addFile(org, { type: 'JOB', id: job.id }, viewer.id);
+
+        const asViewer = await viewer.api();
+        for (const file of [theirs, mine]) {
+          expect((await asViewer.delete(`/api/attachments/job/${job.id}/${file}`)).status, `${base} without the Edit`).toBe(403);
+          expect(await filesLeft(file), `${base} without the Edit`).toBe(1);
+        }
+        const asEditor = await editor.api();
+        expect((await asEditor.delete(`/api/attachments/job/${job.id}/${theirs}`)).status, base).toBe(200);
+        expect((await asEditor.delete(`/api/attachments/job/${job.id}/${mine}`)).status, base).toBe(200);
+        expect(await filesLeft(theirs) + (await filesLeft(mine)), base).toBe(0);
       }
     });
 
-    it('refuses a delete, their own file included, on a record the person cannot open', async () => {
+    it('answers not found for a record the person cannot open, the list and a delete of their own file included', async () => {
       const { org, customer } = await newOrg();
       const elsewhere = await fx.addJob(org, customer);
-      const person = await personWith(org, { delete_attachments: true, jobs_scope: 'attached', leads_scope: 'attached' });
+      const person = await personWith(org, { edit_jobs: true, jobs_scope: 'attached', leads_scope: 'attached' });
       const mine = await addFile(org, { type: 'JOB', id: elsewhere.id }, person.id);
-      expect((await (await person.api()).delete(`/api/attachments/job/${elsewhere.id}/${mine}`)).status).toBe(403);
+      const api = await person.api();
+      expect((await api.get(`/api/attachments/job/${elsewhere.id}`)).status).toBe(404);
+      expect((await api.delete(`/api/attachments/job/${elsewhere.id}/${mine}`)).status).toBe(404);
       expect(await filesLeft(mine)).toBe(1);
     });
 
-    it('refuses a delete without View attachments even for their own file', async () => {
+    it('offers the job page its Upload and Add note actions by the job\'s Edit, and not to a person who only views the job', async () => {
       const { org, customer } = await newOrg();
       const job = await fx.addJob(org, customer);
-      const person = await personWith(org, { view_attachments: false, delete_attachments: false, upload_attachments: false, edit_attachments: false });
-      const mine = await addFile(org, { type: 'JOB', id: job.id }, person.id);
-      expect((await (await person.api()).delete(`/api/attachments/job/${job.id}/${mine}`)).status).toBe(403);
-      expect(await filesLeft(mine)).toBe(1);
+      const editor = await personWith(org, { add_notes: false, edit_jobs: true });
+      const viewer = await personWith(org, { add_notes: false, ...NO_JOB_LEAD_EDIT });
+      const actionsOf = async (p: { api: () => Promise<Api> }) => (await (await p.api()).get(`/api/jobs/${job.id}`)).body.job.actions as string[];
+      expect(await actionsOf(editor)).toEqual(expect.arrayContaining(['upload_attachment', 'add_note']));
+      const viewing = await actionsOf(viewer);
+      expect(viewing).not.toContain('upload_attachment');
+      expect(viewing).not.toContain('add_note');
+    });
+
+    it('lists the files of a record the person can open with no switch for it', async () => {
+      const { org, customer, admin } = await newOrg();
+      const job = await fx.addJob(org, customer);
+      const file = await addFile(org, { type: 'JOB', id: job.id }, admin.id);
+      const person = await personWith(org, NO_JOB_LEAD_EDIT);
+      const listed = await (await person.api()).get(`/api/attachments/job/${job.id}`);
+      expect(listed.status).toBe(200);
+      expect((listed.body.attachments as Array<{ id: string }>).map((a) => a.id)).toContain(file);
     });
 
     it('opens the files of a job, a lead and an invoice by what the person can open, never by role name', async () => {
@@ -301,19 +342,19 @@ suite('tasks, attachments and notes follow switches (real database)', () => {
 
       // Reaches everything: a technician-based role sees all three, though the technician preset reaches few.
       for (const base of ['TECHNICIAN', 'SALES'] as const) {
-        const wide = await personWith(org, { invoices_scope: 'all', view_invoices: true }, { base });
+        const wide = await personWith(org, { jobs_scope: 'all', leads_scope: 'all', view_invoices: true }, { base });
         const api = await wide.api();
         for (const t of targets) expect((await api.get(`/api/attachments/${t.path}/${t.id}`)).status, `${base} wide ${t.path}`).toBe(200);
       }
       // Reaches nothing: a dispatcher-based role sees none, though a dispatcher is let in everywhere today.
       for (const base of ['DISPATCHER', 'ADMIN'] as const) {
-        const narrow = await personWith(org, { jobs_scope: 'attached', leads_scope: 'attached', invoices_scope: 'attached' }, { base });
+        const narrow = await personWith(org, { jobs_scope: 'attached', leads_scope: 'attached' }, { base });
         const api = await narrow.api();
-        for (const t of targets) expect((await api.get(`/api/attachments/${t.path}/${t.id}`)).status, `${base} narrow ${t.path}`).toBe(403);
+        for (const t of targets) expect((await api.get(`/api/attachments/${t.path}/${t.id}`)).status, `${base} narrow ${t.path}`).toBe(404);
       }
     });
 
-    it('opens a job\'s files for a person on its crew with the Technician preset\'s scope', async () => {
+    it('opens a job\'s files for a person on its crew with the Technician preset\'s scope, and a crew member with no attachment switch lists them', async () => {
       const { org, customer, admin } = await newOrg();
       const mine = await fx.addJob(org, customer);
       const notMine = await fx.addJob(org, customer);
@@ -323,7 +364,7 @@ suite('tasks, attachments and notes follow switches (real database)', () => {
       await addFile(org, { type: 'JOB', id: notMine.id }, admin.id);
       const api = await person.api();
       expect((await api.get(`/api/attachments/job/${mine.id}`)).status).toBe(200);
-      expect((await api.get(`/api/attachments/job/${notMine.id}`)).status).toBe(403);
+      expect((await api.get(`/api/attachments/job/${notMine.id}`)).status).toBe(404);
     });
   });
   describe('the route-level enforcement table: tasks and calendar events', () => {
@@ -383,11 +424,10 @@ suite('tasks, attachments and notes follow switches (real database)', () => {
       const listed = SWITCH_CATALOG
         .filter((s) => ['Tasks', 'Events'].includes(s.module))
         .flatMap((s) => s.serverChecks.map((c) => `${s.key}:${c}`))
-        // See all tasks changes what a list or a task shows rather than refusing a request: its rows are in 'See all tasks'.
-        .filter((c) => !c.startsWith('see_all_tasks:'))
-        // View events and See all calendar entries decide which entries a person is a participant of or sees, rather than
-        // refusing a request on a switch alone: their rows are in permission-calendar-entries-db.test.ts.
-        .filter((c) => !c.startsWith('view_events:') && !c.startsWith('see_all_calendar_entries:'));
+        // View events decides which entries a person is a participant of or sees, rather than refusing a request on a
+        // switch alone: its rows are in permission-calendar-entries-db.test.ts. (Tasks scope and Events scope hold no
+        // server check: they narrow a list, and their rows are in the 'Tasks scope' tests above and that file.)
+        .filter((c) => !c.startsWith('view_events:'));
       expect(probes.map((p) => `${p.switchKey}:${p.check}`).sort()).toEqual(listed.sort());
     });
 

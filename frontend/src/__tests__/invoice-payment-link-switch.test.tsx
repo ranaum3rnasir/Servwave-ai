@@ -115,7 +115,10 @@ describe('InvoiceDetailPage - the payment-link action follows the Send payment l
     const user = userEvent.setup();
 
     renderWithProviders(<InvoiceDetailPage />, {
-      ability: buildAbility([{ action: 'read', subject: 'Invoice' }, { action: 'send_payment_link', subject: 'Invoice' }]),
+      // The link opens the customer's priced page, so the copy needs See prices too (H6, ticket 34).
+      ability: buildAbility([
+        { action: 'read', subject: 'Invoice' }, { action: 'send_payment_link', subject: 'Invoice' }, { action: 'read', subject: 'Prices' },
+      ]),
     });
 
     await user.click(await screen.findByRole('button', { name: 'More actions' }));
@@ -130,6 +133,7 @@ describe('InvoiceDetailPage - the payment-link action follows the Send payment l
     renderWithProviders(<InvoiceDetailPage />, {
       ability: buildAbility([
         { action: 'read', subject: 'Invoice' }, { action: 'send', subject: 'Invoice' }, { action: 'update', subject: 'Invoice' },
+        { action: 'read', subject: 'Prices' },
       ]),
     });
 

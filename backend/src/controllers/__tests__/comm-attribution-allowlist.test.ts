@@ -47,7 +47,7 @@ describe('POST /api/communication/calls/attribution — outbound allowlist guard
     expect(res.body.code).toBe('NOT_IN_TEST_ALLOWLIST');
     expect(res.body.error).toBeTruthy();
     // Blocked BEFORE any context resolution or stash write.
-    expect(p.job.findUnique).not.toHaveBeenCalled();
+    expect(p.job.findFirst).not.toHaveBeenCalled();
     expect(p.pendingCallAttribution.create).not.toHaveBeenCalled();
     // The guard was consulted with the normalized E.164 destination.
     expect(client.isOutboundAllowed).toHaveBeenCalledWith('+15551234567');
@@ -56,7 +56,7 @@ describe('POST /api/communication/calls/attribution — outbound allowlist guard
   it('an allowlisted destination stashes as before (202 queued:true)', async () => {
     mockAuthAs('dispatcher');
     client.isOutboundAllowed.mockReturnValue(true);
-    p.job.findUnique.mockResolvedValue(JOB_ROW);
+    p.job.findFirst.mockResolvedValue(JOB_ROW);
 
     const res = await request(app)
       .post('/api/communication/calls/attribution')

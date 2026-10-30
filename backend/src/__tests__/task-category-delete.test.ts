@@ -482,9 +482,8 @@ describe('DELETE /api/task-categories/:id - delete_tasks needs the right to dele
    * without See all tasks, so a task is theirs to open only when they are on it.
    */
   function grantCategoryDelete({ withTaskDelete }: { withTaskDelete: boolean }) {
-    mockPrisma.rolePermission.findMany.mockResolvedValue(DEFAULT_GRANTS.filter((g) => g.role === 'DISPATCHER'));
     // Deleting a category is the Manage task categories switch (Roles & Permissions S01.14), no longer a stored grant.
-    mockRoleSwitches({ delete_tasks: withTaskDelete, see_all_tasks: false, manage_task_categories: true });
+    mockRoleSwitches({ delete_tasks: withTaskDelete, tasks_scope: 'attached', manage_task_categories: true });
     clearPermissionCache();
   }
   const deleteAllAs = () =>

@@ -88,7 +88,7 @@ suite('GET /api/communication/my-mailbox (real database)', () => {
     expect(res.body).toEqual({ mailbox: null });
   });
 
-  it('answers 403 to a person on a custom role whose Access Communication is off, and 200 once it is on', async () => {
+  it('answers 403 to a person on a custom role whose Access Communication or Show Email is off, and 200 once both are on', async () => {
     const w = await fx.newOrg();
     const key = `mailbox-me-role-${randomUUID().slice(0, 8)}`;
     const role = await fx.addCustomRole(w.org, key, 'DISPATCHER');
@@ -100,7 +100,13 @@ suite('GET /api/communication/my-mailbox (real database)', () => {
 
     expect((await api.get('/api/communication/my-mailbox')).status).toBe(403);
 
+    // The section alone is not enough: Show Email closes the person's own address too (M7, ticket 36).
     await setRoleSwitchValues({ organizationId: w.org, roleKey: key, values: { access_communication: true }, actorId: null, reason: 'manual' });
+    clearSwitchCacheForUser(person.id);
+    clearPermissionCache(w.org);
+    expect((await api.get('/api/communication/my-mailbox')).status).toBe(403);
+
+    await setRoleSwitchValues({ organizationId: w.org, roleKey: key, values: { show_email: true }, actorId: null, reason: 'manual' });
     clearSwitchCacheForUser(person.id);
     clearPermissionCache(w.org);
     const after = await api.get('/api/communication/my-mailbox');

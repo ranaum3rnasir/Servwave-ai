@@ -9,7 +9,7 @@ export type EstimateOpener = (estimateIds: readonly string[], db?: Prisma.Transa
 
 /**
  * The estimate twin of `invoiceOpenerFor` (invoiceAccess.ts): the person's estimate reach (their View estimates scope plus
- * the creator rule), worked out once up front, and a function that asks which of some estimates it covers. One query per
+ * and the documents they made for a customer alone), worked out once up front, and a function that asks which of some estimates it covers. One query per
  * call however many estimates are named, none for a person whose scope reaches every row, and nothing kept between
  * requests, so a person taken off a job stops opening its estimates on the next call.
  */

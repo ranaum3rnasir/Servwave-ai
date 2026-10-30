@@ -156,7 +156,7 @@ suite("the closed-lead lock on a lead's own entries (real database)", () => {
 
   it('keeps the ordinary refusal first: a person without the switch is told they lack permission, not that the lead is closed', async () => {
     const { org, lead } = await setup('LOST');
-    const nobody = await personWith(org, { ...ALL_ON, edit_job_and_lead_contact_details: false, change_lead_status_by_hand: false, edit_leads: false, leads_scope: 'all' });
+    const nobody = await personWith(org, { ...ALL_ON, edit_job_and_lead_contact_details: false, change_lead_status_by_hand: false, edit_leads: false, create_leads: false, leads_scope: 'all' });
 
     const res = await WRITES['add a phone']!(await fx.signedInAs(nobody), lead.id, '');
 
@@ -165,13 +165,13 @@ suite("the closed-lead lock on a lead's own entries (real database)", () => {
     expect(res.body.code).toBeUndefined();
   });
 
-  it('never tells anyone the status of a lead they cannot open: forbidden as before, and not found across companies', async () => {
+  it('never tells anyone the status of a lead they cannot open: not found, the same as across companies', async () => {
     const { org, lead } = await setup('LOST');
     await db.lead.update({ where: { id: lead.id }, data: { commission_owner_id: null } });
     const scoped = await personWith(org, { ...ALL_ON, leads_scope: 'attached' });
 
     const off = await WRITES['add a phone']!(await fx.signedInAs(scoped), lead.id, '');
-    expect(off.status).toBe(403);
+    expect(off.status).toBe(404);
     expect(off.body.error).not.toBe(CLOSED_MESSAGE);
 
     const other = await fx.newOrg();
@@ -184,7 +184,7 @@ suite("the closed-lead lock on a lead's own entries (real database)", () => {
 
   it("refuses a closed lead's creator, still attached, the same way", async () => {
     const { org, customer } = await fx.newOrg();
-    const creator = await personWith(org, { ...ALL_ON, change_lead_status_by_hand: false, edit_leads: false, edit_job_and_lead_contact_details: false });
+    const creator = await personWith(org, { ...ALL_ON, change_lead_status_by_hand: false });
     const lead = await fx.addLead(org, customer, { createdBy: creator.id, assignees: [creator.id] });
     await db.lead.update({ where: { id: lead.id }, data: { status: 'WON' } });
 

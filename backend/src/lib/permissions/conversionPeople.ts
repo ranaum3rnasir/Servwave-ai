@@ -51,6 +51,7 @@ const PERSON_SELECT = {
   role: true,
   based_on_role_key: true,
   custom_role_id: true,
+  is_admin: true,
   custom_role: { select: { key: true } },
   is_active: true,
   first_name: true,

@@ -167,10 +167,6 @@ function signIn(userKey: TestUserKey) {
   wireUserLookup();
   // Grants are answered per ROLE, so a performer-eligibility lookup for some other role does
   // not get handed the caller's rows.
-  mockPrisma.rolePermission.findMany.mockImplementation(
-    (args: { where: { role: string } }) =>
-      Promise.resolve(DEFAULT_GRANTS.filter((g) => g.role === args.where.role)),
-  );
   clearPermissionCache();
 }
 
@@ -276,8 +272,8 @@ describe.each(DOORS)('$name — the assignee pool', (door) => {
 
     const res = await door.send('sales', [TEST_USERS.sales.id]);
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe('Insufficient permissions');
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Lead not found');
     expectNoPerformerWrite();
   });
 
@@ -488,7 +484,7 @@ describe('validatePerformers — restating an unchanged roster', () => {
     const user = TEST_USERS[userKey];
     return {
       user: { ...user },
-      ability: defineAbilityFor({ id: user.id, role: user.role }, grants),
+      ability: defineAbilityFor({ is_admin: user.role === 'ADMIN', id: user.id, role: user.role }, grants),
     } as unknown as Request;
   }
 

@@ -87,7 +87,7 @@ export interface ReviewSummaryLine {
   quantity: number;
   unit_price: number;
   line_total: number;
-  /** Present only for a person who may see costs (See financial data). */
+  /** Present only for a person who may see costs (See costs). */
   unit_cost?: number | null;
 }
 

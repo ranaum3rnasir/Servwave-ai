@@ -5,7 +5,7 @@ import {
   useCancelServicePlan, useDeleteServicePlan, useScheduleVisit, describeRecurrence,
 } from '@/lib/api/service-plans';
 import { useAppAbility } from '@/contexts/AbilityContext';
-import { useUsers } from '@/lib/api/users';
+import { usePeople } from '@/lib/api/users';
 import { extractApiError } from '@/lib/utils';
 
 import { Button } from '@/ui-kit/components/ui/button';
@@ -53,7 +53,7 @@ function PlanDetailSheet({ id, onClose }: { id: string | null; onClose: () => vo
   const del = useDeleteServicePlan();
   const schedule = useScheduleVisit();
   const updatePlan = useUpdateServicePlan();
-  const { data: users } = useUsers();
+  const { data: users } = usePeople();
 
   const [visitDate, setVisitDate] = useState('');
   const [tech, setTech] = useState('');

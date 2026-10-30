@@ -1,11 +1,11 @@
 /// <reference types="@testing-library/jest-dom/vitest" />
 /**
- * Roles & Permissions, PRD 2, slice S02.25 - the dashboard's "New" menu follows the same Create + Show pair as Create
+ * Roles & Permissions, PRD 2, slice S02.25 - the dashboard's "New" menu follows the same Create + View pair as Create
  * New (S02.24). New Lead, New Estimate, New Job, New Task and New Invoice (Standalone invoices) each need their Create
- * switch AND their page's Show switch; Request Payment creates nothing, so it follows Show Invoices page alone. With no
+ * switch AND their page's View switch; Request Payment creates nothing, so it follows View invoices alone. With no
  * item left the "New" button is not drawn.
  *
- * The Create switch reaches the screen as a compiled rule; Show is display only and arrives with the person's own
+ * The Create switch reaches the screen as a compiled rule; View arrives with the person's own
  * switch answer, so each person below is a custom role described by those switches, never a built-in role name. Switch
  * keys and preset values are read from the backend catalog by the label a person sees, so a renamed switch fails here
  * instead of silently testing nothing.
@@ -25,21 +25,21 @@ vi.mock('@/components/estimates/NewEstimateDialog', () => ({ NewEstimateDialog: 
 
 const mockApi = vi.mocked(api);
 
-/** One menu item: the label a person sees, the Create switch behind it (none for Request Payment), what it compiles to, its Show. */
+/** One menu item: the label a person sees, the Create switch behind it (none for Request Payment), what it compiles to, its View. */
 const ITEMS = [
-  { item: 'New Lead', create: 'Create leads', rule: { action: 'create', subject: 'Lead' }, show: 'Show Leads page' },
-  { item: 'New Estimate', create: 'Create estimates', rule: { action: 'create', subject: 'Estimate' }, show: 'Show Estimates page' },
-  { item: 'New Job', create: 'Create jobs', rule: { action: 'create', subject: 'Job' }, show: 'Show Jobs page' },
-  { item: 'New Task', create: 'Create tasks', rule: { action: 'create', subject: 'Task' }, show: 'Show Tasks page' },
+  { item: 'New Lead', create: 'Create leads', rule: { action: 'create', subject: 'Lead' }, show: 'View leads' },
+  { item: 'New Estimate', create: 'Create estimates', rule: { action: 'create', subject: 'Estimate' }, show: 'View estimates' },
+  { item: 'New Job', create: 'Create jobs', rule: { action: 'create', subject: 'Job' }, show: 'View jobs' },
+  { item: 'New Task', create: 'Create tasks', rule: { action: 'create', subject: 'Task' }, show: 'View tasks' },
   // The invoice is the standalone one (no job, no estimate), so it follows Standalone invoices, not Create invoices.
-  { item: 'New Invoice', create: 'Standalone invoices', rule: { action: 'create_standalone', subject: 'Invoice' }, show: 'Show Invoices page' },
+  { item: 'New Invoice', create: 'Standalone invoices', rule: { action: 'create_standalone', subject: 'Invoice' }, show: 'View invoices' },
   // Creates nothing: it only needs the invoices page it opens.
-  { item: 'Request Payment', create: null, rule: null, show: 'Show Invoices page' },
+  { item: 'Request Payment', create: null, rule: null, show: 'View invoices' },
 ] as const;
 
 type Item = (typeof ITEMS)[number];
 
-/** The rules and the "me" answer of a person whose Create and Show switches are exactly `on` (everything else off). */
+/** The rules and the "me" answer of a person whose Create and View switches are exactly `on` (everything else off). */
 function personWith(on: ReadonlySet<string>) {
   const values: Record<string, boolean> = {};
   const rules: AbilityRule[] = [];
@@ -84,7 +84,7 @@ async function openedItems(witness: Item): Promise<string[]> {
 
 const everythingFor = (entry: Item): string[] => (entry.create === null ? [entry.show] : [entry.create, entry.show]);
 
-describe('the dashboard "New" menu follows Create + Show (S02.25)', () => {
+describe('the dashboard "New" menu follows Create + View (S02.25)', () => {
   beforeEach(() => {
     localStorage.clear();
     mockApi.get.mockReset();
@@ -94,10 +94,10 @@ describe('the dashboard "New" menu follows Create + Show (S02.25)', () => {
     const witness = ITEMS.find((other) => other.item !== entry.item && other.show !== entry.show)!;
 
     it.each([
-      ['Create and Show both on', true, true, true],
-      ['Create on, Show off', true, false, false],
-      ['Create off, Show on', false, true, false],
-      ['Create and Show both off', false, false, false],
+      ['Create and View both on', true, true, true],
+      ['Create on, View off', true, false, false],
+      ['Create off, View on', false, true, false],
+      ['Create and View both off', false, false, false],
     ])('%s: item shown is %s', async (_name, createOn, showOn, shown) => {
       const on = new Set<string>(everythingFor(witness));
       if (createOn) on.add(entry.create!);
@@ -110,11 +110,11 @@ describe('the dashboard "New" menu follows Create + Show (S02.25)', () => {
     });
   });
 
-  describe('Request Payment (creates nothing, so it follows Show Invoices page alone)', () => {
+  describe('Request Payment (creates nothing, so it follows View invoices alone)', () => {
     const witness = ITEMS[0];
 
-    it('shows with Show Invoices page on and no Create switch at all', async () => {
-      renderMenu(personWith(new Set([...everythingFor(witness), 'Show Invoices page'])));
+    it('shows with View invoices on and no Create switch at all', async () => {
+      renderMenu(personWith(new Set([...everythingFor(witness), 'View invoices'])));
 
       const items = await openedItems(witness);
 
@@ -122,7 +122,7 @@ describe('the dashboard "New" menu follows Create + Show (S02.25)', () => {
       expect(items).not.toContain('New Invoice');
     });
 
-    it('is missing with Show Invoices page off, even with Standalone invoices on', async () => {
+    it('is missing with View invoices off, even with Standalone invoices on', async () => {
       renderMenu(personWith(new Set([...everythingFor(witness), 'Standalone invoices'])));
 
       const items = await openedItems(witness);
@@ -148,18 +148,16 @@ describe('the dashboard "New" menu follows Create + Show (S02.25)', () => {
   });
 
   describe("with the built-in roles' starting values", () => {
-    it('the Dispatcher values show no New Invoice and no Request Payment (Show Invoices page is off)', async () => {
+    it('the Dispatcher values show New Invoice and Request Payment: it can create standalone invoices and has View invoices', async () => {
       const dispatcher = personCopiedFrom('DISPATCHER');
-      // The reason is in the values: Dispatcher can create standalone invoices but does not show the invoices page.
+      // The menu follows View, so the pages a Dispatcher opens are the ones it has View on (P1).
       expect(dispatcher.values[catalogToggle('Standalone invoices').key]).toBe(true);
-      expect(dispatcher.values[catalogToggle('Show Invoices page').key]).toBe(false);
+      expect(dispatcher.values[catalogToggle('View invoices').key]).toBe(true);
       renderMenu(dispatcher);
 
       const items = await openedItems(ITEMS[0]);
 
-      expect(items).not.toContain('New Invoice');
-      expect(items).not.toContain('Request Payment');
-      expect(items).toEqual(expect.arrayContaining(['New Lead', 'New Estimate', 'New Job', 'New Task']));
+      expect(items).toEqual(expect.arrayContaining(['New Invoice', 'Request Payment', 'New Lead', 'New Estimate', 'New Job', 'New Task']));
     });
 
     it('the Admin values show every item, in the menu\'s order', async () => {

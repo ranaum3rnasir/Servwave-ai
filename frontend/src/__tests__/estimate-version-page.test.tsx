@@ -8,7 +8,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen } from '@testing-library/react';
 import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
+import { renderWithProviders, seesPrices } from './helpers';
 import EstimateVersionPage from '@/pages/v2/estimates/EstimateVersionPage';
 import { printedRowAmounts, printedTotal, sectionHeadings, sumAmounts } from './estimate-document-dom';
 
@@ -61,7 +61,7 @@ beforeEach(() => {
 
 describe('opening a past version', () => {
   it('renders the whole document as the customer received it', async () => {
-    renderWithProviders(<EstimateVersionPage />);
+    renderWithProviders(<EstimateVersionPage />, { ability: seesPrices });
 
     expect(await screen.findByText('Keypad')).toBeInTheDocument();
     expect(screen.getByText('Install 3 doors')).toBeInTheDocument();
@@ -70,15 +70,26 @@ describe('opening a past version', () => {
     expect(screen.getAllByText('$1,000.00').length).toBeGreaterThan(0);
   });
 
-  it("shows the version's photos", async () => {
+  // Pre-PR review, parked item (d): a person without See prices is sent the version with no figure in it (the server leaves the
+  // price keys out), and the page draws the work with no figure and no $0.00 in their place.
+  it('shows a person without See prices the work, with no figure and no $0.00 anywhere', async () => {
     renderWithProviders(<EstimateVersionPage />);
+
+    expect(await screen.findByText('Keypad')).toBeInTheDocument();
+    expect(screen.getByText('Install 3 doors')).toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/\$/);
+    expect(screen.queryByTestId('estimate-document-total')).toBeNull();
+  });
+
+  it("shows the version's photos", async () => {
+    renderWithProviders(<EstimateVersionPage />, { ability: seesPrices });
 
     const img = await screen.findByAltText('Frame');
     expect(img).toHaveAttribute('src', 'https://signed.test/1.jpg');
   });
 
   it('says plainly that it is a past version and cannot be edited', async () => {
-    renderWithProviders(<EstimateVersionPage />);
+    renderWithProviders(<EstimateVersionPage />, { ability: seesPrices });
 
     expect(await screen.findByText(/Version 1 of E00042/)).toBeInTheDocument();
     expect(screen.getByText(/past version/i)).toHaveTextContent(/cannot be edited/i);
@@ -86,14 +97,14 @@ describe('opening a past version', () => {
   });
 
   it('offers an obvious way back to the current estimate', async () => {
-    renderWithProviders(<EstimateVersionPage />);
+    renderWithProviders(<EstimateVersionPage />, { ability: seesPrices });
 
     const back = await screen.findByRole('link', { name: /current estimate/i });
     expect(back).toHaveAttribute('href', '/estimates/est-1');
   });
 
   it('offers no way to edit anything — the page has no controls at all', async () => {
-    renderWithProviders(<EstimateVersionPage />);
+    renderWithProviders(<EstimateVersionPage />, { ability: seesPrices });
     await screen.findByText('Keypad');
 
     expect(screen.queryAllByRole('button')).toHaveLength(0);
@@ -103,7 +114,7 @@ describe('opening a past version', () => {
   it('says so, with a way back, when the version cannot be opened', async () => {
     vi.mocked(api.get).mockRejectedValue({ response: { data: { error: 'Version not found' } } });
 
-    renderWithProviders(<EstimateVersionPage />);
+    renderWithProviders(<EstimateVersionPage />, { ability: seesPrices });
 
     expect(await screen.findByText('Version not found')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /current estimate/i })).toBeInTheDocument();
@@ -167,7 +178,7 @@ describe('a version frozen before the document was split into sections', () => {
   it('draws only the scope content, under no heading, when that is all the frozen document has', async () => {
     vi.mocked(api.get).mockResolvedValue({ data: { version: freezeVersion([PRE_SLICE_SCOPE], null, 800) } });
 
-    renderWithProviders(<EstimateVersionPage />);
+    renderWithProviders(<EstimateVersionPage />, { ability: seesPrices });
     await screen.findByText('Install 3 doors');
 
     expect(sectionHeadings()).toEqual([]);
@@ -178,7 +189,7 @@ describe('a version frozen before the document was split into sections', () => {
   it('draws only the line items, under no heading, when that is all the frozen document has', async () => {
     vi.mocked(api.get).mockResolvedValue({ data: { version: freezeVersion([PRE_SLICE_LINE], null, 200) } });
 
-    renderWithProviders(<EstimateVersionPage />);
+    renderWithProviders(<EstimateVersionPage />, { ability: seesPrices });
     await screen.findByText('Keypad');
 
     expect(sectionHeadings()).toEqual([]);
@@ -191,7 +202,7 @@ describe('a version frozen before the document was split into sections', () => {
       data: { version: freezeVersion([PRE_SLICE_LINE, PRE_SLICE_SCOPE], 'Business hours only.', 1000) },
     });
 
-    renderWithProviders(<EstimateVersionPage />);
+    renderWithProviders(<EstimateVersionPage />, { ability: seesPrices });
     await screen.findByText('Keypad');
 
     expect(sectionHeadings()).toEqual(['Scope of Work', 'Line Items']);
@@ -208,7 +219,7 @@ describe('a version frozen before the document was split into sections', () => {
   it('draws no section headings at all, but still prints the totals, when the frozen document has neither', async () => {
     vi.mocked(api.get).mockResolvedValue({ data: { version: freezeVersion([], null, 0) } });
 
-    renderWithProviders(<EstimateVersionPage />);
+    renderWithProviders(<EstimateVersionPage />, { ability: seesPrices });
     await screen.findByText(/Version 1 of E00042/);
 
     // An empty document draws no header over nothing — but a version must still show what it was

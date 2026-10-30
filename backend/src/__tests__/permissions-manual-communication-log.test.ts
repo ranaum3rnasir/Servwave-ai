@@ -34,7 +34,7 @@ const ACTION = 'log_past';
 const NON_ADMIN_ROLES = ['SALES', 'DISPATCHER', 'TECHNICIAN'] as const;
 
 const grantsFor = (role: string) => DEFAULT_GRANTS.filter((g) => g.role === role);
-const abilityFor = (role: string) => defineAbilityFor({ id: 'user-1', role }, grantsFor(role));
+const abilityFor = (role: string) => defineAbilityFor({ is_admin: role === 'ADMIN', id: 'user-1', role }, grantsFor(role));
 
 describe('the ability resolves per role', () => {
   it('ADMIN can log a past communication (manage-all short-circuit)', () => {

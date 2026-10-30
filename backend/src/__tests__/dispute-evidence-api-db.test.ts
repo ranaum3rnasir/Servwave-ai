@@ -103,7 +103,7 @@ suite('dispute evidence API (real database)', () => {
     const person: Person = await fx.addUser(org, `${name}${sequence}`, 'DISPATCHER', { customRoleId: role.id, basedOnRoleKey: key });
     return { ...person, api: () => fx.signedInAs(person) };
   }
-  const SEES = { view_payments: true, view_invoices: true, invoices_scope: 'all' } as const;
+  const SEES = { view_payments: true, view_invoices: true, jobs_scope: 'all', leads_scope: 'all' } as const;
   const responder = (org: string) => personWith(org, { ...SEES, refund_payments: true }, 'responder');
   const viewer = (org: string) => personWith(org, { ...SEES, refund_payments: false }, 'viewer');
 
@@ -183,7 +183,7 @@ suite('dispute evidence API (real database)', () => {
     it('refuses the read to a person without View payments', async () => {
       const { org, customer } = await newOrg();
       const d = await addDispute(org, customer);
-      const nobody = await personWith(org, { view_payments: false, view_invoices: true, invoices_scope: 'all', refund_payments: false });
+      const nobody = await personWith(org, { view_payments: false, view_invoices: true, jobs_scope: 'all', leads_scope: 'all', refund_payments: false });
       expect((await get(await nobody.api(), d.id)).status).toBe(403);
     });
 
@@ -313,11 +313,11 @@ suite('dispute evidence API (real database)', () => {
       const { org, d, file } = await setup();
       const id = await file(await pdf(1));
       await evidence(org, d.id, id);
-      const narrow = await personWith(org, { view_payments: true, view_invoices: true, invoices_scope: 'attached', refund_payments: true });
+      const narrow = await personWith(org, { view_payments: true, view_invoices: true, jobs_scope: 'attached', leads_scope: 'attached', refund_payments: true });
       const res = await fileUrl(await narrow.api(), d.id, id);
       expect(res.status).toBe(404);
       expect(JSON.stringify(res.body)).not.toContain('https://');
-      const nobody = await personWith(org, { view_payments: false, view_invoices: true, invoices_scope: 'all', refund_payments: false });
+      const nobody = await personWith(org, { view_payments: false, view_invoices: true, jobs_scope: 'all', leads_scope: 'all', refund_payments: false });
       expect((await fileUrl(await nobody.api(), d.id, id)).status).toBe(403);
     });
 
@@ -351,7 +351,7 @@ suite('dispute evidence API (real database)', () => {
 
     it('gives a person who cannot open the invoice nothing about the customer', async () => {
       const { org, d } = await setup();
-      const narrow = await personWith(org, { view_payments: true, view_invoices: true, invoices_scope: 'attached', refund_payments: true });
+      const narrow = await personWith(org, { view_payments: true, view_invoices: true, jobs_scope: 'attached', leads_scope: 'attached', refund_payments: true });
       const res = await get(await narrow.api(), d.id);
       expect(res.status).toBe(404);
       expect(JSON.stringify(res.body)).not.toContain('Pat');
@@ -378,7 +378,7 @@ suite('dispute evidence API (real database)', () => {
     it('answers 404 for a dispute on an invoice the person cannot open', async () => {
       const { org, customer } = await newOrg();
       const d = await addDispute(org, customer);
-      const narrow = await personWith(org, { view_payments: true, view_invoices: true, invoices_scope: 'attached', refund_payments: true });
+      const narrow = await personWith(org, { view_payments: true, view_invoices: true, jobs_scope: 'attached', leads_scope: 'attached', refund_payments: true });
       const api = await narrow.api();
       expect((await get(api, d.id)).status).toBe(404);
       expect((await put(api, d.id, { version: 0, files: {}, text: { uncategorized_text: 'x' } })).status).toBe(404);

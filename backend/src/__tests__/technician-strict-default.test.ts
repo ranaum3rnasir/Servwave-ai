@@ -19,7 +19,7 @@ const TECH_ID = 'tech-1';
 
 function techAbility() {
   return defineAbilityFor(
-    { id: TECH_ID, role: 'TECHNICIAN' },
+    { is_admin: false, id: TECH_ID, role: 'TECHNICIAN' },
     DEFAULT_GRANTS.filter((g) => g.role === 'TECHNICIAN'),
   );
 }
@@ -143,7 +143,7 @@ describe('strict TECHNICIAN default - what a tech CANNOT do', () => {
 describe('SALES + DISPATCHER retain walkthrough access via perform_walkthrough', () => {
   it('SALES has own-scoped perform_walkthrough Lead', () => {
     const grants = DEFAULT_GRANTS.filter((g) => g.role === 'SALES');
-    const ability = defineAbilityFor({ id: 'sales-1', role: 'SALES' }, grants);
+    const ability = defineAbilityFor({ is_admin: false, id: 'sales-1', role: 'SALES' }, grants);
     const ownLead = subject('Lead', { lead_assignees: [{ user_id: 'sales-1' }] }) as any;
     const otherLead = subject('Lead', { lead_assignees: [{ user_id: 'x' }] }) as any;
     expect(ability.can('perform_walkthrough', ownLead)).toBe(true);
@@ -156,7 +156,7 @@ describe('SALES + DISPATCHER retain walkthrough access via perform_walkthrough',
 
   it('DISPATCHER has unconditional perform_walkthrough Lead', () => {
     const grants = DEFAULT_GRANTS.filter((g) => g.role === 'DISPATCHER');
-    const ability = defineAbilityFor({ id: 'disp-1', role: 'DISPATCHER' }, grants);
+    const ability = defineAbilityFor({ is_admin: false, id: 'disp-1', role: 'DISPATCHER' }, grants);
     expect(ability.can('perform_walkthrough', 'Lead')).toBe(true);
     const grant = grants.find((g) => g.action === 'perform_walkthrough' && g.subject === 'Lead');
     expect(grant).toBeDefined();

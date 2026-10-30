@@ -51,7 +51,7 @@ suite('many people at once (real database)', () => {
   const subjectOf = (id: string) =>
     db.user.findUniqueOrThrow({
       where: { id },
-      select: { id: true, organization_id: true, role: true, custom_role_id: true, custom_role: { select: { key: true } } },
+      select: { id: true, organization_id: true, role: true, is_admin: true, custom_role_id: true, custom_role: { select: { key: true } } },
     });
 
   async function customRole(org: string, base: Role, values: Record<string, boolean | string | string[]> | null, opts: { blank?: boolean } = {}) {

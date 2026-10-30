@@ -11,15 +11,15 @@ const VENDOR_NAMES = /stripe|connect|plaid|resend|supabase|render\.com|\bach\b|c
 const base = { organizationId: 'org1', actorId: null as string | null };
 
 describe('bank payment notifications', () => {
-  it('started and cleared are feed items on the invoice, with the amount', () => {
+  it('started and cleared are feed items on the invoice, naming no amount', () => {
     const started = renderTemplate('billing.bank_payment_started', { object_label: 'I0001', customer_name: 'Pat Payer', amount: '250.00' });
     expect(started).toMatchObject({ category: 'BILLING', object_type: 'INVOICE', priority: 'FEED', needs_action: false });
     expect(started.title).toBe('Bank payment started for I0001 — Pat Payer');
-    expect(started.body).toContain('$250.00');
+    expect(started.body).toBe('It usually takes a few business days to clear.');
     const cleared = renderTemplate('billing.bank_payment_cleared', { object_label: 'I0001', amount: '250.00' });
     expect(cleared).toMatchObject({ category: 'BILLING', object_type: 'INVOICE', priority: 'FEED', needs_action: false });
     expect(cleared.title).toBe('Bank payment cleared for I0001');
-    expect(cleared.body).toContain('$250.00');
+    expect(cleared.body).toBeUndefined();
   });
 
   it('failed interrupts and keeps its title', () => {
@@ -30,37 +30,37 @@ describe('bank payment notifications', () => {
 
   // V7-13 part 2 (BE-13d, C-38): the alert says what really happened to the customer. Exact strings.
   it.each([
-    ['sent', 'Amount: $250.00. No money moved. We emailed the customer a link to pay again.'],
-    ['no_email', 'Amount: $250.00. No money moved. No email was sent because this customer has no email address on file. Contact them to pay again.'],
-    ['bounced', 'Amount: $250.00. No money moved. No email was sent because earlier emails to this customer\u2019s address bounced. Contact them to pay again.'],
-    ['not_sent', 'Amount: $250.00. No money moved. The email to the customer could not be sent. Contact them to pay again.'],
+    ['sent', 'No money moved. We emailed the customer a link to pay again.'],
+    ['no_email', 'No money moved. No email was sent because this customer has no email address on file. Contact them to pay again.'],
+    ['bounced', 'No money moved. No email was sent because earlier emails to this customer\u2019s address bounced. Contact them to pay again.'],
+    ['not_sent', 'No money moved. The email to the customer could not be sent. Contact them to pay again.'],
     // BE-13d: not_open on this path is the unchanged sentence; the C-38 sentence needs the cannot_pay marker (below).
-    ['not_open', 'Amount: $250.00. No money moved. The invoice is no longer open for payment.'],
+    ['not_open', 'No money moved. The invoice is no longer open for payment.'],
   ])('failed, customer_notice %s', (customer_notice, body) => {
     expect(renderTemplate('billing.bank_payment_failed', { object_label: 'I0001', amount: '250.00', customer_notice }).body).toBe(body);
   });
 
   it('failed, not_open with the cannot_pay marker (invoice PAID by another payment or DISPUTED) uses the C-38 sentence', () => {
     expect(renderTemplate('billing.bank_payment_failed', { object_label: 'I0001', amount: '250.00', customer_notice: 'not_open', cannot_pay: 'yes' }).body)
-      .toBe('Amount: $250.00. No money moved. No email was sent because this invoice cannot be paid online right now.');
+      .toBe('No money moved. No email was sent because this invoice cannot be paid online right now.');
   });
 
   it('failed with no customer_notice key (a notice stored before this change) claims nothing about the customer', () => {
-    expect(renderTemplate('billing.bank_payment_failed', { object_label: 'I0001', amount: '250.00' }).body).toBe('Amount: $250.00. No money moved.');
+    expect(renderTemplate('billing.bank_payment_failed', { object_label: 'I0001', amount: '250.00' }).body).toBe('No money moved.');
     // The old claim key alone no longer says anything about the customer.
-    expect(renderTemplate('billing.bank_payment_failed', { object_label: 'I0001', amount: '250.00', pay_again: 'yes' }).body).toBe('Amount: $250.00. No money moved.');
+    expect(renderTemplate('billing.bank_payment_failed', { object_label: 'I0001', amount: '250.00', pay_again: 'yes' }).body).toBe('No money moved.');
   });
 });
 
 describe('bank return alert (billing.chargeback, variant bank_return)', () => {
   const render = (data: Record<string, string>) => renderTemplate('billing.chargeback', { object_label: 'I0001', variant: 'bank_return', amount: '300.00', ...data }).body;
-  const TAKEN = 'Amount: $300.00 was taken back from your ServWave Payments balance.';
-  const BEFORE = 'Amount: $300.00. The bank returned this payment before it cleared, so no money reached your ServWave Payments balance.';
+  const TAKEN = 'This payment was taken back from your ServWave Payments balance.';
+  const BEFORE = 'The bank returned this payment before it cleared, so no money reached your ServWave Payments balance.';
 
   it('names the balance only when the marker says the debit had cleared', () => {
     expect(render({ cleared: 'yes' })).toBe(TAKEN);
     expect(render({ cleared: 'no' })).toBe(BEFORE);
-    expect(render({})).toBe('Amount: $300.00.');
+    expect(render({})).toBeUndefined();
   });
 
   it.each([
@@ -93,31 +93,32 @@ describe('dispute notifications', () => {
       object_label: 'I0001', variant: 'card', amount: '300.00', reason_words: 'Fraudulent', evidence_due: 'October 20, 2026',
     });
     expect(t.title).toBe('Payment disputed for I0001');
-    expect(t.body).toBe('Amount: $300.00. Reason: Fraudulent. Respond by October 20, 2026.');
+    expect(t.body).toBe('Reason: Fraudulent. Respond by October 20, 2026.');
   });
 
   it('a bank return after the payment cleared is worded as the bank taking it back', () => {
     const t = renderTemplate('billing.disputed', { object_label: 'I0001', variant: 'bank_return', amount: '300.00', reason_words: 'Insufficient funds' });
     expect(t.title).toBe('Bank returned the payment for I0001');
-    expect(t.body).toBe('The bank took back $300.00. Reason: Insufficient funds.');
+    expect(t.body).toBe('The bank took back this payment. Reason: Insufficient funds.');
   });
 
-  it('a chargeback and a partial chargeback say how much was taken back', () => {
+  it('a chargeback and a partial chargeback say what was taken back, with no figure', () => {
     expect(renderTemplate('billing.chargeback', { object_label: 'I0001', variant: 'card', amount: '300.00' }).body)
-      .toBe('Amount: $300.00 was taken back from your ServWave Payments balance.');
+      .toBe('This payment was taken back from your ServWave Payments balance.');
     const partial = renderTemplate('billing.chargeback', { object_label: 'I0001', variant: 'partial_chargeback', amount: '100.00' });
-    expect(partial.body).toContain('$100.00');
+    expect(partial.body).not.toContain('$');
+    expect(partial.body).toMatch(/^Part of this payment was taken back\./);
     expect(partial.body).toMatch(/balance was not changed/);
   });
 
-  it('closed (won, or ended without a chargeback) is a feed item with the amount', () => {
+  it('closed (won, or ended without a chargeback) is a feed item', () => {
     const won = renderTemplate('billing.dispute_closed', { object_label: 'I0001', outcome: 'WON', amount: '300.00' });
     expect(won).toMatchObject({ category: 'BILLING', object_type: 'INVOICE', priority: 'FEED', needs_action: false });
     expect(won.title).toBe('Dispute won for I0001');
-    expect(won.body).toBe('Amount: $300.00. It was decided in your favor and the payment stands.');
+    expect(won.body).toBe('It was decided in your favor and the payment stands.');
     const closed = renderTemplate('billing.dispute_closed', { object_label: 'I0001', outcome: 'CLOSED', amount: '300.00' });
     expect(closed.title).toBe('Dispute closed for I0001');
-    expect(closed.body).toBe('Amount: $300.00. It ended without a chargeback.');
+    expect(closed.body).toBe('It ended without a chargeback.');
   });
 });
 
@@ -126,12 +127,12 @@ describe('refund failed', () => {
     const t = renderTemplate('billing.refund_failed', { object_label: 'I0001', customer_name: 'Pat Payer', amount: '40.00', refund_kind: 'bank' });
     expect(t).toMatchObject({ category: 'BILLING', object_type: 'INVOICE', priority: 'INTERRUPT', action_type: 'VIEW', needs_action: true });
     expect(t.title).toBe('Refund failed for I0001 — Pat Payer');
-    expect(t.body).toBe('A bank refund of $40.00 to Pat Payer failed. The money is back in your ServWave Payments balance and the customer still needs to be repaid.');
+    expect(t.body).toBe('A bank refund to Pat Payer failed. The money is back in your ServWave Payments balance and the customer still needs to be repaid.');
   });
 
   it('a refund that is not a bank one says "A refund"; no customer name still reads', () => {
     const t = renderTemplate('billing.refund_failed', { object_label: 'I0001', amount: '40.00' });
-    expect(t.body).toBe('A refund of $40.00 to the customer failed. The money is back in your ServWave Payments balance and the customer still needs to be repaid.');
+    expect(t.body).toBe('A refund to the customer failed. The money is back in your ServWave Payments balance and the customer still needs to be repaid.');
   });
 });
 

@@ -57,7 +57,7 @@ describe.skipIf(!enabled)('lead status options: real database', () => {
         email: 'lws04-org@example.invalid', estimate_terms: '', estimate_notes: '', estimate_payment_terms: '' },
     });
     await prisma.user.create({
-      data: { id: USER_ID, email: 'lws04-admin@example.invalid', first_name: 'Lead', last_name: 'Admin', role: 'ADMIN', organization_id: ORG_ID },
+      data: { id: USER_ID, email: 'lws04-admin@example.invalid', first_name: 'Lead', last_name: 'Admin', role: 'ADMIN', is_admin: true, organization_id: ORG_ID },
     });
     await prisma.customer.create({
       data: { id: CUSTOMER_ID, organization_id: ORG_ID, customer_number: 'C-LWS04', kind: 'PERSON', segment: 'RESIDENTIAL', first_name: 'Status', last_name: 'Probe' },

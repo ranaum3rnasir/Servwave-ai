@@ -38,13 +38,14 @@ import { readersOfConversation } from '../conversationReaders';
 const ORG = 'org-1';
 
 interface Spec {
-  scope?: 'linked_to_me' | 'all';
+  scope?: 'attached' | 'all';
   seeMainLine?: boolean;
   /** View communication / Access Communication / View vendors. */
   canRead?: boolean;
   canAccess?: boolean;
   canSeeVendors?: boolean;
-  canManageRoles?: boolean;
+  /** An Admin, by the flag on the person (AL-18: the main mailbox's fallback reader while nobody active is linked). */
+  isAdmin?: boolean;
   /** Holds an unrestricted row scope on every kind of record (so no look at the record is needed). */
   openScope?: boolean;
 }
@@ -53,7 +54,7 @@ const specs = new Map<string, Spec>();
 /** A person the test is about; returns the row the filter would hand over. */
 function person(id: string, spec: Spec = {}) {
   specs.set(id, spec);
-  return { id, role: 'DISPATCHER', organization_id: ORG, custom_role_id: null, custom_role: null, department_id: null, location_id: null };
+  return { id, role: 'DISPATCHER', is_admin: spec.isAdmin === true, organization_id: ORG, custom_role_id: null, custom_role: null, department_id: null, location_id: null };
 }
 
 /** Who the cohort look says can open each record, by `TYPE:id`. */
@@ -66,7 +67,7 @@ beforeEach(() => {
   switchesMock.resolveSwitchesForPeople.mockImplementation(async (people: { id: string }[]) =>
     new Map(people.map((p) => {
       const s = specs.get(p.id) ?? {};
-      return [p.id, { communication_scope: s.scope ?? 'linked_to_me', see_main_line_when_no_number: s.seeMainLine ?? false }];
+      return [p.id, { communication_scope: s.scope ?? 'attached', see_main_line_when_no_number: s.seeMainLine ?? false }];
     })));
   enforceMock.abilityForUser.mockImplementation(async (p: { id: string }) => {
     const s = specs.get(p.id) ?? {};
@@ -74,7 +75,6 @@ beforeEach(() => {
       can: (action: string, subject: string) => {
         if (subject === 'Communication') return action === 'read' ? s.canRead !== false : s.canAccess !== false;
         if (subject === 'Vendor') return s.canSeeVendors === true;
-        if (subject === 'Role') return s.canManageRoles === true;
         return false;
       },
     };
@@ -291,7 +291,7 @@ describe('an email conversation', () => {
   });
   const ask = async (people: ReturnType<typeof person>[], id = 'thread-1') => inOrder(people, await readersOfConversation(people, 'email', id, ORG));
 
-  it('keeps who holds the mailbox it sits in, who it is assigned to, who wrote in it and who holds All', async () => {
+  it('keeps who holds the mailbox it sits in and who holds All, and not who it is assigned to or who wrote in it (M1)', async () => {
     prismaMock.emailThread.findFirst.mockResolvedValue(thread({
       assigned_to_user_id: 'u-assignee',
       mailbox: { kind: 'user', holder_user_id: 'u-holder', status: 'active' },
@@ -299,7 +299,7 @@ describe('an email conversation', () => {
     }));
     const people = [person('u-holder'), person('u-assignee'), person('u-writer'), person('u-all', { scope: 'all' }), person('u-nobody')];
 
-    expect(await ask(people)).toEqual(['u-holder', 'u-assignee', 'u-writer', 'u-all']);
+    expect(await ask(people)).toEqual(['u-holder', 'u-all']);
   });
 
   it('drops everyone while the company\'s Email plan feature is off, without reading the conversation', async () => {
@@ -321,15 +321,15 @@ describe('an email conversation', () => {
     expect(await ask([person('u-holder')])).toEqual([]);
   });
 
-  it('keeps the people linked to the main mailbox for a conversation started in it, and the Manage roles holders only while nobody active is linked', async () => {
+  it('keeps the people linked to the main mailbox for a conversation started in it, and the Admins only while nobody active is linked', async () => {
     prismaMock.emailThread.findFirst.mockResolvedValue(thread({ mailbox: { kind: 'main', holder_user_id: null, status: 'active' } }));
-    const people = () => [person('u-linked'), person('u-manager', { canManageRoles: true }), person('u-plain')];
+    const people = () => [person('u-linked'), person('u-admin', { isAdmin: true }), person('u-plain')];
 
     prismaMock.mailboxReader.findMany.mockResolvedValue([{ user_id: 'u-linked', user: { is_active: true } }]);
     expect(await ask(people())).toEqual(['u-linked']);
 
     prismaMock.mailboxReader.findMany.mockResolvedValue([{ user_id: 'u-gone', user: { is_active: false } }]);
-    expect(await ask(people())).toEqual(['u-manager']);
+    expect(await ask(people())).toEqual(['u-admin']);
   });
 
   it('does not list a migrated conversation in the main mailbox, nor a vendor one to a person without View vendors', async () => {

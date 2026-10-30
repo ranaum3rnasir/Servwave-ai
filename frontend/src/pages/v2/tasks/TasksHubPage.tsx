@@ -81,7 +81,8 @@ export default function TasksHubPage() {
   const canCreateTask = ability.can('create', 'Task');
   const [searchParams, setSearchParams] = useSearchParams();
   const role = useAuthStore((s) => s.user?.role);
-  const isManager = role === 'ADMIN' || role === 'DISPATCHER';
+  const isAdmin = useAuthStore((s) => s.user?.is_admin === true);
+  const isManager = isAdmin || role === 'DISPATCHER';
 
   const tabs: TabItem[] = [
     { value: 'my-day', label: 'My Day' },

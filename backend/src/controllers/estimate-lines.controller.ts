@@ -470,7 +470,7 @@ export async function addLine(req: Request, res: Response) {
     if (isMutationBlocked(estimate, res)) return;
 
     const body = req.body as z.infer<typeof addLineSchema>;
-    // Drop cost/margin fields BEFORE the write when the requester can't see costs (See financial data) — mirrors
+    // Drop cost/margin fields BEFORE the write when the requester can't see costs (See costs) — mirrors
     // job-lines.controller.ts's / invoice-lines.controller.ts's identical addLine guard (job-lines
     // pricing-leak follow-up, estimate half). Both the write AND the response must strip these
     // (see stripEstimateCost, applied via recomputeAndPersist's estimateDetailSelect response).
@@ -526,7 +526,7 @@ export async function addLine(req: Request, res: Response) {
     await sweepDepositCheckoutsAfterLineEdit(req, estimate);
 
     void logAudit({ req, action: 'estimate.line_added', resourceType: 'Estimate', resourceId: estimate.id });
-    res.status(201).json({ estimate: presentEstimateDetail(req, stripEstimateCost(await resolveEstimatePhotoUrls(updated), req)) });
+    res.status(201).json({ estimate: await presentEstimateDetail(req, stripEstimateCost(await resolveEstimatePhotoUrls(updated), req)) });
   } catch (err) {
     logger.error('Error adding estimate line:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -579,7 +579,7 @@ export async function reorderLines(req: Request, res: Response) {
     }
 
     void logAudit({ req, action: 'estimate.lines_reordered', resourceType: 'Estimate', resourceId: estimate.id });
-    res.json({ estimate: presentEstimateDetail(req, stripEstimateCost(await resolveEstimatePhotoUrls(updated), req)) });
+    res.json({ estimate: await presentEstimateDetail(req, stripEstimateCost(await resolveEstimatePhotoUrls(updated), req)) });
   } catch (err) {
     logger.error('Error reordering estimate lines:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -611,7 +611,7 @@ export async function updateLine(req: Request, res: Response) {
     }
 
     const body = req.body as z.infer<typeof updateLineSchema>;
-    // Drop cost/margin fields BEFORE the write when the requester can't see costs (See financial data) — see
+    // Drop cost/margin fields BEFORE the write when the requester can't see costs (See costs) — see
     // addLine's identical guard for why both the write AND the response must strip these.
     if (!canSeeCosts(req)) {
       body.unit_cost = undefined;
@@ -688,7 +688,7 @@ export async function updateLine(req: Request, res: Response) {
       resourceId: estimate.id,
       metadata: { line_id: lineId },
     });
-    res.json({ estimate: presentEstimateDetail(req, stripEstimateCost(await resolveEstimatePhotoUrls(updated), req)) });
+    res.json({ estimate: await presentEstimateDetail(req, stripEstimateCost(await resolveEstimatePhotoUrls(updated), req)) });
   } catch (err) {
     logger.error('Error updating estimate line:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -725,7 +725,7 @@ export async function deleteLine(req: Request, res: Response) {
       resourceId: estimate.id,
       metadata: { line_id: lineId },
     });
-    res.json({ estimate: presentEstimateDetail(req, stripEstimateCost(await resolveEstimatePhotoUrls(updated), req)) });
+    res.json({ estimate: await presentEstimateDetail(req, stripEstimateCost(await resolveEstimatePhotoUrls(updated), req)) });
   } catch (err) {
     logger.error('Error deleting estimate line:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -762,7 +762,7 @@ export async function addScope(req: Request, res: Response) {
     if (isMutationBlocked(estimate, res)) return;
 
     const body = req.body as z.infer<typeof addEstimateScopeSchema>;
-    // Drop cost data BEFORE the write when the requester can't see costs (See financial data) — mirrors addLine's
+    // Drop cost data BEFORE the write when the requester can't see costs (See costs) — mirrors addLine's
     // identical unit_cost/markup_percent guard above. `delete`, not `= undefined` — see
     // updateScope's identical guard for why the distinction matters there; harmless either way
     // here since this is a brand-new scope with no pre-existing value to preserve.
@@ -820,7 +820,7 @@ export async function addScope(req: Request, res: Response) {
       resourceId: estimate.id,
       metadata: { scope_id: newScope.id },
     });
-    res.status(201).json({ estimate: presentEstimateDetail(req, stripEstimateCost(await resolveEstimatePhotoUrls(updated), req)) });
+    res.status(201).json({ estimate: await presentEstimateDetail(req, stripEstimateCost(await resolveEstimatePhotoUrls(updated), req)) });
   } catch (err) {
     logger.error('Error adding estimate scope:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -840,7 +840,7 @@ export async function updateScope(req: Request, res: Response) {
 
     const idx = parseInt(param(req, 'idx'), 10);
     const body = req.body as z.infer<typeof updateEstimateScopeSchema>;
-    // Drop cost data BEFORE the merge when the requester can't see costs (See financial data) — mirrors
+    // Drop cost data BEFORE the merge when the requester can't see costs (See costs) — mirrors
     // updateLine's identical unit_cost/markup_percent guard. MUST be `delete`, not
     // `body.internal_cost = undefined`: the merge below is a full-object spread over the
     // EXISTING scope, and an explicitly-undefined-valued key is still an own enumerable property
@@ -896,7 +896,7 @@ export async function updateScope(req: Request, res: Response) {
       resourceId: estimate.id,
       metadata: { idx },
     });
-    res.json({ estimate: presentEstimateDetail(req, stripEstimateCost(await resolveEstimatePhotoUrls(updated), req)) });
+    res.json({ estimate: await presentEstimateDetail(req, stripEstimateCost(await resolveEstimatePhotoUrls(updated), req)) });
   } catch (err) {
     logger.error('Error updating estimate scope:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -953,7 +953,7 @@ export async function reorderScopes(req: Request, res: Response) {
       resourceType: 'Estimate',
       resourceId: estimate.id,
     });
-    res.json({ estimate: presentEstimateDetail(req, stripEstimateCost(await resolveEstimatePhotoUrls(updated), req)) });
+    res.json({ estimate: await presentEstimateDetail(req, stripEstimateCost(await resolveEstimatePhotoUrls(updated), req)) });
   } catch (err) {
     logger.error('Error reordering estimate scopes:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -1033,7 +1033,7 @@ export async function deleteScope(req: Request, res: Response) {
       resourceId: estimate.id,
       metadata: { idx, scope_id: deletedScopeId },
     });
-    res.json({ estimate: presentEstimateDetail(req, stripEstimateCost(await resolveEstimatePhotoUrls(updated), req)) });
+    res.json({ estimate: await presentEstimateDetail(req, stripEstimateCost(await resolveEstimatePhotoUrls(updated), req)) });
   } catch (err) {
     logger.error('Error deleting estimate scope:', err);
     res.status(500).json({ error: 'Internal server error' });

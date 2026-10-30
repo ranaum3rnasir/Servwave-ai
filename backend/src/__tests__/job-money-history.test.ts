@@ -491,7 +491,7 @@ describe('reading the money movements back', () => {
     expect(seen.filter((e) => e.event_type === 'PAYMENT_RECEIVED')).toEqual([]);
     expect(ofType(seen, 'JOB_PAYMENT_RECORDED')).toHaveLength(1);
     // The job entry carries the figure and the method in words.
-    expect(ofType(seen, 'JOB_PAYMENT_RECORDED')[0].description).toBe(`Invoice ${INVOICE_NUMBER} payment recorded: $400.00 via Check`);
+    expect(ofType(seen, 'JOB_PAYMENT_RECORDED')[0].description).toBe(`Invoice ${INVOICE_NUMBER} payment recorded via Check`);
   });
 
   it('keeps a payment recorded before this existed: with no job entry beside it, the invoice-level one still shows', async () => {

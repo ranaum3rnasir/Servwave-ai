@@ -6,8 +6,8 @@
  * handed the answer through the entity, the way the other pre-resolved recipient lists are.
  *
  *   Lane 1, the record's people: always told.
- *   Lane 2, who must act: the record's Dispatcher, else the holders of the step's switch, else the holders of Manage
- *     roles and permissions. It stops at the first step that finds someone.
+ *   Lane 2, who must act: the record's Dispatcher, else the holders of the step's switch, else the company's Admins (who
+ *     manage people and roles since AL-18). It stops at the first step that finds someone.
  *   Copies: holders of the area's "Alert me about every ..." switch, on top.
  *
  * Nobody comes from a role name. A person found by more than one lane is one person: the caller's resolver merges them.
@@ -17,7 +17,7 @@
 
 import { logger } from '../../lib/logger';
 import { alertSomeone } from '../../lib/permissions/alertSomeone';
-import { MANAGE_ROLES_SWITCH, activeSwitchHolders } from '../../lib/permissions/switchHolders';
+import { ADMINS, activeSwitchHolders } from '../../lib/permissions/switchHolders';
 import type { EntityRef } from '../../lib/tasks/entityAccess';
 import {
   dispatcherMadeChangeStem,
@@ -109,7 +109,7 @@ export async function twoLaneRecipients(input: TwoLaneInput): Promise<TwoLaneAns
   let laneTwo: string[] = [];
   let fallbackReason: string | null = null;
   const holdersOfStep = async () => someone(await holdersOf(organizationId, input.stepSwitch));
-  const managers = async () => someone(await holdersOf(organizationId, MANAGE_ROLES_SWITCH));
+  const managers = async () => someone(await holdersOf(organizationId, ADMINS));
   if (input.stepHoldersAlways || !record) {
     // Nobody is covering for a missing Dispatcher here (Ready to close, or an alert with no record to have a Dispatcher), so only
     // the last step explains itself.

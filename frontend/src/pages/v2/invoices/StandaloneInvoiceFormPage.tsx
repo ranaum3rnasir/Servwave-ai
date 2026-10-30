@@ -176,7 +176,7 @@ function TotalsSummary({
  * location (which drives tax), author lines, submit. THE SERVER IS
  * AUTHORITATIVE for tax and totals - everything computed here is a preview and
  * deliberately mirrors the backend's `computeOwnedLineTotals`, which has no
- * discount support. Opens on Standalone invoices plus Show Invoices page (the route
+ * discount support. Opens on Standalone invoices (the route
  * guard); the backend decides the create on Standalone invoices.
  *
  * Two behaviours below are load-bearing and are NOT presentation:

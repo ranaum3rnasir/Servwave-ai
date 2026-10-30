@@ -109,7 +109,7 @@ suite('a partial user row never poisons the switch cache (real database)', () =>
     // A plain `users` row without the custom role, the way a careless caller selects a person.
     const plain = await db.user.findUniqueOrThrow({
       where: { id: person.id },
-      select: { id: true, role: true, organization_id: true, department_id: true, location_id: true },
+      select: { id: true, role: true, is_admin: true, organization_id: true, department_id: true, location_id: true },
     });
     await readersWithEntityAccess([plain], { type: 'JOB', id: job.id });
 
@@ -120,11 +120,11 @@ suite('a partial user row never poisons the switch cache (real database)', () =>
     const { org } = await fx.newOrg();
     const person = await bareDispatcher(org);
 
-    const values = await resolveSwitches({ id: person.id, role: 'DISPATCHER', organization_id: org });
+    const values = await resolveSwitches({ is_admin: false, id: person.id, role: 'DISPATCHER', organization_id: org });
 
     for (const key of Object.keys(OFF)) expect(values[key], key).toBe(false);
     // Asked again with the whole user row, the same values come back from the cache.
-    const whole = await db.user.findUniqueOrThrow({ where: { id: person.id }, select: { id: true, role: true, organization_id: true, custom_role_id: true, custom_role: { select: { key: true } } } });
+    const whole = await db.user.findUniqueOrThrow({ where: { id: person.id }, select: { id: true, role: true, is_admin: true, organization_id: true, custom_role_id: true, custom_role: { select: { key: true } } } });
     expect(await resolveSwitches(whole)).toEqual(values);
   });
 
@@ -148,7 +148,7 @@ suite('a partial user row never poisons the switch cache (real database)', () =>
 
     const readers = await db.user.findMany({
       where: { id: { in: [sees.id, blind.id] } },
-      select: { id: true, role: true, organization_id: true, department_id: true, location_id: true, custom_role_id: true, custom_role: { select: { key: true } } },
+      select: { id: true, role: true, is_admin: true, organization_id: true, department_id: true, location_id: true, custom_role_id: true, custom_role: { select: { key: true } } },
     });
     // Either order: the first reader of the role must not decide for the second.
     for (const order of [readers, [...readers].reverse()]) {

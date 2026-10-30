@@ -49,6 +49,7 @@ import {
 import { DateField } from '@/ui-kit/components/form/dateField';
 import { useScheduleTimezone, dayAndTimeToIso, isoToOrgDay, isoToOrgTime } from '@/lib/schedule-tz';
 import { canAutoFocus } from '@/ui-kit/lib/autoFocus';
+import { useNoOptionsLabel } from '@/lib/useIsAdmin';
 
 // ─── Types ───────────────────────────────────────────
 
@@ -137,6 +138,7 @@ function CreateLeadForm({
   /** ?phone= from the dialer's unknown-number "Create lead" affordance. */
   prefillPhone?: string | null;
 }) {
+  const noOptions = useNoOptionsLabel();
   // Scheduling values mean the ORG's clock, never the viewer's browser.
   const timezone = useScheduleTimezone();
   const { data: org } = useOrganization();
@@ -563,7 +565,7 @@ function CreateLeadForm({
                             const options = current && !baseOptions.includes(current) ? [current, ...baseOptions] : baseOptions;
                             return options.length > 0
                               ? options.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)
-                              : <SelectItem value="__none__" disabled>{ability.can('update', 'Organization') ? 'No options - add below' : 'No options - add in Settings'}</SelectItem>;
+                              : <SelectItem value="__none__" disabled>{ability.can('update', 'Organization') ? 'No options - add below' : 'No options'}</SelectItem>;
                           })()}
                           {ability.can('update', 'Organization') && (
                             <SelectItem value="__add_new__">+ Add new type…</SelectItem>
@@ -597,7 +599,7 @@ function CreateLeadForm({
                           const options = current && !baseOptions.includes(current) ? [current, ...baseOptions] : baseOptions;
                           return options.length > 0
                             ? options.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)
-                            : <SelectItem value="__none__" disabled>No options - add in Settings</SelectItem>;
+                            : <SelectItem value="__none__" disabled>{noOptions}</SelectItem>;
                         })()}
                       </SelectContent>
                     </Select>
@@ -714,6 +716,7 @@ function EditLeadForm({
   navigate: ReturnType<typeof useNavigate>;
   queryClient: ReturnType<typeof useQueryClient>;
 }) {
+  const noOptions = useNoOptionsLabel();
   // Scheduling values mean the ORG's clock, never the viewer's browser.
   const timezone = useScheduleTimezone();
   const { data: org } = useOrganization();
@@ -867,7 +870,7 @@ function EditLeadForm({
                             const options = current && !baseOptions.includes(current) ? [current, ...baseOptions] : baseOptions;
                             return options.length > 0
                               ? options.map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)
-                              : <SelectItem value="__none__" disabled>{ability.can('update', 'Organization') ? 'No options - add below' : 'No options - add in Settings'}</SelectItem>;
+                              : <SelectItem value="__none__" disabled>{ability.can('update', 'Organization') ? 'No options - add below' : 'No options'}</SelectItem>;
                           })()}
                           {ability.can('update', 'Organization') && (
                             <SelectItem value="__add_new__">+ Add new type…</SelectItem>
@@ -901,7 +904,7 @@ function EditLeadForm({
                           const options = current && !baseOptions.includes(current) ? [current, ...baseOptions] : baseOptions;
                           return options.length > 0
                             ? options.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)
-                            : <SelectItem value="__none__" disabled>No options - add in Settings</SelectItem>;
+                            : <SelectItem value="__none__" disabled>{noOptions}</SelectItem>;
                         })()}
                       </SelectContent>
                     </Select>

@@ -231,7 +231,7 @@ describe('internal staff alerts stay off the customer timeline', () => {
   it('sendDepositPaidAlert sends but persists nothing', async () => {
     await email.sendDepositPaidAlert({
       organizationId: ORG_ID, to: 'owner@acme.com', estimateNumber: 'E00001',
-      customerName: 'Jane Doe', depositAmount: 50, paymentMethod: 'CARD',
+      customerName: 'Jane Doe', paymentMethod: 'CARD',
     });
 
     expect(resendSend).toHaveBeenCalledTimes(1);

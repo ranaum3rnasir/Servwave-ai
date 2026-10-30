@@ -32,6 +32,7 @@ const C = 'contact_customers';
 const EDIT = 'edit_communication_records';
 const DEL = 'delete_communication_records';
 const ATT = 'attach_conversations';
+const SHOW = 'show_email';
 
 const COMM = '/api/communication';
 const row = (method: RouteRow['method'], path: string, needs: string[], also?: RouteRow['also']): RouteRow => ({
@@ -66,7 +67,7 @@ export const COMMUNICATION_ROUTE_ROWS: RouteRow[] = [
   row('post', '/numbers/sync-if-stale', [V, A]),
   row('patch', '/numbers/:id', [EDIT, A, 'phone_numbers_tab']),
   row('post', '/phone-access', [C, 'office_phone_in_browser']),
-  row('get', '/usage', [V, A, 'phone_usage_bar']),
+  row('get', '/usage', [V, A, 'phone_numbers_tab']),
 
   // ─── The phone setup tabs ───
   row('get', '/call-flows', [V, A, 'call_flows_tab']),
@@ -118,27 +119,27 @@ export const COMMUNICATION_ROUTE_ROWS: RouteRow[] = [
 
   // ─── Email ───
   row('get', '/sending-identity', [V]),
-  row('get', '/my-mailbox', [V, A]),
-  row('get', '/mailboxes', [V, A]),
-  row('get', '/email-groups', [V, A]),
-  row('get', '/forward-rules', [V, A]),
-  row('get', '/emails', [V, A]),
+  row('get', '/my-mailbox', [V, A, SHOW]),
+  row('get', '/mailboxes', [V, A, SHOW]),
+  row('get', '/email-groups', [V, A, SHOW]),
+  row('get', '/forward-rules', [V, A, SHOW]),
+  row('get', '/emails', [V, A, SHOW]),
   row('post', '/emails', [C]),
-  row('patch', '/emails/thread-read', [V, A]),
-  row('patch', '/emails/thread-unread', [V, A]),
-  row('patch', '/emails/threads/:id/assign', [EDIT, A]),
-  row('patch', '/emails/threads/:id/archive', [EDIT, A]),
-  row('patch', '/emails/threads/:id/snooze', [EDIT, A]),
+  row('patch', '/emails/thread-read', [V, A, SHOW]),
+  row('patch', '/emails/thread-unread', [V, A, SHOW]),
+  row('patch', '/emails/threads/:id/assign', [EDIT, A, SHOW]),
+  row('patch', '/emails/threads/:id/archive', [EDIT, A, SHOW]),
+  row('patch', '/emails/threads/:id/snooze', [EDIT, A, SHOW]),
   row('get', '/emails/attach-source', [V]),
-  row('get', '/emails/unmatched', [V, A]),
-  row('get', '/emails/unmatched/:id', [V, A]),
+  row('get', '/emails/unmatched', [V, A, SHOW]),
+  row('get', '/emails/unmatched/:id', [V, A, SHOW]),
   row('patch', '/emails/:id/job', [ATT]),
   row('patch', '/emails/:id/lead', [ATT]),
-  row('get', '/emails/:id/customer-candidates', [ATT, A]),
-  row('patch', '/emails/:id/customer', [ATT, A]),
-  row('patch', '/emails/:id/link', [EDIT, A]),
-  row('get', '/emails/:id', [V, A]),
-  row('get', '/emails/:id/attachments/:index', [V, A]),
+  row('get', '/emails/:id/customer-candidates', [ATT, A, SHOW]),
+  row('patch', '/emails/:id/customer', [ATT, A, SHOW]),
+  row('patch', '/emails/:id/link', [EDIT, A, SHOW]),
+  row('get', '/emails/:id', [V, A, SHOW]),
+  row('get', '/emails/:id/attachments/:index', [V, A, SHOW]),
 
   // ─── The hand-written log ───
   row('post', '/manual-log', ['log_past_communications']),

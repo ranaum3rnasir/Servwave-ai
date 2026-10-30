@@ -51,7 +51,7 @@ vi.mock('@/pages/v2/dashboard/DashboardPage', async () => {
 
 const mockApi = vi.mocked(api);
 const key = (label: string) => catalogToggle(label).key;
-const ALLOWED = () => ({ [key('View payments and payouts')]: true, [key('Show Payments page')]: true });
+const ALLOWED = () => ({ [key('View payments and payouts')]: true });
 
 function open(path: string, values: Record<string, boolean>) {
   mockApi.get.mockImplementation((url: string) =>
@@ -93,15 +93,15 @@ describe('/settings/servwave-payments', () => {
     expect(screen.queryByTestId('opened')).toBeNull();
   });
 
-  it('a person without the Payments page switches ends on the dashboard, not on a blank page', async () => {
+  it('a person without View payments and payouts ends on the dashboard, not on a blank page', async () => {
     open('/settings/servwave-payments?tab=payouts', {});
     expect(await screen.findByRole('heading', { name: 'Dashboard' })).toBeInTheDocument();
     expect(screen.queryByTestId('opened')).toBeNull();
   });
 
-  it('View payments and payouts without Show Payments page also ends on the dashboard', async () => {
-    open('/settings/servwave-payments?tab=payouts', { [key('View payments and payouts')]: true, [key('Show Payments page')]: false });
-    expect(await screen.findByRole('heading', { name: 'Dashboard' })).toBeInTheDocument();
+  it('View payments and payouts alone lands on the Payments page: there is no Show switch to hold as well (P1)', async () => {
+    open('/settings/servwave-payments?tab=payouts', { [key('View payments and payouts')]: true });
+    expect(await screen.findByTestId('opened')).toBeInTheDocument();
   });
 
   it('never mounts the settings body during the ?tab= hop, and the shell is gone once it lands', async () => {

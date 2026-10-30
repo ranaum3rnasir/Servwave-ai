@@ -16,7 +16,7 @@ const InvoiceDetailPage = lazy(() => import('../invoices/InvoiceDetailPage'));
  * The GUARD stack mirrors App.tsx exactly:
  *  - ProtectedRoute(all four roles) wraps all three pages;
  *  - `/invoices/new` (the standalone New invoice) opens on Standalone invoices
- *    plus Show Invoices page, never on a role name: a person without both is
+ *    never on a role name: a person without it is
  *    sent to their dashboard. The backend decides the create on Standalone
  *    invoices (which requires Create invoices);
  *  - `/invoices/new` is declared BEFORE `/invoices/:id`, as it must be.
@@ -32,10 +32,10 @@ export function invoicesV2Routes() {
   return (
     <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN']} />}>
       <Route element={<V2AppLayout />}>
-        <Route element={<RequirePageAccess all={['view_invoices', 'show_invoices_page']} />}>
+        <Route element={<RequirePageAccess all={['view_invoices']} />}>
           <Route path="/invoices" element={<InvoicesPage />} />
         </Route>
-        <Route element={<RequirePageAccess all={['standalone_invoices', 'show_invoices_page']} />}>
+        <Route element={<RequirePageAccess all={['standalone_invoices']} />}>
           <Route path="/invoices/new" element={<StandaloneInvoiceFormPage />} />
         </Route>
         <Route path="/invoices/:id" element={<InvoiceDetailPage />} />

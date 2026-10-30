@@ -147,6 +147,8 @@ export interface TimelineInput {
   refunds: Array<{ amount: number; state: 'PENDING' | 'SUCCEEDED' | 'FAILED'; createdAt: Date }>;
   dispute: { status: string; createdAt: Date; closedAt: Date | null } | null;
   payout: { reference: string; arrivalDate: Date | null; status: string } | null;
+  /** Whether the person may see prices: a refund's line names its amount only then (re-audit P2-2, `canSeePrices`). */
+  figures: boolean;
 }
 
 /** The payment's story in ServWave's words, built from ServWave rows only, oldest first. */
@@ -172,9 +174,10 @@ export function buildTimeline(p: TimelineInput): TimelineEntry[] {
     else push(`On its way in ${p.payout.reference}`, at, null, 'neutral');
   }
   for (const r of p.refunds) {
-    if (r.state === 'SUCCEEDED') push(`Refunded ${money(r.amount)}`, r.createdAt, null, 'neutral');
-    else if (r.state === 'PENDING') push(`Refund of ${money(r.amount)} pending`, r.createdAt, null, 'warning');
-    else push(`Refund of ${money(r.amount)} failed`, r.createdAt, null, 'danger');
+    const of = p.figures ? ` of ${money(r.amount)}` : '';
+    if (r.state === 'SUCCEEDED') push(p.figures ? `Refunded ${money(r.amount)}` : 'Refunded', r.createdAt, null, 'neutral');
+    else if (r.state === 'PENDING') push(`Refund${of} pending`, r.createdAt, null, 'warning');
+    else push(`Refund${of} failed`, r.createdAt, null, 'danger');
   }
   if (p.dispute) {
     push('Dispute opened', p.dispute.createdAt, null, 'warning');

@@ -11,11 +11,11 @@ import type { Grant } from '../lib/permissions/defineAbility';
 // OWN_INVOICE_VIA_JOB after {{userId}} substitution (what an own-scoped read carries).
 const TECH_ID = '00000000-0000-0000-0000-000000000004';
 const INVOICE_OWN = { job: { assignees: { some: { user_id: TECH_ID } } } };
-const techUser = { id: TECH_ID, role: 'TECHNICIAN', department_id: null, location_id: null };
+const techUser = { id: TECH_ID, role: 'TECHNICIAN', is_admin: false, department_id: null, location_id: null };
 
 // The role-grant read condition for a team-scoped role (used to prove union, not first-wins).
 const TEAM_ID = 'team-1';
-const teamUser = { id: 'u-1', role: 'TECHNICIAN', department_id: TEAM_ID, location_id: null };
+const teamUser = { id: 'u-1', role: 'TECHNICIAN', is_admin: false, department_id: TEAM_ID, location_id: null };
 
 function readGrant(resource: ScopeResource, conditions: Record<string, unknown> | null): Grant {
   return { action: 'read', subject: resource, conditions };
@@ -73,7 +73,7 @@ describe('scopeWhereFor — union of ALL read grants', () => {
   });
 
   it('the Admin box → {} regardless of grants', () => {
-    const admin = { id: 'a1', role: 'ADMIN', department_id: null, location_id: null };
+    const admin = { id: 'a1', role: 'ADMIN', is_admin: true, department_id: null, location_id: null };
     expect(scopeWhereFor(admin, 'Invoice', [readGrant('Invoice', INVOICE_OWN)])).toEqual({});
   });
 

@@ -32,13 +32,13 @@ const FIELD_TECH_2 = '11111111-0000-0000-0000-00000000000e'; // TECHNICIAN, othe
 const FOREIGN = '11111111-0000-0000-0000-00000000000d';    // another tenant entirely → REFUSED
 
 const DIRECTORY = [
-  { id: ADMIN, role: 'ADMIN', department_id: null, organization_id: ALPHA_ORG_ID, is_active: true },
-  { id: SALES, role: 'SALES', department_id: DEPT_SALES, organization_id: ALPHA_ORG_ID, is_active: true },
-  { id: MATE, role: 'SALES', department_id: DEPT_SALES, organization_id: ALPHA_ORG_ID, is_active: true },
-  { id: FIELD_TECH, role: 'TECHNICIAN', department_id: DEPT_FIELD, organization_id: ALPHA_ORG_ID, is_active: true },
-  { id: OTHER_ADMIN, role: 'ADMIN', department_id: DEPT_FIELD, organization_id: ALPHA_ORG_ID, is_active: true },
-  { id: FIELD_TECH_2, role: 'TECHNICIAN', department_id: DEPT_FIELD, organization_id: ALPHA_ORG_ID, is_active: true },
-  { id: FOREIGN, role: 'SALES', department_id: DEPT_SALES, organization_id: ORG_B_ID, is_active: true },
+  { id: ADMIN, role: 'ADMIN', is_admin: true, department_id: null, organization_id: ALPHA_ORG_ID, is_active: true },
+  { id: SALES, role: 'SALES', is_admin: false, department_id: DEPT_SALES, organization_id: ALPHA_ORG_ID, is_active: true },
+  { id: MATE, role: 'SALES', is_admin: false, department_id: DEPT_SALES, organization_id: ALPHA_ORG_ID, is_active: true },
+  { id: FIELD_TECH, role: 'TECHNICIAN', is_admin: false, department_id: DEPT_FIELD, organization_id: ALPHA_ORG_ID, is_active: true },
+  { id: OTHER_ADMIN, role: 'ADMIN', is_admin: true, department_id: DEPT_FIELD, organization_id: ALPHA_ORG_ID, is_active: true },
+  { id: FIELD_TECH_2, role: 'TECHNICIAN', is_admin: false, department_id: DEPT_FIELD, organization_id: ALPHA_ORG_ID, is_active: true },
+  { id: FOREIGN, role: 'SALES', is_admin: false, department_id: DEPT_SALES, organization_id: ORG_B_ID, is_active: true },
 ];
 
 const TASK_ID = 'aa000000-0000-0000-0000-000000000001';
@@ -82,8 +82,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
   clearTokenCache();
-  mockPrisma.rolePermission.findMany.mockImplementation((a: any) =>
-    Promise.resolve(DEFAULT_GRANTS.filter((g) => g.role === a.where.role)));
 
   // THE REAL TENANT CLAUSE. Both `allActiveOrgMembers` and `watchersOutsidePool` come through
   // here; each gets exactly the rows Postgres would give it for the where it actually sent.

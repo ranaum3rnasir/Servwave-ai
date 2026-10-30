@@ -90,7 +90,7 @@ suite('vendor fields follow View vendors (real database)', () => {
     const role = await fx.addCustomRole(org, key, 'DISPATCHER', { madeFromBlank: true, copyGrants: false });
     await setRoleSwitchValues({
       organizationId: org, roleKey: key,
-      values: { [VIEW_STOCK]: true, [VIEW_PRICE_BOOK]: true, ...values },
+      values: { [VIEW_STOCK]: true, [VIEW_PRICE_BOOK]: true, see_prices: true, ...values },
       actorId: null, reason: 'manual',
     });
     const person = await fx.addUser(org, `vf${sequence}`, 'DISPATCHER', { customRoleId: role.id });
@@ -161,7 +161,7 @@ suite('vendor fields follow View vendors (real database)', () => {
   describe('write answers', () => {
     it('brand save answers with no default vendor id without View vendors, and keeps the stored one', async () => {
       const w = await world();
-      const api = await personWith(w.org, { [CREATE_PRICE_BOOK]: true });
+      const api = await personWith(w.org, { [EDIT_PRICE_BOOK]: true, [CREATE_PRICE_BOOK]: true });
       const res = await api.post('/api/price-book/brands', { id: w.brand, name: 'Brandy renamed' });
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(JSON.stringify(res.body)).not.toContain(w.vendor);
@@ -174,7 +174,7 @@ suite('vendor fields follow View vendors (real database)', () => {
     it('brand save ignores a default vendor sent without View vendors', async () => {
       const w = await world();
       const other = await db.vendor.create({ data: { organization_id: w.org, name: 'Other Supply', category: 'Hardware' } });
-      const api = await personWith(w.org, { [CREATE_PRICE_BOOK]: true });
+      const api = await personWith(w.org, { [EDIT_PRICE_BOOK]: true, [CREATE_PRICE_BOOK]: true });
       const res = await api.post('/api/price-book/brands', { id: w.brand, name: 'Brandy', defaultVendorId: other.id });
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       const stored = await db.brand.findUniqueOrThrow({ where: { id: w.brand } });
@@ -184,7 +184,7 @@ suite('vendor fields follow View vendors (real database)', () => {
     it('brand save keeps changing the default vendor with View vendors', async () => {
       const w = await world();
       const other = await db.vendor.create({ data: { organization_id: w.org, name: 'Other Supply', category: 'Hardware' } });
-      const api = await personWith(w.org, { [CREATE_PRICE_BOOK]: true, [VIEW_VENDORS]: true });
+      const api = await personWith(w.org, { [EDIT_PRICE_BOOK]: true, [CREATE_PRICE_BOOK]: true, [VIEW_VENDORS]: true });
       const res = await api.post('/api/price-book/brands', { id: w.brand, name: 'Brandy', defaultVendorId: other.id });
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(res.body.brand.defaultVendorId).toBe(other.id);
@@ -205,7 +205,7 @@ suite('vendor fields follow View vendors (real database)', () => {
 
     it('item create answers with no vendor id and stores none without View vendors', async () => {
       const w = await world();
-      const api = await personWith(w.org, { [CREATE_PRICE_BOOK]: true });
+      const api = await personWith(w.org, { [EDIT_PRICE_BOOK]: true, [CREATE_PRICE_BOOK]: true });
       const res = await api.post('/api/price-book/items', { name: 'New hinge', unit_price: 5, vendor_id: w.vendor });
       expect(res.status, JSON.stringify(res.body)).toBe(201);
       expect(JSON.stringify(res.body)).not.toContain(w.vendor);

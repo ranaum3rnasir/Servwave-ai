@@ -69,19 +69,28 @@ export function isOverdue(invoice: InvoiceListItem, timeZone: string): boolean {
  *
  * Both export paths (current page and "export all") run through this one mapper.
  */
-export function toInvoiceExportRow(inv: InvoiceListItem, timeZone: string) {
+/** The columns that are a price (P11): a person without See prices gets none of them, in the table or the export. */
+export const INVOICE_PRICE_COLUMN_IDS: ReadonlySet<string> = new Set([
+  'subtotal', 'discount_amount', 'tax_amount', 'deposit_credit', 'total_amount', 'amount_due',
+]);
+
+export function toInvoiceExportRow(inv: InvoiceListItem, timeZone: string, showPrices = true) {
   return {
     'Invoice #': inv.invoice_number,
     'Customer': customerDisplayName(inv.customer, ''),
     'Company': inv.customer.company_name ?? '',
     'Job': inv.job?.job_number ?? '',
     'Status': isOverdue(inv, timeZone) ? 'OVERDUE' : inv.status,
-    'Subtotal': Number(inv.subtotal),
-    'Discount': Number(inv.discount_amount),
-    'Tax': Number(inv.tax_amount),
-    'Deposit Credit': Number(inv.deposit_credit),
-    'Total': Number(inv.total_amount),
-    'Amount Due': Number(inv.amount_due),
+    ...(showPrices
+      ? {
+          'Subtotal': Number(inv.subtotal),
+          'Discount': Number(inv.discount_amount),
+          'Tax': Number(inv.tax_amount),
+          'Deposit Credit': Number(inv.deposit_credit),
+          'Total': Number(inv.total_amount),
+          'Amount Due': Number(inv.amount_due),
+        }
+      : {}),
     // `formatInstant` renders '' for null/undefined/'', so the old ternary is redundant.
     'Due Date': formatInstant(inv.due_date, timeZone, ORG_DAY_FORMAT),
     'Created': formatInstant(inv.created_at, timeZone, ORG_DAY_FORMAT),

@@ -3,8 +3,8 @@
  * Roles & Permissions, PRD 2, slice S02.20 - the Inventory and Communication groups, both Price Book entries and the
  * demo-only messaging child follow the person's switches in the routed v2 sidebar.
  *
- * Inventory shows when any child shows; each child follows its own View + Show; Price Book shows on View price book +
- * Show Price Book page even when the rest is off, and so does the top-level Price Book entry. Communication shows when
+ * Inventory shows when any child shows; each child follows its own View alone (the Show-page switches are retired, P1);
+ * Price Book shows on View price book even when the rest is off, and so does the top-level Price Book entry. Communication shows when
  * Access Communication is on and at least one of Show Phone, Show Text, Show Email is on; each child follows its Show;
  * the demo-only messaging child follows Access Communication and never decides on its own whether the group shows.
  *
@@ -154,11 +154,11 @@ async function childrenOf(group: 'Inventory' | 'Communication'): Promise<string[
   return Array.from(nested).map((row) => row.getAttribute('title') ?? '');
 }
 
-const STOCK = ['view_stock', 'show_stock_page'] as const;
-const PO = ['view_purchase_orders', 'show_purchase_orders_page'] as const;
-const VENDORS = ['view_vendors', 'show_vendors_page'] as const;
-const PRICE_BOOK = ['view_price_book', 'show_price_book_page'] as const;
-const LOGISTIC = ['view_logistic_orders', 'show_logistic_orders_page'] as const;
+const STOCK = ['view_stock'] as const;
+const PO = ['view_purchase_orders'] as const;
+const VENDORS = ['view_vendors'] as const;
+const PRICE_BOOK = ['view_price_book'] as const;
+const LOGISTIC = ['view_logistic_orders'] as const;
 
 describe('v2 sidebar - the Inventory group and both Price Book entries', () => {
   beforeEach(() => {
@@ -184,22 +184,13 @@ describe('v2 sidebar - the Inventory group and both Price Book entries', () => {
     expect(await childrenOf('Inventory')).toEqual([label]);
   });
 
-  it.each([
-    ['Stock', STOCK],
-    ['Purchase Orders', PO],
-    ['Vendors', VENDORS],
-    ['Price Book', PRICE_BOOK],
-  ] as const)('keeps %s out of the group with only View on, and with only Show on', async (label, pair) => {
-    for (const lone of pair) {
-      localStorage.clear();
-      // The witness (Schedule) is on in both answers, so the menu is only ever [Dashboard, Schedule] once drawn.
-      answerMe(valuesWith(WITNESS, lone));
-      const view = renderShell();
-      await drawn('Schedule');
-      expect(menu()).not.toContain('Inventory');
-      expect(menu()).not.toContain(label);
-      view.unmount();
-    }
+  it.each(['Stock', 'Purchase Orders', 'Vendors', 'Price Book'] as const)('keeps %s out of the group with its View off', async (label) => {
+    // The witness (Schedule) is on, so the menu is only ever [Dashboard, Schedule] once drawn.
+    answerMe(valuesWith(WITNESS));
+    renderShell();
+    await drawn('Schedule');
+    expect(menu()).not.toContain('Inventory');
+    expect(menu()).not.toContain(label);
   });
 
   it('shows each child on its own pair and hides the others', async () => {
@@ -209,19 +200,12 @@ describe('v2 sidebar - the Inventory group and both Price Book entries', () => {
     expect(await childrenOf('Inventory')).toEqual(['Stock', 'Vendors']);
   });
 
-  it('follows the top-level Price Book entry on View price book + Show Price Book page only', async () => {
-    answerMe(valuesWith(WITNESS, PRICE_BOOK[0]));
+  it('follows the top-level Price Book entry on View price book alone', async () => {
+    answerMe(valuesWith(WITNESS));
     const first = renderShell();
     await drawn('Schedule');
     expect(menu()).not.toContain('Price Book');
     first.unmount();
-    localStorage.clear();
-
-    answerMe(valuesWith(WITNESS, PRICE_BOOK[1]));
-    const second = renderShell();
-    await drawn('Schedule');
-    expect(menu()).not.toContain('Price Book');
-    second.unmount();
     localStorage.clear();
 
     answerMe(valuesWith(WITNESS, ...PRICE_BOOK));
@@ -236,7 +220,7 @@ describe('v2 sidebar - the Inventory group and both Price Book entries', () => {
     expect(await childrenOf('Inventory')).toEqual(['Stock', 'Purchase Orders', 'Vendors']);
   });
 
-  it('lists a Price Book child beside the others only once its own pair is on, without a second top-level row', async () => {
+  it('lists a Price Book child beside the others only once its own View is on, without a second top-level row', async () => {
     answerMe(valuesWith(...STOCK, ...PRICE_BOOK));
     renderShell();
     await drawn('Inventory', 'Price Book');
@@ -273,11 +257,8 @@ describe('v2 sidebar - the Logistic Orders child of the Inventory group', () => 
     expect(await childrenOf('Inventory')).toEqual(['Purchase Orders', 'Vendors', 'Logistic Orders']);
   });
 
-  it.each([
-    ['View stock off', ['show_stock_page']],
-    ['Show Stock page off', ['view_stock']],
-  ] as const)('still shows the child when the Stock entry is hidden by %s', async (_name, stockSwitches) => {
-    answerMe(valuesWith(...stockSwitches, ...LOGISTIC));
+  it('still shows the child when the Stock entry is hidden by View stock off', async () => {
+    answerMe(valuesWith(...LOGISTIC));
     renderShell();
     await drawn('Inventory');
     expect(await childrenOf('Inventory')).toEqual(['Logistic Orders']);
@@ -290,16 +271,12 @@ describe('v2 sidebar - the Logistic Orders child of the Inventory group', () => 
     expect(await childrenOf('Inventory')).toEqual(['Stock']);
   });
 
-  it('hides the child, and the group with it, when either logistic-order switch is off', async () => {
-    for (const lone of LOGISTIC) {
-      localStorage.clear();
-      answerMe(valuesWith(WITNESS, lone));
-      const view = renderShell();
-      await drawn('Schedule');
-      expect(menu()).not.toContain('Inventory');
-      expect(menu()).not.toContain('Logistic Orders');
-      view.unmount();
-    }
+  it('hides the child, and the group with it, when View logistic orders is off', async () => {
+    answerMe(valuesWith(WITNESS));
+    renderShell();
+    await drawn('Schedule');
+    expect(menu()).not.toContain('Inventory');
+    expect(menu()).not.toContain('Logistic Orders');
   });
 
   it('counts as a child for the group rule: it opens the group when nothing else in it shows', async () => {
@@ -406,10 +383,10 @@ describe('v2 sidebar - the two groups for a person copied from each built-in rol
     const values = copiedFrom(role);
     const on = (key: string) => values[key] === true;
     const inventoryChildren = [
-      on('view_stock') && on('show_stock_page') && 'Stock',
-      on('view_purchase_orders') && on('show_purchase_orders_page') && 'Purchase Orders',
-      on('view_vendors') && on('show_vendors_page') && 'Vendors',
-      on('view_price_book') && on('show_price_book_page') && 'Price Book',
+      on('view_stock') && on('view_stock') && 'Stock',
+      on('view_purchase_orders') && on('view_purchase_orders') && 'Purchase Orders',
+      on('view_vendors') && on('view_vendors') && 'Vendors',
+      on('view_price_book') && on('view_price_book') && 'Price Book',
     ].filter(Boolean);
     const communicationShows =
       on('access_communication') && (on('show_phone') || on('show_text') || on('show_email'));
@@ -420,7 +397,7 @@ describe('v2 sidebar - the two groups for a person copied from each built-in rol
     await act(async () => {});
     expect(menu().includes('Inventory')).toBe(inventoryChildren.length > 0);
     expect(menu().includes('Communication')).toBe(communicationShows);
-    expect(menu().includes('Price Book')).toBe(on('view_price_book') && on('show_price_book_page'));
+    expect(menu().includes('Price Book')).toBe(on('view_price_book') && on('view_price_book'));
     // No preset's menu changes: the Logistic Orders child never joins the group a preset sees.
     if (inventoryChildren.length > 0) {
       expect(await childrenOf('Inventory')).not.toContain('Logistic Orders');

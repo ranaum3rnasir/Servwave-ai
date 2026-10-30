@@ -27,7 +27,6 @@ const mockPrisma = prisma as unknown as {
     findFirst: ReturnType<typeof vi.fn>;
   };
   tagAssignment: { findMany: ReturnType<typeof vi.fn> };
-  rolePermission: { findMany: ReturnType<typeof vi.fn> };
 };
 
 // Build a FRESH lead carrying an embedded estimate with monetary data on every call.
@@ -59,7 +58,6 @@ beforeEach(() => {
   // Tag enrichment runs on the detail payload; default to no tags.
   (prisma.tagAssignment.findMany as any).mockResolvedValue([]);
   // attachAbility loads grants for non-ADMIN; default empty (mockAuthAs sets role grants).
-  (prisma.rolePermission.findMany as any).mockResolvedValue([]);
   // The detail payload reads the deposit's clearing bank payments (slice 28b): none here.
   (prisma.invoice.findMany as any).mockResolvedValue([]);
   // The detail response lists the walkthrough steps this person may take (S04.19): the lead has no visits here.

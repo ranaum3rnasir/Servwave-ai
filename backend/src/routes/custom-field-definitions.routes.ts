@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/authenticate';
 import { attachAbility } from '../middleware/attachAbility';
-import { canDo } from '../middleware/canGuard';
+import { canDo, requireAdminTo } from '../middleware/canGuard';
 import { validate } from '../middleware/validate';
 import * as customFieldDefinitionsController from '../controllers/custom-field-definitions.controller';
 
@@ -15,7 +15,7 @@ router.use(authenticate, attachAbility);
 router.get('/', canDo('read', 'Organization'), customFieldDefinitionsController.list);
 router.post(
   '/',
-  canDo('update', 'Organization'),
+  requireAdminTo('change company settings'),
   validate(customFieldDefinitionsController.createCustomFieldDefinitionSchema),
   customFieldDefinitionsController.create,
 );
@@ -23,7 +23,7 @@ router.post(
 // DELETE by design (archive-only, slice 6), so this is the only way to correct a definition.
 router.patch(
   '/:id',
-  canDo('update', 'Organization'),
+  requireAdminTo('change company settings'),
   validate(customFieldDefinitionsController.updateCustomFieldDefinitionSchema),
   customFieldDefinitionsController.update,
 );

@@ -281,7 +281,7 @@ describe('EmailSenderPage - who sees it', () => {
     expect(mockApi.get).not.toHaveBeenCalledWith('/api/organization/email-sender');
   });
 
-  it('is what the routed /settings/email-sender address draws for a person without Company settings: no blank pane, no form', async () => {
+  it('is what the routed /settings/email-sender address draws for a person who is not an Admin: nothing, and no read', async () => {
     renderWithProviders(
       <Suspense fallback={null}>
         <Routes>{settingsV2Routes()}</Routes>
@@ -289,7 +289,9 @@ describe('EmailSenderPage - who sees it', () => {
       { initialEntries: ['/settings/email-sender'], ability: nonHolderAbility },
     );
 
-    expect(await noAccess()).toBeInTheDocument();
+    // Setting up the company is the Admin flag's alone (36b, M17): the route renders nothing for anyone else.
+    await screen.findByRole('navigation', { name: 'Settings' });
+    await new Promise((resolve) => setTimeout(resolve, 150));
     expect(screen.queryByLabelText('Company part')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^save$/i })).not.toBeInTheDocument();
     expect(mockApi.get).not.toHaveBeenCalledWith('/api/organization/email-sender');

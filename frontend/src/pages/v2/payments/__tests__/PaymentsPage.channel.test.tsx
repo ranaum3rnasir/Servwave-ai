@@ -35,7 +35,7 @@ const READY: StripeStatus = {
   connected: true, terms_accepted: true, stripe_charges_enabled: true, stripe_payouts_enabled: true,
   stripe_details_submitted: true, stripe_requirements_due: [], stripe_disabled_reason: null, collected_awaiting_payout: 0,
 };
-const OWNER = buildAbility(catalogToggle('Manage payout account').grants.map((g) => ({ action: g.action, subject: g.subject }) as never));
+const OWNER = buildAbility([...catalogToggle('Manage payout account').grants.map((g) => ({ action: g.action, subject: g.subject }) as never), { action: 'read', subject: 'Prices' } as never]);
 
 class FakeChannel {
   static all: FakeChannel[] = [];

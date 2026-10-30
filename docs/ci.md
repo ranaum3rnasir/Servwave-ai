@@ -228,3 +228,15 @@ and not fixed by capping workers: on an idle machine, three consecutive full-sui
 runs gave 0, 2 and 0 failures, and the failing tests passed in isolation. In CI,
 `comm-calls-lead.test.ts` has returned 200 and then 500 for the same assertion
 across retries. `--retry=2` hides some of this; it is not a fix.
+
+## The authorization suite (release gate)
+
+The tests that prove who may do what are one named suite, `npm run test:authorization` (`backend/vitest.authorization.config.ts`).
+Its files are listed ticket by ticket in `backend/src/__tests__/authorization-suite.ts`, and it also takes every `permission-*`
+test, so a new permission test joins the gate the day it lands.
+
+- The Backend job runs it as the step "Authorization suite (release gate)", on every pull request and on every push to main.
+  The suites that need no database run there.
+- The Database job runs its real-database suites (every `*-db.test.ts` is dealt to a shard by name), on the same triggers.
+- `authorization-suite.test.ts` fails when a listed file is missing, when a ticket lists nothing, or when ci.yml stops running
+  the suite. Backend and Database are required checks in branch protection, so a red authorization test blocks the merge.

@@ -522,11 +522,11 @@ describe('renderTemplate — BILLING category (payments-account lifecycle, Task 
   });
 
   // ── deferred-bank first-payment nudge (Task 1.9, §6.6/§6.8) ──
-  it('billing.payouts_pending_first_payment → BILLING, FEED, ORGANIZATION; title + body carry the collected amount', () => {
+  it('billing.payouts_pending_first_payment → BILLING, FEED, ORGANIZATION; names no amount (M4)', () => {
     const t = renderTemplate('billing.payouts_pending_first_payment', { amount: '$500.00' });
     expect(t).toMatchObject({ category: 'BILLING', object_type: 'ORGANIZATION', priority: 'FEED', action_type: null, needs_action: false });
-    expect(t.title).toBe("You've collected $500.00. Add your bank account to get paid out.");
-    expect(t.body).toBe('$500.00');
+    expect(t.title).toBe("You've collected a payment. Add your bank account to get paid out.");
+    expect(t.body).toBeUndefined();
   });
 
   it('billing.payouts_pending_first_payment falls back to generic wording when no amount is supplied', () => {

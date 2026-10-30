@@ -3,7 +3,7 @@ import { authenticate } from '../middleware/authenticate';
 import { attachAbility } from '../middleware/attachAbility';
 import { attachCustomerScope } from '../lib/permissions/customerScope';
 import { requireFeature } from '../middleware/requireFeature';
-import { canDo, canDoAnyOrLeadCreator, canDoOrLeadCreator } from '../middleware/canGuard';
+import { canDo, canDoAny } from '../middleware/canGuard';
 import { validate } from '../middleware/validate';
 import { requireUuidParam } from '../middleware/requireUuidParam';
 import { expensiveLimiter } from '../middleware/rate-limit';
@@ -13,6 +13,7 @@ import * as tagController from '../controllers/tag.controller';
 import * as contactEntriesController from '../controllers/record-contact-entries.controller';
 import * as recordNotesController from '../controllers/record-notes.controller';
 import { refuseWhenLeadClosed } from '../lib/permissions/leadLock';
+import { answerOutOfReachAsMissing, scopedRecord } from '../lib/permissions/outOfReachIsMissing';
 
 const router = Router();
 
@@ -31,8 +32,8 @@ router.get('/creator-prefill', canDo('create', 'Lead'), leadController.getCreato
 router.get('/', leadController.list);
 router.post('/', canDo('create', 'Lead'), validate(leadController.createLeadSchema), leadController.create);
 router.get('/:id', canDo('read', 'Lead'), leadController.getById);
-// A person with Edit leads, or the lead's creator while they are still on it (the handler limits the creator's fields).
-router.patch('/:id', canDoOrLeadCreator(), leadController.refuseCancelledLeadStatus, validate(leadController.updateLeadSchema), leadController.update);
+// A person with Edit leads, at their row scope. Whoever created the lead has no standing of their own (creator is audit only).
+router.patch('/:id', canDo('update', 'Lead'), leadController.refuseCancelledLeadStatus, validate(leadController.updateLeadSchema), leadController.update);
 router.delete('/:id', canDo('delete', 'Lead'), leadController.remove);
 
 // Editable record ID (decision #7) - preview is read-only/no-lock, rename is the write.
@@ -42,8 +43,8 @@ router.patch('/:id/number', canDo('renumber', 'Lead'), validate(leadController.l
 // Notes
 router.get('/:id/notes', canDo('read', 'Lead'), leadController.getNotes);
 // Adding a note checks Add notes, not Edit leads (S01.11); the controller adds the per-instance canAccessRow check.
-router.post('/:id/notes', canDo('add_note', 'Lead'), validate(leadController.createLeadNoteSchema), leadController.addNote);
-// Deleting a note (S04.25): the author's own, or anyone's with Delete other people's notes. A closed lead's notes delete
+router.post('/:id/notes', canDoAny([['add_note', 'Lead'], ['update', 'Lead']]), validate(leadController.createLeadNoteSchema), leadController.addNote);
+// Deleting a note (S04.25): the author's own, or anyone's with Edit leads at the person's row scope. A closed lead's notes delete
 // like any other (the closed-lead lock covers only the lead's contact entries).
 router.delete('/:id/notes/:noteId', canDo('read', 'Lead'), requireUuidParam('id', 'Lead not found'), requireUuidParam('noteId', 'Note not found'), recordNotesController.deleteLeadNote);
 
@@ -97,21 +98,25 @@ router.post('/:id/visits/:visitId/unschedule', canDo('schedule_walkthrough', 'Le
 // canDo so a caller without the grant still gets 403 rather than learning whether the
 // id was well-formed, and they return the SAME 404 text the handler gives for a row
 // that genuinely is not there.
-router.post('/:id/tags', canDoOrLeadCreator(), requireUuidParam('id', 'lead not found'), validate(tagController.addTagToLeadSchema), tagController.addTagToLead);
-router.delete('/:id/tags/:tagId', canDoOrLeadCreator(), requireUuidParam('id', 'lead not found'), requireUuidParam('tagId', 'Tag not attached to this lead'), tagController.removeTagFromLead);
+router.post('/:id/tags', canDo('update', 'Lead'), requireUuidParam('id', 'lead not found'), validate(tagController.addTagToLeadSchema), tagController.addTagToLead);
+router.delete('/:id/tags/:tagId', canDo('update', 'Lead'), requireUuidParam('id', 'lead not found'), requireUuidParam('tagId', 'Tag not attached to this lead'), tagController.removeTagFromLead);
 
 // A lead's own phone, email, name and company, changed with the pencil (PRD 5, S05.13): the job's four endpoints, on the
-// lead. Either Edit job and lead contact details or Edit leads lets a person in for a phone or email, and the lead's
-// creator still on it counts as Edit leads; a name or company needs Edit leads (or that creator). The handler then asks
+// lead. Either Edit job and lead contact details or Edit leads lets a person in for a phone or email; a name or company
+// needs Edit leads. The handler then asks
 // whether the lead opens for them. The customer record is never written. A closed lead (Won or Lost) takes none of
 // them from anyone (S05.14); the lock sits after the switch guard, so a person without the switch is told that first.
-const canEditLeadContact = canDoAnyOrLeadCreator([['edit_contact_details', 'Lead'], ['update', 'Lead']]);
+const canEditLeadContact = canDoAny([['edit_contact_details', 'Lead'], ['update', 'Lead']]);
 router.post('/:id/contact-entries', canEditLeadContact, requireUuidParam('id', 'Lead not found'), refuseWhenLeadClosed(), validate(contactEntriesController.addContactEntrySchema), contactEntriesController.leadEntries.addEntry);
 router.post('/:id/contact-entries/change', canEditLeadContact, requireUuidParam('id', 'Lead not found'), refuseWhenLeadClosed(), validate(contactEntriesController.changeContactEntrySchema), contactEntriesController.leadEntries.changeEntry);
-router.post('/:id/contact-entries/name', canDoOrLeadCreator(), requireUuidParam('id', 'Lead not found'), refuseWhenLeadClosed(), validate(contactEntriesController.changeNameSchema), contactEntriesController.leadEntries.changeName);
+router.post('/:id/contact-entries/name', canDo('update', 'Lead'), requireUuidParam('id', 'Lead not found'), refuseWhenLeadClosed(), validate(contactEntriesController.changeNameSchema), contactEntriesController.leadEntries.changeName);
 // Correcting or removing an entry: the same gate as making one of that kind, whoever added it. The handler asks the
 // entry's kind too, since a name entry needs Edit leads.
 router.patch('/:id/contact-entries/:entryId', canEditLeadContact, requireUuidParam('id', 'Lead not found'), requireUuidParam('entryId', 'Contact detail not found'), refuseWhenLeadClosed(), validate(contactEntriesController.correctContactEntrySchema), contactEntriesController.leadEntries.correctEntry);
 router.delete('/:id/contact-entries/:entryId', canEditLeadContact, requireUuidParam('id', 'Lead not found'), requireUuidParam('entryId', 'Contact detail not found'), refuseWhenLeadClosed(), contactEntriesController.leadEntries.removeEntry);
+
+// Ticket 33: a record out of the person's reach answers exactly like a missing one on every route above that names its id
+// (lib/permissions/outOfReachIsMissing.ts). Keep this after the last route.
+answerOutOfReachAsMissing(router, { param: 'id', notFound: 'Lead not found', reaches: scopedRecord('Lead') });
 
 export default router;

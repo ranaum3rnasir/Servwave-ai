@@ -21,7 +21,7 @@
        people linked.
 
    People are on custom roles (never a built-in role name) holding exactly the switch values under test. The company's
-   Admin box is always in the company: it holds every switch and so is both a holder of Manage roles and permissions and a
+   Admin box is always in the company: it holds every switch and so is both an Admin (the last fallback) and a
    person on Communication scope All, which is exactly the "not linked, not rung" person of the rule.
    Real migrated database (TEST_DATABASE_URL); the suite skips when it is unset. Every org it creates is removed.
    ========================================================================== */
@@ -145,19 +145,21 @@ suite('mail to the main address and who it rings (real database, real webhook an
   /** A person on a fresh custom role holding exactly these switch values, with the Email page open and a mailbox of their own. */
   async function personWith(org: string, values: Record<string, boolean | string> = {}, base: Role = 'DISPATCHER'): Promise<Who> {
     const key = `mm-role-${++sequence}`;
+    // `is_admin: true` makes the person an Admin (the flag, AL-18): it is not a switch, so it never reaches the role.
+    const { is_admin: asAdmin, ...switchValues } = values;
     const role = await fx.addCustomRole(org, key, base);
     await setRoleSwitchValues({
       organizationId: org, roleKey: key,
       values: {
         view_jobs: true, jobs_scope: 'attached', view_leads: true, leads_scope: 'attached', view_customers: true,
-        view_estimates: true, estimates_scope: 'attached', view_invoices: true, invoices_scope: 'attached',
-        access_communication: true, show_email: true, view_communication: true, communication_scope: 'linked_to_me',
+        view_estimates: true, view_invoices: true,
+        access_communication: true, show_email: true, view_communication: true, communication_scope: 'attached',
         contact_customers: true,
-        ...values,
+        ...switchValues,
       },
       actorId: null, reason: 'manual',
     });
-    const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
+    const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id, isAdmin: asAdmin === true });
     return Object.assign(person, { api: () => fx.signedInAs(person) });
   }
 
@@ -323,12 +325,12 @@ suite('mail to the main address and who it rings (real database, real webhook an
       }
     });
 
-    it('rings the people linked to the main mailbox, and not everyone on All, the job\'s people or the holders of Manage roles and permissions', async () => {
+    it('rings the people linked to the main mailbox, and not everyone on All, the job\'s people or the Admins', async () => {
       const w = await world();
       const linkedA = await linkedPerson(w);
       const linkedB = await linkedPerson(w);
       const onAll = await personWith(w.org, { communication_scope: 'all' });
-      const manager = await personWith(w.org, { view_users: true, manage_roles_and_permissions: true });
+      const manager = await personWith(w.org, { view_users: true, is_admin: true });
       const { providerId } = await receive({ to: [w.mainAddress] });
 
       const rung = await bells(providerId);
@@ -341,7 +343,7 @@ suite('mail to the main address and who it rings (real database, real webhook an
       expect(publishEmailsSpy).toHaveBeenCalledTimes(1);
     });
 
-    it('opens the conversation itself from the bell, in the main mailbox, whether it rings the linked people or the holders of Manage roles and permissions', async () => {
+    it('opens the conversation itself from the bell, in the main mailbox, whether it rings the linked people or the Admins', async () => {
       const w = await world();
       const linkOf = async (providerId: string) => {
         const key = `email_inbound:${providerId}`;
@@ -359,9 +361,9 @@ suite('mail to the main address and who it rings (real database, real webhook an
       expect(await linkOf(linked.providerId)).toEqual([`/communication/inbox?mailbox=${w.main}&thread=${linkedThread}`]);
     });
 
-    it('rings the holders of Manage roles and permissions, with the reason line, while nobody is linked, and still not a person on All who holds no such switch', async () => {
+    it('rings the Admins, with the reason line, while nobody is linked, and still not a person on All who holds no such switch', async () => {
       const w = await world();
-      const manager = await personWith(w.org, { view_users: true, manage_roles_and_permissions: true });
+      const manager = await personWith(w.org, { view_users: true, is_admin: true });
       const onAll = await personWith(w.org, { communication_scope: 'all' });
       const { providerId } = await receive({ to: [w.mainAddress] });
 
@@ -376,7 +378,7 @@ suite('mail to the main address and who it rings (real database, real webhook an
     it('rings the holders with the reason line when the only person linked has been deactivated, and the linked person again when they return', async () => {
       const w = await world();
       const gone = await linkedPerson(w);
-      const manager = await personWith(w.org, { view_users: true, manage_roles_and_permissions: true });
+      const manager = await personWith(w.org, { view_users: true, is_admin: true });
       await db.user.update({ where: { id: gone.id }, data: { is_active: false }, select: { id: true } });
       clearTokenCache();
 
@@ -405,14 +407,16 @@ suite('mail to the main address and who it rings (real database, real webhook an
       expect(rung.why).toEqual([]);
     });
 
-    it('does not ring a linked person without Access Communication, which every communication bell needs, yet rings one with only Show Email off', async () => {
+    it('does not ring a linked person without Access Communication, nor one with Show Email off: the bell opens the Email page, which both close', async () => {
       const w = await world();
       const shut = await linkedPerson(w, withDependantsOff(['access_communication']));
       const displayOff = await linkedPerson(w, { show_email: false });
+      const open = await linkedPerson(w);
       const rung = await bells((await receive({ to: [w.mainAddress] })).providerId);
       expect(rung.all).not.toContain(shut.id);
-      // Show Email only hides the page and its menu entry; the bell stays (PRD 10, "Who can read a mailbox").
-      expect(rung.plain).toEqual(ids(displayOff));
+      // Show Email off closes the Email page on the server (M7, ticket 36), so the bell that opens it is not rung.
+      expect(rung.all).not.toContain(displayOff.id);
+      expect(rung.plain).toEqual(ids(open));
     });
   });
 
@@ -433,9 +437,9 @@ suite('mail to the main address and who it rings (real database, real webhook an
       for (const left of [w.admin, w.seller, w.crew, w.dispatcher]) expect(rung.all).not.toContain(left.id);
     });
 
-    it('rings the holders of Manage roles and permissions, with the reason line, when nobody is linked', async () => {
+    it('rings the Admins, with the reason line, when nobody is linked', async () => {
       const w = await world();
-      const manager = await personWith(w.org, { view_users: true, manage_roles_and_permissions: true });
+      const manager = await personWith(w.org, { view_users: true, is_admin: true });
 
       const { providerId } = await receive(fromCustomer(w, 'Re: Your estimate'));
 
@@ -459,7 +463,7 @@ suite('mail to the main address and who it rings (real database, real webhook an
       for (const left of [w.seller, w.crew, w.dispatcher]) expect(rung.all).not.toContain(left.id);
     });
 
-    it('fresh mail from a known customer, with nobody linked, rings the holders of Manage roles and permissions and never a customer-level person', async () => {
+    it('fresh mail from a known customer, with nobody linked, rings the Admins and never a customer-level person', async () => {
       const w = await world();
       const { providerId } = await receive(fromCustomer(w, 'Do you do gutters?'));
 

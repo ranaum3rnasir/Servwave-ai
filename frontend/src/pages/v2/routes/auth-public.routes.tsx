@@ -10,6 +10,7 @@ const AuthCallbackPage = lazy(() => import('../auth-public/AuthCallbackPage'));
 const AcceptInvitePage = lazy(() => import('../auth-public/AcceptInvitePage'));
 const ForgotPasswordPage = lazy(() => import('../auth-public/ForgotPasswordPage'));
 const ResetPasswordPage = lazy(() => import('../auth-public/ResetPasswordPage'));
+const ApproveOwnerPage = lazy(() => import('../auth-public/ApproveOwnerPage'));
 const PublicEstimatePage = lazy(() => import('../auth-public/PublicEstimatePage'));
 const PublicInvoicePage = lazy(() => import('../auth-public/PublicInvoicePage'));
 const UpgradePage = lazy(() => import('../auth-public/UpgradePage'));
@@ -56,6 +57,8 @@ export function authPublicV2Routes() {
       <Route path="/accept-invite" element={<AcceptInvitePage />} />
       <Route path="/forgot-password" element={<ForgotPasswordPage />} />
       <Route path="/reset-password" element={<ResetPasswordPage />} />
+      {/* Make Owner approval (ticket 27): opened from the Owner's email, signed in or not, like a reset link. */}
+      <Route path="/approve-owner" element={<ApproveOwnerPage />} />
       <Route path="/p/estimates/:id" element={<PublicEstimatePage />} />
       <Route path="/p/invoices/:id" element={<PublicInvoicePage />} />
 

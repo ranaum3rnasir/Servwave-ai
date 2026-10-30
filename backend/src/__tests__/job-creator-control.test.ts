@@ -224,10 +224,10 @@ describe('a technician assigned to a job somebody else created', () => {
     expect(res.status, `${route.name} -> ${res.status} ${JSON.stringify(res.body)}`).toBeLessThan(400);
   });
 
-  // S01.15: See financial data covers costs only, and it is off in the Technician preset. The line-item list
+  // S01.15: See costs covers costs only, and it is off in the Technician preset. The line-item list
   // keeps the prices and the billing totals (they follow the job the technician can open) and leaves out
   // the unit cost and the margin.
-  it('sees the prices and the billing totals, not the cost: See financial data is off in the Technician preset', async () => {
+  it('sees the prices and the billing totals, not the cost: See costs is off in the Technician preset', async () => {
     const res = await request(app).get(`/api/jobs/${JOB_ID}/line-items`).set(authHeader('technician'));
     expect(res.status).toBe(200);
     expect(res.body.lines[0]).toHaveProperty('unit_price');
@@ -237,8 +237,8 @@ describe('a technician assigned to a job somebody else created', () => {
     expect(res.body.billing).not.toBeNull();
   });
 
-  it('sees the cost and the margin once See financial data is on', async () => {
-    mockRoleSwitches({ see_financial_data: true });
+  it('sees the cost and the margin once See costs is on', async () => {
+    mockRoleSwitches({ see_costs: true });
     const res = await request(app).get(`/api/jobs/${JOB_ID}/line-items`).set(authHeader('technician'));
     expect(res.status).toBe(200);
     expect(res.body.lines[0]).toHaveProperty('unit_cost');
@@ -250,7 +250,10 @@ describe('a technician assigned to a job somebody else created', () => {
     expect(res.status, route.name).toBe(403);
   });
 
-  it.each(EDIT_JOBS_ROUTES)('is refused $name while Edit jobs is off (the Technician preset)', async (route) => {
+  // AL-04: the Technician preset holds Edit jobs now (Create jobs requires it), so "off" is a technician it was turned off for
+  // (Create jobs goes off with it, or the set would be invalid).
+  it.each(EDIT_JOBS_ROUTES)('is refused $name while Edit jobs is off (turned off on the Technician preset)', async (route) => {
+    mockRoleSwitches({ edit_jobs: false, create_jobs: false });
     const res = await send(route, 'technician');
     expect(res.status, route.name).toBe(403);
   });
@@ -268,7 +271,7 @@ describe('a technician assigned to a job somebody else created', () => {
 
   // The tax and the discount are PRICES: they follow Edit jobs. `labor_hours`, `overhead_mode` and
   // `overhead_value` are the JOB COST MODEL - the margin side of the surface - and are a cost, so they also
-  // need See financial data (off in the Technician preset).
+  // need See costs (off in the Technician preset).
   it.each([
     { tax_rate: 0.0875 },
     { discount_type: 'PERCENTAGE' },
@@ -283,11 +286,11 @@ describe('a technician assigned to a job somebody else created', () => {
     { labor_hours: 40 },
     { overhead_mode: 'PERCENTAGE' },
     { overhead_value: 99 },
-  ])('may change the cost model %o only with Edit jobs and See financial data both on', async (body) => {
+  ])('may change the cost model %o only with Edit jobs and See costs both on', async (body) => {
     mockRoleSwitches({ edit_jobs: true });
     const refused = await request(app).patch(`/api/jobs/${JOB_ID}`).set(authHeader('technician')).send(body);
     expect(refused.status).toBe(403);
-    mockRoleSwitches({ edit_jobs: true, see_financial_data: true });
+    mockRoleSwitches({ edit_jobs: true, see_costs: true });
     const res = await request(app).patch(`/api/jobs/${JOB_ID}`).set(authHeader('technician')).send(body);
     expect(res.status).toBe(200);
   });
@@ -297,6 +300,7 @@ describe('a technician assigned to a job somebody else created', () => {
     { job_type: 'HVAC' },
     { estimated_duration: 90 },
   ])('may PATCH the harmless field %o with Edit jobs on, and not without it', async (body) => {
+    mockRoleSwitches({ edit_jobs: false, create_jobs: false }); // the Technician preset holds Edit jobs now (AL-04)
     const refused = await request(app).patch(`/api/jobs/${JOB_ID}`).set(authHeader('technician')).send(body);
     expect(refused.status).toBe(403);
     mockRoleSwitches({ edit_jobs: true });
@@ -316,7 +320,7 @@ describe('the creator of a job who has since been taken off the crew', () => {
 
   it('can no longer read it: nothing attaches them to it any more', async () => {
     const res = await request(app).get(`/api/jobs/${JOB_ID}/line-items`).set(authHeader('technician'));
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it.each([...ASSIGNEE_SURFACE, ...EDIT_JOBS_ROUTES, ...LINE_ITEM_ROUTES, ...PEOPLE_AND_DELETE])('cannot reach $name', async (route) => {

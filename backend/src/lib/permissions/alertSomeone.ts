@@ -27,7 +27,7 @@ export async function alertSomeone(args: {
     where: { id: { in: wanted }, organization_id: args.organizationId, is_active: true },
     select: {
       id: true, role: true, organization_id: true, department_id: true, location_id: true,
-      custom_role_id: true, custom_role: { select: { key: true } },
+      custom_role_id: true, is_admin: true, custom_role: { select: { key: true } },
     },
   });
   if (!people.length) return [];

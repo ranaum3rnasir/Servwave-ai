@@ -93,7 +93,7 @@ suite('the inbound-text alert goes to switches, scope, numbers and replies (real
     const role = await fx.addCustomRole(org, key, base);
     const all = {
       view_jobs: true, jobs_scope: 'attached', view_leads: true, leads_scope: 'attached',
-      access_communication: true, view_communication: true, communication_scope: 'linked_to_me',
+      access_communication: true, view_communication: true, communication_scope: 'attached',
       see_main_line_when_no_number: false, ...values,
     };
     await setRoleSwitchValues({ organizationId: org, roleKey: key, values: all, actorId: null, reason: 'manual' });
@@ -471,8 +471,8 @@ suite('the inbound-text alert goes to switches, scope, numbers and replies (real
     const builtInDispatcher = await fx.addUser(org, 'builtin-dispatcher', 'DISPATCHER');
     const builtInSales = await fx.addUser(org, 'builtin-sales', 'SALES');
     const builtInTech = await fx.addUser(org, 'builtin-tech', 'TECHNICIAN');
-    const copyOfAdmin = await personWith(org, { communication_scope: 'linked_to_me', see_main_line_when_no_number: false }, { base: 'ADMIN' });
-    const copyOfDispatcher = await personWith(org, { communication_scope: 'linked_to_me', see_main_line_when_no_number: false }, { base: 'DISPATCHER' });
+    const copyOfAdmin = await personWith(org, { communication_scope: 'attached', see_main_line_when_no_number: false }, { base: 'ADMIN' });
+    const copyOfDispatcher = await personWith(org, { communication_scope: 'attached', see_main_line_when_no_number: false }, { base: 'DISPATCHER' });
 
     const onOther = await textIn(org, other);
     const onMain = await textIn(org, main);
@@ -498,8 +498,8 @@ suite('the inbound-text alert goes to switches, scope, numbers and replies (real
   it('tells a copy of Admin set to Linked to me by its fallback value alone: on, it is told the main line, off, it is not', async () => {
     const { org } = await newOrg();
     const main = await addNumber(org, 'run-main', { orgDefault: true });
-    const fallbackOn = await personWith(org, { communication_scope: 'linked_to_me', see_main_line_when_no_number: true }, { base: 'ADMIN' });
-    const fallbackOff = await personWith(org, { communication_scope: 'linked_to_me', see_main_line_when_no_number: false }, { base: 'ADMIN' });
+    const fallbackOn = await personWith(org, { communication_scope: 'attached', see_main_line_when_no_number: true }, { base: 'ADMIN' });
+    const fallbackOff = await personWith(org, { communication_scope: 'attached', see_main_line_when_no_number: false }, { base: 'ADMIN' });
 
     const { told } = await textIn(org, main);
 

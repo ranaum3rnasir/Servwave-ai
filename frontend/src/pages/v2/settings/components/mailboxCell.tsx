@@ -18,7 +18,7 @@ export function CantReadMark() {
 
 /**
  * The Email column of the Users & Teams row (PRD 10). It shows the person's mailbox address, the one customers write
- * to and never the email they sign in with, with Copy and, for a holder of Edit users, "Change address". A person
+ * to and never the email they sign in with, with Copy and, for an Admin, "Change address". A person
  * with no address is marked "Address needed" with "Set address". A person whose own switches close the Email page is
  * marked "Can't read: Email page is off for this person" beside it.
  *
@@ -29,11 +29,14 @@ export function CantReadMark() {
 export function MailboxCell({
   user,
   onEdit,
+  editOffReason,
   wrap = false,
 }: {
   user: UserRow;
-  /** Present for a holder of Edit users: opens the set or change dialog. */
+  /** Present for an Admin: opens the set or change dialog. */
   onEdit?: (mode: 'set' | 'change') => void;
+  /** Why the set or change is off for this viewer (an Admin's mailbox is the Owner's to change, ticket 26). */
+  editOffReason?: string;
   wrap?: boolean;
 }) {
   const mailbox = user.mailbox;
@@ -54,7 +57,7 @@ export function MailboxCell({
           </span>
           <CopyAddressButton address={mailbox.address} label={`Copy address for ${name}`} />
           {canEdit && (
-            <Button type="button" variant="ghost" size="sm" onClick={() => onEdit!('change')}>
+            <Button type="button" variant="ghost" size="sm" disabled={!!editOffReason} disabledReason={editOffReason} onClick={() => onEdit!('change')}>
               Change address
             </Button>
           )}
@@ -65,7 +68,7 @@ export function MailboxCell({
             {ADDRESS_NEEDED_MARK}
           </Badge>
           {canEdit && (
-            <Button type="button" variant="ghost" size="sm" onClick={() => onEdit!('set')}>
+            <Button type="button" variant="ghost" size="sm" disabled={!!editOffReason} disabledReason={editOffReason} onClick={() => onEdit!('set')}>
               Set address
             </Button>
           )}

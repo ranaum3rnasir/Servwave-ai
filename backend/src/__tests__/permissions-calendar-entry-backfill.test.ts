@@ -101,7 +101,7 @@ describe('backfill migration — every existing org, idempotent', () => {
 
 describe('defineAbilityFor — real ability build, not a literal', () => {
   it('ADMIN reaches CalendarEntry via manage-all (no explicit row needed)', () => {
-    const ability = defineAbilityFor({ id: 'u1', role: 'ADMIN' }, []);
+    const ability = defineAbilityFor({ is_admin: true, id: 'u1', role: 'ADMIN' }, []);
     expect(ability.can('read', 'CalendarEntry')).toBe(true);
     expect(ability.can('create', 'CalendarEntry')).toBe(true);
     expect(ability.can('update', 'CalendarEntry')).toBe(true);
@@ -110,7 +110,7 @@ describe('defineAbilityFor — real ability build, not a literal', () => {
 
   it('DISPATCHER reaches all four CRUD actions, unconditionally, from DEFAULT_GRANTS alone', () => {
     const grants = DEFAULT_GRANTS.filter((g) => g.role === 'DISPATCHER' && g.subject === 'CalendarEntry');
-    const ability = defineAbilityFor({ id: 'u2', role: 'DISPATCHER' }, grants);
+    const ability = defineAbilityFor({ is_admin: false, id: 'u2', role: 'DISPATCHER' }, grants);
     expect(ability.can('read', 'CalendarEntry')).toBe(true);
     expect(ability.can('create', 'CalendarEntry')).toBe(true);
     expect(ability.can('update', 'CalendarEntry')).toBe(true);
@@ -118,7 +118,7 @@ describe('defineAbilityFor — real ability build, not a literal', () => {
   });
 
   it('SALES holds nothing on CalendarEntry by default (zero role grants)', () => {
-    const ability = defineAbilityFor({ id: 'u3', role: 'SALES' }, []);
+    const ability = defineAbilityFor({ is_admin: false, id: 'u3', role: 'SALES' }, []);
     expect(ability.can('read', 'CalendarEntry')).toBe(false);
     expect(ability.can('create', 'CalendarEntry')).toBe(false);
   });

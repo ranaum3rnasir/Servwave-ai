@@ -39,10 +39,10 @@ function costedItem(): Item {
   };
 }
 
-/** "See financial data" — the same gate every sibling cost editor reads. */
-const pricingAbility = () => buildAbility([{ action: 'read', subject: 'Pricing' }]);
+/** "See costs" — the same gate every sibling cost editor reads. */
+const pricingAbility = () => buildAbility([{ action: 'read', subject: 'Prices' }, { action: 'read', subject: 'Pricing' }]);
 
-function renderDialog(lines: ItemGroupLine[], { canSeePricing = true } = {}) {
+function renderDialog(lines: ItemGroupLine[], { canSeePricing = true, ability }: { canSeePricing?: boolean; ability?: ReturnType<typeof buildAbility> } = {}) {
   const group: ItemGroup = {
     id: 'grp_1',
     name: 'QA Bundle',
@@ -58,9 +58,10 @@ function renderDialog(lines: ItemGroupLine[], { canSeePricing = true } = {}) {
       editGroup={group}
       items={[costedItem()]}
     />,
-    // No ability at all is the deny-everything posture a viewer without
-    // "See financial data" gets.
-    canSeePricing ? { ability: pricingAbility() } : undefined,
+    // A viewer without "See costs" still has "See prices" here (the Price column
+    // is under test); with neither, the bundle shows no price line at all
+    // (priceBookBundlesWithoutPrices.test.tsx).
+    { ability: ability ?? (canSeePricing ? pricingAbility() : buildAbility([{ action: 'read', subject: 'Prices' }])) },
   );
 }
 
@@ -100,6 +101,23 @@ describe('AddGroupDialog — per-line margin and markup', () => {
     // has no base to be a percentage of.
     expect(figureUnder('Comped part', 'Margin')).toBe('100%');
     expect(figureUnder('Comped part', 'Markup')).toBe('—');
+  });
+
+  // Pre-PR review, parked item: margin and markup are worked out from the sell price, and their hint asks for one ("Enter a sell
+  // price above zero"). A person who holds See costs but not See prices can neither see nor enter a sell price, so the
+  // profitability column, and the hint with it, is not drawn for them; their cost column stays.
+  it('shows a See-costs holder without See prices no margin, markup or sell-price hint, and keeps their cost column', () => {
+    const { container } = (() => {
+      renderDialog([{ id: 'ln_4', itemId: COSTED_ITEM_ID, name: 'Costed Lock', quantity: 1 }], {
+        ability: buildAbility([{ action: 'read', subject: 'Pricing' }]),
+      });
+      return { container: document.body };
+    })();
+
+    expect(screen.queryByRole('group', { name: /profitability for costed lock/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('columnheader', { name: 'Profitability' })).not.toBeInTheDocument();
+    expect(container.innerHTML).not.toMatch(/sell price/i);
+    expect(screen.getByRole('columnheader', { name: 'Cost' })).toBeInTheDocument();
   });
 
   it('shows a viewer without pricing access no cost, margin or markup at all', () => {

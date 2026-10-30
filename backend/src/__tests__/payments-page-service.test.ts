@@ -142,14 +142,25 @@ describe('buildTimeline', () => {
       refunds: [{ amount: 20, state: 'SUCCEEDED', createdAt: new Date('2026-10-03T10:00:00Z') }],
       dispute: { status: 'NEEDS_RESPONSE', createdAt: new Date('2026-10-04T10:00:00Z'), closedAt: null },
       payout: { reference: 'PO-3F2A9C1E', arrivalDate: new Date('2026-10-02T00:00:00Z'), status: 'PAID' },
+      figures: true,
     });
     expect(t.map((e) => e.label)).toEqual(['Paid', 'Paid out in PO-3F2A9C1E', 'Refunded $20.00', 'Dispute opened']);
     expect(JSON.stringify(t)).not.toMatch(/stripe|pi_|po_|ch_/i);
   });
+  it('names no refund figure for a person without See prices (re-audit P2-2)', () => {
+    const refunds = [
+      { amount: 20, state: 'SUCCEEDED' as const, createdAt: new Date('2026-10-03T10:00:00Z') },
+      { amount: 30, state: 'PENDING' as const, createdAt: new Date('2026-10-04T10:00:00Z') },
+      { amount: 40, state: 'FAILED' as const, createdAt: new Date('2026-10-05T10:00:00Z') },
+    ];
+    const base = { method: 'CARD', state: 'SUCCEEDED' as const, paidAt: new Date('2026-10-01T15:00:00Z'), failureText: null, refunds, dispute: null, payout: null };
+    expect(buildTimeline({ ...base, figures: false }).map((e) => e.label)).toEqual(['Paid', 'Refunded', 'Refund pending', 'Refund failed']);
+    expect(buildTimeline({ ...base, figures: true }).map((e) => e.label)).toEqual(['Paid', 'Refunded $20.00', 'Refund of $30.00 pending', 'Refund of $40.00 failed']);
+  });
   it('shows Processing then Cleared for a bank payment that succeeded, and Failed with the failure words', () => {
-    const cleared = buildTimeline({ method: 'ACH', state: 'SUCCEEDED', paidAt: new Date('2026-10-01T15:00:00Z'), failureText: null, refunds: [], dispute: null, payout: null });
+    const cleared = buildTimeline({ method: 'ACH', state: 'SUCCEEDED', paidAt: new Date('2026-10-01T15:00:00Z'), failureText: null, refunds: [], dispute: null, payout: null, figures: true });
     expect(cleared.map((e) => e.label)).toEqual(['Processing', 'Cleared']);
-    const failed = buildTimeline({ method: 'ACH', state: 'FAILED', paidAt: new Date('2026-10-01T15:00:00Z'), failureText: 'Insufficient funds', refunds: [], dispute: null, payout: null });
+    const failed = buildTimeline({ method: 'ACH', state: 'FAILED', paidAt: new Date('2026-10-01T15:00:00Z'), failureText: 'Insufficient funds', refunds: [], dispute: null, payout: null, figures: true });
     expect(failed.map((e) => e.label)).toEqual(['Processing', 'Failed']);
     expect(failed[1].note).toBe('Insufficient funds');
     expect(failed[1].tone).toBe('danger');

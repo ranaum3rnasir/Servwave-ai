@@ -22,6 +22,7 @@ import { PAYMENT_METHOD_LABELS, PAYMENT_METHOD_ORDER } from '@/lib/payment-metho
 import type { DepositType } from '@/lib/deposit';
 import { DepositControls } from '@/components/estimates/DepositControls';
 import { useDepositDraft } from '@/components/estimates/useDepositDraft';
+import { useIsAdmin } from '@/lib/useIsAdmin';
 
 interface MarkSentDialogProps {
   open: boolean;
@@ -72,6 +73,7 @@ export function MarkSentDialog({
   canEditDeposit = true,
   onSuccess,
 }: MarkSentDialogProps) {
+  const isAdmin = useIsAdmin();
   const queryClient = useQueryClient();
   const { data: org } = useOrganization();
   const orgAcceptedMethods: PaymentMethod[] =
@@ -257,7 +259,7 @@ export function MarkSentDialog({
 
                   {orgAcceptedMethods.length === 0 && (
                     <p className="text-xs text-danger">
-                      No payment methods accepted by your organization. Update them in Organization Settings.
+                      No payment methods accepted by your organization.{isAdmin && ' Update them in Organization Settings.'}
                     </p>
                   )}
                   {orgAcceptedMethods.length > 0 && enabledMethods.size === 0 && (

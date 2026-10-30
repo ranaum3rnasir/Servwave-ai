@@ -64,7 +64,7 @@ describe('Jobs Report — DEPOSIT invoices excluded from billed/paid (#499)', ()
       expect.objectContaining({
         select: expect.objectContaining({
           invoices: expect.objectContaining({
-            where: { voided_at: null, kind: { not: 'DEPOSIT' } },
+            where: expect.objectContaining({ voided_at: null, kind: { not: 'DEPOSIT' } }),
           }),
         }),
       }),

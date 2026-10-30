@@ -87,7 +87,7 @@ vi.mock('@/lib/api/users', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/api/users')>();
   return {
     ...actual,
-    useUsers: () => ({ data: h.USERS, isLoading: false, isError: false }),
+    usePeople: () => ({ data: h.USERS, isLoading: false, isError: false }),
   };
 });
 

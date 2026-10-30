@@ -53,7 +53,7 @@ export async function completedCheckoutBooksTheCharge(input: CheckoutFlowInput):
   try {
     await seedStarterTaskCategories(prisma, orgId);
     const user = await prisma.user.create({
-      data: { organization_id: orgId, email: `${tag}-admin@test.invalid`, first_name: 'Verify', last_name: 'Admin', role: 'ADMIN' },
+      data: { organization_id: orgId, email: `${tag}-admin@test.invalid`, first_name: 'Verify', last_name: 'Admin', role: 'ADMIN', is_admin: true },
     });
     const customer = await prisma.customer.create({
       data: { organization_id: orgId, customer_number: `C-${shortTag}`, kind: 'PERSON', segment: 'RESIDENTIAL', first_name: 'Verify', last_name: 'Customer', created_by_source: 'SYSTEM' },
@@ -156,7 +156,7 @@ export async function completedCheckoutBooksTheCharge(input: CheckoutFlowInput):
       for (const table of ['customers', 'users']) {
         await prisma.$executeRawUnsafe(`DELETE FROM ${table} WHERE organization_id = '${orgId}'`).catch(() => undefined);
       }
-      await prisma.$executeRawUnsafe(`DELETE FROM audit_logs WHERE org_id = '${orgId}'`).catch(() => undefined);
+      // audit_logs is append-only (the database refuses a delete) and has no foreign key to the company: its rows stay.
       await prisma.$executeRawUnsafe(`DELETE FROM stripe_events WHERE stripe_event_id LIKE 'evt_verify_checkout_${shortTag}%'`).catch(() => undefined);
       await prisma.organization.deleteMany({ where: { id: orgId } }).catch(() => undefined);
     });
@@ -198,7 +198,7 @@ export async function partlyPaidDepositChargesTheRest(input: { stripe: Stripe; a
   try {
     await seedStarterTaskCategories(prisma, orgId);
     const user = await prisma.user.create({
-      data: { organization_id: orgId, email: `${tag}-admin@test.invalid`, first_name: 'Verify', last_name: 'Admin', role: 'ADMIN' },
+      data: { organization_id: orgId, email: `${tag}-admin@test.invalid`, first_name: 'Verify', last_name: 'Admin', role: 'ADMIN', is_admin: true },
     });
     const customer = await prisma.customer.create({
       data: { organization_id: orgId, customer_number: `C-${shortTag}`, kind: 'PERSON', segment: 'RESIDENTIAL', first_name: 'Verify', last_name: 'Customer', created_by_source: 'SYSTEM' },
@@ -308,7 +308,7 @@ export async function partlyPaidDepositChargesTheRest(input: { stripe: Stripe; a
       for (const table of ['customers', 'users']) {
         await prisma.$executeRawUnsafe(`DELETE FROM ${table} WHERE organization_id = '${orgId}'`).catch(() => undefined);
       }
-      await prisma.$executeRawUnsafe(`DELETE FROM audit_logs WHERE org_id = '${orgId}'`).catch(() => undefined);
+      // audit_logs is append-only (the database refuses a delete) and has no foreign key to the company: its rows stay.
       await prisma.$executeRawUnsafe(`DELETE FROM stripe_events WHERE stripe_event_id LIKE 'evt_verify_partial_${shortTag}%'`).catch(() => undefined);
       await prisma.organization.deleteMany({ where: { id: orgId } }).catch(() => undefined);
     });

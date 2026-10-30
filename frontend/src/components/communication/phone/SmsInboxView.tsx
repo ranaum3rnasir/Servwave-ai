@@ -82,6 +82,7 @@ import { useRoutedPane } from '@/lib/communication/useRoutedPane';
 import { useUnknownNumberCreate } from '@/components/communication/phone/useUnknownNumberCreate';
 import { fieldKindProps } from '@/ui-kit/lib/fieldKind';
 import { canAutoFocus } from '@/ui-kit/lib/autoFocus';
+import { useIsAdmin } from '@/lib/useIsAdmin';
 
 /** Below md a list that can run to hundreds of rows is drawn a page at a time (mobile slice 69,
  *  PERF-04): the directory rows and a thread's bubbles are the bulk of the page's DOM. */
@@ -283,6 +284,7 @@ export function SmsInboxView({
   setThreads: React.Dispatch<React.SetStateAction<MessageThread[]>>;
   onToast: (m: string) => void;
 }) {
+  const isAdmin = useIsAdmin();
   // Data seam — module-scope arrays in the original monolith now come from hooks.
   const { data: customers = [] } = usePhoneCustomers();
   const tz = useScheduleTimezone();
@@ -1140,7 +1142,9 @@ export function SmsInboxView({
                   <p className="border-b border-border bg-background-light px-3 py-1.5 text-[11px] text-text-secondary">
                     {!connected
                       ? "Text messaging activates when your phone system is connected."
-                      : "Texting activates once carrier approval comes through - check status in Settings → Phone & SMS."}
+                      : isAdmin
+                        ? "Texting activates once carrier approval comes through - check status in Settings → Phone & SMS."
+                        : "Texting activates once carrier approval comes through."}
                   </p>
                 )
               )}

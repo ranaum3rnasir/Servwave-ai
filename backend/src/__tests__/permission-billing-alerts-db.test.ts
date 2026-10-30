@@ -7,7 +7,7 @@
    Each used to go to "every Admin" (and, for payments, "every Dispatcher" and the customer owner) by role. Now each goes through the
    chain: lane 1 is the invoice's job or lead people (the job's stored Sold By, crew and Dispatcher, or the lead's Owner, walkthrough
    crew and Dispatcher); lane 2 is who must act (the record's Dispatcher, else the holders of Access Billing who can open the invoice,
-   else the Manage roles and permissions holders, stopping at the first step that finds someone); holders of Alert me about every
+   else the company's Admins, stopping at the first step that finds someone); holders of Alert me about every
    invoice and payment get a copy. "Someone" is active, can open the INVOICE and its job or lead, and is not the person who did the
    action. Nobody comes from a role name. A standalone invoice (no job, no estimate with a job or lead) has no lane 1 and starts at
    step 2.
@@ -62,12 +62,14 @@ const ALL_OFF: Record<string, SwitchValue> = Object.fromEntries(
 /** What a person needs to be named on a job or a lead at all: to be allowed on a crew, as Sold By or Owner, and as Dispatcher. */
 const slots = { can_be_on_crew: true, can_own_leads: true, can_be_dispatcher: true };
 /** Opening a job, a lead and an invoice: what "someone" needs for an alert about an invoice on a job or lead. */
-const opens = { view_jobs: true, jobs_scope: 'all', view_leads: true, leads_scope: 'all', view_invoices: true, invoices_scope: 'all', ...slots };
+const opens = { view_jobs: true, jobs_scope: 'all', view_leads: true, leads_scope: 'all', view_invoices: true, ...slots };
 /** Opening the job and the lead but NOT the invoice (Invoices View off): the alert names an amount, so this person is not told. */
 const opensJobNotInvoice = { view_jobs: true, jobs_scope: 'all', view_leads: true, leads_scope: 'all', ...slots };
 const STEP = 'access_billing';
 const COPY = 'alert_every_invoice';
-const managerValues = { ...opens, manage_roles_and_permissions: true, view_users: true };
+// An Admin (the flag, AL-18): holds every switch, Access Billing and the copy switches included, and opens every invoice. Since the
+// Manage roles and permissions switch retired, the chain's last fallback is the Admins, so an Admin is found at the step already.
+const adminValues = { ...opens, is_admin: true, view_users: true };
 const stepValues = { ...opens, [STEP]: true };
 
 type Api = Awaited<ReturnType<ReturnType<typeof switchFixture>['signedInAs']>>;
@@ -153,9 +155,11 @@ suite('the billing alerts (real database)', () => {
   /** A person on a fresh custom role holding exactly these switch values (every other switch off). */
   async function personWith(org: string, values: Record<string, SwitchValue>, base: Role = 'DISPATCHER'): Promise<Person> {
     const key = `billing-alert-role-${++sequence}`;
+    // `is_admin: true` makes the person an Admin (the flag, AL-18): it is not a switch, so it never reaches the role.
+    const { is_admin: asAdmin, ...switchValues } = values;
     const role = await fx.addCustomRole(org, key, base);
-    await fx.setRoleSwitches(org, key, { ...ALL_OFF, ...values });
-    return fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
+    await fx.setRoleSwitches(org, key, { ...ALL_OFF, see_prices: true, ...switchValues });
+    return fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id, isAdmin: asAdmin === true });
   }
 
   /** A company with nobody but built people, so only they can be alerted. */
@@ -231,13 +235,13 @@ suite('the billing alerts (real database)', () => {
 
   const table: Verb[] = [
     {
-      verb: 'billing.payment_received', ...ROUTE, ...SAYS_OFF, title: (n) => `Payment received for ${n}`, body: 'Amount: $100.00',
+      verb: 'billing.payment_received', ...ROUTE, ...SAYS_OFF, title: (n) => `Payment received for ${n}`, body: null,
       actorValues: { ...opens, record_payments: true, allowed_payment_methods: ['CASH'] },
       prepare: noPrep,
       act: async (world, cast) => (await as(cast)).post(`/api/invoices/${world.invoiceId}/payments`, PAY),
     },
     {
-      verb: 'billing.partial_payment', ...ROUTE, ...SAYS_OFF, title: (n) => `Partial payment received for ${n}`, body: 'Amount: $40.00',
+      verb: 'billing.partial_payment', ...ROUTE, ...SAYS_OFF, title: (n) => `Partial payment received for ${n}`, body: null,
       actorValues: { ...opens, record_payments: true, allowed_payment_methods: ['CASH'] },
       prepare: noPrep,
       act: async (world, cast) => (await as(cast)).post(`/api/invoices/${world.invoiceId}/payments`, { ...PAY, amount: 40 }),
@@ -277,12 +281,12 @@ suite('the billing alerts (real database)', () => {
       act: async () => { await (await import('../services/notifications/invoiceDueCron.js')).runInvoiceDueChecks(new Date()); },
     },
     {
-      verb: 'billing.disputed', ...SYSTEM, ...INTERRUPTS, title: (n) => `Payment disputed for ${n}`, body: 'Amount: $300.00.',
+      verb: 'billing.disputed', ...SYSTEM, ...INTERRUPTS, title: (n) => `Payment disputed for ${n}`, body: null,
       prepare: noPrep, act: notice('billing.disputed', { amount: '300.00' }, 'dp1'),
     },
     {
       verb: 'billing.chargeback', ...SYSTEM, ...INTERRUPTS, title: (n) => `Chargeback received for ${n}`,
-      body: 'Amount: $300.00 was taken back from your ServWave Payments balance.',
+      body: 'This payment was taken back from your ServWave Payments balance.',
       prepare: noPrep, act: notice('billing.chargeback', { amount: '300.00' }, 'dp1'),
     },
     {
@@ -293,26 +297,26 @@ suite('the billing alerts (real database)', () => {
     },
     {
       verb: 'billing.dispute_closed', ...SYSTEM, ...SAYS_OFF, title: (n) => `Dispute won for ${n}`,
-      body: 'Amount: $300.00. It was decided in your favor and the payment stands.',
+      body: 'It was decided in your favor and the payment stands.',
       prepare: noPrep, act: notice('billing.dispute_closed', { amount: '300.00', outcome: 'WON' }, 'dp1'),
     },
     {
       verb: 'billing.bank_payment_started', ...SYSTEM, ...SAYS_OFF, title: (n) => `Bank payment started for ${n}`,
-      body: 'Amount: $300.00. It usually takes a few business days to clear.',
+      body: 'It usually takes a few business days to clear.',
       prepare: noPrep, act: notice('billing.bank_payment_started', { amount: '300.00' }, 'evt1'),
     },
     {
-      verb: 'billing.bank_payment_cleared', ...SYSTEM, ...SAYS_OFF, title: (n) => `Bank payment cleared for ${n}`, body: 'Amount: $300.00',
+      verb: 'billing.bank_payment_cleared', ...SYSTEM, ...SAYS_OFF, title: (n) => `Bank payment cleared for ${n}`, body: null,
       prepare: noPrep, act: notice('billing.bank_payment_cleared', { amount: '300.00' }, 'evt1'),
     },
     {
       verb: 'billing.bank_payment_failed', ...SYSTEM, ...INTERRUPTS, title: (n) => `Bank payment failed for ${n}`,
-      body: 'Amount: $300.00. No money moved. We emailed the customer a link to pay again.',
+      body: 'No money moved. We emailed the customer a link to pay again.',
       prepare: noPrep, act: notice('billing.bank_payment_failed', { amount: '300.00', customer_notice: 'sent' }, 'evt1'),
     },
     {
       verb: 'billing.refund_failed', ...SYSTEM, ...INTERRUPTS, title: (n) => `Refund failed for ${n}`,
-      body: 'A refund of $300.00 to the customer failed. The money is back in your ServWave Payments balance and the customer still needs to be repaid.',
+      body: 'A refund to the customer failed. The money is back in your ServWave Payments balance and the customer still needs to be repaid.',
       prepare: noPrep, act: notice('billing.refund_failed', { amount: '300.00' }, 'rf1'),
     },
   ];
@@ -379,7 +383,7 @@ suite('the billing alerts (real database)', () => {
       for (const who of [holder, dispatcherRole, adminRole, me]) expect(got).not.toContain(who.id);
     });
 
-    it('without a Dispatcher: the record\'s people plus every Access Billing holder on a custom role who can open the invoice; an Admin-role person with the switch off is not one', async () => {
+    it('without a Dispatcher: the record\'s people plus every Access Billing holder who can open the invoice, an Admin among them; an Admin-role person with the switch off is not one', async () => {
       const { org, customer } = await quietOrg();
       const me = await actor(org);
       const soldBy = await personWith(org, opens);
@@ -390,16 +394,20 @@ suite('the billing alerts (real database)', () => {
       const cannotOpenInvoice = await personWith(org, { ...opensJobNotInvoice, [STEP]: true });
       const gone = await personWith(org, stepValues);
       await db.user.update({ where: { id: gone.id }, data: { is_active: false } });
-      const manager = await personWith(org, managerValues);
+      // An Admin (the flag) holds Access Billing like every switch: a holder of the step, not a later fallback.
+      const admin = await personWith(org, adminValues);
 
       const world = await take(row, cast(org, customer, me, { soldBy }));
 
       const alerts = await alertsFor(row.verb, world.invoiceId);
       const got = recipientsOf(alerts);
-      expect(got).toEqual(ids(soldBy, holder, secondHolder));
-      for (const who of [adminSwitchOff, cannotOpenInvoice, gone, manager]) expect(got).not.toContain(who.id);
+      expect(got).toEqual(ids(soldBy, holder, secondHolder, admin));
+      for (const who of [adminSwitchOff, cannotOpenInvoice, gone]) expect(got).not.toContain(who.id);
       // The holders cover for the missing Dispatcher and are told why; the record's own person is not.
       expect(whyFor(alerts, holder)).toBe('This job has no Dispatcher.');
+      // An Admin also holds Alert me about every invoice, so they are told once, without the line, and still asked to act.
+      expect(whyFor(alerts, admin)).toBeNull();
+      expect(rowFor(alerts, admin)).toMatchObject({ priority: row.lane2, needs_action: row.lane2Action });
       expect(whyFor(alerts, soldBy)).toBeNull();
       expect(rowFor(alerts, holder)).toMatchObject({ priority: row.lane2, needs_action: row.lane2Action });
     });
@@ -410,7 +418,7 @@ suite('the billing alerts (real database)', () => {
       const soldByNoInvoices = await personWith(org, opensJobNotInvoice);
       const crewNoInvoices = await personWith(org, opensJobNotInvoice);
       // A technician-style reach: the invoices of the jobs they are attached to.
-      const crewAttached = await personWith(org, { ...opens, invoices_scope: 'attached' }, 'TECHNICIAN');
+      const crewAttached = await personWith(org, { ...opens, jobs_scope: 'attached', leads_scope: 'attached' }, 'TECHNICIAN');
       const holder = await personWith(org, stepValues);
 
       const world = await take(row, cast(org, customer, me, { soldBy: soldByNoInvoices, crew: [crewNoInvoices, crewAttached] }));
@@ -424,7 +432,7 @@ suite('the billing alerts (real database)', () => {
     it('a record person who can open the invoice but not the job is not told either (the chain asks both)', async () => {
       const { org, customer } = await quietOrg();
       const me = await actor(org);
-      const invoiceOnly = await personWith(org, { view_invoices: true, invoices_scope: 'all', ...slots });
+      const invoiceOnly = await personWith(org, { view_invoices: true, jobs_scope: 'all', leads_scope: 'all', ...slots });
       const holder = await personWith(org, stepValues);
 
       const world = await take(row, cast(org, customer, me, { soldBy: invoiceOnly }));
@@ -433,20 +441,23 @@ suite('the billing alerts (real database)', () => {
       expect(got).toEqual(ids(holder));
     });
 
-    it('without a Dispatcher and with no Access Billing holder who can open the invoice: the Manage roles and permissions holders, with the why line', async () => {
+    it('without a Dispatcher and with no other Access Billing holder who can open the invoice: an Admin, who holds the step, asked to act', async () => {
       const { org, customer } = await quietOrg();
       const me = await actor(org);
-      const manager = await personWith(org, managerValues);
+      const admin = await personWith(org, adminValues);
       const cannotOpenInvoice = await personWith(org, { ...opensJobNotInvoice, [STEP]: true });
       const noSwitch = await personWith(org, opens);
 
       const world = await take(row, cast(org, customer, me));
 
       const alerts = await alertsFor(row.verb, world.invoiceId);
-      expect(recipientsOf(alerts)).toEqual(ids(manager));
+      expect(recipientsOf(alerts)).toEqual(ids(admin));
       expect(recipientsOf(alerts)).not.toContain(cannotOpenInvoice.id);
       expect(recipientsOf(alerts)).not.toContain(noSwitch.id);
-      expect(whyFor(alerts, manager)).toBe('This job has no Dispatcher and nobody who can access billing can open it.');
+      // Found at the step (an Admin holds Access Billing), never as "nobody who can access billing"; and as a holder of the copy
+      // switch too, so told once, without a line, still asked to act.
+      expect(whyFor(alerts, admin)).toBeNull();
+      expect(rowFor(alerts, admin)).toMatchObject({ priority: row.lane2, needs_action: row.lane2Action });
     });
 
     describe('a Dispatcher who cannot take the alert sends the chain to step 2 with the matching why line', () => {
@@ -482,27 +493,35 @@ suite('the billing alerts (real database)', () => {
       const holder = await personWith(org, stepValues);
       const cannotOpen = await personWith(org, { ...opensJobNotInvoice, [STEP]: true });
       const noSwitch = await personWith(org, opens);
-      const manager = await personWith(org, managerValues);
+      // An Admin holds Access Billing too, so they are one of the holders told.
+      const admin = await personWith(org, adminValues);
 
       const world = await take(row, cast(org, customer, me, { shape: 'standalone' }));
 
       const alerts = await alertsFor(row.verb, world.invoiceId);
-      expect(recipientsOf(alerts)).toEqual(ids(holder));
-      for (const who of [cannotOpen, noSwitch, manager]) expect(recipientsOf(alerts)).not.toContain(who.id);
+      expect(recipientsOf(alerts)).toEqual(ids(holder, admin));
+      for (const who of [cannotOpen, noSwitch]) expect(recipientsOf(alerts)).not.toContain(who.id);
       expect(whyFor(alerts, holder)).toBe('This invoice has no job or lead.');
+      // An Admin also holds Alert me about every invoice, so they are told once, without the line, and still asked to act.
+      expect(whyFor(alerts, admin)).toBeNull();
+      expect(rowFor(alerts, admin)).toMatchObject({ priority: row.lane2, needs_action: row.lane2Action });
       expect(alertOf(alerts, holder)).toMatchObject({ title: row.title(world.number), body: [row.body, 'This invoice has no job or lead.'].filter(Boolean).join('\n') });
     });
 
-    it('a standalone invoice with nobody holding Access Billing who can open it goes to the Manage roles and permissions holders', async () => {
+    it('a standalone invoice with no other Access Billing holder who can open it goes to an Admin, who holds the step', async () => {
       const { org, customer } = await quietOrg();
       const me = await actor(org);
-      const manager = await personWith(org, managerValues);
+      const admin = await personWith(org, adminValues);
+      const noSwitch = await personWith(org, opens);
 
       const world = await take(row, cast(org, customer, me, { shape: 'standalone' }));
 
       const alerts = await alertsFor(row.verb, world.invoiceId);
-      expect(recipientsOf(alerts)).toEqual(ids(manager));
-      expect(whyFor(alerts, manager)).toBe('This invoice has no job or lead and nobody who can access billing can open it.');
+      expect(recipientsOf(alerts)).toEqual(ids(admin));
+      expect(recipientsOf(alerts)).not.toContain(noSwitch.id);
+      // Found at the step, never as "nobody who can access billing"; told once, without a line (they hold the copy switch too).
+      expect(whyFor(alerts, admin)).toBeNull();
+      expect(rowFor(alerts, admin)).toMatchObject({ priority: row.lane2, needs_action: row.lane2Action });
     });
 
     it('a deposit invoice on a lead reaches the lead\'s Owner, its walkthrough crew and its Dispatcher; one on an estimate\'s job reaches the job\'s people', async () => {
@@ -547,7 +566,7 @@ suite('the billing alerts (real database)', () => {
       const dispatcher = await personWith(org, opens);
       const follower = await personWith(org, { ...opens, [COPY]: true });
       // Sees the job but not invoices: Alert me about every invoice needs View invoices, so it can only be set with it on and a narrower scope.
-      const blindFollower = await personWith(org, { ...opens, invoices_scope: 'attached', [COPY]: true });
+      const blindFollower = await personWith(org, { ...opens, jobs_scope: 'attached', leads_scope: 'attached', [COPY]: true });
 
       const withDispatcher = await take(row, cast(org, customer, me, { dispatcher }));
 
@@ -556,10 +575,10 @@ suite('the billing alerts (real database)', () => {
       expect(recipientsOf(first)).not.toContain(blindFollower.id);
       expect(rowFor(first, follower)).toMatchObject({ priority: row.copy, needs_action: false });
 
-      // No Dispatcher and nobody holding the step: the follower is told as a copy and the chain still goes on to the managers.
-      const manager = await personWith(org, managerValues);
+      // No Dispatcher and no other holder of the step: the follower is told as a copy and the chain still goes on, to an Admin.
+      const admin = await personWith(org, adminValues);
       const bare = await take(row, cast(org, customer, me));
-      expect(recipientsOf(await alertsFor(row.verb, bare.invoiceId))).toEqual(ids(follower, manager));
+      expect(recipientsOf(await alertsFor(row.verb, bare.invoiceId))).toEqual(ids(follower, admin));
     });
 
     it('the why line is on step 2 and step 3 and not on the record\'s people, step 1 or copies', async () => {
@@ -625,7 +644,7 @@ suite('the billing alerts (real database)', () => {
       const other = await quietOrg();
       const me = await actor(org);
       const outsiderHolder = await personWith(other.org, { ...stepValues, [COPY]: true });
-      const outsiderManager = await personWith(other.org, managerValues);
+      const outsiderAdmin = await personWith(other.org, adminValues);
       const holder = await personWith(org, stepValues);
 
       const world = await take(row, cast(org, customer, me, { shape: 'standalone' }));
@@ -633,7 +652,7 @@ suite('the billing alerts (real database)', () => {
       const got = recipientsOf(await alertsFor(row.verb, world.invoiceId));
       expect(got).toEqual(ids(holder));
       expect(got).not.toContain(outsiderHolder.id);
-      expect(got).not.toContain(outsiderManager.id);
+      expect(got).not.toContain(outsiderAdmin.id);
     });
 
     it('today\'s "customer owner" is gone: the Owner of the lead a job came from is told only through the job\'s own Sold By, never on their own', async () => {
@@ -711,34 +730,35 @@ suite('the billing alerts (real database)', () => {
     const alertsOf = (org: string, verb: string) =>
       db.notification.findMany({ where: { organization_id: org, verb }, include: { recipients: true } });
 
-    it('has no record: the Access Billing holders are told with no why line, then the copies; people who hold neither are not', async () => {
+    it('has no record: the Access Billing holders, an Admin among them, are told with no why line, then the copies; people who hold neither are not', async () => {
       const { org } = await quietOrg();
       const holder = await personWith(org, { [STEP]: true });
       const follower = await personWith(org, { ...opens, [COPY]: true });
-      const manager = await personWith(org, managerValues);
+      const admin = await personWith(org, adminValues);
       const nobody = await personWith(org, opens);
 
       await noInvoice('billing.payment_unrecorded', org, { reason: 'INVOICE_NOT_FOUND' });
 
       const alerts = await alertsOf(org, 'billing.payment_unrecorded');
-      expect(recipientsOf(alerts)).toEqual(ids(holder, follower));
-      expect(recipientsOf(alerts)).not.toContain(manager.id);
+      expect(recipientsOf(alerts)).toEqual(ids(holder, follower, admin));
       expect(recipientsOf(alerts)).not.toContain(nobody.id);
       expect(alerts.every((n) => n.object_type === 'ORGANIZATION')).toBe(true);
       expect(alerts.every((n) => (n.data as Record<string, unknown>).fallback_reason === '')).toBe(true);
       expect(rowFor(alerts, holder)).toMatchObject({ priority: 'INTERRUPT' });
     });
 
-    it('with no Access Billing holder: the Manage roles and permissions holders, with the why line', async () => {
+    it('with no other Access Billing holder: an Admin, who holds the step, with no why line', async () => {
       const { org } = await quietOrg();
-      const manager = await personWith(org, managerValues);
+      const admin = await personWith(org, adminValues);
+      const nobody = await personWith(org, opens);
 
       await noInvoice('billing.refund_failed', org, { amount: '12.00' });
 
       const alerts = await alertsOf(org, 'billing.refund_failed');
-      expect(recipientsOf(alerts)).toEqual(ids(manager));
-      expect(whyFor(alerts, manager)).toBe('Nobody can access billing.');
-      expect(alerts[0]!.body).toContain('Nobody can access billing.');
+      expect(recipientsOf(alerts)).toEqual(ids(admin));
+      expect(recipientsOf(alerts)).not.toContain(nobody.id);
+      expect(whyFor(alerts, admin)).toBeNull();
+      expect(alerts[0]!.body).not.toContain('Nobody can access billing.');
     });
 
     it('with nobody at all: logged with the alert kind and the org id, never dropped silently', async () => {
@@ -839,7 +859,7 @@ suite('the billing alerts (real database)', () => {
       expect(alerts.every((n) => n.actor_id === null)).toBe(true);
       expect(whyFor(alerts, holder)).toBe('This job has no Dispatcher.');
       expect(whyFor(alerts, sellerHere)).toBeNull();
-      expect(alerts.find((n) => n.recipients.some((r) => r.recipient_id === holder.id))!.body).toContain('Amount: $500.00');
+      expect(alerts.find((n) => n.recipients.some((r) => r.recipient_id === holder.id))!.body).not.toContain('Amount');
       for (const row of await db.notification.findMany({ where: { organization_id: w.org } })) {
         expect(`${row.title} ${row.body ?? ''}`).not.toMatch(/stripe|plaid|resend|supabase|render\.com|visa|4242/i);
       }

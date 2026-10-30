@@ -441,19 +441,25 @@ export default function InboxPage() {
     setCompose({ mode: 'new', account: defaultAccount, to: '', subject: '', body: '' });
   }
 
-  // Email a teammate directly, or a whole group (comma-joined recipients).
+  // Email a teammate directly, or a whole group. A team list with addresses (an Admin's) fills them in as before; one
+  // without (everyone else's, M3 ticket 29) names the teammates by id and the server finds their addresses.
+  function recipientsFor(people: TeamMember[]): Pick<ComposeState, 'to' | 'toPeople'> {
+    const withAddress = people.filter((m) => m.email);
+    const byId = people.filter((m) => !m.email);
+    return {
+      to: withAddress.map((m) => m.email).join(', '),
+      ...(byId.length ? { toPeople: byId.map((m) => ({ id: m.id, name: m.name })) } : {}),
+    };
+  }
   function emailMember(m: TeamMember) {
     closeRailOnPhone();
-    setCompose({ mode: 'new', account: defaultAccount, to: m.email, subject: '', body: '' });
+    setCompose({ mode: 'new', account: defaultAccount, ...recipientsFor([m]), subject: '', body: '' });
     flash(`✉️ New email to ${m.name}`);
   }
   function emailGroup(g: EmailGroup) {
     closeRailOnPhone();
-    const to = g.memberIds
-      .map((id) => memberById(id)?.email)
-      .filter(Boolean)
-      .join(', ');
-    setCompose({ mode: 'new', account: defaultAccount, to, subject: '', body: '' });
+    const people = g.memberIds.map((id) => memberById(id)).filter((m): m is TeamMember => Boolean(m));
+    setCompose({ mode: 'new', account: defaultAccount, ...recipientsFor(people), subject: '', body: '' });
     flash(`✉️ New group email to ${g.name} (${g.memberIds.length})`);
   }
 
@@ -598,11 +604,14 @@ export default function InboxPage() {
 
   function sendCompose() {
     if (!compose) return;
-    const to = compose.to.trim();
-    if (!to) {
+    const typed = compose.to.trim();
+    const people = compose.toPeople ?? [];
+    if (!typed && people.length === 0) {
       flash('Add a recipient first');
       return;
     }
+    // What the screen shows as the recipients: the teammates by name, then the typed addresses.
+    const to = [...people.map((p) => p.name), typed].filter(Boolean).join(', ');
     const fromEmail = fromAddress ?? '';
     const text = compose.body.trim();
     const atts = compose.attachments ?? [];
@@ -627,7 +636,8 @@ export default function InboxPage() {
     sendEmail.mutate(
       {
 
-        to,
+        to: typed,
+        ...(people.length ? { to_user_ids: people.map((p) => p.id) } : {}),
         subject: sent.subject,
         body: bodyToParas(compose.body),
         thread_id: sent.threadId,
@@ -650,14 +660,15 @@ export default function InboxPage() {
   // Closing with content saves a draft; empty just closes.
   function closeCompose() {
     if (!compose) return;
-    const hasContent = compose.to.trim() || compose.subject.trim() || compose.body.trim();
+    const named = (compose.toPeople ?? []).map((p) => p.name);
+    const hasContent = compose.to.trim() || named.length || compose.subject.trim() || compose.body.trim();
     if (hasContent) {
       const draft: Email = {
         id: localId('e'),
         threadId: compose.threadId ?? localId('t'),
 
         from: { name: ownerName, email: fromAddress ?? '' },
-        to: compose.to.trim() || '(no recipient)',
+        to: [...named, compose.to.trim()].filter(Boolean).join(', ') || '(no recipient)',
         subject: compose.subject.trim() || '(no subject)',
         snippet: compose.body.trim().replace(/\s+/g, ' ').slice(0, 100) || '(draft)',
         body: bodyToParas(compose.body),

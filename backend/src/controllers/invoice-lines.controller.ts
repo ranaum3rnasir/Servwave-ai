@@ -424,7 +424,7 @@ export async function addLine(req: Request, res: Response) {
     if (refusedForDiscount(req, res, 'Invoice', changesDiscount(req.body, null))) return;
 
     const body = req.body as z.infer<typeof addLineSchema>;
-    // Drop cost/margin fields BEFORE the write when the requester can't see costs (See financial data) — mirrors
+    // Drop cost/margin fields BEFORE the write when the requester can't see costs (See costs) — mirrors
     // job-lines.controller.ts's identical addLine guard (job-lines pricing-leak follow-up,
     // invoice-lines half). Both the write AND the response must strip these (see stripInvoiceCost).
     if (!canSeeCosts(req)) {
@@ -835,7 +835,7 @@ export async function updateLine(req: Request, res: Response) {
       if (stored && refusedForDiscount(req, res, 'Invoice', changesDiscount(body, stored))) return;
     }
 
-    // Drop cost/margin fields BEFORE the write when the requester can't see costs (See financial data) — see
+    // Drop cost/margin fields BEFORE the write when the requester can't see costs (See costs) — see
     // addLine's identical guard for why both the write AND the response must strip these.
     if (!canSeeCosts(req)) {
       body.unit_cost = undefined;
@@ -1076,7 +1076,7 @@ export async function addScope(req: Request, res: Response) {
     if (!invoice) return;
 
     const body = req.body as z.infer<typeof addScopeSchema>;
-    // Drop cost data BEFORE the write when the requester can't see costs (See financial data) — symmetric with
+    // Drop cost data BEFORE the write when the requester can't see costs (See costs) — symmetric with
     // job-lines.controller.ts's identical addScope guard (job-lines pricing-leak follow-up,
     // invoice half). `delete`, not `= undefined` — see updateScope's identical guard below for
     // why the distinction matters there; harmless either way here (brand-new scope).
@@ -1133,7 +1133,7 @@ export async function updateScope(req: Request, res: Response) {
 
     const idx = parseInt(param(req, 'idx'), 10);
     const body = req.body as z.infer<typeof updateScopeSchema>;
-    // Drop cost data BEFORE the merge when the requester can't see costs (See financial data) — symmetric with
+    // Drop cost data BEFORE the merge when the requester can't see costs (See costs) — symmetric with
     // job-lines.controller.ts's identical updateScope guard. MUST be `delete`, not
     // `body.internal_cost = undefined`: the merge below is a full-object spread over the
     // EXISTING scope, and an explicitly-undefined-valued key is still an own enumerable

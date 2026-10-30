@@ -1,7 +1,6 @@
 import { prisma } from '../../lib/prisma';
 import { isSuperUser } from '../../lib/permissions/effectiveRole';
 import { scopeWhereForReq } from '../../lib/permissions/enforce';
-import { redactDollarAmounts } from '../../lib/permissions/companyFigures';
 import { invoiceOpenerFor, type InvoiceOpener } from '../../lib/permissions/invoiceAccess';
 import { hideMirroredInvoiceEvents } from '../../lib/job-change-history';
 import { invoiceIdsNamedBy, mayShowInvoiceEntry } from '../../lib/job-review-changeset';
@@ -16,7 +15,7 @@ import type { Prisma } from '@prisma/client';
  * Recent Activity (PRD 9): the newest twenty events among those on records the person can open. Every event is its own
  * category - it needs the View switch of what it is about, and the record has to be inside the person's row scope. An
  * event on a record the person cannot open is skipped, not shown blank. A task event follows the task rule: the
- * assignee or a watcher, anyone who can open the record it is linked to, or someone with See all tasks (a task that is
+ * assignee or a watcher, anyone who can open the record it is linked to, or someone on Tasks scope All (a task that is
  * gone can be opened only by the last). The Admin box can open everything.
  *
  * An invoice's money and file events are also written on its job (S06.6 to S06.9, the job's Activity reads them there).
@@ -128,8 +127,8 @@ async function openableEvents(ctx: DashContext, plan: Plan, events: Event[]): Pr
     (async () => {
       const ids = idsOf('TASK');
       if (ids.length === 0) return;
-      // A task that no longer exists keeps its events; only See all tasks opens them.
-      if (seesAllTasks(ctx.req)) {
+      // A task that no longer exists keeps its events; only Tasks scope All opens them.
+      if (await seesAllTasks(ctx.req)) {
         ids.forEach((id) => open.add(`TASK:${id}`));
         return;
       }
@@ -204,8 +203,8 @@ export async function recentActivity(ctx: DashContext) {
     return {
       id: e.id,
       event_type: e.event_type,
-      // Dollar amounts in the feed are company figures.
-      description: ctx.sees ? e.description : redactDollarAmounts(e.description),
+      // The words of an entry name no figure (M4, Ran 2026-10-28), and no text is ever scanned.
+      description: e.description,
       entity_type: e.entity_type,
       entity_id: e.entity_id,
       entity_deleted: deletedLabel !== null,

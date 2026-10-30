@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
+import { canonicalUserId, sameUserId } from '../lib/users/sameUserId';
 import { logger } from '../lib/logger';
 import { logAudit } from '../lib/audit';
 import { clearTokenCache } from '../middleware/authenticate';
@@ -15,10 +16,12 @@ import {
   setPersonSwitchValues,
   type PersonSetRead,
 } from '../lib/permissions/switches/store';
+import { actorOf } from '../lib/users/access-audit';
+import { refuseUnlessOwnerForPerson } from '../lib/users/owner';
 
 /**
- * A person's switches (Roles & Permissions M2). Every route here needs Manage roles and permissions (the route
- * guard), and nobody writes their own set (checked here, whether or not they hold the switch).
+ * A person's switches (Roles & Permissions M2). Every route here is an Admin's alone (the route guard, AL-18), and nobody
+ * writes their own set (checked here).
  */
 
 const switchValue = z.union([z.boolean(), z.string(), z.array(z.string())]);
@@ -42,7 +45,7 @@ function shape(set: PersonSetRead, requesterId: string) {
   return {
     user_id: set.userId,
     admin_box: set.adminBox,
-    editable: !set.adminBox && set.userId.toLowerCase() !== requesterId.toLowerCase(),
+    editable: !set.adminBox && !sameUserId(set.userId, requesterId),
     based_on: set.basedOn,
     values: set.values,
     differences: set.differences,
@@ -76,12 +79,12 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
  * upper-case spelling of their own id. Something that is not an id names nobody.
  */
 function idOf(req: Request): string {
-  const id = String(req.params.id).toLowerCase();
+  const id = canonicalUserId(String(req.params.id));
   if (!UUID_PATTERN.test(id)) throw new PersonSetError('User not found', 'not_found');
   return id;
 }
 
-const isSelf = (req: Request) => idOf(req) === req.user!.id.toLowerCase();
+const isSelf = (req: Request) => sameUserId(idOf(req), req.user!.id);
 
 export async function getPersonSwitches(req: Request, res: Response) {
   try {
@@ -100,6 +103,8 @@ export async function putPersonSwitches(req: Request, res: Response) {
       res.status(403).json({ error: SELF_WRITE_REFUSED });
       return;
     }
+    // An Admin's switches are the Owner's to touch (ticket 26): checked before the Admin box answers that there are none.
+    if (await refuseUnlessOwnerForPerson(req, res, idOf(req))) return;
     const { values } = req.body as z.infer<typeof putPersonSwitchesSchema>;
     const saved = await setPersonSwitchValues({ organizationId: orgId, userId: idOf(req), values, actorId: req.user!.id });
     void logAudit({ req, action: 'user.permissions_updated', resourceType: 'User', resourceId: idOf(req), metadata: { switches: Object.keys(values) } });
@@ -118,6 +123,8 @@ export async function resetPersonSwitchValues(req: Request, res: Response) {
       res.status(403).json({ error: SELF_WRITE_REFUSED });
       return;
     }
+    // An Admin's switches are the Owner's to touch (ticket 26): checked before the Admin box answers that there are none.
+    if (await refuseUnlessOwnerForPerson(req, res, idOf(req))) return;
     const body = req.body as z.infer<typeof resetPersonSwitchesSchema>;
     const saved = await resetPersonSwitches({ organizationId: orgId, userId: idOf(req), switchKeys: body.all ? 'all' : body.switch_keys!, actorId: req.user!.id });
     void logAudit({ req, action: 'user.permissions_reset', resourceType: 'User', resourceId: idOf(req), metadata: { switches: body.all ? 'all' : body.switch_keys } });
@@ -136,8 +143,10 @@ export async function saveSwitchesAsNewRole(req: Request, res: Response) {
       res.status(403).json({ error: SELF_WRITE_REFUSED });
       return;
     }
+    // An Admin's switches are the Owner's to touch (ticket 26): checked before the Admin box answers that there are none.
+    if (await refuseUnlessOwnerForPerson(req, res, idOf(req))) return;
     const { label, description } = req.body as z.infer<typeof saveAsRoleSchema>;
-    const { role, set } = await saveSwitchesAsRole({ organizationId: orgId, userId: idOf(req), label, description, actorId: req.user!.id });
+    const { role, set } = await saveSwitchesAsRole({ organizationId: orgId, userId: idOf(req), label, description, actorId: req.user!.id, actor: actorOf(req) });
     // The person's role moved: drop the cached sign-in so the next request sees it.
     clearTokenCache(idOf(req));
     void logAudit({ req, action: 'role.created', resourceType: 'Role', resourceId: role.id, metadata: { key: role.key, base_role: role.base_role, from: 'person' } });

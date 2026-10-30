@@ -49,7 +49,6 @@ describe('addOrFilter — clobber-safe OR composition', () => {
 const mockLead = prisma as unknown as {
   lead: { findMany: ReturnType<typeof vi.fn>; count: ReturnType<typeof vi.fn> };
   tag: { findMany: ReturnType<typeof vi.fn> };
-  userPermissionOverride: { findMany: ReturnType<typeof vi.fn> };
 };
 
 function whereOf(mock: ReturnType<typeof vi.fn>): Record<string, unknown> {
@@ -80,9 +79,6 @@ describe('GET /api/leads (LIST) — multi-read scope OR survives a search OR (Is
     mockAuthAs('technician');
     // tech default role read = OWN_WALKTHROUGH (conditional); override `update Lead` synthesizes a
     // second distinct conditional read = OWN_LEAD ⇒ scopeWhereFor returns { OR: [walkthrough, own] }.
-    mockLead.userPermissionOverride.findMany.mockResolvedValue([
-      { action: 'update', subject: 'Lead', effect: 'allow' },
-    ]);
 
     const res = await request(app).get('/api/leads?search=smith').set(authHeader('technician'));
 
@@ -105,9 +101,6 @@ describe('GET /api/leads (LIST) — multi-read scope OR survives a search OR (Is
 
   it('granted tech (override update Lead), NO search: scope OR is the (uncontested) top-level OR', async () => {
     mockAuthAs('technician');
-    mockLead.userPermissionOverride.findMany.mockResolvedValue([
-      { action: 'update', subject: 'Lead', effect: 'allow' },
-    ]);
 
     const res = await request(app).get('/api/leads').set(authHeader('technician'));
 
@@ -129,7 +122,6 @@ const mockInv = prisma as unknown as {
   };
   payment: { aggregate: ReturnType<typeof vi.fn> };
   job: { count: ReturnType<typeof vi.fn> };
-  userPermissionOverride: { findMany: ReturnType<typeof vi.fn> };
 };
 
 describe('GET /api/invoices (LIST) — multi-read scope OR survives a search OR (Issue 1)', () => {
@@ -143,21 +135,18 @@ describe('GET /api/invoices (LIST) — multi-read scope OR survives a search OR 
     mockInv.job.count.mockResolvedValue(0);
   });
 
-  it('SALES (role read OWN_INVOICE_VIA_LEAD) + override create Invoice + ?search=: BOTH scope arms kept', async () => {
+  it('SALES (read through its own leads, plus the invoices it made for a customer alone) + ?search=: BOTH scope arms kept', async () => {
     mockAuthAs('sales');
-    // SALES default role read Invoice = OWN_INVOICE_VIA_LEAD (job.estimate.lead.lead_assignees).
-    // Per-user override create Invoice → synthesizes a SECOND distinct read = OWN_INVOICE_VIA_JOB.
-    mockInv.userPermissionOverride.findMany.mockResolvedValue([
-      { action: 'create', subject: 'Invoice', effect: 'allow' },
-    ]);
+    // SALES reads Invoice = OWN_INVOICE_VIA_LEAD (job.estimate.lead.lead_assignees) and, as a second distinct read, the
+    // invoices it made for a customer alone (P7).
 
     const res = await request(app).get('/api/invoices?search=I00001').set(authHeader('sales'));
 
     expect(res.status).toBe(200);
     const where = whereOf(mockInv.invoice.findMany);
-    // Both scope arms (via-lead AND via-job) survive: the via-lead arm has `estimate`, both have `job`.
-    expect(deepHas(where, 'estimate')).toBe(true); // unique to OWN_INVOICE_VIA_LEAD
-    expect(deepHas(where, 'assignees')).toBe(true);
+    // Both scope arms survive: the via-lead arm has `lead_assignees`, the made-by-me arm has `created_by_id`.
+    expect(deepHas(where, 'lead_assignees')).toBe(true);
+    expect(deepHas(where, 'created_by_id')).toBe(true);
     // The search clauses are present too (neither OR dropped).
     expect(deepHas(where, 'invoice_number')).toBe(true);
   });

@@ -81,7 +81,7 @@ suite('payment link never issues a DRAFT; mark-sent does (real database)', () =>
       },
     });
     await db.user.create({
-      data: { id: user, organization_id: org, email: `admin-${tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN' },
+      data: { id: user, organization_id: org, email: `admin-${tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN', is_admin: true },
     });
     await db.customer.create({
       data: {

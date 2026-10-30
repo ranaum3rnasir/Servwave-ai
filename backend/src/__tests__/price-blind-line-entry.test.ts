@@ -1,7 +1,7 @@
 /**
  * SERV10X-38 Task 4 (D13c), reworked by Roles & Permissions S01.15 — the cost of a new job line.
  *
- * A requester without See financial data (e.g. a TECHNICIAN with Edit job line items) can add a job
+ * A requester without See costs (e.g. a TECHNICIAN with Edit job line items) can add a job
  * line item and sets its PRICE like anyone else (prices follow the job; who may price is the Edit job
  * line items switch). It must never dictate its COST: whatever unit_cost / markup_percent it sends is
  * dropped and the server resolves the cost from the referenced PriceBookItem. A line that names a
@@ -89,7 +89,7 @@ describe('POST /api/jobs/:id/line-items — D13c cost resolution', () => {
 
   it('a cost-blind technician referencing a catalog item keeps their own price and gets the server-resolved cost, not their own', async () => {
     mockAuthAs('technician');
-    mockRoleGrantsWithout('TECHNICIAN', ['read', 'Pricing']);  // cost-blind on purpose: See financial data is off in the Technician preset
+    mockRoleGrantsWithout('TECHNICIAN', ['read', 'Pricing']);  // cost-blind on purpose: See costs is off in the Technician preset
     mockPrisma.priceBookItem.findFirst.mockResolvedValue({
       unit_price: PRICE_BOOK_ITEM_FIXTURE.unit_price,
       unit_cost: PRICE_BOOK_ITEM_FIXTURE.unit_cost,
@@ -169,7 +169,7 @@ describe('POST /api/jobs/:id/line-items — D13c cost resolution', () => {
 
   it('a cost-blind technician referencing a bad/foreign price_book_item_id gets 404, no create', async () => {
     mockAuthAs('technician');
-    mockRoleGrantsWithout('TECHNICIAN', ['read', 'Pricing']);  // cost-blind on purpose: See financial data is off in the Technician preset
+    mockRoleGrantsWithout('TECHNICIAN', ['read', 'Pricing']);  // cost-blind on purpose: See costs is off in the Technician preset
     mockPrisma.priceBookItem.findFirst.mockResolvedValue(null);
 
     const res = await request(app)

@@ -4,7 +4,7 @@ import { prisma } from './prisma';
 import { logger } from './logger';
 import { supabaseAdmin, createIsolatedAuthClient } from './supabase';
 import { sendPasswordResetEmail } from './email';
-import { resolveAppUser, type AppUser } from './auth-user';
+import { resolveAppUser, signInRefusal, type AppUser } from './auth-user';
 import { clearTokenCache } from '../middleware/authenticate';
 import { isWeakPasswordError, isSessionMissingError } from './auth-provider-errors';
 
@@ -285,7 +285,8 @@ export async function completePasswordReset(token: string, password: string): Pr
   try {
     const user = await resolveAppUser(authUser);
     if (user) logId = user.id;
-    if (!user || !user.is_active || !user.has_login) return { kind: 'invalid_link' };
+    // The one sign-in check (H2): a revoked or deactivated person's reset link sets nothing.
+    if (!user || signInRefusal(user)) return { kind: 'invalid_link' };
 
     let updateError: unknown;
     try {

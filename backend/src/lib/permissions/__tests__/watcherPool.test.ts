@@ -28,21 +28,21 @@ const user = (
   id: string,
   role: WatcherCandidate['role'],
   department_id: string | null = null,
-): WatcherCandidate => ({ id, role, department_id });
+): WatcherCandidate => ({ is_admin: role === 'ADMIN', id, role, department_id });
 
 describe('resolveWatcherPool — the ability, not the role name', () => {
   it('an ADMIN resolves org-wide through the manage-all short-circuit, holding no explicit grant', () => {
-    const ability = defineAbilityFor({ id: 'admin-1', role: 'ADMIN' }, []);
+    const ability = defineAbilityFor({ is_admin: true, id: 'admin-1', role: 'ADMIN' }, []);
     expect(resolveWatcherPool(ability, 'admin-1', DEPT_A)).toEqual({ scope: 'org' });
   });
 
   it('an ADMIN with NO department stays org-wide — an unset department must not restrict the unrestricted role', () => {
-    const ability = defineAbilityFor({ id: 'admin-2', role: 'ADMIN' }, []);
+    const ability = defineAbilityFor({ is_admin: true, id: 'admin-2', role: 'ADMIN' }, []);
     expect(resolveWatcherPool(ability, 'admin-2', null)).toEqual({ scope: 'org' });
   });
 
   it('SALES resolves to the cohort, carrying THEIR id and THEIR department', () => {
-    const ability = defineAbilityFor({ id: 'sales-7', role: 'SALES' }, [READ_LEAD]);
+    const ability = defineAbilityFor({ is_admin: false, id: 'sales-7', role: 'SALES' }, [READ_LEAD]);
     expect(resolveWatcherPool(ability, 'sales-7', DEPT_A)).toEqual({
       scope: 'cohort',
       userId: 'sales-7',
@@ -51,7 +51,7 @@ describe('resolveWatcherPool — the ability, not the role name', () => {
   });
 
   it('a departmentless actor normalises to a null department rather than undefined', () => {
-    const ability = defineAbilityFor({ id: 'sales-8', role: 'SALES' }, [READ_LEAD]);
+    const ability = defineAbilityFor({ is_admin: false, id: 'sales-8', role: 'SALES' }, [READ_LEAD]);
     expect(resolveWatcherPool(ability, 'sales-8', undefined)).toEqual({
       scope: 'cohort',
       userId: 'sales-8',
@@ -64,7 +64,7 @@ describe('resolveWatcherPool — the ability, not the role name', () => {
     // an explicit, deliberately-subtracted grant set; treating it as a superuser here would
     // silently hand it the org-wide pool its grant set was written to withhold.
     const ability = defineAbilityFor(
-      { id: 'cust-1', role: 'ADMIN', custom_role_id: 'cr-minus-payroll' },
+      { is_admin: false, id: 'cust-1', role: 'ADMIN', custom_role_id: 'cr-minus-payroll' },
       [READ_LEAD],
     );
     expect(resolveWatcherPool(ability, 'cust-1', DEPT_A)).toEqual({
@@ -83,7 +83,7 @@ describe('resolveWatcherPool — the ability, not the role name', () => {
   });
 
   it('resolveWatcherPoolForRequest reads id and department off the session', () => {
-    const ability = defineAbilityFor({ id: 'tech-3', role: 'TECHNICIAN' }, []);
+    const ability = defineAbilityFor({ is_admin: false, id: 'tech-3', role: 'TECHNICIAN' }, []);
     const req = { ability, user: { id: 'tech-3', department_id: DEPT_B } } as unknown as Request;
     expect(resolveWatcherPoolForRequest(req)).toEqual({
       scope: 'cohort',
@@ -103,7 +103,7 @@ describe('resolveWatcherPool — the ability, not the role name', () => {
 
 describe('isWatcherPermitted — the three clauses', () => {
   const pool = resolveWatcherPool(
-    defineAbilityFor({ id: 'me', role: 'SALES' }, [READ_LEAD]),
+    defineAbilityFor({ is_admin: false, id: 'me', role: 'SALES' }, [READ_LEAD]),
     'me',
     DEPT_A,
   );
@@ -138,7 +138,7 @@ describe('isWatcherPermitted — the three clauses', () => {
 
 describe('isWatcherPermitted — a null department is not a department', () => {
   const pool = resolveWatcherPool(
-    defineAbilityFor({ id: 'me', role: 'SALES' }, [READ_LEAD]),
+    defineAbilityFor({ is_admin: false, id: 'me', role: 'SALES' }, [READ_LEAD]),
     'me',
     null,
   );
@@ -155,7 +155,7 @@ describe('isWatcherPermitted — a null department is not a department', () => {
 });
 
 describe('an org-scoped pool permits everyone', () => {
-  const pool = resolveWatcherPool(defineAbilityFor({ id: 'admin-1', role: 'ADMIN' }, []), 'admin-1', null);
+  const pool = resolveWatcherPool(defineAbilityFor({ is_admin: true, id: 'admin-1', role: 'ADMIN' }, []), 'admin-1', null);
 
   it('permits a stranger in another department', () => {
     expect(isWatcherPermitted(pool, user('stranger', 'TECHNICIAN', DEPT_B))).toBe(true);
@@ -171,23 +171,23 @@ describe('watcherPoolWhere — the read side, derived from the same clauses', ()
     // The roster`s `where` may already carry an OR (include_referenced_in). A bare `OR` here
     // would overwrite it and silently widen the roster.
     const pool = resolveWatcherPool(
-      defineAbilityFor({ id: 'me', role: 'SALES' }, [READ_LEAD]),
+      defineAbilityFor({ is_admin: false, id: 'me', role: 'SALES' }, [READ_LEAD]),
       'me',
       DEPT_A,
     );
     expect(watcherPoolWhere(pool)).toEqual({
-      AND: [{ OR: [{ id: 'me' }, { role: 'ADMIN' }, { department_id: DEPT_A }] }],
+      AND: [{ OR: [{ id: 'me' }, { is_admin: true }, { department_id: DEPT_A }] }],
     });
   });
 
   it('omits the department clause entirely when the actor has none', () => {
     const pool = resolveWatcherPool(
-      defineAbilityFor({ id: 'me', role: 'SALES' }, [READ_LEAD]),
+      defineAbilityFor({ is_admin: false, id: 'me', role: 'SALES' }, [READ_LEAD]),
       'me',
       null,
     );
     expect(watcherPoolWhere(pool)).toEqual({
-      AND: [{ OR: [{ id: 'me' }, { role: 'ADMIN' }] }],
+      AND: [{ OR: [{ id: 'me' }, { is_admin: true }] }],
     });
   });
 
@@ -195,7 +195,7 @@ describe('watcherPoolWhere — the read side, derived from the same clauses', ()
     // The read and the write must answer identically. Asserted by running both over one cast
     // and comparing the sets, so a clause added to one and not the other fails here.
     const pool = resolveWatcherPool(
-      defineAbilityFor({ id: 'me', role: 'SALES' }, [READ_LEAD]),
+      defineAbilityFor({ is_admin: false, id: 'me', role: 'SALES' }, [READ_LEAD]),
       'me',
       DEPT_A,
     );
@@ -224,7 +224,7 @@ describe('watcherPoolWhere — the read side, derived from the same clauses', ()
 
 describe('isWatcherSetPermitted — the set form the controllers call', () => {
   const pool = resolveWatcherPool(
-    defineAbilityFor({ id: 'me', role: 'SALES' }, [READ_LEAD]),
+    defineAbilityFor({ is_admin: false, id: 'me', role: 'SALES' }, [READ_LEAD]),
     'me',
     DEPT_A,
   );

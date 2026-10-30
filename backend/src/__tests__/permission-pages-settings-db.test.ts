@@ -33,7 +33,6 @@ import { SWITCH_CATALOG, findSwitch } from '../lib/permissions/switches/catalog'
 const suite = realClient ? describe : describe.skip;
 
 const keyOf = (label: string) => SWITCH_CATALOG.find((s) => s.label === label)!.key;
-const COMPANY_SETTINGS = keyOf('Company settings');
 const CREATE_TAGS = keyOf('Create tags');
 const MANAGE_TAGS = keyOf('Manage tags');
 const MANAGE_TASK_CATEGORIES = keyOf('Manage task categories');
@@ -138,7 +137,7 @@ suite('Pages and settings follow switches; the dashboard and reference data answ
       }
     });
 
-    it('does not widen a write: editing the company, its tax rates and sub-statuses still needs Company settings', async () => {
+    it('does not widen a write: editing the company, its tax rates and sub-statuses still needs an Admin', async () => {
       const { org } = await fx.newOrg();
       const nobody = await personWith(org, {});
       const api = await nobody.api();
@@ -258,20 +257,8 @@ suite('Pages and settings follow switches; the dashboard and reference data answ
     const uuid = randomUUID();
     type Probe = { switchKey: string; check: string; call: (api: Api) => ReturnType<Api['get']>; extraOn?: Record<string, boolean> };
     const probes: Probe[] = [
-      { switchKey: COMPANY_SETTINGS, check: 'organization-update', call: (api) => api.patch('/api/organization', { display_name: 'Probe Co' }) },
-      // The Sender Address page's save (S10.26): it also moves every person's address, so Company settings alone opens it.
-      { switchKey: COMPANY_SETTINGS, check: 'organization-email-sender', call: (api) => api.patch('/api/organization/email-sender', { local_part: `probe${randomUUID().replace(/-/g, '').replace(/[0-9]/g, (d) => 'abcdefghij'[Number(d)]!).slice(0, 10)}` }) },
-      { switchKey: COMPANY_SETTINGS, check: 'organization-email-sender-read', call: (api) => api.get('/api/organization/email-sender') },
-      // The people who read the main mailbox (S10.8): the page's list, its picker, and linking and unlinking one person. An
-      // unknown person answers 404 / 200 (never 403), so "let in" is told apart from "refused".
-      { switchKey: COMPANY_SETTINGS, check: 'organization-email-readers-read', call: (api) => api.get('/api/organization/email-sender/readers') },
-      { switchKey: COMPANY_SETTINGS, check: 'organization-email-readers-candidates', call: (api) => api.get('/api/organization/email-sender/readers/candidates') },
-      { switchKey: COMPANY_SETTINGS, check: 'organization-email-reader-link', call: (api) => api.put(`/api/organization/email-sender/readers/${uuid}`) },
-      { switchKey: COMPANY_SETTINGS, check: 'organization-email-reader-unlink', call: (api) => api.delete(`/api/organization/email-sender/readers/${uuid}`) },
-      { switchKey: COMPANY_SETTINGS, check: 'org-tax-rate-create', call: (api) => api.post('/api/org-tax-rates', {}) },
-      { switchKey: COMPANY_SETTINGS, check: 'job-sub-status-create', call: (api) => api.post('/api/job-sub-statuses', {}) },
-      { switchKey: COMPANY_SETTINGS, check: 'custom-field-definition-create', call: (api) => api.post('/api/custom-field-definitions', {}) },
-      { switchKey: COMPANY_SETTINGS, check: 'app-setting-update', call: (api) => api.patch('/api/settings/probe_setting', { value: 'on' }) },
+      // The Company settings checks (the company form, the sender address, tax rates, sub-statuses, custom fields, app settings) are
+      // gone with the switch (36b, M17): setting up the company is the Admin flag's alone, proved by permission-company-settings-admin-only-db.test.ts.
       { switchKey: CREATE_TAGS, check: 'tag-create', call: (api) => api.post('/api/tags', { name: `probe-${randomUUID().slice(0, 8)}` }) },
       { switchKey: MANAGE_TAGS, check: 'tag-update', call: (api) => api.patch(`/api/tags/${uuid}`, { name: 'x' }) },
       { switchKey: MANAGE_TAGS, check: 'tag-delete', call: (api) => api.delete(`/api/tags/${uuid}`) },
@@ -329,7 +316,7 @@ suite('Pages and settings follow switches; the dashboard and reference data answ
       });
     }
 
-    it('takes company settings away from a role whose stored grants still hold the old organization update', async () => {
+    it('takes company settings away from a role whose stored grants still hold the old organization update (only the Admin flag opens them)', async () => {
       const { org } = await fx.newOrg();
       const stale = await personWith(org, {}, { extraGrants: [{ action: 'update', subject: 'Organization' }] });
       expect((await (await stale.api()).patch('/api/organization', { display_name: 'Nope' })).status).toBe(403);

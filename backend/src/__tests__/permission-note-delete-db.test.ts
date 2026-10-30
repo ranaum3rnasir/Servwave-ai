@@ -1,6 +1,7 @@
 /* =============================================================================
-   Roles & Permissions, PRD 4, slice S04.25 - deleting a note on a job or a lead: the author's own, anyone's with
-   Delete other people's notes, the completed-job lock, and the activity entry that keeps the text.
+   Roles & Permissions, PRD 4, slice S04.25 and AL-07 (P10, A8d) - deleting a note on a job or a lead: the author's own,
+   anyone's with the record's Edit (Edit jobs, Edit leads), the completed-job lock, and the activity entry that keeps the
+   text. There is no Delete-other-people's-notes switch: a note is the record's own data.
 
    Everything goes through the public interface: the note routes (list, delete) and the record's timeline, called as
    people on custom roles (never a built-in role name) holding exactly the switch values under test. Real migrated
@@ -40,6 +41,9 @@ const LOCK_MESSAGE = 'This job is locked. Only someone who can change locked job
 
 /** What opening a job and a lead takes, with no note switch on. */
 const OPENING = { view_jobs: true, jobs_scope: 'all', view_leads: true, leads_scope: 'all' };
+
+/** The Edit of each record a note hangs on: what deletes anyone's note on it. */
+const EDITS = { edit_jobs: true, edit_leads: true };
 
 const lockedStatuses: JobStatus[] = ['COMPLETED', 'OFFICE_REVIEW', 'READY_TO_CLOSE', 'DONE', 'CANCELLED'];
 
@@ -95,7 +99,7 @@ suite('deleting a note on a job or a lead (real database)', () => {
   const route = (e: Entity, note?: string) => `/api/${e.type.toLowerCase()}s/${e.id}/notes${note ? `/${note}` : ''}`;
   const reopen = (jobId: string) => db.job.update({ where: { id: jobId }, data: { status: 'SCHEDULED' }, select: { id: true } });
 
-  describe('a person\'s own notes (the route-level rows for Delete other people\'s notes)', () => {
+  describe('a person\'s own notes, and the record\'s Edit for anyone else\'s', () => {
     it('deletes their own note on an unlocked job and on a lead, with no note switch on, and is refused someone else\'s', async () => {
       const { org, customer, admin } = await newOrg();
       const job = await fx.addJob(org, customer);
@@ -114,11 +118,11 @@ suite('deleting a note on a job or a lead (real database)', () => {
       }
     });
 
-    it('lets anyone\'s note go with Delete other people\'s notes, and the note leaves the list', async () => {
+    it('lets anyone\'s note go with the record\'s Edit, and the note leaves the list', async () => {
       const { org, customer, admin } = await newOrg();
       const job = await fx.addJob(org, customer);
       const lead = await fx.addLead(org, customer);
-      const person = await personWith(org, { delete_others_notes: true });
+      const person = await personWith(org, EDITS);
       const api = await person.api();
       for (const e of [{ type: 'JOB', id: job.id }, { type: 'LEAD', id: lead.id }] as Entity[]) {
         const theirs = await addNote(org, e, admin.id);
@@ -129,18 +133,18 @@ suite('deleting a note on a job or a lead (real database)', () => {
       }
     });
 
-    it('refuses the switch\'s holder on a record they cannot open, and a note that is not on this record', async () => {
+    it('refuses the Edit holder on a record they cannot open, and answers not found for a note that is not on this record', async () => {
       const { org, customer, admin } = await newOrg();
       const elsewhere = await fx.addJob(org, customer);
-      const person = await personWith(org, { delete_others_notes: true, jobs_scope: 'attached' });
+      const person = await personWith(org, { ...EDITS, jobs_scope: 'attached' });
       const crewJob = await fx.addJob(org, customer, { crew: [person.id] });
       const api = await person.api();
       const hidden = await addNote(org, { type: 'JOB', id: elsewhere.id }, admin.id);
-      expect((await api.delete(route({ type: 'JOB', id: elsewhere.id }, hidden))).status).toBe(403);
+      expect((await api.delete(route({ type: 'JOB', id: elsewhere.id }, hidden))).status).toBe(404);
       expect(await notesLeft(hidden)).toBe(1);
 
       // A note on one job is not reachable through another job's route, and a missing note is not found.
-      const all = await personWith(org, { delete_others_notes: true });
+      const all = await personWith(org, EDITS);
       const other = await all.api();
       const onElsewhere = await addNote(org, { type: 'JOB', id: elsewhere.id }, admin.id);
       expect((await other.delete(route({ type: 'JOB', id: crewJob.id }, onElsewhere))).status).toBe(404);
@@ -152,7 +156,7 @@ suite('deleting a note on a job or a lead (real database)', () => {
       const { org, customer, admin } = await newOrg();
       const job = await fx.addJob(org, customer);
       const lead = await fx.addLead(org, customer);
-      const person = await personWith(org, { delete_others_notes: true });
+      const person = await personWith(org, EDITS);
       const api = await person.api();
       const leadNote = await addNote(org, { type: 'LEAD', id: lead.id }, admin.id);
       const jobNote = await addNote(org, { type: 'JOB', id: job.id }, admin.id);
@@ -165,7 +169,7 @@ suite('deleting a note on a job or a lead (real database)', () => {
       const theirs = await newOrg();
       const theirJob = await fx.addJob(theirs.org, theirs.customer);
       const theirNote = await addNote(theirs.org, { type: 'JOB', id: theirJob.id }, theirs.admin.id);
-      const person = await personWith(mine.org, { delete_others_notes: true });
+      const person = await personWith(mine.org, EDITS);
       const res = await (await person.api()).delete(route({ type: 'JOB', id: theirJob.id }, theirNote));
       expect([403, 404]).toContain(res.status);
       expect(await notesLeft(theirNote)).toBe(1);
@@ -177,7 +181,7 @@ suite('deleting a note on a job or a lead (real database)', () => {
       const { org, customer, admin } = await newOrg();
       const job = await fx.addJob(org, customer, { status });
       const e: Entity = { type: 'JOB', id: job.id };
-      const holder = await personWith(org, { delete_others_notes: true, edit_jobs: true });
+      const holder = await personWith(org, EDITS);
       const plain = await personWith(org, {});
       for (const [who, person] of [['holder', holder], ['plain', plain]] as const) {
         const api = await person.api();
@@ -192,7 +196,7 @@ suite('deleting a note on a job or a lead (real database)', () => {
       }
     });
 
-    it('lets a Change locked jobs holder delete their own note, and anyone\'s only with Delete other people\'s notes too', async () => {
+    it('lets a Change locked jobs holder delete their own note, and anyone\'s only with the job\'s Edit too', async () => {
       const { org, customer, admin } = await newOrg();
       const job = await fx.addJob(org, customer, { status });
       const e: Entity = { type: 'JOB', id: job.id };
@@ -202,14 +206,14 @@ suite('deleting a note on a job or a lead (real database)', () => {
       expect((await keyApi.delete(route(e, mine))).status).toBe(200);
       expect(await notesLeft(mine)).toBe(0);
 
-      // The key opens the lock, not the switch: someone else's note stays out of reach without Delete other people's notes.
+      // The key opens the lock, not the Edit: someone else's note stays out of reach without Edit jobs.
       const theirs = await addNote(org, e, admin.id);
       const refused = await keyApi.delete(route(e, theirs));
       expect(refused.status).toBe(403);
       expect(refused.body.error).toBe('You can only delete notes you wrote.');
       expect(await notesLeft(theirs)).toBe(1);
 
-      const both = await personWith(org, { change_locked_jobs: true, delete_others_notes: true });
+      const both = await personWith(org, { change_locked_jobs: true, ...EDITS });
       expect((await (await both.api()).delete(route(e, theirs))).status).toBe(200);
       expect(await notesLeft(theirs)).toBe(0);
     });
@@ -248,9 +252,10 @@ suite('deleting a note on a job or a lead (real database)', () => {
     const { org, customer, admin } = await newOrg();
     const job = await fx.addJob(org, customer, { status: 'COMPLETED' });
     const note = await addNote(org, { type: 'JOB', id: job.id }, admin.id);
-    const person = await personWith(org, { delete_others_notes: true, jobs_scope: 'attached' });
+    const person = await personWith(org, { ...EDITS, jobs_scope: 'attached' });
     const res = await (await person.api()).delete(route({ type: 'JOB', id: job.id }, note));
-    expect(res.status).toBe(403);
+    // A job the person cannot open is refused whatever its lock, and the lock is never told.
+    expect(res.status).toBe(404);
     expect(res.body.error).not.toBe(LOCK_MESSAGE);
   });
 
@@ -263,7 +268,7 @@ suite('deleting a note on a job or a lead (real database)', () => {
       const person = await personWith(org, {});
       const mine = await addNote(org, e, person.id);
       expect((await (await person.api()).delete(route(e, mine))).status).toBe(200);
-      const holder = await personWith(org, { delete_others_notes: true });
+      const holder = await personWith(org, EDITS);
       const theirs = await addNote(org, e, admin.id);
       expect((await (await holder.api()).delete(route(e, theirs))).status).toBe(200);
     });
@@ -279,7 +284,7 @@ suite('deleting a note on a job or a lead (real database)', () => {
       const job = await fx.addJob(org, customer);
       const lead = await fx.addLead(org, customer);
       const author = await personWith(org, {}, { name: 'Uma' });
-      const deleter = await personWith(org, { delete_others_notes: true }, { name: 'Dan' });
+      const deleter = await personWith(org, EDITS, { name: 'Dan' });
       const api = await deleter.api();
       const written = new Map<string, Date>();
       for (const e of [{ type: 'JOB', id: job.id }, { type: 'LEAD', id: lead.id }] as Entity[]) {
@@ -309,8 +314,8 @@ suite('deleting a note on a job or a lead (real database)', () => {
       const job = await fx.addJob(org, customer, { status: 'DONE' });
       const e: Entity = { type: 'JOB', id: job.id };
       const author = await personWith(org, {}, { name: 'Uma' });
-      const holder = await personWith(org, { change_locked_jobs: true, delete_others_notes: true }, { name: 'Dan' });
-      const blocked = await personWith(org, { delete_others_notes: true }, { name: 'Bea' });
+      const holder = await personWith(org, { change_locked_jobs: true, ...EDITS }, { name: 'Dan' });
+      const blocked = await personWith(org, EDITS, { name: 'Bea' });
       const note = await addNote(org, e, author.id, 'Spare key under the mat');
       expect((await (await blocked.api()).delete(route(e, note))).status).toBe(403);
       expect(await db.timelineEvent.count({ where: { entity_id: job.id, event_type: 'NOTE_DELETED' } })).toBe(0);
@@ -333,12 +338,12 @@ suite('deleting a note on a job or a lead (real database)', () => {
       return (res.body.notes as Row[]).find((n) => n.id === note)!;
     };
 
-    it('lets delete show only on the person\'s own notes without Delete other people\'s notes, and on every note with it', async () => {
+    it('lets delete show only on the person\'s own notes without the record\'s Edit, and on every note with it', async () => {
       const { org, customer, admin } = await newOrg();
       const job = await fx.addJob(org, customer);
       const lead = await fx.addLead(org, customer);
       const plain = await personWith(org, {});
-      const holder = await personWith(org, { delete_others_notes: true });
+      const holder = await personWith(org, EDITS);
       for (const e of [{ type: 'JOB', id: job.id }, { type: 'LEAD', id: lead.id }] as Entity[]) {
         const mine = await addNote(org, e, plain.id);
         const theirs = await addNote(org, e, admin.id);
@@ -354,8 +359,8 @@ suite('deleting a note on a job or a lead (real database)', () => {
       const job = await fx.addJob(org, customer, { status: 'OFFICE_REVIEW' });
       const e: Entity = { type: 'JOB', id: job.id };
       const plain = await personWith(org, {});
-      const holder = await personWith(org, { delete_others_notes: true });
-      const keyHolder = await personWith(org, { change_locked_jobs: true, delete_others_notes: true });
+      const holder = await personWith(org, EDITS);
+      const keyHolder = await personWith(org, { change_locked_jobs: true, ...EDITS });
       const mine = await addNote(org, e, plain.id);
       const theirs = await addNote(org, e, admin.id);
 
@@ -372,7 +377,7 @@ suite('deleting a note on a job or a lead (real database)', () => {
       const lead = await fx.addLead(org, customer);
       const job = await fx.addJob(org, customer, { fromLead: lead.id });
       const leadNote = await addNote(org, { type: 'LEAD', id: lead.id }, admin.id);
-      const person = await personWith(org, { delete_others_notes: true });
+      const person = await personWith(org, EDITS);
       const row = await rowOf(await person.api(), { type: 'JOB', id: job.id }, leadNote, '?include_lead=true');
       expect(row).toMatchObject({ source: 'LEAD', can_delete: false, locked_actions: [] });
       // On the lead page it follows the lead's ordinary rule.
@@ -380,22 +385,17 @@ suite('deleting a note on a job or a lead (real database)', () => {
     });
   });
 
-  describe('the route-level row for Delete other people\'s notes', () => {
-    it('names its server checks in the catalog and is no longer pending', () => {
-      const entry = findSwitch('delete_others_notes')!;
-      expect(entry.pending).toBeUndefined();
-      expect(entry.serverChecks).toEqual(['job-note-delete-others', 'lead-note-delete-others']);
+  describe('the record\'s Edit decides the notes of other people', () => {
+    it('has no Delete-other-people\'s-notes switch any more', () => {
+      expect(findSwitch('delete_others_notes')).toBeUndefined();
     });
 
-    it.each([
-      ['job-note-delete-others', 'JOB'],
-      ['lead-note-delete-others', 'LEAD'],
-    ] as const)('%s: lets the request in with the switch on and refuses it with the switch off', async (_check, type) => {
+    it.each([['JOB'], ['LEAD']] as const)('%s: lets the request in with the record\'s Edit and refuses it without', async (type) => {
       const { org, customer, admin } = await newOrg();
       const record = type === 'JOB' ? await fx.addJob(org, customer) : await fx.addLead(org, customer);
       const e: Entity = { type, id: record.id };
-      const on = await personWith(org, { delete_others_notes: true });
-      const off = await personWith(org, { delete_others_notes: false });
+      const on = await personWith(org, EDITS);
+      const off = await personWith(org, {});
       const note = await addNote(org, e, admin.id);
       const refused = await (await off.api()).delete(route(e, note));
       expect(refused.status).toBe(403);

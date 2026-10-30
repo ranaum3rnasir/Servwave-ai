@@ -135,7 +135,7 @@ suite('the inbound mail router: fresh mail to an issued mailbox address (real da
         organizationId: org, roleKey: `${key}-${seq}`,
         values: {
           view_jobs: true, jobs_scope: 'attached', view_leads: true, leads_scope: 'attached', view_customers: true,
-          access_communication: true, show_email: true, view_communication: true, communication_scope: 'linked_to_me', ...values,
+          access_communication: true, show_email: true, view_communication: true, communication_scope: 'attached', ...values,
         },
         actorId: null, reason: 'manual',
       });

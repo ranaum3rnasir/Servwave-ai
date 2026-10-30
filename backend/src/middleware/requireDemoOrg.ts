@@ -1,4 +1,5 @@
 import type { Request, Response, NextFunction } from 'express';
+import { markRouteCheck } from './routeCheck';
 
 /**
  * Demo-only lock - the "does this surface exist for a paying org yet" axis.
@@ -23,7 +24,7 @@ import type { Request, Response, NextFunction } from 'express';
  * shipped), denies.
  */
 export function requireDemoOrg(feature: string) {
-  return (req: Request, res: Response, next: NextFunction): void => {
+  return markRouteCheck('gate', (req: Request, res: Response, next: NextFunction): void => {
     if (!req.user) {
       res.status(401).json({ error: 'Not authenticated' });
       return;
@@ -33,5 +34,5 @@ export function requireDemoOrg(feature: string) {
       return;
     }
     res.status(404).json({ error: 'FEATURE_DISABLED', feature });
-  };
+  });
 }

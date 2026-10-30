@@ -3,8 +3,8 @@
 
    Each of the three used to go to "every Dispatcher" by role (and the Sold By and crew). Now each goes through the chain:
    lane 1 is the job's people (its stored Sold By, crew and Dispatcher); lane 2 is who must act (the job's Dispatcher, else
-   the holders of the verb's step switch who can open the job, else the Manage roles and permissions holders, stopping at
-   the first step that finds someone); holders of Alert me about every job get a copy. The step switch is Assign people to
+   the holders of the verb's step switch who can open the job, else the company's Admins, stopping at the first step that
+   finds someone; an Admin holds every switch, so an Admin who can be told is found at the step already, AL-18); holders of Alert me about every job get a copy. The step switch is Assign people to
    jobs for started and Office review for cancelled and reopened (the M6 table). "Someone" is active, can open the job and
    is not the person who did the action. Nobody comes from a role name. Priorities and "needs action" are what each verb
    always had: started and reopened are plain feed alerts, cancelled interrupts the job's crew; none asks anyone to act.
@@ -58,7 +58,8 @@ const ALL_OFF: Record<string, SwitchValue> = Object.fromEntries(
 );
 
 const opensJobs = { view_jobs: true, jobs_scope: 'all' };
-const managerValues = { ...opensJobs, manage_roles_and_permissions: true, view_users: true };
+// An Admin (the flag, AL-18): holds every switch, the step and the copy switches included, and opens every record.
+const adminValues = { ...opensJobs, is_admin: true, view_users: true };
 
 type Api = Awaited<ReturnType<ReturnType<typeof switchFixture>['signedInAs']>>;
 
@@ -128,9 +129,11 @@ suite('the job started, cancelled and reopened alerts (real database)', () => {
   /** A person on a fresh custom role holding exactly these switch values (every other switch off). */
   async function personWith(org: string, values: Record<string, SwitchValue>, base: Role = 'DISPATCHER'): Promise<Person> {
     const key = `job-lifecycle-role-${++sequence}`;
+    // `is_admin: true` makes the person an Admin (the flag, AL-18): it is not a switch, so it never reaches the role.
+    const { is_admin: asAdmin, ...switchValues } = values;
     const role = await fx.addCustomRole(org, key, base);
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...values }, actorId: null, reason: 'manual' });
-    return fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
+    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...switchValues }, actorId: null, reason: 'manual' });
+    return fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id, isAdmin: asAdmin === true });
   }
 
   /** A company with nobody but built people, so only they can be alerted. */
@@ -216,20 +219,21 @@ suite('the job started, cancelled and reopened alerts (real database)', () => {
       const cannotOpen = await personWith(org, { view_jobs: true, jobs_scope: 'attached', [row.stepSwitch]: true });
       const gone = await personWith(org, stepValues);
       await db.user.update({ where: { id: gone.id }, data: { is_active: false } });
-      const manager = await personWith(org, managerValues);
+      // An Admin holds the step switch too (every switch), so they are one of the holders.
+      const admin = await personWith(org, adminValues);
       const j = await job(org, customer, { soldBy: soldBy.id });
 
       await take(row, me, j.id);
 
       const got = recipientsOf(await alertsFor(row.verb, j.id));
-      expect(got).toEqual(ids(soldBy, holder, secondHolder));
-      for (const who of [adminSwitchOff, cannotOpen, gone, manager]) expect(got).not.toContain(who.id);
+      expect(got).toEqual(ids(soldBy, holder, secondHolder, admin));
+      for (const who of [adminSwitchOff, cannotOpen, gone]) expect(got).not.toContain(who.id);
     });
 
-    it('without a Dispatcher and with no step holder who can open the job: the Manage roles and permissions holders', async () => {
+    it('without a Dispatcher and with no other step holder who can open the job: the Admins, told as holders of the step', async () => {
       const { org, customer } = await quietOrg();
       const me = await personWith(org, row.actorValues);
-      const manager = await personWith(org, managerValues);
+      const admin = await personWith(org, adminValues);
       const cannotOpen = await personWith(org, { view_jobs: true, jobs_scope: 'attached', [row.stepSwitch]: true });
       const noSwitch = await personWith(org, opensJobs);
       const j = await job(org, customer, {});
@@ -237,10 +241,13 @@ suite('the job started, cancelled and reopened alerts (real database)', () => {
       await take(row, me, j.id);
 
       const alerts = await alertsFor(row.verb, j.id);
-      expect(recipientsOf(alerts)).toEqual(ids(manager));
+      expect(recipientsOf(alerts)).toEqual(ids(admin));
       expect(recipientsOf(alerts)).not.toContain(cannotOpen.id);
       expect(recipientsOf(alerts)).not.toContain(noSwitch.id);
-      expect(whyFor(alerts, manager)).toBe(`This job has no Dispatcher and nobody who can ${row.stepWords} can open it.`);
+      // An Admin holds the step, and the "Alert me about every ..." switch too: told once, without the why line (a covering
+      // person who also has a copy is told without it), never twice.
+      expect(whyFor(alerts, admin)).toBeNull();
+      expect(alerts.filter((n) => n.recipients.some((r) => r.recipient_id === admin.id))).toHaveLength(1);
     });
 
     it('a job with Sold By and crew but no Dispatcher still alerts the step holders', async () => {
@@ -313,11 +320,11 @@ suite('the job started, cancelled and reopened alerts (real database)', () => {
       expect(recipientsOf(first)).not.toContain(blindFollower.id);
       expect(rowFor(first, follower)).toMatchObject({ priority: 'FEED', needs_action: false });
 
-      // No Dispatcher and nobody holding the step: the follower is told as a copy and the chain still goes on to the managers.
-      const manager = await personWith(org, managerValues);
+      // No Dispatcher and no other step holder: the follower is told as a copy and the chain still goes on, to the Admin.
+      const admin = await personWith(org, adminValues);
       const bare = await job(org, customer, {});
       await take(row, me, bare.id);
-      expect(recipientsOf(await alertsFor(row.verb, bare.id))).toEqual(ids(follower, manager));
+      expect(recipientsOf(await alertsFor(row.verb, bare.id))).toEqual(ids(follower, admin));
     });
 
     it('the why line is on step 2 and step 3 and not on lane 1, step 1 or copies', async () => {

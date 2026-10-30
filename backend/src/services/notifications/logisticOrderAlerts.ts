@@ -3,7 +3,7 @@
  *
  * "Who must approve this order" is the whole question, so the alert is not a two-lane alert: it has no record people, no Dispatcher
  * step and no copies (the order's people and the job's are never told by it). It starts at the holders of Approve logistic orders
- * (alertChain.ts, record null) and, when none is someone, goes on to the holders of Manage roles and permissions with the line
+ * (alertChain.ts, record null) and, when none is someone, goes on to the Admins with the line
  * "Nobody can approve this order". "Someone" is the alert test of every chain: active, not the person who submitted it, and here
  * also able to reach the order, by the order's own read rule (lib/permissions/logisticOrderApprovers). A chain that ends with
  * nobody is logged by the chain and nothing is sent. Nobody comes from a role name: a person on a role called Admin with Approve

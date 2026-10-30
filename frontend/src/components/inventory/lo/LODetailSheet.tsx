@@ -127,10 +127,10 @@ export function LODetailSheet({ open, onOpenChange, loId, anchor }: LODetailShee
   const { confirm, confirmDialog } = useConfirm();
   const ability = useAppAbility();
   // The link opens the logistic-order filter of the inventory action log, so it follows that log's switch and the
-  // route it sits on (the Stock page's View stock and Show Stock page), or it would bounce the person to their dashboard.
+  // route it sits on (the Stock page's View stock), or it would bounce the person to their dashboard.
   const mine = useMySwitches()?.values;
   const canSeeActivity =
-    ability.can('see_inventory_activity', 'Inventory') && switchOn(mine, 'view_stock') && switchOn(mine, 'show_stock_page');
+    ability.can('see_inventory_activity', 'Inventory') && switchOn(mine, 'view_stock');
 
   const [activeId, setActiveId] = useState<string | null>(loId);
   const isCreate = activeId === null;

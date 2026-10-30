@@ -259,7 +259,7 @@ suite('the record\'s people, in SQL and in TypeScript (real database)', () => {
       organizationId: org, roleKey: key,
       values: {
         view_jobs: true, jobs_scope: 'attached', view_customers: true, access_communication: true, show_email: true,
-        view_communication: true, communication_scope: 'linked_to_me',
+        view_communication: true, communication_scope: 'attached',
       },
       actorId: null, reason: 'manual',
     });
@@ -285,7 +285,8 @@ suite('the record\'s people, in SQL and in TypeScript (real database)', () => {
       const { emailSectionForReq } = await import('../lib/communication/communicationScope.js');
       const section = await emailSectionForReq({ user: { id: person.id, organization_id: org, org_features: [] } } as never);
       expect(section.inputs.recordPeopleThreadIds).toBeUndefined();
-      expect(spy).not.toHaveBeenCalled();
+      // The people's statement only: since ticket 37 every signed-in request also reads the person's access stamp.
+      expect(peopleStatements(spy)).toBe(0);
     } finally {
       spy.mockRestore();
     }

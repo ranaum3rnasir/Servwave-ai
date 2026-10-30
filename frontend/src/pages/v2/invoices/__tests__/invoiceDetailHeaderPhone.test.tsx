@@ -3,7 +3,7 @@ import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import api from '@/lib/axios';
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderWithProviders, seesPrices } from '@/__tests__/helpers';
 import { MEDIA } from '@/ui-kit/lib/breakpoints';
 import { catalogToggle } from '@/__tests__/support/backendSwitchCatalog';
 
@@ -117,7 +117,7 @@ function mount(status: string) {
     if (url.startsWith('/api/invoices/')) return { data: { invoice: invoice(status) } };
     return { data: {} };
   });
-  renderWithProviders(<InvoiceDetailPage />, { initialEntries: [`/invoices/${INVOICE_ID}`] });
+  renderWithProviders(<InvoiceDetailPage />, { initialEntries: [`/invoices/${INVOICE_ID}`], ability: seesPrices });
 }
 
 beforeEach(() => {

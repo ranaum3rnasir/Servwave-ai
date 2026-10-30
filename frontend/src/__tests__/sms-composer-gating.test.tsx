@@ -116,7 +116,7 @@ describe('SmsInboxView — composer gating', () => {
     expect(screen.getByPlaceholderText('Type an SMS reply…')).toBeDisabled();
   });
 
-  // The numbers list is scoped to the person (Linked to me): an empty list, or
+  // The numbers list is scoped to the person (Attached): an empty list, or
   // one whose numbers cannot text, says nothing about whether the company can.
   it.each([
     ['an empty numbers list', []],

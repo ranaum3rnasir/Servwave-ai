@@ -24,7 +24,7 @@ import { renderWithProviders } from './helpers';
 import api from '@/lib/axios';
 import type { ServicePlan } from '@/lib/api/service-plans';
 
-vi.mock('@/lib/api/users', () => ({ useUsers: () => ({ data: [] }) }));
+vi.mock('@/lib/api/users', () => ({ usePeople: () => ({ data: [] }) }));
 
 import ServicePlansPage from '@/pages/v2/service-plans/ServicePlansPage';
 

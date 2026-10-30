@@ -4,7 +4,7 @@ import { X } from 'lucide-react';
 
 import api from '@/lib/axios';
 import { useCreateServicePlan, planLineItemsTotal } from '@/lib/api/service-plans';
-import { useUsers } from '@/lib/api/users';
+import { usePeople } from '@/lib/api/users';
 import { extractApiError } from '@/lib/utils';
 import {
   recurrenceToPayload, DEFAULT_RECURRENCE, type RecurrenceValue,
@@ -93,7 +93,7 @@ function PlanBuilderDialog({
   open, onOpenChange, presetCustomerId, presetCustomerLabel,
 }: PlanBuilderDialogProps) {
   const create = useCreateServicePlan();
-  const { data: users } = useUsers();
+  const { data: users } = usePeople();
   const qc = useQueryClient();
 
   const [customerId, setCustomerId] = useState(presetCustomerId ?? '');

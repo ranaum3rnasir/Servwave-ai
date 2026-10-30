@@ -22,8 +22,8 @@ import { CUSTOMER_CONTACT_KEYS, redactCustomerContactFor, redactCustomerRowUnles
  * the middleware calls — mirroring production, never re-implementing the semantics.
  */
 function reqWith(grants: Grant[], userId = 'u1'): Request {
-  const ability = defineAbilityFor({ id: userId, role: 'SALES' }, grants);
-  const customerScope = scopeWhereFor({ id: userId, role: 'SALES' }, 'Customer', grants);
+  const ability = defineAbilityFor({ is_admin: false, id: userId, role: 'SALES' }, grants);
+  const customerScope = scopeWhereFor({ is_admin: false, id: userId, role: 'SALES' }, 'Customer', grants);
   return { ability, customerScope } as unknown as Request;
 }
 
@@ -245,21 +245,21 @@ function customerWithLocation(overrides: Record<string, unknown> = {}) {
 }
 
 describe('presentEstimateDetail — service_locations (#1997 round 2, finding 5)', () => {
-  it('strips lead.customer.service_locations for a denied requester', () => {
+  it('strips lead.customer.service_locations for a denied requester', async () => {
     const req = reqWith([DENIED_READ_CUSTOMER]);
     const doc = { id: 'e1', lead: { id: 'lead-1', customer: customerWithLocation() } };
 
-    const out = presentEstimateDetail(req, doc);
+    const out = await presentEstimateDetail(req, doc);
 
     expect('service_locations' in out.lead.customer).toBe(false);
     expect(out.lead.customer.id).toBe('cust-1'); // sibling fields survive
   });
 
-  it('leaves lead.customer.service_locations alone for an unconditional reader', () => {
+  it('leaves lead.customer.service_locations alone for an unconditional reader', async () => {
     const req = reqWith([UNCONDITIONAL_READ_CUSTOMER]);
     const doc = { id: 'e1', lead: { id: 'lead-1', customer: customerWithLocation() } };
 
-    const out = presentEstimateDetail(req, doc);
+    const out = await presentEstimateDetail(req, doc);
 
     expect(out.lead.customer.service_locations).toEqual(customerWithLocation().service_locations);
   });
@@ -402,11 +402,11 @@ describe('redactCustomerContactFor — customers that come with a record the req
   function reqViewOff(userId = 'u1'): Request {
     const arms = customerThroughRecordsReach('attached', 'attached')!;
     const customerRecordScope = scopeWhereFor(
-      { id: userId, role: 'SALES' },
+      { is_admin: false, id: userId, role: 'SALES' },
       'Customer',
       arms.map((conditions) => ({ action: 'read', subject: 'Customer', conditions })),
     );
-    return { ability: defineAbilityFor({ id: userId, role: 'SALES' }, []), customerScope: { ...MATCH_NOTHING }, customerRecordScope } as unknown as Request;
+    return { ability: defineAbilityFor({ is_admin: false, id: userId, role: 'SALES' }, []), customerScope: { ...MATCH_NOTHING }, customerRecordScope } as unknown as Request;
   }
   const onMyLead = (userId = 'u1') => ({ leads: [{ lead_assignees: [{ user_id: userId }] }] });
   const onMyJob = (userId = 'u1') => ({ jobs: [{ visits: [{ assignees: [{ user_id: userId }] }] }] });
@@ -489,14 +489,14 @@ describe('redactCustomerContactFor — customers that come with a record the req
   it('judges Team scope on the department of the people on the lead', () => {
     const arms = customerThroughRecordsReach('team', 'attached')!;
     const scopeFor = (department: string | null) => scopeWhereFor(
-      { id: 'u1', role: 'SALES', department_id: department },
+      { is_admin: false, id: 'u1', role: 'SALES', department_id: department },
       'Customer',
       arms.map((conditions) => ({ action: 'read', subject: 'Customer', conditions })),
     );
     const teamLead = { leads: [{ lead_assignees: [{ user_id: 'u2', user: { department_id: 'dep-1', location_id: null } }] }] };
     const doc = { id: 'e1', customer: null, lead: { id: 'lead-1', customer: fullCustomer(teamLead) } };
     const reqIn = (department: string | null) =>
-      ({ ability: defineAbilityFor({ id: 'u1', role: 'SALES' }, []), customerScope: { ...MATCH_NOTHING }, customerRecordScope: scopeFor(department) }) as unknown as Request;
+      ({ ability: defineAbilityFor({ is_admin: false, id: 'u1', role: 'SALES' }, []), customerScope: { ...MATCH_NOTHING }, customerRecordScope: scopeFor(department) }) as unknown as Request;
 
     expect('email' in redactCustomerContactFor(reqIn('dep-1'), doc).lead.customer).toBe(true);
     expect('email' in redactCustomerContactFor(reqIn('dep-2'), doc).lead.customer).toBe(false);

@@ -25,7 +25,7 @@ import {
  *
  * The caller has already opened the job for this person (existence in their company, the row scope, the Office review
  * switch). What the two money switches take out is decided here, once, before M8 sees anything:
- *  - `mayCosts` (See financial data): unit and scope costs are not even read when it is off, so a cost cannot reach the
+ *  - `mayCosts` (See costs): unit and scope costs are not even read when it is off, so a cost cannot reach the
  *    answer by a missed strip. Prices are never withheld.
  *  - `openInvoices` (View invoices, with the person's invoice scope): told which of the named invoices the person can
  *    open. The job's invoices they cannot open, their payments and the history entries about them stay out, the same

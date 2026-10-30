@@ -53,14 +53,14 @@ const LOCK_MESSAGE = 'This job is locked. Only someone who can change locked job
 
 /** What opening the job, its invoices and its files takes, with no edit switch on. */
 const OPENING = {
-  view_jobs: true, jobs_scope: 'all', view_attachments: true, view_invoices: true, invoices_scope: 'all',
+  view_jobs: true, jobs_scope: 'all', view_invoices: true, leads_scope: 'all',
 };
 
 /** The review's own edits, each on its ordinary switch, plus Office review: the lock is the only thing left to refuse. */
 const REVIEWER = {
-  ...OPENING, office_review: true, edit_job_line_items: true, apply_discounts: true, edit_jobs: true,
-  edit_job_and_lead_contact_details: true, delete_attachments: true, edit_attachments: true,
-  add_notes: true, delete_others_notes: true, assign_people_to_jobs: true, schedule_visits: true,
+  ...OPENING, office_review: true, edit_job_line_items: true, apply_discounts: true, edit_jobs: true, edit_invoices: true,
+  edit_job_and_lead_contact_details: true,
+  add_notes: true, assign_people_to_jobs: true, schedule_visits: true,
   edit_job_record_ids: true, delete_jobs: true,
 };
 
@@ -91,7 +91,7 @@ suite('the review\'s own edits while the job is in Office review (real database)
   async function personWith(org: string, values: Record<string, SwitchValue>, base: Role = 'DISPATCHER') {
     const key = `review-edit-role-${++sequence}`;
     const role = await fx.addCustomRole(org, key, base);
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...values }, actorId: null, reason: 'manual' });
+    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, see_prices: true, ...values }, actorId: null, reason: 'manual' });
     const person = await fx.addUser(org, `re${sequence}`, base, { customRoleId: role.id });
     return Object.assign(person, { api: () => fx.signedInAs(person) });
   }
@@ -310,12 +310,15 @@ suite('the review\'s own edits while the job is in Office review (real database)
       expect((await REVIEW_EDITS["change the customer's name"]!(editsJobs.api, editsJobs)).status).toBe(201);
     });
 
-    it('never replaces the file switch: without Delete attachments only the person\'s own uploads go', async () => {
-      const s = await setup('OFFICE_REVIEW', { ...REVIEWER, delete_attachments: false });
-      expect((await REVIEW_EDITS['delete a job file']!(s.api, s)).status).toBe(403);
-      expect((await REVIEW_EDITS['delete an invoice file']!(s.api, s)).status).toBe(403);
-      const mine = await addFile(s.org, { type: 'JOB', id: s.job.id }, s.me.id);
-      expect((await s.api.delete(fileRoute('job', s.job.id, mine))).status).toBe(200);
+    it('never replaces the record\'s Edit: a job file goes with Edit jobs and an invoice file with Edit invoices, and neither without', async () => {
+      const noInvoiceEdit = await setup('OFFICE_REVIEW', { ...REVIEWER, edit_invoices: false });
+      expect((await REVIEW_EDITS['delete a job file']!(noInvoiceEdit.api, noInvoiceEdit)).status).toBe(200);
+      expect((await REVIEW_EDITS['delete an invoice file']!(noInvoiceEdit.api, noInvoiceEdit)).status).toBe(403);
+      const noJobEdit = await setup('OFFICE_REVIEW', { ...REVIEWER, edit_jobs: false });
+      expect((await REVIEW_EDITS['delete a job file']!(noJobEdit.api, noJobEdit)).status).toBe(403);
+      // The person\'s own upload is no exception: the Edit decides.
+      const mine = await addFile(noJobEdit.org, { type: 'JOB', id: noJobEdit.job.id }, noJobEdit.me.id);
+      expect((await noJobEdit.api.delete(fileRoute('job', noJobEdit.job.id, mine))).status).toBe(403);
     });
 
     it('refuses every one of these edits to a person with Office review off, with the lock message', async () => {

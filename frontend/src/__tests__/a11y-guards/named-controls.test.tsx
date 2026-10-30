@@ -10,7 +10,7 @@ import { renderWithProviders } from '../helpers';
 import RolesPage from '@/pages/v2/settings/RolesPage';
 import { TagInput } from '@/components/leads/TagInput';
 import { useSettingsGuard } from '@/stores/settingsGuard.store';
-import { FIXTURE_CATALOG, FIXTURE_SWITCHES, catalogSwitch, presetSet } from '../support/permissionCatalogFixture';
+import { FIXTURE_CATALOG, FIXTURE_DRAWN_SWITCHES, catalogSwitch, presetSet } from '../support/permissionCatalogFixture';
 
 const mockApi = vi.mocked(api);
 
@@ -38,7 +38,8 @@ describe('Roles controls are named (v2 RolesPage, the routed one)', () => {
   it('names every switch of the catalog by its label', async () => {
     renderWithProviders(<RolesPage />);
     await screen.findByRole('switch', { name: catalogSwitch('view_customers').label });
-    for (const s of FIXTURE_SWITCHES.filter((x) => x.kind === 'toggle')) {
+    // The per-person settings are in the catalog but edited on the person's profile, never drawn by this page.
+    for (const s of FIXTURE_DRAWN_SWITCHES.filter((x) => x.kind === 'toggle')) {
       expect(screen.getByRole('switch', { name: s.label })).toBeInTheDocument();
     }
   });

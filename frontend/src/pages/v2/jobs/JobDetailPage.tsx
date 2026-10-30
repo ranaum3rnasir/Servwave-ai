@@ -34,7 +34,8 @@ import { useRecordPanel } from '@/lib/recordPanel';
 import { switchOn, useMySwitches } from '@/lib/api/mySwitches';
 import { RecordNumberEditor } from '@/components/crm/RecordNumberEditor';
 import { useFeature, useModuleAccess } from '@/lib/entitlements';
-import { canOnJob, canSeePricing as canSeePricingAbility, type AppAbility, type AppAction } from '@/lib/ability';
+import { canOnJob, canSeePricing as canSeePricingAbility, canSeePrices as canSeePricesAbility, type AppAbility, type AppAction } from '@/lib/ability';
+import { PriceFreeLines } from '@/components/money/PriceFreeLines';
 import { useTasksStore } from '@/stores/tasksStore';
 import { customerDisplayName } from '@/lib/customer-name';
 import { extractApiError, formatCurrency, getInitials } from '@/lib/utils';
@@ -131,6 +132,7 @@ import { isForbiddenError, retryUnlessRefused } from '../_shared/loadErrorState'
 import { ProcessingBadge } from '@/components/invoices/ProcessingBadge';
 import { processingBadgeText } from '@/lib/payment-display';
 import { paymentCounts } from '@/lib/payment-ledger';
+import { useNoOptionsLabel } from '@/lib/useIsAdmin';
 
 // --- Types (the legacy page's, verbatim) -------------------------------------
 
@@ -599,19 +601,22 @@ function NotesTabBody({
  * integrity rules listed on `getAvailableActions`.
  */
 export default function JobDetailPage() {
+  const noOptions = useNoOptionsLabel();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
   const user = useAuthStore((s) => s.user);
   const ability = useAppAbility();
-  // The Service Plan reference links to the Service plans page, which the route opens for View service plans and Show
-  // Service plans page; without both it is a reference only, not a link that bounces to the dashboard.
+  // The Service Plan reference links to the Service plans page, which the route opens for View service plans;
+  // without it it is a reference only, not a link that bounces to the dashboard.
   const mySwitches = useMySwitches()?.values;
-  const canOpenServicePlans = switchOn(mySwitches, 'view_service_plans') && switchOn(mySwitches, 'show_service_plans_page');
+  const canOpenServicePlans = switchOn(mySwitches, 'view_service_plans');
   // Cost/margin visibility for <InternalCostsCard> - shared with the backend's
   // canSeePricing gate (SRVW-140).
   const canSeePricing = canSeePricingAbility(ability);
+  // P11: a person without See prices gets no price anywhere on the job: no balance, contract, invoice totals or priced grid.
+  const canSeePrices = canSeePricesAbility(ability);
   // D15 - the material-cost endpoint 403s without read PurchaseOrder. Module
   // access, not ability.can: inv-po.routes also carries requireFeature
   // ('inventory'), and CASL alone lets an admin on a sub-Scale plan through, and
@@ -683,7 +688,7 @@ export default function JobDetailPage() {
 
   // Roles & Permissions PRD 7: the Logistics tab shows for a person attached to the job, or holding View stock, or
   // holding View logistic orders. Its staging part is for attached people and View stock, its orders part for View
-  // logistic orders alone (the Show Logistic Orders page switch plays no part). The server says whether the person
+  // logistic orders alone (no list switch plays a part). The server says whether the person
   // is attached, from the job's people as they stand, so taking them off the job removes the staging on next load.
   const showStagingPart = inventoryBought && (Boolean(job?.viewer_attached) || canViewStock);
   const showOrdersPart = canViewLogisticOrders;
@@ -877,7 +882,9 @@ export default function JobDetailPage() {
   // owed; the server checks it against what is owed at that moment and refuses a changed amount with the new one.
   const [markDoneOpen, setMarkDoneOpen] = useState(false);
   const markDoneMutation = useMutation({
-    mutationFn: async (confirmedAmount: number | null) => api.post(`/api/jobs/${id}/mark-done`, { confirmed_amount: confirmedAmount }),
+    // A person without See prices is never sent the amount owed, so they confirm that a balance is owed, not a figure (CR-1).
+    mutationFn: async (confirmed: number | null | 'balance_owed') =>
+      api.post(`/api/jobs/${id}/mark-done`, confirmed === 'balance_owed' ? { confirmed_without_amount: true } : { confirmed_amount: confirmed }),
     onSuccess: () => {
       setMarkDoneOpen(false);
       refreshAfterJobVerb();
@@ -1508,7 +1515,7 @@ export default function JobDetailPage() {
                         options={
                           (org?.job_type_options ?? []).length > 0
                             ? (org?.job_type_options ?? []).map((t) => ({ value: t, label: t }))
-                            : [{ value: '__none__', label: 'No options - add in Settings', disabled: true }]
+                            : [{ value: '__none__', label: noOptions, disabled: true }]
                         }
                       />
                       <Button
@@ -1541,6 +1548,7 @@ export default function JobDetailPage() {
               </div>
 
               {/* Zone C - money block, three mutually exclusive branches */}
+              {(canSeePrices || isPlanVisit) && (
               <div className="bg-muted/40 flex h-full w-full flex-col justify-center rounded-lg border p-4 lg:w-[260px] lg:justify-self-end">
                 {isPlanVisit ? (
                   <>
@@ -1586,6 +1594,7 @@ export default function JobDetailPage() {
                   </>
                 )}
               </div>
+              )}
             </div>
 
             {/* The Open / Overdue / Next due chips that used to sit here are
@@ -1693,7 +1702,7 @@ export default function JobDetailPage() {
                 ),
               },
               { value: 'notes', label: 'Notes' },
-              ...(mayOpenAnInvoice || actions.mayCreateInvoice ? [{ value: 'payments', label: 'Payments' }] : []),
+              ...(canSeePrices && (mayOpenAnInvoice || actions.mayCreateInvoice) ? [{ value: 'payments', label: 'Payments' }] : []),
             ]}
           />
 
@@ -1814,10 +1823,14 @@ export default function JobDetailPage() {
                                 {inv.invoice_number}
                               </Link>
                               <StatusChip domain="invoice" status={inv.status} />
-                              <ProcessingBadge amount={inv.processing_amount} />
-                              <span className="font-medium tabular-nums">
-                                {formatCurrency(Number(inv.total_amount))}
-                              </span>
+                              {canSeePrices && (
+                                <>
+                                  <ProcessingBadge amount={inv.processing_amount} />
+                                  <span className="font-medium tabular-nums">
+                                    {formatCurrency(Number(inv.total_amount))}
+                                  </span>
+                                </>
+                              )}
                             </div>
                           ))}
                         </div>
@@ -1875,9 +1888,12 @@ export default function JobDetailPage() {
                   <span>{actions.priceEditClosedReason}</span>
                 </div>
               )}
-              <JobScopeOfWorkCard jobId={id!} canManage={actions.canManageLines} lockedReason={itemsLockedReason} />
-              <LineItemsEditor jobId={id!} canManage={actions.canManageLines} lockedReason={itemsLockedReason} />
-              <ReceiptCard
+              {!canSeePrices && (
+                <PriceFreeLines lines={jobLineItemsData?.lines ?? []} scopes={jobScopesData?.scopes ?? []} title="Scope of work" />
+              )}
+              {canSeePrices && <JobScopeOfWorkCard jobId={id!} canManage={actions.canManageLines} lockedReason={itemsLockedReason} />}
+              {canSeePrices && <LineItemsEditor jobId={id!} canManage={actions.canManageLines} lockedReason={itemsLockedReason} />}
+              {canSeePrices && <ReceiptCard
                 variant="job"
                 lineItemsSubtotal={(jobLineItemsData?.lines ?? []).reduce((sum, l) => sum + netOf(l), 0)}
                 scopeSubtotal={(jobScopesData?.scopes ?? [])
@@ -1895,7 +1911,7 @@ export default function JobDetailPage() {
                 taxStateCode={job.service_location?.state ?? null}
                 taxHelperText={jobTaxSourceEstimate ? "Follows the job's estimate" : undefined}
                 total={jobLineItemsData?.billing?.total ?? 0}
-              />
+              />}
               {canSeePricing && (
                 <InternalCostsCard
                   lineItems={jobLineItemsData?.lines ?? []}
@@ -2008,13 +2024,13 @@ export default function JobDetailPage() {
                     </Link>
                     <div className="mt-1.5 flex items-center gap-3">
                       <StatusChip domain="estimate" status={job.estimate.status} />
-                      {job.estimate.total_amount != null && (
+                      {canSeePrices && job.estimate.total_amount != null && (
                         <span className="text-[13px] font-semibold tabular-nums">
                           {formatCurrency(Number(job.estimate.total_amount))}
                         </span>
                       )}
                     </div>
-                    {job.estimate.deposit && (
+                    {canSeePrices && job.estimate.deposit && (
                       <div className="mt-4">
                         <Caption>Deposit</Caption>
                         <div className="flex flex-wrap items-center gap-2 text-[13px]">
@@ -2064,7 +2080,7 @@ export default function JobDetailPage() {
                           </Link>
                           <div className="flex items-center gap-3">
                             <StatusChip domain="estimate" status={e.status} />
-                            {e.total_amount != null && (
+                            {canSeePrices && e.total_amount != null && (
                               <span className="text-[13px] font-semibold tabular-nums">
                                 {formatCurrency(Number(e.total_amount))}
                               </span>
@@ -2174,10 +2190,14 @@ export default function JobDetailPage() {
           open={markDoneOpen}
           onOpenChange={setMarkDoneOpen}
           title="Mark this job Done?"
-          description={`${formatCurrency(job.ready_to_close?.amount_owed ?? 0)} is still owed on ${job.job_number}. Marking it Done closes the job with that balance still open.`}
-          confirmLabel={`Mark Done, ${formatCurrency(job.ready_to_close?.amount_owed ?? 0)} still owed`}
+          description={
+            canSeePrices
+              ? `${formatCurrency(job.ready_to_close?.amount_owed ?? 0)} is still owed on ${job.job_number}. Marking it Done closes the job with that balance still open.`
+              : `A balance is still owed on ${job.job_number}. Marking it Done closes the job with that balance still open.`
+          }
+          confirmLabel={canSeePrices ? `Mark Done, ${formatCurrency(job.ready_to_close?.amount_owed ?? 0)} still owed` : 'Mark Done, balance still owed'}
           isPending={markDoneMutation.isPending}
-          onConfirm={() => markDoneMutation.mutate(job.ready_to_close?.amount_owed ?? 0)}
+          onConfirm={() => markDoneMutation.mutate(canSeePrices ? (job.ready_to_close?.amount_owed ?? 0) : 'balance_owed')}
         />
         <ConfirmDialog
           open={deleteConfirmOpen}

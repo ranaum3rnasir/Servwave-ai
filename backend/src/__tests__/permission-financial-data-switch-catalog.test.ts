@@ -1,5 +1,5 @@
 /* =============================================================================
-   Roles & Permissions, PRD 1, slice S01.15 - "See financial data" in the switch catalog: one switch, costs only.
+   Roles & Permissions, PRD 1, slice S01.15 - "See costs" in the switch catalog: one switch, costs only.
 
    Pure: no database. The expected values are the PRD's catalog row, written out as literals here (they are the
    source of truth the catalog is built from), never read back from the catalog.
@@ -10,15 +10,15 @@ import { BUILT_IN_ROLES, SWITCH_CATALOG, presetSwitchSet } from '../lib/permissi
 import { validateSwitchSet } from '../lib/permissions/switches/validate';
 import { compileSwitchGrants } from '../lib/permissions/switches/store';
 
-const rows = SWITCH_CATALOG.filter((s) => s.label === 'See financial data');
+const rows = SWITCH_CATALOG.filter((s) => s.label === 'See costs');
 
-describe('the See financial data switch', () => {
-  it('is one on/off switch in the Data Scope group, standing on its own, with help text that says costs only', () => {
+describe('the See costs switch', () => {
+  it('is one on/off switch in the Money group, standing on See prices, with help text that says costs and points at See prices', () => {
     expect(rows).toHaveLength(1);
     const entry = rows[0]!;
-    expect(entry.module).toBe('Data Scope');
+    expect(entry.module).toBe('Money');
     expect(entry.kind).toBe('toggle');
-    expect(entry.requires).toEqual([]);
+    expect(entry.requires).toEqual(['see_prices']);
     expect(entry.requiresAny ?? []).toEqual([]);
     expect(entry.helpText).toMatch(/cost/i);
     expect(entry.helpText).toMatch(/prices/i);

@@ -82,7 +82,7 @@ describe.skipIf(!enabled)('company number on calls and texts - real DB', () => {
   }
   async function clean() {
     const orgs = [ORG_A, ORG_B];
-    await run(`DELETE FROM audit_logs WHERE org_id = ANY($1::uuid[])`, orgs);
+    // audit_logs is not cleared: the database refuses any delete there (M14, ticket 25), and its rows hold no foreign key.
     for (const t of ['messages', 'message_threads', 'call_sessions', 'phone_numbers', 'users']) {
       await run(`DELETE FROM ${t} WHERE organization_id = ANY($1::uuid[])`, orgs);
     }

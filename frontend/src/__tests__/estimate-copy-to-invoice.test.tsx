@@ -63,10 +63,12 @@ vi.mock('@/components/estimates/RefundDepositDialog', () => ({ RefundDepositDial
 const mockApi = vi.mocked(api);
 
 const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
-// Can view/manage the estimate but NOT create Invoice — proves the gate is the Invoice grant.
+// Can view/manage the estimate but NOT create Invoice, so the gate under test is the Invoice grant. It holds See
+// prices because the Preview item the test anchors on is the estimate's document, which is its prices (P11).
 const noInvoiceCreateAbility = buildAbility([
   { action: 'read', subject: 'Estimate' },
   { action: 'update', subject: 'Estimate' },
+  { action: 'read', subject: 'Prices' },
 ]);
 
 const BASE_ESTIMATE = {

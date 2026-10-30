@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { TEST_USERS, mockAuthAs, authHeader, attachedEstimateWhere, creatorEstimateWhere } from './helpers';
+import { TEST_USERS, mockAuthAs, authHeader, attachedEstimateWhere, ownDocumentsEstimateWhere } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 // Technician's Estimates scope is Attached: the estimates on a lead or job they are attached to. Having
@@ -44,8 +44,8 @@ describe('GET /api/estimates (LIST) - TECHNICIAN Attached scope', () => {
 
     expect(res.status).toBe(200);
     expect(listWhere().OR).toEqual([
-      { OR: attachedEstimateWhere(TEST_USERS.technician.id) },
-      creatorEstimateWhere(TEST_USERS.technician.id),
+      ...attachedEstimateWhere(TEST_USERS.technician.id),
+      ownDocumentsEstimateWhere(TEST_USERS.technician.id),
     ]);
   });
 
@@ -77,7 +77,7 @@ describe('GET /api/estimates/:id - TECHNICIAN Attached scope', () => {
 
     const res = await request(app).get('/api/estimates/est-tech-1').set(authHeader('technician'));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it('TECHNICIAN gets 200 on an estimate on a lead or job they are attached to', async () => {
@@ -117,6 +117,6 @@ describe('GET /api/estimates/:id - TECHNICIAN Attached scope', () => {
 
     const res = await request(app).get('/api/estimates/est-other-1').set(authHeader('technician'));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 });

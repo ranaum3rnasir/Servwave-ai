@@ -91,21 +91,21 @@ describe('#2090 the summary agrees with the document it is summarising', () => {
 describe('#2090 the estimate.approved notification body', () => {
   const approved = (data: Record<string, unknown>) => renderTemplate('estimate.approved', data);
 
-  it('names the chosen and declined add-ons beside the amount', () => {
+  it('names the chosen and declined add-ons, and no amount (M4: a bell names no figure)', () => {
     const body = approved({
       object_label: 'E00042',
       amount: '1,300.00',
       ...optionSummaryData({ chosen: ['Smart keypad'], declined: ['Extended warranty', 'Permit filing'] }),
     }).body;
 
-    expect(body).toContain('Amount: $1,300.00');
+    expect(body).not.toContain('1,300');
     expect(body).toContain('Chose: Smart keypad');
     expect(body).toContain('Declined: Extended warranty, Permit filing');
   });
 
-  it('is byte-for-byte the old amount line when the estimate offered no add-ons', () => {
+  it('carries no body when the estimate offered no add-ons (it used to be only the amount line)', () => {
     const body = approved({ object_label: 'E00042', amount: '1,300.00', ...optionSummaryData({ chosen: [], declined: [] }) }).body;
-    expect(body).toBe('Amount: $1,300.00');
+    expect(body).toBeUndefined();
   });
 
   it('carries no body at all on an estimate with neither an amount nor add-ons', () => {

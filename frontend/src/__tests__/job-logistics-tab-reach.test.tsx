@@ -129,8 +129,8 @@ describe('JobDetailPage - the Logistics tab follows attachment, View stock and V
     expect(await logisticsParts()).toEqual({ staging: true, orders: true });
   });
 
-  it('shows the orders part without any Show Logistic Orders page switch (that one is display only and grants nothing here)', async () => {
-    // The Show Logistic Orders page switch writes no rule at all; View logistic orders is the only rule in play.
+  it('shows the orders part on View logistic orders alone', async () => {
+    // View logistic orders is the only rule in play.
     await renderJob([VIEW_LOGISTIC_ORDERS], false);
     expect((await logisticsParts()).orders).toBe(true);
   });

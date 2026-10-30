@@ -6,6 +6,8 @@ export interface UserSummary {
   id: string;
   first_name: string;
   last_name: string;
+  /** False for a person who has been deactivated: their name stays on the record, marked (P19). */
+  is_active?: boolean;
 }
 
 /**

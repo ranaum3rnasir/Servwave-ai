@@ -57,7 +57,7 @@ suite('customer block (real database)', () => {
     const person: Person = await fx.addUser(org, `${name}${sequence}`, 'DISPATCHER', { customRoleId: role.id, basedOnRoleKey: key });
     return { ...person, api: () => fx.signedInAs(person) };
   }
-  const SEES_ALL = { view_payments: true, view_invoices: true, invoices_scope: 'all' } as const;
+  const SEES_ALL = { view_payments: true, view_invoices: true, jobs_scope: 'all', leads_scope: 'all' } as const;
 
   /** A request as the middleware leaves it for this user; `viewPayments` stands in for the ability check the route already did. */
   async function reqFor(userId: string, viewPayments = true): Promise<Request> {
@@ -143,7 +143,7 @@ suite('customer block (real database)', () => {
     it('returns customer null and restricted for a caller who cannot open the invoice, with nothing about the person', async () => {
       const { org, customer } = await newOrg();
       await db.customer.update({ where: { id: customer }, data: { company_name: 'Hidden Holdings', email: 'hidden@example.test', phone: '555-999-9999' } });
-      const me = await personWith(org, { ...SEES_ALL, invoices_scope: 'attached' });
+      const me = await personWith(org, { ...SEES_ALL, jobs_scope: 'attached', leads_scope: 'attached' });
       const invoice = await invoiceIn(org, customer);
       const block = await customerBlockFor({ invoiceId: invoice }, await reqFor(me.id));
       expect(block).toEqual({ customer: null, restricted: true });
@@ -197,7 +197,7 @@ suite('customer block (real database)', () => {
     it('still answers 404 for a payment on an invoice the caller cannot open (no block, no PII)', async () => {
       const { org, customer } = await newOrg();
       const { paymentId } = await paidInvoice(org, customer);
-      const narrowed = await personWith(org, { ...SEES_ALL, invoices_scope: 'attached' });
+      const narrowed = await personWith(org, { ...SEES_ALL, jobs_scope: 'attached', leads_scope: 'attached' });
       const res = await (await narrowed.api()).get(`/api/payments-page/payments/${paymentId}`);
       expect(res.status).toBe(404);
       expect(JSON.stringify(res.body)).not.toMatch(/Pat|Payer/);
@@ -219,7 +219,7 @@ suite('customer block (real database)', () => {
       expect(res.body.dispute.reference).toBe(`DSP-${d.id.replace(/-/g, '').slice(0, 8).toUpperCase()}`);
       expect(res.body.customer_block).toMatchObject({ restricted: false, name: 'Pat Payer', email: 'pat@example.test', invoice: { id: invoice } });
       expect(JSON.stringify(res.body)).not.toContain(d.stripe_dispute_id);
-      const narrowed = await personWith(org, { ...SEES_ALL, invoices_scope: 'attached' });
+      const narrowed = await personWith(org, { ...SEES_ALL, jobs_scope: 'attached', leads_scope: 'attached' });
       expect((await (await narrowed.api()).get(`/api/payments-page/disputes/${d.id}/evidence`)).status).toBe(404);
     });
   });

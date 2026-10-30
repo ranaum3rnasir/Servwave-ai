@@ -40,19 +40,33 @@ describe('grantRoleKey', () => {
 
 describe('isSuperUser', () => {
   it('is true for a plain ADMIN', () => {
-    expect(isSuperUser({ role: 'ADMIN', custom_role_id: null })).toBe(true);
+    expect(isSuperUser({ is_admin: true, role: 'ADMIN', custom_role_id: null })).toBe(true);
   });
 
   // The reason the helper exists: an ADMIN-derived custom role must NOT hit the
   // `manage all` short-circuit, or its subtracted grants would be ignored entirely.
   it('is false for an ADMIN-derived custom role', () => {
-    expect(isSuperUser({ role: 'ADMIN', custom_role_id: 'cr-1' })).toBe(false);
+    expect(isSuperUser({ is_admin: false, role: 'ADMIN', custom_role_id: 'cr-1' })).toBe(false);
   });
 
   it('is false for every non-admin base role', () => {
     for (const role of ['SALES', 'DISPATCHER', 'TECHNICIAN']) {
-      expect(isSuperUser({ role, custom_role_id: null })).toBe(false);
+      expect(isSuperUser({ is_admin: false, role, custom_role_id: null })).toBe(false);
     }
+  });
+
+  // P15: Admin is the flag, never the role name.
+  it('is false for a person whose role is named ADMIN but whose flag is off', () => {
+    expect(isSuperUser({ is_admin: false, role: 'ADMIN', custom_role_id: null })).toBe(false);
+  });
+
+  it('is true for a person with the flag on, whatever role or custom role they carry', () => {
+    expect(isSuperUser({ is_admin: true, role: 'SALES', custom_role_id: null })).toBe(true);
+    expect(isSuperUser({ is_admin: true, role: 'TECHNICIAN', custom_role_id: 'cr-1' })).toBe(true);
+  });
+
+  it('is false when the flag was not loaded (fail closed)', () => {
+    expect(isSuperUser({ role: 'ADMIN', custom_role_id: null } as unknown as Parameters<typeof isSuperUser>[0])).toBe(false);
   });
 });
 

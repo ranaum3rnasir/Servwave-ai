@@ -1,14 +1,14 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/authenticate';
 import { attachAbility } from '../middleware/attachAbility';
-import { canDo } from '../middleware/canGuard';
+import { requireAdmin } from '../middleware/canGuard';
 import { validate } from '../middleware/validate';
 import * as ctrl from '../controllers/role.controller';
 
 const router = Router();
 
-// Every read and write of a role, its switches and its change log needs Manage roles and permissions.
-router.use(authenticate, attachAbility, canDo('manage_roles', 'Role'));
+// Every read and write of a role, its switches and its change log is an Admin's alone (AL-18): the Admin flag, never a switch.
+router.use(authenticate, attachAbility, requireAdmin);
 router.get('/', ctrl.listRoles);
 router.post('/', validate(ctrl.createRoleSchema), ctrl.createRole);
 router.get('/:role/permissions', ctrl.getRoleSwitches);

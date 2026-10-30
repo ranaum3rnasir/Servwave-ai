@@ -176,7 +176,7 @@ describe('PATCH /api/tasks/:id - category', () => {
       .set(authHeader('technician'))
       .send({ category_id: CAT_ID });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockPrisma.task.update).not.toHaveBeenCalled();
   });
 });

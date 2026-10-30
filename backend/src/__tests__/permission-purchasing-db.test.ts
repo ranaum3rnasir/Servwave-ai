@@ -1,8 +1,8 @@
 /* =============================================================================
    Roles & Permissions, PRD 7, slice S07.19 - the Purchase Orders and Vendors endpoints follow their switches and
-   See financial data.
+   See costs.
 
-   Without See financial data a purchase order answer carries no amount (no line cost, no catalog cost, no
+   Without See costs a purchase order answer carries no amount (no line cost, no catalog cost, no
    material-cost roll-up) and a vendor answer carries no account number, on every route that can carry one, reads
    and write answers alike. A person without View purchase orders gets no purchase-order data at all. Edit vendors
    guards the vendor update, which rides the same upsert route as Create vendors.
@@ -54,7 +54,7 @@ const EDIT_PO = keyOf('Edit purchase orders');
 const VIEW_VENDORS = keyOf('View vendors');
 const CREATE_VENDORS = keyOf('Create vendors');
 const EDIT_VENDORS = keyOf('Edit vendors');
-const SEE_FINANCIAL = keyOf('See financial data');
+const SEE_FINANCIAL = keyOf('See costs');
 const VIEW_JOBS = keyOf('View jobs');
 const JOBS_SCOPE = 'jobs_scope';
 
@@ -63,7 +63,7 @@ const ACCOUNT = 'ACCT-4471';
 const LINE_COST = 18.37;
 const CATALOG_COST = 20.41;
 
-suite('purchase orders and vendors follow their switches and See financial data (real database)', () => {
+suite('purchase orders and vendors follow their switches and See costs (real database)', () => {
   const db = realClient as PrismaClient;
   const fx = switchFixture(db, async () => (await import('../app.js')).default as never);
   const orgs: string[] = [];
@@ -119,7 +119,7 @@ suite('purchase orders and vendors follow their switches and See financial data 
     const key = `purchasing-${++sequence}`;
     const role = await fx.addCustomRole(org, key, 'DISPATCHER', { madeFromBlank: true, copyGrants: false });
     await setRoleSwitchValues({
-      organizationId: org, roleKey: key, values: { [JOBS_SCOPE]: 'all', ...values } as Record<string, boolean | string>,
+      organizationId: org, roleKey: key, values: { [JOBS_SCOPE]: 'all', see_prices: true, ...values } as Record<string, boolean | string>,
       actorId: null, reason: 'manual',
     });
     const person = await fx.addUser(org, `pu${sequence}`, 'DISPATCHER', { customRoleId: role.id });
@@ -135,7 +135,7 @@ suite('purchase orders and vendors follow their switches and See financial data 
     expect(text).not.toMatch(/"(unitCost|catalogUnitCost|materialCost|unit_cost)"/);
   };
 
-  describe('purchase order amounts need See financial data', () => {
+  describe('purchase order amounts need See costs', () => {
     const reads: { name: string; path: (w: World) => string; carries: (body: any) => boolean }[] = [
       { name: 'the list', path: () => '/api/inventory/purchase-orders', carries: (b) => b.purchaseOrders[0].lines[0].unitCost === LINE_COST && b.purchaseOrders[0].lines[0].catalogUnitCost === CATALOG_COST },
       { name: 'the detail', path: (w) => `/api/inventory/purchase-orders/${w.po}`, carries: (b) => b.purchaseOrder.lines[0].unitCost === LINE_COST && b.purchaseOrder.lines[0].catalogUnitCost === CATALOG_COST },
@@ -144,7 +144,7 @@ suite('purchase orders and vendors follow their switches and See financial data 
     ];
 
     describe.each(reads)('$name', ({ path, carries }) => {
-      it('carries no amount without See financial data, and still answers', async () => {
+      it('carries no amount without See costs, and still answers', async () => {
         const w = await world();
         const api = await personWith(w.org, { [VIEW_PO]: true, [VIEW_JOBS]: true });
         const res = await api.get(path(w));
@@ -269,7 +269,7 @@ suite('purchase orders and vendors follow their switches and See financial data 
       expect(rows.find((r) => r.item_name === 'Stranger')!.unit_cost).toBeNull();
     });
 
-    it('lets a person with See financial data set and change line costs as before', async () => {
+    it('lets a person with See costs set and change line costs as before', async () => {
       const w = await world();
       const api = await personWith(w.org, { [VIEW_PO]: true, [VIEW_JOBS]: true, [EDIT_PO]: true, [SEE_FINANCIAL]: true });
       const edited = await api.patch(`/api/inventory/purchase-orders/${w.po}`, {
@@ -279,7 +279,7 @@ suite('purchase orders and vendors follow their switches and See financial data 
       expect(edited.body.purchaseOrder.lines[0].unitCost).toBe(7.5);
     });
 
-    it('answers a receipt with no amount without See financial data', async () => {
+    it('answers a receipt with no amount without See costs', async () => {
       const w = await world();
       await db.purchaseOrder.update({ where: { id: w.po }, data: { status: 'ordered', ordered_at: new Date() } });
       const api = await personWith(w.org, { [VIEW_PO]: true, [VIEW_JOBS]: true, [EDIT_PO]: true });
@@ -310,7 +310,7 @@ suite('purchase orders and vendors follow their switches and See financial data 
     });
   });
 
-  describe('the vendor account number needs See financial data', () => {
+  describe('the vendor account number needs See costs', () => {
     it('is on no vendor answer without it: list, detail, create and update', async () => {
       const w = await world();
       const api = await personWith(w.org, { [VIEW_VENDORS]: true, [CREATE_VENDORS]: true, [EDIT_VENDORS]: true });
@@ -368,13 +368,16 @@ suite('purchase orders and vendors follow their switches and See financial data 
   });
 
   describe('Edit vendors guards the vendor update', () => {
-    it('refuses an update to a person who can only create, and lets a person who can edit', async () => {
+    it('refuses an update to a person who holds no Edit vendors, and lets a person who can edit', async () => {
       const w = await world();
-      const creator = await personWith(w.org, { [VIEW_VENDORS]: true, [CREATE_VENDORS]: true });
-      const refused = await creator.post('/api/inventory/vendors', { id: w.vendor, notes: 'changed by a creator' });
+      // Create vendors requires Edit vendors (AL-04), so "can only create" can no longer be held: the person who may not
+      // update holds neither, and the person who may create holds both.
+      const viewer = await personWith(w.org, { [VIEW_VENDORS]: true });
+      const refused = await viewer.post('/api/inventory/vendors', { id: w.vendor, notes: 'changed by a viewer' });
       expect(refused.status).toBe(403);
       expect((await db.vendor.findUniqueOrThrow({ where: { id: w.vendor } })).notes).toBeNull();
 
+      const creator = await personWith(w.org, { [VIEW_VENDORS]: true, [EDIT_VENDORS]: true, [CREATE_VENDORS]: true });
       const created = await creator.post('/api/inventory/vendors', { name: 'Creator Supply' });
       expect(created.status, JSON.stringify(created.body)).toBe(201);
 

@@ -29,7 +29,7 @@ const { visibilityWhere, listWhere, reachWhere } = vi.hoisted(() => ({
 }));
 vi.mock('../lib/communication/needsReview', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/communication/needsReview')>()),
-  needsReviewVisibilityForReq: vi.fn(async () => ({ scope: 'linked_to_me', where: visibilityWhere, own: null, main: null, readable: [] })),
+  needsReviewVisibilityForReq: vi.fn(async () => ({ scope: 'attached', where: visibilityWhere, own: null, main: null, readable: [] })),
   needsReviewListWhereForReq: vi.fn(async () => ({ where: listWhere, selection: { kind: 'mine' }, visibility: {} })),
   // By id (the link action and the item a bell opens): the same answer, and the widening for a reply from an address we did not send
   // to is proved against the real tables in permission-email-unmatched-reply-bells-db.test.ts.

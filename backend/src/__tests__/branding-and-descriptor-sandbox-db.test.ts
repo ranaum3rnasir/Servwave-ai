@@ -86,7 +86,7 @@ suite('sandbox: branding read back from the processor on a platform-controlled a
       },
     });
     await db.user.create({
-      data: { id: user, organization_id: org, email: `admin-${tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN' },
+      data: { id: user, organization_id: org, email: `admin-${tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN', is_admin: true },
     });
     (supabaseAdmin.auth.getUser as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: { user: { id: user, email: `admin-${tag}@example.test` } },

@@ -162,11 +162,12 @@ describe.each([['a wide window', WIDE], ['a narrow window', NARROW]] as const)('
     },
   );
 
-  it('the Administrator role has no reset', async () => {
+  it('has no Administrator role to reset: it is not listed', async () => {
     windowWidth(width);
     renderWithProviders(<RolesPage />);
-    expect(await screen.findByText('Full access')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Reset to default' })).toBeNull();
+    await screen.findByRole('heading', { name: 'Sales' });
+    expect(screen.queryByText('Full access')).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Administrator/ })).toBeNull();
   });
 
   it('a custom role resets to the preset of the built-in role it started from', async () => {
@@ -209,13 +210,13 @@ describe.each([['a wide window', WIDE], ['a narrow window', NARROW]] as const)('
     await waitFor(() => expect(screen.getByRole('switch', { name: ON_IN_DRAFT.label })).not.toBeChecked());
   });
 
-  it('says people on the role keep their own switches, and asks nothing about them', async () => {
+  it('says people on the role follow the reset except where they hold their own value, and asks nothing about them', async () => {
     windowWidth(width);
     const user = userEvent.setup();
     renderWithProviders(<RolesPage />);
     await pick(user, width, 'Sales');
     const dialog = await openReset(user, /Reset to the Sales preset/);
-    expect(within(dialog).getByText(/people on (this|the) role keep their own switches/i)).toBeInTheDocument();
+    expect(within(dialog).getByText(/people on the role follow, except where a person holds their own value/i)).toBeInTheDocument();
     await user.click(within(dialog).getByRole('button', { name: 'Reset to the Sales preset' }));
     await waitFor(() => expect(resetCalls()).toHaveLength(1));
     // Only the role's own reset was sent: no call reaches a person's switches.

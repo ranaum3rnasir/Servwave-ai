@@ -243,10 +243,6 @@ describe('GET /api/service-plans/:id — public_token sweep', () => {
 
   it('a plan invoice never carries public_token, for a requester denied read Customer on the plan customer', async () => {
     mockAuthAs('dispatcher'); // holds `read ServicePlan` by default (defaultGrants.ts)
-    (prisma.rolePermission.findMany as MockFn).mockResolvedValue([
-      ...DEFAULT_GRANTS.filter((g) => !(g.role === 'DISPATCHER' && g.action === 'read' && g.subject === 'Customer')),
-      { role: 'DISPATCHER', action: 'read', subject: 'Customer', conditions: { id: 'zz-not-' + CUSTOMER_FIXTURE.id } },
-    ]);
     clearPermissionCache();
     // The mock is select-aware: it prunes the returned invoice row down to whatever `select`
     // object the call site actually passed at `include.invoices.select`, the way a real Prisma

@@ -9,10 +9,14 @@ export type Subject =
   // S01.14 - the pages that are not one record type, each opened by its own "Access" switch (Access Schedule,
   // Access Billing). Never role grants written by the Roles editor, so deliberately absent from PERMISSION_CATALOG below.
   | 'Schedule' | 'Billing'
-  // S01.16 - company-wide money (dashboard money tiles, chart amounts, scoreboard revenue, dollar amounts in the activity
-  // feed, report totals), held by the "See company figures" switch. Never a role grant written by the Roles editor, so
+  // S01.16 - company-wide money (dashboard money tiles, chart amounts, scoreboard revenue, report totals; the activity
+  // feed names no figure and reads the same for everyone), held by the "See company figures" switch. Never a role grant written by the Roles editor, so
   // deliberately absent from PERMISSION_CATALOG below.
   | 'CompanyFigures'
+  // P11 - the root of the three money classes: every price (line price, total, tax, balance, deposit, payment amount, the
+  // price book's sell price), held by the "See prices" switch. Never a role grant written by the legacy editor, so
+  // deliberately absent from PERMISSION_CATALOG below, like CompanyFigures.
+  | 'Prices'
   | 'Attachment' | 'Walkthrough' | 'Inventory' | 'PurchaseOrder' | 'Vendor' | 'LogisticOrder' | 'Communication'
   | 'Location' | 'Role' | 'ServicePlan' | 'Task' | 'Notification' | 'Timeclock'
   | 'Automation'
@@ -73,6 +77,9 @@ export type Action =
   // subject would need its own plumbing across MODULES/ScopeResource/AppSubject for an entity
   // with no table and no rows to scope. A sensitive-bundle toggle, never an eleventh CRUD cell.
   | 'access_inbox'
+  // M7 (ticket 36) - the person's own mailbox, held by the "Show Email" switch: every route of the mail routers asks for it on top
+  // of the grants it already asked for, so with the switch off the mailbox is closed on the server and not only on the screen.
+  | 'show_email'
   // S01.14 - opening a page that is not one record type (the "Access Schedule" and "Access Billing" switches, on the
   // Schedule and Billing subjects), checked on its own instead of the record reads the page happens to ride on.
   | 'access'
@@ -91,8 +98,8 @@ export type Action =
   // scorecard metrics of a phone agent. Without it no call response carries the first and no agents response the second.
   | 'see_call_insights'
   // S08.15 - the Phone page's tabs and usage bar, one action per switch (Phone numbers tab, Call flows tab, Call masking tab,
-  // Call groups tab, Training tab, Blocked callers tab, Phone usage bar). The page draws a tab only for the holder of its
-  // action, and the server checks every one that owns data (a number's routing change, the usage read, call flows, call groups,
+  // Call groups tab, Training tab, Blocked callers tab; the usage bar follows the Phone numbers tab, P1). The page draws a tab only for the holder of its
+  // action, and the server checks every one that owns data (a number's routing change, call flows, call groups,
   // training, the blocked list); Call masking is a prototype with no server data, so its action is display only.
   | 'phone_numbers_tab'
   | 'call_flows_tab'
@@ -100,7 +107,6 @@ export type Action =
   | 'call_groups_tab'
   | 'training_tab'
   | 'blocked_callers_tab'
-  | 'phone_usage_bar'
   // Roles & Permissions S01.1 - what the "Apply discounts" switch compiles into (switches/catalog.ts):
   // setting or changing a discount on an estimate or an invoice. Never a role grant written by the
   // Roles editor, so it is deliberately absent from PERMISSION_CATALOG below.
@@ -133,16 +139,9 @@ export type Action =
   // S01.10 - editing or deleting a hand-logged entry someone else wrote, checked on its own instead of the admin
   // role (the "Edit other people's logged communications" switch).
   | 'edit_others_log'
-  // S01.11 - seeing and opening every task in the company, not only those the person is assignee or watcher on
-  // (the "See all tasks" switch), checked on its own instead of the base role being Admin. S01.13 - the same action on
-  // the Timeclock subject is seeing every person's timesheet (the "See everyone's timesheets" switch).
-  | 'see_all'
   // S01.11 - adding a note to a job or lead, checked on its own instead of Edit jobs / Edit leads (the "Add notes"
   // switch).
   | 'add_note'
-  // S04.25 - deleting a note someone else wrote on a job or lead (the "Delete other people's notes" switch), checked on
-  // its own. Everyone may delete their own note; this grant is only for other people's.
-  | 'delete_others_note'
   // S05.7 - adding or changing a job-only or lead-only phone or email with the pencil (the "Edit job and lead contact
   // details" switch), checked on its own, so a person without Edit jobs or Edit leads can still hold the pencil.
   | 'edit_contact_details'
@@ -151,9 +150,6 @@ export type Action =
   // and permissions" switch, on the Role subject). Never role grants written by the Roles editor, so deliberately absent
   // from PERMISSION_CATALOG below.
   | 'invite' | 'manage_roles'
-  // S07.1 - seeing every asset, not only the ones the person holds (the "See all assets" switch). Checked on the asset
-  // routes instead of any role.
-  | 'see_all_assets'
   // S07.12 - reading the stock movement history: the Activity tab, its count, an item's movement history and the movement
   // detail (the "See inventory activity" switch), on top of View stock. Reading only; movements written as a side effect
   // of other work are not gated by it.
@@ -350,7 +346,8 @@ export const PERMISSION_CATALOG: CatalogEntry[] = [
   // Pricing (SRVW-140) - the grant `canSeePricing` keys on, written by the Roles UI "See
   // financial data" switch. LOAD-BEARING: putRolePermissions filters `desired` through
   // isCatalogEntry, so without this entry the switch would persist nothing at all.
-  { action: 'read',              subject: 'Pricing',      description: 'See financial data (prices, costs and margins)',    category: 'Financial'     },
+  { action: 'read',              subject: 'Pricing',      description: 'See costs (cost, markup and margin)',          category: 'Financial'     },
+  { action: 'read',              subject: 'Prices',       description: 'See prices (what things sell for)',            category: 'Financial'     },
   // StateTaxRate
   { action: 'read',              subject: 'StateTaxRate', description: 'View state tax rates',                              category: 'System'        },
   // AppSetting

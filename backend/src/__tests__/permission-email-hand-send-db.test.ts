@@ -121,8 +121,8 @@ suite('hand-written email goes from the sender\'s own mailbox (real database)', 
       organizationId: w.org, roleKey: key,
       values: {
         view_jobs: true, jobs_scope: 'attached', view_leads: true, leads_scope: 'attached', view_customers: true,
-        view_estimates: true, estimates_scope: 'attached', view_invoices: true, invoices_scope: 'attached',
-        access_communication: true, show_email: true, view_communication: true, communication_scope: 'linked_to_me',
+        view_estimates: true, view_invoices: true,
+        access_communication: true, show_email: true, view_communication: true, communication_scope: 'attached',
         contact_customers: true,
         ...values,
       },
@@ -223,6 +223,8 @@ suite('hand-written email goes from the sender\'s own mailbox (real database)', 
         kind === 'job' ? { job_id: (await fx.addJob(w.org, w.customer, { crew: [jane.id] })).id }
         : kind === 'lead' ? { lead_id: (await fx.addLead(w.org, w.customer, { assignees: [jane.id] })).id }
         : { customer_id: w.customer };
+      // Emailing a customer needs the customer to be one the person reaches: Jane is on a lead of theirs (M2).
+      await fx.addLead(w.org, w.customer, { assignees: [jane.id] });
       const res = await send(jane, record);
       expect(res.status).toBe(201);
 
@@ -369,7 +371,7 @@ suite('hand-written email goes from the sender\'s own mailbox (real database)', 
   });
 
   describe('there is no From choice', () => {
-    const SCOPES = ['linked_to_me', 'all'] as const;
+    const SCOPES = ['attached', 'all'] as const;
 
     it.each(SCOPES)('refuses a send that names the main mailbox, a colleague\'s, a handed-over one or another company\'s, on scope %s', async (scope) => {
       const w = await newOrg();
@@ -629,6 +631,8 @@ suite('hand-written email goes from the sender\'s own mailbox (real database)', 
       const noPage = await personWith(w, { ...withDependantsOff(['access_communication']) });
 
       for (const person of [jane, noPage]) {
+        // Emailing a customer needs the customer to be one the person reaches: each is on a lead of theirs (M2).
+        await fx.addLead(w.org, w.customer, { assignees: [person.id] });
         const shown = await identity(person);
         // From the customer's page: the one place a person without the Email page can write from.
         expect((await send(person, { customer_id: w.customer })).status).toBe(201);

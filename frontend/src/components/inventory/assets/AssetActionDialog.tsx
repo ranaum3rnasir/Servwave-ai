@@ -11,7 +11,7 @@ import { Modal } from "@/components/ui/modal";
 import { Textarea } from "@/components/ui/textarea";
 import { SelectField } from "@/components/form/SelectField";
 import { useAssetAction, type Asset } from "@/lib/api/inventory";
-import { useUsers } from "@/lib/api/users";
+import { usePeople } from "@/lib/api/users";
 import { extractApiError } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 
@@ -35,7 +35,7 @@ type Props = {
 
 export function AssetActionDialog({ open, mode, asset, onClose, onDone }: Props) {
   const action = useAssetAction();
-  const usersQuery = useUsers();
+  const usersQuery = usePeople();
   const [userId, setUserId] = useState("");
   const [note, setNote] = useState("");
   const [error, setError] = useState<string | null>(null);

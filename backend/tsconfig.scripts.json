@@ -22,9 +22,11 @@
     "rootDir": "."
   },
   "include": [
-    // The Express `Request.user` augmentation. Ambient, so it is not reachable by import and
-    // must be named or every `req.user` in a transitively-included controller fails.
-    "src/types/express.d.ts",
+    // The ambient declarations (the Express `Request.user` augmentation, the `parseurl` module). Ambient, so they are
+    // not reachable by import and must be named, or every `req.user` and every import of `parseurl` in a
+    // transitively-included file fails (TS7016). All of src/types, so a declaration added later is covered too;
+    // scripts/__tests__/build-tsconfigs-ambient-types.test.ts fails if a build project misses one.
+    "src/types/**/*.d.ts",
     "scripts/**/*"
   ],
   "exclude": [

@@ -42,9 +42,9 @@ function LocationProbe() {
   return <div data-testid="pathname">{loc.pathname}</div>;
 }
 
-/** Every item's page is shown to this person: S02.24 draws an item only when its Show switch is on too. */
+/** The person may view every item's record type: an item is drawn on its View alone (P1). */
 function answerEveryPageShown() {
-  const values = Object.fromEntries(quickCreateItems.map((item) => [item.show, true]));
+  const values = Object.fromEntries(quickCreateItems.map((item) => [item.view, true]));
   vi.mocked(api.get).mockImplementation(async (url: string) =>
     (url === '/api/permission-switches/me' ? { data: { admin_box: true, values, rules: [] } } : { data: {} }));
 }

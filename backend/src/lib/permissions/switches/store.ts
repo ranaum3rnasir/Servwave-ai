@@ -1,6 +1,6 @@
 import { Prisma, type CustomRole } from '@prisma/client';
 import { prisma } from '../../prisma';
-import { grantRoleKey, isSuperUser, slugifyRoleKey, type RoleBearer } from '../effectiveRole';
+import { grantRoleKey, isSuperUser, slugifyRoleKey, type AdminBearer, type RoleBearer } from '../effectiveRole';
 import { nameTakenMessage, roleNameRefusal } from '../roleName';
 import type { Grant } from '../defineAbility';
 import {
@@ -15,15 +15,17 @@ import {
   type SwitchValue,
 } from './catalog';
 import { FIXED_GRANTS } from '../fixedGrants';
-import { customerReach, logisticOrderReach, orderOnJobReach, scopeReach } from '../recordPeople';
+import { customerReach, documentReach, logisticOrderReach, orderOnJobReach, ownDocumentsReach, scopeReach } from '../recordPeople';
 import { validateSwitchSet, type SwitchSetViolation } from './validate';
 import {
   clearSwitchCacheForOrg,
   clearSwitchCacheForUser,
+  currentSwitchesStamp,
   getCachedSwitches,
   setCachedSwitches,
   type ResolvedSwitches,
 } from './cache';
+import { recordAccessChange, type AccessActor } from '../../users/access-audit';
 
 /**
  * M2 - the per-person switch store (Roles & Permissions, PRD 1).
@@ -36,19 +38,20 @@ import {
  *   3. else the preset of that role's built-in base - a built-in role is its own base, a custom role
  *      uses the base role it records, and a role made from blank has none, so the switch is off.
  *
- * Giving a person a role copies that role's current values into their set once; editing the role
- * afterwards never touches them. The built-in Admin role (no custom role) is one box with every
- * switch on and no stored set.
+ * A person's stored rows are their OVERRIDES only (P14): a row exists only where the person holds a value that
+ * differs from their role. Giving a person a role stores the link (`based_on_role_key`) and clears their overrides;
+ * it copies nothing. Editing the role afterwards reaches every person who holds no override on the changed switch.
+ * The built-in Admin role (no custom role) is one box with every switch on and no stored set.
  */
 
 /** The slice of a person the store needs; `req.user` satisfies it. */
-export interface SwitchSubject extends RoleBearer {
+export interface SwitchSubject extends AdminBearer {
   id: string;
   organization_id: string;
 }
 
 /** Why a value changed; the last column of the change log. */
-export type ChangeReason = 'manual' | 'role assigned' | 'reset' | 'save as role' | 'migration';
+export type ChangeReason = 'manual' | 'role assigned' | 'reset' | 'save as role' | 'migration' | 'role edit' | 'erased';
 
 /** Raised when a write names a switch the catalog does not hold. */
 export class UnknownSwitchError extends Error {
@@ -160,20 +163,22 @@ export async function resolveRoleSwitchValues(organizationId: string, roleKey: s
 export async function resolveSwitches(user: SwitchSubject): Promise<ResolvedSwitches> {
   // The Admin box is full access with no stored set. An admin-derived custom role is not the box.
   if (isSuperUser(user)) return presetValues('ADMIN');
+  // The stamp this request read before anything below is: values kept under it stay right only if read after it.
+  const stamp = currentSwitchesStamp(user.id);
   const cached = getCachedSwitches(user.id);
   if (cached) return cached;
 
   const [person, own] = await Promise.all([
     prisma.user.findUnique({
       where: { id: user.id },
-      select: { role: true, based_on_role_key: true, custom_role_id: true, custom_role: { select: { key: true } } },
+      select: { role: true, based_on_role_key: true, custom_role_id: true, is_admin: true, custom_role: { select: { key: true } } },
     }),
     prisma.permissionUserSwitch.findMany({ where: { user_id: user.id }, select: { switch_key: true, value: true } }),
   ]);
-  const stored: RoleBearer = person ?? user;
+  const stored: AdminBearer = person ?? user;
   const basedOn = person?.based_on_role_key ?? grantRoleKey(stored);
   const values = overlayStored(await roleValues(prisma, user.organization_id, basedOn, stored.role), own);
-  if (person) setCachedSwitches(user.id, user.organization_id, values);
+  if (person) setCachedSwitches(user.id, user.organization_id, values, stamp);
   return values;
 }
 
@@ -188,7 +193,7 @@ export async function presetRoleOfPerson(user: SwitchSubject): Promise<BuiltInRo
   if (isSuperUser(user)) return 'ADMIN';
   const person = await prisma.user.findUnique({
     where: { id: user.id },
-    select: { role: true, based_on_role_key: true, custom_role_id: true, custom_role: { select: { key: true } } },
+    select: { role: true, based_on_role_key: true, custom_role_id: true, is_admin: true, custom_role: { select: { key: true } } },
   });
   const stored: RoleBearer = person ?? user;
   return presetRoleFor(prisma, user.organization_id, person?.based_on_role_key ?? grantRoleKey(stored), stored.role);
@@ -265,6 +270,8 @@ export async function resolveSwitchesForPeople(
     keys ? Object.fromEntries(keys.map((k) => [k, values[k]!])) : values;
   const out = new Map<string, ResolvedSwitches>();
   const toRead = new Map<string, SwitchSubject>();
+  // Only the request's own person has a fresh stamp; for everyone else memory holds only what was just read (switches/cache.ts).
+  const stampOf = new Map(people.map((p) => [p.id, currentSwitchesStamp(p.id)]));
   for (const person of people) {
     if (out.has(person.id) || toRead.has(person.id)) continue;
     if (isSuperUser(person)) {
@@ -285,7 +292,7 @@ export async function resolveSwitchesForPeople(
     const [storedRows, own] = await Promise.all([
       prisma.user.findMany({
         where: { id: { in: ids } },
-        select: { id: true, role: true, based_on_role_key: true, custom_role_id: true, custom_role: { select: { key: true } } },
+        select: { id: true, role: true, based_on_role_key: true, custom_role_id: true, is_admin: true, custom_role: { select: { key: true } } },
       }),
       prisma.permissionUserSwitch.findMany({
         where: { user_id: { in: ids }, ...(keys ? { switch_key: { in: [...keys] } } : {}) },
@@ -306,7 +313,7 @@ export async function resolveSwitchesForPeople(
     for (const person of group) {
       const values = overlayStored({ ...roleSets.get(roleReadKey(readOf(person)))! }, ownByUser.get(person.id) ?? []);
       // A person with no stored row is answered but never cached (see `resolveSwitches`).
-      if (!keys && storedById.has(person.id)) setCachedSwitches(person.id, organizationId, values);
+      if (!keys && storedById.has(person.id)) setCachedSwitches(person.id, organizationId, values, stampOf.get(person.id) ?? null);
       out.set(person.id, pick(values));
     }
   }
@@ -325,6 +332,15 @@ function reachOf(scoped: NonNullable<GrantSpec['scoped']>, values: ResolvedSwitc
       return orderOnJobReach(values.view_jobs, jobsScope);
     case 'LogisticOrder':
       return logisticOrderReach({ jobs: values.view_jobs, leads: values.view_leads }, { jobs: jobsScope, leads: leadsScope });
+    case 'Estimate':
+    case 'Invoice': {
+      // A document has no scope of its own (P6): it is reached the way its lead or job is. The ones the person made for a
+      // customer alone are an arm of their own (P7), present for any scope narrower than All.
+      const reaches = documentReach(scoped, leadsScope, jobsScope, { leads: values.view_leads, jobs: values.view_jobs });
+      if (!reaches) return null;
+      const own = ownDocumentsReach(scoped, leadsScope === 'all' && jobsScope === 'all' ? 'all' : 'attached');
+      return own ? [...reaches, own] : reaches;
+    }
     default:
       return [scopeReach(scoped, values[SCOPE_SWITCH_KEY[scoped]])];
   }
@@ -388,61 +404,12 @@ function logRow(
   return { ...base, switch_key: switchKey, from_value: from, to_value: to };
 }
 
-/**
- * Store values on a role. Only values that change what the role holds are logged (one entry per
- * changed switch). A role's people are never touched; their cached values are dropped so the change
- * shows on the next request for anyone who falls back to the role.
- *
- * Returns the value the role holds for every switch once this is stored, built from what the write already read: a
- * route answers with it and reads nothing after the commit (see `personSetAfter`).
- */
-export async function setRoleSwitchValues(args: {
-  organizationId: string;
-  roleKey: string;
-  values: Record<string, SwitchValue>;
-  actorId: string | null;
-  reason: ChangeReason;
-  /** The role's base built-in role as users.role records it, for a custom role that no longer resolves. */
-  userBaseRole?: string;
-  /**
-   * The whole set is copied from a role or person that holds it (a new role made from a role, Save as role).
-   * The only write that may store a kept scope value the target does not hold yet.
-   */
-  copiedFromHolder?: boolean;
-  /**
-   * Edit or reset of a role that has people on it: a person who holds no value of their own for a switch that changes
-   * keeps the value they had, so the edit never reaches them. Left off for a role that has just been made.
-   */
-  pinPeople?: boolean;
-}): Promise<ResolvedSwitches> {
-  const keys = Object.keys(args.values);
-  keys.forEach(entryFor);
-  const before = await roleValues(prisma, args.organizationId, args.roleKey, args.userBaseRole ?? '');
-  // The set the role would hold after this write must pass the catalog validator; nothing is stored if not.
-  // A kept scope value is accepted only where the role already holds it, unless the set is a copy of a holder's.
-  const violations = validateSwitchSet({ ...before, ...args.values }, args.copiedFromHolder ? {} : { held: before });
-  if (violations.length) throw new InvalidSwitchSetError(violations);
-  const base = {
-    organization_id: args.organizationId, target_type: 'ROLE', target_id: args.roleKey,
-    actor_id: args.actorId, reason: args.reason,
-  };
-  await prisma.$transaction(async (tx) => {
-    for (const key of keys) {
-      const value = args.values[key]!;
-      await tx.permissionRoleSwitch.upsert({
-        where: { organization_id_role_key_switch_key: { organization_id: args.organizationId, role_key: args.roleKey, switch_key: key } },
-        create: { organization_id: args.organizationId, role_key: args.roleKey, switch_key: key, value },
-        update: { value },
-      });
-    }
-    const changed = keys.filter((k) => !sameSwitchValue(before[k], args.values[k]));
-    if (changed.length) {
-      await tx.permissionChangeLog.createMany({ data: changed.map((k) => logRow(base, k, before[k]!, args.values[k]!)) });
-      if (args.pinPeople) await pinPeopleOnRole(tx, args.organizationId, args.roleKey, changed, before);
-    }
-  });
-  clearSwitchCacheForOrg(args.organizationId);
-  return { ...before, ...args.values };
+/** What a role save did to the people on the role. */
+export interface RoleSaveEffect {
+  /** People on the role who follow at least one switch the save changed (they hold no value of their own for it). */
+  reaches: number;
+  /** People on the role who hold their own value for at least one switch the save changed, so it did not reach them. */
+  keepOwn: number;
 }
 
 /** Who is on a role: those based on it, and those who have never been given a based-on role and sit on it by their role. */
@@ -458,47 +425,180 @@ function peopleOnRole(organizationId: string, roleKey: string): Prisma.UserWhere
 }
 
 /**
- * Give each person on the role their own copy of the value the role held for these switches, where they hold none. A
- * person with no stored value for a switch falls back to their role, so without this a change to the role would
- * reach them; with it, only the role changes.
+ * The people on a role after one of its switches changed (P14). Everyone on the role follows a changed switch they hold
+ * no value of their own for. A person's own value stays, except where the role's new set takes away something it needs:
+ * a switch that now breaks the catalog's Requires for that person is dropped, along with the override that breaks it,
+ * and one change-log entry says so. An own value the change makes equal to the role is dropped the same way (it is no
+ * exception any more). Returns how many people were reached and how many kept their own value.
  */
-async function pinPeopleOnRole(
+async function carryRoleChangeToPeople(
   tx: Prisma.TransactionClient,
   organizationId: string,
   roleKey: string,
-  switchKeys: string[],
-  roleBefore: ResolvedSwitches,
-): Promise<void> {
+  roleAfter: ResolvedSwitches,
+  changed: string[],
+  actorId: string | null,
+): Promise<RoleSaveEffect> {
+  if (!changed.length) return { reaches: 0, keepOwn: 0 };
   const people = await tx.user.findMany({ where: peopleOnRole(organizationId, roleKey), select: { id: true } });
-  if (!people.length) return;
-  const held = await tx.permissionUserSwitch.findMany({
-    where: { user_id: { in: people.map((p) => p.id) }, switch_key: { in: switchKeys } },
-    select: { user_id: true, switch_key: true },
+  if (!people.length) return { reaches: 0, keepOwn: 0 };
+  const rows = await tx.permissionUserSwitch.findMany({
+    where: { user_id: { in: people.map((p) => p.id) } },
+    select: { user_id: true, switch_key: true, value: true },
   });
-  const heldPairs = new Set(held.map((r) => `${r.user_id}\u0000${r.switch_key}`));
-  const data = people.flatMap((p) =>
-    switchKeys
-      .filter((k) => !heldPairs.has(`${p.id}\u0000${k}`))
-      .map((k) => ({ organization_id: organizationId, user_id: p.id, switch_key: k, value: roleBefore[k]! })),
-  );
-  if (data.length) await tx.permissionUserSwitch.createMany({ data, skipDuplicates: true });
+  const ownByUser = new Map<string, Map<string, SwitchValue>>();
+  for (const r of rows) {
+    const v = asValue(r.value);
+    if (v === undefined || !findSwitch(r.switch_key)) continue;
+    if (!ownByUser.has(r.user_id)) ownByUser.set(r.user_id, new Map());
+    ownByUser.get(r.user_id)!.set(r.switch_key, v);
+  }
+  const log: LogRow[] = [];
+  let reaches = 0;
+  let keepOwn = 0;
+  for (const person of people) {
+    const own = ownByUser.get(person.id) ?? new Map<string, SwitchValue>();
+    const dropped: string[] = [];
+    const effective = () => ({ ...roleAfter, ...Object.fromEntries(own) });
+    // The role's own set is valid, so removing overrides always ends at a valid set.
+    for (let guard = own.size; guard >= 0; guard--) {
+      const violations = validateSwitchSet(effective());
+      if (!violations.length) break;
+      const culprits = new Set(violations.flatMap((v) => [v.switchKey, ...v.needs]).filter((k) => own.has(k)));
+      if (!culprits.size) break;
+      for (const k of culprits) {
+        dropped.push(k);
+        log.push(logRow(
+          { organization_id: organizationId, target_type: 'USER', target_id: person.id, actor_id: actorId, reason: 'role edit', role_label: null },
+          k, own.get(k)!, roleAfter[k]!,
+        ));
+        own.delete(k);
+      }
+    }
+    // An own value the role now holds too is no exception any more: it goes, as Reset and a person save drop one (and M3 did),
+    // so the person follows the role's next edit instead of being pinned by a row nobody can see (CR-7).
+    for (const k of changed) {
+      if (!own.has(k) || !sameSwitchValue(own.get(k), roleAfter[k])) continue;
+      dropped.push(k);
+      log.push(logRow(
+        { organization_id: organizationId, target_type: 'USER', target_id: person.id, actor_id: actorId, reason: 'role edit', role_label: null },
+        k, own.get(k)!, roleAfter[k]!,
+      ));
+      own.delete(k);
+    }
+    if (dropped.length) await tx.permissionUserSwitch.deleteMany({ where: { user_id: person.id, switch_key: { in: dropped } } });
+    if (changed.some((k) => !own.has(k))) reaches++;
+    if (changed.some((k) => own.has(k))) keepOwn++;
+  }
+  if (log.length) await tx.permissionChangeLog.createMany({ data: log });
+  return { reaches, keepOwn };
 }
 
-/** Edit a role's switches. The people on it are not touched (see `pinPeople`). Returns the values the role now holds. */
+/**
+ * Store values on a role. Only values that change what the role holds are logged (one entry per
+ * changed switch). A role's people are never written to for a switch they follow: everyone on the role who holds no
+ * override on a changed switch follows it, so their cached values are dropped and the change shows on their next
+ * request. A person's override that the change leaves without what it needs is removed (see `carryRoleChangeToPeople`).
+ *
+ * Returns the value the role holds for every switch once this is stored, built from what the write already read: a
+ * route answers with it and reads nothing after the commit (see `personSetAfter`), plus how many people the save
+ * reached and how many kept their own value.
+ */
+async function writeRoleSwitchValues(args: {
+  organizationId: string;
+  roleKey: string;
+  values: Record<string, SwitchValue>;
+  actorId: string | null;
+  reason: ChangeReason;
+  /** The role's base built-in role as users.role records it, for a custom role that no longer resolves. */
+  userBaseRole?: string;
+  /**
+   * The whole set is copied from a role or person that holds it (a new role made from a role, Save as role).
+   * The only write that may store a kept scope value the target does not hold yet.
+   */
+  copiedFromHolder?: boolean;
+  /** The role has just been made, so nobody is on it: the people on a role are not looked up. */
+  newRole?: boolean;
+  /**
+   * Run first, inside the same transaction as the switch write: making the role itself and its audit row (re-audit N23), so a
+   * new role, its starting switches and its record are one step.
+   */
+  inSameStep?: (tx: Prisma.TransactionClient) => Promise<void>;
+}): Promise<{ values: ResolvedSwitches; effect: RoleSaveEffect }> {
+  const keys = Object.keys(args.values);
+  keys.forEach(entryFor);
+  const base = {
+    organization_id: args.organizationId, target_type: 'ROLE', target_id: args.roleKey,
+    actor_id: args.actorId, reason: args.reason,
+  };
+  let effect: RoleSaveEffect = { reaches: 0, keepOwn: 0 };
+  let after: ResolvedSwitches = {};
+  await prisma.$transaction(async (tx) => {
+    if (args.inSameStep) await args.inSameStep(tx);
+    // One save of this role at a time, each reading the values the save before it committed (ticket 37): two Admins saving
+    // different switches of the same role at once both keep their change, and each is checked against the role as it is.
+    await lockRole(tx, args.organizationId, args.roleKey);
+    const before = await roleValues(tx, args.organizationId, args.roleKey, args.userBaseRole ?? '');
+    // The set the role would hold after this write must pass the catalog validator; nothing is stored if not.
+    // A kept scope value is accepted only where the role already holds it, unless the set is a copy of a holder's.
+    const violations = validateSwitchSet({ ...before, ...args.values }, args.copiedFromHolder ? {} : { held: before });
+    if (violations.length) throw new InvalidSwitchSetError(violations);
+    after = { ...before, ...args.values };
+    for (const key of keys) {
+      const value = args.values[key]!;
+      await tx.permissionRoleSwitch.upsert({
+        where: { organization_id_role_key_switch_key: { organization_id: args.organizationId, role_key: args.roleKey, switch_key: key } },
+        create: { organization_id: args.organizationId, role_key: args.roleKey, switch_key: key, value },
+        update: { value },
+      });
+    }
+    const changed = keys.filter((k) => !sameSwitchValue(before[k], args.values[k]));
+    if (changed.length) {
+      await tx.permissionChangeLog.createMany({ data: changed.map((k) => logRow(base, k, before[k]!, args.values[k]!)) });
+      if (!args.newRole) effect = await carryRoleChangeToPeople(tx, args.organizationId, args.roleKey, after, changed, args.actorId);
+    }
+  });
+  clearSwitchCacheForOrg(args.organizationId);
+  return { values: after, effect };
+}
+
+/**
+ * Hold this role's switches until the transaction ends (ticket 37). A transaction-scoped advisory lock rather than a row lock,
+ * because a built-in role has no row of its own to lock, and a role never saved has no switch rows yet.
+ */
+async function lockRole(tx: Prisma.TransactionClient, organizationId: string, roleKey: string): Promise<void> {
+  await tx.$queryRaw`SELECT 1 AS held FROM pg_advisory_xact_lock(hashtext(${`role-switches:${organizationId}`}), hashtext(${roleKey}))`;
+}
+
+/** Hold this person's row, and with it their own switches, until the transaction ends (ticket 37). */
+async function lockPerson(tx: Prisma.TransactionClient, organizationId: string, userId: string): Promise<void> {
+  await tx.$queryRaw`SELECT 1 AS held FROM users WHERE id = ${userId}::uuid AND organization_id = ${organizationId}::uuid FOR UPDATE`;
+}
+
+/** Store values on a role (see `writeRoleSwitchValues`). Returns the value the role holds for every switch. */
+export async function setRoleSwitchValues(args: Parameters<typeof writeRoleSwitchValues>[0]): Promise<ResolvedSwitches> {
+  return (await writeRoleSwitchValues(args)).values;
+}
+
+/**
+ * Edit a role's switches. Everyone on it without an override on a changed switch follows. Returns the values the role now
+ * holds, how many people the save reached and how many kept their own value.
+ */
 export async function editRoleSwitchValues(args: {
   organizationId: string;
   roleKey: string;
   values: Record<string, SwitchValue>;
   actorId: string | null;
   userBaseRole: string;
-}): Promise<ResolvedSwitches> {
-  return setRoleSwitchValues({ ...args, reason: 'manual', pinPeople: true });
+}): Promise<{ values: ResolvedSwitches } & RoleSaveEffect> {
+  const { values, effect } = await writeRoleSwitchValues({ ...args, reason: 'manual' });
+  return { values, ...effect };
 }
 
 /**
  * Reset a role to its starting point: `startsFrom` is the built-in preset (a built-in role's own, a custom role's
  * base), or null for a role made from blank, which starts with everything off. Every switch is stored at that value
- * and each one that changed is logged "reset". The people on the role are not touched. The starting point is the
+ * and each one that changed is logged "reset". The people on the role follow it, as for any edit. The starting point is the
  * preset itself, so a kept value it holds (Sales' Through own leads) is accepted here. Returns the values the role now holds.
  */
 export async function resetRoleSwitchValues(args: {
@@ -507,8 +607,8 @@ export async function resetRoleSwitchValues(args: {
   startsFrom: BuiltInRole | null;
   actorId: string | null;
   userBaseRole: string;
-}): Promise<ResolvedSwitches> {
-  return setRoleSwitchValues({
+}): Promise<{ values: ResolvedSwitches } & RoleSaveEffect> {
+  const { values, effect } = await writeRoleSwitchValues({
     organizationId: args.organizationId,
     roleKey: args.roleKey,
     values: presetValues(args.startsFrom),
@@ -516,8 +616,8 @@ export async function resetRoleSwitchValues(args: {
     reason: 'reset',
     userBaseRole: args.userBaseRole,
     copiedFromHolder: true,
-    pinPeople: true,
   });
+  return { values, ...effect };
 }
 
 /** True when View is off on every module: the role could open nothing, which is almost never what was meant. */
@@ -526,11 +626,11 @@ export function allViewsOff(values: ResolvedSwitches): boolean {
 }
 
 /**
- * Give a person a role: copy the role's current value for every switch into the person's set and log
- * each switch whose value changed for them. Runs inside the caller's transaction so the person's role
- * and their set move together; the caller records the role as the person's based-on role
- * (`users.based_on_role_key`) in that same update. The role is only read here, so editing it later
- * never touches the person.
+ * Give a person a role: clear the person's overrides, so they equal the role, and log each switch whose value changed
+ * for them. Nothing is copied from the role: the caller records the role as the person's based-on role
+ * (`users.based_on_role_key`) in the same update, and the role is only read here to find what changed. Runs inside the
+ * caller's transaction so the person's role and their overrides move together. Editing the role later reaches the
+ * person (P14). The caller drops the person's cached switches after its transaction commits (`clearSwitchCacheForUser`).
  *
  * `previous` is what the person resolved to before the new role, read by the caller before it changed
  * the person's role.
@@ -550,11 +650,6 @@ export async function assignRoleToPerson(
   // The log names the role by the name it has now: a later rename never rewrites it.
   const given = await basedOnRole(tx, args.organizationId, args.roleKey);
   await tx.permissionUserSwitch.deleteMany({ where: { user_id: args.userId } });
-  await tx.permissionUserSwitch.createMany({
-    data: SWITCH_CATALOG.map((s) => ({
-      organization_id: args.organizationId, user_id: args.userId, switch_key: s.key, value: values[s.key]!,
-    })),
-  });
   const base = {
     organization_id: args.organizationId, target_type: 'USER', target_id: args.userId,
     actor_id: args.actorId, reason: 'role assigned' as ChangeReason, role_label: given.label,
@@ -565,7 +660,8 @@ export async function assignRoleToPerson(
       data: changed.map((s) => logRow(base, s.key, args.previous[s.key]!, values[s.key]!)),
     });
   }
-  clearSwitchCacheForUser(args.userId);
+  // No cache is cleared here: this runs inside the caller's transaction, which may still roll back. The caller clears the
+  // person's switches once it has committed (ticket 37).
 }
 
 /** Why a person-set operation cannot run, apart from a bad value (that is an InvalidSwitchSetError). */
@@ -617,6 +713,7 @@ const personSelect = {
   role: true,
   based_on_role_key: true,
   custom_role_id: true,
+  is_admin: true,
   custom_role: { select: { key: true } },
 } satisfies Prisma.UserSelect;
 
@@ -671,7 +768,7 @@ export interface PersonRoleSummary {
 }
 
 /** A stored person as the users list selects them: enough to find the role they are based on. */
-export interface RoleSummaryPerson extends RoleBearer {
+export interface RoleSummaryPerson extends AdminBearer {
   id: string;
   based_on_role_key: string | null;
 }
@@ -693,7 +790,7 @@ function basedOnKeyOf(p: RoleSummaryPerson): string {
 export async function countPeopleByRole(organizationId: string): Promise<Map<string, number>> {
   const people = await prisma.user.findMany({
     where: { organization_id: organizationId },
-    select: { id: true, role: true, custom_role_id: true, based_on_role_key: true, custom_role: { select: { key: true } } },
+    select: { id: true, role: true, custom_role_id: true, is_admin: true, based_on_role_key: true, custom_role: { select: { key: true } } },
   });
   const counts = new Map<string, number>();
   for (const p of people) {
@@ -770,7 +867,10 @@ function personSetAfter(userId: string, state: PersonState, basedOn: BasedOnRole
   return { userId, adminBox: false, basedOn, values: after.values, differences: differencesOf(after) };
 }
 
-/** Store a person's own values for these switches. */
+/**
+ * Store a person's own values for these switches. A value that equals the role's current value is not an override, so
+ * its row is removed (or never written): the person follows the role on that switch until they hold a different one.
+ */
 async function storePersonValues(
   tx: Prisma.TransactionClient,
   person: StoredPerson,
@@ -781,6 +881,10 @@ async function storePersonValues(
 ): Promise<void> {
   const keys = Object.keys(values);
   for (const key of keys) {
+    if (sameSwitchValue(values[key], state.roleVals[key])) {
+      await tx.permissionUserSwitch.deleteMany({ where: { user_id: person.id, switch_key: key } });
+      continue;
+    }
     await tx.permissionUserSwitch.upsert({
       where: { user_id_switch_key: { user_id: person.id, switch_key: key } },
       create: { organization_id: person.organization_id, user_id: person.id, switch_key: key, value: values[key]! },
@@ -810,20 +914,26 @@ export async function setPersonSwitchValues(args: {
   actorId: string | null;
 }): Promise<PersonSetRead> {
   Object.keys(args.values).forEach(entryFor);
-  const person = await loadPerson(prisma, args.organizationId, args.userId);
-  const state = await personState(prisma, person);
-  refuseAdminBox(state);
-  const violations = validateSwitchSet({ ...state.values, ...args.values }, { held: state.values });
-  if (violations.length) throw new InvalidSwitchSetError(violations);
-  const basedOn = await basedOnRole(prisma, args.organizationId, state.basedOnKey!);
-  await prisma.$transaction((tx) => storePersonValues(tx, person, state, args.values, args.actorId, 'manual'));
+  // The person is held and read inside the write (ticket 37): two Admins saving different switches of one person at once
+  // both keep their change, and each is checked against the person as the save before it left them.
+  const saved = await prisma.$transaction(async (tx) => {
+    await lockPerson(tx, args.organizationId, args.userId);
+    const person = await loadPerson(tx, args.organizationId, args.userId);
+    const state = await personState(tx, person);
+    refuseAdminBox(state);
+    const violations = validateSwitchSet({ ...state.values, ...args.values }, { held: state.values });
+    if (violations.length) throw new InvalidSwitchSetError(violations);
+    const basedOn = await basedOnRole(tx, args.organizationId, state.basedOnKey!);
+    await storePersonValues(tx, person, state, args.values, args.actorId, 'manual');
+    return { state, basedOn };
+  });
   clearSwitchCacheForUser(args.userId);
-  return personSetAfter(args.userId, state, basedOn, args.values);
+  return personSetAfter(args.userId, saved.state, saved.basedOn, args.values);
 }
 
 /**
- * Put some of a person's switches (`all` for every one) back to the based-on role's current value. The value is stored
- * on the person, not dropped, so a later edit to the role still never reaches them.
+ * Put some of a person's switches (`all` for every one) back to the based-on role's current value. The person's
+ * override is dropped (`storePersonValues` removes a row that equals the role), so a later edit to the role reaches them.
  */
 export async function resetPersonSwitches(args: {
   organizationId: string;
@@ -832,18 +942,23 @@ export async function resetPersonSwitches(args: {
   actorId: string | null;
 }): Promise<PersonSetRead> {
   if (args.switchKeys !== 'all') args.switchKeys.forEach(entryFor);
-  const person = await loadPerson(prisma, args.organizationId, args.userId);
-  const state = await personState(prisma, person);
-  refuseAdminBox(state);
   const keys = args.switchKeys === 'all' ? SWITCH_CATALOG.map((s) => s.key) : args.switchKeys;
-  const values = Object.fromEntries(keys.map((k) => [k, state.roleVals[k]!]));
-  // The role's own value is held by the role, so a kept value it holds is not refused here.
-  const violations = validateSwitchSet({ ...state.values, ...values }, { held: { ...state.values, ...values } });
-  if (violations.length) throw new InvalidSwitchSetError(violations);
-  const basedOn = await basedOnRole(prisma, args.organizationId, state.basedOnKey!);
-  await prisma.$transaction((tx) => storePersonValues(tx, person, state, values, args.actorId, 'reset'));
+  // Held and read inside the write, as `setPersonSwitchValues` is (ticket 37).
+  const saved = await prisma.$transaction(async (tx) => {
+    await lockPerson(tx, args.organizationId, args.userId);
+    const person = await loadPerson(tx, args.organizationId, args.userId);
+    const state = await personState(tx, person);
+    refuseAdminBox(state);
+    const values = Object.fromEntries(keys.map((k) => [k, state.roleVals[k]!]));
+    // The role's own value is held by the role, so a kept value it holds is not refused here.
+    const violations = validateSwitchSet({ ...state.values, ...values }, { held: { ...state.values, ...values } });
+    if (violations.length) throw new InvalidSwitchSetError(violations);
+    const basedOn = await basedOnRole(tx, args.organizationId, state.basedOnKey!);
+    await storePersonValues(tx, person, state, values, args.actorId, 'reset');
+    return { state, basedOn, values };
+  });
   clearSwitchCacheForUser(args.userId);
-  return personSetAfter(args.userId, state, basedOn, values);
+  return personSetAfter(args.userId, saved.state, saved.basedOn, saved.values);
 }
 
 /**
@@ -860,27 +975,37 @@ export async function saveSwitchesAsRole(args: {
   label: string;
   description?: string;
   actorId: string | null;
+  /** Who moved the person, for the access record (ticket 25). Left out, the record names only `actorId`. */
+  actor?: AccessActor;
 }): Promise<{ role: CustomRole; set: PersonSetRead }> {
-  const person = await loadPerson(prisma, args.organizationId, args.userId);
-  const state = await personState(prisma, person);
-  refuseAdminBox(state);
+  // The refusals come first, in the order they always have: no such person, the Admin box, a bad or taken name.
+  refuseAdminBox(await personState(prisma, await loadPerson(prisma, args.organizationId, args.userId)));
   const refusal = await roleNameRefusal({ organizationId: args.organizationId, label: args.label });
   if (refusal) throw new PersonSetError(refusal.error, refusal.status === 409 ? 'name_taken' : 'bad_name');
   const key = slugifyRoleKey(args.label);
-  const violations = validateSwitchSet(state.values);
-  if (violations.length) throw new InvalidSwitchSetError(violations);
-
-  const source = state.basedOnKey!;
-  const sourceRow = isBuiltInRole(source)
-    ? null
-    : await prisma.customRole.findFirst({ where: { organization_id: args.organizationId, key: source }, select: { base_role: true, made_from_blank: true } });
-  const baseRole = isBuiltInRole(source) ? source : (sourceRow?.base_role ?? person.role);
-  const madeFromBlank = sourceRow?.made_from_blank ?? false;
-  const startValues = presetValues(madeFromBlank ? null : (baseRole as BuiltInRole));
 
   let created;
+  let state!: PersonState;
   try {
     created = await prisma.$transaction(async (tx) => {
+      // The person is held and read inside the write, as `setPersonSwitchValues` holds them (ticket 37): an edit of their own
+      // switches landing at the same moment either commits first, and its value is what the new role is made of, or waits
+      // until the person is on the new role. The overrides deleted below are never ones this save did not read.
+      await lockPerson(tx, args.organizationId, args.userId);
+      const person = await loadPerson(tx, args.organizationId, args.userId);
+      state = await personState(tx, person);
+      refuseAdminBox(state);
+      const violations = validateSwitchSet(state.values);
+      if (violations.length) throw new InvalidSwitchSetError(violations);
+
+      const source = state.basedOnKey!;
+      const sourceRow = isBuiltInRole(source)
+        ? null
+        : await tx.customRole.findFirst({ where: { organization_id: args.organizationId, key: source }, select: { base_role: true, made_from_blank: true } });
+      const baseRole = isBuiltInRole(source) ? source : (sourceRow?.base_role ?? person.role);
+      const madeFromBlank = sourceRow?.made_from_blank ?? false;
+      const startValues = presetValues(madeFromBlank ? null : (baseRole as BuiltInRole));
+
       const role = await tx.customRole.create({
         data: {
           organization_id: args.organizationId, key, label: args.label, description: args.description ?? '',
@@ -903,12 +1028,17 @@ export async function saveSwitchesAsRole(args: {
           { ...saveRow, organization_id: args.organizationId, target_type: 'USER', target_id: person.id, role_label: args.label },
         ],
       });
-      // The person keeps every value they hold; the new role holds the same, so nothing differs.
+      // The person keeps every value they hold; the new role holds the same, so they need no overrides.
       await tx.permissionUserSwitch.deleteMany({ where: { user_id: person.id } });
-      await tx.permissionUserSwitch.createMany({
-        data: SWITCH_CATALOG.map((s) => ({ organization_id: args.organizationId, user_id: person.id, switch_key: s.key, value: state.values[s.key]! })),
-      });
       await tx.user.update({ where: { id: person.id }, data: { custom_role_id: role.id, role: baseRole, based_on_role_key: key } });
+      // The person moved onto the new role: recorded in the same transaction, so the move can't happen unrecorded (ticket 25).
+      await recordAccessChange(tx, {
+        organizationId: args.organizationId,
+        actor: args.actor ?? { id: args.actorId, email: null, ip: null, userAgent: null },
+        targetId: person.id,
+        before: { role: person.role, custom_role_id: person.custom_role_id, is_admin: person.is_admin },
+        after: { role: baseRole, custom_role_id: role.id, is_admin: person.is_admin },
+      });
       return role;
     });
   } catch (err) {

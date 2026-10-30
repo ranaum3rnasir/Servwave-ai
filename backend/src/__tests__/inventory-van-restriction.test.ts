@@ -59,7 +59,6 @@ const mockPrisma = prisma as unknown as {
   };
   organization: { findUnique: ReturnType<typeof vi.fn> };
   timelineEvent: { create: ReturnType<typeof vi.fn> };
-  userPermissionOverride: { findMany: ReturnType<typeof vi.fn> };
   $transaction: ReturnType<typeof vi.fn>;
 };
 
@@ -227,7 +226,7 @@ function setupTransaction() {
 // Technician has it off by default), and View invoices lets them open the invoice they work on.
 function mockTech() {
   mockAuthAs('technician');
-  mockRoleSwitches({ view_invoices: true, edit_invoice_line_items: true });
+  mockRoleSwitches({ view_invoices: true, edit_invoices: true, edit_invoice_line_items: true });
   // canAccessRow(Job/Invoice) — conditional read scope does a real scoped findFirst.
   mockPrisma.job.findFirst.mockResolvedValue({ id: JOB_ID });
   mockPrisma.invoice.findFirst.mockResolvedValue({ id: INVOICE_ID });

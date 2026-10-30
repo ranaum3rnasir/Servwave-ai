@@ -320,6 +320,9 @@ async function validateParentAndBillTo(
   selfId?: string,
   effectiveParentId?: string | null,
   effectiveIsParent?: boolean,
+  // The parent the customer already has (PATCH only). Keeping it is not choosing it: the edit form re-sends parent_id on
+  // every save, so the parent's reach is asked only when the parent CHANGES (or on create, where this is undefined).
+  storedParentId?: string | null,
 ): Promise<void> {
   const parentId = data.parent_id ?? null;
 
@@ -340,7 +343,12 @@ async function validateParentAndBillTo(
       where: { id: parentId, ...tenantWhere(req) },
       select: { id: true, parent_id: true, is_parent: true },
     });
-    if (!parent) throw new GuardError('Parent customer not found in this organization');
+    // A parent out of the person's reach answers exactly like one that does not exist (spec story 47), when it is being
+    // chosen; a parent the customer already has stays as it is.
+    const choosingParent = storedParentId === undefined || parentId !== storedParentId;
+    if (!parent || (choosingParent && !(await canReadCustomerById(req, parent.id)))) {
+      throw new GuardError('Parent customer not found in this organization');
+    }
     if (parent.parent_id !== null) {
       throw new GuardError('Parent must be a top-level customer (billing group)');
     }
@@ -848,6 +856,52 @@ export async function create(req: Request, res: Response) {
   }
 }
 
+/**
+ * The customer's invoices the person can reach (H3), for the money sections of the customer page: the invoices it lists, the
+ * payments under them and every total built from them. Asked through the person's invoice reach (the scope fragment the invoice
+ * list uses), so an invoice they cannot open is neither listed nor counted. A person whose reach covers every invoice (an Admin,
+ * company-wide reach) costs no query, and every filter below is then a no-op.
+ *
+ *  - `prismaWhere`: an AND arm for a Prisma invoice `where` (`{}` for every invoice);
+ *  - `sqlFilter(alias)`: the same reach for raw SQL over `invoices <alias>`, as the ids reached ("AND FALSE" when none).
+ */
+type InvoiceReach = { prismaWhere: Record<string, unknown>; sqlFilter: (alias: string) => Prisma.Sql };
+
+async function customerInvoiceReach(req: Request, customerId: string): Promise<InvoiceReach> {
+  const scope = await scopeWhereForReq(req, 'Invoice');
+  if (Object.keys(scope).length === 0) return { prismaWhere: {}, sqlFilter: () => Prisma.empty };
+  // The customer's own invoices and the deposit invoices of its estimates (the deposits tile reads those through the estimate).
+  const rows = await prisma.invoice.findMany({
+    where: { AND: [tenantWhere(req), scope, { OR: [{ customer_id: customerId }, { estimate: { customer_id: customerId } }] }] },
+    select: { id: true },
+  });
+  // `?? []` as with allInvoices in getById: a unit suite's client can answer a query it was not told about with nothing.
+  return { prismaWhere: { AND: [scope] }, sqlFilter: sqlIdFilter((rows ?? []).map((r) => r.id)) };
+}
+
+/** Raw SQL keeping only these rows of `<alias>` ("AND FALSE" when there are none). */
+function sqlIdFilter(ids: string[]): (alias: string) => Prisma.Sql {
+  return (alias) => (ids.length === 0
+    ? Prisma.sql`AND FALSE`
+    : Prisma.sql`AND ${Prisma.raw(alias)}.id = ANY(${ids}::uuid[])`);
+}
+
+/**
+ * The customer's estimates the person can reach (H3, story 41), for the estimates tile of the customer page: its counts and
+ * value cover only the estimates their Estimate reach (the scope fragment the estimate list uses) covers. Raw SQL over
+ * `estimates <alias>`; no query, and no filter, for a person whose reach covers every estimate.
+ */
+async function customerEstimateReach(req: Request, customerId: string): Promise<(alias: string) => Prisma.Sql> {
+  const scope = await scopeWhereForReq(req, 'Estimate');
+  if (Object.keys(scope).length === 0) return () => Prisma.empty;
+  const rows = await prisma.estimate.findMany({
+    where: { AND: [tenantWhere(req), scope, { customer_id: customerId }] },
+    select: { id: true },
+  });
+  // `?? []`: see customerInvoiceReach.
+  return sqlIdFilter((rows ?? []).map((r) => r.id));
+}
+
 // ─── Shared Financial Helper ──────────────────────────────
 // Single source of truth for customer-anchored financial aggregation.
 // Both getById and getSummary use this so they can never disagree.
@@ -868,14 +922,15 @@ export async function create(req: Request, res: Response) {
 // `await`-free until its `$queryRaw`: both call sites issue it inside a `Promise.all`
 // alongside two more `$queryRaw`s, and the suites stub those BY CALL ORDER
 // (__tests__/customers.test.ts:1814, __tests__/tag-read-hydration.test.ts:69). An internal
-// `await` for the zone lookup would reorder this query behind the other two.
+// `await` for the zone lookup would reorder this query behind the other two. The person's
+// invoice reach (`reach`, H3) is resolved by the caller for the same reason.
 //
 // The boundary is bound as a PARAMETER, not interpolated: `$queryRaw` is a tagged template,
 // so `${overdueBefore}` is `$n` on the wire, exactly like the `${id}::uuid` casts below.
 // The zone STRING never enters SQL at all — the calendar arithmetic happens in TS, which is
 // what every other org-clock reader here does (dashboard.controller.ts:74-76,
 // invoice.controller.ts:964).
-async function loadCustomerFinancials(id: string, orgId: string, timeZone: string) {
+async function loadCustomerFinancials(id: string, orgId: string, timeZone: string, reach: InvoiceReach) {
   // ISO-8601 with an explicit `Z`, cast in SQL exactly like the `${id}::uuid` binds below:
   // a text -> timestamptz cast of a Z-bearing instant is exact in every session TimeZone,
   // and unlike a bare Date bind it makes no assumption about how the query engine types the
@@ -892,6 +947,7 @@ async function loadCustomerFinancials(id: string, orgId: string, timeZone: strin
   // in application code, and the template is transmitted verbatim, so it would ship ~370 bytes
   // to Postgres on every customer-detail request and add noise to pg_stat_statements.
   const overdueBefore = orgTodayStart(timeZone).toISOString();
+  const inReach = reach.sqlFilter('i2');
   const result = await prisma.$queryRaw<Array<{
     lifetime_revenue: string | null;
     total_invoiced: string | null;
@@ -903,24 +959,24 @@ async function loadCustomerFinancials(id: string, orgId: string, timeZone: strin
     SELECT
       COALESCE((SELECT SUM(p.amount) FROM payments p
                 JOIN invoices i2 ON p.invoice_id = i2.id
-                WHERE i2.customer_id = ${id}::uuid AND i2.organization_id = ${orgId}::uuid
+                WHERE i2.customer_id = ${id}::uuid AND i2.organization_id = ${orgId}::uuid ${inReach}
                   AND p.state = 'SUCCEEDED'
                   AND (p.reference_number IS DISTINCT FROM 'DEPOSIT-CREDIT')), 0) AS lifetime_revenue,
       COALESCE((SELECT SUM(i2.total_amount) FROM invoices i2
-                WHERE i2.customer_id = ${id}::uuid AND i2.organization_id = ${orgId}::uuid
+                WHERE i2.customer_id = ${id}::uuid AND i2.organization_id = ${orgId}::uuid ${inReach}
                   AND i2.kind <> 'DEPOSIT'), 0) AS total_invoiced,
       COALESCE((SELECT SUM(i2.amount_due) FROM invoices i2
-                WHERE i2.customer_id = ${id}::uuid AND i2.organization_id = ${orgId}::uuid
+                WHERE i2.customer_id = ${id}::uuid AND i2.organization_id = ${orgId}::uuid ${inReach}
                   AND i2.kind <> 'DEPOSIT'
                   AND i2.status IN ('SENT','PARTIAL') AND i2.due_date < ${overdueBefore}::timestamptz), 0) AS past_due_balance,
       COALESCE((SELECT SUM(i2.amount_due) FROM invoices i2
-                WHERE i2.customer_id = ${id}::uuid AND i2.organization_id = ${orgId}::uuid
+                WHERE i2.customer_id = ${id}::uuid AND i2.organization_id = ${orgId}::uuid ${inReach}
                   AND i2.kind <> 'DEPOSIT'
                   AND i2.status IN ('SENT','PARTIAL') AND (i2.due_date IS NULL OR i2.due_date >= ${overdueBefore}::timestamptz)), 0) AS due_balance,
-      (SELECT COUNT(*) FROM invoices i2 WHERE i2.customer_id = ${id}::uuid AND i2.organization_id = ${orgId}::uuid
+      (SELECT COUNT(*) FROM invoices i2 WHERE i2.customer_id = ${id}::uuid AND i2.organization_id = ${orgId}::uuid ${inReach}
                 AND i2.kind <> 'DEPOSIT'
                 AND i2.status IN ('SENT','PARTIAL')) AS unpaid_invoice_count,
-      (SELECT COUNT(*) FROM invoices i2 WHERE i2.customer_id = ${id}::uuid AND i2.organization_id = ${orgId}::uuid
+      (SELECT COUNT(*) FROM invoices i2 WHERE i2.customer_id = ${id}::uuid AND i2.organization_id = ${orgId}::uuid ${inReach}
                 AND i2.kind <> 'DEPOSIT'
                 AND i2.status = 'PAID') AS paid_invoice_count
   `;
@@ -962,6 +1018,9 @@ export async function getById(req: Request, res: Response) {
     // on the helper.
     const timeZone = await getRequestOrgTimezone(req);
 
+    // H3: the money sections list and add up only the invoices and estimates the person can reach.
+    const [invoiceReach, estimateReach] = await Promise.all([customerInvoiceReach(req, id), customerEstimateReach(req, id)]);
+
     // The job set the paged Jobs tab and the schedule feed read (tenant + Job row scope): Total
     // Jobs, Active Jobs and the embedded list can never count a job another org points here.
     const visibleJobs = customerJobsWhere(req, id, jobScope);
@@ -998,6 +1057,7 @@ export async function getById(req: Request, res: Response) {
               service_location: { select: { address_line1: true, city: true, state: true } },
               estimate: { select: { estimate_number: true, total_amount: true } },
               invoices: {
+                where: invoiceReach.prismaWhere,
                 select: {
                   id: true,
                   invoice_number: true,
@@ -1040,7 +1100,7 @@ export async function getById(req: Request, res: Response) {
       // §6/§8 — reach invoices anchored directly to the customer (orphan + estimate-anchored,
       // not only the job-nested ones above). Job-less invoices have a non-null customer_id.
       prisma.invoice.findMany({
-        where: { customer_id: id, job_id: null, organization_id: orgId },
+        where: { customer_id: id, job_id: null, organization_id: orgId, ...invoiceReach.prismaWhere },
         select: {
           id: true,
           invoice_number: true,
@@ -1065,7 +1125,7 @@ export async function getById(req: Request, res: Response) {
         orderBy: { created_at: 'desc' as const },
         take: 20,
       }),
-      loadCustomerFinancials(id, orgId, timeZone),
+      loadCustomerFinancials(id, orgId, timeZone, invoiceReach),
       prisma.$queryRaw<Array<{
         total: string;
         pending: string;
@@ -1080,6 +1140,7 @@ export async function getById(req: Request, res: Response) {
         FROM estimates e
         WHERE e.customer_id = ${id}::uuid
           AND e.organization_id = ${orgId}::uuid
+          ${estimateReach('e')}
       `,
       prisma.$queryRaw<Array<{
         deposits_collected: string | null;
@@ -1093,9 +1154,10 @@ export async function getById(req: Request, res: Response) {
         WHERE i.kind = 'DEPOSIT'
           AND e.customer_id = ${id}::uuid
           AND e.organization_id = ${orgId}::uuid
+          ${invoiceReach.sqlFilter('i')}
       `,
       prisma.invoice.findMany({
-        where: { customer_id: id, organization_id: orgId, kind: { not: 'DEPOSIT' } },
+        where: { customer_id: id, organization_id: orgId, kind: { not: 'DEPOSIT' }, ...invoiceReach.prismaWhere },
         select: {
           id: true, invoice_number: true, status: true, kind: true,
           total_amount: true, amount_due: true, due_date: true, created_at: true,
@@ -1273,7 +1335,8 @@ export async function listJobs(req: Request, res: Response) {
 
     if (!(await ensureReadableCustomer(req, res, id))) return;
 
-    const where = customerJobsWhere(req, id, await scopeWhereForReq(req, 'Job'));
+    const [jobScope, invoiceScope] = await Promise.all([scopeWhereForReq(req, 'Job'), scopeWhereForReq(req, 'Invoice')]);
+    const where = customerJobsWhere(req, id, jobScope);
     const [rows, total] = await Promise.all([
       prisma.job.findMany({
         where,
@@ -1299,8 +1362,9 @@ export async function listJobs(req: Request, res: Response) {
           service_location: { select: { address_line1: true, city: true, state: true } },
           // The Invoice column: the latest non-voided invoice's status, plus how many more there are.
           // Tenant-filtered like `visits` above: defense in depth, not trusting every invoice that
-          // points at an in-org job to be in the org as well.
-          invoices: { where: tenantWhere(req), select: { id: true, status: true }, orderBy: { created_at: 'asc' } },
+          // points at an in-org job to be in the org as well. Only the invoices the person can open (H3): with View invoices
+          // off there are none, and a narrower invoice reach lists only the ones inside it, as on the page's money sections.
+          invoices: { where: { AND: [tenantWhere(req), invoiceScope] }, select: { id: true, status: true }, orderBy: { created_at: 'asc' } },
         },
         orderBy: CUSTOMER_JOBS_ORDER,
         skip,
@@ -1389,7 +1453,7 @@ export async function update(req: Request, res: Response) {
     // franchise-conflict rule needs to fire even when only is_parent is toggled on a member.
     if ('parent_id' in rest || 'bill_to_customer_id' in rest || 'is_parent' in rest) {
       try {
-        await validateParentAndBillTo(req, rest, selfId, effectiveParentId, effectiveIsParent);
+        await validateParentAndBillTo(req, rest, selfId, effectiveParentId, effectiveIsParent, (existing.parent_id as string | null) ?? null);
       } catch (err) {
         if (err instanceof GuardError) {
           res.status(400).json({ error: err.message });
@@ -2281,9 +2345,12 @@ export async function getSummary(req: Request, res: Response) {
     // getRequestOrgTimezone.
     const timeZone = await getRequestOrgTimezone(req);
 
+    // H3: the totals add up only the invoices and estimates the person can reach.
+    const [invoiceReach, estimateReach] = await Promise.all([customerInvoiceReach(req, id), customerEstimateReach(req, id)]);
+
     // Run all 3 aggregation queries in parallel
     const [financials, estimateResult, depositResult] = await Promise.all([
-      loadCustomerFinancials(id, orgId, timeZone),
+      loadCustomerFinancials(id, orgId, timeZone, invoiceReach),
       prisma.$queryRaw<Array<{
         total: string;
         pending: string;
@@ -2298,6 +2365,7 @@ export async function getSummary(req: Request, res: Response) {
         FROM estimates e
         WHERE e.customer_id = ${id}::uuid
           AND e.organization_id = ${orgId}::uuid
+          ${estimateReach('e')}
       `,
       prisma.$queryRaw<Array<{
         deposits_collected: string | null;
@@ -2311,6 +2379,7 @@ export async function getSummary(req: Request, res: Response) {
         WHERE i.kind = 'DEPOSIT'
           AND e.customer_id = ${id}::uuid
           AND e.organization_id = ${orgId}::uuid
+          ${invoiceReach.sqlFilter('i')}
       `,
     ]);
 

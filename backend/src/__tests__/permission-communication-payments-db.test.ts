@@ -84,8 +84,8 @@ suite('the payments received on the record Communication tab (real database)', (
       organizationId: org, roleKey: key,
       values: {
         view_jobs: true, jobs_scope: 'attached', view_leads: true, leads_scope: 'attached', view_customers: true,
-        view_estimates: true, estimates_scope: 'attached', view_invoices: true, invoices_scope: 'attached',
-        access_communication: true, view_communication: true, communication_scope: 'linked_to_me', ...values,
+        view_estimates: true, view_invoices: true,
+        access_communication: true, view_communication: true, communication_scope: 'attached', ...values,
       },
       actorId: null, reason: 'manual',
     });
@@ -202,7 +202,7 @@ suite('the payments received on the record Communication tab (real database)', (
   });
 
   describe('who gets an entry', () => {
-    it('leaves it out for a person on the job with View invoices off who did not make the invoice, and gives it to the invoice\'s creator', async () => {
+    it('leaves it out for a person on the job with View invoices off, the invoice\'s creator included (P7)', async () => {
       const { org, admin, customer } = await newOrg();
       const creator = await personWith(org, { ...INVOICES_VIEW_OFF });
       const colleague = await personWith(org, { ...INVOICES_VIEW_OFF });
@@ -214,7 +214,8 @@ suite('the payments received on the record Communication tab (real database)', (
 
       const asCreator = await (await creator.api()).get(`/api/jobs/${job.id}/communications`);
       expect(asCreator.status).toBe(200);
-      expect(idsOf(asCreator.body)).toEqual([onMine]);
+      expect(entriesOf(asCreator.body)).toEqual([]);
+      expect(onMine).toBeTruthy();
 
       const asColleague = await (await colleague.api()).get(`/api/jobs/${job.id}/communications`);
       expect(asColleague.status).toBe(200);
@@ -223,7 +224,7 @@ suite('the payments received on the record Communication tab (real database)', (
 
     it('takes the entry away from the creator once they are off the job', async () => {
       const { org, customer } = await newOrg();
-      const creator = await personWith(org, { ...INVOICES_VIEW_OFF });
+      const creator = await personWith(org, { view_invoices: true, jobs_scope: 'attached', leads_scope: 'attached' });
       const other = await personWith(org, {});
       const job = await fx.addJob(org, customer, { crew: [creator.id, other.id] });
       const invoice = await fx.addInvoice(org, customer, { jobId: job.id, createdBy: creator.id });
@@ -233,13 +234,13 @@ suite('the payments received on the record Communication tab (real database)', (
       await fx.removeCrew(job.visitId!, creator.id);
       // The tab is the job's: a person taken off it no longer opens it, so the payment goes with it.
       const after = await (await creator.api()).get(`/api/jobs/${job.id}/communications`);
-      expect(after.status).toBe(403);
+      expect(after.status).toBe(404);
       expect(after.body.items).toBeUndefined();
     });
 
     it('gives it to a person whose invoices data scope is All, on a job they are not on', async () => {
       const { org, admin, customer } = await newOrg();
-      const wide = await personWith(org, { jobs_scope: 'all', invoices_scope: 'all' });
+      const wide = await personWith(org, { jobs_scope: 'all', leads_scope: 'all' });
       const job = await fx.addJob(org, customer, { crew: [admin.id] });
       const invoice = await fx.addInvoice(org, customer, { jobId: job.id, createdBy: admin.id });
       const paid = await addPayment(invoice.id);
@@ -248,9 +249,9 @@ suite('the payments received on the record Communication tab (real database)', (
       expect(idsOf(tab.body)).toEqual([paid]);
     });
 
-    it('shows the amount to a person without See financial data or See company figures: it is the invoice\'s price, not a cost or a company figure', async () => {
+    it('shows the amount to a person without See costs or See company figures: it is the invoice\'s price, not a cost or a company figure', async () => {
       const { org, customer } = await newOrg();
-      const person = await personWith(org, { see_financial_data: false, see_company_figures: false });
+      const person = await personWith(org, { see_costs: false, see_company_figures: false });
       const job = await fx.addJob(org, customer, { crew: [person.id] });
       const invoice = await fx.addInvoice(org, customer, { jobId: job.id });
       await addPayment(invoice.id, { amount: 123.45 });
@@ -317,11 +318,12 @@ suite('the payments received on the record Communication tab (real database)', (
     it('leaves a job invoice\'s payment out for a person who can open the customer but not the job, and keeps a customer-only invoice\'s', async () => {
       const { org, admin, customer } = await newOrg();
       // Opens the customer through a lead they are on, never the job.
-      const person = await personWith(org, { invoices_scope: 'all' });
+      const person = await personWith(org, { jobs_scope: 'attached', leads_scope: 'attached' });
       await fx.addLead(org, customer, { assignees: [person.id] });
       const job = await fx.addJob(org, customer, { crew: [admin.id] });
       const jobInvoice = await fx.addInvoice(org, customer, { jobId: job.id });
-      const customerInvoice = await fx.addInvoice(org, customer, {});
+      // Theirs, made for the customer alone: the one invoice with no job a narrow scope reaches (P7).
+      const customerInvoice = await fx.addInvoice(org, customer, { createdBy: person.id });
       await addPayment(jobInvoice.id);
       const customerOnly = await addPayment(customerInvoice.id);
 
@@ -332,7 +334,7 @@ suite('the payments received on the record Communication tab (real database)', (
 
     it('lists every entry for a person who can open the customer\'s job', async () => {
       const { org, customer } = await newOrg();
-      const person = await personWith(org, { invoices_scope: 'all' });
+      const person = await personWith(org, { jobs_scope: 'all', leads_scope: 'all' });
       const job = await fx.addJob(org, customer, { crew: [person.id] });
       const jobInvoice = await fx.addInvoice(org, customer, { jobId: job.id });
       const customerInvoice = await fx.addInvoice(org, customer, {});
@@ -347,7 +349,7 @@ suite('the payments received on the record Communication tab (real database)', (
   describe('what the entries are not', () => {
     it('never appear in a section list or an unread count, and send no alert', async () => {
       const { org, customer } = await newOrg();
-      const person = await personWith(org, { communication_scope: 'all', jobs_scope: 'all', invoices_scope: 'all' });
+      const person = await personWith(org, { communication_scope: 'all', jobs_scope: 'all', leads_scope: 'all' });
       const job = await fx.addJob(org, customer, { crew: [person.id] });
       const invoice = await fx.addInvoice(org, customer, { jobId: job.id });
       const api = await person.api();

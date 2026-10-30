@@ -46,12 +46,14 @@ const PAYOUT_ONLY = buildAbility([
   { action: 'manage_payout_account', subject: 'Organization' },
 ]);
 
+// Setting up the company is the Admin flag's alone (36b, M17): the person who holds the old update rule here is the Admin.
+let asAdmin = true;
 function mockOrg() {
   vi.mocked(useAuthStore).mockImplementation(((selector: (s: Record<string, unknown>) => unknown) =>
     selector({
       user: {
         id: 'u-1', email: 'admin@test.com', first_name: 'Test', last_name: 'Admin',
-        role: 'ADMIN', org_is_demo: true, organization_id: 'org-demo', org_features: ['phone', 'email'],
+        role: 'ADMIN', is_admin: asAdmin, org_is_demo: true, organization_id: 'org-demo', org_features: ['phone', 'email'],
       },
       isAuthenticated: true, isLoading: false, error: null,
     })) as never);
@@ -76,6 +78,7 @@ function DirtyPage() {
 }
 
 function renderShell(ability = ADMIN, start = '/settings/branding', page = <Where />) {
+  asAdmin = ability.can('update', 'Organization');
   return renderWithProviders(
     <Routes>
       <Route path="/settings" element={<SettingsLayout />}>

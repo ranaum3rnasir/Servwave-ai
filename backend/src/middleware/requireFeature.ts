@@ -1,6 +1,8 @@
 import type { Request, Response, NextFunction } from 'express';
 import type { FeatureKey } from '../lib/entitlements/catalog';
 import { catalogEntry } from '../lib/entitlements/catalog';
+import { markReadsNoRecord } from '../lib/ids/canonicalId';
+import { markRouteCheck } from './routeCheck';
 
 /**
  * Entitlement gate — the "did this company pay for it" axis, orthogonal to CASL.
@@ -24,7 +26,7 @@ export function hasFeature(req: Request, feature: FeatureKey): boolean {
 export function requireFeature(feature: FeatureKey) {
   const required_plan = catalogEntry(feature)?.minPlan ?? 'SCALE';
 
-  return (req: Request, res: Response, next: NextFunction): void => {
+  return markReadsNoRecord(markRouteCheck('gate', (req: Request, res: Response, next: NextFunction): void => {
     if (!req.user) {
       res.status(401).json({ error: 'Not authenticated' });
       return;
@@ -39,5 +41,5 @@ export function requireFeature(feature: FeatureKey) {
       current_plan: req.user.org_plan ?? 'STARTER',
       required_plan,
     });
-  };
+  }));
 }

@@ -94,6 +94,8 @@ export interface ComboboxProps {
    * the placeholder is visibly right there.
    */
   "aria-label"?: string;
+  /** The id of what describes the control, such as why it is disabled. */
+  "aria-describedby"?: string;
   /**
    * Panel placement, forwarded verbatim to `PopoverContent`.
    *
@@ -144,7 +146,7 @@ function Combobox({
   placeholder = "Select…",
   searchPlaceholder = "Search…",
   emptyMessage = "No results found.",
-  disabled, invalid, className, id, size = "default", "aria-label": ariaLabel,
+  disabled, invalid, className, id, size = "default", "aria-label": ariaLabel, "aria-describedby": describedBy,
   side, align = "start", avoidCollisions, collisionPadding, onCreate,
   createLabel = DEFAULT_CREATE_LABEL,
 }: ComboboxProps) {
@@ -361,6 +363,7 @@ function Combobox({
           aria-expanded={open}
           aria-invalid={invalid}
           aria-label={ariaLabel}
+          aria-describedby={describedBy}
           disabled={disabled}
           className={cn(
             // px-3 and text-sm restate SelectTrigger's own base metrics over the

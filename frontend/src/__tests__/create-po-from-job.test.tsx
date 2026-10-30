@@ -231,7 +231,7 @@ describe('Job Items tab — Create PO from job (P2 §2)', () => {
     expect(body).not.toHaveProperty('id');
   });
 
-  it("offers the toast's View link to a person who holds View purchase orders, whether or not the Purchase Orders page is shown to them, and it opens that one order", async () => {
+  it("offers the toast's View link to a person who holds View purchase orders and not otherwise, and it opens that one order", async () => {
     const lines = [MATERIAL_LINE];
     const submit = async (switches: Record<string, boolean>) => {
       localStorage.clear();
@@ -257,14 +257,14 @@ describe('Job Items tab — Create PO from job (P2 §2)', () => {
     };
     seedLines(lines);
 
-    // The order is a record: the Show switch for the list page plays no part, View purchase orders does.
-    const hiddenList = await submit({ view_purchase_orders: true, show_purchase_orders_page: false });
-    expect(hiddenList.arg.action).toBeDefined();
-    act(() => hiddenList.arg.action!.props.onClick());
+    // The order is a record: View purchase orders alone decides the link (no list-page switch exists, P1).
+    const withView = await submit({ view_purchase_orders: true });
+    expect(withView.arg.action).toBeDefined();
+    act(() => withView.arg.action!.props.onClick());
     expect(screen.getByTestId('where')).toHaveTextContent('/inventory/purchase-orders/po-1');
-    hiddenList.view.unmount();
+    withView.view.unmount();
 
-    const withoutView = await submit({ view_purchase_orders: false, show_purchase_orders_page: true });
+    const withoutView = await submit({ view_purchase_orders: false });
     expect(withoutView.arg.action).toBeUndefined();
   });
 

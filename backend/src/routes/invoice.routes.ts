@@ -2,7 +2,7 @@ import { Router, type Request } from 'express';
 import { authenticate } from '../middleware/authenticate';
 import { attachAbility } from '../middleware/attachAbility';
 import { attachCustomerScope } from '../lib/permissions/customerScope';
-import { canDo, canDoOrCreator } from '../middleware/canGuard';
+import { canDo } from '../middleware/canGuard';
 import { validate } from '../middleware/validate';
 import { requireUuidParam } from '../middleware/requireUuidParam';
 import { refuseInvoicePriceEditOnDoneJob } from '../lib/permissions/jobLock';
@@ -12,6 +12,7 @@ import { unscopedRequest } from '../middleware/unscopedRequest';
 import * as invoiceController from '../controllers/invoice.controller';
 import * as invoiceLines from '../controllers/invoice-lines.controller';
 import * as tagController from '../controllers/tag.controller';
+import { answerOutOfReachAsMissing, scopedRecord } from '../lib/permissions/outOfReachIsMissing';
 
 const router = Router();
 
@@ -28,18 +29,19 @@ router.get('/export', expensiveLimiter, canDo('export', 'Invoice'), invoiceContr
 // List-level bulk send / bulk resend (Invoices list page) - same `send Invoice` grant as
 // /:id/send and /:id/resend below. Static paths, so before the CRUD `:id` block to avoid a route
 // conflict.
-router.post('/bulk-send', expensiveLimiter, canDoOrCreator('send', 'Invoice', (req) => req.body?.ids), validate(invoiceController.bulkSendInvoicesSchema), invoiceController.bulkSend);
-router.post('/bulk-resend', expensiveLimiter, canDoOrCreator('send', 'Invoice', (req) => req.body?.ids), validate(invoiceController.bulkSendInvoicesSchema), invoiceController.bulkResend);
+router.post('/bulk-send', expensiveLimiter, canDo('send', 'Invoice'), validate(invoiceController.bulkSendInvoicesSchema), invoiceController.bulkSend);
+router.post('/bulk-resend', expensiveLimiter, canDo('send', 'Invoice'), validate(invoiceController.bulkSendInvoicesSchema), invoiceController.bulkResend);
 
 // CRUD
 // No `read` guard on the list: a person with View invoices off gets an empty list, not a 403. The list's
 // row scope (scopeWhereForReq) reaches nothing without the read grant, so it is the one thing that decides.
 router.get('/', invoiceController.list);
 router.post('/', canDo('create', 'Invoice'), validate(invoiceController.createInvoiceSchema), invoiceController.create);
-router.get('/:id', canDoOrCreator('read', 'Invoice'), invoiceController.getById);
-router.get('/:id/pdf', expensiveLimiter, canDoOrCreator('read', 'Invoice'), invoiceController.getPdf);
-router.patch('/:id', canDoOrCreator('update', 'Invoice'), validate(invoiceController.editInvoiceSchema), invoiceController.update);
-router.delete('/:id', canDoOrCreator('delete', 'Invoice'), invoiceController.remove);
+router.get('/:id', canDo('read', 'Invoice'), invoiceController.getById);
+// P11: the document is its prices; a person who cannot see them is not handed a copy with the figures cut out.
+router.get('/:id/pdf', expensiveLimiter, canDo('read', 'Invoice'), canDo('read', 'Prices'), invoiceController.getPdf);
+router.patch('/:id', canDo('update', 'Invoice'), validate(invoiceController.editInvoiceSchema), invoiceController.update);
+router.delete('/:id', canDo('delete', 'Invoice'), invoiceController.remove);
 
 // Editable record ids (Workiz dual-run, SERV10X record-renumber). Preview is read-only/advisory
 // (no lock); PATCH is the real rename, transactional. Both gated by the dedicated `renumber`
@@ -49,11 +51,11 @@ router.post('/:id/number/preview', canDo('renumber', 'Invoice'), validate(invoic
 router.patch('/:id/number', canDo('renumber', 'Invoice'), validate(invoiceController.invoiceNumberSchema), invoiceController.renameNumber);
 
 // Actions
-router.post('/:id/send', canDoOrCreator('send', 'Invoice'), validate(invoiceController.sendInvoiceSchema), invoiceController.send);
-router.post('/:id/mark-sent', canDoOrCreator('send', 'Invoice'), invoiceController.markSent);
-router.post('/:id/resend', canDoOrCreator('send', 'Invoice'), validate(invoiceController.sendInvoiceSchema), invoiceController.resend);
+router.post('/:id/send', canDo('send', 'Invoice'), validate(invoiceController.sendInvoiceSchema), invoiceController.send);
+router.post('/:id/mark-sent', canDo('send', 'Invoice'), invoiceController.markSent);
+router.post('/:id/resend', canDo('send', 'Invoice'), validate(invoiceController.sendInvoiceSchema), invoiceController.resend);
 // Payable link without an email - its own grant (Send payment links), not "send invoice", and NOT gated by the email
-// toggle. The creator rule never opens it.
+// toggle.
 router.post('/:id/payment-link', canDo('send_payment_link', 'Invoice'), invoiceController.createPaymentLink);
 router.post('/:id/void', canDo('void', 'Invoice'), validate(invoiceController.voidInvoiceSchema), invoiceController.voidInvoice);
 router.post('/:id/refund', canDo('refund', 'Invoice'), validate(invoiceController.refundInvoiceSchema), invoiceController.refundInvoice);
@@ -83,10 +85,10 @@ router.post('/:id/line-items/:lineId/sync-stock', featureDisabled('line_stock_sy
 // MUST come BEFORE the ":lineId" PATCH route below — Express matches routes in registration
 // order, and ":lineId" is just a param placeholder that would otherwise capture the literal
 // path segment "reorder" (routing to updateLine with lineId="reorder" instead of reorderLines).
-router.patch('/:id/line-items/reorder', canDoOrCreator('update', 'Invoice'), refuseInvoicePriceEditOnDoneJob(), validate(invoiceLines.reorderSchema), invoiceLines.reorderLines);
-router.patch('/:id/line-items/:lineId', canDoOrCreator('update', 'Invoice'), refuseInvoicePriceEditOnDoneJob(), validate(invoiceLines.updateLineSchema), invoiceLines.updateLine);
+router.patch('/:id/line-items/reorder', canDo('update', 'Invoice'), refuseInvoicePriceEditOnDoneJob(), validate(invoiceLines.reorderSchema), invoiceLines.reorderLines);
+router.patch('/:id/line-items/:lineId', canDo('update', 'Invoice'), refuseInvoicePriceEditOnDoneJob(), validate(invoiceLines.updateLineSchema), invoiceLines.updateLine);
 router.delete('/:id/line-items/:lineId', canDo('manage_lines', 'Invoice'), refuseInvoicePriceEditOnDoneJob(), invoiceLines.deleteLine);
-router.patch('/:id/billing', canDoOrCreator('update', 'Invoice'), refuseInvoicePriceEditOnDoneJob(billingTouchesPrice), validate(invoiceLines.updateBillingSchema), invoiceLines.updateBilling);
+router.patch('/:id/billing', canDo('update', 'Invoice'), refuseInvoicePriceEditOnDoneJob(billingTouchesPrice), validate(invoiceLines.updateBillingSchema), invoiceLines.updateBilling);
 
 // Scopes of work (flat-priced, non-line-item blocks — Stage 5). Same B6/B7 split as lines:
 // add/delete gated `manage_lines` (Tech/Sales own-scoped); update gated `update` (Admin/
@@ -94,16 +96,16 @@ router.patch('/:id/billing', canDoOrCreator('update', 'Invoice'), refuseInvoiceP
 router.post('/:id/scopes', canDo('manage_lines', 'Invoice'), refuseInvoicePriceEditOnDoneJob(), validate(invoiceLines.addScopeSchema), invoiceLines.addScope);
 // MUST come BEFORE the ":idx" PATCH route below — same Express route-order gotcha as
 // line-items/reorder above (":idx" would otherwise capture the literal path segment "reorder").
-router.patch('/:id/scopes/reorder', canDoOrCreator('update', 'Invoice'), refuseInvoicePriceEditOnDoneJob(), validate(invoiceLines.reorderScopeSchema), invoiceLines.reorderScopes);
-router.patch('/:id/scopes/:idx', canDoOrCreator('update', 'Invoice'), refuseInvoicePriceEditOnDoneJob(), validate(invoiceLines.updateScopeSchema), invoiceLines.updateScope);
+router.patch('/:id/scopes/reorder', canDo('update', 'Invoice'), refuseInvoicePriceEditOnDoneJob(), validate(invoiceLines.reorderScopeSchema), invoiceLines.reorderScopes);
+router.patch('/:id/scopes/:idx', canDo('update', 'Invoice'), refuseInvoicePriceEditOnDoneJob(), validate(invoiceLines.updateScopeSchema), invoiceLines.updateScope);
 router.delete('/:id/scopes/:idx', canDo('manage_lines', 'Invoice'), refuseInvoicePriceEditOnDoneJob(), invoiceLines.deleteScope);
 
 // Timeline (SERV10X-59)
-router.get('/:id/timeline', canDoOrCreator('read', 'Invoice'), invoiceController.getTimeline);
+router.get('/:id/timeline', canDo('read', 'Invoice'), invoiceController.getTimeline);
 
 // Notes
-router.get('/:id/notes', canDoOrCreator('read', 'Invoice'), invoiceController.getNotes);
-router.post('/:id/notes', canDoOrCreator('update', 'Invoice'), validate(invoiceController.addNoteSchema), invoiceController.addNote);
+router.get('/:id/notes', canDo('read', 'Invoice'), invoiceController.getNotes);
+router.post('/:id/notes', canDo('update', 'Invoice'), validate(invoiceController.addNoteSchema), invoiceController.addNote);
 
 // Tags (polymorphic)
 // Tag routes take BOTH ids straight from the path into `where` clauses over Postgres
@@ -112,7 +114,11 @@ router.post('/:id/notes', canDoOrCreator('update', 'Invoice'), validate(invoiceC
 // canDo so a caller without the grant still gets 403 rather than learning whether the
 // id was well-formed, and they return the SAME 404 text the handler gives for a row
 // that genuinely is not there.
-router.post('/:id/tags', canDoOrCreator('update', 'Invoice'), requireUuidParam('id', 'invoice not found'), validate(tagController.addTagToEntitySchema), tagController.addTagToInvoice);
-router.delete('/:id/tags/:tagId', canDoOrCreator('update', 'Invoice'), requireUuidParam('id', 'invoice not found'), requireUuidParam('tagId', 'Tag not attached to this invoice'), tagController.removeTagFromInvoice);
+router.post('/:id/tags', canDo('update', 'Invoice'), requireUuidParam('id', 'invoice not found'), validate(tagController.addTagToEntitySchema), tagController.addTagToInvoice);
+router.delete('/:id/tags/:tagId', canDo('update', 'Invoice'), requireUuidParam('id', 'invoice not found'), requireUuidParam('tagId', 'Tag not attached to this invoice'), tagController.removeTagFromInvoice);
+
+// Ticket 33: a record out of the person's reach answers exactly like a missing one on every route above that names its id
+// (lib/permissions/outOfReachIsMissing.ts). Keep this after the last route.
+answerOutOfReachAsMissing(router, { param: 'id', notFound: 'Invoice not found', reaches: scopedRecord('Invoice') });
 
 export default router;

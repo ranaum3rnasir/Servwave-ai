@@ -63,9 +63,9 @@ function LoErrorBanner({
 
 /** 409 aggregate SHORTAGE — one row per short line, nothing was deducted. */
 export function LoShortagePanel({ details }: { details: LoShortageDetail[] }) {
-  // The Inventory page is offered only to a person who may open it (View stock and Show Stock page).
+  // The Inventory page is offered only to a person who may open it (View stock).
   const mine = useMySwitches()?.values;
-  const canOpenInventory = switchOn(mine, 'view_stock') && switchOn(mine, 'show_stock_page');
+  const canOpenInventory = switchOn(mine, 'view_stock');
   return (
     <LoErrorBanner tone="warning" icon={AlertTriangle} title="Not enough stock to process - nothing was deducted.">
       <ul className="space-y-1 pl-6 text-xs">

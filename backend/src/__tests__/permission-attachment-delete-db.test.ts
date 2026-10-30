@@ -1,6 +1,7 @@
 /* =============================================================================
-   Roles & Permissions, PRD 4, slice S04.24 - deleting and renaming files: a person's own uploads, the
-   completed-job lock, and the files on a job's invoices.
+   Roles & Permissions, PRD 4, slice S04.24 and AL-07 (P10, A8d) - deleting and renaming files: uploads are the record's own
+   data, so the record's Edit adds, renames and removes them (another person's included) and there is no attachments switch;
+   the completed-job lock still wins, and so do the files on a job's invoices.
 
    Everything goes through the public interface: the attachment routes (list, rename, delete) and the job's
    timeline, called as people on custom roles (never a built-in role name) holding exactly the switch values
@@ -37,13 +38,16 @@ const ALL_OFF: Record<string, SwitchValue> = Object.fromEntries(
 
 /** The wording the PRD gives each refusal (its own text, not read from the code). */
 const LOCK_MESSAGE = 'This job is locked. Only someone who can change locked jobs can change it.';
-const OWN_ONLY_MESSAGE = 'You can only delete files you uploaded.';
+const NO_EDIT_MESSAGE = 'Insufficient permissions';
 
-/** What opening a job, a lead, an invoice and a customer takes, with no attachment switch on. */
+/** What opening a job, a lead, an invoice and a customer takes: View on each, and no Edit. */
 const OPENING = {
-  view_jobs: true, jobs_scope: 'all', view_leads: true, leads_scope: 'all', view_attachments: true,
-  view_invoices: true, invoices_scope: 'all', view_customers: true,
+  view_jobs: true, jobs_scope: 'all', view_leads: true, leads_scope: 'all',
+  view_invoices: true, view_customers: true,
 };
+
+/** The Edit of each kind of record a file hangs on: what adds, renames and removes its files. */
+const EDITS = { edit_jobs: true, edit_leads: true, edit_invoices: true, edit_customers: true };
 
 const lockedStatuses: JobStatus[] = ['COMPLETED', 'OFFICE_REVIEW', 'READY_TO_CLOSE', 'DONE', 'CANCELLED'];
 
@@ -80,7 +84,7 @@ suite('deleting and renaming files (real database)', () => {
     const key = `att-delete-role-${++sequence}`;
     const base = opts.base ?? 'DISPATCHER';
     const role = await fx.addCustomRole(org, key, base);
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...OPENING, ...values }, actorId: null, reason: 'manual' });
+    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, see_prices: true, ...OPENING, ...values }, actorId: null, reason: 'manual' });
     const person = await fx.addUser(org, opts.name ?? `p${sequence}`, base, { customRoleId: role.id });
     return Object.assign(person, { api: () => fx.signedInAs(person) });
   }
@@ -104,8 +108,8 @@ suite('deleting and renaming files (real database)', () => {
   const rename = (api: Api, e: Entity, file: string) => api.patch(route(e, file), { display_name: 'Renamed' });
   const reopen = (jobId: string) => db.job.update({ where: { id: jobId }, data: { status: 'SCHEDULED' }, select: { id: true } });
 
-  describe('a person\'s own uploads (the route-level row for Delete attachments)', () => {
-    it('deletes their own file and is refused someone else\'s without the switch, on every kind of record', async () => {
+  describe('the record\'s Edit decides who changes a file', () => {
+    it('removes any file, the person\'s own and someone else\'s, with the record\'s Edit, and refuses both without it, on every kind of record', async () => {
       const { org, customer, admin } = await newOrg();
       const job = await fx.addJob(org, customer);
       const lead = await fx.addLead(org, customer);
@@ -113,27 +117,42 @@ suite('deleting and renaming files (real database)', () => {
       const entities: Entity[] = [
         { type: 'JOB', id: job.id }, { type: 'LEAD', id: lead.id }, { type: 'INVOICE', id: invoice.id }, { type: 'CUSTOMER', id: customer },
       ];
-      const person = await personWith(org, {});
-      const api = await person.api();
+      const viewer = await personWith(org, {});
+      const editor = await personWith(org, EDITS);
       for (const e of entities) {
-        const mine = await addFile(org, e, person.id);
+        const mine = await addFile(org, e, viewer.id);
         const theirs = await addFile(org, e, admin.id);
-        const refused = await api.delete(route(e, theirs));
-        expect(refused.status, `${e.type} someone else's`).toBe(403);
-        expect(refused.body.error, `${e.type} someone else's`).toBe(OWN_ONLY_MESSAGE);
-        expect(await filesLeft(theirs), `${e.type} someone else's`).toBe(1);
-        expect((await api.delete(route(e, mine))).status, `${e.type} own`).toBe(200);
-        expect(await filesLeft(mine), `${e.type} own`).toBe(0);
+        // The fixture points the mocked sign-in at the person it was last asked for, so each call asks for its own api.
+        const asViewer = await viewer.api();
+        for (const file of [mine, theirs]) {
+          const refused = await asViewer.delete(route(e, file));
+          expect(refused.status, `${e.type} without the Edit`).toBe(403);
+          expect(refused.body.error, `${e.type} without the Edit`).toBe(NO_EDIT_MESSAGE);
+          expect(await filesLeft(file), `${e.type} without the Edit`).toBe(1);
+          expect((await rename(asViewer, e, file)).status, `${e.type} rename without the Edit`).toBe(403);
+        }
+        const asEditor = await editor.api();
+        expect((await rename(asEditor, e, theirs)).status, `${e.type} rename with the Edit`).toBe(200);
+        expect((await asEditor.delete(route(e, theirs))).status, `${e.type} someone else's`).toBe(200);
+        expect((await asEditor.delete(route(e, mine))).status, `${e.type} another person's, too`).toBe(200);
+        expect(await filesLeft(theirs) + (await filesLeft(mine)), e.type).toBe(0);
       }
     });
 
-    it('deletes anyone\'s file with Delete attachments', async () => {
+    it('lists the files of any record the person can open, with no switch at all, and answers not found for one they cannot open', async () => {
       const { org, customer, admin } = await newOrg();
       const job = await fx.addJob(org, customer);
-      const person = await personWith(org, { delete_attachments: true });
-      const theirs = await addFile(org, { type: 'JOB', id: job.id }, admin.id);
-      expect((await (await person.api()).delete(route({ type: 'JOB', id: job.id }, theirs))).status).toBe(200);
-      expect(await filesLeft(theirs)).toBe(0);
+      const e: Entity = { type: 'JOB', id: job.id };
+      const file = await addFile(org, e, admin.id);
+      const reader = await personWith(org, {});
+      const listed = await (await reader.api()).get(route(e));
+      expect(listed.status).toBe(200);
+      expect((listed.body.attachments as Array<{ id: string }>).map((a) => a.id)).toContain(file);
+
+      const stranger = await personWith(org, { jobs_scope: 'attached' });
+      const hidden = await (await stranger.api()).get(route(e));
+      expect(hidden.status).toBe(404);
+      expect(JSON.stringify(hidden.body)).not.toContain(file);
     });
   });
 
@@ -142,7 +161,7 @@ suite('deleting and renaming files (real database)', () => {
       const { org, customer, admin } = await newOrg();
       const job = await fx.addJob(org, customer, { status });
       const e: Entity = { type: 'JOB', id: job.id };
-      const holder = await personWith(org, { delete_attachments: true, edit_attachments: true });
+      const holder = await personWith(org, EDITS);
       const plain = await personWith(org, {});
       for (const [who, person] of [['holder', holder], ['plain', plain]] as const) {
         const api = await person.api();
@@ -162,26 +181,26 @@ suite('deleting and renaming files (real database)', () => {
       }
     });
 
-    it('lets a Change locked jobs holder delete and rename, still asking the ordinary switch', async () => {
+    it('lets a Change locked jobs holder delete and rename, still asking the job\'s Edit', async () => {
       const { org, customer, admin } = await newOrg();
       const job = await fx.addJob(org, customer, { status });
       const e: Entity = { type: 'JOB', id: job.id };
-      const holder = await personWith(org, { change_locked_jobs: true, delete_attachments: true, edit_attachments: true });
+      const holder = await personWith(org, { change_locked_jobs: true, ...EDITS });
       const api = await holder.api();
       const other = await addFile(org, e, admin.id);
       expect((await rename(api, e, other)).status).toBe(200);
       expect((await api.delete(route(e, other))).status).toBe(200);
       expect(await filesLeft(other)).toBe(0);
 
-      // The key opens the lock, not the switch: without Delete attachments someone else's file stays out of reach.
+      // The key opens the lock, not the Edit: without Edit jobs a file stays out of reach, the person\'s own included.
       const keyOnly = await personWith(org, { change_locked_jobs: true });
-      const kept = await addFile(org, e, admin.id);
-      const refused = await (await keyOnly.api()).delete(route(e, kept));
-      expect(refused.status).toBe(403);
-      expect(refused.body.error).toBe(OWN_ONLY_MESSAGE);
-      // ...but their own upload goes.
-      const mine = await addFile(org, e, keyOnly.id);
-      expect((await (await keyOnly.api()).delete(route(e, mine))).status).toBe(200);
+      for (const uploader of [admin.id, keyOnly.id]) {
+        const kept = await addFile(org, e, uploader);
+        const refused = await (await keyOnly.api()).delete(route(e, kept));
+        expect(refused.status).toBe(403);
+        expect(refused.body.error).toBe(NO_EDIT_MESSAGE);
+        expect(await filesLeft(kept)).toBe(1);
+      }
     });
 
     it('refuses a delete and a rename on a file of the job\'s invoice, and allows them again after a reopen', async () => {
@@ -189,7 +208,7 @@ suite('deleting and renaming files (real database)', () => {
       const job = await fx.addJob(org, customer, { status });
       const invoice = await fx.addInvoice(org, customer, { jobId: job.id });
       const e: Entity = { type: 'INVOICE', id: invoice.id };
-      const person = await personWith(org, { delete_attachments: true, edit_attachments: true });
+      const person = await personWith(org, EDITS);
       const api = await person.api();
       const file = await addFile(org, e, admin.id);
 
@@ -210,7 +229,7 @@ suite('deleting and renaming files (real database)', () => {
     it('still takes a new file upload route past the lock', async () => {
       const { org, customer } = await newOrg();
       const job = await fx.addJob(org, customer, { status });
-      const person = await personWith(org, { upload_attachments: true });
+      const person = await personWith(org, EDITS);
       const res = await (await person.api()).post(`/api/attachments/job/${job.id}`, {});
       expect(res.body.error).not.toBe(LOCK_MESSAGE);
     });
@@ -220,7 +239,7 @@ suite('deleting and renaming files (real database)', () => {
       const lead = await fx.addLead(org, customer);
       const job = await fx.addJob(org, customer, { status, fromLead: lead.id });
       const leadFile = await addFile(org, { type: 'LEAD', id: lead.id }, admin.id);
-      const person = await personWith(org, { delete_attachments: true });
+      const person = await personWith(org, EDITS);
       const api = await person.api();
       // On the job page the file is listed and not changeable from there.
       const listed = (await api.get(`${route({ type: 'JOB', id: job.id })}?include_lead=true`)).body.attachments as Array<Record<string, unknown>>;
@@ -237,7 +256,7 @@ suite('deleting and renaming files (real database)', () => {
     const { org, customer, admin } = await newOrg();
     const open = await fx.addJob(org, customer, { status: 'IN_PROGRESS' });
     const orphanInvoice = await fx.addInvoice(org, customer);
-    const person = await personWith(org, { delete_attachments: true });
+    const person = await personWith(org, EDITS);
     const api = await person.api();
     for (const e of [{ type: 'JOB', id: open.id }, { type: 'INVOICE', id: orphanInvoice.id }] as Entity[]) {
       const file = await addFile(org, e, admin.id);
@@ -249,7 +268,7 @@ suite('deleting and renaming files (real database)', () => {
     const { org, customer, admin } = await newOrg();
     const job = await fx.addJob(org, customer, { status: 'IN_PROGRESS' });
     const e: Entity = { type: 'JOB', id: job.id };
-    const person = await personWith(org, { delete_attachments: true });
+    const person = await personWith(org, EDITS);
     const api = await person.api();
     const first = await addFile(org, e, admin.id);
     const second = await addFile(org, e, admin.id);
@@ -258,16 +277,16 @@ suite('deleting and renaming files (real database)', () => {
     expect((await api.delete(route(e, second))).body.error).toBe(LOCK_MESSAGE);
   });
 
-  it('locks the files of an invoice for a person who can open the invoice but not its job', async () => {
+  it('refuses the files of an invoice to a person who cannot open its job (an invoice follows the Jobs scope)', async () => {
     const { org, customer, admin } = await newOrg();
     const job = await fx.addJob(org, customer, { status: 'DONE' });
     const invoice = await fx.addInvoice(org, customer, { jobId: job.id });
-    const person = await personWith(org, { delete_attachments: true, jobs_scope: 'attached' });
+    // The invoice is reached through its job (P6), so a person who cannot open the job cannot open the invoice either.
+    const person = await personWith(org, { ...EDITS, jobs_scope: 'attached' });
     const e: Entity = { type: 'INVOICE', id: invoice.id };
     const file = await addFile(org, e, admin.id);
     const res = await (await person.api()).delete(route(e, file));
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe(LOCK_MESSAGE);
+    expect(res.status).toBe(404);
     expect(await filesLeft(file)).toBe(1);
   });
 
@@ -275,9 +294,10 @@ suite('deleting and renaming files (real database)', () => {
     const { org, customer, admin } = await newOrg();
     const job = await fx.addJob(org, customer, { status: 'COMPLETED' });
     const file = await addFile(org, { type: 'JOB', id: job.id }, admin.id);
-    const person = await personWith(org, { delete_attachments: true, jobs_scope: 'attached' });
+    const person = await personWith(org, { ...EDITS, jobs_scope: 'attached' });
     const res = await (await person.api()).delete(route({ type: 'JOB', id: job.id }, file));
-    expect(res.status).toBe(403);
+    // A job the person cannot open is not found, and its lock is never told.
+    expect(res.status).toBe(404);
     expect(res.body.error).not.toBe(LOCK_MESSAGE);
   });
 
@@ -287,7 +307,7 @@ suite('deleting and renaming files (real database)', () => {
       const job = await fx.addJob(org, customer);
       const invoice = await fx.addInvoice(org, customer, { jobId: job.id });
       const uploader = await personWith(org, {}, { name: 'Uma' });
-      const deleter = await personWith(org, { delete_attachments: true, view_invoices: true }, { name: 'Dan' });
+      const deleter = await personWith(org, { ...EDITS, view_invoices: true }, { name: 'Dan' });
       const api = await deleter.api();
       for (const e of [{ type: 'JOB', id: job.id }, { type: 'INVOICE', id: invoice.id }] as Entity[]) {
         const file = await addFile(org, e, uploader.id);
@@ -311,7 +331,7 @@ suite('deleting and renaming files (real database)', () => {
       const { org, customer } = await newOrg();
       const job = await fx.addJob(org, customer, { status: 'DONE' });
       const uploader = await personWith(org, {}, { name: 'Uma' });
-      const holder = await personWith(org, { change_locked_jobs: true, delete_attachments: true }, { name: 'Dan' });
+      const holder = await personWith(org, { change_locked_jobs: true, ...EDITS }, { name: 'Dan' });
       const file = await addFile(org, { type: 'JOB', id: job.id }, uploader.id);
       const api = await holder.api();
       expect((await api.delete(route({ type: 'JOB', id: job.id }, file))).status).toBe(200);
@@ -332,18 +352,19 @@ suite('deleting and renaming files (real database)', () => {
       return { row: (res.body.attachments as Array<Record<string, unknown>>).find((a) => a.id === file)! };
     };
 
-    it('lets delete show only on the person\'s own files without Delete attachments, and on every file with it', async () => {
+    it('shows neither control without the record\'s Edit, the person\'s own file included, and both on every file with it', async () => {
       const { org, customer, admin } = await newOrg();
       const job = await fx.addJob(org, customer);
       const e: Entity = { type: 'JOB', id: job.id };
       const plain = await personWith(org, {});
-      const holder = await personWith(org, { delete_attachments: true, edit_attachments: true });
+      const holder = await personWith(org, EDITS);
       const mine = await addFile(org, e, plain.id);
       const theirs = await addFile(org, e, admin.id);
 
       const asPlain = await plain.api();
-      expect((await rowOf(asPlain, e, mine)).row).toMatchObject({ can_delete: true, can_rename: false, locked_actions: [] });
-      expect((await rowOf(asPlain, e, theirs)).row).toMatchObject({ can_delete: false, can_rename: false, locked_actions: [] });
+      for (const file of [mine, theirs]) {
+        expect((await rowOf(asPlain, e, file)).row).toMatchObject({ can_delete: false, can_rename: false, locked_actions: [] });
+      }
       const asHolder = await holder.api();
       expect((await rowOf(asHolder, e, theirs)).row).toMatchObject({ can_delete: true, can_rename: true, locked_actions: [] });
     });
@@ -352,9 +373,9 @@ suite('deleting and renaming files (real database)', () => {
       const { org, customer, admin } = await newOrg();
       const job = await fx.addJob(org, customer, { status: 'OFFICE_REVIEW' });
       const invoice = await fx.addInvoice(org, customer, { jobId: job.id });
-      const holder = await personWith(org, { delete_attachments: true, edit_attachments: true });
+      const holder = await personWith(org, EDITS);
       const plain = await personWith(org, {});
-      const keyHolder = await personWith(org, { change_locked_jobs: true, delete_attachments: true, edit_attachments: true });
+      const keyHolder = await personWith(org, { change_locked_jobs: true, ...EDITS });
 
       for (const e of [{ type: 'JOB', id: job.id }, { type: 'INVOICE', id: invoice.id }] as Entity[]) {
         const theirs = await addFile(org, e, admin.id);
@@ -371,13 +392,14 @@ suite('deleting and renaming files (real database)', () => {
       }
     });
 
-    it('answers the person\'s own file as locked on a locked job, since the lock wins over the own-upload rule', async () => {
+    it('answers the person\'s own file as locked on a locked job, since the lock wins over the Edit', async () => {
       const { org, customer } = await newOrg();
       const job = await fx.addJob(org, customer, { status: 'COMPLETED' });
-      const plain = await personWith(org, {});
-      const mine = await addFile(org, { type: 'JOB', id: job.id }, plain.id);
-      const { row } = await rowOf(await plain.api(), { type: 'JOB', id: job.id }, mine);
-      expect(row).toMatchObject({ can_delete: false, can_rename: false, locked_actions: ['delete'] });
+      const editor = await personWith(org, EDITS);
+      const mine = await addFile(org, { type: 'JOB', id: job.id }, editor.id);
+      const { row } = await rowOf(await editor.api(), { type: 'JOB', id: job.id }, mine);
+      expect(row).toMatchObject({ can_delete: false, can_rename: false });
+      expect([...(row.locked_actions as string[])].sort()).toEqual(['delete', 'rename']);
     });
   });
 });

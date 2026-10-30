@@ -237,12 +237,12 @@ export function PODetailDialog({ open, onClose, po, onReceive, onUpdated, onDele
   const ability = useAppAbility();
   const canUpdatePO = ability.can("update", "PurchaseOrder");
   const canDeletePO = ability.can("delete", "PurchaseOrder");
-  // Amounts are costs (See financial data). Without it the server sends none, and the dialog draws no cost column,
+  // Amounts are costs (See costs). Without it the server sends none, and the dialog draws no cost column,
   // no extended amount and no subtotal or total, rather than a dash or $0 that reads like a value.
   const showCosts = canSeePricing(ability);
   // The staging pointer is offered only to a person who may open the Staging page.
   const mySwitches = useMySwitches()?.values;
-  const canOpenStaging = switchOn(mySwitches, "view_stock") && switchOn(mySwitches, "show_stock_page");
+  const canOpenStaging = switchOn(mySwitches, "view_stock");
   const [tab, setTab] = useState<Tab>("lines");
   const [showPreview, setShowPreview] = useState(false);
 

@@ -52,8 +52,8 @@ const LOCK_MESSAGE = 'This job is locked. Only someone who can change locked job
 
 /** What opening the job takes, with no action switch on. */
 const OPENING = {
-  view_jobs: true, jobs_scope: 'all', create_jobs: true,
-  view_invoices: true, invoices_scope: 'all', view_estimates: true, estimates_scope: 'all',
+  view_jobs: true, jobs_scope: 'all', edit_jobs: true, create_jobs: true,
+  view_invoices: true, leads_scope: 'all', view_estimates: true,
 };
 
 const SCHEDULING = { edit_jobs: true, schedule_visits: true, assign_people_to_jobs: true, assign_work_to_others: true };
@@ -183,7 +183,7 @@ suite('no new visit on a locked job (real database)', () => {
     const me = await personWith(org, { ...OPENING, ...SCHEDULING, jobs_scope: 'attached' });
     const job = await fx.addJob(org, customer, { status: 'COMPLETED', crew: [colleague.id] });
     const res = await (await me.api()).post(`/api/jobs/${job.id}/visits`, body);
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(res.body.error).not.toBe(REOPEN_FIRST);
     expect(res.body.error).not.toBe(LOCK_MESSAGE);
   });

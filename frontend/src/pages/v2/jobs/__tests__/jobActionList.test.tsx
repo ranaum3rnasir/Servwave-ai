@@ -31,7 +31,8 @@ vi.mock('react-router-dom', async () => {
 
 const mockApi = vi.mocked(api);
 const everything = buildAbility([{ action: 'manage', subject: 'all' }]);
-const nothing = buildAbility([]);
+// "Nothing" about acting on the job: the person still sees prices (P11), a separate question from what they may change.
+const nothing = buildAbility([{ action: 'read', subject: 'Prices' }]);
 
 /** What the server lists for a person holding the Technician preset's values (the backend suite derives it from the catalog). */
 const TECHNICIAN_ACTIONS = ['create_estimate', 'edit_line_items', 'add_note', 'upload_attachment', 'log_communication'];
@@ -186,7 +187,7 @@ describe('job page - the Technician preset values', () => {
       { action: 'read', subject: 'Estimate' },
       { action: 'read', subject: 'Invoice' },
       { action: 'read', subject: 'Communication' },
-      { action: 'read', subject: 'Attachment' },
+      { action: 'read', subject: 'Prices' },
     ]);
     mountWith([], { ability: reader });
     await screen.findByRole('heading', { name: /J00001/ });

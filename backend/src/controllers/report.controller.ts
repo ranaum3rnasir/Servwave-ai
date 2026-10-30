@@ -1,10 +1,12 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
-import { InvoiceStatus } from '@prisma/client';
+import { InvoiceStatus, Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { COUNTED_PAYMENT_WHERE } from '../lib/payment-ledger';
 import { logger } from '../lib/logger';
 import { tenantWhere } from '../lib/tenant';
+import { scopeWhereForReq } from '../lib/permissions/enforce';
+import { tableSql, whereSql } from '../lib/permissions/reachSql';
 import { arOutstandingWhere } from '../lib/ar';
 import { getRequestOrgTimezone } from '../lib/timezone';
 import {
@@ -103,9 +105,16 @@ function normalize(e: any): NormalizedRow {
   };
 }
 
+/**
+ * A report is a view over the rows the person's scope reaches, never a wider door (P13): every query below carries the same
+ * row scope the lists use, ANDed on so it never clobbers a filter of the report's own. The sums are over those rows alone,
+ * and what money they may show is the money classes' (See prices on a row, See company figures on a total).
+ */
+const reach = (req: Request, resource: 'Job' | 'Lead' | 'Estimate' | 'Invoice') => scopeWhereForReq(req, resource);
+
 async function fetchOrgRows(req: Request): Promise<NormalizedRow[]> {
   const rows = await prisma.estimate.findMany({
-    where: { ...tenantWhere(req) },
+    where: { ...tenantWhere(req), AND: [await reach(req, 'Estimate')] },
     select: reportSelect,
   });
   return rows.map(normalize);
@@ -248,7 +257,7 @@ function formatArLocation(
 export async function getArAging(req: Request, res: Response) {
   try {
     const invoices = await prisma.invoice.findMany({
-      where: { ...tenantWhere(req), ...arOutstandingWhere },
+      where: { ...tenantWhere(req), ...arOutstandingWhere, AND: [await reach(req, 'Invoice')] },
       select: arInvoiceSelect,
     });
 
@@ -276,6 +285,7 @@ export async function getArAging(req: Request, res: Response) {
     const sales = await prisma.invoice.aggregate({
       where: {
         ...tenantWhere(req),
+        AND: [await reach(req, 'Invoice')],
         kind: { not: 'DEPOSIT' },
         voided_at: null,
         status: { notIn: [InvoiceStatus.DRAFT, InvoiceStatus.VOIDED] },
@@ -344,7 +354,12 @@ const jobsReportSelect = {
 // GET /api/reports/jobs
 export async function getJobsReport(req: Request, res: Response) {
   try {
-    const jobs = await prisma.job.findMany({ where: { ...tenantWhere(req) }, select: jobsReportSelect });
+    // A job's own invoices ride along to sum its money; only the ones the person can reach count (P13), whatever the job's reach.
+    const invoiceReach = await reach(req, 'Invoice');
+    const jobs = await prisma.job.findMany({
+      where: { ...tenantWhere(req), AND: [await reach(req, 'Job')] },
+      select: { ...jobsReportSelect, invoices: { ...jobsReportSelect.invoices, where: { ...jobsReportSelect.invoices.where, AND: [invoiceReach] } } },
+    });
     const rows: JobInput[] = jobs.map((j) => {
       const schedule = resolveJobScheduleWindow(j.visits);
       return {
@@ -409,7 +424,12 @@ function leadAddress(loc: { address_line1: string; city: string; state: string; 
 // GET /api/reports/leads
 export async function getLeadsReport(req: Request, res: Response) {
   try {
-    const leads = await prisma.lead.findMany({ where: { ...tenantWhere(req) }, select: leadsReportSelect });
+    // A lead's estimates give its value and its conversion; only the ones the person can reach count (P13).
+    const estimateReach = await reach(req, 'Estimate');
+    const leads = await prisma.lead.findMany({
+      where: { ...tenantWhere(req), AND: [await reach(req, 'Lead')] },
+      select: { ...leadsReportSelect, estimates: { ...leadsReportSelect.estimates, where: { AND: [estimateReach] } } },
+    });
     const rows: LeadInput[] = leads.map((l) => {
       const assignee = l.commission_owner ?? l.lead_assignees[0]?.user ?? null;
       return {
@@ -459,7 +479,7 @@ const estimatesReportSelect = {
 // GET /api/reports/estimates
 export async function getEstimatesReport(req: Request, res: Response) {
   try {
-    const rows = await prisma.estimate.findMany({ where: { ...tenantWhere(req) }, select: estimatesReportSelect });
+    const rows = await prisma.estimate.findMany({ where: { ...tenantWhere(req), AND: [await reach(req, 'Estimate')] }, select: estimatesReportSelect });
     res.json({ rows: buildEstimatesReport(rows as unknown as EstimateSourceRow[]) });
   } catch (err) {
     logger.error('Estimates report error:', err);
@@ -474,18 +494,19 @@ export async function getRevenueReport(req: Request, res: Response) {
     // Jobs can be moved backward off COMPLETED (Spec B1), which clears completed_at and shrinks
     // a historical month total until they are re-completed. That is intended: the user is
     // asserting the job was not in fact done. The TimelineEvent preserves the original moment.
+    const [jobScope, invoiceScope] = await Promise.all([reach(req, 'Job'), reach(req, 'Invoice')]);
     const [completedJobs, invoices, payments] = await Promise.all([
       prisma.job.findMany({
-        where: { ...tenantWhere(req), completed_at: { not: null } },
+        where: { ...tenantWhere(req), AND: [jobScope], completed_at: { not: null } },
         select: { completed_at: true, amount_invoiced: true },
       }),
       prisma.invoice.findMany({
-        where: { ...tenantWhere(req), kind: { not: 'DEPOSIT' }, voided_at: null },
+        where: { ...tenantWhere(req), AND: [invoiceScope], kind: { not: 'DEPOSIT' }, voided_at: null },
         select: { total_amount: true, sent_at: true, created_at: true },
       }),
       // Slice 05: collected = SUCCEEDED, non-voided payments only.
       prisma.payment.findMany({
-        where: { ...COUNTED_PAYMENT_WHERE, invoice: { is: { ...tenantWhere(req), kind: { not: 'DEPOSIT' } } } },
+        where: { ...COUNTED_PAYMENT_WHERE, invoice: { is: { ...tenantWhere(req), AND: [invoiceScope], kind: { not: 'DEPOSIT' } } } },
         select: { amount: true, paid_at: true },
       }),
     ]);
@@ -531,7 +552,8 @@ export async function getPaymentsReport(req: Request, res: Response) {
     // Slice 05: a PROCESSING bank debit has not been collected and a FAILED one never was, so
     // neither is a row in this report. Voided payments stay listed (as "Voided").
     const payments = await prisma.payment.findMany({
-      where: { state: 'SUCCEEDED', invoice: { ...tenantWhere(req) } },
+      // A payment is reached through its invoice (P13), so the invoice scope decides which payments the report lists.
+      where: { state: 'SUCCEEDED', invoice: { ...tenantWhere(req), AND: [await reach(req, 'Invoice')] } },
       select: paymentReportSelect,
     });
     const rows: PaymentInput[] = payments.map((p) => ({
@@ -612,7 +634,7 @@ const invoicesReportSelect = {
 export async function getInvoicesReport(req: Request, res: Response) {
   try {
     const invoices = await prisma.invoice.findMany({
-      where: { ...tenantWhere(req), kind: { not: 'DEPOSIT' }, voided_at: null, status: { in: INVOICE_REPORT_STATUSES } },
+      where: { ...tenantWhere(req), AND: [await reach(req, 'Invoice')], kind: { not: 'DEPOSIT' }, voided_at: null, status: { in: INVOICE_REPORT_STATUSES } },
       select: invoicesReportSelect,
       orderBy: { created_at: 'desc' },
     });
@@ -647,18 +669,31 @@ export async function getInvoicesReport(req: Request, res: Response) {
 
 // ── Activity — per-actor rollup over the TimelineEvent log ────────────────────
 // No division dimension in the schema → flat per-actor list (division is mock-only).
-const activityEventSelect = {
-  event_type: true,
-  created_at: true,
-  created_by: true,
-  creator: { select: { first_name: true, last_name: true, role: true } },
-} as const;
-
-// GET /api/reports/activity
-export async function getActivityReport(req: Request, res: Response) {
-  try {
-    const events = await prisma.timelineEvent.findMany({ where: { ...tenantWhere(req) }, select: activityEventSelect });
-    const rows: ActivityEventRow[] = events.map((e) => ({
+/**
+ * The events the person's scope reaches (P13): an event on a job, lead, estimate or invoice counts only when the person can
+ * reach that record. A person who reaches all four kinds of record sees the whole log; for anyone narrower, an event on
+ * anything else (a customer, a task, a stock movement) has no scope to be judged by, so it is left out rather than widened.
+ *
+ * The filter runs entirely in the database (spec story 49): each kind's reach, the same `where` the lists use, is compiled
+ * to SQL (lib/permissions/reachSql.ts) and the events are joined against their record with EXISTS. No id list leaves the
+ * database, so it neither slows down nor breaks in a company with more records than a statement can list.
+ */
+async function activityEvents(req: Request): Promise<ActivityEventRow[]> {
+  const kinds = [
+    { type: 'JOB', resource: 'Job' },
+    { type: 'LEAD', resource: 'Lead' },
+    { type: 'ESTIMATE', resource: 'Estimate' },
+    { type: 'INVOICE', resource: 'Invoice' },
+  ] as const;
+  const scopes = await Promise.all(kinds.map((k) => reach(req, k.resource)));
+  const org = tenantWhere(req).organization_id;
+  if (scopes.every((scope) => Object.keys(scope).length === 0)) {
+    // Reach over every record: the whole log, read as it always was.
+    const all = await prisma.timelineEvent.findMany({
+      where: { ...tenantWhere(req) },
+      select: { event_type: true, created_at: true, created_by: true, creator: { select: { first_name: true, last_name: true, role: true } } },
+    });
+    return all.map((e) => ({
       eventType: e.event_type,
       createdAt: e.created_at,
       actorId: e.created_by,
@@ -666,7 +701,37 @@ export async function getActivityReport(req: Request, res: Response) {
       actorLastName: e.creator?.last_name ?? null,
       actorRole: e.creator?.role ?? null,
     }));
-    const users = buildActivityReport(rows);
+  }
+  const arms = kinds.map((k, i) => {
+    const scope = scopes[i]!;
+    if (Object.keys(scope).length === 0) return Prisma.sql`e.entity_type = ${k.type}`;
+    return Prisma.sql`(e.entity_type = ${k.type} AND EXISTS (
+      SELECT 1 FROM ${tableSql(k.resource)} rec
+      WHERE rec.id = e.entity_id AND rec.organization_id = ${org}::uuid AND (${whereSql(k.resource, scope, 'rec')})
+    ))`;
+  });
+  const events = await prisma.$queryRaw<Array<{
+    event_type: string; created_at: Date; created_by: string | null; first_name: string | null; last_name: string | null; role: string | null;
+  }>>(Prisma.sql`
+    SELECT e.event_type, e.created_at, e.created_by, u.first_name, u.last_name, u.role::text AS role
+    FROM timeline_events e
+    LEFT JOIN users u ON u.id = e.created_by
+    WHERE e.organization_id = ${org}::uuid AND (${Prisma.join(arms, ' OR ')})
+  `);
+  return events.map((e) => ({
+    eventType: e.event_type,
+    createdAt: e.created_at,
+    actorId: e.created_by,
+    actorFirstName: e.first_name,
+    actorLastName: e.last_name,
+    actorRole: e.role as ActivityEventRow['actorRole'],
+  }));
+}
+
+// GET /api/reports/activity
+export async function getActivityReport(req: Request, res: Response) {
+  try {
+    const users = buildActivityReport(await activityEvents(req));
     res.json({ users: canSeeCompanyFigures(req) ? users : redactActivityReportRevenue(users) });
   } catch (err) {
     logger.error('Activity report error:', err);
@@ -679,6 +744,27 @@ const inventoryUsageQuerySchema = z.object({
   from: z.coerce.date().optional(),
   to: inclusiveEndOfDay,
 });
+
+async function inventoryJobReach(req: Request): Promise<Record<string, unknown>> {
+  const scope = await reach(req, 'Job');
+  return Object.keys(scope).length === 0 ? {} : { job: { is: { AND: [scope] } } };
+}
+
+/** Which of these invoices the person reaches, asked in the database in slices that stay well under a statement's value limit. */
+async function reachableInvoiceIds(req: Request, invoiceIds: string[]): Promise<Set<string>> {
+  const wanted = [...new Set(invoiceIds)];
+  const scope = await reach(req, 'Invoice');
+  if (Object.keys(scope).length === 0) return new Set(wanted);
+  const out = new Set<string>();
+  for (let i = 0; i < wanted.length; i += 5_000) {
+    const rows = await prisma.invoice.findMany({
+      where: { id: { in: wanted.slice(i, i + 5_000) }, ...tenantWhere(req), AND: [scope] },
+      select: { id: true },
+    });
+    for (const r of rows) out.add(r.id);
+  }
+  return out;
+}
 
 // GET /api/reports/inventory-usage
 export async function getInventoryUsageReport(req: Request, res: Response) {
@@ -693,7 +779,9 @@ export async function getInventoryUsageReport(req: Request, res: Response) {
     const from = parsed.data.from ?? new Date(to.getTime() - 365 * 86_400_000);
 
     const movements = await prisma.stockMovement.findMany({
-      where: { ...tenantWhere(req), type: 'consume', occurred_at: { gte: from, lte: to } },
+      // A consumption is reached through the job it was used on (P13); one with no job belongs to nobody's scope, so a person
+      // whose Jobs scope is narrower than All does not see it.
+      where: { ...tenantWhere(req), type: 'consume', occurred_at: { gte: from, lte: to }, ...(await inventoryJobReach(req)) },
       select: {
         type: true, occurred_at: true, item_id: true, item_sku: true, item_name: true,
         qty: true, unit_cost: true, job_id: true,
@@ -704,6 +792,12 @@ export async function getInventoryUsageReport(req: Request, res: Response) {
         logistic_order: { select: { invoice: { select: { id: true, invoice_number: true } } } },
       },
     });
+
+    // The invoice a consumption was billed on is named only when the person can reach that invoice (spec story 48): the job
+    // being within reach does not open the invoice, which follows the person's own invoice reach (View invoices included).
+    const billedOn = (m: any): { id: string; invoice_number: string } | null =>
+      m.invoice_line_item?.invoice ?? m.logistic_order?.invoice ?? null;
+    const reachable = await reachableInvoiceIds(req, movements.map(billedOn).filter((i): i is { id: string; invoice_number: string } => !!i).map((i) => i.id));
 
     // Normalize at the boundary (qty/unit_cost are Prisma Decimals) → pure service.
     const rows: UsageMovementRow[] = movements.map((m: any) => ({
@@ -716,17 +810,14 @@ export async function getInventoryUsageReport(req: Request, res: Response) {
       unitCost: m.unit_cost != null ? Number(m.unit_cost) : null,
       jobId: m.job?.id ?? m.job_id ?? null,
       jobNumber: m.job?.job_number ?? null,
-      invoiceId: m.invoice_line_item?.invoice?.id ?? m.logistic_order?.invoice?.id ?? null,
-      invoiceNumber:
-        m.invoice_line_item?.invoice?.invoice_number ??
-        m.logistic_order?.invoice?.invoice_number ??
-        null,
+      invoiceId: reachable.has(billedOn(m)?.id ?? '') ? billedOn(m)!.id : null,
+      invoiceNumber: reachable.has(billedOn(m)?.id ?? '') ? billedOn(m)!.invoice_number : null,
     }));
 
     const report = buildInventoryUsageReport(rows, { from, to });
 
     // Cost gate (plan §3.5): movement cost data is stripped for non-canSeeCosts
-    // viewers. Admin and Sales hold See financial data by default, but per-user
+    // viewers. Admin and Sales hold See costs by default, but per-user
     // overrides make the strip mandatory. delete → key absent, not null.
     if (!canSeeCosts(req)) {
       for (const item of report.items) {
@@ -786,6 +877,7 @@ export async function getPaymentFeesReport(req: Request, res: Response) {
 
     // Payment has no own organization_id — tenant-scope via the invoice relation,
     // same shape as getRevenueReport's `collected` stream.
+    const invoiceScope = await reach(req, 'Invoice');
     const payments = await prisma.payment.findMany({
       where: {
         method: 'CARD',
@@ -795,7 +887,7 @@ export async function getPaymentFeesReport(req: Request, res: Response) {
         platform_fee_amount: { not: null },
         net_amount: { not: null },
         paid_at: { gte: from, lte: to },
-        invoice: { is: { ...tenantWhere(req) } },
+        invoice: { is: { ...tenantWhere(req), AND: [invoiceScope] } },
       },
       select: {
         amount: true,
@@ -825,7 +917,7 @@ export async function getPaymentFeesReport(req: Request, res: Response) {
       where: {
         ...COUNTED_PAYMENT_WHERE,
         paid_at: { gte: from, lte: to },
-        invoice: { is: { ...tenantWhere(req) } },
+        invoice: { is: { ...tenantWhere(req), AND: [invoiceScope] } },
         OR: [{ service_fee_amount: { not: null } }, { tip_amount: { not: null } }],
       },
       select: {

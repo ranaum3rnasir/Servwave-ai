@@ -131,8 +131,8 @@ describe('findDuplicateCustomer — readable is fail-closed (R8) and tenant-stru
     // `attachCustomerScope` middleware computes).
     const grants = [{ action: 'read', subject: 'Customer', conditions: { assignees: { some: { id: 'nope' } } } }];
     const req = {
-      ability: defineAbilityFor({ id: 'u1', role: 'SALES' }, grants),
-      customerScope: scopeWhereFor({ id: 'u1', role: 'SALES' }, 'Customer', grants),
+      ability: defineAbilityFor({ is_admin: false, id: 'u1', role: 'SALES' }, grants),
+      customerScope: scopeWhereFor({ is_admin: false, id: 'u1', role: 'SALES' }, 'Customer', grants),
     } as unknown as Request;
 
     let finding: DuplicateFinding | null = null;
@@ -150,7 +150,7 @@ describe('findDuplicateCustomer — readable is fail-closed (R8) and tenant-stru
 
   it('N6: customer.findMany runs with where.organization_id === the requester org (structural, not a mocked-return proof)', async () => {
     const client = makeClient([]);
-    const req = { ability: defineAbilityFor({ id: 'admin-1', role: 'ADMIN' }, []) } as unknown as Request;
+    const req = { ability: defineAbilityFor({ is_admin: true, id: 'admin-1', role: 'ADMIN' }, []) } as unknown as Request;
 
     await findDuplicateCustomer(client, 'the-requesters-org', { phone: '5559998888' }, { requester: req });
 
@@ -160,7 +160,7 @@ describe('findDuplicateCustomer — readable is fail-closed (R8) and tenant-stru
 
   it('N6: with excludeCustomerId set, the where ALSO excludes the linked customer by id.not', async () => {
     const client = makeClient([]);
-    const req = { ability: defineAbilityFor({ id: 'admin-1', role: 'ADMIN' }, []) } as unknown as Request;
+    const req = { ability: defineAbilityFor({ is_admin: true, id: 'admin-1', role: 'ADMIN' }, []) } as unknown as Request;
 
     await findDuplicateCustomer(client, 'the-requesters-org', { phone: '5559998888' }, {
       requester: req,
@@ -176,8 +176,8 @@ describe('findDuplicateCustomer — readable is fail-closed (R8) and tenant-stru
     const client = makeClient([ROW]); // ROW.organization_id === 'org-1'
     const grants = [{ action: 'read', subject: 'Customer', conditions: { organization_id: 'org-1' } }];
     const req = {
-      ability: defineAbilityFor({ id: 'u1', role: 'SALES' }, grants),
-      customerScope: scopeWhereFor({ id: 'u1', role: 'SALES' }, 'Customer', grants),
+      ability: defineAbilityFor({ is_admin: false, id: 'u1', role: 'SALES' }, grants),
+      customerScope: scopeWhereFor({ is_admin: false, id: 'u1', role: 'SALES' }, 'Customer', grants),
     } as unknown as Request;
 
     const finding = await findDuplicateCustomer(client, 'org-1', { phone: '(555) 999-8888' }, { requester: req });
@@ -466,10 +466,6 @@ describe('H2 — an ADMIN-derived custom role (base role ADMIN, custom_role_id s
       custom_role: { key: CUSTOM_ROLE_KEY },
       organization: { is_demo: false, plan: 'SCALE', trial_ends_at: null, feature_overrides: {} },
     });
-    mockPrisma.rolePermission.findMany.mockResolvedValue([
-      ...DEFAULT_GRANTS.filter((g) => g.role === 'SALES').map((g) => ({ ...g, role: CUSTOM_ROLE_KEY })),
-      { role: CUSTOM_ROLE_KEY, action: 'read', subject: 'Customer', conditions: null },
-    ]);
     clearTokenCache();
     clearPermissionCache();
     mockPrisma.customer.findMany.mockResolvedValue([EXISTING_ROW]);

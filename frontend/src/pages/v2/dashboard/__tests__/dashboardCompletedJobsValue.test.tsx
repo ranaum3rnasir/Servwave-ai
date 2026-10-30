@@ -96,7 +96,7 @@ describe('the Completed jobs value tile', () => {
     expect(where()).toBe('/sent-jobs?completed_this_month=true');
   });
 
-  it('is drawn but is not a control when the server sent no address (no Show Jobs page)', async () => {
+  it('is drawn but is not a control when the server sent no address (no View jobs)', async () => {
     open(answer(null, { jobs: 1, value: 10 }));
     const label = await screen.findByText('Completed jobs value');
     expect(label.closest('button')).toBeNull();

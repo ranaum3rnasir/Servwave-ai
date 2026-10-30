@@ -27,7 +27,7 @@ const COMMUNICATION_ROWS: Record<string, Row> = {
   'Show Phone': [true, true, true, true],
   'Show Text': [true, true, true, true],
   'Show Email': [true, true, true, true],
-  'Communication scope': ['all', 'linked_to_me', 'linked_to_me', 'linked_to_me'],
+  'Communication scope': ['all', 'attached', 'attached', 'attached'],
   'See the main line when I have no number': [true, true, true, false],
   'Play recording': [true, true, true, false],
   'View transcript': [true, true, true, false],
@@ -43,7 +43,6 @@ const COMMUNICATION_ROWS: Record<string, Row> = {
   'Call groups tab': [true, false, true, false],
   'Training tab': [true, false, true, false],
   'Blocked callers tab': [true, false, true, false],
-  'Phone usage bar': [true, false, true, false],
   'Office phone in the browser': [true, true, true, false],
 };
 const AUTOMATION_ROWS: Record<string, Row> = {
@@ -51,7 +50,6 @@ const AUTOMATION_ROWS: Record<string, Row> = {
   'Create automations': [true, false, false, false],
   'Edit automations': [true, false, false, false],
   'Delete automations': [true, false, false, false],
-  'Show Automations page': [true, false, false, false],
 };
 const GROUPS: Record<string, Record<string, Row>> = {
   Communication: COMMUNICATION_ROWS,
@@ -108,15 +106,17 @@ describe('the Communication and Automations rows of the switch catalog', () => {
 });
 
 describe('Communication scope', () => {
-  it('is a choice that offers exactly "Linked to me" and "All", and nothing else', () => {
+  it('is a choice that offers the standard three, Attached, Team and All, and nothing else (P6)', () => {
     const entry = entryOf('Communication scope');
     expect(entry.kind).toBe('choice');
-    expect(entry.choices).toEqual(['linked_to_me', 'all']);
+    expect(entry.choices).toEqual(['attached', 'team', 'all']);
     expect(entry.keptValues ?? []).toEqual([]);
   });
 
-  it('refuses a value that is not one of the two', () => {
-    expect(validateSwitchSet({ ...presetSwitchSet('SALES'), communication_scope: 'team' }).map((v) => v.switchKey)).toEqual(['communication_scope']);
+  it('refuses a value that is not one of the three, and no longer accepts the retired "Linked to me" spelling', () => {
+    expect(validateSwitchSet({ ...presetSwitchSet('SALES'), communication_scope: 'location' }).map((v) => v.switchKey)).toEqual(['communication_scope']);
+    expect(validateSwitchSet({ ...presetSwitchSet('SALES'), communication_scope: 'linked_to_me' }).map((v) => v.switchKey)).toEqual(['communication_scope']);
+    expect(validateSwitchSet({ ...presetSwitchSet('SALES'), communication_scope: 'team' })).toEqual([]);
     expect(validateSwitchSet({ ...presetSwitchSet('SALES'), communication_scope: 'all' })).toEqual([]);
   });
 });
@@ -134,7 +134,7 @@ describe('Requires in the Communication and Automations groups', () => {
   it('keeps the section\'s sub-pages and Export call log on Access Communication only, never on View communication', () => {
     const subPages = [
       'Show Phone', 'Show Text', 'Show Email', 'Phone numbers tab', 'Call flows tab', 'Call masking tab',
-      'Call groups tab', 'Training tab', 'Blocked callers tab', 'Phone usage bar', 'Export call log',
+      'Call groups tab', 'Training tab', 'Blocked callers tab', 'Export call log',
     ];
     for (const label of subPages) expect(entryOf(label).requires, label).toEqual([access]);
     // So a person with the record tab closed can still hold them.
@@ -170,9 +170,11 @@ describe('Requires in the Communication and Automations groups', () => {
   });
 
   it('puts Create, Edit, Delete and Show of automations under View automations', () => {
-    for (const label of ['Create automations', 'Edit automations', 'Delete automations', 'Show Automations page']) {
+    for (const label of ['Edit automations', 'Delete automations']) {
       expect(entryOf(label).requires, label).toEqual([keyOfLabel('View automations')]);
     }
+    // Create requires Edit (AL-04): Create automations needs both View and Edit automations.
+    expect(entryOf('Create automations').requires).toEqual([keyOfLabel('View automations'), keyOfLabel('Edit automations')]);
   });
 });
 
@@ -284,11 +286,10 @@ describe('what the Communication and Automations switches compile into', () => {
     expect(noExport.map((g) => `${g.action}:${g.subject}`)).not.toContain('export:Communication');
   });
 
-  it('gives each phone tab and the usage bar an action of its own, checked by no role name', () => {
+  it('gives each phone tab an action of its own, checked by no role name', () => {
     const switches: Array<[label: string, action: string]> = [
       ['Phone numbers tab', 'phone_numbers_tab'], ['Call flows tab', 'call_flows_tab'], ['Call masking tab', 'call_masking_tab'],
       ['Call groups tab', 'call_groups_tab'], ['Training tab', 'training_tab'], ['Blocked callers tab', 'blocked_callers_tab'],
-      ['Phone usage bar', 'phone_usage_bar'],
     ];
     const granted = (role: 'ADMIN' | 'SALES' | 'DISPATCHER' | 'TECHNICIAN') =>
       compileSwitchGrants(presetSwitchSet(role)).map((g) => `${g.action}:${g.subject}`);
@@ -299,11 +300,11 @@ describe('what the Communication and Automations switches compile into', () => {
     }
   });
 
-  it('checks the Phone numbers tab on a number\'s routing change and on the numbers list, and the usage bar on the usage read', () => {
-    expect(entryOf('Phone numbers tab').serverChecks).toEqual(['phone-numbers-routing', 'phone-numbers-fields']);
+  it('checks the Phone numbers tab on a number\'s routing change and on the numbers list, and the usage read', () => {
+    expect(entryOf('Phone numbers tab').serverChecks).toEqual(['phone-numbers-routing', 'phone-numbers-fields', 'phone-usage']);
     expect(entryOf('Phone numbers tab').pending).toBeUndefined();
-    expect(entryOf('Phone usage bar').serverChecks).toEqual(['phone-usage']);
-    expect(entryOf('Phone usage bar').pending).toBeUndefined();
+    expect(entryOf('Phone numbers tab').serverChecks).toContain('phone-usage');
+    expect(SWITCH_CATALOG.map((s) => s.key)).not.toContain('phone_usage_bar');
   });
 
   it('lists the server checks of the four org-gated phone tabs, and leaves Call masking display only', () => {

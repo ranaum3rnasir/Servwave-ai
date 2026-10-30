@@ -14,7 +14,7 @@ const SpiderSummaryPage = lazy(() => import('../spider/SpiderSummaryPage'));
 export function spiderV2Routes() {
   return (
     <>
-      <Route element={<ProtectedRoute allowedRoles={['ADMIN']} />}>
+      <Route element={<ProtectedRoute adminOnly />}>
         <Route element={<V2AppLayout />}>
           <Route element={<RequireSpider />}>
             <Route path="/spider" element={<SpiderPage />} />

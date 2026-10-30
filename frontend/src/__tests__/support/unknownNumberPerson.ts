@@ -5,14 +5,14 @@ import { catalogToggle, presetSwitchLabels, type PresetRole } from './backendSwi
 
 /**
  * Roles & Permissions S02.27 - the people the Texts inbox and the dialer's unknown-number panels are tried against.
- * Create lead needs Create leads + Show Leads page; Create job needs Create jobs + Show Jobs page. A person is
+ * Create lead needs Create leads + View leads; Create job needs Create jobs + View jobs. A person is
  * described by the switches they hold, by the label a person sees, never by a role name; the Create half reaches the
- * screen as a compiled rule, the Show half as the person's own switch answer (seeded as the last-known answer).
+ * screen as a compiled rule, the View half as the person's own switch answer (seeded as the last-known answer).
  */
-export const LEAD_PAIR = ['Create leads', 'Show Leads page'] as const;
-export const JOB_PAIR = ['Create jobs', 'Show Jobs page'] as const;
+export const LEAD_PAIR = ['Create leads', 'View leads'] as const;
+export const JOB_PAIR = ['Create jobs', 'View jobs'] as const;
 
-const SHOW_LABELS = ['Show Leads page', 'Show Jobs page', 'Show Customers page'];
+const SHOW_LABELS = ['View leads', 'View jobs', 'View customers'];
 const CREATE_LABELS = ['Create leads', 'Create jobs', 'Create customers'];
 
 export interface Person {

@@ -162,7 +162,7 @@ describe('authorize middleware', () => {
 
   it('returns 403 when role is not in allowed list', () => {
     const req = mockReq();
-    req.user = { id: '1', email: 'tech@test.com', first_name: 'T', last_name: 'U', role: 'TECHNICIAN' as const, organization_id: '00000000-0000-0000-0000-000000000001' };
+    req.user = { id: '1', email: 'tech@test.com', first_name: 'T', last_name: 'U', role: 'TECHNICIAN' as const, is_admin: false, organization_id: '00000000-0000-0000-0000-000000000001' };
     const res = mockRes();
     const next = mockNext();
 
@@ -173,7 +173,7 @@ describe('authorize middleware', () => {
 
   it('calls next when role matches', () => {
     const req = mockReq();
-    req.user = { id: '1', email: 'admin@test.com', first_name: 'A', last_name: 'U', role: 'ADMIN' as const, organization_id: '00000000-0000-0000-0000-000000000001' };
+    req.user = { id: '1', email: 'admin@test.com', first_name: 'A', last_name: 'U', role: 'ADMIN' as const, is_admin: true, organization_id: '00000000-0000-0000-0000-000000000001' };
     const res = mockRes();
     const next = mockNext();
 

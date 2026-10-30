@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/authenticate';
 import { attachAbility } from '../middleware/attachAbility';
-import { canDo } from '../middleware/canGuard';
+import { requireAdminTo } from '../middleware/canGuard';
 import { validate } from '../middleware/validate';
 import * as jobCancelReasonController from '../controllers/jobCancelReason.controller';
 
@@ -16,10 +16,10 @@ router.use(authenticate, attachAbility);
  * financial.
  */
 router.get('/', jobCancelReasonController.list);
-router.post('/', canDo('update', 'Organization'), validate(jobCancelReasonController.createJobCancelReasonSchema), jobCancelReasonController.create);
+router.post('/', requireAdminTo('change company settings'), validate(jobCancelReasonController.createJobCancelReasonSchema), jobCancelReasonController.create);
 // Literal path segment BEFORE the ":code" route, the house ordering rule.
-router.post('/reorder', canDo('update', 'Organization'), validate(jobCancelReasonController.reorderJobCancelReasonsSchema), jobCancelReasonController.reorder);
-router.patch('/:code', canDo('update', 'Organization'), validate(jobCancelReasonController.updateJobCancelReasonSchema), jobCancelReasonController.update);
+router.post('/reorder', requireAdminTo('change company settings'), validate(jobCancelReasonController.reorderJobCancelReasonsSchema), jobCancelReasonController.reorder);
+router.patch('/:code', requireAdminTo('change company settings'), validate(jobCancelReasonController.updateJobCancelReasonSchema), jobCancelReasonController.update);
 
 // No DELETE. A reason is turned off, never deleted: a cancelled job holds the code.
 

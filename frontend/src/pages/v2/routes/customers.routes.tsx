@@ -28,12 +28,12 @@ export function customersV2Routes() {
   return (
     <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN']} />}>
       <Route element={<V2AppLayout />}>
-        <Route element={<RequirePageAccess all={['view_customers', 'show_customers_page']} />}>
+        <Route element={<RequirePageAccess all={['view_customers']} />}>
           <Route path="/customers" element={<CustomersPage />} />
         </Route>
-        {/* The standalone New Customer follows Create customers and Show Customers page (S02.26); the customer
+        {/* The standalone New Customer follows Create customers and View customers (S02.26); the customer
             inside the lead and job forms never comes through here. A person without the pair goes to their dashboard. */}
-        <Route element={<RequirePageAccess all={['create_customers', 'show_customers_page']} />}>
+        <Route element={<RequirePageAccess all={['create_customers']} />}>
           <Route path="/customers/new" element={<CustomerFormPage />} />
         </Route>
         <Route path="/customers/:id/edit" element={<CustomerFormPage />} />

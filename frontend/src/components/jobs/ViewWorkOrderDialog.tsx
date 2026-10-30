@@ -8,6 +8,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { EstimateDocumentView } from '@/components/estimates/EstimateDocumentView';
+import { useCanSeePrices } from '@/contexts/AbilityContext';
 
 interface ViewWorkOrderDialogProps {
   open: boolean;
@@ -27,6 +28,8 @@ export function ViewWorkOrderDialog({
   customerName,
   companyName,
 }: ViewWorkOrderDialogProps) {
+  // A person without See prices gets the estimate without a price in it: the Work Order then shows the work, no figure (P11).
+  const showPrices = useCanSeePrices();
   const { data: est, isLoading } = useQuery({
     queryKey: ['estimate', estimateId],
     queryFn: () => api.get(`/api/estimates/${estimateId}`).then((r) => r.data.estimate),
@@ -59,6 +62,7 @@ export function ViewWorkOrderDialog({
             discountValue={est.discount_value != null ? Number(est.discount_value) : null}
             discountName={est.discount_name}
             discountAmount={est.discount_amount != null ? Number(est.discount_amount) : null}
+            showPrices={showPrices}
           />
         )}
       </DialogContent>

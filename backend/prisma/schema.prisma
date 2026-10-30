@@ -11,6 +11,10 @@ datasource db {
 model User {
   id                          String                @id @default(uuid()) @db.Uuid
   email                       String                @unique
+  // Sign-in lives at the identity provider, not here. This column holds the person's LIVE INVITE MARK (security finding H2):
+  // 'invite:v1:<sha256 of the live link's id>' while an invite is out, 'invite:used:<sha256>' while a link is being used, and ''
+  // otherwise. Revoke, deactivate and erase blank it, which expires every invite link. See lib/invite-link.ts. Never a password.
+  // While a revoke waits on the identity provider it holds that revoke's own 'revoking:<uuid>' (user.controller revokeLogin).
   password_hash               String                @default("")
   first_name                  String
   last_name                   String
@@ -20,7 +24,13 @@ model User {
   role                        Role
   custom_role_id              String?               @db.Uuid
   custom_role                 CustomRole?           @relation(fields: [custom_role_id], references: [id], onDelete: SetNull)
+  // Roles & Permissions P15: whether a person is an Admin is this flag, never a role name. An Admin holds full access
+  // whatever role or custom role they carry; every "is this an admin" check reads it (lib/permissions/effectiveRole.ts).
+  is_admin                    Boolean               @default(false)
   is_active                   Boolean               @default(true)
+  // Roles & Permissions P19: set when an Admin erased this deactivated person's personal data (name, email, phone, photo,
+  // credentials). The row and every link to it stay. An erased person cannot sign in or be reactivated.
+  erased_at                   DateTime?
   has_login                   Boolean               @default(true)
   mfa_email_enrolled          Boolean               @default(false)
   enforce_clock_in_location   Boolean               @default(true)
@@ -127,8 +137,6 @@ model User {
   // --- Email-OTP 2FA ---
   mfa_email_challenges MfaEmailChallenge[] @relation("MfaChallengeUser")
 
-  // --- Per-user permission overrides (allow/deny on top of the role grant) ---
-  permission_overrides UserPermissionOverride[] @relation("UserPermissionOverrideUser")
   // Roles & Permissions M2: this person's own switch values, and the role they were last given
   // (a built-in role name or a custom role key). See lib/permissions/switches.
   switch_values        PermissionUserSwitch[]
@@ -151,7 +159,12 @@ model User {
 
   organization_id String       @db.Uuid
   organization    Organization @relation(fields: [organization_id], references: [id])
+  // Roles & Permissions AL-16 (M11): the company this person is the Owner of. At most one (organizations.owner_user_id is
+  // unique), and only their own company: the reference is the pair (company, person).
+  owned_organizations Organization[] @relation("OrganizationOwner")
 
+  // The target of the Owner reference above: (organization_id, id) is unique because id is.
+  @@unique([organization_id, id], map: "users_organization_id_id_key")
   @@index([custom_role_id])
   @@index([department_id])
   @@index([location_id])
@@ -2858,6 +2871,12 @@ model Organization {
   // orgs (false) only ever see DB-backed reports — never fabricated data.
   // Surfaced on the /api/auth/me + login payloads as user.org_is_demo.
   is_demo                  Boolean   @default(false)
+  // Roles & Permissions AL-16 (M11, H5): the company's one Owner, the person no one can remove. Unique, so a person owns at
+  // most one company, and the reference is the pair (this company, the person), so the Owner is always one of this
+  // company's own people. Null only for a company that has none yet: nothing treats anyone else as the Owner then.
+  // NoAction: the Owner's row cannot be deleted while it is the Owner (a purge clears this first).
+  owner_user_id            String?   @unique @db.Uuid
+  owner                    User?     @relation("OrganizationOwner", fields: [id, owner_user_id], references: [organization_id, id], onDelete: NoAction, onUpdate: NoAction, map: "organizations_owner_same_company_fkey")
   plan                     Plan      @default(STARTER)
   trial_ends_at            DateTime?
   feature_overrides        Json      @default("{}")
@@ -3017,8 +3036,6 @@ model Organization {
   price_book_items          PriceBookItem[]
   attachments               Attachment[]
   notes                     Note[]
-  role_permissions          RolePermission[]
-  user_permission_overrides UserPermissionOverride[]
   permission_role_switches  PermissionRoleSwitch[]
   permission_user_switches  PermissionUserSwitch[]
   mailboxes                 Mailbox[]
@@ -3175,10 +3192,10 @@ model Organization {
   @@map("organizations")
 }
 
-// SRVW-138 - an org-defined role. Its `key` is written into RolePermission.role, the
+// SRVW-138 - an org-defined role. Its `key` is the role_key of the role's switch rows, in the
 // same column the four system role names use, so keys are validated against those
 // (effectiveRole.ts isReservedRoleKey) and are immutable once created: changing a key
-// would orphan every grant row pointing at it. Renames therefore touch `label` only.
+// would orphan every switch row pointing at it. Renames therefore touch `label` only.
 //
 // `base_role` is the system role whose CODE-level behaviour this role inherits - the
 // value copied onto users.role. ADMIN is permitted: such a role is seeded with an
@@ -3208,49 +3225,11 @@ model CustomRole {
   @@map("custom_roles")
 }
 
-model RolePermission {
-  id              String       @id @default(uuid()) @db.Uuid
-  organization_id String       @db.Uuid
-  role            String
-  action          String
-  subject         String
-  conditions      Json?
-  created_at      DateTime     @default(now())
-  updated_at      DateTime     @updatedAt
-  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
-
-  @@unique([organization_id, role, action, subject])
-  @@index([organization_id, role])
-  @@map("role_permissions")
-}
-
-// Per-user permission override (Phase 2 of the RBAC model). Layers on top of the
-// user's role grant: `effect=allow` grants a capability the role lacks; `effect=deny`
-// revokes a capability the role grants. Capability-level only (no row-scope) in v1.
-// ADMIN is `manage all` in code and is never affected by overrides.
-model UserPermissionOverride {
-  id              String       @id @default(uuid()) @db.Uuid
-  organization_id String       @db.Uuid
-  user_id         String       @db.Uuid
-  action          String
-  subject         String
-  effect          String // 'allow' | 'deny'
-  created_at      DateTime     @default(now())
-  updated_at      DateTime     @updatedAt
-  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
-  user            User         @relation("UserPermissionOverrideUser", fields: [user_id], references: [id], onDelete: Cascade)
-
-  @@unique([user_id, action, subject])
-  @@index([user_id])
-  @@index([organization_id])
-  @@map("user_permission_overrides")
-}
-
 // Roles & Permissions M2 - the per-person switch store. A switch is a named capability held in the
 // switch catalog (lib/permissions/switches/catalog.ts). A role holds one value per switch it was
 // given, a person holds their own, and a switch with no stored value resolves from the role the
 // person is based on, then from the built-in preset. `role_key` is a built-in role name or a custom
-// role's key, the same convention role_permissions.role uses.
+// role's key, the same convention custom_roles.key uses.
 model PermissionRoleSwitch {
   id              String       @id @default(uuid()) @db.Uuid
   organization_id String       @db.Uuid

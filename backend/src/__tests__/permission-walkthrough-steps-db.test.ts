@@ -246,15 +246,15 @@ suite('walkthrough steps follow the crew of the walkthrough acted on (real datab
   describe('a lead someone else assigned, with Edit leads off', () => {
     it('lets the person note the walkthrough, add a photo and build an estimate, and refuses a plain edit', async () => {
       const { org, customer } = await fx.newOrg();
-      const me = await personWith(org, { ...performs, edit_leads: false, create_estimates: true, upload_attachments: true, view_attachments: true });
+      const me = await personWith(org, { ...performs, edit_leads: false, create_leads: false, edit_estimates: true, create_estimates: true });
       const lead = await scheduledLead(org, customer, { assignees: [me.id], walkthroughCrew: [me.id] });
       const api = await me.api();
 
       expect((await api.patch(`/api/leads/${lead.id}`, { service_request: 'Changed' })).status).toBe(403);
       expect((await api.post(`/api/leads/${lead.id}/walkthrough`, { walkthrough_notes: 'Bay window, 3 panes' })).status).toBe(200);
       expect((await visitRow(lead.walkthroughId!)).notes).toBe('Bay window, 3 panes');
-      // The photo door answers the missing file, not a refusal.
-      expect((await api.post(`/api/attachments/LEAD/${lead.id}`)).status).toBe(400);
+      // A photo is the lead's own data (P10): it takes the lead's Edit, which this person does not hold, so the door refuses.
+      expect((await api.post(`/api/attachments/LEAD/${lead.id}`)).status).toBe(403);
       const estimate = await api.post('/api/estimates', { lead_id: lead.id });
       expect(estimate.status).toBe(201);
     });
@@ -266,7 +266,7 @@ suite('walkthrough steps follow the crew of the walkthrough acted on (real datab
     it('lets a person with Book walkthroughs cancel the walkthrough and refuses one without it, with no switch named Cancel leads', async () => {
       const { org, customer } = await fx.newOrg();
       const crew = await colleague(org);
-      const booker = await personWith(org, { ...performs, book_walkthroughs: true, edit_leads: false });
+      const booker = await personWith(org, { ...performs, book_walkthroughs: true, edit_leads: false, create_leads: false });
       const nonBooker = await personWith(org, { ...performs, update_any_visit_status: true, book_walkthroughs: false, edit_leads: true });
       const lead = await scheduledLead(org, customer, { owner: booker.id, assignees: [nonBooker.id], walkthroughCrew: [crew.id] });
 

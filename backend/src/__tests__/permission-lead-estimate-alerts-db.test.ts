@@ -5,8 +5,8 @@
    deposit waived, approval voided, status corrected) used to go to "every Admin" and "every Dispatcher" by role. Now each
    goes through the chain: lane 1 is the record's people (a lead's Owner, walkthrough performers and Dispatcher; for an
    estimate its lead's Owner and the people of its job, else of its lead); lane 2 is who must act (the record's Dispatcher,
-   else the holders of the verb's step switch who can open it, else the Manage roles and permissions holders, stopping at the
-   first step that finds someone); holders of the area's "Alert me about every ..." switch get a copy. "Someone" is active,
+   else the holders of the verb's step switch who can open it, else the company's Admins, stopping at the first step that
+   finds someone; an Admin holds every switch, so an Admin who can be told is found at the step already, AL-18); holders of the area's "Alert me about every ..." switch get a copy. "Someone" is active,
    can open the record (for an estimate, the estimate itself too) and is not the person who did it. Nobody comes from a role
    name.
 
@@ -53,7 +53,8 @@ const ALL_OFF: Record<string, SwitchValue> = Object.fromEntries(
 );
 
 const opensLeads = { view_leads: true, leads_scope: 'all' };
-const managerValues = { ...opensLeads, manage_roles_and_permissions: true, view_users: true };
+// An Admin (the flag, AL-18): holds every switch, the step and the copy switches included, and opens every record.
+const adminValues = { ...opensLeads, is_admin: true, view_users: true };
 
 /** One row of the lead table: a verb, the switch that is its lane 2 step, and what the bell says. */
 interface LeadVerb {
@@ -72,7 +73,7 @@ const LEAD_VERBS: LeadVerb[] = [
 ];
 
 /** What a person needs to open an estimate and the lead or job it is on. */
-const opensEstimates = { view_estimates: true, estimates_scope: 'all', ...opensLeads, view_jobs: true, jobs_scope: 'all', view_invoices: true };
+const opensEstimates = { view_estimates: true, ...opensLeads, view_jobs: true, jobs_scope: 'all', view_invoices: true };
 
 /** One row of the estimate table: a verb, what the bell says, and how it asks and interrupts. */
 interface EstimateVerb {
@@ -118,9 +119,11 @@ suite('the lead and estimate alerts (real database)', () => {
   /** A person on a fresh custom role holding exactly these switch values (every other switch off). */
   async function personWith(org: string, values: Record<string, SwitchValue>, base: Role = 'DISPATCHER'): Promise<Person> {
     const key = `lead-estimate-role-${++sequence}`;
+    // `is_admin: true` makes the person an Admin (the flag, AL-18): it is not a switch, so it never reaches the role.
+    const { is_admin: asAdmin, ...switchValues } = values;
     const role = await fx.addCustomRole(org, key, base);
-    await fx.setRoleSwitches(org, key, { ...ALL_OFF, ...values });
-    return fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
+    await fx.setRoleSwitches(org, key, { ...ALL_OFF, ...switchValues });
+    return fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id, isAdmin: asAdmin === true });
   }
 
   /** A company with nobody but built people, so only they can be alerted. */
@@ -201,20 +204,21 @@ suite('the lead and estimate alerts (real database)', () => {
       const cannotOpen = await personWith(org, { view_leads: true, leads_scope: 'attached', assign_people_to_leads: true });
       const gone = await personWith(org, stepValues);
       await db.user.update({ where: { id: gone.id }, data: { is_active: false } });
-      const manager = await personWith(org, managerValues);
+      // An Admin holds the step switch too (every switch), so they are one of the holders.
+      const admin = await personWith(org, adminValues);
       const l = await lead(org, customer, { walkthroughCrew: [performer.id] });
 
       await send(org, me, l.id, [performer.id]);
 
       const got = recipientsOf(await alertsFor(row.verb, l.id));
-      expect(got).toEqual(ids(performer, holder, secondHolder));
-      for (const who of [adminSwitchOff, cannotOpen, gone, manager]) expect(got).not.toContain(who.id);
+      expect(got).toEqual(ids(performer, holder, secondHolder, admin));
+      for (const who of [adminSwitchOff, cannotOpen, gone]) expect(got).not.toContain(who.id);
     });
 
-    it('without a Dispatcher and with no step holder who can open the lead: the Manage roles and permissions holders', async () => {
+    it('without a Dispatcher and with no other step holder who can open the lead: the Admins, told as holders of the step', async () => {
       const { org, customer } = await quietOrg();
       const me = await personWith(org, opensLeads);
-      const manager = await personWith(org, managerValues);
+      const admin = await personWith(org, adminValues);
       const cannotOpen = await personWith(org, { view_leads: true, leads_scope: 'attached', assign_people_to_leads: true });
       const noSwitch = await personWith(org, opensLeads);
       const l = await lead(org, customer, {});
@@ -222,10 +226,13 @@ suite('the lead and estimate alerts (real database)', () => {
       await send(org, me, l.id);
 
       const alerts = await alertsFor(row.verb, l.id);
-      expect(recipientsOf(alerts)).toEqual(ids(manager));
+      expect(recipientsOf(alerts)).toEqual(ids(admin));
       expect(recipientsOf(alerts)).not.toContain(cannotOpen.id);
       expect(recipientsOf(alerts)).not.toContain(noSwitch.id);
-      expect(whyFor(alerts, manager)).toBe('This lead has no Dispatcher and nobody who can assign people to leads can open it.');
+      // An Admin holds the step, and the "Alert me about every ..." switch too: told once, without the why line (a covering
+      // person who also has a copy is told without it), never twice.
+      expect(whyFor(alerts, admin)).toBeNull();
+      expect(alerts.filter((n) => n.recipients.some((r) => r.recipient_id === admin.id))).toHaveLength(1);
     });
 
     describe('a Dispatcher who cannot take the alert sends the chain to step 2 with the matching why line', () => {
@@ -285,11 +292,11 @@ suite('the lead and estimate alerts (real database)', () => {
       expect(recipientsOf(first)).not.toContain(blindFollower.id);
       expect(rowFor(first, follower)).toMatchObject({ priority: 'FEED', needs_action: false });
 
-      // No Dispatcher and nobody holding the step: the follower is told as a copy and the chain still goes on to the managers.
-      const manager = await personWith(org, managerValues);
+      // No Dispatcher and no other step holder: the follower is told as a copy and the chain still goes on, to the Admin.
+      const admin = await personWith(org, adminValues);
       const bare = await lead(org, customer, {});
       await send(org, me, bare.id);
-      expect(recipientsOf(await alertsFor(row.verb, bare.id))).toEqual(ids(follower, manager));
+      expect(recipientsOf(await alertsFor(row.verb, bare.id))).toEqual(ids(follower, admin));
     });
 
     it('the why line is on step 2 and step 3 and not on lane 1, step 1 or copies', async () => {
@@ -445,30 +452,34 @@ suite('the lead and estimate alerts (real database)', () => {
       const cannotOpenLead = await personWith(world.org, { ...stepValues, leads_scope: 'attached' });
       const gone = await personWith(world.org, stepValues);
       await db.user.update({ where: { id: gone.id }, data: { is_active: false } });
-      const manager = await personWith(world.org, { ...opensEstimates, manage_roles_and_permissions: true, view_users: true });
+      // An Admin holds the step switch too (every switch), so they are one of the holders.
+      const admin = await personWith(world.org, { ...opensEstimates, is_admin: true, view_users: true });
       const e = await estimateOn('lead', world, { owner });
 
       await send(world.org, world.me, e.id);
 
       const got = recipientsOf(await alertsFor(row.verb, e.id));
-      expect(got).toEqual(ids(owner, holder, secondHolder));
-      for (const who of [adminSwitchOff, cannotOpenEstimate, cannotOpenLead, gone, manager]) expect(got).not.toContain(who.id);
+      expect(got).toEqual(ids(owner, holder, secondHolder, admin));
+      for (const who of [adminSwitchOff, cannotOpenEstimate, cannotOpenLead, gone]) expect(got).not.toContain(who.id);
     });
 
-    it('on a lead with no Dispatcher and no step holder who can open it: the Manage roles and permissions holders, with the why line', async () => {
+    it('on a lead with no Dispatcher and no other step holder who can open it: the Admins, told as holders of the step, with the why line', async () => {
       const world = await quiet();
-      const manager = await personWith(world.org, { ...opensEstimates, manage_roles_and_permissions: true, view_users: true });
-      const cannotOpen = await personWith(world.org, { ...opensEstimates, estimates_scope: 'attached', [row.leadStep]: true });
+      const admin = await personWith(world.org, { ...opensEstimates, is_admin: true, view_users: true });
+      const cannotOpen = await personWith(world.org, { ...opensEstimates, jobs_scope: 'attached', leads_scope: 'attached', [row.leadStep]: true });
       const noSwitch = await personWith(world.org, opensEstimates);
       const e = await estimateOn('lead', world);
 
       await send(world.org, world.me, e.id);
 
       const alerts = await alertsFor(row.verb, e.id);
-      expect(recipientsOf(alerts)).toEqual(ids(manager));
+      expect(recipientsOf(alerts)).toEqual(ids(admin));
       expect(recipientsOf(alerts)).not.toContain(cannotOpen.id);
       expect(recipientsOf(alerts)).not.toContain(noSwitch.id);
-      expect(whyFor(alerts, manager)).toBe(`This lead has no Dispatcher and nobody who can ${row.leadStepWords} can open it.`);
+      // An Admin holds the step, and the "Alert me about every ..." switch too: told once, without the why line (a covering
+      // person who also has a copy is told without it), never twice.
+      expect(whyFor(alerts, admin)).toBeNull();
+      expect(alerts.filter((n) => n.recipients.some((r) => r.recipient_id === admin.id))).toHaveLength(1);
     });
 
     it('on a job: its Sold By, crew and Dispatcher and the estimate\'s Owner, and Assign people to jobs is the step whatever the verb', async () => {
@@ -496,7 +507,6 @@ suite('the lead and estimate alerts (real database)', () => {
     it('a standalone estimate (no lead, no job) starts at step 2 with "This estimate has no lead or job.", no lane 1', async () => {
       const world = await quiet();
       const holder = await personWith(world.org, { ...opensEstimates, [row.leadStep]: true });
-      const manager = await personWith(world.org, { ...opensEstimates, manage_roles_and_permissions: true, view_users: true });
       const e = await estimateOn('neither', world);
 
       await send(world.org, world.me, e.id);
@@ -504,13 +514,15 @@ suite('the lead and estimate alerts (real database)', () => {
       expect(recipientsOf(alerts)).toEqual(ids(holder));
       expect(whyFor(alerts, holder)).toBe('This estimate has no lead or job.');
 
-      // Nobody holding the step: the managers, and the line says so.
+      // The holder gone, an Admin is the one who holds the step (every switch); they hold the copy switches too, so they are
+      // told once, without the line.
       await db.user.update({ where: { id: holder.id }, data: { is_active: false } });
+      const admin = await personWith(world.org, { ...opensEstimates, is_admin: true, view_users: true });
       await db.notification.deleteMany({ where: { object_id: e.id } });
       await send(world.org, world.me, e.id);
       alerts = await alertsFor(row.verb, e.id);
-      expect(recipientsOf(alerts)).toEqual(ids(manager));
-      expect(whyFor(alerts, manager)).toBe(`This estimate has no lead or job and nobody who can ${row.leadStepWords} can open it.`);
+      expect(recipientsOf(alerts)).toEqual(ids(admin));
+      expect(whyFor(alerts, admin)).toBeNull();
     });
 
     describe('a Dispatcher who cannot take the alert sends the chain to step 2 with the matching why line', () => {
@@ -522,7 +534,7 @@ suite('the lead and estimate alerts (real database)', () => {
         ['did the action', "This lead's Dispatcher made this change.", async (_org, _dispatcher, me) => me],
         // Being the lead's Dispatcher attaches them to the lead, but opening the ESTIMATE is its own question.
         ['cannot open the estimate', "This lead's Dispatcher is not available.", async (org) => personWith(org, { ...opensLeads, view_estimates: false })],
-        ['cannot open the lead', "This lead's Dispatcher is not available.", async (org) => personWith(org, { view_estimates: true, estimates_scope: 'all' })],
+        ['cannot open the lead', "This lead's Dispatcher is not available.", async (org) => personWith(org, { view_estimates: true, jobs_scope: 'all', leads_scope: 'all' })],
       ];
       it.each(cases)('a Dispatcher who %s', async (_label, line, makeDispatcher) => {
         const world = await quiet();
@@ -576,7 +588,7 @@ suite('the lead and estimate alerts (real database)', () => {
       for (const key of row.copySwitches) followers.push(await personWith(world.org, { ...opensEstimates, [key]: true }));
       // A person holding every copy switch is still one alert.
       const holdsAll = await personWith(world.org, { ...opensEstimates, ...copyValues });
-      const blind = await personWith(world.org, { ...opensEstimates, estimates_scope: 'attached', ...copyValues });
+      const blind = await personWith(world.org, { ...opensEstimates, jobs_scope: 'attached', leads_scope: 'attached', ...copyValues });
       const withDispatcher = await estimateOn('lead', world, { dispatcher });
 
       await send(world.org, world.me, withDispatcher.id);
@@ -586,10 +598,11 @@ suite('the lead and estimate alerts (real database)', () => {
       expect(recipientsOf(first)).not.toContain(blind.id);
       expect(rowFor(first, holdsAll)).toMatchObject({ priority: 'FEED', needs_action: false });
 
-      const manager = await personWith(world.org, { ...opensEstimates, manage_roles_and_permissions: true, view_users: true });
+      // No Dispatcher and no other step holder: the copies still go, and the chain goes on to the Admin.
+      const admin = await personWith(world.org, { ...opensEstimates, is_admin: true, view_users: true });
       const bare = await estimateOn('lead', world);
       await send(world.org, world.me, bare.id);
-      expect(recipientsOf(await alertsFor(row.verb, bare.id))).toEqual(ids(manager, holdsAll, ...followers));
+      expect(recipientsOf(await alertsFor(row.verb, bare.id))).toEqual(ids(admin, holdsAll, ...followers));
     });
 
     it('the why line is on step 2 and step 3 and not on lane 1, step 1 or copies', async () => {
@@ -743,7 +756,7 @@ suite('the lead and estimate alerts (real database)', () => {
   }
 
   describe('New lead with no owner, from every source', () => {
-    const makesLeads = { ...opensLeads, create_leads: true, assign_people_to_leads: true };
+    const makesLeads = { ...opensLeads, edit_leads: true, create_leads: true, assign_people_to_leads: true };
     const holderValues = { ...opensLeads, assign_people_to_leads: true };
     const verb = 'lead.unassigned_created';
     const leadsOf = (org: string) => db.lead.findMany({ where: { organization_id: org }, select: { id: true, lead_number: true } });
@@ -771,7 +784,7 @@ suite('the lead and estimate alerts (real database)', () => {
 
     it('a lead made together with a new customer (the way a call from a new number becomes a lead) alerts the same people', async () => {
       const { org } = await quietOrg();
-      const creator = await personWith(org, { ...makesLeads, view_customers: true, create_customers: true });
+      const creator = await personWith(org, { ...makesLeads, view_customers: true, edit_customers: true, create_customers: true });
       const holder = await personWith(org, holderValues);
       const api = await fx.signedInAs(creator);
 
@@ -840,7 +853,7 @@ suite('the lead and estimate alerts (real database)', () => {
   describe('Walkthrough scheduled, from the new-lead form', () => {
     it('a walkthrough booked while the lead is made tells the people booked (interrupting them) and whoever covers for the missing Dispatcher', async () => {
       const { org, customer } = await quietOrg();
-      const creator = await personWith(org, { ...opensLeads, view_jobs: true, jobs_scope: 'all', create_leads: true, assign_people_to_leads: true, assign_work_to_others: true });
+      const creator = await personWith(org, { ...opensLeads, view_jobs: true, jobs_scope: 'all', edit_leads: true, create_leads: true, assign_people_to_leads: true, assign_work_to_others: true });
       const performer = await personWith(org, { ...opensLeads, can_be_on_crew: true });
       const holder = await personWith(org, { ...opensLeads, assign_people_to_leads: true });
       const api = await fx.signedInAs(creator);

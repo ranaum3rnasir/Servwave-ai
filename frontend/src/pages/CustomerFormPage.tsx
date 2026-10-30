@@ -170,6 +170,7 @@ interface ParentCustomerOption {
 }
 
 import { customerSchema, type CustomerFormData } from '@/lib/customers/customerSchema';
+import { useNoOptionsLabel } from '@/lib/useIsAdmin';
 
 // ─── Tiny shared label (asterisk for required) ───────
 
@@ -221,6 +222,7 @@ function RadioRow({ checked, onClick, label }: { checked: boolean; onClick: () =
 // ─── Component ───────────────────────────────────────
 
 export default function CustomerFormPage() {
+  const noOptions = useNoOptionsLabel('add some in Settings');
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
@@ -991,7 +993,7 @@ export default function CustomerFormPage() {
                             ))
                           ) : (
                             <SelectItem value="__none__" disabled>
-                              No options - add some in Settings
+                              {noOptions}
                             </SelectItem>
                           );
                         })()}
@@ -1320,7 +1322,7 @@ export default function CustomerFormPage() {
                                         ))
                                       ) : (
                                         <SelectItem value="__none__" disabled>
-                                          No options - add some in Settings
+                                          {noOptions}
                                         </SelectItem>
                                       );
                                     })()}

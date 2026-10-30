@@ -10,7 +10,7 @@ import { renderWithProviders } from '@/__tests__/helpers';
 import { buildAbility } from '@/lib/ability';
 import type { Email } from '@/lib/api/communication';
 
-const hoisted = vi.hoisted(() => ({ markThreadReadMutate: vi.fn() }));
+const hoisted = vi.hoisted(() => ({ markThreadReadMutate: vi.fn(), emailsAskedFor: [] as unknown[][] }));
 
 const message = (id: string, threadId: string, extra: Partial<Email> = {}): Email => ({
   id, threadId, account: 'system', from: { name: 'Dana Lee', email: 'dana@example.com' }, to: 'main@mail.test',
@@ -29,7 +29,10 @@ vi.mock('@/lib/api/communication', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/api/communication')>();
   return {
     ...actual,
-    useEmails: () => ({ data: EMAILS }),
+    useEmails: (...args: unknown[]) => {
+      hoisted.emailsAskedFor.push(args);
+      return { data: EMAILS };
+    },
     useEmailGroups: () => ({ data: NOTHING }),
     useForwardRules: () => ({ data: NOTHING }),
     useTeamMembers: () => ({ data: NOTHING }),
@@ -52,7 +55,10 @@ const ability = buildAbility([
 ]);
 const renderAt = (entry: string) => renderWithProviders(<><InboxPage /><Where /></>, { ability, initialEntries: [entry] });
 
-beforeEach(() => hoisted.markThreadReadMutate.mockClear());
+beforeEach(() => {
+  hoisted.markThreadReadMutate.mockClear();
+  hoisted.emailsAskedFor.length = 0;
+});
 
 describe('the Email page opened by a received-email bell (?thread=)', () => {
   it('opens the conversation the address names, marks it read and takes the ask out of the address', async () => {
@@ -61,6 +67,8 @@ describe('the Email page opened by a received-email bell (?thread=)', () => {
     expect(await screen.findByText('Body of m-new')).toBeInTheDocument();
     expect(hoisted.markThreadReadMutate).toHaveBeenCalledWith('thr-asked');
     await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent(/^\/communication\/inbox$/));
+    // A bell with no mailbox opens "My mailbox": the list asked for is the person's own (M1, ticket 31).
+    expect(hoisted.emailsAskedFor).toContainEqual(['all', 'mine']);
   });
 
   it('leaves no conversation open when the list does not hold the one asked for, and still clears the address', async () => {

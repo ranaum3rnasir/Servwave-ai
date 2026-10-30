@@ -159,13 +159,13 @@ describe('#2090 rejectCustomerSelections - the payload rules, as a unit', () => 
 });
 
 describe('#2090 PATCH /api/estimates/:id/public/selections - the token door', () => {
-  it('400s with no token at all', async () => {
+  it('404s with no token at all, as for a wrong token (re-audit N0)', async () => {
     const res = await request(app)
       .patch(`/api/estimates/${ESTIMATE_ID}/public/selections`)
       .send({ selections: [{ kind: 'line', id: OPTIONAL_LINE, is_selected: true }] });
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe('Token is required');
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Estimate not found');
   });
 
   it('404s on a wrong token, without saying whether the estimate exists', async () => {

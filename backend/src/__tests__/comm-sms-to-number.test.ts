@@ -14,6 +14,7 @@ import app from '../app';
 import { prisma } from '../lib/prisma';
 import * as ctmClient from '../lib/ctm/client';
 import { findOrCreateSmsThreadByNumber } from '../lib/ctm/smsThread';
+import { matchByPhone } from '../lib/comms-identity';
 import { _resetCtmSmsDoubleFireGuard } from '../lib/ctm/sendSms';
 import { clearTokenCache } from '../middleware/authenticate';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
@@ -24,6 +25,8 @@ const p = prisma as any;
 const client = ctmClient as any;
 
 const ORG_ID = ALPHA_ORG_ID;
+// The webhook's resolver: the whole company's customers, leads and vendors (the helper takes it from its caller, NV-vp3-1).
+const companyWide = (n: string) => matchByPhone(prisma, ORG_ID, n);
 const THREAD_ID = 'a1b2c3d4-0000-0000-0000-000000000001';
 const MSG_ID = '99990000-0000-0000-0000-000000000001';
 const RAW_NUMBER = '(201) 555-0123';
@@ -82,7 +85,7 @@ describe('findOrCreateSmsThreadByNumber — keying parity with ingest', () => {
     });
     p.messageThread.create.mockResolvedValue({ id: 'th-1', customer_id: 'cust-1' });
 
-    const { thread, match } = await findOrCreateSmsThreadByNumber(prisma, ORG_ID, RAW_NUMBER);
+    const { thread, match } = await findOrCreateSmsThreadByNumber(prisma, ORG_ID, RAW_NUMBER, companyWide);
 
     expect(p.messageThread.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -107,7 +110,7 @@ describe('findOrCreateSmsThreadByNumber — keying parity with ingest', () => {
     p.vendor.findFirst.mockResolvedValue({ id: 'vendor-1', name: 'Acme Supply' });
     p.messageThread.create.mockResolvedValue({ id: 'th-v', vendor_id: 'vendor-1' });
 
-    await findOrCreateSmsThreadByNumber(prisma, ORG_ID, RAW_NUMBER);
+    await findOrCreateSmsThreadByNumber(prisma, ORG_ID, RAW_NUMBER, companyWide);
 
     expect(p.messageThread.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -123,7 +126,7 @@ describe('findOrCreateSmsThreadByNumber — keying parity with ingest', () => {
   it('unmatched number keys by title = the E.164 normalization (bare spelling included)', async () => {
     p.messageThread.create.mockResolvedValue({ id: 'th-t', title: E164 });
 
-    await findOrCreateSmsThreadByNumber(prisma, ORG_ID, '2015550123');
+    await findOrCreateSmsThreadByNumber(prisma, ORG_ID, '2015550123', companyWide);
 
     expect(p.messageThread.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -145,7 +148,7 @@ describe('findOrCreateSmsThreadByNumber — keying parity with ingest', () => {
   it('reuses an existing thread — no create when the find hits', async () => {
     p.messageThread.findFirst.mockResolvedValue({ id: 'th-existing', title: E164 });
 
-    const { thread } = await findOrCreateSmsThreadByNumber(prisma, ORG_ID, RAW_NUMBER);
+    const { thread } = await findOrCreateSmsThreadByNumber(prisma, ORG_ID, RAW_NUMBER, companyWide);
 
     expect(thread.id).toBe('th-existing');
     expect(p.messageThread.create).not.toHaveBeenCalled();

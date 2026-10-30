@@ -14,6 +14,7 @@ import { Outlet, Routes, Route } from 'react-router-dom';
 import api from '@/lib/axios';
 import { buildAbility, type AppAbility } from '@/lib/ability';
 import { useSettingsGuard } from '@/stores/settingsGuard.store';
+import { useAuthStore } from '@/stores/auth.store';
 import { settingsV2Routes } from '@/pages/v2/routes/settings.routes';
 import { EstimateReceiptCard, type EstimateReceiptCardEstimate } from '@/components/estimates/EstimateReceiptCard';
 import { renderWithProviders } from './helpers';
@@ -21,6 +22,7 @@ import { renderWithProviders } from './helpers';
 vi.mock('@/components/ProtectedRoute', () => ({ default: () => <Outlet /> }));
 vi.mock('@/pages/v2/V2AppLayout', () => ({ default: () => <Outlet /> }));
 vi.mock('@/pages/v2/settings/CompanyProfilePage', () => ({ default: () => <p role="heading" aria-level={2}>Company page</p> }));
+vi.mock('@/pages/v2/settings/MyProfilePage', () => ({ default: () => <p role="heading" aria-level={2}>My profile page</p> }));
 
 const mockApi = vi.mocked(api);
 
@@ -53,6 +55,13 @@ function serve() {
 
 function openSettings(path: string, ability: AppAbility) {
   serve();
+  // Setting up the company is the Admin flag's alone (36b, M17): the person who holds the old update rule here is the Admin.
+  const isAdmin = ability.can('update', 'Organization');
+  vi.mocked(useAuthStore).mockImplementation(((selector: (state: Record<string, unknown>) => unknown) =>
+    selector({
+      user: { id: '00000000-0000-0000-0000-000000000001', email: 'p@test.com', first_name: 'Test', last_name: 'Person', role: 'DISPATCHER', is_admin: isAdmin },
+      isAuthenticated: true, isLoading: false, error: null,
+    })) as never);
   return renderWithProviders(
     <Suspense fallback={null}>
       <Routes>
@@ -74,9 +83,9 @@ beforeEach(() => {
 
 describe('the Tax Rates settings page follows Company settings', () => {
   it('draws no Tax Rates tab for a person without it', async () => {
-    openSettings('/settings/company', formUser);
-    await screen.findByRole('heading', { name: 'Company page' });
-    const nav = screen.getByRole('navigation', { name: 'Settings' });
+    openSettings('/settings/profile', formUser);
+    const nav = await screen.findByRole('navigation', { name: 'Settings' });
+    expect(await within(nav).findByRole('link', { name: 'My Profile' })).toBeInTheDocument();
 
     expect(within(nav).queryByRole('link', { name: 'Tax Rates' })).toBeNull();
   });
@@ -84,7 +93,9 @@ describe('the Tax Rates settings page follows Company settings', () => {
   it('refuses the page to a person who types its address, and never asks for the rates list', async () => {
     openSettings('/settings/tax-rates', formUser);
 
-    expect(await screen.findByRole('heading', { name: /don.t have access to this page/ })).toBeInTheDocument();
+    // The address renders nothing for anyone who is not an Admin: no page, no no-access pane, no reads.
+    await screen.findByRole('navigation', { name: 'Settings' });
+    await new Promise((resolve) => setTimeout(resolve, 150));
     expect(screen.queryByText(/Your organization.s tax rates/)).toBeNull();
     expect(screen.queryByRole('button', { name: /Add rate/ })).toBeNull();
     expect(calledUrls()).not.toContain('/api/org-tax-rates');

@@ -7,7 +7,7 @@ import { Download, Plus } from 'lucide-react';
 
 import api from '@/lib/axios';
 import { ESTIMATE_STATUS } from '@/constants/estimateStatus';
-import { useAppAbility } from '@/contexts/AbilityContext';
+import { useAppAbility, useCanSeePrices } from '@/contexts/AbilityContext';
 import { summariseBulkResult } from '@/lib/bulk-result';
 import { customerDisplayName } from '@/lib/customer-name';
 import { endOfMonthDay, startOfMonthDay } from '@/lib/date-range';
@@ -109,6 +109,8 @@ export default function EstimatesPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const ability = useAppAbility();
+  // P11: without See prices the server leaves every price out, so the list draws no place for one.
+  const canSeePrices = useCanSeePrices();
   // The Export control on the list: the Export estimates switch, for any role.
   const canExport = ability.can('export', 'Estimate');
   // The New Estimate button: the Create estimates switch (the list itself already needed View and Show to open).
@@ -140,8 +142,13 @@ export default function EstimatesPage() {
   // Admin box). The server refuses the roster to anyone narrower, so they are neither asked for it nor offered the
   // filter. Until the person's switches have arrived the filter stays in place and the roster is not asked for.
   const mySwitches = useMySwitches();
-  const mayListCreators = !!mySwitches && (mySwitches.admin_box || mySwitches.values.estimates_scope === 'all');
-  const registry = !mySwitches || mayListCreators ? estimatesRegistry : estimatesRegistryWithoutCreator;
+  const mayListCreators = !!mySwitches && (mySwitches.admin_box || (mySwitches.values.jobs_scope === 'all' && mySwitches.values.leads_scope === 'all'));
+  const withCreator = !mySwitches || mayListCreators;
+  // Stable between renders (useFilterState's registry contract): rebuilt only when one of its two inputs changes.
+  const registry = useMemo(
+    () => (withCreator ? estimatesRegistry : estimatesRegistryWithoutCreator).filter((facet) => canSeePrices || facet.key !== 'total'),
+    [withCreator, canSeePrices],
+  );
   const { value, setValue, listParams: filterParams } = useFilterState(registry);
 
   // Auto-open the picker when returning from lead/customer creation, or from a
@@ -472,8 +479,8 @@ export default function EstimatesPage() {
   );
 
   const columns = useMemo(
-    () => buildEstimateColumns({ sorting, onToggleSort: toggleSort }),
-    [sorting, toggleSort],
+    () => buildEstimateColumns({ sorting, onToggleSort: toggleSort }).filter((c) => canSeePrices || c.id !== 'total'),
+    [sorting, toggleSort, canSeePrices],
   );
 
   // --- Export ----------------------------------------------------------------
@@ -487,7 +494,7 @@ export default function EstimatesPage() {
       'Customer': customerDisplayName(c, ''),
       'Company': c?.company_name ?? '',
       'Status': e.status,
-      'Total': Number(e.total_amount),
+      ...(canSeePrices ? { 'Total': Number(e.total_amount) } : {}),
       'Created By': `${e.creator.first_name} ${e.creator.last_name}`,
       'Date': new Date(e.created_at).toLocaleDateString(),
     };
@@ -532,49 +539,53 @@ export default function EstimatesPage() {
           endpoint returns today. */}
       <StatCardGroup className="mb-1.5 xl:grid-cols-4 2xl:grid-cols-7">
         <StatCard
-          label="Draft" value={stats?.draft?.count ?? 0} detail={statWorth(stats?.draft?.value)} loading={isLoading}
+          label="Draft" value={stats?.draft?.count ?? 0} detail={canSeePrices ? statWorth(stats?.draft?.value) : undefined} loading={isLoading}
           active={activeStatusKpi === ESTIMATE_STATUS.DRAFT}
           onClick={() => handleStatusKpi(ESTIMATE_STATUS.DRAFT)}
         />
         <StatCard
-          label="Sent" value={stats?.sent?.count ?? 0} detail={statWorth(stats?.sent?.value)} loading={isLoading}
+          label="Sent" value={stats?.sent?.count ?? 0} detail={canSeePrices ? statWorth(stats?.sent?.value) : undefined} loading={isLoading}
           active={activeStatusKpi === ESTIMATE_STATUS.SENT}
           onClick={() => handleStatusKpi(ESTIMATE_STATUS.SENT)}
         />
         <StatCard
-          label="Pending" value={stats?.pending?.count ?? 0} detail={statWorth(stats?.pending?.value)} loading={isLoading}
+          label="Pending" value={stats?.pending?.count ?? 0} detail={canSeePrices ? statWorth(stats?.pending?.value) : undefined} loading={isLoading}
           active={activeStatusKpi === ESTIMATE_STATUS.PENDING}
           onClick={() => handleStatusKpi(ESTIMATE_STATUS.PENDING)}
         />
         <StatCard
-          label="Won" value={stats?.won?.count ?? 0} detail={statWorth(stats?.won?.value)} loading={isLoading}
+          label="Won" value={stats?.won?.count ?? 0} detail={canSeePrices ? statWorth(stats?.won?.value) : undefined} loading={isLoading}
           active={activeStatusKpi === ESTIMATE_STATUS.WON}
           onClick={() => handleStatusKpi(ESTIMATE_STATUS.WON)}
         />
         <StatCard
-          label="Declined" value={stats?.declined?.count ?? 0} detail={statWorth(stats?.declined?.value)} loading={isLoading}
+          label="Declined" value={stats?.declined?.count ?? 0} detail={canSeePrices ? statWorth(stats?.declined?.value) : undefined} loading={isLoading}
           active={activeStatusKpi === ESTIMATE_STATUS.DECLINED}
           onClick={() => handleStatusKpi(ESTIMATE_STATUS.DECLINED)}
         />
         <StatCard
-          label="Archived" value={stats?.archived?.count ?? 0} detail={statWorth(stats?.archived?.value)} loading={isLoading}
+          label="Archived" value={stats?.archived?.count ?? 0} detail={canSeePrices ? statWorth(stats?.archived?.value) : undefined} loading={isLoading}
           active={activeStatusKpi === ESTIMATE_STATUS.ARCHIVED}
           onClick={() => handleStatusKpi(ESTIMATE_STATUS.ARCHIVED)}
         />
-        <StatCard
-          label="Pending Deposits"
-          value={formatCurrency(Number(stats?.pending_deposits?.total ?? 0))}
-          loading={isLoading}
-          active={activeDepositKpi}
-          onClick={handleDepositKpi}
-        />
+        {canSeePrices && (
+          <StatCard
+            label="Pending Deposits"
+            value={formatCurrency(Number(stats?.pending_deposits?.total ?? 0))}
+            loading={isLoading}
+            active={activeDepositKpi}
+            onClick={handleDepositKpi}
+          />
+        )}
       </StatCardGroup>
 
       {/* The count and the worth beneath it share a window, but the tiles do
           not share one with each other - draft/sent/won/declined/archived are
           this-month, pending and pending deposits are all time. */}
       <p className="text-muted-foreground mb-4 text-xs">
-        Draft, Sent, Won, Declined and Archived cover estimates created this month. Pending and Pending Deposits are all time.
+        {canSeePrices
+          ? 'Draft, Sent, Won, Declined and Archived cover estimates created this month. Pending and Pending Deposits are all time.'
+          : 'Draft, Sent, Won, Declined and Archived cover estimates created this month. Pending is all time.'}
       </p>
 
       {/* Applied-filter chips only. The Filter TRIGGER lives in the table

@@ -87,7 +87,7 @@ suite('account events through the reconciler (real database)', () => {
       },
     });
     await db.user.create({
-      data: { id: randomUUID(), organization_id: org, email: `admin-${tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN' },
+      data: { id: randomUUID(), organization_id: org, email: `admin-${tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN', is_admin: true },
     });
     let seq = 0;
     /** Post one event to the webhook route, the way the processor delivers it. */

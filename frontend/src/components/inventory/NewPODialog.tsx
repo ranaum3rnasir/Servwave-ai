@@ -107,7 +107,7 @@ export function NewPODialog({
   onAddCategory,
   brands = [],
 }: Props) {
-  // The unit cost is a cost (See financial data): without it the server would not send one and does not keep one
+  // The unit cost is a cost (See costs): without it the server would not send one and does not keep one
   // sent, so the column is not drawn at all and a line goes in with no cost of its own.
   const showCosts = canSeePricing(useAppAbility());
   // When set, the "Add Item" dialog is open and on save we auto-select
@@ -305,7 +305,7 @@ export function NewPODialog({
       kind: payload.kind as Item["kind"],
       uom: payload.uom,
       unitCost: payload.unitCost,
-      sellPrice: payload.sellPrice,
+      sellPrice: payload.sellPrice ?? 0,
       serialized: payload.serialized,
       hazmat: payload.hazmat,
       status: "active",

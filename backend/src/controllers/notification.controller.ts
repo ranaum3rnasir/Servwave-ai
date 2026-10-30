@@ -3,6 +3,7 @@ import { BELL_VISIBLE } from '../services/notifications/bellHiddenVerbs';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { tenantWhere } from '../lib/tenant';
+import { withoutMoneyFields } from '../lib/permissions/prices';
 
 // ─── Keyset cursor encoding ────────────────────────────────────────────────
 
@@ -52,7 +53,8 @@ function toView(row: {
     object_id: n.object_id,
     object_label: n.object_label,
     action_type: n.action_type,
-    data: n.data,
+    // A bell shows no amount to anyone (M4, Ran 2026-10-28), including a row stored before alerts stopped keeping one.
+    data: n.data && typeof n.data === 'object' && !Array.isArray(n.data) ? withoutMoneyFields(n.data as Record<string, unknown>) : n.data,
     // priority and needs_action come from the RECIPIENT row (per-recipient, not from the event)
     priority: row.priority,
     needs_action: row.needs_action,

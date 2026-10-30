@@ -1,7 +1,7 @@
 /* =============================================================================
    Roles & Permissions, PRD 1, slice S01.21 - the Roles API: a role's switch set (read and write, never touching the
    people on it), a new role from any role or from blank, role reset, rename and archive with built-in roles
-   protected, and a role's change log. Every route needs Manage roles and permissions.
+   protected, and a role's change log. Every route is an Admin's alone (AL-18).
 
    Everything goes through the public interface: the routes, called as people on custom roles (never a built-in role
    name) holding exactly the switch values under test. Expected values come from the catalog, never a copy of it. Real
@@ -25,12 +25,10 @@ const { realClient } = vi.hoisted(() => {
 vi.mock('../lib/prisma', () => ({ prisma: realClient }));
 
 import { switchFixture, type Person } from './permission-switches-fixture';
-import { setRoleSwitchValues } from '../lib/permissions/switches/store';
 import { SCOPE_SWITCH_KEY, SWITCH_CATALOG, THROUGH_OWN_LEADS, presetSwitchSet, type SwitchEntry, type SwitchValue } from '../lib/permissions/switches/catalog';
 
 const suite = realClient ? describe : describe.skip;
 
-const MANAGE = 'manage_roles_and_permissions';
 
 /** The value a blank role starts with for a switch: off, the narrowest choice, no list members. */
 const blankValue = (s: SwitchEntry): SwitchValue => (s.kind === 'choice' ? s.choices![0]! : s.kind === 'list' ? [] : false);
@@ -56,12 +54,14 @@ suite('the Roles API (real database)', () => {
   type Api = Awaited<ReturnType<typeof fx.signedInAs>>;
   let sequence = 0;
 
-  /** A person on a fresh custom role, with Manage roles and permissions on or off, everything else as Dispatcher. */
+  /**
+   * A person on a fresh custom role (everything as Dispatcher), an Admin or not: since AL-18 managing roles and people's
+   * switches is the Admin flag's alone, never a switch.
+   */
   async function manager(org: string, manage: boolean): Promise<Person & { api: () => Promise<Api> }> {
     const key = `mgr-role-${++sequence}`;
     const role = await fx.addCustomRole(org, key, 'DISPATCHER', { copyGrants: false });
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { [MANAGE]: manage }, actorId: null, reason: 'manual' });
-    const person = await fx.addUser(org, `mgr${sequence}`, 'DISPATCHER', { customRoleId: role.id });
+    const person = await fx.addUser(org, `mgr${sequence}`, 'DISPATCHER', { customRoleId: role.id, isAdmin: manage });
     return Object.assign(person, { api: () => fx.signedInAs(person) });
   }
 
@@ -102,7 +102,7 @@ suite('the Roles API (real database)', () => {
       expect((await api.post('/api/roles/ADMIN/reset')).status).toBe(400);
     });
 
-    it('stores the values sent on the role, and leaves every person on it with the values they had', async () => {
+    it('stores the values sent on the role, and reaches every person on it who holds no value of their own for those switches', async () => {
       const { org } = await fx.newOrg();
       const api = await (await manager(org, true)).api();
       const { key, people } = await roleWithPeople(org, 2);
@@ -117,9 +117,23 @@ suite('the Roles API (real database)', () => {
 
       for (const [i, person] of people.entries()) {
         const after = await personValues(api, person.id);
-        expect(after, `person ${i}`).toEqual(before[i]);
-        expect(after[a!.key]).toBe(false);
+        // Only the two switches the role changed differ from before; nothing else moved.
+        expect(after, `person ${i}`).toEqual({ ...before[i], [a!.key]: true, [b!.key]: true });
       }
+    });
+
+    it('a person whose own value the role comes to equal follows the role from then on (CR-7)', async () => {
+      const { org } = await fx.newOrg();
+      const api = await (await manager(org, true)).api();
+      const { key, people } = await roleWithPeople(org, 2);
+      const [a] = flippable('DISPATCHER', 1);
+      // The first person is given the switch on by hand: it differs from the role's, so it is an override.
+      expect((await api.put(`/api/users/${people[0]!.id}/permissions`, { values: { [a!.key]: true } })).status).toBe(200);
+      // The role is turned on (now equal to the first person's own value, which is dropped) and back off again: both follow it.
+      await api.put(`/api/roles/${key}/permissions`, { values: { [a!.key]: true } });
+      await api.put(`/api/roles/${key}/permissions`, { values: { [a!.key]: false } });
+      expect((await personValues(api, people[0]!.id))[a!.key]).toBe(false);
+      expect((await personValues(api, people[1]!.id))[a!.key]).toBe(false);
     });
 
     it('leaves a person who was given the role earlier with their own value for a switch the role changes', async () => {
@@ -138,7 +152,7 @@ suite('the Roles API (real database)', () => {
       const { org } = await fx.newOrg();
       const api = await (await manager(org, true)).api();
       const { key } = await roleWithPeople(org, 0);
-      const res = await api.put(`/api/roles/${key}/permissions`, { values: { create_jobs: true, view_jobs: false } });
+      const res = await api.put(`/api/roles/${key}/permissions`, { values: { edit_jobs: true, create_jobs: true, view_jobs: false } });
       expect(res.status).toBe(400);
       expect(res.body.violations).toEqual(expect.arrayContaining([expect.objectContaining({ switchKey: 'create_jobs', needs: ['view_jobs'] })]));
       expect(await db.permissionRoleSwitch.count({ where: { organization_id: org, role_key: key } })).toBe(0);
@@ -261,19 +275,19 @@ suite('the Roles API (real database)', () => {
   });
 
   describe('role reset', () => {
-    it('returns a built-in role to its preset, logs each change "reset", and changes no person', async () => {
+    it('returns a built-in role to its preset, logs each change "reset", and the people on it follow', async () => {
       const { org } = await fx.newOrg();
       const api = await (await manager(org, true)).api();
       const salesPerson = await fx.addUser(org, `reset-sales${++sequence}`, 'SALES');
       const [a] = flippable('SALES', 1);
       await api.put('/api/roles/SALES/permissions', { values: { [a!.key]: true, [SCOPE_SWITCH_KEY.Lead]: 'all' } });
-      const personBefore = await personValues(api, salesPerson.id);
+      expect((await personValues(api, salesPerson.id))[a!.key]).toBe(true);
 
       const res = await api.post('/api/roles/SALES/reset');
       expect(res.status).toBe(200);
       expect(res.body.values).toEqual(presetSwitchSet('SALES'));
       expect((await setOf(api, 'SALES')).values).toEqual(presetSwitchSet('SALES'));
-      expect(await personValues(api, salesPerson.id)).toEqual(personBefore);
+      expect((await personValues(api, salesPerson.id))[a!.key]).toBe(false);
 
       const log = (await api.get('/api/roles/SALES/change-log')).body.entries as Array<{ switch_key: string; reason: string; from: SwitchValue; to: SwitchValue }>;
       const resets = log.filter((e) => e.reason === 'reset');
@@ -294,20 +308,20 @@ suite('the Roles API (real database)', () => {
       expect(resets.map((e: { switch_key: string }) => e.switch_key)).toEqual([a!.key]);
     });
 
-    it('returns a role made from blank to all off, and changes no person on it', async () => {
+    it('returns a role made from blank to all off, and the people on it follow', async () => {
       const { org } = await fx.newOrg();
       const api = await (await manager(org, true)).api();
       const made = await api.post('/api/roles', { label: 'Start empty', blank: true });
       const role = await db.customRole.findFirstOrThrow({ where: { organization_id: org, key: made.body.role } });
       const person = await fx.addUser(org, `blankmember${++sequence}`, 'TECHNICIAN', { customRoleId: role.id, basedOnRoleKey: role.key });
       await api.put(`/api/roles/${role.key}/permissions`, { values: { view_jobs: true, view_customers: true } });
-      const personBefore = await personValues(api, person.id);
+      expect((await personValues(api, person.id)).view_jobs).toBe(true);
 
       const res = await api.post(`/api/roles/${role.key}/reset`);
       expect(res.status).toBe(200);
       expect(res.body.values).toEqual(blankSet());
       expect(res.body.all_views_off).toBe(true);
-      expect(await personValues(api, person.id)).toEqual(personBefore);
+      expect(await personValues(api, person.id)).toEqual(blankSet());
       const resets = (await api.get(`/api/roles/${role.key}/change-log`)).body.entries.filter((e: { reason: string }) => e.reason === 'reset');
       expect(resets.map((e: { switch_key: string }) => e.switch_key).sort()).toEqual(['view_customers', 'view_jobs']);
     });
@@ -429,14 +443,16 @@ suite('the Roles API (real database)', () => {
 
       const listed = (await api.get('/api/roles')).body as Listed[];
       const countOf = (role: string) => listed.find((r) => r.role === role)?.userCount;
-      expect(countOf('ADMIN')).toBe(2);
+      // The Admin box, the second boxed Admin, and the manager: an Admin (the flag) counts under Admin whatever role they sit on.
+      expect(countOf('ADMIN')).toBe(3);
       expect(countOf('DISPATCHER')).toBe(1);
       expect(countOf('TECHNICIAN')).toBe(1);
       expect(countOf('SALES')).toBe(0);
       expect(countOf(adminCopy.key)).toBe(1);
       expect(countOf(teamKey)).toBe(2);
       const managerRole = await db.user.findUniqueOrThrow({ where: { id: managerPerson.id }, select: { custom_role: { select: { key: true } } } });
-      expect(countOf(managerRole.custom_role!.key)).toBe(1);
+      // The manager is an Admin, so they are counted under Admin, not under the custom role they sit on.
+      expect(countOf(managerRole.custom_role!.key)).toBe(0);
       // Nobody is counted twice: the counts add up to the company's people.
       expect(listed.reduce((sum, r) => sum + r.userCount, 0)).toBe(await db.user.count({ where: { organization_id: org } }));
 
@@ -468,7 +484,7 @@ suite('the Roles API (real database)', () => {
   });
 
   describe('who may use it', () => {
-    it('lets a custom role given Manage roles and permissions read the roles, their sets and both change logs', async () => {
+    it('lets an Admin on a custom role read the roles, their sets and both change logs', async () => {
       const { org } = await fx.newOrg();
       const api = await (await manager(org, true)).api();
       const { key, people } = await roleWithPeople(org, 1);
@@ -479,7 +495,7 @@ suite('the Roles API (real database)', () => {
       expect((await api.get(`/api/users/${people[0]!.id}/permissions/change-log`)).status).toBe(200);
     });
 
-    it('refuses every role read and write without it, writing nothing, while the catalog and Me answer', async () => {
+    it('refuses every role read and write to a non-Admin, writing nothing, while the catalog and Me answer', async () => {
       const { org } = await fx.newOrg();
       const outsider = await manager(org, false);
       const api = await outsider.api();

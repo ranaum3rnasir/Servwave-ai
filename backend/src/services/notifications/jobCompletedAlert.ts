@@ -3,7 +3,7 @@
  *
  * When a job is completed it lands in Office review, and one bell alert goes out through M6's two lanes (alertChain.ts):
  * the job's stored Sold By, crew and Dispatcher; whoever must act next (the Dispatcher, else the Office review holders
- * who can open the job, else the Manage roles and permissions holders); and a copy to the Alert me about every job
+ * who can open the job, else the Admins); and a copy to the Alert me about every job
  * holders. Its link opens the job with the review panel open. In-app only.
  *
  * The people who reached it as a fallback are told why ("This job has no Dispatcher") and the others are not, so a

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/authenticate';
 import { attachAbility } from '../middleware/attachAbility';
-import { canDo } from '../middleware/canGuard';
+import { requireAdminTo } from '../middleware/canGuard';
 import { validate } from '../middleware/validate';
 import * as jobSubStatusController from '../controllers/jobSubStatus.controller';
 
@@ -15,12 +15,12 @@ router.use(authenticate, attachAbility);
 // The READ is reference data: every form and every job page needs these labels, so every signed-in
 // person reads the list with no switch.
 router.get('/', jobSubStatusController.list);
-router.post('/', canDo('update', 'Organization'), validate(jobSubStatusController.createJobSubStatusSchema), jobSubStatusController.create);
+router.post('/', requireAdminTo('change company settings'), validate(jobSubStatusController.createJobSubStatusSchema), jobSubStatusController.create);
 // Literal path segment BEFORE any ":id" route. Safe today either way (the only /:id routes are
 // PATCH and DELETE, and Express matches on method as well as path), but the ordering is the house
 // rule here and keeps a future POST /:id/... from shadowing it.
-router.post('/reorder', canDo('update', 'Organization'), validate(jobSubStatusController.reorderJobSubStatusSchema), jobSubStatusController.reorder);
-router.patch('/:id', canDo('update', 'Organization'), validate(jobSubStatusController.updateJobSubStatusSchema), jobSubStatusController.update);
-router.delete('/:id', canDo('update', 'Organization'), jobSubStatusController.remove);
+router.post('/reorder', requireAdminTo('change company settings'), validate(jobSubStatusController.reorderJobSubStatusSchema), jobSubStatusController.reorder);
+router.patch('/:id', requireAdminTo('change company settings'), validate(jobSubStatusController.updateJobSubStatusSchema), jobSubStatusController.update);
+router.delete('/:id', requireAdminTo('change company settings'), jobSubStatusController.remove);
 
 export default router;

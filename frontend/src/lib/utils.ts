@@ -33,6 +33,9 @@ export { formatPhoneInput } from '@/ui-kit/lib/phoneField';
 
 export function formatCurrency(amount: number | string): string {
   const num = typeof amount === 'string' ? parseFloat(amount) : amount;
+  // A price the server left out (a person without See prices) arrives as nothing at all, which is no figure: draw
+  // nothing, never "$NaN" (P11). A real zero is still "$0.00".
+  if (!Number.isFinite(num)) return '';
   // Currency code comes from the hydrated org prefs (defaults to USD). Keep the
   // en-US locale for stable grouping/decimals; Intl derives the right symbol
   // from the currency code regardless of locale. (#126)
@@ -44,6 +47,7 @@ export function formatCurrency(amount: number | string): string {
 /** Whole-dollar currency (no trailing cents) for headline figures, org-aware. (#126) */
 export function formatCurrencyWhole(amount: number | string): string {
   const num = typeof amount === 'string' ? parseFloat(amount) : amount;
+  if (!Number.isFinite(num)) return '';
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency: getOrgCurrency(),

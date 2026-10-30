@@ -162,8 +162,8 @@ describe('GET /api/tasks', () => {
     await request(app).get('/api/tasks').set(authHeader('technician'));
     const where = (mockPrisma.task.findMany.mock.calls[0][0] as any).where;
     expect(where.OR).toEqual([
-      { assignee_ids: { has: expect.any(String) } },
-      { watcher_ids: { has: expect.any(String) } },
+      { assignee_ids: { hasSome: [expect.any(String)] } },
+      { watcher_ids: { hasSome: [expect.any(String)] } },
     ]);
   });
 

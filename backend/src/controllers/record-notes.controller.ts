@@ -4,9 +4,9 @@
  *
  * The route guard asks only that the person can read the record. The handler opens the record in the detail route's own
  * split (not found for a missing record or one in another company, forbidden for one in the same company outside their
- * reach), finds the note on THAT record, and then asks `lib/permissions/noteChange`: the completed-job lock first (a
- * locked job refuses everyone without Change locked jobs, the author included), then whose note it is (your own, or
- * anyone's with Delete other people's notes). A refusal changes nothing.
+ * reach), finds the note on THAT record, and then asks `lib/permissions/noteChange`: the completed-job lock first (a locked job
+ * refuses everyone without Change locked jobs, the author included), then whose note it is (your own, or anyone's with the
+ * record's Edit). A refusal changes nothing.
  *
  * The delete is a hard one: the note's row goes, and in the same transaction the record's timeline gets a "note deleted"
  * entry that keeps the text, the author, when it was written and who deleted it (lib/record-note-history).

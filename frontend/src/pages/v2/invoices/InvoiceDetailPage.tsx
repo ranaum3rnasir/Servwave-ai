@@ -11,7 +11,8 @@ import api from '@/lib/axios';
 import { useScheduleTimezone, formatInstant, ORG_DAY_FORMAT } from '@/lib/schedule-tz';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import { RecordNumberEditor } from '@/components/crm/RecordNumberEditor';
-import { canSeePricing as canSeePricingAbility } from '@/lib/ability';
+import { canSeePricing as canSeePricingAbility, canSeePrices as canSeePricesAbility } from '@/lib/ability';
+import { PriceFreeLines } from '@/components/money/PriceFreeLines';
 import { customerDisplayName } from '@/lib/customer-name';
 import { cn, downloadBlob, extractApiError, formatCurrency } from '@/lib/utils';
 import { isInvoiceEditable, isInvoiceRenumberLocked } from '@/lib/invoiceEditable';
@@ -326,6 +327,8 @@ export default function InvoiceDetailPage() {
   };
   const overdue = isOverdue(invoice, timeZone);
   const canSeePricing = canSeePricingAbility(ability);
+  // P11: a person without See prices gets no price anywhere on the invoice: no totals, balance, payments or priced grid.
+  const canSeePrices = canSeePricesAbility(ability);
   // Customer resolves from the top-level field (deposit/orphan invoices) or via
   // the job. Backend always supplies one; the empty fallback keeps render
   // null-safe for a job-less invoice.
@@ -596,21 +599,28 @@ export default function InvoiceDetailPage() {
           key: 'edit', label: 'Edit', icon: <FileText />, group: 'doc', onSelect: () => navigate(v2Path(`/invoices/${id}/edit`)),
         }]
       : []),
-    ...(actions.canCopyLink
+    // The link opens the customer's own page, which shows every price, so it needs See prices (P11, H6): without it the
+    // server leaves the token out and the item is not drawn, the same as Preview and Download below.
+    ...(actions.canCopyLink && canSeePrices
       ? [{ key: 'copy-link', label: copyLinkLabel, icon: <Link2 />, group: 'doc', disabled: createPaymentLinkMutation.isPending || linkRedacted, onSelect: handleCopyLink }]
       : []),
     ...(actions.canMarkSent
       ? [{ key: 'mark-sent', label: 'Mark as sent', icon: <Send />, group: 'doc', onSelect: () => setMarkSentOpen(true) }]
       : []),
-    { key: 'preview-pdf', label: 'Preview PDF', icon: <Eye />, group: 'doc', onSelect: () => setPdfPreviewOpen(true) },
-    {
-      key: 'download-pdf',
-      label: 'Download PDF',
-      icon: downloadingPdf ? <Loader2 className="animate-spin" /> : <Download />,
-      group: 'doc',
-      disabled: downloadingPdf,
-      onSelect: handleDownloadPdf,
-    },
+    // The document is its prices, so Preview and Download need See prices (P11).
+    ...(canSeePrices
+      ? [
+          { key: 'preview-pdf', label: 'Preview PDF', icon: <Eye />, group: 'doc', onSelect: () => setPdfPreviewOpen(true) },
+          {
+            key: 'download-pdf',
+            label: 'Download PDF',
+            icon: downloadingPdf ? <Loader2 className="animate-spin" /> : <Download />,
+            group: 'doc',
+            disabled: downloadingPdf,
+            onSelect: handleDownloadPdf,
+          },
+        ]
+      : []),
     { key: 'print', label: 'Print', icon: <FileText />, group: 'doc', onSelect: () => window.print() },
     ...(actions.canVoid
       ? [{ key: 'void', label: 'Void Invoice', icon: <XCircle />, group: 'end', variant: 'destructive' as const, onSelect: () => setVoidOpen(true) }]
@@ -761,18 +771,20 @@ export default function InvoiceDetailPage() {
             </div>
           }
           aside={
-            <div className="flex flex-col sm:items-end">
-              <p
-                data-testid="invoice-amount-due"
-                className={cn(
-                  'text-3xl font-bold tabular-nums',
-                  overdue && 'text-status-red-emphasis',
-                )}
-              >
-                {formatCurrency(amountDue)}
-              </p>
-              <p className="text-muted-foreground mt-0.5 text-xs">Amount Due</p>
-            </div>
+            canSeePrices ? (
+              <div className="flex flex-col sm:items-end">
+                <p
+                  data-testid="invoice-amount-due"
+                  className={cn(
+                    'text-3xl font-bold tabular-nums',
+                    overdue && 'text-status-red-emphasis',
+                  )}
+                >
+                  {formatCurrency(amountDue)}
+                </p>
+                <p className="text-muted-foreground mt-0.5 text-xs">Amount Due</p>
+              </div>
+            ) : undefined
           }
           primary={primaryAction}
           secondary={invoiceHeaderActions}
@@ -837,7 +849,7 @@ export default function InvoiceDetailPage() {
             onValueChange={setActiveTab}
             tabs={[
               { value: 'line-items', label: `Line Items (${allItems.length})` },
-              { value: 'payments', label: `Payments (${ledgerEvents.length})` },
+              ...(canSeePrices ? [{ value: 'payments', label: `Payments (${ledgerEvents.length})` }] : []),
             ]}
           />
 
@@ -858,54 +870,64 @@ export default function InvoiceDetailPage() {
                   <span>{invoice.price_edit_closed_reason}</span>
                 </div>
               )}
-              <InvoiceReceiptCard
-                invoice={invoice}
-                overdue={overdue}
-                onDiscountChange={canEditInvoicePrices ? (v) => billingMutation.mutate({ discount_amount: v }) : undefined}
-                onTipChange={canEditInvoiceBilling ? (v) => billingMutation.mutate({ tip: v }) : undefined}
-                onTaxRateChange={canEditInvoicePrices ? (r) => billingMutation.mutate({ tax_rate: r }) : undefined}
-                taxRates={canEditInvoicePrices ? taxRates : undefined}
-                refundedTotal={money.refundedTotal}
-                creditedTotal={money.creditedTotal}
-                settledTotal={money.settled}
-                overpaidAmount={money.overpaidAmount}
-              />
+              {canSeePrices && (
+                <>
+                  <InvoiceReceiptCard
+                    invoice={invoice}
+                    overdue={overdue}
+                    onDiscountChange={canEditInvoicePrices ? (v) => billingMutation.mutate({ discount_amount: v }) : undefined}
+                    onTipChange={canEditInvoiceBilling ? (v) => billingMutation.mutate({ tip: v }) : undefined}
+                    onTaxRateChange={canEditInvoicePrices ? (r) => billingMutation.mutate({ tax_rate: r }) : undefined}
+                    taxRates={canEditInvoicePrices ? taxRates : undefined}
+                    refundedTotal={money.refundedTotal}
+                    creditedTotal={money.creditedTotal}
+                    settledTotal={money.settled}
+                    overpaidAmount={money.overpaidAmount}
+                  />
 
-              {/* Payments at a glance. The full ledger stays reachable via
-                  "View all payments", which jumps to the Payments tab. */}
-              <div className="flex flex-col gap-3">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-muted-foreground text-xs font-semibold uppercase tracking-wide">
-                    Payments
-                  </p>
-                  <div className="flex flex-wrap items-center gap-2">
-                    {actions.canRecordPayment && (
-                      <Button size="sm" onClick={() => setRecordPaymentOpen(true)}>
-                        <DollarSign /> Record payment
-                      </Button>
-                    )}
-                    <Button size="sm" variant="ghost" onClick={() => setActiveTab('payments')}>
-                      View all payments
-                    </Button>
+                  {/* Payments at a glance. The full ledger stays reachable via
+                      "View all payments", which jumps to the Payments tab. */}
+                  <div className="flex flex-col gap-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-muted-foreground text-xs font-semibold uppercase tracking-wide">
+                        Payments
+                      </p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {actions.canRecordPayment && (
+                          <Button size="sm" onClick={() => setRecordPaymentOpen(true)}>
+                            <DollarSign /> Record payment
+                          </Button>
+                        )}
+                        <Button size="sm" variant="ghost" onClick={() => setActiveTab('payments')}>
+                          View all payments
+                        </Button>
+                      </div>
+                    </div>
+                    <StatCardGroup>
+                      <StatCard label="Deposit credit" value={formatCurrency(Number(invoice.deposit_credit))} />
+                      <StatCard label="Paid" value={formatCurrency(paymentsTotal)} />
+                      <StatCard
+                        label="Balance"
+                        value={formatCurrency(amountDue)}
+                        tone={amountDue > 0 ? 'amber' : 'green'}
+                      />
+                      <StatCard
+                        label="Status"
+                        value={<StatusChip domain="invoice" status={overdue ? 'OVERDUE' : invoice.status} />}
+                      />
+                    </StatCardGroup>
                   </div>
-                </div>
-                <StatCardGroup>
-                  <StatCard label="Deposit credit" value={formatCurrency(Number(invoice.deposit_credit))} />
-                  <StatCard label="Paid" value={formatCurrency(paymentsTotal)} />
-                  <StatCard
-                    label="Balance"
-                    value={formatCurrency(amountDue)}
-                    tone={amountDue > 0 ? 'amber' : 'green'}
-                  />
-                  <StatCard
-                    label="Status"
-                    value={<StatusChip domain="invoice" status={overdue ? 'OVERDUE' : invoice.status} />}
-                  />
-                </StatCardGroup>
-              </div>
+                </>
+              )}
 
-              <InvoiceScopeOfWorkCard invoice={invoice} />
-              <InvoiceLineItemsEditor invoice={invoice} estimateLines={estimateItems} />
+              {canSeePrices ? (
+                <>
+                  <InvoiceScopeOfWorkCard invoice={invoice} />
+                  <InvoiceLineItemsEditor invoice={invoice} estimateLines={estimateItems} />
+                </>
+              ) : (
+                <PriceFreeLines lines={allItems} scopes={invoice.scopes ?? []} title="Scope of work" />
+              )}
               {/* Payments go-live slice 21 - which methods this invoice offers and whether it
                   takes partial payments, against the org's defaults. Editable on the same gate
                   as the rest of the invoice. */}

@@ -123,9 +123,12 @@ suite('Cancelled leads become Lost (real database)', () => {
       select: { id: true },
     });
     const seller = randomUUID();
-    await db.user.create({
-      data: { id: seller, organization_id: org, email: `seller-${tag}@example.test`, first_name: 'Sam', last_name: 'Seller', role: 'SALES' },
-    });
+    // Raw insert: this database holds only the migrations before the one under test, and the client's insert would name later columns (users.is_admin).
+    await db.$executeRawUnsafe(
+      `INSERT INTO users (id, organization_id, email, first_name, last_name, role, updated_at)
+       VALUES ($1::uuid, $2::uuid, $3, 'Sam', 'Seller', 'SALES'::"Role", now())`,
+      seller, org, `seller-${tag}@example.test`,
+    );
     const customer = randomUUID();
     await db.customer.create({
       data: { id: customer, organization_id: org, customer_number: `C-${tag}`, kind: 'PERSON', segment: 'RESIDENTIAL', first_name: 'Pat', last_name: 'Payer' },

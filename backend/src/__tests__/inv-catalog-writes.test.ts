@@ -136,12 +136,9 @@ describe('GET /api/inventory/items — cost stripping (P0 §D7)', () => {
     updated_at: new Date('2026-02-01'),
   };
 
-  it('strips unitCost for a reader without See financial data, keeps the prices (sellPrice and listPrice)', async () => {
+  it('strips unitCost for a reader without See costs, keeps the prices (sellPrice and listPrice)', async () => {
     mockAuthAs('technician');
-    // Grant the tech stock visibility (read Inventory) but NOT See financial data (read Pricing).
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { role: 'TECHNICIAN', action: 'read', subject: 'Inventory' },
-    ]);
+    // Grant the tech stock visibility (read Inventory) but NOT See costs (read Pricing).
     mockPrisma.priceBookItem.findMany.mockResolvedValue([row]);
     mockPrisma.priceBookItem.count.mockResolvedValue(1);
 
@@ -167,9 +164,6 @@ describe('GET /api/inventory/items — cost stripping (P0 §D7)', () => {
 
   it('strips on the single-item read too', async () => {
     mockAuthAs('technician');
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { role: 'TECHNICIAN', action: 'read', subject: 'Inventory' },
-    ]);
     mockPrisma.priceBookItem.findFirst.mockResolvedValue(row);
 
     const res = await request(app).get(`/api/inventory/items/${row.id}`).set(authHeader('technician'));
@@ -404,9 +398,6 @@ describe('inv-catalog pure-catalog reads gate on read PriceBook', () => {
 
   it('GET /api/inventory/brands 200s with a read PriceBook grant', async () => {
     mockAuthAs('technician');
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { role: 'TECHNICIAN', action: 'read', subject: 'PriceBook' },
-    ]);
     mockPrisma.brand.findMany.mockResolvedValue([]);
     const res = await request(app).get('/api/inventory/brands').set(authHeader('technician'));
     expect(res.status).toBe(200);

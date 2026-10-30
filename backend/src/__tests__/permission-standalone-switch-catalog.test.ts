@@ -18,7 +18,7 @@ const VENDORS = /\b(stripe|twilio|supabase|render|ctm|calltrackingmetrics|resend
 describe('Standalone estimates, Create invoices and Standalone invoices', () => {
   it.each([
     ['Standalone estimates', 'Estimates', ['Create estimates'], [true, true, true, false]],
-    ['Create invoices', 'Invoices', ['View invoices'], [true, false, true, false]],
+    ['Create invoices', 'Invoices', ['View invoices', 'Edit invoices', 'See prices'], [true, false, true, false]], // AL-04: Create requires Edit; P11: See prices
     ['Standalone invoices', 'Invoices', ['Create invoices'], [true, false, true, false]],
   ])('%s is one on/off switch with the PRD group, requirement and preset column', (label, group, needs, column) => {
     const rows = byLabel(label);

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { Request } from 'express';
-import { logAudit, getClientIp } from '../audit';
+import { logAudit, getClientIp, forgetRefusalsForTests, refusalKeysForTests } from '../audit';
 import { prisma } from '../prisma';
 import { logger } from '../logger';
 
@@ -137,5 +137,67 @@ describe('getClientIp', () => {
 
     const socketReq = makeReq({ headers: {}, ip: undefined, socket: { remoteAddress: '10.0.0.9' } });
     expect(getClientIp(socketReq)).toBe('10.0.0.9');
+  });
+});
+
+describe('a repeated refusal, remembered in fixed-size keys (re-audit N19, memory)', () => {
+  /** A refused GET on a route, as Express leaves the request once the route has matched. */
+  const refuse = (path: string, route = '/:id') => logAudit({
+    req: makeReq({ method: 'GET', baseUrl: '/api/customers', route: { path: route } }),
+    action: 'access.denied', metadata: { method: 'GET', path, role: 'TECHNICIAN', needs: ['read:Customer'], switches: [] },
+  });
+
+  it('keeps one key of the same size however long the refused address is', async () => {
+    forgetRefusalsForTests();
+    await refuse('/api/customers/stats', '/stats');
+    await refuse(`/api/customers/${'x'.repeat(8_192)}`);
+    const keys = refusalKeysForTests();
+    expect(keys).toHaveLength(2);
+    expect(new Set(keys.map((k) => k.length)).size).toBe(1);
+    expect(keys[0]!.length).toBeLessThanOrEqual(64);
+  });
+
+  it('writes the same refusal once a minute whatever id the address carries, and another route on its own (P2-6)', async () => {
+    forgetRefusalsForTests();
+    for (let i = 0; i < 25; i++) await refuse(`/api/customers/${i}-${'y'.repeat(i * 300)}`);
+    expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
+    await refuse('/api/customers/stats', '/stats');
+    expect(prisma.auditLog.create).toHaveBeenCalledTimes(2);
+  });
+
+  it('writes one refusal however the letters of the address are cased (pass 3, N-p3-1)', async () => {
+    forgetRefusalsForTests();
+    // Express matches mount paths and routes without regard to case, and leaves req.baseUrl as the caller typed it.
+    const casings = ['/api/customers', '/API/customers', '/api/Customers', '/API/CUSTOMERS', '/Api/Customers', '/aPi/cUsToMeRs'];
+    for (const baseUrl of casings) {
+      for (const route of ['/:id', '/:ID']) {
+        await logAudit({
+          req: makeReq({ method: 'GET', baseUrl, route: { path: route } }),
+          action: 'access.denied', metadata: { method: 'GET', path: `${baseUrl}/x1`, needs: ['read:Customer'], switches: [] },
+        });
+      }
+    }
+    // A check the whole router makes, before any route matches: no route pattern, only the router's prefix as typed.
+    for (const baseUrl of ['/api/roles', '/API/Roles', '/api/ROLES']) {
+      await logAudit({
+        req: makeReq({ method: 'GET', baseUrl }), action: 'access.denied',
+        metadata: { method: 'GET', path: `${baseUrl}/x1/permissions`, needs: [], switches: [] },
+      });
+    }
+    // And with no request to read the route from, the address itself.
+    for (const path of ['/api/customers/x1', '/API/CUSTOMERS/x1']) {
+      await logAudit({ orgId: 'org-1', actorId: 'user-1', action: 'access.hidden', metadata: { method: 'GET', path } });
+    }
+    expect(prisma.auditLog.create).toHaveBeenCalledTimes(3);
+  });
+
+  it('reads an id out of the address when there is no request to read the route from', async () => {
+    forgetRefusalsForTests();
+    const bare = (path: string) => logAudit({
+      orgId: 'org-1', actorId: 'user-1', action: 'access.denied', metadata: { method: 'GET', path, needs: [], switches: [] },
+    });
+    await bare('/api/customers/3f2a9c1e-0000-4000-8000-000000000001');
+    await bare('/api/customers/3f2a9c1e-0000-4000-8000-000000000002');
+    expect(prisma.auditLog.create).toHaveBeenCalledTimes(1);
   });
 });

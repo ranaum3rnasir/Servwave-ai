@@ -1,6 +1,7 @@
 import { Download } from 'lucide-react';
 
-import { paymentsRegistry } from '@/lib/filters/registries/payments';
+import { useCanSeePrices } from '@/contexts/AbilityContext';
+import { paymentsRegistryFor } from '@/lib/filters/registries/payments';
 import type { FacetOption, FilterState } from '@/lib/filters/types';
 import { Badge } from '@/ui-kit/components/ui/badge';
 import { Button } from '@/ui-kit/components/ui/button';
@@ -63,6 +64,7 @@ export function PaymentsToolbar({
   onExport: () => void;
   exporting: boolean;
 }) {
+  const registry = paymentsRegistryFor(useCanSeePrices());
   return (
     <div className="flex flex-col gap-3">
       <div
@@ -123,7 +125,7 @@ export function PaymentsToolbar({
         ) : (
           <>
             <FilterPopover
-              registry={paymentsRegistry}
+              registry={registry}
               value={filters}
               onChange={onFilters}
               resolveOptions={NO_OPTIONS}

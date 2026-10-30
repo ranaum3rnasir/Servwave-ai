@@ -1,12 +1,12 @@
 /**
- * Roles & Permissions S07.19 - the Purchase Orders page follows its switches and See financial data.
+ * Roles & Permissions S07.19 - the Purchase Orders page follows its switches and See costs.
  *
  * Rendered through the routed page (`/inventory/purchase-orders`) and the dialogs it opens, with the data hooks
  * seam-mocked to stable answers (see poBulkExport.test.tsx for why). The person's rules are built from the switches
  * under test:
  *   - Create purchase orders: Create PO;
  *   - Export purchase orders: the Export button and the checkboxes that exist for Export selected;
- *   - See financial data (`read Pricing`): every amount (the Total column, the lines' unit cost and extension, the
+ *   - See costs (`read Pricing`): every amount (the Total column, the lines' unit cost and extension, the
  *     subtotal and total, the print preview, the cost field on a new order, the Total in a file).
  * An amount the person may not see is absent: no column, no dash standing in for a figure, never a $0.
  */
@@ -52,7 +52,7 @@ const hoisted = vi.hoisted(() => {
     signatureName: null,
     signatureAt: null,
     createdAt: '2026-06-30T00:00:00.000Z',
-    // What the server sends a person without See financial data: the line has no cost keys at all.
+    // What the server sends a person without See costs: the line has no cost keys at all.
     lines: [{ id: 'lx', itemSku: 'CAP-01', itemName: 'Run Capacitor', uom: 'ea', qtyOrdered: 4, qtyReceived: 0 }],
   };
   return {
@@ -127,7 +127,7 @@ async function renderPage(...rules: AbilityRule[][]) {
   expect(await screen.findByText('PO-1001')).toBeInTheDocument();
 }
 
-describe('the lists: the Total column follows See financial data', () => {
+describe('the lists: the Total column follows See costs', () => {
   it('has a Total column on both tabs with it', async () => {
     await renderPage(FINANCIAL);
     expect(screen.getByRole('columnheader', { name: /total/i })).toBeInTheDocument();
@@ -172,7 +172,7 @@ describe('Export purchase orders gates the download', () => {
     expect(history[0]).toHaveProperty('Total', 50);
   });
 
-  it('writes no Total column into either file for a person without See financial data', async () => {
+  it('writes no Total column into either file for a person without See costs', async () => {
     await renderPage(EXPORT);
     await userEvent.click(screen.getByRole('button', { name: /^export$/i }));
     const open = hoisted.toCSV.mock.calls[0]![0] as Record<string, unknown>[];
@@ -215,7 +215,7 @@ describe('Create purchase orders draws Create PO', () => {
     expect(screen.queryByRole('button', { name: /create po/i })).not.toBeInTheDocument();
   });
 
-  it('has no unit cost field on the new-order form without See financial data', async () => {
+  it('has no unit cost field on the new-order form without See costs', async () => {
     await renderPage(CREATE, VENDORS);
     await userEvent.click(screen.getByRole('button', { name: /create po/i }));
     const dialog = await screen.findByRole('dialog');
@@ -234,7 +234,7 @@ describe('Create purchase orders draws Create PO', () => {
 describe('the detail dialog and the print preview', () => {
   const asPO = (value: unknown) => value as import('@/lib/api/inventory').PurchaseOrder;
 
-  it('shows unit cost, extension, subtotal and total with See financial data', () => {
+  it('shows unit cost, extension, subtotal and total with See costs', () => {
     renderWithProviders(
       <PODetailDialog open onClose={vi.fn()} po={asPO(hoisted.pos[0])} onReceive={vi.fn()} />,
       { ability: abilityOf(FINANCIAL) },
@@ -258,7 +258,7 @@ describe('the detail dialog and the print preview', () => {
     expect(document.body.textContent).not.toMatch(/\$\d/);
   });
 
-  it('leaves the cost field out of the draft line editor without See financial data', async () => {
+  it('leaves the cost field out of the draft line editor without See costs', async () => {
     renderWithProviders(
       <PODetailDialog open onClose={vi.fn()} po={asPO({ ...hoisted.costFree, status: 'draft', orderedAt: null })} onReceive={vi.fn()} />,
       { ability: abilityOf([{ action: 'update', subject: 'PurchaseOrder' }]) },
@@ -270,7 +270,7 @@ describe('the detail dialog and the print preview', () => {
     expect(screen.queryByText('Subtotal')).not.toBeInTheDocument();
   });
 
-  it('prints the cost columns and the totals with See financial data, and neither without', () => {
+  it('prints the cost columns and the totals with See costs, and neither without', () => {
     const withIt = renderWithProviders(
       <POPreviewDialog open onClose={vi.fn()} po={asPO(hoisted.pos[0])} />,
       { ability: abilityOf(FINANCIAL) },
@@ -295,8 +295,8 @@ describe('the detail dialog and the print preview', () => {
 describe('the staging pointer on a staged order follows who may open the Staging page', () => {
   const staged = { ...hoisted.pos[0], stagedAsJobStageId: 'stage-1' } as unknown as import('@/lib/api/inventory').PurchaseOrder;
 
-  it('is offered to a person who holds View stock and Show Stock page', () => {
-    seedMySwitches({ view_stock: true, show_stock_page: true });
+  it('is offered to a person who holds View stock', () => {
+    seedMySwitches({ view_stock: true });
     renderWithProviders(<PODetailDialog open onClose={vi.fn()} po={staged} onReceive={vi.fn()} />, {
       ability: abilityOf([{ action: 'update', subject: 'PurchaseOrder' }]),
     });
@@ -304,7 +304,7 @@ describe('the staging pointer on a staged order follows who may open the Staging
   });
 
   it('is not offered when the Staging page is hidden from them, though the receive hint stays', () => {
-    seedMySwitches({ view_stock: true, show_stock_page: false });
+    seedMySwitches({ view_stock: false });
     renderWithProviders(<PODetailDialog open onClose={vi.fn()} po={staged} onReceive={vi.fn()} />, {
       ability: abilityOf([{ action: 'update', subject: 'PurchaseOrder' }]),
     });

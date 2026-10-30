@@ -68,7 +68,7 @@ describe('POST /api/communication/calls — pending attribution stash (CTM branc
   it('job_id context: org-scoped resolve, pending row stashed (E.164 + job fields + requested_by) BEFORE placeCall, 202, NO CallSession row', async () => {
     mockAuthAs('dispatcher');
     mockConnectedOrg();
-    p.job.findUnique.mockResolvedValue({ id: JOB_ID, job_number: 'J00077', customer_id: CUSTOMER_ID });
+    p.job.findFirst.mockResolvedValue({ id: JOB_ID, job_number: 'J00077', customer_id: CUSTOMER_ID });
 
     const res = await request(app)
       .post('/api/communication/calls')
@@ -78,7 +78,7 @@ describe('POST /api/communication/calls — pending attribution stash (CTM branc
     expect(res.status).toBe(202);
     expect(res.body).toEqual({ queued: true, outcome_since: expect.any(String) });
 
-    expect(p.job.findUnique).toHaveBeenCalledWith(
+    expect(p.job.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ id: JOB_ID, organization_id: ALPHA_ORG_ID }),
       }),
@@ -105,7 +105,7 @@ describe('POST /api/communication/calls — pending attribution stash (CTM branc
   it('sweeps stale stash rows (>24h) opportunistically on the same request', async () => {
     mockAuthAs('dispatcher');
     mockConnectedOrg();
-    p.job.findUnique.mockResolvedValue({ id: JOB_ID, job_number: 'J00077', customer_id: CUSTOMER_ID });
+    p.job.findFirst.mockResolvedValue({ id: JOB_ID, job_number: 'J00077', customer_id: CUSTOMER_ID });
 
     const before = Date.now();
     await request(app)
@@ -124,7 +124,7 @@ describe('POST /api/communication/calls — pending attribution stash (CTM branc
   it('404s a cross-org/unknown job_id — no pending row, no bridge', async () => {
     mockAuthAs('dispatcher');
     mockConnectedOrg();
-    p.job.findUnique.mockResolvedValue(null);
+    p.job.findFirst.mockResolvedValue(null);
 
     const res = await request(app)
       .post('/api/communication/calls')
@@ -193,7 +193,7 @@ describe('POST /api/communication/calls — pending attribution stash (CTM branc
   it('502 when CTM rejects the bridge — the freshly-stashed pending row is deleted', async () => {
     mockAuthAs('dispatcher');
     mockConnectedOrg();
-    p.job.findUnique.mockResolvedValue({ id: JOB_ID, job_number: 'J00077', customer_id: CUSTOMER_ID });
+    p.job.findFirst.mockResolvedValue({ id: JOB_ID, job_number: 'J00077', customer_id: CUSTOMER_ID });
     client.placeCall.mockRejectedValue(new Error('socket hang up'));
 
     const res = await request(app)
@@ -220,7 +220,7 @@ describe('POST /api/communication/calls — pending attribution stash (CTM branc
 
     expect(res.status).toBe(409);
     expect(res.body.code).toBe('NOT_IN_TEST_ALLOWLIST');
-    expect(p.job.findUnique).not.toHaveBeenCalled();
+    expect(p.job.findFirst).not.toHaveBeenCalled();
     expect(p.pendingCallAttribution.create).not.toHaveBeenCalled();
     expect(client.placeCall).not.toHaveBeenCalled();
   });
@@ -238,7 +238,7 @@ describe('POST /api/communication/calls — pending attribution stash (CTM branc
     expect(res.body).toEqual({ queued: true, outcome_since: expect.any(String) });
     expect(p.pendingCallAttribution.create).not.toHaveBeenCalled();
     expect(p.pendingCallAttribution.deleteMany).not.toHaveBeenCalled();
-    expect(p.job.findUnique).not.toHaveBeenCalled();
+    expect(p.job.findFirst).not.toHaveBeenCalled();
     expect(p.lead.findFirst).not.toHaveBeenCalled();
     expect(p.customer.findFirst).not.toHaveBeenCalled();
   });
@@ -291,7 +291,7 @@ describe('POST /api/communication/calls/attribution — softphone stash (no brid
   it('job_id context: org-scoped resolve, stash written (E.164 + job fields + requested_by), 202, and NO call is bridged', async () => {
     mockAuthAs('dispatcher');
     mockConnectedOrg();
-    p.job.findUnique.mockResolvedValue({ id: JOB_ID, job_number: 'J00077', customer_id: CUSTOMER_ID });
+    p.job.findFirst.mockResolvedValue({ id: JOB_ID, job_number: 'J00077', customer_id: CUSTOMER_ID });
 
     const res = await request(app)
       .post('/api/communication/calls/attribution')
@@ -301,7 +301,7 @@ describe('POST /api/communication/calls/attribution — softphone stash (no brid
     expect(res.status).toBe(202);
     expect(res.body).toEqual({ queued: true });
 
-    expect(p.job.findUnique).toHaveBeenCalledWith(
+    expect(p.job.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({ id: JOB_ID, organization_id: ALPHA_ORG_ID }),
       }),
@@ -347,7 +347,7 @@ describe('POST /api/communication/calls/attribution — softphone stash (no brid
   it('404s a cross-org/unknown job_id — no stash written', async () => {
     mockAuthAs('dispatcher');
     mockConnectedOrg();
-    p.job.findUnique.mockResolvedValue(null);
+    p.job.findFirst.mockResolvedValue(null);
 
     const res = await request(app)
       .post('/api/communication/calls/attribution')
@@ -392,7 +392,7 @@ describe('POST /api/communication/calls/attribution — softphone stash (no brid
   it('sweeps stale stash rows (>24h) opportunistically', async () => {
     mockAuthAs('dispatcher');
     mockConnectedOrg();
-    p.job.findUnique.mockResolvedValue({ id: JOB_ID, job_number: 'J00077', customer_id: CUSTOMER_ID });
+    p.job.findFirst.mockResolvedValue({ id: JOB_ID, job_number: 'J00077', customer_id: CUSTOMER_ID });
 
     const before = Date.now();
     await request(app)
@@ -421,7 +421,7 @@ describe('POST /api/communication/calls/attribution — softphone stash (no brid
     expect(res.body).toEqual({ queued: false });
     expect(p.pendingCallAttribution.create).not.toHaveBeenCalled();
     expect(p.pendingCallAttribution.deleteMany).not.toHaveBeenCalled();
-    expect(p.job.findUnique).not.toHaveBeenCalled();
+    expect(p.job.findFirst).not.toHaveBeenCalled();
   });
 });
 

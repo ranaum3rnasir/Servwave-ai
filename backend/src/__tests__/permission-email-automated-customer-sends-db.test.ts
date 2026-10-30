@@ -126,9 +126,9 @@ suite('every email to a customer carries a reply address tied to its record (rea
       organizationId: w.org, roleKey: key,
       values: {
         view_jobs: true, jobs_scope: 'attached', view_leads: true, leads_scope: 'attached', view_customers: true,
-        view_estimates: true, estimates_scope: 'attached', edit_estimates: true,
-        view_invoices: true, invoices_scope: 'attached', edit_invoices: true,
-        access_communication: true, show_email: true, view_communication: true, communication_scope: 'linked_to_me',
+        view_estimates: true, edit_estimates: true,
+        view_invoices: true, edit_invoices: true,
+        access_communication: true, show_email: true, view_communication: true, communication_scope: 'attached',
         contact_customers: true,
         ...values,
       },
@@ -424,7 +424,7 @@ suite('every email to a customer carries a reply address tied to its record (rea
       const e = await email();
       const threadsBefore = await db.emailThread.count({ where: { organization_id: w.org } });
 
-      await e.sendDepositPaidAlert({ organizationId: w.org, to: 'owner@example.com', estimateNumber: 'E-9', customerName: 'Pat Payer', depositAmount: 50, paymentMethod: 'CARD' });
+      await e.sendDepositPaidAlert({ organizationId: w.org, to: 'owner@example.com', estimateNumber: 'E-9', customerName: 'Pat Payer', paymentMethod: 'CARD' });
       await e.sendAutomationEmail({ organizationId: w.org, to: 'owner@example.com', subject: '[Test] A note', text: 'hi', html: '<p>hi</p>' });
       await e.sendPaymentsActionNeededEmail({ organizationId: w.org, to: 'owner@example.com', orgName: companyName(w), fixUrl: 'https://app.example.com/fix' });
       await e.sendOwnerPaymentNoticeEmail({ organizationId: w.org, to: 'owner@example.com', subject: 'A dispute', heading: 'A dispute', lines: ['x'], actionUrl: 'https://app.example.com/p', actionLabel: 'Open' });
@@ -479,7 +479,8 @@ suite('every email to a customer carries a reply address tied to its record (rea
   async function rungBy(reply: { provider_message_id: string | null }, w: World) {
     const key = `email_inbound:${reply.provider_message_id}`;
     const rows = await db.notification.findMany({
-      where: { dedup_key: { in: [key, `${key}:why`] } }, select: { recipients: { select: { recipient_id: true } } },
+      // One alert per list the bells open (M1): every one of them has a key that starts with the reply's.
+      where: { dedup_key: { startsWith: key } }, select: { recipients: { select: { recipient_id: true } } },
     });
     return rows.flatMap((r) => r.recipients.map((x) => x.recipient_id)).filter((id) => id !== w.admin.id).sort();
   }

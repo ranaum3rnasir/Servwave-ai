@@ -10,6 +10,7 @@
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { logger } from '../../lib/logger';
+import { withoutMoneyFields } from '../../lib/permissions/prices';
 import { isKnownVerb, renderTemplate } from './templates';
 import { resolveRecipients } from './resolveRecipients';
 import { publishNotificationsChanged } from './realtimePublish';
@@ -60,7 +61,7 @@ export interface EmitArgs {
   /**
    * The people of a missed-call, voicemail or inbound-text alert, handed over by the never-silent fallback (conversationAlertFallback.ts)
    * and by nothing else: it makes the token, and `emit` ignores any other. The lookup of the conversation's people and the access filter
-   * inside it are then skipped, because the fallback tells holders of Manage roles and permissions the lookup left out, in an alert
+   * inside it are then skipped, because the fallback tells Admins the lookup left out, in an alert
    * that carries no caller details when they cannot read the conversation.
    */
   fallbackPeople?: FallbackPeople;
@@ -114,11 +115,12 @@ export async function emit(args: EmitArgs): Promise<string[]> {
     const client = args.tx ?? prisma;
 
     // Step 4: Build the data bag and render the template.
-    const data = { ...(args.data ?? {}), object_label: args.object.label };
+    // No money field is stored on a bell (M4, Ran 2026-10-28): the alert names the event, the figure lives on the record.
+    const data = { ...withoutMoneyFields(args.data ?? {}), object_label: args.object.label };
     const tpl = renderTemplate(args.verb, data);
 
     // Step 5: Dedup — idempotent on dedup_key. A call or text alert may have been written under the event's own key (told to the people
-    // the lookup named) or under either key of the never-silent fallback (told to the holders of Manage roles and permissions), and a
+    // the lookup named) or under either key of the never-silent fallback (told to the Admins), and a
     // redelivery is the same event whichever it was.
     const conversationAlert = conversationAlertOf(args);
     if (args.dedupKey) {

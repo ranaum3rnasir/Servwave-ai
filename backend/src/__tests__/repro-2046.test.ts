@@ -193,7 +193,6 @@ function mockDispatcherWithAccessInbox() {
     ...DEFAULT_GRANTS.filter((g) => g.role === 'DISPATCHER'),
     { role: 'DISPATCHER', action: 'access_inbox', subject: 'Communication' },
   ];
-  mockPrisma.rolePermission.findMany.mockResolvedValue(rows);
   clearPermissionCache();
 }
 

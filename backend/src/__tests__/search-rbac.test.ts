@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { TEST_USERS, mockAuthAs, authHeader, attachedEstimateWhere, creatorEstimateWhere, creatorInvoiceWhere } from './helpers';
+import { TEST_USERS, mockAuthAs, mockRoleSwitches, authHeader, attachedEstimateWhere, ownDocumentsEstimateWhere, ownDocumentsInvoiceWhere } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -24,7 +24,6 @@ const m = prisma as unknown as {
   estimate: { findMany: ReturnType<typeof vi.fn> };
   invoice: { findMany: ReturnType<typeof vi.fn> };
   customer: { findMany: ReturnType<typeof vi.fn> };
-  userPermissionOverride: { findMany: ReturnType<typeof vi.fn> };
 };
 
 const MATCH_NOTHING_ID = { in: [] as string[] };
@@ -37,7 +36,6 @@ function reset() {
   m.estimate.findMany.mockResolvedValue([]);
   m.invoice.findMany.mockResolvedValue([]);
   m.customer.findMany.mockResolvedValue([]);
-  m.userPermissionOverride.findMany.mockResolvedValue([]);
 }
 
 // Collect EVERY `where` a delegate's findMany was called with (search fans out into
@@ -82,22 +80,19 @@ describe('GET /api/search — RBAC row-scoping (QA-B2 residual leak fix)', () =>
       // Customers sub-query must be SKIPPED for a tech (no read Customer).
       expect(m.customer.findMany).not.toHaveBeenCalled();
 
-      // Invoice queries, IF run at all, reach only what the person made (View invoices is off, so the
-      // creator rule is the only arm) - never org-wide.
-      for (const w of wheresOf(m.invoice.findMany)) {
-        expect(JSON.stringify(w)).toContain(JSON.stringify(creatorInvoiceWhere(TEST_USERS.technician.id)));
-        expect(JSON.stringify(w)).not.toContain(JSON.stringify(creatorInvoiceWhere(TEST_USERS.sales.id)));
-      }
+      // Invoice queries, IF run at all, reach nothing: View invoices is off and View is the single gate (P7), so not
+      // even an invoice the person made is found - and never org-wide.
+      for (const w of wheresOf(m.invoice.findMany)) expect(isMatchNothing(w)).toBe(true);
 
-      // Estimate queries carry the Attached condition (the estimate's lead or job) and the creator rule's own
-      // arm, never MATCH_NOTHING and never org-wide. Having created an estimate attaches nobody, so the
-      // created_by column is read only inside that arm.
+      // Estimate queries carry the Attached condition (the estimate's lead or job) and the arm for the estimates
+      // they made for a customer alone, never MATCH_NOTHING and never org-wide. Having created an estimate attaches
+      // nobody, so the created_by column is read only inside that arm.
       const estWheres = wheresOf(m.estimate.findMany);
       expect(estWheres.length).toBeGreaterThan(0);
       for (const w of estWheres) {
         expect(isMatchNothing(w)).toBe(false);
-        expect(JSON.stringify(w)).toContain(JSON.stringify({ OR: attachedEstimateWhere(TEST_USERS.technician.id) }));
-        expect(JSON.stringify(w)).toContain(JSON.stringify(creatorEstimateWhere(TEST_USERS.technician.id)));
+        for (const arm of attachedEstimateWhere(TEST_USERS.technician.id)) expect(JSON.stringify(w)).toContain(JSON.stringify(arm));
+        expect(JSON.stringify(w)).toContain(JSON.stringify(ownDocumentsEstimateWhere(TEST_USERS.technician.id)));
       }
 
       // Jobs scoped to OWN (assignees), leads scoped to OWN_WALKTHROUGH.
@@ -212,14 +207,10 @@ describe('GET /api/search — RBAC row-scoping (QA-B2 residual leak fix)', () =>
 
   // ── Multi-read user: scope OR + search OR both preserved (no clobber) ────────
   describe('multi-read user (OR-clobber safety)', () => {
-    it('SALES + override create Invoice: both invoice scope arms AND the search OR survive', async () => {
+    it('SALES: both invoice scope arms AND the search OR survive', async () => {
       mockAuthAs('sales');
-      // SALES role read Invoice = OWN_INVOICE_VIA_LEAD (job.estimate.lead.lead_assignees).
-      // Per-user override `create Invoice` synthesizes a SECOND distinct read = OWN_INVOICE_VIA_JOB
-      // → scopeWhereFor returns { OR: [viaLead, viaJob] }. The search term then adds its own OR.
-      m.userPermissionOverride.findMany.mockResolvedValue([
-        { action: 'create', subject: 'Invoice', effect: 'allow' },
-      ]);
+      // SALES reads invoices through its own leads, plus the invoices it made for a customer alone (P7), as two
+      // arms of its own → scopeWhereFor returns { OR: [viaLead, madeByMe] }. The search term then adds its own OR.
 
       const res = await request(app).get('/api/search?q=I00001').set(authHeader('sales'));
       expect(res.status).toBe(200);
@@ -227,9 +218,9 @@ describe('GET /api/search — RBAC row-scoping (QA-B2 residual leak fix)', () =>
       const invWheres = wheresOf(m.invoice.findMany);
       expect(invWheres.length).toBeGreaterThan(0);
       const w = invWheres[0];
-      // Both scope arms survive: via-lead arm has `estimate`, via-job arm has `assignees`.
-      expect(deepHas(w, 'estimate')).toBe(true);
-      expect(deepHas(w, 'assignees')).toBe(true);
+      // Both scope arms survive: the via-lead arm has `lead_assignees`, the made-by-me arm has `created_by_id`.
+      expect(deepHas(w, 'lead_assignees')).toBe(true);
+      expect(deepHas(w, 'created_by_id')).toBe(true);
       // The search OR (invoice_number) is present too — neither OR clobbered the other.
       expect(deepHas(w, 'invoice_number')).toBe(true);
       // The scope OR was demoted under AND (not standing alone as a bare top-level OR
@@ -244,13 +235,11 @@ describe('GET /api/search — RBAC row-scoping (QA-B2 residual leak fix)', () =>
   });
 
   // ── Granted technician: override read/create Invoice → own-scoped invoices ───
-  describe('granted TECHNICIAN (override create Invoice)', () => {
+  describe('granted TECHNICIAN (View invoices on)', () => {
     it('gets own-scoped invoices (via job) instead of zero', async () => {
       mockAuthAs('technician');
-      // create Invoice override → synthesizes own-scoped read Invoice = OWN_INVOICE_VIA_JOB.
-      m.userPermissionOverride.findMany.mockResolvedValue([
-        { action: 'create', subject: 'Invoice', effect: 'allow' },
-      ]);
+      // View invoices is off in the Technician preset; turned on, it reaches the invoices of the jobs they are attached to.
+      mockRoleSwitches({ view_invoices: true, jobs_scope: 'attached', leads_scope: 'attached' });
 
       const res = await request(app).get('/api/search?q=I00001').set(authHeader('technician'));
       expect(res.status).toBe(200);

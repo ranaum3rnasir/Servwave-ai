@@ -99,7 +99,7 @@ describe('Phone page with the Dispatcher preset\'s switch values', () => {
   });
 });
 
-describe('each tab and the usage bar follow their own switch', () => {
+describe('each tab follows its own switch, and the usage bar follows the Phone numbers tab', () => {
   const TABS: Array<[switchLabel: string, tabLabel: string, stub: string, route: string]> = [
     ['Phone numbers tab', 'Phone numbers', 'Numbers view stub', 'numbers'],
     ['Call flows tab', 'Call flows', 'Flows view stub', 'flows'],
@@ -114,20 +114,14 @@ describe('each tab and the usage bar follow their own switch', () => {
     await screen.findByText(stub);
 
     expect(moduleTabs(false)).toEqual(['Calls', tabLabel]);
-    expect(screen.queryByTestId('usage-bar')).toBeNull();
-  });
-
-  it('draws the usage bar for Phone usage bar alone, and no strip', async () => {
-    renderPhone([...SECTION, 'Phone usage bar']);
-    await screen.findByText('Calls view stub');
-
-    expect(screen.getByTestId('usage-bar')).toBeInTheDocument();
-    expect(screen.getAllByRole('tablist')).toHaveLength(1);
+    // The usage bar has no switch of its own (P1): it sits on the Phone numbers tab.
+    if (switchLabel === 'Phone numbers tab') expect(screen.getByTestId('usage-bar')).toBeInTheDocument();
+    else expect(screen.queryByTestId('usage-bar')).toBeNull();
   });
 
   it('leaves the Phone numbers tab off a person who holds the other tabs but not that switch', async () => {
     renderPhone([
-      ...SECTION, 'Call flows tab', 'Call masking tab', 'Call groups tab', 'Training tab', 'Blocked callers tab', 'Phone usage bar',
+      ...SECTION, 'Call flows tab', 'Call masking tab', 'Call groups tab', 'Training tab', 'Blocked callers tab',
     ]);
     await screen.findByText('Calls view stub');
     expect(screen.queryByRole('tab', { name: 'Phone numbers' })).toBeNull();

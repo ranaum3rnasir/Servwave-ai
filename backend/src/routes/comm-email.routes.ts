@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Request, type Response } from 'express';
 import multer from 'multer';
 import { authenticate } from '../middleware/authenticate';
 import { attachAbility } from '../middleware/attachAbility';
@@ -13,6 +13,7 @@ import * as commAgentsController from '../controllers/comm-agents.controller';
 import * as myMailboxController from '../controllers/my-mailbox.controller';
 import * as mailboxListController from '../controllers/mailbox-list.controller';
 import { MAX_EMAIL_ATTACHMENTS, MAX_EMAIL_ATTACHMENT_BYTES } from '../lib/email-attachment-limits';
+import { markRouteCheck } from '../middleware/routeCheck';
 
 const router = Router();
 
@@ -75,6 +76,15 @@ const EMAIL_PREFIXES = ['/emails', '/email-groups', '/forward-rules', '/sending-
 
 router.use(EMAIL_PREFIXES, authenticate, requireFeature('email'), attachAbility);
 
+// M7 (ticket 36): Show Email is a permission, not a hidden button. It closes the Email page's mailbox the way Access Communication
+// does: every route below that asks for `access_inbox` asks for `show_email` too, so a person with the switch off gets a 403 on
+// the list, a message, filing and assigning a conversation, the attachments, the mailbox list and their own address. The routes
+// the job, lead and customer tabs also use (the sender line, a send, the attach list, filing one email under a job or lead) ask
+// for neither: they stay with Contact customers and Attach conversations, as for a person with no section. A reply, or a send
+// that names no record, is the Email page's, and sendEmail refuses it to a person with the switch off (see its first lines).
+// permission-show-email-guard.test.ts fails on a route here that asks for the section and not the switch, and on a route that
+// asks for neither without being declared a record-tab route.
+
 // ─── Sending identity ───────────────────────────────────
 // The From a send would carry, resolved without sending, so the compose window
 // can name it. Its own prefix rather than a path under '/emails' - '/emails' as
@@ -89,24 +99,24 @@ router.get('/sending-identity', canDo('read', 'Communication'), commController.g
 // PRD 10 (S10.3): the address shown at the top of the Email page and on the person's profile. Their own, and it reads no
 // mail, but it is part of the Communication section: a person who cannot open the section has no use for an address
 // there, and the section gate closes every endpoint of it.
-router.get('/my-mailbox', canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), myMailboxController.getMyMailbox);
+router.get('/my-mailbox', canDo('show_email', 'Communication'), canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), myMailboxController.getMyMailbox);
 
 // ─── The mailbox list ───────────────────────────────────
 // PRD 10 (S10.7): the Email page's rail. It counts mail, so it is closed by the section gate like every mailbox endpoint.
-router.get('/mailboxes', canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), mailboxListController.listMailboxes);
+router.get('/mailboxes', canDo('show_email', 'Communication'), canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), mailboxListController.listMailboxes);
 
 // ─── Email groups ───────────────────────────────────────
 // #2046: section-only config, no record-tab consumer.
-router.get('/email-groups', canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), commController.listEmailGroups);
+router.get('/email-groups', canDo('show_email', 'Communication'), canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), commController.listEmailGroups);
 
 // ─── Forward rules ──────────────────────────────────────
 // Roles & Permissions S08.16: not a phone tab. These are the email forward-rules table, so no phone tab switch gates
 // the read (PRD 08 lists only call flows, call groups, training and blocked callers as tab endpoints).
-router.get('/forward-rules', canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), commAgentsController.listForwardRules);
+router.get('/forward-rules', canDo('show_email', 'Communication'), canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), commAgentsController.listForwardRules);
 
 // ─── Emails ─────────────────────────────────────────────
 // #2046: the inbox list is the org-wide section surface.
-router.get('/emails', canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), commController.listEmails);
+router.get('/emails', canDo('show_email', 'Communication'), canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), commController.listEmails);
 // #2046 R2: the record tabs' send path (useSendJobEmail/useSendEmail, JobCommunicationsTab +
 // CustomerDetailPage) and the lead contact-clock flow (lead-contact-clock.test.ts) - stays on
 // `create Communication` alone.
@@ -128,19 +138,19 @@ router.post(
 // rights only, mirroring the new SMS thread-read route. #2046's thread-level
 // WORKFLOW routes (assign/archive/snooze) keep `update`+`access_inbox` - unchanged.
 // PRD 10 (S10.7): a mailbox endpoint like the list, so the section gate closes it too (only the Email page calls it).
-router.patch('/emails/thread-read', canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), validate(commController.markThreadReadSchema), commController.markThreadRead);
+router.patch('/emails/thread-read', canDo('show_email', 'Communication'), canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), validate(commController.markThreadReadSchema), commController.markThreadRead);
 // #2049 - the persisted half of "Mark as unread" (deletes this caller's
 // EmailReadState rows for the visible emails of the thread). MUST also stay
 // above '/emails/:id' for the same swallowing reason. Same gate as thread-read.
-router.patch('/emails/thread-unread', canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), validate(commController.markThreadUnreadSchema), commController.markThreadUnread);
+router.patch('/emails/thread-unread', canDo('show_email', 'Communication'), canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), validate(commController.markThreadUnreadSchema), commController.markThreadUnread);
 // Email slice 8b - conversation assignment + shared archive/snooze. These have
 // MORE path segments than '/emails/:id' (which matches exactly one segment
 // after '/emails/'), so they never collide with it regardless of registration
 // order - kept up here anyway, beside thread-read, since they are the other
 // thread-level (not per-message) mutations.
-router.patch('/emails/threads/:id/assign', canDo('update', 'Communication'), canDo('access_inbox', 'Communication'), validate(commController.assignEmailThreadSchema), commController.assignEmailThread);
-router.patch('/emails/threads/:id/archive', canDo('update', 'Communication'), canDo('access_inbox', 'Communication'), validate(commController.archiveEmailThreadSchema), commController.archiveEmailThread);
-router.patch('/emails/threads/:id/snooze', canDo('update', 'Communication'), canDo('access_inbox', 'Communication'), validate(commController.snoozeEmailThreadSchema), commController.snoozeEmailThread);
+router.patch('/emails/threads/:id/assign', canDo('show_email', 'Communication'), canDo('update', 'Communication'), canDo('access_inbox', 'Communication'), validate(commController.assignEmailThreadSchema), commController.assignEmailThread);
+router.patch('/emails/threads/:id/archive', canDo('show_email', 'Communication'), canDo('update', 'Communication'), canDo('access_inbox', 'Communication'), validate(commController.archiveEmailThreadSchema), commController.archiveEmailThread);
+router.patch('/emails/threads/:id/snooze', canDo('show_email', 'Communication'), canDo('update', 'Communication'), canDo('access_inbox', 'Communication'), validate(commController.snoozeEmailThreadSchema), commController.snoozeEmailThread);
 // "Attach from this record" (email slice 7) - MUST also stay above '/emails/:id'
 // for the same reason as thread-read above: a literal path is swallowed by a
 // param route registered before it.
@@ -150,10 +160,10 @@ router.get('/emails/attach-source', canDo('read', 'Communication'), commControll
 // above '/emails/:id' for the same reason as thread-read and attach-source:
 // registered after the param route, 'unmatched' is swallowed as an id.
 // #2046: the unmatched queue is section-only triage.
-router.get('/emails/unmatched', canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), commController.listUnmatchedEmails);
+router.get('/emails/unmatched', canDo('show_email', 'Communication'), canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), commController.listUnmatchedEmails);
 // One held message by id: what the bell of a reply from an address we did not send to opens (PRD 10, S10.19). Two segments after
 // '/emails/', so it never meets '/emails/:id', whatever the order.
-router.get('/emails/unmatched/:id', canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), emailId, commController.getUnmatchedEmail);
+router.get('/emails/unmatched/:id', canDo('show_email', 'Communication'), canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), emailId, commController.getUnmatchedEmail);
 // One-click reassign of an email's job attribution (job_id: null clears) - the
 // email mirror of PATCH /sms/:id/job.
 // #2046 R3: useReassignEmailJob -> components/communication/shared/CommRowJobControl.tsx, which
@@ -163,18 +173,18 @@ router.patch('/emails/:id/job', canDo('attach', 'Communication'), emailId, valid
 router.patch('/emails/:id/lead', canDo('attach', 'Communication'), emailId, validate(commController.reassignEmailLeadSchema), commController.reassignEmailLead);
 // PRD 10 (S10.20): pick which of several customers that share a sender's address a received message belongs to. Two segments after
 // '/emails/:id', so they never meet the param route. Both need the attach switch (PRD 8's rule) and are the Email page's own.
-router.get('/emails/:id/customer-candidates', canDo('attach', 'Communication'), canDo('access_inbox', 'Communication'), emailId, commController.listCustomerMatches);
-router.patch('/emails/:id/customer', canDo('attach', 'Communication'), canDo('access_inbox', 'Communication'), emailId, validate(commController.pickEmailCustomerSchema), commController.pickEmailCustomer);
+router.get('/emails/:id/customer-candidates', canDo('show_email', 'Communication'), canDo('attach', 'Communication'), canDo('access_inbox', 'Communication'), emailId, commController.listCustomerMatches);
+router.patch('/emails/:id/customer', canDo('show_email', 'Communication'), canDo('attach', 'Communication'), canDo('access_inbox', 'Communication'), emailId, validate(commController.pickEmailCustomerSchema), commController.pickEmailCustomer);
 // Email slice 6 - manually attach an unmatched inbound message to a thread. A
 // deeper path than '/emails/:id', so it never collides with the param route.
 // #2046: the unmatched-triage editor, section-only.
-router.patch('/emails/:id/link', canDo('update', 'Communication'), canDo('access_inbox', 'Communication'), emailId, validate(commController.linkInboundEmailSchema), commController.linkInboundEmail);
+router.patch('/emails/:id/link', canDo('show_email', 'Communication'), canDo('update', 'Communication'), canDo('access_inbox', 'Communication'), emailId, validate(commController.linkInboundEmailSchema), commController.linkInboundEmail);
 // #2046: no record-tab consumer of the by-id read (grep of `/emails/${` finds only section code
 // paths), so gating it closes the by-id door on the section's own rows at no cost.
-router.get('/emails/:id', canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), emailId, commController.getEmail);
+router.get('/emails/:id', canDo('show_email', 'Communication'), canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), emailId, commController.getEmail);
 // Mint a fresh signed URL for one attachment (email slice 7) - a deeper path
 // than '/emails/:id' so it never collides with the param route above.
-router.get('/emails/:id/attachments/:index', canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), emailId, commController.getEmailAttachmentUrl);
+router.get('/emails/:id/attachments/:index', canDo('show_email', 'Communication'), canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), emailId, commController.getEmailAttachmentUrl);
 
 /**
  * Terminate this router's own prefixes.
@@ -187,8 +197,8 @@ router.get('/emails/:id/attachments/:index', canDo('read', 'Communication'), can
  * These prefixes belong to this router, so an unmatched path under them is a
  * 404, not somebody else's entitlement problem.
  */
-router.all([...EMAIL_PREFIXES, '/emails/*', '/email-groups/*', '/forward-rules/*'], (_req, res) => {
+router.all([...EMAIL_PREFIXES, '/emails/*', '/email-groups/*', '/forward-rules/*'], markRouteCheck('closed', (_req: Request, res: Response) => {
   res.status(404).json({ error: 'Not found' });
-});
+}));
 
 export default router;

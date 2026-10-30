@@ -54,7 +54,7 @@ async function paymentItems(user: 'admin' | 'technician' = 'admin'): Promise<Ite
   return (res.body.data.needs_attention as Item[]).filter((a) => a.type === 'payments_attention');
 }
 
-const SEES_PAGE = { view_payments: true, show_payments_page: true };
+const SEES_PAGE = { view_payments: true };
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['Date'], now: new Date('2026-06-17T12:00:00Z') });
@@ -112,29 +112,19 @@ describe('GET /api/dashboard needs attention: payments needing attention', () =>
   it('is not shown to, nor counted for, someone without View payments', async () => {
     withOpen(5);
     mockAuthAs('technician');
-    mockRoleSwitches({ view_payments: false, show_payments_page: false });
+    mockRoleSwitches({ view_payments: false });
     const res = await request(app).get('/api/dashboard').set(authHeader('technician'));
     expect((res.body.data.needs_attention as Item[]).filter((a) => a.type === 'payments_attention')).toHaveLength(0);
     expect(openCount).not.toHaveBeenCalled();
   });
 
-  it('is clickable for a role holding View payments and Show Payments page, whatever its name', async () => {
+  it('is clickable for a role holding View payments, whatever its name', async () => {
     withOpen(2);
     mockAuthAs('technician');
     mockRoleSwitches(SEES_PAGE);
     const res = await request(app).get('/api/dashboard').set(authHeader('technician'));
     const [item] = (res.body.data.needs_attention as Item[]).filter((a) => a.type === 'payments_attention');
     expect(item.link).toBe('/payments?tab=payments&chip=attention');
-  });
-
-  it('is shown, and not clickable, to a View payments holder with Show Payments page off', async () => {
-    withOpen(2);
-    mockAuthAs('technician');
-    mockRoleSwitches({ view_payments: true, show_payments_page: false });
-    const res = await request(app).get('/api/dashboard').set(authHeader('technician'));
-    const [item] = (res.body.data.needs_attention as Item[]).filter((a) => a.type === 'payments_attention');
-    expect(item).toMatchObject({ badge: '2' });
-    expect(item.link).toBeNull();
   });
 
   it('is the first item the API returns, ahead of danger items, so the six-row widget always shows it (slice 33b)', async () => {

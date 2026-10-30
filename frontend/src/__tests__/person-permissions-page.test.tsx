@@ -17,7 +17,7 @@ import { toast } from '@/components/ui/use-toast';
 import { useSettingsGuard } from '@/stores/settingsGuard.store';
 import { settingsV2Routes } from '@/pages/v2/routes/settings.routes';
 import { renderWithProviders } from './helpers';
-import { FIXTURE_CATALOG, FIXTURE_SWITCHES, catalogSwitch, presetSet } from './support/permissionCatalogFixture';
+import { FIXTURE_CATALOG, FIXTURE_DRAWN_SWITCHES, FIXTURE_SWITCHES, catalogSwitch, presetSet } from './support/permissionCatalogFixture';
 
 vi.mock('@/components/ProtectedRoute', () => ({ default: () => <Outlet /> }));
 vi.mock('@/pages/v2/V2AppLayout', () => ({ default: () => <Outlet /> }));
@@ -57,17 +57,7 @@ const manager: { ability: AppAbility; switches: Record<string, boolean> } = {
     { action: 'read', subject: 'Role' },
     { action: 'read', subject: 'User' },
   ]),
-  switches: { manage_roles_and_permissions: true, show_users_teams_page: true },
-};
-
-/** Edit users and the Users page, but not Manage roles and permissions. */
-const userEditor: typeof manager = {
-  ability: buildAbility([
-    { action: 'read', subject: 'User' },
-    { action: 'update', subject: 'User' },
-    { action: 'read', subject: 'Role' },
-  ]),
-  switches: { manage_roles_and_permissions: false, show_users_teams_page: true },
+  switches: { manage_roles_and_permissions: true, view_users: true },
 };
 
 function serve(viewer: typeof manager, answers: Record<string, unknown> = {}) {
@@ -140,19 +130,8 @@ describe('the Permissions action on Users & Teams', () => {
     expect(where()).toBe('/settings/users/u4/permissions');
   });
 
-  it('is missing for a custom role with Edit users but not Manage roles and permissions, who lands on the dashboard by address', async () => {
-    const first = open('/settings/users', userEditor);
-    await screen.findByText('Dee Spatch');
-    expect(screen.getAllByRole('button', { name: 'Edit' }).length).toBeGreaterThan(0);
-    expect(screen.queryByRole('button', { name: 'Permissions' })).toBeNull();
-    first.unmount();
-
-    open(PAGE, userEditor);
-    expect(await screen.findByRole('heading', { name: 'Dashboard' })).toBeInTheDocument();
-    expect(where()).toBe('/');
-    // The page and its reads are never mounted for them.
-    expect(calledUrls().some((u) => u.includes('/permissions'))).toBe(false);
-  });
+  // A non-Admin no longer opens Users & Teams or a person's Permissions page at all, whatever their switches (AL-18):
+  // settings-users-roles-admin-only.test.tsx proves both addresses render nothing for them.
 });
 
 describe('a person\'s Permissions page', () => {
@@ -179,11 +158,11 @@ describe('a person\'s Permissions page', () => {
 
     await screen.findByRole('switch', { name: catalogSwitch(key).label });
     expect(screen.getByText('1 change')).toBeInTheDocument();
-    for (const s of FIXTURE_SWITCHES) {
+    for (const s of FIXTURE_DRAWN_SWITCHES) {
       expect(screen.getByRole('button', { name: `About ${s.label}` }), s.label).toBeInTheDocument();
       if (s.kind === 'toggle') expect(screen.getByRole('switch', { name: s.label }).getAttribute('aria-checked'), s.label).toBe(String(values[s.key]));
     }
-    expect(screen.getByRole('region', { name: 'Data Scope' })).toBeInTheDocument();
+    expect(screen.getByRole('region', { name: 'Money' })).toBeInTheDocument();
   });
 
   it('opens a person migrated with an old Allow or Deny entry on zero changes and the preset\'s values', async () => {
@@ -193,7 +172,7 @@ describe('a person\'s Permissions page', () => {
     await screen.findByRole('switch', { name: catalogSwitch('reopen_leads').label });
     expect(screen.getByText('No changes')).toBeInTheDocument();
     const preset = presetSet('DISPATCHER');
-    for (const s of FIXTURE_SWITCHES.filter((x) => x.kind === 'toggle')) {
+    for (const s of FIXTURE_DRAWN_SWITCHES.filter((x) => x.kind === 'toggle')) {
       expect(screen.getByRole('switch', { name: s.label }).getAttribute('aria-checked'), s.label).toBe(String(preset[s.key]));
     }
   });
@@ -253,7 +232,7 @@ describe('an admin person and the viewer\'s own page', () => {
 
     expect(await screen.findByText('Full access')).toBeInTheDocument();
     expect(screen.queryAllByRole('switch')).toHaveLength(0);
-    expect(screen.queryByRole('region', { name: 'Data Scope' })).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Money' })).toBeNull();
   });
 
   it('draws no editable control on the viewer\'s own page and says people cannot change their own access', async () => {

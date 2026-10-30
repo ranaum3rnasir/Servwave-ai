@@ -2,7 +2,7 @@
 /**
  * Roles & Permissions, PRD 2, slice S02.19 - the routed v2 sidebar follows the person's switches.
  *
- * A record module's entry shows when its View and its Show are both on; a page's entry (Schedule, Reports,
+ * A record module's entry shows when its View is on (the Show-page switches are retired, P1); a page's entry (Schedule, Reports,
  * Billing, Marketing) when its Access switch is on; the Dashboard entry always. The values come from the "me"
  * answer (`GET /api/permission-switches/me`); the compiled rules are never what decides a menu entry here, so every
  * person below holds an EMPTY ability and only their switches differ. Each person is a custom role built from
@@ -181,50 +181,42 @@ const ALL_ACCESS: Array<[label: string, access: string]> = [
   ['Marketing', 'access_marketing'],
 ];
 
-describe('v2 sidebar - follows View + Show, or Access', () => {
+describe('v2 sidebar - follows View, or Access', () => {
   beforeEach(() => {
     localStorage.clear();
     mockApi.get.mockReset();
   });
 
   it.each([
-    ['Customers', 'view_customers', 'show_customers_page'],
-    ['Leads', 'view_leads', 'show_leads_page'],
-    ['Jobs', 'view_jobs', 'show_jobs_page'],
-    ['Estimates', 'view_estimates', 'show_estimates_page'],
-    ['Invoices', 'view_invoices', 'show_invoices_page'],
-    ['Payments', 'view_payments', 'show_payments_page'],
-    ['Tasks', 'view_tasks', 'show_tasks_page'],
-    ['Service Plans', 'view_service_plans', 'show_service_plans_page'],
-    ['Automations', 'view_automations', 'show_automations_page'],
-  ])('%s shows only with %s and %s both on', async (label, view, show) => {
-    answerMe(valuesWith(view, show));
+    ['Customers', 'view_customers'],
+    ['Leads', 'view_leads'],
+    ['Jobs', 'view_jobs'],
+    ['Estimates', 'view_estimates'],
+    ['Invoices', 'view_invoices'],
+    ['Payments', 'view_payments'],
+    ['Tasks', 'view_tasks'],
+    ['Service Plans', 'view_service_plans'],
+    ['Automations', 'view_automations'],
+  ])('%s shows with %s on', async (label, view) => {
+    answerMe(valuesWith(view));
     renderShell();
     await expectMenu(['Dashboard', label]);
   });
 
   it.each([
-    ['Customers', 'view_customers', 'show_customers_page'],
-    ['Leads', 'view_leads', 'show_leads_page'],
-    ['Jobs', 'view_jobs', 'show_jobs_page'],
-    ['Estimates', 'view_estimates', 'show_estimates_page'],
-    ['Invoices', 'view_invoices', 'show_invoices_page'],
-    ['Payments', 'view_payments', 'show_payments_page'],
-    ['Tasks', 'view_tasks', 'show_tasks_page'],
-    ['Service Plans', 'view_service_plans', 'show_service_plans_page'],
-    ['Automations', 'view_automations', 'show_automations_page'],
-  ])('%s is missing with only View on, and with only Show on', async (label, view, show) => {
-    // The witness (Schedule) is on in both answers, so the menu is only ever [Dashboard, Schedule] once the
-    // answer is drawn; the entry under test must be absent from that drawn menu.
-    answerMe(valuesWith(WITNESS.access, view));
-    const first = renderShell();
-    await expectMenu(['Dashboard', WITNESS.label]);
-    expect(menu()).not.toContain(label);
-    first.unmount();
-    // The first render cached its answer for this person; a second render would draw THAT before its own answer lands.
-    localStorage.clear();
-
-    answerMe(valuesWith(WITNESS.access, show));
+    ['Customers', 'view_customers'],
+    ['Leads', 'view_leads'],
+    ['Jobs', 'view_jobs'],
+    ['Estimates', 'view_estimates'],
+    ['Invoices', 'view_invoices'],
+    ['Payments', 'view_payments'],
+    ['Tasks', 'view_tasks'],
+    ['Service Plans', 'view_service_plans'],
+    ['Automations', 'view_automations'],
+  ])('%s is missing with its View off', async (label) => {
+    // The witness (Schedule) is on, so the menu is only ever [Dashboard, Schedule] once the answer is drawn; the
+    // entry under test must be absent from that drawn menu.
+    answerMe(valuesWith(WITNESS.access));
     renderShell();
     await expectMenu(['Dashboard', WITNESS.label]);
     expect(menu()).not.toContain(label);
@@ -280,35 +272,34 @@ describe('v2 sidebar - follows View + Show, or Access', () => {
   it('draws the last answer for this person while the fresh one is on its way', () => {
     localStorage.setItem(
       `servwave_my_switches:${USER_ID}`,
-      JSON.stringify({ values: valuesWith('view_jobs', 'show_jobs_page') }),
+      JSON.stringify({ values: valuesWith('view_jobs') }),
     );
     mockApi.get.mockImplementation(() => new Promise(() => {}));
     renderShell();
     expect(menu()).toEqual(['Dashboard', 'Jobs']);
   });
 
-  it('draws no Customers entry for View customers on and Show Customers page off, whatever the rules allow', async () => {
-    // The Dispatcher preset's value. The compiled rules still let this person read customers (search, pickers and
-    // a job's customer link depend on them); only the menu entry follows Show.
-    const values = valuesWith('view_customers', 'view_jobs', 'show_jobs_page');
+  it('draws the Customers entry on View customers alone, whatever the rules allow (P1: the sidebar follows View)', async () => {
+    // The Dispatcher preset used to hold View customers with the page hidden; with the Show switch retired the entry
+    // follows View, so that person now sees it.
+    const values = valuesWith('view_customers', 'view_jobs');
     answerMe(values);
     renderShell(ORG_USER, buildAbility(rulesFrom(values)));
-    await expectMenu(['Dashboard', 'Jobs']);
-    expect(menu()).not.toContain('Customers');
+    await expectMenu(['Dashboard', 'Customers', 'Jobs']);
     expect(buildAbility(rulesFrom(values)).can('read', 'Customer')).toBe(true);
   });
 
   it('shows no entry on a rule the person holds but a switch they do not', async () => {
-    // Show Invoices page off while the rules still read invoices.
-    const values = valuesWith('view_invoices', WITNESS.access);
-    answerMe(values);
-    renderShell(ORG_USER, buildAbility(rulesFrom(values)));
+    // View invoices off while the rules still read invoices.
+    const held = valuesWith('view_invoices', WITNESS.access);
+    answerMe(valuesWith(WITNESS.access));
+    renderShell(ORG_USER, buildAbility(rulesFrom(held)));
     await expectMenu(['Dashboard', WITNESS.label]);
-    expect(buildAbility(rulesFrom(values)).can('read', 'Invoice')).toBe(true);
+    expect(buildAbility(rulesFrom(held)).can('read', 'Invoice')).toBe(true);
   });
 
   it('keeps a plan lock on top of the switches', async () => {
-    answerMe(valuesWith('view_automations', 'show_automations_page', 'view_leads', 'show_leads_page'));
+    answerMe(valuesWith('view_automations', 'view_leads'));
     renderShell({ ...ORG_USER, org_features: ['leads'] });
     await waitFor(() => expect(menu()).toContain('Leads'));
     const automations = screen.getByText('Automations').closest('[data-slot="sidebar-item"]');

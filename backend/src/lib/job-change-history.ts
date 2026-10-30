@@ -334,7 +334,7 @@ export interface JobMoneyMovement {
   method: string | null;
   /**
    * Money the payment reconciler recorded (a card or bank payment taken through ServWave Payments).
-   * Its line reads "received via ServWave Payments", like the invoice timeline, never a method code.
+   * Its line reads "via ServWave Payments", never a method code.
    */
   online?: boolean;
   /** The invoice-level entry this movement also writes, so the job's Activity can show it once. */
@@ -355,7 +355,7 @@ const MONEY_VERB: Record<JobMoneyKind, string> = {
 /** The method clause of a money line: words, never an enum code (payments go-live slice 28). */
 function movementWording(kind: JobMoneyKind, movement: JobMoneyMovement): string {
   if (kind === 'DEPOSIT_APPLIED') return '';
-  if (movement.online && kind === 'PAYMENT_RECORDED') return ' received via ServWave Payments';
+  if (movement.online && kind === 'PAYMENT_RECORDED') return ' via ServWave Payments';
   if (!movement.method) return '';
   // The same label the payments report uses; a code it does not know is tidied, never shown raw.
   const known = methodLabel(movement.method as PaymentMethod) as string | undefined;
@@ -365,7 +365,7 @@ function movementWording(kind: JobMoneyKind, movement: JobMoneyMovement): string
 
 /**
  * S06.7: one entry on the JOB for money that moved on one of its invoices. `jobId` null (a
- * standalone invoice) writes nothing. The description carries the figure; the whole entry is
+ * standalone invoice) writes nothing. The description carries no figure (M4: it is on `metadata.amount`, behind See prices); the whole entry is
  * dropped for a reader who may not see pricing.
  */
 export async function recordJobMoneyMovement(
@@ -383,7 +383,7 @@ export async function recordJobMoneyMovement(
     actor,
     jobId,
     JOB_MONEY_EVENT[kind],
-    `Invoice ${invoice.invoice_number} ${MONEY_VERB[kind]}: $${movement.amount.toFixed(2)}${via}`,
+    `Invoice ${invoice.invoice_number} ${MONEY_VERB[kind]}${via}`,
     {
       invoice_id: invoice.id,
       invoice_number: invoice.invoice_number,

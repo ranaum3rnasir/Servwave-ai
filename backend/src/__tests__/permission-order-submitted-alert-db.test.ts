@@ -72,7 +72,8 @@ function withRequires(key: string, into: Record<string, SwitchValue> = {}): Reco
 const REACH_ALL = { view_jobs: true, view_leads: true, jobs_scope: 'all', leads_scope: 'all' } as const;
 const REACH_ATTACHED = { view_jobs: true, view_leads: true, jobs_scope: 'attached', leads_scope: 'attached' } as const;
 const APPROVER = { ...withRequires('approve_logistic_orders'), ...withRequires('view_logistic_orders') };
-const MANAGER = { ...withRequires('manage_roles_and_permissions'), ...withRequires('view_logistic_orders') };
+// The last fallback is the company's Admins (AL-18): a manager here is an Admin, by the flag.
+const MANAGER = { is_admin: true, ...withRequires('view_logistic_orders') };
 const MAKER = { ...withRequires('create_logistic_orders'), ...withRequires('view_logistic_orders'), ...REACH_ALL };
 
 const WHY = 'Nobody can approve this order.';
@@ -112,10 +113,12 @@ suite('the order-submitted alert (real database)', () => {
   async function personWith(org: string, values: Record<string, SwitchValue>, opts: { base?: Role; label?: string } = {}) {
     const key = `order-alert-role-${++sequence}`;
     const base = opts.base ?? 'DISPATCHER';
+    // `is_admin: true` makes the person an Admin (the flag, AL-18): it is not a switch, so it never reaches the role.
+    const { is_admin: asAdmin, ...switchValues } = values;
     const role = await fx.addCustomRole(org, key, base);
     if (opts.label) await db.customRole.update({ where: { id: role.id }, data: { label: opts.label } });
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...values }, actorId: null, reason: 'manual' });
-    const person = await fx.addUser(org, `p${++sequence}`, base, { customRoleId: role.id });
+    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...switchValues }, actorId: null, reason: 'manual' });
+    const person = await fx.addUser(org, `p${++sequence}`, base, { customRoleId: role.id, isAdmin: asAdmin === true });
     return Object.assign(person, { api: () => fx.signedInAs(person) });
   }
 
@@ -170,8 +173,8 @@ suite('the order-submitted alert (real database)', () => {
     const notOnTheJob = await personWith(org, { ...APPROVER, ...REACH_ATTACHED });
     const gone = await personWith(org, { ...APPROVER, ...REACH_ALL });
     await db.user.update({ where: { id: gone.id }, data: { is_active: false } });
-    // A role called Admin, based on the Admin box, with Approve switched off: everything else on, and Manage roles too.
-    const adminNamed = await personWith(org, { ...MANAGER, ...REACH_ALL, approve_logistic_orders: false }, { base: 'ADMIN', label: 'Admin' });
+    // A role called Admin, based on the Admin box, with Approve switched off, held by a person who is not an Admin (no flag).
+    const adminNamed = await personWith(org, { ...withRequires('view_logistic_orders'), ...REACH_ALL, approve_logistic_orders: false }, { base: 'ADMIN', label: 'Admin' });
 
     const other = await fx.newOrg();
     orgs.push(other.org);
@@ -200,25 +203,26 @@ suite('the order-submitted alert (real database)', () => {
     expect((await reached(orderId)).ids).toEqual([second.id]);
   });
 
-  it('tells the Manage roles and permissions holders who can reach the order, with the why line, when nobody else can approve it', async () => {
+  it('tells the Admins when nobody else who can reach the order can approve it: an Admin holds Approve and reaches every order', async () => {
     const { org, customer } = await quietOrg();
-    // The submitter is the only Approve holder; a second holder cannot reach the order; a third is gone.
+    // The submitter is the only Approve holder on a custom role; a second holder cannot reach the order; a third is gone.
     const both = await personWith(org, { ...MAKER, ...APPROVER });
     const cannotReach = await personWith(org, { ...APPROVER, ...REACH_ATTACHED });
     const gone = await personWith(org, { ...APPROVER, ...REACH_ALL });
     await db.user.update({ where: { id: gone.id }, data: { is_active: false } });
-    const manager = await personWith(org, { ...MANAGER, ...REACH_ALL });
-    const managerCannotReach = await personWith(org, { ...MANAGER, ...REACH_ATTACHED });
+    const manager = await personWith(org, { ...MANAGER, ...REACH_ATTACHED });
     const crew = await personWith(org, { ...REACH_ALL });
     const job = await fx.addJob(org, customer, { crew: [crew.id] });
     const orderId = await draftOrder(await both.api(), org, job.id);
     await submit(await both.api(), orderId);
 
     const told = await reached(orderId);
+    // The Admin is told as a holder of Approve (whatever scope their role stores: an Admin reaches everything), so the chain
+    // stops at the step and nothing says nobody can approve it.
     expect(told.ids).toEqual([manager.id]);
     expect(told.rows[0]).toMatchObject({ priority: 'INTERRUPT', needsAction: true });
-    expect(told.rows[0]!.body).toContain(WHY);
-    for (const outsider of [both, cannotReach, gone, managerCannotReach, crew]) expect(told.ids).not.toContain(outsider.id);
+    expect(told.rows[0]!.body).not.toContain(WHY);
+    for (const outsider of [both, cannotReach, gone, crew]) expect(told.ids).not.toContain(outsider.id);
   });
 
   it('logs a chain that ends with nobody and sends nothing', async () => {

@@ -54,7 +54,7 @@ function serveAll(extra: Parameters<typeof makeDetail>[1] = {}, open = [makeItem
   }) as never);
 }
 
-const render = (entry: string, ability = buildAbility([{ action: 'create', subject: 'Attachment' }])) =>
+const render = (entry: string, ability = buildAbility([{ action: 'update', subject: 'Invoice' }])) =>
   renderWithProviders(<><TabHarness /><BrowserBack /></>, { initialEntries: [entry], ability });
 const dialogNamed = (name: string | RegExp) => screen.findByRole('dialog', { name });
 

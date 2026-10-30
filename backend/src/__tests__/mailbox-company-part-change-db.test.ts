@@ -223,12 +223,17 @@ suite('changeCompanyPart (real database, one connection)', () => {
     const { reservePurgedAddresses } = await load();
     const t = tag();
     const mine = await company(`Mine ${t}`);
-    await company(`Chosen ${t}`);
-    await legacyCompany(`Derived ${t}`);
+    const chosen = await company(`Chosen ${t}`);
+    const derived = await legacyCompany(`Derived ${t}`);
     const gone = await company(`Gone ${t}`);
     await db.$transaction((tx) => reservePurgedAddresses(tx, gone.id));
     await db.organization.update({ where: { id: gone.id }, data: { email_sender_local_part: null, name: `Renamed after purge ${t}` } });
-    const before = await db.mailboxAddress.count();
+    // Only this test's own companies are counted: the table is shared with every other suite on the database.
+    // The rows themselves are compared, not only their number, so a refused change that rewrote an address would show.
+    const own = { OR: [{ organization_id: { in: [mine.id, chosen.id, derived.id, gone.id] } }, { local_part: { contains: t } }] };
+    const ownRows = () => db.mailboxAddress.findMany({ where: own, select: { local_part: true, kind: true, organization_id: true, mailbox_id: true, is_primary: true }, orderBy: { local_part: 'asc' } });
+    const before = await ownRows();
+    expect(before.length).toBeGreaterThan(0);
 
     const taken = { ok: false, reason: 'taken' };
     expect(await change(mine.id, `chosen${t}`)).toEqual(taken);
@@ -239,7 +244,7 @@ suite('changeCompanyPart (real database, one connection)', () => {
     expect(await change(mine.id, 'postmaster')).toEqual({ ok: false, reason: 'reserved' });
     expect(await change(mine.id, 'has space')).toEqual({ ok: false, reason: 'invalid' });
     // a refusal writes nothing
-    expect(await db.mailboxAddress.count()).toBe(before);
+    expect(await ownRows()).toEqual(before);
     expect((await db.organization.findUniqueOrThrow({ where: { id: mine.id } })).email_sender_local_part).toBe(mine.part);
   });
 

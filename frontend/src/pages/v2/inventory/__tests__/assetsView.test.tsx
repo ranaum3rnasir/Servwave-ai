@@ -25,7 +25,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-import { renderWithProviders, inventoryWriteAbility } from '@/__tests__/helpers';
+import { renderWithProviders, inventoryWriteAbility, seedMySwitches } from '@/__tests__/helpers';
 import { buildAbility } from '@/lib/ability';
 import InventoryPage from '@/pages/v2/inventory/InventoryPage';
 
@@ -181,11 +181,13 @@ vi.mock('@/lib/api/users', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/api/users')>();
   return {
     ...actual,
-    useUsers: () => ({ data: h.USERS, isLoading: false, isError: false }),
+    usePeople: () => ({ data: h.USERS, isLoading: false, isError: false }),
   };
 });
 
 function renderAssetsView() {
+  // A writer who sees every asset (Assets scope All), as today: the holder filter and the Assignee column show.
+  seedMySwitches({ assets_scope: 'all' });
   return renderWithProviders(<InventoryPage />, {
     initialEntries: ['/inventory/assets'],
     // #2043 - the row kebab, the history panel and its actions all gate on

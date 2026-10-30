@@ -82,7 +82,6 @@ function mockSalesReadPurchaseOrderScoped() {
     ...DEFAULT_GRANTS.filter((g) => g.role === 'SALES'),
     { role: 'SALES', action: 'read', subject: 'PurchaseOrder', conditions: OWN_JOB_PO_CONDITION },
   ];
-  mockPrisma.rolePermission.findMany.mockResolvedValue(rows);
   clearPermissionCache();
 }
 

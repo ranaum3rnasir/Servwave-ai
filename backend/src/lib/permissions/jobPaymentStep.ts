@@ -5,10 +5,10 @@ import { invoiceActionsFor } from './documentActions';
 /**
  * What the job page's Payment Received step offers this person (Roles & Permissions, PRD 6, S06.22, M9). The step opens
  * the record-payment dialog on the job's final invoice, so it is offered only when the person holds Record payments AND
- * can open that invoice (Invoices View and scope, or the creator rule); otherwise the step is drawn greyed with the one
+ * can open that invoice (Invoices View and its scope); otherwise the step is drawn greyed with the one
  * reason that applies. The browser draws what this says and never tests a switch, a role or an invoice's creator itself.
  *
- * The creator rule opens the invoice but never grants Record payments (it is a switch of its own), and the route that
+ * Who made the invoice opens nothing (P7), and Record payments is a switch of its own, and the route that
  * takes the payment asks the same two questions, so a listed step is one the route lets in. The server stays the check:
  * a payment posted to an invoice the person cannot open is refused whatever the screen shows.
  */

@@ -6,7 +6,11 @@ import { renderWithProviders, ALL_JOB_ACTIONS } from './helpers';
 import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
 import { buildAbility } from '@/lib/ability';
 
-const invoiceReadAbility = buildAbility([{ action: 'read', subject: 'Invoice' }]);
+// The processing amount and Balance due are prices, so the person holds See prices (P11).
+const invoiceReadAbility = buildAbility([
+  { action: 'read', subject: 'Invoice' },
+  { action: 'read', subject: 'Prices' },
+]);
 
 // floating-ui (under Radix dropdown) does `new ResizeObserver(...)`
 class ResizeObserverStub {

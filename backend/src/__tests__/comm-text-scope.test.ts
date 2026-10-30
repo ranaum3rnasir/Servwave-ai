@@ -61,7 +61,7 @@ function linkNumbers(...ids: string[]) {
 function signInNarrow(extra: Record<string, boolean | string> = {}) {
   mockAuthAs('dispatcher');
   mockRoleSwitches({
-    communication_scope: 'linked_to_me', see_main_line_when_no_number: false, view_jobs: true, jobs_scope: 'attached', ...extra,
+    communication_scope: 'attached', see_main_line_when_no_number: false, view_jobs: true, jobs_scope: 'attached', ...extra,
   });
 }
 

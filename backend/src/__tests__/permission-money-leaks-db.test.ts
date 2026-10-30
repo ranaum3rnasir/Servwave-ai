@@ -10,7 +10,7 @@
        counts only the deposits on estimates the person can open (the same answer the estimates list gives for the
        tile); with it, or as the Admin box, it is the whole company's.
      - GET /api/reports/jobs: a margin or cost key (profit, item cost, labor cost, card and tech expenses) is
-       left out without See financial data; the prices of each job stay.
+       left out without See costs; the prices of each job stay.
      - GET /api/reports/activity: revenue touched, which sums company revenue, is left out without See company
        figures; the action counts stay.
    ========================================================================== */
@@ -39,10 +39,11 @@ const suite = realClient ? describe : describe.skip;
 
 const keyOf = (label: string) => SWITCH_CATALOG.find((s) => s.label === label)!.key;
 const SEE_COMPANY_FIGURES = keyOf('See company figures');
-const SEE_FINANCIAL_DATA = keyOf('See financial data');
+const SEE_FINANCIAL_DATA = keyOf('See costs');
 const ACCESS_REPORTS = keyOf('Access Reports');
 const VIEW_ESTIMATES = keyOf('View estimates');
-const ESTIMATES_SCOPE = keyOf('Estimates scope');
+/** The scope an estimate follows (P6): the Leads and Jobs scopes, both at the one value. */
+const estimatesScope = (v: string) => ({ jobs_scope: v, leads_scope: v });
 
 /** Figures no count, date or id on these records can equal. */
 const DEPOSIT = { mine: 321.45, stranger: 777.77 };
@@ -64,7 +65,7 @@ suite('company money and cost words held back from a person without the switch (
     const allOff = Object.fromEntries(SWITCH_CATALOG.filter((s) => s.kind === 'toggle').map((s) => [s.key, false]));
     const roleKey = `money-role-${++sequence}`;
     const role = await fx.addCustomRole(org, roleKey, 'TECHNICIAN', { madeFromBlank: true, copyGrants: false });
-    await setRoleSwitchValues({ organizationId: org, roleKey, actorId: null, reason: 'manual', values: { ...allOff, ...values } });
+    await setRoleSwitchValues({ organizationId: org, roleKey, actorId: null, reason: 'manual', values: { ...allOff, see_prices: true, ...values } });
     const person = await fx.addUser(org, `p${sequence}`, 'TECHNICIAN', { customRoleId: role.id });
     return Object.assign(() => fx.signedInAs(person), { id: person.id });
   }
@@ -84,11 +85,13 @@ suite('company money and cost words held back from a person without the switch (
 
     async function buildWorld() {
       const { org, customer, admin } = await fx.newOrg();
-      const attached = { [VIEW_ESTIMATES]: true, [ESTIMATES_SCOPE]: 'attached' };
+      // A document is reached through the lead or job it hangs off, which takes View leads and View jobs (ticket 33, story 50).
+      const opens = { view_leads: true, view_jobs: true };
+      const attached = { [VIEW_ESTIMATES]: true, ...opens, ...estimatesScope('attached') };
       const on = await personWith(org, { ...attached, [SEE_COMPANY_FIGURES]: true });
       const off = await personWith(org, { ...attached, [SEE_COMPANY_FIGURES]: false });
-      const offSeesAll = await personWith(org, { [VIEW_ESTIMATES]: true, [ESTIMATES_SCOPE]: 'all', [SEE_COMPANY_FIGURES]: false });
-      const nothing = await personWith(org, { [VIEW_ESTIMATES]: true, [ESTIMATES_SCOPE]: 'attached' });
+      const offSeesAll = await personWith(org, { [VIEW_ESTIMATES]: true, ...opens, ...estimatesScope('all'), [SEE_COMPANY_FIGURES]: false });
+      const nothing = await personWith(org, { [VIEW_ESTIMATES]: true, ...estimatesScope('attached') });
 
       // The person without the figures is on the first lead; the second belongs to nobody they can reach.
       const mine = await fx.addLead(org, customer, { assignees: [off.id, on.id] });
@@ -145,7 +148,12 @@ suite('company money and cost words held back from a person without the switch (
 
     async function buildWorld() {
       const { org, customer, admin } = await fx.newOrg();
-      const reports = { [ACCESS_REPORTS]: true };
+      // A report shows the rows the person's scope reaches (P13), so these people read every kind of record at the widest scope;
+      // what differs between them is only the money classes.
+      const reports = {
+        [ACCESS_REPORTS]: true, view_jobs: true, view_leads: true, view_estimates: true, view_invoices: true,
+        jobs_scope: 'all', leads_scope: 'all',
+      };
       const both = await personWith(org, { ...reports, [SEE_FINANCIAL_DATA]: true, [SEE_COMPANY_FIGURES]: true });
       const costsOff = await personWith(org, { ...reports, [SEE_FINANCIAL_DATA]: false, [SEE_COMPANY_FIGURES]: true });
       const figuresOff = await personWith(org, { ...reports, [SEE_FINANCIAL_DATA]: true, [SEE_COMPANY_FIGURES]: false });
@@ -176,13 +184,13 @@ suite('company money and cost words held back from a person without the switch (
       return res.body.jobs as Record<string, unknown>[];
     };
 
-    it('carries the margin and cost keys of every job with See financial data, and for the Admin box', async () => {
+    it('carries the margin and cost keys of every job with See costs, and for the Admin box', async () => {
       for (const who of [world.both, world.figuresOff, world.admin]) {
         for (const row of await jobRows(who)) for (const key of COST_KEYS) expect(key in row, key).toBe(true);
       }
     });
 
-    it('leaves the margin and cost keys out of every job without See financial data, keeping the prices', async () => {
+    it('leaves the margin and cost keys out of every job without See costs, keeping the prices', async () => {
       for (const row of await jobRows(world.costsOff)) {
         for (const key of COST_KEYS) expect(key in row, key).toBe(false);
         for (const key of PRICE_KEYS) expect(key in row, key).toBe(true);

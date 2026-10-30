@@ -13,7 +13,7 @@ import { join } from 'node:path';
 import { SWITCH_CATALOG, type SwitchEntry } from '../lib/permissions/switches/catalog';
 import { PRESET_MIGRATION_NAME } from '../lib/permissions/switches/presetMigration';
 import { loadPresetMigrationSnapshot } from '../lib/permissions/switches/presetMigrationSnapshot';
-import { formatPresetMigrationDrift, presetMigrationDrift } from '../lib/permissions/switches/presetMigrationDrift';
+import { PRESET_FOLLOW_UPS, formatPresetMigrationDrift, presetMigrationDrift } from '../lib/permissions/switches/presetMigrationDrift';
 
 const BACKEND = join(__dirname, '..', '..');
 const FILE = join(BACKEND, 'prisma', 'migrations', PRESET_MIGRATION_NAME, 'migration.sql');
@@ -33,12 +33,28 @@ describe('the drift checker for the applied preset migration', () => {
     expect(formatPresetMigrationDrift(drift).ok).toBe(true);
   });
 
+  it('does not call a preset drift when a later migration carries the stored rows to the catalog value, and still names one it does not', () => {
+    // AL-04 moved seven built-in Technician / Dispatcher presets in 20261028100300_permission_create_requires_edit.
+    const move = PRESET_FOLLOW_UPS[0]!;
+    const migrationSql = readFileSync(join(BACKEND, 'prisma', 'migrations', move.migration, 'migration.sql'), 'utf8');
+    for (const m of move.moves) {
+      expect(migrationSql, `${m.role} ${m.key} is in ${move.migration}`).toMatch(
+        new RegExp(`\\('${m.role}',\\s*'${m.key}',\\s*'${m.was}'::jsonb,\\s*'${m.now}'::jsonb\\)`),
+      );
+      const live = SWITCH_CATALOG.find((s) => s.key === m.key)!;
+      expect(live.presets[m.role as keyof SwitchEntry['presets']], `${m.role} ${m.key} in the catalog`).toBe(m.now);
+    }
+    // A catalog value that the follow-up does NOT land on is still drift.
+    const catalog = catalogWith('edit_jobs', (s) => ({ ...s, presets: { ...s.presets, TECHNICIAN: false, SALES: !s.presets.SALES } }));
+    expect(presetMigrationDrift(sql, snapshot, catalog).changed.map((c) => c.key)).toContain('edit_jobs');
+  });
+
   it('treats a switch added after the migration as fine: a role with no stored row resolves to its preset', () => {
     const drift = presetMigrationDrift(sql, snapshot, SWITCH_CATALOG);
-    expect(drift.added).toContain('show_payments_page');
+    expect(drift.added).toContain('tasks_scope');
     const report = formatPresetMigrationDrift(drift);
     expect(report.ok).toBe(true);
-    expect(report.lines.join('\n')).toMatch(/show_payments_page/);
+    expect(report.lines.join('\n')).toMatch(/tasks_scope/);
   });
 
   it('does not ask for anything when only a grant mapping moved: those are read once, by a migration that has run', () => {

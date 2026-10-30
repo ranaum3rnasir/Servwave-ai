@@ -230,7 +230,7 @@ export function JobCommunicationsTab({
                   // somebody who may actually change it - the logger, or an org admin, holding
                   // the ability. See LeadCommunicationsTab for the full reasoning.
                   it.manuallyLogged
-                    ? canLogPast && canModifyLoggedEntry(it, { id: viewer?.id, role: viewer?.role })
+                    ? canLogPast && canModifyLoggedEntry(it, { id: viewer?.id, is_admin: viewer?.is_admin })
                       ? () => setEditingEntryId(it.id)
                       : undefined
                     : canAccessComms

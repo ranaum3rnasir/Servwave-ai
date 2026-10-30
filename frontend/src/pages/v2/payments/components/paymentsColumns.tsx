@@ -121,16 +121,17 @@ export function buildPaymentColumns({
   ];
 }
 
+/** The columns that are a payment amount (P11): a person without See prices gets none of them, in the table or the export. */
+export const PAYMENT_PRICE_COLUMN_IDS: ReadonlySet<string> = new Set(['amount', 'fee', 'net']);
+
 /** One payment as a CSV row; Restricted rows say so instead of naming the customer or the invoice. */
-export function toPaymentExportRow(p: PaymentRow & { customer_name: string; invoice_number: string }, timeZone: string) {
+export function toPaymentExportRow(p: PaymentRow & { customer_name: string; invoice_number: string }, timeZone: string, showPrices = true) {
   return {
     Date: formatInstant(p.date, timeZone, { year: 'numeric', month: '2-digit', day: '2-digit' }),
     Customer: p.restricted ? 'Restricted' : p.customer_name,
     Invoice: p.restricted ? 'Restricted' : p.invoice_number,
     Method: p.method_label,
     Status: p.status,
-    Amount: p.amount,
-    Fee: p.fee,
-    Net: netAfterRefunds(p),
+    ...(showPrices ? { Amount: p.amount, Fee: p.fee, Net: netAfterRefunds(p) } : {}),
   };
 }

@@ -125,7 +125,7 @@ function toVendorDto(row: any, req: Request) {
   if (Array.isArray(row.contacts) && row.contacts.length > 0) {
     dto.additionalContacts = row.contacts.map(mapContact);
   }
-  // The account number is a company cost detail: it needs See financial data (S01.15).
+  // The account number is a company cost detail: it needs See costs (S01.15).
   if (row.account_number != null && canSeeCosts(req)) dto.accountNumber = row.account_number;
   if (row.website != null) dto.website = row.website;
   if (row.pickup_address != null) dto.pickupAddress = row.pickup_address;

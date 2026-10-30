@@ -46,7 +46,7 @@ export function automationsV2Routes() {
     <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN']} />}>
       <Route element={<V2AppLayout />}>
         <Route element={<RequireFeature feature="automations" />}>
-          <Route element={<RequirePageAccess all={['view_automations', 'show_automations_page']} />}>
+          <Route element={<RequirePageAccess all={['view_automations']} />}>
             <Route path="/automations" element={<AutomationsHomePage />} />
           </Route>
           <Route element={<RequirePageAccess all={['create_automations']} />}>

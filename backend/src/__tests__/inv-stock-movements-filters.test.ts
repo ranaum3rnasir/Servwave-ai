@@ -199,8 +199,8 @@ describe('GET /api/inventory/movements — {data,meta} + filters', () => {
 
   it('OMITS the unitCost key entirely for read-Inventory-without-read-Invoice (strip-by-omission)', async () => {
     mockAuthAs('dispatcher');
-    // Read Inventory WITHOUT See financial data — can list movements, must not see cost. The requester is on the
-    // Dispatcher preset: it holds See inventory activity (the movement routes need it) and not See financial data.
+    // Read Inventory WITHOUT See costs — can list movements, must not see cost. The requester is on the
+    // Dispatcher preset: it holds See inventory activity (the movement routes need it) and not See costs.
     mockPrisma.stockMovement.findMany.mockResolvedValue([movementRow()]);
     mockPrisma.stockMovement.count.mockResolvedValue(1);
 

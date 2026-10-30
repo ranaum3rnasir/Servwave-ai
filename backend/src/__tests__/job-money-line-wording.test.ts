@@ -23,13 +23,13 @@ async function line(
 describe('job money history wording', () => {
   it('an online card payment reads "received via ServWave Payments"', async () => {
     const d = await line('PAYMENT_RECORDED', { amount: 500, method: 'CARD', online: true });
-    expect(d.description).toBe('Invoice INV-100 payment recorded: $500.00 received via ServWave Payments');
+    expect(d.description).toBe('Invoice INV-100 payment recorded via ServWave Payments');
     expect(d.metadata.method).toBe('CARD');
   });
 
   it('an online bank payment reads the same, never ACH', async () => {
     const d = await line('PAYMENT_RECORDED', { amount: 500, method: 'ACH', online: true });
-    expect(d.description).toBe('Invoice INV-100 payment recorded: $500.00 received via ServWave Payments');
+    expect(d.description).toBe('Invoice INV-100 payment recorded via ServWave Payments');
     expect(d.description).not.toMatch(/ACH/);
   });
 
@@ -41,20 +41,20 @@ describe('job money history wording', () => {
     ['CASH_APP', 'Cash App'],
   ])('a hand payment by %s reads "%s"', async (method, label) => {
     const d = await line('PAYMENT_RECORDED', { amount: 400, method });
-    expect(d.description).toBe(`Invoice INV-100 payment recorded: $400.00 via ${label}`);
+    expect(d.description).toBe(`Invoice INV-100 payment recorded via ${label}`);
   });
 
   it('a refund and a void name the method in words too', async () => {
     expect((await line('REFUND_ISSUED', { amount: 50, method: 'BANK_TRANSFER' })).description)
-      .toBe('Invoice INV-100 refund issued: $50.00 via Bank transfer');
+      .toBe('Invoice INV-100 refund issued via Bank transfer');
     expect((await line('PAYMENT_VOIDED', { amount: 50, method: 'EXTERNAL_CARD' })).description)
-      .toBe('Invoice INV-100 payment voided: $50.00 via Card (outside ServWave)');
+      .toBe('Invoice INV-100 payment voided via Card (outside ServWave)');
   });
 
   it('a deposit applied has no method wording, and a null method has none', async () => {
     expect((await line('DEPOSIT_APPLIED', { amount: 100, method: 'DEPOSIT_CREDIT' })).description)
-      .toBe('Invoice INV-100 deposit applied: $100.00');
+      .toBe('Invoice INV-100 deposit applied');
     expect((await line('REFUND_ISSUED', { amount: 5, method: null })).description)
-      .toBe('Invoice INV-100 refund issued: $5.00');
+      .toBe('Invoice INV-100 refund issued');
   });
 });

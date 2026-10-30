@@ -37,6 +37,7 @@ function fakeTx(orgName: string) {
   const tx: any = {
     organization: {
       findUnique: vi.fn(async () => ({ id: ORG, name: orgName })),
+      update: del('organization.update'),
       delete: del('organization.delete'),
     },
     mailboxAddress: { findMany: vi.fn(async () => []) },
@@ -45,7 +46,6 @@ function fakeTx(orgName: string) {
     // Roles & Permissions S09.4 - each person's saved home-page layout.
     userDashboardLayout: { deleteMany: del('userDashboardLayout') },
     appSetting: { deleteMany: del('appSetting') },
-    rolePermission: { deleteMany: del('rolePermission') },
     tagAssignment: { deleteMany: del('tagAssignment') },
     tag: { deleteMany: del('tag') },
     // Payments go-live P10 - files attached to a dispute's evidence hold their attachments (RESTRICT).
@@ -111,6 +111,13 @@ describe('purgeOrganization', () => {
     expect(calls).toContain('department');
     expect(calls.indexOf('user')).toBeLessThan(calls.indexOf('organization.delete'));
     expect(calls.indexOf('department')).toBeLessThan(calls.indexOf('organization.delete'));
+  });
+
+  it("lets go of the company's Owner before deleting its people (AL-16: the database refuses to delete the Owner's row)", async () => {
+    const { tx, calls, args } = fakeTx('e2e-qa-abc123');
+    await purgeOrganization(tx, ORG, 'e2e-qa-');
+    expect(args.get('organization.update')).toEqual({ where: { id: ORG }, data: { owner_user_id: null } });
+    expect(calls.indexOf('organization.update')).toBeLessThan(calls.indexOf('user'));
   });
 
   it('deletes reply tokens before the organization row (email slice 6)', async () => {

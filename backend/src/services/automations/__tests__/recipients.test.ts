@@ -345,13 +345,13 @@ describe('resolveAudience — assigned_user', () => {
 // ── resolveAudience — all_admins / all_dispatchers ──────────────────────────
 
 describe('resolveAudience — all_admins / all_dispatchers', () => {
-  it('all_admins queries active ADMINs scoped to the org', async () => {
+  it('all_admins queries the active people with the Admin flag, scoped to the org', async () => {
     const admins = [user({ id: 'a1' }), user({ id: 'a2' })];
     mockPrisma.user.findMany.mockResolvedValueOnce(admins);
     const r = await resolveAudience('all_admins', ctx());
     expect(r).toEqual({ users: admins, emails: [] });
     expect(mockPrisma.user.findMany.mock.calls[0][0]).toMatchObject({
-      where: { organization_id: ORG, role: 'ADMIN', is_active: true },
+      where: { organization_id: ORG, is_admin: true, is_active: true },
       select: { id: true, email: true, first_name: true, last_name: true, phone: true },
     });
   });

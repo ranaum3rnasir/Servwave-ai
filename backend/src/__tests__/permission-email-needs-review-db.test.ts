@@ -149,17 +149,19 @@ suite('the Needs review folder (real database, real webhook route, real list and
     const seq = ++sequence;
 
     const personWith = async (key: string, values: Record<string, boolean | string>): Promise<Member> => {
+      // `is_admin: true` makes the person an Admin (the flag, AL-18): it is not a switch, so it never reaches the role.
+      const { is_admin: asAdmin, ...switchValues } = values;
       const role = await fx.addCustomRole(org, `${key}-${seq}`, 'DISPATCHER');
       await setRoleSwitchValues({
         organizationId: org, roleKey: `${key}-${seq}`,
         values: {
           view_jobs: true, jobs_scope: 'attached', view_leads: true, leads_scope: 'attached', view_customers: true,
-          view_estimates: true, estimates_scope: 'attached', view_invoices: true, invoices_scope: 'attached',
-          access_communication: true, show_email: true, view_communication: true, communication_scope: 'linked_to_me', ...values,
+          view_estimates: true, view_invoices: true,
+          access_communication: true, show_email: true, view_communication: true, communication_scope: 'attached', ...switchValues,
         },
         actorId: null, reason: 'manual',
       });
-      const person = await fx.addUser(org, `${key}${seq}`, 'DISPATCHER', { customRoleId: role.id });
+      const person = await fx.addUser(org, `${key}${seq}`, 'DISPATCHER', { customRoleId: role.id, isAdmin: asAdmin === true });
       return Object.assign(person, { api: () => fx.signedInAs(person) });
     };
     const mailboxOf = async (person: Person) => {
@@ -841,7 +843,7 @@ suite('the Needs review folder (real database, real webhook route, real list and
 
     it('moves what the mailbox held to the main mailbox\'s list, where its readers find it, with no one left holding it', async () => {
       const w = await world();
-      const editor = await w.personWith('editor', { view_users: true, edit_users: true, delete_users: false });
+      const editor = await w.personWith('editor', { view_users: true, is_admin: true });
       const id = await holdDirect(w, { mailbox: w.boxA.id, subject: 'Held for the leaver' });
       expect(idsOf((await listFor(w.reader, `?mailbox=${w.main}`)).body)).not.toContain(id);
 
@@ -854,7 +856,7 @@ suite('the Needs review folder (real database, real webhook route, real list and
 
     it('leaves it where it is when the mailbox is handed to a person, who now holds it and sees it', async () => {
       const w = await world();
-      const editor = await w.personWith('editor', { view_users: true, edit_users: true, delete_users: false });
+      const editor = await w.personWith('editor', { view_users: true, is_admin: true });
       const id = await holdDirect(w, { mailbox: w.boxA.id });
 
       expect((await deactivate(editor, w.holderA.id, w.holderB.id)).status).toBe(200);

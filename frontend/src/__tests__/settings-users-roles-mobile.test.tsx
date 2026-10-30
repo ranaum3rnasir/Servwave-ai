@@ -79,7 +79,7 @@ describe('Roles & Permissions: one column below xl', () => {
   it('stacks the roles list above the detail below xl and keeps them side by side from xl', async () => {
     windowWidth(900);
     const { container } = renderWithProviders(<RolesPage />, { ability: ADMIN });
-    await screen.findByRole('heading', { name: 'Admin' });
+    await screen.findByRole('heading', { name: 'Technician' });
 
     // Below xl the roles are one picker, not a row of buttons; the two panes are one column.
     const picker = screen.getByRole('combobox', { name: 'Role' });
@@ -91,7 +91,7 @@ describe('Roles & Permissions: one column below xl', () => {
   it('keeps the side column from xl, with each role a button in it', async () => {
     windowWidth(1400);
     renderWithProviders(<RolesPage />, { ability: ADMIN });
-    await screen.findByRole('heading', { name: 'Admin' });
+    await screen.findByRole('heading', { name: 'Technician' });
     const list = screen.getByRole('group', { name: 'Roles' });
     expect(within(list).getByRole('button', { name: /Technician/ })).toBeInTheDocument();
     expect(screen.queryByRole('combobox', { name: 'Role' })).toBeNull();
@@ -99,14 +99,14 @@ describe('Roles & Permissions: one column below xl', () => {
 
   it('lets the role header and every switch row wrap instead of pushing past the edge', async () => {
     renderWithProviders(<RolesPage />, { ability: ADMIN });
-    await screen.findByRole('heading', { name: 'Admin' });
+    await screen.findByRole('heading', { name: 'Technician' });
     await userEvent.click(screen.getByRole('button', { name: /Technician/ }));
 
-    const switchEl = await screen.findByRole('switch', { name: catalogSwitch('see_financial_data').label });
+    const switchEl = await screen.findByRole('switch', { name: catalogSwitch('see_costs').label });
     const row = switchEl.parentElement!;
     // Label over control on a phone; side by side, wrapping, from md.
     expect(row).toHaveClass('flex-col', 'md:flex-row', 'md:flex-wrap', 'md:gap-x-3');
-    expect(screen.getByText(catalogSwitch('see_financial_data').label)).toHaveClass('min-w-0');
+    expect(screen.getByText(catalogSwitch('see_costs').label)).toHaveClass('min-w-0');
   });
 });
 
@@ -126,8 +126,8 @@ describe('Users & Teams: cards below md', () => {
     expect(within(tess).getByText('No login')).toBeInTheDocument();
     expect(within(tess).getByRole('combobox', { name: 'Role for Tess Tech' })).toBeInTheDocument();
     expect(within(tess).getByRole('combobox', { name: 'Team for Tess Tech' })).toBeInTheDocument();
-    // No clock-in location controls: the checks are gone from the product.
-    expect(within(tess).queryByRole('switch')).toBeNull();
+    // No clock-in location controls: the checks are gone from the product. The one switch on the card is the Admin flag.
+    expect(within(tess).getAllByRole('switch').map((el) => el.getAttribute('aria-label'))).toEqual(['Admin: Tess Tech']);
     expect(within(tess).getByText('Active')).toBeInTheDocument();
     for (const name of ['Edit', 'Permissions', 'Send invite', 'Deactivate']) {
       expect(within(tess).getByRole('button', { name })).toBeInTheDocument();

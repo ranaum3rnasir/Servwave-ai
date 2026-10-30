@@ -88,14 +88,13 @@ function bankFailedEnding(data: Record<string, any>): string | undefined {
  * DISPUTED rather than voided.
  */
 function bankReturnBody(data: Record<string, any>): string | undefined {
-  const amount = s(data, 'amount');
-  if (!amount) return undefined;
   const cleared = s(data, 'cleared');
-  const base = cleared === 'yes'
-    ? 'Amount: $' + amount + ' was taken back from your ServWave Payments balance.'
+  // Roles & Permissions M4 (Ran, 2026-10-28): no bell or owner email names an amount, to anyone.
+  const base: string | undefined = cleared === 'yes'
+    ? 'This payment was taken back from your ServWave Payments balance.'
     : cleared === 'no'
-      ? 'Amount: $' + amount + '. The bank returned this payment before it cleared, so no money reached your ServWave Payments balance.'
-      : 'Amount: $' + amount + '.';
+      ? 'The bank returned this payment before it cleared, so no money reached your ServWave Payments balance.'
+      : undefined;
   const open = cleared === 'no' ? 'The invoice is still open' : 'The invoice is open again';
   const notice = s(data, 'customer_notice');
   const ending: string | undefined = notice === 'sent' ? open + ' and we emailed the customer a link to pay again.'
@@ -104,7 +103,7 @@ function bankReturnBody(data: Record<string, any>): string | undefined {
     : notice === 'not_sent' ? open + '. ' + EMAIL_NOT_SENT
     : notice === 'not_open' ? (s(data, 'cannot_pay') ? CANNOT_PAY_ONLINE : 'The invoice stays voided, so the customer was not asked to pay.')
     : undefined;
-  return ending ? base + ' ' + ending : base;
+  return [base, ending].filter(Boolean).join(' ') || undefined;
 }
 
 /**
@@ -135,14 +134,11 @@ export function disputeReasonWords(reason: string | null | undefined): string {
 
 /** Slice 32: the body of a dispute alert - what, why and by when. */
 function openedDisputeBody(data: Record<string, any>): string | undefined {
-  const amount = s(data, 'amount');
   const reason = s(data, 'reason_words');
   if (s(data, 'variant') === 'bank_return') {
-    if (!amount) return undefined;
-    return `The bank took back $${amount}.` + (reason ? ` Reason: ${reason}.` : '');
+    return 'The bank took back this payment.' + (reason ? ` Reason: ${reason}.` : '');
   }
   const parts = [
-    amount ? `Amount: $${amount}.` : '',
     reason ? `Reason: ${reason}.` : '',
     s(data, 'evidence_due') ? `Respond by ${s(data, 'evidence_due')}.` : '',
   ].filter(Boolean);
@@ -293,7 +289,6 @@ const registry = {
     // neither key, so its body is exactly the amount line it was before this existed.
     body: [
       [
-        s(data, 'amount') ? 'Amount: $' + s(data, 'amount') : '',
         s(data, 'options_chosen') ? 'Chose: ' + s(data, 'options_chosen') : '',
         s(data, 'options_declined') ? 'Declined: ' + s(data, 'options_declined') : '',
       ].filter(Boolean).join(' · '),
@@ -321,7 +316,7 @@ const registry = {
     needs_action: true,
     title: 'Deposit paid for ' + s(data, 'object_label', 'estimate')
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
-    body: [s(data, 'amount') ? 'Amount: $' + s(data, 'amount') : '', s(data, 'fallback_reason')].filter(Boolean).join('\n') || undefined,
+    body: s(data, 'fallback_reason') || undefined,
   }),
 
   'estimate.cancelled': (data) => ({
@@ -640,7 +635,7 @@ const registry = {
     needs_action: false,
     title: 'Payment received for ' + s(data, 'object_label', 'invoice')
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
-    body: withWhy(data, s(data, 'amount') ? 'Amount: $' + s(data, 'amount') : undefined),
+    body: withWhy(data),
   }),
 
   'billing.partial_payment': (data) => ({
@@ -651,7 +646,7 @@ const registry = {
     needs_action: false,
     title: 'Partial payment received for ' + s(data, 'object_label', 'invoice')
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
-    body: withWhy(data, s(data, 'amount') ? 'Amount: $' + s(data, 'amount') : undefined),
+    body: withWhy(data),
   }),
 
   'billing.invoice_overdue': (data) => ({
@@ -662,7 +657,7 @@ const registry = {
     needs_action: true,
     title: s(data, 'object_label', 'Invoice') + ' is overdue'
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
-    body: withWhy(data, s(data, 'amount') ? 'Balance due: $' + s(data, 'amount') : undefined),
+    body: withWhy(data),
   }),
 
   'billing.invoice_due_soon': (data) => ({
@@ -673,7 +668,7 @@ const registry = {
     needs_action: true,
     title: s(data, 'object_label', 'Invoice') + ' is due soon'
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
-    body: withWhy(data, s(data, 'amount') ? 'Balance due: $' + s(data, 'amount') : undefined),
+    body: withWhy(data),
   }),
 
   'billing.refunded': (data) => ({
@@ -684,7 +679,7 @@ const registry = {
     needs_action: true,
     title: 'Refund issued for ' + s(data, 'object_label', 'invoice')
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
-    body: withWhy(data, s(data, 'amount') ? 'Amount: $' + s(data, 'amount') : undefined),
+    body: withWhy(data),
   }),
 
   'billing.disputed': (data) => ({
@@ -716,10 +711,9 @@ const registry = {
     // Payments go-live slice 09: a lost dispute for less than the payment leaves the payment as
     // recorded, so a person must check the balance.
     body: withWhy(data, unrecordedDisputeBody(data, 'lost') ?? (s(data, 'variant') === 'partial_chargeback'
-      ? (s(data, 'amount') ? '$' + s(data, 'amount') + ' was taken back. ' : '')
-        + 'The payment was left as recorded and the balance was not changed. Review the balance by hand.'
+      ? 'Part of this payment was taken back. The payment was left as recorded and the balance was not changed. Review the balance by hand.'
       : s(data, 'variant') === 'bank_return' ? bankReturnBody(data)
-      : s(data, 'amount') ? 'Amount: $' + s(data, 'amount') + ' was taken back from your ServWave Payments balance.' : undefined)),
+      : 'This payment was taken back from your ServWave Payments balance.')),
   }),
 
   // Payments go-live slice 32: a dispute reached a final answer that cost nothing (the owner won,
@@ -732,8 +726,7 @@ const registry = {
     needs_action: false,
     title: (s(data, 'outcome') === 'WON' ? 'Dispute won for ' : 'Dispute closed for ') + s(data, 'object_label', 'invoice')
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
-    body: withWhy(data, (s(data, 'amount') ? 'Amount: $' + s(data, 'amount') + '. ' : '')
-      + (s(data, 'outcome') === 'WON'
+    body: withWhy(data, (s(data, 'outcome') === 'WON'
         ? 'It was decided in your favor and the payment stands.'
         : 'It ended without a chargeback.')),
   }),
@@ -748,7 +741,7 @@ const registry = {
     needs_action: false,
     title: 'Bank payment started for ' + s(data, 'object_label', 'invoice')
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
-    body: withWhy(data, (s(data, 'amount') ? 'Amount: $' + s(data, 'amount') + '. ' : '') + 'It usually takes a few business days to clear.'),
+    body: withWhy(data, 'It usually takes a few business days to clear.'),
   }),
 
   'billing.bank_payment_cleared': (data) => ({
@@ -759,7 +752,7 @@ const registry = {
     needs_action: false,
     title: 'Bank payment cleared for ' + s(data, 'object_label', 'invoice')
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
-    body: withWhy(data, s(data, 'amount') ? 'Amount: $' + s(data, 'amount') : undefined),
+    body: withWhy(data),
   }),
 
   'billing.bank_payment_failed': (data) => ({
@@ -770,8 +763,7 @@ const registry = {
     needs_action: true,
     title: 'Bank payment failed for ' + s(data, 'object_label', 'invoice')
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
-    body: withWhy(data, (s(data, 'amount') ? 'Amount: $' + s(data, 'amount') + '. ' : '')
-      + 'No money moved.' + (bankFailedEnding(data) ? ' ' + bankFailedEnding(data) : '')),
+    body: withWhy(data, 'No money moved.' + (bankFailedEnding(data) ? ' ' + bankFailedEnding(data) : '')),
   }),
 
   // Payments go-live slice 32: a refund the processor could not complete.
@@ -785,7 +777,6 @@ const registry = {
     title: 'Refund failed for ' + s(data, 'object_label', 'invoice')
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
     body: withWhy(data, (s(data, 'refund_kind') === 'bank' ? 'A bank refund' : 'A refund')
-      + (s(data, 'amount') ? ' of $' + s(data, 'amount') : '')
       + ' to ' + s(data, 'customer_name', 'the customer')
       + ' failed. The money is back in your ServWave Payments balance and the customer still needs to be repaid.'),
   }),
@@ -843,7 +834,7 @@ const registry = {
     needs_action: false,
     title: 'Credit applied to ' + s(data, 'object_label', 'invoice')
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
-    body: withWhy(data, s(data, 'amount') ? 'Amount: $' + s(data, 'amount') : undefined),
+    body: withWhy(data),
   }),
 
   // ── BILLING: payments-account lifecycle (Stripe Connect, Task 1.8) ─────────
@@ -887,12 +878,11 @@ const registry = {
   // ── BILLING: deferred-bank first-payment nudge (Task 1.9, §6.6/§6.8) ──────
   // One-shot FEED item fired from webhook.controller.ts's checkout.session.completed
   // CARD branch the first time a direct-charge org collects a card payment while
-  // stripe_payouts_enabled is still false. data.amount arrives pre-formatted
-  // (e.g. "$500.00") — interpolated straight into the §6.8 copy, not re-prefixed.
+  // stripe_payouts_enabled is still false. It names no amount (M4, Ran 2026-10-28).
   'billing.payouts_pending_first_payment': (data) => ({
     category: 'BILLING', object_type: 'ORGANIZATION', priority: 'FEED', action_type: null, needs_action: false,
-    title: `You've collected ${s(data, 'amount', 'a payment')}. Add your bank account to get paid out.`,
-    body: withWhy(data, s(data, 'amount') || undefined),
+    title: "You've collected a payment. Add your bank account to get paid out.",
+    body: withWhy(data),
   }),
 
   // ── TEAM ───────────────────────────────────────────────────────────────────
@@ -1062,7 +1052,7 @@ const registry = {
     needs_action: true,
     title: 'Logistic order submitted for approval'
       + (s(data, 'object_label') ? ': ' + s(data, 'object_label') : ''),
-    // S07.9: the why line of the Manage roles and permissions holders who cover when nobody can approve it, on its own line.
+    // S07.9: the why line of the Admins who cover when nobody can approve it, on its own line.
     body: withWhy(data, s(data, 'actor_name') ? 'Submitted by ' + s(data, 'actor_name') : undefined),
   }),
 
@@ -1172,7 +1162,7 @@ const registry = {
   // the generic verb for the NOTIFY_TEAM step until that step was retired
   // (docs/adr/0005) and the engine's emit() call site went with it, so a
   // workflow RUN no longer reaches this template at all. What still does is the
-  // Test dialog's send-to-me receipt (workflow.controller.ts:766) - one
+  // Test dialog's send-to-me receipt (workflow.controller.ts:772) - one
   // synchronous row for the person who clicked Test. Title/body arrive fully
   // rendered from that caller; object_type mirrors the trigger's entity so
   // filterRecipientsByAccess row-scopes on the right resource.
@@ -1482,9 +1472,9 @@ export const VERB_RULES: Record<KnownVerb, VerbRule> = {
   'mailbox.address_needed_admin': {
     family: 'duty',
     timing: 'event',
-    exception: 'The recipients are the active holders of Edit users, found by the switch-holder lookup (never a role '
-      + 'name) and handed over in entity.recipient_ids. The alert carries no actor: the person who created the user '
-      + 'did not know the name was taken, so they are told too.',
+    exception: 'The recipients are the active Admins (setting a user\'s address is user management, the Admin flag\'s '
+      + 'alone since AL-18; never a role name), handed over in entity.recipient_ids. The alert carries no actor: the '
+      + 'person who created the user did not know the name was taken, so they are told too.',
   },
 
   // ── CALENDAR ENTRY ─────────────────────────────────────────────────────────
@@ -1578,7 +1568,7 @@ export const VERB_RULES: Record<KnownVerb, VerbRule> = {
     timing: 'event',
     exception: 'Not involvement (nothing is attached) and not duty (no role is consulted): '
       + 'the recipients arrive pre-resolved in entity.recipient_ids. `self` because its one '
-      + 'and only emit site is the Test dialog (workflow.controller.ts:766), whose sole '
+      + 'and only emit site is the Test dialog (workflow.controller.ts:772), whose sole '
       + 'recipient is the person who clicked Test and therefore asked for the receipt - the '
       + 'same shape as security.*, where the recipient must be told regardless of who appears '
       + 'to have acted. That single door is the whole of the Automation Center in the bell '

@@ -194,7 +194,7 @@ const manager = {
     { action: 'read', subject: 'Role' },
     { action: 'read', subject: 'User' },
   ]),
-  switches: { manage_roles_and_permissions: true, show_users_teams_page: true },
+  switches: { manage_roles_and_permissions: true, view_users: true },
 };
 
 /** Serve the reads of both screens; the accepted-methods read answers `accepted` (or fails). */

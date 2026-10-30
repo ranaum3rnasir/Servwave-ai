@@ -62,8 +62,11 @@ const COMMUNICATION_TYPES: Record<string, ConversationKind> = {
  * - Unknown user (missing from DB within org) → DROPPED (fail-closed).
  * - The scope check throwing for any recipient → DROPPED + logger.warn (fail-closed).
  * - Input order is preserved for kept ids.
- * - `opts.messageId` is for an alert about one text of a conversation: it narrows a text conversation's question to that
- *   message, so a person is kept only if they read the text the alert quotes (see readersOfConversation). Other types ignore it.
+ * - `opts.messageId` is for an alert about one message of a conversation: it narrows a text or an email conversation's question
+ *   to that message, so a person is kept only if they read the message the alert quotes (see readersOfConversation). Calls
+ *   ignore it. Without it the question is the conversation's: at least one of its messages opens for the person (what the
+ *   routes that open a conversation answer). A customer's email reply does not come through here: its bell asks the readers
+ *   question itself, about the reply AND the conversation the link opens (emailReplyAlerts.ts, M1).
  */
 export async function filterRecipientsByAccess(
   objectType: string,
@@ -91,7 +94,7 @@ export async function filterRecipientsByAccess(
     // switches, not by the base role's (grantRoleKey throws if the key is missing).
     select: {
       id: true, role: true, organization_id: true, department_id: true, location_id: true,
-      custom_role_id: true, custom_role: { select: { key: true } },
+      custom_role_id: true, is_admin: true, custom_role: { select: { key: true } },
     },
   });
 
@@ -165,7 +168,8 @@ export async function filterRecipientsByAccess(
  * - Only active people of this company are asked; anyone else is DROPPED (fail-closed), a deactivated person included.
  * - The question failing for any reason DROPS everyone and warns: a communication alert names a customer, so a failure
  *   never lets it through.
- * - Show Phone / Show Text / Show Email decide nothing here: they hide a menu entry, not access.
+ * - Show Phone and Show Text decide nothing here: they hide a menu entry, not access. Show Email decides for an email
+ *   conversation: its mail routes refuse a person with it off, so no email alert goes to them (M7, ticket 36).
  * - Input order is preserved for kept ids.
  */
 async function filterByConversationAccess(
@@ -182,7 +186,7 @@ async function filterByConversationAccess(
       where: { id: { in: recipientIds }, organization_id: organizationId, is_active: true },
       select: {
         id: true, role: true, organization_id: true, department_id: true, location_id: true,
-        custom_role_id: true, custom_role: { select: { key: true } },
+        custom_role_id: true, is_admin: true, custom_role: { select: { key: true } },
       },
     });
     const readers = await readersOfConversation(users, kind, objectId, organizationId, { messageId });

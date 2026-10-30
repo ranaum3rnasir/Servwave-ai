@@ -4,6 +4,7 @@ import { unscopedRequest } from '../middleware/unscopedRequest';
 import { authLimiter, mfaResendLimiter, passwordResetRequestLimiter } from '../middleware/rate-limit';
 import * as authController from '../controllers/auth.controller';
 import * as passwordResetController from '../controllers/password-reset.controller';
+import * as ownerApprovalController from '../controllers/owner-approval.controller';
 
 const router = Router();
 
@@ -25,6 +26,12 @@ router.get('/me', authenticate, authController.me);
 router.post('/invite', unscopedRequest, authLimiter, authController.getInvite);
 router.post('/accept-invite', unscopedRequest, authLimiter, authController.acceptInvite);
 router.post('/accept-invite/terms', unscopedRequest, authLimiter, authController.acceptInviteTerms);
+
+// ─── Make Owner approval (ticket 27, D1) ───
+// The link emailed to the company's Owner. Unauthenticated by design: the emailed link is the proof (as an invite link is), and it
+// makes no session. The token travels in the body only; authLimiter blunts guessing.
+router.post('/owner-approval', unscopedRequest, authLimiter, ownerApprovalController.previewOwnerApproval);
+router.post('/owner-approval/approve', unscopedRequest, authLimiter, ownerApprovalController.approveOwner);
 
 // ─── Forgotten password (password reset spec §5.2) ───
 // forgot always answers 200, so authLimiter (which refunds < 400) only counts malformed input; the

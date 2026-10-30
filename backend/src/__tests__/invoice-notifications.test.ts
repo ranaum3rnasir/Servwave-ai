@@ -243,10 +243,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
 
-  mockPrisma.rolePermission.findMany.mockImplementation(
-    (args: { where: { organization_id: string; role: string } }) =>
-      Promise.resolve(DEFAULT_GRANTS.filter((g) => g.role === args.where.role)),
-  );
 
   // canAccessRow uses invoice.count with tenant scope.
   mockPrisma.invoice.count.mockResolvedValue(1);

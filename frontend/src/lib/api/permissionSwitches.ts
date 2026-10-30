@@ -31,6 +31,8 @@ export interface CatalogSwitch {
   requires: string[];
   requiresAny?: string[];
   presets: Record<BuiltInRoleKey, SwitchValue>;
+  /** A per-person setting (P1): edited on the person's profile, not on the Permissions screens. */
+  setting?: boolean;
 }
 
 export interface LayoutExtra {
@@ -54,8 +56,11 @@ export interface LayoutGroup {
 }
 
 export interface CatalogLayout {
-  dataScope: string[];
+  /** The one Money row: See prices, with See costs and See company figures nested under it. */
+  money: LayoutExtra[];
   groups: LayoutGroup[];
+  /** The keys of the per-person settings, in catalog order: edited on the person's profile, never drawn by the switch editor. */
+  settings?: string[];
 }
 
 export interface SwitchCatalog {
@@ -74,6 +79,9 @@ export interface RoleSwitchSet {
   made_from_blank: boolean;
   values: SwitchSet;
   all_views_off: boolean;
+  /** Only on the answer to a save or a reset: how many people on the role follow the change, and how many keep their own value. */
+  reaches?: number;
+  keep_own?: number;
 }
 
 /** The role a person's set is based on: the one their switches were filled from. */
@@ -159,6 +167,8 @@ export function useSaveRoleSwitches() {
       void qc.invalidateQueries({ queryKey: ['roles'], exact: true });
       // Everyone based on this role has had their set read before the edit: read it again.
       void qc.invalidateQueries({ queryKey: allPersonSwitchesKey });
+      // The Users & Teams role column counts each person's changes from their role, and those are measured against this set.
+      void qc.invalidateQueries({ queryKey: ['users'] });
     },
     onError: (err) =>
       toast({

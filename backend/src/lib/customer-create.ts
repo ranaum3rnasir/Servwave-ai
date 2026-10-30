@@ -2,6 +2,9 @@ import type { Prisma, CustomerKind, CustomerSegment } from '@prisma/client';
 import { allocateNumber } from './numbering';
 import { deriveCustomerKind } from './customer-kind';
 
+/** The refusal when a lead or job form tries to add a customer for someone who cannot create customers (A7). */
+export const NEW_CUSTOMER_NEEDS_CREATE = 'Adding a new customer needs permission to create customers. Choose an existing customer.';
+
 /**
  * Single source of truth for the Customer columns that are NOT-NULL with no DB
  * default: `customer_number` (per-org app-allocated sequence), `kind`, and

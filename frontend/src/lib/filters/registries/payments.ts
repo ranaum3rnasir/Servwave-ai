@@ -69,3 +69,12 @@ export const paymentsRegistry: FacetConfig[] = [
     ],
   },
 ];
+
+const paymentsRegistryWithoutPrices: FacetConfig[] = paymentsRegistry.filter((facet) => facet.key !== 'amount');
+
+/**
+ * The facets a person is offered: without See prices there is no Amount range (P11), and the server ignores one anyway.
+ * Both arrays are module-level, so the reference `useFilterState` needs stays stable between renders.
+ */
+export const paymentsRegistryFor = (canSeePrices: boolean): FacetConfig[] =>
+  canSeePrices ? paymentsRegistry : paymentsRegistryWithoutPrices;

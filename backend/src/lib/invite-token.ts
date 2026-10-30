@@ -11,20 +11,34 @@ const SECRET =
   (env.NODE_ENV === 'production' ? '' : env.SUPABASE_SERVICE_ROLE_KEY);
 const DEFAULT_TTL_SECONDS = 7 * 24 * 60 * 60; // 7 days
 
+/** How long an invite link lives. Ticket 27's Make Owner approval link uses the same (the spec gives it none of its own). */
+export const INVITE_TTL_SECONDS = DEFAULT_TTL_SECONDS;
+
 export interface InvitePayload {
   uid: string;
   email: string;
   exp: number; // unix seconds
+  /** Which invite this link is. Only the link whose id the person's row currently holds is live (lib/invite-link.ts). */
+  jti?: string;
 }
 
 function sign(body: string): string {
   return createHmac('sha256', SECRET).update(body).digest('base64url');
 }
 
+/**
+ * The signature for another one-time link signed with the same secret, under its own scope (ticket 27: the Make Owner approval
+ * link). The scope is part of what is signed, so a link of one kind never verifies as another, and never as an invite: an
+ * invite's signed text is the bare body, which (base64url) never holds the newline that ends a scope.
+ */
+export function signScoped(scope: string, body: string): string {
+  return sign(`${scope}\n${body}`);
+}
+
 /** Build a signed, self-contained invite token: `<base64url(payload)>.<hmac>`. */
-export function signInviteToken(uid: string, email: string, ttlSeconds = DEFAULT_TTL_SECONDS): string {
+export function signInviteToken(uid: string, email: string, ttlSeconds = DEFAULT_TTL_SECONDS, jti?: string): string {
   const exp = Math.floor(Date.now() / 1000) + ttlSeconds;
-  const payload: InvitePayload = { uid, email, exp };
+  const payload: InvitePayload = { uid, email, exp, ...(jti ? { jti } : {}) };
   const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
   return `${body}.${sign(body)}`;
 }
@@ -48,5 +62,6 @@ export function verifyInviteToken(token: string): InvitePayload | null {
   }
   if (!payload || !payload.uid || !payload.email || typeof payload.exp !== 'number') return null;
   if (payload.exp < Math.floor(Date.now() / 1000)) return null;
+  if (payload.jti !== undefined && typeof payload.jti !== 'string') return null;
   return payload;
 }

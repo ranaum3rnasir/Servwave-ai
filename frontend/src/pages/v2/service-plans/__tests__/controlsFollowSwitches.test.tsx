@@ -20,7 +20,7 @@ import type { ServicePlan } from '@/lib/api/service-plans';
 
 import ServicePlansPage from '../ServicePlansPage';
 
-vi.mock('@/lib/api/users', () => ({ useUsers: () => ({ data: [] }) }));
+vi.mock('@/lib/api/users', () => ({ usePeople: () => ({ data: [] }) }));
 
 const mockApi = vi.mocked(api);
 

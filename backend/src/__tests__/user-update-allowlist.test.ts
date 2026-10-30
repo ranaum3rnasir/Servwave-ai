@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { Request, Response } from 'express';
 import { update } from '../controllers/user.controller';
 import { prisma } from '../lib/prisma';
-import { ALPHA_ORG_ID } from './helpers';
+import { ALPHA_ORG_ID, mockCompanyOwner } from './helpers';
 
 // authz-4: user.update must self-defend with an EXPLICIT field allowlist, not
 // `data: req.body`. validate(updateUserSchema) strips unknown keys upstream today,
@@ -24,12 +24,16 @@ function mockRes() {
   return res;
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  // The caller ('admin-id') is the company's Owner: making an Admin is the Owner's alone (ticket 26).
+  mockCompanyOwner('admin-id');
+});
 
 describe('user.controller update() — explicit field allowlist (authz-4)', () => {
   it('writes ONLY the allowlisted fields, dropping injected keys that bypass validate', async () => {
     const targetId = 'target-user-id';
-    mockPrisma.user.findFirst.mockResolvedValue({ id: targetId, organization_id: ALPHA_ORG_ID, role: 'TECHNICIAN' });
+    mockPrisma.user.findFirst.mockResolvedValue({ id: targetId, organization_id: ALPHA_ORG_ID, role: 'TECHNICIAN', is_admin: false });
     mockPrisma.user.update.mockResolvedValue({ id: targetId });
     // A role change fills the person's switches in one transaction with the update (Roles & Permissions M2).
     mockPrisma.$transaction.mockImplementation((fn: (tx: unknown) => unknown) => fn(mockPrisma));
@@ -47,7 +51,9 @@ describe('user.controller update() — explicit field allowlist (authz-4)', () =
         email: 'attacker@evil.com',      // identity change
         id: 'some-other-id',             // PK overwrite attempt
       },
-      user: { id: 'admin-id', organization_id: ALPHA_ORG_ID, role: 'ADMIN' },
+      user: { id: 'admin-id', organization_id: ALPHA_ORG_ID, role: 'ADMIN', is_admin: true },
+      // The access record names where the change came from (ticket 25), read from the request like any Express request.
+      headers: {},
     } as unknown as Request;
 
     await update(req, mockRes());
@@ -66,13 +72,15 @@ describe('user.controller update() — explicit field allowlist (authz-4)', () =
 
   it('omits allowlisted fields that were not provided (no undefined overwrites)', async () => {
     const targetId = 'target-2';
-    mockPrisma.user.findFirst.mockResolvedValue({ id: targetId, organization_id: ALPHA_ORG_ID, role: 'TECHNICIAN' });
+    mockPrisma.user.findFirst.mockResolvedValue({ id: targetId, organization_id: ALPHA_ORG_ID, role: 'TECHNICIAN', is_admin: false });
     mockPrisma.user.update.mockResolvedValue({ id: targetId });
 
     const req = {
       params: { id: targetId },
       body: { is_active: false }, // only one field supplied
-      user: { id: 'admin-id', organization_id: ALPHA_ORG_ID, role: 'ADMIN' },
+      user: { id: 'admin-id', organization_id: ALPHA_ORG_ID, role: 'ADMIN', is_admin: true },
+      // The access record names where the change came from (ticket 25), read from the request like any Express request.
+      headers: {},
     } as unknown as Request;
 
     await update(req, mockRes());

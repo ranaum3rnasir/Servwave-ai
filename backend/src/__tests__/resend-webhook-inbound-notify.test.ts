@@ -179,6 +179,8 @@ describe('email.received - notifying', () => {
       threadId: THREAD,
       // The id the alert dedupes on, so a webhook replay cannot double-notify.
       providerMessageId: RECEIVED_ID,
+      // The stored reply itself: the bell goes only to people who open it (M1).
+      emailId: 'inbound-row-1',
       senderLabel: 'Angel <angel@example.com>',
       subject: 'Re: Quote',
     });
@@ -189,7 +191,8 @@ describe('email.received - notifying', () => {
 
     expect(p.user.findMany).not.toHaveBeenCalled();
     const args = (alertEmailReply as any).mock.calls[0][0];
-    expect(Object.keys(args).sort()).toEqual(['organizationId', 'providerMessageId', 'senderLabel', 'subject', 'threadId']);
+    // The stored reply's id names a message, not a person: who may open it is the alert's question (M1).
+    expect(Object.keys(args).sort()).toEqual(['emailId', 'organizationId', 'providerMessageId', 'senderLabel', 'subject', 'threadId']);
   });
 
   it('anchors the alert on the conversation the reply landed in, which is what the inbox opens', async () => {

@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useState, type ReactNode } from 'react';
 import { useNavigate } from 'react-router-dom';
 
 import {
@@ -7,10 +7,13 @@ import {
   useSendInvite,
   useUpdateUser,
   useDeactivateUser,
+  useReassignOpenRecords,
+  useErasePersonalData,
   useMoveMailbox,
   useDeleteUser,
   useRevokeLogin,
   useSendPasswordReset,
+  useMakeOwner,
   type UserRole,
   type UserRow,
   type InviteUserPayload,
@@ -22,6 +25,7 @@ import {
 } from '@/lib/api/departments';
 import { useRoles, resolveRoleAssignment, type RoleSummary } from '@/lib/api/roles';
 import { useAuthStore } from '@/stores/auth.store';
+import { useIsAdmin } from '@/lib/useIsAdmin';
 import { changeCountLabel } from '@/lib/permissionChangeCount';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import { useFeature } from '@/lib/entitlements';
@@ -29,6 +33,7 @@ import { extractApiError, formatPhone } from '@/lib/utils';
 import { isUsableUserPhone, userPhoneForSubmit, USER_PHONE_INVALID_MESSAGE } from '@/lib/user-phone';
 
 import { Badge } from '@/ui-kit/components/ui/badge';
+import { DisabledReasonShell } from '@/ui-kit/components/ui/disabledReason';
 import { Button } from '@/ui-kit/components/ui/button';
 import { Card } from '@/ui-kit/components/ui/card';
 import {
@@ -48,7 +53,8 @@ import { FlushCard } from './components/section';
 import { PersonRolePicker } from './components/personRolePicker';
 import { MailboxCell } from './components/mailboxCell';
 import { MailboxAddressDialog } from './components/mailboxAddressDialog';
-import { DeactivateUserDialog } from './components/deactivateUserDialog';
+import { PersonSettingsSection } from './components/personSettingsSection';
+import { DeactivateUserDialog, type ReassignChoice } from './components/deactivateUserDialog';
 import { MoveMailboxDialog } from './components/moveMailboxDialog';
 import { SelectField } from '@/ui-kit/components/form/selectField';
 import { canAutoFocus } from '@/ui-kit/lib/autoFocus';
@@ -91,6 +97,25 @@ function roleChangeMessage(person: UserRow, fromName: string, to: RoleSummary): 
  * Every mutation control is gated on the same CASL ability the API enforces, so
  * a read-only viewer sees a read-only table rather than an action that 403s.
  */
+/** Why the actions that would remove the company's Owner are off (AL-16): the server answers the same words. */
+const OWNER_CANT_BE_REMOVED = "The Owner can't be removed.";
+/** Why the Admin controls are off for anyone but the Owner (ticket 26): the server answers the same words. */
+const ONLY_THE_OWNER_CHANGES_ADMINS = 'Only the Owner can change Admins.';
+
+/**
+ * A control kept off for a reason, saying why on hover and on tap. `render` receives the id of the reason, for the control's
+ * aria-describedby. With no reason the control renders as it is.
+ */
+function Locked({ reason, render }: { reason: string | undefined; render: (describedBy?: string) => ReactNode }) {
+  const id = useId();
+  if (!reason) return <>{render()}</>;
+  return (
+    <DisabledReasonShell reason={reason} descriptionId={id}>
+      {render(id)}
+    </DisabledReasonShell>
+  );
+}
+
 export default function UsersTeamsPage() {
   const { data: users = [] } = useUsers();
   const { data: departments = [] } = useDepartments();
@@ -99,10 +124,23 @@ export default function UsersTeamsPage() {
   const sendInvite = useSendInvite();
   const updateUser = useUpdateUser();
   const deactivate = useDeactivateUser();
+  const reassignOpen = useReassignOpenRecords();
+  const erasePersonal = useErasePersonalData();
+  const [eraseFor, setEraseFor] = useState<UserRow | null>(null);
+  const isAdmin = useIsAdmin();
+  // The company's Owner, from the sign-in payload (AL-16). No Owner, no one marked.
+  const ownerId = useAuthStore((s) => s.user?.org_owner_user_id ?? null);
+  const isOwner = (u: UserRow) => ownerId !== null && u.id === ownerId;
+  // Only the Owner makes an Admin or acts on another Admin's account (ticket 26). The server is the lock; the screen follows it.
+  const viewerIsOwner = ownerId !== null && myId === ownerId;
+  const adminLock = (u: UserRow) => (!viewerIsOwner && u.is_admin === true && u.id !== myId ? ONLY_THE_OWNER_CHANGES_ADMINS : undefined);
+  /** The Owner's own removal is refused for everyone (409); every other action on an Admin is the Owner's (403). */
+  const removalLock = (u: UserRow) => (isOwner(u) ? OWNER_CANT_BE_REMOVED : adminLock(u));
   const moveMailbox = useMoveMailbox();
   const deleteUser = useDeleteUser();
   const revokeLogin = useRevokeLogin();
   const sendPasswordReset = useSendPasswordReset();
+  const makeOwner = useMakeOwner();
   const createDept = useCreateDepartment();
   const updateDept = useUpdateDepartment();
   const deleteDept = useDeleteDepartment();
@@ -121,7 +159,7 @@ export default function UsersTeamsPage() {
   const canUpdateUser = ability.can('update', 'User');
   const canDeleteUser = ability.can('delete', 'User');
   const canManageRoles = ability.can('manage_roles', 'Role');
-  // The roles route answers only a holder of Manage roles and permissions, so no one else asks it: they read each
+  // The roles route answers only an Admin, so no one else asks it: they read each
   // person's role name from the users list.
   const { data: rolesData } = useRoles(canManageRoles);
   // Every active role, built-in and custom. A screen that has not heard from the roles route yet shows the role as text.
@@ -156,10 +194,15 @@ export default function UsersTeamsPage() {
   // shown inline under the email field so the admin can correct it in place.
   const [inviteError, setInviteError] = useState<string | null>(null);
   const [newDept, setNewDept] = useState('');
-  // Revoke-login (only offered for users who currently have_login) confirms first.
+  // Revoke-login (offered for users who have_login, or whose revoke could not finish) confirms first.
   const [revokeFor, setRevokeFor] = useState<UserRow | null>(null);
   // "Send password reset" (password reset spec §7) confirms first: who, and the address it goes to.
   const [resetFor, setResetFor] = useState<UserRow | null>(null);
+  // Make Owner (ticket 27, D1) confirms first; then the dialog says to check email, since nothing changes until the Owner opens
+  // the link the server mails them. `ownerError` is the server's refusal, shown in the dialog that asked.
+  const [ownerFor, setOwnerFor] = useState<UserRow | null>(null);
+  const [ownerSent, setOwnerSent] = useState(false);
+  const [ownerError, setOwnerError] = useState<string | null>(null);
   // Create-team-from-the-Users-table flow: holds the user id to assign once created.
   const [createTeamFor, setCreateTeamFor] = useState<string | null>(null);
   const [createTeamName, setCreateTeamName] = useState('');
@@ -216,7 +259,11 @@ export default function UsersTeamsPage() {
   // Per-row login control: only shown for users who have_login. Revoke confirms first.
   const confirmRevokeLogin = async () => {
     if (!revokeFor) return;
-    await revokeLogin.mutateAsync(revokeFor.id);
+    try {
+      await revokeLogin.mutateAsync(revokeFor.id);
+    } catch {
+      // The hook's toast shows the server's error; the dialog closes either way and the row shows what the server holds.
+    }
     setRevokeFor(null);
   };
 
@@ -224,6 +271,22 @@ export default function UsersTeamsPage() {
   const confirmSendPasswordReset = () => {
     if (!resetFor) return;
     sendPasswordReset.mutate(resetFor.id, { onSettled: () => setResetFor(null) });
+  };
+
+  const openMakeOwner = (u: UserRow) => {
+    setOwnerSent(false);
+    setOwnerError(null);
+    setOwnerFor(u);
+  };
+  const confirmMakeOwner = async () => {
+    if (!ownerFor) return;
+    setOwnerError(null);
+    try {
+      await makeOwner.mutateAsync(ownerFor.id);
+      setOwnerSent(true);
+    } catch (err) {
+      setOwnerError(extractApiError(err, "We couldn't start the hand-over. Try again."));
+    }
   };
 
   // Save edited contact details via the existing update endpoint (name/phone/ext only).
@@ -293,8 +356,17 @@ export default function UsersTeamsPage() {
   };
 
   // Deactivation also revokes login - confirm first, then deactivate.
-  const confirmDeactivate = async (handoverTo: string | undefined) => {
+  const confirmDeactivate = async (handoverTo: string | undefined, reassign?: ReassignChoice) => {
     if (!deactivateFor) return;
+    // Moving their open records to someone is the Admin's optional first step; deactivating changes no record by itself.
+    if (reassign) {
+      try {
+        await reassignOpen.mutateAsync({ id: deactivateFor.id, ...reassign });
+      } catch {
+        // Reported by the hook; the person is not deactivated until the records they were asked to move have moved.
+        return;
+      }
+    }
     await deactivate.mutateAsync({ id: deactivateFor.id, handoverTo });
     setDeactivateFor(null);
   };
@@ -357,7 +429,16 @@ export default function UsersTeamsPage() {
         <span className="font-medium">
           {u.first_name} {u.last_name}
         </span>
-        {!u.has_login && (
+        {isOwner(u) && (
+          <Badge variant="softBlue" size="sm" className="ml-2">
+            Owner
+          </Badge>
+        )}
+        {u.erased_at ? (
+          <Badge variant="softNeutral" size="sm" className="ml-2">
+            Erased
+          </Badge>
+        ) : !u.has_login && (
           <Badge variant="softNeutral" size="sm" className="ml-2">
             No login
           </Badge>
@@ -371,6 +452,7 @@ export default function UsersTeamsPage() {
         user={u}
         wrap={wrapMailbox}
         onEdit={canUpdateUser ? (mode) => setMailboxFor({ user: u, mode }) : undefined}
+        editOffReason={adminLock(u)}
       />
     ),
     phone: (
@@ -390,23 +472,49 @@ export default function UsersTeamsPage() {
     ),
     role: (
       <>
-        {/* The picker is for a holder of Manage roles and permissions, who also edits users (the server asks for both),
+        {/* The picker is for an Admin, who also edits users (the server asks for both),
             and never on the viewer's own row. Anyone else reads the role as text. */}
         {canUpdateUser && canManageRoles && u.id !== myId && roles.length > 0 ? (
           <div className="space-y-1">
-            <PersonRolePicker
-              aria-label={`Role for ${u.first_name} ${u.last_name}`}
-              className="h-8 text-xs"
-              roles={roles}
-              value={roleKeyOf(u)}
-              onValueChange={(v) => pickRole(u, v)}
+            {/* The Owner's role is never changed here: the Owner is an Admin by the flag (AL-03), whatever role they sit on. */}
+            <Locked
+              reason={isOwner(u) && u.is_admin === true ? OWNER_CANT_BE_REMOVED : adminLock(u)}
+              render={(reason) => (
+                <PersonRolePicker
+                  aria-label={`Role for ${u.first_name} ${u.last_name}`}
+                  aria-describedby={reason}
+                  disabled={reason !== undefined}
+                  adminRolesOff={!viewerIsOwner}
+                  className="h-8 text-xs"
+                  roles={roles}
+                  value={roleKeyOf(u)}
+                  onValueChange={(v) => pickRole(u, v)}
+                />
+              )}
             />
             {(u.change_count ?? 0) > 0 && <p className="text-muted-foreground text-xs">· {changeCountLabel(u.change_count!)}</p>}
+            {/* Admin is a flag on the person (P15), whatever their role. */}
+            <label className="flex items-center gap-2 text-xs">
+              <Locked
+                reason={isOwner(u) ? OWNER_CANT_BE_REMOVED : viewerIsOwner ? undefined : ONLY_THE_OWNER_CHANGES_ADMINS}
+                render={(reason) => (
+                  <Switch
+                    aria-label={`Admin: ${u.first_name} ${u.last_name}`}
+                    aria-describedby={reason}
+                    disabled={reason !== undefined}
+                    checked={u.is_admin === true}
+                    onCheckedChange={(on) => updateUser.mutate({ id: u.id, payload: { is_admin: on } })}
+                  />
+                )}
+              />
+              Admin
+            </label>
           </div>
         ) : (
           <span className="text-muted-foreground text-xs">
             {roleNameOf(u)}
             {(u.change_count ?? 0) > 0 && ` · ${changeCountLabel(u.change_count!)}`}
+            {u.is_admin === true && ' · Admin'}
           </span>
         )}
       </>
@@ -445,6 +553,8 @@ export default function UsersTeamsPage() {
           <Button
             variant="ghost"
             size="sm"
+            disabled={adminLock(u) !== undefined}
+            disabledReason={adminLock(u)}
             onClick={() =>
               setEditUser({
                 id: u.id,
@@ -459,7 +569,7 @@ export default function UsersTeamsPage() {
             Edit
           </Button>
         )}
-        {/* The person's Permissions page follows Manage roles and permissions, not Edit users, and an Admin row
+        {/* The person's Permissions page is the Admin's (AL-18), and an Admin row
             never offers it: an admin shows one Full access box and has no switches to change. That is the server's
             Admin box, not the base role: a role copied from Admin has switches. */}
         {canManageRoles && !u.admin_box && (
@@ -471,7 +581,8 @@ export default function UsersTeamsPage() {
           <Button
             variant="ghost"
             size="sm"
-            disabled={sendInvite.isPending}
+            disabled={sendInvite.isPending || adminLock(u) !== undefined}
+            disabledReason={adminLock(u)}
             onClick={() => void sendInvite.mutateAsync(u.id)}
           >
             Send invite
@@ -479,11 +590,13 @@ export default function UsersTeamsPage() {
         )}
         {u.is_active ? (
           <>
-            {canUpdateUser && u.has_login && (
+            {/* Also while a revoke could not finish, so its "Please try again" can be done. */}
+            {canUpdateUser && (u.has_login || u.revoke_pending) && (
               <Button
                 variant="ghost"
                 size="sm"
-                disabled={revokeLogin.isPending}
+                disabled={revokeLogin.isPending || removalLock(u) !== undefined}
+                disabledReason={removalLock(u)}
                 onClick={() => setRevokeFor(u)}
               >
                 Revoke login
@@ -494,15 +607,29 @@ export default function UsersTeamsPage() {
               <Button
                 variant="ghost"
                 size="sm"
-                disabled={sendPasswordReset.isPending}
+                disabled={sendPasswordReset.isPending || adminLock(u) !== undefined}
+                disabledReason={adminLock(u)}
                 onClick={() => setResetFor(u)}
               >
                 Send password reset
               </Button>
             )}
+            {/* Make Owner (ticket 27): only the Owner sees it, and only on a row the server marks as able to become the Owner
+                (an active Admin who has signed in). */}
+            {viewerIsOwner && u.owner_eligible === true && u.id !== myId && (
+              <Button variant="ghost" size="sm" disabled={makeOwner.isPending} onClick={() => openMakeOwner(u)}>
+                Make Owner
+              </Button>
+            )}
             {/* Nobody deactivates their own account: the server refuses it, so the row does not offer it. */}
             {canUpdateUser && u.id !== myId && (
-              <Button variant="ghost" size="sm" onClick={() => setDeactivateFor(u)}>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={removalLock(u) !== undefined}
+                disabledReason={removalLock(u)}
+                onClick={() => setDeactivateFor(u)}
+              >
                 Deactivate
               </Button>
             )}
@@ -510,22 +637,29 @@ export default function UsersTeamsPage() {
         ) : (
           <>
             {canUpdateUser && hasEmail && u.mailbox_handover && (
-              <Button variant="ghost" size="sm" onClick={() => setMoveFor(u)}>
+              <Button variant="ghost" size="sm" disabled={adminLock(u) !== undefined} disabledReason={adminLock(u)} onClick={() => setMoveFor(u)}>
                 Move mailbox
               </Button>
             )}
-            {canUpdateUser && (
+            {/* A person whose personal data was erased stays on their records as a former user: no reactivating, no deleting. */}
+            {canUpdateUser && !u.erased_at && (
               <Button
                 variant="ghost"
                 size="sm"
-                disabled={updateUser.isPending}
+                disabled={updateUser.isPending || adminLock(u) !== undefined}
+                disabledReason={adminLock(u)}
                 onClick={() => void updateUser.mutateAsync({ id: u.id, payload: { is_active: true } })}
               >
                 Reactivate
               </Button>
             )}
-            {canDeleteUser && (
-              <Button variant="ghost" size="sm" onClick={() => setUserToDelete(u)}>
+            {canUpdateUser && isAdmin && !u.erased_at && (
+              <Button variant="ghost" size="sm" disabled={adminLock(u) !== undefined} disabledReason={adminLock(u)} onClick={() => setEraseFor(u)}>
+                Erase personal data
+              </Button>
+            )}
+            {canDeleteUser && !u.erased_at && (
+              <Button variant="ghost" size="sm" disabled={adminLock(u) !== undefined} disabledReason={adminLock(u)} onClick={() => setUserToDelete(u)}>
                 Delete
               </Button>
             )}
@@ -621,6 +755,7 @@ export default function UsersTeamsPage() {
                 <Input kind="phone-extension" personalAutofill={false} placeholder="Extension" value={invite.phone_ext} onChange={(e) => setInvite({ ...invite, phone_ext: e.target.value })} />
                 <PersonRolePicker
                   aria-label="Role"
+                  adminRolesOff={!viewerIsOwner}
                   roles={roles}
                   value={invite.role}
                   onValueChange={(v) => setInvite({ ...invite, role: v })}
@@ -915,6 +1050,34 @@ export default function UsersTeamsPage() {
         </DialogContent>
       </Dialog>
 
+      {/* Erase personal data: the person stays on their records as a former user */}
+      <Dialog open={eraseFor !== null} onOpenChange={(o) => !o && setEraseFor(null)}>
+        <DialogContent intent="choice">
+          <DialogHeader>
+            <DialogTitle>Erase {eraseFor?.first_name} {eraseFor?.last_name}&rsquo;s personal data?</DialogTitle>
+            <DialogDescription>
+              Their name, email, phone and photo are removed for good and can&rsquo;t be undone. Their records stay and show
+              them as Former user. They can&rsquo;t be reactivated.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setEraseFor(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              disabled={erasePersonal.isPending}
+              onClick={() => {
+                if (!eraseFor) return;
+                erasePersonal.mutate(eraseFor.id, { onSettled: () => setEraseFor(null) });
+              }}
+            >
+              Erase personal data
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       {/* Permanent-delete confirmation */}
       <Dialog open={userToDelete !== null} onOpenChange={(o) => !o && closeDeleteUser()}>
         <DialogContent intent="choice">
@@ -996,13 +1159,55 @@ export default function UsersTeamsPage() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={ownerFor !== null} onOpenChange={(o) => !o && !makeOwner.isPending && setOwnerFor(null)}>
+        <DialogContent intent="choice">
+          {ownerSent ? (
+            <>
+              <DialogHeader>
+                <DialogTitle>Check your email</DialogTitle>
+                <DialogDescription>
+                  We sent you a link to approve {ownerFor?.first_name} {ownerFor?.last_name} as the new Owner. Nothing changes until
+                  you open it. The link works once and expires in 7 days.
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <Button onClick={() => setOwnerFor(null)}>Done</Button>
+              </DialogFooter>
+            </>
+          ) : (
+            <>
+              <DialogHeader>
+                <DialogTitle>Make Owner</DialogTitle>
+                <DialogDescription>
+                  Make {ownerFor?.first_name} {ownerFor?.last_name} the Owner? We&rsquo;ll email you a link to approve it, and
+                  nothing changes until you open it. You stay an Admin.
+                </DialogDescription>
+              </DialogHeader>
+              {ownerError && (
+                <DialogBody>
+                  <p role="alert" className="text-destructive text-sm">{ownerError}</p>
+                </DialogBody>
+              )}
+              <DialogFooter>
+                <Button variant="ghost" onClick={() => setOwnerFor(null)} disabled={makeOwner.isPending}>
+                  Cancel
+                </Button>
+                <Button onClick={() => void confirmMakeOwner()} disabled={makeOwner.isPending}>
+                  Email me the link
+                </Button>
+              </DialogFooter>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+
       {/* Edit-user-details dialog (name + phone; role/team/email are edited elsewhere) */}
       <Dialog open={editUser !== null} onOpenChange={(o) => !o && setEditUser(null)}>
         <DialogContent intent="form">
           <DialogHeader>
             <DialogTitle>Edit details</DialogTitle>
             <DialogDescription>
-              Update name and phone. Role and team are changed from the table; email can&rsquo;t be changed here.
+              Update name, phone and settings. Role and team are changed from the table; email can&rsquo;t be changed here.
             </DialogDescription>
           </DialogHeader>
           {editUser && (
@@ -1018,6 +1223,8 @@ export default function UsersTeamsPage() {
                 </div>
                 <Input kind="phone-extension" personalAutofill={false} placeholder="Extension" value={editUser.phone_ext} onChange={(e) => setEditUser({ ...editUser, phone_ext: e.target.value })} />
               </div>
+              {/* The person's settings (P1): what they are offered. Read and written through the person's switches, so only an Admin sees them. */}
+              {canManageRoles && <PersonSettingsSection userId={editUser.id} />}
             </DialogBody>
           )}
           <DialogFooter>
@@ -1073,7 +1280,7 @@ export default function UsersTeamsPage() {
         showMailboxChoice={hasEmail}
         pending={deactivate.isPending}
         onCancel={() => setDeactivateFor(null)}
-        onConfirm={(handoverTo) => void confirmDeactivate(handoverTo)}
+        onConfirm={(handoverTo, reassign) => void confirmDeactivate(handoverTo, reassign)}
       />
 
       {/* Hand a leaver's mailbox on later - to another person or to the main mailbox */}

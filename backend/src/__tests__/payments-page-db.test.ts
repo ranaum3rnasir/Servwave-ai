@@ -63,7 +63,7 @@ suite('Payments page read API (real database)', () => {
     return { ...person, api: () => fx.signedInAs(person) };
   }
   /** Sees every invoice and every payment figure. */
-  const finance = (org: string) => personWith(org, { view_payments: true, view_invoices: true, invoices_scope: 'all', refund_payments: false }, 'finance');
+  const finance = (org: string) => personWith(org, { view_payments: true, view_invoices: true, jobs_scope: 'all', leads_scope: 'all', refund_payments: false }, 'finance');
 
   type PayOpts = {
     amount?: number; tip?: number | null; serviceFee?: number | null; method?: 'CARD' | 'ACH' | 'CASH'; online?: boolean;
@@ -138,7 +138,7 @@ suite('Payments page read API (real database)', () => {
       const invoice = await invoiceIn(org, customer);
       const payment = await addPayment(invoice, { paidAt: iso('2026-10-05T16:00:00Z') });
       const payout = await addPayout(org);
-      const off = await personWith(org, { view_payments: false, view_invoices: true, invoices_scope: 'all' });
+      const off = await personWith(org, { view_payments: false, view_invoices: true, jobs_scope: 'all', leads_scope: 'all' });
       const on = await finance(org);
       for (const [name, url] of ROUTES) {
         const target = name.startsWith('payout') && name !== 'payouts' ? url(payout.id) : url(payment);
@@ -198,7 +198,7 @@ suite('Payments page read API (real database)', () => {
     it('marks rows on invoices the caller cannot open as restricted and keeps the amounts', async () => {
       const { org, customer } = await newOrg();
       const secret = await addCustomer(org, 'Hidden Holdings');
-      const me = await personWith(org, { view_payments: true, view_invoices: true, invoices_scope: 'attached' });
+      const me = await personWith(org, { view_payments: true, view_invoices: true, jobs_scope: 'attached', leads_scope: 'attached' });
       const job = await fx.addJob(org, customer, { crew: [me.id] });
       const mine = await invoiceIn(org, customer, { jobId: job.id });
       const theirs = await invoiceIn(org, secret);
@@ -378,7 +378,7 @@ suite('Payments page read API (real database)', () => {
     it('returns every matching row without paging, as Restricted where the caller cannot open the invoice', async () => {
       const { org, customer } = await newOrg();
       const secret = await addCustomer(org, 'Hidden Holdings');
-      const me = await personWith(org, { view_payments: true, view_invoices: true, invoices_scope: 'attached' });
+      const me = await personWith(org, { view_payments: true, view_invoices: true, jobs_scope: 'attached', leads_scope: 'attached' });
       const job = await fx.addJob(org, customer, { crew: [me.id] });
       const mine = await invoiceIn(org, customer, { jobId: job.id });
       const theirs = await invoiceIn(org, secret);
@@ -463,7 +463,7 @@ suite('Payments page read API (real database)', () => {
       const { org, admin, invoice, id, payout } = await detailSetup();
       await addRefund(org, invoice, id, admin.id, 20);
       const dispute = await addDispute(org, invoice, id, 'NEEDS_RESPONSE', 100);
-      const refundPerson = await personWith(org, { view_payments: true, view_invoices: true, invoices_scope: 'all', refund_payments: true });
+      const refundPerson = await personWith(org, { view_payments: true, view_invoices: true, jobs_scope: 'all', leads_scope: 'all', refund_payments: true });
       const res = await (await refundPerson.api()).get(`/api/payments-page/payments/${id}`);
       expect(res.status).toBe(200);
       expect(res.body).toMatchObject({
@@ -498,7 +498,7 @@ suite('Payments page read API (real database)', () => {
       // Each person is signed in right before their own calls: the test sign-in answers for whoever signed in last.
       const viewOnly = await finance(org);
       expect((await (await viewOnly.api()).get(`/api/payments-page/payments/${ok}`)).body.can_refund).toBe(false);
-      const refunder = await (await personWith(org, { view_payments: true, view_invoices: true, invoices_scope: 'all', refund_payments: true })).api();
+      const refunder = await (await personWith(org, { view_payments: true, view_invoices: true, jobs_scope: 'all', leads_scope: 'all', refund_payments: true })).api();
       expect((await refunder.get(`/api/payments-page/payments/${ok}`)).body.can_refund).toBe(true);
       expect((await refunder.get(`/api/payments-page/payments/${gone}`)).body).toMatchObject({ can_refund: false, refundable_amount: 0, status: 'Refunded' });
       expect((await refunder.get(`/api/payments-page/payments/${failed}`)).body.can_refund).toBe(false);
@@ -509,7 +509,7 @@ suite('Payments page read API (real database)', () => {
       const b = await newOrg();
       const hidden = await addPayment(await invoiceIn(a.org, a.customer));
       const foreign = await addPayment(await invoiceIn(b.org, b.customer));
-      const narrow = await (await personWith(a.org, { view_payments: true, view_invoices: true, invoices_scope: 'attached' })).api();
+      const narrow = await (await personWith(a.org, { view_payments: true, view_invoices: true, jobs_scope: 'attached', leads_scope: 'attached' })).api();
       expect((await narrow.get(`/api/payments-page/payments/${hidden}`)).status).toBe(404);
       const api = await (await finance(a.org)).api();
       expect((await api.get(`/api/payments-page/payments/${foreign}`)).status).toBe(404);
@@ -527,7 +527,7 @@ suite('Payments page read API (real database)', () => {
       return id;
     };
     const refunderApi = async (org: string) =>
-      (await personWith(org, { view_payments: true, view_invoices: true, invoices_scope: 'all', refund_payments: true })).api();
+      (await personWith(org, { view_payments: true, view_invoices: true, jobs_scope: 'all', leads_scope: 'all', refund_payments: true })).api();
 
     it('caps a DEPOSIT invoice at the credit not yet drawn down onto another invoice', async () => {
       const { org, customer } = await newOrg();
@@ -686,7 +686,7 @@ suite('Payments page read API (real database)', () => {
 
     it('applies the row privacy rule inside a payout', async () => {
       const { org, customer, payout } = await payoutSetup();
-      const me = await personWith(org, { view_payments: true, view_invoices: true, invoices_scope: 'attached' });
+      const me = await personWith(org, { view_payments: true, view_invoices: true, jobs_scope: 'attached', leads_scope: 'attached' });
       const body = (await (await me.api()).get(`/api/payments-page/payouts/${payout.id}/payments`)).body;
       expect(body.payments.every((r: Row) => r.restricted && r.customer === null && r.invoice === null)).toBe(true);
       expect(body.totals.amount).toBe(3010);
@@ -709,7 +709,7 @@ suite('Payments page read API (real database)', () => {
       const { org } = await newOrg();
       const failed = await addPayout(org, { status: 'FAILED', arrival: '2026-10-08' });
       const paid = await addPayout(org, { status: 'PAID', arrival: '2026-10-09' });
-      const manager = await personWith(org, { view_payments: true, view_invoices: true, invoices_scope: 'all', manage_payout_account: true }, 'manager');
+      const manager = await personWith(org, { view_payments: true, view_invoices: true, jobs_scope: 'all', leads_scope: 'all', manage_payout_account: true }, 'manager');
       const viewer = await finance(org);
       // The sign-in is one shared stub, so each call signs in as its person just before it.
       const actions = async (who: typeof viewer, id: string) => (await (await who.api()).get(`/api/payments-page/payouts/${id}`)).body.actions;
@@ -799,7 +799,7 @@ suite('Payments page read API (real database)', () => {
       const { org, customer } = await newOrg();
       const invoice = await invoiceIn(org, customer); // nobody is attached to it
       await addPayment(invoice, { amount: 100, paidAt: iso('2026-10-05T16:00:00Z') });
-      const narrow = await personWith(org, { view_payments: true, view_invoices: true, invoices_scope: 'attached' });
+      const narrow = await personWith(org, { view_payments: true, view_invoices: true, jobs_scope: 'attached', leads_scope: 'attached' });
       const res = await (await narrow.api()).get(`/api/payments-page/summary?${WINDOW}`);
       expect(res.status).toBe(200);
       expect(res.body.collected).toBe(100);
@@ -874,7 +874,7 @@ suite('Payments page read API (real database)', () => {
   });
 
   describe('conductor fixes (dispute rights, money integrity, scale)', () => {
-    const refunder = (org: string) => personWith(org, { view_payments: true, view_invoices: true, invoices_scope: 'all', refund_payments: true }, 'refunder');
+    const refunder = (org: string) => personWith(org, { view_payments: true, view_invoices: true, jobs_scope: 'all', leads_scope: 'all', refund_payments: true }, 'refunder');
 
     it('shows Respond to a dispute only to a Refund payments holder, never to a view-only caller', async () => {
       const { org, customer } = await newOrg();

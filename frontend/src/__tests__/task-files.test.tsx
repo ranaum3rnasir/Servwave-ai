@@ -167,36 +167,30 @@ describe('rename and remove on a task follow the server rule', () => {
     return items;
   }
 
-  it('without the grants, offers Rename and Delete only on a file I uploaded', async () => {
+  it('without the task\'s Edit, offers neither Rename nor Delete, a file I uploaded included (uploads are the record\'s own data)', async () => {
     renderSection('task');
     await screen.findByText('Gate photo');
 
-    expect(await menuItems('Gate photo')).toContain('Rename');
+    expect(await menuItems('Gate photo')).not.toContain('Rename');
     expect(await menuItems('Permit')).not.toContain('Rename');
-
-    const deletes = screen.getAllByRole('button', { name: 'Delete attachment' });
-    expect(deletes).toHaveLength(1);
+    expect(screen.queryAllByRole('button', { name: 'Delete attachment' })).toHaveLength(0);
   });
 
-  it('with the grants, offers both on every file', async () => {
-    renderSection('task', [
-      { action: 'update', subject: 'Attachment' },
-      { action: 'delete', subject: 'Attachment' },
-    ]);
+  it('with the task\'s Edit, offers both on every file', async () => {
+    renderSection('task', [{ action: 'update', subject: 'Task' }]);
     await screen.findByText('Gate photo');
 
     expect(await menuItems('Permit')).toContain('Rename');
     expect(screen.getAllByRole('button', { name: 'Delete attachment' })).toHaveLength(2);
   });
 
-  it('does not extend the rename exception off a task, but a person can always remove their own file', async () => {
+  it('asks the lead\'s own Edit on a lead, not the task\'s', async () => {
     givenFiles('/api/attachments/lead/t1', [MINE, THEIRS]);
-    renderSection('lead');
+    renderSection('lead', [{ action: 'update', subject: 'Task' }]);
     await screen.findByText('Gate photo');
 
     expect(await menuItems('Gate photo')).not.toContain('Rename');
-    // Without Delete attachments a person deletes only their own, on any record they can open (S01.11).
-    expect(screen.getAllByRole('button', { name: 'Delete attachment' })).toHaveLength(1);
+    expect(screen.queryAllByRole('button', { name: 'Delete attachment' })).toHaveLength(0);
   });
 });
 

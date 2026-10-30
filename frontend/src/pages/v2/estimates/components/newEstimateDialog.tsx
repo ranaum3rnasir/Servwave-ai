@@ -367,7 +367,7 @@ function NewEstimateDialog({
             )}
           </DialogList>
 
-          {/* The standalone New Customer: only with Create customers + Show Customers page (S02.26). */}
+          {/* The standalone New Customer: only with Create customers + View customers (S02.26). */}
           {entries.addNewClient && (
             <>
               <div className="flex items-center gap-3 pt-2 pb-5">

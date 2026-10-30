@@ -516,15 +516,15 @@ suite('Complete job and Reopen on a pool of one connection (real database)', () 
   /**
    * S06.29: the alerts that have no record go through the same writer, so a bigger company must not cost more queries. The routes
    * only queue their alert (the request gains no query for it); the payments-account door and the first-payment effects send it
-   * themselves after their own commit. Each is measured with one holder of its switch in the company, 20 people against 270. A request
+   * themselves after their own commit. Each is measured with one holder of its switch in the company (the payments-account alerts go to the Admins, 36b: the company's own Admin), 20 people against 270. A request
    * that raises many of them (ten stock crossings at once) reads the company's holders once, not once per alert.
    */
   it('sends the alerts that have no record in the same number of queries for a company of 20 as for one of 270', async () => {
     const { default: request } = await import('supertest');
     const { supabaseAdmin } = await import('../lib/supabase.js');
-    const { signInviteToken } = await import('../lib/invite-token.js');
+    const { issueInviteToken } = await import('../lib/invite-link.js');
     const holderValues = {
-      company_settings: true, invite_users: true, view_users: true, create_purchase_orders: true, view_purchase_orders: true,
+      view_users: true, create_purchase_orders: true, view_purchase_orders: true,
       edit_stock: true, view_stock: true, edit_price_book_items: true, view_price_book: true, edit_purchase_orders: true, view_jobs: true, jobs_scope: 'all',
     };
     async function noRecordCosts(people: number, dispatchers: number) {
@@ -536,7 +536,7 @@ suite('Complete job and Reopen on a pool of one connection (real database)', () 
       await fx.addUser(c.org, 'holder', 'DISPATCHER', { customRoleId: role.id });
       const actorRole = `no-record-actor-${c.org.slice(0, 6)}`;
       const actorRow = await fx.addCustomRole(c.org, actorRole, 'DISPATCHER');
-      await setRoleSwitchValues({ organizationId: c.org, roleKey: actorRole, values: { ...holderValues, company_settings: false, invite_users: false, create_purchase_orders: false }, actorId: null, reason: 'manual' });
+      await setRoleSwitchValues({ organizationId: c.org, roleKey: actorRole, values: { ...holderValues, create_purchase_orders: false }, actorId: null, reason: 'manual' });
       const actor = await fx.addUser(c.org, 'actor', 'DISPATCHER', { customRoleId: actorRow.id });
       const api = await fx.signedInAs(actor);
       const settledQueries = async (act: () => Promise<{ status: number; body: unknown } | void>) => {
@@ -571,10 +571,11 @@ suite('Complete job and Reopen on a pool of one connection (real database)', () 
       const noArea = await settledQueries(() => api.patch(`/api/inventory/job-stages/${stage.id}`, { status: 'complete' }));
 
       const invitee = await fx.addUser(c.org, 'invitee', 'TECHNICIAN');
-      await db.user.update({ where: { id: invitee.id }, data: { has_login: false } });
+      // The person's one live invite, as an admin's invitation makes it.
+      const inviteToken = await issueInviteToken(invitee);
       vi.mocked(supabaseAdmin.auth.admin.createUser).mockResolvedValue({ data: { user: { id: randomUUID() } }, error: null } as never);
       const app = (await import('../app.js')).default as never;
-      const invite = await settledQueries(() => request(app).post('/api/auth/accept-invite').send({ token: signInviteToken(invitee.id, invitee.email), password: 'sup3rsecret99', accepted_terms: true }));
+      const invite = await settledQueries(() => request(app).post('/api/auth/accept-invite').send({ token: inviteToken, password: 'sup3rsecret99', accepted_terms: true }));
 
       const { sendAccountNotices } = await import('../lib/payments-notifications.js');
       clearAllSwitchCaches();
@@ -714,21 +715,22 @@ suite('Complete job and Reopen on a pool of one connection (real database)', () 
       const emptyJob = await fx.addJob(c.org, c.customer, {});
       const replyIn = async (jobId: string) => {
         const emailThread = randomUUID();
+        const emailId = randomUUID();
         await db.emailThread.create({ data: { id: emailThread, organization_id: c.org, mailbox_id: mailbox, origin: 'record', record_type: 'job', record_id: jobId } });
         await db.email.create({
           data: {
-            id: randomUUID(), organization_id: c.org, thread_id: emailThread, customer_id: c.customer, account: 'user', direction: 'in', folder: 'inbox',
+            id: emailId, organization_id: c.org, thread_id: emailThread, customer_id: c.customer, account: 'user', direction: 'in', folder: 'inbox',
             from: { name: null, email: 'customer@example.com' }, to: 'office@example.com', subject: 'run-email', snippet: 's', body: ['b'], at: '1:00 PM', ts: BigInt(Date.now()),
           },
         });
-        return emailThread;
+        return { threadId: emailThread, emailId };
       };
       const crewThread = await replyIn(job.id);
       const fallbackThread = await replyIn(emptyJob.id);
-      const emailCost = async (threadId: string) => {
+      const emailCost = async ({ threadId, emailId }: { threadId: string; emailId: string }) => {
         clearAllSwitchCaches();
         sent.length = 0;
-        const told = await alertEmailReply({ organizationId: c.org, threadId, providerMessageId: `fanout-comm:${randomUUID()}`, senderLabel: 'Caller', subject: 'run-email' });
+        const told = await alertEmailReply({ organizationId: c.org, threadId, emailId, providerMessageId: `fanout-comm:${randomUUID()}`, senderLabel: 'Caller', subject: 'run-email' });
         await flushRealtimePublishes();
         return { statements: sent.length, told: told.length };
       };
@@ -769,10 +771,9 @@ suite('Complete job and Reopen on a pool of one connection (real database)', () 
   }, 300_000);
 
   /**
-   * S08.24: a missed call and an inbound text on a number nobody is linked to, with nobody on All, go to the holders of Manage roles and
-   * permissions (the never-silent fallback). Half of them can open the conversation (it is tied to a job they see company-wide) and
-   * half cannot, so both alerts are written: the full one and the one without caller details. The statements one alert sends must not
-   * grow with the company: the lookup that finds nobody, the switch's holders, the company's zone and one look at who can read.
+   * S08.24: a missed call and an inbound text on a number nobody is linked to, with nobody on All, go to the company's Admins (the
+   * never-silent fallback; the holders of Manage roles and permissions until AL-18). The statements one alert sends must not grow with
+   * the company: the lookup that finds nobody, the Admins, the company's zone and one look at who can read.
    */
   it('sends the never-silent fallback of a call and a text in the same number of queries for a company of 20 as for one of 270', async () => {
     const { emit } = await import('../services/notifications/notificationService.js');
@@ -784,8 +785,8 @@ suite('Complete job and Reopen on a pool of one connection (real database)', () 
         await setRoleSwitchValues({
           organizationId: c.org, roleKey: key, actorId: null, reason: 'manual',
           values: {
-            view_users: true, manage_roles_and_permissions: true, view_jobs: true, jobs_scope: jobsScope, access_communication: true,
-            view_communication: true, communication_scope: 'linked_to_me', see_main_line_when_no_number: false,
+            view_users: true, view_jobs: true, jobs_scope: jobsScope, access_communication: true,
+            view_communication: true, communication_scope: 'attached', see_main_line_when_no_number: false,
           },
         });
         return role;
@@ -793,8 +794,9 @@ suite('Complete job and Reopen on a pool of one connection (real database)', () 
       const readers = await holders('fanout-readers', 'all');
       const others = await holders('fanout-others', 'attached');
       const ids = c.dispatchers.map((d) => d.id);
-      await db.user.updateMany({ where: { id: { in: ids.slice(0, Math.ceil(ids.length / 2)) } }, data: { custom_role_id: readers.id } });
-      await db.user.updateMany({ where: { id: { in: ids.slice(Math.ceil(ids.length / 2)) } }, data: { custom_role_id: others.id } });
+      // The managers are Admins (the flag) on custom roles: half see the job company-wide, half only what they are attached to.
+      await db.user.updateMany({ where: { id: { in: ids.slice(0, Math.ceil(ids.length / 2)) } }, data: { custom_role_id: readers.id, is_admin: true } });
+      await db.user.updateMany({ where: { id: { in: ids.slice(Math.ceil(ids.length / 2)) } }, data: { custom_role_id: others.id, is_admin: true } });
       clearAllSwitchCaches();
 
       const number = randomUUID();
@@ -828,7 +830,7 @@ suite('Complete job and Reopen on a pool of one connection (real database)', () 
     const large = await fallbackCosts(270, 90);
 
     for (const kind of ['call', 'text'] as const) {
-      // Every manager is told, however many there are, in two alerts.
+      // Every manager is told, however many there are.
       expect(small[kind].told, `${kind}: every manager of the small company`).toBe(small.managers);
       expect(large[kind].told, `${kind}: every manager of the large company`).toBe(large.managers);
       expect(Math.abs(large[kind].statements - small[kind].statements), `${kind}: ${small[kind].statements} vs ${large[kind].statements}`).toBeLessThanOrEqual(3);
@@ -1007,7 +1009,7 @@ suite('Complete job and Reopen on a pool of one connection (real database)', () 
       for (const id of everyone) {
         const user = await db.user.findFirst({
           where: { id, organization_id: org },
-          select: { id: true, role: true, organization_id: true, department_id: true, location_id: true, custom_role_id: true, custom_role: { select: { key: true } } },
+          select: { id: true, role: true, is_admin: true, organization_id: true, department_id: true, location_id: true, custom_role_id: true, custom_role: { select: { key: true } } },
         });
         if (!user) continue;
         const ability = await abilityForUser(user);

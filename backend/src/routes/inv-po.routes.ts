@@ -24,7 +24,7 @@ router.post('/purchase-orders/from-job', canDo('create', 'PurchaseOrder'), valid
 // AC12) - any `read PurchaseOrder` holder passes, including a job-scoped SALES rep; per Ran's
 // decision SALES reads the whole inventory module. `unit_cost` (here and on every other
 // purchasing read) is stripped in the controller for a caller whose role does NOT also hold
-// `read Pricing` ("See financial data" off) - security round 3 finding D. `read PurchaseOrder`
+// `read Pricing` ("See costs" off) - security round 3 finding D. `read PurchaseOrder`
 // alone does not disclose cost; the gate below controls reachability, not cost visibility.
 router.get('/purchase-orders/low-stock-proposals', canDo('read', 'PurchaseOrder'), invPoController.listLowStockProposals);
 router.get('/purchase-orders/:id', canDo('read', 'PurchaseOrder'), requireUuidParam('id', 'Purchase order not found'), invPoController.getPurchaseOrder);

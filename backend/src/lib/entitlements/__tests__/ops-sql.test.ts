@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { lit, buildSetPlanSql, buildCreateOrgSql, buildAuditReport } from '../ops-sql';
-import { DEFAULT_GRANTS } from '../../permissions/defaultGrants';
 
 const ORG = '11111111-1111-1111-1111-111111111111';
 
@@ -87,23 +86,6 @@ describe('buildCreateOrgSql', () => {
     expect(trialSql).toContain("'2026-08-05'");
   });
 
-  it('seeds exactly every DEFAULT_GRANT row', () => {
-    const grantMatches = sql.match(/\(gen_random_uuid\(\), '22222222-2222-2222-2222-222222222222', '(SALES|DISPATCHER|TECHNICIAN)',/g) ?? [];
-    expect(grantMatches.length).toBe(DEFAULT_GRANTS.length);
-  });
-
-  it('preserves row-scoping conditions as a jsonb object for scoped grants', () => {
-    const scoped = DEFAULT_GRANTS.filter((g) => (g as { conditions?: unknown }).conditions).length;
-    expect(scoped).toBeGreaterThan(0);
-    // scoped grants render conditions as a jsonb object literal, not NULL
-    expect(sql).toMatch(/'\{[^']*"[a-zA-Z_]+"[^']*\}'::jsonb/);
-  });
-
-  it('renders NULL conditions for unscoped grants', () => {
-    // at least one grant has no conditions → the tuple ends in ", NULL, now())"
-    expect(sql).toMatch(/, NULL, now\(\)\)/);
-  });
-
   it('seeds the org its own copy of the global tax-rate list', () => {
     // Org-owned tax rates (2026-08-05): `org_tax_rates` is the list the pickers read, so a new
     // org that never got one would open to an empty tax dropdown.
@@ -155,7 +137,7 @@ describe('buildCreateOrgSql', () => {
 
   it('is idempotent — every insert guards ON CONFLICT DO NOTHING', () => {
     const conflicts = sql.match(/ON CONFLICT DO NOTHING/g) ?? [];
-    expect(conflicts.length).toBeGreaterThanOrEqual(3); // org, grants, app_settings
+    expect(conflicts.length).toBeGreaterThanOrEqual(2); // org, app_settings
   });
 
   // Regression guard for C1: raw SQL bypasses Prisma's client-side @updatedAt /
@@ -165,24 +147,17 @@ describe('buildCreateOrgSql', () => {
     expect(sql).toMatch(/'\["BANK_TRANSFER","CHECK","CASH"\]'::jsonb, '\{"phone": false\}'::jsonb, now\(\)\) ON CONFLICT DO NOTHING/);
   });
 
-  it('supplies role_permissions id + updated_at (no DB default under raw SQL)', () => {
-    expect(sql).toContain('INSERT INTO "role_permissions" ("id", "organization_id"');
-    expect(sql).toContain('"updated_at") VALUES');
-    // every grant tuple starts with a generated id and ends with now()
-    expect(sql).toMatch(/\(gen_random_uuid\(\), '22222222-2222-2222-2222-222222222222', 'SALES',[\s\S]*?, now\(\)\)/);
+  it('writes no per-role grant rows: a role holds its switches from the built-in presets (P14)', () => {
+    expect(sql).not.toContain('role_permissions');
+    expect(sql).not.toContain('user_permission_overrides');
   });
 });
 
 describe('buildAuditReport', () => {
-  const fullGrants = DEFAULT_GRANTS.map((g) => ({
-    role: g.role, action: g.action, subject: g.subject,
-    conditions: (g as { conditions?: unknown }).conditions ?? null,
-  }));
-
   it('shows the effective plan and org name', () => {
     const report = buildAuditReport({
       org: { id: 'x', name: 'Acme', plan: 'PRO', trial_ends_at: null, feature_overrides: {}, is_demo: false },
-      users: [], grants: [],
+      users: [],
     });
     expect(report).toContain('Acme');
     expect(report).toMatch(/Effective:\s*PRO/);
@@ -191,7 +166,7 @@ describe('buildAuditReport', () => {
   it('resolves a trialing org up to SCALE', () => {
     const report = buildAuditReport({
       org: { id: 'x', name: 'Acme', plan: 'STARTER', trial_ends_at: '2999-01-01', feature_overrides: {}, is_demo: false },
-      users: [], grants: [],
+      users: [],
     });
     expect(report).toMatch(/Effective:\s*SCALE/);
   });
@@ -204,7 +179,6 @@ describe('buildAuditReport', () => {
         { email: 'b@x.com', role: 'SALES', has_login: true },
         { email: 'c@x.com', role: 'TECHNICIAN', has_login: false },
       ],
-      grants: [],
     });
     expect(report).toMatch(/2 \/ 2/); // 2 logins, STARTER allows 2
   });
@@ -217,36 +191,7 @@ describe('buildAuditReport', () => {
         { email: 'b@x.com', role: 'SALES', has_login: true },
         { email: 'c@x.com', role: 'DISPATCHER', has_login: true },
       ],
-      grants: [],
     });
     expect(report).toMatch(/OVERAGE/i);
-  });
-
-  it('flags all DEFAULT_GRANTS missing when grants is empty', () => {
-    const report = buildAuditReport({
-      org: { id: 'x', name: 'Acme', plan: 'PRO', trial_ends_at: null, feature_overrides: {}, is_demo: false },
-      users: [], grants: [],
-    });
-    expect(report).toMatch(/missing/i);
-  });
-
-  it('reports healthy grants when all DEFAULT_GRANTS are present and scoped', () => {
-    const report = buildAuditReport({
-      org: { id: 'x', name: 'Acme', plan: 'PRO', trial_ends_at: null, feature_overrides: {}, is_demo: false },
-      users: [], grants: fullGrants,
-    });
-    expect(report).toMatch(/All \d+ DEFAULT_GRANTS present/);
-  });
-
-  it('flags a present-but-unscoped grant (row isolation broken)', () => {
-    // strip conditions off one scoped grant → it becomes present-but-unscoped
-    const brokenGrants = fullGrants.map((g) =>
-      g.conditions ? { ...g, conditions: null } : g,
-    );
-    const report = buildAuditReport({
-      org: { id: 'x', name: 'Acme', plan: 'PRO', trial_ends_at: null, feature_overrides: {}, is_demo: false },
-      users: [], grants: brokenGrants,
-    });
-    expect(report).toMatch(/UNSCOPED/i);
   });
 });

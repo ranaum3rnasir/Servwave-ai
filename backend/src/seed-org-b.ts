@@ -3,6 +3,7 @@ import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
 import { seedStarterTaskCategories } from './lib/tasks/categories';
 import { seedListRows } from './lib/org-list-rows';
+import { setFirstOwner } from './lib/users/first-owner';
 
 dotenv.config();
 
@@ -80,10 +81,12 @@ async function main() {
       create: {
         id: supabaseUserId,
         email, first_name: 'Org', last_name: 'B Admin',
-        role: 'ADMIN', is_active: true,
+        role: 'ADMIN', is_admin: true, is_active: true,
         organization_id: ORG_B_ID,
       },
     });
+    // The person the company is set up for is its Owner (AL-16). A re-run leaves an Owner already set alone.
+    await setFirstOwner(prisma, ORG_B_ID, supabaseUserId);
     console.log(`Org B admin user upserted: ${email}`);
 
     // 3. Create one customer for Org B

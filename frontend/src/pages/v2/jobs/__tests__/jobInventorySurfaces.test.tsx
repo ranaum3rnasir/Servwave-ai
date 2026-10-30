@@ -3,7 +3,7 @@
  *
  *   - "Create PO" needs Create purchase orders, and a vendor to pick (View vendors): absent without either.
  *   - The material cost ("Materials purchased (POs)" on the internal costs card) needs BOTH View purchase orders and
- *     See financial data. Without both the card is absent and the cost is never even asked for.
+ *     See costs. Without both the card is absent and the cost is never even asked for.
  *
  * The person's rules are built from the grants the switches compile into (create / read PurchaseOrder, read Vendor,
  * read Pricing), never from a role name. The HTTP layer is mocked.
@@ -69,7 +69,7 @@ function serve(materialCost: Record<string, unknown> = { jobId: JOB_ID, material
 
 async function openItemsTab(rules: AbilityRule[], materialCost?: Record<string, unknown>) {
   serve(materialCost);
-  renderWithProviders(<JobDetailPage />, { ability: buildAbility([{ action: 'read', subject: 'Job' }, { action: 'manage_lines', subject: 'Job' }, ...rules]) });
+  renderWithProviders(<JobDetailPage />, { ability: buildAbility([{ action: 'read', subject: 'Job' }, { action: 'manage_lines', subject: 'Job' }, { action: 'read', subject: 'Prices' }, ...rules]) });
   await userEvent.click(await screen.findByRole('tab', { name: 'Items' }));
   await screen.findByText('Rooftop unit');
 }
@@ -104,19 +104,19 @@ describe('the job page Items tab - Create PO', () => {
 describe('the job page Items tab - the material cost', () => {
   const COST_ROW = 'Materials purchased (POs)';
 
-  it('shows with View purchase orders and See financial data, and asks for the cost', async () => {
+  it('shows with View purchase orders and See costs, and asks for the cost', async () => {
     await openItemsTab([READ_POS, SEE_COSTS]);
     expect(await screen.findByText(COST_ROW)).toBeInTheDocument();
     expect(materialCostCalls()).toHaveLength(1);
   });
 
-  it('is absent, and never requested, with View purchase orders but not See financial data', async () => {
+  it('is absent, and never requested, with View purchase orders but not See costs', async () => {
     await openItemsTab([READ_POS]);
     expect(screen.queryByText(COST_ROW)).not.toBeInTheDocument();
     expect(materialCostCalls()).toHaveLength(0);
   });
 
-  it('is absent, and never requested, with See financial data but not View purchase orders', async () => {
+  it('is absent, and never requested, with See costs but not View purchase orders', async () => {
     await openItemsTab([SEE_COSTS]);
     expect(screen.queryByText(COST_ROW)).not.toBeInTheDocument();
     expect(materialCostCalls()).toHaveLength(0);

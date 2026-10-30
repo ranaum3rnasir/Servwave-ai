@@ -510,7 +510,7 @@ describe('GET /api/leads/:id/communications', () => {
 
     const res = await request(app).get(`/api/leads/${LEAD_ID}/communications`).set(authHeader('technician'));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockPrisma.callSession.findMany).not.toHaveBeenCalled();
     expect(mockPrisma.message.findMany).not.toHaveBeenCalled();
     expect(mockPrisma.email.findMany).not.toHaveBeenCalled();
@@ -527,8 +527,8 @@ describe('GET /api/leads/:id/communications', () => {
 
     const res = await request(app).get(`/api/leads/${LEAD_ID}/communications`).set(authHeader('sales'));
 
-    expect(res.status).toBe(403);
-    expect(res.body).toEqual({ error: 'Insufficient permissions' });
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Lead not found' });
     expect(mockPrisma.callSession.findMany).not.toHaveBeenCalled();
     expect(mockPrisma.message.findMany).not.toHaveBeenCalled();
     expect(mockPrisma.email.findMany).not.toHaveBeenCalled();

@@ -78,7 +78,7 @@ suite('bank payment emails to the customer (real database)', () => {
     });
     const user = randomUUID();
     await db.user.create({
-      data: { id: user, organization_id: org, email: `admin-${tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN' },
+      data: { id: user, organization_id: org, email: `admin-${tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN', is_admin: true },
     });
     await db.customer.create({
       data: {
@@ -264,7 +264,7 @@ suite('bank payment emails to the customer (real database)', () => {
 
       await vi.waitFor(async () => expect(await failedAlert(f)).toBeTruthy());
       expect(failedSender).toHaveBeenCalledTimes(1);
-      expect((await failedAlert(f)).body).toBe('Amount: $500.00. No money moved. We emailed the customer a link to pay again.');
+      expect((await failedAlert(f)).body).toBe('No money moved. We emailed the customer a link to pay again.');
       const payment = await db.payment.findFirstOrThrow({ where: { invoice_id: f.invoice } });
       const rows = await askedRows(f);
       expect(rows).toHaveLength(1);
@@ -280,7 +280,7 @@ suite('bank payment emails to the customer (real database)', () => {
       await vi.waitFor(async () => expect(await failedAlert(f)).toBeTruthy());
       expect(failedSender).not.toHaveBeenCalled();
       const { body } = await failedAlert(f);
-      expect(body).toBe('Amount: $500.00. No money moved. No email was sent because this customer has no email address on file. Contact them to pay again.');
+      expect(body).toBe('No money moved. No email was sent because this customer has no email address on file. Contact them to pay again.');
       expect(body).not.toMatch(/has been sent/);
       expect(await askedRows(f)).toHaveLength(0);
     });
@@ -291,7 +291,7 @@ suite('bank payment emails to the customer (real database)', () => {
       failedSender.mockResolvedValueOnce({ status: 'skipped', reason: 'suppressed' });
       await a.failed();
       await vi.waitFor(async () => expect(await failedAlert(a)).toBeTruthy());
-      expect((await failedAlert(a)).body).toBe('Amount: $500.00. No money moved. No email was sent because earlier emails to this customer\u2019s address bounced. Contact them to pay again.');
+      expect((await failedAlert(a)).body).toBe('No money moved. No email was sent because earlier emails to this customer\u2019s address bounced. Contact them to pay again.');
       expect(await askedRows(a)).toHaveLength(0);
 
       const b = await fixture({ total: 500 });
@@ -299,7 +299,7 @@ suite('bank payment emails to the customer (real database)', () => {
       failedSender.mockResolvedValueOnce({ status: 'skipped', reason: 'org_disabled' });
       await b.failed();
       await vi.waitFor(async () => expect(await failedAlert(b)).toBeTruthy());
-      expect((await failedAlert(b)).body).toBe('Amount: $500.00. No money moved. The email to the customer could not be sent. Contact them to pay again.');
+      expect((await failedAlert(b)).body).toBe('No money moved. The email to the customer could not be sent. Contact them to pay again.');
 
       const c = await fixture({ total: 500 });
       await c.completed();
@@ -317,7 +317,7 @@ suite('bank payment emails to the customer (real database)', () => {
       failedSender.mockResolvedValueOnce({ status: 'skipped', reason });
       await f.failed();
       await vi.waitFor(async () => expect(await failedAlert(f)).toBeTruthy());
-      expect((await failedAlert(f)).body).toBe('Amount: $500.00. No money moved. The email to the customer could not be sent. Contact them to pay again.');
+      expect((await failedAlert(f)).body).toBe('No money moved. The email to the customer could not be sent. Contact them to pay again.');
       expect(await askedRows(f)).toHaveLength(0);
     });
 
@@ -327,14 +327,14 @@ suite('bank payment emails to the customer (real database)', () => {
       await db.invoice.update({ where: { id: paid.invoice }, data: { status: 'PAID', amount_due: 0 } });
       await paid.failed();
       await vi.waitFor(async () => expect(await failedAlert(paid)).toBeTruthy());
-      expect((await failedAlert(paid)).body).toBe('Amount: $500.00. No money moved. No email was sent because this invoice cannot be paid online right now.');
+      expect((await failedAlert(paid)).body).toBe('No money moved. No email was sent because this invoice cannot be paid online right now.');
 
       const disputed = await fixture({ total: 500 });
       await disputed.completed();
       await db.invoice.update({ where: { id: disputed.invoice }, data: { status: 'DISPUTED' } });
       await disputed.failed();
       await vi.waitFor(async () => expect(await failedAlert(disputed)).toBeTruthy());
-      expect((await failedAlert(disputed)).body).toBe('Amount: $500.00. No money moved. No email was sent because this invoice cannot be paid online right now.');
+      expect((await failedAlert(disputed)).body).toBe('No money moved. No email was sent because this invoice cannot be paid online right now.');
       expect(failedSender).not.toHaveBeenCalled();
       expect(await askedRows(paid)).toHaveLength(0);
     });
@@ -346,7 +346,7 @@ suite('bank payment emails to the customer (real database)', () => {
       await db.invoice.update({ where: { id: voided.invoice }, data: { status: 'VOIDED' } });
       await voided.failed();
       await vi.waitFor(async () => expect(await failedAlert(voided)).toBeTruthy());
-      expect((await failedAlert(voided)).body).toBe('Amount: $500.00. No money moved. The invoice is no longer open for payment.');
+      expect((await failedAlert(voided)).body).toBe('No money moved. The invoice is no longer open for payment.');
       expect(failedSender).not.toHaveBeenCalled();
     });
 
@@ -409,7 +409,7 @@ suite('bank payment emails to the customer (real database)', () => {
       });
       expect(failedSender).toHaveBeenCalledTimes(1);
       expect(await askedRows(f)).toHaveLength(0);
-      expect((await failedAlert(f)).body).toBe('Amount: $500.00. No money moved. We emailed the customer a link to pay again.');
+      expect((await failedAlert(f)).body).toBe('No money moved. We emailed the customer a link to pay again.');
     });
   });
 });

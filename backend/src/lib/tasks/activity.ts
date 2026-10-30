@@ -118,8 +118,8 @@ export function diffIdSets(before: unknown, after: unknown): IdSetDelta {
 /**
  * The four people-event phrasings, in ONE place.
  *
- * Exported because the interactive PATCH is no longer the only writer: the deactivation sweep
- * (`lib/tasks/deactivation.ts`) records the same events outside a diff. Two hand-written copies
+ * Exported because the interactive PATCH is no longer the only writer: reassigning a person's open
+ * records (`lib/users/openRecords.ts`) records the same events outside a diff. Two hand-written copies
  * of "unassigned Dana" would drift, and the feed would read as two different systems.
  */
 export const PEOPLE_EVENT = {

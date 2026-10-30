@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/authenticate';
 import { attachAbility } from '../middleware/attachAbility';
-import { canDo } from '../middleware/canGuard';
+import { requireAdminTo } from '../middleware/canGuard';
 import { validate } from '../middleware/validate';
 import * as orgTaxRateController from '../controllers/org-tax-rate.controller';
 
@@ -13,8 +13,8 @@ router.use(authenticate, attachAbility);
 // conceptually org settings: the "Company settings" switch) rather than a new Action/Subject pair.
 // The list is reference data every form's tax picker fills from, so every signed-in person reads it.
 router.get('/', orgTaxRateController.list);
-router.post('/', canDo('update', 'Organization'), validate(orgTaxRateController.createOrgTaxRateSchema), orgTaxRateController.create);
-router.patch('/:id', canDo('update', 'Organization'), validate(orgTaxRateController.updateOrgTaxRateSchema), orgTaxRateController.update);
-router.delete('/:id', canDo('update', 'Organization'), orgTaxRateController.remove);
+router.post('/', requireAdminTo('change company settings'), validate(orgTaxRateController.createOrgTaxRateSchema), orgTaxRateController.create);
+router.patch('/:id', requireAdminTo('change company settings'), validate(orgTaxRateController.updateOrgTaxRateSchema), orgTaxRateController.update);
+router.delete('/:id', requireAdminTo('change company settings'), orgTaxRateController.remove);
 
 export default router;

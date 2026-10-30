@@ -7,8 +7,7 @@ import { defineAbilityFor, type AppAbility, type Grant } from './defineAbility';
 import { scopeWhereFor, MATCH_NOTHING, type ScopeResource } from './scopeWhereFor';
 import { isSuperUser } from './effectiveRole';
 import { grantsForPerson } from './switches/store';
-import { creatorReach } from './recordPeople';
-import { substituteConditions } from './substituteConditions';
+import { noteRowRefusal } from './refusalNote';
 
 /**
  * Minimal slice of a Prisma model delegate — just the visibility probe we need.
@@ -65,6 +64,8 @@ export function can(
 export interface PermissionUser {
   id: string;
   role: string;
+  /** The Admin flag (P15): the only thing that makes a person an Admin. */
+  is_admin: boolean;
   organization_id: string;
   custom_role_id?: string | null;
   custom_role?: { key: string } | null;
@@ -152,10 +153,11 @@ export async function scopeTemplateForProfile(
 ): Promise<Record<string, unknown>> {
   if (isSuperUser(user)) return {};
   const grants = await grantsForUser(user);
-  const viewScope = scopeWhereFor(
+  return scopeWhereFor(
     {
       id: placeholderUserId,
       role: user.role,
+      is_admin: user.is_admin,
       custom_role_id: user.custom_role_id ?? null,
       department_id: user.department_id ?? null,
       location_id: user.location_id ?? null,
@@ -163,26 +165,6 @@ export async function scopeTemplateForProfile(
     resource,
     grants,
   );
-  return withCreatorRule(viewScope, resource, placeholderUserId);
-}
-
-/**
- * The creator rule (every role): the estimates and invoices a person made are theirs to open on top of what
- * their View scope reaches, while they are attached to the job or lead or for good when for a customer alone
- * (M3). So a list is the union of the View scope's rows and the creator rows, and with View off (nothing
- * reached) it is the creator rows alone, often none. Every other kind of record is left as it is.
- */
-function withCreatorRule(
-  viewScope: Record<string, unknown>,
-  resource: ScopeResource,
-  userId: string,
-): Record<string, unknown> {
-  if (resource !== 'Estimate' && resource !== 'Invoice') return viewScope;
-  // Every row is already reached.
-  if (Object.keys(viewScope).length === 0) return viewScope;
-  const creator = substituteConditions(creatorReach(resource), { userId })!;
-  const reachesNothing = JSON.stringify(viewScope) === JSON.stringify(MATCH_NOTHING);
-  return { OR: reachesNothing ? [creator] : [viewScope, creator] };
 }
 
 /**
@@ -238,7 +220,14 @@ export async function canAccessRow(
   // ADMIN / unconditional read: empty fragment means no restriction — skip the query.
   if (Object.keys(scope).length === 0) return true;
   const where = { id, ...tenantWhere(req), ...scope };
-  return !!(await delegate.findFirst({ where, select: { id: true } }));
+  const reached = !!(await delegate.findFirst({ where, select: { id: true } }));
+  if (!reached) noteRowRefusal(req, subjectName, id, null, () => rowExists(req, delegate, id));
+  return reached;
+}
+
+/** Does the record exist in the person's company at all? Asked only to tell a hidden row from one that is not there. */
+async function rowExists(req: Request, delegate: RowDelegate, id: string): Promise<boolean> {
+  return !!(await delegate.findFirst({ where: { id, ...tenantWhere(req) }, select: { id: true } }));
 }
 
 /**
@@ -278,7 +267,9 @@ export async function canActOnRow(
   ].filter((f) => Object.keys(f).length > 0);
   if (fragments.length === 0) return true;
   const where = { id, ...tenantWhere(req), AND: fragments };
-  return !!(await delegate.findFirst({ where, select: { id: true } }));
+  const allowed = !!(await delegate.findFirst({ where, select: { id: true } }));
+  if (!allowed) noteRowRefusal(req, subjectName, id, action, () => rowExists(req, delegate, id));
+  return allowed;
 }
 
 /**
@@ -348,6 +339,7 @@ async function actionScopeWhereForReq(
     {
       id: req.user.id,
       role: req.user.role,
+      is_admin: req.user.is_admin,
       department_id: req.user.department_id ?? null,
       location_id: req.user.location_id ?? null,
     },
@@ -364,12 +356,11 @@ async function actionScopeWhereForReq(
  * estimates, invoices and jobs, scope internal_cost, the org labor rate and overhead, price-book and
  * inventory cost, movement cost, purchase-order line cost and the vendor account number - are visible to
  * a requester holding the dedicated `read Pricing` grant. That grant has exactly ONE writer: the
- * "See financial data" switch (`see_financial_data` in switches/catalog.ts). ADMIN still passes via manage-all.
+ * "See costs" switch (`see_costs` in switches/catalog.ts). ADMIN still passes via manage-all.
  *
- * It covers costs ONLY. A price (line unit_price and line_total, totals, tax, balance, deposit, the price
- * book's list and sell price, a scope's flat price) follows the record: whoever can open an estimate, job or
- * invoice sees its prices, with or without this grant. Anything a price-blind person used to lose is a
- * question for the record's own read ability, never for this predicate.
+ * It covers costs ONLY (P11, the second of the three money classes). A price (line unit_price and line_total, totals, tax,
+ * balance, deposit, the price book's list and sell price, a scope's flat price) is the first class and follows See prices
+ * (`canSeePrices`), which this switch needs on: a person cannot hold costs without prices.
  *
  * It used to key on `read Invoice`, a DIFFERENT control ("may this user open an invoice RECORD"). The two
  * came apart in practice. Opening invoices confers no cost visibility; an admin's remedy is the switch.
@@ -394,6 +385,21 @@ export function canSeeCosts(req: Request): boolean {
 }
 
 /**
+ * Price visibility predicate (P11, the root of the three money classes): may this requester see a price - a line's unit
+ * price and total, a subtotal, a document total, tax, a discount, a balance, a deposit, a payment amount, the price
+ * book's sell price, and every customer-level figure built from them?
+ *
+ * It reads only the requester's own switches: the `read Prices` grant the "See prices" switch (`see_prices` in
+ * switches/catalog.ts) compiles into, which is that switch's one writer. ADMIN passes via manage-all. Nothing else
+ * counts: not a role's name, not View on the record, not who made the record. The omission itself is in prices.ts, which
+ * runs over every answer a signed-in person gets, so a new endpoint that carries a known price key is covered without
+ * a call to this at its own site.
+ */
+export function canSeePrices(req: Request): boolean {
+  return !!req.ability?.can('read', 'Prices' as Subject);
+}
+
+/**
  * Vendor-fields predicate (S07.18): may this requester see which vendor supplies what - the vendor name on a
  * stock item, the vendor id on a price book item, the default vendor id on a brand? It is View vendors ("read
  * Vendor"), the same switch that opens the Vendors page, so a role that holds View stock and View price book
@@ -405,14 +411,14 @@ export function canSeeVendors(req: Request): boolean {
 
 /**
  * Company-figures predicate (S01.16): may this requester see company-wide money - dashboard money tiles, chart
- * amounts, revenue on the scoreboards, dollar amounts in the activity feed, report totals, and (PRD 8) call and
- * agent revenue.
+ * amounts, revenue on the scoreboards, report totals, and (PRD 8) call and agent revenue. The activity feed is not
+ * one of them: it names no figure in its words.
  *
  * It reads only the requester's own switches: the `read CompanyFigures` grant the "See company figures" switch
  * (`see_company_figures` in switches/catalog.ts) compiles into, which is that switch's one writer. ADMIN passes via
  * manage-all (the Admin box has no switches), so an admin always sees them. Nothing else counts: not a role's name,
- * not Reports access, not a Data Scope. Prices on a record the person can open are NOT company figures and never go
- * through here. The redaction itself is in companyFigures.ts.
+ * not Reports access, not a Data Scope. A price on a record is the other class (`canSeePrices`), which this switch needs on,
+ * and never goes through here. The redaction itself is in companyFigures.ts.
  *
  * The non-test consumers: dashboard.controller.ts (getDashboard), report.controller.ts (revenue, payment-fees,
  * estimate-conversion, ar-aging, activity) and estimate.controller.ts (getStats' pending deposits). PRD 8's call-revenue endpoints and PRD 9's dashboard tiles call this too.

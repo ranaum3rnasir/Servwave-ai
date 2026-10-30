@@ -11,7 +11,7 @@
        people, the fallback, the copies) with "A reply from an address we didn't send to - check and link it"; a person who cannot
        open the record gets no bell;
      - an ordinary conversation rings its assignee, else its mailbox's holder, else (the main mailbox) the people linked to read
-       it, else the holders of Manage roles and permissions;
+       it, else the company's Admins (the holders of Manage roles and permissions until AL-18);
      - the Email plan feature off rings nobody; every other held kind (failed authentication, automatic mail, a reply address that
        no longer resolves) still rings nobody; a redelivery rings nobody twice;
      - the bell opens the Needs review item for anyone who can reach the token's conversation, whichever mailbox it is filed under;
@@ -153,17 +153,19 @@ suite('a reply from an address we did not send to rings the record\'s people (re
   /** A person on a fresh custom role holding exactly these switch values, with the Email page open. */
   async function personWith(c: Company, key: string, values: Record<string, boolean | string> = {}): Promise<Member> {
     const seq = ++sequence;
+    // `is_admin: true` makes the person an Admin (the flag, AL-18): it is not a switch, so it never reaches the role.
+    const { is_admin: asAdmin, ...switchValues } = values;
     const role = await fx.addCustomRole(c.org, `${key}-${seq}`, 'DISPATCHER');
     await setRoleSwitchValues({
       organizationId: c.org, roleKey: `${key}-${seq}`,
       values: {
         view_jobs: true, jobs_scope: 'attached', view_leads: true, leads_scope: 'attached', view_customers: true,
-        view_estimates: true, estimates_scope: 'attached', view_invoices: true, invoices_scope: 'attached',
-        access_communication: true, show_email: true, view_communication: true, communication_scope: 'linked_to_me', ...values,
+        view_estimates: true, view_invoices: true,
+        access_communication: true, show_email: true, view_communication: true, communication_scope: 'attached', ...switchValues,
       },
       actorId: null, reason: 'manual',
     });
-    const person = await fx.addUser(c.org, `${key}${seq}`, 'DISPATCHER', { customRoleId: role.id });
+    const person = await fx.addUser(c.org, `${key}${seq}`, 'DISPATCHER', { customRoleId: role.id, isAdmin: asAdmin === true });
     return Object.assign(person, { api: () => fx.signedInAs(person) });
   }
 
@@ -179,7 +181,7 @@ suite('a reply from an address we did not send to rings the record\'s people (re
    * address the customer was given (expecting angel@).
    */
   async function conversation(
-    c: Company, mailboxId: string, record: { type: string; id: string } | null, opts: { sentBy?: string; assignee?: string } = {},
+    c: Company, mailboxId: string, record: { type: string; id: string } | null, opts: { sentBy?: string; assignee?: string; jobId?: string } = {},
   ) {
     const thread = randomUUID();
     await db.emailThread.create({
@@ -190,7 +192,7 @@ suite('a reply from an address we did not send to rings the record\'s people (re
     });
     await db.email.create({
       data: {
-        id: randomUUID(), organization_id: c.org, thread_id: thread, customer_id: c.customer,
+        id: randomUUID(), organization_id: c.org, thread_id: thread, customer_id: c.customer, job_id: opts.jobId ?? null,
         account: opts.sentBy ? 'user' : 'system', direction: 'out', folder: 'sent', sent_by_user_id: opts.sentBy ?? null,
         from: { name: null, email: 'office@example.com' }, to: 'angel@example.com',
         subject: 'Your invoice', snippet: 's', body: ['b'], at: '1:00 PM', ts: BigInt(Date.now() - 86_400_000),
@@ -305,7 +307,7 @@ suite('a reply from an address we did not send to rings the record\'s people (re
     });
 
     // Opens every job and invoice of the company, so the person reads a conversation about any of them.
-    const SEES_ALL = { jobs_scope: 'all', invoices_scope: 'all' };
+    const SEES_ALL = { jobs_scope: 'all', leads_scope: 'all' };
 
     it('rings the person who sent the invoice by hand even when they are not on the job, and the copy holders on top', async () => {
       const w = await invoiceWorld();
@@ -336,7 +338,7 @@ suite('a reply from an address we did not send to rings the record\'s people (re
     it('falls back to the people linked to the main mailbox when the record has nobody who can take it, with the reason', async () => {
       const c = await company();
       const linked = await personWith(c, 'linked', SEES_ALL);
-      const manager = await personWith(c, 'manager', { ...SEES_ALL, manage_roles_and_permissions: true });
+      const admin = await personWith(c, 'admin', { is_admin: true });
       const stranger = await personWith(c, 'stranger');
       await db.mailboxReader.create({ data: { organization_id: c.org, mailbox_id: c.main, user_id: linked.id } });
       const job = await fx.addJob(c.org, c.customer, {});
@@ -349,15 +351,18 @@ suite('a reply from an address we did not send to rings the record\'s people (re
       expect(rung.why).toEqual(sorted(linked));
       expect(rung.reason).toBe('This job has no Dispatcher or Sold By who can take this reply');
       expect(rung.titles).toEqual([MESSAGE]);
-      // The managers are only for when nobody linked can take it.
-      expect(rung.all).not.toContain(manager.id);
+      // An Admin holds every "Alert me about every ..." switch, so they have a copy without the line: never the fallback while a
+      // linked person takes it (AL-18).
+      expect(rung.plain).toEqual(sorted(admin));
+      expect(rung.why).not.toContain(admin.id);
       expect(rung.all).not.toContain(stranger.id);
     });
 
-    it('falls back to the holders of Manage roles and permissions when nobody linked can take it', async () => {
+    it('tells the Admins when nobody linked can take it, as holders of every copy switch, so without the reason line, and no non-Admin', async () => {
       const c = await company();
-      const manager = await personWith(c, 'manager', { ...SEES_ALL, manage_roles_and_permissions: true });
-      const stranger = await personWith(c, 'stranger');
+      // An Admin whose own switches reach no job: the switches do not narrow an Admin.
+      const admin = await personWith(c, 'admin', { is_admin: true });
+      const stranger = await personWith(c, 'stranger', SEES_ALL);
       const job = await fx.addJob(c.org, c.customer, {});
       const invoice = await fx.addInvoice(c.org, c.customer, { jobId: job.id, createdBy: c.admin.id });
       const automated = await conversation(c, c.main, { type: 'invoice', id: invoice.id });
@@ -365,14 +370,16 @@ suite('a reply from an address we did not send to rings the record\'s people (re
       const { providerId } = await receive({ to: [automated.address] });
 
       const rung = await bells(providerId, c);
-      expect(rung.why).toEqual(sorted(manager));
-      expect(rung.reason).toBe('This job has no Dispatcher or Sold By who can take this reply');
+      expect(rung.plain).toEqual(sorted(admin));
+      expect(rung.why).toEqual([]);
+      expect(rung.admin).toBe(true);
+      // A non-Admin is never the fallback, however much they can read.
       expect(rung.all).not.toContain(stranger.id);
     });
   });
 
   describe('a reply to an ordinary conversation', () => {
-    it('rings its assignee, whoever holds the mailbox', async () => {
+    it('rings the mailbox\'s holder, and not an assignee who does not hold the mailbox: being assigned opens nothing (M1)', async () => {
       const c = await company();
       const holder = await personWith(c, 'holder');
       const assignee = await personWith(c, 'assignee');
@@ -382,7 +389,8 @@ suite('a reply from an address we did not send to rings the record\'s people (re
       const { providerId } = await receive({ to: [convo.address] });
 
       const rung = await bells(providerId, c);
-      expect(rung.all).toEqual(sorted(assignee));
+      expect(rung.all).toEqual(sorted(holder));
+      expect(rung.all).not.toContain(assignee.id);
       expect(rung.titles).toEqual([MESSAGE]);
     });
 
@@ -416,9 +424,10 @@ suite('a reply from an address we did not send to rings the record\'s people (re
       expect(rung.reason).toBeNull();
     });
 
-    it('rings the holders of Manage roles and permissions, told why, while nobody active is linked to the main mailbox', async () => {
+    it('rings the Admins, told why, while nobody active is linked to the main mailbox, and no non-Admin', async () => {
       const c = await company();
-      const stranger = await personWith(c, 'stranger');
+      // Reads every conversation, yet is no Admin: never the fallback.
+      const stranger = await personWith(c, 'stranger', { communication_scope: 'all' });
       const convo = await conversation(c, c.main, null);
 
       const { providerId } = await receive({ to: [convo.address] });
@@ -550,7 +559,30 @@ suite('a reply from an address we did not send to rings the record\'s people (re
       }
     });
 
-    it('opens an ordinary conversation\'s item to its assignee, who does not hold the mailbox, and to nobody else', async () => {
+    it('neither rings nor opens the item to an assignee who opens only another message of the conversation; the holder gets both (M1)', async () => {
+      const c = await company();
+      const holder = await personWith(c, 'holder');
+      const assignee = await personWith(c, 'assignee');
+      const box = await mailboxOf(c, holder);
+      // The assignee is crewed on a job of ANOTHER customer, and the message that went out is tied to that job: it opens for them,
+      // the conversation itself does not.
+      const elsewhere = randomUUID();
+      await db.customer.create({ data: { id: elsewhere, organization_id: c.org, customer_number: `C-m1-${elsewhere.slice(0, 6)}`, kind: 'PERSON', segment: 'RESIDENTIAL', first_name: 'Other', last_name: 'Customer' } });
+      const theirJob = await fx.addJob(c.org, elsewhere, { crew: [assignee.id] });
+      const convo = await conversation(c, box.id, null, { assignee: assignee.id, jobId: theirJob.id });
+
+      const { providerId } = await receive({ to: [convo.address] });
+      const held = await heldBy(providerId);
+
+      const rung = await bells(providerId, c);
+      expect(rung.all).toEqual(sorted(holder));
+      expect(rung.all).not.toContain(assignee.id);
+      expect((await itemFor(assignee, held.id)).status).toBe(404);
+      expect((await linkAs(assignee, held.id)).status).toBe(404);
+      expect((await itemFor(holder, held.id)).status).toBe(200);
+    });
+
+    it('opens an ordinary conversation\'s item to the mailbox\'s holder only, not to an assignee who does not hold the mailbox (M1)', async () => {
       const c = await company();
       const holder = await personWith(c, 'holder');
       const assignee = await personWith(c, 'assignee');
@@ -561,7 +593,7 @@ suite('a reply from an address we did not send to rings the record\'s people (re
       const { providerId } = await receive({ to: [convo.address] });
       const held = await heldBy(providerId);
 
-      expect((await itemFor(assignee, held.id)).status).toBe(200);
+      expect((await itemFor(assignee, held.id)).status).toBe(404);
       expect((await itemFor(holder, held.id)).status).toBe(200);
       expect((await itemFor(stranger, held.id)).status).toBe(404);
     });
@@ -654,7 +686,7 @@ suite('a reply from an address we did not send to rings the record\'s people (re
       const { alertEmailReply } = await import('../services/notifications/emailReplyAlerts.js');
       const held = await db.email.findFirstOrThrow({ where: { provider_message_id: first.providerId }, select: { id: true } });
       const rungAgain = await alertEmailReply({
-        organizationId: w.c.org, threadId: w.reply.thread, providerMessageId: first.providerId, senderLabel: FROM_SPOUSE,
+        organizationId: w.c.org, threadId: w.reply.thread, providerMessageId: first.providerId, emailId: held.id, senderLabel: FROM_SPOUSE,
         subject: 'Re: Your invoice', heldEmailId: held.id,
       });
       expect(rungAgain).toEqual([]);

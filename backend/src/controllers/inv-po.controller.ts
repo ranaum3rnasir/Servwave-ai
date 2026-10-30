@@ -8,10 +8,12 @@ import { allocateNumber } from '../lib/numbering';
 import { withNumberCollisionRetry } from '../lib/number-collision-retry';
 import { logAudit } from '../lib/audit';
 import { canAccessRow, canActOnRow, canCreateOnAnchor, scopeWhereForReq, canSeeCosts } from '../lib/permissions/enforce';
+import { canReadCustomerById } from '../lib/permissions/customerScope';
 import { applyStockMovement } from './inv-stock.controller';
 import { emitPoPartial } from '../services/notifications/inventoryEmit';
 import { env } from '../config/env';
 import { LONG_TEXT_MAX } from '../lib/text-limits';
+import { actorNamesById, seesFullPeopleRecords } from '../lib/users/peopleRow';
 
 const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -19,13 +21,14 @@ const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 // Before persisting an inbound job_id/customer_id, confirm the referenced row
 // belongs to the requesting org. Returns an error message string (→ 400) or null.
 async function validateJobAndCustomer(req: Request, jobId?: string | null, customerId?: string | null): Promise<string | null> {
+  // A job or customer out of the person's reach answers exactly like one that does not exist (spec story 47).
   if (jobId) {
     const job = await prisma.job.findFirst({ where: { id: jobId, ...tenantWhere(req) }, select: { id: true } });
-    if (!job) return 'Invalid job_id';
+    if (!job || !(await canAccessRow(req, 'Job', prisma.job, jobId))) return 'Invalid job_id';
   }
   if (customerId) {
     const customer = await prisma.customer.findFirst({ where: { id: customerId, ...tenantWhere(req) }, select: { id: true } });
-    if (!customer) return 'Invalid customer_id';
+    if (!customer || !(await canReadCustomerById(req, customerId))) return 'Invalid customer_id';
   }
   return null;
 }
@@ -100,7 +103,7 @@ async function resolveReceiveLocationId(req: Request): Promise<string | null> {
 }
 
 // ─── Line costs a cost-blind person cannot set ──────────────────────────────
-// A person without See financial data is never shown a line cost (mapPOLine), so the form they edit
+// A person without See costs is never shown a line cost (mapPOLine), so the form they edit
 // with carries none. Saving that form must not wipe the costs the office set, and a cost they send
 // anyway must not be planted where only the office can read it (S07.19). A new line therefore
 // stores no cost; an edit that replaces the lines gives each submitted line the cost of the stored
@@ -141,7 +144,7 @@ async function carryStoredLineCosts<T extends CostedLine>(req: Request, purchase
 // consumer can tell "not ordered yet" from "old server".
 
 // #2042 security round 3 (D): cost fields ride behind `canSeeCosts(req)` (`read Pricing`,
-// the Roles editor's "See financial data" switch) — the same predicate `stripMappedItemCost`
+// the Roles editor's "See costs" switch) — the same predicate `stripMappedItemCost`
 // (inv-catalog.controller.ts) applies to the catalog. Both fields are simply OMITTED
 // (`undefined` drops out of the JSON body) for a cost-blind caller, matching this DTO's
 // existing "absent when unset" convention rather than introducing a second null-vs-absent rule.
@@ -479,12 +482,12 @@ interface POActivityEvent {
 function mapAuditToActivity(row: {
   id: string;
   action: string;
-  actor_email: string | null;
+  actor: string | null;
   metadata: Prisma.JsonValue;
   created_at: Date;
 }): POActivityEvent | null {
   const meta = (row.metadata ?? {}) as Record<string, unknown>;
-  const base = { id: row.id, at: row.created_at.toISOString(), actor: row.actor_email };
+  const base = { id: row.id, at: row.created_at.toISOString(), actor: row.actor };
   switch (row.action) {
     case 'inventory.po_created':
       return {
@@ -550,8 +553,14 @@ export async function getPurchaseOrderActivity(req: Request, res: Response) {
       }),
     ]);
 
+    // Who did it (N6): an Admin sees the login address the row stored; anyone else the person's name, never their address.
+    const fullRecords = seesFullPeopleRecords(req);
+    const names = fullRecords ? new Map<string, string>() : await actorNamesById(req, audits.map((a) => a.actor_id));
     const fromAudit = audits
-      .map(mapAuditToActivity)
+      .map((a) => mapAuditToActivity({
+        ...a,
+        actor: fullRecords ? a.actor_email : (a.actor_id ? names.get(a.actor_id) ?? null : null),
+      }))
       .filter((e): e is POActivityEvent => e !== null);
 
     const fromEmail: POActivityEvent[] = emails.map((e) => {
@@ -738,12 +747,9 @@ export async function createPurchaseOrderFromJob(req: Request, res: Response) {
         service_location: { select: { address_line1: true, city: true, state: true } },
       },
     });
-    if (!job) { res.status(400).json({ error: 'Invalid job_id' }); return; }
-    // Per-instance scope (QA-804 per-user-grant path makes this non-vacuous).
-    if (!(await canAccessRow(req, 'Job', prisma.job, body.jobId))) {
-      res.status(403).json({ error: 'Insufficient permissions' });
-      return;
-    }
+    // Per-instance scope (QA-804 per-user-grant path makes this non-vacuous): a job out of reach answers exactly like a
+    // missing one (spec story 47), before its status is said.
+    if (!job || !(await canAccessRow(req, 'Job', prisma.job, body.jobId))) { res.status(400).json({ error: 'Invalid job_id' }); return; }
     // Cancel is terminal — ordering materials for a cancelled job is always a mistake.
     if (job.status === 'CANCELLED') {
       res.status(409).json({ error: 'JOB_CANCELLED', message: 'Cannot order materials for a cancelled job' });
@@ -1015,7 +1021,7 @@ export async function updatePurchaseOrder(req: Request, res: Response) {
     // Lines are replace-all when provided (mirrors the dialog's full-form submit); only
     // reachable in draft (guard above), so no receipt is ever discarded here.
     if (body.lines !== undefined) {
-      // Costs ride only with See financial data; without it the stored ones carry over (see above).
+      // Costs ride only with See costs; without it the stored ones carry over (see above).
       const newLines: any[] = canSeeCosts(req)
         ? body.lines
         : await carryStoredLineCosts(req, existing.id, withoutLineCosts(body.lines));

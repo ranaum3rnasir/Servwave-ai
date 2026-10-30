@@ -51,7 +51,8 @@ suite('payments on switches (real database)', () => {
     const key = `pay-role-${++sequence}`;
     const base = opts.base ?? 'DISPATCHER';
     const role = await fx.addCustomRole(org, key, base, { madeFromBlank: opts.blank });
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values, actorId: null, reason: 'manual' });
+    // Recording a payment stands on See prices (P11), so every person here holds it unless the case says otherwise.
+    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { see_prices: true, ...values }, actorId: null, reason: 'manual' });
     const person = await fx.addUser(org, `${opts.name ?? 'payer'}${sequence}`, base, { customRoleId: role.id, basedOnRoleKey: key });
     return { ...person, roleKey: key, api: () => fx.signedInAs(person) };
   }
@@ -72,18 +73,18 @@ suite('payments on switches (real database)', () => {
   describe('Record payments on an invoice', () => {
     it('is refused on an invoice the person cannot open, and let in on one they can', async () => {
       const { org, customer } = await fx.newOrg();
-      const me = await personWith(org, { invoices_scope: 'attached', record_payments: true });
+      const me = await personWith(org, { jobs_scope: 'attached', leads_scope: 'attached', record_payments: true });
       const mine = await invoiceFor(org, customer, [me.id]);
       const theirs = (await fx.addInvoice(org, customer)).id;
       const api = await me.api();
 
-      expect((await pay(api, theirs, 'CASH')).status).toBe(403);
+      expect((await pay(api, theirs, 'CASH')).status).toBe(404);
       expect((await pay(api, mine, 'CASH')).status).toBe(201);
     });
 
     it('is refused without Record payments, whatever else the person holds', async () => {
       const { org, customer } = await fx.newOrg();
-      const me = await personWith(org, { invoices_scope: 'all', edit_invoices: true, record_payments: false });
+      const me = await personWith(org, { jobs_scope: 'all', leads_scope: 'all', edit_invoices: true, record_payments: false });
       const api = await me.api();
       const invoice = (await fx.addInvoice(org, customer)).id;
       expect((await pay(api, invoice, 'CASH')).status).toBe(403);
@@ -92,7 +93,7 @@ suite('payments on switches (real database)', () => {
     it('refuses a method the company does not accept, and says so in the company\'s words', async () => {
       const { org, customer } = await fx.newOrg();
       await companyAccepts(org, ['CHECK']);
-      const me = await personWith(org, { invoices_scope: 'all', record_payments: true });
+      const me = await personWith(org, { jobs_scope: 'all', leads_scope: 'all', record_payments: true });
       const api = await me.api();
       const invoice = (await fx.addInvoice(org, customer)).id;
 
@@ -104,7 +105,7 @@ suite('payments on switches (real database)', () => {
 
     it('refuses a method outside the person\'s own list, though the company accepts it', async () => {
       const { org, customer } = await fx.newOrg();
-      const me = await personWith(org, { invoices_scope: 'all', record_payments: true, allowed_payment_methods: ['CHECK'] });
+      const me = await personWith(org, { jobs_scope: 'all', leads_scope: 'all', record_payments: true, allowed_payment_methods: ['CHECK'] });
       const api = await me.api();
       const invoice = (await fx.addInvoice(org, customer)).id;
 
@@ -116,10 +117,10 @@ suite('payments on switches (real database)', () => {
 
     it('refuses everything for a role made from blank, whose list is empty', async () => {
       const { org, customer } = await fx.newOrg();
-      const me = await personWith(org, { invoices_scope: 'all', record_payments: true }, { blank: true });
-      expect((await resolveSwitches({ ...me, role: 'DISPATCHER', organization_id: org })).allowed_payment_methods).toEqual([]);
+      const me = await personWith(org, { jobs_scope: 'all', leads_scope: 'all', record_payments: true }, { blank: true });
+      expect((await resolveSwitches({ is_admin: false, ...me, role: 'DISPATCHER', organization_id: org })).allowed_payment_methods).toEqual([]);
       const invoice = (await fx.addInvoice(org, customer)).id;
-      expect((await pay(await me.api(), invoice, 'CHECK')).status).toBe(403);
+      expect((await pay(await me.api(), invoice, 'CHECK')).status).toBe(404);
     });
 
     it.each([
@@ -128,7 +129,7 @@ suite('payments on switches (real database)', () => {
     ])('accepts any method, for an admin and for a person on "All accepted methods", with %s', async (_name, stored, live) => {
       const { org, customer, admin } = await fx.newOrg();
       await companyAccepts(org, stored, live);
-      const me = await personWith(org, { invoices_scope: 'all', record_payments: true, allowed_payment_methods: ALL_ACCEPTED_METHODS });
+      const me = await personWith(org, { jobs_scope: 'all', leads_scope: 'all', record_payments: true, allowed_payment_methods: ALL_ACCEPTED_METHODS });
       const adminApi = await fx.signedInAs(admin);
       const meApi = await me.api();
       for (const method of ['CASH', 'CHECK', 'ZELLE', 'CARD']) {
@@ -140,7 +141,7 @@ suite('payments on switches (real database)', () => {
     it('accepts Check and Credit Card, and refuses Cash, for a company that ticked Check with the processor live', async () => {
       const { org, customer } = await fx.newOrg();
       await companyAccepts(org, ['CHECK', 'CARD'], true);
-      const me = await personWith(org, { invoices_scope: 'all', record_payments: true });
+      const me = await personWith(org, { jobs_scope: 'all', leads_scope: 'all', record_payments: true });
       const api = await me.api();
       const invoice = (await fx.addInvoice(org, customer)).id;
 
@@ -152,18 +153,17 @@ suite('payments on switches (real database)', () => {
     it('stores "All accepted methods" as the marker, never expanded, so a method the company adds later is allowed for it and not for a fixed subset', async () => {
       const { org, customer } = await fx.newOrg();
       await companyAccepts(org, ['CHECK']);
-      const everything = await personWith(org, { invoices_scope: 'all', record_payments: true, allowed_payment_methods: ALL_ACCEPTED_METHODS });
-      const fixed = await personWith(org, { invoices_scope: 'all', record_payments: true, allowed_payment_methods: ['CHECK'] });
+      const everything = await personWith(org, { jobs_scope: 'all', leads_scope: 'all', record_payments: true, allowed_payment_methods: ALL_ACCEPTED_METHODS });
+      const fixed = await personWith(org, { jobs_scope: 'all', leads_scope: 'all', record_payments: true, allowed_payment_methods: ['CHECK'] });
 
       const stored = await db.permissionRoleSwitch.findFirst({ where: { organization_id: org, role_key: everything.roleKey, switch_key: 'allowed_payment_methods' } });
       expect(stored?.value).toBe(ALL_ACCEPTED_METHODS);
-      // A person given the role is filled with the marker too, not a copy of the company's list.
+      // A person given the role follows the role's marker: nothing is copied onto them, least of all a copy of the company's list.
       const full = await db.user.findUniqueOrThrow({ where: { id: everything.id } });
       await db.$transaction((tx) => assignRoleToPerson(tx, {
         organizationId: org, userId: everything.id, roleKey: everything.roleKey, userBaseRole: full.role, previous: {}, actorId: null,
       }));
-      const own = await db.permissionUserSwitch.findFirst({ where: { user_id: everything.id, switch_key: 'allowed_payment_methods' } });
-      expect(own?.value).toBe(ALL_ACCEPTED_METHODS);
+      expect(await db.permissionUserSwitch.count({ where: { user_id: everything.id } })).toBe(0);
 
       await companyAccepts(org, ['CHECK', 'CASH']);
       const invoice = (await fx.addInvoice(org, customer)).id;
@@ -200,8 +200,8 @@ suite('payments on switches (real database)', () => {
     it('needs Record payments, a method the company accepts and a method in the person\'s list', async () => {
       const { org, customer, admin } = await fx.newOrg();
       await companyAccepts(org, ['CHECK', 'CASH']);
-      const me = await personWith(org, { estimates_scope: 'all', record_payments: true, allowed_payment_methods: ['CHECK'] });
-      const off = await personWith(org, { estimates_scope: 'all', record_payments: false });
+      const me = await personWith(org, { jobs_scope: 'all', leads_scope: 'all', record_payments: true, allowed_payment_methods: ['CHECK'] });
+      const off = await personWith(org, { jobs_scope: 'all', leads_scope: 'all', record_payments: false });
       const estimate = (await fx.addEstimate(org, customer, admin.id)).id;
 
       expect((await deposit(await off.api(), estimate, 'CHECK')).status).toBe(403);
@@ -221,7 +221,7 @@ suite('payments on switches (real database)', () => {
     it('takes Credit Card from a person on "All accepted methods" when the company ticked Check with the processor live, and refuses Cash', async () => {
       const { org, customer, admin } = await fx.newOrg();
       await companyAccepts(org, ['CHECK', 'CARD'], true);
-      const me = await personWith(org, { estimates_scope: 'all', record_payments: true });
+      const me = await personWith(org, { jobs_scope: 'all', leads_scope: 'all', record_payments: true });
       const estimate = (await fx.addEstimate(org, customer, admin.id)).id;
       const api = await me.api();
 
@@ -234,7 +234,7 @@ suite('payments on switches (real database)', () => {
     it('refuses Credit Card when the company ticked Check and the processor is not live', async () => {
       const { org, customer, admin } = await fx.newOrg();
       await companyAccepts(org, ['CHECK']);
-      const me = await personWith(org, { estimates_scope: 'all', record_payments: true });
+      const me = await personWith(org, { jobs_scope: 'all', leads_scope: 'all', record_payments: true });
       const estimate = (await fx.addEstimate(org, customer, admin.id)).id;
 
       const card = await deposit(await me.api(), estimate, 'CARD');
@@ -279,7 +279,7 @@ suite('payments on switches (real database)', () => {
 
     it('is refused with Record payments on and Refund payments off, and let in with it on', async () => {
       const { org, customer } = await fx.newOrg();
-      const me = await personWith(org, { invoices_scope: 'all', record_payments: true, refund_payments: false, view_payments: true });
+      const me = await personWith(org, { jobs_scope: 'all', leads_scope: 'all', record_payments: true, refund_payments: false, view_payments: true });
       const api = await me.api();
       const invoice = (await fx.addInvoice(org, customer)).id;
       expect((await pay(api, invoice, 'CASH')).status).toBe(201);
@@ -297,12 +297,16 @@ suite('payments on switches (real database)', () => {
 
     it('is refused without Send payment links even with Edit invoices on, and let in with it on', async () => {
       const { org, customer } = await fx.newOrg();
-      const me = await personWith(org, { invoices_scope: 'all', edit_invoices: true, send_payment_links: false });
+      const me = await personWith(org, { jobs_scope: 'all', leads_scope: 'all', edit_invoices: true, send_payment_links: false });
       const api = await me.api();
       const invoice = (await fx.addInvoice(org, customer)).id;
       expect((await link(api, invoice)).status).toBe(403);
 
-      await setRoleSwitchValues({ organizationId: org, roleKey: me.roleKey, values: { send_payment_links: true, edit_invoices: false }, actorId: null, reason: 'manual' });
+      // Create requires Edit (AL-04): taking Edit invoices away takes Create invoices (and Standalone invoices) with it.
+      await setRoleSwitchValues({
+        organizationId: org, roleKey: me.roleKey,
+        values: { send_payment_links: true, edit_invoices: false, create_invoices: false, standalone_invoices: false }, actorId: null, reason: 'manual',
+      });
       const created = await link(api, invoice);
       expect(created.status).toBe(200);
       expect(created.body.url).toMatch(/\/p\/invoices\//);
@@ -310,27 +314,40 @@ suite('payments on switches (real database)', () => {
 
     it('is refused on an invoice the person cannot open', async () => {
       const { org, customer } = await fx.newOrg();
-      const me = await personWith(org, { invoices_scope: 'attached', send_payment_links: true });
+      const me = await personWith(org, { jobs_scope: 'attached', leads_scope: 'attached', send_payment_links: true });
       const theirs = (await fx.addInvoice(org, customer)).id;
-      expect((await link(await me.api(), theirs)).status).toBe(403);
+      expect((await link(await me.api(), theirs)).status).toBe(404);
     });
   });
 
-  describe('the creator rule never grants them, but opens the invoice for them', () => {
-    it('lets a Technician-preset person record a payment and send a link on their own invoice with Invoices View off', async () => {
+  describe('who made the invoice opens nothing (P7)', () => {
+    it('refuses a Technician-preset person who holds Record payments and Send payment links a payment and a link on their own invoice with Invoices View off', async () => {
       const { org, customer } = await fx.newOrg();
-      const me = await personWith(org, {}, { base: 'TECHNICIAN' });
+      // AL-04: the Technician preset holds neither switch any more, so this person has been given both.
+      const me = await personWith(org, { record_payments: true, send_payment_links: true }, { base: 'TECHNICIAN' });
+      const api = await me.api();
+      const job = await fx.addJob(org, customer, { crew: [me.id] });
+      const mine = (await fx.addInvoice(org, customer, { jobId: job.id, createdBy: me.id })).id;
+
+      const switches = await resolveSwitches({ is_admin: false, ...me, role: 'TECHNICIAN', organization_id: org });
+      expect(switches.view_invoices).toBe(false);
+      expect((await pay(api, mine, 'CASH')).status).toBe(404);
+      expect((await api.post(`/api/invoices/${mine}/payment-link`, {})).status).toBe(404);
+      expect(await db.payment.count({ where: { invoice_id: mine } })).toBe(0);
+    });
+
+    it('lets the same person record a payment and send a link on the invoice of their job once Invoices View is on', async () => {
+      const { org, customer } = await fx.newOrg();
+      const me = await personWith(org, { record_payments: true, send_payment_links: true, view_invoices: true, jobs_scope: 'attached', leads_scope: 'attached' }, { base: 'TECHNICIAN' });
       const api = await me.api();
       const job = await fx.addJob(org, customer, { crew: [me.id] });
       const mine = (await fx.addInvoice(org, customer, { jobId: job.id, createdBy: me.id })).id;
       const theirs = (await fx.addInvoice(org, customer)).id;
 
-      const switches = await resolveSwitches({ ...me, role: 'TECHNICIAN', organization_id: org });
-      expect(switches.view_invoices).toBe(false);
       expect((await pay(api, mine, 'CASH')).status).toBe(201);
       expect((await api.post(`/api/invoices/${mine}/payment-link`, {})).status).toBe(200);
-      expect((await pay(api, theirs, 'CASH')).status).toBe(403);
-      expect((await api.post(`/api/invoices/${theirs}/payment-link`, {})).status).toBe(403);
+      expect((await pay(api, theirs, 'CASH')).status).toBe(404);
+      expect((await api.post(`/api/invoices/${theirs}/payment-link`, {})).status).toBe(404);
     });
 
     it('refuses the creator a payment or a link when the switches are off', async () => {

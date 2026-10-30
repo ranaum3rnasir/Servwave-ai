@@ -4,6 +4,7 @@ import {
   useLinkReader, useMainMailboxReaders, useReaderCandidates, useUnlinkReader, type ReaderPage,
 } from '@/lib/api/emailSender';
 import { extractApiError } from '@/lib/utils';
+import { useAuthStore } from '@/stores/auth.store';
 import { Card } from '@/components/ui/card';
 import { Heading } from '@/components/ui/heading';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -20,8 +21,10 @@ import { useDebounce } from '@/ui-kit/hooks/useDebounce';
  * "People who read the main mailbox", on Settings -> Sender Address (PRD 10, S10.8).
  *
  * The company's main mailbox is read by the people linked here, by people on Communication scope All, and, while nobody
- * is linked, by the people who can manage roles and permissions. A holder of Company settings (the page's own gate) links
- * and unlinks people; the server refuses anyone else.
+ * is linked, by Admins. The Sender Address page is Admin-only (36b), so only an Admin reaches this card. Linking and
+ * unlinking people stays the Admin flag's alone (M8, D3: nobody adds themselves to the company mailbox on a lesser right);
+ * the server refuses anyone else, and the card still draws the Remove and Add person controls for an Admin only, so it
+ * stays right if it is ever mounted elsewhere.
  *
  * A company can have hundreds of people, so the page never ticks them one by one: the linked people are a short list with
  * a Remove each, and "Add person" opens a picker with its own search and its own scroller, both paged by the server.
@@ -29,7 +32,7 @@ import { useDebounce } from '@/ui-kit/hooks/useDebounce';
 
 /** Shown while nobody is linked, word for word. */
 const NOBODY_LINKED =
-  'Nobody is linked. People who can manage roles and permissions read the main mailbox until you add someone.';
+  'Nobody is linked. Admins read the main mailbox until you add someone.';
 
 function Pager({ page, onOffset }: { page: ReaderPage; onOffset: (offset: number) => void }) {
   if (page.total <= page.limit) return null;
@@ -53,6 +56,7 @@ function Pager({ page, onOffset }: { page: ReaderPage; onOffset: (offset: number
 export function MainMailboxReaders() {
   const [offset, setOffset] = useState(0);
   const [adding, setAdding] = useState(false);
+  const isAdmin = useAuthStore((s) => s.user?.is_admin === true);
   const { data, isLoading, isError } = useMainMailboxReaders(offset);
   const unlink = useUnlinkReader();
 
@@ -91,16 +95,18 @@ export function MainMailboxReaders() {
             {items.map((person) => (
               <li key={person.id} className="flex items-center justify-between gap-2 px-3 py-1.5">
                 <span className="min-w-0 break-words text-sm text-text-primary">{person.name}</span>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  aria-label={`Remove ${person.name}`}
-                  disabled={unlink.isPending}
-                  onClick={() => remove(person.id)}
-                >
-                  <X />
-                  Remove
-                </Button>
+                {isAdmin && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label={`Remove ${person.name}`}
+                    disabled={unlink.isPending}
+                    onClick={() => remove(person.id)}
+                  >
+                    <X />
+                    Remove
+                  </Button>
+                )}
               </li>
             ))}
           </ul>
@@ -108,14 +114,16 @@ export function MainMailboxReaders() {
         </>
       )}
 
-      <div>
-        <Button variant="outline" size="sm" onClick={() => setAdding(true)}>
-          <UserPlus />
-          Add person
-        </Button>
-      </div>
+      {isAdmin && (
+        <div>
+          <Button variant="outline" size="sm" onClick={() => setAdding(true)}>
+            <UserPlus />
+            Add person
+          </Button>
+        </div>
+      )}
 
-      {adding && <AddPersonDialog onClose={() => setAdding(false)} />}
+      {isAdmin && adding && <AddPersonDialog onClose={() => setAdding(false)} />}
     </Card>
   );
 }

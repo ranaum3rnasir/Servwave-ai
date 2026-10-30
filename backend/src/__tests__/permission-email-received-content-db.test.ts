@@ -63,6 +63,7 @@ import { sanitizeEmailHtml } from '../lib/email-html';
 import { supabaseAdmin } from '../lib/supabase';
 import { ATTACHMENTS_BUCKET } from '../lib/attachment-access';
 import { env } from '../config/env';
+import { clearAllSwitchCaches } from '../lib/permissions/switches/cache';
 
 const suite = process.env.TEST_DATABASE_URL ? describe : describe.skip;
 
@@ -131,14 +132,14 @@ suite('received mail: cleaned HTML and stored attachments (real database, real w
   };
 
   /** A person on a fresh custom role holding exactly these switch values. */
-  async function personWith(org: string, scope: 'all' | 'linked_to_me', extra: Record<string, boolean | string> = {}): Promise<Who> {
+  async function personWith(org: string, scope: 'all' | 'attached', extra: Record<string, boolean | string> = {}): Promise<Who> {
     const key = `rc-role-${++sequence}`;
     const role = await fx.addCustomRole(org, key, 'DISPATCHER');
     await setRoleSwitchValues({
       organizationId: org, roleKey: key,
       values: {
         view_jobs: true, jobs_scope: 'attached', view_leads: true, leads_scope: 'attached', view_customers: true,
-        view_estimates: true, estimates_scope: 'attached', view_invoices: true, invoices_scope: 'attached',
+        view_estimates: true, view_invoices: true,
         access_communication: true, show_email: true, view_communication: true, communication_scope: scope, ...extra,
       },
       actorId: null, reason: 'manual',
@@ -160,9 +161,9 @@ suite('received mail: cleaned HTML and stored attachments (real database, real w
     const main = randomUUID();
     await db.mailbox.create({ data: { id: main, organization_id: org, kind: 'main', status: 'active' } });
     await db.mailboxAddress.create({ data: { local_part: `main-${tag}`, organization_id: org, mailbox_id: main, is_primary: true } });
-    const holder = await personWith(org, 'linked_to_me');
+    const holder = await personWith(org, 'attached');
     const holderBox = await fx.addUserMailbox(org, holder);
-    const outsider = await personWith(org, 'linked_to_me');
+    const outsider = await personWith(org, 'attached');
     await fx.addUserMailbox(org, outsider);
     const wide = await personWith(org, 'all');
     // Holds every reading switch there is except the section itself.
@@ -584,6 +585,10 @@ suite('received mail: cleaned HTML and stored attachments (real database, real w
       const w = await world();
       const measure = async (count: number) => {
         await settle();
+        // Ticket 37: switches read for people other than a signed-in requester are reused only for a moment, so whether a
+        // message re-reads its recipients' switches depends on how long the one before took. Starting each message from an
+        // empty memory puts the same reads in every count, and the differences below stay the attachments' own.
+        clearAllSwitchCaches();
         queries.length = 0;
         storage().upload.mockClear();
         const { res } = await receive({ to: [w.userAddress], files: Array.from({ length: count }, (_, i) => ({ name: `p${i}.jpg` })) });

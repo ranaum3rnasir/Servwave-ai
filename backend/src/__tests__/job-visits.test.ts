@@ -723,10 +723,6 @@ describe('POST /api/jobs/:id/visits - booking a visit needs the reschedule Job g
     // they may act on - the same per-instance check assign() applies - or a granted technician
     // could add visits to every job in the org.
     mockAuthAs('technician');
-    (mockPrisma.rolePermission.findMany as any).mockResolvedValue([
-      ...DEFAULT_GRANTS.filter((g: any) => g.role === 'TECHNICIAN'),
-      { role: 'TECHNICIAN', action: 'reschedule', subject: 'Job' },
-    ]);
     clearPermissionCache();
     // The row-scoped probe finds nothing: this job is not one of theirs.
     mockPrisma.job.findFirst.mockResolvedValue(null);
@@ -1576,10 +1572,6 @@ describe('POST /api/jobs/:id/visits/:visitId/cancel - calling a trip off needs t
     // call off another crew's trip - and if it was that job's last live visit the derivation
     // unschedules it and it drops off the dispatcher's board. PATCH on the very same row 403s.
     mockAuthAs('technician');
-    (mockPrisma.rolePermission.findMany as any).mockResolvedValue([
-      ...DEFAULT_GRANTS.filter((g: any) => g.role === 'TECHNICIAN'),
-      { role: 'TECHNICIAN', action: 'reschedule', subject: 'Job' },
-    ]);
     clearPermissionCache();
     // The tenant probe finds the job; the row-scope probe does not.
     mockPrisma.job.findFirst.mockResolvedValue(null);

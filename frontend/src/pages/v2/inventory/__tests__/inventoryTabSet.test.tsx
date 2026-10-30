@@ -52,9 +52,7 @@ const LOW_STOCK_ROW = {
 
 const key = (label: string) => catalogToggle(label).key;
 const VIEW_STOCK = 'View stock';
-const SHOW_STOCK = 'Show Stock page';
 const VIEW_LO = 'View logistic orders';
-const SHOW_LO = 'Show Logistic Orders page';
 
 const callsTo = (prefix: string) => mockApi.get.mock.calls.filter((c) => String(c[0]).startsWith(prefix));
 
@@ -112,79 +110,64 @@ beforeEach(() => {
 describe('Inventory tab set per switch combination', () => {
   const ACTIVITY: AbilityRule = { action: 'see_inventory_activity', subject: 'Inventory' };
 
-  it('shows the four Stock tabs, and no Activity or Logistic Orders tab, with View stock and Show Stock page', async () => {
-    renderPage('/inventory', [VIEW_STOCK, SHOW_STOCK]);
+  it('shows the four Stock tabs, and no Activity or Logistic Orders tab, with View stock', async () => {
+    renderPage('/inventory', [VIEW_STOCK]);
 
     await screen.findByText('Brass Hinge');
     expect(tabNames()).toEqual(['Items', 'Staging', 'Assets', 'Low stock']);
   });
 
   it('adds the Activity tab with See inventory activity', async () => {
-    renderPage('/inventory', [VIEW_STOCK, SHOW_STOCK], [ACTIVITY]);
+    renderPage('/inventory', [VIEW_STOCK], [ACTIVITY]);
 
     await screen.findByText('Brass Hinge');
     expect(tabNames()).toEqual(['Items', 'Staging', 'Assets', 'Low stock', 'Activity']);
   });
 
-  it('adds the Logistic Orders tab with View logistic orders and Show Logistic Orders page', async () => {
-    renderPage('/inventory', [VIEW_STOCK, SHOW_STOCK, VIEW_LO, SHOW_LO]);
+  it('adds the Logistic Orders tab with View logistic orders', async () => {
+    renderPage('/inventory', [VIEW_STOCK, VIEW_LO]);
 
     await screen.findByText('Brass Hinge');
     await waitFor(() => expect(tabNames()).toEqual(['Items', 'Staging', 'Assets', 'Low stock', 'Logistic Orders']));
   });
 
-  it('shows no Logistic Orders tab with View logistic orders on and Show Logistic Orders page off', async () => {
-    renderPage('/inventory', [VIEW_STOCK, SHOW_STOCK, VIEW_LO]);
+  it('shows no Logistic Orders tab with View logistic orders off', async () => {
+    renderPage('/inventory', [VIEW_STOCK]);
 
     await screen.findByText('Brass Hinge');
     expect(screen.queryByRole('tab', { name: /Logistic Orders/ })).not.toBeInTheDocument();
     expect(callsTo('/api/logistic-orders')).toHaveLength(0);
   });
 
-  it('shows no Logistic Orders tab with Show Logistic Orders page on and View logistic orders off', async () => {
-    renderPage('/inventory', [VIEW_STOCK, SHOW_STOCK, SHOW_LO]);
-
-    await screen.findByText('Brass Hinge');
-    expect(screen.queryByRole('tab', { name: /Logistic Orders/ })).not.toBeInTheDocument();
-    expect(callsTo('/api/logistic-orders')).toHaveLength(0);
-  });
-
-  it('shows no Stock tab with Show Stock page off, and reads no stock for the count pills', async () => {
-    renderPage('/inventory/logistic-orders', [VIEW_STOCK, VIEW_LO, SHOW_LO]);
+  it('shows no Stock tab with View stock off, and reads no stock for the count pills', async () => {
+    renderPage('/inventory/logistic-orders', [VIEW_LO]);
 
     await screen.findByRole('tab', { name: /Logistic Orders/ });
     expect(tabNames()).toEqual(['Logistic Orders']);
     expect(callsTo('/api/inventory/low-stock')).toHaveLength(0);
     expect(callsTo('/api/inventory/assets')).toHaveLength(0);
     expect(callsTo('/api/inventory/job-stages')).toHaveLength(0);
-  });
-
-  it('shows no Stock tab with Show Stock page on and View stock off', async () => {
-    renderPage('/inventory/logistic-orders', [SHOW_STOCK, VIEW_LO, SHOW_LO]);
-
-    await screen.findByRole('tab', { name: /Logistic Orders/ });
-    expect(tabNames()).toEqual(['Logistic Orders']);
     expect(callsTo('/api/inventory/items')).toHaveLength(0);
   });
 });
 
 describe('a tab deep link without its switch', () => {
   it('lands the Assets link on the first tab the person may see (Logistic Orders when that is all they have)', async () => {
-    renderPage('/inventory/assets', [VIEW_STOCK, VIEW_LO, SHOW_LO]);
+    renderPage('/inventory/assets', [VIEW_LO]);
 
     await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent('/inventory/logistic-orders'));
     expect(tabNames()).toEqual(['Logistic Orders']);
   });
 
-  it('lands the Logistic Orders link on Items when its two switches are not both on', async () => {
-    renderPage('/inventory/logistic-orders', [VIEW_STOCK, SHOW_STOCK, VIEW_LO]);
+  it('lands the Logistic Orders link on Items when View logistic orders is off', async () => {
+    renderPage('/inventory/logistic-orders', [VIEW_STOCK]);
 
     await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent(/^\/inventory$/));
     expect(await screen.findByText('Brass Hinge')).toBeInTheDocument();
   });
 
   it('lands the Activity link on Items without See inventory activity', async () => {
-    renderPage('/inventory/activity', [VIEW_STOCK, SHOW_STOCK]);
+    renderPage('/inventory/activity', [VIEW_STOCK]);
 
     await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent(/^\/inventory$/));
   });
@@ -192,7 +175,7 @@ describe('a tab deep link without its switch', () => {
 
 describe('what a View stock person sees', () => {
   it('reads quantities, locations, categories and the low-stock list', async () => {
-    renderPage('/inventory', [VIEW_STOCK, SHOW_STOCK]);
+    renderPage('/inventory', [VIEW_STOCK]);
 
     const row = (await screen.findByText('Brass Hinge')).closest('tr') as HTMLElement;
     expect(within(row).getByText('Hardware')).toBeInTheDocument();
@@ -219,23 +202,23 @@ describe('the routed table', () => {
   const where = () => screen.getByTestId('where').textContent;
   const dashboard = () => screen.findByRole('heading', { name: 'Dashboard' });
 
-  it('sends the Logistic Orders link home with Show Logistic Orders page off and View logistic orders on', async () => {
-    open('/inventory/logistic-orders', [VIEW_STOCK, SHOW_STOCK, VIEW_LO]);
+  it('sends the Logistic Orders link home with View logistic orders off', async () => {
+    open('/inventory/logistic-orders', [VIEW_STOCK]);
 
     expect(await dashboard()).toBeInTheDocument();
     expect(where()).toBe('/');
   });
 
-  it('opens the Logistic Orders link with that tab alone when Show Stock page is off', async () => {
-    open('/inventory/logistic-orders', [VIEW_LO, SHOW_LO]);
+  it('opens the Logistic Orders link with that tab alone when View stock is off', async () => {
+    open('/inventory/logistic-orders', [VIEW_LO]);
 
     expect(await screen.findByRole('heading', { level: 1, name: 'Logistic Orders' })).toBeInTheDocument();
     expect(where()).toBe('/inventory/logistic-orders');
     expect(tabNames()).toEqual(['Logistic Orders']);
   });
 
-  it.each(['/inventory', '/inventory/staging'])('sends the %s link home when Show Stock page is off', async (path) => {
-    open(path, [VIEW_STOCK, VIEW_LO, SHOW_LO]);
+  it.each(['/inventory', '/inventory/staging'])('sends the %s link home when View stock is off', async (path) => {
+    open(path, [VIEW_LO]);
 
     expect(await dashboard()).toBeInTheDocument();
     expect(where()).toBe('/');

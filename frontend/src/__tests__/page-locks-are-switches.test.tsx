@@ -51,11 +51,12 @@ const PAGES: Array<{ name: string; path: string; opens: string[] }> = [
   { name: 'Reports', path: '/reports', opens: ['Access Reports'] },
   { name: 'a report page', path: '/reports/revenue', opens: ['Access Reports'] },
   { name: 'Billing', path: '/reports/unpaid-invoices', opens: ['Access Billing'] },
-  // The standalone New Customer form (S02.26); a customer's edit form is the same page and keeps its own rule.
-  { name: 'New customer', path: '/customers/new', opens: ['Create customers', 'Show Customers page'] },
-  { name: 'New invoice', path: '/invoices/new', opens: ['Standalone invoices', 'Show Invoices page'] },
-  { name: 'Payments', path: '/payments', opens: ['View payments and payouts', 'Show Payments page'] },
-  { name: 'Automations', path: '/automations', opens: ['View automations', 'Show Automations page'] },
+  // The standalone New Customer form (S02.26) opens on Create customers alone: Create requires Edit and View, so a page that
+  // also asked for View would test a combination no stored set can hold. A customer's edit form keeps its own rule.
+  { name: 'New customer', path: '/customers/new', opens: ['Create customers'] },
+  { name: 'New invoice', path: '/invoices/new', opens: ['Standalone invoices'] },
+  { name: 'Payments', path: '/payments', opens: ['View payments and payouts'] },
+  { name: 'Automations', path: '/automations', opens: ['View automations'] },
   { name: 'an automation', path: '/automations/abc', opens: ['View automations'] },
   { name: 'New automation', path: '/automations/new', opens: ['Create automations'] },
   { name: 'Marketing', path: '/marketing', opens: ['Access Marketing'] },

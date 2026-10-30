@@ -27,8 +27,9 @@ import {
   JOB_FIXTURE,
   LEAD_FIXTURE,
   attachedEstimateWhere,
-  creatorEstimateWhere,
+  ownDocumentsEstimateWhere,
   ownLeadsEstimateWhere,
+  salesEstimateArms,
   mockRoleSwitches,
 } from './helpers';
 
@@ -42,6 +43,7 @@ const mockGetStripeForOrg = getStripeForOrg as ReturnType<typeof vi.fn>;
 const mockPrisma = prisma as unknown as {
   lead: {
     findUnique: ReturnType<typeof vi.fn>;
+    findFirst: ReturnType<typeof vi.fn>;
     update: ReturnType<typeof vi.fn>;
     updateMany: ReturnType<typeof vi.fn>;
   };
@@ -92,7 +94,6 @@ const mockPrisma = prisma as unknown as {
   // Walkthrough-as-entity redesign, PR-B2: D8/D9's silent instrumentation reads this on send.
   visit: { count: ReturnType<typeof vi.fn>; findFirst: ReturnType<typeof vi.fn> };
   user: { findUnique: ReturnType<typeof vi.fn>; findMany: ReturnType<typeof vi.fn> };
-  rolePermission: { findMany: ReturnType<typeof vi.fn> };
   invoice: {
     findFirst: ReturnType<typeof vi.fn>;
     findMany: ReturnType<typeof vi.fn>;
@@ -430,11 +431,11 @@ describe('GET /api/estimates', () => {
 
     const findManyArgs = mockPrisma.estimate.findMany.mock.calls[0][0];
     // Sales holds the kept "Through own leads" value on Estimates scope: estimates whose lead has the
-    // person as an assignee. The estimates they made are theirs on top of that (the creator rule), but only
-    // while attached or for a customer alone: there is no plain created-by arm.
+    // person as an assignee. The estimates they made for a customer alone are theirs on top of that (P7): there is
+    // no plain created-by arm.
     expect(findManyArgs.where.OR).toEqual([
-      ownLeadsEstimateWhere(TEST_USERS.sales.id),
-      creatorEstimateWhere(TEST_USERS.sales.id),
+      ...salesEstimateArms(TEST_USERS.sales.id),
+      ownDocumentsEstimateWhere(TEST_USERS.sales.id),
     ]);
   });
 
@@ -453,7 +454,7 @@ describe('GET /api/estimates', () => {
     expect(depositCall.where.kind).toBe('DEPOSIT');
     // The deposit KPI is scoped through `estimate: readScope`, the same reach as the list.
     expect(depositCall.where.estimate).toEqual({
-      OR: [ownLeadsEstimateWhere(TEST_USERS.sales.id), creatorEstimateWhere(TEST_USERS.sales.id)],
+      OR: [...salesEstimateArms(TEST_USERS.sales.id), ownDocumentsEstimateWhere(TEST_USERS.sales.id)],
     });
   });
 
@@ -503,8 +504,8 @@ describe('GET /api/estimates', () => {
     expect(res.status).toBe(200);
     const findManyArgs = mockPrisma.estimate.findMany.mock.calls[0][0];
     expect(findManyArgs.where.OR).toEqual([
-      { OR: attachedEstimateWhere(TEST_USERS.technician.id) },
-      creatorEstimateWhere(TEST_USERS.technician.id),
+      ...attachedEstimateWhere(TEST_USERS.technician.id),
+      ownDocumentsEstimateWhere(TEST_USERS.technician.id),
     ]);
   });
 
@@ -520,11 +521,11 @@ describe('GET /api/estimates', () => {
       .set(authHeader('sales'));
 
     // The SALES stats scope mirrors the list scope: the estimates of the leads they are an assignee of.
-    const salesFilter = ownLeadsEstimateWhere(TEST_USERS.sales.id);
+    const salesFilter = salesEstimateArms(TEST_USERS.sales.id);
 
     // The groupBy call for stats must include the SALES lead filter
     const groupByCall = mockPrisma.estimate.groupBy.mock.calls[0][0];
-    expect(groupByCall.where.OR).toEqual([salesFilter, creatorEstimateWhere(TEST_USERS.sales.id)]);
+    expect(groupByCall.where.OR).toEqual([...salesFilter, ownDocumentsEstimateWhere(TEST_USERS.sales.id)]);
   });
 
   it('includes customer_number in nested lead.customer select', async () => {
@@ -766,7 +767,7 @@ describe('POST /api/estimates', () => {
       .set(authHeader('sales'))
       .send(validBody);
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   // R5a (2026-07-21) — relaxed: calculateTotals already folds a scope's flat_price into subtotal
@@ -861,7 +862,7 @@ describe('POST /api/estimates', () => {
       .set(authHeader('technician'))
       .send(validBody);
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   // Bug #39/#7 — a DRAFT estimate must ALWAYS persist; the walkthrough requirement
@@ -1209,7 +1210,7 @@ describe('POST /api/estimates - job-anchored create (SERV10X-61)', () => {
     mockPrisma.job.findFirst.mockResolvedValue(null);
     const res = await request(app).post('/api/estimates').set(authHeader('sales'))
       .send({ job_id: JOB_ANCHOR_ID, line_items: [{ description: 'AC', quantity: 1, unit_price: 1000, is_taxable: true }] });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it('SALES can create a job-anchored estimate for a job they ARE assigned to (201)', async () => {
@@ -1519,7 +1520,7 @@ describe('POST /api/estimates/:id/attach-to-job (transition 16)', () => {
       .post(`/api/estimates/${ATTACH_EST_ID}/attach-to-job`)
       .set(authHeader('sales'))
       .send({ job_id: ATTACH_JOB_ID });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 });
 
@@ -1803,10 +1804,9 @@ describe('SRVW-82 tax-exempt customer', () => {
   it('duplicate (cross-lead): re-derived tax is zeroed when the TARGET lead\'s customer is exempt', async () => {
     mockAuthAs('admin');
     mockPrisma.estimate.findUnique.mockResolvedValue(exemptSourceEstimate());
-    // The controller calls lead.findUnique twice for the target (validate, then derive).
-    mockPrisma.lead.findUnique
-      .mockResolvedValueOnce({ id: TGT_LEAD_ID, customer_id: CUSTOMER_FIXTURE.id, service_location_id: 'loc-ca', customer: { tax_exempt: true } })
-      .mockResolvedValueOnce({ service_location_id: 'loc-ca', service_location: { state: 'CA' }, service_state: 'CA' });
+    // The controller reads the target lead twice: a reach-scoped findFirst to validate, then findUnique to derive the tax.
+    mockPrisma.lead.findFirst.mockResolvedValueOnce({ id: TGT_LEAD_ID, customer_id: CUSTOMER_FIXTURE.id, service_location_id: 'loc-ca', customer: { tax_exempt: true } });
+    mockPrisma.lead.findUnique.mockResolvedValueOnce({ service_location_id: 'loc-ca', service_location: { state: 'CA' }, service_state: 'CA' });
     mockPrisma.stateTaxRate.findFirst.mockResolvedValue({ tax_rate: 0.0725 });
     const getCaptured = captureDuplicateCreateData();
 
@@ -1822,6 +1822,8 @@ describe('SRVW-82 tax-exempt customer', () => {
 
   it('duplicate (same lead): a clone of a pre-fix exempt estimate is re-quoted tax-free', async () => {
     mockAuthAs('admin');
+    // The lead the copy lands on is read once, for its reach (M2).
+    mockPrisma.lead.findFirst.mockResolvedValueOnce({ id: ESTIMATE_FIXTURE.lead_id, customer_id: CUSTOMER_FIXTURE.id, service_location_id: null, customer: { tax_exempt: false } });
     mockPrisma.estimate.findUnique.mockResolvedValue(exemptSourceEstimate({ customer: { tax_exempt: true } }));
     const getCaptured = captureDuplicateCreateData();
 
@@ -2131,7 +2133,7 @@ describe('GET /api/estimates/:id', () => {
       .get(`/api/estimates/${ESTIMATE_FIXTURE.id}`)
       .set(authHeader('sales'));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it('DISPATCHER can view (read-only)', async () => {
@@ -2617,7 +2619,7 @@ describe('PATCH /api/estimates/:id', () => {
       .set(authHeader('sales'))
       .send({ scope_notes: 'Nope' });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it('returns 404 for non-existent', async () => {
@@ -2831,7 +2833,7 @@ describe('DELETE /api/estimates/:id', () => {
       .delete(`/api/estimates/${ESTIMATE_FIXTURE.id}`)
       .set(authHeader('sales'));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 });
 
@@ -2946,7 +2948,7 @@ describe('#106 estimate enforcement', () => {
     // The pre-#106 list() hardcoded the SALES branch and let EVERY other non-ADMIN role see the
     // whole org. Any role whose Estimates scope is narrower than All is scoped by it, not by its name.
     mockAuthAs('dispatcher');
-    mockRoleSwitches({ estimates_scope: 'attached' });
+    mockRoleSwitches({ jobs_scope: 'attached', leads_scope: 'attached' });
     mockPrisma.estimate.findMany.mockResolvedValue([]);
     mockPrisma.estimate.count.mockResolvedValue(0);
     mockPrisma.estimate.groupBy.mockResolvedValue([]);
@@ -2956,14 +2958,14 @@ describe('#106 estimate enforcement', () => {
     await request(app).get('/api/estimates').set(authHeader('dispatcher'));
 
     const findManyArgs = mockPrisma.estimate.findMany.mock.calls[0][0];
-    const attachedOrMine = [{ OR: attachedEstimateWhere(TEST_USERS.dispatcher.id) }, creatorEstimateWhere(TEST_USERS.dispatcher.id)];
+    const attachedOrMine = [...attachedEstimateWhere(TEST_USERS.dispatcher.id), ownDocumentsEstimateWhere(TEST_USERS.dispatcher.id)];
     expect(findManyArgs.where.OR).toEqual(attachedOrMine);
     // The total count is scoped identically - no fail-open broadening.
     const countArgs = mockPrisma.estimate.count.mock.calls[0][0];
     expect(countArgs.where.OR).toEqual(attachedOrMine);
   });
 
-  it('list reaches only the estimates the person made for a role with View estimates off (the creator rule), and never answers 403', async () => {
+  it('list reaches no estimate for a role with View estimates off, not even one the person made, and never answers 403', async () => {
     mockAuthAs('dispatcher');
     mockRoleSwitches({ view_estimates: false });
     mockPrisma.estimate.findMany.mockResolvedValue([]);
@@ -2976,8 +2978,9 @@ describe('#106 estimate enforcement', () => {
 
     expect(res.status).toBe(200);
     const findManyArgs = mockPrisma.estimate.findMany.mock.calls[0][0];
-    expect(findManyArgs.where.OR).toEqual([creatorEstimateWhere(TEST_USERS.dispatcher.id)]);
-    expect(findManyArgs.where.id).toBeUndefined();
+    // View is the single gate (P7): the scope reaches nothing, so no row can match.
+    expect(findManyArgs.where.OR).toBeUndefined();
+    expect(findManyArgs.where.id).toEqual({ in: [] });
     // The per-request filter survives untouched: the scope spread never clobbers request filters.
     expect(findManyArgs.where.status).toBe('DRAFT');
   });
@@ -2986,10 +2989,6 @@ describe('#106 estimate enforcement', () => {
 
   it('update BLOCKS a scoped user on a row owned by another user (403, no estimate.update)', async () => {
     mockAuthAs('sales');
-    mockPrisma.rolePermission.findMany.mockResolvedValue([
-      { role: 'SALES', action: 'update', subject: 'Estimate' },
-      { role: 'SALES', action: 'read', subject: 'Estimate', conditions: { lead: { lead_assignees: { some: { user_id: '{{userId}}' } } } } },
-    ]);
     // DRAFT row owned by ADMIN (not the SALES requester).
     mockPrisma.estimate.findUnique.mockResolvedValue({
       id: ESTIMATE_FIXTURE.id,
@@ -3006,18 +3005,14 @@ describe('#106 estimate enforcement', () => {
       .set(authHeader('sales'))
       .send({ scope_notes: 'should be blocked' });
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe('Insufficient permissions');
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Estimate not found');
     // The mutation must NOT have run — enforcement, not just response shape.
     expect(mockPrisma.estimate.update).not.toHaveBeenCalled();
   });
 
   it('update ALLOWS the owner (200, estimate.update runs)', async () => {
     mockAuthAs('sales');
-    mockPrisma.rolePermission.findMany.mockResolvedValue([
-      { role: 'SALES', action: 'update', subject: 'Estimate' },
-      { role: 'SALES', action: 'read', subject: 'Estimate', conditions: { lead: { lead_assignees: { some: { user_id: '{{userId}}' } } } } },
-    ]);
     mockPrisma.estimate.findUnique.mockResolvedValue({
       id: ESTIMATE_FIXTURE.id,
       status: 'DRAFT',
@@ -3044,10 +3039,6 @@ describe('#106 estimate enforcement', () => {
 
   it('delete BLOCKS a scoped user on a row owned by another user (403, no estimate.delete)', async () => {
     mockAuthAs('sales');
-    mockPrisma.rolePermission.findMany.mockResolvedValue([
-      { role: 'SALES', action: 'delete', subject: 'Estimate' },
-      { role: 'SALES', action: 'read', subject: 'Estimate', conditions: { lead: { lead_assignees: { some: { user_id: '{{userId}}' } } } } },
-    ]);
     mockPrisma.estimate.findUnique.mockResolvedValue({
       id: ESTIMATE_FIXTURE.id,
       status: 'DRAFT',
@@ -3061,17 +3052,13 @@ describe('#106 estimate enforcement', () => {
       .delete(`/api/estimates/${ESTIMATE_FIXTURE.id}`)
       .set(authHeader('sales'));
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe('Insufficient permissions');
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Estimate not found');
     expect(mockPrisma.estimate.delete).not.toHaveBeenCalled();
   });
 
   it('delete ALLOWS the owner (200, estimate.delete runs)', async () => {
     mockAuthAs('sales');
-    mockPrisma.rolePermission.findMany.mockResolvedValue([
-      { role: 'SALES', action: 'delete', subject: 'Estimate' },
-      { role: 'SALES', action: 'read', subject: 'Estimate', conditions: { lead: { lead_assignees: { some: { user_id: '{{userId}}' } } } } },
-    ]);
     mockPrisma.estimate.findUnique.mockResolvedValue({
       id: ESTIMATE_FIXTURE.id,
       status: 'DRAFT',
@@ -3119,7 +3106,6 @@ describe('#106 estimate enforcement — nested Owned condition (canAccessRow, ne
 
   it('OWNER with a conditioned Owned grant can update own estimate → 200 (NOT 500 from can() on the nested condition)', async () => {
     mockAuthAs('sales');
-    mockPrisma.rolePermission.findMany.mockResolvedValue(ownedConditionedGrants('SALES', 'update'));
     // DRAFT row owned by the SALES requester — the scoped findFirst (canAccessRow) must MATCH it.
     mockPrisma.estimate.findUnique.mockResolvedValue({
       id: ESTIMATE_FIXTURE.id,
@@ -3144,7 +3130,6 @@ describe('#106 estimate enforcement — nested Owned condition (canAccessRow, ne
 
   it('NON-OWNER with a conditioned Owned grant is blocked from update → 403, no estimate.update', async () => {
     mockAuthAs('sales');
-    mockPrisma.rolePermission.findMany.mockResolvedValue(ownedConditionedGrants('SALES', 'update'));
     mockPrisma.estimate.findUnique.mockResolvedValue({
       id: ESTIMATE_FIXTURE.id,
       status: 'DRAFT',
@@ -3159,8 +3144,8 @@ describe('#106 estimate enforcement — nested Owned condition (canAccessRow, ne
       .set(authHeader('sales'))
       .send({ scope_notes: 'should be blocked' });
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe('Insufficient permissions');
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Estimate not found');
     expect(mockPrisma.estimate.update).not.toHaveBeenCalled();
   });
 
@@ -3168,7 +3153,6 @@ describe('#106 estimate enforcement — nested Owned condition (canAccessRow, ne
 
   it('OWNER with a conditioned Owned grant can delete own estimate → 200 (NOT 500)', async () => {
     mockAuthAs('sales');
-    mockPrisma.rolePermission.findMany.mockResolvedValue(ownedConditionedGrants('SALES', 'delete'));
     mockPrisma.estimate.findUnique.mockResolvedValue({
       id: ESTIMATE_FIXTURE.id,
       status: 'DRAFT',
@@ -3187,7 +3171,6 @@ describe('#106 estimate enforcement — nested Owned condition (canAccessRow, ne
 
   it('NON-OWNER with a conditioned Owned grant is blocked from delete → 403, no estimate.delete', async () => {
     mockAuthAs('sales');
-    mockPrisma.rolePermission.findMany.mockResolvedValue(ownedConditionedGrants('SALES', 'delete'));
     mockPrisma.estimate.findUnique.mockResolvedValue({
       id: ESTIMATE_FIXTURE.id,
       status: 'DRAFT',
@@ -3199,8 +3182,8 @@ describe('#106 estimate enforcement — nested Owned condition (canAccessRow, ne
       .delete(`/api/estimates/${ESTIMATE_FIXTURE.id}`)
       .set(authHeader('sales'));
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe('Insufficient permissions');
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Estimate not found');
     expect(mockPrisma.estimate.delete).not.toHaveBeenCalled();
   });
 
@@ -3209,7 +3192,7 @@ describe('#106 estimate enforcement — nested Owned condition (canAccessRow, ne
   it('NON-OWNER is blocked from recording payment on another user\'s estimate → 403, no transaction', async () => {
     mockAuthAs('sales');
     // Record payments is a switch now (off in the Sales preset): hold it, reaching only estimates the person is attached to.
-    mockRoleSwitches({ record_payments: true, estimates_scope: 'attached' });
+    mockRoleSwitches({ record_payments: true, jobs_scope: 'attached', leads_scope: 'attached' });
     mockPrisma.estimate.findUnique.mockResolvedValue({
       id: ESTIMATE_FIXTURE.id,
       status: 'SENT',
@@ -3229,15 +3212,15 @@ describe('#106 estimate enforcement — nested Owned condition (canAccessRow, ne
       .set(authHeader('sales'))
       .send({ amount: 500, payment_method: 'CHECK' });
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe('Insufficient permissions');
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Estimate not found');
     // The payment transaction must NEVER run for a non-owner.
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
   });
 
   it('OWNER with a conditioned Owned grant can record payment on own estimate → 200 (NOT 500)', async () => {
     mockAuthAs('sales');
-    mockRoleSwitches({ record_payments: true, estimates_scope: 'attached' });
+    mockRoleSwitches({ record_payments: true, jobs_scope: 'attached', leads_scope: 'attached' });
     mockPrisma.estimate.findUnique.mockResolvedValue({
       id: ESTIMATE_FIXTURE.id,
       status: 'SENT',
@@ -3282,7 +3265,7 @@ describe('#106 estimate enforcement — nested Owned condition (canAccessRow, ne
     // scope actually evaluates. The estimate is on nobody they are attached to → scoped
     // findFirst sees nothing → 403 before the void transaction.
     mockAuthAs('dispatcher');
-    mockRoleSwitches({ estimates_scope: 'attached' });
+    mockRoleSwitches({ jobs_scope: 'attached', leads_scope: 'attached' });
     mockPrisma.estimate.findUnique.mockResolvedValue({
       id: ESTIMATE_SENT_FIXTURE.id,
       status: 'SENT',
@@ -3298,8 +3281,8 @@ describe('#106 estimate enforcement — nested Owned condition (canAccessRow, ne
       .set(authHeader('dispatcher'))
       .send({ action: 'waive' });
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe('Insufficient permissions');
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Estimate not found');
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
   });
 });
@@ -5966,6 +5949,8 @@ describe('POST /api/estimates/:id/mark-sent', () => {
 
   it('DISPATCHER cannot mark-sent (no send grant)', async () => {
     mockAuthAs('dispatcher');
+    // The Dispatcher preset holds Edit estimates now (AL-04, and Edit carries Send), so this is a dispatcher it was turned off for.
+    mockRoleSwitches({ edit_estimates: false, create_estimates: false });
     // Not the creator of this estimate either, so the creator rule opens nothing.
     mockPrisma.estimate.findFirst.mockResolvedValue(null);
 
@@ -6127,6 +6112,8 @@ describe('PATCH /api/estimates/:id/status', () => {
 
   it('DISPATCHER cannot set estimate status (no update grant)', async () => {
     mockAuthAs('dispatcher');
+    // The Dispatcher preset holds Edit estimates now (AL-04), so this is a dispatcher it was turned off for.
+    mockRoleSwitches({ edit_estimates: false, create_estimates: false });
     // Not the creator of this estimate either, so the creator rule opens nothing.
     mockPrisma.estimate.findFirst.mockResolvedValue(null);
 
@@ -7388,6 +7375,8 @@ describe('POST /api/estimates/:id/void-approval', () => {
 describe('POST /api/estimates/:id/duplicate', () => {
   it('duplicates an estimate', async () => {
     mockAuthAs('admin');
+    // The lead the copy lands on is read once, for its reach (M2).
+    mockPrisma.lead.findFirst.mockResolvedValueOnce({ id: ESTIMATE_FIXTURE.lead_id, customer_id: CUSTOMER_FIXTURE.id, service_location_id: null, customer: { tax_exempt: false } });
     mockPrisma.estimate.findUnique.mockResolvedValue({
       lead_id: ESTIMATE_FIXTURE.lead_id,
       scope_notes: ESTIMATE_FIXTURE.scope_notes,
@@ -7430,6 +7419,8 @@ describe('POST /api/estimates/:id/duplicate', () => {
   // recomputed totals stay selection-correct (275, not the everything-counts 475).
   it('carries is_optional/is_selected onto the copied lines and recomputes selection-correct totals', async () => {
     mockAuthAs('admin');
+    // The lead the copy lands on is read once, for its reach (M2).
+    mockPrisma.lead.findFirst.mockResolvedValueOnce({ id: ESTIMATE_FIXTURE.lead_id, customer_id: CUSTOMER_FIXTURE.id, service_location_id: null, customer: { tax_exempt: false } });
     mockPrisma.estimate.findUnique.mockResolvedValue({
       lead_id: ESTIMATE_FIXTURE.lead_id,
       scope_notes: ESTIMATE_FIXTURE.scope_notes,
@@ -7507,11 +7498,10 @@ describe('POST /api/estimates/:id/duplicate', () => {
   it('duplicates to a DIFFERENT target lead and re-derives tax from target location', async () => {
     mockAuthAs('admin');
     mockSourceEstimate();
-    // Target lead: tenant validation + tax derivation. The controller calls lead.findUnique
-    // twice for the target (validate, then derive); mock both.
-    mockPrisma.lead.findUnique
-      .mockResolvedValueOnce({ id: TGT_LEAD })
-      .mockResolvedValueOnce({ service_location_id: 'loc-ca', service_location: { state: 'CA' }, service_state: 'CA' });
+    // Target lead: tenant validation + tax derivation. The controller reads the target lead twice
+    // (a reach-scoped findFirst to validate, then findUnique to derive the tax); mock both.
+    mockPrisma.lead.findFirst.mockResolvedValueOnce({ id: TGT_LEAD });
+    mockPrisma.lead.findUnique.mockResolvedValueOnce({ service_location_id: 'loc-ca', service_location: { state: 'CA' }, service_state: 'CA' });
     mockPrisma.stateTaxRate.findFirst.mockResolvedValue({ tax_rate: 0.0725 });
     const getCaptured = captureDuplicateCreate();
 
@@ -7528,6 +7518,7 @@ describe('POST /api/estimates/:id/duplicate', () => {
   it('omitted target defaults to source lead and carries source tax unchanged', async () => {
     mockAuthAs('admin');
     mockSourceEstimate();
+    mockPrisma.lead.findFirst.mockResolvedValueOnce({ id: SRC_LEAD, customer_id: CUSTOMER_FIXTURE.id, service_location_id: LOCATION_FIXTURE.id, customer: { tax_exempt: false } });
     const getCaptured = captureDuplicateCreate();
 
     const res = await request(app)
@@ -7538,14 +7529,15 @@ describe('POST /api/estimates/:id/duplicate', () => {
     expect(res.status).toBe(201);
     expect(getCaptured()?.lead_id).toBe(SRC_LEAD);
     expect(getCaptured()?.tax_rate).toBe(0.0625);
-    // No target lead lookup when same-lead.
+    // The lead the copy lands on is checked for reach even when it is the source's own (M2); tax is not re-derived.
+    expect(mockPrisma.lead.findFirst).toHaveBeenCalledTimes(1);
     expect(mockPrisma.lead.findUnique).not.toHaveBeenCalled();
   });
 
   it('404 when target_lead_id is not in the tenant', async () => {
     mockAuthAs('admin');
     mockSourceEstimate();
-    mockPrisma.lead.findUnique.mockResolvedValue(null);
+    mockPrisma.lead.findFirst.mockResolvedValueOnce(null);
 
     const res = await request(app)
       .post(`/api/estimates/${ESTIMATE_FIXTURE.id}/duplicate`)
@@ -7559,6 +7551,7 @@ describe('POST /api/estimates/:id/duplicate', () => {
   it('explicit target equal to source behaves as same-lead (no re-derive)', async () => {
     mockAuthAs('admin');
     mockSourceEstimate();
+    mockPrisma.lead.findFirst.mockResolvedValueOnce({ id: SRC_LEAD, customer_id: CUSTOMER_FIXTURE.id, service_location_id: LOCATION_FIXTURE.id, customer: { tax_exempt: false } });
     const getCaptured = captureDuplicateCreate();
 
     const res = await request(app)
@@ -7569,6 +7562,7 @@ describe('POST /api/estimates/:id/duplicate', () => {
     expect(res.status).toBe(201);
     expect(getCaptured()?.lead_id).toBe(SRC_LEAD);
     expect(getCaptured()?.tax_rate).toBe(0.0625);
+    expect(mockPrisma.lead.findFirst).toHaveBeenCalledTimes(1);
     expect(mockPrisma.lead.findUnique).not.toHaveBeenCalled();
   });
 
@@ -7589,6 +7583,7 @@ describe('POST /api/estimates/:id/duplicate', () => {
       lead: { lead_assignees: [{ user_id: TEST_USERS.sales.id }] },
       line_items: ESTIMATE_FIXTURE.line_items,
     });
+    mockPrisma.lead.findFirst.mockResolvedValueOnce({ id: SRC_LEAD, customer_id: CUSTOMER_FIXTURE.id, service_location_id: LOCATION_FIXTURE.id, customer: { tax_exempt: false } });
     let captured: Record<string, unknown> | undefined;
     mockPrisma.$transaction.mockImplementation((fn: (tx: unknown) => Promise<unknown>) =>
       fn({
@@ -7619,9 +7614,8 @@ describe('POST /api/estimates/:id/duplicate', () => {
     mockSourceEstimate(); // source lead is SRC_LEAD, customer_id/service_location_id NOT set on this fixture
     const OTHER_CUSTOMER_ID = 'c0000000-0000-0000-0000-0000000000cc';
     const OTHER_LOCATION_ID = 'l0000000-0000-0000-0000-0000000000cc';
-    mockPrisma.lead.findUnique
-      .mockResolvedValueOnce({ id: TGT_LEAD, customer_id: OTHER_CUSTOMER_ID, service_location_id: OTHER_LOCATION_ID })
-      .mockResolvedValueOnce({ service_location_id: OTHER_LOCATION_ID, service_location: { state: 'CA' }, service_state: 'CA' });
+    mockPrisma.lead.findFirst.mockResolvedValueOnce({ id: TGT_LEAD, customer_id: OTHER_CUSTOMER_ID, service_location_id: OTHER_LOCATION_ID });
+    mockPrisma.lead.findUnique.mockResolvedValueOnce({ service_location_id: OTHER_LOCATION_ID, service_location: { state: 'CA' }, service_state: 'CA' });
     mockPrisma.stateTaxRate.findFirst.mockResolvedValue({ tax_rate: 0.0725 });
     let captured: Record<string, unknown> | undefined;
     mockPrisma.$transaction.mockImplementation((fn: (tx: unknown) => Promise<unknown>) =>
@@ -7857,7 +7851,7 @@ describe('POST /api/estimates/:id/revise', () => {
       .post(`/api/estimates/${ESTIMATE_SENT_FIXTURE.id}/revise`)
       .set(authHeader('sales'));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   // Integration: after revise the estimate is DRAFT, so a re-send takes the isFirstSend
@@ -8162,11 +8156,11 @@ describe('GET /api/estimates/:id/public', () => {
     expect(res.body.estimate).toBeDefined();
   });
 
-  it('returns 400 without token', async () => {
+  it('returns 404 without token, as for a wrong token (re-audit N0)', async () => {
     const res = await request(app)
       .get(`/api/estimates/${ESTIMATE_SENT_FIXTURE.id}/public`);
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(404);
   });
 
   it('returns 404 with invalid token', async () => {
@@ -8856,11 +8850,11 @@ describe('POST /api/estimates/:id/approve', () => {
     expect(res.body.error).toMatch(/card payment is not available/i);
   });
 
-  it('returns 400 without token', async () => {
+  it('returns 404 without token, as for a wrong token (re-audit N0)', async () => {
     const res = await request(app)
       .post(`/api/estimates/${ESTIMATE_SENT_FIXTURE.id}/approve`);
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(404);
   });
 
   it('returns 404 with invalid token', async () => {
@@ -9408,11 +9402,11 @@ describe('GET /api/estimates/stats', () => {
 
     expect(res.status).toBe(200);
     // The stats scope mirrors the list scope: the estimates of the leads they are an assignee of.
-    const salesFilter = ownLeadsEstimateWhere(TEST_USERS.sales.id);
+    const salesFilter = salesEstimateArms(TEST_USERS.sales.id);
     // Every estimate count + aggregate must carry the SALES lead-owner scope, so a
     // SALES user's summary cards never sum estimates they cannot see in the list.
     expect(mockPrisma.estimate.count.mock.calls.length).toBeGreaterThan(0);
-    const mineOrCreated = [salesFilter, creatorEstimateWhere(TEST_USERS.sales.id)];
+    const mineOrCreated = [...salesFilter, ownDocumentsEstimateWhere(TEST_USERS.sales.id)];
     for (const call of mockPrisma.estimate.count.mock.calls) {
       expect(call[0].where.OR).toEqual(mineOrCreated);
     }
@@ -9827,6 +9821,8 @@ describe('Estimate Discounts', () => {
 
   it('duplicate copies discount fields from source', async () => {
     mockAuthAs('admin');
+    // The lead the copy lands on is read once, for its reach (M2).
+    mockPrisma.lead.findFirst.mockResolvedValueOnce({ id: ESTIMATE_FIXTURE.lead_id, customer_id: CUSTOMER_FIXTURE.id, service_location_id: null, customer: { tax_exempt: false } });
     mockPrisma.estimate.findUnique.mockResolvedValue({
       lead_id: ESTIMATE_FIXTURE.lead_id,
       scope_notes: ESTIMATE_FIXTURE.scope_notes,
@@ -10454,8 +10450,8 @@ describe('GET /api/estimates/export', () => {
 
     // Export reuses buildEstimateListWhere, so the scope is the same one the list uses.
     expect(mockPrisma.estimate.findMany.mock.calls[0][0].where.OR).toEqual([
-      ownLeadsEstimateWhere(TEST_USERS.sales.id),
-      creatorEstimateWhere(TEST_USERS.sales.id),
+      ...salesEstimateArms(TEST_USERS.sales.id),
+      ownDocumentsEstimateWhere(TEST_USERS.sales.id),
     ]);
   });
 
@@ -10649,8 +10645,8 @@ describe('PATCH /api/estimates/:id — cost model fields (R3)', () => {
     // default SALES grants (which include Pricing).
     clearPermissionCache();
     mockAuthAs('sales');
-    // Roles & Permissions S01.15 - See financial data is a catalog switch, so turn it off for Sales.
-    mockRoleSwitches({ see_financial_data: false });
+    // Roles & Permissions S01.15 - See costs is a catalog switch, so turn it off for Sales.
+    mockRoleSwitches({ see_costs: false });
     mockPrisma.estimate.findUnique.mockResolvedValue({
       id: ESTIMATE_FIXTURE.id,
       status: 'DRAFT',
@@ -11118,9 +11114,6 @@ describe('POST /api/estimates/:id/copy-to-invoice', () => {
   it('403s a granted person on an estimate they cannot open at the CONTROLLER layer, whatever their role', async () => {
     clearPermissionCache();
     mockAuthAs('technician');
-    (prisma.userPermissionOverride.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { action: 'create', subject: 'Invoice', effect: 'allow' },
-    ]);
     const estimate = copyToInvoiceEstimate();
     mockPrisma.estimate.findUnique.mockResolvedValue(estimate);
     // The estimate-scope probe finds nothing: the estimate is not one this person can open.

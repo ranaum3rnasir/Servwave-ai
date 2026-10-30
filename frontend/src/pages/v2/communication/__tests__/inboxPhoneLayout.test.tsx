@@ -44,7 +44,7 @@ function answerNetwork() {
       const selected = (config?.params as { selected?: string } | undefined)?.selected ?? 'mine';
       return {
         data: {
-          scope: 'linked_to_me', selected, selected_label: null, selected_unread: 0, total_unread: 0,
+          scope: 'attached', selected, selected_label: null, selected_unread: 0, total_unread: 0,
           mine: { id: 'box-mine', unread: 0 }, held: heldMailboxes, main: null, people: null,
         },
       };

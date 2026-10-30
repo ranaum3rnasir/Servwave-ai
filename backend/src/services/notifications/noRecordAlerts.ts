@@ -4,12 +4,12 @@
  * The payments-account alerts (payments active, payouts enabled, more information needed, payments paused, payments disconnected,
  * connect your bank), Invite accepted, Low stock, Item on backorder, Purchase order partly received, Staging has no area and a stock
  * approval request are about the company, not about a job, a lead or an invoice. They go through M6's two lanes from the second
- * step (alertChain.ts, record null): the active holders of the alert's switch, else the Manage roles and permissions holders, with the
+ * step (alertChain.ts, record null): the active holders of the alert's switch, else the company's Admins, with the
  * why line naming what nobody could do. There are no record people, no Dispatcher step and no copies: nobody comes from a role name,
  * and the person who did it is never told. A person who holds the switch with the Admin box ticked off is not told.
  *
- *   billing.payments_*, billing.payouts_*   Company settings
- *   team.invite_accepted                    Invite users
+ *   billing.payments_*, billing.payouts_*   the Admins (setting up the company is the Admin flag's alone since 36b)
+ *   team.invite_accepted                    the Admins (inviting people is the Admin flag's alone since AL-18)
  *   inventory.low_stock, backorder, po_partial   Create purchase orders
  *   inventory.staging_no_area, stock_approval_requested   Edit stock
  *
@@ -27,20 +27,20 @@
 
 import { logger } from '../../lib/logger';
 import { prisma } from '../../lib/prisma';
-import { activeSwitchHolders } from '../../lib/permissions/switchHolders';
+import { ADMINS, activeSwitchHolders } from '../../lib/permissions/switchHolders';
 import { sendByWhyLine, twoLaneRecipients, WHY_KEY, type TwoLaneInput } from './alertChain';
 import { emit } from './notificationService';
 import { queueAlertAfterResponse, requestMemo } from './reviewAttentionQueue';
 
 /** The switch whose holders must act on each alert, the words for "nobody can ..." and the name a log line gives the alert. */
 const NO_RECORD_ALERTS = {
-  'billing.payments_activated': { step: 'company_settings', stepWords: 'change company settings', alert: 'payments active alert' },
-  'billing.payouts_activated': { step: 'company_settings', stepWords: 'change company settings', alert: 'payouts enabled alert' },
-  'billing.payments_action_needed': { step: 'company_settings', stepWords: 'change company settings', alert: 'payments need more information alert' },
-  'billing.payments_paused': { step: 'company_settings', stepWords: 'change company settings', alert: 'payments paused alert' },
-  'billing.payments_disconnected': { step: 'company_settings', stepWords: 'change company settings', alert: 'payments disconnected alert' },
-  'billing.payouts_pending_first_payment': { step: 'company_settings', stepWords: 'change company settings', alert: 'connect your bank alert' },
-  'team.invite_accepted': { step: 'invite_users', stepWords: 'invite users', alert: 'invite accepted alert' },
+  'billing.payments_activated': { step: ADMINS, stepWords: 'change company settings', alert: 'payments active alert' },
+  'billing.payouts_activated': { step: ADMINS, stepWords: 'change company settings', alert: 'payouts enabled alert' },
+  'billing.payments_action_needed': { step: ADMINS, stepWords: 'change company settings', alert: 'payments need more information alert' },
+  'billing.payments_paused': { step: ADMINS, stepWords: 'change company settings', alert: 'payments paused alert' },
+  'billing.payments_disconnected': { step: ADMINS, stepWords: 'change company settings', alert: 'payments disconnected alert' },
+  'billing.payouts_pending_first_payment': { step: ADMINS, stepWords: 'change company settings', alert: 'connect your bank alert' },
+  'team.invite_accepted': { step: ADMINS, stepWords: 'invite users', alert: 'invite accepted alert' },
   'inventory.low_stock': { step: 'create_purchase_orders', stepWords: 'create purchase orders', alert: 'low stock alert' },
   'inventory.backorder': { step: 'create_purchase_orders', stepWords: 'create purchase orders', alert: 'item on backorder alert' },
   'inventory.po_partial': { step: 'create_purchase_orders', stepWords: 'create purchase orders', alert: 'purchase order partly received alert' },

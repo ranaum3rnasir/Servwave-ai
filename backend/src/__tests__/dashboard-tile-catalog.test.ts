@@ -19,9 +19,12 @@ import {
 import { SWITCH_CATALOG, SCOPE_SWITCH_KEY, type SwitchValue } from '../lib/permissions/switches/catalog';
 import { presetValues } from '../lib/permissions/switches/store';
 
-/** Every switch off (a choice at its narrowest, a list empty), then the named values laid over it. */
+/**
+ * Every switch off (a choice at its narrowest, a list empty) except See prices, then the named values laid over it. A money
+ * tile is a sum of prices and needs See prices (P11); the cases about something else start from a person who has it.
+ */
 function person(values: Record<string, SwitchValue> = {}): Record<string, SwitchValue> {
-  return { ...presetValues(null), ...values };
+  return { ...presetValues(null), see_prices: true, ...values };
 }
 const ids = (values: Record<string, SwitchValue>) => eligibleTiles(values).map((t) => t.id);
 const byCategory = (cats: TileCategory[]) => TILE_CATALOG.filter((t) => cats.includes(t.category)).map((t) => t.id);
@@ -33,6 +36,28 @@ const TODAYS_IDS = [
   'pipeline', 'tech_scoreboard', 'dispatch_scoreboard', 'lead_sources', 'jobs_by_status', 'revenue_by_job_type', 'coming_up',
   'recent_activity', 'service_areas', 'recent_calls',
 ];
+
+/** The scope values an estimate or invoice follows (P6): the Jobs scope and the Leads scope (the kept Through own leads is Jobs only). */
+const documentScope = (scope: string): Record<string, SwitchValue> => ({
+  [SCOPE_SWITCH_KEY.Job]: scope,
+  ...(scope === 'through_own_leads' ? {} : { [SCOPE_SWITCH_KEY.Lead]: scope }),
+});
+
+describe('money tiles need See prices', () => {
+  const moneyIds = TILE_CATALOG.filter((t) => t.money).map((t) => t.id);
+
+  it('offers none of the money tiles to a person without See prices, whatever else they hold', () => {
+    const everything = person({ view_invoices: true, view_jobs: true, view_leads: true, view_estimates: true, see_company_figures: true, see_prices: false });
+    for (const id of moneyIds) expect(ids(everything), id).not.toContain(id);
+    // The tiles that are counts stay.
+    expect(ids(everything)).toEqual(expect.arrayContaining(['kpi.jobs_today', 'kpi.open_leads']));
+  });
+
+  it('offers them again with See prices, so the switch is the only thing that decides', () => {
+    const wide = person({ view_invoices: true, view_jobs: true, view_leads: true, view_estimates: true, see_company_figures: true });
+    for (const id of moneyIds) expect(ids(wide), id).toContain(id);
+  });
+});
 
 describe('the tile catalog', () => {
   it('keeps every id the dashboard draws today, and holds each exactly once', () => {
@@ -51,7 +76,7 @@ describe('the tile catalog', () => {
     expect(CATEGORY_UNLOCKED_BY.company_figures).toEqual(['see_company_figures']);
     expect(CATEGORY_UNLOCKED_BY.office_review).toEqual(['office_review']);
     expect(CATEGORY_UNLOCKED_BY.communication).toEqual(['access_communication']);
-    expect(CATEGORY_UNLOCKED_BY.costs).toEqual(['see_financial_data']);
+    expect(CATEGORY_UNLOCKED_BY.costs).toEqual(['see_costs']);
   });
 
   it('holds no commission tile, and the switch catalog holds no dashboard switch', () => {
@@ -158,7 +183,7 @@ describe('eligibility follows the switches', () => {
 describe('the Unscheduled jobs tile', () => {
   it('is a Jobs tile that View jobs alone unlocks, whatever the Jobs scope is', () => {
     expect(TILE_CATALOG.find((t) => t.id === 'unscheduled_jobs')?.category).toBe('jobs');
-    for (const scope of ['attached', 'team', 'location', 'all']) {
+    for (const scope of ['attached', 'team', 'all']) {
       expect(ids(person({ view_jobs: true, [SCOPE_SWITCH_KEY.Job]: scope })), scope).toContain('unscheduled_jobs');
     }
     expect(ids(person({ view_leads: true, view_estimates: true, view_invoices: true }))).not.toContain('unscheduled_jobs');
@@ -180,7 +205,7 @@ describe('the Office review queue tile', () => {
     // Eligibility reads the switch values as given: the switch catalog refuses a set that holds Office review without
     // View jobs, so the "View jobs off" half is asked of the catalog's function, not of a saved role.
     for (const viewJobs of [true, false]) {
-      for (const scope of ['attached', 'team', 'location', 'all']) {
+      for (const scope of ['attached', 'team', 'all']) {
         expect(ids(person({ office_review: true, view_jobs: viewJobs, [SCOPE_SWITCH_KEY.Job]: scope })), `${viewJobs}/${scope}`).toContain(tileId);
       }
     }
@@ -205,7 +230,7 @@ describe('the Missing crew tile', () => {
   it('is a Jobs tile that View jobs unlocks under every Jobs scope, Attached included, and nothing else does', () => {
     expect(def()?.category).toBe('jobs');
     expect(def()?.title).toBe('Missing crew');
-    for (const scope of ['attached', 'team', 'location', 'all']) {
+    for (const scope of ['attached', 'team', 'all']) {
       expect(ids(person({ view_jobs: true, [SCOPE_SWITCH_KEY.Job]: scope })), scope).toContain(tileId);
     }
     // View jobs on alone is enough: a person with View leads off is still offered it (its walkthroughs are what go).
@@ -230,7 +255,7 @@ describe('the Jobs this month tile', () => {
   it('is a Jobs tile that View jobs unlocks under every Jobs scope, and nothing else does', () => {
     expect(def()?.category).toBe('jobs');
     expect(def()?.title).toBe('Jobs this month');
-    for (const scope of ['attached', 'team', 'location', 'all']) {
+    for (const scope of ['attached', 'team', 'all']) {
       expect(ids(person({ view_jobs: true, [SCOPE_SWITCH_KEY.Job]: scope })), scope).toContain(tileId);
     }
     const everythingElse = Object.fromEntries(SWITCH_CATALOG.filter((s) => s.kind === 'toggle' && s.key !== 'view_jobs').map((s) => [s.key, true]));
@@ -253,7 +278,7 @@ describe('the Completed jobs value tile', () => {
   it('is a Job value tile that View jobs unlocks under every Jobs scope, and nothing else does', () => {
     expect(def()?.category).toBe('job_value');
     expect(def()?.title).toBe('Completed jobs value');
-    for (const scope of ['attached', 'team', 'location', 'all']) {
+    for (const scope of ['attached', 'team', 'all']) {
       expect(ids(person({ view_jobs: true, [SCOPE_SWITCH_KEY.Job]: scope })), scope).toContain(tileId);
     }
     const everythingElse = Object.fromEntries(SWITCH_CATALOG.filter((s) => s.kind === 'toggle' && s.key !== 'view_jobs').map((s) => [s.key, true]));
@@ -261,12 +286,12 @@ describe('the Completed jobs value tile', () => {
     expect(ids(person())).not.toContain(tileId);
   });
 
-  it('needs no See financial data and no View invoices: the job price shows to anyone who can open the job', () => {
-    expect(tileOf(person({ view_jobs: true, see_financial_data: false, view_invoices: false }))).toBeDefined();
+  it('needs no See costs and no View invoices: the job price shows to anyone who can open the job', () => {
+    expect(tileOf(person({ view_jobs: true, see_costs: false, view_invoices: false }))).toBeDefined();
   });
 
   it('is the person\'s own money, "Yours", without See company figures, whatever the Jobs scope', () => {
-    for (const scope of ['attached', 'team', 'location', 'all']) {
+    for (const scope of ['attached', 'team', 'all']) {
       expect(tileOf(person({ view_jobs: true, see_company_figures: false, [SCOPE_SWITCH_KEY.Job]: scope })), scope).toMatchObject({ mode: 'own', label: 'Yours' });
     }
   });
@@ -276,7 +301,6 @@ describe('the Completed jobs value tile', () => {
     expect(modeOf('all')).toMatchObject({ mode: 'company', label: null });
     expect(modeOf('attached')).toMatchObject({ mode: 'scope', label: 'Yours' });
     expect(modeOf('team')).toMatchObject({ mode: 'scope', label: 'Your team' });
-    expect(modeOf('location')).toMatchObject({ mode: 'scope', label: 'Your location' });
   });
 });
 
@@ -285,24 +309,24 @@ describe('the Estimates still to send tile', () => {
   const def = () => TILE_CATALOG.find((t) => t.id === tileId);
   const tileOf = (values: Record<string, SwitchValue>) => eligibleTiles(values).find((t) => t.id === tileId);
 
-  it('is an Estimates tile that View estimates unlocks under every Estimates scope, and nothing else does', () => {
+  it('is an Estimates tile that View estimates unlocks under every scope it follows, and nothing else does', () => {
     expect(def()?.category).toBe('estimates');
     expect(def()?.title).toBe('Estimates still to send');
-    for (const scope of ['attached', 'team', 'location', 'all', 'through_own_leads']) {
-      expect(ids(person({ view_estimates: true, [SCOPE_SWITCH_KEY.Estimate]: scope })), scope).toContain(tileId);
+    for (const scope of ['attached', 'team', 'all', 'through_own_leads']) {
+      expect(ids(person({ view_estimates: true, ...documentScope(scope) })), scope).toContain(tileId);
     }
     const everythingElse = Object.fromEntries(SWITCH_CATALOG.filter((s) => s.kind === 'toggle' && s.key !== 'view_estimates').map((s) => [s.key, true]));
     expect(ids(person({ ...everythingElse, view_estimates: false }))).not.toContain(tileId);
     expect(ids(person())).not.toContain(tileId);
   });
 
-  it('needs no See financial data and no See company figures: the total is the record\'s price', () => {
-    expect(tileOf(person({ view_estimates: true, see_financial_data: false, see_company_figures: false }))).toBeDefined();
+  it('needs no See costs and no See company figures: the total is the record\'s price', () => {
+    expect(tileOf(person({ view_estimates: true, see_costs: false, see_company_figures: false }))).toBeDefined();
   });
 
-  it('is a count tile that follows the Estimates scope and carries no label', () => {
-    expect(tileOf(person({ view_estimates: true, [SCOPE_SWITCH_KEY.Estimate]: 'all' }))).toMatchObject({ mode: 'company', label: null });
-    expect(tileOf(person({ view_estimates: true, [SCOPE_SWITCH_KEY.Estimate]: 'attached' }))).toMatchObject({ mode: 'scope', label: null });
+  it('is a count tile that follows the Jobs and Leads scope and carries no label', () => {
+    expect(tileOf(person({ view_estimates: true, ...documentScope('all') }))).toMatchObject({ mode: 'company', label: null });
+    expect(tileOf(person({ view_estimates: true, ...documentScope('attached') }))).toMatchObject({ mode: 'scope', label: null });
   });
 });
 
@@ -313,7 +337,7 @@ describe('the Missing lead owner tile', () => {
   it('is a Leads tile that View leads unlocks under every Leads scope, Attached included, and nothing else does', () => {
     expect(def()?.category).toBe('leads');
     expect(def()?.title).toBe('Missing lead owner');
-    for (const scope of ['attached', 'team', 'location', 'all']) {
+    for (const scope of ['attached', 'team', 'all']) {
       expect(ids(person({ view_leads: true, [SCOPE_SWITCH_KEY.Lead]: scope })), scope).toContain(tileId);
     }
     // Everything else on, View leads off: not offered. A person with nothing on is not offered it either.
@@ -337,24 +361,23 @@ describe('mode and label', () => {
   };
 
   it('puts a money tile in "own" mode labelled "Yours" without See company figures, whatever the scope', () => {
-    for (const scope of ['attached', 'team', 'location', 'all']) {
-      const values = person({ view_invoices: true, [SCOPE_SWITCH_KEY.Invoice]: scope });
+    for (const scope of ['attached', 'team', 'all']) {
+      const values = person({ view_invoices: true, ...documentScope(scope) });
       for (const id of MONEY_TILES) expect(modeOf(values, id), `${id} ${scope}`).toEqual({ mode: 'own', label: 'Yours' });
     }
   });
 
   it('puts a money tile in "company" mode with no label under scope All, with See company figures', () => {
-    const values = person({ view_invoices: true, see_company_figures: true, [SCOPE_SWITCH_KEY.Invoice]: 'all' });
+    const values = person({ view_invoices: true, see_company_figures: true, ...documentScope('all') });
     for (const id of MONEY_TILES) expect(modeOf(values, id), id).toEqual({ mode: 'company', label: null });
   });
 
-  it('labels a scope-mode money tile Yours, Your team or Your location by the Invoices scope', () => {
+  it('labels a scope-mode money tile Yours or Your team by the Jobs and Leads scope', () => {
     const labelFor = (scope: string) =>
-      modeOf(person({ view_invoices: true, see_company_figures: true, [SCOPE_SWITCH_KEY.Invoice]: scope }), 'kpi.ar');
+      modeOf(person({ view_invoices: true, see_company_figures: true, ...documentScope(scope) }), 'kpi.ar');
     expect(labelFor('attached')).toEqual({ mode: 'scope', label: 'Yours' });
     expect(labelFor('through_own_leads')).toEqual({ mode: 'scope', label: 'Yours' });
     expect(labelFor('team')).toEqual({ mode: 'scope', label: 'Your team' });
-    expect(labelFor('location')).toEqual({ mode: 'scope', label: 'Your location' });
   });
 
   it('puts a count tile in company mode under scope All and scope mode otherwise, with no label', () => {

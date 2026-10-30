@@ -121,23 +121,23 @@ describe('a group landing on the person\'s switches', () => {
     access({ orgFeatures: ['inventory', 'phone', 'email'], switches });
 
   it('lands Price Book alone on Price Book, not on Stock the rules would still allow', () => {
-    const only = withSwitches({ view_price_book: true, show_price_book_page: true });
+    const only = withSwitches({ view_price_book: true });
     expect(visibleNavChildren(inventory, only).map((c) => c.key)).toEqual(['inv-pricebook']);
     expect(resolveNavHref(inventory, only)).toBe('/inventory/price-book');
   });
 
   it('lands Vendors alone on Vendors', () => {
-    const only = withSwitches({ view_vendors: true, show_vendors_page: true });
+    const only = withSwitches({ view_vendors: true });
     expect(resolveNavHref(inventory, only)).toBe('/inventory/vendors');
   });
 
   it('lands Logistic Orders alone on the Logistic Orders tab, and drops the child when the Stock entry shows', () => {
-    const only = withSwitches({ view_logistic_orders: true, show_logistic_orders_page: true });
+    const only = withSwitches({ view_logistic_orders: true });
     expect(visibleNavChildren(inventory, only).map((c) => c.key)).toEqual(['inv-logistic-orders']);
     expect(resolveNavHref(inventory, only)).toBe('/inventory/logistic-orders');
 
     const withStock = withSwitches({
-      view_logistic_orders: true, show_logistic_orders_page: true, view_stock: true, show_stock_page: true,
+      view_logistic_orders: true, view_stock: true,
     });
     expect(visibleNavChildren(inventory, withStock).map((c) => c.key)).toEqual(['inv-stock']);
   });

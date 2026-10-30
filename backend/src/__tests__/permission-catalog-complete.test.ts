@@ -38,8 +38,8 @@ function sourceFiles(dir: string = SRC): string[] {
 /** The (action, subject) pairs a source text asks the ability about, as `action:Subject`. */
 export function grantsChecked(source: string): string[] {
   const found = new Set<string>();
-  // canDo('read', 'Job'), canDoOrCreator('update', 'Estimate', ...), req.ability.can('x', 'Y'), can(req, 'x', 'Y', row).
-  const single = /\b(?:canDo|canDoOrCreator|can|cannot)\(\s*(?:req\s*,\s*)?'([a-z_]+)'\s*,\s*'([A-Z][A-Za-z]+)'/g;
+  // canDo('read', 'Job'), req.ability.can('x', 'Y'), can(req, 'x', 'Y', row).
+  const single = /\b(?:canDo|can|cannot)\(\s*(?:req\s*,\s*)?'([a-z_]+)'\s*,\s*'([A-Z][A-Za-z]+)'/g;
   for (const m of source.matchAll(single)) found.add(`${m[1]}:${m[2]}`);
   // canDoAny([['create', 'Lead'], ['create', 'Job']]).
   for (const call of source.matchAll(/canDoAny\(\s*\[([\s\S]*?)\]\s*\)/g)) {
@@ -87,13 +87,12 @@ describe('every grant the server checks has exactly one owner', () => {
       expect(unaccountedGrants(grantsChecked(route))).toEqual(['launch:Rocket']);
     });
 
-    it('reads a canDoAny, an ability check and a creator-rule guard too', () => {
+    it('reads a canDoAny and an ability check too', () => {
       const text = [
         `router.get('/p', canDoAny([['create', 'Lead'], ['create', 'Rocket']]), h);`,
         `if (req.ability?.can('probe', 'Planet')) {}`,
-        `router.get('/c', canDoOrCreator('update', 'Comet', (r) => [r.params.id]), h);`,
       ].join('\n');
-      expect(grantsChecked(text).sort()).toEqual(['create:Lead', 'create:Rocket', 'probe:Planet', 'update:Comet']);
+      expect(grantsChecked(text).sort()).toEqual(['create:Lead', 'create:Rocket', 'probe:Planet']);
     });
 
     it('reports a grant two switches emit', () => {
@@ -118,8 +117,6 @@ describe('the switches that stand for the guards the routes still check', () => 
     ['reopen_done_jobs', ['reopen:Job']],
     ['reopen_leads', ['reopen:Lead']],
     ['create_estimates', ['create:Estimate', 'duplicate:Estimate']],
-    ['company_settings', ['update:Organization', 'update:AppSetting']],
-    ['manage_roles_and_permissions', ['manage_roles:Role', 'read:Role', 'update:Role']],
   ];
 
   for (const [key, grants] of stands) {
@@ -133,7 +130,7 @@ describe('the switches that stand for the guards the routes still check', () => 
     expect(dispatcher).toContain('renumber:Job');
     expect(dispatcher).not.toContain('cancel:Job');
     const admin = compileSwitchGrants(presetSwitchSet('ADMIN')).map(grantKey);
-    expect(admin).toEqual(expect.arrayContaining(['renumber:Job', 'cancel:Job', 'reopen:Job', 'duplicate:Estimate', 'update:AppSetting']));
+    expect(admin).toEqual(expect.arrayContaining(['renumber:Job', 'cancel:Job', 'reopen:Job', 'duplicate:Estimate']));
   });
 });
 
@@ -152,11 +149,9 @@ describe('no code decides access by a role\'s name outside the Admin box and the
       .map((text, i) => ({ line: i + 1, text }))
       .filter(({ text }) => !/^\s*(\/\/|\*|\/\*)/.test(text) && comparison.test(text));
 
+  // Ticket 26: user.controller.ts no longer names a role. Whether a role makes its holder an Admin is the role's own Admin flag
+  // (effectiveRole.ts roleMakesAdmin), and who IS an Admin is the person's flag, read through isSuperUser.
   const allowed: Record<string, number> = {
-    // The Admin box test itself.
-    'lib/permissions/effectiveRole.ts': 1,
-    // The admin-identity guard: the last active admin cannot be demoted (the Admin box itself is read through isSuperUser).
-    'controllers/user.controller.ts': 1,
     // "All admins" / "all dispatchers" is an audience a company picks by name, not an access check.
     'services/automations/recipients.ts': 1,
   };
@@ -220,7 +215,7 @@ describe('the catalog is whole', () => {
     expect(help('jobs_scope')).toMatch(/any visit/);
     expect(help('jobs_scope')).toMatch(/Sold By/);
     expect(help('jobs_scope')).toMatch(/Dispatcher/);
-    for (const key of ['jobs_scope', 'estimates_scope', 'invoices_scope']) {
+    for (const key of ['jobs_scope']) {
       const kept = SWITCH_CATALOG.find((s) => s.key === key)!.keptValueHelp!['through_own_leads']!;
       expect(kept.meaning, key).toMatch(/lead you are the Owner of/);
     }
@@ -230,12 +225,11 @@ describe('the catalog is whole', () => {
     // [switch key, group, parents it Requires]
     const placement: Array<[string, string, string[]]> = [
       ['change_lead_status_by_hand', 'Leads', ['edit_leads']],
-      ['see_everyones_timesheets', 'Time tracking', []],
+      ['timesheets_scope', 'Time tracking', []],
       ['inventory_view', 'Stock', []],
-      ['see_all_assets', 'Stock', ['view_stock']],
+      ['assets_scope', 'Stock', []],
       ['office_phone_in_browser', 'Communication', ['contact_customers']],
       ['add_notes', 'Notes', []],
-      ['delete_others_notes', 'Notes', []],
       ['start_and_finish_visits', 'Jobs', ['view_jobs']],
       ['change_customer_created_date', 'Customers', ['edit_customers']],
       ['edit_others_logged_communications', 'Communication', ['log_past_communications']],
@@ -254,8 +248,8 @@ describe('the catalog is whole', () => {
       expect(findSwitch('inventory_view')).toMatchObject({ kind: 'choice', choices: ['counter', 'field'] });
     });
 
-    it('keeps See everyone\'s timesheets the only switch in the Time tracking group', () => {
-      expect(SWITCH_CATALOG.filter((s) => s.module === 'Time tracking').map((s) => s.key)).toEqual(['see_everyones_timesheets']);
+    it('keeps Timesheets scope the only switch in the Time tracking group', () => {
+      expect(SWITCH_CATALOG.filter((s) => s.module === 'Time tracking').map((s) => s.key)).toEqual(['timesheets_scope']);
     });
 
     it('merges Mark Work Completed into Start and finish visits: no switch of that name remains', () => {
@@ -277,11 +271,11 @@ describe('every built-in preset passes validation', () => {
     expect(validateSwitchSet(technician)).toEqual([]);
   });
 
-  it('holds Technician with Invoices View off and Record payments and Send payment links on', () => {
+  it('holds Technician with Invoices View off and no payment recording and no payment links (A8)', () => {
     const technician = presetSwitchSet('TECHNICIAN');
     expect(technician.view_invoices).toBe(false);
-    expect(technician.record_payments).toBe(true);
-    expect(technician.send_payment_links).toBe(true);
+    expect(technician.record_payments).toBe(false);
+    expect(technician.send_payment_links).toBe(false);
     expect(validateSwitchSet(technician)).toEqual([]);
   });
 
@@ -323,7 +317,7 @@ describe('the route-level enforcement table accounts for every switch', () => {
     expect(pendingFor('PRD 8')).toEqual(expect.arrayContaining(['download_transcript']));
     // S08.11 built the two recording checks, S08.12 the transcript check and S08.13 the call insights checks, S08.15 the Phone numbers tab and usage bar checks and S08.16 the four org-gated tabs; none of
     // the ten is pending any more. Download transcript stays pending on purpose: no transcript download is built.
-    for (const built of ['play_recording', 'download_recording', 'view_transcript', 'see_call_insights', 'phone_numbers_tab', 'phone_usage_bar', 'call_flows_tab', 'call_groups_tab', 'training_tab', 'blocked_callers_tab']) expect(pendingFor('PRD 8')).not.toContain(built);
+    for (const built of ['play_recording', 'download_recording', 'view_transcript', 'see_call_insights', 'phone_numbers_tab', 'call_flows_tab', 'call_groups_tab', 'training_tab', 'blocked_callers_tab']) expect(pendingFor('PRD 8')).not.toContain(built);
     // S06.29: the four "Alert me about every ..." switches are read by every alert chain now; none waits for a PRD any more.
     for (const key of ['alert_every_lead', 'alert_every_job', 'alert_every_estimate', 'alert_every_invoice']) {
       const entry = SWITCH_CATALOG.find((s) => s.key === key)!;

@@ -68,7 +68,7 @@ function jobNotOwnedByTech() {
 
 function grantTechCreateInvoice() {
   // Create invoices is off in the Technician preset. Turned on, it reaches the jobs the technician can open (View jobs, Attached).
-  mockRoleSwitches({ create_invoices: true, view_invoices: true });
+  mockRoleSwitches({ edit_invoices: true, create_invoices: true, view_invoices: true });
 }
 
 beforeEach(() => {
@@ -127,7 +127,7 @@ describe('POST /api/invoices — Phase B ownership (granted OWN-scoped technicia
       .set(authHeader('technician'))
       .send({ job_id: JOB_FIXTURE.id });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it('strict (un-granted) tech is blocked at the route guard (403), never reaching create', async () => {

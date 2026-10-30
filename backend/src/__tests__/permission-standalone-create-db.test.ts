@@ -63,42 +63,42 @@ suite('standalone estimates, Create invoices and standalone invoices (real datab
   describe('Standalone estimates', () => {
     it('refuses a customer-only estimate without it, and lets one in with it', async () => {
       const { org, customer } = await fx.newOrg();
-      const without = await personWith(org, { create_estimates: true, standalone_estimates: false });
+      const without = await personWith(org, { edit_estimates: true, create_estimates: true, standalone_estimates: false });
       const refused = await (await without.api()).post('/api/estimates', customerOnlyEstimate(customer));
       expect(refused.status).toBe(403);
       expect(refused.body.error).toMatch(/without a lead or job/);
 
-      const withIt = await personWith(org, { create_estimates: true, standalone_estimates: true });
+      const withIt = await personWith(org, { edit_estimates: true, create_estimates: true, standalone_estimates: true });
       expect((await (await withIt.api()).post('/api/estimates', customerOnlyEstimate(customer))).status).toBe(201);
     });
 
     it('lets an estimate on a lead the person can open in, without Standalone estimates, and refuses a lead they cannot open', async () => {
       const { org, customer } = await fx.newOrg();
-      const me = await personWith(org, { leads_scope: 'attached', create_estimates: true, standalone_estimates: false });
+      const me = await personWith(org, { leads_scope: 'attached', edit_estimates: true, create_estimates: true, standalone_estimates: false });
       const mine = await fx.addLead(org, customer, { assignees: [me.id] });
       const theirs = await fx.addLead(org, customer);
       const api = await me.api();
 
       expect((await api.post('/api/estimates', { lead_id: mine.id, line_items: lineItems })).status).toBe(201);
-      expect((await api.post('/api/estimates', { lead_id: theirs.id, line_items: lineItems })).status).toBe(403);
+      expect((await api.post('/api/estimates', { lead_id: theirs.id, line_items: lineItems })).status).toBe(404);
     });
 
     it('opens a lead the person is Owner of but not an assignee on, since Attached reaches it', async () => {
       const { org, customer } = await fx.newOrg();
-      const me = await personWith(org, { leads_scope: 'attached', estimates_scope: 'attached', create_estimates: true, standalone_estimates: false });
+      const me = await personWith(org, { leads_scope: 'attached', jobs_scope: 'attached', edit_estimates: true, create_estimates: true, standalone_estimates: false });
       const owned = await fx.addLead(org, customer, { owner: me.id });
       expect((await (await me.api()).post('/api/estimates', { lead_id: owned.id, line_items: lineItems })).status).toBe(201);
     });
 
     it('lets an estimate on a job the person can open in, and refuses one they cannot', async () => {
       const { org, customer } = await fx.newOrg();
-      const me = await personWith(org, { jobs_scope: 'attached', create_estimates: true, standalone_estimates: false });
+      const me = await personWith(org, { jobs_scope: 'attached', edit_estimates: true, create_estimates: true, standalone_estimates: false });
       const mine = await fx.addJob(org, customer, { crew: [me.id] });
       const theirs = await fx.addJob(org, customer, { crew: [] });
       const api = await me.api();
 
       expect((await api.post('/api/estimates', { job_id: mine.id, line_items: lineItems })).status).toBe(201);
-      expect((await api.post('/api/estimates', { job_id: theirs.id, line_items: lineItems })).status).toBe(403);
+      expect((await api.post('/api/estimates', { job_id: theirs.id, line_items: lineItems })).status).toBe(404);
     });
 
     it('holds a duplicate that lands on no lead and no job to the same switch', async () => {
@@ -107,7 +107,7 @@ suite('standalone estimates, Create invoices and standalone invoices (real datab
       const lead = await fx.addLead(org, customer);
       const onLead = await fx.addEstimate(org, customer, admin.id, { leadId: lead.id });
 
-      const without = await personWith(org, { estimates_scope: 'all', create_estimates: true, standalone_estimates: false }, { base: 'SALES' });
+      const without = await personWith(org, { jobs_scope: 'all', leads_scope: 'all', edit_estimates: true, create_estimates: true, standalone_estimates: false }, { base: 'SALES' });
       const api = await without.api();
       const refused = await api.post(`/api/estimates/${source.id}/duplicate`, {});
       expect(refused.status).toBe(403);
@@ -115,7 +115,7 @@ suite('standalone estimates, Create invoices and standalone invoices (real datab
       // A copy that stays on its lead is not a standalone estimate.
       expect((await api.post(`/api/estimates/${onLead.id}/duplicate`, {})).status).toBe(201);
 
-      const withIt = await personWith(org, { estimates_scope: 'all', create_estimates: true, standalone_estimates: true }, { base: 'SALES' });
+      const withIt = await personWith(org, { jobs_scope: 'all', leads_scope: 'all', edit_estimates: true, create_estimates: true, standalone_estimates: true }, { base: 'SALES' });
       expect((await (await withIt.api()).post(`/api/estimates/${source.id}/duplicate`, {})).status).toBe(201);
     });
   });
@@ -125,10 +125,10 @@ suite('standalone estimates, Create invoices and standalone invoices (real datab
       const { org, customer } = await fx.newOrg();
       const job = await fx.addJob(org, customer, { crew: [] });
 
-      const both = await personWith(org, { view_invoices: true, create_invoices: true, standalone_invoices: true });
+      const both = await personWith(org, { view_invoices: true, edit_invoices: true, create_invoices: true, standalone_invoices: true });
       expect((await (await both.api()).post('/api/invoices', standaloneInvoice(customer))).status).toBe(201);
 
-      const jobOnly = await personWith(org, { jobs_scope: 'all', view_invoices: true, create_invoices: true, standalone_invoices: false });
+      const jobOnly = await personWith(org, { jobs_scope: 'all', view_invoices: true, edit_invoices: true, create_invoices: true, standalone_invoices: false });
       const api = await jobOnly.api();
       const refused = await api.post('/api/invoices', standaloneInvoice(customer));
       expect(refused.status).toBe(403);
@@ -149,14 +149,14 @@ suite('standalone estimates, Create invoices and standalone invoices (real datab
 
     it('lets a Sales-based role with Create invoices make a job invoice on a job it can open, and refuses one it cannot open', async () => {
       const { org, customer } = await fx.newOrg();
-      const me = await personWith(org, { jobs_scope: 'attached', view_invoices: true, create_invoices: true }, { base: 'SALES' });
+      const me = await personWith(org, { jobs_scope: 'attached', view_invoices: true, edit_invoices: true, create_invoices: true }, { base: 'SALES' });
       const dispatchedToMe = await fx.addJob(org, customer, { dispatcher: me.id });
       const notMine = await fx.addJob(org, customer, { crew: [] });
       const api = await me.api();
 
       // Attached reaches a job the person dispatches, though they are not on its crew.
       expect((await api.post('/api/invoices', { job_id: dispatchedToMe.id, line_items: lineItems })).status).toBe(201);
-      expect((await api.post('/api/invoices', { job_id: notMine.id, line_items: lineItems })).status).toBe(403);
+      expect((await api.post('/api/invoices', { job_id: notMine.id, line_items: lineItems })).status).toBe(404);
     });
   });
 
@@ -165,22 +165,22 @@ suite('standalone estimates, Create invoices and standalone invoices (real datab
       const { org, customer, admin } = await fx.newOrg();
       const lead = await fx.addLead(org, customer);
 
-      const sales = await personWith(org, { estimates_scope: 'all', view_invoices: true, create_invoices: true }, { base: 'SALES' });
+      const sales = await personWith(org, { jobs_scope: 'all', leads_scope: 'all', view_invoices: true, edit_invoices: true, create_invoices: true }, { base: 'SALES' });
       const estimate = await fx.addEstimate(org, customer, admin.id, { leadId: lead.id });
       expect((await (await sales.api()).post(`/api/estimates/${estimate.id}/copy-to-invoice`, {})).status).toBe(201);
 
-      const dispatcher = await personWith(org, { estimates_scope: 'all', view_invoices: true, create_invoices: false, standalone_invoices: false }, { base: 'DISPATCHER' });
+      const dispatcher = await personWith(org, { jobs_scope: 'all', leads_scope: 'all', view_invoices: true, create_invoices: false, standalone_invoices: false }, { base: 'DISPATCHER' });
       const another = await fx.addEstimate(org, customer, admin.id, { leadId: lead.id });
       expect((await (await dispatcher.api()).post(`/api/estimates/${another.id}/copy-to-invoice`, {})).status).toBe(403);
 
-      const narrow = await personWith(org, { estimates_scope: 'attached', view_invoices: true, create_invoices: true });
+      const narrow = await personWith(org, { jobs_scope: 'attached', leads_scope: 'attached', view_invoices: true, edit_invoices: true, create_invoices: true });
       const notTheirs = await fx.addEstimate(org, customer, admin.id, { leadId: lead.id });
-      expect((await (await narrow.api()).post(`/api/estimates/${notTheirs.id}/copy-to-invoice`, {})).status).toBe(403);
+      expect((await (await narrow.api()).post(`/api/estimates/${notTheirs.id}/copy-to-invoice`, {})).status).toBe(404);
     });
 
     it('needs no Standalone invoices, since it is a copy of an estimate and not a bare invoice', async () => {
       const { org, customer, admin } = await fx.newOrg();
-      const me = await personWith(org, { estimates_scope: 'all', view_invoices: true, create_invoices: true, standalone_invoices: false });
+      const me = await personWith(org, { jobs_scope: 'all', leads_scope: 'all', view_invoices: true, edit_invoices: true, create_invoices: true, standalone_invoices: false });
       const estimate = await fx.addEstimate(org, customer, admin.id);
       expect((await (await me.api()).post(`/api/estimates/${estimate.id}/copy-to-invoice`, {})).status).toBe(201);
     });

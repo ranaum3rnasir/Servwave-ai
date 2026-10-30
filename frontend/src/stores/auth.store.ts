@@ -21,6 +21,9 @@ export interface User {
   // this field only; a custom role narrows GRANTS (CASL ability, via abilityRules) but never
   // this value, so it must never be used for a role === 'X' route check.
   role: 'ADMIN' | 'SALES' | 'DISPATCHER' | 'TECHNICIAN';
+  // Whether the person is an Admin (P15). Never decided from `role`. Optional because a cached payload from before
+  // the flag existed omits it; absent means not an Admin until the next /api/auth/me answers.
+  is_admin?: boolean;
   // Present when the user holds a custom role; optional because a cached pre-SRVW-138 payload
   // may omit it.
   custom_role_id?: string | null;
@@ -37,6 +40,9 @@ export interface User {
   // fails OPEN on undefined so existing sessions are not locked out at deploy.
   org_plan?: string;
   org_features?: string[];
+  // The company's Owner (AL-16): Users & Teams marks them and keeps their remove actions off. Null when the company has
+  // none; optional because a cached pre-Owner payload omits it (then nobody is marked until /api/auth/me answers).
+  org_owner_user_id?: string | null;
   // Self-service profile fields. Optional because the cached/`/api/auth/me`
   // payload may predate them; the full row is merged in via applyUserPatch
   // after a profile save (PATCH /api/users/me returns these).
@@ -80,6 +86,9 @@ interface AuthState {
   // cached auth user so the header/profile reflect a self-service edit without a
   // full re-fetch. Identity fields the patch omits are preserved.
   applyUserPatch: (patch: Partial<User>) => void;
+  // Replace the CASL rules with a fresher answer (the switches read carries them), so the action buttons follow a
+  // permission change at the same moment the menus do (P17).
+  applyAbilityRules: (rules: AbilityRule[]) => void;
 }
 
 const CACHE_KEY = 'servwave_user';
@@ -307,5 +316,10 @@ export const useAuthStore = create<AuthState>((set, get) => {
       setCachedUser(next);
       return { user: next };
     }),
+
+  applyAbilityRules: (rules) => {
+    setCachedAbilityRules(rules);
+    set({ ability: buildAbility(rules) });
+  },
   };
 });

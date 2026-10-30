@@ -11,9 +11,10 @@ vi.unmock('../config/env');
 const executeRaw = vi.fn().mockResolvedValue(3);
 vi.mock('../lib/prisma', () => {
   const prisma = {
-    organization: { create: vi.fn().mockResolvedValue({}), delete: vi.fn() },
-    rolePermission: { createMany: vi.fn().mockResolvedValue({ count: 0 }) },
+    organization: { create: vi.fn().mockResolvedValue({}), delete: vi.fn(), updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
     user: { create: vi.fn().mockResolvedValue({}) },
+    // The first Owner is recorded in the same transaction (ticket 25).
+    auditLog: { create: vi.fn().mockResolvedValue({}) },
     $executeRawUnsafe: (...args: unknown[]) => executeRaw(...args),
     // The admin and their mailbox are written in one transaction.
     $transaction: (fn: (tx: unknown) => unknown) => fn(prisma),

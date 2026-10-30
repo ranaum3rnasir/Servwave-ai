@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { useForm } from 'react-hook-form';
 import { useFeature } from '@/lib/entitlements';
+import { useAuthStore } from '@/stores/auth.store';
 
 import {
   useOrganization,
@@ -221,6 +222,9 @@ function OnlineMethodRow({
  */
 export function usePaymentDefaults(): { summary: ReactNode; cards: ReactNode } {
   const onlinePaymentsInPlan = useFeature('online_payments');
+  // The bank-transfer instructions are an Admin's alone (M8, D3): the server refuses a save that carries them from anyone else,
+  // so for anyone else the card is not drawn and the field is never sent.
+  const isAdmin = useAuthStore((s) => s.user?.is_admin === true);
   const { data: org } = useOrganization();
   const update = useUpdateOrganization();
   const { registerSaver } = useSettingsBar();
@@ -290,7 +294,8 @@ export function usePaymentDefaults(): { summary: ReactNode; cards: ReactNode } {
           if (values.tips_enabled) Object.assign(problems, bad);
           else if (Object.keys(bad).length) delete payload.tip_presets;
         }
-        if ((values.bank_transfer_instructions ?? '').length > BANK_MAX) problems[BANK_ID] = BANK_LENGTH_MESSAGE;
+        if (!isAdmin) delete payload.bank_transfer_instructions;
+        else if ((values.bank_transfer_instructions ?? '').length > BANK_MAX) problems[BANK_ID] = BANK_LENGTH_MESSAGE;
         // The amount field that is not on screen is held to no rule: a bad value left behind in it is not sent.
         const badNumber = (v: unknown) => typeof v !== 'number' || Number.isNaN(v);
         if (depositType === 'FIXED' && 'deposit_default_percentage' in payload && badNumber(payload.deposit_default_percentage)) {
@@ -556,42 +561,44 @@ export function usePaymentDefaults(): { summary: ReactNode; cards: ReactNode } {
         </Section>
       </div>
 
-      <div id="sec-bank">
-        <Section
-          title="Bank-transfer instructions"
-          info={
-            <InfoPopover label="Bank-transfer instructions">
-              Shown to customers who choose to pay by bank transfer. Transfers are not tracked automatically: when one arrives, record the payment on the invoice yourself.
-            </InfoPopover>
-          }
-        >
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor={BANK_ID} className="text-xs">
-              Instructions customers see
-            </Label>
-            <Textarea
-              id={BANK_ID}
-              rows={5}
-              placeholder="Account name, routing and account numbers, and the reference to use"
-              aria-invalid={bankBad}
-              aria-describedby={BANK_ID in fieldErrors ? `${BANK_ID}-error` : undefined}
-              className={cn('mobile:!text-base', bankBad && 'border-danger')}
-              {...bankRegister}
-              onChange={(e) => {
-                void bankRegister.onChange(e);
-                clearFieldError(BANK_ID);
-              }}
-            />
-            <span
-              data-testid="bank-instructions-counter"
-              className={cn('self-end text-xs text-text-secondary', bankText.length > BANK_MAX && 'font-semibold text-danger')}
-            >
-              {bankText.length.toLocaleString('en-US')} of 5,000
-            </span>
-            <FieldMessage id={`${BANK_ID}-error`} message={fieldErrors[BANK_ID]} />
-          </div>
-        </Section>
-      </div>
+      {isAdmin && (
+        <div id="sec-bank">
+          <Section
+            title="Bank-transfer instructions"
+            info={
+              <InfoPopover label="Bank-transfer instructions">
+                Shown to customers who choose to pay by bank transfer. Transfers are not tracked automatically: when one arrives, record the payment on the invoice yourself.
+              </InfoPopover>
+            }
+          >
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor={BANK_ID} className="text-xs">
+                Instructions customers see
+              </Label>
+              <Textarea
+                id={BANK_ID}
+                rows={5}
+                placeholder="Account name, routing and account numbers, and the reference to use"
+                aria-invalid={bankBad}
+                aria-describedby={BANK_ID in fieldErrors ? `${BANK_ID}-error` : undefined}
+                className={cn('mobile:!text-base', bankBad && 'border-danger')}
+                {...bankRegister}
+                onChange={(e) => {
+                  void bankRegister.onChange(e);
+                  clearFieldError(BANK_ID);
+                }}
+              />
+              <span
+                data-testid="bank-instructions-counter"
+                className={cn('self-end text-xs text-text-secondary', bankText.length > BANK_MAX && 'font-semibold text-danger')}
+              >
+                {bankText.length.toLocaleString('en-US')} of 5,000
+              </span>
+              <FieldMessage id={`${BANK_ID}-error`} message={fieldErrors[BANK_ID]} />
+            </div>
+          </Section>
+        </div>
+      )}
 
       <div id="sec-related">
         <Section

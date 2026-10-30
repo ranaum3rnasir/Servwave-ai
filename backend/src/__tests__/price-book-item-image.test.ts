@@ -260,7 +260,7 @@ describe('POST /api/price-book/items/:id/image — estimate_id row scope (R6)', 
     expect(res.body).toEqual({ error: 'Estimate not found' });
   });
 
-  it('403s when the supplied estimate is outside the requester\'s own row scope', async () => {
+  it('404s, exactly as for a missing estimate, when the supplied estimate is outside the requester\'s own row scope (re-audit P2-4)', async () => {
     mockPrisma.estimate.findUnique.mockResolvedValue(guardRow());
     // An estimate on a lead the sales rep is not an assignee of: outside their Estimates scope.
     mockScopedFindFirst(mockPrisma.estimate.findFirst, {
@@ -276,8 +276,8 @@ describe('POST /api/price-book/items/:id/image — estimate_id row scope (R6)', 
       .field('estimate_id', ESTIMATE_ID)
       .attach('file', jpegBuf(), { filename: 'a.jpg', contentType: 'image/jpeg' });
 
-    expect(res.status).toBe(403);
-    expect(res.body).toEqual({ error: 'Insufficient permissions' });
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Estimate not found' });
     expect(mockPrisma.priceBookItem.update).not.toHaveBeenCalled();
   });
 

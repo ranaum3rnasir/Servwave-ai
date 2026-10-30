@@ -40,6 +40,7 @@ const roster = Array.from({ length: PEOPLE }, (_, i) => ({
   id: `00000000-0000-0000-0000-${String(i + 1).padStart(12, '0')}`,
   organization_id: ALPHA_ORG_ID,
   role: 'TECHNICIAN',
+  is_admin: false,
   is_active: true,
   based_on_role_key: null,
   department_id: null,
@@ -89,7 +90,7 @@ describe('resolving many people at once', () => {
   });
 
   it('holds every switch on for the Admin box without reading anything', async () => {
-    const box = { id: 'box', organization_id: ALPHA_ORG_ID, role: 'ADMIN' };
+    const box = { id: 'box', organization_id: ALPHA_ORG_ID, role: 'ADMIN', is_admin: true };
     const answers = await resolveSwitchesForPeople([box]);
     expect(switchReads()).toBe(0);
     expect(answers.get('box')).toEqual(presetValues('ADMIN'));

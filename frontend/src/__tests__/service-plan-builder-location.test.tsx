@@ -8,7 +8,7 @@ import { PlanBuilderDialog } from '@/pages/service-plans/ServicePlansPage';
 import { resolveServiceLocationId } from '@/lib/service-plans/resolveServiceLocationId';
 
 vi.mock('@/lib/axios', () => ({ default: { get: vi.fn(), post: vi.fn() } }));
-vi.mock('@/lib/api/users', () => ({ useUsers: () => ({ data: [] }) }));
+vi.mock('@/lib/api/users', () => ({ usePeople: () => ({ data: [] }) }));
 vi.mock('@/components/ui/use-toast', () => ({ useToast: () => ({ toast: vi.fn() }) }));
 
 // Stubbed so the builder's own submit path is what's under test, not the picker's internals.

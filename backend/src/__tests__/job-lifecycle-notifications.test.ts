@@ -156,10 +156,6 @@ beforeEach(() => {
   mockPrisma.invoice.findFirst.mockResolvedValue(null);
 
   // loadGrantsFor() used by the canDo middleware.
-  mockPrisma.rolePermission.findMany.mockImplementation(
-    (args: { where: { organization_id: string; role: string } }) =>
-      Promise.resolve(DEFAULT_GRANTS.filter((g) => g.role === args.where.role)),
-  );
 
   // canAccessRow uses prisma.job.findFirst for row-scope checks.
   mockPrisma.job.findFirst.mockResolvedValue({ id: JOB_FIXTURE.id });

@@ -19,8 +19,7 @@ import { textingNotSwitchedOn } from '../lib/ctm/userCopy';
 
 /**
  * CTM connect / disconnect / A2P-check for the requesting user's own org.
- * Routes are gated canDo('update','Organization') — the repo's ADMIN-only
- * idiom (organization.routes.ts precedent; DISPATCHER/SALES lack the grant).
+ * Routes are Admin-only (requireAdminTo, the Admin flag: ticket 36).
  */
 
 // Positions provisioned at connect (see master plan §1 + v3.1 addendum §A.3 -

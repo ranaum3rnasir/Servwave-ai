@@ -71,6 +71,7 @@ vi.mock('@/stores/auth.store', () => ({
         first_name: 'Test',
         last_name: 'Admin',
         role: 'ADMIN',
+        is_admin: true,
       },
       isAuthenticated: true,
       isLoading: false,

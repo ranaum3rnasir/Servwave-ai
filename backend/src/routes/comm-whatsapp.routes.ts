@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Request, type Response } from 'express';
 import { authenticate } from '../middleware/authenticate';
 import { attachAbility } from '../middleware/attachAbility';
 import { requireFeature } from '../middleware/requireFeature';
@@ -7,6 +7,7 @@ import { canDo } from '../middleware/canGuard';
 import { validate } from '../middleware/validate';
 import { requireUuidParam } from '../middleware/requireUuidParam';
 import * as commController from '../controllers/comm-whatsapp-email.controller';
+import { markRouteCheck } from '../middleware/routeCheck';
 
 const router = Router();
 
@@ -50,8 +51,8 @@ router.post('/whatsapp-chats', canDo('create', 'Communication'), canDo('access_i
 // Terminate this router's own prefixes - see the same guard in
 // comm-email.routes.ts for why an unmatched path must not walk the mount chain
 // into a foreign entitlement gate.
-router.all([...WHATSAPP_PREFIXES, '/whatsapp/*', '/whatsapp-chats/*'], (_req, res) => {
+router.all([...WHATSAPP_PREFIXES, '/whatsapp/*', '/whatsapp-chats/*'], markRouteCheck('closed', (_req: Request, res: Response) => {
   res.status(404).json({ error: 'Not found' });
-});
+}));
 
 export default router;

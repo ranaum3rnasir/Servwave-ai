@@ -33,6 +33,10 @@ function reasonText(entry: ChangeLogEntry): string {
       return 'Save as role';
     case 'migration':
       return 'Migration';
+    case 'role edit':
+      return 'Role edit removed this exception';
+    case 'erased':
+      return 'Personal data erased';
     default:
       return choiceLabel(entry.reason);
   }
@@ -50,6 +54,7 @@ function plainValue(value: SwitchValue | null): string {
 function titleOf(entry: ChangeLogEntry, sw: CatalogSwitch | undefined, view: 'role' | 'person'): string {
   if (sw) return sw.label;
   if (entry.switch_key) return 'A switch that no longer exists';
+  if (entry.reason === 'erased') return 'Personal data erased';
   // The one entry a Save as role writes for the event: it has no switch.
   if (entry.reason === 'save as role') {
     if (view === 'role') return 'Role created through Save as role';

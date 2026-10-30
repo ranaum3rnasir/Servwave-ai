@@ -84,10 +84,12 @@ suite('record-tab email customer backfill migration (real database)', () => {
       select: { id: true },
     });
     const sender = randomUUID();
-    await db.user.create({
-      data: { id: sender, organization_id: org, email: `sender-${tag}@example.test`, first_name: 'Sam', last_name: 'Sender', role: 'SALES' },
-      select: { id: true },
-    });
+    // Raw insert: this database holds only the migrations before the one under test, and the client's insert would name later columns (users.is_admin).
+    await db.$executeRawUnsafe(
+      `INSERT INTO users (id, organization_id, email, first_name, last_name, role, updated_at)
+       VALUES ($1::uuid, $2::uuid, $3, 'Sam', 'Sender', 'SALES'::"Role", now())`,
+      sender, org, `sender-${tag}@example.test`,
+    );
     const customer = async (n: number) => {
       const id = randomUUID();
       await db.customer.create({

@@ -87,7 +87,7 @@ beforeEach(() => {
 
 describe('S07.16 - the Price Book page with View price book alone', () => {
   it('loads names, categories and sell prices, reads no stock or vendor endpoint, and shows no error', async () => {
-    renderWithProviders(<PriceBookPage />, { initialEntries: ['/inventory/price-book'], ability: held(VIEW_PRICE_BOOK) });
+    renderWithProviders(<PriceBookPage />, { initialEntries: ['/inventory/price-book'], ability: held(VIEW_PRICE_BOOK, { action: 'read', subject: 'Prices' } as AbilityRule) });
 
     expect(await screen.findByText('Catalog-only hinge')).toBeInTheDocument();
     expect(screen.getAllByText('Hinges').length).toBeGreaterThan(0);

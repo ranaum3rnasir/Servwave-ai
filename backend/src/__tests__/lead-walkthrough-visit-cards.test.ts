@@ -48,7 +48,6 @@ function visitRow(over: Record<string, unknown>) {
 beforeEach(() => {
   vi.resetAllMocks();
   clearPermissionCache();
-  (prisma.rolePermission.findMany as any).mockResolvedValue([]);
   (prisma.estimate.findMany as any).mockResolvedValue([]);
 });
 

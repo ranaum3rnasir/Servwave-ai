@@ -121,6 +121,19 @@ describe('EstimateWorkspacePage — Copy Link control when public_token is redac
     expect(screen.queryByRole('menuitem', { name: /copy link/i })).not.toBeInTheDocument();
   });
 
+  it('does not offer Copy Link to a person without See prices, even if a token reached the page: the link opens the customer\'s priced page (H6)', async () => {
+    const estimate = baseEstimate({ public_token: 'tok-1997' });
+    setupMocks(estimate);
+    const user = userEvent.setup();
+    const noPrices = buildAbility([{ action: 'manage', subject: 'all' }, { action: 'read', subject: 'Prices', inverted: true }]);
+
+    renderWithProviders(<EstimateWorkspacePage />, { ability: noPrices });
+
+    await user.click(await screen.findByRole('button', { name: 'Actions' }));
+    await screen.findByRole('menuitem', { name: /history/i });
+    expect(screen.queryByRole('menuitem', { name: /copy link/i })).not.toBeInTheDocument();
+  });
+
   it('shows Copy Link when public_token is present, and it never copies a "token=undefined" URL', async () => {
     const estimate = baseEstimate({ public_token: 'tok-1997' });
     setupMocks(estimate);

@@ -3,7 +3,7 @@
 // Needs Attention) and the Calls tab's stat strip count what the call log lists, and nothing else.
 //
 // Renders the ROUTED Phone page (pages/v2/communication/PhonePage) with the real call log in it. The server answers the
-// way the call log and the text inbox route do for each Communication scope value: "Linked to me" returns only the
+// way the call log and the text inbox route do for each Communication scope value: "Attached" returns only the
 // person's calls and conversations, "All" returns every one. The page has no count route of its own and no other
 // source, so every figure on screen must come from those answers. The out-of-scope fixtures are chosen to move EVERY
 // figure if one leaked: a missed call, a needs-manager call, a negative-sentiment call, a live call, a long call, a
@@ -106,7 +106,7 @@ beforeEach(() => {
 });
 
 describe('Phone page tiles and the Calls stat strip follow Communication scope (S08.4)', () => {
-  it('on "Linked to me" every tile and every stat-strip figure counts only the person\'s own calls and texts', async () => {
+  it('on "Attached" every tile and every stat-strip figure counts only the person\'s own calls and texts', async () => {
     renderPhone({ calls: MINE, threads: MY_THREADS });
     await waitFor(() => expect(figure('Calls today')).toBe('3'));
     expect(figures(PAGE_TILES)).toEqual({

@@ -9,7 +9,6 @@
 
 import { describe, it, expect } from 'vitest';
 import {
-  redactDollarAmounts,
   redactDashboardCompanyFigures,
   redactRevenueReport,
   redactPaymentFeesReport,
@@ -47,26 +46,11 @@ const dashboard = () => ({
     dispatch_scoreboard: [{ user_id: 'u2', name: 'Dee Dispatch', revenue: 8000, jobs: 6 }],
     lead_sources: [{ source: 'google', label: 'Google', lead_pct: 60, revenue: 4000 }],
     recent_activity: [
-      { id: 'e1', event_type: 'PAYMENT_RECEIVED', description: 'Payment of $12.50 received via Cash', entity_type: 'INVOICE', entity_id: 'i1', entity_deleted: false, entity_label: null, created_at: '2026-10-10T10:00:00.000Z', creator_name: 'Ann Admin' },
+      { id: 'e1', event_type: 'PAYMENT_RECEIVED', description: 'Payment received via Cash', entity_type: 'INVOICE', entity_id: 'i1', entity_deleted: false, entity_label: null, created_at: '2026-10-10T10:00:00.000Z', creator_name: 'Ann Admin' },
       { id: 'e2', event_type: 'JOB_CREATED', description: 'Job J-1 created', entity_type: 'JOB', entity_id: 'j1', entity_deleted: false, entity_label: null, created_at: '2026-10-10T09:00:00.000Z', creator_name: null },
     ],
   } as Record<string, any>,
   generated_at: '2026-10-10T10:05:00.000Z',
-});
-
-describe('redactDollarAmounts', () => {
-  it.each([
-    ['Payment of $12.50 received via Cash', 'Payment received via Cash'],
-    ['Payment of $12.50 received via Check (plus $2.00 tip)', 'Payment received via Check'],
-    ['Invoice INV-1 refunded $5.00 (damaged)', 'Invoice INV-1 refunded (damaged)'],
-    ['Deposit of $1,200.00 requested (50%)', 'Deposit requested (50%)'],
-    ['Invoice INV-1 give-back refund $5.00 - balance reopened to $20.00', 'Invoice INV-1 give-back refund - balance reopened'],
-    ['Deposit of $50.00 recorded via Cash for estimate E-1 (partial — $25.00 remaining)', 'Deposit recorded via Cash for estimate E-1'],
-    ['Acme · 5 days past due · $1,200', 'Acme · 5 days past due'],
-    ['Job J-1 created', 'Job J-1 created'],
-  ])('%s', (input, expected) => {
-    expect(redactDollarAmounts(input)).toBe(expected);
-  });
 });
 
 describe('redactDashboardCompanyFigures', () => {
@@ -94,7 +78,7 @@ describe('redactDashboardCompanyFigures', () => {
     expect(out.data.lead_sources).toEqual([{ source: 'google', label: 'Google', lead_pct: 60 }]);
   });
 
-  it('takes the dollar amounts out of the activity feed without dropping a row, and leaves a record\'s own price alone', () => {
+  it('leaves the activity feed exactly as written (no text is scanned: an entry names no figure in its words) and drops no row, and leaves a record\'s own price alone', () => {
     const out = redactDashboardCompanyFigures(dashboard());
     expect(out.data.recent_activity.map((e: { description: string }) => e.description)).toEqual(['Payment received via Cash', 'Job J-1 created']);
     expect(out.data.recent_activity.map((e: { id: string }) => e.id)).toEqual(['e1', 'e2']);

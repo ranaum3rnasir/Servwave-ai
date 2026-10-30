@@ -10,6 +10,9 @@ export type AppSubject =
   // Roles & Permissions S01.16 - company-wide money (the "See company figures" switch), kept in lockstep with the backend
   // permissions catalog.
   | 'CompanyFigures'
+  // Roles & Permissions P11 - the root of the three money classes (the "See prices" switch), kept in lockstep with the backend
+  // permissions catalog.
+  | 'Prices'
   | 'Attachment' | 'Inventory' | 'Communication'
   // Inventory P0 purchasing subjects (kept in lockstep with backend permissions catalog)
   | 'PurchaseOrder' | 'Vendor'
@@ -76,12 +79,9 @@ export type AppAction =
   // conversations to jobs and leads" switch) and editing someone else's hand-logged entry (the "Edit other people's
   // logged communications" switch), kept in lockstep with the backend permissions catalog.
   | 'attach' | 'edit_others_log'
-  // Roles & Permissions S01.11 - seeing every task in the company (the "See all tasks" switch) and adding a note to a
-  // job or lead (the "Add notes" switch), kept in lockstep with the backend permissions catalog.
-  | 'see_all' | 'add_note'
-  // Roles & Permissions S04.25 - deleting a note someone else wrote on a job or lead (the "Delete other people's notes"
-  // switch), kept in lockstep with the backend permissions catalog.
-  | 'delete_others_note'
+  // Roles & Permissions S01.11 - adding a note to a job or lead (the "Add notes" switch), kept in lockstep with the
+  // backend permissions catalog.
+  | 'add_note'
   // Roles & Permissions S05.7 - adding or changing a job-only or lead-only phone or email with the pencil (the "Edit job
   // and lead contact details" switch), kept in lockstep with the backend permissions catalog.
   | 'edit_contact_details'
@@ -89,9 +89,6 @@ export type AppAction =
   // user is on (the "Manage roles and permissions" switch, on the Role subject), kept in lockstep with the backend
   // permissions catalog.
   | 'invite' | 'manage_roles'
-  // Roles & Permissions S07.1 - seeing every asset, not only the ones the person holds (the "See all assets"
-  // switch), kept in lockstep with the backend permissions catalog.
-  | 'see_all_assets'
   // Roles & Permissions S07.12 - reading the stock movement history: the Activity tab, its count and an item's movement
   // history (the "See inventory activity" switch), kept in lockstep with the backend permissions catalog.
   | 'see_inventory_activity'
@@ -112,6 +109,8 @@ export type AppAction =
   // one is the shared baseline that also covers the per-record Communication tab on a lead/job/
   // customer, which must keep working for a role that lacks this action.
   | 'access_inbox'
+  // M7 (ticket 36) - the person's own mailbox (the "Show Email" switch), kept in lockstep with the backend permissions catalog.
+  | 'show_email'
   // Roles & Permissions S01.14 - opening a page that is not one record type (the "Access Schedule" and "Access Billing"
   // switches, on the Schedule and Billing subjects), kept in lockstep with the backend permissions catalog.
   | 'access'
@@ -142,7 +141,6 @@ export type AppAction =
   | 'call_groups_tab'
   | 'training_tab'
   | 'blocked_callers_tab'
-  | 'phone_usage_bar'
   // Payments go-live slice 34 - the "Manage payout account" switch: shows the owner-only Payout account page.
   // Kept in lockstep with the backend permissions catalog.
   | 'manage_payout_account'
@@ -158,12 +156,22 @@ export function buildAbility(rules: AbilityRule[]): AppAbility {
 export const emptyAbility: AppAbility = createMongoAbility([]);
 
 /**
- * Cost/price/margin visibility (SRVW-140), written by the Roles UI "See financial data" switch.
+ * Cost/price/margin visibility (SRVW-140), written by the Roles UI "See costs" switch.
  * The single check every consumer should share - mirrors the backend's canSeePricing
  * (lib/permissions/enforce.ts), which exists for the same reason.
  */
 export function canSeePricing(ability: AppAbility): boolean {
   return ability.can('read', 'Pricing');
+}
+
+/**
+ * Prices (Roles & Permissions P11, the "See prices" switch): line prices, totals, tax, balances, deposits and payment amounts.
+ * The server leaves every price out of an answer for a person without it, so this only decides whether a screen offers a
+ * place for one (a column, a total, a figure); it is never what keeps a price hidden. Record payments, Create/Edit
+ * estimates and Create/Edit invoices need it, so a screen that offers them never lacks it.
+ */
+export function canSeePrices(ability: AppAbility): boolean {
+  return ability.can('read', 'Prices');
 }
 
 /**

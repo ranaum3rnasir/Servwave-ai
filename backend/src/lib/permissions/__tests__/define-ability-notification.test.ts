@@ -14,7 +14,7 @@ describe('Notification CASL ability', () => {
   });
 
   it('ADMIN manage all still covers Notification (admin path is hard-filtered in controller)', () => {
-    const ability = defineAbilityFor({ id: 'a1', role: 'ADMIN' } as any, []);
+    const ability = defineAbilityFor({ id: 'a1', role: 'ADMIN', is_admin: true } as any, []);
     expect(ability.can('read', 'Notification')).toBe(true);
   });
 

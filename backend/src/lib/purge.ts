@@ -445,7 +445,6 @@ export async function purgeOrganization(tx: Tx, orgId: string, nameGuard: string
   await tx.userTablePreference.deleteMany({ where: { user: { organization_id: orgId } } });
   await tx.userDashboardLayout.deleteMany({ where: { organization_id: orgId } });
   await tx.appSetting.deleteMany({ where: { organization_id: orgId } });
-  await tx.rolePermission.deleteMany({ where: { organization_id: orgId } });
   await tx.tagAssignment.deleteMany({ where: { organization_id: orgId } });
   await tx.tag.deleteMany({ where: { organization_id: orgId } });
   await tx.disputeEvidenceItem.deleteMany({ where: { organization_id: orgId } });
@@ -573,6 +572,8 @@ export async function purgeOrganization(tx: Tx, orgId: string, nameGuard: string
   await tx.messageThread.deleteMany({ where: { organization_id: orgId } });
 
   // 3. Users (Restrict→org) and departments (Restrict→org) before the org; locations Cascade.
+  // The Owner's row can't be deleted while they are the Owner (AL-16: the database refuses it), so the company lets go first.
+  await tx.organization.update({ where: { id: orgId }, data: { owner_user_id: null } });
   await tx.user.deleteMany({ where: { organization_id: orgId } });
   await tx.department.deleteMany({ where: { organization_id: orgId } });
   await tx.location.deleteMany({ where: { organization_id: orgId } });

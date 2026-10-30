@@ -60,7 +60,7 @@ describe('GET /api/estimates/:id/history', () => {
       .get(`/api/estimates/${ESTIMATE_FIXTURE.id}/history`)
       .set(authHeader('sales'));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it('blocks unauthenticated access', async () => {

@@ -158,7 +158,8 @@ export function ScopePresetPicker({
                     {p.priced ? (
                       <span className="inline-flex items-center gap-1 text-sm font-bold text-sage-700">
                         <Tag className="h-3.5 w-3.5" />
-                        {money(p.price ?? 0)}
+                        {/* A missing price is never drawn as $0.00: the server leaves the key out for a person without See prices. */}
+                        {p.price != null ? money(p.price) : 'Priced'}
                       </span>
                     ) : (
                       <span className="inline-flex items-center gap-1 text-xs font-medium text-text-secondary">

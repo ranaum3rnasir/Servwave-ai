@@ -291,7 +291,8 @@ async function resolveAudienceKey(
     case 'all_dispatchers': {
       const role = k === 'all_admins' ? 'ADMIN' : 'DISPATCHER';
       const users = await prisma.user.findMany({
-        where: { organization_id: ctx.organizationId, role, is_active: true },
+        // Admin is the flag on the person (P15); Dispatcher is still the base role.
+        where: { organization_id: ctx.organizationId, ...(k === 'all_admins' ? { is_admin: true } : { role }), is_active: true },
         select: { id: true, email: true, first_name: true, last_name: true, phone: true },
       });
       if (users.length === 0) {

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { TEST_USERS, mockAuthAs, authHeader, ownLeadsEstimateWhere, creatorEstimateWhere } from './helpers';
+import { TEST_USERS, mockAuthAs, authHeader, salesEstimateArms, ownDocumentsEstimateWhere } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 // A customer-anchored (lead-less) estimate has `lead: null`. Sales reaches estimates through the kept
@@ -49,8 +49,8 @@ describe('GET /api/estimates (LIST) - Sales scope has no created-by arm of its o
 
     expect(res.status).toBe(200);
     expect(listWhere().OR).toEqual([
-      ownLeadsEstimateWhere(TEST_USERS.sales.id),
-      creatorEstimateWhere(TEST_USERS.sales.id),
+      ...salesEstimateArms(TEST_USERS.sales.id),
+      ownDocumentsEstimateWhere(TEST_USERS.sales.id),
     ]);
   });
 
@@ -59,9 +59,11 @@ describe('GET /api/estimates (LIST) - Sales scope has no created-by arm of its o
 
     await request(app).get('/api/estimates').set(authHeader('sales'));
 
-    const [scopeArm, creatorArm] = listWhere().OR as Record<string, unknown>[];
-    expect(JSON.stringify(scopeArm)).not.toContain('created_by');
-    expect(creatorArm).toEqual(creatorEstimateWhere(TEST_USERS.sales.id));
+    const arms = listWhere().OR as Record<string, unknown>[];
+    const madeForCustomerAlone = arms[arms.length - 1];
+    // The scope's own arms (Leads scope, Through own leads) never read who made the estimate.
+    expect(JSON.stringify(arms.slice(0, -1))).not.toContain('created_by');
+    expect(madeForCustomerAlone).toEqual(ownDocumentsEstimateWhere(TEST_USERS.sales.id));
   });
 });
 
@@ -83,6 +85,6 @@ describe('GET /api/estimates/:id - lead-less detail agrees with the list', () =>
 
     const res = await request(app).get('/api/estimates/est-leadless-1').set(authHeader('sales'));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 });

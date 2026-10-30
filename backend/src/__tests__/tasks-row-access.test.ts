@@ -126,8 +126,8 @@ describe('instance access — non-principal, out-of-scope link', () => {
 
     const res = await request(app).get(`/api/tasks/${TASK_ID}`).set(authHeader('sales'));
 
-    expect(res.status).toBe(403);
-    expect(res.body).toEqual({ error: 'Insufficient permissions' });
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Task not found' });
   });
 
   // [2] Same caller, mutating routes
@@ -140,7 +140,7 @@ describe('instance access — non-principal, out-of-scope link', () => {
       .set(authHeader('sales'))
       .send({ title: 'hijack' });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockPrisma.task.update).not.toHaveBeenCalled();
   });
 
@@ -152,7 +152,7 @@ describe('instance access — non-principal, out-of-scope link', () => {
       .delete(`/api/tasks/${TASK_ID}/subtasks/${SUBTASK_ID}`)
       .set(authHeader('sales'));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockPrisma.taskSubtask.delete).not.toHaveBeenCalled();
   });
 });
@@ -209,7 +209,7 @@ describe('instance access — principals', () => {
 
     const res = await request(app).get(`/api/tasks/${TASK_ID}`).set(authHeader('sales'));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockPrisma.job.findFirst).not.toHaveBeenCalled();
   });
 
@@ -238,7 +238,7 @@ describe('instance access — principals', () => {
 
     const res = await request(app).get(`/api/tasks/${TASK_ID}`).set(authHeader('sales'));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 });
 
@@ -252,7 +252,7 @@ describe('instance access — unlinked tasks + admin fast-path', () => {
 
     const res = await request(app).get(`/api/tasks/${TASK_ID}`).set(authHeader('sales'));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it('ADMIN on the same task → 200 and no scope probe on any entity', async () => {
@@ -314,7 +314,7 @@ describe('CUSTOMER-linked tasks', () => {
 
     const res = await request(app).get(`/api/tasks/${TASK_ID}`).set(authHeader('technician'));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     const probe = mockPrisma.customer.findFirst.mock.calls[0]?.[0] as { where: Record<string, unknown> } | undefined;
     if (probe) expect(JSON.stringify(probe.where)).toContain('"in":[]');
   });
@@ -398,8 +398,8 @@ describe('unfiltered non-admin list scope', () => {
     expect(res.status).toBe(200);
     const where = (mockPrisma.task.findMany.mock.calls[0][0] as { where: Record<string, unknown> }).where;
     expect(where.OR).toEqual([
-      { assignee_ids: { has: TEST_USERS.sales.id } },
-      { watcher_ids: { has: TEST_USERS.sales.id } },
+      { assignee_ids: { hasSome: [TEST_USERS.sales.id] } },
+      { watcher_ids: { hasSome: [TEST_USERS.sales.id] } },
     ]);
   });
 });

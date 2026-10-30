@@ -192,7 +192,7 @@ export function StageDetailDialog({
   // not, so the per-line qtyReceived inputs (which render under `editing`)
   // never appear for them either.
   const canUpdate = ability.can("update", "Inventory");
-  // S07.4 - a line's vendor and unit cost show only with View vendors / See financial data.
+  // S07.4 - a line's vendor and unit cost show only with View vendors / See costs.
   const { showCost, showVendor } = useStageLineDisclosure();
 
   const [editing, setEditing] = useState(isInProgress && canUpdate);

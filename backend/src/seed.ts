@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
+import { setFirstOwner } from './lib/users/first-owner';
 
 dotenv.config();
 
@@ -46,9 +47,12 @@ async function seed() {
         first_name: 'System',
         last_name: 'Admin',
         role: 'ADMIN',
+        is_admin: true,
         organization_id: ALPHA_ORG_ID,
       },
     });
+    // The person the company is set up for is its Owner (AL-16).
+    await setFirstOwner(prisma, ALPHA_ORG_ID, authData.user.id);
 
     console.log('Admin user created.');
     console.log(`  Email: ${ADMIN_EMAIL}`);

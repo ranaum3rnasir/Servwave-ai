@@ -44,15 +44,19 @@ const ATTACHMENT = {
 
 const fullAttachmentAbility = () =>
   buildAbility([
-    { action: 'read', subject: 'Attachment' },
-    { action: 'update', subject: 'Attachment' },
-    { action: 'delete', subject: 'Attachment' },
+    // Uploads are the record's own data (P10): the record's Edit renames and removes its files.
+    { action: 'update', subject: 'Job' },
+    { action: 'update', subject: 'Lead' },
+    { action: 'update', subject: 'Invoice' },
+    { action: 'update', subject: 'Customer' },
+    { action: 'update', subject: 'Task' },
   ]);
 
 const noUpdateAttachmentAbility = () =>
   buildAbility([
-    { action: 'read', subject: 'Attachment' },
-    { action: 'delete', subject: 'Attachment' },
+    { action: 'read', subject: 'Job' },
+    { action: 'read', subject: 'Lead' },
+    { action: 'read', subject: 'Invoice' },
   ]);
 
 beforeEach(() => {
@@ -221,14 +225,14 @@ describe('AttachmentRowActions', () => {
     return { user, onRenamed, ...utils };
   }
 
-  it('exposes Download and Rename under update Attachment', async () => {
+  it('exposes Download and Rename under the record\'s Edit', async () => {
     await openMenu(fullAttachmentAbility());
 
     expect(screen.getByRole('menuitem', { name: /download/i })).toBeInTheDocument();
     expect(screen.getByRole('menuitem', { name: /rename/i })).toBeInTheDocument();
   });
 
-  it('exposes Download but not Rename without update Attachment', async () => {
+  it('exposes Download but not Rename without the record\'s Edit', async () => {
     await openMenu(noUpdateAttachmentAbility());
 
     expect(screen.getByRole('menuitem', { name: /download/i })).toBeInTheDocument();
@@ -242,7 +246,7 @@ describe('AttachmentRowActions', () => {
     expect(screen.queryByRole('menuitem', { name: /rename/i })).not.toBeInTheDocument();
   });
 
-  it('renamable={false} hides Rename even with update Attachment', async () => {
+  it('renamable={false} hides Rename even with the record\'s Edit', async () => {
     await openMenu(fullAttachmentAbility(), false);
 
     expect(screen.getByRole('menuitem', { name: /download/i })).toBeInTheDocument();
@@ -484,7 +488,7 @@ describe('attachment surfaces put Delete in the menu (mobile slice 15)', () => {
     view.unmount();
 
     renderWithProviders(<AttachmentSection entityType="LEAD" entityId="lead-1" />, {
-      ability: buildAbility([{ action: 'read', subject: 'Attachment' }]),
+      ability: buildAbility([{ action: 'read', subject: 'Lead' }]),
     });
     await user.click(await screen.findByRole('button', { name: 'Actions for Site photo' }));
     expect(screen.getByRole('menuitem', { name: /download/i })).toBeInTheDocument();

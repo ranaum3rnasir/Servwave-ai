@@ -4,7 +4,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { screen, within } from '@testing-library/react';
 
-import { renderWithProviders } from './helpers';
+import { renderWithProviders, seesPrices } from './helpers';
 
 const phoneMode = vi.hoisted(() => ({ value: false }));
 vi.mock('@/pages/v2/_shared/useRecordCards', () => ({ useRecordCards: () => phoneMode.value }));
@@ -26,10 +26,11 @@ const custInvoice = (over: Partial<CustomerInvoice>): CustomerInvoice => ({
 const VOIDED = custInvoice({ id: 'v', invoice_number: 'I-VOID', status: 'VOIDED', amount_due: '227.22' });
 const SENT = custInvoice({ id: 's', invoice_number: 'I-SENT', status: 'SENT', amount_due: '123.45' });
 
+// Amount Due is a price, so the tab is drawn for a person who holds See prices (P11).
 describe('customer Invoices tab Amount Due', () => {
   it('table view: a voided invoice prints no amount and no Paid badge; a sent one prints its amount', () => {
     phoneMode.value = false;
-    renderWithProviders(<InvoicesTab invoices={[VOIDED, SENT]} />);
+    renderWithProviders(<InvoicesTab invoices={[VOIDED, SENT]} />, { ability: seesPrices });
 
     const voidedRow = screen.getByText('I-VOID').closest('tr') as HTMLElement;
     const sentRow = screen.getByText('I-SENT').closest('tr') as HTMLElement;
@@ -40,7 +41,7 @@ describe('customer Invoices tab Amount Due', () => {
 
   it('card view: a voided invoice prints no amount and no Paid badge; a sent one prints its amount', () => {
     phoneMode.value = true;
-    renderWithProviders(<InvoicesTab invoices={[VOIDED, SENT]} />);
+    renderWithProviders(<InvoicesTab invoices={[VOIDED, SENT]} />, { ability: seesPrices });
 
     expect(screen.getByText('$123.45')).toBeInTheDocument();
     expect(screen.queryByText('$227.22')).toBeNull();

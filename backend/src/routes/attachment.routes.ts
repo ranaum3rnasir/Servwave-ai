@@ -2,7 +2,6 @@ import { Router } from 'express';
 import multer from 'multer';
 import { authenticate } from '../middleware/authenticate';
 import { attachAbility } from '../middleware/attachAbility';
-import { canDo } from '../middleware/canGuard';
 import { validate } from '../middleware/validate';
 import { withOrgContext } from '../middleware/withOrgContext';
 import { multerErrorHandler, sizeLimitLabel } from '../middleware/multerErrors';
@@ -56,13 +55,15 @@ const uploadMulterErrors = multerErrorHandler({
 router.use(authenticate, attachAbility);
 
 // List attachments for an entity
-router.get('/:entityType/:entityId', canDo('read', 'Attachment'), attachmentController.listAttachments);
+// Uploads are the record's own data (P10): the handlers ask the record's View (not found otherwise) and, to change a file,
+// its Edit (forbidden otherwise). There is no attachments switch to guard on here.
+router.get('/:entityType/:entityId', attachmentController.listAttachments);
 
 // Upload attachment (multipart/form-data: file + display_name + description)
 // `withOrgContext` re-establishes the org AsyncLocalStorage scope that multer's
 // stream consumption drops — without it the controller's queries run org-less
 // and RLS 404s with "Entity not found" (DB_TENANT_GUARD=on).
-router.post('/:entityType/:entityId', canDo('create', 'Attachment'), upload.single('file'), uploadMulterErrors, withOrgContext, attachmentController.uploadAttachment);
+router.post('/:entityType/:entityId', upload.single('file'), uploadMulterErrors, withOrgContext, attachmentController.uploadAttachment);
 
 // Direct-to-storage upload (video), two steps and NO multer on either.
 //
@@ -77,22 +78,18 @@ router.post('/:entityType/:entityId', canDo('create', 'Attachment'), upload.sing
 // the scope `authenticate` established is still intact.
 router.post(
   '/:entityType/:entityId/direct-upload',
-  canDo('create', 'Attachment'),
   validate(attachmentController.directUploadRequestSchema),
   attachmentController.createDirectUploadUrl,
 );
 router.post(
   '/:entityType/:entityId/direct-upload/complete',
-  canDo('create', 'Attachment'),
   validate(attachmentController.directUploadCompleteSchema),
   attachmentController.completeDirectUpload,
 );
 
-// Update attachment metadata (display_name, description) and delete. `attachmentChangeGuard` is
-// `canDo('update'|'delete', 'Attachment')` everywhere except a TASK, where the handler also lets
-// the file's own uploader in once the row is loaded (slice 12; no role grant is widened).
-router.patch('/:entityType/:entityId/:attachmentId', attachmentController.attachmentChangeGuard('update'), validate(attachmentController.updateAttachmentSchema), attachmentController.updateAttachment);
+// Update attachment metadata (display_name, description) and delete: the record's Edit decides, in the handler.
+router.patch('/:entityType/:entityId/:attachmentId', validate(attachmentController.updateAttachmentSchema), attachmentController.updateAttachment);
 
-router.delete('/:entityType/:entityId/:attachmentId', attachmentController.attachmentChangeGuard('delete'), attachmentController.deleteAttachment);
+router.delete('/:entityType/:entityId/:attachmentId', attachmentController.deleteAttachment);
 
 export default router;

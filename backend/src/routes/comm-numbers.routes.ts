@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { authenticate } from '../middleware/authenticate';
 import { attachAbility } from '../middleware/attachAbility';
 import { requireFeature } from '../middleware/requireFeature';
-import { canDo } from '../middleware/canGuard';
+import { canDo, requireAdminTo } from '../middleware/canGuard';
 import { requireUuidParam } from '../middleware/requireUuidParam';
 import { validate } from '../middleware/validate';
 import * as commNumbersController from '../controllers/comm-numbers.controller';
@@ -30,9 +30,9 @@ router.get('/my-numbers', canDo('create', 'Communication'), commMyNumberControll
 
 // ─── Numbers platform (PhoneNumber) ──────────────────────
 // READ/PATCH are plain Communication grants; search/buy/register-byo spend
-// money or change org plumbing, so they carry the ADMIN idiom
-// canDo('update','Organization') — addendum §A.2 (a Communication gate would
-// let DISPATCHER buy numbers).
+// money or change org plumbing, so they are an Admin's alone (M8, D3: the Admin
+// flag, not the Company settings switch) — addendum §A.2 (a Communication gate
+// would let DISPATCHER buy numbers).
 // #2046: the numbers platform list/edit is section-only config.
 router.get('/numbers', canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), commNumbersController.listNumbers);
 // Opening a numbers screen syncs in the background. Exactly the list's gate:
@@ -40,17 +40,17 @@ router.get('/numbers', canDo('read', 'Communication'), canDo('access_inbox', 'Co
 // answer as on the list. The sync's texting switch-on is system policy, not
 // the viewer's act, so this is not the ADMIN-gated /numbers/refresh.
 router.post('/numbers/sync-if-stale', canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), commNumbersController.syncNumbersIfStale);
-router.post('/numbers/search', canDo('update', 'Organization'), validate(commNumbersController.searchNumbersSchema), commNumbersController.searchNumbers);
-router.post('/numbers/buy', canDo('update', 'Organization'), validate(commNumbersController.buyNumberSchema), commNumbersController.buyNumber);
-router.post('/numbers/register-byo', canDo('update', 'Organization'), validate(commNumbersController.registerByoSchema), commNumbersController.registerByoNumber);
+router.post('/numbers/search', requireAdminTo('change phone numbers'), validate(commNumbersController.searchNumbersSchema), commNumbersController.searchNumbers);
+router.post('/numbers/buy', requireAdminTo('change phone numbers'), validate(commNumbersController.buyNumberSchema), commNumbersController.buyNumber);
+router.post('/numbers/register-byo', requireAdminTo('change phone numbers'), validate(commNumbersController.registerByoSchema), commNumbersController.registerByoNumber);
 // The Sync numbers button: re-read the provider's list and make ours match
 // (it also switches texting on, see lib/ctm/numberSync). It ignores the
 // automatic-sync window but joins a sync already running. Org plumbing, so it
 // carries the same ADMIN gate as the rest of this block.
-router.post('/numbers/refresh', canDo('update', 'Organization'), commNumbersController.refreshNumbers);
+router.post('/numbers/refresh', requireAdminTo('change phone numbers'), commNumbersController.refreshNumbers);
 // Release - ends a paid subscription and is irreversible at the provider, so
 // it carries the ADMIN idiom rather than a plain Communication grant.
-router.delete('/numbers/:id', canDo('update', 'Organization'), numberId, commNumbersController.releaseNumberById);
+router.delete('/numbers/:id', requireAdminTo('change phone numbers'), numberId, commNumbersController.releaseNumberById);
 // Flow + forwarding destination.
 // Needs the Phone numbers tab as well as Edit communication records (S08.15); the list below answers without the tab,
 // leaving the routing and call-flow fields out.

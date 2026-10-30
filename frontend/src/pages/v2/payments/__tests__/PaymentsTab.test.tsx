@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderWithProviders, seesPrices } from '@/__tests__/helpers';
 import { toast } from '@/ui-kit/components/ui/sonner';
 
 import { TabHarness, exportCalls, lastList, listCalls, makeRow, manyRows, mockApi, serve, urlSearch } from './paymentsFixtures';
@@ -14,7 +14,7 @@ vi.mock('@/ui-kit/components/ui/sonner', async (importOriginal) => ({
 const mockToast = vi.mocked(toast);
 
 const user = () => userEvent.setup();
-const open = (entry = '/payments') => renderWithProviders(<TabHarness />, { initialEntries: [entry] });
+const open = (entry = '/payments') => renderWithProviders(<TabHarness />, { initialEntries: [entry], ability: seesPrices });
 const bodyRows = () => within(screen.getAllByRole('rowgroup')[1]!).getAllByRole('row');
 
 const originalMatchMedia = window.matchMedia;

@@ -8,7 +8,7 @@ import {
 } from 'lucide-react';
 
 import api from '@/lib/axios';
-import { useAppAbility } from '@/contexts/AbilityContext';
+import { useAppAbility, useCanSeePrices } from '@/contexts/AbilityContext';
 import { RecordNumberEditor } from '@/components/crm/RecordNumberEditor';
 import { purgeCustomer } from '@/lib/api/customers';
 import { customerDisplayName } from '@/lib/customer-name';
@@ -111,6 +111,8 @@ export default function CustomerDetailPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const ability = useAppAbility();
+  // P11: the money on this page (revenue, balances, totals, payments, the statement) needs See prices.
+  const canSeePrices = useCanSeePrices();
   const canAccessComms = useFeature('phone');
   const hasLeads = useFeature('leads');
   const sendEmail = useSendEmail();
@@ -527,16 +529,21 @@ export default function CustomerDetailPage() {
         <Separator className="my-5" />
 
         <div className="grid grid-cols-2 gap-6 lg:grid-cols-5">
-          <Kpi label="Lifetime Revenue" loading={summaryLoading}
-            value={formatCurrency(summary?.financials.lifetime_revenue ?? 0)} />
-          <Kpi label="Past Due" loading={summaryLoading}
-            value={(summary?.financials.past_due_balance ?? 0) > 0
-              ? formatCurrency(summary!.financials.past_due_balance)
-              : 'None'} />
-          <Kpi label="Due" loading={summaryLoading}
-            value={(summary?.financials.due_balance ?? 0) > 0
-              ? formatCurrency(summary!.financials.due_balance)
-              : 'Paid up'} />
+          {/* P11: lifetime revenue and the balances sum prices, so they need See prices. */}
+          {canSeePrices && (
+            <>
+              <Kpi label="Lifetime Revenue" loading={summaryLoading}
+                value={formatCurrency(summary?.financials.lifetime_revenue ?? 0)} />
+              <Kpi label="Past Due" loading={summaryLoading}
+                value={(summary?.financials.past_due_balance ?? 0) > 0
+                  ? formatCurrency(summary!.financials.past_due_balance)
+                  : 'None'} />
+              <Kpi label="Due" loading={summaryLoading}
+                value={(summary?.financials.due_balance ?? 0) > 0
+                  ? formatCurrency(summary!.financials.due_balance)
+                  : 'Paid up'} />
+            </>
+          )}
           {/* Counted on the server across every page (the list itself is paged). */}
           <Kpi label="Active Jobs" loading={summaryLoading} value={summary?.jobs?.active ?? 0} />
           <Kpi label="Pending Estimates" loading={summaryLoading} value={summary?.estimates.pending ?? 0} />
@@ -764,7 +771,7 @@ export default function CustomerDetailPage() {
                 // every org - see the effectiveTab note.
                 { value: 'schedule', label: 'Schedule' },
                 { value: 'invoices', label: 'Invoices' },
-                { value: 'payments', label: 'Payments' },
+                ...(canSeePrices ? [{ value: 'payments', label: 'Payments' }] : []),
                 { value: 'notes', label: 'Notes' },
                 { value: 'tasks', label: 'Tasks' },
                 ...(canReadComms ? [{ value: 'communications', label: 'Comms' }] : []),
@@ -811,7 +818,7 @@ export default function CustomerDetailPage() {
               />
             </TabPanel>
             <TabPanel value="invoices" activeValue={effectiveTab}>
-              {ability.can('read', 'Invoice') && (
+              {ability.can('read', 'Invoice') && canSeePrices && (
                 <div className="flex justify-end px-4 pt-4">
                   <Button asChild variant="outline" size="sm">
                     <Link to={v2Path(`/customers/${id}/statement`)} >

@@ -5,7 +5,7 @@
    client holding ONE connection as the hosted pool does, against a real migrated database (TEST_DATABASE_URL); the
    suite skips when it is unset. Covers: the mailbox and address come with the user; a namesake lands in "address
    needed" without an error; a failure after the user is written rolls BOTH back; and the "address needed" bell reaches
-   the new user and every active holder of Edit users once (holders are people on custom roles built from the
+   the new user and every active Admin once (holders are people on custom roles built from the
    catalog, never a role name). Every org it creates is removed again.
    ========================================================================== */
 
@@ -63,13 +63,16 @@ suite('creating a user issues their mailbox (real database, one connection)', ()
   /** A person on a fresh custom role holding exactly these switch values (every other toggle off). */
   async function personWith(org: string, values: Record<string, boolean>, base: Role = 'DISPATCHER'): Promise<Person> {
     const key = `mailbox-role-${++sequence}`;
+    // `is_admin: true` makes the person an Admin (the flag, AL-18): it is not a switch, so it never reaches the role.
+    const { is_admin: asAdmin, ...switchValues } = values;
     const role = await fx.addCustomRole(org, key, base);
     const allOff = Object.fromEntries(SWITCH_CATALOG.filter((s) => s.kind === 'toggle').map((s) => [s.key, false]));
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...allOff, ...values }, actorId: null, reason: 'manual' });
-    return fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
+    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...allOff, ...switchValues }, actorId: null, reason: 'manual' });
+    return fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id, isAdmin: asAdmin === true });
   }
 
-  const holdsEditUsers = { view_users: true, edit_users: true };
+  // Setting a person's address is user management, the Admin flag's alone (AL-18): the people told are the Admins.
+  const anAdmin = { view_users: true, is_admin: true };
 
   const invite = (api: Awaited<ReturnType<typeof fx.signedInAs>>, first: string, last: string) =>
     api.post('/api/users/invite', { first_name: first, last_name: last, email: `${tag()}@example.test`, role: 'TECHNICIAN' });
@@ -78,11 +81,18 @@ suite('creating a user issues their mailbox (real database, one connection)', ()
     return db.mailbox.findFirst({ where: { user_id: userId, kind: 'user' }, include: { addresses: true } });
   }
 
-  /** The bells of one verb about one person, with who each went to; waits for the detached send to land. */
+  /**
+   * The bells of one verb about one person, with who each went to; waits for the detached send to land. The bell row is written
+   * before its recipient rows, so a bell with nobody on it yet is not landed: it waits until every bell has recipients and the
+   * recipient count has stopped growing.
+   */
   async function bells(org: string, verb: string, about: string) {
-    for (let i = 0; i < 40; i += 1) {
+    let lastCount = -1;
+    for (let i = 0; i < 60; i += 1) {
       const rows = await db.notification.findMany({ where: { organization_id: org, verb, object_id: about }, include: { recipients: true } });
-      if (rows.length) return rows;
+      const count = rows.reduce((n, r) => n + r.recipients.length, 0);
+      if (rows.length && rows.every((r) => r.recipients.length > 0) && count === lastCount) return rows;
+      lastCount = count;
       await new Promise((r) => setTimeout(r, 100));
     }
     return [];
@@ -154,12 +164,11 @@ suite('creating a user issues their mailbox (real database, one connection)', ()
     expect(statuses).toEqual(['active', 'address_needed']);
   });
 
-  it('rings the new user and every active holder of Edit users, once, and nobody else', async () => {
+  it('rings the new user and every active Admin, once, and nobody else', async () => {
     const w = await company();
-    // The admin created the user; a custom-role holder, a deactivated holder, a person who holds nothing, and a
-    // person with the built-in role of the holder but no Edit users.
-    const holder = await personWith(w.org, holdsEditUsers);
-    const gone = await personWith(w.org, holdsEditUsers);
+    // The admin created the user; an Admin on a custom role, a deactivated Admin, and a person who is not an Admin.
+    const holder = await personWith(w.org, anAdmin);
+    const gone = await personWith(w.org, anAdmin);
     await db.user.update({ where: { id: gone.id }, data: { is_active: false } });
     const bystander = await personWith(w.org, { view_users: true });
     const api = await fx.signedInAs(w.admin);
@@ -182,18 +191,16 @@ suite('creating a user issues their mailbox (real database, one connection)', ()
     expect(await db.notification.count({ where: { organization_id: w.org, verb: { startsWith: 'mailbox.' } } })).toBe(2);
   });
 
-  it('a new user who holds Edit users hears the "you" bell and is left out of the admin one', async () => {
+  it('a new user who is an Admin hears the "you" bell and is left out of the admin one', async () => {
     const w = await company();
     const api = await fx.signedInAs(w.admin);
     expect((await invite(api, 'Zed', 'Quinn')).status).toBe(201);
-    // The namesake is created on a custom role that holds Edit users.
+    // The namesake is invited as an Admin on a custom role.
     const key = `mailbox-role-${++sequence}`;
     const role = await fx.addCustomRole(w.org, key, 'DISPATCHER');
-    const allOff = Object.fromEntries(SWITCH_CATALOG.filter((s) => s.kind === 'toggle').map((s) => [s.key, false]));
-    await setRoleSwitchValues({ organizationId: w.org, roleKey: key, values: { ...allOff, ...holdsEditUsers }, actorId: null, reason: 'manual' });
 
     const second = await api.post('/api/users/invite', {
-      first_name: 'Zed', last_name: 'Quinn', email: `${tag()}@example.test`, role: 'DISPATCHER', custom_role_id: role.id,
+      first_name: 'Zed', last_name: 'Quinn', email: `${tag()}@example.test`, role: 'DISPATCHER', custom_role_id: role.id, is_admin: true,
     });
 
     expect(second.status).toBe(201);

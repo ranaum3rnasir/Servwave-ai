@@ -348,7 +348,6 @@ function paymentLabel(method: PaymentMethod): string {
   return 'Payment';
 }
 
-const usd = (cents: number): string => `$${fromCents(cents).toFixed(2)}`;
 
 /** What settling a payment changed, for the effects that run once its transaction commits. */
 export interface SettledPayment extends SettlePaymentResult {
@@ -445,7 +444,7 @@ export async function settlePaymentInTx(tx: Prisma.TransactionClient, input: {
     // the card path lists a checkout's whole total.
     const wholeCents = chargedCents + toCents(payment.tip_amount ?? 0);
     const unapplied = unappliedCapture('INVOICE_NOT_PAYABLE', wholeCents,
-      `${label} of ${usd(wholeCents)} on invoice ${invoice.invoice_number} was not applied: the invoice was closed for payment (voided or already paid) while the payment was clearing.`);
+      `${label} on invoice ${invoice.invoice_number} was not applied: the invoice was closed for payment (voided or already paid) while the payment was clearing.`);
     await writeUnappliedCaptureEntry(tx, unapplied);
     return { ...nothing, changed: true, unapplied };
   }
@@ -479,7 +478,7 @@ export async function settlePaymentInTx(tx: Prisma.TransactionClient, input: {
   let unapplied: UnappliedCapture | null = null;
   if (excessCents > 0) {
     unapplied = unappliedCapture('OVERPAYMENT', excessCents,
-      `${label} of ${usd(chargedCents)} on invoice ${invoice.invoice_number} was more than the balance due: ${usd(excessCents)} was not applied to the invoice.`);
+      `${label} on invoice ${invoice.invoice_number} was more than the balance due: the excess was not applied to the invoice.`);
     await writeUnappliedCaptureEntry(tx, unapplied);
   }
   return { changed: true, becamePaid, invoice: { id: invoice.id, invoice_number: invoice.invoice_number }, unapplied };

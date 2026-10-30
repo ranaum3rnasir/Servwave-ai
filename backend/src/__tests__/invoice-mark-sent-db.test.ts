@@ -3,8 +3,7 @@
 
    A DRAFT the office delivered outside the app is marked sent without an email: it becomes SENT
    (or PAID when its deposit credit covers it), gets its sent date, a public token and a due date,
-   and writes one history line and one audit row. It rides the Send grant (`edit_invoices` plus the
-   creator rule), exactly as the estimate twin does. Driven through the real route as people on
+   and writes one history line and one audit row. It rides the Send grant (`edit_invoices`), exactly as the estimate twin does. Driven through the real route as people on
    custom roles, against a real, migrated database (TEST_DATABASE_URL); skips when it is unset.
    Every org it creates is removed again.
    ========================================================================== */
@@ -46,6 +45,8 @@ suite('POST /api/invoices/:id/mark-sent (real database)', () => {
     vi.mocked(dispatchAutomationEvent).mockClear();
   });
 
+  // Create requires Edit (AL-04): someone holding no Edit invoices holds no Create invoices either (nor Standalone invoices, which needs it).
+  const NO_CREATE_INVOICES = { create_invoices: false, standalone_invoices: false };
   let sequence = 0;
   /** A person on a fresh custom role holding exactly these switch values on top of the base role's preset. */
   async function personWith(org: string, values: Record<string, boolean | string>) {
@@ -189,22 +190,22 @@ suite('POST /api/invoices/:id/mark-sent (real database)', () => {
     expect((await read(inv.id)).status).toBe('DRAFT');
   });
 
-  it('is refused (403) for someone without the Send grant who is not the creator, and allowed for the creator who lacks the switch', async () => {
+  it('is refused (403) for someone without the Send grant, whoever made the invoice (P7: who made it opens nothing)', async () => {
     const { org, customer, admin } = await fx.newOrg();
-    const me = await personWith(org, { invoices_scope: 'all', edit_invoices: false });
+    const me = await personWith(org, { jobs_scope: 'all', leads_scope: 'all', edit_invoices: false, ...NO_CREATE_INVOICES });
     const api = await me.api();
     const colleagues = await fx.addInvoice(org, customer, { createdBy: admin.id });
     const mine = await fx.addInvoice(org, customer, { createdBy: me.person.id });
 
     expect((await api.post(`/api/invoices/${colleagues.id}/mark-sent`)).status).toBe(403);
     expect((await read(colleagues.id)).status).toBe('DRAFT');
-    expect((await api.post(`/api/invoices/${mine.id}/mark-sent`)).status).toBe(200);
-    expect((await read(mine.id)).status).toBe('SENT');
+    expect((await api.post(`/api/invoices/${mine.id}/mark-sent`)).status).toBe(403);
+    expect((await read(mine.id)).status).toBe('DRAFT');
   });
 
   it('with the Send switch on, marks someone else\'s DRAFT as sent', async () => {
     const { org, customer, admin } = await fx.newOrg();
-    const me = await personWith(org, { invoices_scope: 'all', edit_invoices: true });
+    const me = await personWith(org, { jobs_scope: 'all', leads_scope: 'all', edit_invoices: true });
     const inv = await fx.addInvoice(org, customer, { createdBy: admin.id });
 
     expect((await (await me.api()).post(`/api/invoices/${inv.id}/mark-sent`)).status).toBe(200);
@@ -213,7 +214,7 @@ suite('POST /api/invoices/:id/mark-sent (real database)', () => {
   it('the invoice payload lists "send" in its actions for exactly the people who may mark it sent (W5 draws the button from it)', async () => {
     const { org, customer, admin } = await fx.newOrg();
     const api = await fx.signedInAs(admin);
-    const reader = await personWith(org, { invoices_scope: 'all', edit_invoices: false });
+    const reader = await personWith(org, { jobs_scope: 'all', leads_scope: 'all', edit_invoices: false, ...NO_CREATE_INVOICES });
     const inv = await fx.addInvoice(org, customer, { createdBy: admin.id });
 
     expect((await api.get(`/api/invoices/${inv.id}`)).body.invoice.actions).toContain('send');

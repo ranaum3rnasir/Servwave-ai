@@ -3,6 +3,8 @@ import { prisma } from '../lib/prisma';
 import { COUNTED_PAYMENT_WHERE, COUNTED_REFUND_WHERE } from '../lib/payment-ledger';
 import { tenantWhere } from '../lib/tenant';
 import { logger } from '../lib/logger';
+import { scopeWhereForReq } from '../lib/permissions/enforce';
+import { canReadCustomerById, resolveCustomerScope } from '../lib/permissions/customerScope';
 import type { StatementForPdf, StatementPdfLine } from '../lib/pdf/templates/statement';
 
 // ─── Statement (entity-redesign §9) ───────────────────
@@ -10,13 +12,15 @@ import type { StatementForPdf, StatementPdfLine } from '../lib/pdf/templates/sta
 // (or across a customer's billing group) with its Payments, Refunds, Credits and applied
 // deposit credit, in chronological order, with a running balance.
 //
-// Route-guarded by read:Invoice (org-level); per-assignment ownership narrowing for
-// SALES/TECH is deferred to Phase 8 (a statement is an org-internal financial doc).
+// Route-guarded by read:Invoice + read:Prices; the rows follow the person's reach (H3): a job or
+// customer they cannot reach answers 404 exactly like a missing one, and the statement carries only
+// the invoices their invoice reach covers (the same scope fragment the invoice list uses), so its
+// lines and totals are a statement of what they can open. An Admin and a person with company-wide
+// reach get an empty fragment and see everything.
 //
 // DEFER (§13): QuickBooks statement sync seam — the chronological projection here is the
 //   natural export point; no code yet.
 // DEFER (Phase 8): FE statement page — backend returns JSON + PDF only.
-// DEFER (Phase 8): narrow statement to own invoices for SALES/TECH.
 
 const DEPOSIT_CREDIT_REFERENCE = 'DEPOSIT-CREDIT';
 
@@ -295,8 +299,10 @@ export const getJobStatement = async (req: Request, res: Response): Promise<void
   try {
     // Hop 1 — the job, tenant-scoped. This single scoped read is the tenant gate for the
     // whole job statement (every downstream invoice is reachable only via job_id = this job).
+    // The person's Job reach rides the same read, so a job they cannot reach is not found.
+    const [jobScope, invoiceScope] = await Promise.all([scopeWhereForReq(req, 'Job'), scopeWhereForReq(req, 'Invoice')]);
     const job = await prisma.job.findUnique({
-      where: { id: jobId, ...tenantWhere(req) },
+      where: { id: jobId, ...tenantWhere(req), AND: [jobScope] },
       select: {
         id: true,
         job_number: true,
@@ -312,9 +318,9 @@ export const getJobStatement = async (req: Request, res: Response): Promise<void
       return;
     }
 
-    // Hop 2 — every invoice on the job, tenant-scoped AGAIN (do NOT rely on the job hop alone).
+    // Hop 2 — every invoice on the job the person can reach, tenant-scoped AGAIN (do NOT rely on the job hop alone).
     const invoices = (await prisma.invoice.findMany({
-      where: { job_id: jobId, ...tenantWhere(req) },
+      where: { job_id: jobId, ...tenantWhere(req), AND: [invoiceScope] },
       select: invoiceStatementSelect,
       orderBy: { created_at: 'asc' },
     })) as unknown as StatementInvoice[];
@@ -361,28 +367,42 @@ export const getCustomerStatement = async (req: Request, res: Response): Promise
       },
     });
 
-    if (!customer) {
+    // A customer the person cannot reach answers exactly like a missing one.
+    if (!customer || !(await canReadCustomerById(req, customerId))) {
       res.status(404).json({ error: 'Customer not found' });
       return;
     }
 
+    const [customerScope, invoiceScope] = await Promise.all([resolveCustomerScope(req), scopeWhereForReq(req, 'Invoice')]);
+
     // Hop 2 — the billing-group member set, resolved by bill_to_customer_id (NOT parent_id).
     // §3 clar.3: the authoritative payer is bill_to. A member that bills itself is NOT rolled
     // into this customer; a member whose bill_to === this customer IS.
-    const members = (await prisma.customer.findMany({
+    const groupMembers = (await prisma.customer.findMany({
       where: { bill_to_customer_id: customerId, ...tenantWhere(req) },
       select: { id: true, first_name: true, last_name: true, company_name: true },
     })) as Array<{ id: string; first_name: string | null; last_name: string | null; company_name: string | null }>;
 
     // Self is always included — an invoice billed directly to this customer has
     // customer_id === customerId (bill_to may be null/self at creation).
-    const memberIds = [customerId, ...members.map((m) => m.id)];
+    const memberIds = [customerId, ...groupMembers.map((m) => m.id)];
 
-    // Hop 3 — invoices across the group, tenant-scoped AGAIN (the leak-prevention hop).
+    // Every member's invoices are asked for (below, through the invoice reach); only the members the person can reach are named.
+    let members = groupMembers;
+    if (Object.keys(customerScope).length > 0 && groupMembers.length > 0) {
+      const reachable = await prisma.customer.findMany({
+        where: { AND: [{ id: { in: groupMembers.map((m) => m.id) } }, tenantWhere(req), customerScope] },
+        select: { id: true },
+      });
+      const reachableIds = new Set(reachable.map((m) => m.id));
+      members = groupMembers.filter((m) => reachableIds.has(m.id));
+    }
+
+    // Hop 3 — invoices across the group the person can reach, tenant-scoped AGAIN (the leak-prevention hop).
     // Invoice.customer_id already encodes the bill_to resolution done at creation, so we
     // query customer_id IN memberIds rather than re-resolving bill_to per invoice.
     const invoices = (await prisma.invoice.findMany({
-      where: { customer_id: { in: memberIds }, ...tenantWhere(req) },
+      where: { customer_id: { in: memberIds }, ...tenantWhere(req), AND: [invoiceScope] },
       select: invoiceStatementSelect,
       orderBy: { created_at: 'asc' },
     })) as unknown as StatementInvoice[];

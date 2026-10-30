@@ -164,7 +164,7 @@ describe('GET /api/reports/inventory-usage', () => {
 
   it('strips cost AND unpricedUnits from every row when the requester lacks read Invoice', async () => {
     mockAuthAs('dispatcher');
-    // Access Reports without See financial data (read Pricing) — the per-user shape that makes the strip mandatory.
+    // Access Reports without See costs (read Pricing) — the per-user shape that makes the strip mandatory.
     mockRoleGrantsWithout('DISPATCHER', ['read', 'Pricing']);
     mockRoleSwitches({ access_reports: true });
     mockPrisma.stockMovement.findMany.mockResolvedValue([consumeRow(), consumeRow({ unit_cost: null })]);

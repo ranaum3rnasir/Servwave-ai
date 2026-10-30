@@ -2,8 +2,8 @@
    Roles & Permissions, PRD 4, slice S04.16 - the visit-finish alert through M6's two-lane chain.
 
    After a visit is finished one bell alert goes out. Lane 1 is the job's people (Sold By, crew, Dispatcher); lane 2 is
-   who must act (the job's Dispatcher, else the Complete jobs holders, else the Manage roles and permissions holders,
-   stopping at the first step that finds someone); holders of Alert me about every job get a copy. "Someone" is active,
+   who must act (the job's Dispatcher, else the Complete jobs holders, else the company's Admins, stopping at the first step
+   that finds someone; an Admin holds every switch, so since AL-18 an Admin is found among the Complete jobs holders); holders of Alert me about every job get a copy. "Someone" is active,
    can open the job and is not the person who tapped. Nobody comes from a role list.
 
    Everything goes through the public interface: the finish route, called as people on custom roles holding exactly the
@@ -57,10 +57,12 @@ suite('the visit-finish alert (real database)', () => {
   /** A person on a fresh custom role holding exactly these switch values (every other toggle off). */
   async function personWith(org: string, values: Record<string, boolean | string>, base: Role = 'DISPATCHER'): Promise<Person> {
     const key = `visit-alert-role-${++sequence}`;
+    // `is_admin: true` makes the person an Admin (the flag, AL-18): it is not a switch, so it never reaches the role.
+    const { is_admin: asAdmin, ...switchValues } = values;
     const role = await fx.addCustomRole(org, key, base);
     const allOff = Object.fromEntries(SWITCH_CATALOG.filter((s) => s.kind === 'toggle').map((s) => [s.key, false]));
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...allOff, ...values }, actorId: null, reason: 'manual' });
-    return fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
+    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...allOff, ...switchValues }, actorId: null, reason: 'manual' });
+    return fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id, isAdmin: asAdmin === true });
   }
 
   const opensJobs = { view_jobs: true, jobs_scope: 'all' };
@@ -137,7 +139,7 @@ suite('the visit-finish alert (real database)', () => {
     expect(alert!.recipients.map((r) => r.recipient_id)).toContain(dispatcher.id);
   });
 
-  it('with no Dispatcher, lane 2 gives every active Complete jobs holder by switch and says why', async () => {
+  it('with no Dispatcher, lane 2 gives every active Complete jobs holder by switch, an Admin included, and says why', async () => {
     const { org, customer, admin } = await fx.newOrg();
     await db.user.update({ where: { id: admin.id }, data: { is_active: false } });
     const me = await personWith(org, finisherValues);
@@ -147,22 +149,23 @@ suite('the visit-finish alert (real database)', () => {
     await db.user.update({ where: { id: gone.id }, data: { is_active: false } });
     const cannotOpen = await personWith(org, { view_jobs: true, jobs_scope: 'attached', complete_jobs: true });
     const noSwitch = await personWith(org, opensJobs);
-    const manager = await personWith(org, { ...opensJobs, manage_roles_and_permissions: true, view_users: true });
+    const manager = await personWith(org, { ...opensJobs, is_admin: true, view_users: true });
     const job = await jobWithTwoOpenVisits(org, customer, { crew: [me.id] });
 
     await finish(me, job.id, job.first);
 
     const alerts = await alertsFor(job.id);
-    expect(recipientsOf(alerts)).toEqual([completer.id, secondCompleter.id].sort());
-    for (const who of [gone, cannotOpen, noSwitch, manager]) expect(recipientsOf(alerts)).not.toContain(who.id);
+    // An Admin (the flag) holds every switch, Complete jobs included.
+    expect(recipientsOf(alerts)).toEqual([completer.id, secondCompleter.id, manager.id].sort());
+    for (const who of [gone, cannotOpen, noSwitch]) expect(recipientsOf(alerts)).not.toContain(who.id);
     expect(alerts[0]!.body).toBe('This job has no Dispatcher.');
   });
 
-  it('with no Dispatcher and no Complete jobs holder, lane 2 falls to the Manage roles and permissions holders', async () => {
+  it('with no Dispatcher and no Complete jobs holder on a custom role, lane 2 reaches the Admins, who hold the switch', async () => {
     const { org, customer, admin } = await fx.newOrg();
     await db.user.update({ where: { id: admin.id }, data: { is_active: false } });
     const me = await personWith(org, finisherValues);
-    const manager = await personWith(org, { ...opensJobs, manage_roles_and_permissions: true, view_users: true });
+    const manager = await personWith(org, { ...opensJobs, is_admin: true, view_users: true });
     const noSwitch = await personWith(org, opensJobs);
     const job = await jobWithTwoOpenVisits(org, customer, { crew: [me.id] });
 
@@ -171,6 +174,8 @@ suite('the visit-finish alert (real database)', () => {
     const alerts = await alertsFor(job.id);
     expect(recipientsOf(alerts)).toEqual([manager.id]);
     expect(recipientsOf(alerts)).not.toContain(noSwitch.id);
+    // Found at the step, so the why line is the step's.
+    expect(alerts[0]!.body).toBe('This job has no Dispatcher.');
   });
 
   it('with a Dispatcher, lane 2 stops there: Complete jobs holders off the job are not alerted', async () => {

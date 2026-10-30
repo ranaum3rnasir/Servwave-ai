@@ -56,9 +56,9 @@ beforeEach(() => {
 
 describe('the Estimates page creators roster', () => {
   it.each(['attached', 'team', 'location', 'through_own_leads'])(
-    'is not requested for a person whose Estimates scope is %s',
+    'is not requested for a person whose Jobs scope is %s',
     async (scope) => {
-      answerAs({ values: { view_estimates: true, show_estimates_page: true, estimates_scope: scope } });
+      answerAs({ values: { view_estimates: true, jobs_scope: scope, leads_scope: 'all' } });
       await openEstimates();
       // Give a late request every chance to show up before saying there was none.
       await new Promise((r) => setTimeout(r, 50));
@@ -67,15 +67,15 @@ describe('the Estimates page creators roster', () => {
     },
   );
 
-  it('is requested for a person whose Estimates scope is All', async () => {
-    answerAs({ values: { view_estimates: true, show_estimates_page: true, estimates_scope: 'all' } });
+  it('is requested for a person whose Jobs scope and Leads scope are both All', async () => {
+    answerAs({ values: { view_estimates: true, jobs_scope: 'all', leads_scope: 'all' } });
     await openEstimates();
 
     await waitFor(() => expect(asked('/api/estimates/creators')).toBe(true));
   });
 
   it('is requested for the Admin box holder', async () => {
-    answerAs({ admin_box: true, values: { view_estimates: true, show_estimates_page: true } });
+    answerAs({ admin_box: true, values: { view_estimates: true } });
     await openEstimates();
 
     await waitFor(() => expect(asked('/api/estimates/creators')).toBe(true));
@@ -100,16 +100,16 @@ describe('the Estimates page Created By filter', () => {
     await userEvent.click(await screen.findByRole('button', { name: /filter/i }));
   }
 
-  it('is offered to a person with Estimates scope All', async () => {
-    answerAs({ values: { view_estimates: true, show_estimates_page: true, estimates_scope: 'all' } });
+  it('is offered to a person with Jobs scope and Leads scope All', async () => {
+    answerAs({ values: { view_estimates: true, jobs_scope: 'all', leads_scope: 'all' } });
     await openEstimates();
     await filterNames();
 
     expect(await screen.findByRole('tab', { name: /Created By/ })).toBeInTheDocument();
   });
 
-  it('is not offered to a person with a narrowed Estimates scope, whose other filters stay', async () => {
-    answerAs({ values: { view_estimates: true, show_estimates_page: true, estimates_scope: 'attached' } });
+  it('is not offered to a person with a narrowed scope, whose other filters stay', async () => {
+    answerAs({ values: { view_estimates: true, jobs_scope: 'attached', leads_scope: 'attached' } });
     await openEstimates();
     await filterNames();
 

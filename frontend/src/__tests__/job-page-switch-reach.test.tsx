@@ -1,6 +1,5 @@
 // Roles & Permissions scenario pass 1 - the routed job page draws no link and makes no read that the person's own
-// switches say is not theirs: the Service Plan link follows the Service plans page route's gate (View service plans and
-// Show Service plans page), and the Items tab asks for the vendor list only for someone who may read vendors.
+// switches say is not theirs: the Service Plan link follows the Service plans page route's gate (View service plans), and the Items tab asks for the vendor list only for someone who may read vendors.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -33,6 +32,9 @@ const BASE_JOB = {
 };
 
 const VIEW_JOBS: AbilityRule = { action: 'read', subject: 'Job' };
+// The Items tab draws the line items editor only for a person who holds See prices (P11), so the reads below are only
+// asked of a page that actually drew it.
+const SEE_PRICES: AbilityRule = { action: 'read', subject: 'Prices' };
 
 function answerJob(switches: Record<string, boolean>) {
   localStorage.clear();
@@ -60,12 +62,12 @@ beforeEach(() => {
 
 describe('the job page Service Plan reference', () => {
   it('is a link for a person the Service plans route lets in', async () => {
-    await renderJob([], { view_service_plans: true, show_service_plans_page: true });
+    await renderJob([], { view_service_plans: true });
     expect(await screen.findByRole('link', { name: /Service Plan \(SP-7\)/ })).toHaveAttribute('href', expect.stringContaining('/service-plans'));
   });
 
   it('is plain text for a person the route would send to the dashboard', async () => {
-    await renderJob([], { view_service_plans: true, show_service_plans_page: false });
+    await renderJob([], { view_service_plans: true, view_service_plans: false });
     expect(await screen.findByText(/Service Plan \(SP-7\)/)).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: /Service Plan/ })).toBeNull();
   });
@@ -73,14 +75,14 @@ describe('the job page Service Plan reference', () => {
 
 describe('the job page Items tab reads', () => {
   it('asks for no vendor list when the person cannot order parts', async () => {
-    await renderJob([{ action: 'read', subject: 'Inventory' }], {});
+    await renderJob([SEE_PRICES, { action: 'read', subject: 'Inventory' }], {});
     await userEvent.click(await screen.findByRole('tab', { name: /Items/ }));
     await screen.findByText('No line items yet.');
     expect(asked('/api/inventory/vendors')).toBe(false);
   });
 
   it('asks for no vendor list for a person who may order parts but not read vendors', async () => {
-    await renderJob([{ action: 'create', subject: 'PurchaseOrder' }], {});
+    await renderJob([SEE_PRICES, { action: 'create', subject: 'PurchaseOrder' }], {});
     await userEvent.click(await screen.findByRole('tab', { name: /Items/ }));
     await screen.findByText('No line items yet.');
     expect(asked('/api/inventory/vendors')).toBe(false);

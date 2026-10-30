@@ -74,6 +74,7 @@ async function main() {
           first_name: 'Ran',
           last_name: 'Roffe',
           role: 'ADMIN',
+          is_admin: true,
           organization_id: ALPHA_ORG_ID,
         },
       });

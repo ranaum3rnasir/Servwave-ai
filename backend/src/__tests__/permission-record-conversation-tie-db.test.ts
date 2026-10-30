@@ -88,8 +88,8 @@ suite('record conversations on the job\'s and lead\'s Communication tab (real da
       organizationId: org, roleKey: key,
       values: {
         view_jobs: true, jobs_scope: 'attached', view_leads: true, leads_scope: 'attached', view_customers: true,
-        view_estimates: true, estimates_scope: 'attached', view_invoices: true, invoices_scope: 'attached',
-        access_communication: true, view_communication: true, communication_scope: 'linked_to_me', ...values,
+        view_estimates: true, view_invoices: true,
+        access_communication: true, view_communication: true, communication_scope: 'attached', ...values,
       },
       actorId: null, reason: 'manual',
     });
@@ -180,7 +180,7 @@ suite('record conversations on the job\'s and lead\'s Communication tab (real da
 
     it('leaves out the conversations of another job, and of an estimate on another job', async () => {
       const { org, admin, customer } = await newOrg();
-      const person = await personWith(org, { estimates_scope: 'all' });
+      const person = await personWith(org, { jobs_scope: 'all', leads_scope: 'all' });
       const mine = await fx.addJob(org, customer, { crew: [person.id] });
       const other = await fx.addJob(org, customer, { crew: [admin.id] });
       const estimate = await fx.addEstimate(org, customer, admin.id, { jobId: other.id });
@@ -234,7 +234,7 @@ suite('record conversations on the job\'s and lead\'s Communication tab (real da
 
     it('shows a conversation tied to the lead on a job made from the lead, to a person who can open the estimate but not the lead', async () => {
       const { org, customer } = await newOrg();
-      const person = await personWith(org, { estimates_scope: 'all' });
+      const person = await personWith(org, { jobs_scope: 'all', leads_scope: 'all' });
       const lead = await fx.addLead(org, customer);
       const job = await fx.addJob(org, customer, { crew: [person.id], fromLead: lead.id });
       const estimate = await fx.addEstimate(org, customer, person.id, { leadId: lead.id });
@@ -247,7 +247,7 @@ suite('record conversations on the job\'s and lead\'s Communication tab (real da
 
     it('changes no tie when a Won lead is reopened: the job keeps its conversations, the lead keeps showing them, and new mail about the lead shows on both', async () => {
       const { org, customer } = await newOrg();
-      const person = await personWith(org, { reopen_leads: true, change_lead_status_by_hand: true, estimates_scope: 'all', leads_scope: 'all', jobs_scope: 'all' });
+      const person = await personWith(org, { reopen_leads: true, change_lead_status_by_hand: true, leads_scope: 'all', jobs_scope: 'all' });
       const lead = await fx.addLead(org, customer, { assignees: [person.id], owner: person.id });
       const job = await fx.addJob(org, customer, { crew: [person.id], fromLead: lead.id });
       const won = await fx.addEstimate(org, customer, person.id, { leadId: lead.id, jobId: job.id });
@@ -318,12 +318,14 @@ suite('record conversations on the job\'s and lead\'s Communication tab (real da
 
     it('refuses to open an invoice email or its reply by id for a person who cannot open the invoice, and opens them for one who can', async () => {
       const { without, withInvoices, creator, conversation, notice } = await invoiceConversation();
-      const refused = await without.api();
-      for (const id of conversation.ids) expect((await refused.get(`/api/communication/emails/${id}`)).status, id).toBe(404);
-      for (const person of [withInvoices, creator]) {
+      // Having made the invoice opens nothing without View invoices (P7), so the creator is refused like anyone else.
+      for (const person of [without, creator]) {
         const api = await person.api();
-        for (const id of conversation.ids) expect((await api.get(`/api/communication/emails/${id}`)).status, id).toBe(200);
+        for (const id of conversation.ids) expect((await api.get(`/api/communication/emails/${id}`)).status, id).toBe(404);
       }
+      const refused = await without.api();
+      const api = await withInvoices.api();
+      for (const id of conversation.ids) expect((await api.get(`/api/communication/emails/${id}`)).status, id).toBe(200);
       // A conversation about the job itself still opens through the job.
       expect((await refused.get(`/api/communication/emails/${notice.ids[0]}`)).status).toBe(200);
     });
@@ -367,9 +369,9 @@ suite('record conversations on the job\'s and lead\'s Communication tab (real da
       expect(tabIds((await (await withInvoices.api()).get(`/api/jobs/${job.id}/communications`)).body)).toEqual(expect.arrayContaining(ids));
     });
 
-    it('shows them to the person who made the invoice while they are on the job, and not to a colleague on the job who did not', async () => {
+    it('shows them to the person on the job with View invoices on, and not to a colleague on the job with it off, the invoice\'s creator included', async () => {
       const { org, customer } = await newOrg();
-      const creator = await personWith(org, { ...INVOICES_VIEW_OFF });
+      const creator = await personWith(org, { view_invoices: true, jobs_scope: 'attached', leads_scope: 'attached' });
       const colleague = await personWith(org, { ...INVOICES_VIEW_OFF });
       const job = await fx.addJob(org, customer, { crew: [creator.id, colleague.id] });
       const invoice = await fx.addInvoice(org, customer, { jobId: job.id, createdBy: creator.id });

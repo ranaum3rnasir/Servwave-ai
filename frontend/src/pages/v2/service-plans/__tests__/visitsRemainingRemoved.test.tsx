@@ -19,7 +19,7 @@ import ServicePlansPage from '../ServicePlansPage';
  * SRVW-229 (promoting the band above the tabs) has landed yet in this tree.
  */
 
-vi.mock('@/lib/api/users', () => ({ useUsers: () => ({ data: [] }) }));
+vi.mock('@/lib/api/users', () => ({ usePeople: () => ({ data: [] }) }));
 
 const mockApi = vi.mocked(api);
 

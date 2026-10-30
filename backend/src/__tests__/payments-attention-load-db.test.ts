@@ -58,7 +58,7 @@ suite('Needs attention at scale on a pool of one connection (real database)', ()
     const role = await fx.addCustomRole(org, 'load-role', 'DISPATCHER');
     await setRoleSwitchValues({
       organizationId: org, roleKey: 'load-role', actorId: null, reason: 'manual',
-      values: { view_payments: true, view_invoices: true, invoices_scope: 'all', refund_payments: false, send_payment_links: false, manage_payout_account: false },
+      values: { view_payments: true, view_invoices: true, jobs_scope: 'all', leads_scope: 'all', refund_payments: false, send_payment_links: false, manage_payout_account: false },
     });
     const person = await fx.addUser(org, 'loader', 'DISPATCHER', { customRoleId: role.id, basedOnRoleKey: 'load-role' });
     api = await fx.signedInAs(person);

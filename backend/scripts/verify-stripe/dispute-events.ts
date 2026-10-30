@@ -48,7 +48,7 @@ export async function disputesRecordedOnceAndSettled(input: { stripe: Stripe; ve
   try {
     await seedStarterTaskCategories(prisma, orgId);
     await prisma.user.create({
-      data: { organization_id: orgId, email: `${tag}-admin@test.invalid`, first_name: 'Verify', last_name: 'Admin', role: 'ADMIN' },
+      data: { organization_id: orgId, email: `${tag}-admin@test.invalid`, first_name: 'Verify', last_name: 'Admin', role: 'ADMIN', is_admin: true },
     });
     const customer = await prisma.customer.create({
       data: { organization_id: orgId, customer_number: `C-${shortTag}`, kind: 'PERSON', segment: 'RESIDENTIAL', first_name: 'Verify', last_name: 'Customer', created_by_source: 'SYSTEM' },
@@ -146,7 +146,7 @@ export async function disputesRecordedOnceAndSettled(input: { stripe: Stripe; ve
       for (const table of ['timeline_events', 'notifications', 'invoices', 'customers', 'users']) {
         await prisma.$executeRawUnsafe(`DELETE FROM ${table} WHERE organization_id = '${orgId}'`).catch(() => undefined);
       }
-      await prisma.$executeRawUnsafe(`DELETE FROM audit_logs WHERE org_id = '${orgId}'`).catch(() => undefined);
+      // audit_logs is append-only (the database refuses a delete) and has no foreign key to the company: its rows stay.
       await prisma.organization.deleteMany({ where: { id: orgId } });
     });
   }
@@ -180,7 +180,7 @@ export async function disputeBeforeTheBookingIsPickedUp(input: { stripe: Stripe;
   try {
     await seedStarterTaskCategories(prisma, orgId);
     await prisma.user.create({
-      data: { organization_id: orgId, email: `${tag}-admin@test.invalid`, first_name: 'Verify', last_name: 'Admin', role: 'ADMIN' },
+      data: { organization_id: orgId, email: `${tag}-admin@test.invalid`, first_name: 'Verify', last_name: 'Admin', role: 'ADMIN', is_admin: true },
     });
     const customer = await prisma.customer.create({
       data: { organization_id: orgId, customer_number: `C-${shortTag}`, kind: 'PERSON', segment: 'RESIDENTIAL', first_name: 'Verify', last_name: 'Customer', created_by_source: 'SYSTEM' },
@@ -250,7 +250,7 @@ export async function disputeBeforeTheBookingIsPickedUp(input: { stripe: Stripe;
       for (const table of ['timeline_events', 'notifications', 'invoices', 'customers', 'users']) {
         await prisma.$executeRawUnsafe(`DELETE FROM ${table} WHERE organization_id = '${orgId}'`).catch(() => undefined);
       }
-      await prisma.$executeRawUnsafe(`DELETE FROM audit_logs WHERE org_id = '${orgId}'`).catch(() => undefined);
+      // audit_logs is append-only (the database refuses a delete) and has no foreign key to the company: its rows stay.
       await prisma.organization.deleteMany({ where: { id: orgId } });
     });
   }

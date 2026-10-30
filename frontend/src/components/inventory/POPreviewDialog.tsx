@@ -15,6 +15,7 @@ import { useScheduleTimezone } from "@/lib/schedule-tz";
 import { toast } from "@/components/ui/use-toast";
 import { Button } from "@/components/ui/button";
 import { STATUS_INTENT_CLASSES, STATUS_REGISTRY } from "@/design-system/status-registry";
+import { useIsAdmin } from '@/lib/useIsAdmin';
 
 type Props = {
   open: boolean;
@@ -75,7 +76,7 @@ export function POPreviewDialog({
   // ─── Seam data ───
   // Read only by a person who may read them: the server refuses both lists to others, and this dialog is mounted (closed) on pages they open.
   const ability = useAppAbility();
-  // The cost columns and the totals are costs (See financial data): without it the document has none of them.
+  // The cost columns and the totals are costs (See costs): without it the document has none of them.
   const showCosts = canSeePricing(ability);
   const { data: purchaseOrders = [] } = usePurchaseOrders(ability.can('read', 'PurchaseOrder'));
   const { data: allVendors = [] } = useVendors(ability.can('read', 'Vendor'));
@@ -119,6 +120,8 @@ export function POPreviewDialog({
   }, [po, allVendors]);
 
   // "Deliver to" is the company address from Settings (verdict §6) — never a branch.
+  // The company's address is set on a Settings page only an Admin can open (36b, M17): the prompt is an Admin's.
+  const mayPointAtSettings = useIsAdmin();
   const deliverTo = useMemo(() => {
     const cityLine = [
       [org?.city, org?.state].filter(Boolean).join(", "),
@@ -401,11 +404,11 @@ export function POPreviewDialog({
                   {line}
                 </div>
               ))
-            ) : (
+            ) : mayPointAtSettings ? (
               <div className="mt-1 rounded-md border border-warning/20 bg-warning/10 px-2 py-1 text-[11px] text-warning">
                 Set your company address in Settings
               </div>
-            )}
+            ) : null}
             {po.jobNumber && (
               <div className="mt-2 inline-block rounded-md border border-primary/30 bg-primary-subtle/60 px-2.5 py-1.5 text-[11px] text-primary">
                 <div className="font-semibold">For Job · {po.jobNumber}</div>

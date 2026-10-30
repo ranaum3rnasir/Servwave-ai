@@ -116,10 +116,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
   mockPrisma.invoice.findFirst.mockResolvedValue(null);
-  mockPrisma.rolePermission.findMany.mockImplementation(
-    (args: { where: { role: string } }) =>
-      Promise.resolve(DEFAULT_GRANTS.filter((g) => g.role === args.where.role)),
-  );
   mockScheduled.mockResolvedValue({ status: 'sent' });
   mockRescheduled.mockResolvedValue({ status: 'sent' });
 });

@@ -544,7 +544,7 @@ describe('POST /api/invoices/:id/line-items — RBAC (manage_lines)', () => {
       .post(`/api/invoices/${INVOICE_ID}/line-items`)
       .set(authHeader('technician'))
       .send({ description: 'x', quantity: 1, unit_price: 10 });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockPrisma.invoiceLineItem.create).not.toHaveBeenCalled();
   });
 
@@ -568,7 +568,7 @@ describe('POST /api/invoices/:id/line-items — RBAC (manage_lines)', () => {
       .post(`/api/invoices/${INVOICE_ID}/line-items`)
       .set(authHeader('sales'))
       .send({ description: 'x', quantity: 1, unit_price: 10 });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockPrisma.invoiceLineItem.create).not.toHaveBeenCalled();
   });
 });
@@ -661,7 +661,7 @@ describe('DELETE /api/invoices/:id/line-items/:lineId — delete (manage_lines)'
     res = await request(app)
       .delete(`/api/invoices/${INVOICE_ID}/line-items/${LINE_ID}`)
       .set(authHeader('technician'));
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockPrisma.invoiceLineItem.delete).not.toHaveBeenCalled();
     expect(mockPrisma.invoiceLineItem.deleteMany).not.toHaveBeenCalled();
   });
@@ -685,7 +685,7 @@ describe('DELETE /api/invoices/:id/line-items/:lineId — delete (manage_lines)'
     res = await request(app)
       .delete(`/api/invoices/${INVOICE_ID}/line-items/${LINE_ID}`)
       .set(authHeader('sales'));
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 });
 
@@ -836,7 +836,7 @@ describe('PATCH /api/invoices/:id/line-items/:lineId — edit line (update Invoi
     // Narrow DISPATCHER to an owner-scoped update/read grant (the kind org-settings can persist).
     const OWN_VIA_JOB = { job: { assignees: { some: { user_id: '{{userId}}' } } } };
     // Reading invoices comes from the switch catalog: the narrowed reach is the Invoices scope.
-    mockRoleSwitches({ invoices_scope: 'attached' });
+    mockRoleSwitches({ jobs_scope: 'attached', leads_scope: 'attached' });
     mockPrisma.invoice.findUnique.mockResolvedValue(invoiceRow({ techId: '99999999-9999-9999-9999-999999999999' }));
     mockPrisma.invoice.findFirst.mockResolvedValue(null); // canAccessRow → false
 
@@ -844,7 +844,7 @@ describe('PATCH /api/invoices/:id/line-items/:lineId — edit line (update Invoi
       .patch(`/api/invoices/${INVOICE_ID}/line-items/${LINE_ID}`)
       .set(authHeader('dispatcher'))
       .send({ quantity: 2 });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockPrisma.invoiceLineItem.update).not.toHaveBeenCalled();
   });
 
@@ -1086,7 +1086,7 @@ describe('POST/PATCH /api/invoices/:id/line-items — pricing leak (unit_cost/ma
     mockAuthAs('technician');
     const OWN_VIA_JOB = { job: { assignees: { some: { user_id: '{{userId}}' } } } };
     // A technician holds neither View invoices nor Edit invoice line items by default; both are switches now.
-    mockRoleSwitches({ view_invoices: true });
+    mockRoleSwitches({ view_invoices: true, edit_invoices: true });
     mockPrisma.invoice.findUnique.mockResolvedValue(invoiceRow());
     mockPrisma.invoice.findFirst.mockResolvedValue({ id: INVOICE_ID });
     const updatedLine = { ...existingLines()[0], unit_cost: 220, markup_percent: 35 };
@@ -1113,7 +1113,7 @@ describe('POST/PATCH /api/invoices/:id/line-items — pricing leak (unit_cost/ma
     mockAuthAs('technician');
     const OWN_VIA_JOB = { job: { assignees: { some: { user_id: '{{userId}}' } } } };
     // A technician holds neither View invoices nor Edit invoice line items by default; both are switches now.
-    mockRoleSwitches({ view_invoices: true });
+    mockRoleSwitches({ view_invoices: true, edit_invoices: true });
     mockPrisma.invoice.findUnique.mockResolvedValue(invoiceRow());
     mockPrisma.invoice.findFirst.mockResolvedValue({ id: INVOICE_ID });
     // An admin previously set real unit_cost/markup_percent on this line.
@@ -1354,7 +1354,7 @@ describe('PATCH /api/invoices/:id/line-items/reorder — reorder (update Invoice
     mockAuthAs('dispatcher');
     const OWN_VIA_JOB = { job: { assignees: { some: { user_id: '{{userId}}' } } } };
     // Reading invoices comes from the switch catalog: the narrowed reach is the Invoices scope.
-    mockRoleSwitches({ invoices_scope: 'attached' });
+    mockRoleSwitches({ jobs_scope: 'attached', leads_scope: 'attached' });
     mockPrisma.invoice.findUnique.mockResolvedValue(invoiceRow({ techId: '99999999-9999-9999-9999-999999999999' }));
     mockPrisma.invoice.findFirst.mockResolvedValue(null); // canAccessRow → false
 
@@ -1362,7 +1362,7 @@ describe('PATCH /api/invoices/:id/line-items/reorder — reorder (update Invoice
       .patch(`/api/invoices/${INVOICE_ID}/line-items/reorder`)
       .set(authHeader('dispatcher'))
       .send({ order: [LINE_A, LINE_B, LINE_C] });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockPrisma.invoiceLineItem.update).not.toHaveBeenCalled();
   });
 });
@@ -1922,7 +1922,7 @@ describe('POST/PATCH /api/invoices/:id/scopes — pricing leak (internal_cost)',
     mockAuthAs('technician');
     const OWN_VIA_JOB = { job: { assignees: { some: { user_id: '{{userId}}' } } } };
     // A technician holds neither View invoices nor Edit invoice line items by default; both are switches now.
-    mockRoleSwitches({ view_invoices: true });
+    mockRoleSwitches({ view_invoices: true, edit_invoices: true });
     mockPrisma.invoice.findFirst.mockResolvedValue({ id: INVOICE_ID });
     const before = [scopeFixture({ flat_price: 300, internal_cost: null })];
     mockScopeReads(before, [scopeFixture({ flat_price: 500, internal_cost: 150 })]);
@@ -1949,7 +1949,7 @@ describe('POST/PATCH /api/invoices/:id/scopes — pricing leak (internal_cost)',
     mockAuthAs('technician');
     const OWN_VIA_JOB = { job: { assignees: { some: { user_id: '{{userId}}' } } } };
     // A technician holds neither View invoices nor Edit invoice line items by default; both are switches now.
-    mockRoleSwitches({ view_invoices: true });
+    mockRoleSwitches({ view_invoices: true, edit_invoices: true });
     mockPrisma.invoice.findFirst.mockResolvedValue({ id: INVOICE_ID });
     // An admin previously set a real internal_cost on this scope.
     const before = [scopeFixture({ title: 'Permit fee', flat_price: 300, internal_cost: 150 })];

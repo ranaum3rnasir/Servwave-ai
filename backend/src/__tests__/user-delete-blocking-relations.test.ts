@@ -49,8 +49,9 @@ describe('DELETE_BLOCKING_RELATIONS', () => {
   });
 
   it('does not label relations that are not actually blocking', () => {
+    // 'tasks' is counted by hand: a task names its people in uuid[] columns with no foreign key, so no relation count sees them.
     const orphanLabels = Object.keys(DELETE_RELATION_LABELS).filter(
-      (key) => !(key in DELETE_BLOCKING_RELATIONS),
+      (key) => key !== 'tasks' && !(key in DELETE_BLOCKING_RELATIONS),
     );
     expect(orphanLabels).toEqual([]);
   });

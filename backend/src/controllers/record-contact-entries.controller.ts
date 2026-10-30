@@ -25,7 +25,6 @@ import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { tenantWhere } from '../lib/tenant';
 import { canAccessRow } from '../lib/permissions/enforce';
-import { isLeadCreatorStillAttached } from '../lib/permissions/leadEdit';
 import {
   recordEntryAdded,
   recordEntryChanged,
@@ -112,7 +111,7 @@ const LEAD: RecordKind = {
   entity: 'LEAD',
   find: findLead,
   opens: (req, id) => canAccessRow(req, 'Lead', prisma.lead, id),
-  mayEditNames: async (req, id) => req.ability!.can('update', 'Lead') || (await isLeadCreatorStillAttached(req, id)),
+  mayEditNames: async (req) => req.ability!.can('update', 'Lead'),
 };
 
 const noun = (input: { kind: string }) => (input.kind === 'PHONE' ? 'number' : 'email');

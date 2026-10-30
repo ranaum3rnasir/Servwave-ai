@@ -14,6 +14,7 @@ import api from '@/lib/axios';
 import { buildAbility, type AppAbility } from '@/lib/ability';
 import { toast } from '@/components/ui/use-toast';
 import UsersTeamsPage from '@/pages/v2/settings/UsersTeamsPage';
+import { useAuthStore } from '@/stores/auth.store';
 import { renderWithProviders } from './helpers';
 
 vi.mock('@/components/ui/use-toast', () => ({ toast: vi.fn() }));
@@ -80,6 +81,12 @@ const rowOf = async (name: string) => (await screen.findByText(name)).closest('t
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // The viewer is the company's Owner: moving someone onto the Administrator role is the Owner's alone (ticket 26).
+  vi.mocked(useAuthStore).mockImplementation(((selector: (st: Record<string, unknown>) => unknown) =>
+    selector({
+      user: { id: ME, email: 'admin@test.com', first_name: 'Test', last_name: 'Admin', role: 'ADMIN', is_admin: true, org_owner_user_id: ME },
+      isAuthenticated: true, isLoading: false, error: null,
+    })) as never);
   serve([DEE, SAM, ANNA, MINE, CLERK]);
   mockApi.patch.mockResolvedValue({ data: { user: DEE } });
 });

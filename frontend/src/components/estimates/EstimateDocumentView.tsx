@@ -95,6 +95,12 @@ interface EstimateDocumentViewProps {
    * Defaults to false, unchanged for every caller that does not pass it.
    */
   locked?: boolean;
+  /**
+   * False for a person without See prices (Roles & Permissions P11; ruling 7, "no false $0.00"). Their answer carries no price,
+   * so the document shows the work and no figure at all: no unit price, no discount, no row amount and no totals. Defaults to
+   * true; the customer's own page always shows prices.
+   */
+  showPrices?: boolean;
 }
 
 // ─── Row ────────────────────────────────────────────
@@ -106,7 +112,7 @@ interface EstimateDocumentViewProps {
  * the amount on a line of its own - so at 320 px the description gets the width the amount
  * column used to take (it was about 76 px wide there). From sm up it is the one row it always was.
  */
-function DocumentRowCard({ row, rowControl }: { row: DocumentRow; rowControl?: (row: DocumentRow) => ReactNode }) {
+function DocumentRowCard({ row, rowControl, showPrices = true }: { row: DocumentRow; rowControl?: (row: DocumentRow) => ReactNode; showPrices?: boolean }) {
   const control = rowControl ? rowControl(row) : null;
   return (
     <div data-testid="estimate-document-row" className="flex flex-wrap sm:flex-nowrap items-start gap-3 p-3 rounded-lg bg-background-light border border-border">
@@ -164,7 +170,7 @@ function DocumentRowCard({ row, rowControl }: { row: DocumentRow; rowControl?: (
         {row.kind === 'line_item' && (
           <div className="flex items-center gap-4 mt-1 text-xs text-text-secondary">
             <span>Qty: <span className="tabular-nums">{row.quantity}</span></span>
-            <span>@ <span className="tabular-nums">{formatCurrency(row.unitPrice ?? 0)}</span></span>
+            {showPrices && <span>@ <span className="tabular-nums">{formatCurrency(row.unitPrice ?? 0)}</span></span>}
           </div>
         )}
         {/* #2029 — the scope's own photos, up to four across and wrapping beyond that. These are
@@ -185,7 +191,7 @@ function DocumentRowCard({ row, rowControl }: { row: DocumentRow; rowControl?: (
             ))}
           </div>
         )}
-        {row.discountType && (
+        {showPrices && row.discountType && (
           <p className="text-xs text-warning-text mt-0.5">
             Discount: {row.discountType === 'PERCENTAGE' ? `${row.discountValue}%` : formatCurrency(row.discountValue ?? 0)}
             {' '}(-{formatCurrency(row.discountAmount ?? 0)})
@@ -197,7 +203,7 @@ function DocumentRowCard({ row, rowControl }: { row: DocumentRow; rowControl?: (
           is free, where a blank says it is not separately priced. An optional add-on prints its
           figure like any other row; the pill above says it is not in the Total. */}
       <div data-testid="estimate-document-row-amount" className="w-full sm:w-auto shrink-0 text-right empty:hidden sm:empty:block">
-        {row.netAmount == null ? null : row.discounted ? (
+        {!showPrices || row.netAmount == null ? null : row.discounted ? (
           <>
             <span className="text-xs text-text-soft line-through tabular-nums block">{formatCurrency(row.grossAmount ?? 0)}</span>
             <span className="text-sm font-semibold tabular-nums text-text-primary">{formatCurrency(row.netAmount ?? 0)}</span>
@@ -230,6 +236,7 @@ export function EstimateDocumentView({
   discountAmount,
   rowControl,
   locked = false,
+  showPrices = true,
 }: EstimateDocumentViewProps) {
   // #2028 — every content decision (which rows exist, how each is presented, how discounts are
   // summarised, what the totals rows are) comes from the shared view-model, which mirrors the one
@@ -288,7 +295,7 @@ export function EstimateDocumentView({
                   used to be filtered out, so work the salesperson had described vanished from the
                   customer's page. It contributes nothing to the totals, which was already true. */}
               {section.rows.map((row) => (
-                <DocumentRowCard key={row.key} row={row} rowControl={rowControl} />
+                <DocumentRowCard key={row.key} row={row} rowControl={rowControl} showPrices={showPrices} />
               ))}
             </div>
           )}
@@ -299,7 +306,7 @@ export function EstimateDocumentView({
           rather than living inside a line-item card that a scope-only estimate never draws.
           Which rows exist, in what order, and which are subtractions is the view-model's call;
           this supplies alignment and weight. */}
-      <Card padding="sm">
+      {showPrices && <Card padding="sm">
         <div className="flex flex-col items-end space-y-1">
           {view.totals.map((total) => {
             const label = total.kind === 'tax'
@@ -331,7 +338,7 @@ export function EstimateDocumentView({
             <p className="pt-1 text-xs text-text-secondary">{OPTIONAL_TOTALS_NOTE}</p>
           )}
         </div>
-      </Card>
+      </Card>}
     </div>
   );
 }

@@ -584,7 +584,7 @@ export async function validatePerformers(
     const u = await prisma.user.findUnique({
       where: { id: userId, ...tenantWhere(req) },
       select: {
-        id: true, organization_id: true, role: true, custom_role_id: true, custom_role: { select: { key: true } },
+        id: true, organization_id: true, role: true, custom_role_id: true, is_admin: true, custom_role: { select: { key: true } },
         is_active: true, email: true, first_name: true, last_name: true, phone: true,
       },
     });

@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
 import { Landmark } from 'lucide-react';
 
+import { useCanSeePrices } from '@/contexts/AbilityContext';
 import { usePayoutsList, type PayoutRow } from '@/lib/api/paymentsPage';
 import { formatCurrency } from '@/lib/utils';
 import { DataTable } from '@/ui-kit/components/data/dataTable/dataTable';
@@ -14,7 +15,7 @@ import { useDrawerHost } from '../drawerHost';
 import { formatPayoutDay } from '../payouts';
 import type { PaymentsTabProps } from '../types';
 
-const columns: ColumnDef<PayoutRow>[] = [
+const allColumns: ColumnDef<PayoutRow>[] = [
   {
     id: 'date',
     header: 'Date',
@@ -58,6 +59,9 @@ const columns: ColumnDef<PayoutRow>[] = [
  */
 export default function PayoutsTab(_props: PaymentsTabProps) {
   const host = useDrawerHost();
+  // P11: a payout's amount is a sum of payments, so it needs See prices; without it the column is not drawn.
+  const canSeePrices = useCanSeePrices();
+  const columns = useMemo(() => allColumns.filter((c) => canSeePrices || c.id !== 'amount'), [canSeePrices]);
   const [page, setPage] = useState(1);
   const { ref: tableTopRef, request: scrollTableTop } = useScrollTableIntoView();
   const list = usePayoutsList(page);

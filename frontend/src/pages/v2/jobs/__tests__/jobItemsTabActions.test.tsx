@@ -33,7 +33,8 @@ vi.mock('react-router-dom', async () => {
 
 const mockApi = vi.mocked(api);
 const everything = buildAbility([{ action: 'manage', subject: 'all' }]);
-const nothing = buildAbility([]);
+// "Nothing" about editing: the person still sees prices (P11), which is a separate question from what they may change.
+const nothing = buildAbility([{ action: 'read', subject: 'Prices' }]);
 
 /** Part of the Technician preset's list: it holds Edit job line items and not Apply discounts. */
 const TECHNICIAN_ACTIONS = ['create_estimate', 'edit_line_items', 'add_note', 'upload_attachment', 'log_communication'];

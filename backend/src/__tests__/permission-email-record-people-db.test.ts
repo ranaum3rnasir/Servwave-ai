@@ -93,8 +93,8 @@ suite('record conversations list for the record\'s people, by M11\'s rule (real 
       organizationId: org, roleKey: key,
       values: {
         view_jobs: true, jobs_scope: 'attached', view_leads: true, leads_scope: 'attached', view_customers: true,
-        view_estimates: true, estimates_scope: 'attached', view_invoices: true, invoices_scope: 'attached',
-        access_communication: true, show_email: true, view_communication: true, communication_scope: 'linked_to_me',
+        view_estimates: true, view_invoices: true,
+        access_communication: true, show_email: true, view_communication: true, communication_scope: 'attached',
         ...values,
       },
       actorId: null, reason: 'manual',
@@ -400,7 +400,7 @@ suite('record conversations list for the record\'s people, by M11\'s rule (real 
       expect(await listed(owner, '?folder=inbox')).toEqual([reply]);
     });
 
-    it('lists an invoice conversation to its job\'s people while they can open the invoice, and keeps the creator rule', async () => {
+    it('lists an invoice conversation to its job\'s people while they can open the invoice, and not to its creator without View invoices', async () => {
       const { org, customer, main } = await newOrg();
       const soldBy = await personWith(org);
       const creator = await personWith(org, { ...INVOICES_VIEW_OFF });
@@ -410,10 +410,10 @@ suite('record conversations list for the record\'s people, by M11\'s rule (real 
       const reply = await customerReplies(await addRecordConversation(org, main, customer, { type: 'invoice', id: invoice.id }));
 
       expect(await listed(soldBy, '?folder=inbox')).toEqual([reply]);
-      // View invoices off, but the invoice is theirs while they are on its job: the creator rule opens it.
-      expect(await listed(creator, '?folder=inbox')).toEqual([reply]);
-      expect(await opens(creator, reply)).toBe(true);
-      expect(await badge(creator)).toBe(1);
+      // View invoices off: having made the invoice opens nothing (P7).
+      expect(await listed(creator, '?folder=inbox')).toEqual([]);
+      expect(await opens(creator, reply)).toBe(false);
+      expect(await badge(creator)).toBe(0);
       // On the job, View invoices off, not the creator: nothing.
       expect(await listed(noInvoices, '?folder=inbox')).toEqual([]);
       expect(await opens(noInvoices, reply)).toBe(false);
@@ -614,14 +614,50 @@ suite('record conversations list for the record\'s people, by M11\'s rule (real 
       const job = await fx.addJob(org, customer, { soldBy: person.id });
       const estimate = await fx.addEstimate(org, customer, (await newCreator(org)).id, { jobId: job.id });
       const reply = await customerReplies(await addRecordConversation(org, main, customer, { type: 'estimate', id: estimate.id }));
-      const plain = await db.emailThread.create({ data: { organization_id: org, assigned_to_user_id: person.id, mailbox_id: main }, select: { id: true } });
+      // An ordinary conversation in the person's own mailbox (being assigned one elsewhere would list nothing: M1).
+      const plain = await db.emailThread.create({ data: { organization_id: org, mailbox_id: await userMailbox(org, person) }, select: { id: true } });
       const plainMail = await addMessage(org, plain.id, customer, { direction: 'in' });
+      const assignedElsewhere = await db.emailThread.create({ data: { organization_id: org, assigned_to_user_id: person.id, mailbox_id: main }, select: { id: true } });
+      const assignedMail = await addMessage(org, assignedElsewhere.id, customer, { direction: 'in' });
 
       const byId = new Map((await rows(person)).map((r) => [r.id, r.recordTie ?? null]));
-      expect(byId.has(reply)).toBe(true);
-      expect(byId.get(reply)).toBeNull();
+      // Without View jobs the estimate on the job is out of reach too (ticket 33, story 50), and the reply about it is reached
+      // only through that estimate (M1: per message), so it is not listed at all, and nothing in the list names the job.
+      expect(byId.has(reply)).toBe(false);
+      expect(JSON.stringify(await rows(person))).not.toContain(job.id);
+      expect(byId.has(plainMail)).toBe(true);
       expect(byId.get(plainMail)).toBeNull();
+      expect(byId.has(assignedMail)).toBe(false);
     });
+
+    // The reply is reached another way (Communication scope All lists every conversation), but the job or lead it is about
+    // is one the person cannot open: it is listed, and nothing in the answer names that job or lead.
+    for (const kind of ['job', 'lead'] as const) {
+      it(`lists a reply the person reaches through Communication scope All about an estimate on a ${kind} they cannot open, with no label and nothing that names the ${kind}`, async () => {
+        const { org, customer, main } = await newOrg();
+        const person = await personWith(org, { ...withDependantsOff([kind === 'job' ? 'view_jobs' : 'view_leads']), communication_scope: 'all' });
+        const creator = await newCreator(org);
+        const record = kind === 'job'
+          ? { id: (await fx.addJob(org, customer, { soldBy: person.id })).id }
+          : { id: (await fx.addLead(org, customer, { owner: person.id })).id };
+        const number = kind === 'job'
+          ? (await db.job.findUniqueOrThrow({ where: { id: record.id }, select: { job_number: true } })).job_number
+          : (await db.lead.findUniqueOrThrow({ where: { id: record.id }, select: { lead_number: true } })).lead_number;
+        const estimate = await fx.addEstimate(org, customer, creator.id, kind === 'job' ? { jobId: record.id } : { leadId: record.id });
+        const reply = await customerReplies(await addRecordConversation(org, main, customer, { type: 'estimate', id: estimate.id }));
+
+        const listedRows = await rows(person);
+        const row = listedRows.find((r) => r.id === reply);
+        expect(row, 'Communication scope All lists the reply').toBeDefined();
+        expect(row!.recordTie ?? null).toBeNull();
+        expect(JSON.stringify(listedRows)).not.toContain(record.id);
+        expect(JSON.stringify(listedRows)).not.toContain(number);
+        const one = await (await person.api()).get(`/api/communication/emails/${reply}`);
+        expect(one.status).toBe(200);
+        expect(one.body.email.recordTie ?? null).toBeNull();
+        expect(JSON.stringify(one.body)).not.toContain(record.id);
+      });
+    }
   });
 
   describe('what it costs on the hosted database\'s one connection', () => {
@@ -672,7 +708,12 @@ suite('record conversations list for the record\'s people, by M11\'s rule (real 
       // with no record conversation.
       // S10.18 adds the Needs review folder's counts to the mailbox list: one grouped count of the held messages a person sees
       // (a person who reads no mailbox is asked nothing), so under All 7 -> 8.
-      expect(after).toEqual({ person: { list: 12, mailboxes: 6, badge: 9 }, wide: { list: 8, mailboxes: 8, badge: 2 } });
+      // Estimates and invoices are reached through the Leads and Jobs scope now (P6), as separate arms (the lead, the job, the job
+      // link, the ones made for a customer alone): two reads more per request. The count stays fixed however many conversations
+      // there are, which is what this test pins.
+      // Ticket 37 adds ONE read to every signed-in request: the person's access stamp, read from the database so a change made
+      // on another server is seen at once (lib/permissions/accessStamp.ts).
+      expect(after).toEqual({ person: { list: 15, mailboxes: 9, badge: 12 }, wide: { list: 9, mailboxes: 9, badge: 3 } });
     });
   });
 

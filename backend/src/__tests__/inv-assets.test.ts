@@ -291,7 +291,7 @@ describe('role gates (subject matrix: Admin+Dispatcher full, Sales read-only, Te
   it('dispatcher holding Create stock → GET 200 + POST 201', async () => {
     mockAuthAs('dispatcher');
     // The Dispatcher preset does not hold Create stock (Roles & Permissions S01.9); the case gives it the switch.
-    mockRoleSwitches({ create_stock: true });
+    mockRoleSwitches({ edit_stock: true, create_stock: true });
     mockPrisma.asset.create.mockResolvedValue(ASSET_FIXTURE);
 
     const list = await request(app).get('/api/inventory/assets').set(authHeader('dispatcher'));

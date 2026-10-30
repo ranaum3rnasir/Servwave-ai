@@ -7,7 +7,7 @@ const TECH_ID = 'tech-1';
 
 function techAbility() {
   return defineAbilityFor(
-    { id: TECH_ID, role: 'TECHNICIAN' },
+    { is_admin: false, id: TECH_ID, role: 'TECHNICIAN' },
     DEFAULT_GRANTS.filter((g) => g.role === 'TECHNICIAN'),
   );
 }

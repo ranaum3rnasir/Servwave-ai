@@ -669,12 +669,13 @@ describe('registerByoNumber', () => {
 describe('route gating', () => {
   const src = () => readFileSync(join(__dirname, '../routes/comm-numbers.routes.ts'), 'utf8');
 
-  it("gates search/buy/register-byo with canDo('update','Organization')", () => {
+  it('gates search/buy/register-byo/refresh/release with the Admin check (M8 / D3), not the Company settings switch', () => {
     const lines = src().split('\n');
-    for (const path of ['/numbers/search', '/numbers/buy', '/numbers/register-byo']) {
+    for (const path of ['/numbers/search', '/numbers/buy', '/numbers/register-byo', '/numbers/refresh']) {
       const line = lines.find((l) => l.includes(`'${path}'`));
       expect(line, `route ${path} missing`).toBeTruthy();
-      expect(line).toContain("canDo('update', 'Organization')");
+      expect(line).toContain('requireAdminTo(');
+      expect(line).not.toContain("canDo('update', 'Organization')");
     }
   });
 

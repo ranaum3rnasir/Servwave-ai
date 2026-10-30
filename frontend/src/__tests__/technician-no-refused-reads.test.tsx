@@ -130,8 +130,8 @@ describe('the refused-route list is true of the Technician preset', () => {
     expect(personHolds(needs as { action: string; subject: string })).toBe(false);
   });
 
-  it('the person\'s Estimates scope is narrower than All', () => {
-    expect(technicianSwitchesAnswer().values.estimates_scope).not.toBe('all');
+  it('the person\'s Jobs scope, which estimates and invoices follow, is narrower than All', () => {
+    expect(technicianSwitchesAnswer().values.jobs_scope).not.toBe('all');
   });
 });
 

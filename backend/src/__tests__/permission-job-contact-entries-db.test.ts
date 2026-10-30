@@ -55,7 +55,7 @@ suite('job-only phones and emails (real database)', () => {
   }
 
   /** Holds the pencil through Edit job and lead contact details alone. */
-  const contactOnly = { edit_job_and_lead_contact_details: true, edit_jobs: false, jobs_scope: 'attached' };
+  const contactOnly = { edit_job_and_lead_contact_details: true, edit_jobs: false, create_jobs: false, jobs_scope: 'attached' };
 
   async function fillCustomer(customer: string) {
     await db.customer.update({
@@ -95,7 +95,7 @@ suite('job-only phones and emails (real database)', () => {
     it('returns the entries on the job detail to anyone who can open the job, View customers off included', async () => {
       const { org, customer, job, api } = await setup();
       await api.post(addPath(job.id), { kind: 'PHONE', value: '6175550199', label: 'Wife' });
-      const reader = await personWith(org, { view_customers: false, edit_job_and_lead_contact_details: false, edit_jobs: false, jobs_scope: 'all' });
+      const reader = await personWith(org, { view_customers: false, edit_job_and_lead_contact_details: false, edit_jobs: false, create_jobs: false, jobs_scope: 'all' });
       expect(customer).toBeTruthy();
 
       const res = await (await fx.signedInAs(reader)).get(`/api/jobs/${job.id}`);
@@ -151,7 +151,7 @@ suite('job-only phones and emails (real database)', () => {
 
   describe('the gate', () => {
     it('refuses the add with Edit job and lead contact details off and Edit jobs off, even with Add notes on', async () => {
-      const { job, api } = await setup({ edit_job_and_lead_contact_details: false, edit_jobs: false, add_notes: true, jobs_scope: 'attached' });
+      const { job, api } = await setup({ edit_job_and_lead_contact_details: false, edit_jobs: false, create_jobs: false, add_notes: true, jobs_scope: 'attached' });
 
       const res = await api.post(addPath(job.id), { kind: 'PHONE', value: '6175550199' });
 
@@ -166,13 +166,13 @@ suite('job-only phones and emails (real database)', () => {
       expect(res.status).toBe(201);
     });
 
-    it('asks who may open the job first: forbidden once taken off the crew, not found for another company or a missing id', async () => {
+    it('asks who may open the job first: not found once taken off the crew, the same as for another company or a missing id', async () => {
       const { me, job, api } = await setup();
       expect((await api.post(addPath(job.id), { kind: 'EMAIL', value: 'one@example.test' })).status).toBe(201);
 
       await fx.removeCrew(job.visitId!, me.id);
       const off = await (await fx.signedInAs(me)).post(addPath(job.id), { kind: 'EMAIL', value: 'two@example.test' });
-      expect(off.status).toBe(403);
+      expect(off.status).toBe(404);
 
       const other = await fx.newOrg();
       const foreign = await fx.addJob(other.org, other.customer, {});
@@ -337,7 +337,7 @@ suite('job-only phones and emails (real database)', () => {
     });
 
     it('is refused with neither switch even with Add notes on, and accepted with Edit jobs alone', async () => {
-      const neither = await setup({ edit_job_and_lead_contact_details: false, edit_jobs: false, add_notes: true, jobs_scope: 'attached' });
+      const neither = await setup({ edit_job_and_lead_contact_details: false, edit_jobs: false, create_jobs: false, add_notes: true, jobs_scope: 'attached' });
       const refused = await neither.api.post(changePath(neither.job.id), { kind: 'EMAIL', replaces: 'pat@example.test', value: 'new@example.test' });
       const jobsOnly = await setup({ edit_job_and_lead_contact_details: false, edit_jobs: true, jobs_scope: 'attached' });
       const accepted = await jobsOnly.api.post(changePath(jobsOnly.job.id), { kind: 'EMAIL', replaces: 'pat@example.test', value: 'new@example.test' });
@@ -347,11 +347,11 @@ suite('job-only phones and emails (real database)', () => {
       expect(accepted.status).toBe(201);
     });
 
-    it('asks who may open the job first: forbidden off the crew, not found for another company or a missing id', async () => {
+    it('asks who may open the job first: not found off the crew, the same as for another company or a missing id', async () => {
       const { me, job, api } = await setup();
       await fx.removeCrew(job.visitId!, me.id);
       const off = await (await fx.signedInAs(me)).post(changePath(job.id), { kind: 'EMAIL', replaces: 'pat@example.test', value: 'two@example.test' });
-      expect(off.status).toBe(403);
+      expect(off.status).toBe(404);
 
       const other = await fx.newOrg();
       const foreign = await fx.addJob(other.org, other.customer, {});
@@ -417,7 +417,7 @@ suite('job-only phones and emails (real database)', () => {
     });
 
     it('refuses a person with neither switch, the entry\'s own author included, and changes nothing', async () => {
-      const { org, customer, job, entry, fixerApi, author } = await withColleagueEntry({ edit_job_and_lead_contact_details: false, edit_jobs: false, add_notes: true, jobs_scope: 'attached' });
+      const { org, customer, job, entry, fixerApi, author } = await withColleagueEntry({ edit_job_and_lead_contact_details: false, edit_jobs: false, create_jobs: false, add_notes: true, jobs_scope: 'attached' });
 
       expect((await fixerApi.patch(entryPath(job.id, entry.id), { label: 'Nope' })).status).toBe(403);
       expect((await fixerApi.delete(entryPath(job.id, entry.id))).status).toBe(403);
@@ -426,7 +426,7 @@ suite('job-only phones and emails (real database)', () => {
       await setRoleSwitchValues({
         organizationId: org,
         roleKey: (await db.user.findUniqueOrThrow({ where: { id: author.id }, include: { custom_role: true } })).custom_role!.key,
-        values: { edit_job_and_lead_contact_details: false, edit_jobs: false },
+        values: { edit_job_and_lead_contact_details: false, edit_jobs: false, create_jobs: false },
         actorId: null,
         reason: 'manual',
       });
@@ -439,7 +439,7 @@ suite('job-only phones and emails (real database)', () => {
       expect(customer).toBeTruthy();
     });
 
-    it('asks who may open the job first: forbidden off the crew, not found for another company, a missing job or a missing entry', async () => {
+    it('asks who may open the job first: not found off the crew, the same as for another company, a missing job or a missing entry', async () => {
       const { job, entry, fixer, fixerApi } = await withColleagueEntry();
       const other = await fx.newOrg();
       const foreign = await fx.addJob(other.org, other.customer, {});
@@ -453,8 +453,8 @@ suite('job-only phones and emails (real database)', () => {
       expect((await fixerApi.delete(entryPath(second.id, entry.id))).status).toBe(404);
 
       await fx.removeCrew(job.visitId!, fixer.id);
-      expect((await (await fx.signedInAs(fixer)).patch(entryPath(job.id, entry.id), { label: 'x' })).status).toBe(403);
-      expect((await (await fx.signedInAs(fixer)).delete(entryPath(job.id, entry.id))).status).toBe(403);
+      expect((await (await fx.signedInAs(fixer)).patch(entryPath(job.id, entry.id), { label: 'x' })).status).toBe(404);
+      expect((await (await fx.signedInAs(fixer)).delete(entryPath(job.id, entry.id))).status).toBe(404);
       expect((await db.recordContactEntry.findUniqueOrThrow({ where: { id: entry.id } })).removed_at).toBeNull();
     });
 
@@ -652,7 +652,7 @@ suite('job-only phones and emails (real database)', () => {
       const refused = await contact.api.post(namePath(contact.job.id), { kind: 'FIRST_NAME', value: 'Patricia' });
       // The same person still adds a phone: the contact switch covers phones and emails, not names.
       const added = await contact.api.post(addPath(contact.job.id), { kind: 'EMAIL', value: 'wife@example.test' });
-      const neither = await setupNamed({ edit_job_and_lead_contact_details: false, edit_jobs: false, add_notes: true, jobs_scope: 'attached' });
+      const neither = await setupNamed({ edit_job_and_lead_contact_details: false, edit_jobs: false, create_jobs: false, add_notes: true, jobs_scope: 'attached' });
       const none = await neither.api.post(namePath(neither.job.id), { kind: 'COMPANY_NAME', value: 'Other Co' });
       const editor = await setupNamed();
       const accepted = await editor.api.post(namePath(editor.job.id), { kind: 'COMPANY_NAME', value: 'Other Co' });
@@ -664,13 +664,13 @@ suite('job-only phones and emails (real database)', () => {
       expect(await db.recordContactEntry.count({ where: { job_id: { in: [contact.job.id, neither.job.id] }, kind: { not: 'EMAIL' } } })).toBe(0);
     });
 
-    it('asks who may open the job first: forbidden off the crew, not found for another company or a missing id', async () => {
+    it('asks who may open the job first: not found off the crew, the same as for another company or a missing id', async () => {
       const { me, job, api } = await setupNamed();
       expect((await api.post(namePath(job.id), { kind: 'FIRST_NAME', value: 'Patricia' })).status).toBe(201);
 
       await fx.removeCrew(job.visitId!, me.id);
       const off = await (await fx.signedInAs(me)).post(namePath(job.id), { kind: 'LAST_NAME', value: 'Soto' });
-      expect(off.status).toBe(403);
+      expect(off.status).toBe(404);
 
       const other = await fx.newOrg();
       const foreign = await fx.addJob(other.org, other.customer, {});

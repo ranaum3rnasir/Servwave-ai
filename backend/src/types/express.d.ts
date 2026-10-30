@@ -11,6 +11,8 @@ declare global {
         // SRVW-138: the BASE role. Every branch asking "what kind of user is this"
         // reads this; only GRANT lookups go through grantRoleKey.
         role: Role;
+        // Roles & Permissions P15: whether the person is an Admin. Always loaded with the role.
+        is_admin: boolean;
         custom_role_id?: string | null;
         // Selected wherever custom_role_id is - grantRoleKey throws without it rather
         // than silently falling back to the base role's grant set.

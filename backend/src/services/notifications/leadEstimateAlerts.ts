@@ -4,7 +4,7 @@
  * "New lead with no owner", "Walkthrough scheduled" and the estimate alerts (won, declined, archived, deposit paid, deposit
  * waived, approval voided, status corrected) go out through M6's two lanes (alertChain.ts), the same rule as the job alerts:
  * the record's people are always told; whoever must act is the record's Dispatcher, else the holders of the verb's step switch
- * who can open it, else the Manage roles and permissions holders; holders of the area's "Alert me about every ..." switch get a
+ * who can open it, else the Admins; holders of the area's "Alert me about every ..." switch get a
  * copy. Nobody comes from a role name, and the person who did it is never told.
  *
  *   A lead's record is the lead: its Owner, the people on its walkthroughs, its Dispatcher.

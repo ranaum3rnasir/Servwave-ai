@@ -132,10 +132,6 @@ beforeEach(() => {
   clearPermissionCache();
 
   // attachAbility middleware
-  mockPrisma.rolePermission.findMany.mockImplementation(
-    (args: { where: { organization_id: string; role: string } }) =>
-      Promise.resolve(DEFAULT_GRANTS.filter((g) => g.role === args.where.role)),
-  );
 
   // Common defaults for create() path
   (prisma.customer.findMany as any).mockResolvedValue([]);

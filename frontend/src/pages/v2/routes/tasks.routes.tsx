@@ -22,14 +22,14 @@ const TasksHubPage = lazy(() => import('../tasks/TasksHubPage'));
  * Guards decide who may enter, the layout only decides what frames the page, so
  * swapping the second changes no permission.
  *
- * List switches: the Tasks list opens on View tasks and Show Tasks page. A person without them is sent to their
+ * List switches: the Tasks list opens on View tasks. A person without it is sent to their
  * dashboard, which is everyone's home page (Roles & Permissions, PRD 2).
  */
 export function tasksV2Routes() {
   return (
     <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN']} />}>
       <Route element={<V2AppLayout />}>
-        <Route element={<RequirePageAccess all={['view_tasks', 'show_tasks_page']} />}>
+        <Route element={<RequirePageAccess all={['view_tasks']} />}>
           <Route path="/tasks" element={<TasksHubPage />} />
         </Route>
       </Route>

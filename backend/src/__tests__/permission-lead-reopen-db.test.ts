@@ -328,14 +328,14 @@ suite('reopening a closed lead, and the status lock on a closed lead (real datab
       }
     });
 
-    it('refuses a person who cannot open the lead (forbidden), and a lead in another company (not found)', async () => {
+    it('refuses a person who cannot open the lead, and a lead in another company, both as not found', async () => {
       const { org, lead } = await setup(REOPEN_ONLY, { status: 'LOST' });
       await db.lead.update({ where: { id: lead.id }, data: { commission_owner_id: null } });
       const scoped = await personWith(org, { ...REOPEN_ONLY, leads_scope: 'attached' });
       const asScoped = await fx.signedInAs(scoped);
 
       const forbidden = await reopen(asScoped, lead.id);
-      expect(forbidden.status).toBe(403);
+      expect(forbidden.status).toBe(404);
       expect(await statusOf(lead.id)).toBe('LOST');
 
       const other = await fx.newOrg();
@@ -441,7 +441,7 @@ suite('reopening a closed lead, and the status lock on a closed lead (real datab
     });
 
     it('lists Reopen for a person who can open the lead but cannot edit it (Edit leads off)', async () => {
-      const { lead, api } = await setup({ ...REOPEN_ONLY, edit_leads: false, edit_job_and_lead_contact_details: false }, { status: 'WON' });
+      const { lead, api } = await setup({ ...REOPEN_ONLY, edit_leads: false, create_leads: false, edit_job_and_lead_contact_details: false }, { status: 'WON' });
 
       expect(((await api.get(`/api/leads/${lead.id}`)).body.lead.actions as string[])).toContain('reopen');
     });

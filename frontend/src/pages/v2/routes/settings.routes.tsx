@@ -2,8 +2,9 @@ import { lazy } from 'react';
 import { Navigate, Route } from 'react-router-dom';
 
 import ProtectedRoute from '@/components/ProtectedRoute';
-import RequireManageRoles from '@/components/RequireManageRoles';
-import RequireUsersTeamsPage from '@/components/RequireUsersTeamsPage';
+import RequireAdmin from '@/components/RequireAdmin';
+
+import { useAuthStore } from '@/stores/auth.store';
 
 import V2AppLayout from '../V2AppLayout';
 
@@ -60,35 +61,21 @@ const EmailSenderPage = lazy(() => import('@/pages/settings/EmailSenderPage'));
  *   /users              ProtectedRoute(all four roles) - the app-wide gate that
  *                       wraps App.tsx's whole authenticated tree - then a bare
  *                       redirect to /settings/users. The admin-only "Users" stub
- *                       page is gone (PRD 2, S02.5); /settings/users decides,
- *                       on Show Users & Teams page, who stays and who goes home.
- *   /settings/*         NO route-level ROLE guard. Every authenticated
- *                       user of any role can deep-link to any settings tab,
- *                       EXCEPT the two that follow a switch (PRD 2, S02.5):
- *                       /settings/users (Show Users & Teams page) and
- *                       /settings/roles (Manage roles and permissions) send
- *                       anyone without theirs to the dashboard. Every other
- *                       tab is open as described next. The
- *                       nav LIST is CASL-filtered inside SettingsLayout, but the
- *                       routes are open, so a technician who types
- *                       /settings/inventory mounts the page with no redirect and
- *                       no toast. Adding a guard here would change who can reach a
- *                       page - a behaviour change, not a restyle.
- *
- *                       WHAT THAT USER THEN SEES IS PER-PAGE, and "the API 403s
- *                       the read, so the page comes up empty" is NOT a rule to
- *                       rely on. It holds only where a page's READ is gated as
- *                       tightly as its writes. /settings/decline-reasons is the
- *                       counter-example that proves it: its GET is the coarser
- *                       `read Estimate` on purpose (slice C needs a rep to read
- *                       these words while declining their own estimate), so a
- *                       SALES user reached a FULLY POPULATED list - rename
- *                       fields, toggles, drag handles, an Add button - every
- *                       control of which 403s. Not an empty list; a working-
- *                       looking one. A page whose read and write gates differ
- *                       has to gate ITSELF, and that one now does: `update
- *                       Organization`, the same pair as its writes, rendering
- *                       NotAuthorizedPage.
+ *                       page is gone (PRD 2, S02.5); /settings/users decides
+ *                       (Admins only, AL-18).
+ *   /settings/*         NO route-level ROLE guard on the pages that have a
+ *                       door of their own: My Profile, Login & Security (every
+ *                       person's own password and email code), Locations (its own
+ *                       switch) and ServWave Payments (the payout switch). The
+ *                       rest is the Admin flag's alone (AL-18, ticket 36, 36b):
+ *                       Users & Teams, Roles & Permissions, a person's
+ *                       Permissions, the company's details, branding, lists, statuses, reasons, tax rates, phone,
+ *                       sender address, inventory and schedule colours all sit
+ *                       under one RequireAdmin, so for anyone who is not an
+ *                       Admin those addresses render nothing and none of the
+ *                       page's reads are made. The nav LIST in SettingsLayout
+ *                       shows an Admin-only row to Admins alone. The server
+ *                       refuses every one of their writes the same way.
  *
  * There is no RequireFeature on any settings route in App.tsx either, including
  * the two comm-gated tabs: the `phone` entitlement gates their NAV ENTRY and
@@ -106,6 +93,12 @@ const EmailSenderPage = lazy(() => import('@/pages/settings/EmailSenderPage'));
  * AppLayout. Guards decide who may enter, the layout only decides what frames
  * the page, so swapping the second changes no permission.
  */
+/** The bare /settings: an Admin opens the company's details, anyone else the one page every signed-in person has. */
+function SettingsHome() {
+  const isAdmin = useAuthStore((s) => s.user?.is_admin === true);
+  return <Navigate to={isAdmin ? '/settings/company' : '/settings/profile'} replace />;
+}
+
 export function settingsV2Routes() {
   return (
     <>
@@ -128,40 +121,38 @@ export function settingsV2Routes() {
       <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN']} />}>
         <Route element={<V2AppLayout />}>
           <Route path="/settings" element={<SettingsLayout />}>
-            <Route index element={<Navigate to="/settings/company" replace />} />
-            <Route path="/settings/company" element={<CompanyProfilePage />} />
-            <Route path="/settings/branding" element={<BrandingPage />} />
-            <Route path="/settings/locations" element={<LocationsPage />} />
-            {/* Users & Teams follows Show Users & Teams page; Roles & Permissions follows Manage roles and
-                permissions. Anyone else lands on their dashboard (PRD 2, S02.5). */}
-            <Route element={<RequireUsersTeamsPage />}>
+            <Route index element={<SettingsHome />} />
+            {/* Setting up the company, and managing its people and roles, are the Admin flag's alone (AL-18, ticket 36, 36b): for anyone
+                else every one of these addresses renders nothing, and none of the page's reads are made. */}
+            <Route element={<RequireAdmin />}>
+              <Route path="/settings/company" element={<CompanyProfilePage />} />
+              <Route path="/settings/branding" element={<BrandingPage />} />
               <Route path="/settings/users" element={<UsersTeamsPage />} />
-            </Route>
-            <Route element={<RequireManageRoles />}>
               <Route path="/settings/roles" element={<RolesPage />} />
               {/* A person's own switches: opened from the Permissions action on their Users & Teams row. */}
               <Route path="/settings/users/:userId/permissions" element={<PersonPermissionsPage />} />
+              <Route path="/settings/lists" element={<ListsPage />} />
+              <Route path="/settings/job-sub-statuses" element={<JobSubStatusesPage />} />
+              <Route path="/settings/decline-reasons" element={<DeclineReasonsPage />} />
+              <Route path="/settings/job-cancel-reasons" element={<JobCancelReasonsPage />} />
+              <Route path="/settings/phone-sms" element={<PhoneSmsPage />} />
+              <Route path="/settings/phone-numbers" element={<PhoneNumbersSettingsPage />} />
+              <Route path="/settings/inventory" element={<InventorySettingsPage />} />
+              <Route path="/settings/schedule-colors" element={<ScheduleColorsPage />} />
+              <Route path="/settings/tax-rates" element={<TaxRatesPage />} />
+              <Route path="/settings/email-sender" element={<EmailSenderPage />} />
             </Route>
+            <Route path="/settings/locations" element={<LocationsPage />} />
+            {/* Login & Security is every person's own sign-in (their password and email code); the company's two-step policy on it is
+                drawn for an Admin alone, and the server refuses its write to anyone else. */}
             <Route path="/settings/security" element={<SecurityPage />} />
-            {/* ServWave Payments: an old ?tab= link still goes to the Payments page, anything else is the settings page. */}
+            {/* ServWave Payments: an old ?tab= link still goes to the Payments page, anything else is the settings page. It is the
+                one setup page with a second door: the payout switch also opens it, and the page checks both itself. */}
             <Route path="/settings/servwave-payments" element={<ServwavePaymentsRoute />} />
-            <Route path="/settings/lists" element={<ListsPage />} />
-            <Route path="/settings/job-sub-statuses" element={<JobSubStatusesPage />} />
-            <Route path="/settings/decline-reasons" element={<DeclineReasonsPage />} />
-            <Route path="/settings/job-cancel-reasons" element={<JobCancelReasonsPage />} />
-            <Route path="/settings/phone-sms" element={<PhoneSmsPage />} />
-            <Route path="/settings/phone-numbers" element={<PhoneNumbersSettingsPage />} />
-            <Route path="/settings/inventory" element={<InventorySettingsPage />} />
-            <Route path="/settings/schedule-colors" element={<ScheduleColorsPage />} />
             <Route path="/settings/profile" element={<MyProfilePage />} />
             {/* Lead statuses are fixed, so the Lead Statuses tab is gone. An old bookmark
                 lands on the settings home rather than falling through to the catch-all. */}
             <Route path="/settings/lead-statuses" element={<Navigate to="/settings" replace />} />
-            {/* The two not-yet-rebuilt tabs - see the comment on their imports.
-                Same guard stack and same URLs as every sibling above; only the
-                page component comes from the original module. */}
-            <Route path="/settings/tax-rates" element={<TaxRatesPage />} />
-            <Route path="/settings/email-sender" element={<EmailSenderPage />} />
           </Route>
         </Route>
       </Route>

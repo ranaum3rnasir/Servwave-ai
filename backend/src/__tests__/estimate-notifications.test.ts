@@ -168,10 +168,6 @@ beforeEach(() => {
   mockPrisma.estimate.findUnique.mockResolvedValue(null);
 
   // loadGrantsFor() used by the canDo middleware.
-  mockPrisma.rolePermission.findMany.mockImplementation(
-    (args: { where: { organization_id: string; role: string } }) =>
-      Promise.resolve(DEFAULT_GRANTS.filter((g) => g.role === args.where.role)),
-  );
 
   // Default: no stripeEvent duplicate.
   mockPrisma.stripeEvent.findUnique.mockResolvedValue(null);

@@ -61,7 +61,7 @@ describe.each([
   });
 
   it('leaves Delete out of the row menu of a file the person may not delete, and Rename out of one they may not rename', async () => {
-    renderWithProviders(render([THEIRS, MINE]), { ability: buildAbility([{ action: 'update', subject: 'Attachment' }]) });
+    renderWithProviders(render([THEIRS, MINE]), { ability: buildAbility([{ action: 'update', subject: 'Job' }]) });
     const theirs = await openMenu('Their photo');
     // The server's answer wins over the browser's own grant: this person's CASL rules include update, the file says no.
     expect(within(theirs).queryByRole('menuitem', { name: /rename/i })).not.toBeInTheDocument();
@@ -123,7 +123,7 @@ describe('the lead page\'s file list', () => {
     list([MINE, THEIRS]);
     renderWithProviders(
       <AttachmentSection entityType="LEAD" entityId="lead-1" />,
-      { ability: buildAbility([{ action: 'delete', subject: 'Attachment' }, { action: 'read', subject: 'Attachment' }]) },
+      { ability: buildAbility([{ action: 'update', subject: 'Lead' }]) },
     );
     await screen.findByText('My photo');
     expect(screen.getAllByRole('button', { name: 'Delete attachment' })).toHaveLength(1);

@@ -6,8 +6,9 @@
  *   1. the people on the job or lead the call or text is tied to: its Owner or Sold By, its Dispatcher and its crew (the crew of
  *      a lead is its walkthroughs' crew; a lead's assignees are not among the record's people);
  *   2. the holders of Communication scope "All";
+ *      (and, on Team, the people of the department of anyone told by the groups below);
  *   3. everyone linked to the company number it came in on. For the main line (the Organization default number) that is
- *      the people ticked on it AND the people the main-line fallback covers: a person on "Linked to me" with no linked number
+ *      the people ticked on it AND the people the main-line fallback covers: a person on Attached with no linked number
  *      of their own who holds "See the main line when I have no number" (M11's `effectiveLinkedNumberIds`, which a call log
  *      uses for the same person). A person with a number of their own who is not ticked on the main line is not covered;
  *   4. for a text only, the person reply attribution names: the sender of the latest outbound text before it, in the same
@@ -160,7 +161,7 @@ export async function conversationAlertAudience(
   // company, is not among them and so is never told.
   const people = await prisma.user.findMany({
     where: { organization_id: organizationId, is_active: true },
-    select: { id: true, organization_id: true, role: true, custom_role_id: true, custom_role: { select: { key: true } } },
+    select: { id: true, organization_id: true, role: true, custom_role_id: true, is_admin: true, department_id: true, custom_role: { select: { key: true } } },
   });
   if (people.length === 0) return { people: [], subject };
   const active = new Set(people.map((p) => p.id));
@@ -181,7 +182,7 @@ export async function conversationAlertAudience(
     });
     for (const link of links) if (active.has(link.user_id)) told.add(link.user_id);
 
-    // The main line also reaches the people the fallback covers: on "Linked to me", the switch on and no number of their own.
+    // The main line also reaches the people the fallback covers: on Attached, the switch on and no number of their own.
     if (subject.is_org_default) {
       const maybe = people.filter((p) => {
         const own = values.get(p.id);
@@ -197,6 +198,14 @@ export async function conversationAlertAudience(
         for (const p of maybe) if (!own.has(p.id)) told.add(p.id);
       }
     }
+  }
+
+  // A person on Team lists what anyone in their department took part in, so they hear about the conversations of
+  // the people told above. The access filter below has the last word on whether they may read it.
+  const departmentOf = new Map(people.map((p) => [p.id, p.department_id]));
+  const departmentsTold = new Set([...told].flatMap((id) => departmentOf.get(id) ?? []));
+  for (const p of people) {
+    if (scopeValueOf(values.get(p.id)?.communication_scope) === 'team' && p.department_id && departmentsTold.has(p.department_id)) told.add(p.id);
   }
 
   const readers = await filterRecipientsByAccess(subject.objectType, subject.objectId, [...told], organizationId, { messageId: subject.messageId });

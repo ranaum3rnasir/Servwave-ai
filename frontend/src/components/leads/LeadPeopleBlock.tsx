@@ -5,10 +5,11 @@ import api from '@/lib/axios';
 import { extractApiError } from '@/lib/utils';
 import { Button } from '@/ui-kit/components/ui/button';
 import { toast } from '@/ui-kit/components/ui/sonner';
+import { DeactivatedMark } from '@/components/people/DeactivatedMark';
 import { AssignLeadPopover } from './AssignLeadPopover';
 import { AssignLeadDispatcherPopover } from './AssignLeadDispatcherPopover';
 
-type Person = { id: string; first_name: string; last_name: string };
+type Person = { id: string; first_name: string; last_name: string; is_active?: boolean };
 
 interface LeadPeopleBlockProps {
   leadId: string;
@@ -31,6 +32,7 @@ function Slot({ label, empty, person, actions }: { label: string; empty: string;
           <span className={person ? 'truncate font-medium' : 'text-muted-foreground'}>
             {person ? `${person.first_name} ${person.last_name}` : empty}
           </span>
+          <DeactivatedMark person={person} />
         </p>
         <div className="flex shrink-0 items-center gap-1.5">{actions}</div>
       </div>

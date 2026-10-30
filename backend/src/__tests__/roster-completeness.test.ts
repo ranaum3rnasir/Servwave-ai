@@ -12,8 +12,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
   mockAuthAs('admin');
-  mockPrisma.rolePermission.findMany.mockImplementation((a: any) =>
-    Promise.resolve(DEFAULT_GRANTS.filter((g) => g.role === a.where.role)));
   mockPrisma.user.findMany.mockResolvedValue([]);
 });
 
@@ -67,11 +65,11 @@ describe('GET /api/users/assignable?include_referenced_in=leads', () => {
 });
 
 describe('GET /api/estimates/creators', () => {
-  it('unions active ADMIN/SALES with distinct actual creators (any role/status)', async () => {
+  it('unions active Admins and Sales with distinct actual creators (any role/status)', async () => {
     await request(app).get('/api/estimates/creators').set(authHeader('admin'));
     const where = mockPrisma.user.findMany.mock.calls[0][0].where;
     expect(where.OR).toEqual(expect.arrayContaining([
-      expect.objectContaining({ is_active: true, role: { in: ['ADMIN', 'SALES'] } }),
+      expect.objectContaining({ is_active: true, OR: [{ is_admin: true }, { role: 'SALES' }] }),
       expect.objectContaining({ created_estimates: { some: {} } }),
     ]));
   });

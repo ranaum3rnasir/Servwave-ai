@@ -2,7 +2,8 @@ import { Router } from 'express';
 import multer from 'multer';
 import { authenticate } from '../middleware/authenticate';
 import { attachAbility } from '../middleware/attachAbility';
-import { canDo, canSetRoleFields } from '../middleware/canGuard';
+import { canDo, requireAdmin } from '../middleware/canGuard';
+import { requireOwner } from '../lib/users/owner';
 import { validate } from '../middleware/validate';
 import { withOrgContext } from '../middleware/withOrgContext';
 import { requireFeature } from '../middleware/requireFeature';
@@ -72,36 +73,45 @@ router.delete('/me/avatar', avatarController.deleteAvatar);
 router.get('/assignable', userController.listAssignable);
 
 router.get('/', canDo('read', 'User'), userController.list);
-// A direct create needs Create users; an invite and a resend need Invite users (S01.12). Naming a role on a create,
-// an invite or an update needs Manage roles and permissions on top.
-router.post('/', canDo('create', 'User'), canSetRoleFields(), validate(userController.createUserSchema), userController.create);
-router.post('/invite', canDo('invite', 'User'), canSetRoleFields(), validate(userController.inviteUserSchema), userController.inviteUser);
-router.post('/:id/invite', canDo('invite', 'User'), userController.invite);
-router.post('/:id/revoke-login', canDo('update', 'User'), userController.revokeLogin);
+// Managing people is an Admin's alone (AL-18): adding, inviting, changing (a role included), deactivating, deleting and
+// erasing a person, their switches, their mailbox, their sign-in and their password reset all check the Admin flag, never
+// a switch. Only the two reads above and below follow View users, for names in pickers and on records.
+router.post('/', requireAdmin, validate(userController.createUserSchema), userController.create);
+router.post('/invite', requireAdmin, validate(userController.inviteUserSchema), userController.inviteUser);
+router.post('/:id/invite', requireAdmin, userController.invite);
+router.post('/:id/revoke-login', requireAdmin, userController.revokeLogin);
 // "Send password reset" (password reset spec §7, slice 07): emails the person the same reset link as
-// "Forgot password?". Edit users; limited per admin on every request; the target is org-scoped.
-// A malformed :id answers the handler's own 404 before Prisma runs (P2023 screen), after canDo so a
-// caller without the grant still gets 403.
-router.post('/:id/password-reset', canDo('update', 'User'), adminPasswordResetLimiter, requireUuidParam('id', 'User not found'), passwordResetController.sendUserPasswordReset);
-// A person's switches (S01.20): every read and write needs Manage roles and permissions; nobody writes their own set.
-router.get('/:id/permissions', canDo('manage_roles', 'Role'), permissionController.getPersonSwitches);
-router.put('/:id/permissions', canDo('manage_roles', 'Role'), validate(permissionController.putPersonSwitchesSchema), permissionController.putPersonSwitches);
-router.post('/:id/permissions/reset', canDo('manage_roles', 'Role'), validate(permissionController.resetPersonSwitchesSchema), permissionController.resetPersonSwitchValues);
-router.post('/:id/permissions/save-as-role', canDo('manage_roles', 'Role'), validate(permissionController.saveAsRoleSchema), permissionController.saveSwitchesAsNewRole);
-router.get('/:id/permissions/change-log', canDo('manage_roles', 'Role'), permissionController.getPersonChangeLog);
+// "Forgot password?". Limited per admin on every request; the target is org-scoped.
+// A malformed :id answers the handler's own 404 before Prisma runs (P2023 screen), after the Admin check so a
+// non-Admin still gets 403.
+router.post('/:id/password-reset', requireAdmin, adminPasswordResetLimiter, requireUuidParam('id', 'User not found'), passwordResetController.sendUserPasswordReset);
+// Make Owner (ticket 27, D1): the Owner's alone, whoever the target is. It only emails the Owner an approval link; ownership
+// moves when that link is opened (POST /api/auth/owner-approval/approve).
+router.post('/:id/make-owner', requireOwner, userController.requestMakeOwner);
+// A person's switches (S01.20): every read and write is an Admin's; nobody writes their own set.
+router.get('/:id/permissions', requireAdmin, permissionController.getPersonSwitches);
+router.put('/:id/permissions', requireAdmin, validate(permissionController.putPersonSwitchesSchema), permissionController.putPersonSwitches);
+router.post('/:id/permissions/reset', requireAdmin, validate(permissionController.resetPersonSwitchesSchema), permissionController.resetPersonSwitchValues);
+router.post('/:id/permissions/save-as-role', requireAdmin, validate(permissionController.saveAsRoleSchema), permissionController.saveSwitchesAsNewRole);
+router.get('/:id/permissions/change-log', requireAdmin, permissionController.getPersonChangeLog);
+// Deactivating changes no record (P19). What the person still has open is read here, and moving it to someone else is an
+// optional, Admin-only step.
+router.get('/:id/deactivation-summary', requireAdmin, userController.deactivationSummary);
+router.post('/:id/reassign', requireAdmin, validate(userController.reassignOpenSchema), userController.reassignOpen);
 router.get('/:id', canDo('read', 'User'), userController.getById);
-router.patch('/:id', canDo('update', 'User'), canSetRoleFields(), validate(userController.updateUserSchema), userController.update);
-// Deactivating is an Edit users action on every path (this one and the is_active field above); Delete users is only
-// the permanent delete and the two-step login reset (S01.12).
-// A user's mailbox address (PRD 10, S10.25): the name part only, under Edit users and the Email plan feature. The
-// sign-in email is a different thing and is never changed here.
-router.put('/:id/mailbox-address', requireFeature('email'), canDo('update', 'User'), validate(userMailboxController.setMailboxAddressSchema), userMailboxController.setMailboxAddress);
-// A leaver's mailbox handed on later, to another person or to the main mailbox (S10.22): Edit users and the Email plan feature.
-router.put('/:id/mailbox-handover', requireFeature('email'), canDo('update', 'User'), validate(userMailboxController.moveMailboxSchema), userMailboxController.moveUserMailbox);
-router.delete('/:id', canDo('update', 'User'), validate(userController.deactivateUserSchema), userController.deactivate);
-router.delete('/:id/permanent', canDo('delete', 'User'), userController.permanentDelete);
-router.post('/:id/mfa/reset', canDo('delete', 'User'), userController.resetMfa);
-router.post('/:id/avatar', canDo('update', 'User'), avatarUpload.single('file'), avatarMulterErrors, withOrgContext, avatarController.setAvatar);
-router.delete('/:id/avatar', canDo('update', 'User'), avatarController.deleteAvatar);
+router.patch('/:id', requireAdmin, validate(userController.updateUserSchema), userController.update);
+// A user's mailbox address (PRD 10, S10.25): the name part only, under the Email plan feature. The sign-in email is a
+// different thing and is never changed here.
+router.put('/:id/mailbox-address', requireAdmin, requireFeature('email'), validate(userMailboxController.setMailboxAddressSchema), userMailboxController.setMailboxAddress);
+// A leaver's mailbox handed on later, to another person or to the main mailbox (S10.22), under the Email plan feature.
+router.put('/:id/mailbox-handover', requireAdmin, requireFeature('email'), validate(userMailboxController.moveMailboxSchema), userMailboxController.moveUserMailbox);
+// Deactivating (this path or the is_active field above); the permanent delete; the two-step login reset.
+router.delete('/:id', requireAdmin, validate(userController.deactivateUserSchema), userController.deactivate);
+router.delete('/:id/permanent', requireAdmin, userController.permanentDelete);
+// Erasing a deactivated person's personal data keeps the row and every link to it (P19); an Admin's action, never a delete.
+router.post('/:id/erase-personal-data', requireAdmin, userController.erasePersonalData);
+router.post('/:id/mfa/reset', requireAdmin, userController.resetMfa);
+router.post('/:id/avatar', requireAdmin, avatarUpload.single('file'), avatarMulterErrors, withOrgContext, avatarController.setAvatar);
+router.delete('/:id/avatar', requireAdmin, avatarController.deleteAvatar);
 
 export default router;

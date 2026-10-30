@@ -114,7 +114,6 @@ describe('GET /api/inventory/purchase-orders/:id/activity — #2042 scoped to a 
       ...DEFAULT_GRANTS.filter((g) => g.role === 'SALES'),
       { role: 'SALES', action: 'read', subject: 'PurchaseOrder', conditions: OWN_JOB_PO_CONDITION },
     ];
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue(rows);
     clearPermissionCache();
     mockPrisma.purchaseOrder.findFirst.mockImplementation(({ where }: { where: Record<string, unknown> }) => {
       const row = ALL_POS.find((p) => p.id === where.id);

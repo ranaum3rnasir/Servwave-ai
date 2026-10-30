@@ -2,6 +2,7 @@ import { Request } from 'express';
 import { prisma } from '../prisma';
 import { tenantWhere } from '../tenant';
 import { customerLabel } from '../tasks/enrich';
+import { resolveCustomerScope } from '../permissions/customerScope';
 
 export type ParticipantKind = 'USER' | 'CUSTOMER';
 
@@ -54,10 +55,30 @@ export async function validateParticipantRefs(req: Request, participants: Partic
     if (rows.length !== userIds.length) return 'Invalid user_id in participants';
   }
   if (customerIds.length) {
+    // The entry form picks customers from the org-wide picker, so any customer of the company may be named (Ran's picker
+    // ruling, 2026-10-28); one that is not this company's answers as missing.
     const rows = await prisma.customer.findMany({ where: { id: { in: customerIds }, ...tenantWhere(req) }, select: { id: true } });
     if (rows.length !== customerIds.length) return 'Invalid customer_id in participants';
   }
   return null;
+}
+
+/**
+ * The participants as a viewer may see them: a customer the viewer cannot read keeps its name (the picker shows it) and
+ * loses its email address (the picker does not). The notification senders take the unredacted list; only answers go
+ * through this.
+ */
+export async function participantsForViewer<T extends { kind: string; customer_id: string | null; email: string | null }>(
+  req: Request,
+  participants: T[],
+): Promise<T[]> {
+  const customerIds = [...new Set(participants.filter((p) => p.kind === 'CUSTOMER' && p.customer_id).map((p) => p.customer_id as string))];
+  if (customerIds.length === 0) return participants;
+  const scope = await resolveCustomerScope(req);
+  const readable = Object.keys(scope).length === 0
+    ? new Set(customerIds)
+    : new Set((await prisma.customer.findMany({ where: { id: { in: customerIds }, ...tenantWhere(req), ...scope }, select: { id: true } })).map((c) => c.id));
+  return participants.map((p) => (p.kind === 'CUSTOMER' && p.customer_id && !readable.has(p.customer_id) ? { ...p, email: null } : p));
 }
 
 /**

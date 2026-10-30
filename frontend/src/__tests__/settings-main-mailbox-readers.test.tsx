@@ -20,7 +20,7 @@ const nonHolderAbility = buildAbility([{ action: 'read', subject: 'Job' }]);
 const DOMAIN = 'mail.servwave.com';
 const READERS = '/api/organization/email-sender/readers';
 const NOBODY =
-  'Nobody is linked. People who can manage roles and permissions read the main mailbox until you add someone.';
+  'Nobody is linked. Admins read the main mailbox until you add someone.';
 
 type Person = { id: string; name: string };
 type Page = { items: Person[]; total: number; offset: number; limit: number };
@@ -48,7 +48,7 @@ function mockServer() {
 function signIn() {
   vi.mocked(useAuthStore).mockImplementation((selector: (s: Record<string, unknown>) => unknown) =>
     selector({
-      user: { id: 'u-1', email: 'holder@test.com', first_name: 'Test', last_name: 'Holder', role: 'ADMIN', org_features: ['email'] },
+      user: { id: 'u-1', email: 'holder@test.com', first_name: 'Test', last_name: 'Holder', role: 'ADMIN', is_admin: true, org_features: ['email'] },
       isAuthenticated: true, isLoading: false, error: null,
     }),
   );

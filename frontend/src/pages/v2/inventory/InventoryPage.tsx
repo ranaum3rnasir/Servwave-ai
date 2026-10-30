@@ -17,7 +17,7 @@ import {
 import type { Branch, Category, Item, Location, Vendor } from '@/lib/api/inventory';
 import { useLogisticOrders } from '@/lib/api/logisticOrders';
 import { useAppAbility } from '@/contexts/AbilityContext';
-import { canSeePricing, canStartPurchaseOrder } from '@/lib/ability';
+import { canSeePricing, canSeePrices as canSeePricesAbility, canStartPurchaseOrder } from '@/lib/ability';
 import { switchOn, useMySwitches } from '@/lib/api/mySwitches';
 import { useConfirm } from '@/hooks/useConfirm';
 import { extractApiError, formatCurrencyWhole } from '@/lib/utils';
@@ -181,9 +181,9 @@ export default function InventoryPage() {
   // stands on its own pair and does not depend on Stock.
   const mine = useMySwitches()?.values;
   const canReadStock = ability.can('read', 'Inventory');
-  const canSeeStockTabs = canReadStock && switchOn(mine, 'show_stock_page');
+  const canSeeStockTabs = canReadStock && switchOn(mine, 'view_stock');
   const canReadLogisticOrders = ability.can('read', 'LogisticOrder');
-  const canSeeLogisticOrdersTab = canReadLogisticOrders && switchOn(mine, 'show_logistic_orders_page');
+  const canSeeLogisticOrdersTab = canReadLogisticOrders && switchOn(mine, 'view_logistic_orders');
   // Every stock read below waits for View stock, so a person who holds only the Logistic Orders tab makes no refused read.
   const itemsQuery = useInventoryItems(showArchived, canReadStock);
   // Below md the items list renders as cards (the same query DataTable's
@@ -245,10 +245,12 @@ export default function InventoryPage() {
   // either hide an action the API allows or offer one it 403s.
   const canBulkRestock = canUpdateInventory;
   // S07.15 - Export stock compiles into `export Inventory`. Both downloads are built in the browser, so the buttons
-  // are the whole gate. Cost is company cost: it follows See financial data on the grid, the cards, the item detail
+  // are the whole gate. Cost is company cost: it follows See costs on the grid, the cards, the item detail
   // and the file. The server leaves it out of the items for a person without it; the page never fills the gap.
   const canExport = ability.can('export', 'Inventory');
   const canSeeCosts = canSeePricing(ability);
+  // P11: the sell price is a price, so it needs See prices (cost is its own class).
+  const canSeePrices = canSeePricesAbility(ability);
   // Inventory P2 (D16 entry #3) - the Generate-PO surfaces gate on create PurchaseOrder.
   const canCreatePO = canStartPurchaseOrder(ability);
   const upsertItem = useUpsertItem();
@@ -483,7 +485,7 @@ export default function InventoryPage() {
                 kind: payload.kind as Item['kind'],
                 uom: payload.uom,
                 unitCost: payload.unitCost,
-                sellPrice: payload.sellPrice,
+                sellPrice: payload.sellPrice ?? i.sellPrice,
                 serialized: payload.serialized,
                 hazmat: payload.hazmat,
                 trackInventory: payload.trackInventory,
@@ -516,7 +518,7 @@ export default function InventoryPage() {
       kind: payload.kind as Item['kind'],
       uom: payload.uom,
       unitCost: payload.unitCost,
-      sellPrice: payload.sellPrice,
+      sellPrice: payload.sellPrice ?? 0,
       serialized: payload.serialized,
       hazmat: payload.hazmat,
       trackInventory: payload.trackInventory,
@@ -648,7 +650,7 @@ export default function InventoryPage() {
     Kind: i.kind,
     UoM: i.uom,
     ...(canSeeCosts ? { 'Unit Cost': (i.unitCost ?? 0).toFixed(2) } : {}),
-    'Sell Price': i.sellPrice.toFixed(2),
+    ...(canSeePrices ? { 'Sell Price': (i.sellPrice ?? 0).toFixed(2) } : {}),
     'Total On Hand': totalOnHand(i),
     'Total Available': totalOnHand(i),
     ...(canViewVendors ? { Vendor: i.vendor ?? '' } : {}),
@@ -952,7 +954,7 @@ export default function InventoryPage() {
                 }))
               }
             />
-            {/* The value is a sum of item costs, so without See financial data the card is not drawn: a $0 here
+            {/* The value is a sum of item costs, so without See costs the card is not drawn: a $0 here
                 would read as a real figure. */}
             {canSeeCosts && (
               <StatCard

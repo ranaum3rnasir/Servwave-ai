@@ -302,7 +302,7 @@ suite('job slot writes follow slot eligibility (real database)', () => {
   });
 
   describe('deleting a person', () => {
-    it('succeeds for a job Dispatcher who is also on a crew, and empties those slots', async () => {
+    it('is refused for a job Dispatcher who is also on a crew: a record\'s people are history (P19), and nothing changes', async () => {
       const { org, customer, admin } = await fx.newOrg();
       const api = await fx.signedInAs(admin);
       const leaver = await personWith(org, { can_be_dispatcher: true, can_be_on_crew: true }, 'TECHNICIAN');
@@ -310,9 +310,10 @@ suite('job slot writes follow slot eligibility (real database)', () => {
       await db.user.update({ where: { id: leaver.id }, data: { is_active: false } });
 
       const deleted = await api.delete(`/api/users/${leaver.id}/permanent`);
-      expect(deleted.status).toBe(200);
-      expect((await db.job.findUniqueOrThrow({ where: { id: job.id } })).dispatcher_id).toBeNull();
-      expect(await db.visitAssignee.count({ where: { visit_id: job.visitId! } })).toBe(0);
+      expect(deleted.status).toBe(409);
+      expect(await db.user.count({ where: { id: leaver.id } })).toBe(1);
+      expect((await db.job.findUniqueOrThrow({ where: { id: job.id } })).dispatcher_id).toBe(leaver.id);
+      expect(await db.visitAssignee.count({ where: { visit_id: job.visitId! } })).toBe(1);
     });
   });
 });

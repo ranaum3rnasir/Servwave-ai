@@ -92,17 +92,19 @@ suite('the notification access filter asks the single read for calls, texts and 
   async function personWith(
     org: string,
     values: Record<string, boolean | string>,
-    opts: { base?: Role; numbers?: string[] } = {},
+    opts: { base?: Role; numbers?: string[]; departmentId?: string } = {},
   ): Promise<Member> {
     const base = opts.base ?? 'DISPATCHER';
     const key = `readers-role-${++sequence}`;
+    // `is_admin: true` makes the person an Admin (the flag, AL-18): it is not a switch, so it never reaches the role.
+    const { is_admin: asAdmin, ...switchValues } = values;
     const role = await fx.addCustomRole(org, key, base);
     const all = {
       view_jobs: true, jobs_scope: 'attached', view_leads: true, leads_scope: 'attached',
-      access_communication: true, view_communication: true, communication_scope: 'linked_to_me', ...values,
+      access_communication: true, view_communication: true, communication_scope: 'attached', ...switchValues,
     };
     await setRoleSwitchValues({ organizationId: org, roleKey: key, values: all, actorId: null, reason: 'manual' });
-    const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
+    const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id, isAdmin: asAdmin === true, departmentId: opts.departmentId });
     for (const phone_number_id of opts.numbers ?? []) await db.userPhoneNumber.create({ data: { user_id: person.id, phone_number_id } });
     return Object.assign(person, { api: () => fx.signedInAs(person), mayUseSection: all.access_communication === true });
   }
@@ -147,7 +149,7 @@ suite('the notification access filter asks the single read for calls, texts and 
     const main = await addNumber(org, 'run-main', { orgDefault: true });
 
     const crew = await personWith(org, {
-      view_jobs: true, jobs_scope: 'attached', view_estimates: true, estimates_scope: 'attached', view_invoices: true, invoices_scope: 'attached',
+      view_jobs: true, jobs_scope: 'attached', view_estimates: true, leads_scope: 'attached', view_invoices: true,
     });
     const leadPerson = await personWith(org, { ...withDependantsOff(['view_jobs']), view_leads: true, leads_scope: 'attached' });
     const job = await fx.addJob(org, customer, { crew: [crew.id] });
@@ -434,11 +436,11 @@ suite('the notification access filter asks the single read for calls, texts and 
       expect(outcomes['about a job nobody is on, in the holder\'s mailbox']).toContain(false);
     }, 480_000);
 
-    it('keeps the holders of Manage roles and permissions for the main mailbox while nobody active is linked to it, and the linked person once there is one', async () => {
+    it('keeps an Admin for the main mailbox whether or not anyone is linked (it was the holders of Manage roles and permissions until AL-18), and the linked person once there is one', async () => {
       const { org, customer } = await newOrg();
       const main = await mainMailbox(org);
-      const manager = await personWith(org, { manage_roles_and_permissions: true, communication_scope: 'linked_to_me' });
-      const plain = await personWith(org, { communication_scope: 'linked_to_me' });
+      const manager = await personWith(org, { is_admin: true, communication_scope: 'attached' });
+      const plain = await personWith(org, { communication_scope: 'attached' });
       const started = await addConversation(org, main, customer);
       const kept = () => filterObject('EMAIL_THREAD', started.thread, [manager.id, plain.id], org);
 
@@ -448,11 +450,77 @@ suite('the notification access filter asks the single read for calls, texts and 
 
       await db.mailboxReader.create({ data: { organization_id: org, mailbox_id: main, user_id: plain.id } });
       await expectAgreement('one person linked', 'EMAIL_THREAD', started.thread, org, people, opensAny(started.ids));
-      expect(await kept()).toEqual([plain.id]);
+      expect((await kept()).sort()).toEqual([manager.id, plain.id].sort());
     });
   });
 
   // ─── What the rule does with the person, not the conversation ─────────────────────────────
+
+  // ─── Team ──────────────────────────────────────────────────────────────────────────────────
+
+  describe('Communication scope Team', () => {
+    it('keeps exactly the people the routes answer for a call, a text conversation and an email conversation, and tells a teammate of the people linked', async () => {
+      const { org, admin, customer } = await newOrg();
+      const north = await fx.addDepartment(org, 'North');
+      const south = await fx.addDepartment(org, 'South');
+      const numberNorth = await addNumber(org, 'run-north');
+      const numberSouth = await addNumber(org, 'run-south');
+      const mate = await personWith(org, {}, { numbers: [numberNorth], departmentId: north });
+      const stranger = await personWith(org, {}, { numbers: [numberSouth], departmentId: south });
+      const teamNorth = await personWith(org, { communication_scope: 'team' }, { departmentId: north });
+      const teamSouth = await personWith(org, { communication_scope: 'team' }, { departmentId: south });
+      const teamless = await personWith(org, { communication_scope: 'team' });
+      const attached = await personWith(org, {}, { departmentId: north });
+      const people: Member[] = [mate, stranger, teamNorth, teamSouth, teamless, attached];
+
+      // A call on the north number.
+      const call = randomUUID();
+      await db.callSession.create({
+        data: {
+          id: call, organization_id: org, direction: 'in', from_number: '+15555550100', to_number: '+15555550199', status: 'missed',
+          answered_by: {}, started_at: new Date(), phone_number_id: numberNorth,
+        },
+      });
+      const callVerdicts = (await expectAgreement('call on the north number', 'CALL', call, org, people, async (p) =>
+        (await (await p.api()).get(`/api/communication/calls/${call}`)).status === 200)).verdicts;
+      expect(Object.values(callVerdicts)).toEqual([true, false, true, false, false, false]);
+
+      // A text on the north number.
+      const thread = randomUUID();
+      await db.messageThread.create({ data: { id: thread, organization_id: org, campaign_type: 'none', customer_id: customer } });
+      await db.message.create({
+        data: { id: randomUUID(), organization_id: org, thread_id: thread, direction: 'in', body: 'run-text', ts: new Date(), phone_number_id: numberNorth },
+      });
+      const textVerdicts = (await expectAgreement('text on the north number', 'MESSAGE_THREAD', thread, org, people, async (p) =>
+        (await (await p.api()).get(`/api/communication/threads/${thread}`)).status === 200)).verdicts;
+      expect(Object.values(textVerdicts)).toEqual([true, false, true, false, false, false]);
+
+      // An email conversation in the north teammate's mailbox.
+      const mailbox = randomUUID();
+      await db.mailbox.create({ data: { id: mailbox, organization_id: org, kind: 'user', user_id: mate.id, holder_user_id: mate.id, status: 'active' } });
+      await db.mailboxAddress.create({ data: { local_part: `u-${mailbox}`, organization_id: org, mailbox_id: mailbox, is_primary: true } });
+      const emailThread = randomUUID();
+      await db.emailThread.create({ data: { id: emailThread, organization_id: org, mailbox_id: mailbox, origin: 'started' } });
+      const emailId = randomUUID();
+      await db.email.create({
+        data: {
+          id: emailId, organization_id: org, thread_id: emailThread, customer_id: customer, account: 'user', direction: 'in', folder: 'inbox',
+          from: { name: null, email: 'customer@example.com' }, to: 'office@example.com', subject: 'run-email', snippet: 's', body: ['b'],
+          at: '1:00 PM', ts: BigInt(Date.now()),
+        },
+      });
+      const emailVerdicts = (await expectAgreement('email in a teammate mailbox', 'EMAIL_THREAD', emailThread, org, people, async (p) =>
+        (await (await p.api()).get(`/api/communication/emails/${emailId}`)).status === 200)).verdicts;
+      expect(Object.values(emailVerdicts)).toEqual([true, false, true, false, false, false]);
+
+      // The alert goes to the people linked and, on Team, to their department; the access filter has the last word.
+      const { conversationAlertRecipients } = await import('../services/notifications/conversationAlertRecipients.js');
+      const told = await conversationAlertRecipients({ kind: 'call', organizationId: org, callId: call });
+      expect(told).toEqual(expect.arrayContaining([mate.id, teamNorth.id]));
+      for (const out of [stranger, teamSouth, teamless, attached]) expect(told).not.toContain(out.id);
+      expect(admin.id).toBeTruthy();
+    }, 240_000);
+  });
 
   describe('who is asked', () => {
     /** One conversation of each kind that the first person below reads through a number linked to them. */
@@ -473,7 +541,7 @@ suite('the notification access filter asks the single read for calls, texts and 
       return { call, thread, mailbox };
     }
 
-    it('lets the page switches decide nothing: a person who may read is kept with Show Phone, Text and Email off, and one who may not is dropped with them on', async () => {
+    it('lets Show Phone and Show Text decide nothing, and Show Email decide for email only: a call or text reader is kept with them off, an email reader is dropped with Show Email off, and one who may not read is dropped with them on', async () => {
       const { org } = await newOrg();
       const number = await addNumber(org, 'run-linked');
       const unrelated = await addNumber(org, 'run-unrelated');
@@ -499,7 +567,8 @@ suite('the notification access filter asks the single read for calls, texts and 
 
         expect(await filterObject('CALL', ids.call, [reads.id, readsNothing.id], org), `call, pages shown: ${shown}`).toEqual([reads.id]);
         expect(await filterObject('MESSAGE_THREAD', ids.thread, [reads.id, readsNothing.id], org), `text, pages shown: ${shown}`).toEqual([reads.id]);
-        expect(await filterObject('EMAIL_THREAD', emailThread, [owner.id, readsNothing.id], org), `email, pages shown: ${shown}`).toEqual([owner.id]);
+        // Show Email closes the Email page, the destination of an email alert (M7, ticket 36): off, nobody is told.
+        expect(await filterObject('EMAIL_THREAD', emailThread, [owner.id, readsNothing.id], org), `email, pages shown: ${shown}`).toEqual(shown ? [owner.id] : []);
       }
     });
 
@@ -653,7 +722,7 @@ suite('the notification access filter asks the single read for calls, texts and 
       ];
       // A customer's email reply finds its people itself (S10.10): the conversation's assignee here, through the same single read.
       const ring = (a: (typeof alerts)[number], key: string) => a.verb === 'communication.email_inbound'
-        ? alertEmailReply({ organizationId: org, threadId: emailThread, providerMessageId: key, senderLabel: 'customer@example.com', subject: 'run-email' })
+        ? alertEmailReply({ organizationId: org, threadId: emailThread, providerMessageId: key, emailId: message, senderLabel: 'customer@example.com', subject: 'run-email' })
         : emit({ ...a, organizationId: org, actorId: null, dedupKey: `s0821:${key}` });
       const rowsOf = () => db.notificationRecipient.findMany({
         where: { organization_id: org, recipient_id: person.id },

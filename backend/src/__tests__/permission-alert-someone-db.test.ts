@@ -48,7 +48,7 @@ suite('the alert "someone" test (real database)', () => {
     return fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
   }
 
-  const opensEverything = { view_jobs: true, jobs_scope: 'all', view_leads: true, leads_scope: 'all', view_estimates: true, estimates_scope: 'all', view_invoices: true, invoices_scope: 'all' };
+  const opensEverything = { view_jobs: true, jobs_scope: 'all', view_leads: true, leads_scope: 'all', view_estimates: true, view_invoices: true };
 
   async function someoneFor(org: string, candidates: Person[], record: { type: string; id: string }, actor: Person | null) {
     const { alertSomeone } = await import('../lib/permissions/alertSomeone.js');

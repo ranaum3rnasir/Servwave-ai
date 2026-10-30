@@ -744,9 +744,9 @@ export default function CustomerDetailPage() {
     },
   });
 
-  const canEdit = user?.role === 'ADMIN' || user?.role === 'DISPATCHER' || user?.role === 'SALES';
+  const canEdit = user?.is_admin === true || user?.role === 'DISPATCHER' || user?.role === 'SALES';
   // Service-location delete stays role-gated (unchanged from before the lifecycle refactor).
-  const canDeleteLocation = user?.role === 'ADMIN' || user?.role === 'DISPATCHER';
+  const canDeleteLocation = user?.is_admin === true || user?.role === 'DISPATCHER';
   const canReadComms = ability.can('read', 'Communication');
   // Comms affordances (E5): the in-app dialer / email compose render only for
   // comms-enabled orgs + users with create Communication; everyone else falls

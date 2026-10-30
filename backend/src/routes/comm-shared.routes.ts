@@ -1,9 +1,10 @@
-import { Router } from 'express';
+import { Router, type Request, type Response } from 'express';
 import { authenticate } from '../middleware/authenticate';
 import { attachAbility } from '../middleware/attachAbility';
 import { canDo } from '../middleware/canGuard';
 import * as commController from '../controllers/comm-whatsapp-email.controller';
 import * as commAgentsController from '../controllers/comm-agents.controller';
+import { markRouteCheck } from '../middleware/routeCheck';
 
 const router = Router();
 
@@ -36,8 +37,8 @@ router.get('/team-members', canDo('read', 'Communication'), canDo('access_inbox'
 
 // Terminate this router's own prefixes - see comm-email.routes.ts for why an
 // unmatched path must not walk the mount chain into a foreign entitlement gate.
-router.all([...SHARED_PREFIXES, '/unread-counts/*', '/team-members/*'], (_req, res) => {
+router.all([...SHARED_PREFIXES, '/unread-counts/*', '/team-members/*'], markRouteCheck('closed', (_req: Request, res: Response) => {
   res.status(404).json({ error: 'Not found' });
-});
+}));
 
 export default router;

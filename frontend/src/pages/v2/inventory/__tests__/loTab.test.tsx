@@ -81,8 +81,8 @@ vi.mock('@/lib/api/logisticOrders', async (importOriginal) => {
 
 describe('v2 InventoryPage - Logistic Orders tab', () => {
   it('renders the tab with a total-count pill and an amber pending-approval badge', () => {
-    // The tab needs View logistic orders (a rule) and Show Logistic Orders page (a display switch).
-    seedMySwitches({ show_logistic_orders_page: true });
+    // The tab needs View logistic orders.
+    seedMySwitches({ view_logistic_orders: true });
     renderWithProviders(<InventoryPage />, {
       initialEntries: ['/inventory'],
       ability: buildAbility([{ action: 'read', subject: 'LogisticOrder' }]),

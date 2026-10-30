@@ -268,7 +268,7 @@ export function LeadCommunicationsTab({
                 // enforces both again on the write — this decides what to OFFER, not what is
                 // allowed.
                 it.manuallyLogged
-                  ? canLogPast && canModifyLoggedEntry(it, { id: viewer?.id, role: viewer?.role })
+                  ? canLogPast && canModifyLoggedEntry(it, { id: viewer?.id, is_admin: viewer?.is_admin })
                     ? () => setEditingEntryId(it.id)
                     : undefined
                   : canAccessComms

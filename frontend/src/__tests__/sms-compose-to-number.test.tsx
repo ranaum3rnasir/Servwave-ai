@@ -330,7 +330,7 @@ describe('Unknown-number thread affordance', () => {
 
   beforeEach(() => localStorage.clear());
 
-  it('offers Create lead with Create leads + Show Leads page, opening /leads/new?phone=<e164>', async () => {
+  it('offers Create lead with Create leads + View leads, opening /leads/new?phone=<e164>', async () => {
     renderUnknownThreadAs(personHolding(LEAD_PAIR, COMMUNICATION_RULES));
 
     expect(await screen.findByText('Unknown number')).toBeInTheDocument();
@@ -338,7 +338,7 @@ describe('Unknown-number thread affordance', () => {
     expect(await screen.findByTestId('probe')).toHaveTextContent(`/leads/new?phone=${encodeURIComponent(E164)}`);
   });
 
-  it('offers Create job with Create jobs + Show Jobs page, opening /jobs/new?phone=<e164>', async () => {
+  it('offers Create job with Create jobs + View jobs, opening /jobs/new?phone=<e164>', async () => {
     renderUnknownThreadAs(personHolding(JOB_PAIR, COMMUNICATION_RULES));
 
     fireEvent.click(await screen.findByRole('button', { name: /create job/i }));
@@ -347,7 +347,7 @@ describe('Unknown-number thread affordance', () => {
 
   it('never offers Create customer, whatever the person holds', async () => {
     renderUnknownThreadAs(personHolding(
-      [...LEAD_PAIR, ...JOB_PAIR, 'Create customers', 'Show Customers page'],
+      [...LEAD_PAIR, ...JOB_PAIR, 'Create customers', 'View customers'],
       [...COMMUNICATION_RULES, { action: 'manage', subject: 'all' }],
     ));
 
@@ -356,10 +356,10 @@ describe('Unknown-number thread affordance', () => {
   });
 
   it.each([
-    ['Create leads without Show Leads page', ['Create leads']],
-    ['Show Leads page without Create leads', ['Show Leads page']],
-    ['Create jobs without Show Jobs page', ['Create jobs']],
-    ['Show Jobs page without Create jobs', ['Show Jobs page']],
+    ['Create leads without View leads', ['Create leads']],
+    ['View leads without Create leads', ['View leads']],
+    ['Create jobs without View jobs', ['Create jobs']],
+    ['View jobs without Create jobs', ['View jobs']],
   ])('offers nothing for %s', async (_name, held) => {
     renderUnknownThreadAs(personHolding(held, COMMUNICATION_RULES));
 

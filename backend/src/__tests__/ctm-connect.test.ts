@@ -554,8 +554,8 @@ describe('disconnectCtm while a number sync is running', () => {
   });
 });
 
-describe('route gating (ADMIN idiom)', () => {
-  it("gates all three phone org routes, and their deprecated aliases, with canDo('update','Organization')", () => {
+describe('route gating (Admin only, M8 / D3)', () => {
+  it('gates all three phone org routes, and their deprecated aliases, with the Admin check', () => {
     const src = readFileSync(join(__dirname, '../routes/organization.routes.ts'), 'utf8');
     for (const path of [
       '/phone/connect',
@@ -567,7 +567,8 @@ describe('route gating (ADMIN idiom)', () => {
     ]) {
       const line = src.split('\n').find((l) => l.includes(`'${path}'`));
       expect(line, `route ${path} missing`).toBeTruthy();
-      expect(line).toContain("canDo('update', 'Organization')");
+      expect(line).toContain('requireAdminTo(');
+      expect(line).not.toContain("canDo('update', 'Organization')");
     }
   });
 });

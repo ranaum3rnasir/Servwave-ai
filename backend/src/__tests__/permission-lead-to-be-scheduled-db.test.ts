@@ -86,7 +86,7 @@ suite('"To be scheduled" walkthroughs (real database)', () => {
 
   /** A creator who may create leads and be on a crew, with the walkthrough-related switches given. */
   const creatorWith = (org: string, values: Record<string, boolean> = {}, base: Role = 'TECHNICIAN') =>
-    personWith(org, { view_leads: true, create_leads: true, can_be_on_crew: true, ...values }, base);
+    personWith(org, { view_leads: true, edit_leads: true, create_leads: true, can_be_on_crew: true, ...values }, base);
 
   describe('performers with no time', () => {
     it('create a walkthrough visit with no time and those performers on it, whoever the creator is', async () => {

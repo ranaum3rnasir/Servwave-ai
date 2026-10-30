@@ -14,7 +14,7 @@ describe('catalog — settings subjects', () => {
     expect(has('update', 'Role')).toBe(true);
   });
   it('ADMIN can manage Location and Role', () => {
-    const ability = defineAbilityFor({ id: 'a', role: 'ADMIN' }, []);
+    const ability = defineAbilityFor({ is_admin: true, id: 'a', role: 'ADMIN' }, []);
     expect(ability.can('read', 'Location' as never)).toBe(true);
     expect(ability.can('update', 'Role' as never)).toBe(true);
   });

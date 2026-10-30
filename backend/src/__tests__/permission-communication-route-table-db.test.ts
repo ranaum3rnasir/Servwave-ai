@@ -178,12 +178,13 @@ suite('the Communication rows of the route-level table (real database)', () => {
       const { org } = await newOrg();
       const holder = await newHolder(org);
       const api = await holder.api();
-      await setHolds(org, holder, withParents(['edit_communication_records']));
-      const attach = COMMUNICATION_ROUTE_ROWS.filter((r) => r.needs.length === 1 && r.needs[0] === 'attach_conversations');
+      // Show Email is held too: the two email attach routes ask for it as well (M7), and the attach switch is what is under test.
+      await setHolds(org, holder, withParents(['edit_communication_records', 'show_email']));
+      const attach = COMMUNICATION_ROUTE_ROWS.filter((r) => r.needs[0] === 'attach_conversations' && r.needs.every((k) => k === 'attach_conversations' || k === 'show_email'));
       expect(attach).toHaveLength(6);
       for (const row of attach) expectRefused(await call(api, row), `${row.method.toUpperCase()} ${row.path}`);
 
-      await setHolds(org, holder, withParents(['attach_conversations']));
+      await setHolds(org, holder, withParents(['attach_conversations', 'show_email']));
       for (const row of attach) expectLetIn(await call(api, row), `${row.method.toUpperCase()} ${row.path} with the attach switch alone`);
     });
 
@@ -217,8 +218,7 @@ suite('the Communication rows of the route-level table (real database)', () => {
       ['call_groups_tab', ['GET /api/communication/call-groups'], ['POST /api/communication/call-groups', 'PATCH /api/communication/call-groups/:id', 'DELETE /api/communication/call-groups/:id']],
       ['blocked_callers_tab', ['GET /api/communication/blocked'], ['POST /api/communication/blocked', 'POST /api/communication/blocked/unblock']],
       ['training_tab', ['GET /api/communication/training/scenarios', 'GET /api/communication/training/sessions'], []],
-      ['phone_numbers_tab', [], ['PATCH /api/communication/numbers/:id']],
-      ['phone_usage_bar', ['GET /api/communication/usage'], []],
+      ['phone_numbers_tab', ['GET /api/communication/usage'], ['PATCH /api/communication/numbers/:id']],
     ];
     const rowFor = (spec: string) => {
       const [method, path] = spec.split(' ');
@@ -321,7 +321,8 @@ suite('the Communication rows of the route-level table (real database)', () => {
       const { org, customer } = await newOrg();
       const job = await fx.addJob(org, customer);
       const author = await newHolder(org);
-      await setHolds(org, author, withParents(['log_past_communications']), { jobs_scope: 'all' });
+      // Logging onto a job needs the job to be one the person can open (M2): View jobs on, Jobs scope All.
+      await setHolds(org, author, withParents(['log_past_communications', 'view_jobs']), { jobs_scope: 'all' });
       const authorApi = await author.api();
       const made = await authorApi.post('/api/communication/manual-log', {
         job_id: job.id, direction: 'out', occurred_at: '2026-08-26T16:00', notes: 'Called about the quote',
@@ -334,12 +335,12 @@ suite('the Communication rows of the route-level table (real database)', () => {
 
       for (const [key, status] of [['edit_others_logged_communications', 200], [null, 403]] as const) {
         const other = await newHolder(org);
-        await setHolds(org, other, withParents(key ? [key] : ['log_past_communications']));
+        await setHolds(org, other, withParents(key ? [key, 'view_jobs'] : ['log_past_communications', 'view_jobs']), { jobs_scope: 'all' });
         const api = await other.api();
         expect((await api.put(`/api/communication/manual-log/${entry}`, edit(author.id))).status, `${key} edit`).toBe(status);
       }
       const holder = await newHolder(org);
-      await setHolds(org, holder, withParents(['edit_others_logged_communications']));
+      await setHolds(org, holder, withParents(['edit_others_logged_communications', 'view_jobs']), { jobs_scope: 'all' });
       expect((await (await holder.api()).delete(`/api/communication/manual-log/${entry}`)).status).toBe(204);
 
       const own = await authorApi.post('/api/communication/manual-log', {
@@ -393,10 +394,10 @@ suite('the Communication rows of the route-level table (real database)', () => {
       const cases: Array<[string, string, boolean, boolean, Array<keyof typeof numberIds>]> = [
         ['All', 'all', false, false, ['main', 'mine', 'other']],
         ['All with the main-line switch on', 'all', true, false, ['main', 'mine', 'other']],
-        ['Linked to me, no number, main-line switch on', 'linked_to_me', true, false, ['main']],
-        ['Linked to me, no number, main-line switch off', 'linked_to_me', false, false, []],
-        ['Linked to me with a number, main-line switch on', 'linked_to_me', true, true, ['mine']],
-        ['Linked to me with a number, main-line switch off', 'linked_to_me', false, true, ['mine']],
+        ['Linked to me, no number, main-line switch on', 'attached', true, false, ['main']],
+        ['Linked to me, no number, main-line switch off', 'attached', false, false, []],
+        ['Linked to me with a number, main-line switch on', 'attached', true, true, ['mine']],
+        ['Linked to me with a number, main-line switch off', 'attached', false, true, ['mine']],
       ];
       for (const [label, scope, mainLine, linked, sees] of cases) {
         const holder = await newHolder(org);

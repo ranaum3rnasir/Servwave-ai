@@ -5,7 +5,7 @@ import { tenantWhere } from '../tenant';
 /**
  * The people who read the company's main mailbox (Roles & Permissions PRD 10, S10.8): the ones a holder of Company
  * settings links on the Sender Address page. This module owns the list; WHO READS the main mailbox, which also counts
- * people on Communication scope All and, while nobody active is linked, the holders of Manage roles and permissions, is
+ * people on Communication scope All and, while nobody active is linked, the Admins, is
  * decided in M11 (`communicationScope.ts`), from the same table.
  *
  * A link says who handles one mailbox, as a company number's links do; it is not a switch. A person who is not active

@@ -3,7 +3,7 @@
 
    Every read the Price Book page needs (items, categories, brands, finishes, units, item groups) is
    reachable with View price book and nothing else, the items it returns carry catalog fields and prices
-   (never stock, and never cost without See financial data), and the stock item endpoints keep their
+   (never stock, and never cost without See costs), and the stock item endpoints keep their
    View stock check.
 
    Everything goes through the public interface: the routes, called as a person on a custom role made from
@@ -38,7 +38,7 @@ const keyOf = (label: string) => SWITCH_CATALOG.find((s) => s.label === label)!.
 const VIEW_PRICE_BOOK = keyOf('View price book');
 const VIEW_STOCK = keyOf('View stock');
 const VIEW_VENDORS = keyOf('View vendors');
-const SEE_FINANCIAL_DATA = keyOf('See financial data');
+const SEE_FINANCIAL_DATA = keyOf('See costs');
 
 /** Figures nothing else on the test records can equal, so finding one in a response means the field was carried. */
 const COST = 41.37;
@@ -116,7 +116,7 @@ suite('the Price Book works on View price book alone (real database)', () => {
     const key = `price-book-reads-${++sequence}`;
     const role = await fx.addCustomRole(org, key, 'DISPATCHER', { madeFromBlank: true, copyGrants: false });
     await setRoleSwitchValues({
-      organizationId: org, roleKey: key, values: { [VIEW_PRICE_BOOK]: true, ...values }, actorId: null, reason: 'manual',
+      organizationId: org, roleKey: key, values: { [VIEW_PRICE_BOOK]: true, see_prices: true, ...values }, actorId: null, reason: 'manual',
     });
     const person = await fx.addUser(org, `pb${sequence}`, 'DISPATCHER', { customRoleId: role.id });
     return fx.signedInAs(person);
@@ -165,7 +165,7 @@ suite('the Price Book works on View price book alone (real database)', () => {
       { name: 'item detail', read: (api, item) => api.get(`/api/price-book/items/${item}`), find: (b) => b.data },
     ];
 
-    it.each(itemReads)('$name carries names, details and sell prices but no stock field and no cost without See financial data', async ({ read, find }) => {
+    it.each(itemReads)('$name carries names, details and sell prices but no stock field and no cost without See costs', async ({ read, find }) => {
       const { org, item } = await world();
       const api = await personWith(org);
       const body = (await read(api, item)).body;
@@ -178,7 +178,7 @@ suite('the Price Book works on View price book alone (real database)', () => {
       for (const figure of [String(ON_HAND), SERIAL, String(COST)]) expect(text, figure).not.toContain(figure);
     });
 
-    it('catalog list carries the cost with See financial data, and still no stock field', async () => {
+    it('catalog list carries the cost with See costs, and still no stock field', async () => {
       const { org } = await world();
       const api = await personWith(org, { [SEE_FINANCIAL_DATA]: true });
       const body = (await api.get('/api/price-book/catalog-items')).body;

@@ -88,7 +88,7 @@ suite('disputes through the reconciler (real database)', () => {
       },
     });
     await db.user.create({
-      data: { id: user, organization_id: org, email: `admin-${tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN' },
+      data: { id: user, organization_id: org, email: `admin-${tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN', is_admin: true },
     });
     await db.customer.create({
       data: { id: customer, organization_id: org, customer_number: `C-${tag}`, kind: 'PERSON', segment: 'RESIDENTIAL', first_name: 'Pat', last_name: 'Payer' },
@@ -271,7 +271,8 @@ suite('disputes through the reconciler (real database)', () => {
     expect(await f.timeline('CHARGEBACK')).toHaveLength(0);
     const [flag, ...more] = await f.timeline('CHARGEBACK_PARTIAL');
     expect(more).toHaveLength(0);
-    expect(flag.description).toMatch(/\$40\.00/);
+    expect(flag.description).toMatch(/took back part of the payment/);
+    expect((flag.metadata as { disputed_cents?: number }).disputed_cents).toBe(4000);
     expect(flag.description).toMatch(/manual review/i);
     expect(flag.description).not.toMatch(/stripe/i);
     const [alert] = await f.notifications('billing.chargeback');
@@ -304,7 +305,9 @@ suite('disputes through the reconciler (real database)', () => {
     expect(Number(invoice.amount_due)).toBe(0);
     const [flag, ...more] = await f.timeline('CHARGEBACK_PARTIAL');
     expect(more).toHaveLength(0);
-    expect(flag.description).toMatch(/\$100\.00 of the \$120\.00 payment/);
+    expect(flag.description).toMatch(/took back part of the payment/);
+    expect((flag.metadata as { disputed_cents?: number; unrefunded_cents?: number }).disputed_cents).toBe(10000);
+    expect((flag.metadata as { unrefunded_cents?: number }).unrefunded_cents).toBe(12000);
   });
 
   it('closed lost for exactly what is left of a partly refunded payment keeps void-and-reopen', async () => {
@@ -585,7 +588,7 @@ suite('disputes through the reconciler (real database)', () => {
     expect(await f.timeline('CHARGEBACK')).toHaveLength(0);
     const [entry, ...more] = await f.timeline('PAYMENT_RETURNED');
     expect(more).toHaveLength(0);
-    expect(entry.description).toMatch(/bank returned the payment of \$500\.00/i);
+    expect(entry.description).toMatch(/bank returned the payment on invoice INV-/i);
     expect(entry.description).not.toMatch(/stripe/i);
     const [alert] = await f.notifications('billing.chargeback');
     expect(alert.title).toMatch(/bank payment returned/i);
@@ -642,7 +645,7 @@ suite('disputes through the reconciler (real database)', () => {
       payUrl: expect.stringContaining(`/p/invoices/${f.invoice}?token=tok-${f.tag}`),
     });
     expect((await f.readInvoice()).status).toBe('SENT');
-    expect(await alertBody(f)).toBe('Amount: $500.00 was taken back from your ServWave Payments balance. The invoice is open again and we emailed the customer a link to pay again.');
+    expect(await alertBody(f)).toBe('This payment was taken back from your ServWave Payments balance. The invoice is open again and we emailed the customer a link to pay again.');
     const rows = await askedAgain(f);
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ description: PAY_AGAIN_DESCRIPTION, created_by: null, metadata: { item_key: `failed_payment:${f.payment}` } });
@@ -659,7 +662,7 @@ suite('disputes through the reconciler (real database)', () => {
     const f = await bankInvoice({ email: null });
     await f.deliver('charge.dispute.created', f.dispute(BANK_RETURN));
     expect(failedSender).not.toHaveBeenCalled();
-    expect(await alertBody(f)).toBe('Amount: $500.00 was taken back from your ServWave Payments balance. The invoice is open again. No email was sent because this customer has no email address on file. Contact them to pay again.');
+    expect(await alertBody(f)).toBe('This payment was taken back from your ServWave Payments balance. The invoice is open again. No email was sent because this customer has no email address on file. Contact them to pay again.');
     expect(await askedAgain(f)).toHaveLength(0);
   });
 
@@ -689,7 +692,7 @@ suite('disputes through the reconciler (real database)', () => {
     await f.deliver('charge.dispute.created', f.dispute(BANK_RETURN));
     expect(failedSender).not.toHaveBeenCalled();
     expect((await f.readInvoice()).status).toBe('VOIDED');
-    expect(await alertBody(f)).toBe('Amount: $400.00 was taken back from your ServWave Payments balance. The invoice stays voided, so the customer was not asked to pay.');
+    expect(await alertBody(f)).toBe('This payment was taken back from your ServWave Payments balance. The invoice stays voided, so the customer was not asked to pay.');
   });
 
   it('an invoice already PAID by another payment: no Pay Again email, and the alert says it cannot be paid online (C-38, C-49)', async () => {
@@ -699,7 +702,7 @@ suite('disputes through the reconciler (real database)', () => {
     });
     await f.deliver('charge.dispute.created', f.dispute(BANK_RETURN));
     expect(failedSender).not.toHaveBeenCalled();
-    expect(await alertBody(f)).toBe('Amount: $500.00 was taken back from your ServWave Payments balance. No email was sent because this invoice cannot be paid online right now.');
+    expect(await alertBody(f)).toBe('This payment was taken back from your ServWave Payments balance. No email was sent because this invoice cannot be paid online right now.');
     expect(await askedAgain(f)).toHaveLength(0);
   });
 
@@ -717,7 +720,7 @@ suite('disputes through the reconciler (real database)', () => {
     await f.deliver('charge.dispute.created', f.dispute({ ...BANK_RETURN, amount: 30000 }));
     expect(failedSender).not.toHaveBeenCalled();
     expect((await f.readInvoice()).status).toBe('DISPUTED');
-    expect(await alertBody(f)).toBe('Amount: $300.00 was taken back from your ServWave Payments balance. No email was sent because this invoice cannot be paid online right now.');
+    expect(await alertBody(f)).toBe('This payment was taken back from your ServWave Payments balance. No email was sent because this invoice cannot be paid online right now.');
   });
 
   it('a lost CARD dispute sends the customer nothing and its alert has no customer ending', async () => {
@@ -726,7 +729,7 @@ suite('disputes through the reconciler (real database)', () => {
     await f.deliver('charge.dispute.created', f.dispute());
     await f.deliver('charge.dispute.closed', f.dispute({ status: 'lost' }));
     expect(failedSender).not.toHaveBeenCalled();
-    expect(await alertBody(f)).toBe('Amount: $500.00 was taken back from your ServWave Payments balance.');
+    expect(await alertBody(f)).toBe('This payment was taken back from your ServWave Payments balance.');
     expect(await askedAgain(f)).toHaveLength(0);
   });
 
@@ -739,7 +742,7 @@ suite('disputes through the reconciler (real database)', () => {
     expect(failedSender).toHaveBeenCalledTimes(1);
     expect(failedSender.mock.calls[0][0]).toMatchObject({ to: f.email, amount: 500, payUrl: expect.stringContaining('/p/invoices/') });
     const body = await alertBody(f);
-    expect(body).toBe('Amount: $500.00. The bank returned this payment before it cleared, so no money reached your ServWave Payments balance. The invoice is still open and we emailed the customer a link to pay again.');
+    expect(body).toBe('The bank returned this payment before it cleared, so no money reached your ServWave Payments balance. The invoice is still open and we emailed the customer a link to pay again.');
     expect(body).not.toMatch(/taken back/);
     expect(await askedAgain(f)).toHaveLength(1);
 
@@ -756,7 +759,7 @@ suite('disputes through the reconciler (real database)', () => {
     });
     await f.deliver('charge.dispute.created', f.dispute(BANK_RETURN));
     expect(failedSender).not.toHaveBeenCalled();
-    expect(await alertBody(f)).toBe('Amount: $500.00. The bank returned this payment before it cleared, so no money reached your ServWave Payments balance. No email was sent because this invoice cannot be paid online right now.');
+    expect(await alertBody(f)).toBe('The bank returned this payment before it cleared, so no money reached your ServWave Payments balance. No email was sent because this invoice cannot be paid online right now.');
   });
 
   it('a second automatic email for the same item inside the throttle window is not sent, and the alert still reads sent', async () => {
@@ -892,7 +895,7 @@ suite('disputes through the reconciler (real database)', () => {
     const [entry, ...more] = await f.timeline('DISPUTE_ON_UNRECORDED_PAYMENT');
     expect(more).toHaveLength(0);
     expect(entry).toMatchObject({ entity_type: 'INVOICE', entity_id: f.invoice });
-    expect(entry.description).toMatch(/disputed a card payment of \$450\.00 on invoice INV-/i);
+    expect(entry.description).toMatch(/disputed a card payment on invoice INV-/i);
     expect(entry.description).toMatch(/not recorded/i);
     expect(entry.description).not.toMatch(/stripe/i);
     const [alert, ...moreAlerts] = await f.notifications('billing.disputed');
@@ -944,7 +947,7 @@ suite('disputes through the reconciler (real database)', () => {
     const [entry, ...more] = await f.timeline('DISPUTE_ON_UNRECORDED_PAYMENT');
     expect(more).toHaveLength(0);
     expect(entry).toMatchObject({ entity_type: 'INVOICE', entity_id: f.invoice });
-    expect(entry.description).toMatch(/bank returned a payment of \$500\.00 on invoice INV-/i);
+    expect(entry.description).toMatch(/bank returned a payment on invoice INV-/i);
     expect(entry.description).toMatch(/recorded by hand/i);
     const [alert] = await f.notifications('billing.chargeback');
     expect(alert.title).toMatch(/bank payment returned/i);

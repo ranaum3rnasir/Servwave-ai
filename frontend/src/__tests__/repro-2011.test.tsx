@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
+import { renderWithProviders, seesPrices } from './helpers';
 import EstimatesPage from '@/pages/v2/estimates/EstimatesPage';
 
 // #2011 — the v2 Estimates list's status tiles (Draft/Sent/Pending/Won/
@@ -42,9 +42,10 @@ beforeEach(() => {
   global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
 });
 
+// The worth under a count is a price, so the page is drawn for a person who holds See prices (P11).
 describe('repro #2011 — v2 Estimates status tiles omit worth', () => {
   it('shows the formatted worth ($1,250.25) beneath the Draft tile\'s count', async () => {
-    renderWithProviders(<EstimatesPage />);
+    renderWithProviders(<EstimatesPage />, { ability: seesPrices });
 
     await waitFor(() => {
       expect(screen.getByText('Draft', { selector: 'span' })).toBeInTheDocument();
@@ -57,7 +58,7 @@ describe('repro #2011 — v2 Estimates status tiles omit worth', () => {
   });
 
   it('a zero-value status tile (Pending) still renders its worth as "$0.00"', async () => {
-    renderWithProviders(<EstimatesPage />);
+    renderWithProviders(<EstimatesPage />, { ability: seesPrices });
 
     await waitFor(() => {
       expect(screen.getByText('Pending', { selector: 'span' })).toBeInTheDocument();

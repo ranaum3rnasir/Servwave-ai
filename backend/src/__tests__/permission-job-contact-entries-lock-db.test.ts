@@ -212,12 +212,12 @@ suite("the job lock on a job's own contact entries (real database)", () => {
     expect(res.body.code).toBeUndefined();
   });
 
-  it('never tells anyone the status of a job they cannot open: forbidden as before, and not found across companies', async () => {
+  it('never tells anyone the status of a job they cannot open: not found, the same as across companies', async () => {
     const { org, job } = await setup('DONE');
     const scoped = await personWith(org, { ...ORDINARY, view_jobs: true, jobs_scope: 'attached' });
 
     const off = await WRITES['add a phone']!(await fx.signedInAs(scoped), job.id, '');
-    expect(off.status).toBe(403);
+    expect(off.status).toBe(404);
     expect(off.body.error).not.toBe(LOCK_MESSAGE);
 
     const other = await fx.newOrg();

@@ -12,7 +12,7 @@ import userEvent from '@testing-library/user-event';
 import { TooltipProvider } from '@/ui-kit/components/ui/tooltip';
 import SwitchSetEditor from '@/components/permissions/SwitchSetEditor';
 import type { SwitchCatalog, SwitchSet } from '@/lib/api/permissionSwitches';
-import { FIXTURE_CATALOG, FIXTURE_LAYOUT, FIXTURE_SWITCHES, catalogSwitch, presetSet } from './support/permissionCatalogFixture';
+import { FIXTURE_CATALOG, FIXTURE_LAYOUT, FIXTURE_DRAWN_SWITCHES, FIXTURE_SWITCHES, catalogSwitch, presetSet } from './support/permissionCatalogFixture';
 
 function Harness({
   catalog = FIXTURE_CATALOG,
@@ -52,24 +52,24 @@ const controlFor = (key: string) => {
 describe('SwitchSetEditor, what it draws', () => {
   it('draws a row for every switch of the catalog, each with a help icon', () => {
     render(<Harness />);
-    expect(FIXTURE_SWITCHES.length).toBeGreaterThan(0);
-    for (const s of FIXTURE_SWITCHES) {
+    expect(FIXTURE_DRAWN_SWITCHES.length).toBeGreaterThan(0);
+    for (const s of FIXTURE_DRAWN_SWITCHES) {
       expect(controlFor(s.key), s.label).toBeInTheDocument();
       expect(screen.getByRole('button', { name: `About ${s.label}` }), s.label).toBeInTheDocument();
     }
   });
 
-  it('draws the groups in the catalog order, headings first, and the Data Scope block before them', () => {
+  it('draws the groups in the catalog order, headings first, and the Money block before them', () => {
     render(<Harness />);
     const headings = screen.getAllByRole('heading').map((h) => h.textContent);
-    expect(headings).toEqual(['Data Scope', ...FIXTURE_LAYOUT.groups.map((g) => g.label)]);
+    expect(headings).toEqual(['Money', ...FIXTURE_LAYOUT.groups.map((g) => g.label)]);
   });
 
-  it('holds only the two money lines in the Data Scope block, See financial data last', () => {
+  it('holds only the three money lines in the Money block, See prices first and See costs and See company figures under it', () => {
     render(<Harness />);
-    const block = screen.getByRole('region', { name: 'Data Scope' });
+    const block = screen.getByRole('region', { name: 'Money' });
     const labels = within(block).getAllByRole('switch').map((el) => el.getAttribute('aria-label'));
-    expect(labels).toEqual(FIXTURE_LAYOUT.dataScope.map((k) => catalogSwitch(k).label));
+    expect(labels).toEqual(FIXTURE_LAYOUT.money.map((m) => catalogSwitch(m.key).label));
     expect(within(block).queryByRole('radiogroup')).toBeNull();
   });
 
@@ -122,7 +122,7 @@ describe('SwitchSetEditor, what it draws', () => {
   it('shows the value of every kind of switch from the set it is given', () => {
     const values = { ...presetSet('SALES') };
     render(<Harness initial={values} />);
-    for (const s of FIXTURE_SWITCHES.filter((x) => x.kind === 'toggle')) {
+    for (const s of FIXTURE_DRAWN_SWITCHES.filter((x) => x.kind === 'toggle')) {
       const el = screen.getByRole('switch', { name: s.label });
       expect(el.getAttribute('aria-checked'), s.label).toBe(String(values[s.key]));
     }
@@ -132,10 +132,10 @@ describe('SwitchSetEditor, what it draws', () => {
     expect(within(scope).getByRole('radio', { name: 'All' })).not.toBeChecked();
   });
 
-  it('reads a choice\'s options as words: Linked to me and All on Communication scope', () => {
+  it('reads a choice\'s options as words: Attached, Team and All on Communication scope', () => {
     render(<Harness />);
     const scope = screen.getByRole('radiogroup', { name: catalogSwitch('communication_scope').label });
-    expect(within(scope).getAllByRole('radio').map((r) => r.getAttribute('aria-label') ?? r.textContent)).toEqual(['Linked to me', 'All']);
+    expect(within(scope).getAllByRole('radio').map((r) => r.getAttribute('aria-label') ?? r.textContent)).toEqual(['Attached', 'Team', 'All']);
   });
 
   it('shows a kept scope value by its name and meaning instead of leaving the choice blank', () => {
@@ -195,8 +195,8 @@ describe('SwitchSetEditor, editing', () => {
     const user = userEvent.setup();
     const initial = presetSet('DISPATCHER');
     render(<Harness initial={initial} onChange={onChange} />);
-    await user.click(within(screen.getByRole('radiogroup', { name: 'Communication scope' })).getByRole('radio', { name: 'Linked to me' }));
-    expect(onChange).toHaveBeenCalledWith({ ...initial, communication_scope: 'linked_to_me' });
+    await user.click(within(screen.getByRole('radiogroup', { name: 'Communication scope' })).getByRole('radio', { name: 'Attached' }));
+    expect(onChange).toHaveBeenCalledWith({ ...initial, communication_scope: 'attached' });
   });
 
   it('hands back a ticked subset of a list switch, and the marker again when All accepted is ticked', async () => {
@@ -222,5 +222,36 @@ describe('SwitchSetEditor, editing', () => {
     expect(screen.getAllByRole('button').every((b) => /^About /.test(b.getAttribute('aria-label') ?? '') || b.hasAttribute('aria-expanded'))).toBe(true);
     expect(screen.getAllByText('On').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Off').length).toBeGreaterThan(0);
+  });
+});
+
+describe('SwitchSetEditor, the Money row', () => {
+  const moneyRegion = () => screen.getByRole('region', { name: 'Money' });
+
+  it('draws See prices with See costs and See company figures nested under it, in one block', () => {
+    render(<Harness initial={presetSet('ADMIN')} />);
+    const block = moneyRegion();
+    // One nested list holds the two classes that stand on the root.
+    const nested = within(block)
+      .getAllByRole('list')
+      .find((ul) => within(ul).queryByRole('switch', { name: 'See costs' }) && !within(ul).queryByRole('switch', { name: 'See prices' }));
+    expect(nested).toBeDefined();
+    expect(within(nested!).getByRole('switch', { name: 'See company figures' })).toBeInTheDocument();
+    expect(within(nested!).queryByRole('switch', { name: 'See prices' })).toBeNull();
+    expect(within(block).queryByRole('switch', { name: 'See financial data' })).toBeNull();
+  });
+
+  it('turns See costs and See company figures off with See prices, and greys them with a note naming it', async () => {
+    const onChange = vi.fn();
+    render(<Harness initial={presetSet('ADMIN')} onChange={onChange} />);
+    const user = userEvent.setup();
+    expect(screen.getByRole('switch', { name: 'See costs' })).toHaveAttribute('aria-checked', 'true');
+    await user.click(screen.getByRole('switch', { name: 'See prices' }));
+
+    const next = onChange.mock.calls.at(-1)![0] as SwitchSet;
+    expect(next.see_prices).toBe(false);
+    for (const key of ['see_costs', 'see_company_figures', 'record_payments', 'create_estimates']) expect(next[key], key).toBe(false);
+    expect(screen.getByRole('switch', { name: 'See costs' })).toBeDisabled();
+    expect(within(moneyRegion()).getAllByText('Requires See prices').length).toBe(2);
   });
 });

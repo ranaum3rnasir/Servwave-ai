@@ -297,8 +297,11 @@ describe('EstimateWorkspacePage — Waive Deposit gates on ability, not role (#2
 
   it('hides Waive Deposit when ability lacks waive_deposit Estimate (even though the auth-store role is ADMIN)', async () => {
     setupMocks(FIXTURE_A);
-    // read-only ability: can view the estimate, but no waive grant.
-    const ability = buildAbility([{ action: 'read', subject: 'Estimate' }]);
+    // Can view the estimate and its prices (the deposit box is a price, P11), but holds no waive grant.
+    const ability = buildAbility([
+      { action: 'read', subject: 'Estimate' },
+      { action: 'read', subject: 'Prices' },
+    ]);
     renderWithProviders(<EstimateWorkspacePage />, { ability });
 
     // Anchor on the deposit percent (FIXTURE_A = 30%) to confirm the receipt

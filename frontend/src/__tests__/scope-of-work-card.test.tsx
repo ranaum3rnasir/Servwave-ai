@@ -166,7 +166,7 @@ describe('ScopeOfWorkCard — add a block', () => {
     await userEvent.click(screen.getByRole('button', { name: /add scope of work/i }));
     const form = within(screen.getByTestId('scope-add-form'));
 
-    // canSeePricing is `read Pricing`, the org's "See financial data" switch, deliberately
+    // canSeePricing is `read Pricing`, the org's "See costs" switch, deliberately
     // decoupled from record capability. Gating a customer-facing SELL price on it would stop a
     // dispatcher with that switch off from pricing a scope — and the saved block's own footer
     // price input has never been gated on it either.

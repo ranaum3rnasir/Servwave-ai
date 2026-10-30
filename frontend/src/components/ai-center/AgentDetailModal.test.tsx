@@ -16,10 +16,10 @@ function signIn(user: Record<string, unknown>) {
   vi.mocked(useAuthStore).mockImplementation(((selector: (s: Record<string, unknown>) => unknown) =>
     selector({ user, isAuthenticated: true })) as never);
 }
-const NO_SPIDER = { id: 'u1', role: 'ADMIN', org_is_demo: false, org_features: ['leads'] };
-const SPIDER_COMPANY = { id: 'u1', role: 'ADMIN', org_is_demo: true, org_features: ['leads', 'spider'] };
+const NO_SPIDER = { id: 'u1', role: 'ADMIN', is_admin: true, org_is_demo: false, org_features: ['leads'] };
+const SPIDER_COMPANY = { id: 'u1', role: 'ADMIN', is_admin: true, org_is_demo: true, org_features: ['leads', 'spider'] };
 // SPEC-5: a real (non-demo) company on the server's Spider pilot list.
-const PILOT_COMPANY = { id: 'u1', role: 'ADMIN', org_is_demo: false, org_is_spider_pilot: true, org_features: ['leads', 'spider'] };
+const PILOT_COMPANY = { id: 'u1', role: 'ADMIN', is_admin: true, org_is_demo: false, org_is_spider_pilot: true, org_features: ['leads', 'spider'] };
 const STATUS = '/api/ai-farm/spider/status';
 const mockApi = vi.mocked(api);
 const ON = { isActive: true, isSetUp: true };
@@ -318,7 +318,7 @@ describe('AgentDetailModal: the control row', () => {
     ['on but never set up', ON_NOT_SET_UP, 'Spider is on', 'An Admin has not set it up yet', 'on'],
     ['off and never set up', NEVER_SET_UP, 'Spider is off', 'An Admin has not set it up yet', 'off'],
   ] as const)('someone who is not an Admin sees the %s lines and a read-only chip, no switch', async (_l, answer, title, detail, chip) => {
-    signIn({ ...SPIDER_COMPANY, role: 'SALES' });
+    signIn({ ...SPIDER_COMPANY, role: 'SALES', is_admin: false });
     spiderSwitch(answer);
     const dialog = openOn('spider');
     expect(await within(dialog).findByText(title)).toBeInTheDocument();
@@ -365,7 +365,7 @@ describe('AgentDetailModal: a company on the Spider pilot list', () => {
   });
 
   it('Sales sees the staff note and a read-only chip, no switch', async () => {
-    signIn({ ...PILOT_COMPANY, role: 'SALES' });
+    signIn({ ...PILOT_COMPANY, role: 'SALES', is_admin: false });
     spiderSwitch(ON);
     const dialog = openOn('spider');
     expect(await within(dialog).findByText('Spider is on')).toBeInTheDocument();
@@ -589,7 +589,7 @@ describe('AgentDetailModal: the footer for an agent the company can use', () => 
     ['on but never set up', ON_NOT_SET_UP, 'Spider is on for your company. You will get its alerts once an Admin sets it up.'],
     ['off and never set up', NEVER_SET_UP, 'An Admin turns Spider on or off. You will get its alerts once it is on.'],
   ] as const)('someone who is not an Admin gets one note and no button while Spider is %s', async (_l, answer, note) => {
-    signIn({ ...SPIDER_COMPANY, role: 'TECHNICIAN' });
+    signIn({ ...SPIDER_COMPANY, role: 'TECHNICIAN', is_admin: false });
     spiderSwitch(answer);
     const dialog = openOn('spider');
     expect(await within(dialog).findByText(note)).toBeInTheDocument();

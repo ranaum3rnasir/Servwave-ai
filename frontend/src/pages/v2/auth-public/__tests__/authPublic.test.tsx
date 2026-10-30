@@ -49,9 +49,7 @@ describe('v2 auth-public smoke', () => {
 
   it('accept-invite with no token renders the invalid phase', async () => {
     renderWithProviders(<V2AcceptInvitePage />, { initialEntries: ['/accept-invite'] });
-    expect(
-      await screen.findByText('This invitation link is invalid or has expired.'),
-    ).toBeInTheDocument();
+    expect(await screen.findByText('This link has expired')).toBeInTheDocument();
   });
 
   it('not-authorized renders', () => {

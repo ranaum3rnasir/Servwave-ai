@@ -153,10 +153,6 @@ beforeEach(() => {
   // The job-level complete writes its visit cancels, history, status move and review round in one transaction (S06.1);
   // the stub runs that callback against the same mocked client.
   mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => fn(mockPrisma));
-  mockPrisma.rolePermission.findMany.mockImplementation(
-    (args: { where: { organization_id: string; role: string } }) =>
-      Promise.resolve(DEFAULT_GRANTS.filter((g) => g.role === args.where.role)),
-  );
   mockPrisma.invoice.findFirst.mockResolvedValue(null);
   mockPrisma.jobAssignee.createMany.mockResolvedValue({ count: 1 });
   mockPrisma.jobAssignee.deleteMany.mockResolvedValue({ count: 0 });

@@ -199,7 +199,7 @@ export function VendorDetailDialog({
   // and Archive both ride it. Delete is its own DELETE route, gated `delete Vendor`.
   const canEditVendor = ability.can("update", "Vendor");
   const canDeleteVendor = ability.can("delete", "Vendor");
-  // The account number and the orders' totals are cost details (See financial data): without it there is no account
+  // The account number and the orders' totals are cost details (See costs): without it there is no account
   // card, field or subtitle, and the order list has no Total column. The orders themselves need View purchase orders.
   const showCosts = canSeePricing(ability);
   const canReadPurchaseOrders = ability.can("read", "PurchaseOrder");

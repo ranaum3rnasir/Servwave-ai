@@ -5,8 +5,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, within, waitFor } from '@testing-library/react';
 
 import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
+import { renderWithProviders, seesPrices } from './helpers';
 
+// The Amount Due cell is a price, so the list is drawn for a person who holds See prices (P11).
 const mockApi = vi.mocked(api);
 
 class ResizeObserverStub {
@@ -47,7 +48,7 @@ const { default: InvoicesPage } = await import('@/pages/v2/invoices/InvoicesPage
 
 describe('Invoices list Amount Due cell', () => {
   it('shows no amount due on a voided invoice, and still shows it on a sent one', async () => {
-    renderWithProviders(<InvoicesPage />);
+    renderWithProviders(<InvoicesPage />, { ability: seesPrices });
 
     const voidedRow = (await screen.findByText('I-VOID')).closest('tr') as HTMLElement;
     const sentRow = (await screen.findByText('I-SENT')).closest('tr') as HTMLElement;
@@ -58,7 +59,7 @@ describe('Invoices list Amount Due cell', () => {
   });
 
   it('right-aligns the voided dash under the right-aligned header, and leaves the no-job dash left-aligned', async () => {
-    renderWithProviders(<InvoicesPage />);
+    renderWithProviders(<InvoicesPage />, { ability: seesPrices });
 
     const voidedRow = (await screen.findByText('I-VOID')).closest('tr') as HTMLElement;
     const table = voidedRow.closest('table') as HTMLElement;

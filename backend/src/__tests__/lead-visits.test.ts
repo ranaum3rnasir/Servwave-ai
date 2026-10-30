@@ -463,7 +463,7 @@ describe('a lead visit route is no weaker than the lead it hangs off', () => {
         notify: { notify_customer: true, notify_recipient_email: 'attacker@example.test' },
       });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockPrisma.visit.create).not.toHaveBeenCalled();
     // The write being refused is only half of it: this door now sends customer mail from the
     // org's own sending domain, to an address the request chose.
@@ -477,7 +477,7 @@ describe('a lead visit route is no weaker than the lead it hangs off', () => {
       .get(`/api/leads/${LEAD_FIXTURE.id}/visits`)
       .set(authHeader('technician'));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(res.body.visits).toBeUndefined();
   });
 });

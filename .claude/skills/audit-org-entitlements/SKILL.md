@@ -1,13 +1,13 @@
 ---
 name: audit-org-entitlements
-description: "Report an organization's plan, resolved features, feature overrides, seat usage, and RBAC grant health — the 'why can't this customer see X module' diagnostic. Read-only; runs against staging or prod. Use when the user asks to audit an org's entitlements, check what plan/features an org has, or diagnose a missing module."
+description: "Report an organization's plan, resolved features, feature overrides, and seat usage — the 'why can't this customer see X module' diagnostic. Read-only; runs against staging or prod. Use when the user asks to audit an org's entitlements, check what plan/features an org has, or diagnose a missing module."
 user_invocable: true
 ---
 
 # Audit org entitlements
 
 Read-only diagnostic. Fetches an org's rows via Supabase MCP and computes the report through the
-canonical TS resolver (`buildAuditReport`), so the plan/feature/seat/grant math is never re-derived
+canonical TS resolver (`buildAuditReport`), so the plan/feature/seat math is never re-derived
 by hand.
 
 ## Environments
@@ -39,13 +39,9 @@ by hand.
    -- active users
    SELECT email, role, has_login FROM users
    WHERE organization_id = '<org id>' AND is_active = true;
-
-   -- grants
-   SELECT role, action, subject, conditions FROM role_permissions
-   WHERE organization_id = '<org id>';
    ```
 
-4. **Assemble** the JSON object `{ "org": {...}, "users": [...], "grants": [...] }` exactly matching
+4. **Assemble** the JSON object `{ "org": {...}, "users": [...] }` exactly matching
    the `AuditData` shape (org.trial_ends_at as an ISO string or null; feature_overrides as an object).
    Write it to a temp file in the scratchpad, then run:
    ```bash
@@ -53,13 +49,12 @@ by hand.
    ```
    (`--from-json -` also reads stdin.) This opens no DB connection — it only computes.
 
-5. **Print the report verbatim.** Then, if the report shows missing/unscoped grants or a seat
-   overage, add one line of plain-English interpretation (e.g. "SALES will 403 on Leads — the
-   DEFAULT_GRANTS seed is incomplete; re-run onboarding's grant seed").
+5. **Print the report verbatim.** Then, if the report shows a seat
+   overage, add one line of plain-English interpretation.
 
 ## Notes
 
 - This skill never writes. No confirmation gate needed.
-- "Why can't they see X": if a module is missing, check (a) the Features section — is the feature
-  off because the plan/override excludes it? and (b) Grant health — is the RBAC grant missing? These
-  are two different gates (entitlement vs permission).
+- "Why can't they see X": if a module is missing, check the Features section — is the feature
+  off because the plan/override excludes it? If it is on, the other gate is the person's switches
+  (entitlement vs permission): read them on the person's Permissions page.

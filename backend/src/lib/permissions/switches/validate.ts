@@ -55,7 +55,12 @@ export function validateSwitchSet(
         continue;
       }
     } else if (typeof value !== 'string' || !storableChoices(s).includes(value)) {
-      violations.push({ switchKey: s.key, message: `${s.label} cannot be set to that value.`, needs: [] });
+      const offered = (s.choices ?? []).join(', ');
+      violations.push({
+        switchKey: s.key,
+        message: typeof value === 'string' ? `${s.label} cannot be set to "${value}". Choose one of: ${offered}.` : `${s.label} cannot be set to that value.`,
+        needs: [],
+      });
       continue;
     } else if (options.held && s.keptValues?.includes(value) && options.held[s.key] !== value) {
       const name = s.keptValueHelp?.[value]?.label ?? value;

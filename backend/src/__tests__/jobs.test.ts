@@ -145,7 +145,6 @@ const mockPrisma = prisma as unknown as {
   };
   // SRVW-114 slice 1 - validateCustomFieldValues' lookup.
   customFieldDefinition: { findMany: ReturnType<typeof vi.fn> };
-  rolePermission: { findMany: ReturnType<typeof vi.fn> };
   $transaction: ReturnType<typeof vi.fn>;
   $queryRaw: ReturnType<typeof vi.fn>;
 };
@@ -1285,7 +1284,7 @@ describe('POST /api/jobs — standard', () => {
     expect(res.body.job.id).toBe(JOB_FIXTURE.id);
   });
 
-  it('TECHNICIAN cannot create standard job (403)', async () => {
+  it('TECHNICIAN cannot create standard job (not found: the estimate is out of their reach)', async () => {
     mockAuthAs('technician');
 
     const res = await request(app)
@@ -1293,7 +1292,8 @@ describe('POST /api/jobs — standard', () => {
       .set(authHeader('technician'))
       .send({ estimate_id: ESTIMATE_APPROVED_FIXTURE.id });
 
-    expect(res.status).toBe(403);
+    // The estimate is out of the technician's reach, so it answers like a missing one (ticket 33).
+    expect(res.status).toBe(404);
   });
 
   it('SALES cannot create standard job (403)', async () => {
@@ -1911,10 +1911,6 @@ describe('POST /api/jobs — standalone (no estimate)', () => {
     // #1996 security follow-up: the existing-customer branch now requires `read Customer` on
     // the linked customer before create/accretion (TECHNICIAN holds none by default). This test
     // is about crew auto-assignment, not that gate, so grant it here for a readable customer.
-    mockPrisma.rolePermission.findMany.mockResolvedValue([
-      ...DEFAULT_GRANTS.filter((g) => g.role === 'TECHNICIAN'),
-      { role: 'TECHNICIAN', action: 'read', subject: 'Customer' },
-    ]);
     clearPermissionCache();
     mockPrisma.customer.findUnique.mockResolvedValue(CUSTOMER_FIXTURE);
     mockPrisma.serviceLocation.findFirst.mockResolvedValue(LOCATION_FIXTURE);
@@ -2892,8 +2888,10 @@ describe('PATCH /api/jobs/:id', () => {
 
   // Edit jobs is a switch (S01.11), off in the Technician preset: a technician on the crew edits the job's
   // details only when the person is given the switch. Adding a note rides Add notes instead.
-  it('refuses a TECHNICIAN on the crew a job edit while Edit jobs is off (the Technician preset)', async () => {
+  // AL-04: the Technician preset holds Edit jobs now (Create jobs requires it), so this is a technician it was turned off for.
+  it('refuses a TECHNICIAN on the crew a job edit while Edit jobs is off (turned off on the Technician preset)', async () => {
     mockAuthAs('technician');
+    mockRoleSwitches({ edit_jobs: false, create_jobs: false });
     mockPrisma.job.findUnique.mockResolvedValue({
       ...JOB_FIXTURE,
       ...withCrew([TEST_USERS.technician.id]),
@@ -3238,11 +3236,11 @@ describe('PATCH /api/jobs/:id', () => {
 
     // DISPATCHER can update a Job unconditionally by default; every default role that can is
     // ALSO a cost holder, so this simulates the guard's real target the same way Estimate's
-    // does - a switch set with "See financial data" withheld.
+    // does - a switch set with "See costs" withheld.
     it('returns 403 and does not write when the requester can update the Job but cannot see pricing', async () => {
       clearPermissionCache();
       mockAuthAs('dispatcher');
-      mockRoleSwitches({ see_financial_data: false });
+      mockRoleSwitches({ see_costs: false });
       mockPrisma.job.findUnique.mockResolvedValue(JOB_FIXTURE);
 
       const res = await request(app)
@@ -3418,12 +3416,12 @@ describe('PATCH /api/jobs/:id', () => {
       expect(captured.data.tax_rate).toBe(0);
     });
 
-    // S01.15 - the tax rate is a PRICE: See financial data covers costs only, so a requester without it
+    // S01.15 - the tax rate is a PRICE: See costs covers costs only, so a requester without it
     // still writes the tax rate of a job it can edit (the cost-field gate above is labor and overhead only).
     it('writes tax_rate for a requester who can update the Job but cannot see costs', async () => {
       clearPermissionCache();
       mockAuthAs('dispatcher');
-      mockRoleSwitches({ see_financial_data: false });
+      mockRoleSwitches({ see_costs: false });
       mockPrisma.job.findUnique.mockResolvedValue(jobWithLines());
       let captured: any;
       mockPrisma.job.update.mockImplementation((args: any) => {
@@ -3945,10 +3943,6 @@ describe('POST /api/jobs/:id/assign', () => {
   beforeEach(() => {
     // loadGrantsFor() calls rolePermission.findMany for the target user.
     // Default: return grants filtered by role so target ability is correctly resolved.
-    (prisma.rolePermission.findMany as any).mockImplementation(
-      (args: { where: { organization_id: string; role: string } }) =>
-        Promise.resolve(DEFAULT_GRANTS.filter(g => g.role === args.where.role))
-    );
   });
 
   it('admin can assign a job to a crew member', async () => {
@@ -4592,10 +4586,6 @@ describe('POST /api/jobs/:id/assign — conflict detection', () => {
 
   beforeEach(() => {
     // loadGrantsFor() calls rolePermission.findMany for the target user.
-    (prisma.rolePermission.findMany as any).mockImplementation(
-      (args: { where: { organization_id: string; role: string } }) =>
-        Promise.resolve(DEFAULT_GRANTS.filter(g => g.role === args.where.role))
-    );
   });
 
   it('returns 409 when a crew member has an overlapping scheduled job', async () => {
@@ -4830,10 +4820,6 @@ describe('POST /api/jobs/:id/assignees', () => {
   }
 
   beforeEach(() => {
-    (prisma.rolePermission.findMany as any).mockImplementation(
-      (args: { where: { organization_id: string; role: string } }) =>
-        Promise.resolve(DEFAULT_GRANTS.filter(g => g.role === args.where.role))
-    );
   });
 
   it('replaces the crew WITHOUT touching status or schedule', async () => {
@@ -6035,9 +6021,6 @@ describe('POST /api/jobs/:id/status', () => {
     clearPermissionCache();
     mockAuthAs('dispatcher');
     // Holds `read Job` (so the route gate passes) but NOT `cancel Job`.
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue(
-      DEFAULT_GRANTS.filter((g) => g.role === 'DISPATCHER' && !(g.action === 'cancel' && g.subject === 'Job')),
-    );
     mockPrisma.job.findUnique.mockResolvedValue({ ...JOB_FIXTURE, ...withCrew([]), invoices: [] });
 
     const res = await request(app)

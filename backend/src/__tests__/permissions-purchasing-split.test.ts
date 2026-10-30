@@ -81,7 +81,7 @@ describe('CASL parity — PurchaseOrder + Vendor abilities', () => {
           role === 'ADMIN' || role === 'DISPATCHER' || (role === 'SALES' && action === 'read');
         it(`${role} ${shouldAllow ? 'CAN' : 'CANNOT'} ${action} ${subject}`, () => {
           const grants = DEFAULT_GRANTS.filter((g) => g.role === role);
-          const ability = defineAbilityFor({ id: 'test-user-id', role }, grants);
+          const ability = defineAbilityFor({ is_admin: role === 'ADMIN', id: 'test-user-id', role }, grants);
           expect(ability.can(action as any, subject as any)).toBe(shouldAllow);
         });
       }

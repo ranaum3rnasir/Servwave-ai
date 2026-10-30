@@ -18,7 +18,7 @@ export interface ChangeLogEntry {
   switch_label: string | null;
   from: SwitchValue | null;
   to: SwitchValue | null;
-  /** manual | role assigned | reset | save as role | migration */
+  /** manual | role assigned | reset | save as role | migration | role edit | erased */
   reason: string;
   /** The role a "role assigned" or "save as role" entry is about, by the name it had then. */
   role_label: string | null;

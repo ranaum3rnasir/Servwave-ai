@@ -17,7 +17,7 @@ import ServicePlansPage from '../ServicePlansPage';
  * query.
  */
 
-vi.mock('@/lib/api/users', () => ({ useUsers: () => ({ data: [] }) }));
+vi.mock('@/lib/api/users', () => ({ usePeople: () => ({ data: [] }) }));
 
 const mockApi = vi.mocked(api);
 

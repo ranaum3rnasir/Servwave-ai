@@ -42,6 +42,8 @@ export const NOT_AVAILABLE_COPY = {
 export type AgentUser =
   | {
       role?: string;
+      /** The Admin flag (P15). */
+      is_admin?: boolean;
       org_features?: readonly string[];
       org_is_demo?: boolean;
       org_is_spider_pilot?: boolean;

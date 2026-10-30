@@ -1,5 +1,5 @@
 /* =============================================================================
-   Roles & Permissions, PRD 10, slice S10.26 - PATCH /api/organization/email-sender: a holder of Company settings changes
+   Roles & Permissions, PRD 10, slice S10.26 - PATCH /api/organization/email-sender: an Admin changes
    the company part of the company's addresses (the Sender Address page).
 
    Through the route the page calls, as people on custom roles holding exactly the switch values under test (never a
@@ -58,17 +58,20 @@ suite('PATCH /api/organization/email-sender (real database)', () => {
     return { ...w, part };
   }
 
-  /** A person on a fresh custom role holding exactly these switches on (everything else off). */
+  /**
+   * A person on a fresh custom role holding exactly these switches on (everything else off). '@admin' makes them an Admin (the
+   * flag: setting up the company is the Admin flag's alone since 36b, M17); it is no switch.
+   */
   async function personWith(org: string, on: string[], name = 'holder') {
     const key = `snd-${randomUUID().slice(0, 8)}`;
     const role = await fx.addCustomRole(org, key, 'DISPATCHER');
     const allOff = Object.fromEntries(SWITCH_CATALOG.filter((x) => x.kind === 'toggle').map((x) => [x.key, false]));
     await setRoleSwitchValues({
-      organizationId: org, roleKey: key, values: { ...allOff, ...Object.fromEntries(on.map((k) => [k, true])) },
+      organizationId: org, roleKey: key, values: { ...allOff, ...Object.fromEntries(on.filter((k) => k !== '@admin').map((k) => [k, true])) },
       actorId: null, reason: 'manual',
     });
     clearPermissionCache(org);
-    return fx.addUser(org, name, 'DISPATCHER', { customRoleId: role.id });
+    return fx.addUser(org, name, 'DISPATCHER', { customRoleId: role.id, isAdmin: on.includes('@admin') });
   }
 
   /** A user with a mailbox issued the way a user create does. */
@@ -77,9 +80,9 @@ suite('PATCH /api/organization/email-sender (real database)', () => {
     return db.$transaction((tx) => issueUserMailbox(tx, { id: person.id, organization_id: org, first_name: first, last_name: last }));
   }
 
-  const HOLDER = ['company_settings'];
+  const HOLDER = ['@admin'];
 
-  it('lets a holder of Company settings change the company part: the main address and every user address move, the old ones keep resolving, and new automated sends use the new main address', async () => {
+  it('lets an Admin change the company part: the main address and every user address move, the old ones keep resolving, and new automated sends use the new main address', async () => {
     const w = await world();
     const holder = await personWith(w.org, HOLDER);
     const jane = await fx.addUser(w.org, 'jane', 'DISPATCHER');
@@ -100,7 +103,7 @@ suite('PATCH /api/organization/email-sender (real database)', () => {
     expect((await api.get('/api/organization/email-sender')).body).toMatchObject({ address: `${next}@${DOMAIN}`, local_part: next });
   });
 
-  it('shows the main address and company part to a holder of Company settings who cannot read the Email page, and to nobody else', async () => {
+  it('shows the main address and company part to an Admin whose role cannot read the Email page, and to nobody else', async () => {
     const w = await world();
     const holder = await personWith(w.org, HOLDER);
     const emailOnly = await personWith(w.org, ['access_communication', 'show_email'], 'emailonly');
@@ -113,9 +116,9 @@ suite('PATCH /api/organization/email-sender (real database)', () => {
     expect((await (await fx.signedInAs(emailOnly)).get('/api/organization/email-sender')).status).toBe(403);
   });
 
-  it('refuses a person without Company settings with 403 and writes nothing, whatever else they hold', async () => {
+  it('refuses a person who is not an Admin with 403 and writes nothing, whatever else they hold', async () => {
     const w = await world();
-    const everythingElse = SWITCH_CATALOG.filter((s) => s.kind === 'toggle' && s.key !== 'company_settings').map((s) => s.key);
+    const everythingElse = SWITCH_CATALOG.filter((s) => s.kind === 'toggle' && true).map((s) => s.key);
     const person = await personWith(w.org, everythingElse, 'noteverything');
     const api = await fx.signedInAs(person);
     const before = await db.mailboxAddress.count({ where: { organization_id: w.org } });
@@ -219,7 +222,7 @@ suite('PATCH /api/organization/email-sender (real database)', () => {
     expect((await api.patch('/api/organization/email-sender', { local_part: fresh })).status).toBe(200);
   });
 
-  it('refuses a dry run to a person without Company settings, like the change itself', async () => {
+  it('refuses a dry run to a person who is not an Admin, like the change itself', async () => {
     const w = await world();
     const nobody = await personWith(w.org, []);
     const res = await (await fx.signedInAs(nobody)).patch('/api/organization/email-sender', { local_part: `service${tag()}`, dry_run: true });

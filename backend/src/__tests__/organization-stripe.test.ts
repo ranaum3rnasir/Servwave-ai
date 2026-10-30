@@ -396,13 +396,6 @@ describe('GET /api/organization/stripe/status', () => {
     expect(JSON.stringify(res.body)).not.toContain('acct_');
   });
 
-  it('answers a user holding only Company settings (the switch that carries update Organization)', async () => {
-    asSalesWith({ company_settings: true });
-    const res = await getStatusAsSales();
-    expect(res.status).toBe(200);
-    expect(JSON.stringify(res.body)).not.toContain('acct_');
-  });
-
   // V7-02a: the four verification rows. Stored in organizations.stripe_verification, sent as `verification`.
   const storedVerification = { business_details: 'verified', owner_identity: 'action_needed', bank_account: 'pending', tax_id: 'verified' };
 
@@ -435,7 +428,7 @@ describe('GET /api/organization/stripe/status', () => {
   });
 
   it('refuses a user with every payments switch off, who holds only the reads everyone has', async () => {
-    asSalesWith({ view_payments: false, manage_payout_account: false, company_settings: false });
+    asSalesWith({ view_payments: false, manage_payout_account: false });
     const res = await getStatusAsSales();
     expect(res.status).toBe(403);
     expect(mockPrisma.organization.findUnique).not.toHaveBeenCalled();

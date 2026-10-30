@@ -11,7 +11,7 @@ import type { Request } from 'express';
 import type { Prisma } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { tenantWhere } from '../../lib/tenant';
-import { scopeWhereForReq } from '../../lib/permissions/enforce';
+import { canSeePrices, scopeWhereForReq } from '../../lib/permissions/enforce';
 import { logger } from '../../lib/logger';
 import { retrieveCapturePayerDetail } from '../../lib/stripe';
 import { PAYABLE_STATUSES, PROCESSING_PAYMENT_WHERE, payableNowCents } from '../../lib/payment-ledger';
@@ -132,10 +132,14 @@ export async function unappliedDetail(req: Request, row: RawRow) {
   const restricted = item.restricted;
   const kind = row.type === 'unmatched_refund' ? 'REFUND' : 'PAYMENT';
   const amount = row.amount == null ? null : Number(row.amount);
-  // A caller who cannot open the invoice gets the reason in words but not its number or total.
+  // A caller who cannot open the invoice gets the reason in words but nothing about the invoice: not its number, its total,
+  // or its state (paid, voided, paid twice), so the words read the same whatever happened to an invoice they cannot open.
   const texts = unappliedReasonTexts({
-    reason: row.code ?? '', invoiceStatus: row.invoice_status, invoiceNumber: restricted ? null : row.invoice_number,
-    invoiceTotal: restricted || row.invoice_total == null ? null : Number(row.invoice_total), amount, sameAmountPaid: row.same_amount_paid,
+    reason: row.code ?? '', invoiceStatus: restricted ? null : row.invoice_status, invoiceNumber: restricted ? null : row.invoice_number,
+    // The sentence names the figures only to a person who may see prices (N5): the words are built from the invoice's total and
+    // the payment's amount, both price fields, so without See prices it is the sentence with no figure.
+    invoiceTotal: restricted || !canSeePrices(req) || row.invoice_total == null ? null : Number(row.invoice_total), amount,
+    sameAmountPaid: restricted ? null : row.same_amount_paid,
   });
   // The payer is read only for an open item: a resolved or attached one already has its method stored.
   const capture = restricted || !row.is_open

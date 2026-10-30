@@ -229,14 +229,14 @@ describe("Dialer real search (slice 2.2)", () => {
     job: screen.queryByRole("button", { name: /Create job/ }),
   });
 
-  it("offers Create lead with Create leads + Show Leads page, opening /leads/new?phone=<e164>", async () => {
+  it("offers Create lead with Create leads + View leads, opening /leads/new?phone=<e164>", async () => {
     await typeUnknownNumber(personHolding(LEAD_PAIR));
 
     await userEvent.click(await screen.findByRole("button", { name: /Create lead/ }));
     expect(mockNavigate).toHaveBeenCalledWith(`/leads/new?phone=${encodeURIComponent("+16095550000")}`);
   });
 
-  it("offers Create job with Create jobs + Show Jobs page, opening /jobs/new?phone=<e164>", async () => {
+  it("offers Create job with Create jobs + View jobs, opening /jobs/new?phone=<e164>", async () => {
     await typeUnknownNumber(personHolding(JOB_PAIR));
 
     await userEvent.click(await screen.findByRole("button", { name: /Create job/ }));
@@ -244,17 +244,17 @@ describe("Dialer real search (slice 2.2)", () => {
   });
 
   it("never offers Create customer, whatever the person holds", async () => {
-    await typeUnknownNumber(personHolding([...LEAD_PAIR, ...JOB_PAIR, "Create customers", "Show Customers page"], SCREEN_RULES));
+    await typeUnknownNumber(personHolding([...LEAD_PAIR, ...JOB_PAIR, "Create customers", "View customers"], SCREEN_RULES));
 
     await screen.findByRole("button", { name: /Create lead/ });
     expect(createButtons().customer).not.toBeInTheDocument();
   });
 
   it.each([
-    ["Create leads without Show Leads page", ["Create leads"]],
-    ["Show Leads page without Create leads", ["Show Leads page"]],
-    ["Create jobs without Show Jobs page", ["Create jobs"]],
-    ["Show Jobs page without Create jobs", ["Show Jobs page"]],
+    ["Create leads without View leads", ["Create leads"]],
+    ["View leads without Create leads", ["View leads"]],
+    ["Create jobs without View jobs", ["Create jobs"]],
+    ["View jobs without Create jobs", ["View jobs"]],
   ])("offers nothing for %s", async (_name, held) => {
     await typeUnknownNumber(personHolding(held));
 

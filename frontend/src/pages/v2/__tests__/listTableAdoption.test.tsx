@@ -198,7 +198,8 @@ const LISTS = [
     path: '/invoices',
     endpoint: '/api/invoices',
     data: INVOICES_FIXTURE,
-    ability: () => buildAbility([{ action: 'send', subject: 'Invoice' }]),
+    // Total and Amount Due are prices, so the list draws them only for a person who holds See prices (P11).
+    ability: () => buildAbility([{ action: 'send', subject: 'Invoice' }, { action: 'read', subject: 'Prices' }]),
     rowText: 'I00001',
     sortHeader: 'Invoice #',
     sortBy: 'invoice_number',

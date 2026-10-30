@@ -19,6 +19,13 @@ function createTestQueryClient() {
   });
 }
 
+/**
+ * A person who may see prices and nothing else (the "See prices" switch, P11). A screen that draws a price, a total or a
+ * balance draws none for an ability without it, so a test about a figure on the screen renders with this one (or with an
+ * ability that holds `read Prices` among its rules).
+ */
+export const seesPrices: AppAbility = buildAbility([{ action: 'read', subject: 'Prices' }]);
+
 // ─── Render with Providers ────────────────────────────────
 interface WrapperOptions {
   initialEntries?: string[];
@@ -70,7 +77,7 @@ export function renderWithProviders(
 export function seedEveryMenuSwitch(userId: string): void {
   const values: Record<string, boolean> = {};
   const seed = (gate: NavGate | undefined) => {
-    if (gate?.kind === 'record') { values[gate.view] = true; values[gate.show] = true; }
+    if (gate?.kind === 'record') values[gate.view] = true;
     if (gate?.kind === 'page') values[gate.access] = true;
     if (gate?.kind === 'show') values[gate.show] = true;
     if (gate?.kind === 'group' && gate.access) values[gate.access] = true;
@@ -85,7 +92,7 @@ export function seedEveryMenuSwitch(userId: string): void {
 // Roles & Permissions S07.13 - a page that draws a tab from a Show switch (display only, so not a rule) reads it from the
 // person's own switches. A suite that mounts such a page with its data hooks stubbed seeds the last-known answer here,
 // as `seedEveryMenuSwitch` does for the menu. The default test user's id is the one the shared auth mock hands out.
-export function seedMySwitches(values: Record<string, boolean>, userId = '00000000-0000-0000-0000-000000000001'): void {
+export function seedMySwitches(values: Record<string, boolean | string>, userId = '00000000-0000-0000-0000-000000000001'): void {
   localStorage.setItem(`servwave_my_switches:${userId}`, JSON.stringify({ values }));
 }
 
@@ -101,8 +108,6 @@ export function inventoryWriteAbility(): AppAbility {
     { action: 'create', subject: 'Inventory' },
     { action: 'update', subject: 'Inventory' },
     { action: 'delete', subject: 'Inventory' },
-    // Roles & Permissions S07.1: a writer who sees every asset, as today (the holder filter and Assignee column show).
-    { action: 'see_all_assets', subject: 'Inventory' },
     // Roles & Permissions S07.12: a writer who reads the movement history, as today (the Activity tab and item history show).
     { action: 'see_inventory_activity', subject: 'Inventory' },
     { action: 'read', subject: 'PriceBook' },
@@ -125,7 +130,7 @@ export function inventoryWriteAbility(): AppAbility {
 }
 
 // Roles & Permissions S07.19 - the Purchase Orders and Vendors screens draw their controls from the person's own
-// rules: Create, Edit and Delete of each, its Export, and See financial data (`read Pricing`) for every amount and the
+// rules: Create, Edit and Delete of each, its Export, and See costs (`read Pricing`) for every amount and the
 // vendor account number. A suite whose subject is something other than who may do what mounts them with all of it.
 export function purchasingAbility(): AppAbility {
   return buildAbility([

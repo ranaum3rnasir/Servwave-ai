@@ -12,11 +12,11 @@ import { randomUUID } from 'crypto';
 import { vi } from 'vitest';
 import type { JobStatus, PrismaClient, Role } from '@prisma/client';
 import { supabaseAdmin } from '../lib/supabase';
-import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { clearSwitchCacheForOrg, clearSwitchCacheForUser } from '../lib/permissions/switches/cache';
 import type { SwitchValue } from '../lib/permissions/switches/catalog';
 import { validateSwitchSet } from '../lib/permissions/switches/validate';
+import { setFirstOwner } from '../lib/users/first-owner';
 
 export type Person = { id: string; email: string };
 
@@ -47,7 +47,10 @@ export function switchFixture(db: PrismaClient, loadApp: () => Promise<Parameter
     };
   }
 
-  /** An org with an admin, a customer, and an invoice and an estimate on it that anyone with the grants can open. */
+  /**
+   * An org with an admin, a customer, and an invoice and an estimate on it that anyone with the grants can open. The admin is
+   * the company's Owner, set the way onboarding sets it (AL-16).
+   */
   async function newOrg() {
     const org = randomUUID();
     orgs.push(org);
@@ -63,8 +66,9 @@ export function switchFixture(db: PrismaClient, loadApp: () => Promise<Parameter
     });
     const admin: Person = { id: randomUUID(), email: `admin-${tag}@example.test` };
     await db.user.create({
-      data: { id: admin.id, organization_id: org, email: admin.email, first_name: 'Test', last_name: 'Admin', role: 'ADMIN' },
+      data: { id: admin.id, organization_id: org, email: admin.email, first_name: 'Test', last_name: 'Admin', role: 'ADMIN', is_admin: true },
     });
+    await setFirstOwner(db, org, admin.id);
     adminOf.set(org, admin.id);
     const customer = randomUUID();
     await db.customer.create({
@@ -78,12 +82,14 @@ export function switchFixture(db: PrismaClient, loadApp: () => Promise<Parameter
     org: string,
     name: string,
     role: Role,
-    opts: { customRoleId?: string; basedOnRoleKey?: string; departmentId?: string; locationId?: string } = {},
+    opts: { customRoleId?: string; basedOnRoleKey?: string; departmentId?: string; locationId?: string; isAdmin?: boolean } = {},
   ): Promise<Person> {
     const person: Person = { id: randomUUID(), email: `${name}-${org.slice(0, 8)}@example.test` };
     await db.user.create({
       data: {
         id: person.id, organization_id: org, email: person.email, first_name: name, last_name: 'Tester', role,
+        // Admin is the flag on the person (P15). A person added as the Administrator role, with no custom role, is an Admin.
+        is_admin: opts.isAdmin ?? (role === 'ADMIN' && !opts.customRoleId),
         custom_role_id: opts.customRoleId ?? null,
         based_on_role_key: opts.basedOnRoleKey ?? null,
         department_id: opts.departmentId ?? null,
@@ -110,8 +116,9 @@ export function switchFixture(db: PrismaClient, loadApp: () => Promise<Parameter
   }
 
   /**
-   * A custom role with the grants of a built-in role under its own key, the way creating a role in
-   * the Roles screen copies them. `madeFromBlank` marks a role started from nothing.
+   * A custom role under its own key. It holds no stored switch values: a switch resolves from the preset of its base role
+   * (or off, for a role `madeFromBlank`) until a test gives it values. `copyGrants` and `extraGrants` are accepted and
+   * ignored: the old per-role grant rows are gone, and callers that pass them are left as they were.
    */
   async function addCustomRole(
     org: string,
@@ -124,13 +131,6 @@ export function switchFixture(db: PrismaClient, loadApp: () => Promise<Parameter
         organization_id: org, key, label: key, base_role: baseRole, made_from_blank: opts.madeFromBlank ?? false,
       },
     });
-    // One insert for the whole copy: a role copies the dozens of grants of its base, and a row at a time is a round trip each.
-    const copied = opts.copyGrants === false ? [] : DEFAULT_GRANTS.filter((x) => x.role === baseRole);
-    const grants = [
-      ...copied.map((g) => ({ organization_id: org, role: key, action: g.action, subject: g.subject, conditions: (g.conditions ?? undefined) as never })),
-      ...(opts.extraGrants ?? []).map((g) => ({ organization_id: org, role: key, action: g.action, subject: g.subject })),
-    ];
-    if (grants.length) await db.rolePermission.createMany({ data: grants });
     clearPermissionCache(org);
     return row;
   }
@@ -340,17 +340,18 @@ export function switchFixture(db: PrismaClient, loadApp: () => Promise<Parameter
       await quietly(db.$executeRawUnsafe(`DELETE FROM payments WHERE invoice_id IN (SELECT id FROM invoices WHERE organization_id IN (${inOrgs}))`));
       for (const table of [
         'permission_change_log', 'permission_user_switches', 'permission_role_switches',
-        'user_permission_overrides', 'role_permissions',
         'timeline_events', 'notifications', 'invoices', 'jobs',
         'service_plans',
         'estimates', 'leads',
       ]) {
         await quietly(db.$executeRawUnsafe(`DELETE FROM ${table} WHERE organization_id IN (${inOrgs})`));
       }
-      await quietly(db.$executeRawUnsafe(`DELETE FROM audit_logs WHERE org_id IN (${inOrgs})`));
+      // audit_logs is not cleared: the database refuses any delete there (M14, ticket 25), and its rows hold no foreign key.
       for (const table of ['mailbox_addresses', 'mailboxes']) {
         await quietly(db.$executeRawUnsafe(`DELETE FROM ${table} WHERE organization_id IN (${inOrgs})`));
       }
+      // The Owner's row can't be deleted while they are the Owner (AL-16): the company lets go of them first.
+      await quietly(db.$executeRawUnsafe(`UPDATE organizations SET owner_user_id = NULL WHERE id IN (${inOrgs})`));
       for (const table of ['customers', 'users', 'custom_roles', 'departments', 'locations']) {
         await quietly(db.$executeRawUnsafe(`DELETE FROM ${table} WHERE organization_id IN (${inOrgs})`));
       }

@@ -36,7 +36,7 @@ suite('permission switches (real database)', () => {
   const fx = switchFixture(db, async () => (await import('../app.js')).default as never);
   beforeAll(async () => {
     await import('../app.js');
-  });
+  }, 120_000);
   afterAll(() => fx.cleanup());
 
   describe('the catalog read', () => {
@@ -81,7 +81,7 @@ suite('permission switches (real database)', () => {
   async function permissionUser(person: Person) {
     const row = await db.user.findUniqueOrThrow({
       where: { id: person.id },
-      select: { id: true, role: true, organization_id: true, custom_role_id: true, custom_role: { select: { key: true } } },
+      select: { id: true, role: true, is_admin: true, organization_id: true, custom_role_id: true, custom_role: { select: { key: true } } },
     });
     return row;
   }
@@ -235,23 +235,6 @@ suite('permission switches (real database)', () => {
     });
   });
 
-  describe('the Show Payments page switch', () => {
-    it('resolves from the base preset for a role with only a stored View invoices row, and off for a role made from blank', async () => {
-      const { org, admin } = await fx.newOrg();
-      const adminBased = await fx.addCustomRole(org, 'admin-based', 'ADMIN');
-      const salesBased = await fx.addCustomRole(org, 'sales-based-pay', 'SALES');
-      const blank = await fx.addCustomRole(org, 'blank-pay', 'ADMIN', { madeFromBlank: true });
-      for (const roleKey of ['admin-based', 'sales-based-pay']) {
-        await setRoleSwitchValues({ organizationId: org, roleKey, values: { view_invoices: true }, actorId: admin.id, reason: 'manual' });
-      }
-      const valueFor = async (person: Person) => (await resolveSwitches(await permissionUser(person)))['show_payments_page'];
-
-      expect(await valueFor(await fx.addUser(org, 'p1', 'ADMIN', { customRoleId: adminBased.id }))).toBe(true);
-      expect(await valueFor(await fx.addUser(org, 'p2', 'SALES', { customRoleId: salesBased.id }))).toBe(false);
-      expect(await valueFor(await fx.addUser(org, 'p3', 'ADMIN', { customRoleId: blank.id }))).toBe(false);
-    });
-  });
-
   describe('writing a role\'s switch values', () => {
     it('logs a changed value with where it came from, logs nothing for a value that stays as it was, and refuses a switch the catalog does not hold', async () => {
       const { org, admin } = await fx.newOrg();
@@ -276,18 +259,17 @@ suite('permission switches (real database)', () => {
   });
 
   describe('giving a person a role through the user update', () => {
-    it('fills the person\'s set and based-on role once, logs one entry per changed switch, and leaves them alone when the role is edited afterwards', async () => {
+    it('links the person to the role without copying it, logs one entry per changed switch, and lets a later edit of the role reach them', async () => {
       const { org, admin } = await fx.newOrg();
       const dispatcher = await fx.addUser(org, 'dee', 'DISPATCHER');
       const api = await fx.signedInAs(admin);
 
       expect((await api.patch(`/api/users/${dispatcher.id}`, { role: 'SALES' })).status).toBe(200);
 
-      // The set holds the new role's value for every switch, and the person is based on the role.
-      const stored = await db.permissionUserSwitch.findMany({ where: { user_id: dispatcher.id } });
-      expect(stored.map((r) => r.switch_key).sort()).toEqual(SWITCH_CATALOG.map((c) => c.key).sort());
-      expect(stored.find((r) => r.switch_key === APPLY_DISCOUNTS)?.value).toBe(findSwitch(APPLY_DISCOUNTS)!.presets.SALES);
+      // Only the link is stored: the person holds no override of their own, and resolves to the new role.
+      expect(await db.permissionUserSwitch.count({ where: { user_id: dispatcher.id } })).toBe(0);
       expect((await db.user.findUniqueOrThrow({ where: { id: dispatcher.id } })).based_on_role_key).toBe('SALES');
+      expect((await resolveSwitches(await permissionUser(dispatcher)))[APPLY_DISCOUNTS]).toBe(findSwitch(APPLY_DISCOUNTS)!.presets.SALES);
 
       // One change-log entry per switch whose value changed for them, derived from the catalog.
       const changed = SWITCH_CATALOG.filter((c) => c.presets.DISPATCHER !== c.presets.SALES);
@@ -303,15 +285,15 @@ suite('permission switches (real database)', () => {
         expect(entry.created_at).toBeInstanceOf(Date);
       }
 
-      // Editing the role afterwards changes the role, never the person.
+      // Editing the role afterwards reaches the person: they hold no value of their own for the switch.
       await setRoleSwitchValues({ organizationId: org, roleKey: 'SALES', values: { [APPLY_DISCOUNTS]: false }, actorId: admin.id, reason: 'manual' });
-      expect((await resolveSwitches(await permissionUser(dispatcher)))[APPLY_DISCOUNTS]).toBe(true);
+      expect((await resolveSwitches(await permissionUser(dispatcher)))[APPLY_DISCOUNTS]).toBe(false);
       // A Sales person who was never given a set follows the role as it stands.
       const untouched = await fx.addUser(org, 'sam', 'SALES');
       expect((await resolveSwitches(await permissionUser(untouched)))[APPLY_DISCOUNTS]).toBe(false);
     });
 
-    it('refills the set from the new role when the person\'s role changes again, and writes no log entry for a switch that did not change', async () => {
+    it('follows the new role when the person\'s role changes again, and writes no log entry for a switch that did not change', async () => {
       const { org, admin } = await fx.newOrg();
       const person = await fx.addUser(org, 'pat', 'DISPATCHER');
       const api = await fx.signedInAs(admin);
@@ -324,8 +306,9 @@ suite('permission switches (real database)', () => {
       const refill = (await readChangeLog({ organizationId: org, targetType: 'USER', targetId: person.id })).filter(
         (l) => l.from_value === findSwitch(l.switch_key!)!.presets.SALES && l.to_value === findSwitch(l.switch_key!)!.presets.TECHNICIAN,
       );
-      expect(refill.map((l) => l.switch_key)).toEqual(
-        SWITCH_CATALOG.filter((c) => c.presets.SALES !== c.presets.TECHNICIAN).map((c) => c.key),
+      // Rows written in one statement share a timestamp, so their read order is not the catalog's: compare as sets.
+      expect(refill.map((l) => l.switch_key).sort()).toEqual(
+        SWITCH_CATALOG.filter((c) => c.presets.SALES !== c.presets.TECHNICIAN).map((c) => c.key).sort(),
       );
 
       // Dispatcher to Technician logs exactly the switches whose preset differs between the two, and
@@ -342,7 +325,7 @@ suite('permission switches (real database)', () => {
       expect(await readChangeLog({ organizationId: org, targetType: 'USER', targetId: same.id })).toEqual([]);
     });
 
-    it('fills from a custom role\'s stored values, and an update that leaves the role as it is does not refill a tailored set', async () => {
+    it('follows a custom role\'s stored values, and an update that leaves the role as it is keeps the person\'s own override', async () => {
       const { org, admin } = await fx.newOrg();
       const role = await fx.addCustomRole(org, 'crew-lead', 'DISPATCHER');
       await setRoleSwitchValues({ organizationId: org, roleKey: role.key, values: { [APPLY_DISCOUNTS]: true }, actorId: admin.id, reason: 'manual' });
@@ -354,7 +337,7 @@ suite('permission switches (real database)', () => {
       expect((await db.user.findUniqueOrThrow({ where: { id: person.id } })).based_on_role_key).toBe(role.key);
 
       // Someone tailors the person, then an edit to their name sends the same role back.
-      await db.permissionUserSwitch.updateMany({ where: { user_id: person.id, switch_key: APPLY_DISCOUNTS }, data: { value: false } });
+      await db.permissionUserSwitch.create({ data: { organization_id: org, user_id: person.id, switch_key: APPLY_DISCOUNTS, value: false } });
       expect((await api.patch(`/api/users/${person.id}`, { role: 'DISPATCHER', custom_role_id: role.id, first_name: 'Cora-Lee' })).status).toBe(200);
       expect(
         (await db.permissionUserSwitch.findFirstOrThrow({ where: { user_id: person.id, switch_key: APPLY_DISCOUNTS } })).value,

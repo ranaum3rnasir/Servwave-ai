@@ -1,12 +1,12 @@
 /**
- * Roles & Permissions S01.13 - the Timesheets report: whose punches it asks for follows See everyone's timesheets
- * (read from the ability, never a role name), and the punch log says where each clock-in and clock-out happened.
+ * Roles & Permissions S01.13 - the Timesheets report: whose punches it asks for follows Timesheets scope
+ * (read from the person's switches, never a role name), and the punch log says where each clock-in and clock-out happened.
  * Nothing on the page is about clock-in location rules any more.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen } from '@testing-library/react';
 
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderWithProviders, seedMySwitches } from '@/__tests__/helpers';
 import { buildAbility } from '@/lib/ability';
 import { usePunches, useOtReviews, useUpsertOtReview } from '@/lib/api/timeclock';
 import type { Punch } from '@/lib/timeclock/types';
@@ -34,26 +34,30 @@ const PUNCHES: Punch[] = [
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
   mockUsePunches.mockReturnValue({ data: PUNCHES } as ReturnType<typeof usePunches>);
   vi.mocked(useOtReviews).mockReturnValue({ data: [] } as unknown as ReturnType<typeof useOtReviews>);
   vi.mocked(useUpsertOtReview).mockReturnValue({ mutateAsync: vi.fn() } as unknown as ReturnType<typeof useUpsertOtReview>);
 });
 
 describe('Timesheets report', () => {
-  it("asks for everyone's punches when the person holds See everyone's timesheets", () => {
-    renderWithProviders(<TimesheetsReport />, { ability: buildAbility([{ action: 'see_all', subject: 'Timeclock' }]) });
+  it.each(['all', 'team'])('asks for the organisation\'s punches when Timesheets scope is %s', (scope) => {
+    seedMySwitches({ timesheets_scope: scope });
+    renderWithProviders(<TimesheetsReport />, { ability: buildAbility([{ action: 'read', subject: 'Report' }]) });
     expect(mockUsePunches).toHaveBeenCalledWith({ scope: 'org' });
     expect(vi.mocked(useOtReviews)).toHaveBeenCalledWith({ scope: 'org' });
   });
 
-  it('asks only for the own punches without it, whatever the base role', () => {
+  it('asks only for the own punches on Attached, whatever the base role', () => {
+    seedMySwitches({ timesheets_scope: 'attached' });
     renderWithProviders(<TimesheetsReport />, { ability: buildAbility([{ action: 'read', subject: 'Report' }]) });
     expect(mockUsePunches).toHaveBeenCalledWith({ scope: 'me' });
     expect(vi.mocked(useOtReviews)).toHaveBeenCalledWith({ scope: 'me' });
   });
 
   it('shows where each clock-in and clock-out happened, and no location rules', () => {
-    renderWithProviders(<TimesheetsReport />, { ability: buildAbility([{ action: 'see_all', subject: 'Timeclock' }]) });
+    seedMySwitches({ timesheets_scope: 'all' });
+    renderWithProviders(<TimesheetsReport />, { ability: buildAbility([{ action: 'read', subject: 'Report' }]) });
     expect(screen.getByText('30.2672, -97.7431')).toBeInTheDocument();
     expect(screen.getByText('40.7128, -74.0060')).toBeInTheDocument();
     expect(screen.queryByText(/in-zone|in zone|override|work zone/i)).toBeNull();

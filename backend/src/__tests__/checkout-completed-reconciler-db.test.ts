@@ -88,7 +88,7 @@ suite('completed card checkouts through the reconciler (real database)', () => {
       },
     });
     await db.user.create({
-      data: { id: user, organization_id: org, email: `admin-${tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN' },
+      data: { id: user, organization_id: org, email: `admin-${tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN', is_admin: true },
     });
     await db.customer.create({
       data: { id: customer, organization_id: org, customer_number: `C-${tag}`, kind: 'PERSON', segment: 'RESIDENTIAL', first_name: 'Pat', last_name: 'Payer' },
@@ -220,7 +220,7 @@ suite('completed card checkouts through the reconciler (real database)', () => {
       where: { organization_id: f.org, entity_type: 'INVOICE', entity_id: f.invoice, event_type: 'PAYMENT_RECEIVED' },
     });
 
-    expect(lines.map((l) => l.description)).toEqual(['Card payment of $500.00 received via ServWave Payments']);
+    expect(lines.map((l) => l.description)).toEqual(['Card payment received via ServWave Payments']);
   });
 
   // Payments go-live slice 28 follow-up: the job's own history line is worded the same way, and never
@@ -241,7 +241,7 @@ suite('completed card checkouts through the reconciler (real database)', () => {
     const lines = await db.timelineEvent.findMany({
       where: { organization_id: f.org, entity_type: 'JOB', entity_id: job, event_type: 'JOB_PAYMENT_RECORDED' },
     });
-    expect(lines.map((l) => l.description)).toEqual([`Invoice INV-${f.tag} payment recorded: $500.00 received via ServWave Payments`]);
+    expect(lines.map((l) => l.description)).toEqual([`Invoice INV-${f.tag} payment recorded via ServWave Payments`]);
   });
 
   // Payments go-live slice 09 (conductor note from slice 08 acceptance): SQL and reports read the

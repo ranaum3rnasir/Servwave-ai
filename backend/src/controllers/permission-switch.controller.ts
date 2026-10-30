@@ -2,9 +2,11 @@ import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { SWITCH_CATALOG } from '../lib/permissions/switches/catalog';
 import { buildCatalogLayout } from '../lib/permissions/switches/layout';
+import { isPersonSetting } from '../lib/permissions/switches/settings';
 import { effectiveAcceptedMethods } from '../lib/permissions/paymentMethods';
 import { isSuperUser } from '../lib/permissions/effectiveRole';
 import { resolveSwitches } from '../lib/permissions/switches/store';
+import { computeSwitchesStamp } from '../lib/permissions/switches/stamp';
 
 /**
  * GET /api/permission-switches/catalog - the switch catalog (Roles & Permissions M1).
@@ -30,6 +32,8 @@ export function getCatalog(_req: Request, res: Response) {
       requires: s.requires,
       requiresAny: s.requiresAny,
       presets: s.presets,
+      // A per-person setting (P1): edited on the person's profile, not on the Permissions screens.
+      setting: isPersonSetting(s.key),
     })),
     // Where each switch sits on the Roles and Permissions screens: groups, rows, first line and nesting.
     layout: buildCatalogLayout(SWITCH_CATALOG),
@@ -57,6 +61,9 @@ export async function getAcceptedPaymentMethods(req: Request, res: Response) {
  * draws from this; the server decides access on every request. Open to any signed-in person: it is their own.
  */
 export async function getMe(req: Request, res: Response) {
-  const values = await resolveSwitches(req.user!);
-  res.json({ admin_box: isSuperUser(req.user!), values, rules: req.ability!.rules });
+  const [values, switches_version] = await Promise.all([
+    resolveSwitches(req.user!),
+    computeSwitchesStamp(req.user!).catch(() => null),
+  ]);
+  res.json({ admin_box: isSuperUser(req.user!), values, rules: req.ability!.rules, switches_version });
 }

@@ -99,9 +99,6 @@ suite('every PRD 3 slot write is enforced at the route (real database)', () => {
   /** The stored grants the built-in Sales role has in a real company (a new test company has none until written). */
   async function seedSalesRole(org: string) {
     for (const g of DEFAULT_GRANTS.filter((x) => x.role === 'SALES')) {
-      await db.rolePermission.create({
-        data: { organization_id: org, role: 'SALES', action: g.action, subject: g.subject, conditions: (g.conditions ?? undefined) as never },
-      });
     }
     clearPermissionCache(org);
   }

@@ -196,7 +196,7 @@ suite('public invoice pay state (real database)', () => {
     const lead = randomUUID();
     const estimate = randomUUID();
     await db.user.create({
-      data: { id: user, organization_id: inv.org, email: `admin-${inv.tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN' },
+      data: { id: user, organization_id: inv.org, email: `admin-${inv.tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN', is_admin: true },
     });
     await db.lead.create({
       data: { id: lead, organization_id: inv.org, lead_number: `L-${inv.tag}`, customer_id: inv.customer, service_request: 'Deposit', status: 'ESTIMATED' },

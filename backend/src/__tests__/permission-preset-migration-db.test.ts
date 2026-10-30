@@ -28,10 +28,12 @@ import { spawnSync } from 'child_process';
 import { rmSync } from 'fs';
 import { dirname, join } from 'path';
 import { PrismaClient } from '@prisma/client';
-import { BUILT_IN_ROLES, SWITCH_CATALOG, type SwitchValue } from '../lib/permissions/switches/catalog';
+import { BUILT_IN_ROLES, SWITCH_CATALOG, sameSwitchValue, type SwitchValue } from '../lib/permissions/switches/catalog';
 import { validateSwitchSet } from '../lib/permissions/switches/validate';
 import { loadPresetMigrationSnapshot } from '../lib/permissions/switches/presetMigrationSnapshot';
 import { PRESET_MIGRATION_NAME } from '../lib/permissions/switches/presetMigration';
+import { followUpPresetMove, retiredByFollowUp } from '../lib/permissions/switches/presetMigrationDrift';
+import { renamedSwitchKey } from '../lib/permissions/switches/presetMigrationRenames';
 import {
   dryRunReport, driftReport, formatDriftReport, formatDryRunReport, formatProofReport, inReadOnlyTransaction, proofReport,
 } from '../lib/permissions/switches/presetMigrationReport';
@@ -489,7 +491,16 @@ suite('the preset migration (real database)', () => {
       // The migration is frozen history and predates "Refund payments needs View payments and payouts" (payments
       // go-live P8); that one later-added need is checked by permission-refund-requires-view-payments.test.ts.
       const laterNeed = (v: { switchKey: string; needs: string[] }) => v.switchKey === 'refund_payments' && v.needs.join() === 'view_payments';
-      expect(validateSwitchSet(set as Record<string, SwitchValue>).filter((v) => !laterNeed(v)), name).toEqual([]);
+      // Likewise it predates "Create needs Edit" (AL-04): a Create it writes on beside an Edit it writes off is moved by the
+      // follow-up migration 20261028100300 (M7), checked by permission-create-requires-edit-migration-db.test.ts.
+      const createNeedsEdit = (v: { switchKey: string; needs: string[] }) => v.switchKey.startsWith('create_') && v.needs.length > 0 && v.needs.every((n) => n.startsWith('edit_'));
+      // And it predates the scope switches (AL-08): the See-all toggles it wrote and "Linked to me" are carried to their scope
+      // switch by the follow-up migration 20261028100500 (M9a), checked by permission-reach-scope-migration-db.test.ts.
+      const retiredKey = (v: { switchKey: string }) => retiredByFollowUp(v.switchKey) || renamedSwitchKey(v.switchKey) !== undefined;
+      // And it predates the money root (AL-05): a switch that now needs See prices, and See financial data (now See costs).
+      const needsSeePrices = (v: { needs: string[] }) => v.needs.includes('see_prices');
+      const oldScopeSpelling = (v: { switchKey: string }) => v.switchKey === 'communication_scope' && set.communication_scope === 'linked_to_me';
+      expect(validateSwitchSet(set as Record<string, SwitchValue>).filter((v) => !laterNeed(v) && !createNeedsEdit(v) && !retiredKey(v) && !oldScopeSpelling(v) && !needsSeePrices(v)), name).toEqual([]);
     }
   }, 300_000);
 
@@ -603,18 +614,34 @@ suite('the preset migration (real database)', () => {
     expect((await proofReport(client)).ok).toBe(true);
   }, 300_000);
 
+  /**
+   * The drift report without the presets a LATER migration moves (AL-04, 20261028100300): the stored rows hold what this
+   * migration wrote, the catalog holds what the follow-up carries them to, and that gap is not drift.
+   */
+  const withoutFollowUps = <R extends {
+    drifted: Array<{ role_key: string; switch_key: string; stored: unknown; preset: unknown }>;
+    unknownSwitches: Array<{ switch_key: string }>;
+  }>(r: R): R => ({
+    ...r,
+    drifted: r.drifted.filter((d) => {
+      const move = followUpPresetMove(d.role_key, d.switch_key, d.preset as SwitchValue);
+      return !(move && sameSwitchValue(move.was, d.stored as SwitchValue));
+    }),
+    // The stored rows of a switch a later migration retired (AL-08) are that migration's to carry, not unknown switches.
+    unknownSwitches: r.unknownSwitches.filter((u) => !retiredByFollowUp(u.switch_key) && renamedSwitchKey(u.switch_key) === undefined),
+  });
+
   it('finds a freshly migrated organization free of drift, and reports an edited built-in role', async () => {
     const { client, seeded } = await migrated();
-    const clean = await driftReport(client);
+    const clean = withoutFollowUps(await driftReport(client));
     const inOrg = (org: string) => clean.drifted.filter((d) => d.organization_id === org);
     // Presets only: no drift. The hand-made technician rows changed nothing either.
     expect(inOrg(seeded.orgs.orgBare)).toEqual([]);
     expect(inOrg(seeded.orgs.orgHandMade)).toEqual([]);
     expect(clean.unknownSwitches).toEqual([]);
-    // An organization whose Sales rows mapped away from the preset shows exactly that.
-    expect(inOrg(seeded.orgs.orgAll).map((d) => `${d.role_key} ${d.switch_key} ${JSON.stringify(d.stored)}`).sort()).toEqual([
-      'SALES estimates_scope "all"', 'SALES invoices_scope "all"',
-    ]);
+    // An organization whose Sales rows mapped the Estimates and Invoices scope away from the preset: those two switches are
+    // retired now (AL-06b, migration 20261028101000 deletes their rows), so they are no drift.
+    expect(inOrg(seeded.orgs.orgAll)).toEqual([]);
     // A catalog preset that no longer matches what is stored is drift: edit one value, and an unknown key too.
     await client.$executeRawUnsafe(
       `UPDATE permission_role_switches SET value = 'true'::jsonb WHERE organization_id = '${seeded.orgs.orgBare}' AND role_key = 'DISPATCHER' AND switch_key = 'delete_jobs'`,
@@ -623,7 +650,7 @@ suite('the preset migration (real database)', () => {
       `INSERT INTO permission_role_switches (id, organization_id, role_key, switch_key, value, updated_at)
        VALUES (gen_random_uuid(), '${seeded.orgs.orgBare}', 'SALES', 'access_dashboard', 'true'::jsonb, now())`,
     );
-    const dirty = await driftReport(client);
+    const dirty = withoutFollowUps(await driftReport(client));
     expect(dirty.drifted.filter((d) => d.organization_id === seeded.orgs.orgBare)).toEqual([
       { organization_id: seeded.orgs.orgBare, role_key: 'DISPATCHER', switch_key: 'delete_jobs', stored: true, preset: false },
     ]);
@@ -632,7 +659,7 @@ suite('the preset migration (real database)', () => {
       `UPDATE permission_role_switches SET value = 'false'::jsonb WHERE organization_id = '${seeded.orgs.orgBare}' AND role_key = 'DISPATCHER' AND switch_key = 'delete_jobs'`,
     );
     await client.$executeRawUnsafe(`DELETE FROM permission_role_switches WHERE switch_key = 'access_dashboard'`);
-    expect((await driftReport(client)).drifted.filter((d) => d.organization_id === seeded.orgs.orgBare)).toEqual([]);
+    expect(withoutFollowUps(await driftReport(client)).drifted.filter((d) => d.organization_id === seeded.orgs.orgBare)).toEqual([]);
   }, 300_000);
 
   it('lets a switch added after the migration read its preset for every built-in role that holds no row for it', async () => {

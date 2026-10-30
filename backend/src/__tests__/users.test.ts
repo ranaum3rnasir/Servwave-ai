@@ -848,8 +848,10 @@ describe('POST /api/users/:id/invite (resend invite for an existing row)', () =>
     expect(res.status).toBe(200);
     expect(res.body.email_sent).toBe(true);
     expect(mockSendInvite).toHaveBeenCalledOnce();
-    const updateArgs = mockPrisma.user.update.mock.calls[0][0];
-    expect(updateArgs.data).toMatchObject({ has_login: true });
+    // The first write stores the new link as the person's one live invite (H2); another flips has_login.
+    const writes = mockPrisma.user.update.mock.calls.map((c: unknown[]) => (c[0] as { data: Record<string, unknown> }).data);
+    expect(writes).toContainEqual(expect.objectContaining({ has_login: true }));
+    expect(writes).toContainEqual({ password_hash: expect.stringMatching(/^invite:v1:/) });
   });
 
   it('returns 404 for an unknown user', async () => {

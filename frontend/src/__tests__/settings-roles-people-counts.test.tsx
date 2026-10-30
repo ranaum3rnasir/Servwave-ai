@@ -74,8 +74,9 @@ describe('the Roles page people counts', () => {
   it('shows each role in the side column with the number of people based on it', async () => {
     windowWidth(1600);
     renderWithProviders(<RolesPage />);
-    const admin = await screen.findByRole('button', { name: /^Administrator \(Owner\)/ });
-    expect(countOf(admin)).toBe('2');
+    // The Administrator entry is not a role on this page: Admin is a flag on the person.
+    expect(await screen.findByRole('button', { name: /^Admin copy/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Administrator/ })).toBeNull();
     expect(countOf(screen.getByRole('button', { name: /^Admin copy/ }))).toBe('1');
     expect(countOf(screen.getByRole('button', { name: /^Office team/ }))).toBe('3');
     expect(countOf(screen.getByRole('button', { name: /^Dispatcher/ }))).toBe('1');
@@ -86,7 +87,7 @@ describe('the Roles page people counts', () => {
     const user = userEvent.setup();
     renderWithProviders(<RolesPage />);
     const picker = await screen.findByRole('combobox', { name: 'Role' });
-    await waitFor(() => expect(picker).toHaveTextContent('Administrator (Owner) · 2 people'));
+    await waitFor(() => expect(picker).toHaveTextContent('Sales · 1 person'));
     await user.click(picker);
     const options = within(await screen.findByRole('listbox', { name: 'Role' })).getAllByRole('option').map((o) => o.textContent);
     expect(options).toContain('Admin copy · 1 person');

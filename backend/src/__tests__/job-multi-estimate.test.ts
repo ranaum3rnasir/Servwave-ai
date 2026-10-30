@@ -32,7 +32,6 @@ const mockPrisma = prisma as unknown as {
   invoice: { findFirst: ReturnType<typeof vi.fn>; findMany: ReturnType<typeof vi.fn> };
   email: { updateMany: ReturnType<typeof vi.fn> };
   tagAssignment: { findMany: ReturnType<typeof vi.fn> };
-  userPermissionOverride: { findMany: ReturnType<typeof vi.fn> };
   $transaction: ReturnType<typeof vi.fn>;
 };
 
@@ -484,13 +483,10 @@ describe('POST /api/jobs - multi-estimate money path (SERV10X-61 Task 9)', () =>
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
   });
 
-  it('returns 403 when a row-scoped creator does not own EVERY selected estimate\'s lead', async () => {
+  it('refuses a row-scoped creator who does not own EVERY selected estimate\'s lead (not found: they cannot reach them all)', async () => {
     // A granted OWN-scoped `create Job` technician: the route guard lets them in, but the multi
     // branch requires ownership of ALL the selected estimates' leads, not just one.
     mockAuthAs('technician');
-    mockPrisma.userPermissionOverride.findMany.mockResolvedValue([
-      { action: 'create', subject: 'Job', effect: 'allow' },
-    ]);
     mockPrisma.estimate.findMany.mockResolvedValue([
       { ...ESTIMATE_A, lead: { ...SHARED_LEAD, lead_assignees: [{ user_id: TEST_USERS.technician.id }] } },
       { ...ESTIMATE_B, lead: { ...SHARED_LEAD, lead_assignees: [{ user_id: TEST_USERS.dispatcher.id }] } },
@@ -502,8 +498,9 @@ describe('POST /api/jobs - multi-estimate money path (SERV10X-61 Task 9)', () =>
       .set(authHeader('technician'))
       .send({ estimate_ids: [ESTIMATE_A.id, ESTIMATE_B.id] });
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe('Insufficient permissions');
+    // The technician cannot reach estimate B either, so the selection answers like one with a missing id (ticket 33).
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('One or more estimates not found');
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
   });
 

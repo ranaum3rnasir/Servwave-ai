@@ -35,6 +35,7 @@ import { buildCreateJobPayload } from '@/lib/job-create-payload';
 import { createJobFormSchema, type CreateJobFormData as CreateFormData } from '@/lib/job-create-schema';
 import { ScheduleTimeFields } from '@/components/schedule/ScheduleTimeFields';
 import { useScheduleTimezone } from '@/lib/schedule-tz';
+import { useNoOptionsLabel } from '@/lib/useIsAdmin';
 
 // ─── Types ───────────────────────────────────────────
 
@@ -82,6 +83,7 @@ function CreateJobForm({
   ability: AppAbility;
   preselectedCustomerId?: string | null;
 }) {
+  const noOptions = useNoOptionsLabel();
   const { data: org } = useOrganization();
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
   const [selectedCustomer, setSelectedCustomer] = useState<PickCustomer | null>(null);
@@ -398,7 +400,7 @@ function CreateJobForm({
                       <SelectContent>
                         {(org?.job_type_options ?? []).length > 0
                           ? (org?.job_type_options ?? []).map((t) => <SelectItem key={t} value={t}>{t}</SelectItem>)
-                          : <SelectItem value="__none__" disabled>No options - add in Settings</SelectItem>}
+                          : <SelectItem value="__none__" disabled>{noOptions}</SelectItem>}
                       </SelectContent>
                     </Select>
                   )}
@@ -414,7 +416,7 @@ function CreateJobForm({
                           const options = current && !baseOptions.includes(current) ? [current, ...baseOptions] : baseOptions;
                           return options.length > 0
                             ? options.map((s) => <SelectItem key={s} value={s}>{s}</SelectItem>)
-                            : <SelectItem value="__none__" disabled>No options - add in Settings</SelectItem>;
+                            : <SelectItem value="__none__" disabled>{noOptions}</SelectItem>;
                         })()}
                       </SelectContent>
                     </Select>

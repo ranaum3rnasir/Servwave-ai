@@ -186,7 +186,7 @@ suite('the Communication and Automations groups follow switches (real database)'
   describe('Office phone in the browser', () => {
     it('hands out a phone token by the switch alone, for a role of any base and any name, and refuses it without', async () => {
       const { org } = await newOrg();
-      await db.organization.update({ where: { id: org }, data: { ctm_account_id: 'run-prefixed-account' } });
+      await db.organization.update({ where: { id: org }, data: { ctm_account_id: `run-prefixed-account-${org}` } });
       const client = ctmClient as unknown as {
         isCtmConfigured: ReturnType<typeof vi.fn>; requestPhoneAccess: ReturnType<typeof vi.fn>;
       };
@@ -255,7 +255,7 @@ suite('the Communication and Automations groups follow switches (real database)'
       });
 
       const outsider = await personWith(org, {
-        communication_scope: 'linked_to_me', see_main_line_when_no_number: false, play_recording: true, download_recording: true,
+        communication_scope: 'attached', see_main_line_when_no_number: false, play_recording: true, download_recording: true,
       }, { base: 'TECHNICIAN' });
       const api = await outsider.api();
       expect((await api.get(`/api/communication/calls/${call}/recording`)).status).toBe(404);
@@ -429,15 +429,15 @@ suite('the Communication and Automations groups follow switches (real database)'
       { switchKey: 'attach_conversations', check: 'email-attach-lead', also: { view_communication: true }, run: (api) => api.patch(`/api/communication/emails/${missing}/lead`, { lead_id: null }) },
       { switchKey: 'attach_conversations', check: 'text-attach-job', also: { view_communication: true }, run: (api) => api.patch(`/api/communication/sms/${missing}/job`, { job_id: null }) },
       { switchKey: 'attach_conversations', check: 'text-attach-lead', also: { view_communication: true }, run: (api) => api.patch(`/api/communication/sms/${missing}/lead`, { lead_id: null }) },
-      { switchKey: 'edit_communication_records', check: 'email-thread-assign', also: { view_communication: true }, run: (api) => api.patch(`/api/communication/emails/threads/${missing}/assign`, {}) },
-      { switchKey: 'edit_communication_records', check: 'email-thread-archive', also: { view_communication: true }, run: (api) => api.patch(`/api/communication/emails/threads/${missing}/archive`, {}) },
-      { switchKey: 'edit_communication_records', check: 'email-thread-snooze', also: { view_communication: true }, run: (api) => api.patch(`/api/communication/emails/threads/${missing}/snooze`, {}) },
-      { switchKey: 'edit_communication_records', check: 'email-link-inbound', also: { view_communication: true }, run: (api) => api.patch(`/api/communication/emails/${missing}/link`, {}) },
+      { switchKey: 'edit_communication_records', check: 'email-thread-assign', also: { view_communication: true, show_email: true }, run: (api) => api.patch(`/api/communication/emails/threads/${missing}/assign`, {}) },
+      { switchKey: 'edit_communication_records', check: 'email-thread-archive', also: { view_communication: true, show_email: true }, run: (api) => api.patch(`/api/communication/emails/threads/${missing}/archive`, {}) },
+      { switchKey: 'edit_communication_records', check: 'email-thread-snooze', also: { view_communication: true, show_email: true }, run: (api) => api.patch(`/api/communication/emails/threads/${missing}/snooze`, {}) },
+      { switchKey: 'edit_communication_records', check: 'email-link-inbound', also: { view_communication: true, show_email: true }, run: (api) => api.patch(`/api/communication/emails/${missing}/link`, {}) },
       { switchKey: 'edit_communication_records', check: 'message-template-create', also: { view_communication: true }, run: (api) => api.post('/api/communication/templates', {}) },
       { switchKey: 'edit_communication_records', check: 'message-template-update', also: { view_communication: true }, run: (api) => api.patch(`/api/communication/templates/${missing}`, {}) },
       { switchKey: 'edit_communication_records', check: 'message-template-delete', also: { view_communication: true }, run: (api) => api.delete(`/api/communication/templates/${missing}`) },
       { switchKey: 'phone_numbers_tab', check: 'phone-numbers-routing', also: { view_communication: true, edit_communication_records: true }, run: (api) => api.patch(`/api/communication/numbers/${missing}`, { call_flow_id: null }) },
-      { switchKey: 'phone_usage_bar', check: 'phone-usage', also: { view_communication: true }, run: (api) => api.get('/api/communication/usage') },
+      { switchKey: 'phone_numbers_tab', check: 'phone-usage', also: { view_communication: true }, run: (api) => api.get('/api/communication/usage') },
       // The phone setup tabs (S08.16): each tab's switch on its endpoints, on top of the grants the endpoints needed before.
       { switchKey: 'call_flows_tab', check: 'call-flows-read', also: { view_communication: true }, run: (api) => api.get('/api/communication/call-flows') },
       { switchKey: 'call_flows_tab', check: 'call-flows-write', also: { view_communication: true, contact_customers: true }, run: (api) => api.post('/api/communication/call-flows', {}) },
@@ -453,12 +453,14 @@ suite('the Communication and Automations groups follow switches (real database)'
       { switchKey: 'edit_communication_records', check: 'call-group-update', also: { view_communication: true, call_groups_tab: true }, run: (api) => api.patch(`/api/communication/call-groups/${missing}`, {}) },
       { switchKey: 'delete_communication_records', check: 'call-group-delete', also: { view_communication: true, call_groups_tab: true }, run: (api) => api.delete(`/api/communication/call-groups/${missing}`) },
       { switchKey: 'delete_communication_records', check: 'call-flow-delete', also: { view_communication: true, call_flows_tab: true }, run: (api) => api.delete(`/api/communication/call-flows/${missing}`) },
+      { switchKey: 'show_email', check: 'email-page-send', also: { view_communication: true, contact_customers: true }, run: (api) => api.post('/api/communication/emails', { to: 'someone@example.com', subject: 'Hello', body: ['Hi'] }) },
+      { switchKey: 'show_email', check: 'email-mailbox', also: { view_communication: true }, run: (api) => api.get('/api/communication/emails') },
       { switchKey: 'access_communication', check: 'communication-section', also: { view_communication: true }, run: (api) => api.get('/api/communication/unread-counts') },
       { switchKey: 'log_past_communications', check: 'manual-log-create', also: { view_communication: true }, run: (api) => api.post('/api/communication/manual-log', {}) },
       { switchKey: 'view_automations', check: 'automation-list', run: (api) => api.get('/api/workflows') },
       { switchKey: 'view_automations', check: 'text-automation-list', run: (api) => api.get('/api/communication/automations') },
-      { switchKey: 'create_automations', check: 'automation-create', also: { view_automations: true }, run: (api) => api.post('/api/workflows', {}) },
-      { switchKey: 'create_automations', check: 'text-automation-create', also: { view_automations: true }, run: (api) => api.post('/api/communication/automations', {}) },
+      { switchKey: 'create_automations', check: 'automation-create', also: { view_automations: true, edit_automations: true }, run: (api) => api.post('/api/workflows', {}) },
+      { switchKey: 'create_automations', check: 'text-automation-create', also: { view_automations: true, edit_automations: true }, run: (api) => api.post('/api/communication/automations', {}) },
       { switchKey: 'edit_automations', check: 'automation-update', also: { view_automations: true }, run: (api) => api.patch(`/api/workflows/${missing}`, {}) },
       { switchKey: 'edit_automations', check: 'text-automation-update', also: { view_automations: true }, run: (api) => api.patch(`/api/communication/automations/${missing}`, {}) },
       { switchKey: 'delete_automations', check: 'automation-delete', also: { view_automations: true }, run: (api) => api.delete(`/api/workflows/${missing}`) },
@@ -467,7 +469,8 @@ suite('the Communication and Automations groups follow switches (real database)'
     // Checks that are not a route's allow-or-refuse, each proven by its own cases in this file.
     // The two See call insights checks leave things out of a response rather than refuse (proven in its own case above),
     // and so does the Phone numbers tab's check on the numbers list (proven by the mocked-prisma unit test comm-phone-numbers-tab.test.ts, not by a case in this file).
-    const provenElsewhere = ['manual-log-edit-others', 'call-insights', 'phone-agent-metrics', 'phone-numbers-fields'];
+    // Show Email's unread-badge check leaves the email count out of an answer that still comes (proven by permission-show-email-db.test.ts).
+    const provenElsewhere = ['manual-log-edit-others', 'call-insights', 'phone-agent-metrics', 'phone-numbers-fields', 'email-unread-count'];
 
     it('has a row for every server check the catalog lists for a Communication or Automations switch, and no switch is left unaccounted for', () => {
       const inGroups = SWITCH_CATALOG.filter((s) => GROUPS.includes(s.module));

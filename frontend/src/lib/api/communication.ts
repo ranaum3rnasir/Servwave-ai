@@ -876,8 +876,8 @@ export function useEmails(assignment: EmailAssignmentView = 'all', mailbox?: str
 /** PRD 10 (S10.7) - the Email page's mailbox list: the rail's top, with an unread count on every entry. */
 export type MailboxEntry = { id: string; name: string; unread: number };
 export type MailboxList = {
-  /** The Communication scope value the lists below follow: "linked_to_me" or "all". */
-  scope: 'linked_to_me' | 'all';
+  /** The Communication scope value the lists below follow: "attached", "team" or "all". */
+  scope: 'attached' | 'team' | 'all';
   /** The mailbox the page should show: "mine", "all" or a mailbox id (a mailbox the person may not open reads "mine"). */
   selected: string;
   /** What the server calls the picked mailbox, when it is one person's or the main one; empty otherwise. */
@@ -973,13 +973,14 @@ export type MyMailbox = { status: string; address: string | null };
  * The person's own mailbox. Only asked while the company has the Email plan feature (the route answers 402 without it),
  * and `mailbox` is null for a person who has none.
  */
-export function useMyMailbox() {
+export function useMyMailbox(allowed = true) {
   const entitlementsReady = useEntitlementsReady();
   const canAccess = useFeature('email');
   return useQuery<{ mailbox: MyMailbox | null }>({
     queryKey: ['communication', 'my-mailbox'],
     queryFn: () => api.get('/api/communication/my-mailbox').then((r) => r.data),
-    enabled: entitlementsReady && canAccess,
+    // `allowed` is false for a person the server would refuse (M7: Show Email off), so the read is not asked for them.
+    enabled: entitlementsReady && canAccess && allowed,
   });
 }
 export function useEmailGroups() {
@@ -1341,6 +1342,8 @@ export const useSendWhatsApp         = () => useCommMutation<{ chat_id: string; 
  *  app-generated mail, so a client must not be able to set either. */
 export type SendEmailArgs = {
   to: string;
+  /** Teammates by id (M3, ticket 29): the server resolves their addresses inside the sender's company. */
+  to_user_ids?: string[];
   cc?: string;
   bcc?: string;
   subject?: string;
@@ -1378,6 +1381,7 @@ export function useSendEmail() {
     mutationFn: (args: SendEmailArgs) => {
       const fd = new FormData();
       fd.append('to', args.to);
+      if (args.to_user_ids?.length) fd.append('to_user_ids', args.to_user_ids.join(','));
       if (args.cc) fd.append('cc', args.cc);
       if (args.bcc) fd.append('bcc', args.bcc);
       if (args.subject) fd.append('subject', args.subject);

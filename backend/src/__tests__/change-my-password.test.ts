@@ -164,12 +164,13 @@ describe('POST /api/users/me/password', () => {
     expect(userEndpointCalls).toHaveLength(0);
   });
 
-  it('a user without a login gets a 400 and the provider is never asked', async () => {
+  it('a user without a login holds no session: refused before the handler, and the provider is never asked', async () => {
     (prisma.user.findUnique as Mock).mockResolvedValue({ ...ME, has_login: false, organization: TEST_ORG });
 
     const res = await change({ current_password: secret(), password: secret() });
 
-    expect(res.status).toBe(400);
+    // H2 (ticket 22): the sign-in check refuses a person whose login is off on every request, before any route.
+    expect(res.status).toBe(401);
     expect(auth.signInWithPassword).not.toHaveBeenCalled();
     expect(userEndpointCalls).toHaveLength(0);
   });

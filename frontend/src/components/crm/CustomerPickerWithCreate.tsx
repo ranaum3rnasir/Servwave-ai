@@ -72,7 +72,7 @@ const addressComplete = (a: NewAddressFields) =>
  * Which create the picker's "Create new customer" row is, and so who is offered it.
  * - `customer` (default): the standalone customer create, offered with Create customers.
  * - `service-plan`: the service plan builder's quick create, offered with Create service plans
- *   whatever Create customers and Show Customers page say, and saved through the plan route, which
+ *   whatever Create customers and View customers say, and saved through the plan route, which
  *   the server accepts on Create service plans (the way a lead's new customer is accepted on
  *   Create leads). Same handler behind it, so the same duplicate-customer check.
  */

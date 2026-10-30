@@ -11,7 +11,8 @@ import api from '@/lib/axios';
 import { refreshAfterVisitWrite } from '@/lib/refreshAfterVisitWrite';
 import { ESTIMATE_STATUS, type EstimateStatusValue } from '@/constants/estimateStatus';
 import { useAppAbility } from '@/contexts/AbilityContext';
-import { canSeePricing as canSeePricingAbility } from '@/lib/ability';
+import { canSeePricing as canSeePricingAbility, canSeePrices as canSeePricesAbility } from '@/lib/ability';
+import { PriceFreeLines } from '@/components/money/PriceFreeLines';
 import {
   copyEstimateToInvoice, deleteEstimate, setEstimateStatus, setEstimateStatusTo,
   type EstimateLineItem, type EstimateScopePhoto, type Scope,
@@ -354,6 +355,8 @@ export default function EstimateWorkspacePage() {
   const canManageLines = canEditNow && may('edit');
   // Cost/margin visibility, shared with the backend's canSeePricing gate.
   const canSeePricing = canSeePricingAbility(ability);
+  // P11: a person without See prices gets no price anywhere on the estimate, so the priced grids and the money rail are not drawn.
+  const canSeePrices = canSeePricesAbility(ability);
   // Writing INTO the catalog is a separate, admin-grantable ability; editing
   // estimate lines must not imply catalog-write rights.
   const canSaveToPriceBook = ability.can('create', 'PriceBook');
@@ -649,7 +652,9 @@ export default function EstimateWorkspacePage() {
   const canApproveInternal = ability.can('approve', 'Estimate') && isSentLike;
   const canDeclineInternal = ability.can('decline', 'Estimate') && isSentLike;
   const canVoidApproval = ability.can('void_approval', 'Estimate') && isApproved;
-  const canCopyLink = !!estimate.public_token;
+  // The link opens the customer's own page, which shows every price, so it needs See prices (P11, H6), the same as Preview
+  // and Download; the server leaves the token out for a person without it.
+  const canCopyLink = canSeePrices && !!estimate.public_token;
 
   const sc = estimate.send_config;
   // True once a send_config exists, i.e. the deposit has been billed and can no longer move
@@ -830,14 +835,19 @@ export default function EstimateWorkspacePage() {
                   View invoice
                 </DropdownMenuItem>
               )}
-              <DropdownMenuItem onClick={() => setPreviewOpen(true)}>
-                <Eye />
-                Preview
-              </DropdownMenuItem>
-              <DropdownMenuItem onClick={handleDownloadPdf} disabled={downloading}>
-                {downloading ? <Spinner label={null} /> : <Download />}
-                Download
-              </DropdownMenuItem>
+              {/* The document is its prices, so Preview and Download need See prices (P11). */}
+              {canSeePrices && (
+                <>
+                  <DropdownMenuItem onClick={() => setPreviewOpen(true)}>
+                    <Eye />
+                    Preview
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={handleDownloadPdf} disabled={downloading}>
+                    {downloading ? <Spinner label={null} /> : <Download />}
+                    Download
+                  </DropdownMenuItem>
+                </>
+              )}
               {canCopyLink && (
                 <DropdownMenuItem onClick={handleCopyLink}>
                   <Link2 />
@@ -1061,18 +1071,24 @@ export default function EstimateWorkspacePage() {
       {/* Body: canvas plus the right money rail. */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,1fr)_320px]">
         <div className="flex min-w-0 flex-col gap-4">
-          <EstimateScopeOfWorkCard estimate={estimate} canManage={canManageLines} canSeePricing={canSeePricing} />
-          <EstimateLineItemsEditor
-            estimate={estimate}
-            canManage={canManageLines}
-            canSeePricing={canSeePricing}
-            canSaveToPriceBook={canSaveToPriceBook}
-          />
+          {canSeePrices ? (
+            <>
+              <EstimateScopeOfWorkCard estimate={estimate} canManage={canManageLines} canSeePricing={canSeePricing} />
+              <EstimateLineItemsEditor
+                estimate={estimate}
+                canManage={canManageLines}
+                canSeePricing={canSeePricing}
+                canSaveToPriceBook={canSaveToPriceBook}
+              />
+            </>
+          ) : (
+            <PriceFreeLines lines={estimate.line_items ?? []} scopes={estimate.scopes ?? []} title="Scope of work" />
+          )}
         </div>
 
         <aside className="lg:sticky lg:top-4 lg:self-start">
           <div className="flex flex-col gap-4">
-            <EstimateReceiptCard estimate={estimate} canEditNow={canEditNow} />
+            {canSeePrices && <EstimateReceiptCard estimate={estimate} canEditNow={canEditNow} />}
             {canSeePricing && (
               <EstimateInternalCostsCard
                 estimate={{

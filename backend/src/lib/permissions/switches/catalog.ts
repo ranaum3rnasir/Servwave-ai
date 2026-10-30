@@ -97,10 +97,10 @@ export interface SwitchEntry {
 }
 
 /** The selectable Data Scope choices, shared by every scope switch. */
-const SCOPE_CHOICES = ['attached', 'team', 'location', 'all'];
+const SCOPE_CHOICES = ['attached', 'team', 'all'];
 
 /**
- * The kept scope value. Stored on Jobs, Estimates and Invoices only, so Sales keeps the reach it has
+ * The kept scope value. Stored on Jobs only, so Sales keeps the reach it has
  * today; never offered as a choice and never accepted from a write that does not already hold it.
  */
 export const THROUGH_OWN_LEADS = 'through_own_leads';
@@ -116,9 +116,12 @@ const presets = (admin: SwitchValue, sales: SwitchValue, dispatcher: SwitchValue
   ADMIN: admin, SALES: sales, DISPATCHER: dispatcher, TECHNICIAN: technician,
 });
 
-/** A Data Scope switch key per scoped subject; the compile path reads the person's value from it. */
-export const SCOPE_SWITCH_KEY: Record<ScopedSubject, string> = {
-  Lead: 'leads_scope', Job: 'jobs_scope', Estimate: 'estimates_scope', Invoice: 'invoices_scope',
+/**
+ * A Data Scope switch key per record kind that has a scope of its own; the compile path reads the person's value from it.
+ * Estimates and invoices have none (P6): who reaches them follows the Jobs and Leads scope.
+ */
+export const SCOPE_SWITCH_KEY: Record<'Lead' | 'Job', string> = {
+  Lead: 'leads_scope', Job: 'jobs_scope',
 };
 
 type Draft = Omit<SwitchEntry, 'kind' | 'requires' | 'grants' | 'serverChecks'> &
@@ -158,7 +161,7 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     label: 'Leads scope',
     helpText:
       'Which leads list and open: Attached (a lead you are the Owner or Dispatcher of, or on the walkthrough crew of), ' +
-      'Team, Location or All.',
+      'Team or All.',
     kind: 'choice',
     choices: SCOPE_CHOICES,
     pending: 'Not a check of its own: it sets which leads every Leads switch reaches.',
@@ -170,7 +173,7 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     label: 'Jobs scope',
     helpText:
       'Which jobs list and open: Attached (a job you are on the crew of for any visit, past or upcoming, or are its Sold By or Dispatcher), ' +
-      'Team, Location or All.',
+      'Team or All.',
     kind: 'choice',
     choices: SCOPE_CHOICES,
     // Sales keeps the reach it has today until an admin changes it. The value is never offered as a choice.
@@ -180,63 +183,60 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     presets: presets('all', THROUGH_OWN_LEADS, 'all', 'attached'),
   }),
   entry({
-    key: 'estimates_scope',
-    module: 'Data Scope',
-    label: 'Estimates scope',
+    key: 'see_prices',
+    module: 'Money',
+    label: 'See prices',
     helpText:
-      'Which estimates list and open: Attached (an estimate on a lead or job you are attached to), Team, Location or All.',
-    kind: 'choice',
-    choices: SCOPE_CHOICES,
-    keptValues: [THROUGH_OWN_LEADS],
-    keptValueHelp: throughOwnLeads('Estimates'),
-    pending: 'Not a check of its own: it sets which estimates every Estimates switch reaches.',
-    presets: presets('all', THROUGH_OWN_LEADS, 'all', 'attached'),
-  }),
-  entry({
-    key: 'invoices_scope',
-    module: 'Data Scope',
-    label: 'Invoices scope',
-    helpText:
-      'Which invoices list and open: Attached (an invoice on a job you are attached to, or a deposit invoice with no job yet ' +
-      'on a lead or job you are attached to), Team, Location or All.',
-    kind: 'choice',
-    choices: SCOPE_CHOICES,
-    keptValues: [THROUGH_OWN_LEADS],
-    keptValueHelp: throughOwnLeads('Invoices'),
-    pending: 'Not a check of its own: it sets which invoices every Invoices switch reaches.',
-    presets: presets('all', THROUGH_OWN_LEADS, 'all', 'attached'),
-  }),
-  entry({
-    key: 'see_company_figures',
-    module: 'Data Scope',
-    label: 'See company figures',
-    helpText:
-      'See company-wide money: revenue and collected-payment tiles and charts on the dashboard, revenue on the scoreboards, ' +
-      'dollar amounts in the activity feed, and the totals on reports. Job counts stay on the scoreboards without it.',
-    grants: [{ action: 'read', subject: 'CompanyFigures' }],
-    // Each name is a place the server leaves company money out (the key is gone, never zero), with a row in the
-    // route-level suite proving it while the counts and the per-record prices beside it stay.
+      'See what things sell for: line prices, subtotals, totals, tax, discounts, balances, deposits and payment amounts on ' +
+      'estimates, invoices, jobs and payments, the price book\'s sell price, and the customer balances built from them. ' +
+      'Without it these are left out of every list, page, export and document. It is also what creating or editing an ' +
+      'estimate or invoice and recording a payment stand on.',
+    grants: [{ action: 'read', subject: 'Prices' }],
+    // Each name is a response that carries a price, with a row in the route-level suite proving the price is left
+    // out (the key is gone, never zero) while the record's other fields stay.
     serverChecks: [
-      'dashboard-company-figures',
-      'dashboard-scoreboard-revenue',
-      'dashboard-activity-amounts',
-      'report-revenue-totals',
-      'report-payment-fees-totals',
-      'report-estimate-conversion-totals',
-      'report-unpaid-invoices-totals',
-      'call-revenue',
-      'agent-revenue',
+      'estimate-list-prices',
+      'estimate-detail-prices',
+      'estimate-export-prices',
+      'estimate-pdf-prices',
+      'invoice-list-prices',
+      'invoice-detail-prices',
+      'invoice-export-prices',
+      'invoice-pdf-prices',
+      'job-detail-prices',
+      'job-line-prices',
+      'job-money-panel-prices',
+      'job-history-prices',
+      'payments-page-summary-prices',
+      'payments-page-list-prices',
+      'payments-page-detail-prices',
+      'payments-page-export-prices',
+      'payments-page-payouts-prices',
+      'customer-detail-prices',
+      'customer-summary-prices',
+      'customer-statement-prices',
+      'price-book-list-prices',
+      'price-book-detail-prices',
+      'stock-item-list-prices',
+      'stock-item-detail-prices',
+      'search-prices',
+      'lead-detail-prices',
+      'record-history-amounts',
+      'report-row-prices',
+      'dashboard-money-tiles',
     ],
-    presets: presets(true, false, false, false),
+    presets: presets(true, true, true, true),
   }),
   entry({
-    key: 'see_financial_data',
-    module: 'Data Scope',
-    label: 'See financial data',
+    key: 'see_costs',
+    module: 'Money',
+    label: 'See costs',
     helpText:
       'See what things cost the company: item and line cost, markup and margin, job cost, labor rate and overhead, price book and stock cost, ' +
-      'purchase order amounts, stock value and vendor account numbers. Prices are not covered: anyone who can open an estimate, job or ' +
-      'invoice still sees its prices, totals, tax, balance and deposit.',
+      'purchase order amounts, stock value and vendor account numbers. Prices are a separate switch (See prices), which this needs.',
+    requires: ['see_prices'],
+    // The grant keeps the subject it has always had ('Pricing'): every cost check in the controllers reads it, and renaming
+    // the subject would touch each of them for no change in behaviour. The class is costs; 'Prices' is the price class.
     grants: [{ action: 'read', subject: 'Pricing' }],
     // Each name is a response that carries a cost, with a row in the route-level suite proving the cost is left
     // out (the key is gone, never zero) while the prices on the same response stay.
@@ -256,6 +256,32 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
       'vendor-account-number',
     ],
     presets: presets(true, true, false, false),
+  }),
+  entry({
+    key: 'see_company_figures',
+    module: 'Money',
+    label: 'See company figures',
+    helpText:
+      'See company-wide money: revenue and collected-payment tiles and charts on the dashboard, revenue on the scoreboards, ' +
+      'and the totals on reports. Job counts stay on the scoreboards without it. The activity feed reads the same for everyone. Needs See prices.',
+    requires: ['see_prices'],
+    grants: [{ action: 'read', subject: 'CompanyFigures' }],
+    // Each name is a place the server leaves company money out (the key is gone, never zero), with a row in the
+    // route-level suite proving it while the counts and the per-record prices beside it stay. `dashboard-activity-unchanged`
+    // is the one place that is proven NOT to change: the activity feed names no figure in its words (M16), so it reads
+    // the same with or without this switch.
+    serverChecks: [
+      'dashboard-company-figures',
+      'dashboard-scoreboard-revenue',
+      'dashboard-activity-unchanged',
+      'report-revenue-totals',
+      'report-payment-fees-totals',
+      'report-estimate-conversion-totals',
+      'report-unpaid-invoices-totals',
+      'call-revenue',
+      'agent-revenue',
+    ],
+    presets: presets(true, false, false, false),
   }),
 
   // ─── Customers ───────────────────────────────────────────────────────────────────────────────
@@ -277,7 +303,7 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     helpText:
       'The standalone New Customer only. Not the new customer inside the lead and job forms (Create leads, Create jobs), ' +
       'and not the service plan builder\'s quick customer create (Create service plans).',
-    requires: ['view_customers'],
+    requires: ['view_customers', 'edit_customers'],
     grants: [{ action: 'create', subject: 'Customer' }],
     serverChecks: ['customer-create'],
     presets: presets(true, true, true, false),
@@ -290,7 +316,7 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     requires: ['view_customers'],
     grants: [{ action: 'update', subject: 'Customer', scoped: 'Customer' }],
     serverChecks: ['customer-update'],
-    presets: presets(true, true, false, false),
+    presets: presets(true, true, true, false),
   }),
   entry({
     key: 'delete_customers',
@@ -301,15 +327,6 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     grants: [{ action: 'delete', subject: 'Customer', scoped: 'Customer' }],
     serverChecks: ['customer-delete'],
     presets: presets(true, false, false, false),
-  }),
-  entry({
-    key: 'show_customers_page',
-    module: 'Customers',
-    label: 'Show Customers page',
-    helpText: 'Menu entry and list page. Display only: the server never checks it.',
-    requires: ['view_customers'],
-    pending: 'Display only; stored and served, never checked.',
-    presets: presets(true, true, false, false),
   }),
   entry({
     key: 'export_customers',
@@ -387,7 +404,7 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     module: 'Leads',
     label: 'Create leads',
     helpText: 'Create a lead, with a new or existing customer.',
-    requires: ['view_leads'],
+    requires: ['view_leads', 'edit_leads'],
     grants: [{ action: 'create', subject: 'Lead' }],
     serverChecks: ['lead-create'],
     presets: presets(true, true, true, true),
@@ -401,7 +418,7 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     // The lead update route also gates a lead's tags; its notes follow Add notes (S01.11).
     grants: [{ action: 'update', subject: 'Lead', scoped: 'Lead' }],
     serverChecks: ['lead-update', 'lead-tag-add', 'lead-tag-remove', 'lead-contact-entry-add', 'lead-contact-entry-change', 'lead-contact-entry-correct', 'lead-contact-entry-remove', 'lead-contact-name-change'],
-    presets: presets(true, true, true, false),
+    presets: presets(true, true, true, true),
   }),
   entry({
     key: 'change_lead_status_by_hand',
@@ -425,15 +442,6 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     grants: [{ action: 'delete', subject: 'Lead', scoped: 'Lead' }],
     serverChecks: ['lead-delete'],
     presets: presets(true, true, true, false),
-  }),
-  entry({
-    key: 'show_leads_page',
-    module: 'Leads',
-    label: 'Show Leads page',
-    helpText: 'Menu entry and list page. Display only: the server never checks it.',
-    requires: ['view_leads'],
-    pending: 'Display only; stored and served, never checked.',
-    presets: presets(true, true, true, true),
   }),
   entry({
     key: 'export_leads',
@@ -548,7 +556,7 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     module: 'Jobs',
     label: 'Create jobs',
     helpText: 'Create a job, with a new or existing customer, or convert a lead to a job.',
-    requires: ['view_jobs'],
+    requires: ['view_jobs', 'edit_jobs'],
     grants: [{ action: 'create', subject: 'Job' }],
     serverChecks: ['job-create'],
     presets: presets(true, false, true, true),
@@ -562,7 +570,7 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     // The job update route also gates a job's tags and sub-status; its notes follow Add notes (S01.11).
     grants: [{ action: 'update', subject: 'Job', scoped: 'Job' }],
     serverChecks: ['job-update', 'job-sub-status', 'job-tag-add', 'job-tag-remove', 'job-contact-entry-add', 'job-contact-entry-change', 'job-contact-entry-correct', 'job-contact-entry-remove', 'job-contact-name-change'],
-    presets: presets(true, false, true, false),
+    presets: presets(true, false, true, true),
   }),
   entry({
     key: 'delete_jobs',
@@ -573,15 +581,6 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     grants: [{ action: 'delete', subject: 'Job', scoped: 'Job' }],
     serverChecks: ['job-delete'],
     presets: presets(true, false, false, false),
-  }),
-  entry({
-    key: 'show_jobs_page',
-    module: 'Jobs',
-    label: 'Show Jobs page',
-    helpText: 'Menu entry and list page. Display only: the server never checks it.',
-    requires: ['view_jobs'],
-    pending: 'Display only; stored and served, never checked.',
-    presets: presets(true, true, true, true),
   }),
   entry({
     key: 'export_jobs',
@@ -821,7 +820,7 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     key: 'view_estimates',
     module: 'Estimates',
     label: 'View estimates',
-    helpText: 'Open estimates within Estimates scope. Without it no estimate page opens and the list is empty.',
+    helpText: 'Open the estimates on the leads and jobs within your Leads scope and Jobs scope, and the ones you made for a customer alone. Without it no estimate page opens and the list is empty.',
     grants: [{ action: 'read', subject: 'Estimate', scoped: 'Estimate' }],
     serverChecks: ['estimate-list', 'estimate-detail'],
     presets: presets(true, true, true, true),
@@ -831,7 +830,7 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     module: 'Estimates',
     label: 'Create estimates',
     helpText: 'Create an estimate on a lead or job they can open, or duplicate an estimate.',
-    requires: ['view_estimates'],
+    requires: ['view_estimates', 'edit_estimates', 'see_prices'],
     grants: [
       { action: 'create', subject: 'Estimate' },
       { action: 'duplicate', subject: 'Estimate', scoped: 'Estimate' },
@@ -854,11 +853,10 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     module: 'Estimates',
     label: 'Edit estimates',
     helpText:
-      'Edit, send, resend, recall, cancel and archive other people\'s estimates in scope. Creators keep their own estimates ' +
-      'while they can see them.',
-    requires: ['view_estimates'],
-    // One grant (update) gates an estimate's details, lines, notes and tags (Add notes covers jobs and leads only). An estimate's
-    // creator edits, sends, cancels and revises their own whatever this says (the creator rule, M3).
+      'Edit, send, resend, recall, cancel and archive estimates in scope.',
+    requires: ['view_estimates', 'see_prices'],
+    // One grant (update) gates an estimate's details, lines, notes and tags (Add notes covers jobs and leads only). Who made an
+    // estimate opens nothing by itself (P7): this switch and the estimate being in scope are the whole test.
     grants: [
       { action: 'update', subject: 'Estimate', scoped: 'Estimate' },
       { action: 'send', subject: 'Estimate', scoped: 'Estimate' },
@@ -866,26 +864,17 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
       { action: 'revise', subject: 'Estimate', scoped: 'Estimate' },
     ],
     serverChecks: ['estimate-update', 'estimate-send', 'estimate-cancel', 'estimate-revise'],
-    presets: presets(true, true, false, false),
+    presets: presets(true, true, true, true),
   }),
   entry({
     key: 'delete_estimates',
     module: 'Estimates',
     label: 'Delete estimates',
-    helpText: 'Delete other people\'s estimates in scope. Creators keep their own estimates while they can see them.',
+    helpText: 'Delete estimates in scope.',
     requires: ['view_estimates'],
     grants: [{ action: 'delete', subject: 'Estimate', scoped: 'Estimate' }],
     serverChecks: ['estimate-delete'],
     presets: presets(true, true, false, false),
-  }),
-  entry({
-    key: 'show_estimates_page',
-    module: 'Estimates',
-    label: 'Show Estimates page',
-    helpText: 'Menu entry and list page. Display only: the server never checks it.',
-    requires: ['view_estimates'],
-    pending: 'Display only; stored and served, never checked.',
-    presets: presets(true, true, true, true),
   }),
   entry({
     key: 'export_estimates',
@@ -952,7 +941,7 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     key: 'view_invoices',
     module: 'Invoices',
     label: 'View invoices',
-    helpText: 'Open invoices within Invoices scope. Without it no invoice page opens and the list is empty.',
+    helpText: 'Open the invoices on the jobs within your Jobs scope, and the ones you made for a customer alone. Without it no invoice page opens and the list is empty.',
     grants: [{ action: 'read', subject: 'Invoice', scoped: 'Invoice' }],
     serverChecks: ['invoice-list', 'invoice-detail'],
     presets: presets(true, true, true, false),
@@ -962,7 +951,7 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     module: 'Invoices',
     label: 'Create invoices',
     helpText: 'Create an invoice from a job they can open, and copy an estimate to an invoice.',
-    requires: ['view_invoices'],
+    requires: ['view_invoices', 'edit_invoices', 'see_prices'],
     grants: [{ action: 'create', subject: 'Invoice' }],
     serverChecks: ['invoice-create', 'invoice-create-from-job-items', 'estimate-copy-to-invoice'],
     presets: presets(true, false, true, false),
@@ -982,8 +971,8 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     module: 'Invoices',
     label: 'Edit invoices',
     helpText:
-      'Edit, send and resend other people\'s invoices in scope. Creators keep their own invoices while they can see them.',
-    requires: ['view_invoices'],
+      'Edit, send and resend invoices in scope.',
+    requires: ['view_invoices', 'see_prices'],
     grants: [
       { action: 'update', subject: 'Invoice', scoped: 'Invoice' },
       { action: 'send', subject: 'Invoice', scoped: 'Invoice' },
@@ -996,20 +985,11 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     module: 'Invoices',
     label: 'Delete invoices',
     helpText:
-      'Delete other people\'s draft invoices in scope. Creators keep their own invoices while they can see them.',
+      'Delete draft invoices in scope.',
     requires: ['view_invoices'],
     grants: [{ action: 'delete', subject: 'Invoice', scoped: 'Invoice' }],
     serverChecks: ['invoice-delete'],
     presets: presets(true, false, false, false),
-  }),
-  entry({
-    key: 'show_invoices_page',
-    module: 'Invoices',
-    label: 'Show Invoices page',
-    helpText: 'Menu entry and list page. Display only: the server never checks it.',
-    requires: ['view_invoices'],
-    pending: 'Display only; stored and served, never checked.',
-    presets: presets(true, true, false, false),
   }),
   entry({
     key: 'view_payments',
@@ -1035,15 +1015,6 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     presets: presets(true, false, false, false),
   }),
   entry({
-    key: 'show_payments_page',
-    module: 'Invoices',
-    label: 'Show Payments page',
-    helpText: 'Menu entry and page for payments, payouts and documents. Display only: the server never checks it.',
-    requires: ['view_payments'],
-    pending: 'Display only; stored and served, never checked.',
-    presets: presets(true, false, false, false),
-  }),
-  entry({
     key: 'export_invoices',
     module: 'Invoices',
     label: 'Export invoices',
@@ -1058,20 +1029,21 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     module: 'Invoices',
     label: 'Record payments',
     helpText:
-      'Record a payment on an invoice they can open, and a deposit on an estimate they can open. The creator rule never ' +
-      'grants it. The method must be one the company accepts and one of their Allowed payment methods.',
+      'Record a payment on an invoice they can open, and a deposit on an estimate they can open. ' +
+      'The method must be one the company accepts and one of their Allowed payment methods.',
+    requires: ['see_prices'],
     grants: [
       { action: 'record_payment', subject: 'Invoice', scoped: 'Invoice' },
       { action: 'record_payment', subject: 'Estimate', scoped: 'Estimate' },
     ],
     serverChecks: ['invoice-record-payment', 'estimate-record-payment'],
-    presets: presets(true, false, true, true),
+    presets: presets(true, false, true, false),
   }),
   entry({
     key: 'refund_payments',
     module: 'Invoices',
     label: 'Refund payments',
-    helpText: 'Refund a payment or a deposit, send money back to a customer and settle payments that need attention. The creator rule never grants it.',
+    helpText: 'Refund a payment or a deposit, send money back to a customer and settle payments that need attention.',
     grants: [{ action: 'refund', subject: 'Invoice', scoped: 'Invoice' }],
     requires: ['view_invoices', 'view_payments'],
     serverChecks: [
@@ -1092,16 +1064,16 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     key: 'send_payment_links',
     module: 'Invoices',
     label: 'Send payment links',
-    helpText: 'Create a payment link for an invoice they can open; card payments only happen this way. The creator rule never grants it.',
+    helpText: 'Create a payment link for an invoice they can open; card payments only happen this way.',
     grants: [{ action: 'send_payment_link', subject: 'Invoice', scoped: 'Invoice' }],
     serverChecks: ['invoice-payment-link', 'payments-page-attention-contact'],
-    presets: presets(true, false, true, true),
+    presets: presets(true, false, true, false),
   }),
   entry({
     key: 'void_invoices',
     module: 'Invoices',
     label: 'Void invoices',
-    helpText: 'Void an invoice they can open. The creator rule never grants it.',
+    helpText: 'Void an invoice they can open.',
     requires: ['view_invoices'],
     grants: [{ action: 'void', subject: 'Invoice', scoped: 'Invoice' }],
     serverChecks: ['invoice-void'],
@@ -1111,7 +1083,7 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     key: 'apply_credits',
     module: 'Invoices',
     label: 'Apply credits',
-    helpText: 'Apply a credit or give-back on an invoice they can open. The creator rule never grants it.',
+    helpText: 'Apply a credit or give-back on an invoice they can open.',
     requires: ['view_invoices'],
     grants: [{ action: 'credit', subject: 'Invoice', scoped: 'Invoice' }],
     serverChecks: ['invoice-credit'],
@@ -1121,7 +1093,7 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     key: 'void_payments',
     module: 'Invoices',
     label: 'Void payments',
-    helpText: 'Void a recorded payment on an invoice they can open. The creator rule never grants it.',
+    helpText: 'Void a recorded payment on an invoice they can open.',
     requires: ['view_invoices'],
     grants: [{ action: 'void_payment', subject: 'Invoice', scoped: 'Invoice' }],
     serverChecks: ['invoice-void-payment'],
@@ -1131,7 +1103,7 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     key: 'edit_invoice_line_items',
     module: 'Invoices',
     label: 'Edit invoice line items',
-    helpText: 'Add and remove an invoice\'s lines and scopes of work, on an invoice they can open. The creator rule never grants it.',
+    helpText: 'Add and remove an invoice\'s lines and scopes of work, on an invoice they can open.',
     requires: ['view_invoices'],
     grants: [{ action: 'manage_lines', subject: 'Invoice', scoped: 'Invoice' }],
     serverChecks: ['invoice-line-add', 'invoice-line-delete'],
@@ -1186,7 +1158,7 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     helpText:
       'Create plans, including a new customer from the plan builder\'s quick customer create (name, company, phone, email ' +
       'and the plan\'s service address), without Create customers.',
-    requires: ['view_service_plans'],
+    requires: ['view_service_plans', 'edit_service_plans'],
     grants: [{ action: 'create', subject: 'ServicePlan' }],
     serverChecks: ['service-plan-create', 'service-plan-customer-create'],
     presets: presets(true, false, true, false),
@@ -1211,15 +1183,6 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     serverChecks: ['service-plan-delete'],
     presets: presets(true, false, true, false),
   }),
-  entry({
-    key: 'show_service_plans_page',
-    module: 'Service Plans',
-    label: 'Show Service Plans page',
-    helpText: 'Menu entry and list page. Display only: the server never checks it.',
-    requires: ['view_service_plans'],
-    pending: 'Display only; stored and served, never checked.',
-    presets: presets(true, false, true, false),
-  }),
 
   // ─── Automations ─────────────────────────────────────────────────────────────────────────────
   // Text automations in the Communication section follow these four, like every other automation.
@@ -1237,7 +1200,7 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     module: 'Automations',
     label: 'Create automations',
     helpText: 'Create automations, including text automations in the Communication section. Contact customers alone does not allow it.',
-    requires: ['view_automations'],
+    requires: ['view_automations', 'edit_automations'],
     grants: [{ action: 'create', subject: 'Automation' }],
     serverChecks: ['automation-create', 'text-automation-create'],
     presets: presets(true, false, false, false),
@@ -1262,15 +1225,6 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     serverChecks: ['automation-delete', 'text-automation-delete'],
     presets: presets(true, false, false, false),
   }),
-  entry({
-    key: 'show_automations_page',
-    module: 'Automations',
-    label: 'Show Automations page',
-    helpText: 'Menu entry and list page. Display only: the server never checks it.',
-    requires: ['view_automations'],
-    pending: 'Display only; stored and served, never checked.',
-    presets: presets(true, false, false, false),
-  }),
 
   // ─── Tasks ───────────────────────────────────────────────────────────────────────────────────
   entry({
@@ -1287,7 +1241,7 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     module: 'Tasks',
     label: 'Create tasks',
     helpText: 'Create tasks.',
-    requires: ['view_tasks'],
+    requires: ['view_tasks', 'edit_tasks'],
     grants: [{ action: 'create', subject: 'Task' }],
     serverChecks: ['task-create'],
     presets: presets(true, true, true, true),
@@ -1313,15 +1267,6 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     presets: presets(true, true, true, false),
   }),
   entry({
-    key: 'show_tasks_page',
-    module: 'Tasks',
-    label: 'Show Tasks page',
-    helpText: 'Menu entry and list page. Display only: the server never checks it.',
-    requires: ['view_tasks'],
-    pending: 'Display only; stored and served, never checked.',
-    presets: presets(true, true, true, true),
-  }),
-  entry({
     key: 'assign_tasks_to_others',
     module: 'Tasks',
     label: 'Assign tasks to others',
@@ -1332,16 +1277,17 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     presets: presets(true, false, true, false),
   }),
   entry({
-    key: 'see_all_tasks',
+    key: 'tasks_scope',
     module: 'Tasks',
-    label: 'See all tasks',
+    label: 'Tasks scope',
     helpText:
-      'See and open every task in the company, not only those they are assignee or watcher on, or that are linked to a ' +
-      'record they can open. It also shows the names of the files on those tasks.',
-    requires: ['view_tasks'],
-    grants: [{ action: 'see_all', subject: 'Task' }],
-    serverChecks: ['task-list-all', 'task-open-any', 'linked-task-list-all', 'task-file-names-feed'],
-    presets: presets(true, false, true, false),
+      'Which tasks list and open: Attached (a task you are the assignee or a watcher of), Team (a task someone in your department ' +
+      'is the assignee or a watcher of) or All. A task linked to a record you can open stays open to you on any choice. It also ' +
+      'decides whose file names show on those tasks.',
+    kind: 'choice',
+    choices: SCOPE_CHOICES,
+    pending: 'Not a check of its own: it sets which tasks every Tasks switch reaches (lib/permissions/moduleReach.ts).',
+    presets: presets('all', 'attached', 'all', 'attached'),
   }),
 
   // ─── Events ──────────────────────────────────────────────────────────────────────────────────
@@ -1359,7 +1305,7 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     module: 'Events',
     label: 'Create events',
     helpText: 'Create calendar entries.',
-    requires: ['view_events'],
+    requires: ['view_events', 'edit_events'],
     grants: [{ action: 'create', subject: 'CalendarEntry' }],
     serverChecks: ['calendar-entry-create'],
     presets: presets(true, false, true, false),
@@ -1385,61 +1331,22 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     presets: presets(true, false, true, false),
   }),
   entry({
-    key: 'see_all_calendar_entries',
+    key: 'events_scope',
     module: 'Events',
-    label: 'See all calendar entries',
-    helpText: 'See every calendar entry, not only those they take part in.',
-    requires: ['view_events'],
-    grants: [{ action: 'see_all', subject: 'CalendarEntry' }],
-    serverChecks: ['calendar-entry-list-all', 'calendar-entry-detail-all', 'calendar-entry-search-all'],
-    presets: presets(true, false, true, false),
-  }),
-
-  // ─── Attachments ─────────────────────────────────────────────────────────────────────────────
-  // Every attachment route first asks whether the person can open the record the file hangs on (the access
-  // resolver), whatever the switch says.
-  entry({
-    key: 'view_attachments',
-    module: 'Attachments',
-    label: 'View attachments',
-    helpText: 'See and download the files on records they can open.',
-    grants: [{ action: 'read', subject: 'Attachment' }],
-    serverChecks: ['attachment-list'],
-    presets: presets(true, true, true, true),
-  }),
-  entry({
-    key: 'upload_attachments',
-    module: 'Attachments',
-    label: 'Upload attachments',
-    helpText: 'Add files to records they can open.',
-    requires: ['view_attachments'],
-    grants: [{ action: 'create', subject: 'Attachment' }],
-    serverChecks: ['attachment-upload'],
-    presets: presets(true, true, true, true),
-  }),
-  entry({
-    key: 'edit_attachments',
-    module: 'Attachments',
-    label: 'Edit attachments',
-    helpText: 'Rename or re-describe files on records they can open.',
-    requires: ['view_attachments'],
-    grants: [{ action: 'update', subject: 'Attachment' }],
-    serverChecks: ['attachment-update'],
-    presets: presets(true, true, true, false),
-  }),
-  entry({
-    key: 'delete_attachments',
-    module: 'Attachments',
-    label: 'Delete attachments',
+    label: 'Events scope',
     helpText:
-      'Delete anyone\'s files on records they can open. Without it, a person deletes only the files they uploaded themselves.',
-    requires: ['view_attachments'],
-    grants: [{ action: 'delete', subject: 'Attachment' }],
-    serverChecks: ['attachment-delete'],
-    presets: presets(true, true, true, false),
+      'Which calendar entries list and open: Attached (an entry you take part in), Team (an entry someone in your department ' +
+      'takes part in) or All.',
+    kind: 'choice',
+    choices: SCOPE_CHOICES,
+    pending: 'Not a check of its own: it sets which calendar entries every Events switch reaches (lib/permissions/moduleReach.ts).',
+    presets: presets('all', 'attached', 'all', 'attached'),
   }),
 
   // ─── Notes ───────────────────────────────────────────────────────────────────────────────────
+  // Uploads and notes are the record's own data (P10, A8d): anyone who can open the record reads them, anyone with the
+  // record's Edit adds, changes and removes them, another person's included. Add notes stays for a person who writes notes
+  // without being able to edit the record.
   entry({
     key: 'add_notes',
     module: 'Notes',
@@ -1452,20 +1359,6 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     serverChecks: ['job-note-create', 'lead-note-create'],
     presets: presets(true, true, true, true),
   }),
-  entry({
-    key: 'delete_others_notes',
-    module: 'Notes',
-    label: 'Delete other people\'s notes',
-    helpText:
-      'Delete anyone\'s notes on jobs and leads they can open. Everyone may delete their own. On a locked job only ' +
-      'Change locked jobs deletes a note.',
-    grants: [
-      { action: 'delete_others_note', subject: 'Job', scoped: 'Job' },
-      { action: 'delete_others_note', subject: 'Lead', scoped: 'Lead' },
-    ],
-    serverChecks: ['job-note-delete-others', 'lead-note-delete-others'],
-    presets: presets(true, false, true, false),
-  }),
 
   // ─── Users ───────────────────────────────────────────────────────────────────────────────────
   entry({
@@ -1477,81 +1370,8 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     serverChecks: ['user-list', 'user-detail'],
     presets: presets(true, false, true, true),
   }),
-  entry({
-    key: 'create_users',
-    module: 'Users',
-    label: 'Create users',
-    helpText:
-      'Create a user directly, without an invitation. Setting the new user\'s role also needs Manage roles and permissions.',
-    requires: ['view_users'],
-    grants: [{ action: 'create', subject: 'User' }],
-    serverChecks: ['user-create'],
-    presets: presets(true, false, false, false),
-  }),
-  entry({
-    key: 'invite_users',
-    module: 'Users',
-    label: 'Invite users',
-    helpText:
-      'Send or resend an invitation to join the company. Setting the invited user\'s role also needs Manage roles and permissions.',
-    // Every invite sets the new person's role, which is a Manage roles and permissions write, so a working invite
-    // needs both; the Invite button is hidden unless both are on (PRD 2).
-    requires: ['view_users'],
-    grants: [{ action: 'invite', subject: 'User' }],
-    serverChecks: ['user-invite', 'user-invite-resend'],
-    presets: presets(true, false, false, false),
-  }),
-  entry({
-    key: 'edit_users',
-    module: 'Users',
-    label: 'Edit users',
-    helpText:
-      'Edit users, and deactivate and reactivate them. Changing a user\'s role also needs Manage roles and permissions.',
-    requires: ['view_users'],
-    grants: [{ action: 'update', subject: 'User' }],
-    serverChecks: ['user-update', 'user-deactivate', 'user-reactivate', 'user-mailbox-address', 'user-mailbox-move'],
-    presets: presets(true, false, false, false),
-  }),
-  entry({
-    key: 'delete_users',
-    module: 'Users',
-    label: 'Delete users',
-    helpText:
-      'Permanently delete an inactive user with no history, and reset a user\'s two-step login. It does not deactivate.',
-    requires: ['view_users'],
-    grants: [{ action: 'delete', subject: 'User' }],
-    serverChecks: ['user-delete-permanent', 'user-reset-two-step-login'],
-    presets: presets(true, false, false, false),
-  }),
-  entry({
-    key: 'show_users_teams_page',
-    module: 'Users',
-    label: 'Show Users & Teams page',
-    helpText: 'Menu entry and list page. Display only: the server never checks it.',
-    requires: ['view_users'],
-    pending: 'Display only; stored and served, never checked.',
-    presets: presets(true, false, false, false),
-  }),
-  entry({
-    key: 'manage_roles_and_permissions',
-    module: 'Users',
-    label: 'Manage roles and permissions',
-    helpText:
-      'See and change roles, people\'s switches and their change logs, and set which role a user is on. Only holders ' +
-      'open Roles & Permissions or see a person\'s own switches. As the last fallback, holders are alerted when an alert ' +
-      'finds no Dispatcher and no holder of its own switch.',
-    requires: ['view_users'],
-    // The base role and custom-role link on a user update, invite or create check manage_roles. The role routes still
-    // guard on read and update Role until the roles and person-switch APIs replace them (S01.20, S01.21), so this
-    // switch carries those two as well: it is the one switch that stands for roles and permissions.
-    grants: [
-      { action: 'manage_roles', subject: 'Role' },
-      { action: 'read', subject: 'Role' },
-      { action: 'update', subject: 'Role' },
-    ],
-    serverChecks: ['user-role-field', 'role-list'],
-    presets: presets(true, false, false, false),
-  }),
+  // Create users, Invite users, Edit users, Delete users and Manage roles and permissions retired (AL-18, migration M13):
+  // managing people and roles is the Admin flag's alone (requireAdmin on every such route), so no switch can grant it.
   entry({
     key: 'can_own_leads',
     module: 'Users',
@@ -1596,7 +1416,7 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     module: 'Departments',
     label: 'Create departments',
     helpText: 'Create departments.',
-    requires: ['view_departments'],
+    requires: ['view_departments', 'edit_departments'],
     grants: [{ action: 'create', subject: 'Department' }],
     serverChecks: ['department-create'],
     presets: presets(true, false, false, false),
@@ -1637,7 +1457,7 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     module: 'Locations',
     label: 'Create locations',
     helpText: 'Create business locations.',
-    requires: ['view_locations'],
+    requires: ['view_locations', 'edit_locations'],
     grants: [{ action: 'create', subject: 'Location' }],
     serverChecks: ['location-create'],
     presets: presets(true, false, false, false),
@@ -1664,20 +1484,10 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
   }),
 
   // ─── Settings ─────────────────────────────────────────────────────────────────────────────────
-  entry({
-    key: 'company_settings',
-    module: 'Settings',
-    label: 'Company settings',
-    helpText:
-      'Edit the company\'s settings: name, address, branding, tax rates, job statuses, custom fields and payment and phone setup. ' +
-      'Everyone can read the company name and the lists their forms need.',
-    grants: [
-      { action: 'update', subject: 'Organization' },
-      { action: 'update', subject: 'AppSetting' },
-    ],
-    serverChecks: ['organization-update', 'organization-email-sender', 'organization-email-sender-read', 'organization-email-readers-read', 'organization-email-readers-candidates', 'organization-email-reader-link', 'organization-email-reader-unlink', 'org-tax-rate-create', 'job-sub-status-create', 'custom-field-definition-create', 'app-setting-update'],
-    presets: presets(true, false, false, false),
-  }),
+  // Company settings retired (ticket 36b, migration M17): setting up the company (its details, branding, tax rates, job statuses,
+  // lists, custom fields, payment defaults, sender address, main-mailbox readers, phone service and numbers) is the Admin flag's
+  // alone (requireAdminTo on every such route), so no switch can grant it, and no switch emits `update` on the company or on app
+  // settings. Reading the company stays open to everyone.
   entry({
     key: 'create_tags',
     module: 'Settings',
@@ -1793,15 +1603,16 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
 
   // ─── Time tracking ───────────────────────────────────────────────────────────────────────────
   entry({
-    key: 'see_everyones_timesheets',
+    key: 'timesheets_scope',
     module: 'Time tracking',
-    label: "See everyone's timesheets",
+    label: 'Timesheets scope',
     helpText:
-      'See the company\'s timesheets and time entries, including where each clock-in and clock-out happened. ' +
-      'Everyone still sees their own.',
-    grants: [{ action: 'see_all', subject: 'Timeclock' }],
-    serverChecks: ['timesheet-punches-org', 'timesheet-ot-reviews-org'],
-    presets: presets(true, false, true, false),
+      'Whose timesheets and time entries show, including where each clock-in and clock-out happened: Attached (their own), Team ' +
+      '(people in their department) or All.',
+    kind: 'choice',
+    choices: SCOPE_CHOICES,
+    pending: 'Not a check of its own: it sets whose timesheets the organisation views reach (lib/permissions/moduleReach.ts).',
+    presets: presets('all', 'attached', 'all', 'attached'),
   }),
 
   // ─── Inventory: Stock ────────────────────────────────────────────────────────────────────────
@@ -1821,7 +1632,7 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     module: 'Stock',
     label: 'Create stock',
     helpText: 'Add stock records.',
-    requires: ['view_stock'],
+    requires: ['view_stock', 'edit_stock'],
     grants: [{ action: 'create', subject: 'Inventory' }],
     serverChecks: ['stock-location-create'],
     presets: presets(true, false, false, false),
@@ -1847,15 +1658,6 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     presets: presets(true, false, false, false),
   }),
   entry({
-    key: 'show_stock_page',
-    module: 'Stock',
-    label: 'Show Stock page',
-    helpText: 'Menu entry and list page. Display only: the server never checks it.',
-    requires: ['view_stock'],
-    pending: 'Display only; stored and served, never checked.',
-    presets: presets(true, true, false, true),
-  }),
-  entry({
     key: 'export_stock',
     module: 'Stock',
     label: 'Export stock',
@@ -1876,14 +1678,15 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     presets: presets(true, true, true, false),
   }),
   entry({
-    key: 'see_all_assets',
+    key: 'assets_scope',
     module: 'Stock',
-    label: 'See all assets',
-    helpText: 'See every asset, not only the ones they hold.',
-    requires: ['view_stock'],
-    grants: [{ action: 'see_all_assets', subject: 'Inventory' }],
-    serverChecks: ['asset-list', 'asset-detail', 'asset-events'],
-    presets: presets(true, true, true, false),
+    label: 'Assets scope',
+    helpText:
+      'Which assets list and open: Attached (an asset held by you), Team (an asset held by someone in your department) or All.',
+    kind: 'choice',
+    choices: SCOPE_CHOICES,
+    pending: 'Not a check of its own: it sets which assets the asset routes reach (lib/permissions/moduleReach.ts).',
+    presets: presets('all', 'all', 'all', 'attached'),
   }),
   entry({
     key: 'inventory_view',
@@ -1948,7 +1751,7 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     module: 'Purchase Orders',
     label: 'Create purchase orders',
     helpText: 'Create purchase orders and reservations, on a job they can open (an order with no job needs Jobs scope All).',
-    requires: ['view_purchase_orders'],
+    requires: ['view_purchase_orders', 'edit_purchase_orders'],
     grants: [{ action: 'create', subject: 'PurchaseOrder', scoped: 'PurchaseOrder' }],
     serverChecks: ['purchase-order-create'],
     presets: presets(true, false, false, false),
@@ -1972,15 +1775,6 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     grants: [{ action: 'delete', subject: 'PurchaseOrder', scoped: 'PurchaseOrder' }],
     serverChecks: ['purchase-order-delete'],
     presets: presets(true, false, false, false),
-  }),
-  entry({
-    key: 'show_purchase_orders_page',
-    module: 'Purchase Orders',
-    label: 'Show Purchase Orders page',
-    helpText: 'Menu entry and list page. Display only: the server never checks it.',
-    requires: ['view_purchase_orders'],
-    pending: 'Display only; stored and served, never checked.',
-    presets: presets(true, true, false, false),
   }),
   entry({
     key: 'export_purchase_orders',
@@ -2008,7 +1802,7 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     module: 'Vendors',
     label: 'Create vendors',
     helpText: 'Create vendors.',
-    requires: ['view_vendors'],
+    requires: ['view_vendors', 'edit_vendors'],
     grants: [{ action: 'create', subject: 'Vendor' }],
     serverChecks: ['vendor-create'],
     presets: presets(true, false, false, false),
@@ -2032,15 +1826,6 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     grants: [{ action: 'delete', subject: 'Vendor' }],
     serverChecks: ['vendor-delete'],
     presets: presets(true, false, false, false),
-  }),
-  entry({
-    key: 'show_vendors_page',
-    module: 'Vendors',
-    label: 'Show Vendors page',
-    helpText: 'Menu entry and list page. Display only: the server never checks it.',
-    requires: ['view_vendors'],
-    pending: 'Display only; stored and served, never checked.',
-    presets: presets(true, true, false, false),
   }),
   entry({
     key: 'export_vendors',
@@ -2072,7 +1857,7 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     helpText:
       'Create logistic orders on a job they can open, and submit them for approval (submitting is part of creating). ' +
       'Without Approve logistic orders, a submitted order waits for an approver.',
-    requires: ['view_logistic_orders'],
+    requires: ['view_logistic_orders', 'edit_logistic_orders'],
     grants: [
       { action: 'create', subject: 'LogisticOrder', scoped: 'LogisticOrderOnJob' },
       { action: 'submit', subject: 'LogisticOrder', scoped: 'LogisticOrder' },
@@ -2098,15 +1883,6 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     requires: ['view_logistic_orders'],
     grants: [{ action: 'delete', subject: 'LogisticOrder', scoped: 'LogisticOrder' }],
     serverChecks: ['logistic-order-delete'],
-    presets: presets(true, true, false, false),
-  }),
-  entry({
-    key: 'show_logistic_orders_page',
-    module: 'Logistic Orders',
-    label: 'Show Logistic Orders page',
-    helpText: 'Menu entry and list page. Display only: the server never checks it.',
-    requires: ['view_logistic_orders'],
-    pending: 'Display only; stored and served, never checked.',
     presets: presets(true, true, false, false),
   }),
   entry({
@@ -2150,7 +1926,7 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     key: 'view_price_book',
     module: 'Price Book',
     label: 'View price book',
-    helpText: 'See items, categories and prices. Cost needs See financial data.',
+    helpText: 'See items, categories and prices. Cost needs See costs.',
     grants: [{ action: 'read', subject: 'PriceBook' }],
     serverChecks: ['price-book-list'],
     presets: presets(true, true, true, true),
@@ -2160,7 +1936,7 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     module: 'Price Book',
     label: 'Create price book items',
     helpText: 'Add items and categories.',
-    requires: ['view_price_book'],
+    requires: ['view_price_book', 'edit_price_book_items'],
     grants: [{ action: 'create', subject: 'PriceBook' }],
     serverChecks: ['price-book-create'],
     presets: presets(true, false, false, false),
@@ -2184,15 +1960,6 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     grants: [{ action: 'delete', subject: 'PriceBook' }],
     serverChecks: ['price-book-delete'],
     presets: presets(true, false, false, false),
-  }),
-  entry({
-    key: 'show_price_book_page',
-    module: 'Price Book',
-    label: 'Show Price Book page',
-    helpText: 'Menu entry and list page, shown even when the rest of Inventory is hidden. Display only: the server never checks it.',
-    requires: ['view_price_book'],
-    pending: 'Display only; stored and served, never checked.',
-    presets: presets(true, true, true, true),
   }),
   entry({
     key: 'export_price_book',
@@ -2304,9 +2071,16 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     key: 'show_email',
     module: 'Communication',
     label: 'Show Email',
-    helpText: 'The Email sub-page of the Communication section, scoped to their own mailbox.',
+    helpText:
+      'The Email sub-page of the Communication section, scoped to their own mailbox. Off closes their mailbox on the server too: ' +
+      'they cannot list, read, reply to, write from the Email page, assign or file its email, and the Email count leaves their badge. ' +
+      'Writing to a customer from a job, lead or customer page stays with Contact customers.',
     requires: ['access_communication'],
-    pending: 'Display only: the sub-page, its menu entry and its address follow it; the server never checks it.',
+    grants: [{ action: 'show_email', subject: 'Communication' }],
+    // The Email page's routes ask for it beside the section (the list, a message, assigning and filing a conversation, the
+    // attachments, the mailbox list and the person's own address); the send route asks for it for a reply or a send that names
+    // no record; the unread badge leaves the email count out.
+    serverChecks: ['email-mailbox', 'email-page-send', 'email-unread-count'],
     presets: presets(true, true, true, true),
   }),
   entry({
@@ -2314,19 +2088,20 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     module: 'Communication',
     label: 'Communication scope',
     helpText:
-      'Linked to me (the numbers linked to them, their own mailbox, and mailboxes handed over to them) or All (every ' +
-      'number and mailbox): one choice for calls, texts and mailboxes. Missed-call, text and email alerts follow it.',
+      'Attached (the numbers linked to them, their own mailbox, and mailboxes handed over to them), Team (the same for everyone ' +
+      'in their department) or All (every number and mailbox): one choice for calls, texts and mailboxes. Missed-call, text and ' +
+      'email alerts follow it.',
     kind: 'choice',
-    choices: ['linked_to_me', 'all'],
+    choices: SCOPE_CHOICES,
     pending: 'Not a check of its own: it narrows the rows the section\'s lists and single reads answer with and the communication alerts, so no route refuses by it.',
-    presets: presets('all', 'linked_to_me', 'linked_to_me', 'linked_to_me'),
+    presets: presets('all', 'attached', 'attached', 'attached'),
   }),
   entry({
     key: 'see_main_line_when_no_number',
     module: 'Communication',
     label: 'See the main line when I have no number',
     helpText:
-      'On Linked to me with no number linked to them: see and work the company\'s main line in the Communication section. ' +
+      'On Attached with no number linked to them: see and work the company\'s main line in the Communication section. ' +
       'Off: they still see the calls they placed or answered and the texts they sent, and the replies to them.',
     pending: 'Not a check of its own: it widens the rows the section lists and the communication alerts answer with for a person with no linked number, so no route refuses by it.',
     presets: presets(true, true, true, false),
@@ -2421,9 +2196,10 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     helpText: 'The Phone numbers tab.',
     requires: ['access_communication'],
     // A routing change is refused without it; the numbers list answers either way and leaves the routing and call-flow
-    // fields out (not a refusal, so it has no probe row of its own).
+    // fields out (not a refusal, so it has no probe row of its own). The usage read follows the same tab: the bar sits on
+    // that tab and a display-only switch of its own is retired (P1).
     grants: [{ action: 'phone_numbers_tab', subject: 'Communication' }],
-    serverChecks: ['phone-numbers-routing', 'phone-numbers-fields'],
+    serverChecks: ['phone-numbers-routing', 'phone-numbers-fields', 'phone-usage'],
     presets: presets(true, false, true, false),
   }),
   entry({
@@ -2479,16 +2255,6 @@ export const SWITCH_CATALOG: readonly SwitchEntry[] = [
     // The blocked list, blocking (also Contact customers) and unblocking (also Delete communication records).
     grants: [{ action: 'blocked_callers_tab', subject: 'Communication' }],
     serverChecks: ['blocked-read', 'blocked-add', 'blocked-remove'],
-    presets: presets(true, false, true, false),
-  }),
-  entry({
-    key: 'phone_usage_bar',
-    module: 'Communication',
-    label: 'Phone usage bar',
-    helpText: 'The minutes and texts usage bar.',
-    requires: ['access_communication'],
-    grants: [{ action: 'phone_usage_bar', subject: 'Communication' }],
-    serverChecks: ['phone-usage'],
     presets: presets(true, false, true, false),
   }),
   entry({

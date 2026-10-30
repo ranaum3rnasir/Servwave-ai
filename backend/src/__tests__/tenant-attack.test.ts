@@ -655,9 +655,9 @@ describe('Attack 7 — Public route token boundary', () => {
     expect((calls[0][0] as any).where.public_token).toBe('wrong-token');
   });
 
-  it('GET /api/estimates/:id/public WITHOUT token → 400 (no findFirst issued)', async () => {
+  it('GET /api/estimates/:id/public WITHOUT token → 404, as for a wrong token (no findFirst issued)', async () => {
     const res = await request(app).get(`/api/estimates/${ESTIMATE_FIXTURE.id}/public`);
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(404);
     expect(prisma.estimate.findFirst).not.toHaveBeenCalled();
   });
 });

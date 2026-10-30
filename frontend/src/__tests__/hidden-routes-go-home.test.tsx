@@ -65,22 +65,22 @@ vi.mock('@/pages/v2/dashboard/DashboardPage', async () => {
 
 const mockApi = vi.mocked(api);
 
-/** A list route: it opens on the module's View AND Show switches. */
-const LIST_ROUTES: Array<{ name: string; path: string; view: string; show: string }> = [
-  { name: 'Customers', path: '/customers', view: 'View customers', show: 'Show Customers page' },
-  { name: 'Leads', path: '/leads', view: 'View leads', show: 'Show Leads page' },
-  { name: 'Jobs', path: '/jobs', view: 'View jobs', show: 'Show Jobs page' },
-  { name: 'Estimates', path: '/estimates', view: 'View estimates', show: 'Show Estimates page' },
-  { name: 'Invoices', path: '/invoices', view: 'View invoices', show: 'Show Invoices page' },
-  { name: 'Payments', path: '/payments', view: 'View payments and payouts', show: 'Show Payments page' },
-  { name: 'Tasks', path: '/tasks', view: 'View tasks', show: 'Show Tasks page' },
-  { name: 'Service Plans', path: '/service-plans', view: 'View service plans', show: 'Show Service Plans page' },
-  { name: 'Automations', path: '/automations', view: 'View automations', show: 'Show Automations page' },
-  { name: 'Stock', path: '/inventory', view: 'View stock', show: 'Show Stock page' },
-  { name: 'Purchase Orders', path: '/inventory/purchase-orders', view: 'View purchase orders', show: 'Show Purchase Orders page' },
-  { name: 'Vendors', path: '/inventory/vendors', view: 'View vendors', show: 'Show Vendors page' },
-  { name: 'Logistic Orders', path: '/inventory/logistic-orders', view: 'View logistic orders', show: 'Show Logistic Orders page' },
-  { name: 'Price Book', path: '/inventory/price-book', view: 'View price book', show: 'Show Price Book page' },
+/** A list route: it opens on the module's View switch alone (P1: no Show switch exists). */
+const LIST_ROUTES: Array<{ name: string; path: string; view: string }> = [
+  { name: 'Customers', path: '/customers', view: 'View customers' },
+  { name: 'Leads', path: '/leads', view: 'View leads' },
+  { name: 'Jobs', path: '/jobs', view: 'View jobs' },
+  { name: 'Estimates', path: '/estimates', view: 'View estimates' },
+  { name: 'Invoices', path: '/invoices', view: 'View invoices' },
+  { name: 'Payments', path: '/payments', view: 'View payments and payouts' },
+  { name: 'Tasks', path: '/tasks', view: 'View tasks' },
+  { name: 'Service Plans', path: '/service-plans', view: 'View service plans' },
+  { name: 'Automations', path: '/automations', view: 'View automations' },
+  { name: 'Stock', path: '/inventory', view: 'View stock' },
+  { name: 'Purchase Orders', path: '/inventory/purchase-orders', view: 'View purchase orders' },
+  { name: 'Vendors', path: '/inventory/vendors', view: 'View vendors' },
+  { name: 'Logistic Orders', path: '/inventory/logistic-orders', view: 'View logistic orders' },
+  { name: 'Price Book', path: '/inventory/price-book', view: 'View price book' },
 ];
 
 /** A page route: it opens on its one Access switch. */
@@ -127,16 +127,16 @@ beforeEach(() => {
   localStorage.clear();
 });
 
-describe.each(LIST_ROUTES)('$name list ($path)', ({ path, view, show }) => {
-  it('opens with View and Show on', async () => {
-    open(path, { [key(view)]: true, [key(show)]: true });
+describe.each(LIST_ROUTES)('$name list ($path)', ({ path, view }) => {
+  it('opens with View on', async () => {
+    open(path, { [key(view)]: true });
 
     expect(await screen.findByTestId('opened')).toHaveTextContent(path);
     expect(screen.queryByRole('heading', { name: 'Dashboard' })).toBeNull();
   });
 
-  it('goes to the dashboard with Show off, View still on', async () => {
-    open(path, { [key(view)]: true, [key(show)]: false });
+  it('goes to the dashboard with View off', async () => {
+    open(path, { [key(view)]: false });
 
     expect(await dashboard()).toBeInTheDocument();
     expect(where()).toBe('/');
@@ -166,7 +166,7 @@ describe.each(PAGE_ROUTES)('$name page ($path)', ({ path, access }) => {
 });
 
 /**
- * Record routes are not blocked by the client on View or Show: the record page asks the server, so a record reached
+ * Record routes are not blocked by the client on View: the record page asks the server, so a record reached
  * from search, a picker or a link on a job or lead opens whenever the server allows it, whatever the person's lists say.
  */
 const RECORD_ROUTES = [
@@ -185,10 +185,10 @@ describe.each(RECORD_ROUTES)('record route %s', (path) => {
     expect(screen.queryByRole('heading', { name: 'Dashboard' })).toBeNull();
   });
 
-  it('opens with its list hidden (View on, Show off)', async () => {
+  it('opens with its list closed (View off)', async () => {
     const module = path.split('/')[1]!;
-    const { view, show } = LIST_ROUTES.find((r) => r.path === `/${module}`)!;
-    open(path, { [key(view)]: true, [key(show)]: false });
+    const { view } = LIST_ROUTES.find((r) => r.path === `/${module}`)!;
+    open(path, { [key(view)]: false });
 
     expect(await screen.findByTestId('opened')).toHaveTextContent(path);
   });
@@ -208,8 +208,8 @@ describe('purchase order record route', () => {
     expect(screen.queryByRole('heading', { name: 'Dashboard' })).toBeNull();
   });
 
-  it('opens with the list hidden (View purchase orders on, Show Purchase Orders page off)', async () => {
-    open(path, { [key('View purchase orders')]: true, [key('Show Purchase Orders page')]: false });
+  it('opens with the list closed (View purchase orders off)', async () => {
+    open(path, { [key('View purchase orders')]: false });
 
     expect(await screen.findByTestId('opened')).toHaveTextContent(path);
   });
@@ -226,8 +226,8 @@ describe('logistic order record route', () => {
     expect(screen.queryByRole('heading', { name: 'Dashboard' })).toBeNull();
   });
 
-  it('opens with the list hidden (View logistic orders on, Show Logistic Orders page off)', async () => {
-    open(path, { [key('View logistic orders')]: true, [key('Show Logistic Orders page')]: false });
+  it('opens with the list closed (View logistic orders off)', async () => {
+    open(path, { [key('View logistic orders')]: false });
 
     expect(await screen.findByTestId('opened')).toHaveTextContent(path);
   });
@@ -244,8 +244,8 @@ describe('New Lead (the new-lead address)', () => {
     expect(screen.queryByRole('heading', { name: 'Dashboard' })).toBeNull();
   });
 
-  it('goes to the dashboard with Create leads off, even with View leads and Show Leads page on', async () => {
-    open(NEW_LEAD, { [key('Create leads')]: false, [key('View leads')]: true, [key('Show Leads page')]: true });
+  it('goes to the dashboard with Create leads off, even with View leads on', async () => {
+    open(NEW_LEAD, { [key('Create leads')]: false, [key('View leads')]: true });
 
     expect(await dashboard()).toBeInTheDocument();
     expect(where()).toBe('/');
@@ -282,7 +282,7 @@ describe('a role with every switch off', () => {
  */
 describe('a route guard and the last-known answer', () => {
   const userId = '00000000-0000-0000-0000-000000000001';
-  const leadsKeys = [key('View leads'), key('Show Leads page')];
+  const leadsKeys = [key('View leads')];
   const allowing = Object.fromEntries(leadsKeys.map((k) => [k, true]));
   const refusing = Object.fromEntries(leadsKeys.map((k) => [k, false]));
 

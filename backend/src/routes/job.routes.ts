@@ -17,6 +17,7 @@ import * as contactEntriesController from '../controllers/record-contact-entries
 import * as recordNotesController from '../controllers/record-notes.controller';
 import * as estimateController from '../controllers/estimate.controller';
 import * as tagController from '../controllers/tag.controller';
+import { answerOutOfReachAsMissing, scopedRecord } from '../lib/permissions/outOfReachIsMissing';
 
 const router = Router();
 
@@ -211,8 +212,8 @@ router.delete('/:id/contact-entries/:entryId', canDoAny([['edit_contact_details'
 // Notes
 router.get('/:id/notes', canDo('read', 'Job'), jobController.getNotes);
 // Adding a note checks Add notes, not Edit jobs (S01.11); the controller adds the per-instance canAccessRow check.
-router.post('/:id/notes', canDo('add_note', 'Job'), validate(jobController.noteSchema), jobController.addNote);
-// Deleting a note (S04.25): the author's own, or anyone's with Delete other people's notes. No switch is asked here; the
+router.post('/:id/notes', canDoAny([['add_note', 'Job'], ['update', 'Job']]), validate(jobController.noteSchema), jobController.addNote);
+// Deleting a note (S04.25): the author's own, or anyone's with Edit jobs at the person's row scope. No switch is asked here; the
 // controller asks the completed-job lock and whose note it is, once it has the note.
 router.delete('/:id/notes/:noteId', canDo('read', 'Job'), requireUuidParam('id', 'Job not found'), requireUuidParam('noteId', 'Note not found'), recordNotesController.deleteJobNote);
 
@@ -236,5 +237,9 @@ router.get('/:id/communications', canDo('read', 'Communication'), jobCommunicati
 // that genuinely is not there.
 router.post('/:id/tags', canDo('update', 'Job'), requireUuidParam('id', 'job not found'), refuseWhenJobLocked(), validate(tagController.addTagToEntitySchema), tagController.addTagToJob);
 router.delete('/:id/tags/:tagId', canDo('update', 'Job'), requireUuidParam('id', 'job not found'), requireUuidParam('tagId', 'Tag not attached to this job'), refuseWhenJobLocked(), tagController.removeTagFromJob);
+
+// Ticket 33: a record out of the person's reach answers exactly like a missing one on every route above that names its id
+// (lib/permissions/outOfReachIsMissing.ts). Keep this after the last route.
+answerOutOfReachAsMissing(router, { param: 'id', notFound: 'Job not found', reaches: scopedRecord('Job') });
 
 export default router;

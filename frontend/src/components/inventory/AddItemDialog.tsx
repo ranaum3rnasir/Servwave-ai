@@ -35,7 +35,7 @@ import {
 } from "@/lib/api/inventory";
 import { useOrganization } from "@/lib/api/organization";
 import { useAppAbility } from "@/contexts/AbilityContext";
-import { canSeePricing as canSeePricingAbility } from "@/lib/ability";
+import { canSeePricing as canSeePricingAbility, canSeePrices as canSeePricesAbility } from "@/lib/ability";
 import {
   PROFITABILITY_NOTE,
   calculateProfitability,
@@ -113,7 +113,8 @@ export type NewItem = {
   uom: string;
   /** Absent when the person cannot see costs: the form had none to send, and the save must not zero it. */
   unitCost?: number;
-  sellPrice: number;
+  /** Left out without See prices: the form never held the price, so the price book keeps what it has. */
+  sellPrice?: number;
   serialized: boolean;
   hazmat: boolean;
   /** Inventory P1: deduct stock when added to jobs/invoices (newly added lines only). */
@@ -184,6 +185,7 @@ export function AddItemDialog({
   // Cost/margin visibility (SRVW-140) - the shared gate, not a local re-check.
   const ability = useAppAbility();
   const canSeePricing = canSeePricingAbility(ability);
+  const canSeePrices = canSeePricesAbility(ability);
   // The "+ Add" and "Manage" entries on category, brand and finish write the price book (POST and DELETE), so they
   // follow Create and Delete price book items, never Edit.
   const canCreateCatalog = ability.can('create', 'PriceBook');
@@ -294,7 +296,7 @@ export function AddItemDialog({
         kind: editItem.kind,
         uom: editItem.uom,
         unitCost: editItem.unitCost != null ? String(editItem.unitCost) : "",
-        sellPrice: String(editItem.sellPrice),
+        sellPrice: editItem.sellPrice != null ? String(editItem.sellPrice) : "",
         serialized: editItem.serialized,
         hazmat: editItem.hazmat,
         trackInventory: editItem.trackInventory ?? false,
@@ -535,10 +537,12 @@ export function AddItemDialog({
           trade: form.trade,
           kind: form.kind,
           uom: form.uom,
-          // Without See financial data the form never held the cost (the server leaves it out of the read), so
+          // Without See costs the form never held the cost (the server leaves it out of the read), so
           // sending 0 would overwrite the real one: leave the key out and the price book keeps what it has.
           unitCost: canSeePricing ? parseFloat(form.unitCost || "0") : undefined,
-          sellPrice: parseFloat(form.sellPrice || "0"),
+          // Same rule as the cost: without See prices the form never held the price (the server leaves it out of
+          // the read), so sending 0 would overwrite the real one. Leave the key out and the price book keeps it.
+          sellPrice: canSeePrices ? parseFloat(form.sellPrice || "0") : undefined,
           serialized: form.serialized,
           hazmat: form.hazmat,
           trackInventory: form.trackInventory,
@@ -584,7 +588,7 @@ export function AddItemDialog({
   // forgot the zero-price guard and printed a non-number where a percentage
   // belonged.
   const profitability = calculateProfitability(form.unitCost, form.sellPrice);
-  // The pair and its note are drawn only for a viewer with "See financial data"
+  // The pair and its note are drawn only for a viewer with "See costs"
   // (lib/ability.ts, SRVW-140; S07.17), so the note may invite them into the
   // cost field.
   const profitabilityNote = PROFITABILITY_NOTE[profitability.state];
@@ -1048,14 +1052,16 @@ export function AddItemDialog({
                   />
                 </FormField>
               )}
-              <FormField label="Sell Price">
-                <MoneyInput
-                  value={form.sellPrice}
-                  onChange={(v) => set("sellPrice", v)}
-                  ariaLabel="Sell price"
-                  disabled={readOnly}
-                />
-              </FormField>
+              {canSeePrices && (
+                <FormField label="Sell Price">
+                  <MoneyInput
+                    value={form.sellPrice}
+                    onChange={(v) => set("sellPrice", v)}
+                    ariaLabel="Sell price"
+                    disabled={readOnly}
+                  />
+                </FormField>
+              )}
 
               {/* Margin and markup side by side, each under its full word:
                   margin is the share of the price that is profit, markup is

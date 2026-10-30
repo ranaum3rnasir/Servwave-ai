@@ -8,7 +8,7 @@ import type { AppAction, AppSubject } from '@/lib/ability';
  * (one opens from the Estimates list and Create New, the other from the dashboard "New" menu) read this, so they cannot
  * drift apart.
  *
- * - `addNewClient`: the standalone New Customer, so it follows the same Create customers + Show Customers page pair as the
+ * - `addNewClient`: the standalone New Customer, so it follows the same Create customers + View customers pair as the
  *   Create New item of that name. The pair is READ from `quickCreateItems`, never copied. Nothing shows until the person's
  *   switches have arrived.
  * - `createLead`: starting a lead for the picked customer, on Create leads.

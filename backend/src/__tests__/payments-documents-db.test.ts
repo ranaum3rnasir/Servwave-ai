@@ -28,6 +28,7 @@ const { realClient, queries } = vi.hoisted(() => {
 vi.mock('../lib/prisma', () => ({ prisma: realClient }));
 
 import { switchFixture, type Person } from './permission-switches-fixture';
+import { withDependantsOff } from './support/switchDependants';
 import { setRoleSwitchValues } from '../lib/permissions/switches/store';
 import { supabaseAdmin } from '../lib/supabase';
 
@@ -68,14 +69,16 @@ suite('Documents tab API (real database)', () => {
   }
   /** Sees the page, may upload, reaches every invoice, job and customer. */
   const officer = (org: string) => personWith(org, {
-    view_payments: true, view_invoices: true, invoices_scope: 'all', view_jobs: true, jobs_scope: 'all',
-    view_leads: true, leads_scope: 'all', view_customers: true, upload_attachments: true, view_attachments: true,
+    view_payments: true, view_invoices: true, view_jobs: true, jobs_scope: 'all',
+    view_leads: true, leads_scope: 'all', view_customers: true, edit_invoices: true, edit_jobs: true, edit_customers: true,
   }, 'officer');
+
+  /** Holds no Edit on an invoice, a job or a customer: an upload is the record's own data (P10), so it cannot add one. */
+  const NO_EDITS = withDependantsOff(['edit_invoices', 'edit_jobs', 'edit_customers']);
 
   /** Customers View off, with every switch that needs it. */
   const NO_CUSTOMERS = {
-    view_customers: false, create_customers: false, edit_customers: false, delete_customers: false,
-    show_customers_page: false, export_customers: false, archive_customers: false, edit_customer_record_ids: false,
+    view_customers: false, create_customers: false, edit_customers: false, delete_customers: false, export_customers: false, archive_customers: false, edit_customer_record_ids: false,
   };
 
   async function addDoc(
@@ -160,13 +163,13 @@ suite('Documents tab API (real database)', () => {
       expect(await db.attachment.count({ where: { organization_id: org } })).toBe(0);
     });
 
-    it('still refuses a person without Create attachments (403), and a record they cannot open (403)', async () => {
+    it('still refuses a person without the invoice\'s Edit (403), and answers not found for a record they cannot open (404)', async () => {
       const { org, customer } = await newOrg();
       const invoice = await fx.addInvoice(org, customer);
-      const noUpload = await personWith(org, { view_payments: true, view_invoices: true, invoices_scope: 'all', upload_attachments: false });
+      const noUpload = await personWith(org, { view_payments: true, view_invoices: true, jobs_scope: 'all', leads_scope: 'all', ...NO_EDITS });
       expect((await upload(noUpload, 'invoice', invoice.id, { display_name: 'x', description: '', source: MARK })).status).toBe(403);
-      const attachedOnly = await personWith(org, { view_payments: true, view_invoices: true, invoices_scope: 'attached', upload_attachments: true });
-      expect((await upload(attachedOnly, 'invoice', invoice.id, { display_name: 'x', description: '', source: MARK })).status).toBe(403);
+      const attachedOnly = await personWith(org, { view_payments: true, view_invoices: true, jobs_scope: 'attached', leads_scope: 'attached', edit_invoices: true });
+      expect((await upload(attachedOnly, 'invoice', invoice.id, { display_name: 'x', description: '', source: MARK })).status).toBe(404);
       expect(await db.attachment.count({ where: { organization_id: org } })).toBe(0);
     });
   });
@@ -174,7 +177,7 @@ suite('Documents tab API (real database)', () => {
   describe('GET /api/payments-page/documents', () => {
     it('needs View payments', async () => {
       const { org } = await newOrg();
-      const without = await personWith(org, { view_payments: false, upload_attachments: true });
+      const without = await personWith(org, { view_payments: false, edit_invoices: true });
       expect((await (await without.api()).get('/api/payments-page/documents')).status).toBe(403);
       const withIt = await personWith(org, { view_payments: true });
       expect((await (await withIt.api()).get('/api/payments-page/documents')).status).toBe(200);
@@ -245,7 +248,7 @@ suite('Documents tab API (real database)', () => {
       await addDoc(org, { type: 'JOB', id: job.id }, admin.id, { name: 'on job' });
       await addDoc(org, { type: 'CUSTOMER', id: customer }, admin.id, { name: 'on customer' });
       const narrow = await personWith(org, {
-        view_payments: true, view_invoices: true, invoices_scope: 'attached', view_jobs: true, jobs_scope: 'attached',
+        view_payments: true, view_invoices: true, view_jobs: true, jobs_scope: 'attached',
         view_leads: true, leads_scope: 'attached', ...NO_CUSTOMERS,
       });
       const res = await (await narrow.api()).get('/api/payments-page/documents');
@@ -270,7 +273,7 @@ suite('Documents tab API (real database)', () => {
       }
       // a person with a restricted reach, so every scope check really queries
       const narrow = await personWith(org, {
-        view_payments: true, view_invoices: true, invoices_scope: 'attached', view_jobs: true, jobs_scope: 'attached',
+        view_payments: true, view_invoices: true, view_jobs: true, jobs_scope: 'attached',
         view_leads: true, leads_scope: 'attached', ...NO_CUSTOMERS,
       });
       const api = await narrow.api();
@@ -284,11 +287,11 @@ suite('Documents tab API (real database)', () => {
   });
 
   describe('GET /api/payments-page/documents/targets', () => {
-    it('needs Create attachments, not View payments', async () => {
+    it('needs the Edit of an invoice, a job or a customer, not View payments', async () => {
       const { org } = await newOrg();
-      const viewOnly = await personWith(org, { view_payments: true, upload_attachments: false });
+      const viewOnly = await personWith(org, { view_payments: true, ...NO_EDITS });
       expect((await (await viewOnly.api()).get('/api/payments-page/documents/targets?kind=invoice')).status).toBe(403);
-      const uploader = await personWith(org, { view_payments: false, upload_attachments: true, view_invoices: true, invoices_scope: 'all' });
+      const uploader = await personWith(org, { view_payments: false, edit_invoices: true, view_invoices: true, jobs_scope: 'all', leads_scope: 'all' });
       expect((await (await uploader.api()).get('/api/payments-page/documents/targets?kind=invoice')).status).toBe(200);
     });
 
@@ -337,7 +340,7 @@ suite('Documents tab API (real database)', () => {
       expect((await api.get('/api/payments-page/documents/targets?kind=customer')).body.targets).toHaveLength(1);
 
       const narrow = await personWith(org, {
-        upload_attachments: true, view_invoices: true, invoices_scope: 'attached', view_jobs: true, jobs_scope: 'attached',
+        edit_invoices: true, edit_jobs: true, view_invoices: true, view_jobs: true, jobs_scope: 'attached',
         view_leads: true, leads_scope: 'attached', ...NO_CUSTOMERS,
       });
       const nApi = await narrow.api();

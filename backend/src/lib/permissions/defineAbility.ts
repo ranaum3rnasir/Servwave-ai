@@ -18,29 +18,27 @@ export type Grant = {
 type AbilityUser = {
   id: string;
   role: string;
+  /** The Admin flag (P15). */
+  is_admin: boolean;
   custom_role_id?: string | null;
   department_id?: string | null;
   location_id?: string | null;
 };
 
-// Substitute {{userId}}/{{teamId}}/{{locationId}} in a condition template, FAIL-CLOSED on a
-// null team/location token (emit match-nothing instead of the fail-open `*_id: null` match —
+// Substitute {{userId}}/{{teamId}} in a condition template, FAIL-CLOSED on a
+// null team token (emit match-nothing instead of the fail-open `*_id: null` match —
 // mirrors scopeWhereFor).
 function resolveConditions(
   conditions: Record<string, unknown> | null | undefined,
   user: AbilityUser,
 ): Record<string, unknown> | undefined {
   const needsTeam = JSON.stringify(conditions ?? null).includes('{{teamId}}');
-  const needsLoc = JSON.stringify(conditions ?? null).includes('{{locationId}}');
-  const failClosed =
-    (needsTeam && (user.department_id ?? null) === null) ||
-    (needsLoc && (user.location_id ?? null) === null);
+  const failClosed = needsTeam && (user.department_id ?? null) === null;
   return failClosed
     ? { ...MATCH_NOTHING }
     : substituteConditions(conditions, {
         userId: user.id,
         teamId: user.department_id ?? null,
-        locationId: user.location_id ?? null,
       });
 }
 

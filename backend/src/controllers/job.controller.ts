@@ -19,7 +19,7 @@ import { computeJobBilling } from '../lib/jobBilling';
 import { recomputeInvoiceTotals, countsTowardTotals } from '../lib/invoice-totals';
 import { asScopeArray, toScopeForTotals } from '../lib/scopes';
 import { findDuplicateCustomer, duplicateConflictBody } from '../lib/customer-duplicate';
-import { withRequiredCustomerFields } from '../lib/customer-create';
+import { withRequiredCustomerFields, NEW_CUSTOMER_NEEDS_CREATE } from '../lib/customer-create';
 import { optionalCustomerEmail, hasPhoneOrEmail, CONTACT_REQUIRED_MSG } from '../lib/email-schema';
 import { optionalCustomerPhone } from '../lib/phone-schema';
 import { hasNameOrCompany } from '../lib/customer-kind';
@@ -56,7 +56,7 @@ import type { Action, Subject } from '../lib/permissions/catalog';
 import { whyNotSlot } from '../lib/permissions/slotEligibility';
 import { creatorCanBeOnCrew, jobCreatorPrefill, recordJobCreationPeople, type JobCreationPick } from '../lib/permissions/creatorPrefill';
 import { recordConversionPeople, resolveConversionPeople, type ConversionPeople } from '../lib/permissions/conversionPeople';
-import { canAccessRow, canActOnRow, scopeWhereForReq, canSeeCosts } from '../lib/permissions/enforce';
+import { canAccessRow, canActOnRow, scopeWhereForReq, canSeeCosts, canSeePrices } from '../lib/permissions/enforce';
 import { isAttachedToJob } from '../lib/permissions/jobAttachment';
 import { scheduleFeedCrewUserId, ownCrewVisits } from '../lib/permissions/scheduleFeed';
 import { missingCrewBookedVisit, missingCrewJobWhere } from '../lib/missingCrew';
@@ -198,7 +198,7 @@ const jobListSelect = {
           // is gated on `assign User` and no longer carries contact fields, so a viewer who owns
           // the job but may not change its crew would otherwise lose the affordance entirely.
           // Who you may ADD is gated; who is ALREADY ON the record is not.
-          user: { select: { id: true, first_name: true, last_name: true, phone: true } },
+          user: { select: { id: true, first_name: true, last_name: true, phone: true, is_active: true } },
         },
       },
     },
@@ -230,7 +230,7 @@ const jobDetailSelect = {
   scope_notes: true,
   job_type: true,
   // R3b (2026-07-21) — cost model (D2/D8/D18). Staff-only — stripJobCostForRequester deletes
-  // these three for a requester without See financial data (canSeeCosts).
+  // these three for a requester without See costs (canSeeCosts).
   labor_hours: true,
   overhead_mode: true,
   overhead_value: true,
@@ -271,7 +271,7 @@ const jobDetailSelect = {
   },
   dispatcher: {
     select: {
-      id: true, first_name: true, last_name: true, email: true, phone: true, role: true, avatar_path: true,
+      id: true, first_name: true, last_name: true, email: true, phone: true, role: true, is_active: true, avatar_path: true,
       department: { select: { id: true, name: true } },
     },
   },
@@ -279,7 +279,7 @@ const jobDetailSelect = {
   // multi-estimate job and a service plan visit job have a seller but no single estimate to walk.
   salesperson: {
     select: {
-      id: true, first_name: true, last_name: true, email: true, phone: true, role: true, avatar_path: true,
+      id: true, first_name: true, last_name: true, email: true, phone: true, role: true, is_active: true, avatar_path: true,
       department: { select: { id: true, name: true } },
     },
   },
@@ -306,7 +306,7 @@ const jobDetailSelect = {
           user_id: true,
           user: {
             select: {
-              id: true, first_name: true, last_name: true, role: true, phone: true, email: true, avatar_path: true,
+              id: true, first_name: true, last_name: true, role: true, is_active: true, phone: true, email: true, avatar_path: true,
               department: { select: { id: true, name: true } },
             },
           },
@@ -716,7 +716,7 @@ function withRemainingUnbilled<
 
 // S01.15 - what a job-detail payload withholds from a requester.
 //
-// COSTS (the labor_hours/overhead cost model) follow "See financial data" (canSeeCosts).
+// COSTS (the labor_hours/overhead cost model) follow "See costs" (canSeeCosts).
 //
 // PRICES follow the record. The job's own prices (amount_invoiced, its lines) are never withheld from a
 // person who can open the job. The payload also embeds money that belongs to OTHER records - the attached
@@ -740,7 +740,8 @@ const TIMELINE_MONEY_METADATA_KEYS = ['collected_total', 'refund_suggested'] as 
 function redactTimelineMoneyForRequester<
   T extends { event_type: string; metadata?: unknown },
 >(events: T[], req: Request): T[] {
-  if (canReadInvoices(req)) return events;
+  // P11: a person without See prices gets the history without its prices too, whatever they may open.
+  if (canReadInvoices(req) && canSeePrices(req)) return events;
   // S06.5: the line/scope/discount change entries keep their prices in old/new, not in the two
   // top-level keys below; the money movements on the job's invoices are dropped whole.
   return redactJobChangePrices(events).map((ev) => {
@@ -1099,7 +1100,7 @@ export async function validateCrew(
     const tech = await prisma.user.findUnique({
       where: { id: userId, ...tenantWhere(req) },
       select: {
-        id: true, organization_id: true, role: true, custom_role_id: true, custom_role: { select: { key: true } },
+        id: true, organization_id: true, role: true, custom_role_id: true, is_admin: true, custom_role: { select: { key: true } },
         is_active: true, email: true, first_name: true, last_name: true,
         ...performerPhoneSelect,
       },
@@ -1921,7 +1922,7 @@ async function creationPicks(
 async function jobSlotRefusal(req: Request, userId: string, slot: 'owner' | 'dispatcher'): Promise<string | null> {
   const target = await prisma.user.findUnique({
     where: { id: userId, ...tenantWhere(req) },
-    select: { id: true, organization_id: true, role: true, based_on_role_key: true, custom_role_id: true, custom_role: { select: { key: true } }, is_active: true },
+    select: { id: true, organization_id: true, role: true, based_on_role_key: true, custom_role_id: true, is_admin: true, custom_role: { select: { key: true } }, is_active: true },
   });
   if (!target) return 'Target user not found';
   return whyNotSlot(target, slot);
@@ -2107,6 +2108,12 @@ export async function create(req: Request, res: Response) {
         }, { requester: req });
         if (duplicateMatch && !override) {
           res.status(409).json(duplicateConflictBody(duplicateMatch));
+          return;
+        }
+        // A new customer inside the job form is a Create customers action (A7), as in the lead form: an existing
+        // customer's details answer with the duplicate above, a customer that does not exist yet needs the switch.
+        if (!req.ability?.can('create', 'Customer')) {
+          res.status(403).json({ error: NEW_CUSTOMER_NEEDS_CREATE });
           return;
         }
 
@@ -2402,6 +2409,12 @@ export async function create(req: Request, res: Response) {
       // provenance, idempotent find-or-create, cost-basis copy, P2002 race fallback). `estimate_id`
       // is the one selected id, whether the request used `estimate_id:X` or `estimate_ids:[X]`.
       const estimate_id = estimateIds[0];
+      // Reach first, before anything about the estimate is read (spec story 47): an estimate the person cannot reach answers
+      // like a missing one, whatever its status or lead, so the conversion is not a way to learn about it.
+      if (!(await canAccessRow(req, 'Estimate', prisma.estimate, estimate_id))) {
+        res.status(404).json({ error: 'Estimate not found' });
+        return;
+      }
       // Standard flow: validate estimate exists in requesting org. The route guard
       // `canDo('create','Job')` already gated entry; the converter's access to the lead is checked below
       // (S04.21), by the Leads scope, never by a role name.
@@ -2483,6 +2496,7 @@ export async function create(req: Request, res: Response) {
       // S04.21 - the converter must be able to open the lead (Leads scope); a lead-less estimate is refused to a
       // person limited to their own jobs.
       if (!(await mayConvertFromLead(req, [estimate.lead_id], isRowScopedCreator))) {
+        // The person can reach the estimate (checked above), so refusing the conversion tells them nothing new.
         res.status(403).json({ error: 'Insufficient permissions' });
         return;
       }
@@ -2767,6 +2781,16 @@ export async function create(req: Request, res: Response) {
       // 1:N relation) and their line items feed the job's item list. Job.estimate_id (the 1:1
       // JobPrimaryEstimate provenance FK) is left NULL for multi - it is set ONLY when exactly one
       // estimate is selected (the single-estimate branch above). This branch only runs at length > 1.
+      // Reach first, before anything about the estimates is read (spec story 47): one the person cannot reach makes the
+      // selection answer exactly like one with a missing id.
+      const estimateScope = await scopeWhereForReq(req, 'Estimate');
+      const reachable = Object.keys(estimateScope).length === 0
+        ? new Set(estimateIds).size // reach over every estimate: the existence check below answers a missing id
+        : await prisma.estimate.count({ where: { id: { in: estimateIds }, ...tenantWhere(req), ...estimateScope } });
+      if (reachable !== new Set(estimateIds).size) {
+        res.status(404).json({ error: 'One or more estimates not found' });
+        return;
+      }
       const estimates = await prisma.estimate.findMany({
         where: { id: { in: estimateIds }, ...tenantWhere(req) },
         select: {
@@ -2840,6 +2864,7 @@ export async function create(req: Request, res: Response) {
       // 2. Lead access (S04.21) - the converter must be able to open the lead, and here that must hold for
       //    EVERY selected estimate (generalizes the single branch's gate).
       if (!(await mayConvertFromLead(req, estimates.map((e) => e.lead_id), isRowScopedCreator))) {
+        // Every estimate is within reach (checked above), so refusing the conversion tells them nothing new.
         res.status(403).json({ error: 'Insufficient permissions' });
         return;
       }
@@ -3539,7 +3564,7 @@ export async function update(req: Request, res: Response) {
     // (ability-based) authorization checks, not the job's current status.
 
     // R3b (2026-07-21) — labor_hours/overhead_mode/overhead_value are staff-only cost-model
-    // inputs (D2/D8). A requester without See financial data (canSeeCosts) must not be able to
+    // inputs (D2/D8). A requester without See costs (canSeeCosts) must not be able to
     // blindly set them either — mirrors the read-side strip in stripJobCostForRequester and
     // Estimate's identical guard in estimate.controller.ts. tax_rate and the discount are PRICES
     // (S01.15): they follow Edit jobs, not this switch.
@@ -4912,7 +4937,7 @@ export async function setDispatcher(req: Request, res: Response) {
     if (dispatcher_id !== null) {
       const target = await prisma.user.findUnique({
         where: { id: dispatcher_id, ...tenantWhere(req) },
-        select: { id: true, organization_id: true, role: true, custom_role_id: true, custom_role: { select: { key: true } }, is_active: true, first_name: true, last_name: true },
+        select: { id: true, organization_id: true, role: true, custom_role_id: true, is_admin: true, custom_role: { select: { key: true } }, is_active: true, first_name: true, last_name: true },
       });
       if (!target) {
         res.status(404).json({ error: 'User not found' });
@@ -5018,7 +5043,7 @@ export async function setSoldBy(req: Request, res: Response) {
     if (sold_by_id !== null) {
       const target = await prisma.user.findUnique({
         where: { id: sold_by_id, ...tenantWhere(req) },
-        select: { id: true, organization_id: true, role: true, custom_role_id: true, custom_role: { select: { key: true } }, is_active: true, first_name: true, last_name: true },
+        select: { id: true, organization_id: true, role: true, custom_role_id: true, is_admin: true, custom_role: { select: { key: true } }, is_active: true, first_name: true, last_name: true },
       });
       if (!target) {
         res.status(404).json({ error: 'User not found' });
@@ -5726,8 +5751,15 @@ export async function complete(req: Request, res: Response) {
   }
 }
 
-/** The amount (dollars) the person confirmed before marking a job Done with money owed; absent or null when they were not asked. */
-export const markDoneSchema = z.object({ confirmed_amount: z.number().min(0).max(1_000_000_000).nullable().optional() });
+/**
+ * The amount (dollars) the person confirmed before marking a job Done with money owed; absent or null when they were not asked.
+ * `confirmed_without_amount` is the confirmation of a person without See prices, who is never shown the amount (CR-1): it is
+ * honoured only from such a person.
+ */
+export const markDoneSchema = z.object({
+  confirmed_amount: z.number().min(0).max(1_000_000_000).nullable().optional(),
+  confirmed_without_amount: z.literal(true).optional(),
+});
 
 /**
  * POST /api/jobs/:id/mark-done - Mark Done (Roles & Permissions, PRD 6, S06.13): Ready to close to Done, stamping when and
@@ -5747,12 +5779,16 @@ export async function markDone(req: Request, res: Response) {
     const mayClose = await canActOnRow(req, 'Job', prisma.job, id, 'close');
     const mayCloseOwed = req.ability!.can('close_with_money_owed', 'Job' as Subject) && (await canActOnRow(req, 'Job', prisma.job, id, 'close_with_money_owed'));
     const user = req.user!;
+    const body = req.body as z.infer<typeof markDoneSchema>;
+    const figureHidden = !canSeePrices(req);
     const result = await markJobDone({
       orgId: user.organization_id,
       jobId: id,
       actor: { id: user.id, name: `${user.first_name} ${user.last_name}`.trim() || user.email },
       switches: { close_jobs: mayClose, close_jobs_with_money_owed: mayCloseOwed },
-      confirmedAmount: (req.body as z.infer<typeof markDoneSchema>).confirmed_amount ?? null,
+      confirmedAmount: body.confirmed_amount ?? null,
+      figureHidden,
+      confirmedOwed: figureHidden && body.confirmed_without_amount === true,
     });
     void logAudit({
       req,
@@ -7088,8 +7124,8 @@ export async function addNote(req: Request, res: Response) {
     }
 
     // GAP-1 — grant/override-aware per-instance gate (see getById). NOTE: the route guard for
-    // addNote is canDo('add_note','Job') (the Add notes switch); the per-instance scope is still derived
-    // from the read-Job grant (canAccessRow), so a note goes only on a job the person can open.
+    // addNote is the Add notes switch or the job's Edit (a note is the record's own data, P10); the per-instance scope
+    // is still derived from the read-Job grant (canAccessRow), so a note goes only on a job the person can open.
     if (!(await canAccessRow(req, 'Job', prisma.job, id))) {
       res.status(403).json({ error: 'Insufficient permissions' });
       return;
@@ -7155,7 +7191,7 @@ export async function getTimeline(req: Request, res: Response) {
     // prose. For a requester who cannot read invoices the events are not fetched at all (Spec A D13).
     //
     // S06.24: the same rule as the review panel and the dashboard's Recent Activity: an entry about an invoice stays only for a
-    // reader who can open that invoice (View invoices with its scope, and the creator rule), so a reader whose Invoices scope is
+    // reader who can open that invoice (View invoices with its scope), so a reader whose Invoices scope is
     // Attached does not get the entries of an invoice they are not on. That covers the invoice's own entries, the job's entries
     // that name an invoice (lines, discounts, payments, files) and the sentence of a job sent back by an invoice item.
     const jobInvoiceIds = canReadInvoices(req)

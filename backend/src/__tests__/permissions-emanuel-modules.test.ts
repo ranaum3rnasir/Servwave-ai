@@ -148,7 +148,7 @@ describe('CASL parity — Inventory + Communication + Purchasing subjects', () =
       const shouldAllow = route.allowedRoles.includes(role);
       it(`${role} ${shouldAllow ? 'CAN' : 'CANNOT'} ${route.action} ${route.subject}`, () => {
         const grants = DEFAULT_GRANTS.filter((g) => g.role === role);
-        const ability = defineAbilityFor({ id: 'test-user-id', role }, grants);
+        const ability = defineAbilityFor({ is_admin: role === 'ADMIN', id: 'test-user-id', role }, grants);
         expect(ability.can(route.action as any, route.subject as any)).toBe(shouldAllow);
       });
     }
@@ -163,7 +163,7 @@ describe('CASL parity — Inventory + Communication + Purchasing subjects', () =
 describe('CASL — TECHNICIAN on-site payment is NOT a default ability (Phase B)', () => {
   it('TECHNICIAN CANNOT record_payment Invoice by default (per-user toggle now)', () => {
     const grants = DEFAULT_GRANTS.filter((g) => g.role === 'TECHNICIAN');
-    const ability = defineAbilityFor({ id: 'test-user-id', role: 'TECHNICIAN' }, grants);
+    const ability = defineAbilityFor({ is_admin: false, id: 'test-user-id', role: 'TECHNICIAN' }, grants);
     expect(ability.can('record_payment' as any, 'Invoice' as any)).toBe(false);
   });
 });

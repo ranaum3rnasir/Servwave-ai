@@ -321,7 +321,7 @@ describe('The all-View-off warning', () => {
 
   it('shows on a role with View off on every module, which can still be saved', async () => {
     windowWidth(WIDE);
-    const values = { ...allOff(), company_settings: true };
+    const values = { ...allOff(), manage_payout_account: true };
     const role = addCustom('Settings only', { values, made_from_blank: true, made_from_role_key: null, all_views_off: true });
     mockApi.put.mockImplementation(((_url: string, body: { values: SwitchSet }) => Promise.resolve({ data: { ...SETS[role]!, values: { ...values, ...body.values } } })) as never);
     renderWithProviders(<RolesPage />);
@@ -343,13 +343,6 @@ describe('The all-View-off warning', () => {
     renderWithProviders(<RolesPage />);
     await user_pick(/Sales/);
     await screen.findByRole('switch', { name: catalogSwitch('view_customers').label });
-    expect(screen.queryByText(WARNING)).toBeNull();
-  });
-
-  it('is not shown on the Administrator role', async () => {
-    windowWidth(WIDE);
-    renderWithProviders(<RolesPage />);
-    await screen.findByText('Full access');
     expect(screen.queryByText(WARNING)).toBeNull();
   });
 
@@ -377,6 +370,14 @@ describe('A custom role\'s header names the role it was made from', () => {
     renderWithProviders(<RolesPage />);
     await user_pick(/Second dispatcher/);
     expect(await screen.findByText('Made from Dispatcher')).toBeInTheDocument();
+  });
+
+  it('names the built-in Administrator when that is what the role was copied from', async () => {
+    windowWidth(WIDE);
+    addCustom('Everything but billing', { made_from_role_key: 'ADMIN' }, 'SALES');
+    renderWithProviders(<RolesPage />);
+    await user_pick(/Everything but billing/);
+    expect(await screen.findByText('Made from Administrator (Owner)')).toBeInTheDocument();
   });
 
   it('names a custom source role', async () => {

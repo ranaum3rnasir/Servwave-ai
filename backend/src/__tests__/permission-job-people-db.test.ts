@@ -197,7 +197,6 @@ suite('job people, visit steps, job complete and job line items follow switches 
     it("no longer has the per-person 'edit line items on jobs they created' capability: a stored allow row grants nothing", async () => {
       const { org, customer } = await fx.newOrg();
       const me = await personWith(org, { edit_job_line_items: false }, { base: 'TECHNICIAN' });
-      await db.userPermissionOverride.create({ data: { organization_id: org, user_id: me.id, action: 'manage_lines', subject: 'Job', effect: 'allow' } });
       const job = await fx.addJob(org, customer, { createdBy: me.id, soldBy: me.id, crew: [me.id] });
       expect((await (await me.api()).post(`/api/jobs/${job.id}/line-items`, newLine)).status).toBe(403);
       expect(await linesOf(job.id)).toBe(0);
@@ -266,7 +265,7 @@ suite('job people, visit steps, job complete and job line items follow switches 
       for (const base of ['TECHNICIAN', 'SALES', 'DISPATCHER'] as const) {
         // Without the switch the people in the request are ignored: the job holds the creator rule's result (S03.16),
         // which the form's own pre-fill route reports.
-        const without = await personWith(org, { create_jobs: true, assign_people_to_jobs: false }, { base });
+        const without = await personWith(org, { edit_jobs: true, create_jobs: true, assign_people_to_jobs: false }, { base });
         const api = await without.api();
         const prefill = (await api.get('/api/jobs/creator-prefill')).body.prefill;
         const created = await api.post('/api/jobs', { ...body, salesperson_id: named.id, sold_by_id: named.id, dispatcher_id: named.id, assignee_ids: [named.id] });
@@ -277,7 +276,7 @@ suite('job people, visit steps, job complete and job line items follow switches 
         expect(stored.visits.flatMap((v) => v.assignees), `${base} without`).toEqual([]);
 
         // A holder may empty both fields on purpose, and the job is accepted with nobody on it.
-        const holder = await personWith(org, { create_jobs: true, assign_people_to_jobs: true }, { base });
+        const holder = await personWith(org, { edit_jobs: true, create_jobs: true, assign_people_to_jobs: true }, { base });
         const emptied = await (await holder.api()).post('/api/jobs', { ...body, sold_by_id: null, dispatcher_id: null });
         expect(emptied.status, `${base} holder`).toBe(201);
         const emptyStored = await storedOf(emptied.body.job.id);
@@ -299,8 +298,8 @@ suite('job people, visit steps, job complete and job line items follow switches 
     it('refuses a duplicate without the switch even with Create jobs, and lets it in with it, whatever the role is based on', async () => {
       const { org, customer } = await fx.newOrg();
       for (const base of ['TECHNICIAN', 'SALES', 'DISPATCHER'] as const) {
-        const without = await personWith(org, { create_jobs: true, duplicate_jobs: false }, { base });
-        const withIt = await personWith(org, { create_jobs: true, duplicate_jobs: true }, { base });
+        const without = await personWith(org, { edit_jobs: true, create_jobs: true, duplicate_jobs: false }, { base });
+        const withIt = await personWith(org, { edit_jobs: true, create_jobs: true, duplicate_jobs: true }, { base });
         const job = await fx.addJob(org, customer, { crew: [without.id, withIt.id] });
         expect((await (await without.api()).post(`/api/jobs/${job.id}/duplicate`, {})).status, base).toBe(403);
         const allowed = await (await withIt.api()).post(`/api/jobs/${job.id}/duplicate`, {});

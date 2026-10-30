@@ -47,7 +47,7 @@ const ALL_OFF: Record<string, SwitchValue> = Object.fromEntries(
 );
 
 /** What opening the job and its invoices takes. */
-const OPENING = { view_jobs: true, jobs_scope: 'all', view_invoices: true, invoices_scope: 'all' };
+const OPENING = { view_jobs: true, jobs_scope: 'all', view_invoices: true, leads_scope: 'all' };
 
 suite('the office review panel (real database)', () => {
   const db = realClient as PrismaClient;
@@ -63,7 +63,7 @@ suite('the office review panel (real database)', () => {
   async function personWith(org: string, values: Record<string, SwitchValue>, base: Role = 'DISPATCHER') {
     const key = `job-review-role-${++sequence}`;
     const role = await fx.addCustomRole(org, key, base);
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...values }, actorId: null, reason: 'manual' });
+    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, see_prices: true, ...values }, actorId: null, reason: 'manual' });
     const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
     return Object.assign(person, { api: () => fx.signedInAs(person) });
   }
@@ -125,7 +125,7 @@ suite('the office review panel (real database)', () => {
     const { org, customer } = await fx.newOrg();
     const me = await personWith(org, { ...OPENING, jobs_scope: 'attached', office_review: true });
     const job = await reviewJob(org, customer);
-    expect((await (await me.api()).get(`/api/jobs/${job.id}/review`)).status).toBe(403);
+    expect((await (await me.api()).get(`/api/jobs/${job.id}/review`)).status).toBe(404);
   });
 
   it('says a job that is not in office review has no review to show', async () => {
@@ -163,7 +163,7 @@ suite('the office review panel (real database)', () => {
 
   it('shows the job summary from the real job: customer, address, visits, lines, total, balance, files and notes', async () => {
     const { org, customer, admin } = await fx.newOrg();
-    const me = await personWith(org, { ...OPENING, office_review: true, see_financial_data: true });
+    const me = await personWith(org, { ...OPENING, office_review: true, see_costs: true });
     const job = await reviewJob(org, customer);
     await fx.addVisit(org, { jobId: job.id, crew: [admin.id], daysFromNow: -2 });
     await db.jobLineItem.create({
@@ -196,13 +196,13 @@ suite('the office review panel (real database)', () => {
     expect(visits.map((v) => [v.seq, v.outcome, v.cancelled_by_complete])).toEqual([[1, 'cancelled', true], [2, 'cancelled', false]]);
   });
 
-  it('leaves costs out of the summary without See financial data and keeps the prices', async () => {
+  it('leaves costs out of the summary without See costs and keeps the prices', async () => {
     const { org, customer } = await fx.newOrg();
     const job = await reviewJob(org, customer);
     await db.jobLineItem.create({
       data: { organization_id: org, job_id: job.id, sequence: 1, description: 'Spring', quantity: 2, unit_price: 100, unit_cost: 60, line_total: 200 },
     });
-    const without = await personWith(org, { ...OPENING, office_review: true, see_financial_data: false });
+    const without = await personWith(org, { ...OPENING, office_review: true, see_costs: false });
     const res = await (await without.api()).get(`/api/jobs/${job.id}/review`);
     expect(res.body.review.summary.lines).toEqual([{ name: 'Spring', quantity: 2, unit_price: 100, line_total: 200 }]);
     expect('total_cost' in res.body.review.summary).toBe(false);
@@ -256,7 +256,7 @@ suite('the office review panel (real database)', () => {
     const { org, customer, admin } = await fx.newOrg();
     const job = await reviewJob(org, customer);
     const hiddenInv = await fx.addInvoice(org, customer, { jobId: job.id });
-    const mine = await personWith(org, { ...OPENING, invoices_scope: 'attached', office_review: true });
+    const mine = await personWith(org, { ...OPENING, view_invoices: false, office_review: true });
     await history(org, job.id, 'JOB_PAYMENT_RECORDED', { invoice_id: hiddenInv.id, invoice_number: 'INV-9', amount: 50, method: 'CASH', payment_id: randomUUID() }, { by: admin.id });
     await history(org, job.id, 'JOB_INVOICE_LINE_CHANGED', { invoice_id: hiddenInv.id, invoice_number: 'INV-9', line_id: randomUUID(), old: line(), new: line({ unit_price: 50 }) }, { by: admin.id });
     await history(org, job.id, 'JOB_INVOICE_DISCOUNT_CHANGED', { invoice_id: hiddenInv.id, invoice_number: 'INV-9', old: 0, new: 10 }, { by: admin.id });
@@ -274,7 +274,7 @@ suite('the office review panel (real database)', () => {
   it('lists the invoices and payments for a person with the attached scope who is attached to the job', async () => {
     const { org, customer, admin } = await fx.newOrg();
     const job = await reviewJob(org, customer);
-    const mine = await personWith(org, { ...OPENING, invoices_scope: 'attached', office_review: true });
+    const mine = await personWith(org, { ...OPENING, jobs_scope: 'attached', leads_scope: 'attached', office_review: true });
     await fx.addVisit(org, { jobId: job.id, crew: [mine.id] });
     const inv = await fx.addInvoice(org, customer, { jobId: job.id });
     await history(org, job.id, 'JOB_PAYMENT_RECORDED', { invoice_id: inv.id, invoice_number: 'INV-1', amount: 50, method: 'CASH', payment_id: randomUUID() }, { by: admin.id });

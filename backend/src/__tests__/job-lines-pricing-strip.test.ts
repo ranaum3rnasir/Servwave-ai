@@ -6,7 +6,7 @@ const scopes = [
 ];
 
 describe('stripScopeCost', () => {
-  it('removes internal_cost and keeps the scope\'s flat price: See financial data covers costs only', () => {
+  it('removes internal_cost and keeps the scope\'s flat price: See costs covers costs only', () => {
     const [out] = stripScopeCost(scopes) as unknown as Record<string, unknown>[];
     expect(out).not.toHaveProperty('internal_cost');
     expect(out.flat_price).toBe(1200);

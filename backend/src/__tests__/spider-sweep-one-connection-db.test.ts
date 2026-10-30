@@ -51,7 +51,7 @@ suite('Spider sweep on a one-connection pool (real database)', () => {
     const quietly = (p: Promise<unknown>) => p.catch(() => undefined);
     for (const org of orgs) {
       await quietly(db.spiderSettings.deleteMany({ where: { organization_id: org } }));
-      for (const table of ['spider_alerts', 'notifications', 'timeline_events', 'leads', 'role_permissions', 'customers', 'users']) {
+      for (const table of ['spider_alerts', 'notifications', 'timeline_events', 'leads', 'customers', 'users']) {
         await quietly(db.$executeRawUnsafe(`DELETE FROM ${table} WHERE organization_id = '${org}'`));
       }
       await quietly(db.organization.deleteMany({ where: { id: org } }));
@@ -72,12 +72,9 @@ suite('Spider sweep on a one-connection pool (real database)', () => {
       },
     });
     for (const g of DEFAULT_GRANTS) {
-      await db.rolePermission.create({
-        data: { organization_id: org, role: g.role, action: g.action, subject: g.subject, conditions: (g.conditions ?? undefined) as never },
-      });
     }
     await db.user.create({
-      data: { id: randomUUID(), organization_id: org, email: `admin-${tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN' },
+      data: { id: randomUUID(), organization_id: org, email: `admin-${tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN', is_admin: true },
     });
     const customer = randomUUID();
     await db.customer.create({

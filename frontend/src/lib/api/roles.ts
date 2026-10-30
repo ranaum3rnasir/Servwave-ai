@@ -24,7 +24,7 @@ export interface RoleSummary {
   made_from_blank?: boolean;
 }
 
-export type ScopeValue = 'All' | 'Owned' | 'Team' | 'Location';
+export type ScopeValue = 'All' | 'Owned' | 'Team';
 export type CrudCell = { read: boolean; create: boolean; update: boolean; delete: boolean };
 // SRVW-139 - toggle bundles for actions the CRUD matrix can't host (no create action, or a
 // single lifecycle verb rather than a CRUD cell). Keep in lockstep with backend TOGGLES
@@ -50,7 +50,7 @@ export interface RoleViewModel {
   editable: boolean;
   matrix: Record<string, CrudCell>;
   // SRVW-140 - `viewReports` is the honest control for `read Report`, split out of
-  // "See financial data" (which now writes the `read Pricing` grant canSeePricing keys on).
+  // "See costs" (which now writes the `read Pricing` grant canSeePricing keys on).
   // Editable record IDs (2026-08-19 plan, decision #7) - `editRecordIds` is permission plumbing
   // for a NOT-YET-BUILT capability (the PATCH .../:id/number endpoints ship in a later PR).
   // Manual Communication Log slice 4 - `logPastCommunications` writes `log_past Communication`,
@@ -117,7 +117,7 @@ export function resolveRoleAssignment(
   return { role: value, custom_role_id: null };
 }
 
-/** `enabled` is false for a screen whose viewer may not read the list (it needs Manage roles and permissions). */
+/** `enabled` is false for a screen whose viewer may not read the list (the roles route answers only Admins). */
 export function useRoles(enabled = true) {
   return useQuery<RoleSummary[]>({
     queryKey: ['roles'],
@@ -160,13 +160,15 @@ export function useResetRole() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (role: string) => api.post(`/api/roles/${role}/reset`).then((r) => r.data as RoleSwitchSet),
-    // The reset answers with the role's whole set: show it now. People on the role are not touched, but what they differ
+    // The reset answers with the role's whole set: show it now. People on the role follow it, and what they differ
     // by is measured against the role, so their cached sets are read again. A refusal is shown by the caller, inside the
     // confirm that asked.
     onSuccess: (reset, role) => {
       qc.setQueryData(['roles', role, 'switches'], reset);
       resetChangeLogs(qc);
       void qc.invalidateQueries({ queryKey: allPersonSwitchesKey });
+      // The Users & Teams role column counts each person's changes from their role, and those are measured against this set.
+      void qc.invalidateQueries({ queryKey: ['users'] });
     },
   });
 }

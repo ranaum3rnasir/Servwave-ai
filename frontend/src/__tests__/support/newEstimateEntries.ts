@@ -4,7 +4,7 @@ import { seedMySwitches } from '../helpers';
 import { abilityWithSwitches, catalogToggle } from './backendSwitchCatalog';
 
 /** The switches behind the new-estimate dialog's three ways out (Roles & Permissions S02.26), by the label a person sees. */
-export const NEW_ESTIMATE_ENTRY_SWITCHES = ['Create customers', 'Show Customers page', 'Create leads', 'Standalone estimates'];
+export const NEW_ESTIMATE_ENTRY_SWITCHES = ['Create customers', 'View customers', 'Create leads', 'Standalone estimates'];
 
 /**
  * A person who holds every way out of the new-estimate dialog, for a suite whose subject is something else (where the

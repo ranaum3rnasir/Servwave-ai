@@ -8,6 +8,8 @@ export interface AuthenticatedUser {
   last_name: string;
   // SRVW-138: the BASE role; grants may come from a custom role (see effectiveRole.ts).
   role: Role;
+  // Roles & Permissions P15: whether the person is an Admin (see lib/permissions/effectiveRole.ts).
+  is_admin: boolean;
   custom_role_id?: string | null;
   custom_role?: { key: string } | null;
   is_active: boolean;

@@ -31,8 +31,8 @@ const SETTINGS = '/api/ai-farm/spider/settings';
 const MINE = '/api/ai-farm/spider/summary';
 const COMPANY = '/api/ai-farm/spider/summary/company';
 
-const ADMIN = { id: 'u1', role: 'ADMIN', organization_id: 'o1', org_is_demo: true, org_features: ['leads', 'spider'] };
-const SALES = { ...ADMIN, id: 'u2', role: 'SALES' };
+const ADMIN = { id: 'u1', role: 'ADMIN', is_admin: true, organization_id: 'o1', org_is_demo: true, org_features: ['leads', 'spider'] };
+const SALES = { ...ADMIN, id: 'u2', role: 'SALES', is_admin: false };
 
 function signIn(user: Record<string, unknown>) {
   const state = { user, isAuthenticated: true, isLoading: false };

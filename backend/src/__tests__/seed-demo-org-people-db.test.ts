@@ -23,6 +23,7 @@ import { cpSync, mkdtempSync, readdirSync, rmSync, copyFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join } from 'path';
 import { PrismaClient } from '@prisma/client';
+import { deployFrom } from './migration-deploy-support';
 import { SWITCH_CATALOG, type BuiltInRole } from '../lib/permissions/switches/catalog';
 
 const url = process.env.TEST_DATABASE_URL;
@@ -31,7 +32,6 @@ const suite = url ? describe : describe.skip;
 const DEMO_ORG = '00000000-0000-0000-0000-000000000001';
 const BACKEND_DIR = join(__dirname, '..', '..');
 const PRISMA_DIR = join(BACKEND_DIR, 'prisma');
-const PRISMA_CLI = join(dirname(require.resolve('prisma/package.json')), 'build', 'index.js');
 const TSX_CLI = join(dirname(require.resolve('tsx/package.json')), 'dist', 'cli.mjs');
 
 const OPEN_LEAD_STATUSES = ['NEW', 'CONTACTED', 'WALKTHROUGH_SCHEDULED', 'WALKTHROUGH_COMPLETED', 'ESTIMATED'];
@@ -86,12 +86,8 @@ suite('demo-org seed fills lead Dispatchers and job Sold By (real database)', ()
     tempDirs.push(dir);
     copyFileSync(join(PRISMA_DIR, 'schema.prisma'), join(dir, 'schema.prisma'));
     cpSync(join(PRISMA_DIR, 'migrations'), join(dir, 'migrations'), { recursive: true });
-    const deploy = spawnSync(process.execPath, [PRISMA_CLI, 'migrate', 'deploy', '--schema', join(dir, 'schema.prisma')], {
-      cwd: dir,
-      env: { ...process.env, DATABASE_URL: dbUrl, DIRECT_URL: dbUrl },
-      encoding: 'utf8',
-    });
-    if (deploy.status !== 0) throw new Error(`deploy failed:\n${deploy.stdout}\n${deploy.stderr}`);
+    // The shared deploy gives the database the stub auth helpers first (see migration-deploy-support).
+    deployFrom(dbUrl, dir);
 
     // The demo org itself comes from the migrations; the seed never creates users.
     const staff: Array<[string, 'ADMIN' | 'SALES' | 'DISPATCHER' | 'TECHNICIAN']> = [
@@ -104,6 +100,11 @@ suite('demo-org seed fills lead Dispatchers and job Sold By (real database)', ()
         select: { id: true },
       });
     }
+    // The account `npm run seed` makes. The demo company has no Owner yet, so the demo seed makes this person its Owner (AL-16).
+    const seedAdmin = await db.user.create({
+      data: { organization_id: DEMO_ORG, email: 'admin@servwave.com', first_name: 'System', last_name: 'Admin', role: 'ADMIN', is_admin: true },
+      select: { id: true },
+    });
 
     // Another company the seed must never touch.
     const other = randomUUID();
@@ -128,7 +129,7 @@ suite('demo-org seed fills lead Dispatchers and job Sold By (real database)', ()
       data: { organization_id: other, customer_id: customer, service_location_id: location, lead_number: 'L-OTHER', service_request: 'Fix the door' },
       select: { id: true },
     });
-    return { dbUrl, db, other };
+    return { dbUrl, db, other, seedAdmin: seedAdmin.id };
   }
 
   function runSeed(dbUrl: string) {
@@ -168,9 +169,15 @@ suite('demo-org seed fills lead Dispatchers and job Sold By (real database)', ()
     };
   }
 
+  const ownerOfDemo = async (db: Db) =>
+    (await db.organization.findUniqueOrThrow({ where: { id: DEMO_ORG }, select: { owner_user_id: true } })).owner_user_id;
+
   it('fills leads and jobs with the new people fields, only from people the switches allow', async () => {
-    const { dbUrl, db } = await migratedDatabase();
+    const { dbUrl, db, seedAdmin } = await migratedDatabase();
     runSeed(dbUrl);
+
+    // Every company has an Owner (AL-16): the demo company's is the seed admin.
+    expect(await ownerOfDemo(db)).toBe(seedAdmin);
 
     const seen = await picture(db);
     expect(seen.withDispatcher).toBeGreaterThan(0);
@@ -240,7 +247,7 @@ suite('demo-org seed fills lead Dispatchers and job Sold By (real database)', ()
   }, 240_000);
 
   it('can be run again: the same picture, and no other organization is touched', async () => {
-    const { dbUrl, db, other } = await migratedDatabase();
+    const { dbUrl, db, other, seedAdmin } = await migratedDatabase();
     const otherBefore = await others(db, other);
     const staffBefore = await others(db, DEMO_ORG);
 
@@ -252,6 +259,8 @@ suite('demo-org seed fills lead Dispatchers and job Sold By (real database)', ()
     // Counts do not double, and every fact the demo shows is still there.
     expect(second.leads).toBe(first.leads);
     expect(second.jobs).toBe(first.jobs);
+    // The Owner the first run set is kept.
+    expect(await ownerOfDemo(db)).toBe(seedAdmin);
     expect(second.withDispatcher).toBeGreaterThan(0);
     expect(second.withoutDispatcher).toBeGreaterThan(0);
     expect(second.openNoOwner).toBeGreaterThanOrEqual(1);

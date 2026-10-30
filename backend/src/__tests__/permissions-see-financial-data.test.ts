@@ -1,5 +1,5 @@
 /**
- * SRVW-140 - the Roles UI "See financial data" switch must gate financial data.
+ * SRVW-140 - the Roles UI "See costs" switch must gate financial data.
  *
  * Before this card the switch wrote exactly one grant, `read Report`, which gates the /api/reports
  * routes and the Reports/Billing nav and appears NOWHERE in the cost/price path. The predicate that
@@ -15,7 +15,7 @@
  * person's switch values via mockRoleSwitches - mirrors job-lines-pricing-leak.test.ts /
  * estimate-pricing-leak.test.ts.
  *
- * Roles & Permissions S01.15: the switch is a catalog switch (`see_financial_data`) now, so the stored
+ * Roles & Permissions S01.15: the switch is a catalog switch (`see_costs`) now, so the stored
  * `read Pricing` row no longer counts and each state below is a switch value. It covers COSTS only: the
  * prices on the same responses stay.
  *
@@ -41,7 +41,6 @@ const mockPrisma = prisma as unknown as {
   job: { findUnique: ReturnType<typeof vi.fn>; findFirst: ReturnType<typeof vi.fn> };
   estimate: { findUnique: ReturnType<typeof vi.fn>; findFirst: ReturnType<typeof vi.fn> };
   invoice: { findUnique: ReturnType<typeof vi.fn>; findFirst: ReturnType<typeof vi.fn>; findMany: ReturnType<typeof vi.fn> };
-  rolePermission: { findMany: ReturnType<typeof vi.fn> };
   timelineEvent: { findFirst: ReturnType<typeof vi.fn> };
   $transaction: ReturnType<typeof vi.fn>;
 };
@@ -53,16 +52,16 @@ const INVOICE_ID = '00000000-0000-0000-0000-000000000901';
 type TestGrant = { action: string; subject: string; conditions: Record<string, unknown> | null };
 
 // Jobs, estimates and invoices are reached through their Data Scope switches, not stored grants: an
-// unconditional read is the module's View on with its scope All. See financial data is a switch too.
+// unconditional read is the module's View on with its scope All. See costs is a switch too.
 function openRecordsIfAsked(extra: string[], opts: { invoices: boolean; seeFinancialData: boolean }) {
-  const open: Record<string, boolean | string> = { see_financial_data: opts.seeFinancialData };
+  const open: Record<string, boolean | string> = { see_costs: opts.seeFinancialData };
   if (extra.includes('Job')) open.jobs_scope = 'all';
-  if (extra.includes('Estimate')) Object.assign(open, { view_estimates: true, estimates_scope: 'all' });
-  if (opts.invoices || extra.includes('Invoice')) Object.assign(open, { view_invoices: true, invoices_scope: 'all' });
+  if (extra.includes('Estimate')) Object.assign(open, { view_estimates: true, jobs_scope: 'all', leads_scope: 'all' });
+  if (opts.invoices || extra.includes('Invoice')) Object.assign(open, { view_invoices: true, jobs_scope: 'all', leads_scope: 'all' });
   mockRoleSwitches(open);
 }
 
-// The switch-OFF state: See financial data off and `read Invoice` present, plus whatever route gate
+// The switch-OFF state: See costs off and `read Invoice` present, plus whatever route gate
 // the surface under test needs. Unconditional grants so canAccessRow short-circuits.
 function grantsWithoutPricing(...extra: string[]) {
   const grants: TestGrant[] = [{ action: 'read', subject: 'Invoice', conditions: null }];
@@ -272,14 +271,14 @@ beforeEach(() => {
 // ════════════════════════════════════════════════════════════════════════════
 describe('canSeeCosts - the predicate', () => {
   it('is FALSE for an ability holding read Invoice but NOT read Pricing', () => {
-    const ability = defineAbilityFor({ id: TEST_USERS.technician.id, role: 'TECHNICIAN' }, [
+    const ability = defineAbilityFor({ is_admin: false, id: TEST_USERS.technician.id, role: 'TECHNICIAN' }, [
       { action: 'read', subject: 'Invoice', conditions: null },
     ]);
     expect(canSeeCosts({ ability } as unknown as Request)).toBe(false);
   });
 
   it('is TRUE for an ability holding read Pricing and NOT read Invoice', () => {
-    const ability = defineAbilityFor({ id: TEST_USERS.technician.id, role: 'TECHNICIAN' }, [
+    const ability = defineAbilityFor({ is_admin: false, id: TEST_USERS.technician.id, role: 'TECHNICIAN' }, [
       { action: 'read', subject: 'Pricing', conditions: null },
     ]);
     expect(canSeeCosts({ ability } as unknown as Request)).toBe(true);
@@ -289,7 +288,7 @@ describe('canSeeCosts - the predicate', () => {
 // ════════════════════════════════════════════════════════════════════════════
 // 2-8. The consumer surfaces, driven over HTTP in the switch-OFF state
 // ════════════════════════════════════════════════════════════════════════════
-describe('switch OFF (read Invoice, See financial data off) - costs are stripped everywhere, prices stay', () => {
+describe('switch OFF (read Invoice, See costs off) - costs are stripped everywhere, prices stay', () => {
   it('price-book search strips unit_cost', async () => {
     grantsWithoutPricing('PriceBook');
     mockPrisma.priceBookItem.findMany.mockResolvedValue([priceBookSearchRow()]);
@@ -401,7 +400,7 @@ describe('switch OFF (read Invoice, See financial data off) - costs are stripped
     ],
   });
 
-  it('job financials keep the invoice money for someone who reads invoices: it is prices, and See financial data covers costs only', async () => {
+  it('job financials keep the invoice money for someone who reads invoices: it is prices, and See costs covers costs only', async () => {
     grantsWithoutPricing('Job');
     mockPrisma.job.findUnique.mockResolvedValue({ estimate_id: null });
     mockPrisma.invoice.findMany.mockResolvedValue([financialsInvoiceRow()]);
@@ -417,7 +416,7 @@ describe('switch OFF (read Invoice, See financial data off) - costs are stripped
 
   it('job financials list no invoice for someone who can open none, but the job\'s own figures and the lifecycle bar stay', async () => {
     // View invoices off (the Technician preset), and the invoice is not one they made.
-    mockRoleSwitches({ jobs_scope: 'all', view_invoices: false, see_financial_data: true });
+    mockRoleSwitches({ jobs_scope: 'all', view_invoices: false, see_costs: true });
     mockPrisma.job.findUnique.mockResolvedValue({ estimate_id: null });
     mockPrisma.invoice.findMany.mockResolvedValueOnce([financialsInvoiceRow()]).mockResolvedValueOnce([]);
 
@@ -458,7 +457,7 @@ describe('switch OFF (read Invoice, See financial data off) - costs are stripped
 // ════════════════════════════════════════════════════════════════════════════
 // 9. read Pricing is the door, not a second lock
 // ════════════════════════════════════════════════════════════════════════════
-describe('See financial data WITHOUT read Invoice is sufficient to see costs', () => {
+describe('See costs WITHOUT read Invoice is sufficient to see costs', () => {
   it('price-book search returns unit_cost', async () => {
     grantsWithPricingOnly('PriceBook');
     mockPrisma.priceBookItem.findMany.mockResolvedValue([priceBookSearchRow()]);

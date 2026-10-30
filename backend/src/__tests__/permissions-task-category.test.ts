@@ -38,7 +38,7 @@ describe('defineAbilityFor - TaskCategory', () => {
   it('a non-admin reads but cannot create, update or delete', () => {
     for (const role of ROLES) {
       const grants = DEFAULT_GRANTS.filter((g) => g.role === role);
-      const ability = defineAbilityFor({ id: 'u', role }, grants);
+      const ability = defineAbilityFor({ is_admin: false, id: 'u', role }, grants);
       expect(ability.can('read', 'TaskCategory'), role).toBe(true);
       expect(ability.can('create', 'TaskCategory'), role).toBe(false);
       expect(ability.can('update', 'TaskCategory'), role).toBe(false);
@@ -47,7 +47,7 @@ describe('defineAbilityFor - TaskCategory', () => {
   });
 
   it('ADMIN reaches all four through manage-all', () => {
-    const ability = defineAbilityFor({ id: 'a', role: 'ADMIN' }, []);
+    const ability = defineAbilityFor({ is_admin: true, id: 'a', role: 'ADMIN' }, []);
     for (const a of ['read', 'create', 'update', 'delete'] as const) expect(ability.can(a, 'TaskCategory')).toBe(true);
   });
 });

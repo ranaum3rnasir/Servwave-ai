@@ -97,19 +97,29 @@ suite('top search returns exactly what the person can open (real database)', () 
     };
   }
 
-  it('with Invoices View off, returns an invoice the person created on a job they are still on, and drops it once they are taken off the job', async () => {
+  it('with Invoices View off, returns no invoice at all, not even one the person created on a job they are on (P7)', async () => {
     const { org } = await fx.newOrg();
     const q = word();
     const customer = await addCustomer(org, q);
-    const me = await personWith(org, { ...INVOICES_VIEW_OFF, invoices_scope: 'attached', jobs_scope: 'attached' });
+    const me = await personWith(org, { ...INVOICES_VIEW_OFF, leads_scope: 'attached', jobs_scope: 'attached' });
+    const job = await fx.addJob(org, customer, { crew: [me.id] });
+    await fx.addInvoice(org, customer, { jobId: job.id, createdBy: me.id });
+
+    expect((await found(await me.api(), q)).invoices).toEqual([]);
+  });
+
+  it('with Invoices View on, returns the invoices of the job the person is on, and drops them once they are taken off the job', async () => {
+    const { org } = await fx.newOrg();
+    const q = word();
+    const customer = await addCustomer(org, q);
+    const me = await personWith(org, { view_invoices: true, leads_scope: 'attached', jobs_scope: 'attached' });
     const api = await me.api();
     const job = await fx.addJob(org, customer, { crew: [me.id] });
     const mine = await fx.addInvoice(org, customer, { jobId: job.id, createdBy: me.id });
     const colleagues = await fx.addInvoice(org, customer, { jobId: job.id, createdBy: (await fx.addUser(org, `peer${++sequence}`, 'SALES')).id });
 
     const before = await found(api, q);
-    expect(before.invoices).toEqual([mine.id]);
-    expect(before.invoices).not.toContain(colleagues.id);
+    expect([...before.invoices].sort()).toEqual([mine.id, colleagues.id].sort());
     expect(before.jobs).toEqual([job.id]);
 
     await fx.removeCrew(job.visitId!, me.id);
@@ -119,11 +129,11 @@ suite('top search returns exactly what the person can open (real database)', () 
     expect(after.jobs).toEqual([]);
   });
 
-  it('with View off, finds by the customer\'s name an estimate and an invoice the person created for a customer alone, and not a colleague\'s', async () => {
+  it('with View on at Their own, finds by the customer\'s name an estimate and an invoice the person created for a customer alone, and not a colleague\'s', async () => {
     const { org } = await fx.newOrg();
     const q = word();
     const customer = await addCustomer(org, q);
-    const me = await personWith(org, { ...INVOICES_VIEW_OFF, ...ESTIMATES_VIEW_OFF });
+    const me = await personWith(org, { view_invoices: true, jobs_scope: 'attached', leads_scope: 'attached', view_estimates: true });
     const api = await me.api();
     const colleague = await fx.addUser(org, `peer${++sequence}`, 'SALES');
     const mineInvoice = await fx.addInvoice(org, customer, { createdBy: me.id });
@@ -169,7 +179,7 @@ suite('top search returns exactly what the person can open (real database)', () 
     const q = word();
     const customer = await addCustomer(org, q);
     const me = await personWith(org, {
-      leads_scope: 'attached', jobs_scope: 'attached', estimates_scope: 'attached', invoices_scope: 'attached',
+      leads_scope: 'attached', jobs_scope: 'attached',
     });
     const api = await me.api();
 

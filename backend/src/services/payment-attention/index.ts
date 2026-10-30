@@ -13,7 +13,6 @@ import { tenantWhere } from '../../lib/tenant';
 import { scopeWhereForReq } from '../../lib/permissions/enforce';
 import { invoiceOpenerFor } from '../../lib/permissions/invoiceAccess';
 import { buildPaginationMeta } from '../../lib/pagination';
-import { resolveSwitches } from '../../lib/permissions/switches/store';
 import { countRows, findRow, pageRows, type Counts, type Filters, type RawRow, type View } from './queries';
 import { toItem, type AttentionItem, type Caps } from './items';
 import { payAgainUrl } from '../payment-reconciler/checkout-effects';
@@ -34,9 +33,7 @@ export async function capsOf(req: Request): Promise<Caps> {
     refund: !!req.ability?.can('refund', 'Invoice'),
     sendLink: !!req.ability?.can('send_payment_link', 'Invoice'),
     payoutAccount: !!req.ability?.can('manage_payout_account', 'Organization'),
-    // Show Invoices page is a display switch with no ability behind it, so it is read from the person's resolved switches.
-    // The new invoice page is behind it; without it the button would end on a no-access page (C-35).
-    createInvoice: canCreate && (await resolveSwitches(req.user!)).show_invoices_page === true,
+    createInvoice: canCreate,
   };
 }
 

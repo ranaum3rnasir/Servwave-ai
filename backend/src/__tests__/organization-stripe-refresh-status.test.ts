@@ -88,7 +88,7 @@ describe('POST /api/organization/stripe/refresh-status (return from onboarding)'
     expect(mockPrisma.organization.updateMany).not.toHaveBeenCalled();
   });
 
-  describe('the gate is Manage payout account OR update Organization', () => {
+  describe('the gate is Manage payout account, or the Admin flag', () => {
     const okAccount = {
       id: 'acct_bogus', charges_enabled: true, payouts_enabled: true, details_submitted: true,
       requirements: { currently_due: [], disabled_reason: null },
@@ -97,24 +97,23 @@ describe('POST /api/organization/stripe/refresh-status (return from onboarding)'
 
     it('a person holding only Manage payout account gets 200 (the embedded form calls this when it closes)', async () => {
       mockAuthAs('sales');
-      mockRoleSwitches({ manage_payout_account: true, company_settings: false });
+      mockRoleSwitches({ manage_payout_account: true });
       mockRetrieveAccount.mockResolvedValue(okAccount);
       const res = await post();
       expect(res.status).toBe(200);
       expect(mockRetrieveAccount).toHaveBeenCalledWith('acct_bogus');
     });
 
-    it('a person holding only update Organization still gets 200', async () => {
-      mockAuthAs('sales');
-      mockRoleSwitches({ manage_payout_account: false, company_settings: true });
+    it('an Admin still gets 200 (the Admin flag opens it; the Company settings switch that did is retired)', async () => {
+      mockAuthAs('admin');
       mockRetrieveAccount.mockResolvedValue(okAccount);
-      const res = await post();
+      const res = await request(app).post('/api/organization/stripe/refresh-status').set(authHeader('admin'));
       expect(res.status).toBe(200);
     });
 
     it('a person holding neither gets 403 and nothing is read or written', async () => {
       mockAuthAs('sales');
-      mockRoleSwitches({ manage_payout_account: false, company_settings: false, view_payments: true });
+      mockRoleSwitches({ manage_payout_account: false, view_payments: true });
       const res = await post();
       expect(res.status).toBe(403);
       expect(mockRetrieveAccount).not.toHaveBeenCalled();

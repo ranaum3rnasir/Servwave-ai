@@ -20,16 +20,16 @@ import {
 // including `Request Payment`, which goes to the invoice LIST rather than to a
 // payment form, because that is where it goes today.
 //
-// Each item follows the same Create + Show pair as its Create New item (Roles &
+// Each item follows the same Create + View pair as its Create New item (Roles &
 // Permissions S02.25): the pair is READ from `quickCreateItems` by label, never
 // copied, so the two menus cannot drift apart. Request Payment creates nothing,
-// so it follows Show Invoices page alone.
-type Gate = Pick<QuickCreateItem, 'show'> & Partial<Pick<QuickCreateItem, 'action' | 'subject'>>;
+// so it follows View invoices alone.
+type Gate = Pick<QuickCreateItem, 'view'> & Partial<Pick<QuickCreateItem, 'action' | 'subject'>>;
 
 function sameAsCreateNew(label: string): Gate {
   const item = quickCreateItems.find((candidate) => candidate.label === label);
   if (!item) throw new Error(`No Create New item labelled "${label}"`);
-  return { action: item.action, subject: item.subject, show: item.show };
+  return { action: item.action, subject: item.subject, view: item.view };
 }
 
 const ITEMS: { label: string; to?: string; dialog?: 'estimate'; gate: Gate }[] = [
@@ -38,7 +38,7 @@ const ITEMS: { label: string; to?: string; dialog?: 'estimate'; gate: Gate }[] =
   { label: 'New Job', to: '/jobs/new', gate: sameAsCreateNew('New Job') },
   { label: 'New Task', to: '/tasks?action=new-task', gate: sameAsCreateNew('New Task') },
   { label: 'New Invoice', to: '/invoices/new', gate: sameAsCreateNew('New Invoice') },
-  { label: 'Request Payment', to: '/invoices', gate: { show: sameAsCreateNew('New Invoice').show } },
+  { label: 'Request Payment', to: '/invoices', gate: { view: sameAsCreateNew('New Invoice').view } },
 ];
 
 /**
@@ -51,10 +51,10 @@ const ITEMS: { label: string; to?: string; dialog?: 'estimate'; gate: Gate }[] =
  * e2e suite reads: the trigger is still `role="button"` named `New`, and each
  * item is still `role="menuitem"` with its exact label.
  *
- * Each item shows only when its Create ability and its page's Show switch are
+ * Each item shows only when its Create ability and its page's View switch are
  * both on (Roles & Permissions S02.25), and the "New" button is not drawn when
- * no item is left. Show is display only, so it is read from the person's own
- * switches (`useMySwitches`), and nothing is drawn until they have arrived.
+ * no item is left. It is read from the person's own switches
+ * (`useMySwitches`), and nothing is drawn until they have arrived.
  *
  * Destinations are LEGACY paths, not `v2Path`-prefixed: none of these six
  * targets is a page this module owns, and `preferV2Path` is the layout's job

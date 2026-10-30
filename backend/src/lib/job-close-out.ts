@@ -87,11 +87,20 @@ export interface CancelState {
 /**
  * What Mark Done needs to know about the job's money: what is owed as the server reads it now, and the amount the person
  * confirmed (null when they were not asked, or sent none). Both are whole cents, so no float is ever compared.
+ *
+ * `figureHidden` is true for a person without See prices (pre-PR review CR-1): they are never shown what is owed, so they
+ * confirm that money IS owed (`confirmedOwed`) instead of a figure, and no refusal to them names an amount. Closing with
+ * money owed is still a deliberate act for them: without that confirmation the move is refused, as for anyone.
  */
 export interface MarkDoneState {
   owedCents: number;
   confirmedCents: number | null;
+  figureHidden?: boolean;
+  confirmedOwed?: boolean;
 }
+
+/** The refusal for a confirmed amount that is no longer what is owed, to a person who is not shown the amount. */
+export const AMOUNT_CHANGED_MESSAGE = 'The amount owed on this job has changed. Check it and confirm again.';
 
 /**
  * What Finish review needs to know about the review itself: its version as the server reads it now, the version the
@@ -170,10 +179,17 @@ function decideMarkDone(input: { status: JobStatus; switches: CloseOutSwitches; 
   // Nobody closes a job over an amount nobody looked at: with no money facts the move is refused as unconfirmed.
   if (!markDone) return { allowed: false, kind: 'amount', reason: CONFIRM_AMOUNT_MESSAGE };
   if (markDone.owedCents > 0 && !switches.close_jobs_with_money_owed) return { allowed: false, kind: 'money_owed', reason: MONEY_OWED_MESSAGE };
-  if (markDone.owedCents > 0 && markDone.confirmedCents === null) return { allowed: false, kind: 'amount', reason: CONFIRM_AMOUNT_MESSAGE };
+  // A person without See prices confirms that money is owed, never a figure they were not shown (CR-1). Only they may.
+  const confirmedWithoutFigure = markDone.figureHidden === true && markDone.confirmedOwed === true && markDone.confirmedCents === null;
+  if (markDone.owedCents > 0 && markDone.confirmedCents === null && !confirmedWithoutFigure) {
+    return { allowed: false, kind: 'amount', reason: CONFIRM_AMOUNT_MESSAGE };
+  }
   // An amount the person confirmed must still be the amount owed (a payment may have landed since).
   if (markDone.confirmedCents !== null && markDone.confirmedCents !== markDone.owedCents) {
-    return { allowed: false, kind: 'amount', reason: `The amount owed on this job is now ${dollars(markDone.owedCents)}. Check it and confirm again.` };
+    const reason = markDone.figureHidden
+      ? AMOUNT_CHANGED_MESSAGE
+      : `The amount owed on this job is now ${dollars(markDone.owedCents)}. Check it and confirm again.`;
+    return { allowed: false, kind: 'amount', reason };
   }
   return { allowed: true, next: 'DONE' };
 }

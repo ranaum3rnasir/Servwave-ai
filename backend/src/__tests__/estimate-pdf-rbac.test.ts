@@ -80,8 +80,8 @@ describe('GET /api/estimates/:id/pdf — per-row RBAC (in-tenant cross-user pric
       .get(`/api/estimates/${PDF_FIXTURE_OWNED_BY_OTHER.id}/pdf`)
       .set(authHeader('sales'));
 
-    expect(res.status).toBe(403);
-    expect(res.body).toEqual({ error: 'Insufficient permissions' });
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Estimate not found' });
     expect(generateEstimatePdf).not.toHaveBeenCalled();
   });
 
@@ -150,7 +150,7 @@ describe('GET /api/estimates/:id/pdf — per-row RBAC (in-tenant cross-user pric
       .get(`/api/estimates/${PDF_FIXTURE_OWNED_BY_OTHER.id}/pdf`)
       .set(authHeader('technician'));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(generateEstimatePdf).not.toHaveBeenCalled();
   });
 
@@ -173,7 +173,7 @@ describe('GET /api/estimates/:id/pdf — per-row RBAC (in-tenant cross-user pric
 
     mockPrisma.estimate.findFirst.mockResolvedValue(null);
     const outsideRes = await request(app).get(`/api/estimates/${LEAD_LESS_FIXTURE.id}/pdf`).set(authHeader('sales'));
-    expect(outsideRes.status).toBe(403);
+    expect(outsideRes.status).toBe(404);
   });
 
   it('still 404s an unknown estimate id (own-check runs only after the row loads)', async () => {

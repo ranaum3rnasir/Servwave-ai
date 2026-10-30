@@ -26,7 +26,8 @@ import { orgPaymentCapabilities, paymentOptionsFor, storedMethodsOverride, tipPr
 import { exceedsPayableNow, handPaymentAboveBalanceMessage, payableNowCents, priceCheckout, processingBlocksHandPaymentMessage, type CheckoutMethod } from '../lib/checkout-pricing';
 import { generateInvoicePdf } from '../lib/pdf';
 import { invoicePdfSelect, toInvoiceForPdf } from '../lib/pdf/invoice-select';
-import { scopeWhereForReq, canAccessRow, canSeeCosts } from '../lib/permissions/enforce';
+import { ignorePriceQuery } from '../lib/permissions/prices';
+import { scopeWhereForReq, canAccessRow, canSeeCosts, canSeePrices } from '../lib/permissions/enforce';
 import { invoiceActionsFor } from '../lib/permissions/documentActions';
 import { invoiceDonePriceRefusal } from '../lib/permissions/jobLock';
 import { presentInvoiceDetail, isCustomerReadable, resolveTokenAnchor } from '../lib/permissions/customerContact';
@@ -95,6 +96,7 @@ import {
 } from '../lib/payment-ledger';
 import { LINE_DESCRIPTION_MAX } from '../lib/line-items';
 import { LONG_TEXT_MAX, VERY_LONG_TEXT_MAX } from '../lib/text-limits';
+import { publicLinkToken } from '../lib/publicLinkToken';
 
 function param(req: Request, name: string): string {
   return req.params[name] as string;
@@ -731,7 +733,10 @@ export async function create(req: Request, res: Response) {
       },
     });
 
-    if (!job) return res.status(404).json({ error: 'Job not found' });
+    // A job out of the person's reach answers exactly like a missing one (spec story 47), before anything about it (its
+    // plan link, its existing invoice) is said. Create invoices reaches a job the person can open: the route already
+    // required `create Invoice` via canDo (subject-level only), and the person's Jobs scope decides which jobs are theirs.
+    if (!job || !(await canAccessRow(req, 'Job', prisma.job, job.id))) return res.status(404).json({ error: 'Job not found' });
     // Every job status can be invoiced (Spec B1) — cancellation is no longer terminal, so a
     // cancelled job that gets revived, or one cancelled after work was genuinely done, still bills.
     // Service-plan visit-jobs are non-billable: the plan was paid once upfront via its kind=PLAN
@@ -753,13 +758,6 @@ export async function create(req: Request, res: Response) {
       return res.status(409).json({
         error: `This job already has an invoice (${activeInvoice.invoice_number}). Void it first or edit the existing one.`,
       });
-    }
-
-    // Create invoices reaches a job the person can open: the route already required `create Invoice` via canDo
-    // (subject-level only), and the person's Jobs scope decides which jobs are theirs (Attached covers the crew, Sold By
-    // and Dispatcher). No role name is read.
-    if (!(await canAccessRow(req, 'Job', prisma.job, job.id))) {
-      return res.status(403).json({ error: 'Insufficient permissions' });
     }
 
     // Resolve the invoice's OWNED lines + totals. SRVW-85 precedence, three-way:
@@ -973,8 +971,8 @@ async function createStandaloneInvoice(req: Request, res: Response) {
     if (body.unapplied_capture_id) {
       if (!req.ability?.can('refund', 'Invoice')) return res.status(403).json({ error: 'You do not have permission to record this payment.' });
       capture = await loadCapture(req, body.unapplied_capture_id.toLowerCase());
-      if (!capture) return res.status(404).json({ error: 'Payment not found' });
-      if (!(await canActOnCapture(req, capture.id))) return res.status(403).json({ error: 'Insufficient permissions' });
+      // A payment item the person cannot act on answers like a missing one (spec story 47).
+      if (!capture || !(await canActOnCapture(req, capture.id))) return res.status(404).json({ error: 'Payment not found' });
       assertAttachable(capture, 'PAYMENT');
       payer = await readCapturePayer(capture);
       await assertNoUncountedRefund(capture);
@@ -1075,9 +1073,9 @@ async function createStandaloneInvoice(req: Request, res: Response) {
       // The same booking attach uses, under the invoice and item locks: the whole amount goes on, PAID when the total is
       // exactly the payment, PARTIAL when larger. Re-run in full by the number-collision retry (a fresh transaction).
       const booked = await bookCaptureOnInvoice(tx, {
-        organizationId: req.user!.organization_id, capture, invoiceId: created.id, payer, actor,
+        organizationId: req.user!.organization_id, capture, invoiceId: created.id, payer, actor, figures: canSeePrices(req),
         note: (number) => `Invoice ${number} created, payment recorded`,
-        history: (number, amount, who) => `Payment of ${amount} from payments needing attention recorded on the new invoice ${number} by ${who}`,
+        history: (number, who) => `Payment from payments needing attention recorded on the new invoice ${number} by ${who}`,
       });
       return { invoice: await tx.invoice.findFirstOrThrow({ where: { id: created.id, organization_id: req.user!.organization_id }, select: invoiceDetailSelect }), booked };
     }), { label: 'invoice.create' });
@@ -1174,6 +1172,7 @@ export async function buildInvoiceListWhere(req: Request): Promise<{ where: Reco
 
 export async function list(req: Request, res: Response) {
   try {
+    ignorePriceQuery(req);
     const { page, limit, skip } = parsePagination(req.query);
 
     // SRVW-89 - hoisted above buildInvoiceListWhere/where/scopeWhere: parseSortParams is pure
@@ -1330,6 +1329,7 @@ const EXPORT_ROW_CAP = 50_000;
  */
 export async function exportAll(req: Request, res: Response) {
   try {
+    ignorePriceQuery(req);
     const { where } = await buildInvoiceListWhere(req);
     const invoices = await prisma.invoice.findMany({
       where,
@@ -1362,8 +1362,10 @@ export async function getById(req: Request, res: Response) {
     });
 
     if (!invoice) return res.status(404).json({ error: 'Invoice not found' });
+    // An invoice outside the person's reach answers exactly like one that does not exist, so the answer never
+    // confirms the id is real (P7). A person with View invoices off is refused at the route, before this.
     if (!(await canAccessRow(req, 'Invoice', prisma.invoice, param(req, 'id')))) {
-      return res.status(403).json({ error: 'Not authorized' });
+      return res.status(404).json({ error: 'Invoice not found' });
     }
 
     // SERV10X-59 — derived, not persisted: true when a material edit landed strictly after the
@@ -1387,7 +1389,7 @@ export async function getById(req: Request, res: Response) {
     const tags = await loadTagsForEntity(req, 'INVOICE', invoice.id);
 
     // What this person may do on this invoice, asked of the record as it stands: the invoice page draws a button only
-    // for a listed action (M3), and the routes behind the buttons ask the same switches and the creator rule.
+    // for a listed action (M3), and the routes behind the buttons ask the same switches.
     const actions = await invoiceActionsFor(req, invoice.id);
     // The words beside the closed line, scope, discount and tax controls when the invoice belongs to a Done job (S06.19), else null.
     const price_edit_closed_reason = await invoiceDonePriceRefusal(req, invoice.id);
@@ -1423,7 +1425,7 @@ export async function update(req: Request, res: Response) {
     const { due_date, labor_hours, overhead_mode, overhead_value, payment_methods_override, allow_partial_payment } = req.body;
 
     // R3b (2026-07-21) — labor_hours/overhead_mode/overhead_value are staff-only cost-model
-    // inputs (D2/D8). A requester without See financial data (canSeeCosts) must
+    // inputs (D2/D8). A requester without See costs (canSeeCosts) must
     // not be able to blindly set them either — mirrors Estimate's identical write-guard.
     if (
       (labor_hours !== undefined || overhead_mode !== undefined || overhead_value !== undefined)
@@ -1768,6 +1770,9 @@ async function sendInvoiceInternal(
   body: z.infer<typeof sendInvoiceSchema>,
   sender: HandSender,
 ): Promise<InvoiceSendResult> {
+  // Reach first, before anything about the invoice is read (spec story 47): out of reach answers like a missing invoice,
+  // for the single route and the bulk send alike, so the bulk answer is not an existence or status oracle.
+  if (!(await canAccessRow(req, 'Invoice', prisma.invoice, id))) return { ok: false, status: 404, error: 'Invoice not found' };
   const invoice = await prisma.invoice.findUnique({
     where: { id, ...tenantWhere(req) },
     select: invoiceDetailSelect,
@@ -1950,6 +1955,9 @@ async function resendInvoiceInternal(
   body: z.infer<typeof sendInvoiceSchema>,
   sender: HandSender,
 ): Promise<InvoiceSendResult> {
+  // Reach first, before anything about the invoice is read (spec story 47): out of reach answers like a missing invoice,
+  // for the single route and the bulk send alike, so the bulk answer is not an existence or status oracle.
+  if (!(await canAccessRow(req, 'Invoice', prisma.invoice, id))) return { ok: false, status: 404, error: 'Invoice not found' };
   const invoice = await prisma.invoice.findUnique({
     where: { id, ...tenantWhere(req) },
     select: invoiceDetailSelect,
@@ -2699,8 +2707,10 @@ export async function recordPayment(req: Request, res: Response) {
           entity_type: 'INVOICE',
           entity_id: param(req, 'id'),
           event_type: 'PAYMENT_RECEIVED',
-          description: `Payment of $${amount.toFixed(2)} received via ${methodLabel(method)}`
-            + (tip_amount > 0 ? ` (plus $${Number(tip_amount).toFixed(2)} tip)` : ''),
+          description: `Payment received via ${methodLabel(method)}`
+            + (tip_amount > 0 ? ' (plus a tip)' : ''),
+          // The figure is on the record, behind See prices (the history route leaves `amount` out for anyone without it).
+          metadata: { amount, ...(tip_amount > 0 ? { tip_amount: Number(tip_amount) } : {}) },
           created_by: req.user?.id,
         },
       });
@@ -2755,7 +2765,8 @@ export async function recordPayment(req: Request, res: Response) {
             entity_type: 'ESTIMATE',
             entity_id: est.id,
             event_type: 'DEPOSIT_PAID',
-            description: `Deposit of $${amount.toFixed(2)} paid via ${method} for estimate ${est.estimate_number}`,
+            description: `Deposit paid via ${method} for estimate ${est.estimate_number}`,
+            metadata: { amount },
             created_by: req.user?.id,
           },
         });
@@ -2883,8 +2894,9 @@ export async function recordPayment(req: Request, res: Response) {
 // 2026-10-06): it shadowed the defaults the owner saves.
 export async function getPublic(req: Request, res: Response) {
   try {
-    const token = req.query.token as string;
-    if (!token) return res.status(400).json({ error: 'Token required' });
+    // N0: only a plain-text token opens the link; an object or a list would be a database filter.
+    const token = publicLinkToken(req);
+    if (!token) return res.status(404).json({ error: 'Invoice not found' });
 
     const invoice = await prisma.invoice.findFirst({
       where: { id: param(req, 'id'), public_token: token },
@@ -3291,8 +3303,9 @@ export function depositHoldReason(
 // metadata.invoiceId → the webhook invoice-payment branch records the Payment.
 export async function createPublicCheckout(req: Request, res: Response) {
   try {
-    const token = req.query.token as string;
-    if (!token) return res.status(400).json({ error: 'Token required' });
+    // N0: only a plain-text token opens the link; an object or a list would be a database filter.
+    const token = publicLinkToken(req);
+    if (!token) return res.status(404).json({ error: 'Invoice not found' });
 
     const parsedBody = publicCheckoutSchema.safeParse(req.body ?? {});
     if (!parsedBody.success) {
@@ -3803,7 +3816,7 @@ export async function refundInvoice(req: Request, res: Response) {
           entity_type: 'INVOICE',
           entity_id: invoice.id,
           event_type: 'INVOICE_REFUNDED',
-          description: `Invoice ${invoice.invoice_number} refunded $${amount.toFixed(2)} (${reason_category})`,
+          description: `Invoice ${invoice.invoice_number} refunded (${reason_category})`,
           metadata: { source: 'in_app', refund_id: refundRowId, amount, reason_category },
           created_by: req.user?.id,
         },
@@ -4160,7 +4173,7 @@ export async function credit(req: Request, res: Response) {
             entity_type: 'INVOICE',
             entity_id: invoice.id,
             event_type: 'CREDIT_APPLIED',
-            description: `Credit of $${creditNow.toFixed(2)} applied to invoice ${invoice.invoice_number}`,
+            description: `Credit applied to invoice ${invoice.invoice_number}`,
             metadata: { amount: creditNow, reason, category: category ?? null },
             created_by: req.user?.id,
           },
@@ -4199,7 +4212,7 @@ export async function credit(req: Request, res: Response) {
               entity_type: 'INVOICE',
               entity_id: invoice.id,
               event_type: 'CREDIT_APPLIED',
-              description: `Write-off credit of $${refundPart.toFixed(2)} recorded for the cash give-back on invoice ${invoice.invoice_number}`,
+              description: `Write-off credit recorded for the cash give-back on invoice ${invoice.invoice_number}`,
               metadata: { amount: refundPart, reason, category: 'REFUND_WRITE_OFF' },
               created_by: req.user?.id,
             },
@@ -4242,8 +4255,8 @@ export async function credit(req: Request, res: Response) {
             entity_id: invoice.id,
             event_type: 'INVOICE_REFUNDED',
             description: reopenBalance
-              ? `Invoice ${invoice.invoice_number} give-back refund $${refundPart.toFixed(2)} - balance reopened to $${reopenedDue.toFixed(2)}`
-              : `Invoice ${invoice.invoice_number} give-back refund $${refundPart.toFixed(2)}`,
+              ? `Invoice ${invoice.invoice_number} give-back refund - balance reopened`
+              : `Invoice ${invoice.invoice_number} give-back refund`,
             metadata: { source: 'in_app', amount: refundPart, give_back: true, ...(reopenBalance ? { reopened: true } : {}) },
             created_by: req.user?.id,
           },
@@ -4445,8 +4458,8 @@ export async function cancelBankPayment(req: Request, res: Response) {
           entity_type: 'INVOICE',
           entity_id: invoice.id,
           event_type: 'PAYMENT_CANCELED',
-          description: `Bank payment of $${Number(payment.amount).toFixed(2)} canceled before it cleared`,
-          metadata: { payment_id: payment.id },
+          description: `Bank payment canceled before it cleared`,
+          metadata: { payment_id: payment.id, amount: Number(payment.amount) },
           created_by: req.user!.id,
         },
       });
@@ -4564,7 +4577,7 @@ export async function voidPayment(req: Request, res: Response) {
           entity_type: 'INVOICE',
           entity_id: invoice.id,
           event_type: 'PAYMENT_VOIDED',
-          description: `Payment of $${reopenAmount.toFixed(2)} voided on invoice ${invoice.invoice_number} (${void_category})`,
+          description: `Payment voided on invoice ${invoice.invoice_number} (${void_category})`,
           metadata: { payment_id: payment.id, void_category, reason, amount: reopenAmount },
           created_by: req.user?.id,
         },
@@ -4592,7 +4605,7 @@ export async function voidPayment(req: Request, res: Response) {
               entity_type: 'INVOICE',
               entity_id: target.id,
               event_type: 'DEPOSIT_CREDIT_REVERSED',
-              description: `Deposit credit of $${target.amount.toFixed(2)} reversed on invoice ${target.invoice_number}`,
+              description: `Deposit credit reversed on invoice ${target.invoice_number}`,
               metadata: { deposit_invoice_id: invoice.id, amount: target.amount },
               created_by: req.user?.id,
             },
@@ -4688,8 +4701,8 @@ export async function systemVoidPaymentForChargeback(
       entity_id: invoice.id,
       event_type: 'CHARGEBACK',
       description: bankReturn
-        ? `The bank returned the payment of $${reopenAmount.toFixed(2)} on invoice ${invoice.invoice_number}; payment voided, ${invoiceClosed ? 'the invoice stays voided' : 'balance reopened'}`
-        : `Chargeback lost — payment of $${reopenAmount.toFixed(2)} voided on invoice ${invoice.invoice_number}; ${invoiceClosed ? 'the invoice stays voided' : 'balance reopened'}`,
+        ? `The bank returned the payment on invoice ${invoice.invoice_number}; payment voided, ${invoiceClosed ? 'the invoice stays voided' : 'balance reopened'}`
+        : `Chargeback lost — payment voided on invoice ${invoice.invoice_number}; ${invoiceClosed ? 'the invoice stays voided' : 'balance reopened'}`,
       metadata: { payment_id: payment.id, stripe_dispute_id: disputeId, amount: reopenAmount },
     },
   });
@@ -4716,7 +4729,7 @@ export async function systemVoidPaymentForChargeback(
           entity_type: 'INVOICE',
           entity_id: target.id,
           event_type: 'DEPOSIT_CREDIT_REVERSED',
-          description: `Deposit credit of $${target.amount.toFixed(2)} reversed on invoice ${target.invoice_number} (chargeback)`,
+          description: `Deposit credit reversed on invoice ${target.invoice_number} (chargeback)`,
           metadata: { deposit_invoice_id: invoice.id, amount: target.amount },
         },
       });
@@ -4762,7 +4775,7 @@ export const getPdf = async (req: Request, res: Response): Promise<void> => {
     // response does for a requester who cannot read the customer (mirrors estimate.controller.ts's
     // getPdf, which applies presentEstimateDetail the same way). getPublicPdf below is untouched —
     // it renders on behalf of the organization for the customer, not a requester.
-    // A person without See financial data gets the same document with the scopes' internal cost gone,
+    // A person without See costs gets the same document with the scopes' internal cost gone,
     // so a cost never reaches the renderer, whatever a template chooses to draw.
     const pdfSource = presentInvoiceDetail(req, stripInvoiceCost(invoice, req));
     const buffer = await generateInvoicePdf(
@@ -4785,7 +4798,7 @@ export const getPdf = async (req: Request, res: Response): Promise<void> => {
 export const getPublicPdf = async (req: Request, res: Response): Promise<void> => {
   try {
     const id = param(req, 'id');
-    const token = req.query.token as string | undefined;
+    const token = publicLinkToken(req);
     if (!token) {
       res.status(404).json({ error: 'Invoice not found' });
       return;

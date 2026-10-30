@@ -147,9 +147,17 @@ describe('a principal with `manage_lines Job` but NOT `update Job`', () => {
 });
 
 describe('a principal with `update Job` but Add notes turned off', () => {
-  it('is refused on POST /:id/notes', async () => {
+  // A note is the job's own data (P10): the job's Edit adds one too, beside the Add notes switch.
+  it('is let through on POST /:id/notes by the job\'s Edit', async () => {
     mockAuthAs('technician');
     mockRoleSwitches({ edit_jobs: true, add_notes: false });
+    const res = await send(NOTE_ROUTE, 'technician');
+    expect(res.status).not.toBe(403);
+  });
+
+  it('is refused on POST /:id/notes with neither Add notes nor Edit jobs', async () => {
+    mockAuthAs('technician');
+    mockRoleSwitches({ edit_jobs: false, create_jobs: false, add_notes: false });
     const res = await send(NOTE_ROUTE, 'technician');
     expect(res.status).toBe(403);
   });

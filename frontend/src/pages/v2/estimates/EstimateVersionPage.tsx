@@ -18,6 +18,7 @@ import api from '@/lib/axios';
 import { Card } from '@/components/ui/card';
 import { Heading } from '@/components/ui/heading';
 import { EstimateDocumentView } from '@/components/estimates/EstimateDocumentView';
+import { useCanSeePrices } from '@/contexts/AbilityContext';
 import { customerDisplayName } from '@/lib/customer-name';
 import { extractApiError } from '@/lib/utils';
 import type { EstimateDocumentModel } from '@/lib/estimate-document-view';
@@ -64,6 +65,8 @@ export default function EstimateVersionPage() {
   // version has loaded — before that, the layout's own fallback ("Estimates") is exactly as
   // good a guess as this page could make, and is what it fell back to before this fix, too.
   useRecordVisit('estimates', data ? `${data.estimate_number} · Version ${data.version}` : undefined);
+  // A person without See prices is sent the version with no figure in it, so it is drawn with none (P11).
+  const showPrices = useCanSeePrices();
 
   if (error) {
     return (
@@ -118,6 +121,7 @@ export default function EstimateVersionPage() {
         companyName={doc.customer?.company_name}
         document={doc.view}
         taxRate={doc.view.taxRate}
+        showPrices={showPrices}
       />
     </div>
   );

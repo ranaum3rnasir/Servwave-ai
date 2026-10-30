@@ -5,7 +5,8 @@ import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { supabaseAdmin } from '../lib/supabase';
 import { tenantWhere } from '../lib/tenant';
-import { matchByPhone } from '../lib/comms-identity';
+import { findCustomerToContact, leadReachWhere } from '../lib/permissions/targetReach';
+import { matchByPhoneInReach } from '../lib/communication/phoneMatchInReach';
 // The Request-flavoured hasFeature (fails closed on a missing org_features),
 // NOT lib/entitlements/resolve.ts's OrgEntitlementSource one - this reads the
 // entitlements already resolved onto req.user by authenticate.
@@ -19,7 +20,7 @@ import {
   textsInSectionScopeForReq,
   emailsInSectionWhereForReq,
   emailReadWhereForReq,
-  emailThreadReadWhereForReq,
+  emailThreadSectionWhereForReq,
   emailThreadReachWhereForReq,
 } from '../lib/communication/communicationScope';
 import { needsReviewItemWhereForReq, needsReviewListWhereForReq } from '../lib/communication/needsReview';
@@ -38,6 +39,7 @@ import { attachCallerUnread as attachCallerUnreadSms } from './comm-threads.cont
 import { sendComposedEmail, dispatchFailureStatus, orgSendingIdentity, EmailDispatchResult } from '../lib/email';
 import { parseReplyAddress, prepareReplyToken, persistReplyToken, replyAddressFor, resolveReplyToken } from '../lib/reply-token';
 import { startedConversationData, takeConversationOnFirstReply } from '../lib/mailbox/conversations';
+import { readersOfConversation } from '../lib/communication/conversationReaders';
 import { ADDRESS_NEEDED_MESSAGE, NOT_YOUR_ADDRESS_MESSAGE, resolveHandSender } from '../lib/mailbox/hand-sender';
 import { formatSizeLabel, sanitizeEmailHtml } from '../lib/email-html';
 import { sniffMatchesDeclared } from '../lib/file-sniff';
@@ -54,6 +56,8 @@ import {
 import { ALLOWED_MIME_TYPES, ALLOWED_TYPES_LABEL, checkEntityAccess } from './attachment.controller';
 import { reconsiderLeadLeftBehind, recordLeadContactOnLink, recordLeadOutboundContact } from '../services/lead-contact.service';
 import { VERY_LONG_TEXT_MAX } from '../lib/text-limits';
+import { MAX_TEAMMATE_RECIPIENTS, teammateAddresses } from '../lib/users/teammateAddresses';
+import { canReadCustomerById } from '../lib/permissions/customerScope';
 
 // Guards a caller-supplied id before it reaches a `@db.Uuid` column. Prisma
 // raises P2023 on a malformed UUID instead of matching nothing, so a lookup
@@ -80,7 +84,15 @@ export const sendEmailSchema = z.object({
   // `account` is deliberately NOT accepted here - it is server-owned. See
   // HUMAN_COMPOSED_ACCOUNT below for why a client must never be able to set it.
   // Zod strips unknown keys, so a client still posting one is ignored, not 400'd.
-  to: z.string().min(1, 'Recipient is required'),
+  // A typed address list. Optional only because a send may instead (or also) name teammates by id below.
+  to: z.string().optional(),
+  // Ruling Q3 (b1, ticket 29): teammates named BY ID, resolved to their addresses on the server inside the sender's
+  // company, so a non-Admin's team list never has to carry anyone's address. A JSON body sends an array; the inbox's
+  // multipart form sends one comma-separated field.
+  to_user_ids: z.preprocess(
+    (val) => (typeof val === 'string' ? val.split(',').map((v) => v.trim()).filter(Boolean) : val),
+    z.array(z.string().uuid('to_user_ids must be valid ids')).max(MAX_TEAMMATE_RECIPIENTS),
+  ).optional(),
   cc: z.string().optional(),
   bcc: z.string().optional(),
   subject: z.string().max(998).optional(),
@@ -137,7 +149,7 @@ export const sendEmailSchema = z.object({
   // does not fire (see sendEmail's own comment for why that is a client
   // integration gap, not a policy toggle).
   composing_since: z.string().datetime({ offset: true }).optional(),
-});
+}).refine((b) => Boolean(b.to?.trim()) || (b.to_user_ids?.length ?? 0) > 0, { message: 'Recipient is required', path: ['to'] });
 
 /**
  * The `emails.account` value for a message a PERSON composed in the app, as
@@ -552,7 +564,7 @@ export async function createWhatsAppChat(req: Request, res: Response) {
     let explicitLeadId: string | null = null;
     if (req.body.lead_id) {
       const lead = await prisma.lead.findFirst({
-        where: { id: req.body.lead_id, ...tenantWhere(req) },
+        where: await leadReachWhere(req, req.body.lead_id),
       });
       if (!lead) {
         res.status(404).json({ error: 'Lead not found' });
@@ -561,7 +573,8 @@ export async function createWhatsAppChat(req: Request, res: Response) {
       explicitLeadId = lead.id;
     }
 
-    const match = await matchByPhone(prisma, orgId, req.body.phone);
+    // Re-audit P2-1: the number's customer only when the person can open it; otherwise the chat is filed on nobody.
+    const match = await matchByPhoneInReach(req, req.body.phone);
 
     const chat = await prisma.whatsAppChat.create({
       data: {
@@ -754,7 +767,7 @@ function applyAssignmentFilter(where: Record<string, unknown>, req: Request, vie
 
 export async function listEmails(req: Request, res: Response) {
   try {
-    // The Email page follows Communication scope (M11): "All" lists every email conversation, "Linked to me" the
+    // The Email page follows Communication scope (M11): "All" lists every email conversation, Attached the
     // ones in a mailbox the person holds. A job, lead or customer tie plays no part here; it only decides whether
     // a single message opens (getEmail).
     const where: any = {
@@ -1067,6 +1080,12 @@ function mapComposeEmailFailure(
  * row when there is no thread to reply to and submits it, so every fresh
  * compose 500'd in production while every reply (a real UUID) worked.
  */
+/** The customer, when the signed-in person can open it; otherwise null, as if no customer had been found (re-audit N9). */
+async function customerInReach(req: Request, customerId: string | null): Promise<string | null> {
+  if (!customerId) return null;
+  return (await canReadCustomerById(req, customerId)) ? customerId : null;
+}
+
 async function resolveVisibleThreadId(req: Request, claimedThreadId: string): Promise<string | null> {
   if (!UUID_RE.test(claimedThreadId)) return null;
 
@@ -1124,7 +1143,11 @@ export async function sendEmail(req: Request, res: Response) {
     // the list does. The route cannot say so (it also serves the job, lead and customer tabs' compose, which need no
     // section), so the line is drawn here: a reply, or a send that names no job, lead or customer, is the Email page's.
     const fromARecordTab = Boolean(req.body.job_id || req.body.lead_id || req.body.customer_id);
-    if ((req.body.thread_id || !fromARecordTab) && !req.ability?.can('access_inbox', 'Communication')) {
+    // M7 (ticket 36): Show Email closes the same mailbox, so it is asked for here too.
+    if (
+      (req.body.thread_id || !fromARecordTab) &&
+      !(req.ability?.can('access_inbox', 'Communication') && req.ability?.can('show_email', 'Communication'))
+    ) {
       res.status(403).json({ error: 'Insufficient permissions' });
       return;
     }
@@ -1141,6 +1164,18 @@ export async function sendEmail(req: Request, res: Response) {
     if (!sender.ok) {
       res.status(409).json({ error: ADDRESS_NEEDED_MESSAGE, code: 'ADDRESS_NEEDED' });
       return;
+    }
+
+    // Ruling Q3 (b1, ticket 29): teammates named by id become addresses here, inside the sender's company only, before
+    // anything is looked up or sent. An id that is not an active person of this company refuses the whole send, 404,
+    // and the answer names no address. From here on the send is the ordinary address send it always was.
+    if (req.body.to_user_ids?.length) {
+      const addresses = await teammateAddresses(prisma, orgId, req.body.to_user_ids);
+      if (!addresses) {
+        res.status(404).json({ error: 'Recipient not found' });
+        return;
+      }
+      req.body.to = [req.body.to?.trim(), ...addresses].filter(Boolean).join(', ');
     }
 
     // Communication ↔ Jobs (spec §7): stamp job attribution at origin, under the
@@ -1163,10 +1198,7 @@ export async function sendEmail(req: Request, res: Response) {
 
     // Attach-by-origin: a send composed from a customer page stamps that customer.
     if (req.body.customer_id) {
-      const customer = await prisma.customer.findUnique({
-        where: { id: req.body.customer_id, ...tenantWhere(req) },
-        select: { id: true },
-      });
+      const customer = await findCustomerToContact(req, req.body.customer_id);
       if (!customer) {
         res.status(404).json({ error: 'Customer not found' });
         return;
@@ -1209,7 +1241,10 @@ export async function sendEmail(req: Request, res: Response) {
     // With neither, a hand-written email still belongs to the customer its recipient is (PRD 10, S10.20): linked on the recipient's
     // address when exactly one customer has it, so the customer's tab lists it with no linking by hand. Never a job or a lead.
     // A reply that none of these places takes the customer its conversation is already linked to (below, once the conversation is resolved).
-    const placedCustomerId: string | null = req.body.customer_id ?? recordCustomerId ?? await customerOfRecipients(prisma, orgId, req.body.to);
+    // The recipient's customer is filed only when the sender can open it (re-audit N9): an email is never put on, and the answer
+    // never names, a customer outside the sender's customer reach.
+    const placedCustomerId: string | null = req.body.customer_id ?? recordCustomerId
+      ?? await customerInReach(req, await customerOfRecipients(prisma, orgId, req.body.to));
 
     // Multipart attachments (multer.array('files', ...), comm-email.routes.ts).
     // Sniffed BEFORE the send so a bad file 400s without ever calling Resend or
@@ -1260,7 +1295,9 @@ export async function sendEmail(req: Request, res: Response) {
       distinct: ['customer_id'],
       take: 2,
     });
-    const customerId: string | null = placedCustomerId ?? (threadCustomers.length === 1 ? threadCustomers[0]!.customer_id : null);
+    // The same customer reach as the recipient's customer above (N9): a conversation's customer the sender cannot open is not filed.
+    const customerId: string | null = placedCustomerId
+      ?? (threadCustomers.length === 1 ? await customerInReach(req, threadCustomers[0]!.customer_id) : null);
 
     if (resolvedThreadId && req.body.composing_since) {
       const newerMessages = await threadChangedSince(req, resolvedThreadId, req.body.composing_since);
@@ -2062,10 +2099,10 @@ export async function markThreadUnread(req: Request, res: Response) {
 /**
  * Email slice 8b - conversation assignment + archive/snooze. All three share
  * the exact same scoping shape: EmailThread carries no job_id/lead_id/
- * customer_id of its own, so visibility rides `emailThreadReadWhereForReq` -
- * the to-many "at least one child email is readable" filter built from the
- * same Communication scope rule as every other email read (communicationScope.ts),
- * not a second, competing gate. `updateMany` + refetch (rather
+ * customer_id of its own, so the right to change it rides `emailThreadSectionWhereForReq`:
+ * the conversation itself is the person's (its mailbox, or a record conversation whose record they open),
+ * by the same Communication scope rule the Email list uses (communicationScope.ts), not a second,
+ * competing gate. Reading one message of it is not enough (re-audit N16). `updateMany` + refetch (rather
  * than a bare `.update`) mirrors reassignEmailJob just above: atomic, and the
  * refetch can never be broader than the write that preceded it.
  */
@@ -2081,7 +2118,9 @@ async function updateEmailThread(req: Request, res: Response, data: any): Promis
     return;
   }
 
-  const scope = { ...tenantWhere(req), ...(await emailThreadReadWhereForReq(req, req.params.id as string)) };
+  // The conversation as a whole must be the person's (N16): in a mailbox they hold or read, or a record conversation they can
+  // open. Reading one of its messages is not enough to change it for everyone else who reads it.
+  const scope = { ...tenantWhere(req), ...(await emailThreadSectionWhereForReq(req, req.params.id as string)) };
   const result = await prisma.emailThread.updateMany({
     where: { id: req.params.id as string, ...scope },
     data,
@@ -2097,15 +2136,39 @@ async function updateEmailThread(req: Request, res: Response, data: any): Promis
   res.json({ thread: mapEmailThread(updated) });
 }
 
+/**
+ * A conversation is assigned only to someone who can reach it (finding M1, ticket 31): the assignee must open at least one
+ * of its messages by the same rule every email read goes through (`readersOfConversation`, which runs
+ * `emailReadWhere` for them). Being assigned opens nothing more: assignment is not part of that rule.
+ *
+ * The caller's own reach is asked FIRST, so a person who cannot open the conversation gets the same "not found" as for
+ * one that does not exist, whoever they name, and never learns what a colleague can reach.
+ */
 export async function assignEmailThread(req: Request, res: Response) {
   try {
+    const threadId = req.params.id as string;
+    if (!UUID_RE.test(threadId) || !(await prisma.emailThread.findFirst({
+      where: { id: threadId, ...tenantWhere(req), ...(await emailThreadSectionWhereForReq(req, threadId)) },
+      select: { id: true },
+    }))) {
+      res.status(404).json({ error: 'Thread not found' });
+      return;
+    }
     if (req.body.user_id != null) {
       const assignee = await prisma.user.findFirst({
         where: { id: req.body.user_id, ...tenantWhere(req) },
-        select: { id: true },
+        select: {
+          id: true, role: true, organization_id: true, department_id: true, location_id: true,
+          custom_role_id: true, is_admin: true, custom_role: { select: { key: true } },
+        },
       });
       if (!assignee) {
         res.status(404).json({ error: 'User not found' });
+        return;
+      }
+      const readers = await readersOfConversation([assignee], 'email', threadId, req.user!.organization_id);
+      if (!readers.has(assignee.id)) {
+        res.status(422).json({ error: 'This person cannot open this conversation.', code: 'ASSIGNEE_CANNOT_REACH' });
         return;
       }
     }
@@ -2182,7 +2245,9 @@ export async function getUnreadCounts(req: Request, res: Response) {
 
     const wantsSms = hasFeature(req, 'phone');
     const wantsWhatsApp = hasFeature(req, 'phone') && req.user?.org_is_demo === true;
-    const wantsEmail = hasFeature(req, 'email');
+    // M7 (ticket 36): a person whose Show Email is off cannot open the Email page, so its count leaves their badge (it is 0, never
+    // the volume of mail they may not open).
+    const wantsEmail = hasFeature(req, 'email') && req.ability?.can('show_email', 'Communication') === true;
     // Email unread follows Communication scope like the Email page it badges, so it counts what that page lists.
     const emailScope = wantsEmail ? await emailsInSectionWhereForReq(req) : {};
     // The same goes for texts: the Text page's unread count is the conversations holding an unread message of the person's.

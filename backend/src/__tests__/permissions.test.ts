@@ -67,7 +67,7 @@ describe('substituteConditions', () => {
 
 describe('defineAbilityFor', () => {
   it('admin gets manage all', () => {
-    const ability = defineAbilityFor({ id: 'u1', role: 'ADMIN' }, []);
+    const ability = defineAbilityFor({ is_admin: true, id: 'u1', role: 'ADMIN' }, []);
     expect(ability.can('read', 'Lead')).toBe(true);
     expect(ability.can('delete', 'Invoice')).toBe(true);
     expect(ability.can('refund', 'Invoice')).toBe(true);
@@ -76,7 +76,7 @@ describe('defineAbilityFor', () => {
   });
 
   it('admin can force_purge / archive / anonymize Customer (entity-redesign §10)', () => {
-    const ability = defineAbilityFor({ id: 'u1', role: 'ADMIN' }, []);
+    const ability = defineAbilityFor({ is_admin: true, id: 'u1', role: 'ADMIN' }, []);
     expect(ability.can('force_purge', 'Customer')).toBe(true);
     expect(ability.can('archive', 'Customer')).toBe(true);
     expect(ability.can('anonymize', 'Customer')).toBe(true);
@@ -86,19 +86,19 @@ describe('defineAbilityFor', () => {
     expect(isCatalogEntry('delete', 'Lead')).toBe(true);
 
     // ADMIN — manage all
-    const admin = defineAbilityFor({ id: 'a1', role: 'ADMIN' }, []);
+    const admin = defineAbilityFor({ is_admin: true, id: 'a1', role: 'ADMIN' }, []);
     expect(admin.can('delete', 'Lead')).toBe(true);
 
     // DISPATCHER — unconditional delete Lead grant
     const dispatcher = defineAbilityFor(
-      { id: 'd1', role: 'DISPATCHER' },
+      { is_admin: false, id: 'd1', role: 'DISPATCHER' },
       DEFAULT_GRANTS.filter(g => g.role === 'DISPATCHER'),
     );
     expect(dispatcher.can('delete', 'Lead')).toBe(true);
 
     // SALES — own-scoped via OWN_LEAD: own lead yes, another's no
     const sales = defineAbilityFor(
-      { id: 'sales-user', role: 'SALES' },
+      { is_admin: false, id: 'sales-user', role: 'SALES' },
       DEFAULT_GRANTS.filter(g => g.role === 'SALES'),
     );
     expect(sales.can('delete', subject('Lead', { lead_assignees: [{ user_id: 'sales-user' }] }) as any)).toBe(true);
@@ -106,26 +106,26 @@ describe('defineAbilityFor', () => {
 
     // TECHNICIAN — no delete Lead grant
     const tech = defineAbilityFor(
-      { id: 't1', role: 'TECHNICIAN' },
+      { is_admin: false, id: 't1', role: 'TECHNICIAN' },
       DEFAULT_GRANTS.filter(g => g.role === 'TECHNICIAN'),
     );
     expect(tech.can('delete', 'Lead')).toBe(false);
   });
 
   it('deny-by-default for empty grants', () => {
-    const ability = defineAbilityFor({ id: 'u1', role: 'SALES' }, []);
+    const ability = defineAbilityFor({ is_admin: false, id: 'u1', role: 'SALES' }, []);
     expect(ability.can('read', 'Lead')).toBe(false);
   });
 
   it('grants unconditional action', () => {
-    const ability = defineAbilityFor({ id: 'u1', role: 'SALES' }, [
+    const ability = defineAbilityFor({ is_admin: false, id: 'u1', role: 'SALES' }, [
       { action: 'read', subject: 'Estimate' },
     ]);
     expect(ability.can('read', 'Estimate')).toBe(true);
   });
 
   it('substitutes {{userId}} in conditions', () => {
-    const ability = defineAbilityFor({ id: 'user-42', role: 'SALES' }, [
+    const ability = defineAbilityFor({ is_admin: false, id: 'user-42', role: 'SALES' }, [
       { action: 'read', subject: 'Lead', conditions: { assigned_to: '{{userId}}' } },
     ]);
     expect(ability.can('read', 'Lead')).toBe(true);

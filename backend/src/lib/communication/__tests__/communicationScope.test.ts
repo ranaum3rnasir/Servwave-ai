@@ -78,7 +78,7 @@ const ALL_CALLS = [
 function inputs(over: Partial<CommunicationScopeInputs> = {}): CommunicationScopeInputs {
   return {
     personId: ME,
-    scope: 'linked_to_me',
+    scope: 'attached',
     linkedNumberIds: [LINKED],
     // The main-line fallback is off unless a test turns it on, so the S08.2 cases above read as they did.
     seeMainLineWhenNoNumber: false,
@@ -327,17 +327,22 @@ describe('email under "Linked to me"', () => {
   const emailReadable = (i: CommunicationScopeInputs) =>
     ALL_EMAIL.filter((e) => matchesWhere(e, emailReadWhere(i))).map((e) => e.id);
 
-  it('lists a conversation in one of the injected mailboxes, one assigned to the person and one they wrote in', () => {
-    expect(emailListed(mine())).toEqual([
-      inMyBox.id, myBoxOtherJob.id, assignedToMe.id, iWroteIn.id, recordOfAnOtherKind.id,
-    ]);
+  it('lists a conversation in one of the injected mailboxes, and never one only assigned to the person or written in by them (M1)', () => {
+    expect(emailListed(mine())).toEqual([inMyBox.id, myBoxOtherJob.id, recordOfAnOtherKind.id]);
     expect(emailListed(mine({ mailboxIds: [MY_BOX, MAIN_BOX] }))).toEqual([
-      inMyBox.id, inMainBox.id, myBoxOtherJob.id, assignedToMe.id, iWroteIn.id, recordOfAnOtherKind.id, migrated.id,
+      inMyBox.id, inMainBox.id, myBoxOtherJob.id, recordOfAnOtherKind.id, migrated.id,
     ]);
+    // Neither listed nor opened: assignment and authorship are not reach.
+    for (const e of [assignedToMe, iWroteIn]) {
+      expect(emailListed(mine()), String(e.id)).not.toContain(e.id);
+      expect(emailReadable(mine()), String(e.id)).not.toContain(e.id);
+    }
   });
 
-  it('drops a mailbox the moment it leaves the input, keeping what is assigned to the person or written by them', () => {
-    expect(emailListed(mine({ mailboxIds: [] }))).toEqual([assignedToMe.id, iWroteIn.id]);
+  it('drops a mailbox the moment it leaves the input, and keeps nothing for being assigned or having written in it (M1)', () => {
+    expect(emailListed(mine({ mailboxIds: [] }))).toEqual([]);
+    expect(emailReadable(mine({ mailboxIds: [] }))).not.toEqual(expect.arrayContaining([assignedToMe.id]));
+    expect(emailReadable(mine({ mailboxIds: [] }))).not.toEqual(expect.arrayContaining([iWroteIn.id]));
     expect(emailListed(mine({ mailboxIds: [MY_BOX, COLLEAGUE_BOX] }))).toContain(inColleagueBox.id);
     expect(emailListed(mine({ mailboxIds: [MY_BOX] }))).not.toContain(inColleagueBox.id);
   });
@@ -454,19 +459,21 @@ describe('the main mailbox under "Linked to me" (S10.8)', () => {
   const listedFor = (i: CommunicationScopeInputs) => ALL.filter((e) => matchesWhere(e, emailsInSectionWhere(i))).map((e) => e.id);
   const readableFor = (i: CommunicationScopeInputs) => ALL.filter((e) => matchesWhere(e, emailReadWhere(i))).map((e) => e.id);
 
-  it('lists to a reader only what was started in it, with the vendor-tied one for a person who holds View vendors', () => {
-    expect(listedFor(reader())).toEqual([started.id, assignedMigrated.id, vendorTied.id]);
-    expect(readableFor(reader())).toEqual([started.id, assignedMigrated.id, vendorTied.id]);
+  it('lists to a reader only what was started in it, with the vendor-tied one for a person who holds View vendors, and not a migrated one assigned to them (M1)', () => {
+    expect(listedFor(reader())).toEqual([started.id, vendorTied.id]);
+    expect(readableFor(reader())).toEqual([started.id, vendorTied.id]);
   });
 
   it('keeps a vendor-tied conversation from a person without View vendors', () => {
     const noVendors = reader({ reach: { job: NOTHING, lead: NOTHING, customer: NOTHING, vendors: false } });
-    expect(listedFor(noVendors)).toEqual([started.id, assignedMigrated.id]);
+    expect(listedFor(noVendors)).toEqual([started.id]);
     expect(readableFor(noVendors)).not.toContain(vendorTied.id);
   });
 
-  it('lists nothing of it to a person who does not read it, apart from what is assigned to them', () => {
-    expect(listedFor(reader({ mainMailboxId: null }))).toEqual([assignedMigrated.id]);
+  it('lists and opens nothing of it to a person who does not read it, even what is assigned to them (M1)', () => {
+    expect(listedFor(reader({ mainMailboxId: null }))).toEqual([]);
+    // Only the vendor-tied message opens, through its own tie (the person holds View vendors), never through assignment.
+    expect(readableFor(reader({ mainMailboxId: null }))).toEqual([vendorTied.id]);
   });
 });
 

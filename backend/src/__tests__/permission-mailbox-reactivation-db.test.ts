@@ -17,7 +17,7 @@
        it was first issued to, a namesake who arrived meanwhile has none, and the register refuses a second row for one address;
      - a person with several old mailboxes (deactivated and reactivated more than once), a mailbox handed on again by a later
        move, a person who still has a live mailbox, and a person with no mailbox history;
-     - the route is Edit users alone (Delete users does not stand in for it);
+     - the route is the Admin flag's alone (AL-18);
      - the whole reactivation runs on a ONE-connection pool (the hosted database's) and costs the same statements for 0 or
        1,000 conversations.
 
@@ -141,20 +141,22 @@ suite('a reactivated user gets their mailbox back (real database, real routes an
   /** A person on a fresh custom role holding exactly the switch values under test, with the Email page open and a mailbox of their own. */
   async function personWith(org: string, values: Record<string, boolean | string> = {}, opts: { name?: string; mailbox?: boolean } = {}): Promise<Who> {
     const key = `ph-role-${++sequence}`;
+    // `is_admin: true` makes the person an Admin (the flag, AL-18): it is not a switch, so it never reaches the role.
+    const { is_admin: asAdmin, ...switchValues } = values;
     const role = await fx.addCustomRole(org, key, 'DISPATCHER' as Role);
     await setRoleSwitchValues({
       organizationId: org, roleKey: key,
       values: {
         view_jobs: true, jobs_scope: 'attached', view_leads: true, leads_scope: 'attached', view_customers: true,
-        view_estimates: true, estimates_scope: 'attached', view_invoices: true, invoices_scope: 'attached',
-        access_communication: true, show_email: true, view_communication: true, communication_scope: 'linked_to_me',
+        view_estimates: true, view_invoices: true,
+        access_communication: true, show_email: true, view_communication: true, communication_scope: 'attached',
         contact_customers: true,
-        ...values,
+        ...switchValues,
       },
       actorId: null, reason: 'manual',
     });
     const first = opts.name ?? `P${sequence}`;
-    const person = await fx.addUser(org, first, 'DISPATCHER', { customRoleId: role.id });
+    const person = await fx.addUser(org, first, 'DISPATCHER', { customRoleId: role.id, isAdmin: asAdmin === true });
     if (opts.mailbox !== false) await fx.addUserMailbox(org, person);
     return Object.assign(person, { first, api: () => fx.signedInAs(person) });
   }
@@ -191,7 +193,7 @@ suite('a reactivated user gets their mailbox back (real database, real routes an
   }
 
   /**
-   * A company with its main mailbox; the person who reactivates (Edit users on, Delete users off); a reader of the main
+   * A company with its main mailbox; the person who reactivates (an Admin); a reader of the main
    * mailbox; a leaver who can sign in, with a mailbox and the address first.last.company, who holds a started conversation
    * and an invoice conversation; two people who could take the mailbox over; and a stranger.
    */
@@ -205,7 +207,7 @@ suite('a reactivated user gets their mailbox back (real database, real routes an
     await db.mailbox.create({ data: { id: main, organization_id: org, kind: 'main', status: 'active' } });
     await db.mailboxAddress.create({ data: { local_part: `co${tag}`, organization_id: org, mailbox_id: main, is_primary: true } });
 
-    const editor = await personWith(org, { view_users: true, edit_users: true, delete_users: false });
+    const editor = await personWith(org, { view_users: true, is_admin: true });
     const reader = await personWith(org);
     await db.mailboxReader.create({ data: { organization_id: org, mailbox_id: main, user_id: reader.id } });
     const heir = await personWith(org, {}, { name: 'Hank' });
@@ -246,7 +248,16 @@ suite('a reactivated user gets their mailbox back (real database, real routes an
 
   const deactivate = async (w: World, who: Person, handoverTo?: string) =>
     (await w.editor.api()).delete(`/api/users/${who.id}`, handoverTo === undefined ? undefined : { handover_to: handoverTo });
-  const reactivate = async (by: Who, who: Person) => (await by.api()).patch(`/api/users/${who.id}`, { is_active: true });
+  /**
+   * Reactivate, then give the person their sign-in back. Deactivating removed their login, and reactivating does not restore it:
+   * they sign in again from a new invite. A person with no login holds no session (H2, ticket 22), so the cases that read mail as
+   * them stand for "re-invited and set up again", which this suite is not about.
+   */
+  const reactivate = async (by: Who, who: Person) => {
+    const res = await (await by.api()).patch(`/api/users/${who.id}`, { is_active: true });
+    if (res.status === 200) await db.user.update({ where: { id: who.id }, data: { has_login: true } });
+    return res;
+  };
   const move = async (by: Who, ownerId: string, handoverTo: unknown) =>
     (await by.api()).put(`/api/users/${ownerId}/mailbox-handover`, { handover_to: handoverTo });
 
@@ -622,11 +633,11 @@ suite('a reactivated user gets their mailbox back (real database, real routes an
   });
 
   describe('who may reactivate', () => {
-    it('Edit users does, without Delete users; without Edit users it is refused and nothing changes (Delete users does not stand in)', async () => {
+    it('an Admin does it; a non-Admin is refused and nothing changes', async () => {
       const w = await world();
       expect((await deactivate(w, w.leaver, w.heir.id)).status).toBe(200);
-      const without = await personWith(w.org, { view_users: true, edit_users: false });
-      const deleter = await personWith(w.org, { view_users: true, edit_users: false, delete_users: true });
+      const without = await personWith(w.org, { view_users: true });
+      const deleter = await personWith(w.org, { view_users: true });
 
       for (const who of [without, deleter]) {
         const res = await reactivate(who, w.leaver);

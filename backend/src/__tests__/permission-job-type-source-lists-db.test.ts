@@ -49,7 +49,6 @@ suite('Job type and job source lists answer a person with the Technician preset 
     const key = `tech-preset-${++sequence}`;
     const role = await fx.addCustomRole(org, key, 'TECHNICIAN');
     if (opts.withoutCompanyRead) {
-      await db.rolePermission.deleteMany({ where: { organization_id: org, role: key, subject: 'Organization' } });
     }
     await setRoleSwitchValues({ organizationId: org, roleKey: key, values: presetSwitchSet('TECHNICIAN'), actorId: null, reason: 'manual' });
     const person = await fx.addUser(org, `tech${sequence}`, 'TECHNICIAN', { customRoleId: role.id });

@@ -14,7 +14,7 @@ import { withNumberCollisionRetry } from '../lib/number-collision-retry';
 import { computeRenumber, applyRenumber, validateNumberFormat, type RenumberComputation } from '../lib/record-renumber';
 // Creator tracking (audit only) - stamped at every create, never read for authorization here.
 import { createdByUser } from '../lib/created-by';
-import { withRequiredCustomerFields } from '../lib/customer-create';
+import { withRequiredCustomerFields, NEW_CUSTOMER_NEEDS_CREATE } from '../lib/customer-create';
 import { findDuplicateCustomer, duplicateConflictBody } from '../lib/customer-duplicate';
 import { optionalCustomerEmail, hasPhoneOrEmail, CONTACT_REQUIRED_MSG } from '../lib/email-schema';
 import { optionalCustomerPhone } from '../lib/phone-schema';
@@ -32,7 +32,7 @@ import type { Subject } from '../lib/permissions/catalog';
 import { whyNotSlot } from '../lib/permissions/slotEligibility';
 import { creatorPrefill, creatorCanBeOnCrew, recordLeadCreationPeople } from '../lib/permissions/creatorPrefill';
 import { scopeWhereForReq, canAccessRow, canActOnRow } from '../lib/permissions/enforce';
-import { creatorEditRefusal, editsAsCreator, leadActionsFor } from '../lib/permissions/leadEdit';
+import { leadActionsFor } from '../lib/permissions/leadEdit';
 import { scheduleWalkthroughFeed, feedWalkthroughVisitWhere, feedWalkthroughs, type WalkthroughFeed } from '../lib/permissions/scheduleFeed';
 import { mayStepWalkthrough } from '../lib/permissions/walkthroughSteps';
 import { isCustomerReadableRow, CUSTOMER_PROOF_SELECT } from '../lib/permissions/customerScope';
@@ -149,8 +149,8 @@ const leadListSelect = {
   // email: see the job list select - the walkthrough composer needs it too (SRVW-243).
   customer: { select: { id: true, customer_number: true, first_name: true, last_name: true, company_name: true, phone: true, email: true, ad_source: true, service_locations: { where: { is_primary: true }, take: 1, select: { city: true, state: true } } } },
   // Scheduler redesign: the SINGLE owner (commission_owner) + the MULTI performer set.
-  commission_owner: { select: { id: true, first_name: true, last_name: true } },
-  lead_assignees: { select: { user_id: true, user: { select: { id: true, first_name: true, last_name: true } } } },
+  commission_owner: { select: { id: true, first_name: true, last_name: true, is_active: true } },
+  lead_assignees: { select: { user_id: true, user: { select: { id: true, first_name: true, last_name: true, is_active: true } } } },
 
   estimates: {
     select: { id: true, total_amount: true },
@@ -245,10 +245,10 @@ const leadDetailSelect = {
   // now sources from the CURRENT visit's own canceller, not necessarily the lead's last-ever one.
   // Scheduler redesign: the SINGLE owner (commission_owner + the mirrored lead_assignees row)
   // and the MULTI walkthrough performer set.
-  commission_owner: { select: { id: true, first_name: true, last_name: true, email: true } },
+  commission_owner: { select: { id: true, first_name: true, last_name: true, email: true, is_active: true } },
   // PRD 3: the lead's Dispatcher, who books the walkthrough and assigns its crew. Null when nobody is.
-  dispatcher: { select: { id: true, first_name: true, last_name: true, email: true } },
-  lead_assignees: { select: { user_id: true, user: { select: { id: true, first_name: true, last_name: true } } } },
+  dispatcher: { select: { id: true, first_name: true, last_name: true, email: true, is_active: true } },
+  lead_assignees: { select: { user_id: true, user: { select: { id: true, first_name: true, last_name: true, is_active: true } } } },
 
   estimates: {
     select: {
@@ -902,7 +902,7 @@ async function ownerRefusal(
 ): Promise<{ status: number; error: string } | null> {
   const target = await prisma.user.findUnique({
     where: { id: userId, ...tenantWhere(req) },
-    select: { id: true, organization_id: true, role: true, custom_role_id: true, custom_role: { select: { key: true } }, is_active: true },
+    select: { id: true, organization_id: true, role: true, custom_role_id: true, is_admin: true, custom_role: { select: { key: true } }, is_active: true },
   });
   if (!target) return { status: 400, error: 'Target user not found' };
   if (target.id === currentOwnerId) return null;
@@ -917,7 +917,7 @@ async function ownerRefusal(
 async function dispatcherRefusal(req: Request, userId: string): Promise<{ status: number; error: string } | null> {
   const target = await prisma.user.findUnique({
     where: { id: userId, ...tenantWhere(req) },
-    select: { id: true, organization_id: true, role: true, based_on_role_key: true, custom_role_id: true, custom_role: { select: { key: true } }, is_active: true },
+    select: { id: true, organization_id: true, role: true, based_on_role_key: true, custom_role_id: true, is_admin: true, custom_role: { select: { key: true } }, is_active: true },
   });
   if (!target) return { status: 400, error: 'Target user not found' };
   const refusal = await whyNotSlot(target, 'dispatcher');
@@ -1138,6 +1138,13 @@ export async function create(req: Request, res: Response) {
       }, { requester: req });
       if (duplicateMatch && !override) {
         res.status(409).json(duplicateConflictBody(duplicateMatch));
+        return;
+      }
+      // A new customer inside the lead form is a Create customers action (A7): the form may attach an existing customer
+      // to anyone who can create a lead (the duplicate answer above is how typing an existing customer's details finds
+      // it), and add a new one only to someone who can create customers.
+      if (!req.ability?.can('create', 'Customer')) {
+        res.status(403).json({ error: NEW_CUSTOMER_NEEDS_CREATE });
         return;
       }
 
@@ -1531,17 +1538,6 @@ export async function update(req: Request, res: Response) {
     if (!(await canAccessRow(req, 'Lead', prisma.lead, param(req, 'id')))) {
       res.status(403).json({ error: 'Insufficient permissions' });
       return;
-    }
-
-    // The creator path (Edit leads off, the person made the lead and is still on it: the route let them in) edits the
-    // plain details only. The address, source, walkthrough times and status stay with Edit leads, and the refusal
-    // names the field. The route already proved the person is on the lead as its creator.
-    if (editsAsCreator(req)) {
-      const refusal = creatorEditRefusal(req.body, existing.status);
-      if (refusal) {
-        res.status(403).json({ error: refusal });
-        return;
-      }
     }
 
     // The lead's status menu is Change lead status by hand: a status that differs from the stored one
@@ -2016,7 +2012,7 @@ export async function setDispatcher(req: Request, res: Response) {
     if (dispatcher_id !== null) {
       const target = await prisma.user.findUnique({
         where: { id: dispatcher_id, ...tenantWhere(req) },
-        select: { id: true, organization_id: true, role: true, custom_role_id: true, custom_role: { select: { key: true } }, is_active: true, first_name: true, last_name: true },
+        select: { id: true, organization_id: true, role: true, custom_role_id: true, is_admin: true, custom_role: { select: { key: true } }, is_active: true, first_name: true, last_name: true },
       });
       if (!target) {
         res.status(404).json({ error: 'User not found' });
@@ -3255,9 +3251,9 @@ export async function addNote(req: Request, res: Response) {
       return;
     }
 
-    // #106 P1: per-instance scope — mirror update(). The route guard (`add_note Lead`, the Add notes
-    // switch) is CONDITIONAL on the person's Leads scope; without this an own-scoped role could write a
-    // note onto a lead it doesn't own (in-tenant cross-user write leak).
+    // #106 P1: per-instance scope — mirror update(). The route guard (the Add notes switch or the lead's Edit) is
+    // CONDITIONAL on the person's Leads scope; without this an own-scoped role could write a note onto a lead it
+    // doesn't own (in-tenant cross-user write leak).
     if (!(await canAccessRow(req, 'Lead', prisma.lead, id))) {
       res.status(403).json({ error: 'Insufficient permissions' });
       return;

@@ -114,7 +114,6 @@ beforeEach(() => {
   clearPermissionCache();
   // No grant rows by default — a role reaching a handler without an explicit
   // rolePermission mock (or ADMIN's unconditional fast path) gets 403.
-  (prisma.rolePermission.findMany as any).mockResolvedValue([]);
   // Rename opens `prisma.$transaction(async (tx) => ...)` — hand the SAME mocked
   // `prisma` object back as `tx`, mirroring leads.test.ts's own convention, so the
   // `installTable` wiring above (on the top-level mocked delegates) is what the

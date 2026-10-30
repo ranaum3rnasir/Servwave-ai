@@ -1,12 +1,17 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { computeTaskRisk } from '../lib/tasks/risk';
+import { prisma } from '../lib/prisma';
 import { taskVisibilityWhere } from '../lib/tasks/visibility';
+import { resolveSwitches } from '../lib/permissions/switches/store';
 import { diffTaskActivities } from '../lib/tasks/activity';
 import {
   TASK_STATUSES, TERMINAL_TASK_STATUSES, isTerminalTaskStatus, openTaskStatusFilter,
 } from '../lib/tasks/status';
+
+// The Tasks scope is read from the person's switches; this file holds the value each test names.
+vi.mock('../lib/permissions/switches/store', () => ({ resolveSwitches: vi.fn() }));
 
 const NOW = new Date('2026-06-17T12:00:00Z');
 
@@ -73,35 +78,54 @@ describe('computeTaskRisk', () => {
   });
 });
 
-// `seesAll` stands for the ability a person holding See all tasks gets (the Admin box holds every action).
-const reqAs = (role: string, id: string, seesAll = role === 'ADMIN') =>
-  ({
-    user: { id, role, organization_id: 'org-1' },
-    ability: { can: (action: string, subject: string) => seesAll && action === 'see_all' && subject === 'Task' },
-  } as any);
+// The request of a person whose Tasks scope is `scope` (the Admin box resolves to All, as the switch store answers it).
+const reqAs = (role: string, id: string, scope = role === 'ADMIN' ? 'all' : 'attached', department_id: string | null = null) => {
+  vi.mocked(resolveSwitches).mockResolvedValue({ tasks_scope: scope });
+  return { user: { id, role, organization_id: 'org-1', department_id } } as any;
+};
 
 describe('taskVisibilityWhere', () => {
-  it('See all tasks hub → org-only, no OR scoping', () => {
-    const w = taskVisibilityWhere(reqAs('ADMIN', 'u-admin'), {});
+  beforeEach(() => {
+    vi.mocked(prisma.user.findMany).mockReset();
+  });
+
+  it('Tasks scope All → org-only, no OR scoping', async () => {
+    const w = await taskVisibilityWhere(reqAs('ADMIN', 'u-admin'), {});
     expect(w.organization_id).toBe('org-1');
     expect(w.OR).toBeUndefined();
   });
-  it('a custom role based on Admin WITHOUT See all tasks is scoped like anyone else', () => {
-    const w = taskVisibilityWhere(reqAs('ADMIN', 'u-custom', false), {});
+  it('a custom role based on Admin WITHOUT Tasks scope All is scoped like anyone else', async () => {
+    const w = await taskVisibilityWhere(reqAs('ADMIN', 'u-custom', 'attached'), {});
     expect(w.OR).toEqual([
-      { assignee_ids: { has: 'u-custom' } },
-      { watcher_ids: { has: 'u-custom' } },
+      { assignee_ids: { hasSome: ['u-custom'] } },
+      { watcher_ids: { hasSome: ['u-custom'] } },
     ]);
   });
-  it('non-admin hub → assignee OR watcher, with no created_by arm', () => {
-    const w = taskVisibilityWhere(reqAs('TECHNICIAN', 'u-tech'), {});
+  it('Attached → assignee OR watcher, with no created_by arm', async () => {
+    const w = await taskVisibilityWhere(reqAs('TECHNICIAN', 'u-tech'), {});
     expect(w.OR).toEqual([
-      { assignee_ids: { has: 'u-tech' } },
-      { watcher_ids: { has: 'u-tech' } },
+      { assignee_ids: { hasSome: ['u-tech'] } },
+      { watcher_ids: { hasSome: ['u-tech'] } },
     ]);
   });
-  it('entity filter → entity-wide, no personal scoping even for non-admin', () => {
-    const w = taskVisibilityWhere(reqAs('SALES', 'u-sales'), { linked_entity_type: 'JOB', linked_entity_id: 'job-1' });
+  it('Team → a task whose assignee or watcher is anyone in the department', async () => {
+    vi.mocked(prisma.user.findMany).mockResolvedValue([{ id: 'u-1' }, { id: 'u-2' }] as never);
+    const w = await taskVisibilityWhere(reqAs('DISPATCHER', 'u-1', 'team', 'dept-1'), {});
+    expect(w.OR).toEqual([
+      { assignee_ids: { hasSome: ['u-1', 'u-2'] } },
+      { watcher_ids: { hasSome: ['u-1', 'u-2'] } },
+    ]);
+  });
+  it('Team with no department reaches nothing (fail closed, P3)', async () => {
+    const w = await taskVisibilityWhere(reqAs('DISPATCHER', 'u-1', 'team', null), {});
+    expect(w.id).toEqual({ in: [] });
+  });
+  it('a scope the resolver does not know reaches nothing', async () => {
+    const w = await taskVisibilityWhere(reqAs('SALES', 'u-sales', 'through_own_leads'), {});
+    expect(w.id).toEqual({ in: [] });
+  });
+  it('entity filter → entity-wide, no personal scoping even for non-admin', async () => {
+    const w = await taskVisibilityWhere(reqAs('SALES', 'u-sales'), { linked_entity_type: 'JOB', linked_entity_id: 'job-1' });
     expect(w.linked_entity_type).toBe('JOB');
     expect(w.linked_entity_id).toBe('job-1');
     expect(w.OR).toBeUndefined();

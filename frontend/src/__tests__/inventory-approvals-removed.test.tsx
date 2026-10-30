@@ -73,7 +73,7 @@ function InventoryRoutes() {
 
 describe('v2 InventoryPage - approvals surface removed (QA-901)', () => {
   it('renders Items + Staging tabs and NO Approvals tab or stat tile', () => {
-    seedMySwitches({ show_stock_page: true });
+    seedMySwitches({ view_stock: true });
     renderWithProviders(<InventoryRoutes />, { initialEntries: ['/inventory'], ability: inventoryWriteAbility() });
 
     expect(screen.getByRole('tab', { name: /Items/ })).toBeInTheDocument();

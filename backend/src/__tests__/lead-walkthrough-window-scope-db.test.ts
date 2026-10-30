@@ -102,7 +102,6 @@ suite('technician lead scope + walkthrough window (real database)', () => {
 
   beforeEach(() => {
     clearPermissionCache();
-    (appClient.userPermissionOverride.findMany as Mock).mockResolvedValue([]);
   });
 
   afterAll(async () => {

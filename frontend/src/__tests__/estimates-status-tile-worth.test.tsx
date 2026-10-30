@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
+import { renderWithProviders, seesPrices } from './helpers';
 import EstimatesPage from '@/pages/v2/estimates/EstimatesPage';
 
 // #2011 — every status tile on the v2 Estimates list shows its count AND,
@@ -10,6 +10,7 @@ import EstimatesPage from '@/pages/v2/estimates/EstimatesPage';
 // string-wire-value case the frozen repro test does not (it uses numbers),
 // a zero status's worth scoped to its own tile, the window caption's exact
 // text appearing once, and the Pending Deposits tile staying detail-less.
+// The worth under a count is a price, so it is drawn for a person who holds See prices (P11).
 const mockApi = vi.mocked(api);
 
 const ESTIMATE_LIST_FIXTURE = {
@@ -46,7 +47,7 @@ const WINDOW_CAPTION =
 
 describe('#2011 — Estimates status tiles show worth beneath count', () => {
   it("shows the Draft tile's worth from a STRING stats value", async () => {
-    renderWithProviders(<EstimatesPage />);
+    renderWithProviders(<EstimatesPage />, { ability: seesPrices });
 
     await waitFor(() => {
       expect(screen.getByText('Draft', { selector: 'span' })).toBeInTheDocument();
@@ -58,7 +59,7 @@ describe('#2011 — Estimates status tiles show worth beneath count', () => {
   });
 
   it("a zero status's worth (\"$0.00\") is scoped to its own tile", async () => {
-    renderWithProviders(<EstimatesPage />);
+    renderWithProviders(<EstimatesPage />, { ability: seesPrices });
 
     await waitFor(() => {
       expect(screen.getByText('Won', { selector: 'span' })).toBeInTheDocument();
@@ -70,7 +71,7 @@ describe('#2011 — Estimates status tiles show worth beneath count', () => {
   });
 
   it('renders the window caption exactly once, verbatim', async () => {
-    renderWithProviders(<EstimatesPage />);
+    renderWithProviders(<EstimatesPage />, { ability: seesPrices });
 
     await waitFor(() => {
       expect(screen.getByText('Draft', { selector: 'span' })).toBeInTheDocument();
@@ -80,7 +81,7 @@ describe('#2011 — Estimates status tiles show worth beneath count', () => {
   });
 
   it('the Pending Deposits tile has no detail node', async () => {
-    renderWithProviders(<EstimatesPage />);
+    renderWithProviders(<EstimatesPage />, { ability: seesPrices });
 
     await waitFor(() => {
       expect(screen.getByText('Pending Deposits', { selector: 'span' })).toBeInTheDocument();

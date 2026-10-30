@@ -47,7 +47,7 @@ describe('LoShortagePanel (409)', () => {
   });
 
   it('renders a row per short line plus the restock link', () => {
-    seedMySwitches({ view_stock: true, show_stock_page: true });
+    seedMySwitches({ view_stock: true });
     renderWithProviders(<LoShortagePanel details={SHORTAGE} />);
     expect(
       screen.getByText('Not enough stock to process - nothing was deducted.'),
@@ -61,7 +61,7 @@ describe('LoShortagePanel (409)', () => {
   });
 
   it('offers no link to the Inventory page to a person who cannot open it, and still says what to do', () => {
-    seedMySwitches({ view_stock: true, show_stock_page: false });
+    seedMySwitches({ view_stock: false });
     renderWithProviders(<LoShortagePanel details={SHORTAGE} />);
     expect(screen.queryByRole('link', { name: /inventory page/i })).not.toBeInTheDocument();
     expect(screen.getByText(/lower the quantity and try again/i)).toBeInTheDocument();

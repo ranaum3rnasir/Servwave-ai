@@ -518,13 +518,13 @@ describe('#2042 security round 2 (C) — an APPROVED LO\'s lines are frozen to a
 
 /**
  * FINDING D (MEDIUM) — `read PurchaseOrder` now reaches every SALES-derived role (#2042 R1/R2),
- * but `canSeePricing(req)` (`read Pricing`, the Roles editor's "See financial data" switch) was
+ * but `canSeePricing(req)` (`read Pricing`, the Roles editor's "See costs" switch) was
  * never wired into the purchasing surface — `mapPOLine` always emitted `unitCost`/
  * `catalogUnitCost`, the low-stock proposal lines always emitted `unitCost`, and
  * `getJobMaterialCost` always emitted the aggregate `materialCost`. `stripMappedItemCost`
  * (inv-catalog.controller.ts) already strips the same two catalog fields behind the same
  * predicate for the identical principal — a cost-blind SALES/DISPATCHER user (an admin has
- * unticked "See financial data" for their role) must get the same treatment on purchasing.
+ * unticked "See costs" for their role) must get the same treatment on purchasing.
  * Security round 3 finding D (handoffs/security-3.md).
  */
 describe('#2042 security round 3 (D) — purchasing cost fields respect the financial-data grant', () => {
@@ -576,7 +576,7 @@ describe('#2042 security round 3 (D) — purchasing cost fields respect the fina
     mockPrisma.jobStageLine.findMany.mockResolvedValue([]);
   }
 
-  describe('cost-blind SALES ("See financial data" off)', () => {
+  describe('cost-blind SALES ("See costs" off)', () => {
     beforeEach(() => {
       mockAuthAs('sales');
       mockRoleGrantsWithout('SALES', ['read', 'Pricing']);

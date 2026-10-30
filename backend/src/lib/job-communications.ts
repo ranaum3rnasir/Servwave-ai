@@ -557,7 +557,7 @@ async function customerDecisionEntries(
  *
  * It sits where its invoice sits: on the invoice's job, or the job its estimate went on to have; a deposit that started on
  * a lead sits on the lead too, and an invoice with neither sits on the customer. Only a person who can open the invoice
- * gets it (the `payments` row filter, creator rule included), and its amount is that invoice's price, so it follows the
+ * gets it (the `payments` row filter), and its amount is that invoice's price, so it follows the
  * invoice's money rules: no cost or company-wide figure is in it. It says "paid online" when the customer paid on their own
  * link and "recorded by the office" otherwise, and never names the payment processor.
  */

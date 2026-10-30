@@ -23,10 +23,10 @@ export function useSpiderAvailable(): boolean {
 
 /**
  * Who may manage Spider: an Admin. Spider's settings and History are Admin-only (the server
- * enforces it too). In ServWave an Admin is never also on a custom role, so the role is the answer.
+ * enforces it too). Admin is the flag on the person (P15), never the role name.
  */
-export function isSpiderAdminUser(user: { role?: string } | null | undefined): boolean {
-  return user?.role === 'ADMIN';
+export function isSpiderAdminUser(user: { is_admin?: boolean } | null | undefined): boolean {
+  return user?.is_admin === true;
 }
 
 export function useIsSpiderAdmin(): boolean {

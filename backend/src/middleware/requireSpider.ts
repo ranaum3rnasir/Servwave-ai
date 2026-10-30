@@ -1,6 +1,8 @@
 import type { Request, Response, NextFunction } from 'express';
 import { spiderAvailable } from '../services/spider/gate';
 import { isSuperUser } from '../lib/permissions/effectiveRole';
+import { markRouteCheck } from './routeCheck';
+import { markReadsNoRecord } from '../lib/ids/canonicalId';
 
 /**
  * The Spider gate on every Spider endpoint (#2619): the `spider` feature AND, while the launch is
@@ -24,6 +26,7 @@ export function requireSpider(req: Request, res: Response, next: NextFunction): 
   }
   res.status(404).json({ error: 'FEATURE_DISABLED', feature: 'spider' });
 }
+markReadsNoRecord(requireSpider);
 
 /**
  * Spider's settings and History are Admin-only (decided 28 Sep), enforced here on the server.
@@ -37,3 +40,4 @@ export function requireSpiderAdmin(req: Request, res: Response, next: NextFuncti
   }
   res.status(403).json({ error: 'Only Admins can manage Spider' });
 }
+markRouteCheck('permission', requireSpiderAdmin);

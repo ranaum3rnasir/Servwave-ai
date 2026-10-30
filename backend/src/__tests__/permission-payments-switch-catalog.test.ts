@@ -21,9 +21,10 @@ const VENDORS = /\b(stripe|twilio|supabase|render|ctm|calltrackingmetrics|resend
 
 describe('the payment switches', () => {
   it.each([
-    ['Record payments', [true, false, true, true]],
+    // AL-04: the Technician preset no longer holds Record payments or Send payment links.
+    ['Record payments', [true, false, true, false]],
     ['Refund payments', [true, false, false, false]],
-    ['Send payment links', [true, false, true, true]],
+    ['Send payment links', [true, false, true, false]],
   ])('%s is one on/off switch in the Invoices group that stands on its own, with the PRD preset column', (label, column) => {
     const rows = byLabel(label);
     expect(rows).toHaveLength(1);
@@ -34,12 +35,14 @@ describe('the payment switches', () => {
     expect(`${entry.label} ${entry.helpText}`).not.toMatch(VENDORS);
   });
 
-  it('Record payments needs nothing, so it is valid with Invoices View off (the Technician preset)', () => {
-    expect(byLabel('Record payments')[0]!.requires).toEqual([]);
+  it('Record payments needs only See prices, so it is valid with Invoices View off (a Technician set that turns it on)', () => {
+    expect(byLabel('Record payments')[0]!.requires).toEqual(['see_prices']);
     expect(byLabel('Send payment links')[0]!.requires).toEqual([]);
+    // AL-04: the Technician preset has Record payments off now; turning it on by hand must stay valid with View invoices off.
     const technician = presetSwitchSet('TECHNICIAN');
+    technician.record_payments = true;
+    technician.send_payment_links = true;
     expect(technician.view_invoices).toBe(false);
-    expect(technician.record_payments).toBe(true);
     expect(validateSwitchSet(technician)).toEqual([]);
   });
 
@@ -53,10 +56,11 @@ describe('the payment switches', () => {
   it('compiles each grant in exactly the presets that have the switch on', () => {
     const holders = (action: string, subject: string) =>
       BUILT_IN_ROLES.filter((role) => compileSwitchGrants(presetSwitchSet(role)).some((g) => g.action === action && g.subject === subject));
-    expect(holders('record_payment', 'Invoice')).toEqual(['ADMIN', 'DISPATCHER', 'TECHNICIAN']);
-    expect(holders('record_payment', 'Estimate')).toEqual(['ADMIN', 'DISPATCHER', 'TECHNICIAN']);
+    // AL-04: Technician no longer holds Record payments or Send payment links.
+    expect(holders('record_payment', 'Invoice')).toEqual(['ADMIN', 'DISPATCHER']);
+    expect(holders('record_payment', 'Estimate')).toEqual(['ADMIN', 'DISPATCHER']);
     expect(holders('refund', 'Invoice')).toEqual(['ADMIN']);
-    expect(holders('send_payment_link', 'Invoice')).toEqual(['ADMIN', 'DISPATCHER', 'TECHNICIAN']);
+    expect(holders('send_payment_link', 'Invoice')).toEqual(['ADMIN', 'DISPATCHER']);
   });
 
   it('accounts for each switch with named server checks', () => {

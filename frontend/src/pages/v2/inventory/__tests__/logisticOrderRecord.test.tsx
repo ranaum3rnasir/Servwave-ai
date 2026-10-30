@@ -1,8 +1,8 @@
 /**
  * Roles & Permissions S07.9 - a logistic order opened from its alert (or any link) opens on View logistic orders alone.
  *
- * The single-order address (`/inventory/logistic-orders/:orderId`) is a record route: it carries no list or Show guard
- * (Show Logistic Orders page hides the list page and its menu entry, not the order), and the page asks the server. With the
+ * The single-order address (`/inventory/logistic-orders/:orderId`) is a record route: it carries no list guard
+ * (the order opens whatever the list switches say), and the page asks the server. With the
  * order readable it draws the one order sheet the list uses, with the buttons the server's `actions` list names; with the
  * server's refusal, or without View logistic orders at all, it draws a plain not-found state that says nothing about whether
  * the order exists. The HTTP layer is mocked; the page is the one the route renders and the data hooks are the real ones.
@@ -49,8 +49,8 @@ function serve(answer: LogisticOrderDetail | 'refused' | 'missing') {
       if (typeof answer !== 'string') return { data: answer };
       throw Object.assign(new Error(answer), { response: { status: answer === 'refused' ? 403 : 404, data: { error: 'x' } } });
     }
-    // The list page is hidden for this person: Show Logistic Orders page is off.
-    if (url === '/api/permission-switches/me') return { data: { admin_box: false, values: { show_logistic_orders_page: false }, rules: [] } };
+    // The list is closed for this person; the order still opens on the server's answer.
+    if (url === '/api/permission-switches/me') return { data: { admin_box: false, values: { view_logistic_orders: false }, rules: [] } };
     if (url.startsWith('/api/inventory/locations')) return { data: { locations: [{ id: 'loc1', name: 'Main', type: 'warehouse', branch: 'HQ' }] } };
     return { data: { data: [], locations: [], activity: [], users: [], total: 0 } };
   }) as typeof mockApi.get);
@@ -69,7 +69,7 @@ beforeEach(() => {
 });
 
 describe('a logistic order opened from its alert', () => {
-  it('opens on View logistic orders alone, with the Show page switch off, and offers what the server lists', async () => {
+  it('opens on View logistic orders alone, with the list switch off, and offers what the server lists', async () => {
     serve(order(['approve']));
     // The ability holds Approve too, but only what the server lists is offered: no Process, no Cancel.
     open([READ_ORDERS, { action: 'approve', subject: 'LogisticOrder' }, { action: 'process', subject: 'LogisticOrder' }]);

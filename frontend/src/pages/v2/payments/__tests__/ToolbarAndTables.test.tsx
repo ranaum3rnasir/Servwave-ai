@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderWithProviders, seesPrices } from '@/__tests__/helpers';
 import { INTENDED_X_SCROLLERS } from '@/ui-kit/lib/intendedScrollers';
 
 import { buildAttentionColumns } from '../components/attentionColumns';
@@ -21,7 +21,7 @@ vi.mock('@/lib/api/mySwitches', async (importOriginal) => ({
 }));
 
 const user = () => userEvent.setup();
-const open = (entry = '/payments') => renderWithProviders(<TabHarness />, { initialEntries: [entry] });
+const open = (entry = '/payments') => renderWithProviders(<TabHarness />, { initialEntries: [entry], ability: seesPrices });
 const bodyRows = () => within(screen.getAllByRole('rowgroup')[1]!).getAllByRole('row');
 async function rowWith(text: string) {
   await screen.findByText(text);

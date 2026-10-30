@@ -48,7 +48,8 @@ suite('GET /api/dashboard payments item counts the page\'s own items (real datab
 
   let sequence = 0;
   const allOff = Object.fromEntries(SWITCH_CATALOG.filter((s) => s.kind === 'toggle').map((s) => [s.key, false]));
-  const SEES_ALL = { view_payments: true, view_invoices: true, invoices_scope: 'all' };
+  // Every invoice takes View jobs and View leads as well as both scopes All: an invoice is reached through its job or lead (ticket 33).
+  const SEES_ALL = { view_payments: true, view_invoices: true, view_jobs: true, view_leads: true, jobs_scope: 'all', leads_scope: 'all' };
 
   async function newOrg() {
     const o = await fx.newOrg();
@@ -89,7 +90,7 @@ suite('GET /api/dashboard payments item counts the page\'s own items (real datab
   it('shows a View payments holder a failed payout alone (it did not before), opening the page on the attention chip', async () => {
     const { org } = await newOrg();
     await addPayout(org);
-    const person = await personWith(org, { ...SEES_ALL, show_payments_page: true });
+    const person = await personWith(org, { ...SEES_ALL });
     expect(await itemOf(person)).toMatchObject({ badge: '1', title: '1 payment needs attention', link: '/payments?tab=payments&chip=attention' });
   });
 
@@ -97,7 +98,7 @@ suite('GET /api/dashboard payments item counts the page\'s own items (real datab
     const { org } = await newOrg();
     await addPayout(org);
     const captureId = await addUnapplied(org);
-    const person = await personWith(org, { ...SEES_ALL, show_payments_page: true });
+    const person = await personWith(org, { ...SEES_ALL });
     expect((await itemOf(person))?.badge).toBe('2');
     expect(await pageCount(person)).toBe(2);
     await db.unappliedCapture.update({ where: { id: captureId }, data: { status: 'RESOLVED' } });
@@ -105,26 +106,17 @@ suite('GET /api/dashboard payments item counts the page\'s own items (real datab
     expect(await pageCount(person)).toBe(1);
   });
 
-  it('shows the row but sends no link to a holder with Show Payments page off', async () => {
-    const { org } = await newOrg();
-    await addPayout(org);
-    const person = await personWith(org, { ...SEES_ALL, show_payments_page: false });
-    const item = await itemOf(person);
-    expect(item).toBeDefined();
-    expect(item!.link).toBeNull();
-  });
-
   it('is absent, and adds no count, for someone holding no payments switch', async () => {
     const { org } = await newOrg();
     await addPayout(org);
-    const person = await personWith(org, { view_invoices: true, invoices_scope: 'all' });
+    const person = await personWith(org, { view_invoices: true, jobs_scope: 'all', leads_scope: 'all' });
     expect(await itemOf(person)).toBeUndefined();
   });
 
   it('does not count an item on the company itself for a caller whose invoice reach is narrower', async () => {
     const { org } = await newOrg();
     await addUnapplied(org);
-    const narrowed = await personWith(org, { ...SEES_ALL, invoices_scope: 'attached', show_payments_page: true });
+    const narrowed = await personWith(org, { ...SEES_ALL, jobs_scope: 'attached', leads_scope: 'attached' });
     expect(await pageCount(narrowed)).toBe(0);
     expect(await itemOf(narrowed)).toBeUndefined();
   });
@@ -132,7 +124,7 @@ suite('GET /api/dashboard payments item counts the page\'s own items (real datab
   it('is the first item the API returns', async () => {
     const { org } = await newOrg();
     await addPayout(org);
-    const person = await personWith(org, { ...SEES_ALL, show_payments_page: true });
+    const person = await personWith(org, { ...SEES_ALL });
     const res = await (await fx.signedInAs(person)).get('/api/dashboard');
     expect((res.body.data.needs_attention as Item[])[0].type).toBe('payments_attention');
   });

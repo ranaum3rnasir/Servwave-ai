@@ -115,7 +115,7 @@ export function VendorsPage() {
   // checkboxes that exist only for Export selected) show only with it.
   const canExport = ability.can('export', 'Vendor');
   // Money on this page is vendor spend, summed from purchase-order line costs, and the vendor account number. Both
-  // need See financial data; spend needs the purchase orders too. A figure the person may not see is not drawn at
+  // need See costs; spend needs the purchase orders too. A figure the person may not see is not drawn at
   // all (no tile, tab, column or card strip), and never as a $0 that reads like a value.
   const canSeeCosts = canSeePricing(ability);
   const showSpend = canSeeCosts && ability.can('read', 'PurchaseOrder');

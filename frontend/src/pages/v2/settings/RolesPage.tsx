@@ -7,7 +7,6 @@ import { useFeature } from '@/lib/entitlements';
 import SwitchSetEditor from '@/components/permissions/SwitchSetEditor';
 
 import { useSettingsBar } from './settingsBar';
-import { Section } from './components/section';
 import { RoleList } from './components/roleList';
 import { NewRoleDialog } from './components/newRoleDialog';
 import { RoleActions } from './components/roleActions';
@@ -31,11 +30,20 @@ function madeFromText(set: { type: string; made_from_role_key: string | null; ma
  *
  * A role is a named set of switch values. The page lists the company's roles and, for the one picked, draws the whole
  * switch catalog through the shared switch-set editor, reading and saving the role's set through the Roles API. What
- * a role holds is a starting point: people already on it keep their own switches, so an edit here reaches only people
- * given the role from now on.
+ * a role holds is what everyone on it has, except where a person holds their own value for a switch: an edit here reaches
+ * every other person on the role at once, and a save says how many people that was.
  */
+/** What a save did: "Reaches 4 people; 1 keeps their own value." */
+export function saveSummary(reaches: number, keepOwn: number): string {
+  const people = `${reaches} ${reaches === 1 ? 'person' : 'people'}`;
+  return `Reaches ${people}; ${keepOwn} ${keepOwn === 1 ? 'keeps' : 'keep'} their own value.`;
+}
+
 export default function RolesPage() {
-  const { data: roles = [] } = useRoles();
+  // Admin is a flag on the person (P15), not a role, so the built-in Administrator entry is not a role to pick or edit here.
+  // It stays a starting point for a new role (a copy of full access that can then be narrowed).
+  const { data: allRoles = [] } = useRoles();
+  const roles = allRoles.filter((r) => !r.fullAccess);
   const [selected, setSelected] = useState<string>('');
   // Edits made to the picked role and not saved yet: only the switches that differ from what is saved.
   const [edits, setEdits] = useState<SwitchSet>({});
@@ -46,11 +54,12 @@ export default function RolesPage() {
   const requestLeave = useSettingsGuard((s) => s.requestLeave);
 
   const current = roles.find((r) => r.role === selected);
-  const fullAccess = !!current?.fullAccess;
   const { data: catalog, isError: catalogUnavailable } = useSwitchCatalog();
   const acceptedMethods = useAcceptedPaymentMethods();
-  const { data: loaded, isError: roleUnavailable } = useRoleSwitches(fullAccess ? '' : selected);
+  const { data: loaded, isError: roleUnavailable } = useRoleSwitches(selected);
   const saveRole = useSaveRoleSwitches();
+  // What the last save did to the people on the role, shown until the role is left or edited again.
+  const [lastSave, setLastSave] = useState<{ role: string; reaches: number; keepOwn: number } | null>(null);
 
   useEffect(() => {
     const first = roles[0];
@@ -66,7 +75,8 @@ export default function RolesPage() {
     registerSaver({
       save: async () => {
         if (!loaded || !editable || !isDirty) return;
-        await saveRole.mutateAsync({ role: selected, values: edits });
+        const saved = await saveRole.mutateAsync({ role: selected, values: edits });
+        setLastSave({ role: selected, reaches: saved.reaches ?? 0, keepOwn: saved.keep_own ?? 0 });
         setEdits({});
       },
       discard: () => setEdits({}),
@@ -91,9 +101,10 @@ export default function RolesPage() {
   // A role that closes the Email page to its people gets a note, never a block: the mailbox still receives, and the role
   // still saves. Read from the same values, so it appears and goes as the switch is flipped.
   const hasEmail = useFeature('email');
-  const cantReadEmail = hasEmail && !fullAccess && !!values && emailPageClosed(values);
-  const opensNothing = !fullAccess && !!catalog && !!values && allViewsOff(catalog, values);
-  const madeFrom = madeFromText(loaded, roles);
+  const cantReadEmail = hasEmail && !!values && emailPageClosed(values);
+  const opensNothing = !!catalog && !!values && allViewsOff(catalog, values);
+  // The whole list, not the picker's: Administrator is not a role to pick here, but it is still a starting point to name.
+  const madeFrom = madeFromText(loaded, allRoles);
 
   return (
     // One column below xl, where the roles are a single picker above the detail; from xl the list is the side column.
@@ -103,7 +114,7 @@ export default function RolesPage() {
           exactly why the unsaved-changes guard lives in a zustand store rather than the router. */}
       <RoleList roles={roles} selected={selected} onPick={pickRole} onNew={() => setCreating(true)} />
       {/* The new role opens selected; picking it goes through the same unsaved-changes guard as any other pick. */}
-      <NewRoleDialog open={creating} onOpenChange={setCreating} roles={roles} onCreated={(role) => { setCreating(false); pickRole(role); }} />
+      <NewRoleDialog open={creating} onOpenChange={setCreating} roles={allRoles} onCreated={(role) => { setCreating(false); pickRole(role); }} />
 
       <div className="min-w-0 flex-1">
         {!current ? (
@@ -118,9 +129,12 @@ export default function RolesPage() {
                 </p>
                 {current.type === 'custom' && current.description && <p className="text-muted-foreground mt-1 text-sm">{current.description}</p>}
                 {madeFrom && <p className="text-muted-foreground mt-1 text-xs">{madeFrom}</p>}
-                {!fullAccess && (
-                  <p className="text-muted-foreground mt-1 text-xs">
-                    Changes apply to people you give this role from now on. People already on it keep their own switches.
+                <p className="text-muted-foreground mt-1 text-xs">
+                  Changes reach everyone on this role, except people who hold their own value for a switch.
+                </p>
+                {lastSave && lastSave.role === selected && !isDirty && (
+                  <p role="status" className="text-muted-foreground mt-1 text-xs">
+                    {saveSummary(lastSave.reaches, lastSave.keepOwn)}
                   </p>
                 )}
               </div>
@@ -155,9 +169,7 @@ export default function RolesPage() {
                     {CANT_READ_ROLE_NOTE}
                   </Alert>
                 )}
-                {fullAccess ? (
-                  <Section title="Full access" description="Administrators can do everything in ServWave. This role cannot be changed." />
-                ) : catalogUnavailable || roleUnavailable ? (
+                {catalogUnavailable || roleUnavailable ? (
                   <p className="text-muted-foreground text-sm">This role&rsquo;s permissions can&rsquo;t be shown right now.</p>
                 ) : !catalog || !values ? (
                   <p className="text-muted-foreground text-sm">Loading...</p>

@@ -271,7 +271,7 @@ describe('the status menu needs the same verb as the dedicated door', () => {
 
       const res = await patch({ status: 'LOST' });
 
-      expect(res.status).toBe(403);
+      expect(res.status).toBe(404);
       expectNothingWritten();
     });
 

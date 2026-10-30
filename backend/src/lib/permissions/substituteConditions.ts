@@ -1,7 +1,6 @@
 export interface SubstitutionContext {
   userId: string;
   teamId?: string | null;
-  locationId?: string | null;
 }
 
 export function substituteConditions(
@@ -16,7 +15,6 @@ function walk(value: unknown, ctx: SubstitutionContext): unknown {
   if (typeof value === 'string') {
     if (value === '{{userId}}') return ctx.userId;
     if (value === '{{teamId}}') return ctx.teamId ?? null;
-    if (value === '{{locationId}}') return ctx.locationId ?? null;
     if (/\{\{[^}]+\}\}/.test(value)) throw new Error(`Unknown token in condition: ${value}`);
     return value;
   }

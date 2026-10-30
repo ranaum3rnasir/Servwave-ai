@@ -1,7 +1,7 @@
 /* =============================================================================
    Roles & Permissions, PRD 2, slice S02.12 - the change logs behind the Roles page and a person's Permissions page.
 
-   A role's log and a person's log are read newest first, a page at a time, behind Manage roles and permissions. This
+   A role's log and a person's log are read newest first, a page at a time, behind the Admin flag (AL-18). This
    suite proves what each write leaves in them (the reason, the role's name on the rows that are about a role, the one
    event row a Save as role writes), that a page never repeats or skips a row when a whole burst shares one timestamp,
    that a page costs the queries the hosted pool can afford, and that nobody outside the company's managers reads one.
@@ -36,7 +36,6 @@ import { SWITCH_CATALOG, findSwitch, type SwitchEntry, type SwitchValue } from '
 
 const suite = realClient ? describe : describe.skip;
 
-const MANAGE = 'manage_roles_and_permissions';
 
 interface Entry {
   id: string;
@@ -70,12 +69,14 @@ suite('the change logs of a role and of a person (real database)', () => {
   type Api = Awaited<ReturnType<typeof fx.signedInAs>>;
   let sequence = 0;
 
-  /** A person on a fresh custom role, with Manage roles and permissions on or off, everything else as Dispatcher. */
+  /**
+   * A person on a fresh custom role (everything as Dispatcher), an Admin or not: since AL-18 managing roles and people's
+   * switches is the Admin flag's alone, never a switch.
+   */
   async function manager(org: string, manage: boolean, name = `mgr${++sequence}`): Promise<Person & { api: () => Promise<Api> }> {
     const key = `mgr-role-${++sequence}`;
     const role = await fx.addCustomRole(org, key, 'DISPATCHER', { copyGrants: false });
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { [MANAGE]: manage }, actorId: null, reason: 'manual' });
-    const person = await fx.addUser(org, name, 'DISPATCHER', { customRoleId: role.id });
+    const person = await fx.addUser(org, name, 'DISPATCHER', { customRoleId: role.id, isAdmin: manage });
     return Object.assign(person, { api: () => fx.signedInAs(person) });
   }
 
@@ -297,7 +298,7 @@ suite('the change logs of a role and of a person (real database)', () => {
   });
 
   describe('who may read it', () => {
-    it('is read by a holder of Manage roles and permissions, refused to a person without it, and never shows another company\'s rows', async () => {
+    it('is read by an Admin, refused to a non-Admin, and never shows another company\'s rows', async () => {
       const { org } = await fx.newOrg();
       const other = await fx.newOrg();
       const holder = await manager(org, true);

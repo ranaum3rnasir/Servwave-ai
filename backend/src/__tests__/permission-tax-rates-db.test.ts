@@ -1,8 +1,8 @@
 /* =============================================================================
-   Roles & Permissions, PRD 7, slice S07.22 - Tax rates load on forms; tax settings stay with Company settings.
+   Roles & Permissions, PRD 7, slice S07.22 - Tax rates load on forms; tax settings stay with the Admin (36b: the Company settings switch retired).
 
    Everything goes through the public interface: the routes, called as a person on a custom role (never a
-   built-in role name) who can create estimates and invoices but does NOT hold Company settings. Real migrated
+   built-in role name) who can create estimates and invoices and is not an Admin. Real migrated
    database (TEST_DATABASE_URL); the suite skips when it is unset. Every org it creates is removed again.
    ========================================================================== */
 
@@ -32,10 +32,9 @@ import { SWITCH_CATALOG } from '../lib/permissions/switches/catalog';
 const suite = realClient ? describe : describe.skip;
 
 const keyOf = (label: string) => SWITCH_CATALOG.find((s) => s.label === label)!.key;
-const COMPANY_SETTINGS = keyOf('Company settings');
-const FORM_SWITCHES = ['View estimates', 'Create estimates', 'Standalone estimates', 'View invoices', 'Create invoices', 'Standalone invoices'].map(keyOf);
+const FORM_SWITCHES = ['View estimates', 'Edit estimates', 'Create estimates', 'Standalone estimates', 'View invoices', 'Edit invoices', 'Create invoices', 'Standalone invoices'].map(keyOf);
 
-suite('tax rates load on the estimate and invoice forms; tax settings stay with Company settings (real database)', () => {
+suite('tax rates load on the estimate and invoice forms; tax settings stay with the Admin (real database)', () => {
   const db = realClient as PrismaClient;
   const fx = switchFixture(db, async () => (await import('../app.js')).default as never);
   // Loading the whole app is slow on a loaded machine.
@@ -52,7 +51,7 @@ suite('tax rates load on the estimate and invoice forms; tax settings stay with 
     const key = `tax-role-${++sequence}`;
     const role = await fx.addCustomRole(org, key, 'SALES', { madeFromBlank: true, copyGrants: false });
     const allOff = Object.fromEntries(SWITCH_CATALOG.filter((s) => s.kind === 'toggle').map((s) => [s.key, false]));
-    const values = { ...allOff, ...Object.fromEntries(on.map((k) => [k, true])) };
+    const values = { ...allOff, see_prices: true, ...Object.fromEntries(on.map((k) => [k, true])) };
     await setRoleSwitchValues({ organizationId: org, roleKey: key, values, actorId: null, reason: 'manual' });
     const person = await fx.addUser(org, `t${sequence}`, 'SALES', { customRoleId: role.id, basedOnRoleKey: key });
     return Object.assign(person, { api: () => fx.signedInAs(person) });
@@ -83,7 +82,7 @@ suite('tax rates load on the estimate and invoice forms; tax settings stay with 
     expect((await api.get('/api/org-tax-rates')).status).toBe(200);
   });
 
-  it('prices an estimate at the chosen org rate for a person without Company settings', async () => {
+  it('prices an estimate at the chosen org rate for a person who is not an Admin', async () => {
     const { org, customer } = await orgWithLocalRate();
     const person = await personWith(org, FORM_SWITCHES);
 
@@ -93,7 +92,7 @@ suite('tax rates load on the estimate and invoice forms; tax settings stay with 
     expect(Number(res.body.estimate.total_amount)).toBeCloseTo(108.25, 2);
   });
 
-  it('prices an invoice at the org rate for the customer\'s location for a person without Company settings', async () => {
+  it('prices an invoice at the org rate for the customer\'s location for a person who is not an Admin', async () => {
     const { org, customer } = await orgWithLocalRate();
     const person = await personWith(org, FORM_SWITCHES);
 
@@ -104,7 +103,7 @@ suite('tax rates load on the estimate and invoice forms; tax settings stay with 
     expect(Number(res.body.invoice.total_amount)).toBeCloseTo(108.25, 2);
   });
 
-  it('refuses the tax settings writes (add, edit, delete) without Company settings, and lets them through with it', async () => {
+  it('refuses the tax settings writes (add, edit, delete) to a non-Admin, and lets them through for the Admin', async () => {
     const { org, rate } = await orgWithLocalRate();
     const without = await (await personWith(org, FORM_SWITCHES)).api();
 
@@ -113,7 +112,12 @@ suite('tax rates load on the estimate and invoice forms; tax settings stay with 
     expect((await without.delete(`/api/org-tax-rates/${rate.id}`)).status).toBe(403);
     expect(Number((await db.orgTaxRate.findUniqueOrThrow({ where: { id: rate.id } })).rate)).toBeCloseTo(0.0825, 6);
 
-    const withIt = await (await personWith(org, [...FORM_SWITCHES, COMPANY_SETTINGS])).api();
+    const everything = SWITCH_CATALOG.filter((s) => s.kind === 'toggle').map((s) => s.key);
+    const widest = await (await personWith(org, everything)).api();
+    expect((await widest.post('/api/org-tax-rates', { name: 'Nope', rate: 0.01 })).status).toBe(403);
+
+    const admin = await db.user.findFirstOrThrow({ where: { organization_id: org, is_admin: true }, select: { id: true, email: true } });
+    const withIt = await fx.signedInAs(admin);
     expect((await withIt.post('/api/org-tax-rates', { name: 'Yes', rate: 0.01 })).status).toBe(201);
     expect((await withIt.patch(`/api/org-tax-rates/${rate.id}`, { rate: 0.09 })).status).toBe(200);
   });

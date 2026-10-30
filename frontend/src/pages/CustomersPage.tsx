@@ -499,7 +499,7 @@ export default function CustomersPage() {
     setPage(1);
   };
 
-  const canCreate = user?.role === 'ADMIN' || user?.role === 'DISPATCHER';
+  const canCreate = user?.is_admin === true || user?.role === 'DISPATCHER';
   // ONE gate for BOTH export paths — see the identical comment on the LIVE page
   // (`pages/v2/customers/CustomersPage.tsx`, which is what `/customers` routes
   // to). This copy is unrouted, but ~4 test files still import it, so it is kept

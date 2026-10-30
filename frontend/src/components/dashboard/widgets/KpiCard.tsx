@@ -29,7 +29,7 @@ export interface KpiCardProps {
   icon: ReactNode;
   iconBg: string; // tailwind bg class for the icon chip
   label: string;
-  /** The word the server sends when the figure is not the whole company's ("Yours", "Your team", "Your location"). */
+  /** The word the server sends when the figure is not the whole company's ("Yours", "Your team"). */
   scopeLabel?: string | null;
   value: string; // pre-formatted
   meta?: ReactNode;

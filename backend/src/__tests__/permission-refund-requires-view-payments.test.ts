@@ -2,7 +2,7 @@
    Payments go-live, slice P8 - catalog edits agreed with the roles session (13 Oct).
 
    Pure: no database. Refund payments needs View payments and payouts (the Payments page the refund is made from),
-   and View payments and payouts sits in the Invoices and payments group beside Show Payments page.
+   and View payments and payouts sits in the Invoices and payments group.
    ========================================================================== */
 
 import { describe, it, expect } from 'vitest';
@@ -31,10 +31,8 @@ describe('Refund payments needs View payments and payouts', () => {
 });
 
 describe('View payments and payouts sits with the invoice switches', () => {
-  it('is in the Invoices module, directly before Show Payments page', () => {
+  it('is in the Invoices module', () => {
     expect(entry('view_payments').module).toBe('Invoices');
-    const keys = SWITCH_CATALOG.map((s) => s.key);
-    expect(keys.indexOf('view_payments')).toBe(keys.indexOf('show_payments_page') - 1);
   });
 
   it('keeps its grant, label and help text, a toggle that requires nothing', () => {

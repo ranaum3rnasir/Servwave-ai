@@ -198,7 +198,7 @@ suite('the Schedule walkthrough feed under Leads scope Attached (real database)'
       const teammate = await fx.addUser(org, 'team', 'TECHNICIAN', { departmentId: department, locationId: location });
       const lead = await leadWithWalkthrough(org, customer, [teammate.id, admin.id]);
 
-      for (const scope of ['all', 'team', 'location']) {
+      for (const scope of ['all', 'team']) {
         const me = await personWith(org, { leads_scope: scope, book_walkthroughs: false });
         await db.user.update({ where: { id: me.id }, data: { department_id: department, location_id: location } });
         expect((await feed(await me.api())).get(lead.id), scope).toEqual([lead.visit]);

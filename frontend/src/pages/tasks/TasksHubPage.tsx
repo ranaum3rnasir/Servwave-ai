@@ -24,7 +24,8 @@ export default function TasksHubPage() {
   const [newTaskOpen, setNewTaskOpen] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
   const role = useAuthStore((s) => s.user?.role);
-  const canSeeHistory = role === 'ADMIN' || role === 'DISPATCHER';
+  const isAdmin = useAuthStore((s) => s.user?.is_admin === true);
+  const canSeeHistory = isAdmin || role === 'DISPATCHER';
 
   const tabs: TabStripTab[] = [
     { value: 'dashboard', label: 'Dashboard' },

@@ -157,8 +157,9 @@ export default function PhonePage() {
     (!isDemo && !isPilot && PILOT_AND_DEMO_SECTIONS.includes(s));
   const section: ModuleSection = isSectionHidden(requestedSection) ? 'calls' : requestedSection;
   const moduleTabs = MODULE_TABS.filter((t) => !isSectionHidden(t.key));
-  // The Phone usage bar follows its own switch.
-  const mayUsageBar = ability.can('phone_usage_bar', 'Communication');
+  // The Phone usage bar has no switch of its own (P1): it shows with the Phone numbers tab, the people who manage the
+  // company's numbers, which is who the server's usage read answers.
+  const mayUsageBar = ability.can('phone_numbers_tab', 'Communication');
 
   // Within-Calls sub-tab + KPI focus stay local (a sub-nav, no remount needed).
   const [tab, setTab] = useState<Tab>('calls');

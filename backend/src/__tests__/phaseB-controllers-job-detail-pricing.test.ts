@@ -7,7 +7,7 @@ import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 // Phase B (§E), reworked by Roles & Permissions S01.15 - what the job detail withholds.
 //
-// COSTS (the labor_hours / overhead cost model) follow See financial data. PRICES follow the record:
+// COSTS (the labor_hours / overhead cost model) follow See costs. PRICES follow the record:
 // the job's own prices are never withheld from a person who can open the job, and the money of the
 // OTHER records embedded in the payload (the attached estimate's total and line prices, each invoice's
 // total_amount / amount_due) follows the ability to read that record - a strict technician reads their
@@ -15,7 +15,7 @@ import { clearPermissionCache } from '../lib/permissions/permissionCache';
 // remaining_unbilled) through it independent of any estimate read. Descriptions and quantities are kept
 // either way so the tech can still do the work. Mirrors the lead-controller `stripEstimateMonetaryFields`.
 //
-// The Technician preset: View estimates on, View invoices off, See financial data off.
+// The Technician preset: View estimates on, View invoices off, See costs off.
 //
 // INVOICES (S04.26): the payload lists only the invoices the person can open, with their prices - the invoice query
 // that decides it is mocked here (the real scope is proven against a database in permission-job-money-db.test.ts).
@@ -75,7 +75,7 @@ beforeEach(() => {
   mockPrisma.invoice.findMany.mockResolvedValue([]);
 });
 
-describe('GET /api/jobs/:id — the embedded money follows the record, the cost model follows See financial data', () => {
+describe('GET /api/jobs/:id — the embedded money follows the record, the cost model follows See costs', () => {
   it('technician on the preset: estimate prices stay (View estimates is on), an invoice they cannot open is not listed, and the cost model goes', async () => {
     mockAuthAs('technician');
 
@@ -96,7 +96,7 @@ describe('GET /api/jobs/:id — the embedded money follows the record, the cost 
     // job still knows it has one.
     expect(job.invoices).toEqual([]);
     expect(job.invoice_count).toBe(1);
-    // R3b — cost model fields stripped: See financial data is off.
+    // R3b — cost model fields stripped: See costs is off.
     expect(job.labor_hours).toBeUndefined();
     expect(job.overhead_mode).toBeUndefined();
     expect(job.overhead_value).toBeUndefined();
@@ -123,9 +123,9 @@ describe('GET /api/jobs/:id — the embedded money follows the record, the cost 
   });
 
   // The other side of the same switch: with it on, a technician pricing a job sees the cost model.
-  it('technician with See financial data on gets the cost model too', async () => {
+  it('technician with See costs on gets the cost model too', async () => {
     mockAuthAs('technician');
-    mockRoleSwitches({ see_financial_data: true });
+    mockRoleSwitches({ see_costs: true });
 
     const res = await request(app).get(`/api/jobs/${JOB_ID}`).set(authHeader('technician'));
 
@@ -140,7 +140,7 @@ describe('GET /api/jobs/:id — the embedded money follows the record, the cost 
 });
 
 describe('GET /api/jobs/:id — money and cost for the office roles', () => {
-  it('DISPATCHER (reads estimates and invoices, See financial data off) sees every price but not the cost model', async () => {
+  it('DISPATCHER (reads estimates and invoices, See costs off) sees every price but not the cost model', async () => {
     mockAuthAs('dispatcher');
 
     const res = await request(app).get(`/api/jobs/${JOB_ID}`).set(authHeader('dispatcher'));
@@ -153,7 +153,7 @@ describe('GET /api/jobs/:id — money and cost for the office roles', () => {
     expect(job.estimate.line_items[0].line_total).toBe(1600);
     expect(job.invoices[0].total_amount).toBe(900);
     expect(job.invoices[0].amount_due).toBe(400);
-    // R3b — cost model fields are a cost: the Dispatcher preset has See financial data off.
+    // R3b — cost model fields are a cost: the Dispatcher preset has See costs off.
     expect(job.labor_hours).toBeUndefined();
     expect(job.overhead_mode).toBeUndefined();
     expect(job.overhead_value).toBeUndefined();
@@ -176,7 +176,7 @@ describe('GET /api/jobs/:id — money and cost for the office roles', () => {
   // conditional read Invoice) once handed the technician full dollar visibility on their own job,
   // costs included. That is exactly the leak the card names - an admin granting on-site invoicing or
   // payment collection silently unlocked cost/margin data while the Roles UI switch that claims to
-  // control it still read OFF. The See financial data switch is the only door to COSTS; the invoice
+  // control it still read OFF. The See costs switch is the only door to COSTS; the invoice
   // grant opens the invoice's own prices (it is the invoice record), and nothing more.
   it('technician given View invoices gets the invoice prices but still NO cost on their own job', async () => {
     mockAuthAs('technician');

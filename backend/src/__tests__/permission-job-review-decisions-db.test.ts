@@ -47,7 +47,7 @@ const ALL_OFF: Record<string, SwitchValue> = Object.fromEntries(
 );
 
 /** What opening the job and its invoices takes. */
-const OPENING = { view_jobs: true, jobs_scope: 'all', view_invoices: true, invoices_scope: 'all' };
+const OPENING = { view_jobs: true, jobs_scope: 'all', view_invoices: true, leads_scope: 'all' };
 
 const PHONE = { value: '5551234567', extension: null, label: null };
 const EMAIL = { value: 'tenant@example.test', extension: null, label: null };
@@ -76,7 +76,7 @@ suite('the office review customer decisions (real database)', () => {
   async function personWith(org: string, values: Record<string, SwitchValue>, base: Role = 'DISPATCHER') {
     const key = `job-review-decisions-role-${++sequence}`;
     const role = await fx.addCustomRole(org, key, base);
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...values }, actorId: null, reason: 'manual' });
+    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, see_prices: true, ...values }, actorId: null, reason: 'manual' });
     const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
     return Object.assign(person, { api: () => fx.signedInAs(person) });
   }
@@ -344,7 +344,7 @@ suite('the office review customer decisions (real database)', () => {
     const evB = await added(b.org, jobB.id, 'PHONE');
     const api = await scoped.api();
     const body = (ev: { id: string; metadata: unknown }) => ({ item_key: `contact:${(ev.metadata as { entry_id: string }).entry_id}`, entry_id: ev.id, choice: 'ADD' });
-    expect((await api.post(`/api/jobs/${jobA.id}/review/decisions`, body(evA))).status).toBe(403);
+    expect((await api.post(`/api/jobs/${jobA.id}/review/decisions`, body(evA))).status).toBe(404);
     expect((await api.post(`/api/jobs/${jobB.id}/review/decisions`, body(evB))).status).toBe(404);
     expect(await db.jobReviewCustomerDecision.count({ where: { organization_id: { in: [a.org, b.org] } } })).toBe(0);
   });

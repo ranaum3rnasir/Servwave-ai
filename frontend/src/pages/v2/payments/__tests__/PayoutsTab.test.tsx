@@ -11,7 +11,7 @@ import {
 } from './payoutsFixtures';
 
 const user = () => userEvent.setup();
-const OWNER = buildAbility([{ action: 'manage_payout_account', subject: 'Organization' }, { action: 'view_payments', subject: 'Organization' }]);
+const OWNER = buildAbility([{ action: 'manage_payout_account', subject: 'Organization' }, { action: 'view_payments', subject: 'Organization' }, { action: 'read', subject: 'Prices' }]);
 const open = (entry = '/payments?tab=payouts', ability = OWNER) =>
   renderWithProviders(<PayoutsHarness />, { initialEntries: [entry], ability });
 const bodyRows = () => within(screen.getAllByRole('rowgroup')[1]!).getAllByRole('row');

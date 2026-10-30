@@ -60,10 +60,6 @@ describe('technician complete Job is seed-time only (D15)', () => {
   // longer lets anyone complete a job, in an old org or a new one. The switch is the only source.
   it('no longer lets a technician in an EXISTING org complete on the stored row alone', async () => {
     mockAuthAs('technician');
-    mockPrisma.rolePermission.findMany.mockResolvedValue([
-      ...DEFAULT_GRANTS.filter((g) => g.role === 'TECHNICIAN'),
-      { role: 'TECHNICIAN', action: 'complete', subject: 'Job', conditions: OWN_JOB },
-    ]);
     clearPermissionCache();
     arrangeCrewedJob();
 

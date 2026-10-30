@@ -29,7 +29,6 @@ const mockPrisma = prisma as unknown as {
   priceBookItem: { findMany: ReturnType<typeof vi.fn>; count: ReturnType<typeof vi.fn> };
   priceBookCategory: { findMany: ReturnType<typeof vi.fn> };
   itemGroup: { findMany: ReturnType<typeof vi.fn> };
-  rolePermission: { findMany: ReturnType<typeof vi.fn> };
 };
 
 beforeEach(() => {
@@ -162,9 +161,6 @@ describe('GET /api/price-book/items — resolved cost', () => {
     // cost strip would hand a technician the margin data the strip exists to withhold.
     mockAuthAs('technician');
     clearPermissionCache();
-    mockPrisma.rolePermission.findMany.mockResolvedValue([
-      { role: 'TECHNICIAN', action: 'read', subject: 'PriceBook' },
-    ]);
     mockPrisma.priceBookItem.findMany.mockResolvedValue([itemRow({ unit_cost: 200, sell_price: 500 })]);
     mockPrisma.priceBookItem.count.mockResolvedValue(1);
 
@@ -196,7 +192,7 @@ describe('GET /api/price-book/items — the raw columns still travel', () => {
     });
   });
 
-  it('hands a reader without See financial data exactly these keys and nothing else', async () => {
+  it('hands a reader without See costs exactly these keys and nothing else', async () => {
     // EXHAUSTIVE `toEqual` on purpose — do NOT relax it to `toMatchObject`, and do not
     // reduce it to a handful of `toBeUndefined()` checks on the field names we happen to
     // know about today. Naming the fields that must be ABSENT can only ever catch the
@@ -209,9 +205,6 @@ describe('GET /api/price-book/items — the raw columns still travel', () => {
     // TECHNICIAN holds role-default `read PriceBook` but not `read Invoice` — the same
     // grant shape price-book.test.ts's §D7 block uses.
     clearPermissionCache();
-    mockPrisma.rolePermission.findMany.mockResolvedValue([
-      { role: 'TECHNICIAN', action: 'read', subject: 'PriceBook' },
-    ]);
     mockPrisma.priceBookItem.findMany.mockResolvedValue([itemRow({ sell_price: 500, list_price: 900 })]);
     mockPrisma.priceBookItem.count.mockResolvedValue(1);
 
@@ -405,9 +398,6 @@ describe('GET /api/price-book/items/search — the projection carries both fallb
     // thought of.
     mockAuthAs('technician');
     clearPermissionCache();
-    mockPrisma.rolePermission.findMany.mockResolvedValue([
-      { role: 'TECHNICIAN', action: 'read', subject: 'PriceBook' },
-    ]);
     mockFindManyThroughSelect();
 
     const res = await request(app).get('/api/price-book/items/search?q=tune').set(authHeader('technician'));

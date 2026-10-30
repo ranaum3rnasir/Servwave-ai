@@ -85,7 +85,10 @@ suite('transactional routes on a one-connection pool (real database)', () => {
   let sequence = 0;
   type Api = Awaited<ReturnType<typeof fx.signedInAs>>;
 
-  /** A company with a person holding every switch (on a custom role, so nothing takes the Admin box's shortcut). */
+  /**
+   * A company with a person holding every switch (on a custom role, so nothing takes the Admin box's shortcut), and its Admin,
+   * who makes the user and role writes: those are the Admin flag's alone (AL-18).
+   */
   async function world() {
     const w = await fx.newOrg();
     orgs.push(w.org);
@@ -93,7 +96,21 @@ suite('transactional routes on a one-connection pool (real database)', () => {
     const role = await fx.addCustomRole(w.org, key, 'DISPATCHER');
     await setRoleSwitchValues({ organizationId: w.org, roleKey: key, values: ALL_ON, actorId: null, reason: 'manual' });
     const me: Person = await fx.addUser(w.org, `pool${sequence}`, 'DISPATCHER', { customRoleId: role.id });
-    return { ...w, me, api: await fx.signedInAs(me), roleKey: key, roleId: role.id };
+    return { ...w, me, api: as(me), adminApi: as(w.admin), roleKey: key, roleId: role.id };
+  }
+
+  /**
+   * Requests as one person. `signedInAs` sets one identity for the whole app, so each request signs in again: a world that
+   * acts as two people (the switch holder, and the Admin for user and role management, AL-18) never sends one as the other.
+   */
+  function as(person: Person) {
+    return {
+      get: async (path: string) => (await fx.signedInAs(person)).get(path),
+      post: async (path: string, body?: object) => (await fx.signedInAs(person)).post(path, body),
+      put: async (path: string, body?: object) => (await fx.signedInAs(person)).put(path, body),
+      patch: async (path: string, body?: object) => (await fx.signedInAs(person)).patch(path, body),
+      delete: async (path: string, body?: object) => (await fx.signedInAs(person)).delete(path, body),
+    };
   }
   type World = Awaited<ReturnType<typeof world>>;
 
@@ -339,7 +356,7 @@ suite('transactional routes on a one-connection pool (real database)', () => {
       const key = `pool-saved-${++sequence}`;
       await fx.addCustomRole(w.org, key, 'DISPATCHER');
       const [a, b] = flippable('DISPATCHER');
-      const res = await w.api.put(`/api/roles/${key}/permissions`, { values: { [a!.key]: true, [b!.key]: true } });
+      const res = await w.adminApi.put(`/api/roles/${key}/permissions`, { values: { [a!.key]: true, [b!.key]: true } });
       ok(res, "save a role's switches");
       expect(res.body.values[a!.key]).toBe(true);
     });
@@ -351,10 +368,10 @@ suite('transactional routes on a one-connection pool (real database)', () => {
       const w = await world();
       const sales = await target(w, 'SALES');
       const [a, b] = flippable('SALES');
-      const res = await w.api.put(`/api/users/${sales.id}/permissions`, { values: { [a!.key]: true, [b!.key]: true } });
+      const res = await w.adminApi.put(`/api/users/${sales.id}/permissions`, { values: { [a!.key]: true, [b!.key]: true } });
       ok(res, "save a person's switches");
       expect(res.body.difference_count).toBe(2);
-      expect((await w.api.get(`/api/users/${sales.id}/permissions`)).body).toEqual(res.body);
+      expect((await w.adminApi.get(`/api/users/${sales.id}/permissions`)).body).toEqual(res.body);
     });
 
     /**
@@ -383,60 +400,60 @@ suite('transactional routes on a one-connection pool (real database)', () => {
       const w = await world();
       const sales = await target(w, 'SALES');
       const [a] = flippable('SALES');
-      const res = await busyAfterCommit(() => w.api.put(`/api/users/${sales.id}/permissions`, { values: { [a!.key]: true } }));
+      const res = await busyAfterCommit(() => w.adminApi.put(`/api/users/${sales.id}/permissions`, { values: { [a!.key]: true } }));
       ok(res, 'save with the connection busy after the commit');
       expect(res.body.values[a!.key]).toBe(true);
-      expect((await w.api.get(`/api/users/${sales.id}/permissions`)).body.values[a!.key]).toBe(true);
+      expect((await w.adminApi.get(`/api/users/${sales.id}/permissions`)).body.values[a!.key]).toBe(true);
     });
 
     it("reset a person's switches", async () => {
       const w = await world();
       const sales = await target(w, 'SALES');
       const [a] = flippable('SALES');
-      ok(await w.api.put(`/api/users/${sales.id}/permissions`, { values: { [a!.key]: true } }), 'save');
-      const res = await w.api.post(`/api/users/${sales.id}/permissions/reset`, { switch_keys: [a!.key] });
+      ok(await w.adminApi.put(`/api/users/${sales.id}/permissions`, { values: { [a!.key]: true } }), 'save');
+      const res = await w.adminApi.post(`/api/users/${sales.id}/permissions/reset`, { switch_keys: [a!.key] });
       ok(res, 'reset');
       expect(res.body.difference_count).toBe(0);
-      expect((await w.api.get(`/api/users/${sales.id}/permissions`)).body).toEqual(res.body);
+      expect((await w.adminApi.get(`/api/users/${sales.id}/permissions`)).body).toEqual(res.body);
     });
 
     it("answers a person's reset of named switches from what it holds, with nothing read after the commit", async () => {
       const w = await world();
       const sales = await target(w, 'SALES');
       const [a, b] = flippable('SALES');
-      ok(await w.api.put(`/api/users/${sales.id}/permissions`, { values: { [a!.key]: true, [b!.key]: true } }), 'save');
-      const res = await busyAfterCommit(() => w.api.post(`/api/users/${sales.id}/permissions/reset`, { switch_keys: [a!.key] }));
+      ok(await w.adminApi.put(`/api/users/${sales.id}/permissions`, { values: { [a!.key]: true, [b!.key]: true } }), 'save');
+      const res = await busyAfterCommit(() => w.adminApi.post(`/api/users/${sales.id}/permissions/reset`, { switch_keys: [a!.key] }));
       ok(res, 'reset with the connection busy after the commit');
       expect(res.body.values[a!.key]).toBe(false);
       expect(res.body.values[b!.key]).toBe(true);
       expect(res.body.difference_count).toBe(1);
-      expect((await w.api.get(`/api/users/${sales.id}/permissions`)).body).toEqual(res.body);
+      expect((await w.adminApi.get(`/api/users/${sales.id}/permissions`)).body).toEqual(res.body);
     });
 
     it("answers a person's reset of everything from what it holds, with nothing read after the commit", async () => {
       const w = await world();
       const sales = await target(w, 'SALES');
       const [a, b] = flippable('SALES');
-      ok(await w.api.put(`/api/users/${sales.id}/permissions`, { values: { [a!.key]: true, [b!.key]: true } }), 'save');
-      const res = await busyAfterCommit(() => w.api.post(`/api/users/${sales.id}/permissions/reset`, { all: true }));
+      ok(await w.adminApi.put(`/api/users/${sales.id}/permissions`, { values: { [a!.key]: true, [b!.key]: true } }), 'save');
+      const res = await busyAfterCommit(() => w.adminApi.post(`/api/users/${sales.id}/permissions/reset`, { all: true }));
       ok(res, 'reset all with the connection busy after the commit');
       expect(res.body.values[a!.key]).toBe(false);
       expect(res.body.difference_count).toBe(0);
-      expect((await w.api.get(`/api/users/${sales.id}/permissions`)).body).toEqual(res.body);
+      expect((await w.adminApi.get(`/api/users/${sales.id}/permissions`)).body).toEqual(res.body);
     });
 
     it("answers a person's Save as role from what it holds, with nothing read after the commit", async () => {
       const w = await world();
       const sales = await target(w, 'SALES');
       const [a] = flippable('SALES');
-      ok(await w.api.put(`/api/users/${sales.id}/permissions`, { values: { [a!.key]: true } }), 'save');
-      const res = await busyAfterCommit(() => w.api.post(`/api/users/${sales.id}/permissions/save-as-role`, { label: `Pool role ${++sequence}` }));
+      ok(await w.adminApi.put(`/api/users/${sales.id}/permissions`, { values: { [a!.key]: true } }), 'save');
+      const res = await busyAfterCommit(() => w.adminApi.post(`/api/users/${sales.id}/permissions/save-as-role`, { label: `Pool role ${++sequence}` }));
       ok(res, 'save as role with the connection busy after the commit');
       expect(res.body.values[a!.key]).toBe(true);
       expect(res.body.difference_count).toBe(0);
       const { role, ...set } = res.body;
       expect(set.based_on).toEqual({ key: role.role, label: role.label, type: 'custom' });
-      expect((await w.api.get(`/api/users/${sales.id}/permissions`)).body).toEqual(set);
+      expect((await w.adminApi.get(`/api/users/${sales.id}/permissions`)).body).toEqual(set);
     });
 
     it("answers a role's save from what it holds, with nothing read after the commit", async () => {
@@ -444,10 +461,10 @@ suite('transactional routes on a one-connection pool (real database)', () => {
       const key = `pool-busy-${++sequence}`;
       await fx.addCustomRole(w.org, key, 'DISPATCHER');
       const [a, b] = flippable('DISPATCHER');
-      const res = await busyAfterCommit(() => w.api.put(`/api/roles/${key}/permissions`, { values: { [a!.key]: true, [b!.key]: true } }));
+      const res = await busyAfterCommit(() => w.adminApi.put(`/api/roles/${key}/permissions`, { values: { [a!.key]: true, [b!.key]: true } }));
       ok(res, "save a role's switches with the connection busy after the commit");
       expect(res.body.values[a!.key]).toBe(true);
-      expect((await w.api.get(`/api/roles/${key}/permissions`)).body.values).toEqual(res.body.values);
+      expect((await w.adminApi.get(`/api/roles/${key}/permissions`)).body.values).toEqual(res.body.values);
     });
 
     it("answers a role's reset from what it holds, with nothing read after the commit", async () => {
@@ -455,17 +472,17 @@ suite('transactional routes on a one-connection pool (real database)', () => {
       const key = `pool-busy-${++sequence}`;
       await fx.addCustomRole(w.org, key, 'DISPATCHER');
       const [a] = flippable('DISPATCHER');
-      ok(await w.api.put(`/api/roles/${key}/permissions`, { values: { [a!.key]: true } }), 'save');
-      const res = await busyAfterCommit(() => w.api.post(`/api/roles/${key}/reset`));
+      ok(await w.adminApi.put(`/api/roles/${key}/permissions`, { values: { [a!.key]: true } }), 'save');
+      const res = await busyAfterCommit(() => w.adminApi.post(`/api/roles/${key}/reset`));
       ok(res, 'reset a role with the connection busy after the commit');
       expect(res.body.values[a!.key]).toBe(false);
-      expect((await w.api.get(`/api/roles/${key}/permissions`)).body.values).toEqual(res.body.values);
+      expect((await w.adminApi.get(`/api/roles/${key}/permissions`)).body.values).toEqual(res.body.values);
     });
 
     it('answers a new role made from another from what it holds, with nothing read after the commit', async () => {
       // The copied values are read before the write opens; the answer is built from them.
       const w = await world();
-      const res = await busyAfterCommit(() => w.api.post('/api/roles', { label: `Pool copy ${++sequence}`, clone_grants_from: w.roleKey }));
+      const res = await busyAfterCommit(() => w.adminApi.post('/api/roles', { label: `Pool copy ${++sequence}`, clone_grants_from: w.roleKey }));
       ok(res, 'create a role with the connection busy after the commit');
       expect(res.body.role).toBeTruthy();
     });
@@ -482,7 +499,7 @@ suite('transactional routes on a one-connection pool (real database)', () => {
       const w = await world();
       await db.organization.update({ where: { id: w.org }, data: { email_sender_local_part: `pool${w.tag.replace(/[^a-z]/g, 'x')}` } });
       const invite = () =>
-        w.api.post('/api/users/invite', { first_name: 'Jane', last_name: 'Smith', email: `inv-${randomUUID()}@example.test`, role: 'TECHNICIAN' });
+        w.adminApi.post('/api/users/invite', { first_name: 'Jane', last_name: 'Smith', email: `inv-${randomUUID()}@example.test`, role: 'TECHNICIAN' });
 
       const first = await invite();
       ok(first, 'invite');
@@ -493,7 +510,7 @@ suite('transactional routes on a one-connection pool (real database)', () => {
       const id = randomUUID();
       (supabaseAdmin.auth.admin.createUser as ReturnType<typeof vi.fn>).mockResolvedValueOnce({ data: { user: { id } }, error: null });
       ok(
-        await w.api.post('/api/users', { first_name: 'Ann', last_name: 'Lee', email: `cr-${randomUUID()}@example.test`, password: 'a-long-password-1', role: 'TECHNICIAN' }),
+        await w.adminApi.post('/api/users', { first_name: 'Ann', last_name: 'Lee', email: `cr-${randomUUID()}@example.test`, password: 'a-long-password-1', role: 'TECHNICIAN' }),
         'create',
       );
 
@@ -505,14 +522,14 @@ suite('transactional routes on a one-connection pool (real database)', () => {
       const w = await world();
       await db.organization.update({ where: { id: w.org }, data: { email_sender_local_part: `pool${w.tag.replace(/[^a-z]/g, 'x')}` } });
       const invite = () =>
-        w.api.post('/api/users/invite', { first_name: 'Jane', last_name: 'Smith', email: `inv-${randomUUID()}@example.test`, role: 'TECHNICIAN' });
+        w.adminApi.post('/api/users/invite', { first_name: 'Jane', last_name: 'Smith', email: `inv-${randomUUID()}@example.test`, role: 'TECHNICIAN' });
       ok(await invite(), 'invite');
       const namesake = await invite();
       ok(namesake, 'invite a namesake');
 
-      const set = await w.api.put(`/api/users/${namesake.body.user.id}/mailbox-address`, { name_part: 'jane.smith2' });
+      const set = await w.adminApi.put(`/api/users/${namesake.body.user.id}/mailbox-address`, { name_part: 'jane.smith2' });
       ok(set, 'set an address');
-      const change = await w.api.put(`/api/users/${namesake.body.user.id}/mailbox-address`, { name_part: 'jsmith2' });
+      const change = await w.adminApi.put(`/api/users/${namesake.body.user.id}/mailbox-address`, { name_part: 'jsmith2' });
       ok(change, 'change an address');
 
       const addresses = await db.mailboxAddress.findMany({ where: { mailbox: { user_id: namesake.body.user.id } }, orderBy: { issued_at: 'asc' } });
@@ -524,13 +541,13 @@ suite('transactional routes on a one-connection pool (real database)', () => {
       const first = `pool${w.tag.replace(/[^a-z]/g, 'x')}`;
       await db.organization.update({ where: { id: w.org }, data: { email_sender_local_part: first } });
       const invite = (firstName: string) =>
-        w.api.post('/api/users/invite', { first_name: firstName, last_name: 'Smith', email: `inv-${randomUUID()}@example.test`, role: 'TECHNICIAN' });
+        w.adminApi.post('/api/users/invite', { first_name: firstName, last_name: 'Smith', email: `inv-${randomUUID()}@example.test`, role: 'TECHNICIAN' });
       ok(await invite('Jane'), 'invite');
       ok(await invite('Omar'), 'invite another');
 
       const next = `${first}two`;
-      ok(await w.api.patch('/api/organization/email-sender', { local_part: next }), 'change the company part');
-      ok(await w.api.patch('/api/organization/email-sender', { local_part: first }), 'take the earlier part back');
+      ok(await w.adminApi.patch('/api/organization/email-sender', { local_part: next }), 'change the company part');
+      ok(await w.adminApi.patch('/api/organization/email-sender', { local_part: first }), 'take the earlier part back');
 
       const primaries = await db.mailboxAddress.findMany({ where: { organization_id: w.org, is_primary: true } });
       expect(primaries.map((a) => a.local_part).sort()).toEqual([first, `jane.smith.${first}`, `omar.smith.${first}`].sort());

@@ -174,8 +174,8 @@ export async function applyActions(
             entity_type: 'INVOICE',
             entity_id: action.invoiceId,
             event_type: 'INVOICE_REFUNDED',
-            description: `Refund of $${amount.toFixed(2)} made outside ServWave recorded`,
-            metadata: { source: 'outside_servwave', processor_refund_id: action.processorRefundId, event_id: ctx.eventId },
+            description: 'Refund made outside ServWave recorded',
+            metadata: { source: 'outside_servwave', processor_refund_id: action.processorRefundId, event_id: ctx.eventId, amount },
           },
         });
         effects.externalRefunds.push({ invoiceId: action.invoiceId, amount, processorRefundId: action.processorRefundId });
@@ -381,7 +381,7 @@ export async function recordPayment(
       entity_id: action.invoiceId,
       event_type: eventType,
       description,
-      metadata: { payment_id: payment.id, stripe_payment_intent_id: action.processorPaymentIntentId, event_id: ctx.eventId },
+      metadata: { payment_id: payment.id, stripe_payment_intent_id: action.processorPaymentIntentId, event_id: ctx.eventId, amount },
     },
   });
   // Only money that landed (SUCCEEDED) takes the balance down. A bank debit still clearing, or one
@@ -389,9 +389,9 @@ export async function recordPayment(
   const landed = action.state === 'SUCCEEDED';
   const newBalanceCents = landed ? Math.max(toCents(invoice.amount_due) - action.amountCents, 0) : toCents(invoice.amount_due);
   if (action.state === 'PROCESSING') {
-    await history('PAYMENT_PROCESSING', `${label} of $${amount.toFixed(2)} started; it takes a few business days to clear`);
+    await history('PAYMENT_PROCESSING', `${label} started; it takes a few business days to clear`);
   } else if (action.state === 'FAILED') {
-    await history('PAYMENT_FAILED', `${label} of $${amount.toFixed(2)} failed; nothing was collected`);
+    await history('PAYMENT_FAILED', `${label} failed; nothing was collected`);
   } else {
     await updateInvoiceInOrg(tx, action.invoiceId, ctx.organizationId, {
       amount_due: fromCents(newBalanceCents),
@@ -401,7 +401,7 @@ export async function recordPayment(
     // The stored net collected (and refund totals) from the ledger rows, under the same lock: SQL and
     // reports read the column (payments go-live slice 09, from slice 08 acceptance).
     await rederiveRefundTotals(tx, { invoiceId: action.invoiceId, organizationId: ctx.organizationId });
-    await history('PAYMENT_RECEIVED', `${label} of $${amount.toFixed(2)} received via ServWave Payments`);
+    await history('PAYMENT_RECEIVED', `${label} received via ServWave Payments`);
     // S06.7: money that landed is on the job's own history too (nobody signed in took it).
     await recordJobMoneyMovement(
       tx, { orgId: ctx.organizationId, userId: null }, invoice.job_id,
@@ -462,11 +462,11 @@ export async function recordPayment(
         entity_id: est.id,
         event_type: landed ? 'DEPOSIT_PAID' : 'DEPOSIT_PROCESSING',
         description: !byBank
-          ? `Deposit of $${amount.toFixed(2)} paid via credit card for estimate ${est.estimate_number}`
+          ? `Deposit paid via credit card for estimate ${est.estimate_number}`
           : landed
-            ? `Deposit of $${amount.toFixed(2)} paid by bank payment for estimate ${est.estimate_number}`
-            : `Deposit of $${amount.toFixed(2)} by bank payment started for estimate ${est.estimate_number}; it takes a few business days to clear`,
-        metadata: { payment_intent: action.processorPaymentIntentId, method: action.method },
+            ? `Deposit paid by bank payment for estimate ${est.estimate_number}`
+            : `Deposit by bank payment started for estimate ${est.estimate_number}; it takes a few business days to clear`,
+        metadata: { payment_intent: action.processorPaymentIntentId, method: action.method, amount },
       },
     });
   }
@@ -485,7 +485,6 @@ export async function recordPayment(
   };
 }
 
-const usd = (cents: number): string => `$${fromCents(cents).toFixed(2)}`;
 
 /**
  * A bank debit still clearing reached its outcome: the ledger door settles it under the invoice
@@ -525,7 +524,6 @@ async function settleBankPayment(
       organizationId: ctx.organizationId, chargeId: action.charge.id, paymentIntentId: payment.stripe_payment_intent_id, paymentId: action.paymentId,
     });
   }
-  const amount = usd(toCents(payment.amount));
   // A bank deposit that cleared: its estimate (approved when the debit started) records the deposit paid.
   const deposit = action.to === 'SUCCEEDED' ? await tx.invoice.findFirst({
     where: { id: payment.invoice_id, organization_id: ctx.organizationId, kind: 'DEPOSIT' },
@@ -538,8 +536,8 @@ async function settleBankPayment(
         entity_type: 'ESTIMATE',
         entity_id: deposit.estimate.id,
         event_type: 'DEPOSIT_PAID',
-        description: `Deposit of ${amount} paid by bank payment for estimate ${deposit.estimate.estimate_number}`,
-        metadata: { payment_intent: payment.stripe_payment_intent_id, method: 'ACH' },
+        description: `Deposit paid by bank payment for estimate ${deposit.estimate.estimate_number}`,
+        metadata: { payment_intent: payment.stripe_payment_intent_id, method: 'ACH', amount: Number(payment.amount) },
       },
     });
   }
@@ -550,9 +548,9 @@ async function settleBankPayment(
       entity_id: payment.invoice_id,
       event_type: action.to === 'SUCCEEDED' ? 'PAYMENT_RECEIVED' : 'PAYMENT_FAILED',
       description: action.to === 'SUCCEEDED'
-        ? `Bank payment of ${amount} cleared`
-        : `Bank payment of ${amount} failed; the balance is open for payment again`,
-      metadata: { payment_id: action.paymentId, stripe_payment_intent_id: payment.stripe_payment_intent_id, event_id: ctx.eventId },
+        ? 'Bank payment cleared'
+        : 'Bank payment failed; the balance is open for payment again',
+      metadata: { payment_id: action.paymentId, stripe_payment_intent_id: payment.stripe_payment_intent_id, event_id: ctx.eventId, amount: Number(payment.amount) },
     },
   });
   // S06.7: a bank payment that cleared and was applied is money collected: on the job's own history
@@ -609,9 +607,9 @@ async function openDispute(
       entity_id: action.invoiceId,
       event_type: 'INVOICE_DISPUTED',
       description: action.bankReturn
-        ? `The bank returned the payment of ${usd(action.amountCents)} on invoice ${invoice.invoice_number}`
-        : `Card payment of ${usd(action.amountCents)} disputed on invoice ${invoice.invoice_number}`,
-      metadata: { processor_dispute_id: action.processorDisputeId, payment_id: action.paymentId, bank_return: action.bankReturn, event_id: ctx.eventId },
+        ? `The bank returned the payment on invoice ${invoice.invoice_number}`
+        : `Card payment disputed on invoice ${invoice.invoice_number}`,
+      metadata: { processor_dispute_id: action.processorDisputeId, payment_id: action.paymentId, bank_return: action.bankReturn, event_id: ctx.eventId, amount: action.amountCents / 100 },
     },
   });
 }
@@ -699,7 +697,7 @@ async function flagPartialChargeback(
       entity_type: 'INVOICE',
       entity_id: action.invoiceId,
       event_type: 'CHARGEBACK_PARTIAL',
-      description: `${taken} ${usd(action.disputedCents)} of the ${usd(action.unrefundedCents)} payment on invoice ${invoice.invoice_number}. `
+      description: `${taken} part of the payment on invoice ${invoice.invoice_number}. `
         + 'The payment and the balance were left as they are; the balance needs a manual review.',
       metadata: {
         processor_dispute_id: action.processorDisputeId, payment_id: action.paymentId,
@@ -810,9 +808,9 @@ async function failDisputedPayment(
       entity_type: 'INVOICE',
       entity_id: action.invoiceId,
       event_type: 'PAYMENT_RETURNED',
-      description: `${taken} of ${usd(action.amountCents)} on invoice ${invoice.invoice_number} before it cleared. `
+      description: `${taken} on invoice ${invoice.invoice_number} before it cleared. `
         + 'The payment was marked failed; it was never counted, so the balance is unchanged.',
-      metadata: { processor_dispute_id: action.processorDisputeId, payment_id: action.paymentId, event_id: ctx.eventId },
+      metadata: { processor_dispute_id: action.processorDisputeId, payment_id: action.paymentId, event_id: ctx.eventId, amount: action.amountCents / 100 },
     },
   });
   // What the customer owes again is the payment's own face amount, not the dispute amount (which includes the tip).
@@ -840,7 +838,6 @@ function unappliedCapture(
 ): UnappliedCapture {
   const label = action.paymentLabel;
   const on = action.invoice ? `on invoice ${action.invoice.invoiceNumber}` : '';
-  const charged = action.chargedCents != null ? ` of ${usd(action.chargedCents)}` : '';
   const description = (() => {
     switch (action.reason) {
       case 'DEPOSIT_SUPERSEDED':
@@ -851,11 +848,11 @@ function unappliedCapture(
         return `${label} ${on} was not recorded: ${notPayableBecause(action.invoiceStatus)}`;
       case 'INVOICE_NOT_FOUND':
       case 'WRONG_ORG':
-        return `${label}${charged} was not recorded: it does not belong to any invoice in this account.`;
+        return `${label} was not recorded: it does not belong to any invoice in this account.`;
       case 'DOCUMENT_MISMATCH':
         return `${label} ${on} was not recorded: the payment was made for a different document than this invoice.`;
       case 'REFUND_UNMATCHED':
-        return `${label}${charged} sent from this account was not recorded: it does not match any payment ServWave recorded.`;
+        return `${label} sent from this account was not recorded: it does not match any payment ServWave recorded.`;
       case 'AMOUNT_MISMATCH':
       default:
         return `${label} ${on} was not recorded: the amount paid does not match the amount owed.`;
@@ -928,7 +925,7 @@ async function lockInvoice(tx: Prisma.TransactionClient, invoiceId: string, orga
  */
 async function systemActor(tx: Prisma.TransactionClient, organizationId: string): Promise<string> {
   const admin = await tx.user.findFirst({
-    where: { organization_id: organizationId, role: 'ADMIN' },
+    where: { organization_id: organizationId, is_admin: true },
     orderBy: { created_at: 'asc' },
     select: { id: true },
   });

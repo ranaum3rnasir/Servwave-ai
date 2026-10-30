@@ -36,6 +36,7 @@ vi.mock('../lib/numbering', () => {
 });
 
 import { switchFixture, type Person } from './permission-switches-fixture';
+import { withDependantsOff } from './support/switchDependants';
 import { setRoleSwitchValues } from '../lib/permissions/switches/store';
 import { SWITCH_CATALOG, presetSwitchSet, type SwitchValue } from '../lib/permissions/switches/catalog';
 
@@ -60,16 +61,43 @@ const ACTION_SWITCH = {
   renumber: 'edit_job_record_ids',
   edit_line_items: 'edit_job_line_items',
   add_note: 'add_notes',
-  upload_attachment: 'upload_attachments',
   log_communication: 'log_past_communications',
 } as const;
 type JobAction = keyof typeof ACTION_SWITCH;
+
+/** Edit jobs also lists the job's own data actions: a note and an upload are the job's own data (P10), so its Edit adds them. */
+const EDIT_BRINGS: string[] = ['edit', 'add_note', 'upload_attachment'];
 const ACTIONS = Object.keys(ACTION_SWITCH) as JobAction[];
+
+/**
+ * Create requires Edit (AL-04): holding the switch behind some actions takes other switches too. The extras are valid
+ * together, and an extra that is itself a page action is listed with it (Duplicate needs Create jobs, which needs Edit jobs).
+ */
+const ALSO_HOLDS: Partial<Record<JobAction, Record<string, SwitchValue>>> = {
+  duplicate: { edit_jobs: true, create_jobs: true },
+  create_invoice: { edit_invoices: true },
+  create_estimate: { edit_estimates: true },
+};
+const ALSO_LISTED: Partial<Record<JobAction, JobAction[]>> = { duplicate: ['edit'] };
+/** The page's order, the server's. */
+const PAGE_ORDER: string[] = [
+  'edit', 'assign', 'schedule', 'complete', 'cancel', 'delete', 'duplicate', 'create_invoice', 'create_estimate', 'renumber',
+  'edit_line_items', 'apply_discount', 'add_note', 'upload_attachment', 'log_communication',
+];
+/** Edit jobs also lists the job's own data actions: a note and an upload are the job's own data (P10), so its Edit adds them. */
+const withOwnData = (held: Set<string>) => {
+  if (held.has('edit')) { held.add('add_note'); held.add('upload_attachment'); }
+  return PAGE_ORDER.filter((a) => held.has(a));
+};
+/** The actions a person holding `action`'s switch (and what it takes) is listed, in the page's order. */
+const listedFor = (action: JobAction) => withOwnData(new Set<string>([action, ...(ALSO_LISTED[action] ?? [])]));
 
 /** What opening the job and holding a switch's requirements takes, with no action switch on. */
 const OPENING = {
-  view_jobs: true, jobs_scope: 'all', create_jobs: true,
-  view_attachments: true, view_communication: true, view_invoices: true, view_estimates: true, estimates_scope: 'all',
+  view_jobs: true, jobs_scope: 'all',
+  // View leads too: an estimate on a lead is reached only with it (ticket 33), and an estimate reach narrower than All limits
+  // Create estimates to the jobs the person is crew on.
+  view_communication: true, view_invoices: true, view_estimates: true, view_leads: true, leads_scope: 'all',
 };
 
 suite('the job page action list comes from the server (real database)', () => {
@@ -92,7 +120,7 @@ suite('the job page action list comes from the server (real database)', () => {
   ): Promise<Person & { api: () => Promise<Api> }> {
     const key = `job-actions-role-${++sequence}`;
     const role = await fx.addCustomRole(org, key, base);
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...values }, actorId: null, reason: 'manual' });
+    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, see_prices: true, ...values }, actorId: null, reason: 'manual' });
     const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
     return Object.assign(person, { api: () => fx.signedInAs(person) });
   }
@@ -113,9 +141,9 @@ suite('the job page action list comes from the server (real database)', () => {
   for (const action of ACTIONS) {
     it(`lists ${action} for the person holding ${ACTION_SWITCH[action]}, and only that`, async () => {
       const { org, customer } = await fx.newOrg();
-      const me = await personWith(org, { ...OPENING, [ACTION_SWITCH[action]]: true });
+      const me = await personWith(org, { ...OPENING, ...ALSO_HOLDS[action], [ACTION_SWITCH[action]]: true });
       const job = await fx.addJob(org, customer, {});
-      expect(await actionsOn(await me.api(), job.id)).toEqual([action]);
+      expect(await actionsOn(await me.api(), job.id)).toEqual(listedFor(action));
     });
   }
 
@@ -124,19 +152,22 @@ suite('the job page action list comes from the server (real database)', () => {
     const me = await personWith(org, presetSwitchSet('TECHNICIAN'), 'TECHNICIAN');
     const job = await fx.addJob(org, customer, { crew: [me.id] });
     const preset = presetSwitchSet('TECHNICIAN');
-    const expected = ACTIONS.filter((a) => preset[ACTION_SWITCH[a]] === true);
+    const expected = withOwnData(new Set<string>(ACTIONS.filter((a) => preset[ACTION_SWITCH[a]] === true)));
     const actions = await actionsOn(await me.api(), job.id);
     expect(actions).toEqual(expected);
     // The controls the slice takes away from a technician are not there.
-    for (const gone of ['edit', 'assign', 'schedule', 'cancel', 'delete', 'complete', 'duplicate'] as const) {
+    // AL-04: the Technician preset now holds Edit jobs (Create jobs requires it), so Edit is listed; the rest are not.
+    expect(actions).toContain('edit');
+    for (const gone of ['assign', 'schedule', 'cancel', 'delete', 'complete', 'duplicate'] as const) {
       expect(actions, gone).not.toContain(gone);
     }
   });
 
-  it('lists create_estimate under a narrower Estimates scope only on a job the person is crewed on', async () => {
+  it('lists create_estimate under a reach over estimates narrower than All only on a job the person is crewed on', async () => {
     const { org, customer } = await fx.newOrg();
     const colleague = await fx.addUser(org, `crew${++sequence}`, 'TECHNICIAN');
-    const me = await personWith(org, { ...OPENING, estimates_scope: 'attached', create_estimates: true });
+    // Every job opens (Jobs scope All) but the Leads scope is Attached, so the reach over estimates is narrower than All (P6).
+    const me = await personWith(org, { ...OPENING, jobs_scope: 'all', leads_scope: 'attached', edit_estimates: true, create_estimates: true });
     const mine = await fx.addJob(org, customer, { crew: [me.id] });
     const theirs = await fx.addJob(org, customer, { crew: [colleague.id] });
     const api = await me.api();
@@ -152,7 +183,7 @@ suite('the job page action list comes from the server (real database)', () => {
     const me = await personWith(org, { ...OPENING, jobs_scope: 'attached', edit_jobs: true });
     const job = await fx.addJob(org, customer, { crew: [me.id, colleague.id] });
     const api = await me.api();
-    expect(await actionsOn(api, job.id)).toEqual(['edit']);
+    expect(await actionsOn(api, job.id)).toEqual(EDIT_BRINGS);
     await fx.removeCrew(job.visitId!, me.id);
     // Off the only visit and under Attached scope, the person no longer opens the job, so nothing is listed.
     const res = await api.get(`/api/jobs/${job.id}`);
@@ -178,7 +209,6 @@ suite('the job page action list comes from the server (real database)', () => {
       renumber: (api, job) => api.patch(`/api/jobs/${job.id}/number`, { job_number: `JN-${uuid().slice(0, 8)}` }),
       edit_line_items: (api, job) => api.post(`/api/jobs/${job.id}/line-items`, { description: 'Hinge', quantity: 1, unit_price: 10 }),
       add_note: (api, job) => api.post(`/api/jobs/${job.id}/notes`, { content: 'a note' }),
-      upload_attachment: (api, job) => api.post(`/api/attachments/JOB/${job.id}`, {}),
       log_communication: (api, job) => api.post('/api/communication/manual-log', {}),
     };
 
@@ -186,7 +216,7 @@ suite('the job page action list comes from the server (real database)', () => {
       it(`${action}: refused without ${ACTION_SWITCH[action]}, not refused with it`, async () => {
         const { org, customer } = await fx.newOrg();
         const without = await personWith(org, OPENING);
-        const withIt = await personWith(org, { ...OPENING, [ACTION_SWITCH[action]]: true });
+        const withIt = await personWith(org, { ...OPENING, ...ALSO_HOLDS[action], [ACTION_SWITCH[action]]: true });
         const a = await fx.addJob(org, customer, {});
         const b = await fx.addJob(org, customer, {});
         expect((await CALLS[action](await without.api(), a)).status).toBe(403);
@@ -196,7 +226,9 @@ suite('the job page action list comes from the server (real database)', () => {
 
     it('refuses every verb the Technician preset values leave out, and the tag and sub-status doors', async () => {
       const { org, customer } = await fx.newOrg();
-      const me = await personWith(org, presetSwitchSet('TECHNICIAN'), 'TECHNICIAN');
+      // AL-04: the Technician preset holds Edit jobs now (Create jobs requires it), and the edit, tag and sub-status doors
+      // stand on Edit jobs. So the doors are checked for a Technician whose Edit jobs (and Create jobs) is taken off.
+      const me = await personWith(org, { ...presetSwitchSet('TECHNICIAN'), edit_jobs: false, create_jobs: false }, 'TECHNICIAN');
       const job = await fx.addJob(org, customer, { crew: [me.id] });
       const api = await me.api();
       const calls: [string, Promise<{ status: number }>][] = [

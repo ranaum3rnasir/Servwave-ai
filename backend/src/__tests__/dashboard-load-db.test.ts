@@ -52,7 +52,8 @@ import { defaultLayoutOf, eligibleTiles, type SwitchValues } from '../lib/dashbo
 const suite = realClient ? describe : describe.skip;
 
 // A Sales-preset person's default home page on an empty company, measured when S09.18 gave it Estimates still to send.
-const SALES_QUERIES = 17;
+// Ticket 37: every signed-in request reads the person's access stamp first (one query), so each count below is one more.
+const SALES_QUERIES = 18;
 
 type Answer = {
   tiles: Array<{ id: string; category: string }>;
@@ -89,7 +90,7 @@ suite('GET /api/dashboard on a pool of one connection (real database)', () => {
   const ALL_OFF: Record<string, SwitchValue> = Object.fromEntries(
     SWITCH_CATALOG.map((s) => [s.key, s.kind === 'choice' ? s.choices![0]! : s.kind === 'list' ? [] : false]),
   );
-  const ALL_SCOPES = { leads_scope: 'all', jobs_scope: 'all', estimates_scope: 'all', invoices_scope: 'all' };
+  const ALL_SCOPES = { leads_scope: 'all', jobs_scope: 'all' };
 
   async function newOrg() {
     const made = await fx.newOrg();
@@ -101,7 +102,7 @@ suite('GET /api/dashboard on a pool of one connection (real database)', () => {
   async function personWith(org: string, values: Record<string, SwitchValue>): Promise<Person> {
     const key = `load-role-${++sequence}`;
     await fx.addCustomRole(org, key, 'TECHNICIAN', { madeFromBlank: true, copyGrants: false });
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...values }, actorId: null, reason: 'manual' });
+    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, see_prices: true, ...values }, actorId: null, reason: 'manual' });
     const role = await db.customRole.findFirstOrThrow({ where: { organization_id: org, key } });
     return fx.addUser(org, `p${sequence}`, 'TECHNICIAN', { customRoleId: role.id });
   }
@@ -131,7 +132,7 @@ suite('GET /api/dashboard on a pool of one connection (real database)', () => {
       expect(res.status).toBe(200);
       expect(Object.keys(answer.data)).toEqual(['kpi.jobs_today']);
       // Eligible but hidden (kpi.ar) and eligible but never added (kpi.avg_ticket) are still offered by the picker.
-      const eligible = eligibleTiles({ ...presetValues(null), ...ALL_OFF, view_jobs: true, view_invoices: true, ...ALL_SCOPES } as SwitchValues);
+      const eligible = eligibleTiles({ ...presetValues(null), ...ALL_OFF, see_prices: true, view_jobs: true, view_invoices: true, ...ALL_SCOPES } as SwitchValues);
       expect(answer.tiles.map((t) => t.id)).toEqual(eligible.map((t) => t.id));
       expect(answer.tiles.map((t) => t.id)).toEqual(expect.arrayContaining(['kpi.ar', 'kpi.avg_ticket']));
       expect(answer.categories.length).toBeGreaterThan(0);
@@ -165,7 +166,8 @@ suite('GET /api/dashboard on a pool of one connection (real database)', () => {
       // Measured at 7 (the layout, the lead counts, the close rate) until S09.16 gave that default Jobs this month, which is
       // one grouped read of the visits (see below): 8, and S09.17 gave it Completed jobs value, one aggregate of the jobs: 9, and S09.18 gave it Estimates still to send, one count of the draft estimates (the rows are read only when there is a draft): 10. A count, not a time, so it is steady in CI. Before the page computed
       // only its shown tiles it asked for every eligible tile: 16 tiles, about 45 queries.
-      expect(queries.length).toBeLessThanOrEqual(10);
+      // Ticket 37: every signed-in request reads the person's access stamp first (one query), so each count below is one more.
+      expect(queries.length).toBeLessThanOrEqual(11);
     });
   });
 
@@ -174,7 +176,7 @@ suite('GET /api/dashboard on a pool of one connection (real database)', () => {
     const noOwnerCounts = (queries: string[]) => queries.filter((q) => /SELECT COUNT/i.test(q) && /"public"\."leads"/.test(q) && /"commission_owner_id" IS NULL/.test(q));
     const noOwnerOldest = (queries: string[]) => queries.filter((q) => !/COUNT/i.test(q) && /FROM "public"\."leads"/.test(q) && /"commission_owner_id" IS NULL/.test(q));
 
-    const LEADS = { view_leads: true, show_leads_page: true, leads_scope: 'all' };
+    const LEADS = { view_leads: true, leads_scope: 'all' };
 
     it('reads the count once and the oldest lead once for the tile, the Needs Attention item and the Open Leads line together', async () => {
       const { org, customer } = await newOrg();
@@ -225,7 +227,8 @@ suite('GET /api/dashboard on a pool of one connection (real database)', () => {
       const { res, answer, queries } = await read(dispatcher, '?shown=1');
       expect(res.status).toBe(200);
       expect(answer.data.missing_lead_owner).toMatchObject({ count: 1 });
-      expect(queries.length).toBeLessThanOrEqual(24);
+      // Ticket 37: every signed-in request reads the person's access stamp first (one query), so each count below is one more.
+      expect(queries.length).toBeLessThanOrEqual(25);
     });
 
     it('reads an Admin-preset person\'s default home page in a bounded number of queries', async () => {
@@ -234,7 +237,8 @@ suite('GET /api/dashboard on a pool of one connection (real database)', () => {
       const admin = await fx.addUser(org, 'adm', 'ADMIN');
       const { res, queries } = await read(admin, '?shown=1');
       expect(res.status).toBe(200);
-      expect(queries.length).toBeLessThanOrEqual(45);
+      // Ticket 37: every signed-in request reads the person's access stamp first (one query), so each count below is one more.
+      expect(queries.length).toBeLessThanOrEqual(46);
     });
   });
 
@@ -289,7 +293,7 @@ suite('GET /api/dashboard on a pool of one connection (real database)', () => {
     const crewlessCounts = (queries: string[]) => crewlessReads(queries).filter((q) => /SELECT COUNT/i.test(q));
     const crewlessSoonest = (queries: string[]) => crewlessReads(queries).filter((q) => !/COUNT/i.test(q));
 
-    const JOBS = { view_jobs: true, show_jobs_page: true, access_schedule: true, jobs_scope: 'all' };
+    const JOBS = { view_jobs: true, access_schedule: true, jobs_scope: 'all' };
 
     async function orgWithCrewlessVisits(visits: number) {
       const made = await newOrg();
@@ -341,7 +345,8 @@ suite('GET /api/dashboard on a pool of one connection (real database)', () => {
       const none = await read(await fx.addUser(quiet.org, 'disp-none', 'DISPATCHER'), '?shown=1');
       expect(none.res.status).toBe(200);
       expect(none.answer.data.missing_crew).toEqual({ count: 0, soonest: null });
-      expect(none.queries.length).toBeLessThanOrEqual(24);
+      // Ticket 37: every signed-in request reads the person's access stamp first (one query), so each count below is one more.
+      expect(none.queries.length).toBeLessThanOrEqual(25);
       expect(crewlessCounts(none.queries)).toHaveLength(1);
       expect(crewlessSoonest(none.queries)).toHaveLength(0);
 
@@ -369,7 +374,7 @@ suite('GET /api/dashboard on a pool of one connection (real database)', () => {
       for (const [seq, status] of ([[1, 'COMPLETED'], [2, 'SCHEDULED']] as const)) {
         await db.visit.create({ data: { organization_id: org, job_id: job.id, purpose: 'WORK', visit_seq: seq, status, scheduled_at: noon, scheduled_end: noon } });
       }
-      const me = await personWith(org, { view_jobs: true, show_jobs_page: true, jobs_scope: 'all' });
+      const me = await personWith(org, { view_jobs: true, jobs_scope: 'all' });
       const { res, answer, queries } = await read(me, '?tiles=jobs_this_month');
       expect(res.status).toBe(200);
       expect(answer.data.jobs_this_month).toEqual({ jobs: 1, finished: 1, still_to_do: 1 });
@@ -386,7 +391,8 @@ suite('GET /api/dashboard on a pool of one connection (real database)', () => {
       const { res, answer, queries } = await read(stock, '?shown=1');
       expect(res.status).toBe(200);
       expect(answer.data.jobs_this_month).toEqual({ jobs: 0, finished: 0, still_to_do: 0 });
-      expect(queries.length).toBe(10);
+      // Ticket 37: every signed-in request reads the person's access stamp first (one query), so each count below is one more.
+      expect(queries.length).toBe(11);
       expect(visitReads(queries)).toHaveLength(1);
     });
   });
@@ -400,7 +406,7 @@ suite('GET /api/dashboard on a pool of one connection (real database)', () => {
       const job = await fx.addJob(org, customer, { status: 'COMPLETED' });
       await db.job.update({ where: { id: job.id }, data: { completed_at: new Date(), amount_invoiced: 40 } });
       for (const see of [true, false]) {
-        const me = await personWith(org, { view_jobs: true, show_jobs_page: true, jobs_scope: 'all', see_company_figures: see });
+        const me = await personWith(org, { view_jobs: true, jobs_scope: 'all', see_company_figures: see });
         const { res, answer, queries } = await read(me, '?tiles=completed_jobs_value');
         expect(res.status).toBe(200);
         expect(answer.data.completed_jobs_value).toEqual({ jobs: see ? 1 : 0, value: see ? 40 : 0 });
@@ -416,7 +422,8 @@ suite('GET /api/dashboard on a pool of one connection (real database)', () => {
       const { res, answer, queries } = await read(stock, '?shown=1');
       expect(res.status).toBe(200);
       expect(answer.data.completed_jobs_value).toEqual({ jobs: 0, value: 0 });
-      expect(queries.length).toBe(10);
+      // Ticket 37: every signed-in request reads the person's access stamp first (one query), so each count below is one more.
+      expect(queries.length).toBe(11);
       const alone = await read(stock, '?tiles=completed_jobs_value');
       expect(jobReads(alone.queries)).toHaveLength(1);
     });
@@ -428,7 +435,7 @@ suite('GET /api/dashboard on a pool of one connection (real database)', () => {
 
     it('reads the count alone when nothing is waiting, and the count and the rows when something is', async () => {
       const { org, customer, admin } = await newOrg();
-      const me = await personWith(org, { view_estimates: true, show_estimates_page: true, estimates_scope: 'all' });
+      const me = await personWith(org, { view_estimates: true, jobs_scope: 'all', leads_scope: 'all' });
       const none = await read(me, '?tiles=estimates_to_send');
       expect(none.answer.data.estimates_to_send).toEqual({ count: 0, estimates: [] });
       expect(estimateReads(none.queries)).toHaveLength(1);
@@ -447,7 +454,8 @@ suite('GET /api/dashboard on a pool of one connection (real database)', () => {
       const techRead = await read(tech, '?shown=1');
       expect(techRead.res.status).toBe(200);
       expect(techRead.answer.data.estimates_to_send).toEqual({ count: 0, estimates: [] });
-      expect(techRead.queries.length).toBe(10);
+      // Ticket 37: every signed-in request reads the person's access stamp first (one query), so each count below is one more.
+      expect(techRead.queries.length).toBe(11);
       const sales = await fx.addUser(org, 'sales-estimates', 'SALES');
       const salesRead = await read(sales, '?shown=1');
       expect(salesRead.res.status).toBe(200);
@@ -527,7 +535,7 @@ suite('GET /api/dashboard on a pool of one connection (real database)', () => {
       it('keeps the invoice mirror rule: a copy on a job reaches only a person who can open the invoice it names', async () => {
         const { org, customer, admin } = await newOrg();
         const jobOnly = await personWith(org, { view_jobs: true, jobs_scope: 'attached' });
-        const both = await personWith(org, { view_jobs: true, view_invoices: true, jobs_scope: 'attached', invoices_scope: 'all' });
+        const both = await personWith(org, { view_jobs: true, view_invoices: true, jobs_scope: 'attached' });
         const job = await fx.addJob(org, customer, { crew: [jobOnly.id, both.id] });
         const made = await fx.addInvoice(org, customer, { jobId: job.id, createdBy: admin.id });
         const tag = { invoice_id: made.id, invoice_number: 'INV-X', invoice_event_type: 'PAYMENT_RECEIVED' };

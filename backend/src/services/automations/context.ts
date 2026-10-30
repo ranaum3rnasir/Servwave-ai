@@ -393,9 +393,9 @@ async function taskLinkedRecordLabel(
  * ONE query for the union of every list the caller cares about.
  *
  * Ids that do not come back are DROPPED, silently and on purpose. Nothing in the database
- * removes a deactivated user's id from either array - lib/tasks/deactivation.ts does it in
- * the application layer - so a row a sweep missed still carries one, and the alternatives
- * are a recipient with no email address or a thrown enrollment.
+ * removes a deactivated user's id from either array, and deactivating a person changes no record (P19), so a task keeps
+ * the name of someone who has left; they drop out of the recipients here, and the alternatives are a recipient with
+ * no email address or a thrown enrollment.
  */
 async function loadTaskPeople(organizationId: string, ids: string[]): Promise<Map<string, RecipientUser>> {
   const unique = [...new Set(ids)];

@@ -1372,6 +1372,230 @@ export async function sendPasswordResetEmail(params: {
   }
 }
 
+/** What changed about a person's Admin access, as the Owner's alert says it. */
+export type AdminChange = 'granted' | 'removed';
+
+/** One line, nothing a mail header could read as a second line. */
+function oneLine(value: string): string {
+  return value.replace(/[\r\n]+/g, ' ').trim();
+}
+
+function adminChangeSentence(params: { actorName: string; personName: string; change: AdminChange; orgName: string }): string {
+  return params.change === 'granted'
+    ? `${params.actorName} made ${params.personName} an Admin of ${params.orgName}.`
+    : `${params.actorName} took Admin access away from ${params.personName} at ${params.orgName}.`;
+}
+
+const ADMIN_CHANGE_FINE_PRINT =
+  "As the Owner, you're told about every change to who is an Admin. If you didn't expect this one, open Settings, then Users & Teams, and review this person.";
+
+function adminChangeHtml(params: {
+  greeting: string; sentence: string; when: string; subject: string;
+  org: OrganizationBrandingSubset;
+}): string {
+  return wrapHtml(h`
+    <h2 style="margin:0 0 8px;font-size:22px;color:#111827;">${params.subject}</h2>
+    <p style="margin:0 0 16px;font-size:15px;color:#374151;">${params.greeting}</p>
+    <p style="margin:0 0 8px;font-size:15px;color:#374151;">${params.sentence}</p>
+    <p style="margin:0 0 16px;font-size:14px;color:#6b7280;">${params.when}</p>
+    <p style="margin:0;font-size:13px;color:#9ca3af;">${ADMIN_CHANGE_FINE_PRINT}</p>
+  `, params.org);
+}
+
+/**
+ * Tell the company's Owner that someone became an Admin or stopped being one (Roles & Permissions, ticket 25, M6). An
+ * account-security email like the password reset: sent under the company's name from the platform address, and not through
+ * the company's business-email switch, so turning business email off can't silence it.
+ *
+ * Returns true only when the provider accepted the message. Never throws. The names in it are the people's own; no address,
+ * id or account detail is put in it.
+ */
+export async function sendAdminChangeAlertEmail(params: {
+  to: string;
+  ownerFirstName: string;
+  personName: string;
+  actorName: string;
+  change: AdminChange;
+  at: Date;
+  organizationId: string;
+}): Promise<boolean> {
+  if (!resend) {
+    logger.warn(`RESEND_API_KEY not set - admin change alert not sent (org ${params.organizationId})`);
+    return false;
+  }
+  const orgRow = await prisma.organization.findUnique({
+    where: { id: params.organizationId },
+    select: { name: true, logo_url: true, brand_color: true, timezone: true },
+  });
+  const org: OrganizationBrandingSubset = {
+    id: params.organizationId,
+    name: orgRow?.name ?? 'ServWave',
+    logo_url: orgRow?.logo_url ?? null,
+    brand_color: orgRow?.brand_color ?? '#242424',
+  };
+  const personName = oneLine(params.personName);
+  const subject = params.change === 'granted' ? `${personName} is now an Admin` : `${personName} is no longer an Admin`;
+  const sentence = adminChangeSentence({ actorName: oneLine(params.actorName), personName, change: params.change, orgName: org.name });
+  const when = formatDateTimeInZone(params.at, orgRow?.timezone ?? DEFAULT_TIMEZONE);
+  const greeting = resetGreeting(params.ownerFirstName);
+  try {
+    const { error } = await resend.emails.send({
+      from: formatSenderIdentity(org.name, platformFromAddress()),
+      to: params.to,
+      subject,
+      text: `${greeting} ${sentence}\n\n${when}\n\n${ADMIN_CHANGE_FINE_PRINT}`,
+      html: adminChangeHtml({ greeting, sentence, when, subject, org }),
+    });
+    if (error) {
+      logger.error(`Admin change alert rejected by the mail provider (org ${params.organizationId})`, {
+        name: (error as { name?: string }).name,
+        statusCode: (error as { statusCode?: number | null }).statusCode,
+      });
+      return false;
+    }
+    return true;
+  } catch (err) {
+    logger.error(`Admin change alert could not be sent (org ${params.organizationId})`, {
+      name: err instanceof Error ? err.name : typeof err,
+    });
+    return false;
+  }
+}
+
+/**
+ * Make Owner (Roles & Permissions, ticket 27, D1). Three account-security emails, sent like the Admin-change alert: under the
+ * company's name from the platform address, never through the business-email switch, never throwing, true only when the
+ * provider accepted the message. The approval link is a live credential until it is used or expires: it is never written to a
+ * log line, and neither is a provider error's message. No address, id or account detail is put in any of them.
+ */
+async function sendOwnerEmail(params: {
+  organizationId: string;
+  to: string;
+  what: string;
+  build: (org: OrganizationBrandingSubset, orgRow: { timezone: string | null } | null) => { subject: string; text: string; html: string };
+}): Promise<boolean> {
+  if (!resend) {
+    logger.warn(`RESEND_API_KEY not set - ${params.what} not sent (org ${params.organizationId})`);
+    return false;
+  }
+  try {
+    const orgRow = await prisma.organization.findUnique({
+      where: { id: params.organizationId },
+      select: { name: true, logo_url: true, brand_color: true, timezone: true },
+    });
+    const org: OrganizationBrandingSubset = {
+      id: params.organizationId,
+      name: orgRow?.name ?? 'ServWave',
+      logo_url: orgRow?.logo_url ?? null,
+      brand_color: orgRow?.brand_color ?? '#242424',
+    };
+    const { subject, text, html } = params.build(org, orgRow);
+    const { error } = await resend.emails.send({ from: formatSenderIdentity(org.name, platformFromAddress()), to: params.to, subject, text, html });
+    if (error) {
+      logger.error(`${params.what} rejected by the mail provider (org ${params.organizationId})`, {
+        name: (error as { name?: string }).name,
+        statusCode: (error as { statusCode?: number | null }).statusCode,
+      });
+      return false;
+    }
+    return true;
+  } catch (err) {
+    logger.error(`${params.what} could not be sent (org ${params.organizationId})`, { name: err instanceof Error ? err.name : typeof err });
+    return false;
+  }
+}
+
+/** The Owner's approval link lives as long as an invite link: the spec gives it no expiry of its own. */
+export const OWNER_APPROVAL_FINE_PRINT =
+  "This link works once and expires in 7 days. If you didn't ask for this, don't open the link and nothing will change. Then change your password, because someone may be signed in as you.";
+
+/** Ask the CURRENT Owner to approve handing ownership to another Admin (D1). Nothing has changed yet. */
+export async function sendOwnerApprovalEmail(params: {
+  to: string;
+  ownerFirstName: string;
+  newOwnerName: string;
+  approveUrl: string;
+  organizationId: string;
+}): Promise<boolean> {
+  return sendOwnerEmail({
+    organizationId: params.organizationId,
+    to: params.to,
+    what: 'Owner approval email',
+    build: (org) => {
+      const newOwner = oneLine(params.newOwnerName);
+      const subject = `Approve ${newOwner} as the new Owner`;
+      const greeting = resetGreeting(params.ownerFirstName);
+      const sentence = `You asked to make ${newOwner} the Owner of ${org.name}. Nothing changes until you approve it.`;
+      const brandColor = org.brand_color ?? '#242424';
+      return {
+        subject,
+        text: `${greeting} ${sentence}\n\nApprove: ${params.approveUrl}\n\n${OWNER_APPROVAL_FINE_PRINT}`,
+        html: wrapHtml(h`
+    <h2 style="margin:0 0 8px;font-size:22px;color:#111827;">${subject}</h2>
+    <p style="margin:0 0 16px;font-size:15px;color:#374151;">${greeting}</p>
+    <p style="margin:0 0 16px;font-size:15px;color:#374151;">${sentence}</p>
+    <table cellpadding="0" cellspacing="0" style="margin:0 0 24px;">
+      <tr><td style="background:${brandColor};border-radius:6px;padding:12px 28px;">
+        <a href="${params.approveUrl}" style="color:#ffffff;text-decoration:none;font-size:15px;font-weight:600;">Approve new Owner</a>
+      </td></tr>
+    </table>
+    <p style="margin:0;font-size:13px;color:#6b7280;">${OWNER_APPROVAL_FINE_PRINT}</p>
+  `, org),
+      };
+    },
+  });
+}
+
+/** Who an Owner-changed email goes to: the person who is now the Owner, or the one who was. */
+export type OwnerChangedFor = 'new' | 'previous';
+
+const OWNER_CHANGED_FINE_PRINT = {
+  new: "As the Owner, you're the only one who can add or remove Admins, act on an Admin's account, or hand ownership on.",
+  previous: "You're still an Admin. If you didn't approve this, contact ServWave support right away.",
+} as const;
+
+/**
+ * Tell the new Owner that ownership moved to them, and the outgoing Owner that it moved away (spec: the Owner is emailed on every
+ * Owner change). Sent after the change has committed.
+ */
+export async function sendOwnerChangedEmail(params: {
+  to: string;
+  firstName: string;
+  for: OwnerChangedFor;
+  newOwnerName: string;
+  previousOwnerName: string;
+  at: Date;
+  organizationId: string;
+}): Promise<boolean> {
+  return sendOwnerEmail({
+    organizationId: params.organizationId,
+    to: params.to,
+    what: params.for === 'new' ? 'New Owner email' : 'Previous Owner email',
+    build: (org, orgRow) => {
+      const newOwner = oneLine(params.newOwnerName);
+      const previous = oneLine(params.previousOwnerName);
+      const subject = params.for === 'new' ? `You're now the Owner of ${org.name}` : `${newOwner} is now the Owner of ${org.name}`;
+      const sentence = params.for === 'new'
+        ? `${previous} made you the Owner of ${org.name}.`
+        : `You approved the hand-over: ${newOwner} is now the Owner of ${org.name}.`;
+      const greeting = resetGreeting(params.firstName);
+      const when = formatDateTimeInZone(params.at, orgRow?.timezone ?? DEFAULT_TIMEZONE);
+      const fine = OWNER_CHANGED_FINE_PRINT[params.for];
+      return {
+        subject,
+        text: `${greeting} ${sentence}\n\n${when}\n\n${fine}`,
+        html: wrapHtml(h`
+    <h2 style="margin:0 0 8px;font-size:22px;color:#111827;">${subject}</h2>
+    <p style="margin:0 0 16px;font-size:15px;color:#374151;">${greeting}</p>
+    <p style="margin:0 0 8px;font-size:15px;color:#374151;">${sentence}</p>
+    <p style="margin:0 0 16px;font-size:14px;color:#6b7280;">${when}</p>
+    <p style="margin:0;font-size:13px;color:#9ca3af;">${fine}</p>
+  `, org),
+      };
+    },
+  });
+}
+
 /**
  * Internal ops alert (payments go-live slice 37: the nightly reconcile's drift report). Goes to
  * ServWave's own inbox (PAYMENTS_OPS_ALERT_EMAIL), plain text, never to an org or a customer.
@@ -1872,9 +2096,10 @@ export async function sendDepositPaidAlert(params: {
   to: string;
   estimateNumber: string;
   customerName: string;
-  depositAmount: number;
   paymentMethod: string;
 }): Promise<void> {
+  // A staff email names no amount (Roles & Permissions M4, Ran 2026-10-28): the creator may not hold See prices, and an email
+  // cannot be hidden from them afterwards. The deposit's figure is on the estimate, for whoever may open it.
   const methodLabels: Record<string, string> = {
     CARD: 'Card',
     BANK_TRANSFER: 'Bank Transfer',
@@ -1890,8 +2115,7 @@ export async function sendDepositPaidAlert(params: {
   const html = wrapHtml(h`
     <h2 style="margin:0 0 8px;font-size:22px;color:#111827;">Deposit Received</h2>
     <p style="margin:0 0 16px;font-size:15px;color:#374151;">
-      Deposit received for <strong>${params.estimateNumber}</strong> from <strong>${params.customerName}</strong> -
-      <strong>${formatCurrency(params.depositAmount)}</strong> via ${methodLabel}.
+      Deposit received for <strong>${params.estimateNumber}</strong> from <strong>${params.customerName}</strong> via ${methodLabel}.
     </p>
     <p style="margin:0;font-size:15px;color:#374151;">
       You can now create a job for this estimate.
@@ -1901,7 +2125,7 @@ export async function sendDepositPaidAlert(params: {
     await dispatchEmail(params.organizationId, {
       to: params.to,
       subject: `Deposit Received - ${params.estimateNumber}`,
-      text: `Deposit received for ${params.estimateNumber} from ${params.customerName} - ${formatCurrency(params.depositAmount)} via ${methodLabel}. You can now create a job.`,
+      text: `Deposit received for ${params.estimateNumber} from ${params.customerName} via ${methodLabel}. You can now create a job.`,
       html,
     });
     logger.info(`Deposit paid alert sent to ${params.to} for ${params.estimateNumber}`);
@@ -1916,8 +2140,8 @@ export async function sendPaymentMethodSelectedAlert(params: {
   estimateNumber: string;
   customerName: string;
   paymentMethod: string;
-  depositAmount: number;
 }): Promise<void> {
+  // A staff email names no amount (Roles & Permissions M4, Ran 2026-10-28), as the deposit alert above.
   const methodLabels: Record<string, string> = {
     CARD: 'Card',
     BANK_TRANSFER: 'Bank Transfer',
@@ -1934,7 +2158,7 @@ export async function sendPaymentMethodSelectedAlert(params: {
     <h2 style="margin:0 0 8px;font-size:22px;color:#111827;">Customer Selected Payment Method</h2>
     <p style="margin:0 0 16px;font-size:15px;color:#374151;">
       <strong>${params.customerName}</strong> selected <strong>${methodLabel}</strong> for the
-      <strong>${formatCurrency(params.depositAmount)}</strong> deposit on estimate <strong>${params.estimateNumber}</strong>.
+      deposit on estimate <strong>${params.estimateNumber}</strong>.
     </p>
     <p style="margin:0;font-size:15px;color:#374151;">
       Watch for incoming payment before marking the deposit as received.
@@ -1944,7 +2168,7 @@ export async function sendPaymentMethodSelectedAlert(params: {
     await dispatchEmail(params.organizationId, {
       to: params.to,
       subject: `Payment Method Selected - ${params.estimateNumber}`,
-      text: `Customer selected ${methodLabel} for ${formatCurrency(params.depositAmount)} deposit on ${params.estimateNumber}. Watch for incoming payment.`,
+      text: `Customer selected ${methodLabel} for the deposit on ${params.estimateNumber}. Watch for incoming payment.`,
       html,
     });
     logger.info(`Payment method selected alert sent to ${params.to} for ${params.estimateNumber}`);
@@ -1983,8 +2207,7 @@ function paymentsActionNeededHtml(params: {
 }
 
 /**
- * Co-branded action-needed email (Task 1.9). Sent to the active holders of Company settings (else of
- * Manage roles and permissions) from lib/payments-notifications.ts (sendAccountNotices) when Stripe's
+ * Co-branded action-needed email (Task 1.9). Sent to the company's active Admins from lib/payments-notifications.ts (sendAccountNotices) when Stripe's
  * requirements_due gains items or the account becomes disabled/restricted —
  * the "Interrupt + email" half of billing.payments_action_needed /
  * billing.payments_paused (§6.7). Deep-links to Settings > ServWave Payments.

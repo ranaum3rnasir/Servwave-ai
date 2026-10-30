@@ -97,7 +97,7 @@ export default function PurchaseOrdersPage() {
   // Export purchase orders compiles into `export PurchaseOrder`. The files are built in the browser, so the buttons
   // (and the checkboxes that exist only for Export selected) show only with it.
   const canExport = ability.can('export', 'PurchaseOrder');
-  // Amounts are costs: without See financial data the server sends none, and the page draws no Total column and
+  // Amounts are costs: without See costs the server sends none, and the page draws no Total column and
   // writes none to a file, rather than a $0 that reads like a value.
   const canSeeCosts = canSeePricing(ability);
   const [tab, setTabRaw] = useState<Tab>('open'); // default landing tab

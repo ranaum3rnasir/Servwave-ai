@@ -3,7 +3,9 @@ import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { tenantWhere } from '../lib/tenant';
-import { matchByPhone, normalizeNAPhone } from '../lib/comms-identity';
+import { findCustomerToContact, leadReachWhere } from '../lib/permissions/targetReach';
+import { normalizeNAPhone } from '../lib/comms-identity';
+import { matchByPhoneInReach } from '../lib/communication/phoneMatchInReach';
 import { scopeWhereForReq } from '../lib/permissions/enforce';
 import { textReadScopeForReq, textsInSectionScopeForReq } from '../lib/communication/communicationScope';
 import { findOrCreateSmsThreadByNumber, smsThreadExistsForNumber } from '../lib/ctm/smsThread';
@@ -467,7 +469,7 @@ export async function createThread(req: Request, res: Response) {
     let explicitLeadId: string | null = null;
     if (req.body.lead_id) {
       const lead = await prisma.lead.findFirst({
-        where: { id: req.body.lead_id, ...tenantWhere(req) },
+        where: await leadReachWhere(req, req.body.lead_id),
       });
       if (!lead) {
         res.status(404).json({ error: 'Lead not found' });
@@ -476,7 +478,8 @@ export async function createThread(req: Request, res: Response) {
       explicitLeadId = lead.id;
     }
 
-    const match = await matchByPhone(prisma, orgId, req.body.from_number);
+    // Re-audit P2-1: the number's customer only when the person can open it; otherwise the thread is filed on nobody.
+    const match = await matchByPhoneInReach(req, req.body.from_number);
 
     const thread = await prisma.messageThread.create({
       data: {
@@ -528,6 +531,24 @@ export async function sendMessage(req: Request, res: Response) {
       }
     }
 
+    // Re-audit NV-v3b-1 (GitHub #2906): the job is resolved up front too, under the caller's OWN Job row-scope (the same rule
+    // sendWhatsApp and sendEmail apply), so a made-up, hidden or another company's job is refused BEFORE any conversation
+    // exists. Refusing it after a number's thread was made left an empty conversation behind, and the next plain send to that
+    // number then counted as a reply to an existing conversation and skipped the Access Communication gate below. A send into
+    // an existing conversation (threadId) makes no thread, and keeps its order: the internal-lane refusal comes first, below.
+    const findJobInReach = async () => prisma.job.findUnique({
+      where: { id: req.body.jobId, ...tenantWhere(req), ...(await scopeWhereForReq(req, 'Job')) },
+      select: { id: true, job_number: true, customer_id: true },
+    });
+    let job: Awaited<ReturnType<typeof findJobInReach>> = null;
+    if (req.body.jobId && !req.body.threadId) {
+      job = await findJobInReach();
+      if (!job) {
+        res.status(404).json({ error: 'Job not found' });
+        return;
+      }
+    }
+
     // Compose-to-number (slice H7): resolved AFTER threadId and customerId —
     // an explicit thread/customer always wins over the raw number.
     let threadFromNumber = false;
@@ -540,9 +561,10 @@ export async function sendMessage(req: Request, res: Response) {
     if (req.body.threadId) {
       // Scoped like the read paths: a caller who cannot see a conversation must
       // not be able to append to it either. The resolve-or-create branches below
-      // are deliberately NOT scoped - they key a thread by customer or by raw
-      // destination number, which is a compose action, not access to a
-      // restricted row.
+      // are not scoped by the thread's read rule - they key a thread by customer
+      // or by raw destination number, which is a compose action. The number's
+      // customer is still resolved within the sender's customer reach
+      // (re-audit NV-vp3-1), and the customer path asks findCustomerToContact.
       thread = await prisma.messageThread.findFirst({
         where: {
           id: req.body.threadId,
@@ -578,8 +600,20 @@ export async function sendMessage(req: Request, res: Response) {
       // write — no create-then-rollback. A reply into a thread that already
       // exists for this number, or a lead/job-anchored compose, is a caller
       // acting on something already in their view and stays ungated.
+      // Re-audit NV-vp3-1: the number's customer only within the sender's customer reach, resolved once for the gate, the
+      // job check and the keying below.
+      const match = await matchByPhoneInReach(req, String(req.body.toNumber));
+      const identify = async () => match;
+      // NV-v3b-1: a customer's conversation takes only that customer's jobs (the same-customer rule below), checked before
+      // the conversation is made; another customer's job answers like a missing one.
+      if (job && match?.customerId && job.customer_id !== match.customerId) {
+        res.status(404).json({ error: 'Job not found' });
+        return;
+      }
       if (!req.body.leadId && !req.body.jobId) {
-        const exists = await smsThreadExistsForNumber(prisma, orgId, String(req.body.toNumber));
+        // Re-audit NV-vp3-1: asked within the sender's customer reach, so whether a customer they cannot open has a
+        // conversation never changes this answer.
+        const exists = await smsThreadExistsForNumber(prisma, orgId, String(req.body.toNumber), identify);
         if (!exists && !req.ability?.can('access_inbox', 'Communication')) {
           res.status(403).json({
             error: 'Starting a new conversation from the inbox requires access to the Communication section.',
@@ -587,16 +621,21 @@ export async function sendMessage(req: Request, res: Response) {
           return;
         }
       }
-      const resolution = await findOrCreateSmsThreadByNumber(prisma, orgId, String(req.body.toNumber));
+      // Re-audit NV-vp3-1: the number's customer only when the sender can open it. Otherwise the text goes to the number in
+      // a conversation of its own, filed on nobody; it never joins, or names, the customer's conversation.
+      const resolution = await findOrCreateSmsThreadByNumber(prisma, orgId, String(req.body.toNumber), identify);
       thread = resolution.thread;
       threadCreated = resolution.created;
       threadFromNumber = true;
     } else {
-      const customer = await prisma.customer.findFirst({
-        where: { id: req.body.customerId, ...tenantWhere(req) },
-      });
+      const customer = await findCustomerToContact(req, req.body.customerId);
       if (!customer) {
         res.status(404).json({ error: 'Customer not found' });
+        return;
+      }
+      // NV-v3b-1: another customer's job answers like a missing one, before the customer's conversation is made.
+      if (job && job.customer_id !== customer.id) {
+        res.status(404).json({ error: 'Job not found' });
         return;
       }
       thread = await prisma.messageThread.findFirst({
@@ -621,20 +660,6 @@ export async function sendMessage(req: Request, res: Response) {
       }
     }
 
-    // Lead attribution (slice E4): stamp the resolved thread's lead link.
-    // Backfill ONLY a lead-less thread belonging to the lead's OWN customer —
-    // NEVER overwrite an existing (different) lead link. A thread just created
-    // above already carries lead_id, so this no-ops on that path.
-    if (lead) {
-      const t = thread as { id: string; customer_id?: string | null; lead_id?: string | null };
-      if (t.lead_id == null && t.customer_id === lead.customer_id) {
-        await prisma.messageThread.update({
-          where: { id: thread.id },
-          data: { lead_id: lead.id },
-        });
-      }
-    }
-
     // Communication ↔ Jobs (spec §7): stamp job attribution at origin. An
     // explicit jobId (composed from a job page) always wins; otherwise inbound
     // replies on customer/vendor threads get a best-effort recency-gated
@@ -649,34 +674,40 @@ export async function sendMessage(req: Request, res: Response) {
     // is silently dropped rather than leaking an unrelated lead's id.
     const leadId = lead != null && threadRow.customer_id === lead.customer_id ? lead.id : null;
 
+    // NV-v3b-1: a refusal from here on that follows a thread THIS call made takes the thread back with it, guarded on it
+    // still being empty (see the s1d note at the delivery precheck below), so a refused send never leaves a conversation.
+    const refuseAfterThread = async (status: number, body: object) => {
+      if (threadCreated) {
+        await prisma.messageThread.deleteMany({ where: { id: thread!.id, ...tenantWhere(req), messages: { none: {} } } });
+      }
+      res.status(status).json(body);
+    };
+
     let jobStamp: { job_id: string; job_label: string | null } | null = null;
     if (req.body.jobId) {
       // Internal lanes are never job-attached — reject loudly rather than
       // silently dropping the attribution.
       if (!isJobAttributableThread(threadRow)) {
-        res.status(400).json({ error: 'Internal threads cannot be job-tagged' });
+        await refuseAfterThread(400, { error: 'Internal threads cannot be job-tagged' });
         return;
       }
-      // Under the caller's OWN Job row-scope - the same rule sendWhatsApp and
-      // sendEmail already apply, and the one this composer was missing. Stamping
-      // a send with a job the sender cannot see writes the message straight out
-      // of their own view (job > lead > customer precedence) and INTO that job's
-      // crew timeline.
-      const job = await prisma.job.findUnique({
-        where: { id: req.body.jobId, ...tenantWhere(req), ...(await scopeWhereForReq(req, 'Job')) },
-        select: { id: true, job_number: true, customer_id: true },
-      });
+      // The existing-conversation path resolves its job here, after the internal-lane rule, as it always has.
+      job ??= await findJobInReach();
       if (!job) {
         res.status(404).json({ error: 'Job not found' });
         return;
       }
+      // The job is resolved under the caller's own Job row-scope (up front for a new conversation, NV-v3b-1). Stamping a send with a job
+      // the sender cannot see writes the message straight out of their own view (job > lead > customer precedence) and INTO
+      // that job's crew timeline.
       // Same-customer constraint: a customer-owned thread only accepts that
       // customer's jobs. Another customer's job is indistinguishable from a
       // nonexistent one → 404 'Job not found' (same as cross-org; no existence
       // oracle). Customer-less threads (vendor/lead) keep org-scope-only
-      // validation.
+      // validation. The number and customer paths already checked this before
+      // making a thread; this is the existing-thread path's check.
       if (threadRow.customer_id && job.customer_id !== threadRow.customer_id) {
-        res.status(404).json({ error: 'Job not found' });
+        await refuseAfterThread(404, { error: 'Job not found' });
         return;
       }
       jobStamp = { job_id: job.id, job_label: job.job_number };
@@ -716,6 +747,21 @@ export async function sendMessage(req: Request, res: Response) {
       }
       const routed = resolveInboundSmsJob({ now, recentJobTexts: candidates });
       if (routed) jobStamp = { job_id: routed.jobId, job_label: routed.jobLabel };
+    }
+
+    // Lead attribution (slice E4): stamp the resolved thread's lead link.
+    // After every job refusal above (NV-v3b-1), so a refused send writes nothing on an existing thread either.
+    // Backfill ONLY a lead-less thread belonging to the lead's OWN customer —
+    // NEVER overwrite an existing (different) lead link. A thread just created
+    // above already carries lead_id, so this no-ops on that path.
+    if (lead) {
+      const t = thread as { id: string; customer_id?: string | null; lead_id?: string | null };
+      if (t.lead_id == null && t.customer_id === lead.customer_id) {
+        await prisma.messageThread.update({
+          where: { id: thread.id },
+          data: { lead_id: lead.id },
+        });
+      }
     }
 
     // CTM outbound delivery (slice 6). Connected orgs run the compliance

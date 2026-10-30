@@ -50,7 +50,7 @@ suite('removing two walkthrough trips of one lead concurrently (real database)',
     });
     const adminId = randomUUID();
     await prisma.user.create({
-      data: { id: adminId, email: `admin-${tag}@example.test`, first_name: 'Ada', last_name: 'Admin', role: 'ADMIN', organization_id: orgId },
+      data: { id: adminId, email: `admin-${tag}@example.test`, first_name: 'Ada', last_name: 'Admin', role: 'ADMIN', is_admin: true, organization_id: orgId },
     });
     const customerId = randomUUID();
     await prisma.customer.create({

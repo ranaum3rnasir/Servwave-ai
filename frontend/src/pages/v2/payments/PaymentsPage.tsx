@@ -7,7 +7,7 @@ import { paymentsPageKeys, usePaymentsSummary } from '@/lib/api/paymentsPage';
 import { channelAvailable, subscribe } from '@/lib/paymentsChannel';
 import { formatCurrency } from '@/lib/utils';
 import { useStripeStatus } from '@/lib/api/organization';
-import { useAppAbility } from '@/contexts/AbilityContext';
+import { useAppAbility, useCanSeePrices } from '@/contexts/AbilityContext';
 import { useScheduleTimezone } from '@/lib/schedule-tz';
 
 import { EmptyState } from '@/ui-kit/components/data/emptyState';
@@ -49,6 +49,8 @@ const FRAME_KEYS = new Set(['tab', 'period', 'from', 'to']);
  */
 export default function PaymentsPage() {
   const ability = useAppAbility();
+  // P11: the four tiles are sums of payments, so without See prices the page draws none of them.
+  const canSeePrices = useCanSeePrices();
   const tz = useScheduleTimezone();
   const { data: status, isLoading: statusLoading } = useStripeStatus();
   const [params, setSearchParams] = useSearchParams();
@@ -104,7 +106,7 @@ export default function PaymentsPage() {
   // An org with no payout account (or that has not accepted the terms) has nothing to show yet, so nothing is
   // asked of the totals route until the status says the account exists.
   const notSetUp = Boolean(status) && (!status!.connected || !status!.terms_accepted);
-  const summary = usePaymentsSummary(range, { enabled: Boolean(status) && !notSetUp });
+  const summary = usePaymentsSummary(range, { enabled: Boolean(status) && !notSetUp && canSeePrices });
   const tabState: PaymentsTabState = { params, setParams };
   const { attach: attachPanels, height: panelsHeight } = useCanvasMinHeight();
 
@@ -129,13 +131,15 @@ export default function PaymentsPage() {
         />
       ) : (
         <>
-          <KpiRow
-            summary={summary.data}
-            loading={summary.isPending && !summary.isError}
-            error={summary.isError}
-            refreshing={summary.isFetching}
-            onRetry={() => void summary.refetch()}
-          />
+          {canSeePrices && (
+            <KpiRow
+              summary={summary.data}
+              loading={summary.isPending && !summary.isError}
+              error={summary.isError}
+              refreshing={summary.isFetching}
+              onRetry={() => void summary.refetch()}
+            />
+          )}
           {/* Always on the page, outside the tab panels: a tab or chip change never remounts, hides or moves it. */}
           <AttentionCard />
           <div>

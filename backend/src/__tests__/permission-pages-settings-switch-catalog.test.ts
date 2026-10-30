@@ -25,7 +25,7 @@ type Row = {
 };
 
 const SETTINGS: Row[] = [
-  { label: 'Company settings', presets: [true, false, false, false], grants: ['update:Organization', 'update:AppSetting'], requires: [] },
+  // Company settings retired (36b, M17): setting up the company is the Admin flag's alone, so it is no row here.
   { label: 'Create tags', presets: [true, true, true, false], grants: ['create:Tag'], requires: [] },
   { label: 'Manage tags', presets: [true, false, false, false], grants: ['update:Tag', 'delete:Tag'], requires: [] },
   {

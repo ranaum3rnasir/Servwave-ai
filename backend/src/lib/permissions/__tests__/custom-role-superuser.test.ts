@@ -12,8 +12,9 @@ import { scopeWhereFor, MATCH_NOTHING } from '../scopeWhereFor';
 // Getting these wrong fails in one of two directions, so both are asserted at every site:
 // too tight locks admins out, too loose over-grants.
 
-const ADMIN = { id: 'u1', role: 'ADMIN', custom_role_id: null };
-const ADMIN_DERIVED = { id: 'u2', role: 'ADMIN', custom_role_id: 'cr-1' };
+// Admin is the flag on the person (P15): an Admin-derived custom role is a person with the flag off.
+const ADMIN = { id: 'u1', role: 'ADMIN', is_admin: true, custom_role_id: null };
+const ADMIN_DERIVED = { id: 'u2', role: 'ADMIN', is_admin: false, custom_role_id: 'cr-1' };
 
 describe('defineAbility - ADMIN short-circuit', () => {
   it('a plain ADMIN gets manage all, ignoring grants', () => {

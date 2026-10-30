@@ -103,7 +103,7 @@ export function StagePreviewDialog({
   const { data: allVendors = [] } = useVendors(ability.can('read', 'Vendor'));
   const { data: allTechs = [] } = useTechs();
   const { data: org } = useOrganization();
-  // S07.4 - the vendor column and every cost figure follow View vendors / See financial data.
+  // S07.4 - the vendor column and every cost figure follow View vendors / See costs.
   const { showCost, showVendor } = useStageLineDisclosure();
   const brand = org?.name ?? "ServWave";
 

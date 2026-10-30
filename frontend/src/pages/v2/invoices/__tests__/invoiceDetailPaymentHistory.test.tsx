@@ -3,7 +3,7 @@ import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import api from '@/lib/axios';
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderWithProviders, seesPrices } from '@/__tests__/helpers';
 
 import InvoiceDetailPage from '../InvoiceDetailPage';
 
@@ -53,7 +53,7 @@ async function openPayments(inv: ReturnType<typeof invoice>) {
     if (url.startsWith('/api/invoices/')) return { data: { invoice: inv } };
     return { data: {} };
   });
-  renderWithProviders(<InvoiceDetailPage />, { initialEntries: [`/invoices/${INVOICE_ID}`] });
+  renderWithProviders(<InvoiceDetailPage />, { initialEntries: [`/invoices/${INVOICE_ID}`], ability: seesPrices });
   await userEvent.click(await screen.findByRole('tab', { name: /^Payments \(/ }));
   return screen.getByTestId('invoice-ledger');
 }
@@ -113,7 +113,7 @@ describe('v2 invoice payment history', () => {
       }
       return { data: {} };
     });
-    renderWithProviders(<InvoiceDetailPage />, { initialEntries: [`/invoices/${INVOICE_ID}`] });
+    renderWithProviders(<InvoiceDetailPage />, { initialEntries: [`/invoices/${INVOICE_ID}`], ability: seesPrices });
 
     expect(await screen.findByRole('tab', { name: 'Payments (1)' })).toBeInTheDocument();
   });
@@ -125,7 +125,7 @@ describe('v2 invoice Processing badge', () => {
       if (url.startsWith('/api/invoices/')) return { data: { invoice: invoice({ processing_amount: 60, payments: [pay({ id: 'd', amount: 60, method: 'ACH', state: 'PROCESSING' })] }) } };
       return { data: {} };
     });
-    renderWithProviders(<InvoiceDetailPage />, { initialEntries: [`/invoices/${INVOICE_ID}`] });
+    renderWithProviders(<InvoiceDetailPage />, { initialEntries: [`/invoices/${INVOICE_ID}`], ability: seesPrices });
 
     expect((await screen.findAllByText('Processing $60.00')).length).toBeGreaterThan(0);
   });
@@ -135,7 +135,7 @@ describe('v2 invoice Processing badge', () => {
       if (url.startsWith('/api/invoices/')) return { data: { invoice: invoice({ processing_amount: 0 }) } };
       return { data: {} };
     });
-    renderWithProviders(<InvoiceDetailPage />, { initialEntries: [`/invoices/${INVOICE_ID}`] });
+    renderWithProviders(<InvoiceDetailPage />, { initialEntries: [`/invoices/${INVOICE_ID}`], ability: seesPrices });
 
     await screen.findByRole('heading', { level: 1 });
     expect(screen.queryByText(/Processing \$/)).not.toBeInTheDocument();

@@ -33,8 +33,8 @@ import {
   STATE_TAX_FIXTURE,
   mockRoleSwitches,
   attachedJobWhere,
-  creatorInvoiceWhere,
-  ownLeadsInvoiceWhere,
+  ownDocumentsInvoiceWhere,
+  salesInvoiceArms,
   withLedgerReads,
 } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
@@ -97,7 +97,6 @@ const mockPrisma = prisma as unknown as {
   depositCreditApplication: { aggregate: ReturnType<typeof vi.fn> };
   refund: { aggregate: ReturnType<typeof vi.fn> };
   user: { findUnique: ReturnType<typeof vi.fn> };
-  userPermissionOverride: { findMany: ReturnType<typeof vi.fn> };
   note: {
     findMany: ReturnType<typeof vi.fn>;
     create: ReturnType<typeof vi.fn>;
@@ -1355,9 +1354,9 @@ describe('GET /api/invoices', () => {
       .set(authHeader('technician'));
 
     expect(res.status).toBe(200);
-    // View invoices is off: nothing the scope reaches, so only the invoices the person made (the creator rule).
-    expect(mockPrisma.invoice.findMany.mock.calls[0][0].where.OR).toEqual([creatorInvoiceWhere(TEST_USERS.technician.id)]);
-    expect(mockPrisma.invoice.findMany.mock.calls[0][0].where.id).toBeUndefined();
+    // View invoices is off: View is the single gate (P7), so the scope reaches nothing, even the invoices the person made.
+    expect(mockPrisma.invoice.findMany.mock.calls[0][0].where.OR).toBeUndefined();
+    expect(mockPrisma.invoice.findMany.mock.calls[0][0].where.id).toEqual({ in: [] });
   });
 
   it('SALES sees only own leads invoices', async () => {
@@ -1376,7 +1375,7 @@ describe('GET /api/invoices', () => {
     expect(mockPrisma.invoice.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          OR: [ownLeadsInvoiceWhere(TEST_USERS.sales.id), creatorInvoiceWhere(TEST_USERS.sales.id)],
+          OR: [...salesInvoiceArms(TEST_USERS.sales.id), ownDocumentsInvoiceWhere(TEST_USERS.sales.id)],
         }),
       }),
     );
@@ -1512,7 +1511,7 @@ describe('GET /api/invoices', () => {
     const res = await request(app).get('/api/invoices?customer_id=cust-9').set(authHeader('technician'));
 
     expect(res.status).toBe(200);
-    expect(mockPrisma.invoice.findMany.mock.calls[0][0].where.OR).toEqual([creatorInvoiceWhere(TEST_USERS.technician.id)]);
+    expect(mockPrisma.invoice.findMany.mock.calls[0][0].where.id).toEqual({ in: [] });
   });
 
   it('search matches the invoice\'s direct customer name (includes job-less invoices)', async () => {
@@ -2183,8 +2182,9 @@ describe('#106 base update/delete enforcement (per-instance owner check)', () =>
   beforeEach(() => {
     clearPermissionCache();
     mockAuthAs('sales');
-    // Override the default SALES grants with the owner-scoped update/delete grant in the cache,
-    // so attachAbility builds an ability whose update/delete-Invoice rule is owner-conditioned.
+    // Sales holds neither Edit invoices nor Delete invoices in its preset, and who made an invoice opens nothing by
+    // itself (P7), so the owner cases below turn both on to reach the per-instance check they are about.
+    mockRoleSwitches({ edit_invoices: true, delete_invoices: true });
   });
 
   it('PATCH 403s + never calls prisma.invoice.update when the invoice is owned by ANOTHER user', async () => {
@@ -2198,8 +2198,8 @@ describe('#106 base update/delete enforcement (per-instance owner check)', () =>
       .set(authHeader('sales'))
       .send({ due_date: '2026-04-15T00:00:00.000Z' });
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe('Insufficient permissions');
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Invoice not found');
     // The mutation MUST NOT run — enforcement, not just persistence.
     expect(mockPrisma.invoice.update).not.toHaveBeenCalled();
   });
@@ -2227,8 +2227,8 @@ describe('#106 base update/delete enforcement (per-instance owner check)', () =>
       .delete(`/api/invoices/${INVOICE_FIXTURE.id}`)
       .set(authHeader('sales'));
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe('Insufficient permissions');
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Invoice not found');
     expect(mockPrisma.invoice.delete).not.toHaveBeenCalled();
   });
 
@@ -2298,7 +2298,7 @@ describe('#106 P0: DISPATCHER fail-open closed — grant-driven per-instance + l
     mockAuthAs('dispatcher');
     // Reading invoices and voiding them come from the switch catalog: the narrowed reach is the Invoices
     // scope, and the preset holds Void invoices off for Dispatcher.
-    mockRoleSwitches({ invoices_scope: 'attached', void_invoices: true });
+    mockRoleSwitches({ jobs_scope: 'attached', leads_scope: 'attached', void_invoices: true, delete_invoices: true });
   });
 
   // ── UPDATE ──
@@ -2312,8 +2312,8 @@ describe('#106 P0: DISPATCHER fail-open closed — grant-driven per-instance + l
       .set(authHeader('dispatcher'))
       .send({ due_date: '2026-04-15T00:00:00.000Z' });
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe('Insufficient permissions');
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Invoice not found');
     expect(mockPrisma.invoice.update).not.toHaveBeenCalled();
   });
 
@@ -2340,8 +2340,8 @@ describe('#106 P0: DISPATCHER fail-open closed — grant-driven per-instance + l
       .delete(`/api/invoices/${INVOICE_FIXTURE.id}`)
       .set(authHeader('dispatcher'));
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe('Insufficient permissions');
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Invoice not found');
     expect(mockPrisma.invoice.delete).not.toHaveBeenCalled();
   });
 
@@ -2368,8 +2368,8 @@ describe('#106 P0: DISPATCHER fail-open closed — grant-driven per-instance + l
       .post(`/api/invoices/${INVOICE_FIXTURE.id}/send`)
       .set(authHeader('dispatcher'));
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe('Insufficient permissions');
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Invoice not found');
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
   });
 
@@ -2402,8 +2402,8 @@ describe('#106 P0: DISPATCHER fail-open closed — grant-driven per-instance + l
       .set(authHeader('dispatcher'))
       .send({ voided_reason: 'Duplicate' });
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe('Insufficient permissions');
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Invoice not found');
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
   });
 
@@ -2472,8 +2472,8 @@ describe('#106 list scope is grant-driven', () => {
 
     expect(res.status).toBe(200);
     const where = mockPrisma.invoice.findMany.mock.calls[0][0].where;
-    // The grant-driven owner condition is present — un-owned rows are excluded (the creator rule's arm aside).
-    expect(where.OR).toEqual([ownLeadsInvoiceWhere(TEST_USERS.sales.id), creatorInvoiceWhere(TEST_USERS.sales.id)]);
+    // The grant-driven owner condition is present — un-owned rows are excluded (the documents they made for a customer alone aside).
+    expect(where.OR).toEqual([...salesInvoiceArms(TEST_USERS.sales.id), ownDocumentsInvoiceWhere(TEST_USERS.sales.id)]);
   });
 
   it('FAIL-CLOSED: Invoices scope Team for a person with no team lists NOTHING (MATCH_NOTHING)', async () => {
@@ -2482,14 +2482,14 @@ describe('#106 list scope is grant-driven', () => {
     // in scopeWhereForReq — never the fail-open `team: null` match. This is the gap a flat
     // hand-rolled `if (role===SALES)` block left open for any other/custom role.
     mockAuthAs('sales');
-    mockRoleSwitches({ invoices_scope: 'team' });
+    mockRoleSwitches({ jobs_scope: 'team', leads_scope: 'team' });
 
     const res = await request(app).get('/api/invoices').set(authHeader('sales'));
 
     expect(res.status).toBe(200);
     const where = mockPrisma.invoice.findMany.mock.calls[0][0].where;
-    // Nothing the scope reaches: only the invoices the person made remain (the creator rule).
-    expect(where.OR).toEqual([creatorInvoiceWhere(TEST_USERS.sales.id)]);
+    // The Team arm fails closed, and the invoices the person made for a customer alone are an arm of their own.
+    expect(where).toEqual(expect.objectContaining(ownDocumentsInvoiceWhere(TEST_USERS.sales.id)));
   });
 });
 
@@ -2524,7 +2524,7 @@ describe('GAP-3 list stats role-scope (no org-wide leak)', () => {
     const paymentWhere = mockPrisma.payment.aggregate.mock.calls[0][0].where;
     // The parent-invoice filter must carry the SALES owner condition (the scopeWhere), so the
     // collected total reflects ONLY this rep's invoices — not every payment in the org.
-    expect(paymentWhere.invoice.OR).toEqual([ownLeadsInvoiceWhere(TEST_USERS.sales.id), creatorInvoiceWhere(TEST_USERS.sales.id)]);
+    expect(paymentWhere.invoice.OR).toEqual([...salesInvoiceArms(TEST_USERS.sales.id), ownDocumentsInvoiceWhere(TEST_USERS.sales.id)]);
     // tenant scope is still present (org isolation intact).
     expect(paymentWhere.invoice.organization_id).toBe(ALPHA_ORG_ID);
   });
@@ -4304,8 +4304,9 @@ describe('POST /api/invoices/:id/payments', () => {
     const invoiceEntries = timelineCreateCalls.filter((c) => c.data.entity_type === 'INVOICE');
     expect(invoiceEntries).toHaveLength(1);
     expect(invoiceEntries[0].data.event_type).toBe('PAYMENT_RECEIVED');
-    expect(invoiceEntries[0].data.description).toContain('$500.00');
-    expect(invoiceEntries[0].data.description).toContain('Check');
+    // The words name no figure (M4, Ran 2026-10-28); the figure is on the entry's metadata, behind See prices.
+    expect(invoiceEntries[0].data.description).toBe('Payment received via Check');
+    expect(invoiceEntries[0].data.metadata).toMatchObject({ amount: 500 });
   });
 
   it('sends emails after recording payment', async () => {
@@ -4923,12 +4924,12 @@ describe('GET /api/invoices/:id/public', () => {
     expect(res.body.error).toBe('Invoice not found');
   });
 
-  it('returns 400 without token', async () => {
+  it('returns 404 without token, as for a wrong token (re-audit N0)', async () => {
     const res = await request(app)
       .get(`/api/invoices/${INVOICE_SENT_FIXTURE.id}/public`);
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe('Token required');
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Invoice not found');
   });
 
   // ── Phase 2c: public deposit-pay surface (job-less kind=DEPOSIT invoice) ──
@@ -5362,14 +5363,14 @@ describe('POST /api/invoices/:id/public/checkout', () => {
     expect(res.body.error).toBe('Card payments are not configured');
   });
 
-  it('returns 400 without token', async () => {
+  it('returns 404 without token, as for a wrong token (re-audit N0)', async () => {
     mockIsStripeConfigured.mockReturnValue(true);
 
     const res = await request(app)
       .post(`/api/invoices/${INVOICE_SENT_FIXTURE.id}/public/checkout`);
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe('Token required');
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe('Invoice not found');
   });
 
   it('returns 404 with invalid token', async () => {
@@ -7902,15 +7903,12 @@ describe('PATCH /api/invoices/:id — cost model fields (R3b)', () => {
 
   // DISPATCHER can update an Invoice unconditionally by default; every default role that can is
   // ALSO a pricing holder, so this simulates the guard's real target the same way Estimate's/
-  // Job's does - a grant set with the "See financial data" grant withheld, keeping everything
+  // Job's does - a grant set with the "See costs" grant withheld, keeping everything
   // else. SRVW-140 - the withheld subject is `Pricing`, not `Invoice`: canSeePricing was
   // repointed, so an Invoice reader/updater is no longer automatically a cost viewer.
   it('returns 403 and does not write when the requester can update the Invoice but cannot see pricing', async () => {
     clearPermissionCache();
     mockAuthAs('dispatcher');
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue(
-      DEFAULT_GRANTS.filter((g) => g.role === 'DISPATCHER' && g.subject !== 'Pricing'),
-    );
     mockPrisma.invoice.findUnique.mockResolvedValue({ id: INVOICE_FIXTURE.id, status: 'DRAFT', job: null });
     // DISPATCHER keeps its unconditional read Invoice, so canAccessRow short-circuits on the
     // empty scope and this mock goes unused - kept so the test does not depend on that detail.

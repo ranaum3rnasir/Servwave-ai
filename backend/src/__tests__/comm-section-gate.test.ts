@@ -36,7 +36,6 @@ function mockDispatcherWithoutAccessInbox() {
   const rows = DEFAULT_GRANTS.filter(
     (g) => g.role === 'DISPATCHER' && !(g.action === 'access_inbox' && g.subject === 'Communication'),
   );
-  mockPrisma.rolePermission.findMany.mockResolvedValue(rows);
   clearPermissionCache();
 }
 
@@ -48,7 +47,6 @@ function mockSalesWithCreateCommunication() {
     ...DEFAULT_GRANTS.filter((g) => g.role === 'SALES'),
     { role: 'SALES', action: 'create', subject: 'Communication' },
   ];
-  mockPrisma.rolePermission.findMany.mockResolvedValue(rows);
   clearPermissionCache();
 }
 

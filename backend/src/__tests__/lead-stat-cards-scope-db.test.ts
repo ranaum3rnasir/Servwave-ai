@@ -31,7 +31,7 @@ import { setRoleSwitchValues } from '../lib/permissions/switches/store';
 
 const suite = realClient ? describe : describe.skip;
 
-type Scope = 'all' | 'team' | 'location' | 'attached';
+type Scope = 'all' | 'team' | 'attached';
 
 const DAY = 86_400_000;
 
@@ -120,11 +120,10 @@ suite('Leads page tiles under each Leads scope (real database)', () => {
     return { org, ids, api: await fx.signedInAs(viewer) };
   }
 
-  /** What each scope reaches, written out from the PRD: Attached is the viewer's own, Team and Location add colleagues. */
+  /** What each scope reaches, written out from the PRD: Attached is the viewer's own, Team adds colleagues. */
   const REACH: Record<Scope, string[]> = {
     attached: ['mineNew', 'mineWon', 'mineOld'],
     team: ['mineNew', 'mateWalkthroughScheduled', 'mateWalkthroughCompleted', 'mateOwned', 'mineWon', 'mateLost', 'mateLostLastMonth', 'mineOld'],
-    location: ['mineNew', 'mateWalkthroughScheduled', 'mateWalkthroughCompleted', 'mateOwned', 'mineWon', 'mateLost', 'mateLostLastMonth', 'mineOld'],
     all: [
       'mineNew', 'mateWalkthroughScheduled', 'mateWalkthroughCompleted', 'strangerNew', 'nobodyNew', 'strangerOwned', 'mateOwned',
       'mineWon', 'mateLost', 'mateLostLastMonth', 'strangerWon', 'strangerLost', 'mineOld',
@@ -134,11 +133,10 @@ suite('Leads page tiles under each Leads scope (real database)', () => {
   const NO_OWNER: Record<Scope, string[]> = {
     attached: ['mineNew', 'mineOld'],
     team: ['mineNew', 'mateWalkthroughScheduled', 'mateWalkthroughCompleted', 'mineOld'],
-    location: ['mineNew', 'mateWalkthroughScheduled', 'mateWalkthroughCompleted', 'mineOld'],
     all: ['mineNew', 'mateWalkthroughScheduled', 'mateWalkthroughCompleted', 'strangerNew', 'nobodyNew', 'mineOld'],
   };
 
-  for (const scope of ['all', 'team', 'location', 'attached'] as const) {
+  for (const scope of ['all', 'team', 'attached'] as const) {
     describe(`Leads scope ${scope}`, () => {
       type Api = Awaited<ReturnType<typeof fx.signedInAs>>;
       const idsOf = (body: { leads: Array<{ id: string }> }) => body.leads.map((l) => l.id).sort();

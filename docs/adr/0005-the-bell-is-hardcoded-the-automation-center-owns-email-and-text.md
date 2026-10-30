@@ -73,7 +73,7 @@ this".
 
 - **The Test dialog's receipt is a deliberate exception, and stays.** `POST /api/workflows/:id/test`
   with `send_to_me` emits `automation.message` to the person who clicked Test
-  (`backend/src/controllers/workflow.controller.ts:766`). That is a receipt the actor asked for,
+  (`backend/src/controllers/workflow.controller.ts:772`). That is a receipt the actor asked for,
   not a workflow run, and it is classified `self` in `VERB_RULES` with an `exception` string
   saying exactly that. **No sentence here says the Automation Center never writes to the bell**,
   because that would be a documented lie the first time somebody greps for `automation.message`.

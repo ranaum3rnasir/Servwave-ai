@@ -383,7 +383,7 @@ describe('canAccessLinkedEntity after the entityAccessScope extraction', () => {
 
     const res = await request(app).get(`/api/tasks/${TASK_ID}`).set(authHeader('technician'));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   // Unknown type + CUSTOMER-without-the-grant must both refuse WITHOUT a query.

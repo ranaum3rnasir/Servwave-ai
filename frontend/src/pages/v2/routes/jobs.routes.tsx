@@ -37,7 +37,7 @@ export function jobsV2Routes() {
   return (
     <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN']} />}>
       <Route element={<V2AppLayout />}>
-        <Route element={<RequirePageAccess all={['view_jobs', 'show_jobs_page']} />}>
+        <Route element={<RequirePageAccess all={['view_jobs']} />}>
           <Route path="/jobs" element={<JobsPage />} />
         </Route>
         <Route path="/jobs/new" element={<JobFormPage />} />

@@ -71,7 +71,7 @@ suite('the creator pre-fill on a new job (real database)', () => {
     const role = await fx.addCustomRole(org, key, base);
     await setRoleSwitchValues({
       organizationId: org, roleKey: key,
-      values: { leads_scope: 'all', jobs_scope: 'all', view_jobs: true, create_jobs: true, ...values },
+      values: { leads_scope: 'all', jobs_scope: 'all', view_jobs: true, edit_jobs: true, create_jobs: true, view_customers: true, create_customers: true, edit_customers: true, ...values },
       actorId: null, reason: 'manual',
     });
     const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });

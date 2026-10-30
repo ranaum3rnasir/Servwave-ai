@@ -54,7 +54,7 @@ const ALL_OFF: Record<string, SwitchValue> = Object.fromEntries(
 );
 
 /** What opening the job and its invoices takes. */
-const OPENING = { view_jobs: true, jobs_scope: 'all', view_invoices: true, invoices_scope: 'all' };
+const OPENING = { view_jobs: true, jobs_scope: 'all', view_invoices: true, leads_scope: 'all' };
 
 suite('money owed on a job, one figure everywhere (real database)', () => {
   const db = realClient as PrismaClient;
@@ -72,7 +72,7 @@ suite('money owed on a job, one figure everywhere (real database)', () => {
   async function personWith(org: string, values: Record<string, SwitchValue>, base: Role = 'DISPATCHER') {
     const key = `job-money-owed-role-${++sequence}`;
     const role = await fx.addCustomRole(org, key, base);
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...values }, actorId: null, reason: 'manual' });
+    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, see_prices: true, ...values }, actorId: null, reason: 'manual' });
     const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
     return Object.assign(person, { api: () => fx.signedInAs(person) });
   }
@@ -87,7 +87,7 @@ suite('money owed on a job, one figure everywhere (real database)', () => {
       /** Reads the review panel. */
       reviewer: await personWith(org, { ...OPENING, office_review: true }),
       /** Adds an invoice from the job, as S06.19 lets anyone with Create invoices do in every status. */
-      biller: await personWith(org, { ...OPENING, create_invoices: true }),
+      biller: await personWith(org, { ...OPENING, edit_invoices: true, create_invoices: true }),
     };
   }
 

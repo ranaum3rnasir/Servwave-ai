@@ -26,7 +26,7 @@ vi.mock('@/lib/axios', () => ({
       const selected = config?.params?.selected ?? 'mine';
       const body: MailboxList | { emails: never[] } = url.endsWith('/mailboxes')
         ? {
-            scope: 'linked_to_me', selected, selected_label: null, selected_unread: 0, total_unread: 5,
+            scope: 'attached', selected, selected_label: null, selected_unread: 0, total_unread: 5,
             mine: { id: 'box-mine', unread: 3 }, held: answer.held, main: null, people: null,
           }
         : { emails: [] };

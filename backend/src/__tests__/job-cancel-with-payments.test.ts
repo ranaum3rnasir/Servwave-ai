@@ -458,7 +458,7 @@ describe('POST /api/jobs/:id/cancel - invoices with payments (#891)', () => {
 
   it('hides money figures in the 409 from a caller who cannot read invoices, but still names the invoices', async () => {
     // A dispatcher holding Cancel jobs; with View invoices off it is the real caller who cannot read the money
-    // (ADMIN reaches every invoice through manage-all, so it can't be narrowed this way). See financial data
+    // (ADMIN reaches every invoice through manage-all, so it can't be narrowed this way). See costs
     // covers costs only and has no part in it.
     mockAuthAs('dispatcher');
     mockRoleSwitches({ cancel_jobs: true, view_invoices: false });

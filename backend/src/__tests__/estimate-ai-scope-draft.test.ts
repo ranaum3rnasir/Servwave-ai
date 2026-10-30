@@ -99,6 +99,6 @@ describe('POST /api/estimates/:id/ai/draft-scope', () => {
       .post(`/api/estimates/${ESTIMATE_FIXTURE.id}/ai/draft-scope`)
       .set(authHeader('sales'));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 });

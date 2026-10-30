@@ -55,7 +55,7 @@ describe('POST /api/communication/calls — job stamping', () => {
   it('stamps job_id + job_label when job_id is provided', async () => {
     mockAuthAs('dispatcher');
     mockRoleSwitches({ communication_scope: 'all' }); // the attach reads under Communication scope
-    mockPrisma.job.findUnique.mockResolvedValue(JOB_ROW);
+    mockPrisma.job.findFirst.mockResolvedValue(JOB_ROW);
     mockPrisma.callSession.create.mockImplementation((a: any) =>
       Promise.resolve({ id: CALL_ID, ...a.data }));
     const res = await request(app).post('/api/communication/calls').set(authHeader('dispatcher'))
@@ -64,7 +64,7 @@ describe('POST /api/communication/calls — job stamping', () => {
     const data = mockPrisma.callSession.create.mock.calls[0][0].data;
     expect(data.job_id).toBe(JOB_ID);
     expect(data.job_label).toBe('J00077');
-    expectOrgScoped(mockPrisma.job.findUnique as Mock, ALPHA_ORG_ID);
+    expectOrgScoped(mockPrisma.job.findFirst as Mock, ALPHA_ORG_ID);
     expect(res.body.call.jobId).toBe(JOB_ID);
     expect(res.body.call.jobLabel).toBe('J00077');
   });
@@ -72,7 +72,7 @@ describe('POST /api/communication/calls — job stamping', () => {
   it('404s on a cross-org/unknown job_id and creates nothing', async () => {
     mockAuthAs('dispatcher');
     mockRoleSwitches({ communication_scope: 'all' }); // the attach reads under Communication scope
-    mockPrisma.job.findUnique.mockResolvedValue(null);
+    mockPrisma.job.findFirst.mockResolvedValue(null);
     const res = await request(app).post('/api/communication/calls').set(authHeader('dispatcher'))
       .send({ direction: 'in', from_number: '5551234567', to_number: '5550001111', status: 'completed', job_id: JOB_ID });
     expect(res.status).toBe(404);

@@ -1,10 +1,10 @@
 /**
- * Roles & Permissions S07.19 - the Vendors page follows its switches and See financial data.
+ * Roles & Permissions S07.19 - the Vendors page follows its switches and See costs.
  *
  * Rendered through the routed page (`/inventory/vendors`), with the data hooks seam-mocked to stable answers (see
  * vendorSpendBulkExport.test.tsx for why). The person's rules are built from the switches under test:
  *   - Create / Edit / Delete vendors: Add Vendor, the detail dialog's Edit and Archive, and Delete;
- *   - See financial data (`read Pricing`): the account number (card, detail, form, search) and every spend figure;
+ *   - See costs (`read Pricing`): the account number (card, detail, form, search) and every spend figure;
  *   - View purchase orders: the orders the spend is summed from;
  *   - Export vendors: the spend file's buttons and the checkboxes that exist for Export selected.
  * Money the person may not see is absent, never a $0 and never a dash.
@@ -88,7 +88,7 @@ function renderVendors(...rules: AbilityRule[][]) {
   });
 }
 
-describe('the account number follows See financial data', () => {
+describe('the account number follows See costs', () => {
   it('is on the card and found by search with it', async () => {
     renderVendors(FINANCIAL);
     const card = (await screen.findByText('Acme Supply')).closest('button')!;
@@ -127,7 +127,7 @@ describe('the account number follows See financial data', () => {
     expect(within(without).queryByText(/ACCT-4471/)).not.toBeInTheDocument();
   });
 
-  it('has an Account Number field on the Add Vendor form only with See financial data', async () => {
+  it('has an Account Number field on the Add Vendor form only with See costs', async () => {
     const withIt = renderVendors(FINANCIAL, [{ action: 'create', subject: 'Vendor' }]);
     await userEvent.click(await screen.findByRole('button', { name: /add vendor/i }));
     expect(await screen.findByPlaceholderText('Your account # with this vendor')).toBeInTheDocument();
@@ -141,7 +141,7 @@ describe('the account number follows See financial data', () => {
   });
 });
 
-describe('vendor spend follows See financial data and View purchase orders', () => {
+describe('vendor spend follows See costs and View purchase orders', () => {
   it('draws the spend tile, the card strip, the category total and the analytics tab with both', async () => {
     renderVendors(FINANCIAL, READ_POS);
     expect(await screen.findByText('Total Spend YTD')).toBeInTheDocument();
@@ -151,7 +151,7 @@ describe('vendor spend follows See financial data and View purchase orders', () 
     expect(screen.getByRole('tab', { name: /Spend Analytics/ })).toBeInTheDocument();
   });
 
-  it('draws none of it without See financial data: no tile, no strip, no tab, no dollar amount', async () => {
+  it('draws none of it without See costs: no tile, no strip, no tab, no dollar amount', async () => {
     const { container } = renderVendors(READ_POS);
     const card = (await screen.findByText('Acme Supply')).closest('button')!;
     expect(screen.queryByText('Total Spend YTD')).not.toBeInTheDocument();
@@ -177,7 +177,7 @@ describe('vendor spend follows See financial data and View purchase orders', () 
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).queryByText('YTD Spend')).not.toBeInTheDocument();
     expect(within(dialog).queryByText(/No POs yet/)).not.toBeInTheDocument();
-    // The orders list itself needs only View purchase orders; its Total column needs See financial data.
+    // The orders list itself needs only View purchase orders; its Total column needs See costs.
     expect(within(dialog).getByText('Recent purchase orders')).toBeInTheDocument();
     expect(within(dialog).queryByRole('columnheader', { name: 'Total' })).not.toBeInTheDocument();
   });

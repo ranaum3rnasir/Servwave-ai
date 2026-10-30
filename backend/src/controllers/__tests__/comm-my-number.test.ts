@@ -47,9 +47,6 @@ function mockAuthAsCustomRoleWithTechnicianSwitches() {
     custom_role: { key: CUSTOM_ROLE_KEY },
     organization: { is_demo: false, plan: 'SCALE', trial_ends_at: null, feature_overrides: {} },
   });
-  p.rolePermission.findMany.mockResolvedValue(
-    DEFAULT_GRANTS.filter((g) => g.role === 'TECHNICIAN').map((g) => ({ ...g, role: CUSTOM_ROLE_KEY })),
-  );
   clearTokenCache();
   clearPermissionCache();
 }

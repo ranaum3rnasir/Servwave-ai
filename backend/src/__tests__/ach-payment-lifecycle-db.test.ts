@@ -93,7 +93,7 @@ suite('a bank payment: processing, cleared, failed (real database)', () => {
       },
     });
     await db.user.create({
-      data: { id: user, organization_id: org, email: `admin-${tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN' },
+      data: { id: user, organization_id: org, email: `admin-${tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN', is_admin: true },
     });
     await db.customer.create({
       data: { id: customer, organization_id: org, customer_number: `C-${tag}`, kind: 'PERSON', segment: 'RESIDENTIAL', first_name: 'Pat', last_name: 'Payer' },
@@ -197,7 +197,7 @@ suite('a bank payment: processing, cleared, failed (real database)', () => {
     expect(vi.mocked(expireOpenCheckoutSessionsForInvoice)).toHaveBeenCalledWith(f.invoice, expect.anything());
     // Written down where the owner reads the invoice's history, in ServWave's words.
     const [started] = await f.history('PAYMENT_PROCESSING');
-    expect(started.description).toBe('Bank payment of $500.00 started; it takes a few business days to clear');
+    expect(started.description).toBe('Bank payment started; it takes a few business days to clear');
   });
 
   it('while the debit clears, payable-now is down: a card checkout built for the whole balance is not applied', async () => {
@@ -232,7 +232,7 @@ suite('a bank payment: processing, cleared, failed (real database)', () => {
     expect(Number(invoice.amount_due)).toBe(0);
     expect(Number(invoice.net_collected)).toBe(500);
     const [clearedEntry] = await f.history('PAYMENT_RECEIVED');
-    expect(clearedEntry.description).toBe('Bank payment of $500.00 cleared');
+    expect(clearedEntry.description).toBe('Bank payment cleared');
     expect(await f.history('INVOICE_PAID')).toHaveLength(1);
 
     // The same cleared event again (its own id) is answered as a duplicate, and the same outcome
@@ -354,7 +354,7 @@ suite('a bank payment: processing, cleared, failed (real database)', () => {
     expect(invoice.status).toBe('SENT');
     expect(Number(invoice.amount_due)).toBe(500);
     const [failedEntry] = await f.history('PAYMENT_FAILED');
-    expect(failedEntry.description).toBe('Bank payment of $500.00 failed; the balance is open for payment again');
+    expect(failedEntry.description).toBe('Bank payment failed; the balance is open for payment again');
 
     // A late "cleared" for the failed debit changes nothing.
     await f.cleared();
@@ -497,7 +497,7 @@ suite('a bank payment: processing, cleared, failed (real database)', () => {
     // The approval is announced once, as any other approval is.
     expect(await db.notification.count({ where: { organization_id: f.org, verb: 'estimate.approved' } })).toBe(1);
     const [started] = await d.estimateHistory('DEPOSIT_PROCESSING');
-    expect(started.description).toBe(`Deposit of $500.00 by bank payment started for estimate E-${f.tag}; it takes a few business days to clear`);
+    expect(started.description).toBe(`Deposit by bank payment started for estimate E-${f.tag}; it takes a few business days to clear`);
     expect(await d.estimateHistory('DEPOSIT_PAID')).toHaveLength(0);
   });
 
@@ -515,7 +515,7 @@ suite('a bank payment: processing, cleared, failed (real database)', () => {
     expect(estimate.approved_at).toEqual(approvedAt);
     expect(await db.notification.count({ where: { organization_id: f.org, verb: 'estimate.approved' } })).toBe(1);
     const [paid] = await d.estimateHistory('DEPOSIT_PAID');
-    expect(paid.description).toBe(`Deposit of $500.00 paid by bank payment for estimate E-${f.tag}`);
+    expect(paid.description).toBe(`Deposit paid by bank payment for estimate E-${f.tag}`);
   });
 
   it('a deposit paid by bank that fails: the deposit invoice reopens for payment, the estimate and lead stay WON', async () => {
@@ -829,7 +829,7 @@ suite('a bank payment: processing, cleared, failed (real database)', () => {
       const [alert, ...more] = await alerts(f, 'billing.chargeback');
       expect(more).toHaveLength(0);
       // Early return (the debit never cleared): never "taken back".
-      expect(alert.body).toBe('Amount: $500.00. The bank returned this payment before it cleared, so no money reached your ServWave Payments balance. The invoice is still open and we emailed the customer a link to pay again.');
+      expect(alert.body).toBe('The bank returned this payment before it cleared, so no money reached your ServWave Payments balance. The invoice is still open and we emailed the customer a link to pay again.');
       expect((await f.readInvoice()).status).toBe('SENT');
     });
 
@@ -845,7 +845,7 @@ suite('a bank payment: processing, cleared, failed (real database)', () => {
       expect(await asked(f)).toHaveLength(1);
       expect(await alerts(f, 'billing.bank_payment_failed')).toHaveLength(1);
       // The return finds the payment already failed: it voids nothing, and its alert claims no balance and no customer step.
-      expect((await alerts(f, 'billing.chargeback'))[0].body).toBe('Amount: $500.00.');
+      expect((await alerts(f, 'billing.chargeback'))[0].body).toBeNull();
       expect(await disputes(f)).toEqual([expect.objectContaining({ status: 'LOST', is_bank_return: true })]);
       expect((await f.readInvoice()).status).toBe('SENT');
     });

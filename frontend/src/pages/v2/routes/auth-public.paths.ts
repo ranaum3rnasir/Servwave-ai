@@ -41,6 +41,7 @@ export const AUTH_PUBLIC_V2_PATHS = [
   '/accept-invite',
   '/forgot-password',
   '/reset-password',
+  '/approve-owner',
   '/p/estimates/:id',
   '/p/invoices/:id',
   '/upgrade',

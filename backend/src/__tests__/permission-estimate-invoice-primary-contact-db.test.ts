@@ -49,7 +49,7 @@ suite('estimate and invoice details carry the primary phone and email only (real
       roleKey: key,
       values: {
         view_customers: false, view_estimates: true, view_invoices: true,
-        leads_scope: 'attached', jobs_scope: 'attached', estimates_scope: 'attached', invoices_scope: 'attached',
+        leads_scope: 'attached', jobs_scope: 'attached',
       },
       actorId: null,
       reason: 'manual',

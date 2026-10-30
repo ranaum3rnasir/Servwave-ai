@@ -40,6 +40,7 @@ async function announceInboundEmail(inbound: {
   organizationId: string;
   threadId: string;
   providerMessageId: string;
+  emailId: string;
   senderLabel: string;
   subject: string;
   heldEmailId?: string;
@@ -306,6 +307,8 @@ export async function processResendEvent(
       organizationId: string;
       threadId: string;
       providerMessageId: string;
+      /** The stored copy: the bell goes only to people who open it (M1). */
+      emailId: string;
       senderLabel: string;
       subject: string;
       /** A reply from an address we didn't send to: the held message the bell opens (S10.19). */
@@ -380,6 +383,7 @@ export async function processResendEvent(
                 organizationId: placed.organizationId,
                 threadId,
                 providerMessageId: placed.providerMessageId,
+                emailId: placed.id,
                 senderLabel: inboundMessage.from,
                 subject: inboundMessage.subject,
                 ...(held ? { heldEmailId: placed.id } : {}),

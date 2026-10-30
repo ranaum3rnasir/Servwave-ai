@@ -6,7 +6,7 @@ import {
 
 import { safeHref } from '@/lib/safe-href';
 import { useAppAbility } from '@/contexts/AbilityContext';
-import { canSeePricing as canSeePricingAbility } from '@/lib/ability';
+import { canSeePricing as canSeePricingAbility, canSeePrices as canSeePricesAbility } from '@/lib/ability';
 import {
   PROFITABILITY_NOTE,
   calculateProfitability,
@@ -146,6 +146,8 @@ export function PriceBookPage() {
   // never on a role name, mirroring InventoryPage.tsx's `isLocationAdmin` /
   // `canBulkRestock` / `canCreatePO` pattern.
   const ability = useAppAbility();
+  // P11: the price column is the sell price, so it needs See prices.
+  const canSeePrices = canSeePricesAbility(ability);
   // Add Item, Add Brand / New Bundle / Add category, and the Brand + Group
   // edit pencils - the latter two go through `useUpsertBrand` /
   // `useUpsertItemGroup`, both POST upserts gated `canDo('create','PriceBook')`.
@@ -156,7 +158,7 @@ export function PriceBookPage() {
   // Brand / Group / Category deletes - every `DELETE /price-book/.../:id`
   // route is gated `canDo('delete','PriceBook')`.
   const canDeletePriceBook = ability.can('delete', 'PriceBook');
-  // The shared "See financial data" gate, not a local re-check (SRVW-140).
+  // The shared "See costs" gate, not a local re-check (SRVW-140).
   const canSeePricing = canSeePricingAbility(ability);
   // The download is built in the browser, so the button is the whole gate: the Export price book switch
   // compiles into `export PriceBook`.
@@ -337,10 +339,10 @@ export function PriceBookPage() {
                 : it,
             ),
           ),
-      }),
+      }).filter((c) => canSeePrices || c.id !== 'price'),
     // finishNameById is a dependency because the Item cell reads it - leaving it
     // out prints the finish only for whatever map existed on first render.
-    [brands, finishNameById, canUpdatePriceBook],
+    [brands, finishNameById, canUpdatePriceBook, canSeePrices],
   );
 
   // Effective price/cost lookup mirrors the dialog - an override falls back to
@@ -776,6 +778,9 @@ export function PriceBookPage() {
                       </ul>
                     </div>
                     <div className="mt-auto flex items-end justify-between border-t pt-2">
+                      {/* Ruling 7 (Ran, 2026-10-29): without See prices the bundle stays on the page and shows NO price line - the
+                          price is not in the answer, and a sum of missing prices must never read as "$0.00". */}
+                      {canSeePrices ? (
                       <div>
                         <div className="text-muted-foreground text-[10px] uppercase">Customer sees</div>
                         <div className="text-brand text-lg font-bold tabular-nums">
@@ -787,6 +792,7 @@ export function PriceBookPage() {
                           </div>
                         )}
                       </div>
+                      ) : <div />}
                       {/* Margin and markup side by side, each under its full
                           word. A bundle with no costed line shows an em dash,
                           never a 100% invented out of missing data, and
@@ -1040,7 +1046,7 @@ export function PriceBookPage() {
                       kind: payload.kind as CatalogItem['kind'],
                       uom: payload.uom,
                       unitCost: payload.unitCost,
-                      sellPrice: payload.sellPrice,
+                      sellPrice: payload.sellPrice ?? i.sellPrice,
                       serialized: payload.serialized,
                       hazmat: payload.hazmat,
                       trackInventory: payload.trackInventory,

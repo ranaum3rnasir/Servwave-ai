@@ -24,7 +24,7 @@ import { prisma } from '../lib/prisma';
 import { supabaseAdmin } from '../lib/supabase';
 import {
   mockAuthAs,
-  mockRoleGrantsWithout,
+  mockRoleSwitches,
   authHeader,
   TEST_USERS,
   ALPHA_ORG_ID,
@@ -213,11 +213,11 @@ describe('POST .../direct-upload — minting a scoped upload URL', () => {
     );
   });
 
-  it('refuses a caller without create Attachment', async () => {
-    mockAuthAs('sales');
-    mockRoleGrantsWithout('SALES', ['create', 'Attachment']);
+  it('refuses a caller without Edit on the record', async () => {
+    mockAuthAs('dispatcher');
+    mockRoleSwitches({ edit_jobs: false, create_jobs: false });
 
-    const res = await mintVideo({}, 'sales');
+    const res = await mintVideo({}, 'dispatcher');
 
     expect(res.status).toBe(403);
     expect(storage.createSignedUploadUrl).not.toHaveBeenCalled();
@@ -548,17 +548,19 @@ describe('POST .../direct-upload/complete — verifying the landed object', () =
     );
   });
 
-  it('refuses a caller who has lost create Attachment between mint and verify', async () => {
-    const minted = await mintVideo();
-    mockAuthAs('sales');
-    mockRoleGrantsWithout('SALES', ['create', 'Attachment']);
+  it('refuses a caller who has lost Edit on the record between mint and verify', async () => {
+    // Minted by the same person who completes it (the ticket is bound to whoever minted it), while they still hold the Edit.
+    mockAuthAs('dispatcher');
+    const minted = await mintVideo({}, 'dispatcher');
+    expect(minted.status).toBe(201);
+    mockRoleSwitches({ edit_jobs: false, create_jobs: false });
     stubHeadBytes(mp4Head());
 
     const res = await complete({
       ticket: minted.body.upload.ticket,
       display_name: 'X',
       description: '',
-    }, 'sales');
+    }, 'dispatcher');
 
     expect(res.status).toBe(403);
     expect(mockPrisma.attachment.create).not.toHaveBeenCalled();

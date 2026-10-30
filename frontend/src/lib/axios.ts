@@ -4,6 +4,7 @@ import { toast } from '@/components/ui/use-toast';
 import { handle429 } from './handle429';
 import { handle402 } from './handle402';
 import { handle500 } from './handle500';
+import { SWITCHES_STAMP_HEADER, noteSwitchesStamp } from './switchesStamp';
 
 declare module 'axios' {
   interface AxiosRequestConfig {
@@ -50,7 +51,11 @@ function redirectToLogin(): void {
 }
 
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    // P17: a changed stamp means the person's switches changed; the held copy is refetched (see switchesStamp.ts).
+    noteSwitchesStamp(response.headers?.[SWITCHES_STAMP_HEADER]);
+    return response;
+  },
   async (error) => {
     const originalRequest = error.config;
     const isAuthAttempt = AUTH_ATTEMPT_PATHS.some((path) => originalRequest.url?.startsWith(path));

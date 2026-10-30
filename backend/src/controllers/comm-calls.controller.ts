@@ -6,8 +6,10 @@ import { logger } from '../lib/logger';
 import { supabaseAdmin } from '../lib/supabase';
 import { env } from '../config/env';
 import { tenantWhere } from '../lib/tenant';
+import { findCustomerToContact, jobReachWhere, leadReachWhere } from '../lib/permissions/targetReach';
 import { COMPLETED_OR_LATER_JOB_STATUSES } from '../lib/job-status-order';
-import { matchByPhone, normalizeNAPhone } from '../lib/comms-identity';
+import { normalizeNAPhone } from '../lib/comms-identity';
+import { matchByPhoneInReach } from '../lib/communication/phoneMatchInReach';
 import { scopeWhereForReq, canSeeCallInsights, canSeeCompanyFigures } from '../lib/permissions/enforce';
 import { addOrFilter } from '../lib/permissions/whereCompose';
 import { callsInSectionWhereForReq, callReadWhereForReq } from '../lib/communication/communicationScope';
@@ -204,7 +206,7 @@ function mapPhoneCustomer(row: any) {
 
 export async function listCalls(req: Request, res: Response) {
   try {
-    // The section list follows Communication scope (M11): "All" lists every call, "Linked to me" the calls on the
+    // The section list follows Communication scope (M11): "All" lists every call, Attached the calls on the
     // person's linked numbers and the calls they placed or answered. A job, lead or customer tie plays no part here;
     // it only decides whether a single call opens (getCall).
     const rows = await prisma.callSession.findMany({
@@ -453,7 +455,7 @@ export async function getCallTranscript(req: Request, res: Response) {
 // number / phone (scalar + phones[] relation via the shared phone-search
 // clauses) with their open jobs embedded, jobs by job number / customer name
 // under the caller's Job grant scope, and identity resolution for phone-shaped
-// queries via matchByPhone. LIMIT 5 per group mirrors /api/search.
+// queries via matchByPhoneInReach. LIMIT 5 per group mirrors /api/search.
 
 export const dialerSearchQuerySchema = z.object({ q: z.string().trim().min(2).max(80) });
 
@@ -567,7 +569,8 @@ export async function dialerSearch(req: Request, res: Response) {
           service_location: { select: { address_line1: true, city: true } },
         },
       }),
-      e164 ? matchByPhone(prisma, req.user!.organization_id, q) : Promise.resolve(null),
+      // Re-audit P2-1: the number is named only as a customer (or that customer's lead) the person can open.
+      e164 ? matchByPhoneInReach(req, q) : Promise.resolve(null),
     ]);
 
     res.json({
@@ -659,8 +662,8 @@ async function resolveAttributionContext(
 ): Promise<AttributionContext> {
   let job: AttributionContext['job'] = null;
   if (body.job_id) {
-    job = await prisma.job.findUnique({
-      where: { id: body.job_id, ...tenantWhere(req) },
+    job = await prisma.job.findFirst({
+      where: await jobReachWhere(req, body.job_id),
       select: { id: true, job_number: true, customer_id: true },
     });
     if (!job) throw new AttributionContextError('Job');
@@ -668,17 +671,14 @@ async function resolveAttributionContext(
   let lead: AttributionContext['lead'] = null;
   if (body.lead_id) {
     lead = await prisma.lead.findFirst({
-      where: { id: body.lead_id, ...tenantWhere(req) },
+      where: await leadReachWhere(req, body.lead_id),
       select: { id: true, customer_id: true },
     });
     if (!lead) throw new AttributionContextError('Lead');
   }
   let customer: AttributionContext['customer'] = null;
   if (body.customer_id) {
-    customer = await prisma.customer.findFirst({
-      where: { id: body.customer_id, ...tenantWhere(req) },
-      select: { id: true },
-    });
+    customer = await findCustomerToContact(req, body.customer_id);
     if (!customer) throw new AttributionContextError('Customer');
   }
   return { job, lead, customer };
@@ -975,7 +975,7 @@ export async function createCall(req: Request, res: Response) {
     let explicitLeadId: string | null = null;
     if (req.body.lead_id) {
       const lead = await prisma.lead.findFirst({
-        where: { id: req.body.lead_id, ...tenantWhere(req) },
+        where: await leadReachWhere(req, req.body.lead_id),
       });
       if (!lead) {
         res.status(404).json({ error: 'Lead not found' });
@@ -989,8 +989,8 @@ export async function createCall(req: Request, res: Response) {
     // so call rows never surface raw UUIDs.
     let jobStamp: { job_id: string; job_label: string | null } | null = null;
     if (req.body.job_id) {
-      const job = await prisma.job.findUnique({
-        where: { id: req.body.job_id, ...tenantWhere(req) },
+      const job = await prisma.job.findFirst({
+        where: await jobReachWhere(req, req.body.job_id),
         select: { id: true, job_number: true, customer_id: true },
       });
       if (!job) {
@@ -1004,10 +1004,7 @@ export async function createCall(req: Request, res: Response) {
     // org-validated, and it wins over the phone-match resolver's customer.
     let explicitCustomerId: string | null = null;
     if (req.body.customer_id) {
-      const customer = await prisma.customer.findFirst({
-        where: { id: req.body.customer_id, ...tenantWhere(req) },
-        select: { id: true },
-      });
+      const customer = await findCustomerToContact(req, req.body.customer_id);
       if (!customer) {
         res.status(404).json({ error: 'Customer not found' });
         return;
@@ -1015,7 +1012,8 @@ export async function createCall(req: Request, res: Response) {
       explicitCustomerId = customer.id;
     }
 
-    const match = await matchByPhone(prisma, orgId, req.body.from_number);
+    // Re-audit P2-1: the number's customer only when the person can open it; otherwise the call is filed on nobody.
+    const match = await matchByPhoneInReach(req, req.body.from_number);
 
     const row = await prisma.callSession.create({
       data: {

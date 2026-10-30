@@ -12,7 +12,7 @@ import userEvent from '@testing-library/user-event';
 import { TooltipProvider } from '@/ui-kit/components/ui/tooltip';
 import SwitchSetEditor from '@/components/permissions/SwitchSetEditor';
 import type { SwitchSet } from '@/lib/api/permissionSwitches';
-import { FIXTURE_CATALOG, FIXTURE_LAYOUT, FIXTURE_SWITCHES, catalogSwitch, presetSet } from './support/permissionCatalogFixture';
+import { FIXTURE_CATALOG, FIXTURE_LAYOUT, FIXTURE_DRAWN_SWITCHES, FIXTURE_SWITCHES, catalogSwitch, presetSet } from './support/permissionCatalogFixture';
 
 function Harness({ initial, editable = true, onChange }: { initial: SwitchSet; editable?: boolean; onChange?: (next: SwitchSet) => void }) {
   const [values, setValues] = useState(initial);
@@ -37,7 +37,7 @@ const row = (label: string) => screen.getByRole('group', { name: label });
 const optionNames = (group: HTMLElement) => within(group).getAllByRole('radio').map((r) => r.textContent);
 
 /** The choices of the fixture's scope switches, in words ("attached" is "Attached"). */
-const SCOPE_WORDS = ['Attached', 'Team', 'Location', 'All'];
+const SCOPE_WORDS = ['Attached', 'Team', 'All'];
 
 describe('SwitchSetEditor, Data Scope in each scoped row', () => {
   it('holds a scope control in each of the scoped rows, next to the row, and nowhere else', () => {
@@ -50,7 +50,7 @@ describe('SwitchSetEditor, Data Scope in each scoped row', () => {
     // Every control that offers the scope choices is one of those rows' own: no second copy on the page.
     const withScopeChoices = screen.getAllByRole('radiogroup').filter((g) => optionNames(g).join() === SCOPE_WORDS.join());
     expect(withScopeChoices).toHaveLength(scopedRows().length);
-    expect(within(screen.getByRole('region', { name: 'Data Scope' })).queryByRole('radiogroup')).toBeNull();
+    expect(within(screen.getByRole('region', { name: 'Money' })).queryByRole('radiogroup')).toBeNull();
     for (const module of allRows().filter((m) => !m.scope)) {
       const choices = within(row(module.label)).queryAllByRole('radiogroup').filter((g) => optionNames(g).join() === SCOPE_WORDS.join());
       expect(choices, module.label).toHaveLength(0);
@@ -85,7 +85,7 @@ describe('SwitchSetEditor, Data Scope in each scoped row', () => {
 describe('SwitchSetEditor, choices as options', () => {
   it('draws every choice switch as a set of options with the chosen one checked, never a toggle', () => {
     render(<Harness initial={presetSet('DISPATCHER')} />);
-    const choices = FIXTURE_SWITCHES.filter((s) => s.kind === 'choice');
+    const choices = FIXTURE_DRAWN_SWITCHES.filter((s) => s.kind === 'choice');
     expect(choices.length).toBeGreaterThan(0);
     for (const s of choices) {
       expect(screen.queryByRole('switch', { name: s.label }), s.label).toBeNull();
@@ -98,22 +98,22 @@ describe('SwitchSetEditor, choices as options', () => {
     }
   });
 
-  it('reads Communication scope as Linked to me / All and Inventory view as Counter / Field', () => {
+  it('reads Communication scope as Attached / Team / All, and does not draw Inventory view: it is a setting on the person', () => {
     render(<Harness initial={presetSet('SALES')} />);
-    expect(optionNames(screen.getByRole('radiogroup', { name: catalogSwitch('communication_scope').label }))).toEqual(['Linked to me', 'All']);
-    expect(optionNames(screen.getByRole('radiogroup', { name: catalogSwitch('inventory_view').label }))).toEqual(['Counter', 'Field']);
+    expect(optionNames(screen.getByRole('radiogroup', { name: catalogSwitch('communication_scope').label }))).toEqual(['Attached', 'Team', 'All']);
+    expect(screen.queryByRole('radiogroup', { name: catalogSwitch('inventory_view').label })).toBeNull();
   });
 });
 
 describe('SwitchSetEditor, the kept "Through own leads" value', () => {
   const keptKeys = FIXTURE_SWITCHES.filter((s) => s.keptValueHelp?.through_own_leads).map((s) => s.key);
 
-  it('is held by Sales on Jobs, Estimates and Invoices in the fixture', () => {
-    expect(keptKeys.sort()).toEqual(['estimates_scope', 'invoices_scope', 'jobs_scope']);
+  it('is held by Sales on Jobs in the fixture', () => {
+    expect(keptKeys.sort()).toEqual(['jobs_scope']);
     for (const key of keptKeys) expect(presetSet('SALES')[key]).toBe('through_own_leads');
   });
 
-  it('shows the value read-only with its meaning, beside the four real choices, none of them checked', () => {
+  it('shows the value read-only with its meaning, beside the three real choices, none of them checked', () => {
     render(<Harness initial={presetSet('SALES')} />);
     for (const key of keptKeys) {
       const s = catalogSwitch(key);
@@ -157,8 +157,8 @@ describe('SwitchSetEditor, the kept "Through own leads" value', () => {
     expect(within(group).getByRole('radio', { name: 'Attached' })).toBeChecked();
     expect(within(group).queryByRole('radio', { name: kept.label })).toBeNull();
     expect(optionNames(group)).toEqual(SCOPE_WORDS);
-    // The other two scopes still hold the kept value: only the one that was clicked moved.
-    expect(screen.getAllByText(kept.label, { exact: false })).toHaveLength(keptKeys.length - 1);
+    // Jobs scope is the only scope that held the kept value: once it moved, none shows it.
+    expect(screen.queryAllByText(kept.label, { exact: false })).toHaveLength(keptKeys.length - 1);
   });
 
   it('shows the kept value\'s name as the value when the set is read-only, with no option to press', () => {
@@ -169,10 +169,10 @@ describe('SwitchSetEditor, the kept "Through own leads" value', () => {
 });
 
 describe('SwitchSetEditor, rows with no scope of their own', () => {
-  it('carries the catalog\'s line on Customers, Purchase Orders and Logistic Orders, and on no other row', () => {
+  it('carries the catalog\'s line on Customers, Estimates, Invoices, Purchase Orders and Logistic Orders, and on no other row', () => {
     render(<Harness initial={presetSet('ADMIN')} />);
     const withLine = allRows().filter((m) => m.scopeNote);
-    expect(withLine.map((m) => m.module).sort()).toEqual(['Customers', 'Logistic Orders', 'Purchase Orders']);
+    expect(withLine.map((m) => m.module).sort()).toEqual(['Customers', 'Estimates', 'Invoices', 'Logistic Orders', 'Purchase Orders']);
     for (const m of withLine) expect(within(row(m.label)).getByText(m.scopeNote!), m.label).toBeInTheDocument();
     for (const m of allRows().filter((r) => !r.scopeNote)) {
       expect(within(row(m.label)).queryByText(/follows the leads and jobs/i), m.label).toBeNull();

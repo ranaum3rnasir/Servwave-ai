@@ -32,8 +32,6 @@ import { SWITCH_CATALOG } from '../lib/permissions/switches/catalog';
 
 const suite = realClient ? describe : describe.skip;
 
-const COMPANY_SETTINGS = SWITCH_CATALOG.find((s) => s.label === 'Company settings')!.key;
-
 /** The PRD's six built-ins, in the order they are offered. */
 const PRD_BUILT_INS = [
   'Customer backed out',
@@ -67,9 +65,10 @@ suite('Job cancel reasons: list, edits, tenancy, and independence from the estim
     return Object.assign(person, { api: () => fx.signedInAs(person) });
   }
 
-  /** A person who may edit the company's settings. */
+  /** A person who may edit the company's settings: its Admin (setting up the company is the Admin flag's alone, 36b). */
   async function editor(org: string): Promise<Api> {
-    return (await personWith(org, { [COMPANY_SETTINGS]: true })).api();
+    const admin = await db.user.findFirstOrThrow({ where: { organization_id: org, is_admin: true }, select: { id: true, email: true } });
+    return fx.signedInAs(admin);
   }
 
   const labels = (body: { job_cancel_reasons: { label: string }[] }) => body.job_cancel_reasons.map((r) => r.label);
@@ -168,11 +167,11 @@ suite('Job cancel reasons: list, edits, tenancy, and independence from the estim
   });
 
   describe('who may edit', () => {
-    it('lets a custom role in with Company settings on and refuses it with the switch off', async () => {
+    it('lets the Admin in and refuses a custom role holding every other switch', async () => {
       const { org } = await fx.newOrg();
       // Signing in swaps who the auth layer sees, so each call signs in fresh.
-      const on = await personWith(org, { [COMPANY_SETTINGS]: true });
-      const off = await personWith(org, { [COMPANY_SETTINGS]: false });
+      const everything = Object.fromEntries(SWITCH_CATALOG.filter((s) => s.kind === 'toggle').map((s) => [s.key, true]));
+      const off = await personWith(org, everything);
 
       const code = 'PRICE';
       const calls: [string, (api: Api) => ReturnType<Api['get']>][] = [
@@ -181,13 +180,13 @@ suite('Job cancel reasons: list, edits, tenancy, and independence from the estim
         ['reorder', (api) => api.post('/api/job-cancel-reasons/reorder', { ordered_codes: ['PRICE'] })],
       ];
       for (const [name, call] of calls) {
-        expect((await call(await off.api())).status, `${name} with the switch off`).toBe(403);
+        expect((await call(await off.api())).status, `${name} as a non-Admin`).toBe(403);
       }
       // Nothing the refused calls did reached the list.
       expect(await db.jobCancelReasonOption.count({ where: { organization_id: org } })).toBe(0);
       for (const [name, call] of calls.slice(0, 2)) {
-        const status = (await call(await on.api())).status;
-        expect(status, `${name} with the switch on`).toBeLessThan(300);
+        const status = (await call(await editor(org))).status;
+        expect(status, `${name} as the Admin`).toBeLessThan(300);
       }
     });
   });

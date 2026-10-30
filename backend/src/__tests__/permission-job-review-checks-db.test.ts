@@ -45,7 +45,7 @@ const ALL_OFF: Record<string, SwitchValue> = Object.fromEntries(
 );
 
 /** What opening the job and its invoices takes. */
-const OPENING = { view_jobs: true, jobs_scope: 'all', view_invoices: true, invoices_scope: 'all' };
+const OPENING = { view_jobs: true, jobs_scope: 'all', view_invoices: true, leads_scope: 'all' };
 
 interface Item { key: string; kind: string; checked: boolean; checked_by: string | null; checked_at: string | null; latest_entry_id: string }
 interface Review {
@@ -69,7 +69,7 @@ suite('the office review checks (real database)', () => {
   async function personWith(org: string, values: Record<string, SwitchValue>, base: Role = 'DISPATCHER') {
     const key = `job-review-checks-role-${++sequence}`;
     const role = await fx.addCustomRole(org, key, base);
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...values }, actorId: null, reason: 'manual' });
+    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, see_prices: true, ...values }, actorId: null, reason: 'manual' });
     const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
     return Object.assign(person, { api: () => fx.signedInAs(person) });
   }
@@ -238,7 +238,7 @@ suite('the office review checks (real database)', () => {
     const api = await scoped.api();
     const entryA = await db.timelineEvent.findFirstOrThrow({ where: { entity_id: jobA.id } });
     const entryB = await db.timelineEvent.findFirstOrThrow({ where: { entity_id: jobB.id } });
-    expect((await api.post(`/api/jobs/${jobA.id}/review/checks`, { item_key: 'summary', entry_id: entryA.id })).status).toBe(403);
+    expect((await api.post(`/api/jobs/${jobA.id}/review/checks`, { item_key: 'summary', entry_id: entryA.id })).status).toBe(404);
     expect((await api.post(`/api/jobs/${jobB.id}/review/checks`, { item_key: 'summary', entry_id: entryB.id })).status).toBe(404);
     expect(await db.jobReviewItemCheck.count({ where: { organization_id: { in: [a.org, b.org] } } })).toBe(0);
   });

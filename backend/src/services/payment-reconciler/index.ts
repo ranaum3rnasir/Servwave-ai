@@ -856,12 +856,11 @@ async function recordUnbookedDispute(
         ? await tx.invoice.findFirst({ where: { id: capture.entity_id, organization_id: organizationId }, select: { id: true, invoice_number: true } })
         : null
       : await tx.invoice.findFirst({ where: { id: session.invoiceId, organization_id: organizationId }, select: { id: true, invoice_number: true } });
-    const amount = usdCents(dispute.amount);
     const on = invoice ? `on invoice ${invoice.invoice_number}` : 'in this account';
     const description = bank
-      ? `The bank returned a payment of ${amount} ${on} that was not recorded automatically. Nothing on the invoice was changed. `
+      ? `The bank returned a payment ${on} that was not recorded automatically. Nothing on the invoice was changed. `
         + 'If the payment was recorded by hand, void it and check the balance.'
-      : `A customer disputed a card payment of ${amount} ${on} that was not recorded on the invoice. Nothing on the invoice was changed. `
+      : `A customer disputed a card payment ${on} that was not recorded on the invoice. Nothing on the invoice was changed. `
         + (final ? `The dispute closed: ${finalWords(status)}.` : 'Do not refund this payment while the dispute is open.');
     await tx.timelineEvent.create({
       data: {
@@ -911,7 +910,6 @@ async function recordUnbookedDispute(
   return result.outcome;
 }
 
-const usdCents = (cents: number): string => `$${(cents / 100).toFixed(2)}`;
 
 function finalWords(status: DisputeStatus): string {
   if (status === 'LOST') return 'the money was taken back';

@@ -53,6 +53,8 @@ import type { AppAbility } from './defineAbility';
 /** The candidate fields the rule reads. Structurally satisfied by a Prisma user row. */
 export type WatcherCandidate = {
   id: string;
+  /** The Admin flag (P15): every Admin is reachable by everyone. */
+  is_admin: boolean;
   role: Role;
   department_id: string | null;
 };
@@ -79,7 +81,7 @@ export type WatcherPool =
  */
 type Clause =
   | { id: string }
-  | { role: 'ADMIN' }
+  | { is_admin: true }
   | { department_id: string };
 
 function poolClauses(pool: WatcherPool): Clause[] | null {
@@ -88,7 +90,7 @@ function poolClauses(pool: WatcherPool): Clause[] | null {
     // Always themselves — an actor is in their own pool even with no department and no admins.
     { id: pool.userId },
     // Escalation without a permission change: every admin is reachable by everyone.
-    { role: 'ADMIN' },
+    { is_admin: true },
     // Their own department, and ONLY when they have one. See A NULL DEPARTMENT above.
     ...(pool.departmentId ? [{ department_id: pool.departmentId } as const] : []),
   ];
@@ -146,7 +148,7 @@ export function isWatcherPermitted(pool: WatcherPool, candidate: WatcherCandidat
   if (!clauses) return true;
   return clauses.some((c) =>
     'id' in c ? candidate.id === c.id
-    : 'role' in c ? candidate.role === c.role
+    : 'is_admin' in c ? candidate.is_admin === c.is_admin
     : candidate.department_id === c.department_id,
   );
 }

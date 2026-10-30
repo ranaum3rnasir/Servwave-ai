@@ -75,7 +75,7 @@ suite('invoice money doors, follow-ups (real database)', () => {
       },
     });
     await db.user.create({
-      data: { id: user, organization_id: org, email: `admin-${tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN' },
+      data: { id: user, organization_id: org, email: `admin-${tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN', is_admin: true },
     });
     await db.customer.create({
       data: { id: customer, organization_id: org, customer_number: `C-${tag}`, kind: 'PERSON', segment: 'RESIDENTIAL', first_name: 'Pat', last_name: 'Payer' },
@@ -174,7 +174,7 @@ suite('invoice money doors, follow-ups (real database)', () => {
 
       expect(res.status).toBe(201);
       const received = (await f.timeline()).find((e) => e.event_type === 'PAYMENT_RECEIVED');
-      expect(received?.description).toBe(`Payment of $900.00 received via ${label}`);
+      expect(received?.description).toBe(`Payment received via ${label}`);
     });
   });
   describe('a refund through the processor records the payment\'s own method', () => {

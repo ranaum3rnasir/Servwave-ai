@@ -9,6 +9,7 @@ import { sniffMatchesDeclared } from '../lib/file-sniff';
 import { parsePagination, parseSortParams, buildPaginationMeta, respondInvalidSort } from '../lib/pagination';
 import { ASSET_SORT_FIELDS } from '../lib/sortFields';
 import { LONG_TEXT_MAX } from '../lib/text-limits';
+import { moduleReachFor, reachWhere } from '../lib/permissions/moduleReach';
 
 // ─── Constants ───────────────────────────────────────────
 
@@ -98,11 +99,12 @@ function mapEvent(row: any) {
 }
 
 /**
- * Without See all assets a person reaches only the assets they hold. Merged into the query itself, so the
- * rows, the count and the pages agree, and an asset held by someone else is simply not found.
+ * A person reaches the assets their Assets scope covers (P6): Attached the assets they hold, Team the assets held by
+ * anyone in their department, All every asset. Merged into the query itself, so the rows, the count and the pages
+ * agree, and an asset outside the scope is simply not found.
  */
-function heldOnlyWhere(req: Request): { assigned_user_id?: string } {
-  return req.ability!.can('see_all_assets', 'Inventory') ? {} : { assigned_user_id: req.user!.id };
+async function heldOnlyWhere(req: Request): Promise<Record<string, unknown>> {
+  return reachWhere('Asset', await moduleReachFor(req, 'Asset'));
 }
 
 async function readAsset(req: Request, id: string) {
@@ -134,8 +136,8 @@ export async function listAssets(req: Request, res: Response) {
     if (req.query.assigned_user_id && typeof req.query.assigned_user_id === 'string') {
       where.assigned_user_id = req.query.assigned_user_id;
     }
-    // ANDed with the holder filter above, so asking for a colleague's assets finds none rather than widening the list.
-    where.AND = [heldOnlyWhere(req)];
+    // ANDed with the scope filter above, so asking for a colleague's assets finds none rather than widening the list.
+    where.AND = [await heldOnlyWhere(req)];
 
     if (req.query.search) {
       const search = typeof req.query.search === 'string' ? req.query.search : '';
@@ -164,7 +166,7 @@ export async function listAssets(req: Request, res: Response) {
 export async function getAsset(req: Request, res: Response) {
   try {
     const asset = await prisma.asset.findFirst({
-      where: { id: req.params.id as string, ...tenantWhere(req), ...heldOnlyWhere(req) },
+      where: { id: req.params.id as string, ...tenantWhere(req), ...(await heldOnlyWhere(req)) },
       include: assetInclude,
     });
     if (!asset) {
@@ -312,7 +314,7 @@ export async function deleteAsset(req: Request, res: Response) {
 export async function listAssetEvents(req: Request, res: Response) {
   try {
     const asset = await prisma.asset.findFirst({
-      where: { id: req.params.id as string, ...tenantWhere(req), ...heldOnlyWhere(req) },
+      where: { id: req.params.id as string, ...tenantWhere(req), ...(await heldOnlyWhere(req)) },
     });
     if (!asset) {
       res.status(404).json({ error: 'Asset not found' });

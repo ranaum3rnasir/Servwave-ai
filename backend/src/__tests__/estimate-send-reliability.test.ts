@@ -33,8 +33,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
   mockAuthAs('admin');
-  mockPrisma.rolePermission.findMany.mockImplementation((a: any) =>
-    Promise.resolve(DEFAULT_GRANTS.filter((g) => g.role === a.where.role)));
   mockPrisma.estimate.findUnique.mockResolvedValue(DRAFT);
   mockPrisma.estimate.findFirst.mockResolvedValue({ id: ESTIMATE_ID });
   mockPrisma.organization.findUnique.mockResolvedValue({

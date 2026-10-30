@@ -114,9 +114,6 @@ beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
   mockAuthAs('admin');
-  mockPrisma.rolePermission.findMany.mockImplementation((args: { where: { role: string } }) =>
-    Promise.resolve(DEFAULT_GRANTS.filter((g) => g.role === args.where.role)),
-  );
   mockPrisma.visit.findFirst.mockResolvedValue(null);
   mockPrisma.visit.findMany.mockResolvedValue([]);
   mockPrisma.visit.aggregate.mockResolvedValue({ _max: { visit_seq: 0 } });
@@ -865,9 +862,6 @@ describe('a blank optional field is stored as NULL, not as an empty string', () 
 function beforeEachState() {
   clearPermissionCache();
   mockAuthAs('admin');
-  mockPrisma.rolePermission.findMany.mockImplementation((args: { where: { role: string } }) =>
-    Promise.resolve(DEFAULT_GRANTS.filter((g) => g.role === args.where.role)),
-  );
   mockPrisma.visit.findFirst.mockResolvedValue(null);
   mockPrisma.visit.findMany.mockResolvedValue([]);
   mockPrisma.visit.aggregate.mockResolvedValue({ _max: { visit_seq: 0 } });

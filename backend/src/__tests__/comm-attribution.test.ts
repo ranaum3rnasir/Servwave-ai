@@ -416,19 +416,19 @@ describe('POST /api/communication/emails — attach-by-origin', () => {
 
   it('stamps customer_id when customer_id is provided', async () => {
     mockAuthAs('dispatcher');
-    mockPrisma.customer.findUnique.mockResolvedValue({ id: CUSTOMER_FIXTURE.id });
+    mockPrisma.customer.findFirst.mockResolvedValue({ id: CUSTOMER_FIXTURE.id });
     mockPrisma.email.create.mockImplementation((a: any) => Promise.resolve({ id: 'em1', ...a.data }));
     const res = await request(app).post('/api/communication/emails').set(authHeader('dispatcher'))
       .send({ to: 'x@y.com', body: ['hi'], customer_id: CUSTOMER_FIXTURE.id });
     expect(res.status).toBe(201);
     expect(mockPrisma.email.create.mock.calls[0][0].data.customer_id).toBe(CUSTOMER_FIXTURE.id);
-    expectOrgScoped(mockPrisma.customer.findUnique as Mock, ALPHA_ORG_ID);
+    expectOrgScoped(mockPrisma.customer.findFirst as Mock, ALPHA_ORG_ID);
     expect(res.body.email.customerId).toBe(CUSTOMER_FIXTURE.id);
   });
 
   it('404s on a cross-org/unknown customer_id and creates nothing', async () => {
     mockAuthAs('dispatcher');
-    mockPrisma.customer.findUnique.mockResolvedValue(null);
+    mockPrisma.customer.findFirst.mockResolvedValue(null);
     const res = await request(app).post('/api/communication/emails').set(authHeader('dispatcher'))
       .send({ to: 'x@y.com', body: ['hi'], customer_id: CUSTOMER_FIXTURE.id });
     expect(res.status).toBe(404);
@@ -445,7 +445,7 @@ describe('POST /api/communication/emails — attach-by-origin', () => {
     const res = await request(app).post('/api/communication/emails').set(authHeader('dispatcher'))
       .send({ to: 'x@y.com', body: ['hi'] });
     expect(res.status).toBe(201);
-    expect(mockPrisma.customer.findUnique).not.toHaveBeenCalled();
+    expect(mockPrisma.customer.findFirst).not.toHaveBeenCalled();
     expect(mockPrisma.email.create.mock.calls[0][0].data.customer_id).toBeUndefined();
   });
 });

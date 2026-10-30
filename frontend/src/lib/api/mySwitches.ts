@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import type { SwitchSet } from '@/lib/api/permissionSwitches';
 import api from '@/lib/axios';
 import { registerStoreReset } from '@/lib/storeReset';
+import { MY_SWITCHES_QUERY_KEY } from '@/lib/switchesStamp';
 import { useAuthStore } from '@/stores/auth.store';
 
 /**
@@ -23,7 +24,7 @@ export interface MySwitches {
   values: MySwitchValues;
 }
 
-export const MY_SWITCHES_KEY = ['permission-switches', 'me'] as const;
+export const MY_SWITCHES_KEY = MY_SWITCHES_QUERY_KEY;
 
 const CACHE_PREFIX = 'servwave_my_switches:';
 
@@ -70,14 +71,23 @@ function useMySwitchesQuery() {
   return useQuery<MySwitches>({
     queryKey: [...MY_SWITCHES_KEY, userId],
     enabled: !!userId,
-    // A role edited while the person is signed in shows on their next visit to the tab.
-    staleTime: 60 * 1000,
-    refetchOnWindowFocus: true,
+    // P17: no timer. A role or person edited while the person is signed in moves the version stamp every response
+    // carries, and that marks this query stale (lib/switchesStamp.ts). The only refetch of its own is the first one
+    // of a visit, when all there is to draw from is the cached last answer (updated-at 0) or nothing.
+    staleTime: Infinity,
+    refetchOnMount: (query) => (query.state.dataUpdatedAt === 0 ? 'always' : false),
+    refetchOnWindowFocus: false,
     initialData: () => readCachedAnswer(userId),
     initialDataUpdatedAt: 0,
     queryFn: async () => {
       const { data: answer } = await api.get('/api/permission-switches/me');
       const result: MySwitches = { admin_box: answer.admin_box === true, values: answer.values ?? {} };
+      // The answer carries the rules the same values compile into: the action buttons follow the menus.
+      const store = useAuthStore.getState?.();
+      if (Array.isArray(answer.rules)) store?.applyAbilityRules?.(answer.rules);
+      // The Admin flag moves the stamp too (P17), and the Admin-only screens read it from the signed-in person, so the fresh
+      // answer is carried there as well: a person made or unmade an Admin sees the change without a reload.
+      if (store?.user && store.user.is_admin !== result.admin_box) store.applyUserPatch?.({ is_admin: result.admin_box });
       if (userId) writeCachedAnswer(userId, result);
       return result;
     },
@@ -124,7 +134,28 @@ export function routeAccess(
   return status.settled ? 'refuse' : 'wait';
 }
 
+/** The chosen option of a choice switch (a scope), or `undefined` when the answer does not hold it. */
+export function switchChoice(values: MySwitchValues | undefined, key: string): string | undefined {
+  const value = values?.[key];
+  return typeof value === 'string' ? value : undefined;
+}
+
+/** Whether a scope switch reaches beyond the person's own rows (Team or All). Anything else, or no answer yet, reads as their own. */
+export function reachesBeyondOwn(values: MySwitchValues | undefined, key: string): boolean {
+  const choice = switchChoice(values, key);
+  return choice === 'team' || choice === 'all';
+}
+
 /** Whether a toggle switch is on. A switch the answer does not hold reads as off. */
 export function switchOn(values: MySwitchValues | undefined, key: string): boolean {
   return values?.[key] === true;
+}
+
+/**
+ * Whether the signed-in person's Show Email switch is on (M7, ticket 36). The server refuses every mail route to a person
+ * with it off, so a screen that would make one of those calls (writing an email, filing one, the sender line, the mailbox
+ * address) draws nothing and asks nothing. No answer yet reads as off, like every switch.
+ */
+export function useShowEmail(): boolean {
+  return switchOn(useMySwitches()?.values, 'show_email');
 }

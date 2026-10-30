@@ -62,8 +62,8 @@ const LOCK_MESSAGE = 'This job is locked. Only someone who can change locked job
 
 /** What opening the job, its invoices and its files takes, with no action switch on. */
 const OPENING = {
-  view_jobs: true, jobs_scope: 'all', create_jobs: true, view_attachments: true,
-  view_invoices: true, invoices_scope: 'all', view_customers: true,
+  view_jobs: true, jobs_scope: 'all', edit_jobs: true, create_jobs: true,
+  view_invoices: true, leads_scope: 'all', view_customers: true,
 };
 
 type Res = { status: number; body: Record<string, any> };
@@ -94,7 +94,7 @@ suite('writes on a Done job (real database)', () => {
   async function personWith(org: string, values: Record<string, SwitchValue>, base: Role = 'DISPATCHER') {
     const key = `done-writes-role-${++sequence}`;
     const role = await fx.addCustomRole(org, key, base);
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...values }, actorId: null, reason: 'manual' });
+    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, see_prices: true, ...values }, actorId: null, reason: 'manual' });
     const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
     // A send by hand goes out from the sender's own mailbox (PRD 10, S10.12).
     await fx.addUserMailbox(org, person);
@@ -252,9 +252,9 @@ suite('writes on a Done job (real database)', () => {
       } },
     { name: 'a payment link', switches: { send_payment_links: true }, status: 200,
       call: (api, w) => api.post(`/api/invoices/${w.onJob.id}/payment-link`, {}) },
-    { name: 'a new invoice from the job (a draw of its lines)', switches: { create_invoices: true }, status: 201,
+    { name: 'a new invoice from the job (a draw of its lines)', switches: { edit_invoices: true, create_invoices: true }, status: 201,
       call: (api, w) => api.post(`/api/jobs/${w.job.id}/invoices`, { percent: 50 }) },
-    { name: 'a new invoice from the job (the whole job, with its deposit applied)', switches: { create_invoices: true }, status: 201, world: { deposit: true },
+    { name: 'a new invoice from the job (the whole job, with its deposit applied)', switches: { edit_invoices: true, create_invoices: true }, status: 201, world: { deposit: true },
       call: async (api, w) => {
         // One live invoice per job on this door: void the one made from the job first, directly.
         await db.invoice.update({ where: { id: w.onJob.id }, data: { status: 'VOIDED', voided_at: new Date() } });
@@ -299,7 +299,7 @@ suite('writes on a Done job (real database)', () => {
 
     it('lets in an upload from a custom role holding only Upload attachments, and the job stays Done', async () => {
       const w = await doneWorld();
-      const me = await personWith(w.org, { ...OPENING, upload_attachments: true });
+      const me = await personWith(w.org, { ...OPENING, });
       const api = await me.api();
       const before = await closeOutState(w.job.id);
       // No file is sent, so the route stops at "no file" once every guard has let the person in; the lock would answer 403 first.
@@ -312,7 +312,7 @@ suite('writes on a Done job (real database)', () => {
 
     it('applies the deposit when the new invoice is drawn from the job, and the invoice carries the job\'s lines as they are', async () => {
       const w = await doneWorld({ deposit: true });
-      const me = await personWith(w.org, { ...OPENING, create_invoices: true });
+      const me = await personWith(w.org, { ...OPENING, edit_invoices: true, create_invoices: true });
       const api = await me.api();
       await db.invoice.update({ where: { id: w.onJob.id }, data: { status: 'VOIDED', voided_at: new Date() } });
 
@@ -490,7 +490,7 @@ suite('writes on a Done job (real database)', () => {
         api.post(`/api/jobs/${w.job.id}/contact-entries/change`, { kind: 'PHONE', replaces: '6175550101', value: '6175550188' }),
     };
     /** The ordinary switches of the five changes, with neither key to the lock. */
-    const WITHOUT_THE_KEY = { ...OPENING, delete_attachments: true, edit_jobs: true, edit_job_and_lead_contact_details: true, delete_others_notes: true };
+    const WITHOUT_THE_KEY = { ...OPENING, edit_jobs: true, edit_invoices: true, edit_job_and_lead_contact_details: true };
 
     const standing = async (w: World, f: Awaited<ReturnType<typeof withFiles>>) => ({
       jobFile: await db.attachment.count({ where: { id: f.jobFile } }),
@@ -545,7 +545,7 @@ suite('writes on a Done job (real database)', () => {
   describe('the job\'s answer and the invoice\'s answer', () => {
     it('takes the line and price actions off a Done job for a Change locked jobs holder, names the Done sentence, and keeps the collecting actions', async () => {
       const w = await doneWorld();
-      const me = await personWith(w.org, { ...EVERY_PRICE_SWITCH, add_notes: true, upload_attachments: true, create_invoices: true });
+      const me = await personWith(w.org, { ...EVERY_PRICE_SWITCH, add_notes: true, edit_invoices: true, create_invoices: true });
       const res = await (await me.api()).get(`/api/jobs/${w.job.id}`);
       expect(res.status).toBe(200);
       const job = res.body.job ?? res.body;

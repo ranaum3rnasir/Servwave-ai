@@ -18,7 +18,7 @@ export async function peopleWhoCanReachOrder(organizationId: string, orderId: st
   const people = await prisma.user.findMany({
     where: { id: { in: wanted }, organization_id: organizationId, is_active: true },
     select: {
-      id: true, role: true, organization_id: true, custom_role_id: true, department_id: true, location_id: true,
+      id: true, role: true, organization_id: true, custom_role_id: true, is_admin: true, department_id: true, location_id: true,
       custom_role: { select: { key: true } },
     },
   });

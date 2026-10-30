@@ -27,7 +27,7 @@ export const INVOICE_WITHOUT_JOB_OR_LEAD_STEM: WhyStem = 'This invoice has no jo
 export const whyLine = (stem: WhyStem): string => `${stem}.`;
 /** Step 3: nobody holding the step's switch could take it either ("...and nobody who can review jobs can open it."). */
 export const nobodyCanOpenLine = (stem: WhyStem, step: string): string => `${stem} and nobody who can ${step} can open it.`;
-/** A record-less alert (or Ready to close) that went straight to the Manage roles and permissions holders. */
+/** A record-less alert (or Ready to close) that went straight to the Admins. */
 export const nobodyCanLine = (step: string): string => `Nobody can ${step}.`;
 /** Ready to close: closing is the step holders' own job, so only the last step explains itself. */
 export const nobodyWhoCanOpenRecordLine = (step: string, record: string): string => `Nobody who can ${step} can open this ${record}.`;

@@ -122,7 +122,7 @@ suite('the Inventory group follows switches (real database)', () => {
 
       // Whatever the role is based on: approval is open to any role, so a Technician base proves it.
       for (const base of ['TECHNICIAN', 'SALES', 'DISPATCHER'] as const) {
-        const maker = await personWith(org, { create_logistic_orders: true, approve_logistic_orders: false }, { base });
+        const maker = await personWith(org, { edit_logistic_orders: true, create_logistic_orders: true, approve_logistic_orders: false }, { base });
         const api = await maker.api();
 
         const created = await createOrderOn(api, { job_id: job.id }, stock);
@@ -137,7 +137,7 @@ suite('the Inventory group follows switches (real database)', () => {
         expect(refused.status, `${base} approve without the switch`).toBe(403);
         expect((await db.logisticOrder.findUniqueOrThrow({ where: { id } })).status, base).toBe('PENDING_APPROVAL');
 
-        const approver = await personWith(org, { create_logistic_orders: true, approve_logistic_orders: true }, { base });
+        const approver = await personWith(org, { edit_logistic_orders: true, create_logistic_orders: true, approve_logistic_orders: true }, { base });
         const own = await approver.api();
         const mine = await createOrderOn(own, { job_id: job.id }, stock);
         expect(mine.status, `${base} create with both`).toBe(201);
@@ -149,13 +149,13 @@ suite('the Inventory group follows switches (real database)', () => {
     });
   });
 
-  // Row-reach checks: the switch on is let in to every record, off is held to the person's own. Each row asks
+  // Row-reach checks: Assets scope All is let in to every record, Attached is held to the person's own. Each row asks
   // the route about a colleague's asset and says whether the answer carries it.
   type HeldToOwnProbe = { switchKey: string; check: string; sees: (api: Api, colleagueAsset: string) => Promise<boolean> };
   const heldToOwnProbes: HeldToOwnProbe[] = [
-    { switchKey: 'see_all_assets', check: 'asset-list', sees: async (api, id) => (await api.get('/api/inventory/assets')).body.data.some((a: { id: string }) => a.id === id) },
-    { switchKey: 'see_all_assets', check: 'asset-detail', sees: async (api, id) => (await api.get(`/api/inventory/assets/${id}`)).status === 200 },
-    { switchKey: 'see_all_assets', check: 'asset-events', sees: async (api, id) => (await api.get(`/api/inventory/assets/${id}/events`)).status === 200 },
+    { switchKey: 'assets_scope', check: 'asset-list', sees: async (api, id) => (await api.get('/api/inventory/assets')).body.data.some((a: { id: string }) => a.id === id) },
+    { switchKey: 'assets_scope', check: 'asset-detail', sees: async (api, id) => (await api.get(`/api/inventory/assets/${id}`)).status === 200 },
+    { switchKey: 'assets_scope', check: 'asset-events', sees: async (api, id) => (await api.get(`/api/inventory/assets/${id}/events`)).status === 200 },
   ];
   describe('the server checks the catalog lists for the Inventory group', () => {
     const INVENTORY_GROUPS = ['Stock', 'Purchase Orders', 'Vendors', 'Logistic Orders', 'Price Book'];
@@ -165,22 +165,22 @@ suite('the Inventory group follows switches (real database)', () => {
       { switchKey: 'view_stock', check: 'stock-locations', run: (api) => api.get('/api/inventory/locations') },
       { switchKey: 'see_inventory_activity', check: 'stock-movement-list', also: { view_stock: true }, run: (api) => api.get('/api/inventory/movements') },
       { switchKey: 'see_inventory_activity', check: 'stock-movement-detail', also: { view_stock: true }, run: (api) => api.get(`/api/inventory/movements/${missing}`) },
-      { switchKey: 'create_stock', check: 'stock-location-create', also: { view_stock: true }, run: (api) => api.post('/api/inventory/locations', {}) },
+      { switchKey: 'create_stock', check: 'stock-location-create', also: { view_stock: true, edit_stock: true }, run: (api) => api.post('/api/inventory/locations', {}) },
       { switchKey: 'edit_stock', check: 'stock-set-quantity', also: { view_stock: true }, run: (api) => api.post('/api/inventory/stock/set-quantity', {}) },
       { switchKey: 'delete_stock', check: 'stock-location-delete', also: { view_stock: true }, run: (api) => api.delete(`/api/inventory/locations/${missing}`) },
       { switchKey: 'view_purchase_orders', check: 'purchase-order-list', run: (api) => api.get('/api/inventory/purchase-orders') },
       { switchKey: 'view_purchase_orders', check: 'purchase-order-detail', run: (api) => api.get(`/api/inventory/purchase-orders/${missing}`) },
-      { switchKey: 'create_purchase_orders', check: 'purchase-order-create', also: { view_purchase_orders: true }, run: (api) => api.post('/api/inventory/purchase-orders', {}) },
+      { switchKey: 'create_purchase_orders', check: 'purchase-order-create', also: { view_purchase_orders: true, edit_purchase_orders: true }, run: (api) => api.post('/api/inventory/purchase-orders', {}) },
       { switchKey: 'edit_purchase_orders', check: 'purchase-order-update', also: { view_purchase_orders: true }, run: (api) => api.patch(`/api/inventory/purchase-orders/${missing}`, {}) },
       { switchKey: 'delete_purchase_orders', check: 'purchase-order-delete', also: { view_purchase_orders: true }, run: (api) => api.delete(`/api/inventory/purchase-orders/${missing}`) },
       { switchKey: 'view_vendors', check: 'vendor-list', run: (api) => api.get('/api/inventory/vendors') },
-      { switchKey: 'create_vendors', check: 'vendor-create', also: { view_vendors: true }, run: (api) => api.post('/api/inventory/vendors', {}) },
+      { switchKey: 'create_vendors', check: 'vendor-create', also: { view_vendors: true, edit_vendors: true }, run: (api) => api.post('/api/inventory/vendors', {}) },
       { switchKey: 'edit_vendors', check: 'vendor-update', also: { view_vendors: true }, run: (api) => api.post('/api/inventory/vendors', { id: missing }) },
       { switchKey: 'edit_vendors', check: 'vendor-category-rename', also: { view_vendors: true }, run: (api) => api.patch(`/api/inventory/vendor-categories/${missing}`, { name: 'Hardware' }) },
       { switchKey: 'delete_vendors', check: 'vendor-delete', also: { view_vendors: true }, run: (api) => api.delete(`/api/inventory/vendors/${missing}`) },
       { switchKey: 'view_logistic_orders', check: 'logistic-order-list', run: (api) => api.get('/api/logistic-orders') },
-      { switchKey: 'create_logistic_orders', check: 'logistic-order-create', also: { view_logistic_orders: true }, run: (api) => api.post('/api/logistic-orders', { job_id: missing }) },
-      { switchKey: 'create_logistic_orders', check: 'logistic-order-submit', also: { view_logistic_orders: true }, run: (api) => api.post(`/api/logistic-orders/${missing}/submit`) },
+      { switchKey: 'create_logistic_orders', check: 'logistic-order-create', also: { view_logistic_orders: true, edit_logistic_orders: true }, run: (api) => api.post('/api/logistic-orders', { job_id: missing }) },
+      { switchKey: 'create_logistic_orders', check: 'logistic-order-submit', also: { view_logistic_orders: true, edit_logistic_orders: true }, run: (api) => api.post(`/api/logistic-orders/${missing}/submit`) },
       { switchKey: 'edit_logistic_orders', check: 'logistic-order-update', also: { view_logistic_orders: true }, run: (api) => api.patch(`/api/logistic-orders/${missing}`, {}) },
       { switchKey: 'delete_logistic_orders', check: 'logistic-order-delete', also: { view_logistic_orders: true }, run: (api) => api.delete(`/api/logistic-orders/${missing}`) },
       { switchKey: 'approve_logistic_orders', check: 'logistic-order-approve', also: { view_logistic_orders: true }, run: (api) => api.post(`/api/logistic-orders/${missing}/approve`) },
@@ -193,7 +193,7 @@ suite('the Inventory group follows switches (real database)', () => {
       { switchKey: 'record_pickup_for_someone_else', check: 'order-pickup-for-other', also: { view_logistic_orders: true }, run: (api) => api.post(`/api/logistic-orders/${missing}/taken-by`, { takenById: missing }) },
       { switchKey: 'record_pickup_for_someone_else', check: 'order-pickup-people', also: { view_logistic_orders: true }, run: (api) => api.get(`/api/logistic-orders/${missing}/pickup-people`) },
       { switchKey: 'view_price_book', check: 'price-book-list', run: (api) => api.get('/api/price-book/items') },
-      { switchKey: 'create_price_book_items', check: 'price-book-create', also: { view_price_book: true }, run: (api) => api.post('/api/price-book/categories', {}) },
+      { switchKey: 'create_price_book_items', check: 'price-book-create', also: { view_price_book: true, edit_price_book_items: true }, run: (api) => api.post('/api/price-book/categories', {}) },
       { switchKey: 'edit_price_book_items', check: 'price-book-update', also: { view_price_book: true }, run: (api) => api.patch(`/api/price-book/categories/${missing}`, {}) },
       { switchKey: 'delete_price_book_items', check: 'price-book-delete', also: { view_price_book: true }, run: (api) => api.delete(`/api/price-book/categories/${missing}`) },
     ];
@@ -203,7 +203,8 @@ suite('the Inventory group follows switches (real database)', () => {
     it('has a row for every server check the catalog lists for an Inventory switch, and no switch is left unaccounted for', () => {
       const inGroups = SWITCH_CATALOG.filter((s) => INVENTORY_GROUPS.includes(s.module));
       const listed = inGroups.flatMap((s) => s.serverChecks.map((c) => `${s.key}:${c}`));
-      const covered = [...probes.map((p) => `${p.switchKey}:${p.check}`), ...heldToOwnProbes.map((p) => `${p.switchKey}:${p.check}`), ...provenElsewhere.map((c) => inGroups.find((s) => s.serverChecks.includes(c))!.key + ':' + c)];
+      // Assets scope holds no server check (it narrows the asset routes by value); its rows are the row-reach checks below.
+      const covered = [...probes.map((p) => `${p.switchKey}:${p.check}`), ...provenElsewhere.map((c) => inGroups.find((s) => s.serverChecks.includes(c))!.key + ':' + c)];
       expect(covered.sort()).toEqual([...listed].sort());
       for (const s of inGroups) expect(s.serverChecks.length > 0 || Boolean(s.pending), s.key).toBe(true);
     });
@@ -231,8 +232,8 @@ suite('the Inventory group follows switches (real database)', () => {
     });
   });
 
-  describe('the row-reach checks the catalog lists for the Inventory group', () => {
-    it('lets each in to every record with its switch on and holds it to the person\'s own with the switch off, for a custom role', async () => {
+  describe('the row-reach checks of the Assets scope', () => {
+    it('lets each in to every record on All and holds it to the person\'s own on Attached, for a custom role', async () => {
       const { org } = await newOrg();
       const colleague = await fx.addUser(org, `holder${++sequence}`, 'TECHNICIAN');
       const colleagueAsset = randomUUID();
@@ -241,10 +242,9 @@ suite('the Inventory group follows switches (real database)', () => {
       const api = await me.api();
 
       for (const probe of heldToOwnProbes) {
-        expect(SWITCH_CATALOG.find((s) => s.key === probe.switchKey)!.serverChecks, probe.check).toContain(probe.check);
-        for (const [value, expected] of [[true, true], [false, false]] as const) {
+        for (const [value, expected] of [['all', true], ['attached', false]] as const) {
           await setRoleSwitchValues({ organizationId: org, roleKey: me.roleKey, values: { view_stock: true, [probe.switchKey]: value }, actorId: null, reason: 'manual' });
-          expect(await probe.sees(api, colleagueAsset), `${probe.check} with the switch ${value ? 'on' : 'off'}`).toBe(expected);
+          expect(await probe.sees(api, colleagueAsset), `${probe.check} on ${value}`).toBe(expected);
         }
       }
     });
@@ -408,7 +408,7 @@ suite('the Inventory group follows switches (real database)', () => {
       const stock = await addStockedItem(org);
       const narrow = await personWith(
         org,
-        { create_logistic_orders: true, approve_logistic_orders: true, jobs_scope: 'attached', leads_scope: 'attached' },
+        { edit_logistic_orders: true, create_logistic_orders: true, approve_logistic_orders: true, jobs_scope: 'attached', leads_scope: 'attached' },
         { base: 'DISPATCHER' },
       );
       const mine = await fx.addJob(org, customer, { crew: [narrow.id] });
@@ -472,8 +472,8 @@ suite('the Inventory group follows switches (real database)', () => {
     it('lets a person make a purchase order only on a job they can open, and one with no job only under Jobs scope All', async () => {
       const { org, customer } = await newOrg();
       const someone = await fx.addUser(org, `crew${++sequence}`, 'TECHNICIAN');
-      const narrow = await personWith(org, { view_purchase_orders: true, create_purchase_orders: true, jobs_scope: 'attached' }, { base: 'SALES' });
-      const wide = await personWith(org, { view_purchase_orders: true, create_purchase_orders: true, jobs_scope: 'all' }, { base: 'TECHNICIAN' });
+      const narrow = await personWith(org, { view_purchase_orders: true, edit_purchase_orders: true, create_purchase_orders: true, jobs_scope: 'attached' }, { base: 'SALES' });
+      const wide = await personWith(org, { view_purchase_orders: true, edit_purchase_orders: true, create_purchase_orders: true, jobs_scope: 'all' }, { base: 'TECHNICIAN' });
       const mine = await fx.addJob(org, customer, { crew: [narrow.id] });
       const theirs = await fx.addJob(org, customer, { crew: [someone.id] });
 
@@ -544,7 +544,7 @@ suite('the Inventory group follows switches (real database)', () => {
       const crew = await fx.addUser(org, `crew${++sequence}`, 'TECHNICIAN');
       const stock = await addStockedItem(org);
 
-      const maker = await personWith(org, { create_logistic_orders: true, approve_logistic_orders: false }, { base: 'TECHNICIAN' });
+      const maker = await personWith(org, { edit_logistic_orders: true, create_logistic_orders: true, approve_logistic_orders: false }, { base: 'TECHNICIAN' });
       const reachesAll = await personWith(org, { approve_logistic_orders: true }, { base: 'TECHNICIAN' });
       const reachesAttached = await personWith(org, { approve_logistic_orders: true, jobs_scope: 'attached', leads_scope: 'attached' }, { base: 'SALES' });
       const reachesNothing = await personWith(org, { approve_logistic_orders: true, jobs_scope: 'attached', leads_scope: 'attached' }, { base: 'DISPATCHER' });

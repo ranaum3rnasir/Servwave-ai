@@ -119,7 +119,7 @@ describe('the gate', () => {
     ['that is not a demo company', { ...SPIDER_USER, org_is_demo: false }],
     ['that is neither a demo company nor on the pilot list', { ...SPIDER_USER, org_is_demo: false, org_is_spider_pilot: false }],
     ['on the pilot list but without the spider feature', { ...SPIDER_USER, org_is_demo: false, org_is_spider_pilot: true, org_features: ['leads'] }],
-    ['with no feature list at all (a stale session)', { id: 'u1', role: 'ADMIN', org_is_demo: true }],
+    ['with no feature list at all (a stale session)', { id: 'u1', role: 'ADMIN', is_admin: true, org_is_demo: true }],
   ])('a company %s mounts no popup or frame and makes no Spider request', async (_label, user) => {
     signIn(user);
     mount(<LazySpiderAlerts />);
@@ -410,7 +410,7 @@ describe('his click (D4)', () => {
 describe('his states', () => {
   it('in-app switched off: his sentence, and [Enable Notifications] only for an Admin, which turns it on through the settings save', async () => {
     unread = { alerts: [NEW_CARD], in_app: false, red_frame: true };
-    signIn({ ...SPIDER_USER, role: 'ADMIN' });
+    signIn({ ...SPIDER_USER, role: 'ADMIN', is_admin: true });
     const settings = {
       settings: {
         is_active: true, activated_at: ago(DAY),

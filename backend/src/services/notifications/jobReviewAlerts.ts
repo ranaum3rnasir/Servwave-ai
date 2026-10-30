@@ -4,7 +4,7 @@
  *
  *   Ready to close  "J00123 is ready to close": Finish review moved the job on. Lane 1 is the job's people (stored Sold By,
  *                   crew, Dispatcher); lane 2 is EVERY Close jobs holder who can open the job, whether or not the job has
- *                   a Dispatcher, else the Manage roles and permissions holders; copies to "Alert me about every job". Its
+ *                   a Dispatcher, else the Admins; copies to "Alert me about every job". Its
  *                   link opens the job itself, where the banner offers Mark Done. A job that goes back and is finished
  *                   again alerts again. There is no alert for Done.
  *   Review attention  one alert for a landing, listing what changed in the panel's own words. High priority. Lane 1 the
@@ -105,8 +105,7 @@ function itemsText(items: AttentionItem[]): string {
 
 /**
  * The alert never says more to a person than the review panel would show them. The panel leaves an item about an invoice out
- * for a person who cannot open that invoice (View invoices off, or Invoices scope Attached and not on it, the creator rule
- * letting a creator in), so an item that names an invoice is left out of that person's copy, and a person left with nothing to
+ * for a person who cannot open that invoice (View invoices off, or Invoices scope Attached and not on it), so an item that names an invoice is left out of that person's copy, and a person left with nothing to
  * list is sent nothing: the PRD asks for no bare line, and a generic one would still tell them an invoice was touched.
  *
  * `groupOf` sorts the people the chain found into groups that share one list (for a given set of invoices, those who can open
@@ -140,7 +139,7 @@ function peopleSeeingEachItem(organizationId: string, items: AttentionItem[]) {
 /**
  * The Office review attention alert: ONE alert for a landing, listing its items. `job` is given by a caller that already
  * holds the job's people (Complete does), else the job is read once. The people are the job's own, whoever must act on the
- * review (the Dispatcher, else the Office review holders, else the Manage roles and permissions holders) and the copies.
+ * review (the Dispatcher, else the Office review holders, else the Admins) and the copies.
  * `itemsIfDone` are listed only when the job turns out to be Done: a delete or detail change on a Done job alerts whatever it was.
  */
 export async function alertReviewAttention(args: {

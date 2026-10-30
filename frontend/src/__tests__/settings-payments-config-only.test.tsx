@@ -67,7 +67,7 @@ function signedIn() {
     selector({
       user: {
         id: 'u-22', email: 'office@example.test', first_name: 'Office', last_name: 'User',
-        role: 'DISPATCHER', org_is_demo: true, organization_id: 'org-22', org_features: ['online_payments'],
+        role: 'DISPATCHER', is_admin: asAdmin, org_is_demo: true, organization_id: 'org-22', org_features: ['online_payments'],
       },
       isAuthenticated: true, isLoading: false, error: null,
     })) as never);
@@ -82,7 +82,10 @@ function serve() {
   });
 }
 
+// Setting up the company is the Admin flag's alone (36b, M17): the person who holds the old update rule here is the Admin.
+let asAdmin = false;
 function renderSettings(ability: ReturnType<typeof buildAbility>, path = '/settings/servwave-payments') {
+  asAdmin = ability.can('update', 'Organization');
   return renderWithProviders(
     <Routes>
       <Route path="/settings" element={<SettingsLayout />}>

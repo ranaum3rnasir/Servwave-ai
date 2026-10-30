@@ -78,11 +78,10 @@ const SCOPE_SUBJECTS: Array<{ subject: string; switchKey: string }> = [
 ];
 
 /**
- * A role that held the create-user grant keeps inviting, and a role that could send an invoice keeps making
- * its payment link: the two switches the old grants split into. Everything else reads its own grant.
+ * A role that could send an invoice keeps making its payment link: the switch the old grant split into. Everything else
+ * reads its own grant. (Invite users, which read the create-user grant, retired with AL-18.)
  */
 const SOURCE_OVERRIDES: Record<string, { action: string; subject: string }> = {
-  invite_users: { action: 'create', subject: 'User' },
   send_payment_links: { action: 'send', subject: 'Invoice' },
 };
 

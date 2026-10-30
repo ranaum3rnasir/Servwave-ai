@@ -1,5 +1,5 @@
 /* =============================================================================
-   Roles & Permissions, PRD 10, slice S10.25 - PUT /api/users/:id/mailbox-address: a holder of Edit users sets or
+   Roles & Permissions, PRD 10, slice S10.25 - PUT /api/users/:id/mailbox-address: an Admin sets or
    changes the name part of a user's mailbox address (never the sign-in email).
 
    Through the route the Users page calls, as people on custom roles holding exactly the switch values under test
@@ -53,7 +53,10 @@ suite('PUT /api/users/:id/mailbox-address (real database)', () => {
   }
 
   /** A person on a fresh custom role holding exactly these switches on (everything else off). */
+  /** A person on a custom role holding these switches; 'is_admin' in the list makes them an Admin (the flag, AL-18), not a switch. */
   async function personWith(org: string, on: string[], name = 'holder') {
+    const isAdmin = on.includes('is_admin');
+    on = on.filter((k) => k !== 'is_admin');
     const key = `mbx-${randomUUID().slice(0, 8)}`;
     const role = await fx.addCustomRole(org, key, 'DISPATCHER');
     const allOff = Object.fromEntries(SWITCH_CATALOG.filter((x) => x.kind === 'toggle').map((x) => [x.key, false]));
@@ -62,7 +65,7 @@ suite('PUT /api/users/:id/mailbox-address (real database)', () => {
       actorId: null, reason: 'manual',
     });
     clearPermissionCache(org);
-    return fx.addUser(org, name, 'DISPATCHER', { customRoleId: role.id });
+    return fx.addUser(org, name, 'DISPATCHER', { customRoleId: role.id, isAdmin });
   }
 
   /** A user with a mailbox: active with `localPart`, or in "address needed" when it is null. */
@@ -76,7 +79,7 @@ suite('PUT /api/users/:id/mailbox-address (real database)', () => {
     return box;
   }
 
-  const EDITOR = ['view_users', 'edit_users', 'access_communication', 'show_email'];
+  const EDITOR = ['view_users', 'is_admin', 'access_communication', 'show_email'];
 
   it('sets an address for a person marked "Address needed": the mailbox turns active and their own my-mailbox answers it', async () => {
     const w = await world();
@@ -147,7 +150,7 @@ suite('PUT /api/users/:id/mailbox-address (real database)', () => {
     expect(missing.status).toBe(400);
   });
 
-  it('refuses a person without Edit users, the person themself included, and writes nothing', async () => {
+  it('refuses a non-Admin, the person themself included, and writes nothing', async () => {
     const w = await world();
     const nonHolder = await personWith(w.org, ['view_users', 'access_communication', 'show_email'], 'viewer');
     await withMailbox(w.org, nonHolder, `v.${w.part}`);
@@ -160,7 +163,7 @@ suite('PUT /api/users/:id/mailbox-address (real database)', () => {
     expect(await db.mailboxAddress.count({ where: { mailbox_id: box.id } })).toBe(1);
   });
 
-  it('lets a holder of Edit users change their own address, since the switch is the only gate', async () => {
+  it('lets an Admin change their own address, since the Admin flag is the only gate', async () => {
     const w = await world();
     const editor = await personWith(w.org, EDITOR);
     await withMailbox(w.org, editor, `ed.${w.part}`);

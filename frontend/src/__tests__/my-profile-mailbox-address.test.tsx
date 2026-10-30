@@ -9,7 +9,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { renderWithProviders } from './helpers';
+import { renderWithProviders, seedMySwitches } from './helpers';
 import { useAuthStore } from '@/stores/auth.store';
 import { useUpdateMe } from '@/lib/api/users';
 import MyProfilePage from '@/pages/v2/settings/MyProfilePage';
@@ -37,6 +37,9 @@ const NEEDED_SENTENCE = "You don't have an email address yet. An admin needs to 
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
+  // The address is read only by a person whose Show Email is on (M7, ticket 36).
+  seedMySwitches({ show_email: true }, 'u1');
   emailFeature = true;
   mailbox = null;
   vi.mocked(useUpdateMe).mockReturnValue({ mutateAsync: vi.fn() } as unknown as ReturnType<typeof useUpdateMe>);
@@ -79,6 +82,18 @@ describe('My Profile: your company email address', () => {
     await screen.findByText('My Details');
     expect(screen.queryByText('Company email address')).not.toBeInTheDocument();
     expect(screen.queryByText(NEEDED_SENTENCE)).not.toBeInTheDocument();
+  });
+
+  it('shows neither to a person whose Show Email is off (the server refuses them the address)', async () => {
+    seedMySwitches({ show_email: false }, 'u1');
+    for (const box of [{ status: 'active', address: 'jane.smith.acme@mail.example.test' }, { status: 'address_needed', address: null }]) {
+      mailbox = box;
+      const { unmount } = renderWithProviders(<MyProfilePage />);
+      await screen.findByText('My Details');
+      expect(screen.queryByText('jane.smith.acme@mail.example.test')).not.toBeInTheDocument();
+      expect(screen.queryByText(NEEDED_SENTENCE)).not.toBeInTheDocument();
+      unmount();
+    }
   });
 
   it('shows neither while the company lacks the Email plan feature', async () => {

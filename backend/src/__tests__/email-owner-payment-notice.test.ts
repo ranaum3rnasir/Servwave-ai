@@ -28,7 +28,7 @@ const params = {
   to: 'owner@example.com',
   subject: 'Payment disputed for I00042',
   heading: 'Payment disputed for I00042',
-  lines: ['Amount: $300.00. Reason: Fraudulent. Respond by October 20, 2026.'],
+  lines: ['Reason: Fraudulent. Respond by October 20, 2026.'],
   actionUrl: 'http://localhost:5173/invoices/abc',
   actionLabel: 'Open the invoice',
 };
@@ -48,7 +48,7 @@ describe('owner payment notice email', () => {
     expect(mail.to).toBe('owner@example.com');
     expect(mail.subject).toBe('Payment disputed for I00042');
     for (const body of [mail.html, mail.text]) {
-      expect(body).toContain('Amount: $300.00. Reason: Fraudulent. Respond by October 20, 2026.');
+      expect(body).toContain('Reason: Fraudulent. Respond by October 20, 2026.');
       expect(body).toContain('http://localhost:5173/invoices/abc');
     }
     expect(mail.html).toContain('Open the invoice');

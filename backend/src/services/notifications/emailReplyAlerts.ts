@@ -10,14 +10,14 @@
  * people, never to a shared box.
  *   Lane 1, always told: the holder of the user mailbox the conversation sits in (whoever took it over), the person who sent the
  *     mail being answered by hand, the record's Owner or Sold By, its crew, its Dispatcher and the conversation's assignee.
- *   Fallback, only when lane 1 finds nobody: the people linked to the main mailbox who can read it, else the holders of Manage
- *     roles and permissions, told why ("This job has no Dispatcher or Sold By who can take this reply"). Nobody who cannot read the
+ *   Fallback, only when lane 1 finds nobody: the people linked to the main mailbox who can read it, else the company's
+ *     Admins, told why ("This job has no Dispatcher or Sold By who can take this reply"). Nobody who cannot read the
  *     conversation is told, so there is no alert without details: an alert never says more to a person than the screens show them.
  *   Copies: holders of the "Alert me about every ..." switch of the record's kind, on top, if they can read the conversation.
  *
  * A reply in an ORDINARY conversation (started here, migrated, moved in) rings its assignee, else its mailbox's holder. In the main
  * mailbox, which has no holder, it rings the people linked to it who can read the conversation; while nobody active is linked, the
- * holders of Manage roles and permissions, told why ("Nobody is linked to the main mailbox").
+ * company's Admins, told why ("Nobody is linked to the main mailbox").
  *
  * "The mail being answered": the latest mail that went OUT in the conversation, whose sender is recorded on it (`sent_by_user_id`,
  * written by a hand send; an automated send records nobody, and then a reply has no hand sender). The reply token the customer
@@ -29,14 +29,16 @@
  * reply in the token's conversation would, by the same walk (lanes, fallback, copies, the ordinary conversation's assignee, holder or
  * readers): only the words of the bell differ, and it opens the held message instead of the Email page.
  *
- * The bell opens the conversation it is about (`conversationLink`: the mailbox it sits in and its thread), put into the alert's data
- * here, where the alert is made, for every kind of conversation. A person who cannot read the conversation is never rung, so the
- * link leads no one to more than the screens show. The held reply above opens the held message instead.
+ * The bell opens the conversation it is about (`conversationLink`), in a list where THAT person sees it (Ran 2026-10-28; M1,
+ * ticket 31): the mailbox it sits in when that mailbox's list shows it to them, else "My mailbox" (`emailBellLinks`, which asks the
+ * Email page's own lists). A person no list shows it to is not rung, so nobody is told about a reply they cannot follow; people
+ * whose bells open different lists get one alert per list. The held reply above opens the held message instead.
  *
  * A chain that ends with nobody is logged (kind of alert, conversation and company, nothing the customer said), never dropped.
  * While ServWave has the Email plan feature off for the company nobody is rung and no chain runs (the webhook does not call this,
  * and this checks again). A redelivery rings nobody twice: the dedup key is the provider's message id, the alert with the reason
- * line adds `:why` (WHY_KEY), and both are looked for before anything is read.
+ * line adds `:why` (WHY_KEY), an alert that opens a list other than the conversation's own mailbox adds that list (`:mine`,
+ * `:all`), and all of them are looked for before anything is read.
  *
  * Cost, the same for a company of 20 and of 270: the dedup check, the conversation, the plan, the company's active people, their
  * switches, the record's people, then the single read for lane 1 and the copies and, only when lane 1 found nobody, a second one
@@ -48,12 +50,12 @@ import { prisma } from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { jobCrewIds } from '../../lib/job-crew';
 import { isFollowingRecordType } from '../../lib/communication/communicationScope';
-import { readersOfConversation } from '../../lib/communication/conversationReaders';
+import { emailBellLinks, readersOfConversation } from '../../lib/communication/conversationReaders';
 import { orgEmailFeatureOn } from '../../lib/communication/emailFeature';
 import { linkedReaderIds } from '../../lib/communication/mainMailboxReaders';
 import { tieOf } from '../../lib/communication/recordTie';
 import type { PermissionUser } from '../../lib/permissions/enforce';
-import { MANAGE_ROLES_SWITCH } from '../../lib/permissions/switchHolders';
+import { isSuperUser } from '../../lib/permissions/effectiveRole';
 import { resolveSwitchesForPeople } from '../../lib/permissions/switches/store';
 import { logNobodyToTell, sendByWhyLine, WHY_KEY, type TwoLaneAnswer } from './alertChain';
 import { emit } from './notificationService';
@@ -73,6 +75,10 @@ const REPLY_VERB = 'communication.email_inbound';
 const ALERT_NAME = 'customer email reply alert';
 
 /** The "Alert me about every ..." switch of each kind of record a conversation can be about. */
+/** The lists a reply bell can open besides the conversation's own mailbox (`emailBellLinks`): "My mailbox", and every mailbox. */
+const OWN_LIST = 'own';
+const OTHER_LISTS = ['mine', 'all'] as const;
+
 const COPY_SWITCH: Record<string, string> = {
   job: 'alert_every_job', lead: 'alert_every_lead', estimate: 'alert_every_estimate', invoice: 'alert_every_invoice',
 };
@@ -82,6 +88,12 @@ export interface EmailReplyAlertArgs {
   threadId: string;
   /** The provider's id for the received message: what makes a redelivery the same event. */
   providerMessageId: string;
+  /**
+   * The stored reply itself (the email row): the bell quotes it, so it goes only to people who open THIS message (M1, ticket 31),
+   * never to someone who opens another message of the conversation. For a held reply it is the held message, read through the
+   * conversation its reply address belongs to (`heldEmailId`).
+   */
+  emailId: string;
   /** Who the reply is from, as the bell shows it. */
   senderLabel: string;
   subject: string;
@@ -183,8 +195,13 @@ interface Walk {
   threadId: string;
   /** Holders of a switch among the company's active people. */
   holders(key: string): string[];
-  /** Who, among these ids, may read this conversation: one batched read, asked of active people only. */
-  readable(ids: string[]): Promise<Set<string>>;
+  /** The company's active Admins: the last fallback, since managing people and roles is theirs alone (AL-18). */
+  admins: string[];
+  /**
+   * Who, among these ids, may read what the bell quotes: the reply itself, or, for a held reply (which sits in no conversation),
+   * the conversation its item opens through. One batched read, asked of active people only.
+   */
+  readable(ids: string[], recordPeople?: readonly string[]): Promise<ReadonlySet<string>>;
 }
 
 const unique = (ids: string[]): string[] => [...new Set(ids)];
@@ -201,15 +218,16 @@ async function recordConversationAnswer(walk: Walk, thread: ThreadFacts): Promis
   const copySwitch = COPY_SWITCH[thread.record_type ?? ''];
   const copyHolders = copySwitch ? walk.holders(copySwitch) : [];
 
-  const reading = await walk.readable(unique([...candidates, ...copyHolders]));
+  // Everyone told about it, the copies and the covering people included, must find it in the Email list the bell opens (M1).
+  const reading = await walk.readable(unique([...candidates, ...copyHolders]), record.people);
   const laneOne = candidates.filter((id) => reading.has(id));
   const copies = copyHolders.filter((id) => reading.has(id));
 
   let fallback: string[] = [];
   if (laneOne.length === 0) {
     const linked = await linkedReaderIds(organizationId);
-    const managers = walk.holders(MANAGE_ROLES_SWITCH);
-    const fallbackReading = await walk.readable(unique([...linked, ...managers]));
+    const managers = walk.admins;
+    const fallbackReading = await walk.readable(unique([...linked, ...managers]), record.people);
     fallback = linked.filter((id) => fallbackReading.has(id));
     if (fallback.length === 0) fallback = managers.filter((id) => fallbackReading.has(id));
   }
@@ -229,14 +247,14 @@ async function ordinaryConversationAnswer(walk: Walk, thread: ThreadFacts): Prom
   const answer: TwoLaneAnswer = { laneOne: first ? [first] : [], laneTwo: [], copies: [], fallbackReason: null };
 
   if (!first && thread.mailbox?.kind === 'main') {
-    // The main mailbox has no holder: its readers are the people linked to it, and while nobody active is linked, the holders of
-    // Manage roles and permissions.
+    // The main mailbox has no holder: its readers are the people linked to it, and while nobody active is linked, the company's
+    // Admins.
     const linked = await linkedReaderIds(organizationId);
     if (linked.length > 0) {
       const mainReading = await walk.readable(linked);
       answer.laneOne = linked.filter((id) => mainReading.has(id));
     } else {
-      const managers = walk.holders(MANAGE_ROLES_SWITCH);
+      const managers = walk.admins;
       const mainReading = await walk.readable(managers);
       answer.laneTwo = managers.filter((id) => mainReading.has(id));
       answer.fallbackReason = answer.laneTwo.length ? NOBODY_LINKED_REASON : null;
@@ -266,7 +284,10 @@ async function ringReplyPeople(args: EmailReplyAlertArgs): Promise<string[]> {
 
   // A redelivery is the same event: nothing is read for it.
   const already = await prisma.notification.findFirst({
-    where: { organization_id: organizationId, dedup_key: { in: [dedupKey, dedupKey + WHY_KEY] } },
+    where: {
+      organization_id: organizationId,
+      dedup_key: { in: [dedupKey, dedupKey + WHY_KEY].flatMap((key) => ['', ...OTHER_LISTS].map((list) => key + (list ? `:${list}` : ''))) },
+    },
     select: { id: true },
   });
   if (already) return [];
@@ -288,18 +309,33 @@ async function ringReplyPeople(args: EmailReplyAlertArgs): Promise<string[]> {
     where: { organization_id: organizationId, is_active: true },
     select: {
       id: true, role: true, organization_id: true, department_id: true, location_id: true,
-      custom_role_id: true, custom_role: { select: { key: true } },
+      custom_role_id: true, is_admin: true, custom_role: { select: { key: true } },
     },
   });
-  const keys = [MANAGE_ROLES_SWITCH, ...Object.values(COPY_SWITCH)];
+  const keys = Object.values(COPY_SWITCH);
   const values = await resolveSwitchesForPeople(people, keys);
+  // The `mailbox` each person's bell opens (see `emailBellLinks`): the conversation's own, null for "My mailbox", or 'all'.
+  const bellLinks = new Map<string, string | null>();
   const walk: Walk = {
     organizationId,
     threadId,
     holders: (key) => people.filter((p) => values.get(p.id)?.[key] === true).map((p) => p.id),
-    readable: async (ids) => {
+    admins: people.filter(isSuperUser).map((p) => p.id),
+    readable: async (ids, recordPeople = []) => {
       const asked = new Set(ids);
-      return readersOfConversation(people.filter((p) => asked.has(p.id)), 'email', threadId, organizationId);
+      const them = people.filter((p) => asked.has(p.id));
+      if (!args.heldEmailId) {
+        // Who can follow the bell, and the list each one's bell opens, from ONE answer, so the two cannot drift apart: the person
+        // opens the reply AND one of the Email page's lists shows them the conversation. An owner who cannot falls through to the
+        // mailbox's holder or the main mailbox's readers, exactly as one who reaches nothing; a copy or a cover nobody can follow
+        // is not sent (Ran 2026-10-28).
+        const found = await emailBellLinks(them, threadId, organizationId, { messageId: args.emailId, recordPeople });
+        for (const [id, link] of found) bellLinks.set(id, link);
+        return new Set(found.keys());
+      }
+      // Whoever is told must be able to follow the bell. A held reply is not a message of the conversation, and its bell opens the
+      // held item, which opens to whoever reaches the conversation itself (needsReviewItemWhereForReq).
+      return readersOfConversation(them, 'email', threadId, organizationId, { wholeConversation: true });
     },
   };
 
@@ -314,7 +350,17 @@ async function ringReplyPeople(args: EmailReplyAlertArgs): Promise<string[]> {
   }
 
   const told: string[] = [];
-  await sendByWhyLine(answer, async (entity, whyLine) => {
+  // One alert per list the bells open: the conversation's own mailbox keeps the plain key, any other list adds its name.
+  const listOf = (id: string): string => {
+    const link = bellLinks.get(id);
+    return link === undefined || link === thread.mailbox_id ? OWN_LIST : link === null ? 'mine' : 'all';
+  };
+  const groupOf = args.heldEmailId
+    ? undefined
+    : async (ids: string[]) => new Map(ids.map((id) => [id, listOf(id)] as const));
+  await sendByWhyLine(answer, async (entity, whyLine, list) => {
+    const opens = list === null || list === OWN_LIST ? thread.mailbox_id : list === 'mine' ? null : 'all';
+    const suffix = list === null || list === OWN_LIST ? '' : `:${list}`;
     told.push(...await emit({
       verb: REPLY_VERB,
       organizationId,
@@ -327,12 +373,12 @@ async function ringReplyPeople(args: EmailReplyAlertArgs): Promise<string[]> {
         subject: args.subject,
         fallback_reason: whyLine ?? '',
         // The bell opens the conversation in the mailbox it sits in; a held reply opens the held message instead.
-        link_path: conversationLink(threadId, thread.mailbox_id),
+        link_path: conversationLink(threadId, opens),
         ...(args.heldEmailId ? { unmatched_reply: true, link_path: unmatchedReplyLink(args.heldEmailId) } : {}),
       },
-      dedupKey: whyLine ? dedupKey + WHY_KEY : dedupKey,
+      dedupKey: (whyLine ? dedupKey + WHY_KEY : dedupKey) + suffix,
       readersChecked: true,
     }));
-  });
+  }, groupOf);
   return unique(told);
 }

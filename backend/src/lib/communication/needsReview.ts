@@ -14,10 +14,10 @@ import {
  * A held message (`emails.review_reason` set: failed sender authentication, automatic mail, a reply from an address we did not
  * send to, a reply on an address that no longer resolves) is filed under one mailbox (`review_mailbox_id`). A person sees the held
  * messages of the mailboxes they can see:
- *   - under Communication scope "Linked to me", the mailboxes they hold (their own and any handed to them) and the company's main
+ *   - under Communication scope Attached, the mailboxes they hold (their own and any handed to them) and the company's main
  *     mailbox when they read it;
  *   - under All, every mailbox of the company.
- * With one limit under "Linked to me": a held reply on a record conversation's reply address (an invoice's, an estimate's, a
+ * With one limit under Attached: a held reply on a record conversation's reply address (an invoice's, an estimate's, a
  * job's) shows only to people who can reach that conversation (`heldRecordReachWhereForReq`), so a forwarded reply to an invoice
  * never reaches a person with Invoices View off through a mailbox's list.
  *
@@ -36,15 +36,15 @@ export interface NeedsReviewVisibility {
   where: Where;
   /** The mailbox issued to the person, when they have one. */
   own: string | null;
-  /** The main mailbox, when the person reads it (under "Linked to me"). */
+  /** The main mailbox, when the person reads it (under Attached). */
   main: string | null;
-  /** The mailboxes whose lists the person may open under "Linked to me"; null under All (every mailbox of the company). */
+  /** The mailboxes whose lists the person may open under Attached; null under All (every mailbox of the company). */
   readable: string[] | null;
 }
 
 /** Every held message the person may see (see the header), read afresh on every request. */
 export async function needsReviewVisibilityForReq(req: Request, known?: EmailSection): Promise<NeedsReviewVisibility> {
-  if (!emailFeatureOn(req)) return { scope: 'linked_to_me', where: NO_EMAIL, own: null, main: null, readable: [] };
+  if (!emailFeatureOn(req)) return { scope: 'attached', where: NO_EMAIL, own: null, main: null, readable: [] };
   const scope = await communicationScopeForReq(req);
   const held = { review_reason: { not: null }, ...tenantWhere(req) };
   const section = known ?? await emailSectionForReq(req);

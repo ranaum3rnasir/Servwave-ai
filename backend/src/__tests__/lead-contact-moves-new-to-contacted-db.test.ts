@@ -50,7 +50,7 @@ suite('an outbound contact moves a New lead to Contacted (real database)', () =>
     });
     const userId = randomUUID();
     await prisma.user.create({
-      data: { id: userId, organization_id: orgId, email: `rep-${tag}@example.test`, first_name: 'Rita', last_name: 'Rep', role: 'ADMIN' },
+      data: { id: userId, organization_id: orgId, email: `rep-${tag}@example.test`, first_name: 'Rita', last_name: 'Rep', role: 'ADMIN', is_admin: true },
     });
     const customerId = randomUUID();
     await prisma.customer.create({

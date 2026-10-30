@@ -498,7 +498,7 @@ describe('a send publishes the rep\'s recommendation onto the customer\'s docume
     // User-visible copy: it must not state a percentage the figure beside it does not satisfy.
     const requested = timelineEvents.find((e) => e.event_type === 'DEPOSIT_REQUESTED');
     expect(requested).toBeDefined();
-    expect(requested!.description).toBe('Deposit of $418.75 requested (25%)');
+    expect(requested!.description).toBe('Deposit requested (25%)');
   });
 
   it('re-prices an unpaid deposit invoice off the PUBLISHED total, not the pre-publish one', async () => {

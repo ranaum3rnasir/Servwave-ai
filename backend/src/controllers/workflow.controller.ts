@@ -41,6 +41,9 @@ import {
   type AutomationEntity,
 } from '../services/automations/catalog';
 import { renderMergeFields } from '../services/automations/renderMergeFields';
+import { withoutPriceFields } from '../services/automations/priceMergeFields';
+import { TEXT_SENT_DETAIL } from '../services/automations/executors';
+import { canSeePrices } from '../lib/permissions/enforce';
 import { fallbacksFor, DEFAULT_MERGE_FIELD_FALLBACKS } from '../services/automations/mergeFieldFallbacks';
 import { audienceLabel, type RecipientKey } from '../services/automations/recipients';
 import { hasFeature } from '../lib/entitlements/resolve';
@@ -641,9 +644,12 @@ export async function testWorkflow(req: Request, res: Response) {
     // Sample data by default; with empty_fields every field the trigger advertises resolves to
     // '', so what shows is the step's own fallbacks and nothing else. Nothing is appended to
     // that list any more: nothing outside it is legal in a body (see `BASE` in catalog.ts).
+    // M4 (ticket 35): a person without See prices tests with the fields that render a price (or the customer's private
+    // link) empty, both in the preview they are shown and in the email sent to them.
+    const sampleContext = canSeePrices(req) ? SAMPLE_CONTEXT : withoutPriceFields(SAMPLE_CONTEXT);
     const previewContext: Record<string, string> = body.empty_fields
       ? Object.fromEntries(TRIGGERS[def.trigger_type].mergeFields.map((f) => [f, '']))
-      : SAMPLE_CONTEXT;
+      : sampleContext;
 
     // The server's per-step "needs setup" verdict — same authority as the badge.
     const issuesByStep = new Map<number, string>();
@@ -784,6 +790,17 @@ export async function testWorkflow(req: Request, res: Response) {
   }
 }
 
+/**
+ * What the Activity tab shows as the detail of a run (M4, Ran 2026-10-28: "just the subject"). An email step shows the email's
+ * subject as stored. A text step that went out shows a neutral line, WHATEVER is stored: rows written before this change hold the
+ * first 120 characters of the message body, and nothing rewrites them. A text step that did not go out keeps its reason (a
+ * plain-English line the engine wrote, never the body).
+ */
+export function activityDetail(stepType: string, status: string, stored: string | null | undefined): string | null {
+  if (stepType === 'SEND_TEXT' && status === 'SENT') return TEXT_SENT_DETAIL;
+  return stored ?? null;
+}
+
 export async function getWorkflowActivity(req: Request, res: Response) {
   try {
     const workflow = await prisma.workflow.findFirst({
@@ -825,7 +842,7 @@ export async function getWorkflowActivity(req: Request, res: Response) {
       step_type: r.step_type,
       status: r.status,
       recipient_summary: r.recipient_summary ?? null,
-      detail: r.detail ?? null,
+      detail: activityDetail(r.step_type, r.status, r.detail),
       audience_outcomes: Array.isArray(r.audience_outcomes) ? r.audience_outcomes : [],
       entity_label: r.enrollment?.entity_label ?? null,
     }));
@@ -846,7 +863,7 @@ export async function getWorkflowActivity(req: Request, res: Response) {
         step_type: r.rule.action_type === 'SEND_SMS' ? 'SEND_TEXT' : r.rule.action_type,
         status: r.status,
         recipient_summary: r.recipient_summary ?? null,
-        detail: r.detail ?? null,
+        detail: activityDetail(r.rule.action_type === 'SEND_SMS' ? 'SEND_TEXT' : r.rule.action_type, r.status, r.detail),
         // The legacy engine never resolved audiences, so there is nothing to show per audience.
         audience_outcomes: [],
         entity_label: r.entity_label ?? null,

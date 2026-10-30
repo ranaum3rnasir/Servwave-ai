@@ -73,7 +73,7 @@ suite('Needs attention API (real database)', () => {
     const person: Person = await fx.addUser(org, `${name}${sequence}`, 'DISPATCHER', { customRoleId: role.id, basedOnRoleKey: key });
     return { ...person, api: () => fx.signedInAs(person) };
   }
-  const SEES_ALL = { view_payments: true, view_invoices: true, invoices_scope: 'all' } as const;
+  const SEES_ALL = { view_payments: true, view_invoices: true, jobs_scope: 'all', leads_scope: 'all' } as const;
   const viewer = (org: string) => personWith(org, { ...SEES_ALL, refund_payments: false, send_payment_links: false, manage_payout_account: false }, 'viewer');
   const refunder = (org: string) => personWith(org, { ...SEES_ALL, refund_payments: true, send_payment_links: false, manage_payout_account: false }, 'refunder');
   const linker = (org: string) => personWith(org, { ...SEES_ALL, refund_payments: true, send_payment_links: true, manage_payout_account: false }, 'linker');
@@ -163,7 +163,7 @@ suite('Needs attention API (real database)', () => {
   describe('the gate', () => {
     it('refuses the summary and the list without View payments and lets them in with it', async () => {
       const { org } = await newOrg();
-      const off = await personWith(org, { view_payments: false, view_invoices: true, invoices_scope: 'all' });
+      const off = await personWith(org, { view_payments: false, view_invoices: true, jobs_scope: 'all', leads_scope: 'all' });
       const on = await viewer(org);
       for (const url of [`${BASE}/summary`, BASE]) {
         expect((await (await off.api()).get(url)).status, `${url} without View payments`).toBe(403);
@@ -248,7 +248,7 @@ suite('Needs attention API (real database)', () => {
       expect(by.dispute.respond_by).toBeTruthy();
       expect(by.dispute.days_left).toBeGreaterThanOrEqual(6);
       expect(by.failed_payout).toMatchObject({ title: 'Payout failed', detail: 'The bank account is closed', payout_id: ids.payout, actions: ['update_bank_account'] });
-      expect(by.unmatched_payment).toMatchObject({ title: 'Unapplied payment', detail: 'Paid more than was owed', actions: ['attach_to_invoice', 'refund', 'mark_resolved'], amount: 25 });
+      expect(by.unmatched_payment).toMatchObject({ title: 'Unapplied payment', detail: 'Paid more than was owed', actions: ['attach_to_invoice', 'create_invoice', 'refund', 'mark_resolved'], amount: 25 });
       expect(by.unmatched_refund.actions).toEqual(['attach_to_invoice', 'mark_resolved']);
       expect(body.counts).toEqual({ open: 6, resolved: 0 });
       expect(body.pagination).toMatchObject({ page: 1, total: 6 });
@@ -272,7 +272,7 @@ suite('Needs attention API (real database)', () => {
       await oneOfEach(org, customer, admin.id);
       const actionsOf = async (p: Awaited<ReturnType<typeof refunder>>) => Object.fromEntries((await listOf(await p.api())).items.map((i) => [i.type, i.actions]));
       expect(await actionsOf(await refunder(org))).toMatchObject({
-        failed_payment: ['contact_customer', 'mark_resolved'], failed_refund: ['refund_again', 'mark_resolved'], dispute: ['respond'], failed_payout: [], unmatched_payment: ['attach_to_invoice', 'refund', 'mark_resolved'],
+        failed_payment: ['contact_customer', 'mark_resolved'], failed_refund: ['refund_again', 'mark_resolved'], dispute: ['respond'], failed_payout: [], unmatched_payment: ['attach_to_invoice', 'create_invoice', 'refund', 'mark_resolved'],
       });
       expect(await actionsOf(await linker(org))).toMatchObject({ failed_payment: ['contact_customer', 'mark_resolved'], failed_payout: [] });
     });
@@ -332,7 +332,7 @@ suite('Needs attention API (real database)', () => {
       const secret = randomUUID();
       await db.customer.create({ data: { id: secret, organization_id: org, customer_number: `C-${secret.slice(0, 8)}`, kind: 'COMPANY', segment: 'COMMERCIAL', company_name: 'Hidden Holdings' } });
       await db.customer.update({ where: { id: secret }, data: { email: 'delivered@resend.dev' } });
-      const me = await personWith(org, { ...SEES_ALL, invoices_scope: 'attached', refund_payments: true, send_payment_links: true });
+      const me = await personWith(org, { ...SEES_ALL, jobs_scope: 'attached', leads_scope: 'attached', refund_payments: true, send_payment_links: true });
       const job = await fx.addJob(org, customer, { crew: [me.id] });
       const mine = await invoiceIn(org, customer, { jobId: job.id });
       const theirs = await invoiceIn(org, secret);
@@ -375,7 +375,7 @@ suite('Needs attention API (real database)', () => {
   describe('restricted items carry no free text', () => {
     it('blanks the note, the resolver, the detail text and the source ids on an invoice the caller cannot open', async () => {
       const { org, customer, admin } = await newOrg();
-      const me = await personWith(org, { ...SEES_ALL, invoices_scope: 'attached', refund_payments: true });
+      const me = await personWith(org, { ...SEES_ALL, jobs_scope: 'attached', leads_scope: 'attached', refund_payments: true });
       const theirs = await invoiceIn(org, customer);
       const resolvedPayment = await addPayment(theirs, { amount: 30, paidAt: ago(2), failureCode: 'insufficient_funds' });
       await db.paymentAttentionResolution.create({
@@ -516,7 +516,7 @@ suite('Needs attention API (real database)', () => {
 
     it('is refused for an item on an invoice the caller cannot open', async () => {
       const { org, customer } = await newOrg();
-      const me = await personWith(org, { ...SEES_ALL, invoices_scope: 'attached', refund_payments: true });
+      const me = await personWith(org, { ...SEES_ALL, jobs_scope: 'attached', leads_scope: 'attached', refund_payments: true });
       const hidden = await invoiceIn(org, customer);
       const failed = await addPayment(hidden);
       const res = await (await me.api()).post(`${BASE}/failed_payment:${failed}/resolve`, {});
@@ -776,7 +776,7 @@ suite('Needs attention API (real database)', () => {
       const late = await addDispute(org, invoice, await addPayment(invoice, { method: 'CARD', state: 'SUCCEEDED' }), { due: ago(1) });
       const hiddenInvoice = await invoiceIn(org, customer);
       const hidden = await addDispute(org, hiddenInvoice, await addPayment(hiddenInvoice, { method: 'CARD', state: 'SUCCEEDED' }));
-      const narrowed = await personWith(org, { ...SEES_ALL, invoices_scope: 'attached', refund_payments: true });
+      const narrowed = await personWith(org, { ...SEES_ALL, jobs_scope: 'attached', leads_scope: 'attached', refund_payments: true });
       const job = await fx.addJob(org, customer, { crew: [narrowed.id] });
       await db.invoice.update({ where: { id: invoice }, data: { job_id: job.id } });
       const actions = async (p: { api: () => Promise<Api> }) => Object.fromEntries((await listOf(await p.api())).items.map((i) => [String(i.key).replace('dispute:', ''), i]));
@@ -1061,7 +1061,7 @@ suite('Needs attention API (real database)', () => {
       const { org, customer } = await newOrg();
       const secret = randomUUID();
       await db.customer.create({ data: { id: secret, organization_id: org, customer_number: `C-${secret.slice(0, 8)}`, kind: 'COMPANY', segment: 'COMMERCIAL', company_name: 'Hidden Holdings' } });
-      const me = await personWith(org, { ...SEES_ALL, invoices_scope: 'attached', refund_payments: true });
+      const me = await personWith(org, { ...SEES_ALL, jobs_scope: 'attached', leads_scope: 'attached', refund_payments: true });
       const job = await fx.addJob(org, customer, { crew: [me.id] });
       await invoiceIn(org, customer, { jobId: job.id });
       const theirs = await invoiceIn(org, secret);
@@ -1111,7 +1111,7 @@ suite('Needs attention API (real database)', () => {
     it('refuses a caller without View payments', async () => {
       const { org, customer, admin } = await newOrg();
       const ids = await oneOfEach(org, customer, admin.id);
-      const off = await personWith(org, { view_payments: false, view_invoices: true, invoices_scope: 'all' });
+      const off = await personWith(org, { view_payments: false, view_invoices: true, jobs_scope: 'all', leads_scope: 'all' });
       expect((await (await off.api()).get(`${BASE}/failed_payment:${ids.failedPayment}`)).status).toBe(403);
     });
 
@@ -1138,7 +1138,7 @@ suite('Needs attention API (real database)', () => {
       const { org, customer, admin } = await newOrg();
       const secret = randomUUID();
       await db.customer.create({ data: { id: secret, organization_id: org, customer_number: `C-${secret.slice(0, 8)}`, kind: 'COMPANY', segment: 'COMMERCIAL', company_name: 'Hidden Holdings' } });
-      const me = await personWith(org, { ...SEES_ALL, invoices_scope: 'attached', refund_payments: true });
+      const me = await personWith(org, { ...SEES_ALL, jobs_scope: 'attached', leads_scope: 'attached', refund_payments: true });
       const job = await fx.addJob(org, customer, { crew: [me.id] });
       await invoiceIn(org, customer, { jobId: job.id });
       const theirs = await invoiceIn(org, secret);
@@ -1161,7 +1161,7 @@ suite('Needs attention API (real database)', () => {
 
     /** An office person: sees every invoice, may refund, create invoices (also standalone) and see the Invoices page. */
     const officer = (org: string, extra: Record<string, boolean | string | string[]> = {}) =>
-      personWith(org, { ...SEES_ALL, refund_payments: true, create_invoices: true, standalone_invoices: true, show_invoices_page: true, ...extra }, 'officer');
+      personWith(org, { ...SEES_ALL, refund_payments: true, edit_invoices: true, create_invoices: true, standalone_invoices: true, ...extra }, 'officer');
 
     /** An invoice of the customer with a chosen total, amount due, status, due date and kind. */
     async function invoiceOf(org: string, customer: string, o: {
@@ -1342,7 +1342,7 @@ suite('Needs attention API (real database)', () => {
     it('refuses a caller without View payments, on the detail and on the search', async () => {
       const { org, customer } = await newOrg();
       const id = await addUnapplied(org, { invoiceId: await invoiceOf(org, customer), amount: 25 });
-      const off = await personWith(org, { view_payments: false, view_invoices: true, invoices_scope: 'all' }, 'noview');
+      const off = await personWith(org, { view_payments: false, view_invoices: true, jobs_scope: 'all', leads_scope: 'all' }, 'noview');
       const api = await off.api();
       expect((await get(api, id)).status).toBe(403);
       expect((await api.get(`${DETAIL}/${id}/invoices?q=`)).status).toBe(403);
@@ -1367,7 +1367,7 @@ suite('Needs attention API (real database)', () => {
       const { org, customer } = await newOrg();
       const secret = randomUUID();
       await db.customer.create({ data: { id: secret, organization_id: org, customer_number: `C-${secret.slice(0, 8)}`, kind: 'COMPANY', segment: 'COMMERCIAL', company_name: 'Hidden Holdings' } });
-      const me = await personWith(org, { ...SEES_ALL, invoices_scope: 'attached', refund_payments: true, create_invoices: true, standalone_invoices: true, show_invoices_page: true });
+      const me = await personWith(org, { ...SEES_ALL, jobs_scope: 'attached', leads_scope: 'attached', refund_payments: true, edit_invoices: true, create_invoices: true, standalone_invoices: true });
       const job = await fx.addJob(org, customer, { crew: [me.id] });
       await invoiceOf(org, customer, { jobId: job.id, total: 25 });
       const theirs = await invoiceOf(org, secret, { total: 25 });
@@ -1386,7 +1386,7 @@ suite('Needs attention API (real database)', () => {
 
     it('hides an item with no invoice from a caller whose invoice scope is narrowed, as the list does', async () => {
       const { org } = await newOrg();
-      const me = await personWith(org, { ...SEES_ALL, invoices_scope: 'attached', refund_payments: true });
+      const me = await personWith(org, { ...SEES_ALL, jobs_scope: 'attached', leads_scope: 'attached', refund_payments: true });
       const id = await addUnapplied(org, { reason: 'WRONG_ORG', amount: 25 });
       expect((await get(await me.api(), id)).status).toBe(404);
     });
@@ -1448,7 +1448,7 @@ suite('Needs attention API (real database)', () => {
         const other = await newOrg();
         const secret = randomUUID();
         await db.customer.create({ data: { id: secret, organization_id: org, customer_number: `C-${secret.slice(0, 8)}`, kind: 'COMPANY', segment: 'COMMERCIAL', company_name: 'Hidden Holdings' } });
-        const me = await officer(org, { invoices_scope: 'attached' });
+        const me = await officer(org, { jobs_scope: 'attached', leads_scope: 'attached' });
         const job = await fx.addJob(org, customer, { crew: [me.id] });
         const ok = await invoiceOf(org, customer, { jobId: job.id, total: 25 });
         const deposit = await invoiceOf(org, customer, { jobId: job.id, total: 25, kind: 'DEPOSIT' });
@@ -1511,7 +1511,7 @@ suite('Needs attention API (real database)', () => {
         const { org, customer } = await newOrg();
         const secret = randomUUID();
         await db.customer.create({ data: { id: secret, organization_id: org, customer_number: `C-${secret.slice(0, 8)}`, kind: 'COMPANY', segment: 'COMMERCIAL', company_name: 'Hidden Holdings' } });
-        const me = await personWith(org, { ...SEES_ALL, invoices_scope: 'attached', refund_payments: false }, 'viewer');
+        const me = await personWith(org, { ...SEES_ALL, jobs_scope: 'attached', leads_scope: 'attached', refund_payments: false }, 'viewer');
         const api = await me.api();
         const job = await fx.addJob(org, customer, { crew: [me.id] });
         const mine = await invoiceOf(org, customer, { jobId: job.id, total: 25 });
@@ -1554,7 +1554,7 @@ suite('Needs attention API (real database)', () => {
       it('leaves out deposit invoices, voided and paid ones, other companies\' invoices and invoices the caller cannot open, and returns at most 25', async () => {
         const { org, customer } = await newOrg();
         const other = await newOrg();
-        const me = await officer(org, { invoices_scope: 'attached' });
+        const me = await officer(org, { jobs_scope: 'attached', leads_scope: 'attached' });
         const job = await fx.addJob(org, customer, { crew: [me.id] });
         const secret = randomUUID();
         await db.customer.create({ data: { id: secret, organization_id: org, customer_number: `C-${secret.slice(0, 8)}`, kind: 'COMPANY', segment: 'COMMERCIAL', company_name: 'Hidden Holdings' } });
@@ -1637,13 +1637,12 @@ suite('Needs attention API (real database)', () => {
         expect(listed).toEqual({ unmatched_payment: ['attach_to_invoice', 'create_invoice', 'refund', 'mark_resolved'], unmatched_refund: ['attach_to_invoice', 'mark_resolved'] });
       });
 
-      it('withholds Create invoice from someone who cannot create a standalone invoice or does not see the Invoices page, but keeps their other buttons', async () => {
+      it('withholds Create invoice from someone who cannot create a standalone invoice but keeps their other buttons', async () => {
         const { org, customer } = await newOrg();
         const id = await addUnapplied(org, { invoiceId: await invoiceOf(org, customer), amount: 25 });
         const noStandalone = await officer(org, { standalone_invoices: false });
         const noCreate = await officer(org, { create_invoices: false, standalone_invoices: false });
-        const noPage = await officer(org, { show_invoices_page: false });
-        for (const [who, why] of [[noStandalone, 'no standalone'], [noCreate, 'no create'], [noPage, 'no page']] as const) {
+        for (const [who, why] of [[noStandalone, 'no standalone'], [noCreate, 'no create']] as const) {
           expect(await actionsOf(await who.api(), id), why).toEqual(['attach_to_invoice', 'refund', 'mark_resolved']);
         }
       });
@@ -1661,7 +1660,7 @@ suite('Needs attention API (real database)', () => {
       it('gives a caller without Refund payments none of them', async () => {
         const { org, customer } = await newOrg();
         const id = await addUnapplied(org, { invoiceId: await invoiceOf(org, customer), amount: 25 });
-        const api = await (await personWith(org, { ...SEES_ALL, refund_payments: false, create_invoices: true, standalone_invoices: true, show_invoices_page: true }, 'nopay')).api();
+        const api = await (await personWith(org, { ...SEES_ALL, refund_payments: false, edit_invoices: true, create_invoices: true, standalone_invoices: true }, 'nopay')).api();
         expect(await actionsOf(api, id)).toEqual([]);
       });
     });
@@ -1828,7 +1827,7 @@ suite('Needs attention API (real database)', () => {
       expect(byKey.compose.subject).toBe(`Bank payment failed - Invoice ${c.num}`);
       expect(byKey.compose.body).toContain('Pay again here');
       // restricted: a caller whose scope does not reach the invoice
-      const me = await personWith(c.org, { ...SEES_ALL, invoices_scope: 'attached', refund_payments: true, send_payment_links: true }, 'scoped');
+      const me = await personWith(c.org, { ...SEES_ALL, jobs_scope: 'attached', leads_scope: 'attached', refund_payments: true, send_payment_links: true }, 'scoped');
       const hidden = (await listOf(await me.api())).items.find((i) => i.key === r.key)!;
       expect(hidden).toMatchObject({ restricted: true, actions: [], compose: null });
       expect(JSON.stringify(hidden)).not.toContain(c.token);

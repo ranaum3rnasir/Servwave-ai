@@ -639,7 +639,7 @@ export function PriceBookPage() {
                       kind: payload.kind as Item["kind"],
                       uom: payload.uom,
                       unitCost: payload.unitCost,
-                      sellPrice: payload.sellPrice,
+                      sellPrice: payload.sellPrice ?? i.sellPrice,
                       serialized: payload.serialized,
                       hazmat: payload.hazmat,
                       trackInventory: payload.trackInventory,

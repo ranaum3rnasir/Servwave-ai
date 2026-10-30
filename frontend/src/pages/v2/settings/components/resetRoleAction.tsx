@@ -12,8 +12,8 @@ import { ConfirmDialog } from '@/ui-kit/components/ui/confirmDialog';
  *
  * Like Rename and Archive it belongs to the role shown in the detail, not to a row of the list, so a company with a
  * hundred roles carries one control. The confirm says what the role goes back to before anything is sent: the preset of
- * the built-in role it starts from, or all off for a role made from a blank start. People on the role keep their own
- * switches. The server's plain reason for a refusal is shown inside the confirm, and the role stays as it was.
+ * the built-in role it starts from, or all off for a role made from a blank start. People on the role follow the reset,
+ * except where a person holds their own value for a switch. The server's plain reason for a refusal is shown inside the confirm, and the role stays as it was.
  */
 
 interface ResetRoleActionProps {
@@ -60,7 +60,7 @@ export function ResetRoleAction({ role, target, hasUnsavedEdits, onReset }: Rese
         title={`${confirmLabel}?`}
         description={
           <>
-            Every switch on {role.label} goes back to {target}. People on the role keep their own switches.
+            Every switch on {role.label} goes back to {target}. People on the role follow, except where a person holds their own value for a switch.
             {hasUnsavedEdits && ' Your unsaved changes to this role will be discarded.'}
           </>
         }

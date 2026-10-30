@@ -152,7 +152,7 @@ describe('a caller who can read the lead AND its estimate still gets no estimate
       .get(`/api/leads/${LEAD_FIXTURE.id}/timeline`)
       .set(authHeader('sales'));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockPrisma.timelineEvent.findMany).not.toHaveBeenCalled();
   });
 });

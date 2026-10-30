@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { randomUUID } from 'crypto';
 import { z } from 'zod';
 import { Prisma, Role } from '@prisma/client';
 import { supabaseAdmin, createIsolatedAuthClient } from '../lib/supabase';
@@ -6,31 +7,39 @@ import { mapPasswordUpdateError, isSessionMissingError, needsFreshSignInError, S
 import { updatePasswordAsOwnSession } from '../lib/auth-own-session';
 import { userHasPassword } from '../lib/password-presence';
 import { prisma } from '../lib/prisma';
+import { canonicalUserId, sameUserId } from '../lib/users/sameUserId';
 import { logger } from '../lib/logger';
 import { clearTokenCache } from '../middleware/authenticate';
 import { tenantWhere } from '../lib/tenant';
 import { eligibleUserIds, isSlot, type Slot } from '../lib/permissions/slotEligibility';
 import { resolveAssigneePoolForRequest, type AssigneePool, type AssigneePurpose } from '../lib/permissions/assigneePool';
 import { resolveWatcherPoolForRequest, watcherPoolWhere } from '../lib/permissions/watcherPool';
-import { env } from '../config/env';
-import { signInviteToken } from '../lib/invite-token';
+import { sendInviteLink } from '../lib/invite-link';
 import { emailSchema } from '../lib/email-schema';
 import { userPhoneField } from '../lib/user-phone';
 import { assertEmailAvailable, EmailAlreadyRegisteredError, EMAIL_ALREADY_REGISTERED_MSG } from '../lib/user-email-guard';
-import { sendUserInviteEmail } from '../lib/email';
 import { writeSettingsAudit, logAudit } from '../lib/audit';
-import { assignRoleToPerson, resolveSwitches, summarizePeopleRoles } from '../lib/permissions/switches/store';
-import { isSuperUser } from '../lib/permissions/effectiveRole';
+import { assignRoleToPerson, clearSwitchCacheForUser, resolveSwitches, summarizePeopleRoles } from '../lib/permissions/switches/store';
+import { isSuperUser, roleMakesAdmin } from '../lib/permissions/effectiveRole';
 import { emit } from '../services/notifications/notificationService';
 import { alertAddressNeeded } from '../services/notifications/addressNeededAlert';
 import { issueUserMailbox, userAddressSuffix, userMailboxesFor } from '../lib/mailbox/register';
 import { emailPageClosedFor } from '../lib/mailbox/email-page-access';
 import { hasFeature } from '../middleware/requireFeature';
 import { runUnscoped } from '../lib/tenant-context';
-import { sweepDeactivatedUserFromTasks, announceTaskHandovers, STRANDED_IDS_REPORTED } from '../lib/tasks/deactivation';
+import { summarizeOpenRecords, reassignOpenRecords, REASSIGN_MODULES } from '../lib/users/openRecords';
 import { reactivateMailbox, type ReactivationOutcome } from '../lib/mailbox/reactivation';
 import { handOverMailbox, handoverToField, mailboxHandoverStates, resolveHandoverTarget, settleMailboxesBeforeDelete, HANDOVER_TARGET_REFUSED, type HandoverOutcome } from '../lib/mailbox/handover';
 import { signAvatarPaths, resolveAvatarUrl, removeAvatarObject } from '../lib/avatar';
+import {
+  refuseOwnerRemoval, refuseUnlessOwnerFor, ownerOnlyRefuses, answerOwnerOnly, isCompanyOwner, lockCompanyForAdminChange, activeAdminCount,
+  OwnerOnlyRefusal, LastAdminRefusal,
+} from '../lib/users/owner';
+import { actorOf, recordAccessChange, type AccessAction, type AccessActor, type AccessHeld } from '../lib/users/access-audit';
+import { alertOwnerOfAdminChange } from '../lib/users/admin-change-alert';
+import { NOT_AN_OWNER_CANDIDATE, ownerCandidates, requestOwnerHandover } from '../lib/users/owner-handover';
+import { ProviderLoginRemovalError, removeProviderLogin, removeProviderLoginQuietly } from '../lib/auth-provider-login';
+import { namesOnly, namesOnlySelect, seesFullPeopleRecords } from '../lib/users/peopleRow';
 
 const userSelect = {
   id: true,
@@ -39,8 +48,10 @@ const userSelect = {
   last_name: true,
   role: true,
   custom_role_id: true,
+  is_admin: true,
   custom_role: { select: { key: true, label: true } },
   is_active: true,
+  erased_at: true,
   has_login: true,
   phone: true,
   phone_ext: true,
@@ -85,6 +96,9 @@ export const createUserSchema = z.object({
   // server-side (resolveCustomRoleAssignment) against the org and against base_role agreement -
   // never trusted from the client past shape.
   custom_role_id: z.string().uuid().nullable().optional(),
+  // Roles & Permissions P15: whether the person is an Admin. Left out, it follows the role picked: Administrator is an
+  // Admin, any other role is not.
+  is_admin: z.boolean().optional(),
   department_id: z.string().uuid().nullable().optional(),
 });
 
@@ -94,6 +108,7 @@ export const inviteUserSchema = z.object({
   email: emailSchema,
   role: z.nativeEnum(Role),
   custom_role_id: z.string().uuid().nullable().optional(),
+  is_admin: z.boolean().optional(),
   phone: userPhoneField,
   phone_ext: z.string().max(50).nullable().optional(),
   department_id: z.string().uuid().nullable().optional(),
@@ -104,6 +119,9 @@ export const updateUserSchema = z.object({
   last_name: z.string().min(1).max(100).optional(),
   role: z.nativeEnum(Role).optional(),
   custom_role_id: z.string().uuid().nullable().optional(),
+  // Roles & Permissions P15: grant or take away Admin. Left out, a change of role carries the flag with it
+  // (Administrator is an Admin, any other role is not); a request that does not change the role leaves it alone.
+  is_admin: z.boolean().optional(),
   is_active: z.boolean().optional(),
   phone: userPhoneField,
   phone_ext: z.string().max(50).nullable().optional(),
@@ -154,6 +172,14 @@ export const changePasswordSchema = z
  */
 export async function list(req: Request, res: Response) {
   try {
+    // M3 (ticket 29): a non-Admin gets names only, and nothing else is read for them. The role filter is not applied
+    // for them either: `?role=ADMIN` would otherwise single out who the Admins are by name.
+    if (!seesFullPeopleRecords(req)) {
+      const people = await prisma.user.findMany({ where: tenantWhere(req), select: namesOnlySelect, orderBy: { created_at: 'desc' } });
+      res.json({ users: (await withAvatarUrls(people)).map(namesOnly) });
+      return;
+    }
+
     const roleFilter = req.query.role as Role | undefined;
 
     const where: Record<string, unknown> = { ...tenantWhere(req) };
@@ -163,7 +189,8 @@ export async function list(req: Request, res: Response) {
 
     const users = await prisma.user.findMany({
       where,
-      select: { ...userSelect, based_on_role_key: true },
+      // The invite-mark column is read only to say whether a revoke is unfinished (revoke_pending); it never leaves the server.
+      select: { ...userSelect, based_on_role_key: true, password_hash: true },
       orderBy: { created_at: 'desc' },
     });
 
@@ -178,10 +205,19 @@ export async function list(req: Request, res: Response) {
     const handovers = withEmail ? await mailboxHandoverStates(prisma, users.filter((u) => !u.is_active).map((u) => u.id)) : new Map();
     const addressSuffix = withEmail ? await userAddressSuffix(prisma, orgId) : null;
     const emailClosed = withEmail
-      ? await emailPageClosedFor(users.map((u) => ({ id: u.id, organization_id: orgId, role: u.role, custom_role_id: u.custom_role_id, custom_role: u.custom_role })))
+      ? await emailPageClosedFor(users.map((u) => ({ id: u.id, organization_id: orgId, role: u.role, is_admin: u.is_admin, custom_role_id: u.custom_role_id, custom_role: u.custom_role })))
       : new Set<string>();
-    const rows = users.map(({ based_on_role_key: _basedOn, ...user }) => ({
+    // Make Owner (ticket 27): which rows the Owner may hand the company to. Worked out for the Owner only; false for everyone
+    // else, so whether a person has ever signed in is told to no one who can't act on it.
+    const viewerIsOwner = await isCompanyOwner(orgId, req.user!.id);
+    const candidates = viewerIsOwner
+      ? await ownerCandidates(prisma, orgId, users.filter((u) => u.is_admin && u.is_active && u.id !== req.user!.id).map((u) => u.id))
+      : new Set<string>();
+    const rows = users.map(({ based_on_role_key: _basedOn, password_hash, ...user }) => ({
       ...user,
+      owner_eligible: candidates.has(user.id),
+      // A revoke that could not finish (H2, ticket 22): the screen still offers Revoke so the Admin can try again.
+      revoke_pending: revokePending({ has_login: user.has_login, password_hash }),
       role_label: summaries.get(user.id)!.role_label,
       change_count: summaries.get(user.id)!.change_count,
       mailbox: mailboxes.has(user.id)
@@ -189,8 +225,8 @@ export async function list(req: Request, res: Response) {
         : null,
       mailbox_handover: handovers.get(user.id) ?? null,
       email_page_closed: emailClosed.has(user.id),
-      // The Admin box (full access, no switches to set) is base role Admin AND no custom role; a role copied from
-      // Admin is not in it. The screen follows this answer rather than guessing from role names.
+      // The Admin box (full access, no switches to set) is the person's `is_admin` flag (P15), whatever role they sit on;
+      // a role copied from Admin is not in it. The screen follows this answer rather than guessing from role names.
       admin_box: isSuperUser(user),
     }));
 
@@ -523,15 +559,94 @@ async function resolveCustomRoleAssignment(
 }
 
 /**
+ * Whether a new person is an Admin (P15). The request may say so; left out, it follows the role picked: a role whose Admin flag
+ * is set (the Administrator entry in the role picker, `roleMakesAdmin`) is shorthand for "make this person an Admin". What is
+ * stored, and what every later check reads, is the flag on the person.
+ */
+function adminFlagForNewPerson(body: { role?: string; custom_role_id?: string | null; is_admin?: boolean }): boolean {
+  return body.is_admin ?? roleMakesAdmin(body.role ?? '', body.custom_role_id);
+}
+
+/** True when the request names a role whose Admin flag is set and also asks for the person's flag off: they contradict. */
+function contradictsAdministrator(body: { role?: string; custom_role_id?: string | null; is_admin?: boolean }): boolean {
+  return body.is_admin === false && roleMakesAdmin(body.role ?? '', body.custom_role_id);
+}
+
+/**
+ * Only the Owner changes Admins (ticket 26). Every write that changes an Admin's account, or makes an Admin, takes this step
+ * first inside its own transaction: lock the company, read the person again under the lock, and make the Owner check against
+ * that row (never the sign-in cache). The row it returns is the person as the change finds them: the access record's "before",
+ * and what the last-Admin check (same lock) counts from.
+ */
+const lockedPersonSelect = { id: true, role: true, custom_role_id: true, is_admin: true, is_active: true } as const;
+type LockedPerson = Prisma.UserGetPayload<{ select: typeof lockedPersonSelect }>;
+
+/** The person was removed while the change waited for the lock. */
+class PersonGone extends Error {}
+
+/** A change refused from inside its transaction, already answered. */
+const REFUSED = Symbol('refused');
+
+async function lockPersonForChange(
+  tx: Prisma.TransactionClient,
+  req: Request,
+  id: string,
+  makesAdmin: (row: LockedPerson) => boolean = () => false,
+): Promise<LockedPerson> {
+  const organizationId = req.user!.organization_id;
+  const ownerId = await lockCompanyForAdminChange(tx, organizationId);
+  const row = await tx.user.findFirst({ where: { id, organization_id: organizationId }, select: lockedPersonSelect });
+  if (!row) throw new PersonGone();
+  if (ownerOnlyRefuses({ actorId: req.user!.id, ownerId, target: row, makesAdmin: makesAdmin(row) })) throw new OwnerOnlyRefusal(row.id);
+  return row;
+}
+
+/** Under the same lock: refuse a change that takes away the company's last active Admin. */
+async function refuseLastAdminUnderLock(tx: Prisma.TransactionClient, row: LockedPerson, organizationId: string, removes: boolean): Promise<void> {
+  if (removes && isSuperUser(row) && row.is_active && (await activeAdminCount(tx, organizationId)) <= 1) throw new LastAdminRefusal();
+}
+
+/** Answer a refusal thrown from inside a change (the transaction has rolled back). True when it answered. */
+function answerChangeRefusal(req: Request, res: Response, err: unknown, lastAdminMessage: string): boolean {
+  if (err instanceof OwnerOnlyRefusal) {
+    answerOwnerOnly(req, res, err.targetId);
+    return true;
+  }
+  if (err instanceof LastAdminRefusal) {
+    res.status(409).json({ error: lastAdminMessage });
+    return true;
+  }
+  if (err instanceof PersonGone) {
+    res.status(404).json({ error: 'User not found' });
+    return true;
+  }
+  return false;
+}
+
+/** What a person holds, as the access record shows it (ticket 25). */
+const heldBy = (u: { role: string; custom_role_id: string | null; is_admin: boolean }): AccessHeld => ({
+  role: u.role, custom_role_id: u.custom_role_id, is_admin: u.is_admin,
+});
+
+/**
  * Create the person and, in the SAME transaction, their mailbox and first.last.company address (PRD 10, S10.3): if
  * either fails neither exists. The register spans every company, hence the unscoped run (the person's own
  * organization is written explicitly). Every query inside goes through `tx`: the hosted pool holds one connection.
  * A mailbox that came out without an address rings the new user and the holders of Edit users once the create has
  * committed.
+ *
+ * The access record (ticket 25: the role they start on, and whether they are an Admin) is written in the same transaction,
+ * so a person whose record can't be written is not created. The Owner is told after the commit when they start as an Admin.
+ * A new Admin is the Owner's to make (ticket 26): a caller who is not the Owner gets OwnerOnlyRefusal and nothing is created.
  */
-async function createUserWithMailbox(data: Prisma.UserUncheckedCreateInput) {
-  const { user, mailbox } = await runUnscoped(() =>
+async function createUserWithMailbox(data: Prisma.UserUncheckedCreateInput, actor: AccessActor) {
+  const { user, mailbox, access } = await runUnscoped(() =>
     prisma.$transaction(async (tx) => {
+      // Making an Admin is the Owner's alone (ticket 26): checked again here, under the company lock, before the person exists.
+      if (data.is_admin) {
+        const ownerId = await lockCompanyForAdminChange(tx, data.organization_id);
+        if (ownerOnlyRefuses({ actorId: actor.id ?? '', ownerId, target: null, makesAdmin: true })) throw new OwnerOnlyRefusal(null);
+      }
       const created = await tx.user.create({ data, select: userSelect });
       const issued = await issueUserMailbox(tx, {
         id: created.id,
@@ -539,9 +654,13 @@ async function createUserWithMailbox(data: Prisma.UserUncheckedCreateInput) {
         first_name: data.first_name,
         last_name: data.last_name,
       });
-      return { user: created, mailbox: issued };
+      const recorded = await recordAccessChange(tx, {
+        organizationId: data.organization_id, actor, targetId: created.id, before: null, after: heldBy(created),
+      });
+      return { user: created, mailbox: issued, access: recorded };
     }),
   );
+  void alertOwnerOfAdminChange({ organizationId: data.organization_id, action: access, targetId: user.id, actorId: actor.id });
   if (mailbox.status === 'address_needed') {
     void alertAddressNeeded({
       organizationId: data.organization_id,
@@ -555,6 +674,13 @@ async function createUserWithMailbox(data: Prisma.UserUncheckedCreateInput) {
 
 export async function create(req: Request, res: Response) {
   const { email, password, first_name, last_name, role, custom_role_id, department_id, phone, phone_ext } = req.body;
+  const is_admin = adminFlagForNewPerson(req.body);
+  if (contradictsAdministrator(req.body)) {
+    res.status(400).json({ error: 'The Administrator role is an Admin. Choose another role for someone without admin access.' });
+    return;
+  }
+  // Only the Owner makes an Admin (ticket 26). Read from the database before anything is made; the write checks again.
+  if (await refuseUnlessOwnerFor(req, res, null, { makesAdmin: is_admin })) return;
 
   try {
     if (custom_role_id) {
@@ -605,17 +731,22 @@ export async function create(req: Request, res: Response) {
         last_name,
         role,
         custom_role_id: custom_role_id ?? null,
+        is_admin,
         phone: phone ?? null,
         phone_ext: phone_ext ?? null,
         department_id: department_id ?? null,
         organization_id: req.user!.organization_id,
-      });
+      }, actorOf(req));
 
       void logAudit({ req, action: 'user.created', resourceType: 'User', resourceId: user.id, metadata: { email: user.email, role: user.role } });
       res.status(201).json({ user: await withAvatarUrl(user) });
     } catch (prismaError) {
       // Rollback: delete the Supabase Auth user if Prisma creation fails
       await supabaseAdmin.auth.admin.deleteUser(authData.user.id);
+      if (prismaError instanceof OwnerOnlyRefusal) {
+        answerOwnerOnly(req, res, null);
+        return;
+      }
       logger.error('Create user Prisma error (rolled back Supabase):', prismaError);
       res.status(500).json({ error: 'Failed to create user' });
     }
@@ -629,21 +760,21 @@ export async function create(req: Request, res: Response) {
   }
 }
 
-// Build the invite link + dispatch the branded email. Returns whether it sent.
-async function dispatchInvite(user: { id: string; email: string; first_name: string; organization_id: string }): Promise<{ inviteUrl: string; emailSent: boolean }> {
-  const token = signInviteToken(user.id, user.email);
-  const inviteUrl = `${env.FRONTEND_URL}/accept-invite?token=${encodeURIComponent(token)}`;
-  const emailSent = await sendUserInviteEmail({
-    to: user.email,
-    firstName: user.first_name,
-    inviteUrl,
-    organizationId: user.organization_id,
-  });
-  return { inviteUrl, emailSent };
-}
+// Make the person's one live invite and mail it (lib/invite-link.ts). Returns whether it sent.
+const dispatchInvite = sendInviteLink;
+
+/** What the Admin is told when an invite could not clear a sign-in left behind for the address: nothing was made. */
+export const INVITE_LOGIN_CHECK_FAILED_MESSAGE = 'Could not finish setting up this invite. Nothing was sent. Please try again.';
 
 export async function inviteUser(req: Request, res: Response) {
   const { email, first_name, last_name, role, custom_role_id, department_id, phone, phone_ext } = req.body;
+  const is_admin = adminFlagForNewPerson(req.body);
+  if (contradictsAdministrator(req.body)) {
+    res.status(400).json({ error: 'The Administrator role is an Admin. Choose another role for someone without admin access.' });
+    return;
+  }
+  // Only the Owner makes an Admin (ticket 26). Read from the database before anything is made; the write checks again.
+  if (await refuseUnlessOwnerFor(req, res, null, { makesAdmin: is_admin })) return;
 
   try {
     if (custom_role_id) {
@@ -667,19 +798,34 @@ export async function inviteUser(req: Request, res: Response) {
 
     await assertEmailAvailable(email);
 
+    // No one is invited onto a sign-in left behind (security review SR-5). Nobody holds this address (checked just above), so a
+    // login the provider still has for it belongs to no one: a leftover of a delete or an erase whose removal failed. Left in
+    // place it would open the new account with the old password (sign-in falls back to the confirmed address). It is removed
+    // first, and the invite waits until it is: a failure makes nothing and says so, and a retry looks again.
+    try {
+      await removeProviderLogin(email);
+    } catch (removeErr) {
+      logger.error('Invite: a leftover identity provider login for this address could not be removed; nothing was made', {
+        step: removeErr instanceof ProviderLoginRemovalError ? removeErr.step : 'unknown',
+      });
+      res.status(502).json({ error: INVITE_LOGIN_CHECK_FAILED_MESSAGE });
+      return;
+    }
+
     const user = await createUserWithMailbox({
       email,
       first_name,
       last_name,
       role,
       custom_role_id: custom_role_id ?? null,
+      is_admin,
       phone: phone ?? null,
       phone_ext: phone_ext ?? null,
       has_login: true,
       password_hash: '',
       department_id: department_id ?? null,
       organization_id: req.user!.organization_id,
-    });
+    }, actorOf(req));
 
     const { inviteUrl, emailSent } = await dispatchInvite({
       id: user.id, email: user.email, first_name: user.first_name, organization_id: req.user!.organization_id,
@@ -697,23 +843,48 @@ export async function inviteUser(req: Request, res: Response) {
       res.status(409).json({ error: EMAIL_ALREADY_REGISTERED_MSG });
       return;
     }
+    if (err instanceof OwnerOnlyRefusal) {
+      answerOwnerOnly(req, res, null);
+      return;
+    }
     logger.error('Invite user error:', err);
     res.status(500).json({ error: 'Failed to invite user' });
   }
 }
 
+/** Said when an invite is asked for a deactivated person (N21). */
+export const INACTIVE_INVITE_REFUSAL = 'This person is deactivated. Reactivate them to send an invite.';
+
+/**
+ * Resend invite. On an Admin it is the Owner's alone (ticket 26, H4): an Admin with no password yet could otherwise be taken
+ * over by whoever holds the link. And the link itself is handed back to the Owner only: anyone else gets the email sent and an
+ * answer with no link field at all, so they can help a colleague in without being able to sign in as them.
+ */
 export async function invite(req: Request, res: Response) {
   try {
     const existing = await prisma.user.findFirst({
       where: { id: param(req, 'id'), ...tenantWhere(req) },
-      select: { id: true, email: true, first_name: true, is_active: true, organization_id: true },
+      select: { id: true, email: true, first_name: true, is_active: true, organization_id: true, erased_at: true, is_admin: true },
     });
     if (!existing) {
       res.status(404).json({ error: 'User not found' });
       return;
     }
+    if (existing.erased_at) {
+      res.status(409).json({ error: ERASED_REFUSAL });
+      return;
+    }
+    if (await refuseUnlessOwnerFor(req, res, existing)) return;
+    // A deactivated person gets no invite (re-audit N21): it would turn their sign-in back on and arm a link that opens the
+    // moment they are reactivated. Reactivating them is the way back, and the Users page offers Send invite only to an active person.
+    if (!existing.is_active) {
+      res.status(409).json({ error: INACTIVE_INVITE_REFUSAL });
+      return;
+    }
 
     const { inviteUrl, emailSent } = await dispatchInvite(existing);
+    // Read from the database, not the sign-in cache: someone who stopped being the Owner a moment ago gets no link.
+    const toOwner = await isCompanyOwner(existing.organization_id, req.user!.id);
 
     const user = await prisma.user.update({
       where: { id: existing.id },
@@ -722,7 +893,7 @@ export async function invite(req: Request, res: Response) {
     });
 
     void logAudit({ req, action: 'user.invite_resent', resourceType: 'User', resourceId: existing.id });
-    res.json({ user, email_sent: emailSent, invite_url: inviteUrl });
+    res.json(toOwner ? { user, email_sent: emailSent, invite_url: inviteUrl } : { user, email_sent: emailSent });
   } catch (err) {
     logger.error('Resend invite error:', err);
     res.status(500).json({ error: 'Failed to send invite' });
@@ -730,11 +901,24 @@ export async function invite(req: Request, res: Response) {
 }
 
 function param(req: Request, name: string): string {
-  return req.params[name] as string;
+  // A person's id in the address is read in its stored form, so every lookup, every Owner check and every "is this you" check
+  // in this file sees the same id however the request spelled it (capitals, no hyphens, braces; CR-4).
+  return canonicalUserId(req.params[name] as string);
 }
 
 export async function getById(req: Request, res: Response) {
   try {
+    // M3 (ticket 29): the full record is an Admin's; everyone else gets the names-only row, and only that is read.
+    if (!seesFullPeopleRecords(req)) {
+      const person = await prisma.user.findFirst({ where: { id: param(req, 'id'), ...tenantWhere(req) }, select: namesOnlySelect });
+      if (!person) {
+        res.status(404).json({ error: 'User not found' });
+        return;
+      }
+      res.json({ user: namesOnly(await withAvatarUrl(person)) });
+      return;
+    }
+
     const user = await prisma.user.findFirst({
       where: { id: param(req, 'id'), ...tenantWhere(req) },
       select: userSelect,
@@ -752,46 +936,6 @@ export async function getById(req: Request, res: Response) {
   }
 }
 
-/**
- * Task people-arrays are uuid[] with no FK, so a deactivated user's id survives in every
- * `assignee_ids` / `watcher_ids` that named them until something removes it. Both routes that can
- * flip `is_active` to false call this; see lib/tasks/deactivation.ts for the fallback rule.
- *
- * FAILURE-ISOLATED, and deliberately so: the seat is already freed by the time this runs, and the
- * backfill migration repairs anything a failure leaves behind. Turning a successful deactivation
- * into a 500 because a task could not be reassigned would be the worse trade.
- */
-async function sweepTasksAfterDeactivation(req: Request, userId: string): Promise<void> {
-  try {
-    const sweep = await sweepDeactivatedUserFromTasks({
-      orgId: req.user!.organization_id,
-      userId,
-      actorId: req.user!.id,
-    });
-    // Detached ON PURPOSE (see announceTaskHandovers): every handover ends in a Supabase
-    // Realtime channel round trip, and the rows are already committed by now.
-    void announceTaskHandovers(req.user!.organization_id, req.user!.id, sweep.reassigned);
-    // A sweep that stranded everything updated nothing, and is the case most worth an audit row.
-    if (!sweep.updated && !sweep.stranded.length) return;
-    void logAudit({
-      req, action: 'user.tasks_swept', resourceType: 'User', resourceId: userId,
-      metadata: {
-        tasks_updated: sweep.updated,
-        reassigned: sweep.reassigned.length,
-        // `failed` is the count a chunk failure left unwritten. Those rows still name the user,
-        // so the next sweep of them picks them up; the ones already counted above do not.
-        failed: sweep.failed,
-        stranded: sweep.stranded.length,
-        // The ids, not just the count: nothing else can find these rows again (see
-        // STRANDED_IDS_REPORTED).
-        stranded_task_ids: sweep.stranded.slice(0, STRANDED_IDS_REPORTED),
-      },
-    });
-  } catch (err) {
-    logger.error('Task people-array sweep after deactivation failed:', err);
-  }
-}
-
 /** What the audit row for a mailbox handover says: to the main mailbox or to which person. Ids only. */
 function handoverAudit(handover: Exclude<HandoverOutcome, { handed: 'none' }>): Record<string, unknown> {
   return handover.handed === 'person'
@@ -801,14 +945,40 @@ function handoverAudit(handover: Exclude<HandoverOutcome, { handed: 'none' }>): 
 
 /**
  * What deactivating a person does to their sign-in, shared by both ways to deactivate (the Users page's Deactivate and the user
- * update that sets is_active false) so they cannot drift apart: the auth user is removed and the row stops claiming a login. The
- * caller merges the returned fields into the same write that flips is_active.
+ * update that sets is_active false) so they cannot drift apart. The row stops claiming a login in the same write that flips
+ * is_active (the caller merges these fields in); then, AFTER that write, the login at the identity provider is removed
+ * (removeLoginAfterDeactivation). That order is what lets an invite acceptance racing the deactivation see it and undo the login
+ * it made (H2).
  */
-async function revokeLoginForDeactivation(existing: { has_login: boolean; email: string | null }): Promise<{ has_login: false; password_hash: '' }> {
-  if (existing.has_login && existing.email) {
-    await deleteSupabaseAuthUserByEmail(existing.email);
-  }
-  return { has_login: false, password_hash: '' };
+const LOGIN_OFF = { has_login: false, password_hash: '' } as const;
+
+/**
+ * After the deactivation is written: remove the login at the identity provider. Best effort: the person is already refused at
+ * every door (signInRefusal reads is_active), so a provider failure is logged and the deactivation stands.
+ */
+async function removeLoginAfterDeactivation(existing: { has_login: boolean; email: string | null }): Promise<void> {
+  // Whatever the row said: an off row is no proof the provider is clear (a revoke that could not finish leaves one behind).
+  if (existing.email) await removeProviderLoginQuietly(existing.email, 'deactivation');
+}
+
+/**
+ * The Admin flag a person holds once an update lands (P15). Stated in the request, else carried by a change of role, else left
+ * as it is. A role carries it by its own Admin flag (`roleMakesAdmin`, the Administrator role's alone), never by its name:
+ * moving onto a role whose flag is set makes the person an Admin, and moving off one onto a role without it takes that away.
+ * Any other change of role leaves the person's flag where it was.
+ */
+function nextAdminFlag(
+  existing: { role: string; custom_role_id: string | null; is_admin: boolean },
+  body: { role?: string; custom_role_id?: string | null; is_admin?: boolean },
+): { nextIsAdmin: boolean; toAdministrator: boolean; roleStated: boolean } {
+  const nextRole: string = body.role ?? existing.role;
+  const nextCustomRoleId = body.custom_role_id !== undefined ? body.custom_role_id : existing.custom_role_id;
+  const toAdministrator = roleMakesAdmin(nextRole, nextCustomRoleId);
+  const fromAdministrator = roleMakesAdmin(existing.role, existing.custom_role_id);
+  // The role moves the flag only when the request names a role: a name or phone edit leaves it exactly as it is.
+  const roleStated = body.role !== undefined || body.custom_role_id !== undefined;
+  const nextIsAdmin: boolean = body.is_admin ?? (roleStated ? (toAdministrator ? true : fromAdministrator ? false : existing.is_admin) : existing.is_admin);
+  return { nextIsAdmin, toAdministrator, roleStated };
 }
 
 export async function update(req: Request, res: Response) {
@@ -821,15 +991,32 @@ export async function update(req: Request, res: Response) {
       res.status(404).json({ error: 'User not found' });
       return;
     }
+    // A person whose personal data was erased is a name-less record kept for history: nothing about them is edited and they
+    // are not brought back (P19).
+    if (existing.erased_at) {
+      res.status(409).json({ error: ERASED_REFUSAL });
+      return;
+    }
+
+    // No one, the Owner included, removes the Owner (AL-16): not by taking Admin away (the switch, or a move off the
+    // Administrator role), not by setting them inactive.
+    const { nextIsAdmin, toAdministrator, roleStated } = nextAdminFlag(existing, req.body);
+    const removing = req.body.is_active === false || (existing.is_admin && !nextIsAdmin);
+    if (removing && (await refuseOwnerRemoval(req, res, existing.id))) return;
+    // Only the Owner makes an Admin or changes an Admin's account (ticket 26): read from the database here, before anything else
+    // is looked at, and again inside the write, under the company lock, against the person as they are then.
+    if (await refuseUnlessOwnerFor(req, res, existing, { makesAdmin: nextIsAdmin && !existing.is_admin })) return;
 
     // Nobody changes their own role: neither the base role nor the custom-role link (an admin demoting themselves
     // locks the company out; anyone else would be raising their own access). Editing other fields on your own
     // account is fine, and sending back the role you already hold is not a change (mirrors the self-deactivate
     // guard in deactivate()).
-    if (req.user?.id === existing.id) {
+    if (sameUserId(req.user?.id, existing.id)) {
       const changesBaseRole = req.body.role !== undefined && req.body.role !== existing.role;
       const changesCustomRole = req.body.custom_role_id !== undefined && req.body.custom_role_id !== existing.custom_role_id;
-      if (changesBaseRole || changesCustomRole) {
+      // The Admin flag is part of the role: nobody grants or takes away their own.
+      const changesAdminFlag = req.body.is_admin !== undefined && req.body.is_admin !== existing.is_admin;
+      if (changesBaseRole || changesCustomRole || changesAdminFlag) {
         res.status(400).json({ error: 'Cannot change your own role' });
         return;
       }
@@ -846,9 +1033,15 @@ export async function update(req: Request, res: Response) {
       }
     }
 
+    // Someone in the Administrator role is an Admin: to take it away, give them another role.
+    if (nextIsAdmin === false && toAdministrator && (roleStated || existing.is_admin)) {
+      res.status(400).json({ error: 'Give this person another role to take away their admin access.' });
+      return;
+    }
+
     if (await wouldRemoveLastAdmin(req, existing)) {
-      // Leaving the Admin box: another base role, or any custom role (one based on Admin included).
-      const demoting = (req.body.role !== undefined && req.body.role !== 'ADMIN') || !!req.body.custom_role_id;
+      // Leaving the Admin box: the flag goes off.
+      const demoting = !nextIsAdmin;
       const deactivating = req.body.is_active === false;
       if (demoting || deactivating) {
         res.status(409).json({ error: 'Cannot remove the last active admin. Assign another admin first.' });
@@ -904,58 +1097,71 @@ export async function update(req: Request, res: Response) {
     if (body.last_name !== undefined) data.last_name = body.last_name;
     if (body.role !== undefined) data.role = body.role;
     if (body.custom_role_id !== undefined) data.custom_role_id = body.custom_role_id;
+    if (nextIsAdmin !== existing.is_admin) data.is_admin = nextIsAdmin;
     if (body.is_active !== undefined) data.is_active = body.is_active;
-    // Setting a person inactive removes their login, exactly as the Users page's Deactivate does.
-    if (body.is_active === false) Object.assign(data, await revokeLoginForDeactivation(existing));
+    // Setting a person inactive removes their login, exactly as the Users page's Deactivate does (the provider's, after the write).
+    if (body.is_active === false) Object.assign(data, LOGIN_OFF);
     if (body.department_id !== undefined) data.department_id = body.department_id;
     // Personnel staff-mgmt (PR #218): admin Edit-details dialog PATCHes phone/ext.
     if (body.phone !== undefined) data.phone = body.phone;
     if (body.phone_ext !== undefined) data.phone_ext = body.phone_ext;
 
-    // Giving the person a role (or a different one) fills their switches from it, once; sending
-    // back the role they already hold leaves a tailored set alone. Compared with the role their set
-    // was last filled from, so a fill that failed is retried by sending the same update again.
+    // Giving the person a role (or a different one) links them to it and clears their overrides; sending
+    // back the role they already hold leaves their overrides alone. Compared with the role they were last
+    // linked to, so a link that failed is retried by sending the same update again.
     const filledFrom = existing.based_on_role_key ?? existing.custom_role?.key ?? existing.role;
     const fillSwitches = (body.role !== undefined || body.custom_role_id !== undefined) && newRoleKey !== filledFrom;
 
     if (fillSwitches) data.based_on_role_key = newRoleKey;
 
-    const user = fillSwitches
-      ? await (async () => {
-          // What the person resolved to before the new role, for the change log's "from".
-          const previous = await resolveSwitches(existing);
-          return scoped(() => prisma.$transaction(async (tx) => {
-            const updated = await tx.user.update({ where: { id: param(req, 'id') }, data, select: userSelect });
-            await assignRoleToPerson(tx, {
-              organizationId: existing.organization_id,
-              userId: existing.id,
-              roleKey: newRoleKey,
-              userBaseRole: updated.role,
-              previous,
-              actorId: req.user!.id,
-            });
-            if (handoverTarget) handover = await handOverMailbox(tx, { organizationId: existing.organization_id, userId: existing.id, target: handoverTarget });
-            if (reactivating) returned = await reactivateMailbox(tx, { id: existing.id, organization_id: existing.organization_id, first_name: updated.first_name, last_name: updated.last_name });
-            return updated;
-          }));
-        })()
-      : handoverTarget || reactivating
-        // The handover (or the return of the mailbox) is part of the same write as the flip, so a person is never left inactive with a
-        // mailbox nobody holds, nor active with a mailbox that is not theirs.
-        ? await scoped(() => prisma.$transaction(async (tx) => {
-            const updated = await tx.user.update({ where: { id: param(req, 'id') }, data, select: userSelect });
-            if (handoverTarget) handover = await handOverMailbox(tx, { organizationId: existing.organization_id, userId: existing.id, target: handoverTarget });
-            if (reactivating) returned = await reactivateMailbox(tx, { id: existing.id, organization_id: existing.organization_id, first_name: updated.first_name, last_name: updated.last_name });
-            return updated;
-          }))
-        : await prisma.user.update({
-            where: { id: param(req, 'id') },
-            data,
-            select: userSelect,
-          });
+    // Ticket 25 (M6): a change of Admin or role is recorded in the same transaction as the write, so it can't happen unrecorded.
+    // Ticket 26: the write opens with the company lock and the person read again under it. The Owner check and the last-Admin
+    // check are made against that row, the flag written follows it, and it is the record's "before".
+    const actor = actorOf(req);
+    let access = null as AccessAction | null;
+    const lastAdminRemoved = 'Cannot remove the last active admin. Assign another admin first.';
+    const underLock = async (tx: Prisma.TransactionClient) => {
+      const locked = await lockPersonForChange(tx, req, existing.id, (row) => nextAdminFlag(row, req.body).nextIsAdmin && !row.is_admin);
+      const lockedNext = nextAdminFlag(locked, req.body).nextIsAdmin;
+      await refuseLastAdminUnderLock(tx, locked, existing.organization_id, !lockedNext || req.body.is_active === false);
+      if (lockedNext !== locked.is_admin) data.is_admin = lockedNext;
+      else delete data.is_admin;
+      return heldBy(locked);
+    };
 
+    const user = await (async () => {
+      // What the person resolved to before the new role, for the change log's "from".
+      const previous = fillSwitches ? await resolveSwitches(existing) : null;
+      // The handover (or the return of the mailbox) is part of the same write as the flip, so a person is never left inactive with a
+      // mailbox nobody holds, nor active with a mailbox that is not theirs. A change of access carries its record the same way.
+      return scoped(() => prisma.$transaction(async (tx) => {
+        const before = await underLock(tx);
+        const updated = await tx.user.update({ where: { id: param(req, 'id') }, data, select: userSelect });
+        if (previous) {
+          await assignRoleToPerson(tx, {
+            organizationId: existing.organization_id,
+            userId: existing.id,
+            roleKey: newRoleKey,
+            userBaseRole: updated.role,
+            previous,
+            actorId: req.user!.id,
+          });
+        }
+        access = await recordAccessChange(tx, { organizationId: existing.organization_id, actor, targetId: existing.id, before, after: heldBy(updated) });
+        if (handoverTarget) handover = await handOverMailbox(tx, { organizationId: existing.organization_id, userId: existing.id, target: handoverTarget, actorId: req.user!.id });
+        if (reactivating) returned = await reactivateMailbox(tx, { id: existing.id, organization_id: existing.organization_id, first_name: updated.first_name, last_name: updated.last_name });
+        return updated;
+      }));
+    })().catch((err: unknown): typeof REFUSED => {
+      if (answerChangeRefusal(req, res, err, lastAdminRemoved)) return REFUSED;
+      throw err;
+    });
+    if (user === REFUSED) return;
+
+    // Only now that the change has committed: a rolled-back change leaves both caches as they were (ticket 37).
     clearTokenCache(param(req, 'id'));
-    if (data.is_active === false) await sweepTasksAfterDeactivation(req, param(req, 'id'));
+    clearSwitchCacheForUser(existing.id);
+    if (body.is_active === false) await removeLoginAfterDeactivation(existing);
     void logAudit({ req, action: 'user.updated', resourceType: 'User', resourceId: param(req, 'id'), metadata: { fields: Object.keys(data) } });
     if (returned && returned.returned !== 'none') {
       void logAudit({ req, action: 'user.mailbox_returned', resourceType: 'User', resourceId: param(req, 'id'), metadata: { ...returned } });
@@ -966,9 +1172,7 @@ export async function update(req: Request, res: Response) {
       });
     }
     if (handover && handover.handed !== 'none') void logAudit({ req, action: 'user.mailbox_handed_over', resourceType: 'User', resourceId: param(req, 'id'), metadata: handoverAudit(handover) });
-    if (data.role !== undefined) {
-      void logAudit({ req, action: 'user.role_changed', resourceType: 'User', resourceId: param(req, 'id'), metadata: { role: data.role } });
-    }
+    void alertOwnerOfAdminChange({ organizationId: existing.organization_id, action: access, targetId: existing.id, actorId: actor.id });
     res.json({ user: await withAvatarUrl(user) });
   } catch (err) {
     logger.error('Update user error:', err);
@@ -976,9 +1180,184 @@ export async function update(req: Request, res: Response) {
   }
 }
 
+/**
+ * What deactivating this person would leave open: the number of open records per module that name them (P19). Counts only.
+ * Deactivating changes no record, so this is a heads-up and the way to the optional reassign below, not a precondition.
+ */
+export async function deactivationSummary(req: Request, res: Response) {
+  try {
+    const person = await prisma.user.findFirst({
+      where: { id: param(req, 'id'), ...tenantWhere(req) },
+      select: { id: true, first_name: true, last_name: true, is_active: true },
+    });
+    if (!person) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+    const summary = await summarizeOpenRecords(req.user!.organization_id, person.id);
+    res.json({ person: { id: person.id, first_name: person.first_name, last_name: person.last_name, is_active: person.is_active }, ...summary });
+  } catch (err) {
+    logger.error('Deactivation summary error:', err);
+    res.status(500).json({ error: 'Failed to read the open records' });
+  }
+}
+
+export const reassignOpenSchema = z.object({
+  to_user_id: z.string().uuid(),
+  modules: z.array(z.enum(REASSIGN_MODULES)).min(1),
+});
+
+/**
+ * Replace this person with another on their open records, module by module (P19's optional bulk reassign). It moves the
+ * people fields of open records only; closed records keep the person as history. An Admin's action: it writes across the
+ * company's tasks, leads and jobs, whatever the caller's own reach over them.
+ */
+export async function reassignOpen(req: Request, res: Response) {
+  try {
+    if (!isSuperUser(req.user!)) {
+      res.status(403).json({ error: 'Only an Admin can reassign a person\'s open records.' });
+      return;
+    }
+    const fromId = param(req, 'id');
+    const { to_user_id: toId, modules } = req.body as z.infer<typeof reassignOpenSchema>;
+    if (sameUserId(toId, fromId)) {
+      res.status(400).json({ error: 'Choose someone other than this person.' });
+      return;
+    }
+    const orgId = req.user!.organization_id;
+    const [from, to] = await Promise.all([
+      prisma.user.findFirst({ where: { id: fromId, ...tenantWhere(req) }, select: { id: true } }),
+      prisma.user.findFirst({ where: { id: toId, ...tenantWhere(req), is_active: true }, select: { id: true } }),
+    ]);
+    if (!from) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+    if (!to) {
+      res.status(400).json({ error: 'Choose an active person to take over.' });
+      return;
+    }
+    const result = await reassignOpenRecords({ orgId, actorId: req.user!.id, fromUserId: fromId, toUserId: toId, modules });
+    void logAudit({
+      req, action: 'user.open_records_reassigned', resourceType: 'User', resourceId: fromId,
+      metadata: { to_user_id: toId, modules, moved: result.moved, skipped: result.skipped },
+    });
+    res.json(result);
+  } catch (err) {
+    logger.error('Reassign open records error:', err);
+    res.status(500).json({ error: 'Failed to reassign the open records' });
+  }
+}
+
+/** The erase could not remove the person's sign-in, so nothing was erased (CR-10). ServWave's own words, no provider's. */
+export const ERASE_LOGIN_FAILED_MESSAGE = "Could not remove this person's sign-in, so nothing was erased. Please try again.";
+
+/** The refusal for any change to a person whose personal data was erased. */
+const ERASED_REFUSAL = 'This person\'s personal data was erased. They stay on their records as a former user and cannot be edited or brought back.';
+
+/** What an erased person is called everywhere a record names them. */
+export const FORMER_USER_FIRST_NAME = 'Former';
+export const FORMER_USER_LAST_NAME = 'user';
+
+/**
+ * Erase a deactivated person's personal data (P19, A5; GDPR Art. 17 with its 17(3) exceptions, 11 CCR 7022(b)(1)): the name
+ * becomes "Former user", the email, phone and photo are removed, the credentials are deleted, and the erasure is logged. The
+ * row and every record that names the person stay, so history keeps its shape; the mailbox address stays reserved. An erased
+ * person cannot sign in and cannot be reactivated. An Admin's action, only on a person already deactivated, only once.
+ */
+export async function erasePersonalData(req: Request, res: Response) {
+  try {
+    // No one, the Owner included, erases the Owner (AL-16).
+    if (await refuseOwnerRemoval(req, res, param(req, 'id'))) return;
+    if (!isSuperUser(req.user!)) {
+      res.status(403).json({ error: 'Only an Admin can erase a person\'s personal data.' });
+      return;
+    }
+    const id = param(req, 'id');
+    if (sameUserId(req.user?.id, id)) {
+      res.status(400).json({ error: 'Cannot erase your own account' });
+      return;
+    }
+    const existing = await prisma.user.findFirst({
+      where: { id, ...tenantWhere(req) },
+      select: { id: true, organization_id: true, email: true, is_active: true, erased_at: true, avatar_path: true, is_admin: true },
+    });
+    if (!existing) {
+      res.status(404).json({ error: 'User not found' });
+      return;
+    }
+    // Erasing an Admin is the Owner's alone (ticket 26); checked again inside the write, under the company lock.
+    if (await refuseUnlessOwnerFor(req, res, existing)) return;
+    if (existing.is_active) {
+      res.status(409).json({ error: 'Deactivate this person before erasing their personal data.' });
+      return;
+    }
+    if (existing.erased_at) {
+      res.status(409).json({ error: 'This person\'s personal data was already erased.' });
+      return;
+    }
+
+    // The sign-in first: a login that outlived the erase would be the worst result. If it cannot be removed, nothing is erased and
+    // the answer says so (a status never claims success for a failure, CR-10): the real address is the only way to find that
+    // login again, so it stays for a retry. (The person is already deactivated, so every door refuses them meanwhile.)
+    if (!(await removeProviderLoginQuietly(existing.email, 'erase'))) {
+      res.status(502).json({ error: ERASE_LOGIN_FAILED_MESSAGE });
+      return;
+    }
+    const claimed = await prisma.$transaction(async (tx) => {
+      await lockPersonForChange(tx, req, id);
+      // Only a person still deactivated and not yet erased is erased: a reactivation, or a second erase, between the read above
+      // and this write finds no row to change.
+      const { count } = await tx.user.updateMany({
+        where: { id, ...tenantWhere(req), is_active: false, erased_at: null },
+        data: {
+          first_name: FORMER_USER_FIRST_NAME,
+          last_name: FORMER_USER_LAST_NAME,
+          // The email column is required and unique, so it holds an address that belongs to nobody (the reserved .invalid
+          // domain never resolves) and carries nothing of the person; the real address is free to be used again.
+          email: `erased-${id}@erased.invalid`,
+          phone: null,
+          phone_ext: null,
+          avatar_path: null,
+          has_login: false,
+          password_hash: '',
+          mfa_email_enrolled: false,
+          erased_at: new Date(),
+        },
+      });
+      if (count === 0) return false;
+      await tx.mfaEmailChallenge.deleteMany({ where: { user_id: id } });
+      // The permission change log is the person's own history on the Permissions page: the erasure is one event row on it.
+      await tx.permissionChangeLog.create({
+        data: {
+          organization_id: existing.organization_id, target_type: 'USER', target_id: id, switch_key: null,
+          from_value: Prisma.DbNull, to_value: Prisma.DbNull, actor_id: req.user!.id, reason: 'erased', role_label: null,
+        },
+      });
+      return true;
+    });
+    if (!claimed) {
+      res.status(409).json({ error: 'This person can no longer be erased: they were reactivated or already erased.' });
+      return;
+    }
+    if (existing.avatar_path) await removeAvatarObject(existing.avatar_path);
+    clearTokenCache(id);
+    void logAudit({ req, action: 'user.personal_data_erased', resourceType: 'User', resourceId: id });
+    res.json({ message: 'Personal data erased' });
+  } catch (err) {
+    if (answerChangeRefusal(req, res, err, '')) return;
+    logger.error('Erase personal data error:', err);
+    res.status(500).json({ error: 'Failed to erase personal data' });
+  }
+}
+
+const LAST_ADMIN_DEACTIVATE = 'Cannot deactivate the last active admin. Assign another admin first.';
+
 export async function deactivate(req: Request, res: Response) {
   try {
-    if (req.user?.id === param(req, 'id')) {
+    // No one, the Owner included, deactivates the Owner (AL-16).
+    if (await refuseOwnerRemoval(req, res, param(req, 'id'))) return;
+    if (sameUserId(req.user?.id, param(req, 'id'))) {
       res.status(400).json({ error: 'Cannot deactivate your own account' });
       return;
     }
@@ -989,8 +1368,11 @@ export async function deactivate(req: Request, res: Response) {
       return;
     }
 
+    // Deactivating an Admin is the Owner's alone (ticket 26); checked again inside the write, under the company lock.
+    if (await refuseUnlessOwnerFor(req, res, existing)) return;
+
     if (await wouldRemoveLastAdmin(req, existing)) {
-      res.status(409).json({ error: 'Cannot deactivate the last active admin. Assign another admin first.' });
+      res.status(409).json({ error: LAST_ADMIN_DEACTIVATE });
       return;
     }
 
@@ -1001,49 +1383,61 @@ export async function deactivate(req: Request, res: Response) {
       return;
     }
 
-    // Deactivation force-revokes login so has_login never lies (and the seat can't sign in).
-    const revoked = await revokeLoginForDeactivation(existing);
-
+    // Deactivation force-revokes login so has_login never lies (and the seat can't sign in): the row first, then the provider.
     // The flip and the mailbox handover are one write, so a person is never left inactive with a mailbox nobody holds.
     const handover = await prisma.$transaction(async (tx) => {
+      const locked = await lockPersonForChange(tx, req, existing.id);
+      await refuseLastAdminUnderLock(tx, locked, existing.organization_id, true);
       await tx.user.update({
         where: { id: param(req, 'id') },
-        data: { is_active: false, ...revoked },
+        data: { is_active: false, ...LOGIN_OFF },
         select: { id: true },
       });
-      return handOverMailbox(tx, { organizationId: existing.organization_id, userId: existing.id, target: handoverTarget });
+      return handOverMailbox(tx, { organizationId: existing.organization_id, userId: existing.id, target: handoverTarget, actorId: req.user!.id });
     });
 
     clearTokenCache(param(req, 'id'));
-    await sweepTasksAfterDeactivation(req, param(req, 'id'));
+    await removeLoginAfterDeactivation(existing);
     void logAudit({ req, action: 'user.deactivated', resourceType: 'User', resourceId: param(req, 'id') });
     if (handover.handed !== 'none') void logAudit({ req, action: 'user.mailbox_handed_over', resourceType: 'User', resourceId: param(req, 'id'), metadata: handoverAudit(handover) });
     res.json({ message: 'User deactivated' });
   } catch (err) {
+    if (answerChangeRefusal(req, res, err, LAST_ADMIN_DEACTIVATE)) return;
     logger.error('Deactivate user error:', err);
     res.status(500).json({ error: 'Failed to deactivate user' });
   }
 }
 
-// Relations that represent real audit/financial history. If a user has ANY of
-// these we refuse the hard delete (DB-`Restrict` ones would throw anyway; the
-// `SetNull` ones we choose to protect so attribution isn't silently lost).
-// Cascade relations (crew memberships, table preferences) are intentionally
-// omitted — they auto-clean and are transient. A job's Dispatcher slot is not history either:
-// deleting the person empties it (Job.dispatcher_id is SetNull), as it does a crew membership. A lead's
-// Dispatcher is the same (Lead.dispatcher_id is SetNull).
+// A person with history is never deleted (P19); a person with none (a mistyped invite) can be. History is every record that
+// still names them: what they made, what they were paid or paid out, what they were assigned, crewed, owned, dispatched or
+// sold, and the audit trail. Deactivating keeps all of it and marks the name "Deactivated"; only a person nothing points at
+// can go. (Crew rows and a Dispatcher slot used to count as transient. They are people fields, and a record's people
+// fields are history.) Relations that only hold the person's own settings (table preferences, switch values) are
+// omitted: they are not history.
 export const DELETE_BLOCKING_RELATIONS = {
   created_estimates: true,
   created_notes: true,
   uploaded_attachments: true,
+  created_attachments: true,
   time_entries: true,
   timeclock_ot_reviews: true,
   issued_refunds: true,
   created_credits: true,
   collected_payments: true,
+  created_payments: true,
   voided_payments: true,
   refunded_invoices: true,
+  created_invoices: true,
+  created_customers: true,
+  created_leads: true,
+  created_jobs: true,
+  jobs_closed: true,
   commission_owned_leads: true,
+  lead_crew_memberships: true,
+  dispatched_leads: true,
+  dispatched_jobs: true,
+  jobs_as_salesperson: true,
+  visit_assignments: true,
   service_plans_sold: true,
   // Issue 04 widened what this one blocks: a task's timeline now OUTLIVES the task, so a user
   // whose whole history was creating and deleting one task still holds events here. That is the
@@ -1052,47 +1446,71 @@ export const DELETE_BLOCKING_RELATIONS = {
   // relax this entry to unblock a deletion.
   timeline_events: true,
   cancelled_visits: true,
+  // A record's people fields are history (P19): each of these relations is SetNull, so a hard delete would blank the person from
+  // the record without a word, which is exactly what deactivation promises not to do.
+  stock_movements_performed: true,
+  asset_events: true,
+  asset_events_acted: true,
+  purchase_orders_ordered: true,
+  job_reviews_finished: true,
+  logistic_orders_created: true,
+  logistic_orders_submitted: true,
+  logistic_orders_approved: true,
+  logistic_orders_processed: true,
+  automation_rules_created: true,
+  leads_contact_set: true,
+  headed_departments: true,
+  managed_locations: true,
+  visit_milestone_events: true,
+  payment_resolutions: true,
+  disputes_submitted: true,
 } as const;
 
 export const DELETE_RELATION_LABELS: Record<string, string> = {
   created_estimates: 'estimates',
   created_notes: 'notes',
   uploaded_attachments: 'attachments',
+  created_attachments: 'attachments created',
   time_entries: 'time entries',
   timeclock_ot_reviews: 'overtime reviews',
   issued_refunds: 'refunds',
   created_credits: 'credits',
   collected_payments: 'payments collected',
+  created_payments: 'payments recorded',
   voided_payments: 'payments voided',
   refunded_invoices: 'invoices refunded',
+  created_invoices: 'invoices',
+  created_customers: 'customers',
+  created_leads: 'leads created',
+  created_jobs: 'jobs created',
+  jobs_closed: 'jobs closed',
   commission_owned_leads: 'leads owned',
+  lead_crew_memberships: 'leads assigned',
+  dispatched_leads: 'leads dispatched',
+  dispatched_jobs: 'jobs dispatched',
+  jobs_as_salesperson: 'jobs sold',
+  visit_assignments: 'visits on a crew',
   service_plans_sold: 'service plans sold',
   timeline_events: 'timeline events',
   cancelled_visits: 'walkthrough cancellations',
+  stock_movements_performed: 'stock movements',
+  asset_events: 'asset events',
+  asset_events_acted: 'asset events made',
+  purchase_orders_ordered: 'purchase orders placed',
+  job_reviews_finished: 'job reviews finished',
+  logistic_orders_created: 'logistic orders created',
+  logistic_orders_submitted: 'logistic orders submitted',
+  logistic_orders_approved: 'logistic orders approved',
+  logistic_orders_processed: 'logistic orders processed',
+  automation_rules_created: 'automations created',
+  leads_contact_set: 'leads marked contacted',
+  headed_departments: 'departments headed',
+  managed_locations: 'locations managed',
+  visit_milestone_events: 'visit milestones',
+  payment_resolutions: 'payment problems resolved',
+  disputes_submitted: 'disputes answered',
+  tasks: 'tasks',
 };
-
-// Best-effort removal of the Supabase Auth account by email. Prisma id ≠ Supabase
-// id after the invite redesign, so we can't delete by id — we page listUsers and
-// match on email (the established pattern in lib/e2e-org.ts + the seed scripts).
-// Swallows all errors: the Prisma row is already gone, auth cleanup is secondary.
-async function deleteSupabaseAuthUserByEmail(email: string): Promise<void> {
-  const target = email.toLowerCase();
-  try {
-    for (let page = 1; page <= 50; page++) {
-      const { data, error } = await supabaseAdmin.auth.admin.listUsers({ page, perPage: 200 });
-      if (error || !data?.users?.length) return;
-      const match = data.users.find((u) => u.email?.toLowerCase() === target);
-      if (match) {
-        await supabaseAdmin.auth.admin.deleteUser(match.id);
-        return;
-      }
-      // data.nextPage is null when we've reached the last page (Supabase Pagination type).
-      if (data.nextPage === null) return;
-    }
-  } catch (err) {
-    logger.error('Supabase auth cleanup on user delete failed (non-fatal):', err);
-  }
-}
 
 // Admin "Reset 2FA": clear the target user's email-OTP enrollment and purge any
 // pending challenges so they can re-enroll cleanly. Admin-only + tenant-scoped,
@@ -1125,23 +1543,30 @@ export async function resetMfa(req: Request, res: Response) {
   }
 }
 
+/** What the Admin is told when a delete could not remove the person's sign-in: nothing was deleted, and a retry is safe. */
+export const DELETE_LOGIN_FAILED_MESSAGE = "Could not remove this person's sign-in, so nothing was deleted. Please try again.";
+
 export async function permanentDelete(req: Request, res: Response) {
   try {
     const id = param(req, 'id');
 
-    if (req.user?.id === id) {
+    // No one, the Owner included, deletes the Owner (AL-16). The database refuses it too.
+    if (await refuseOwnerRemoval(req, res, id)) return;
+    if (sameUserId(req.user?.id, id)) {
       res.status(400).json({ error: 'Cannot delete your own account' });
       return;
     }
 
     const existing = await prisma.user.findFirst({
       where: { id, ...tenantWhere(req) },
-      select: { id: true, organization_id: true, email: true, is_active: true, avatar_path: true, _count: { select: DELETE_BLOCKING_RELATIONS } },
+      select: { id: true, organization_id: true, email: true, is_active: true, avatar_path: true, is_admin: true, _count: { select: DELETE_BLOCKING_RELATIONS } },
     });
     if (!existing) {
       res.status(404).json({ error: 'User not found' });
       return;
     }
+    // Deleting an Admin is the Owner's alone (ticket 26); checked again inside the write, under the company lock.
+    if (await refuseUnlessOwnerFor(req, res, existing)) return;
 
     if (existing.is_active) {
       res.status(409).json({ error: 'Deactivate this user before deleting them.' });
@@ -1149,6 +1574,11 @@ export async function permanentDelete(req: Request, res: Response) {
     }
 
     const counts = existing._count as unknown as Record<string, number>;
+    // Task people lists are uuid[] columns with no foreign key, so the count above cannot see them; a task that names the
+    // person (assignee, watcher or creator) is history too.
+    counts.tasks = await prisma.task.count({
+      where: { organization_id: existing.organization_id, OR: [{ assignee_ids: { has: id } }, { watcher_ids: { has: id } }, { created_by: id }] },
+    });
     const history = Object.entries(counts).filter(([, n]) => n > 0);
     if (history.length > 0) {
       const detail = history.map(([k, n]) => `${n} ${DELETE_RELATION_LABELS[k] ?? k}`).join(', ');
@@ -1158,12 +1588,27 @@ export async function permanentDelete(req: Request, res: Response) {
       return;
     }
 
+    // The sign-in goes first, and it must go (security review SR-5). Once the row is deleted nothing holds the address the login
+    // is found by, and a login left at the provider would open the next account invited with that address, on the old password.
+    // So a failure deletes nothing and says so: the row keeps the address, and the Admin's retry finds the login again. (The
+    // person is already deactivated, so every door refuses them meanwhile.)
+    try {
+      await removeProviderLogin(existing.email);
+    } catch (removeErr) {
+      logger.error('Permanent delete: the identity provider login could not be removed; nothing was deleted', {
+        userId: id, step: removeErr instanceof ProviderLoginRemovalError ? removeErr.step : 'unknown',
+      });
+      res.status(502).json({ error: DELETE_LOGIN_FAILED_MESSAGE });
+      return;
+    }
+
     // Mailbox rows and address rows are never history and no foreign key from them blocks this (the links to the user are
     // SET NULL). A mailbox the delete would leave with nobody to read it is merged into the main mailbox in the same write,
     // so a refused delete (below) rolls that back too. The address rows stay as reservations (PRD 10, S10.24).
     let settled: HandoverOutcome;
     try {
       settled = await prisma.$transaction(async (tx) => {
+        await lockPersonForChange(tx, req, id);
         const outcome = await settleMailboxesBeforeDelete(tx, { organizationId: existing.organization_id, userId: id });
         await tx.user.delete({ where: { id } });
         return outcome;
@@ -1180,31 +1625,124 @@ export async function permanentDelete(req: Request, res: Response) {
 
     if (existing.avatar_path) await removeAvatarObject(existing.avatar_path);
 
-    await deleteSupabaseAuthUserByEmail(existing.email);
     clearTokenCache(id);
     void logAudit({ req, action: 'user.permanently_deleted', resourceType: 'User', resourceId: id, metadata: { email: existing.email } });
     if (settled.handed !== 'none') void logAudit({ req, action: 'user.mailbox_handed_over', resourceType: 'User', resourceId: id, metadata: handoverAudit(settled) });
     res.json({ message: 'User deleted' });
   } catch (err) {
+    if (answerChangeRefusal(req, res, err, '')) return;
     logger.error('Permanent delete user error:', err);
     res.status(500).json({ error: 'Failed to delete user' });
   }
 }
 
 // Returns true if `target` is the org's last active admin (so demoting / deactivating /
-// revoking-login it would lock the org out of admin access). An admin is a person in the Admin box: the base role
-// Admin and no custom role. A custom role copied from Admin has the same base role but no full access, so it does
-// not keep the company reachable and is not counted (see isSuperUser).
-async function wouldRemoveLastAdmin(req: Request, target: { role: string; custom_role_id?: string | null; is_active: boolean }): Promise<boolean> {
+// revoking-login it would lock the org out of admin access). An admin is a person with the Admin flag (P15); a role
+// copied from Admin with the flag off keeps the company reachable no more than any other role (see isSuperUser).
+async function wouldRemoveLastAdmin(req: Request, target: { role: string; custom_role_id?: string | null; is_admin: boolean; is_active: boolean }): Promise<boolean> {
   if (!isSuperUser(target) || !target.is_active) return false;
   const activeAdmins = await prisma.user.count({
-    where: { role: 'ADMIN', custom_role_id: null, is_active: true, ...tenantWhere(req) },
+    where: { is_admin: true, is_active: true, ...tenantWhere(req) },
   });
   return activeAdmins <= 1;
 }
 
-// POST /api/users/:id/revoke-login — turn login OFF (idempotent). Deletes the Supabase auth
-// account + blanks the credential; refuses to lock out the last active admin.
+/** What the Admin is told when the login could not be removed and the person holds sign-in: they can still sign in. */
+export const REVOKE_LOGIN_FAILED_MESSAGE = "Could not revoke this person's login. They can still sign in. Please try again.";
+/** The person's sign-in is off, but their login was not confirmed gone at the provider. The screen still offers Revoke. */
+export const REVOKE_LOGIN_UNFINISHED_MESSAGE = "Could not finish revoking this person's login. Please try again.";
+/** The same, for a person deactivated meanwhile: Revoke is not offered for them, so nothing is asked of the Admin. */
+export const REVOKE_LOGIN_UNFINISHED_INACTIVE_MESSAGE = "Could not finish revoking this person's login.";
+
+/**
+ * Revoke's marks in the row's invite-mark column (password_hash, lib/invite-link.ts). None is an invite mark, so while any of them
+ * is there every invite link for the person is expired, and lib/invite-link only ever clears invite marks.
+ *  - `revoking:<uuid>`: a revoke waiting on the provider. Only the revoke holding it may put the person back if the provider fails.
+ *  - `revoking:pending`: a revoke that could not finish (sign-in off, the provider not seen clear). The list says so and the screen
+ *    still offers Revoke.
+ *  - `revoked:confirmed`: a revoke saw the provider hold no login for the person, written only over the exact mark it saw before
+ *    its call. A revoke whose own call also succeeded may lean on it; a revoke whose call failed never does. An empty column proves
+ *    nothing (deactivation, an erase and a finished invite all leave one).
+ */
+const REVOKING_PREFIX = 'revoking:';
+const REVOKE_PENDING_MARK = `${REVOKING_PREFIX}pending`;
+const REVOKE_CONFIRMED_MARK = 'revoked:confirmed';
+
+/** Whether a row's invite-mark column says a revoke is unfinished or still running: the list's `revoke_pending`. */
+export function revokePending(row: { has_login: boolean; password_hash: string | null }): boolean {
+  return !row.has_login && Boolean(row.password_hash?.startsWith(REVOKING_PREFIX));
+}
+
+type RevokeOutcome = 'done' | 'can_sign_in' | 'unfinished' | 'inactive' | 'gone';
+
+/**
+ * Where a revoke stands, read from the row after this request's provider call. "Done" needs this request's OWN proof: its provider
+ * call removed the login (or found none) AND the row was still exactly as it saw it before that call, so its confirmation was
+ * written (`confirmedByMe`); or its call succeeded and a confirmation is already on the row. A revoke whose own provider call failed
+ * is never done, whatever another revoke found. Anything short of proof leaves the pending mark, so "try again" can be done from
+ * the screen.
+ */
+async function revokeOutcome(req: Request, id: string, mine: { seenClear: boolean; confirmedByMe: boolean }): Promise<RevokeOutcome> {
+  const read = () => prisma.user.findFirst({
+    where: { id, ...tenantWhere(req) }, select: { has_login: true, is_active: true, password_hash: true },
+  });
+  const classify = (row: Awaited<ReturnType<typeof read>>): RevokeOutcome | null => {
+    if (!row) return 'gone';
+    // Holding sign-in again (put back, or an Admin re-invited them: an invite mark is a re-invite on its way).
+    const mark = row.password_hash ?? '';
+    if ((row.has_login || mark.startsWith('invite:')) && row.is_active) return 'can_sign_in';
+    if (!row.has_login && (mine.confirmedByMe || (mine.seenClear && mark === REVOKE_CONFIRMED_MARK))) return 'done';
+    if (!row.is_active) return 'inactive';
+    return null;
+  };
+  const first = classify(await read());
+  if (first) return first;
+  // Off, active, and not proven clear by this request: unfinished. Say so on the row (a running revoke's own mark already does),
+  // even over a confirmation another revoke wrote, so the retry this answer asks for is on screen.
+  await prisma.user.updateMany({
+    where: { id, ...tenantWhere(req), has_login: false, is_active: true, password_hash: { in: ['', REVOKE_CONFIRMED_MARK] } },
+    data: { password_hash: REVOKE_PENDING_MARK },
+  });
+  return classify(await read()) ?? 'unfinished';
+}
+
+/**
+ * This request's provider call found no login for the person. Record it, in one conditional write, only if the row still holds
+ * exactly the mark this request saw before that call: a newer revoke, a re-invite or a new sign-in since then means the answer is
+ * stale, and nothing is written. Returns whether it was.
+ */
+async function recordRevokeConfirmed(req: Request, id: string, seenMark: string): Promise<boolean> {
+  const { count } = await prisma.user.updateMany({
+    where: { id, ...tenantWhere(req), has_login: false, password_hash: seenMark },
+    data: { password_hash: REVOKE_CONFIRMED_MARK },
+  });
+  return count === 1;
+}
+
+/** Answer what is true for each outcome. */
+async function answerRevoke(req: Request, res: Response, id: string, outcome: RevokeOutcome): Promise<void> {
+  switch (outcome) {
+    case 'done': {
+      const row = await prisma.user.findFirst({ where: { id, ...tenantWhere(req) }, select: userSelect });
+      if (!row) { res.status(404).json({ error: 'User not found' }); return; }
+      void logAudit({ req, action: 'user.login_revoked', resourceType: 'User', resourceId: id });
+      res.json({ user: await withAvatarUrl(row) });
+      return;
+    }
+    case 'gone': res.status(404).json({ error: 'User not found' }); return; // deleted while the revoke ran
+    case 'can_sign_in': res.status(502).json({ error: REVOKE_LOGIN_FAILED_MESSAGE }); return;
+    case 'inactive': res.status(502).json({ error: REVOKE_LOGIN_UNFINISHED_INACTIVE_MESSAGE }); return;
+    case 'unfinished': res.status(502).json({ error: REVOKE_LOGIN_UNFINISHED_MESSAGE }); return;
+  }
+}
+
+// POST /api/users/:id/revoke-login — turn login OFF (idempotent). Removes the login at the identity provider + blanks the
+// credential; refuses to lock out the last active admin. Security finding H2, build item 10. The row is turned off FIRST (from
+// that moment every door refuses the person, and an invite acceptance racing this sees it and undoes the login it made), then the
+// login is removed at the provider. "Done" only on this request's own proof the provider is clear (revokeOutcome); a failure puts
+// the person back if nothing else changed them, and otherwise says the revoke is unfinished, with Revoke still on screen.
+const LAST_ADMIN_REVOKE = 'Cannot remove login from the last active admin. Assign another admin first.';
+
 export async function revokeLogin(req: Request, res: Response) {
   try {
     const existing = await prisma.user.findUnique({
@@ -1215,26 +1753,76 @@ export async function revokeLogin(req: Request, res: Response) {
       res.status(404).json({ error: 'User not found' });
       return;
     }
-    if (!existing.has_login) {
-      res.json({ user: await withAvatarUrl(existing) }); // idempotent — already no login
+    // No one, the Owner included, revokes the Owner's sign-in (AL-16).
+    if (await refuseOwnerRemoval(req, res, existing.id)) return;
+    // Revoking an Admin's sign-in is the Owner's alone (ticket 26); checked again inside the write, under the company lock.
+    if (await refuseUnlessOwnerFor(req, res, existing)) return;
+    const readMark = () => prisma.user.findFirst({ where: { id: existing.id, ...tenantWhere(req) }, select: { has_login: true, password_hash: true } });
+
+    let turnedOff = false;
+    let mine = '';
+    let held = '';
+    if (existing.has_login) {
+      if (await wouldRemoveLastAdmin(req, existing)) {
+        res.status(409).json({ error: LAST_ADMIN_REVOKE });
+        return;
+      }
+      // The turn-off opens with the company lock and the person read again under it: the Owner check and the last-Admin check
+      // hold until it commits (ticket 26).
+      await prisma.$transaction(async (tx) => {
+        const locked = await lockPersonForChange(tx, req, existing.id);
+        await refuseLastAdminUnderLock(tx, locked, req.user!.organization_id, true);
+        // Turn the row off as a compare-and-swap on what it held, so what is put back on a failure is exactly what was replaced:
+        // a resend landing between the read and the write makes the write miss, and it is read again.
+        for (let attempt = 0; attempt < 3 && !turnedOff; attempt++) {
+          const now = await tx.user.findFirst({ where: { id: existing.id, ...tenantWhere(req) }, select: { has_login: true, password_hash: true } });
+          if (!now?.has_login) break;
+          held = now.password_hash ?? '';
+          mine = `${REVOKING_PREFIX}${randomUUID()}`;
+          turnedOff = (await tx.user.updateMany({
+            where: { id: existing.id, ...tenantWhere(req), has_login: true, password_hash: held },
+            data: { has_login: false, password_hash: mine },
+          })).count === 1;
+        }
+      });
+      clearTokenCache(existing.id);
+    }
+    // What this request sees before its provider call. Already off (an earlier revoke, one still running, or one that could not
+    // finish): idempotent, but an off row is no proof the provider is clear, so the provider is asked every time.
+    const seen = await readMark();
+    if (!seen) {
+      res.status(404).json({ error: 'User not found' });
       return;
     }
-    if (await wouldRemoveLastAdmin(req, existing)) {
-      res.status(409).json({ error: 'Cannot remove login from the last active admin. Assign another admin first.' });
+    if (seen.has_login) {
+      // Holding sign-in (given back, or changing too fast to turn off): their login is not touched, and they are told so.
+      res.status(502).json({ error: REVOKE_LOGIN_FAILED_MESSAGE });
       return;
     }
 
-    await deleteSupabaseAuthUserByEmail(existing.email);
-    const user = await prisma.user.update({
-      where: { id: existing.id },
-      data: { has_login: false, password_hash: '' },
-      select: userSelect,
-    });
+    let seenClear = false;
+    try {
+      await removeProviderLogin(existing.email);
+      seenClear = true;
+    } catch (removeErr) {
+      logger.error('Revoke login: the identity provider login could not be removed', { userId: existing.id, removeErr });
+    }
 
-    clearTokenCache(existing.id);
-    void logAudit({ req, action: 'user.login_revoked', resourceType: 'User', resourceId: existing.id });
-    res.json({ user: await withAvatarUrl(user) });
+    let confirmedByMe = false;
+    if (seenClear) {
+      confirmedByMe = await recordRevokeConfirmed(req, existing.id, seen.password_hash ?? '');
+    } else if (turnedOff) {
+      // Put the person back, only if nothing changed them since: a deactivation, a re-invite, an erase or another revoke has
+      // rewritten this revoke's own mark.
+      const restored = await prisma.user.updateMany({
+        where: { id: existing.id, ...tenantWhere(req), has_login: false, is_active: true, password_hash: mine },
+        data: { has_login: true, password_hash: held },
+      });
+      if (restored.count === 1) clearTokenCache(existing.id);
+    }
+    await answerRevoke(req, res, existing.id, await revokeOutcome(req, existing.id, { seenClear, confirmedByMe }));
   } catch (err) {
+    if (answerChangeRefusal(req, res, err, LAST_ADMIN_REVOKE)) return;
     logger.error('Revoke login error:', err);
     res.status(500).json({ error: 'Failed to revoke login' });
   }
@@ -1433,4 +2021,35 @@ async function signOutOtherSessions(
     }
   }
   return unconfirmed;
+}
+
+/**
+ * POST /api/users/:id/make-owner (ticket 27, D1): the Owner asks to hand the company to this person. Nothing changes: the
+ * CURRENT Owner is emailed a one-time approval link (lib/users/owner-handover.ts), and the link is never in this answer.
+ * `requireOwner` has already refused anyone else; the request repeats that check under the company lock.
+ */
+export async function requestMakeOwner(req: Request, res: Response) {
+  try {
+    const outcome = await requestOwnerHandover({ organizationId: req.user!.organization_id, actorId: req.user!.id, targetId: String(req.params.id ?? '') });
+    switch (outcome.kind) {
+      case 'not_owner':
+        answerOwnerOnly(req, res, null);
+        return;
+      case 'not_found':
+        res.status(404).json({ error: 'User not found' });
+        return;
+      case 'not_a_candidate':
+        res.status(409).json({ error: NOT_AN_OWNER_CANDIDATE });
+        return;
+      case 'sent':
+        if (!outcome.emailSent) {
+          res.status(502).json({ error: "We couldn't send the approval email. Try again." });
+          return;
+        }
+        res.json({ email_sent: true });
+    }
+  } catch (err) {
+    logger.error('Make Owner request failed', { name: err instanceof Error ? err.name : typeof err });
+    res.status(500).json({ error: "We couldn't start the hand-over. Try again." });
+  }
 }

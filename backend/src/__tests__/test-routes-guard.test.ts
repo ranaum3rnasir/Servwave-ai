@@ -23,6 +23,34 @@ describe('assertNoTestRoutesInProduction', () => {
     expect(() => assertNoTestRoutesInProduction(app)).toThrow();
   });
 
+  it('throws on a test door inside a router, or a router or sub-app mounted under /api/test (re-audit N14)', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    const nested = express();
+    const api = express.Router();
+    api.post('/test/cleanup', (_req, res) => res.json({}));
+    nested.use('/api', api);
+    expect(() => assertNoTestRoutesInProduction(nested)).toThrow(/\/api\/test\/cleanup/);
+
+    const mounted = express();
+    const doors = express.Router();
+    doors.post('/cleanup', (_req, res) => res.json({}));
+    mounted.use('/api/test', doors);
+    expect(() => assertNoTestRoutesInProduction(mounted)).toThrow(/\/api\/test/);
+
+    const withSub = express();
+    withSub.use('/api/test', express());
+    expect(() => assertNoTestRoutesInProduction(withSub)).toThrow(/\/api\/test/);
+  });
+
+  it('does not take /api/testimonials for a test door', () => {
+    vi.stubEnv('NODE_ENV', 'production');
+    const app = express();
+    const router = express.Router();
+    router.get('/testimonials', (_req, res) => res.json({}));
+    app.use('/api', router);
+    expect(() => assertNoTestRoutesInProduction(app)).not.toThrow();
+  });
+
   it('no-ops when NODE_ENV=production and no test routes exist', () => {
     vi.stubEnv('NODE_ENV', 'production');
     const app = express();

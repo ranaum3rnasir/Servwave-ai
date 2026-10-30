@@ -2,7 +2,7 @@
    Roles & Permissions, PRD 10, slice S10.8 - the people who read the main mailbox: linking and unlinking them on the
    Sender Address page.
 
-   A holder of Company settings links active people to the company's main mailbox and unlinks them again; nobody else
+   An Admin links active people to the company's main mailbox and unlinks them again; nobody else
    can. The list starts empty, a deactivated person drops off it, and the picker pages and searches on the server so a
    company with hundreds of people never loads them all. Every link and unlink is audited.
 
@@ -28,7 +28,6 @@ import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 const suite = process.env.TEST_DATABASE_URL ? describe : describe.skip;
 const READERS = '/api/organization/email-sender/readers';
-const HOLDER = ['company_settings'];
 
 suite('linking people to the main mailbox (real database)', () => {
   let db: PrismaClient;
@@ -77,15 +76,15 @@ suite('linking people to the main mailbox (real database)', () => {
 
   it('starts empty: no one is linked at release', async () => {
     const w = await world();
-    const holder = await personWith(w.org, HOLDER);
+    const holder = w.admin; // reading and changing who reads the main mailbox is an Admin's alone (36b, M17)
     const res = await (await fx.signedInAs(holder)).get(READERS);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toMatchObject({ items: [], total: 0 });
   });
 
-  it('lets a holder of Company settings link a person, lists them, and unlinks them again', async () => {
+  it('lets an Admin link a person, lists them, and unlinks them again', async () => {
     const w = await world();
-    const holder = await personWith(w.org, HOLDER);
+    const holder = w.admin; // adding and removing a reader is an Admin's alone (M8, D3)
     const jane = await fx.addUser(w.org, 'Jane', 'DISPATCHER');
     const api = await fx.signedInAs(holder);
 
@@ -108,9 +107,9 @@ suite('linking people to the main mailbox (real database)', () => {
     expect((await api.delete(`${READERS}/${jane.id}`)).status).toBe(200);
   });
 
-  it('refuses every readers route without Company settings, whatever else the person holds, and links nobody', async () => {
+  it('refuses every readers route to a non-Admin, whatever else the person holds, and links nobody', async () => {
     const w = await world();
-    const everythingElse = SWITCH_CATALOG.filter((s) => s.kind === 'toggle' && s.key !== 'company_settings').map((s) => s.key);
+    const everythingElse = SWITCH_CATALOG.filter((s) => s.kind === 'toggle' && true).map((s) => s.key);
     const person = await personWith(w.org, everythingElse, 'noteverything');
     const jane = await fx.addUser(w.org, 'Jane', 'DISPATCHER');
     const api = await fx.signedInAs(person);
@@ -122,9 +121,9 @@ suite('linking people to the main mailbox (real database)', () => {
     expect(await linkedIds(w.main)).toEqual([]);
   });
 
-  it('refuses to unlink without Company settings and leaves the link in place', async () => {
+  it('refuses to unlink to a non-Admin and leaves the link in place', async () => {
     const w = await world();
-    const holder = await personWith(w.org, HOLDER);
+    const holder = w.admin; // adding and removing a reader is an Admin's alone (M8, D3)
     const other = await personWith(w.org, ['access_communication'], 'other');
     const jane = await fx.addUser(w.org, 'Jane', 'DISPATCHER');
     expect((await (await fx.signedInAs(holder)).put(`${READERS}/${jane.id}`)).status).toBe(200);
@@ -134,7 +133,7 @@ suite('linking people to the main mailbox (real database)', () => {
 
   it('drops a deactivated person off the list, and refuses to link one', async () => {
     const w = await world();
-    const holder = await personWith(w.org, HOLDER);
+    const holder = w.admin; // adding and removing a reader is an Admin's alone (M8, D3)
     const jane = await fx.addUser(w.org, 'Jane', 'DISPATCHER');
     const leaver = await fx.addUser(w.org, 'Leaver', 'DISPATCHER');
     const api = await fx.signedInAs(holder);
@@ -156,7 +155,7 @@ suite('linking people to the main mailbox (real database)', () => {
   it('never links, lists or unlinks a person of another company', async () => {
     const w = await world();
     const other = await world();
-    const holder = await personWith(w.org, HOLDER);
+    const holder = w.admin; // adding and removing a reader is an Admin's alone (M8, D3)
     const stranger = await fx.addUser(other.org, 'Stranger', 'DISPATCHER');
     const api = await fx.signedInAs(holder);
 
@@ -173,7 +172,7 @@ suite('linking people to the main mailbox (real database)', () => {
 
   it('audits each link and each unlink with who did it and whom, and never a name', async () => {
     const w = await world();
-    const holder = await personWith(w.org, HOLDER);
+    const holder = w.admin; // adding and removing a reader is an Admin's alone (M8, D3)
     const jane = await fx.addUser(w.org, 'Jane', 'DISPATCHER');
     const api = await fx.signedInAs(holder);
     await api.put(`${READERS}/${jane.id}`);
@@ -191,7 +190,7 @@ suite('linking people to the main mailbox (real database)', () => {
   describe('the picker, with a company of 300 people', () => {
     it('pages and searches active people not yet linked, on the server', async () => {
       const w = await world();
-      const holder = await personWith(w.org, HOLDER);
+      const holder = w.admin; // adding and removing a reader is an Admin's alone (M8, D3)
       const people = Array.from({ length: 300 }, (_, n) => ({
         id: randomUUID(), organization_id: w.org, email: `p${n}-${w.org.slice(0, 8)}@example.test`,
         first_name: `Zoe${String(n).padStart(3, '0')}`, last_name: 'Picker', role: 'DISPATCHER' as const,
@@ -203,8 +202,8 @@ suite('linking people to the main mailbox (real database)', () => {
 
       const first = await api.get(`${READERS}/candidates`);
       expect(first.status, JSON.stringify(first.body)).toBe(200);
-      // 300 people, the company's admin and the holder, less the inactive one and the linked one
-      expect(first.body.total).toBe(300);
+      // 300 people and the company's admin (who is the one asking), less the inactive one and the linked one
+      expect(first.body.total).toBe(299);
       expect(first.body.items.length).toBe(first.body.limit);
       expect(first.body.limit).toBeLessThanOrEqual(100);
       const second = await api.get(`${READERS}/candidates?offset=${first.body.limit}`);
@@ -221,7 +220,7 @@ suite('linking people to the main mailbox (real database)', () => {
 
     it('pages the linked list too', async () => {
       const w = await world();
-      const holder = await personWith(w.org, HOLDER);
+      const holder = w.admin; // adding and removing a reader is an Admin's alone (M8, D3)
       const people = Array.from({ length: 120 }, (_, n) => ({
         id: randomUUID(), organization_id: w.org, email: `q${n}-${w.org.slice(0, 8)}@example.test`,
         first_name: `Amy${String(n).padStart(3, '0')}`, last_name: 'Linked', role: 'DISPATCHER' as const,
@@ -241,7 +240,7 @@ suite('linking people to the main mailbox (real database)', () => {
 
   it('does not list a person as a candidate who is already linked, and lists them again after an unlink', async () => {
     const w = await world();
-    const holder = await personWith(w.org, HOLDER);
+    const holder = w.admin; // adding and removing a reader is an Admin's alone (M8, D3)
     const jane = await fx.addUser(w.org, 'Jane', 'DISPATCHER');
     const api = await fx.signedInAs(holder);
     const ids = async () => ((await api.get(`${READERS}/candidates?search=jane`)).body.items as { id: string }[]).map((i) => i.id);
@@ -255,7 +254,7 @@ suite('linking people to the main mailbox (real database)', () => {
   it('lists nobody, and does not fail, for a company that has no main mailbox', async () => {
     const w = await fx.newOrg();
     orgs.push(w.org);
-    const holder: Person = await personWith(w.org, HOLDER);
+    const holder: Person = w.admin;
     const res = await (await fx.signedInAs(holder)).get(READERS);
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ items: [], total: 0 });

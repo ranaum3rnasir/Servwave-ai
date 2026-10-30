@@ -218,7 +218,7 @@ suite('attaching, moving and detaching a conversation (real database)', () => {
       const job = await fx.addJob(org, customer);
       const lead = await fx.addLead(org, customer);
       // "Linked to me" with nothing linked: a conversation tied to nothing is not theirs to read.
-      const person = await personWith(org, { communication_scope: 'linked_to_me', see_main_line_when_no_number: false });
+      const person = await personWith(org, { communication_scope: 'attached', see_main_line_when_no_number: false });
       const api = await person.api();
 
       const unreadable = await kind.make(org, {});
@@ -247,7 +247,7 @@ suite('attaching, moving and detaching a conversation (real database)', () => {
       const { org, customer } = await newOrg();
       const first = await fx.addJob(org, customer);
       const second = await fx.addJob(org, customer);
-      const person = await personWith(org, { communication_scope: 'linked_to_me' });
+      const person = await personWith(org, { communication_scope: 'attached' });
       const row = await kind.make(org, { customerId: customer, jobId: first.id });
 
       const moved = await (await person.api()).patch(kind.jobRoute(row), { job_id: second.id });
@@ -259,7 +259,7 @@ suite('attaching, moving and detaching a conversation (real database)', () => {
     it('detaches and leaves the person\'s list cleanly when it was readable only through the record it is taken off', async () => {
       const { org, customer } = await newOrg();
       const job = await fx.addJob(org, customer);
-      const person = await personWith(org, { communication_scope: 'linked_to_me', see_main_line_when_no_number: false });
+      const person = await personWith(org, { communication_scope: 'attached', see_main_line_when_no_number: false });
       // No customer on the row, so the job was the only way to it.
       const row = await kind.make(org, { jobId: job.id });
 
@@ -276,7 +276,7 @@ suite('attaching, moving and detaching a conversation (real database)', () => {
     it('detaches and answers with the row when it stays readable, and does not say it left', async () => {
       const { org, customer } = await newOrg();
       const job = await fx.addJob(org, customer);
-      const person = await personWith(org, { communication_scope: 'linked_to_me' });
+      const person = await personWith(org, { communication_scope: 'attached' });
       // The person\'s own row stays in their section scope after it is taken off the job.
       const own = await kind.make(org, { customerId: customer, jobId: job.id }, { personId: person.id });
 

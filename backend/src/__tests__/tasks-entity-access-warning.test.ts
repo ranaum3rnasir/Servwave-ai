@@ -34,8 +34,6 @@ const ORG_B_TECH_ID = '00000000-0000-0000-0000-0000000000b1';
 
 const mockPrisma = prisma as unknown as {
   user: { findMany: ReturnType<typeof vi.fn> };
-  rolePermission: { findMany: ReturnType<typeof vi.fn> };
-  userPermissionOverride: { findMany: ReturnType<typeof vi.fn> };
   job: { findFirst: ReturnType<typeof vi.fn>; findMany: ReturnType<typeof vi.fn> };
   lead: { findFirst: ReturnType<typeof vi.fn>; findMany: ReturnType<typeof vi.fn> };
   estimate: { findFirst: ReturnType<typeof vi.fn>; findMany: ReturnType<typeof vi.fn> };
@@ -122,6 +120,7 @@ const CUSTOMER_FIXTURE_ROW: Record<string, unknown> = {
 const candidate = (id: string, role: string) => ({
   id,
   role,
+  is_admin: role === 'ADMIN',
   organization_id: ALPHA_ORG_ID,
   custom_role_id: null,
   custom_role: null,
@@ -188,10 +187,6 @@ beforeEach(() => {
   // mockAuthAs installs ONE role's grants. This endpoint derives a scope for EVERY role on the
   // roster, so the mock has to answer per `where.role` or every candidate resolves to the caller's
   // grant set and the whole suite is vacuous.
-  mockPrisma.rolePermission.findMany.mockImplementation(({ where }: { where: { role: string } }) =>
-    Promise.resolve(DEFAULT_GRANTS.filter((g) => g.role === where.role)),
-  );
-  mockPrisma.userPermissionOverride.findMany.mockResolvedValue([]);
 
   mockPrisma.user.findMany.mockResolvedValue(ROSTER);
   wireDelegate(mockPrisma.job, JOB_FIXTURE);
@@ -243,19 +238,17 @@ describe('GET /api/tasks/entity-access', () => {
     expect(res.body.checked_user_ids).toEqual(ROSTER.map((r) => r.id));
   });
 
-  it('redacts the entity label for an assigner who cannot see it either', async () => {
+  it('answers an assigner who cannot see the record exactly as if it were gone (ticket 33): no label, no roster', async () => {
     mockAuthAs('technician');
-    mockPrisma.rolePermission.findMany.mockImplementation(({ where }: { where: { role: string } }) =>
-      Promise.resolve(DEFAULT_GRANTS.filter((g) => g.role === where.role)),
-    );
     mockPrisma.job.findMany.mockResolvedValue([]); // the label query, scoped, returns nothing
+    mockPrisma.job.findFirst.mockResolvedValue(null); // the reach probe, scoped, finds nothing
 
     const res = await get(`?entity_type=JOB&entity_id=${JOB_ID}`, 'technician');
 
-    expect(res.status).toBe(200);
-    expect(res.body.entity.redacted).toBe(true);
-    expect(res.body.entity.label).toBe('Restricted job');
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Linked entity not found' });
     expect(JSON.stringify(res.body)).not.toContain('J00934');
+    expect(mockPrisma.user.findMany).not.toHaveBeenCalled();
   });
 
   it('404s a link whose entity is gone, rather than flagging the whole roster', async () => {
@@ -319,9 +312,9 @@ describe('batching', () => {
    *   ESTIMATE  {org} · SALES's Through own leads fragment (1) · TECHNICIAN's Attached fragment, one
    *             probe per arm: four through the lead (assignee, Owner, Dispatcher, walkthrough crew), and the
    *             three job arms twice, for the job it produced and the job it was attached to (11),
-   *             and the creator rule's arms for those two profiles, answered together: one read of who
-   *             made the estimate per profile (2), and a second probe about that person alone only
-   *             when they are in the roster (none here)                                          = 14
+   *             and the made-for-a-customer-alone arm both profiles share, answered together: one read of
+   *             who made the estimate (1), and a second probe about that person alone only when they
+   *             are in the roster (none here)                                                    = 13
    *   CUSTOMER  {org} for ADMIN+DISPATCHER (1) · SALES's OWN_CUSTOMER matches on the FIRST
    *             OR-arm (lead_assignees), so the per-arm loop breaks after one probe (1) ·
    *             TECHNICIAN has no `read Customer` grant at all -> MATCH_NOTHING (`id:{in:[]}}`)
@@ -332,7 +325,7 @@ describe('batching', () => {
   const CASES: [string, string, number][] = [
     ['JOB', JOB_ID, 5],
     ['LEAD', LEAD_ID, 5],
-    ['ESTIMATE', ESTIMATE_ID, 14],
+    ['ESTIMATE', ESTIMATE_ID, 13],
     ['CUSTOMER', CUSTOMER_ID, 3],
   ];
 
@@ -359,7 +352,7 @@ describe('batching', () => {
     expect(out.withAccess.has(CREW_TECH_ID)).toBe(true);
     expect(out.withAccess.has(TEST_USERS.sales.id)).toBe(true);
     expect(out.withAccess.has(BIG_ROSTER[10].id)).toBe(false);
-    expect(out.probes).toBe(14);
+    expect(out.probes).toBe(13);
     expect(out.fallbacks).toBe(0);
   });
 
@@ -386,7 +379,6 @@ describe('batching', () => {
   it('never reads per-user override rows: a reader\'s access comes from their switches alone', async () => {
     await readersWithEntityAccess(BIG_ROSTER, { type: 'JOB', id: JOB_ID });
 
-    expect(mockPrisma.userPermissionOverride.findMany).not.toHaveBeenCalled();
   });
 
   it('opening the picker is ONE request and does not re-query per candidate', async () => {

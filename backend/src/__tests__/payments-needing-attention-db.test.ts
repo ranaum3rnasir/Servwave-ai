@@ -106,7 +106,7 @@ suite('payments needing attention (real database)', () => {
       },
     });
     await db.user.create({
-      data: { id: admin.id, organization_id: org, email: admin.email, first_name: 'Test', last_name: 'Admin', role: 'ADMIN' },
+      data: { id: admin.id, organization_id: org, email: admin.email, first_name: 'Test', last_name: 'Admin', role: 'ADMIN', is_admin: true },
     });
     await db.customer.create({
       data: { id: customer, organization_id: org, customer_number: `C-${tag}`, kind: 'PERSON', segment: 'RESIDENTIAL', first_name: 'Pat', last_name: 'Payer' },
@@ -143,7 +143,6 @@ suite('payments needing attention (real database)', () => {
     const quietly = (p: Promise<unknown>) => p.catch(() => undefined);
     for (const org of orgs) {
       await quietly(db.$executeRawUnsafe(`DELETE FROM unapplied_captures WHERE organization_id = '${org}'`));
-      await quietly(db.$executeRawUnsafe(`DELETE FROM role_permissions WHERE organization_id = '${org}'`));
       await quietly(db.$executeRawUnsafe(`DELETE FROM refunds WHERE organization_id = '${org}'`));
       await quietly(db.$executeRawUnsafe(`DELETE FROM disputes WHERE organization_id = '${org}'`));
       await quietly(db.$executeRawUnsafe(`DELETE FROM payments WHERE invoice_id IN (SELECT id FROM invoices WHERE organization_id = '${org}')`));
@@ -599,7 +598,6 @@ suite('payments needing attention (real database)', () => {
       data: { id: dispatcher.id, organization_id: f.org, email: dispatcher.email, first_name: 'Dee', last_name: 'Spatch', role: 'DISPATCHER' },
     });
     // The role may read invoices, but not refund them.
-    await db.rolePermission.create({ data: { organization_id: f.org, role: 'DISPATCHER', action: 'read', subject: 'Invoice' } });
 
     const without = signedInAs(dispatcher);
     expect((await without.get('/api/payments-needing-attention')).status).toBe(403);
@@ -877,7 +875,6 @@ suite('payments needing attention (real database)', () => {
     await db.user.create({
       data: { id: dispatcher.id, organization_id: f.org, email: dispatcher.email, first_name: 'Dee', last_name: 'Spatch', role: 'DISPATCHER' },
     });
-    await db.rolePermission.create({ data: { organization_id: f.org, role: 'DISPATCHER', action: 'read', subject: 'Invoice' } });
     clearPermissionCache(f.org);
     expect((await signedInAs(dispatcher).post(`/api/payments-needing-attention/${item.id}/resolve`)).status).toBe(403);
     expect((await api.get('/api/payments-needing-attention')).body.items[0].status).toBe('OPEN');
@@ -952,7 +949,7 @@ suite('payments needing attention (real database)', () => {
     });
     // Which invoices the rep can open is the Invoices scope switch (Attached: invoices on a job they are on
     // the crew of); the refund right itself is the Refund payments switch.
-    await setRoleSwitchValues({ organizationId: f.org, roleKey: 'SALES', values: { invoices_scope: 'attached', refund_payments: true, view_payments: true }, actorId: null, reason: 'manual' });
+    await setRoleSwitchValues({ organizationId: f.org, roleKey: 'SALES', values: { jobs_scope: 'attached', leads_scope: 'attached', refund_payments: true, view_payments: true }, actorId: null, reason: 'manual' });
     clearPermissionCache(f.org);
     // The rep's own invoice, voided, paid by card, on a job they are on the crew of.
     const ownInvoice = randomUUID();
@@ -1189,7 +1186,7 @@ suite('payments needing attention (real database)', () => {
 
       const rows = await db.timelineEvent.findMany({ where: { organization_id: f.org, entity_id: f.invoice, event_type: 'PAYMENT_SENT_BACK' } });
       expect(rows).toHaveLength(1);
-      expect(rows[0].description).toBe('$300.00 that could not be recorded on this invoice was sent back to the customer');
+      expect(rows[0].description).toBe('A payment that could not be recorded on this invoice was sent back to the customer');
     });
 
     it('a card payment that completed on a voided invoice (no payment row) leaves the same timeline entry', async () => {
@@ -1202,7 +1199,7 @@ suite('payments needing attention (real database)', () => {
       await api.post(`/api/payments-needing-attention/${item.id}/refund`).expect(200);
 
       const rows = await db.timelineEvent.findMany({ where: { organization_id: f.org, entity_id: f.invoice, event_type: 'PAYMENT_SENT_BACK' } });
-      expect(rows.map((r) => r.description)).toEqual(['$120.00 that could not be recorded on this invoice was sent back to the customer']);
+      expect(rows.map((r) => r.description)).toEqual(['A payment that could not be recorded on this invoice was sent back to the customer']);
     });
   });
 });

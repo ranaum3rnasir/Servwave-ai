@@ -2,6 +2,7 @@ import { prisma } from '../prisma';
 import { logger } from '../logger';
 import { abilityForUser, scopeWhereForUser, type PermissionUser } from '../permissions/enforce';
 import type { AppAbility } from '../permissions/defineAbility';
+import { isSuperUser } from '../permissions/effectiveRole';
 import { MATCH_NOTHING, type ScopeResource } from '../permissions/scopeWhereFor';
 import { resolveSwitchesForPeople } from '../permissions/switches/store';
 import type { ResolvedSwitches } from '../permissions/switches/cache';
@@ -9,6 +10,11 @@ import { readersWithEntityAccess } from '../tasks/entityAccessCohort';
 import {
   callReadWhere,
   emailReadWhere,
+  emailsInSectionWhere,
+  narrowedTo,
+  selectionNarrowing,
+  type EmailSection,
+  type MailboxSelection,
   textReadWhere,
   isFollowingRecordType,
   scopeValueOf,
@@ -32,8 +38,8 @@ import { rowMatchesWhere, type Row } from './rowMatchesWhere';
  * `permission-communication-conversation-readers-db.test.ts` holds this and the routes equal over a wide fixture set.
  *
  * A person reads a conversation when they may use the section (Access Communication, which the alert's destination
- * needs) and the route's own gate (View communication) and the single-read rule says yes. The page switches (Show Phone,
- * Show Text, Show Email) hide a menu entry and decide nothing here.
+ * needs) and the route's own gate (View communication) and the single-read rule says yes. Show Phone and Show Text hide a menu
+ * entry and decide nothing here; Show Email does decide for an email conversation, because its mail routes refuse a person with it off.
  *
  * Cost, however many people are asked: one read of the conversation, one of the people's company-number links (a call or
  * a text), at most one of the Organization default number, and, for the people the conversation's own ties do not settle,
@@ -58,6 +64,8 @@ interface Reader {
   ability: AppAbility;
   scope: CommunicationScopeValue;
   seeMainLineWhenNoNumber: boolean;
+  /** The people whose own conversations the section lists for this reader (`peopleForScope`): themself, or their department. */
+  people: string[];
 }
 
 /**
@@ -67,10 +75,19 @@ interface Reader {
  * conversation (the message read rule, which holds the message back from a person who reaches neither its number, its sender
  * nor its record). A text alert quotes one message, so it asks this: a person is told about a text only if they read it. Without
  * it the question is the conversation's: at least one of its messages opens for the person.
+ *
+ * For an email conversation `messageId` asks the same of one email of it (M1, ticket 31: mail reach is per message, so a reply's
+ * bell goes only to people who open that reply, never to someone who opens another message of the conversation). A message that
+ * is not in the conversation is read by nobody. `wholeConversation` asks instead who reaches the conversation itself, by the
+ * section rule (a mailbox they hold, the main mailbox they read, the record it follows): the reach a held reply's item and its
+ * link need, which no single message of the conversation gives. Asked with both, a person must reach the conversation AND open
+ * that message: who a reply's bell can go to, since the bell opens the conversation in the Email list and then the reply.
+ *
+ * Who a customer's reply bell may go to, and where each one's bell links, is `emailBellLinks` below.
  */
 export async function readersOfConversation(
   people: PermissionUser[], kind: ConversationKind, id: string, organizationId: string,
-  opts: { messageId?: string | null } = {},
+  opts: { messageId?: string | null; wholeConversation?: boolean } = {},
 ): Promise<Set<string>> {
   // Nobody from another company reads this company's conversation, whoever the caller hands over.
   const ofCompany = people.filter((p) => p.organization_id === organizationId);
@@ -78,8 +95,28 @@ export async function readersOfConversation(
   switch (kind) {
     case 'call': return callReaders(ofCompany, id, organizationId);
     case 'text': return textReaders(ofCompany, id, organizationId, opts.messageId ?? null);
-    case 'email': return emailReaders(ofCompany, id, organizationId);
+    case 'email': return new Set((await emailReaders(ofCompany, id, organizationId, opts.messageId ?? null, opts.wholeConversation === true, null)).keys());
   }
+}
+
+/**
+ * Who, among `people`, may be told about the customer's reply `messageId` in the email conversation `id`, and the Email list each
+ * one's bell must open (M1, ticket 31; Ran 2026-10-28: an alert always links to a list where THAT recipient sees the
+ * conversation). The value is the `mailbox` the link carries: the conversation's own mailbox when that mailbox's list shows it to
+ * the person, else null for "My mailbox" when that list shows it, else (scope All, a conversation in no mailbox) 'all'. A person
+ * who opens the reply but whom no list shows the conversation is absent: they are told nothing.
+ *
+ * The lists are the Email page's own (communicationScope.ts): the section is built from the same inputs, and the selection is
+ * narrowed by `selectionNarrowing` itself, run in memory over this one conversation. So the main mailbox leaves the record's
+ * people out exactly as the page does, and "My mailbox" counts only the person's own assignment and authorship. `recordPeople`
+ * are the people of the record a record conversation follows (the job's or lead's, as the page's list for them has it).
+ */
+export async function emailBellLinks(
+  people: PermissionUser[], id: string, organizationId: string, opts: { messageId: string; recordPeople: readonly string[] },
+): Promise<Map<string, string | null>> {
+  const ofCompany = people.filter((p) => p.organization_id === organizationId);
+  if (ofCompany.length === 0) return new Map();
+  return emailReaders(ofCompany, id, organizationId, opts.messageId, true, { recordPeople: opts.recordPeople });
 }
 
 // ─── Who may use the section ────────────────────────────────────────────────────────────────
@@ -91,6 +128,7 @@ export async function readersOfConversation(
  */
 async function readersInSection(people: PermissionUser[]): Promise<Reader[]> {
   const values: Map<string, ResolvedSwitches> = await resolveSwitchesForPeople(people);
+  const teams = await teamsOf(people.filter((p) => scopeValueOf(values.get(p.id)?.communication_scope) === 'team'));
   const readers: Reader[] = [];
   for (const person of people) {
     try {
@@ -100,6 +138,7 @@ async function readersInSection(people: PermissionUser[]): Promise<Reader[]> {
       readers.push({
         person, ability, scope: scopeValueOf(own?.communication_scope),
         seeMainLineWhenNoNumber: own?.see_main_line_when_no_number === true,
+        people: scopeValueOf(own?.communication_scope) === 'team' ? teams.get(person.id) ?? [] : [person.id],
       });
     } catch (err) {
       logger.warn('[conversationReaders] permissions could not be worked out - leaving the person out', {
@@ -110,18 +149,40 @@ async function readersInSection(people: PermissionUser[]): Promise<Reader[]> {
   return readers;
 }
 
+/**
+ * The people of each Team reader's department, in two reads however many readers there are. The department is read from
+ * the database, not from the person handed in: a caller may hold a partial person, and a missing department must not read
+ * as "none" for someone who has one. A reader with no department has no people (P3).
+ */
+async function teamsOf(readers: PermissionUser[]): Promise<Map<string, string[]>> {
+  const teams = new Map<string, string[]>();
+  if (readers.length === 0) return teams;
+  const own = await prisma.user.findMany({ where: { id: { in: readers.map((r) => r.id) } }, select: { id: true, department_id: true } });
+  const departments = [...new Set(own.flatMap((u) => u.department_id ?? []))];
+  const members = departments.length > 0
+    ? await prisma.user.findMany({ where: { department_id: { in: departments } }, select: { id: true, department_id: true } })
+    : [];
+  for (const u of own) {
+    teams.set(u.id, u.department_id ? members.filter((m) => m.department_id === u.department_id).map((m) => m.id) : []);
+  }
+  return teams;
+}
+
 // ─── The inputs the rule reads ──────────────────────────────────────────────────────────────
 
-/** The company numbers each person is linked to, and the main line, read together for everyone under "Linked to me". */
+/** The company numbers each person is linked to, and the main line, read together for everyone under Attached. */
 async function numberInputsFor(readers: Reader[], organizationId: string) {
   const narrow = readers.filter((r) => r.scope !== 'all');
   const linked = new Map<string, string[]>();
   if (narrow.length === 0) return { linked, orgDefaultNumberId: null as string | null };
   const links = await prisma.userPhoneNumber.findMany({
-    where: { user_id: { in: narrow.map((r) => r.person.id) }, phone_number: { organization_id: organizationId } },
+    where: { user_id: { in: [...new Set(narrow.flatMap((r) => r.people))] }, phone_number: { organization_id: organizationId } },
     select: { user_id: true, phone_number_id: true },
   });
-  for (const link of links) linked.set(link.user_id, [...(linked.get(link.user_id) ?? []), link.phone_number_id]);
+  const byPerson = new Map<string, string[]>();
+  for (const link of links) byPerson.set(link.user_id, [...(byPerson.get(link.user_id) ?? []), link.phone_number_id]);
+  // A reader's numbers are those linked to any of their people.
+  for (const r of narrow) linked.set(r.person.id, [...new Set(r.people.flatMap((id) => byPerson.get(id) ?? []))]);
   // The main line is looked up only when the fallback could apply to someone: no linked number and the switch on.
   const needsMainLine = narrow.some((r) => (linked.get(r.person.id)?.length ?? 0) === 0 && r.seeMainLineWhenNoNumber);
   const orgDefault = needsMainLine
@@ -159,7 +220,7 @@ function reachOf(r: Reader, record: RecordRef | null, reaches: Reaches): RecordR
 
 function scopeInputs(r: Reader, reach: RecordReach, rest: Partial<CommunicationScopeInputs> = {}): CommunicationScopeInputs {
   return {
-    personId: r.person.id, scope: r.scope, linkedNumberIds: [], seeMainLineWhenNoNumber: false, orgDefaultNumberId: null,
+    personId: r.person.id, personIds: r.people, scope: r.scope, linkedNumberIds: [], seeMainLineWhenNoNumber: false, orgDefaultNumberId: null,
     mailboxIds: [], mainMailboxId: null, recordThreadIds: [], repliedMessageIds: [], reach, ...rest,
   };
 }
@@ -273,7 +334,7 @@ async function textReaders(people: PermissionUser[], id: string, organizationId:
     asked.some((m) => {
       const inputs = scopeInputs(r, reachOf(r, recordOfMessage(m), reaches), {
         ...numberRest(r, numbers),
-        repliedMessageIds: repliedTo === r.person.id ? [m.id] : [],
+        repliedMessageIds: repliedTo !== null && r.people.includes(repliedTo) ? [m.id] : [],
       });
       return rowMatchesWhere({ ...m, thread: threadRow }, textReadWhere(inputs));
     }),
@@ -282,20 +343,32 @@ async function textReaders(people: PermissionUser[], id: string, organizationId:
 
 // ─── An email conversation ──────────────────────────────────────────────────────────────────
 
-async function emailReaders(people: PermissionUser[], id: string, organizationId: string): Promise<Set<string>> {
+async function emailReaders(
+  people: PermissionUser[], id: string, organizationId: string, messageId: string | null, wholeConversation: boolean,
+  inEmailList: { recordPeople: readonly string[] } | null,
+): Promise<Map<string, string | null>> {
   // While the company's Email plan feature is off nobody reads a conversation (the routes answer with a filter that matches
   // nothing). One read of the company's plan columns, for the whole alert.
-  if (!(await orgEmailFeatureOn(prisma, organizationId))) return new Set();
+  if (!(await orgEmailFeatureOn(prisma, organizationId))) return new Map();
   const thread = await prisma.emailThread.findFirst({
     where: { id, organization_id: organizationId },
     select: {
       id: true, mailbox_id: true, origin: true, record_type: true, record_id: true, assigned_to_user_id: true,
-      mailbox: { select: { kind: true, holder_user_id: true, status: true } },
-      emails: { select: { id: true, thread_id: true, job_id: true, lead_id: true, customer_id: true, vendor_id: true, sent_by_user_id: true } },
+      mailbox: { select: { kind: true, holder_user_id: true, user_id: true, status: true } },
+      emails: {
+        select: {
+          id: true, thread_id: true, job_id: true, lead_id: true, customer_id: true, vendor_id: true, sent_by_user_id: true,
+          direction: true, inbound_match: true,
+        },
+      },
     },
   });
-  if (!thread) return new Set();
-  const readers = await readersInSection(people);
+  if (!thread) return new Map();
+  // M7 (ticket 36): the bell opens the conversation on the Email page, which a person whose Show Email is off cannot use (the
+  // mail routes refuse them), so no lane tells them: if no list shows them the conversation, they get no alert. The Admin flag
+  // opens every page whatever the switches, so an Admin's ability keeps the check true. This only leaves the person out of who
+  // may be told; the reply's fallback (the record's people, then the linked readers, then the Admins) still runs for the rest.
+  const readers = (await readersInSection(people)).filter((r) => r.ability.can('show_email', 'Communication'));
   const mainReaders = await mainMailboxReadersOf(readers, thread, organizationId);
 
   const threadRow = {
@@ -307,18 +380,82 @@ async function emailReaders(people: PermissionUser[], id: string, organizationId
   const recordOfEmail = (m: (typeof thread.emails)[number]) => recordOf(m);
   const records = () => [...(followed?.records ?? []), ...thread.emails.flatMap((m) => recordOfEmail(m) ?? [])];
 
-  return askInTwoSteps(readers, records, (r, reaches) => {
-    const held = thread.mailbox_id && thread.mailbox?.holder_user_id === r.person.id && thread.mailbox.status !== 'merged' ? thread.mailbox_id : null;
-    const followsReachedRecord = followed !== null && followed.records.length > 0 && followed.records.every((ref) => reaches(r.person.id, ref));
-    return thread.emails.some((m) => {
-      const inputs = scopeInputs(r, reachOf(r, recordOfEmail(m), reaches), {
-        mailboxIds: held ? [held] : [],
-        mainMailboxId: mainReaders.has(r.person.id) ? thread.mailbox_id : null,
-        recordThreadIds: followsReachedRecord ? [thread.id] : [],
-      });
-      return rowMatchesWhere({ ...m, thread: threadRow }, emailReadWhere(inputs));
+  // The Email page's lists for this conversation (communicationScope.ts), built for one reader: their section, then each list
+  // the bell could open, narrowed by the page's own `selectionNarrowing`. The candidates for the list's record branches are the
+  // page's too: a record conversation is in the section when its record is reached AND it sits in a mailbox they hold, is
+  // assigned to them or they wrote in it (`recordThreadsTheyReach`, 'theirs'), or they are one of the record's people and the
+  // customer has replied (`recordPeopleThreadsTheyReach`).
+  const customerReplied = thread.emails.some((m) => m.direction === 'in' && (m.inbound_match === null || m.inbound_match === 'MATCHED'));
+  const PEOPLE_RECORD_TYPES = ['job', 'lead', 'estimate', 'invoice'];
+  const listOf = (r: Reader, reaches: Reaches, recordPeople: readonly string[]): string | null | undefined => {
+    const box = thread.mailbox_id;
+    // The mailboxes a person holds are theirs and, under Team, their department's (`heldMailboxesFor`); a merged one nobody holds.
+    const holders = [r.person.id, ...r.people];
+    const holds = box !== null && thread.mailbox?.holder_user_id != null && holders.includes(thread.mailbox.holder_user_id) && thread.mailbox.status !== 'merged';
+    const own = holds && thread.mailbox?.user_id === r.person.id;
+    const readsMain = box !== null && thread.mailbox?.kind === 'main' && mainReaders.has(r.person.id);
+    const reached = followed !== null && followed.records.length > 0 && followed.records.every((ref) => reaches(r.person.id, ref));
+    const theirs = holds
+      || (thread.assigned_to_user_id !== null && r.people.includes(thread.assigned_to_user_id))
+      || thread.emails.some((m) => m.sent_by_user_id !== null && r.people.includes(m.sent_by_user_id));
+    const asPerson = reached && customerReplied && PEOPLE_RECORD_TYPES.includes(thread.record_type ?? '') && recordPeople.some((p) => r.people.includes(p));
+    const inputs = scopeInputs(r, reachOf(r, null, reaches), {
+      mailboxIds: holds ? [box!] : [],
+      mainMailboxId: readsMain ? box : null,
+      recordThreadIds: reached && theirs ? [thread.id] : [],
+      recordPeopleThreadIds: asPerson ? [thread.id] : [],
     });
+    const section: EmailSection = {
+      scope: r.scope, personId: r.person.id, where: emailsInSectionWhere(inputs),
+      mailboxes: { held: holds ? [box!] : [], main: readsMain ? box : null, own: own ? box : null, handedOver: [] },
+      inputs,
+    };
+    const row = { thread: threadRow };
+    // The conversation's own mailbox first (a person who sees it there keeps that link), then "My mailbox". A mailbox the person
+    // may not open reads as "My mailbox" on the page (`resolveMailboxSelection`), so it is no list of its own.
+    const lists: { selection: MailboxSelection; link: string | null }[] = [
+      ...(holds || readsMain ? [{ selection: { kind: 'mailbox' as const, id: box! }, link: box }] : []),
+      { selection: { kind: 'mine' as const }, link: null },
+    ];
+    for (const { selection, link } of lists) {
+      if (rowMatchesWhere(row, narrowedTo(section.where, selectionNarrowing(section, selection)))) return link;
+    }
+    return undefined;
+  };
+
+  // One message of it (a reply's bell), or every message (the conversation opens when any one does).
+  const asked = messageId ? thread.emails.filter((m) => m.id === messageId) : thread.emails;
+  const links = new Map<string, string | null>();
+  const told = await askInTwoSteps(readers, records, (r, reaches) => {
+    // The mailboxes a person holds are their own and, under Team, their department's: the same holders `listOf` and the Email
+    // page use (`heldMailboxesFor` always adds the person), so a Team reader with no department still holds their own (CR-6).
+    const holders = [r.person.id, ...r.people];
+    const held = thread.mailbox_id && thread.mailbox?.holder_user_id && holders.includes(thread.mailbox.holder_user_id) && thread.mailbox.status !== 'merged' ? thread.mailbox_id : null;
+    const followsReachedRecord = followed !== null && followed.records.length > 0 && followed.records.every((ref) => reaches(r.person.id, ref));
+    const sectionInputs = (reach: RecordReach) => scopeInputs(r, reach, {
+      mailboxIds: held ? [held] : [],
+      mainMailboxId: mainReaders.has(r.person.id) ? thread.mailbox_id : null,
+      recordThreadIds: followsReachedRecord ? [thread.id] : [],
+    });
+    const opens = () => asked.some((m) => rowMatchesWhere({ ...m, thread: threadRow }, emailReadWhere(sectionInputs(reachOf(r, recordOfEmail(m), reaches)))));
+    if (inEmailList) {
+      // A bell: the person opens the reply AND one of the Email page's lists shows them the conversation.
+      const link = listOf(r, reaches, inEmailList.recordPeople);
+      if (link === undefined || !opens()) return false;
+      links.set(r.person.id, link);
+      return true;
+    }
+    if (wholeConversation) {
+      // The conversation itself, as the section rule reaches it: no message's own tie counts.
+      const reachesIt = rowMatchesWhere({ thread: threadRow }, emailsInSectionWhere(sectionInputs(reachOf(r, null, reaches))));
+      // Asked with a message too, both must hold: the person reaches the conversation AND opens that message.
+      if (!messageId || !reachesIt) return reachesIt;
+    }
+    return opens();
   });
+  // A person on All (asked no question: they read everything) opens the conversation's own mailbox, or every mailbox.
+  for (const id of told) if (!links.has(id)) links.set(id, inEmailList ? thread.mailbox_id ?? 'all' : null);
+  return links;
 }
 
 /**
@@ -345,8 +482,9 @@ function recordFollowedBy(thread: {
 }
 
 /**
- * Who reads the company's main mailbox, among the people under "Linked to me", when the conversation sits in it: a person
- * linked to it, or, while nobody ACTIVE is, a holder of Manage roles and permissions (the same rule as the Email page).
+ * Who reads the company's main mailbox, among the people under Attached, when the conversation sits in it: a person
+ * linked to it, or, while nobody ACTIVE is, an Admin (the same rule as the Email page; it was the holders of Manage roles and
+ * permissions until that switch retired, AL-18).
  * One read of the mailbox's readers; nothing at all for a conversation in any other mailbox.
  */
 async function mainMailboxReadersOf(
@@ -363,7 +501,7 @@ async function mainMailboxReadersOf(
   const linked = new Set(rows.map((row) => row.user_id));
   const anyoneActive = rows.some((row) => row.user.is_active);
   for (const r of narrow) {
-    if (linked.has(r.person.id) || (!anyoneActive && r.ability.can('manage_roles', 'Role'))) out.add(r.person.id);
+    if (linked.has(r.person.id) || (!anyoneActive && isSuperUser(r.person))) out.add(r.person.id);
   }
   return out;
 }

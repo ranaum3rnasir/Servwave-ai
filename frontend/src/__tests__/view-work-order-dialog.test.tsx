@@ -14,9 +14,10 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
+import { renderWithProviders, seesPrices } from './helpers';
 import { ViewWorkOrderDialog } from '@/components/jobs/ViewWorkOrderDialog';
 import { printedRowAmounts, printedTotal, sectionHeadings, sumAmounts } from './estimate-document-dom';
+import { buildAbility } from '@/lib/ability';
 
 const LINE_ITEMS = [
   {
@@ -72,6 +73,8 @@ function openDialog(over: Record<string, unknown> = {}) {
       customerName="Jane Doe"
       companyName="Doe Holdings"
     />,
+    // The figures on these pages are the ones a person who may see prices is shown (P11).
+    { ability: seesPrices },
   );
 }
 
@@ -132,6 +135,29 @@ describe('the Work Order a dispatcher opens from a job', () => {
     // The narrative is prose, not a priced row: it moves neither the rows nor the subtotal.
     expect(printedRowAmounts()).toEqual([400, 405]);
     expect(printedTotal('Subtotal')).toBe(805);
+  });
+
+  // Pre-PR review, parked item (d), under "no false $0.00" (ruling 7 and the bundles ruling): the answer a person without See
+  // prices gets has no price in it, so the Work Order shows the work and no figure at all, never a $0.00 for each line.
+  it('shows a person without See prices the work, with no figure and no $0.00 anywhere', async () => {
+    const stripped = {
+      ...ESTIMATE,
+      line_items: LINE_ITEMS.map(({ unit_price: _u, line_total: _l, discount_amount: _d, discount_value: _v, ...rest }) => rest),
+    } as Record<string, unknown>;
+    for (const k of ['subtotal', 'tax_amount', 'total_amount', 'discount_amount', 'discount_value']) delete stripped[k];
+    vi.mocked(api.get).mockResolvedValue({ data: { estimate: stripped } });
+    const priceBlind = buildAbility([{ action: 'manage', subject: 'all' }, { action: 'read', subject: 'Prices', inverted: true }]);
+    renderWithProviders(
+      <ViewWorkOrderDialog open onOpenChange={() => {}} estimateId="est-1" customerName="Jane Doe" />,
+      { ability: priceBlind },
+    );
+
+    expect(await screen.findByText('Commercial keypad')).toBeInTheDocument();
+    expect(screen.getByText('Install labour')).toBeInTheDocument();
+    const dialog = screen.getByRole('dialog');
+    expect(dialog.textContent).not.toMatch(/\$/);
+    expect(screen.queryByTestId('estimate-document-total')).toBeNull();
+    expect(screen.queryByText(/Subtotal/)).toBeNull();
   });
 
   it('fetches the work order only while it is open', async () => {

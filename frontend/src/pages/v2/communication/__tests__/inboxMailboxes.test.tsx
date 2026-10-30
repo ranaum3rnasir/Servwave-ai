@@ -67,7 +67,7 @@ const renderPage = (entry = '/communication/inbox') =>
 
 const empty = { selected_label: null, selected_unread: 0, main: null, people: null } as const;
 const NARROW: MailboxList = {
-  ...empty, scope: 'linked_to_me', selected: 'mine', total_unread: 5, mine: { id: 'box-mine', unread: 3 },
+  ...empty, scope: 'attached', selected: 'mine', total_unread: 5, mine: { id: 'box-mine', unread: 3 },
   held: [{ id: 'box-handed', name: 'Jane Smith', unread: 2 }],
 };
 
@@ -91,7 +91,7 @@ beforeEach(() => {
   answer = () => NARROW;
 });
 
-describe('the Email page: the mailbox list for a person on "Linked to me"', () => {
+describe('the Email page: the mailbox list for a person on "Attached"', () => {
   it('lists "My mailbox" and each mailbox handed to the person, with their unread counts, above the folders', async () => {
     renderPage();
     const mailboxes = await screen.findByRole('list', { name: 'Mailboxes' });
@@ -105,17 +105,17 @@ describe('the Email page: the mailbox list for a person on "Linked to me"', () =
     expect(mailboxes.compareDocumentPosition(folders) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it('names the scope "Linked to me", as the switch catalog spells it', async () => {
+  it('names the scope "Attached", as the switch catalog spells it', async () => {
     renderPage();
-    expect(await screen.findByText('Communication scope: Linked to me')).toBeInTheDocument();
+    expect(await screen.findByText('Communication scope: Attached')).toBeInTheDocument();
   });
 
   it('spells the scope the way the switch catalog does', async () => {
     const catalog = readFileSync(join(__dirname, '../../../../../../backend/src/lib/permissions/switches/catalog.ts'), 'utf8');
     const entry = catalog.slice(catalog.indexOf("key: 'communication_scope'"));
-    expect(entry.slice(0, entry.indexOf('presets:'))).toContain("'Linked to me (");
+    expect(entry.slice(0, entry.indexOf('presets:'))).toContain("'Attached (");
     renderPage();
-    expect(await screen.findByText(/^Communication scope: Linked to me$/)).toBeInTheDocument();
+    expect(await screen.findByText(/^Communication scope: Attached$/)).toBeInTheDocument();
   });
 
   it('shows the person\'s own mailbox by default, and asks the server for it', async () => {
@@ -232,7 +232,7 @@ describe('the Email page: the mailbox list names no vendor', () => {
 // S10.8: the main mailbox in the rail is for the people who READ it, whatever their scope. The server says who (a person the
 // company linked to it, or a holder of Manage roles and permissions while nobody is linked, or anyone on All) by sending
 // `main`; a person who does not read it gets null, sees no entry and falls back to "My mailbox".
-describe('the Email page: the main mailbox for a person on "Linked to me" who reads it', () => {
+describe('the Email page: the main mailbox for a person on "Attached" who reads it', () => {
   it('lists "Main mailbox" with its unread count in the rail', async () => {
     answer = () => ({ ...NARROW, main: { id: 'box-main', unread: 4 }, total_unread: 9 });
     renderPage();

@@ -41,7 +41,7 @@ const personSet = (over: Record<string, unknown> = {}) => ({
 
 const manager = {
   ability: buildAbility([{ action: 'manage_roles', subject: 'Role' }, { action: 'read', subject: 'Role' }, { action: 'read', subject: 'User' }]),
-  switches: { manage_roles_and_permissions: true, show_users_teams_page: true },
+  switches: { manage_roles_and_permissions: true, view_users: true },
 };
 
 let LOGS: Record<string, ReturnType<typeof logServer>> = {};

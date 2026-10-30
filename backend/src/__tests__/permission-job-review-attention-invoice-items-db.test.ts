@@ -3,7 +3,7 @@
    review panel would show them.
 
    The panel's reader leaves out an invoice item (an invoice line, an invoice discount, a file on an invoice) for a person who
-   cannot open that invoice: View invoices off, or Invoices scope Attached and not on it (the creator rule lets a creator in).
+   cannot open that invoice: View invoices off, or Invoices scope Attached and not on it (whoever made the invoice, P7).
    The alert lists the same items, so each person's copy lists only the items the panel would list for THEM. An item about an
    invoice the person cannot open is left out of their copy, and when that leaves nothing to list they get no attention alert
    for the landing (the panel would show them nothing unusual either). The PRD asks for no bare "something happened" line
@@ -64,15 +64,15 @@ const REASON = {
 
 /** Opens jobs, their files and customers, and every invoice. */
 const OPENING = {
-  view_jobs: true, jobs_scope: 'all', create_jobs: true, view_attachments: true,
-  view_invoices: true, invoices_scope: 'all', view_customers: true,
+  view_jobs: true, jobs_scope: 'all', edit_jobs: true, create_jobs: true,
+  view_invoices: true, leads_scope: 'all', view_customers: true,
 };
 /** Opens jobs and nothing of invoices. */
-const JOBS_ONLY = { view_jobs: true, jobs_scope: 'all', view_attachments: true, view_customers: true };
+const JOBS_ONLY = { view_jobs: true, jobs_scope: 'all', view_customers: true };
 /** Every change below, and the key that opens a locked job. */
 const EVERY_CHANGE = {
   ...OPENING, edit_jobs: true, edit_job_line_items: true, apply_discounts: true, edit_invoices: true,
-  edit_invoice_line_items: true, delete_attachments: true, complete_jobs: true, change_locked_jobs: true,
+  edit_invoice_line_items: true, complete_jobs: true, change_locked_jobs: true,
 };
 
 type Res = { status: number; body: Record<string, any> };
@@ -103,7 +103,7 @@ suite('the Office review attention alert and invoices the reader cannot open (re
   async function personWith(org: string, values: Record<string, SwitchValue>, base: Role = 'DISPATCHER'): Promise<Who> {
     const key = `invoice-items-role-${++sequence}`;
     const role = await fx.addCustomRole(org, key, base);
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...values }, actorId: null, reason: 'manual' });
+    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, see_prices: true, ...values }, actorId: null, reason: 'manual' });
     const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
     return Object.assign(person, { api: () => fx.signedInAs(person) });
   }
@@ -114,7 +114,7 @@ suite('the Office review attention alert and invoices the reader cannot open (re
   /**
    * A company whose people are told about a job, each able to open it: the reviewer (Office review, every invoice), crew with
    * View invoices off, a copy holder whose Invoices scope is Attached and who is not on the job, and crew who made the invoice
-   * with View invoices off (the creator rule lets them in). The job carries one invoice with a line "Service" and a file.
+   * with View invoices off (who made it opens nothing, P7). The job carries one invoice with a line "Service" and a file.
    */
   async function world(status: JobStatus) {
     const { org, customer, admin } = await fx.newOrg();
@@ -126,7 +126,7 @@ suite('the Office review attention alert and invoices the reader cannot open (re
     const reviewer = await personWith(org, { ...OPENING, office_review: true });
     const crew = await personWith(org, JOBS_ONLY);
     const creator = await personWith(org, JOBS_ONLY);
-    const attached = await personWith(org, { ...OPENING, invoices_scope: 'attached', alert_every_job: true });
+    const attached = await personWith(org, { ...OPENING, view_invoices: false, alert_every_job: true });
     const job = await fx.addJob(org, customer, { status, pastVisit: true, crew: [crew.id, creator.id] });
     const finishedAt = new Date(Date.now() - HOUR);
     const line = await db.jobLineItem.create({
@@ -198,7 +198,7 @@ suite('the Office review attention alert and invoices the reader cannot open (re
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       await reviewAttentionSettled();
 
-      for (const opener of [w.reviewer, w.creator]) {
+      for (const opener of [w.reviewer]) {
         const alerts = await attentionFor(w.job.id, opener);
         expect(alerts, `opener ${opener.id}`).toHaveLength(1);
         expect(linesOf(alerts)).toEqual([
@@ -206,7 +206,7 @@ suite('the Office review attention alert and invoices the reader cannot open (re
           `${REASON.lowered}: Invoice ${w.invoiceNumber} line: Service`,
         ]);
       }
-      for (const other of [w.crew, w.attached]) {
+      for (const other of [w.crew, w.attached, w.creator]) {
         const alerts = await attentionFor(w.job.id, other);
         expect(alerts, `non-opener ${other.id}`).toHaveLength(1);
         expect(linesOf(alerts)).toEqual([`${REASON.lowered}: Line: Door`]);
@@ -223,10 +223,10 @@ suite('the Office review attention alert and invoices the reader cannot open (re
       expect(await attentionFor(w.job.id, w.crew)).toEqual([]);
       expect(await attentionFor(w.job.id, w.attached)).toEqual([]);
       expect(linesOf(await attentionFor(w.job.id, w.reviewer))).toEqual([`${REASON.lowered}: Invoice ${w.invoiceNumber} line: Service`]);
-      expect(linesOf(await attentionFor(w.job.id, w.creator))).toEqual([`${REASON.lowered}: Invoice ${w.invoiceNumber} line: Service`]);
+      expect(await attentionFor(w.job.id, w.creator)).toEqual([]);
       // Nothing generic went out in its place: nobody got an alert that is not one of the above.
       const everyone = await db.notification.findMany({ where: { object_id: w.job.id, verb: 'job.review_attention' }, include: { recipients: true } });
-      expect(everyone.flatMap((n) => n.recipients.map((r) => r.recipient_id)).sort()).toEqual([w.reviewer.id, w.creator.id].sort());
+      expect(everyone.flatMap((n) => n.recipients.map((r) => r.recipient_id)).sort()).toEqual([w.reviewer.id]);
     });
   });
 
@@ -240,12 +240,12 @@ suite('the Office review attention alert and invoices the reader cannot open (re
       expect(await statusOf(w.job.id)).toBe('OFFICE_REVIEW');
       await reviewAttentionSettled();
 
-      for (const opener of [w.reviewer, w.creator]) {
+      for (const opener of [w.reviewer]) {
         const alerts = await attentionFor(w.job.id, opener);
         expect(alerts, `opener ${opener.id}`).toHaveLength(1);
         expect(linesOf(alerts)).toEqual([`${REASON.discount}: Invoice ${w.invoiceNumber} line: Service`]);
       }
-      for (const other of [w.crew, w.attached]) {
+      for (const other of [w.crew, w.attached, w.creator]) {
         const alerts = await attentionFor(w.job.id, other);
         expect(alerts, `non-opener ${other.id}`).toEqual([]);
       }
@@ -253,13 +253,13 @@ suite('the Office review attention alert and invoices the reader cannot open (re
       // The job's History: the move back is there for everyone who opens the job, the invoice item only for those who open the invoice.
       const history = async (who: Who) => (await (await who.api()).get(`/api/jobs/${w.job.id}/timeline`)).body.events as Array<Record<string, any>>;
       const movedBack = (events: Array<Record<string, any>>) => events.filter((e) => e.event_type === 'JOB_MOVED_BACK');
-      for (const other of [w.crew, w.attached]) {
+      for (const other of [w.crew, w.attached, w.creator]) {
         const events = await history(other);
         expect(movedBack(events), `non-opener ${other.id}`).toHaveLength(1);
         expectNoInvoiceIn(events, w);
         expect(movedBack(events)[0]!.description).toMatch(/moved back from Ready to close to Office review/i);
       }
-      for (const opener of [w.reviewer, w.creator]) {
+      for (const opener of [w.reviewer]) {
         const [entry] = movedBack(await history(opener));
         expect(entry!.description, `opener ${opener.id}`).toContain(`${REASON.discount}: Invoice ${w.invoiceNumber} line: Service`);
       }
@@ -280,13 +280,13 @@ suite('the Office review attention alert and invoices the reader cannot open (re
         return answer.body.data.recent_activity as Array<Record<string, any>>;
       };
       const movedBack = (events: Array<Record<string, any>>) => events.filter((e) => e.event_type === 'JOB_MOVED_BACK');
-      for (const other of [w.crew, w.attached]) {
+      for (const other of [w.crew, w.attached, w.creator]) {
         const events = await feed(other);
         expect(movedBack(events), `non-opener ${other.id}`).toHaveLength(1);
         expectNoInvoiceIn(events, w);
         expect(movedBack(events)[0]!.description).toMatch(/moved back from Ready to close to Office review/i);
       }
-      for (const opener of [w.reviewer, w.creator]) {
+      for (const opener of [w.reviewer]) {
         const [entry] = movedBack(await feed(opener));
         expect(entry!.description, `opener ${opener.id}`).toContain(`${REASON.discount}: Invoice ${w.invoiceNumber} line: Service`);
       }
@@ -322,12 +322,12 @@ suite('the Office review attention alert and invoices the reader cannot open (re
       expect(await statusOf(w.job.id)).toBe('DONE');
       await reviewAttentionSettled();
 
-      for (const opener of [w.reviewer, w.creator]) {
+      for (const opener of [w.reviewer]) {
         const alerts = await attentionFor(w.job.id, opener);
         expect(alerts, `opener ${opener.id}`).toHaveLength(1);
         expect(linesOf(alerts)).toEqual([`${REASON.file}: Invoice ${w.invoiceNumber} file: Receipt.pdf`]);
       }
-      for (const other of [w.crew, w.attached]) {
+      for (const other of [w.crew, w.attached, w.creator]) {
         expect(await attentionFor(w.job.id, other), `non-opener ${other.id}`).toEqual([]);
       }
     });

@@ -75,9 +75,11 @@ interface Setup {
   actions?: string[];
   job?: Record<string, unknown>;
   can?: Array<{ action: string; subject: string }>;
+  /** False for a person without See prices (default true). */
+  prices?: boolean;
 }
 
-function mountWith({ financials, actions = [], job = {}, can = [] }: Setup) {
+function mountWith({ financials, actions = [], job = {}, can = [], prices = true }: Setup) {
   vi.mocked(useAuthStore).mockImplementation((selector: (s: never) => unknown) =>
     selector({
       // A role name the page must not read: the checks below follow the ability and the server's answers.
@@ -97,7 +99,8 @@ function mountWith({ financials, actions = [], job = {}, can = [] }: Setup) {
     return { data: {} };
   });
   return renderWithProviders(<JobDetailPage />, {
-    ability: buildAbility([{ action: 'read', subject: 'Job' }, ...can] as never),
+    // Prices are held unless the case says otherwise (P11): the balance block is for a person who sees them.
+    ability: buildAbility([{ action: 'read', subject: 'Job' }, ...(prices ? [{ action: 'read', subject: 'Prices' }] : []), ...can] as never),
     initialEntries: [`/jobs/${JOB_ID}`],
   });
 }
@@ -256,5 +259,23 @@ describe('job page - Delete job', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Actions' }));
     const menu = await screen.findByRole('menu');
     expect(within(menu).getByRole('menuitem', { name: 'Delete' })).toBeInTheDocument();
+  });
+});
+
+describe('job page - a person without See prices', () => {
+  it('sees no balance, contract, invoice total or Payments tab, and no figure at all where they would be', async () => {
+    // The server leaves every price out of what it sends this person, so the answers below carry none.
+    mountWith({
+      prices: false,
+      can: [{ action: 'read', subject: 'Invoice' }],
+      financials: { final_invoice: null, invoices: [{ id: 'inv-mine', invoice_number: 'I-MINE', status: 'PARTIAL', kind: 'STANDARD' }], payments: [] },
+      job: { invoices: [{ id: 'inv-mine', invoice_number: 'I-MINE', status: 'PARTIAL', kind: 'STANDARD' }] },
+    });
+
+    expect(await screen.findByRole('heading', { name: /J00026/ })).toBeInTheDocument();
+    expect(screen.queryByText('Balance due')).not.toBeInTheDocument();
+    expect(screen.queryByText('No contract yet')).not.toBeInTheDocument();
+    expect(screen.queryByRole('tab', { name: 'Payments' })).not.toBeInTheDocument();
+    expect(document.body.textContent).not.toMatch(/\$|NaN/);
   });
 });

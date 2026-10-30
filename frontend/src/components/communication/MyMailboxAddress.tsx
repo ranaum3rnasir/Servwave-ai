@@ -3,6 +3,7 @@ import { Check, Copy, Mail } from 'lucide-react';
 
 import { useFeature } from '@/lib/entitlements';
 import { useMyMailbox } from '@/lib/api/communication';
+import { useShowEmail } from '@/lib/api/mySwitches';
 
 import { Button } from '@/ui-kit/components/ui/button';
 import { cn } from '@/ui-kit/lib/utils';
@@ -21,9 +22,13 @@ export const ADDRESS_NEEDED_MESSAGE =
  */
 export function MyMailboxAddress({ variant, compact = false }: { variant: 'banner' | 'field'; compact?: boolean }) {
   const hasEmail = useFeature('email');
-  const { data } = useMyMailbox();
+  // M7: the server refuses the address read to a person whose Show Email is off, so their profile shows no address and does
+  // not ask for it. (The banner is the Email page's own, which only a person with the switch on can open.)
+  const showEmail = useShowEmail();
+  const allowed = variant === 'banner' || showEmail;
+  const { data } = useMyMailbox(allowed);
   const mailbox = data?.mailbox;
-  if (!hasEmail || !mailbox) return null;
+  if (!hasEmail || !allowed || !mailbox) return null;
 
   const label = variant === 'banner' ? 'Your email address' : 'Company email address';
 

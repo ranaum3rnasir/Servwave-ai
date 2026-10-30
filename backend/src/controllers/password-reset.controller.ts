@@ -6,6 +6,7 @@ import { logger } from '../lib/logger';
 import { PASSWORD_UPDATE_FAILED_MESSAGE, mapPasswordUpdateError } from '../lib/auth-provider-errors';
 import { prisma } from '../lib/prisma';
 import { tenantWhere } from '../lib/tenant';
+import { refuseUnlessOwnerFor } from '../lib/users/owner';
 import { emit } from '../services/notifications/notificationService';
 import {
   FORGOT_RESPONSE_DELAY_MS,
@@ -199,12 +200,14 @@ export async function sendUserPasswordReset(req: Request, res: Response) {
   try {
     const target = await prisma.user.findFirst({
       where: { id: String(req.params.id), ...tenantWhere(req) },
-      select: { id: true, email: true, first_name: true, organization_id: true, is_active: true, has_login: true },
+      select: { id: true, email: true, first_name: true, organization_id: true, is_active: true, has_login: true, is_admin: true },
     });
     if (!target) {
       res.status(404).json({ error: 'User not found' });
       return;
     }
+    // To an Admin, a reset link is the Owner's alone to send (ticket 26); to anyone else, any Admin's (the route's gate).
+    if (await refuseUnlessOwnerFor(req, res, target)) return;
     if (!target.is_active) {
       res.status(400).json({ error: ADMIN_RESET_INACTIVE_MESSAGE, code: 'user_inactive' });
       return;

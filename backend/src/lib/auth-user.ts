@@ -11,6 +11,8 @@ export interface AppUser {
   // SRVW-138: the BASE role. Custom-role users keep a real Role here and inherit its
   // code-level behaviour; only their GRANTS come from the custom role.
   role: Role;
+  // Roles & Permissions P15: the Admin flag. Selected with the role, always - see effectiveRole.isSuperUser.
+  is_admin: boolean;
   custom_role_id?: string | null;
   // MUST be selected whenever custom_role_id is: grantRoleKey throws without it rather
   // than falling back to the base role's (possibly wider) grant set.
@@ -27,6 +29,10 @@ export interface AppUser {
   // round trip — the precedent org_is_demo set.
   org_plan: string;
   org_features: string[];
+  // The company's Owner (AL-16), for the sign-in payload only: who the app shows as Owner. Read fresh at each sign-in and
+  // deliberately NOT carried into the cached session (middleware/authenticate.ts): every Owner check reads the database
+  // (lib/users/owner.ts). Null when the company has none.
+  org_owner_user_id: string | null;
   department_id?: string | null;
   location_id?: string | null;
   phone?: string | null;
@@ -39,6 +45,7 @@ const SELECT = {
   first_name: true,
   last_name: true,
   role: true,
+  is_admin: true,
   custom_role_id: true,
   // Selected together with custom_role_id, always - see AppUser.custom_role.
   custom_role: { select: { key: true } },
@@ -50,16 +57,17 @@ const SELECT = {
   phone: true,
   phone_ext: true,
   organization: {
-    select: { is_demo: true, plan: true, trial_ends_at: true, feature_overrides: true },
+    select: { is_demo: true, plan: true, trial_ends_at: true, feature_overrides: true, owner_user_id: true },
   },
 } as const;
 
-type UserRow = Omit<AppUser, 'org_is_demo' | 'org_is_spider_pilot' | 'org_plan' | 'org_features'> & {
+type UserRow = Omit<AppUser, 'org_is_demo' | 'org_is_spider_pilot' | 'org_plan' | 'org_features' | 'org_owner_user_id'> & {
   organization: {
     is_demo: boolean;
     plan: string;
     trial_ends_at: Date | null;
     feature_overrides: unknown;
+    owner_user_id: string | null;
   } | null;
 };
 
@@ -79,6 +87,7 @@ function toAppUser(row: UserRow): AppUser {
     org_is_spider_pilot: organization ? isSpiderPilotOrg(rest.organization_id) : false,
     org_plan: effectivePlan(source),
     org_features: orgFeatures(source),
+    org_owner_user_id: organization?.owner_user_id ?? null,
   };
 }
 
@@ -114,4 +123,36 @@ export async function resolveAppUser(supaUser: {
   }
 
   return null;
+}
+
+/**
+ * Why this person may not sign in or hold a session, or null when they may (security finding H2). THE one sign-in check:
+ * the authenticate middleware runs it on every session before any route, and every door that mints a session (password,
+ * two-step code, refresh, Google, an invite link, a password reset) runs it before answering. A deactivated person is out,
+ * and so is a person whose sign-in an Admin revoked: Revoke turns `has_login` off, and the login it removes at the identity
+ * provider is a second lock, never the only one.
+ *
+ * `has_login` is NOT NULL in the database (and every reader here selects it), so `=== false` and `!has_login` agree on every
+ * real row; the strict form keeps hand-built test users that omit the field signed in, as they always were.
+ */
+export type SignInRefusal = 'deactivated' | 'no_login';
+export function signInRefusal(user: { is_active: boolean; has_login?: boolean }): SignInRefusal | null {
+  if (!user.is_active) return 'deactivated';
+  if (user.has_login === false) return 'no_login';
+  return null;
+}
+
+/**
+ * May this person still sign in RIGHT NOW? Read under a row lock, after a slow call to the identity provider that made them a
+ * login (accepting an invite): an Admin who revoked or deactivated them while the call was in flight has changed the row, and
+ * the caller then undoes the login it just made. Revoke and deactivate change the row BEFORE they look for the login at the
+ * provider, so whichever way the two interleave, no login outlives the revoke.
+ */
+export async function stillMaySignIn(userId: string): Promise<boolean> {
+  return prisma.$transaction(async (tx) => {
+    const rows = await tx.$queryRaw<{ is_active: boolean; has_login: boolean }[]>`
+      SELECT is_active, has_login FROM users WHERE id = ${userId}::uuid FOR UPDATE`;
+    const row = rows[0];
+    return Boolean(row) && signInRefusal(row!) === null;
+  });
 }

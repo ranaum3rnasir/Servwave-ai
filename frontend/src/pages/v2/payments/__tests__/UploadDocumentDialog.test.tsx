@@ -21,7 +21,7 @@ vi.mock('@/ui-kit/components/ui/sonner', async (importOriginal) => ({
 const mockUpload = vi.mocked(uploadAttachment);
 const mockToast = vi.mocked(toast);
 
-const ABILITY = buildAbility([{ action: 'create', subject: 'Attachment' }]);
+const ABILITY = buildAbility([{ action: 'update', subject: 'Invoice' }]);
 
 const INVOICES: DocumentTarget[] = [
   { id: 'inv-1', main: 'INV-1302 · Marcus Delgado', sub: null, amount: 642.5, due_date: '2026-10-20T12:00:00.000Z' },

@@ -30,7 +30,7 @@ describe('B5 — manage_lines Invoice in catalog', () => {
 describe('B5 — DEFAULT_GRANTS: manage_lines Invoice grants per role', () => {
   function abilityFor(role: 'ADMIN' | 'DISPATCHER' | 'TECHNICIAN' | 'SALES') {
     const grants = DEFAULT_GRANTS.filter((g) => g.role === role);
-    return defineAbilityFor({ id: 'test-user', role }, grants);
+    return defineAbilityFor({ is_admin: role === 'ADMIN', id: 'test-user', role }, grants);
   }
 
   it('ADMIN can manage_lines Invoice (via manage all)', () => {

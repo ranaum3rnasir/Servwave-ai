@@ -168,7 +168,7 @@ async function resolveCohort(
 
   const granted = new Set<string>();
   const arms = splitArms(where);
-  // The creator rule's arms read "made by me AND attached to it": the candidate occurs twice, which no
+  // The made-by-me arm (a document made for a customer alone) reads "made by me AND no lead or job": the candidate occurs twice, which no
   // mirror can follow. They are answered together, below, from the one person who made the entity.
   const creatorBound = arms.filter((arm) => creatorColumnOf(arm));
   for (const arm of arms.filter((a) => !creatorBound.includes(a))) {

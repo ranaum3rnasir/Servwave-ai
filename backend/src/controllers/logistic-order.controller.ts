@@ -18,7 +18,8 @@ import type { LogisticOrderStatus } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { tenantWhere } from '../lib/tenant';
-import { scopeWhereForReq, canActOnRow, canCreateOnAnchor } from '../lib/permissions/enforce';
+import { scopeWhereForReq, canActOnRow, canCreateOnAnchor, canAccessRow } from '../lib/permissions/enforce';
+import { canReadCustomerById } from '../lib/permissions/customerScope';
 import {
   pickAnchor,
   allocateNumber,
@@ -260,10 +261,25 @@ function anchorDelegate(column: AnchorColumn): RowProbe {
   return map[column];
 }
 
-/** Every provided anchor id must resolve IN THE CALLER ORG, else 404 and no LO is minted (E18). */
+/**
+ * The anchors whose record has a reach: one out of the person's reach answers like a missing one (ticket 33). A service
+ * plan has no reach of its own (its switch opens every plan), so tenancy is its only check.
+ */
+const REACHED_ANCHORS: Partial<Record<AnchorColumn, 'Job' | 'Lead' | 'Estimate' | 'Invoice'>> = {
+  job_id: 'Job', lead_id: 'Lead', estimate_id: 'Estimate', invoice_id: 'Invoice',
+};
+
+/**
+ * Every provided anchor id must resolve IN THE CALLER ORG, else 404 and no LO is minted (E18). A job, lead, estimate,
+ * invoice or customer anchor must also be within the person's reach, answered the same way (spec story 47), so the order
+ * is not a way to learn that a record exists or to put an order on one the person cannot open.
+ */
 async function assertAnchorsInOrg(req: Request, anchors: AnchorIds): Promise<AnchorColumn | null> {
   for (const [column, id] of Object.entries(anchors) as [AnchorColumn, string | null | undefined][]) {
     if (!id) continue;
+    const reached = REACHED_ANCHORS[column];
+    if (reached && !(await canAccessRow(req, reached, anchorDelegate(column) as never, id))) return column;
+    if (column === 'customer_id' && !(await canReadCustomerById(req, id))) return column;
     const row = await anchorDelegate(column).findFirst({
       where: { id, ...tenantWhere(req) },
       select: { id: true },

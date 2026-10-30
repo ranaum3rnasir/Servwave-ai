@@ -25,12 +25,10 @@ const { realClient } = vi.hoisted(() => {
 vi.mock('../lib/prisma', () => ({ prisma: realClient }));
 
 import { switchFixture, type Person } from './permission-switches-fixture';
-import { setRoleSwitchValues } from '../lib/permissions/switches/store';
 import { SWITCH_CATALOG, presetSwitchSet, type SwitchEntry, type SwitchValue } from '../lib/permissions/switches/catalog';
 
 const suite = realClient ? describe : describe.skip;
 
-const MANAGE = 'manage_roles_and_permissions';
 
 /** A toggle the Sales preset holds off, that needs nothing else and that nothing else needs: safe to flip on. */
 const flippable = (role: Role, count: number): SwitchEntry[] => {
@@ -52,12 +50,14 @@ suite("a person's switches API (real database)", () => {
   type Api = Awaited<ReturnType<typeof fx.signedInAs>>;
   let sequence = 0;
 
-  /** A person on a fresh custom role, with Manage roles and permissions on or off, everything else as Dispatcher. */
+  /**
+   * A person on a fresh custom role (everything as Dispatcher), an Admin or not: since AL-18 managing roles and people's
+   * switches is the Admin flag's alone, never a switch.
+   */
   async function manager(org: string, manage: boolean): Promise<Person & { api: () => Promise<Api> }> {
     const key = `mgr-role-${++sequence}`;
     const role = await fx.addCustomRole(org, key, 'DISPATCHER');
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { [MANAGE]: manage }, actorId: null, reason: 'manual' });
-    const person = await fx.addUser(org, `mgr${sequence}`, 'DISPATCHER', { customRoleId: role.id });
+    const person = await fx.addUser(org, `mgr${sequence}`, 'DISPATCHER', { customRoleId: role.id, isAdmin: manage });
     return Object.assign(person, { api: () => fx.signedInAs(person) });
   }
 
@@ -86,9 +86,6 @@ suite("a person's switches API (real database)", () => {
       const me = await manager(org, true);
       const sales = await target(org, 'SALES');
       // What the old Inherit / Allow / Deny dialog left behind: one entry of each kind.
-      await db.userPermissionOverride.create({ data: { organization_id: org, user_id: sales.id, action: 'read', subject: 'Job', effect: 'deny' } });
-      await db.userPermissionOverride.create({ data: { organization_id: org, user_id: sales.id, action: 'delete', subject: 'Customer', effect: 'allow' } });
-      expect(await db.userPermissionOverride.count({ where: { user_id: sales.id } })).toBe(2);
 
       const body = await read(await me.api(), sales.id);
       expect(body.values).toEqual(presetSwitchSet('SALES'));
@@ -114,8 +111,16 @@ suite("a person's switches API (real database)", () => {
       expect(res.body.differences).toEqual([]);
       expect(res.body.difference_count).toBe(0);
       const [one] = flippable('ADMIN', 1);
-      expect((await api.put(`/api/users/${admin.id}/permissions`, { values: { [one?.key ?? 'view_jobs']: true } })).status).toBe(400);
+      const values = { [one?.key ?? 'view_jobs']: true };
+      // An Admin's switches are the Owner's to touch (ticket 26): an Admin who is not the Owner is refused first (403).
+      const byOther = await api.put(`/api/users/${admin.id}/permissions`, { values });
+      expect(byOther.status).toBe(403);
+      expect(byOther.body.error).toBe('Only the Owner can change Admins.');
       expect(await db.permissionUserSwitch.count({ where: { user_id: admin.id } })).toBe(0);
+      // The Owner is refused too: the Admin box has no set to write.
+      const another = await fx.addUser(org, 'another-admin', 'ADMIN');
+      expect((await (await fx.signedInAs(admin)).put(`/api/users/${another.id}/permissions`, { values })).status).toBe(400);
+      expect(await db.permissionUserSwitch.count({ where: { user_id: another.id } })).toBe(0);
     });
   });
 
@@ -147,7 +152,7 @@ suite("a person's switches API (real database)", () => {
       const me = await manager(org, true);
       const api = await me.api();
       const sales = await target(org, 'SALES');
-      const res = await api.put(`/api/users/${sales.id}/permissions`, { values: { create_jobs: true, view_jobs: false } });
+      const res = await api.put(`/api/users/${sales.id}/permissions`, { values: { edit_jobs: true, create_jobs: true, view_jobs: false } });
       expect(res.status).toBe(400);
       expect(res.body.violations).toEqual(expect.arrayContaining([expect.objectContaining({ switchKey: 'create_jobs', needs: ['view_jobs'] })]));
       expect(await db.permissionUserSwitch.count({ where: { user_id: sales.id } })).toBe(0);
@@ -328,14 +333,18 @@ suite("a person's switches API (real database)", () => {
     it('is refused for the Admin box', async () => {
       const { org, admin } = await fx.newOrg();
       const me = await manager(org, true);
+      // An Admin who is not the Owner is refused first (ticket 26); the Owner is refused by the Admin box (no set to save).
       const res = await (await me.api()).post(`/api/users/${admin.id}/permissions/save-as-role`, { label: 'Everything' });
-      expect(res.status).toBe(400);
+      expect(res.status).toBe(403);
+      const another = await fx.addUser(org, 'another-admin', 'ADMIN');
+      const byOwner = await (await fx.signedInAs(admin)).post(`/api/users/${another.id}/permissions/save-as-role`, { label: 'Everything' });
+      expect(byOwner.status).toBe(400);
       expect(await db.customRole.count({ where: { organization_id: org, label: 'Everything' } })).toBe(0);
     });
   });
 
   describe('who may use it', () => {
-    it('refuses every person-set read and write and the person change log without Manage roles and permissions; the catalog and Me answer', async () => {
+    it('refuses every person-set read and write and the person change log to a non-Admin; the catalog and Me answer', async () => {
       const { org } = await fx.newOrg();
       const outsider = await manager(org, false);
       const api = await outsider.api();
@@ -366,16 +375,19 @@ suite("a person's switches API (real database)", () => {
         expect((await api.post(`${own}/save-as-role`, { label: `Mine ${holds}` })).status, `save holds=${holds}`).toBe(403);
         expect(await db.permissionUserSwitch.count({ where: { user_id: me.id } }), `rows holds=${holds}`).toBe(0);
       }
-      // The id column is a uuid, which a database accepts in any case, so the same person by another spelling is still themselves.
+      // The id column is a uuid, which a database accepts in any case. The same person by another spelling is nobody (pre-PR
+      // review fixes, SR-2: a uuid spelled any way but the canonical one answers 404), so it writes nothing either. A person
+      // the route's gate refuses (not a holder) is refused there first, with the 403 that says nothing about anyone.
       for (const holds of [true, false]) {
         const me = await manager(org, holds);
         const api = await me.api();
         const own = `/api/users/${me.id.toUpperCase()}/permissions`;
-        expect((await api.put(own, { values: { [a!.key]: true } })).status, `upper put holds=${holds}`).toBe(403);
-        expect((await api.post(`${own}/reset`, { all: true })).status, `upper reset holds=${holds}`).toBe(403);
-        expect((await api.post(`${own}/save-as-role`, { label: `Upper ${holds}` })).status, `upper save holds=${holds}`).toBe(403);
+        const refused = holds ? 404 : 403;
+        expect((await api.put(own, { values: { [a!.key]: true } })).status, `upper put holds=${holds}`).toBe(refused);
+        expect((await api.post(`${own}/reset`, { all: true })).status, `upper reset holds=${holds}`).toBe(refused);
+        expect((await api.post(`${own}/save-as-role`, { label: `Upper ${holds}` })).status, `upper save holds=${holds}`).toBe(refused);
         expect(await db.permissionUserSwitch.count({ where: { user_id: me.id } }), `upper rows holds=${holds}`).toBe(0);
-        if (holds) expect((await api.get(own)).body.editable, 'upper editable').toBe(false);
+        if (holds) expect((await api.get(own)).status, 'upper read').toBe(404);
       }
       const holder = await manager(org, true);
       const res = await (await holder.api()).get(`/api/users/${holder.id}/permissions`);
@@ -416,16 +428,18 @@ suite("a person's switches API (real database)", () => {
       }
     });
 
-    it('reads the same log for the person whatever the case of the id, and answers a non-id as not found', async () => {
+    it('reads the log for the person by their id, and answers another spelling of it, or a non-id, as not found', async () => {
       const { org } = await fx.newOrg();
       const me = await manager(org, true);
       const api = await me.api();
       const sales = await target(org, 'SALES');
       const [a] = flippable('SALES', 1);
       await api.put(`/api/users/${sales.id}/permissions`, { values: { [a!.key]: true } });
-      const upper = await api.get(`/api/users/${sales.id.toUpperCase()}/permissions/change-log`);
-      expect(upper.status).toBe(200);
-      expect(upper.body.total).toBe(1);
+      const log = await api.get(`/api/users/${sales.id}/permissions/change-log`);
+      expect(log.status).toBe(200);
+      expect(log.body.total).toBe(1);
+      // An id in upper case is another spelling of a uuid, which names nobody (pre-PR review fixes, SR-2).
+      expect((await api.get(`/api/users/${sales.id.toUpperCase()}/permissions/change-log`)).status).toBe(404);
       for (const path of ['permissions', 'permissions/change-log']) {
         expect((await api.get(`/api/users/not-a-uuid/${path}`)).status, path).toBe(404);
       }

@@ -36,6 +36,8 @@ export interface SelectFieldProps {
    * trigger's text. A call site with no adjacent `<Label htmlFor>` needs this.
    */
   "aria-label"?: string;
+  /** The id of what describes the control, such as why it is disabled. Both branches carry it. */
+  "aria-describedby"?: string;
   /**
    * Escape hatch for §4.2 in either direction: `true` forces the searchable
    * branch below the threshold, `false` forces the plain select above it. It is
@@ -141,6 +143,7 @@ function SelectField({
   size,
   searchable,
   "aria-label": ariaLabel,
+  "aria-describedby": describedBy,
   side,
   align,
   avoidCollisions,
@@ -219,6 +222,7 @@ function SelectField({
         id={id}
         size={size}
         aria-label={ariaLabel}
+        aria-describedby={describedBy}
         className={className}
         side={side}
         align={align}
@@ -238,6 +242,7 @@ function SelectField({
         className={className}
         aria-invalid={invalid}
         aria-label={ariaLabel}
+        aria-describedby={describedBy}
       >
         {/* Children only when the selected option asks for a different trigger word. Radix
             renders `SelectValue`'s children when it has any and otherwise portals the selected

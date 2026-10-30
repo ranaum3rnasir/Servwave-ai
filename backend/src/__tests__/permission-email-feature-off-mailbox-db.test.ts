@@ -123,14 +123,14 @@ suite('mailbox mail while the Email plan feature is off: kept, hidden and silent
   let sequence = 0;
 
   /** A person on a fresh custom role holding exactly these switch values, with the Email page open. */
-  async function personWith(org: string, scope: 'all' | 'linked_to_me'): Promise<Who> {
+  async function personWith(org: string, scope: 'all' | 'attached'): Promise<Who> {
     const key = `ff-role-${++sequence}`;
     const role = await fx.addCustomRole(org, key, 'DISPATCHER');
     await setRoleSwitchValues({
       organizationId: org, roleKey: key,
       values: {
         view_jobs: true, jobs_scope: 'attached', view_leads: true, leads_scope: 'attached', view_customers: true,
-        view_estimates: true, estimates_scope: 'attached', view_invoices: true, invoices_scope: 'attached',
+        view_estimates: true, view_invoices: true,
         access_communication: true, show_email: true, view_communication: true, communication_scope: scope,
       },
       actorId: null, reason: 'manual',
@@ -152,9 +152,9 @@ suite('mailbox mail while the Email plan feature is off: kept, hidden and silent
     const main = randomUUID();
     await db.mailbox.create({ data: { id: main, organization_id: org, kind: 'main', status: 'active' } });
     await db.mailboxAddress.create({ data: { local_part: `main-${tag}`, organization_id: org, mailbox_id: main, is_primary: true } });
-    const holder = await personWith(org, 'linked_to_me');
+    const holder = await personWith(org, 'attached');
     const holderBox = await fx.addUserMailbox(org, holder);
-    const linked = await personWith(org, 'linked_to_me');
+    const linked = await personWith(org, 'attached');
     await fx.addUserMailbox(org, linked);
     await db.mailboxReader.create({ data: { organization_id: org, mailbox_id: main, user_id: linked.id } });
     const wide = await personWith(org, 'all');

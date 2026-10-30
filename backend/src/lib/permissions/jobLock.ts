@@ -11,6 +11,7 @@ import { BACK_OUT_OF_REVIEW_FIRST_MESSAGE, REOPEN_FIRST_MESSAGE } from '../job-c
 import { DISCOUNT_REFUSAL } from './discountWrite';
 import { isAllowedBackwardMove } from './jobStatusDoor';
 import { jobsHoldingInvoice } from '../job-money-owed';
+import { CANONICAL_ID, isOtherSpellingOfId } from '../ids/canonicalId';
 
 /**
  * The completed-job lock (Roles & Permissions, PRD 4, S04.22): one answer to "is this job locked for this person".
@@ -238,12 +239,13 @@ export function respondNewVisitClosed(res: Response, status: JobStatus): void {
   res.status(403).json({ error: newVisitClosedMessage(status), code: NEW_VISIT_CLOSED_CODE });
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Route guard for a job write: refuses with the lock message when the job in `:id` is locked for the person. It sits
- * after the route's own switch guard, so a person without the switch still gets that refusal first. A malformed id or
- * a job that is not there falls through to the handler, which answers as it always has.
+ * after the route's own switch guard, so a person without the switch still gets that refusal first. A uuid spelled any way
+ * but the canonical one answers 404 "Job not found", never steps aside (security review, side finding): the handler's own
+ * lookup would still find the job by that spelling. A malformed id or a job that is not there falls through to the handler,
+ * which answers as it always has.
  *
  * `edit` is the review edit the route makes (S06.9), or a function that reads it off the request when the same route
  * serves both an edit the review makes and one it does not (the job PATCH, whose discount is the review's and whose
@@ -253,7 +255,11 @@ export function refuseWhenJobLocked(edit?: ReviewEdit | ((req: Request) => Revie
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
       const id = String(req.params.id ?? '');
-      if (!UUID.test(id)) {
+      if (isOtherSpellingOfId(id)) {
+        res.status(404).json({ error: 'Job not found' });
+        return;
+      }
+      if (!CANONICAL_ID.test(id)) {
         next();
         return;
       }
@@ -291,13 +297,21 @@ export function refuseWhenJobLocked(edit?: ReviewEdit | ((req: Request) => Revie
  * Route guard for a line, scope, discount or tax edit on an invoice: refuses with the Done words when the invoice belongs to a Done
  * job (S06.19), for every person. It sits after the route's own switch guard, so a person without the switch still gets that
  * refusal first. `when` narrows it to the requests that touch a price (the billing route also takes a tip, which is not one). A
- * malformed id or an invoice that is not there falls through to the handler, which answers as it always has.
+ * uuid in another spelling answers 404 "Invoice not found"; a malformed id or an invoice that is not there falls through.
  */
 export function refuseInvoicePriceEditOnDoneJob(when?: (req: Request) => boolean) {
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
       const id = String(req.params.id ?? '');
-      if (!UUID.test(id) || (when && !when(req))) {
+      if (isOtherSpellingOfId(id)) {
+        res.status(404).json({ error: 'Invoice not found' });
+        return;
+      }
+      if (!CANONICAL_ID.test(id)) {
+        next();
+        return;
+      }
+      if (when && !when(req)) {
         next();
         return;
       }
@@ -316,13 +330,17 @@ export function refuseInvoicePriceEditOnDoneJob(when?: (req: Request) => boolean
 /**
  * Route guard for Add visit: refuses with the job's new-visit words (newVisitClosedMessage) when the job in `:id` is
  * locked, for every person. It sits after the route's own switch guard, so a person without Schedule visits gets that refusal
- * first. A malformed id or a job that is not there falls through to the handler, which answers as it always has.
+ * first. A uuid in another spelling answers 404 "Job not found"; a malformed id or a job that is not there falls through.
  */
 export function refuseNewVisitOnClosedJob() {
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
       const id = String(req.params.id ?? '');
-      if (!UUID.test(id)) {
+      if (isOtherSpellingOfId(id)) {
+        res.status(404).json({ error: 'Job not found' });
+        return;
+      }
+      if (!CANONICAL_ID.test(id)) {
         next();
         return;
       }

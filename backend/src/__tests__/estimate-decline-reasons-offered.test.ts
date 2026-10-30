@@ -262,10 +262,10 @@ describe("GET /api/estimates/:id/decline-reasons - the words the customer may ch
     expect(mockPrisma.lostReasonOption.findMany).not.toHaveBeenCalled();
   });
 
-  it('400s when no token is supplied', async () => {
+  it('404s when no token is supplied, as for a wrong token (re-audit N0)', async () => {
     const res = await request(app).get(`/api/estimates/${ESTIMATE_ID}/decline-reasons`);
 
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(404);
     expect(mockPrisma.lostReasonOption.findMany).not.toHaveBeenCalled();
   });
 

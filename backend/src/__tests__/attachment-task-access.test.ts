@@ -2,10 +2,10 @@
  * Files on a task (visits-and-task-categories slice 12) - who may touch a TASK attachment.
  *
  * A task's files are exactly as private as the task. Access is the task visibility rule
- * (`canAccessTask`): See all tasks always (the Admin box holds it); an assignee or a watcher always;
- * anybody else only through the task's linked record, and an unlinked task is closed to them. That
- * rule replaces the per-role switch for TASK, so a task's files are never opened by an existence
- * check alone.
+ * (`canAccessTask`): Tasks scope All always (the Admin box holds it); a person the scope reaches (an
+ * assignee or a watcher on Attached) always; anybody else only through the task's linked record, and an
+ * unlinked task is closed to them (not found: existence is never told). Changing a file is the task's own
+ * Edit (P10), so a task's files are never opened by an existence check alone.
  *
  * Prior art: attachment-visit-crew-access.test.ts. The task fake HONOURS the tenant filter the
  * controller sends, so a TASK lookup that forgot `tenantWhere` would read another org's task
@@ -20,7 +20,7 @@ import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { signUploadTicket } from '../lib/attachment-direct-upload';
 import { MAX_ENTITY_SIZE, MAX_FILE_SIZE, MAX_VIDEO_FILE_SIZE } from '../controllers/attachment.controller';
 import { sizeLimitLabel } from '../middleware/multerErrors';
-import { mockAuthAs, authHeader, TEST_USERS, ALPHA_ORG_ID, type TestUserKey } from './helpers';
+import { mockAuthAs, authHeader, mockRoleSwitches, TEST_USERS, ALPHA_ORG_ID, type TestUserKey } from './helpers';
 
 const mockPrisma = prisma as unknown as Record<string, any>;
 
@@ -145,13 +145,13 @@ describe('the access matrix - assignee, watcher and admin in; a stranger out', (
     });
   });
 
-  it('refuses a SALES user on an unlinked task they are not on - without See all tasks the role shortcut does not apply to TASK', async () => {
+  it('answers not found to a SALES user on an unlinked task they are not on - off Tasks scope All the role shortcut does not apply to TASK', async () => {
     givenTask(UNLINKED);
     const res = await request(app).get(`/api/attachments/task/${TASK_ID}`).set(as('sales'));
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
-  it('lets a DISPATCHER in to an unlinked task they are not on, because the Dispatcher preset holds See all tasks', async () => {
+  it('lets a DISPATCHER in to an unlinked task they are not on, because the Dispatcher preset is on Tasks scope All', async () => {
     givenTask(UNLINKED);
     const res = await request(app).get(`/api/attachments/task/${TASK_ID}`).set(as('dispatcher'));
     expect(res.status).toBe(200);
@@ -167,13 +167,13 @@ describe('the access matrix - assignee, watcher and admin in; a stranger out', (
   it('refuses a task in another org, even to an admin', async () => {
     mockPrisma.task.findFirst.mockResolvedValue(null);
     const list = await request(app).get(`/api/attachments/task/${TASK_ID}`).set(as('admin'));
-    expect(list.status).toBe(403);
+    expect(list.status).toBe(404);
     const up = await upload(authHeader('admin'));
     expect(up.status).toBe(404);
   });
 });
 
-describe('a technician unrelated to the task is refused on every attachment route', () => {
+describe('a technician unrelated to the task is told it is not found on every attachment route', () => {
   // Not assigned, not watching, and the linked job is outside their scope.
   beforeEach(() => {
     givenTask(LINKED_TO_JOB);
@@ -183,12 +183,12 @@ describe('a technician unrelated to the task is refused on every attachment rout
 
   it('GET list', async () => {
     const res = await request(app).get(`/api/attachments/task/${TASK_ID}`).set(as('technician'));
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it('POST multipart upload', async () => {
     const res = await upload(as('technician'));
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(storage.upload).not.toHaveBeenCalled();
   });
 
@@ -197,7 +197,7 @@ describe('a technician unrelated to the task is refused on every attachment rout
       .post(`/api/attachments/task/${TASK_ID}/direct-upload`)
       .set(as('technician'))
       .send({ file_name: 'clip.mp4', content_type: 'video/mp4', file_size: 1024 });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it('POST direct-upload/complete', async () => {
@@ -209,7 +209,7 @@ describe('a technician unrelated to the task is refused on every attachment rout
       .post(`/api/attachments/task/${TASK_ID}/direct-upload/complete`)
       .set(as('technician'))
       .send({ ticket, display_name: 'Clip', description: 'x' });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockPrisma.attachment.create).not.toHaveBeenCalled();
   });
 
@@ -218,19 +218,19 @@ describe('a technician unrelated to the task is refused on every attachment rout
       .patch(`/api/attachments/task/${TASK_ID}/${ATT_ID}`)
       .set(as('technician'))
       .send({ display_name: 'Renamed' });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockPrisma.attachment.update).not.toHaveBeenCalled();
   });
 
   it('DELETE - even of a file they uploaded themselves', async () => {
     const res = await request(app).delete(`/api/attachments/task/${TASK_ID}/${ATT_ID}`).set(as('technician'));
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(storage.remove).not.toHaveBeenCalled();
     expect(mockPrisma.attachment.deleteMany).not.toHaveBeenCalled();
   });
 });
 
-describe('rename and remove - the grant, or a file you uploaded yourself on a task you can see', () => {
+describe('rename and remove - the task\'s Edit decides, on a task you can see', () => {
   const MINE = { id: ATT_ID, uploaded_by: TECH_ID, storage_path: `${ALPHA_ORG_ID}/task/${TASK_ID}/1-gate.jpg`, file_url: '', display_name: 'Gate photo', file_name: 'gate.jpg' };
   const THEIRS = { ...MINE, uploaded_by: STRANGER_ID };
 
@@ -239,7 +239,7 @@ describe('rename and remove - the grant, or a file you uploaded yourself on a ta
     mockPrisma.attachment.deleteMany.mockResolvedValue({ count: 1 });
   });
 
-  it('lets the assigned technician (no update grant) rename a file they uploaded', async () => {
+  it('lets the assigned technician (Edit tasks) rename a file they uploaded', async () => {
     givenTask({ ...UNLINKED, assignee_ids: [TECH_ID] });
     mockPrisma.attachment.findFirst.mockResolvedValue(MINE);
 
@@ -255,7 +255,7 @@ describe('rename and remove - the grant, or a file you uploaded yourself on a ta
     }));
   });
 
-  it('refuses the assigned technician a rename of somebody else\'s file', async () => {
+  it('lets the assigned technician rename somebody else\'s file too: the task\'s Edit covers every file on it', async () => {
     givenTask({ ...UNLINKED, assignee_ids: [TECH_ID] });
     mockPrisma.attachment.findFirst.mockResolvedValue(THEIRS);
 
@@ -264,11 +264,26 @@ describe('rename and remove - the grant, or a file you uploaded yourself on a ta
       .set(as('technician'))
       .send({ display_name: 'Front gate' });
 
-    expect(res.status).toBe(403);
-    expect(mockPrisma.attachment.update).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
   });
 
-  it('lets the assigned technician (no delete grant) remove a file they uploaded - row and object', async () => {
+  it('refuses a person on the task without Edit tasks a rename and a removal, a file they uploaded included', async () => {
+    givenTask({ ...UNLINKED, assignee_ids: [TECH_ID] });
+    mockPrisma.attachment.findFirst.mockResolvedValue(MINE);
+    const header = as('technician');
+    mockRoleSwitches({ edit_tasks: false, create_tasks: false });
+
+    const renamed = await request(app).patch(`/api/attachments/task/${TASK_ID}/${ATT_ID}`).set(header).send({ display_name: 'Front gate' });
+    expect(renamed.status).toBe(403);
+    expect(mockPrisma.attachment.update).not.toHaveBeenCalled();
+
+    const removed = await request(app).delete(`/api/attachments/task/${TASK_ID}/${ATT_ID}`).set(header);
+    expect(removed.status).toBe(403);
+    expect(storage.remove).not.toHaveBeenCalled();
+    expect(mockPrisma.attachment.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('lets the assigned technician (Edit tasks) remove a file they uploaded - row and object', async () => {
     givenTask({ ...UNLINKED, assignee_ids: [TECH_ID] });
     mockPrisma.attachment.findFirst.mockResolvedValue(MINE);
 
@@ -279,18 +294,17 @@ describe('rename and remove - the grant, or a file you uploaded yourself on a ta
     expect(mockPrisma.attachment.deleteMany).toHaveBeenCalledWith({ where: { id: ATT_ID } });
   });
 
-  it('refuses the assigned technician removal of somebody else\'s file', async () => {
+  it('lets the assigned technician remove somebody else\'s file too', async () => {
     givenTask({ ...UNLINKED, assignee_ids: [TECH_ID] });
     mockPrisma.attachment.findFirst.mockResolvedValue(THEIRS);
 
     const res = await request(app).delete(`/api/attachments/task/${TASK_ID}/${ATT_ID}`).set(as('technician'));
 
-    expect(res.status).toBe(403);
-    expect(storage.remove).not.toHaveBeenCalled();
-    expect(mockPrisma.attachment.deleteMany).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(storage.remove).toHaveBeenCalledWith([THEIRS.storage_path]);
   });
 
-  it('lets a watcher who HOLDS the grant (sales) rename and remove anybody\'s file on the task', async () => {
+  it('lets a watcher with Edit tasks (sales) rename and remove anybody\'s file on the task', async () => {
     givenTask({ ...UNLINKED, watcher_ids: [TEST_USERS.sales.id] });
     mockPrisma.attachment.findFirst.mockResolvedValue(THEIRS);
 
@@ -304,8 +318,8 @@ describe('rename and remove - the grant, or a file you uploaded yourself on a ta
     expect(removed.status).toBe(200);
   });
 
-  it('does NOT widen anything off a task: a technician still cannot rename their own JOB file', async () => {
-    mockPrisma.job.findUnique.mockResolvedValue({ id: JOB_ID, visits: [{ assignees: [{ user_id: TECH_ID }] }] });
+  it('does NOT widen anything off a task: a technician outside the job\'s reach is told the job\'s files are not found', async () => {
+    mockPrisma.job.findFirst.mockResolvedValue(null);
     mockPrisma.attachment.findFirst.mockResolvedValue(MINE);
 
     const res = await request(app)
@@ -313,7 +327,7 @@ describe('rename and remove - the grant, or a file you uploaded yourself on a ta
       .set(as('technician'))
       .send({ display_name: 'Front gate' });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockPrisma.attachment.update).not.toHaveBeenCalled();
   });
 });

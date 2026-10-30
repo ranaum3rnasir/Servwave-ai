@@ -24,7 +24,7 @@ const TECH_ID = 'tech-1';
 /** The abilities a technician in a FRESH org holds: exactly what DEFAULT_GRANTS seeds. */
 function freshOrgTechAbility() {
   return defineAbilityFor(
-    { id: TECH_ID, role: 'TECHNICIAN' },
+    { is_admin: false, id: TECH_ID, role: 'TECHNICIAN' },
     DEFAULT_GRANTS.filter((g) => g.role === 'TECHNICIAN'),
   );
 }

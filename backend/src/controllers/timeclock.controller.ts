@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { tenantWhere } from '../lib/tenant';
 import { isSuperUser } from '../lib/permissions/effectiveRole';
+import { moduleReachFor, reachWhere } from '../lib/permissions/moduleReach';
 
 // ─── Zod schemas ───────────────────────────────────────
 
@@ -29,23 +30,21 @@ function isAdminBox(req: Request): boolean {
 }
 
 /**
- * Does the caller see everyone's timesheets (the "See everyone's timesheets" switch)? The one question both org
- * views ask, so a custom role copied from Admin is held to its switch like any other role. Fails closed with no
- * ability attached.
+ * Which timesheets the request asks for. `?scope=org` is the organisation's view and needs a Timesheets scope wider than
+ * Attached (a refusal is a 403, written here); anything else is the caller's own, open to every signed-in person. The
+ * organisation's view then holds the people the scope reaches: Team the caller's department, All everyone. The answer is
+ * the `where` fragment on `user_id` the view adds ({} for every person), or null once the refusal is written.
  */
-function seesAllTimesheets(req: Request): boolean {
-  return req.ability?.can('see_all', 'Timeclock') ?? false;
-}
-
-/**
- * Which timesheet the request asks for. `?scope=org` is everyone's and needs See everyone's timesheets (a refusal
- * is a 403, written here); anything else is the caller's own, open to every signed-in person.
- */
-function timesheetScope(req: Request, res: Response): 'org' | 'me' | null {
-  if (req.query.scope !== 'org') return 'me';
-  if (seesAllTimesheets(req)) return 'org';
-  res.status(403).json({ error: 'Insufficient permissions' });
-  return null;
+async function timesheetScope(req: Request, res: Response): Promise<Record<string, unknown> | null> {
+  if (req.query.scope !== 'org') return { user_id: req.user!.id };
+  const reach = await moduleReachFor(req, 'Timesheet');
+  // Attached reaches only the caller's own time, which is what the default view already answers: the organisation's view
+  // is not theirs, and an unknown value reaches nothing.
+  if (reach.kind === 'people' && reach.scope !== 'team') {
+    res.status(403).json({ error: 'Insufficient permissions' });
+    return null;
+  }
+  return reachWhere('Timesheet', reach);
 }
 
 /**
@@ -150,11 +149,10 @@ const punchSelect = {
 export async function listPunches(req: Request, res: Response) {
   try {
     const orgId = req.user!.organization_id;
-    const scope = timesheetScope(req, res);
+    const scope = await timesheetScope(req, res);
     if (!scope) return;
 
-    const where: any = { organization_id: orgId };
-    if (scope === 'me') where.user_id = req.user!.id;
+    const where: any = { organization_id: orgId, ...scope };
 
     const range = parseDateRange(req);
     if (range.error) {
@@ -193,11 +191,10 @@ async function canApprove(req: Request): Promise<{ ok: boolean }> {
 export async function listOtReviews(req: Request, res: Response) {
   try {
     const orgId = req.user!.organization_id;
-    const scope = timesheetScope(req, res);
+    const scope = await timesheetScope(req, res);
     if (!scope) return;
 
-    const where: any = { organization_id: orgId };
-    if (scope === 'me') where.user_id = req.user!.id;
+    const where: any = { organization_id: orgId, ...scope };
 
     const range = parseDateRange(req);
     if (range.error) {

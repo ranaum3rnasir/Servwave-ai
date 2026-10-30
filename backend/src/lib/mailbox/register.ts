@@ -421,7 +421,7 @@ export interface IssuedUserMailbox {
  * A name part already issued to anyone in the company, past or present (a leaver's stays taken: the address
  * rows are never deleted), is taken, and so is a name part held under an earlier company part. The register
  * never adds a number or an initial to make a name fit: the user then gets a mailbox in "address needed"
- * with no address, for a holder of Edit users to set later. So does a user with no usable name and a
+ * with no address, for an Admin to set later. So does a user with no usable name and a
  * company with no frozen part. The register-wide lock serialises two namesakes created at the same moment,
  * so the second sees the first; the unique index on `local_part` is the last line of defence.
  *

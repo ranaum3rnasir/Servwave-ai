@@ -4,8 +4,8 @@ import { Prisma, Role } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { tenantWhere } from '../lib/tenant';
 import { logger } from '../lib/logger';
-import { logAudit } from '../lib/audit';
-import { SYSTEM_ROLE_NAMES, slugifyRoleKey } from '../lib/permissions/effectiveRole';
+import { logAudit, recordAuditInTx } from '../lib/audit';
+import { ROLE_ADMIN_FLAG, SYSTEM_ROLE_NAMES, slugifyRoleKey } from '../lib/permissions/effectiveRole';
 import { BUILT_IN_ROLE_LABELS, nameTakenMessage, roleNameRefusal } from '../lib/permissions/roleName';
 import { isBuiltInRole, type BuiltInRole } from '../lib/permissions/switches/catalog';
 import type { ResolvedSwitches } from '../lib/permissions/switches/cache';
@@ -25,10 +25,11 @@ import { putPersonSwitchesSchema } from './user-permission.controller';
 
 const SYSTEM_ROLES = SYSTEM_ROLE_NAMES;
 const ROLE_META: Record<string, { label: string; fullAccess: boolean; editable: boolean }> = {
-  ADMIN: { label: BUILT_IN_ROLE_LABELS.ADMIN, fullAccess: true, editable: false },
-  SALES: { label: BUILT_IN_ROLE_LABELS.SALES, fullAccess: false, editable: true },
-  DISPATCHER: { label: BUILT_IN_ROLE_LABELS.DISPATCHER, fullAccess: false, editable: true },
-  TECHNICIAN: { label: BUILT_IN_ROLE_LABELS.TECHNICIAN, fullAccess: false, editable: true },
+  // fullAccess is the role's Admin flag: the one the user changes read when someone is moved onto the role.
+  ADMIN: { label: BUILT_IN_ROLE_LABELS.ADMIN, fullAccess: ROLE_ADMIN_FLAG.ADMIN, editable: false },
+  SALES: { label: BUILT_IN_ROLE_LABELS.SALES, fullAccess: ROLE_ADMIN_FLAG.SALES, editable: true },
+  DISPATCHER: { label: BUILT_IN_ROLE_LABELS.DISPATCHER, fullAccess: ROLE_ADMIN_FLAG.DISPATCHER, editable: true },
+  TECHNICIAN: { label: BUILT_IN_ROLE_LABELS.TECHNICIAN, fullAccess: ROLE_ADMIN_FLAG.TECHNICIAN, editable: true },
 };
 
 type CustomRoleRow = {
@@ -156,36 +157,39 @@ export const createRole = async (req: Request, res: Response) => {
     // blank, the blank start; one made from blank has no built-in role to fall back on; one made from only a base role
     // starts from that base's preset.
     const baseRole = base_role ?? source?.baseRole ?? BLANK_ROLE_BASE;
-    const created = await prisma.customRole.create({
-      data: {
-        organization_id: orgId, key, label, description: description ?? '', base_role: baseRole,
-        made_from_blank: blank === true || source?.madeFromBlank === true,
-        made_from_role_key: blank ? null : (clone_grants_from ?? base_role ?? null),
-      },
-    });
+    const roleData = {
+      organization_id: orgId, key, label, description: description ?? '', base_role: baseRole,
+      made_from_blank: blank === true || source?.madeFromBlank === true,
+      made_from_role_key: blank ? null : (clone_grants_from ?? base_role ?? null),
+    };
+    // The role, its starting switches and its record are one step (N23): with the audit row failing, no role is made. The values
+    // a copy starts from are read before the write opens.
+    let created!: Awaited<ReturnType<typeof prisma.customRole.create>>;
+    const makeRole = async (tx: Prisma.TransactionClient) => {
+      created = await tx.customRole.create({ data: roleData });
+      await recordAuditInTx(tx, req, { action: 'role.created', resourceType: 'Role', resourceId: created.id, metadata: { key, base_role: baseRole } });
+    };
     // Copying another role (or starting from blank) means storing the starting values on the new role, so editing the
     // source afterwards never touches it. A role made from a base role alone holds its preset without storing it.
     let values = presetValues(blank ? null : baseRole);
     if (source || blank) {
-      try {
-        values = blank ? presetValues(null) : await resolveRoleSwitchValues(orgId, clone_grants_from!, source!.baseRole);
-        await setRoleSwitchValues({
-          organizationId: orgId,
-          roleKey: key,
-          values,
-          actorId: req.user!.id,
-          reason: 'manual',
-          userBaseRole: baseRole,
-          copiedFromHolder: true,
-        });
-      } catch (err) {
-        await prisma.customRole.delete({ where: { id: created.id } });
-        throw err;
-      }
+      values = blank ? presetValues(null) : await resolveRoleSwitchValues(orgId, clone_grants_from!, source!.baseRole);
+      await setRoleSwitchValues({
+        organizationId: orgId,
+        roleKey: key,
+        values,
+        actorId: req.user!.id,
+        reason: 'manual',
+        userBaseRole: baseRole,
+        copiedFromHolder: true,
+        newRole: true,
+        inSameStep: makeRole,
+      });
+    } else {
+      await prisma.$transaction(makeRole);
     }
 
     // The answer is built from `values`, read before the write; nothing is read after it commits (hosted pool of one).
-    void logAudit({ req, action: 'role.created', resourceType: 'Role', resourceId: created.id, metadata: { key, base_role: baseRole } });
     res.status(201).json({
       id: created.id,
       role: created.key,
@@ -247,8 +251,18 @@ export const patchRole = async (req: Request, res: Response) => {
     if (label !== undefined) data.label = label;
     if (description !== undefined) data.description = description;
 
-    const updated = await prisma.customRole.update({ where: { id: custom.id }, data });
-    void logAudit({ req, action: 'role.updated', resourceType: 'Role', resourceId: custom.id, metadata: { fields: Object.keys(data) } });
+    // The rename and its record are one step (N23); the record keeps the name before and after.
+    const updated = await prisma.$transaction(async (tx) => {
+      const row = await tx.customRole.update({ where: { id: custom.id }, data });
+      await recordAuditInTx(tx, req, {
+        action: 'role.updated', resourceType: 'Role', resourceId: custom.id,
+        metadata: {
+          fields: Object.keys(data),
+          ...(label !== undefined ? { label: { from: custom.label, to: row.label } } : {}),
+        },
+      });
+      return row;
+    });
     res.json({
       id: updated.id,
       role: updated.key,
@@ -284,8 +298,11 @@ export const archiveRole = async (req: Request, res: Response) => {
       return;
     }
 
-    await prisma.customRole.update({ where: { id: custom.id }, data: { archived_at: new Date() } });
-    void logAudit({ req, action: 'role.archived', resourceType: 'Role', resourceId: custom.id });
+    // The archive and its record are one step (N23).
+    await prisma.$transaction(async (tx) => {
+      await tx.customRole.update({ where: { id: custom.id }, data: { archived_at: new Date() } });
+      await recordAuditInTx(tx, req, { action: 'role.archived', resourceType: 'Role', resourceId: custom.id, metadata: { key: custom.key } });
+    });
     res.json({ ok: true });
   } catch (err) {
     logger.error('archiveRole error:', err);
@@ -320,8 +337,10 @@ async function resolveNamedRole(req: Request, key: string): Promise<NamedRole | 
 const startsFrom = (role: NamedRole): BuiltInRole | null => (role.madeFromBlank ? null : role.baseRole);
 
 /** The role's set as the Permissions page reads it; a save passes the values it holds, so nothing is read after it commits. */
-function roleSetBody(role: NamedRole, values: ResolvedSwitches) {
+function roleSetBody(role: NamedRole, values: ResolvedSwitches, effect?: { reaches: number; keepOwn: number }) {
   return {
+    // A save tells the Admin what it did: how many people follow the change and how many keep their own value.
+    ...(effect ? { reaches: effect.reaches, keep_own: effect.keepOwn } : {}),
     role: role.key,
     label: role.label,
     type: role.type,
@@ -368,7 +387,7 @@ export const putRoleSwitches = async (req: Request, res: Response) => {
       organizationId: req.user!.organization_id, roleKey: role.key, values, actorId: req.user!.id, userBaseRole: role.baseRole,
     });
     void logAudit({ req, action: 'role.permissions_updated', resourceType: 'Role', resourceId: role.key, metadata: { switches: Object.keys(values) } });
-    res.json(roleSetBody(role, saved));
+    res.json(roleSetBody(role, saved.values, saved));
   } catch (err) {
     if (answerRefusal(err, res)) return;
     logger.error('putRoleSwitches error:', err);
@@ -391,7 +410,7 @@ export const resetRole = async (req: Request, res: Response) => {
       organizationId: req.user!.organization_id, roleKey: role.key, startsFrom: startsFrom(role), actorId: req.user!.id, userBaseRole: role.baseRole,
     });
     void logAudit({ req, action: 'role.reset', resourceType: 'Role', resourceId: role.key });
-    res.json(roleSetBody(role, saved));
+    res.json(roleSetBody(role, saved.values, saved));
   } catch (err) {
     if (answerRefusal(err, res)) return;
     logger.error('resetRole error:', err);

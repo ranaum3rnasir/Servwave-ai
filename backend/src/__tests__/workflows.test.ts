@@ -154,7 +154,7 @@ describe('POST /api/workflows', () => {
 
   it('201s for a DISPATCHER that holds View and Create automations', async () => {
     mockAuthAs('dispatcher');
-    mockRoleSwitches({ view_automations: true, create_automations: true });
+    mockRoleSwitches({ view_automations: true, edit_automations: true, create_automations: true });
     wireTransaction();
     mockPrisma.workflow.create.mockResolvedValueOnce({ ...BASE_WORKFLOW });
     mockPrisma.workflow.findFirst.mockResolvedValueOnce({ ...BASE_WORKFLOW, steps: [] });

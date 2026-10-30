@@ -96,11 +96,11 @@ suite('the creator pre-fill rule and the new-lead form people (real database)', 
 
     it.each(cases)('gives the answer for %s, through the module and through the form pre-fill route', async (_label, values, base, expected) => {
       const { org } = await fx.newOrg();
-      const creator = await personWith(org, { create_leads: true, ...values }, base);
+      const creator = await personWith(org, { create_leads: true, edit_leads: true, view_customers: true, create_customers: true, edit_customers: true, ...values }, base);
       const { creatorPrefillSlot } = await import('../lib/permissions/creatorPrefill.js');
       const stored = await db.user.findUniqueOrThrow({
         where: { id: creator.id },
-        select: { id: true, organization_id: true, role: true, based_on_role_key: true, custom_role_id: true, custom_role: { select: { key: true } } },
+        select: { id: true, organization_id: true, role: true, is_admin: true, based_on_role_key: true, custom_role_id: true, custom_role: { select: { key: true } } },
       });
       expect(await creatorPrefillSlot(stored)).toBe(expected);
 
@@ -133,11 +133,13 @@ suite('the creator pre-fill rule and the new-lead form people (real database)', 
     it('saves the rule\'s result whatever people the request names, on an existing and on a new customer', async () => {
       const { org, customer } = await fx.newOrg();
       const named = await personWith(org, { can_own_leads: true, can_be_dispatcher: true }, 'TECHNICIAN');
+      // A new customer typed into the lead form is a Create customers action (A7), so these creators hold it.
+      const addsCustomers = { view_customers: true, create_customers: true, edit_customers: true };
       // Creators whose base role disagrees with their switches: Owner by Can own leads, Dispatcher by Can be a dispatcher alone.
-      const asOwner = await personWith(org, { assign_people_to_leads: false, can_own_leads: true, can_be_dispatcher: false }, 'DISPATCHER');
-      const asDispatcher = await personWith(org, { assign_people_to_leads: false, can_own_leads: false, can_be_dispatcher: true }, 'TECHNICIAN');
-      const asNeither = await personWith(org, { assign_people_to_leads: false, can_own_leads: false, can_be_dispatcher: false }, 'DISPATCHER');
-      const asBoth = await personWith(org, { assign_people_to_leads: false, can_own_leads: true, can_be_dispatcher: true }, 'TECHNICIAN');
+      const asOwner = await personWith(org, { ...addsCustomers, assign_people_to_leads: false, can_own_leads: true, can_be_dispatcher: false }, 'DISPATCHER');
+      const asDispatcher = await personWith(org, { ...addsCustomers, assign_people_to_leads: false, can_own_leads: false, can_be_dispatcher: true }, 'TECHNICIAN');
+      const asNeither = await personWith(org, { ...addsCustomers, assign_people_to_leads: false, can_own_leads: false, can_be_dispatcher: false }, 'DISPATCHER');
+      const asBoth = await personWith(org, { ...addsCustomers, assign_people_to_leads: false, can_own_leads: true, can_be_dispatcher: true }, 'TECHNICIAN');
 
       const expectations: Array<[string, typeof asOwner, 'owner' | 'dispatcher']> = [
         ['Owner', asOwner, 'owner'], ['Dispatcher', asDispatcher, 'dispatcher'], ['neither switch', asNeither, 'owner'], ['both switches', asBoth, 'owner'],
@@ -296,7 +298,7 @@ suite('the creator pre-fill rule and the new-lead form people (real database)', 
   describe('#2283: a creator who can own leads but cannot assign people', () => {
     it('is the Owner and the assignee, lists and opens the lead at once, and a second person on Attached scope cannot', async () => {
       const { org, customer } = await fx.newOrg();
-      const attached = { leads_scope: 'attached', view_leads: true, create_leads: true, assign_people_to_leads: false, can_own_leads: true };
+      const attached = { leads_scope: 'attached', view_leads: true, edit_leads: true, create_leads: true, assign_people_to_leads: false, can_own_leads: true };
       const creator = await personWith(org, attached, 'DISPATCHER');
       const second = await personWith(org, attached, 'DISPATCHER');
 
@@ -314,7 +316,7 @@ suite('the creator pre-fill rule and the new-lead form people (real database)', 
       const secondApi = await second.api();
       const secondList = await secondApi.get('/api/leads');
       expect(secondList.body.leads.map((l: { id: string }) => l.id)).not.toContain(id);
-      expect((await secondApi.get(`/api/leads/${id}`)).status).toBe(403);
+      expect((await secondApi.get(`/api/leads/${id}`)).status).toBe(404);
     });
   });
 
@@ -356,8 +358,8 @@ suite('the creator pre-fill rule and the new-lead form people (real database)', 
       const key = `prefill-no-slots-${++sequence}`;
       await fx.addCustomRole(org, key, 'SALES');
       await expect(setRoleSwitchValues({
-        organizationId: org, roleKey: key, values: { create_leads: true, can_own_leads: false, can_be_dispatcher: false }, actorId: null, reason: 'manual',
-      })).resolves.toMatchObject({ create_leads: true, can_own_leads: false, can_be_dispatcher: false });
+        organizationId: org, roleKey: key, values: { edit_leads: true, create_leads: true, can_own_leads: false, can_be_dispatcher: false }, actorId: null, reason: 'manual',
+      })).resolves.toMatchObject({ edit_leads: true, create_leads: true, can_own_leads: false, can_be_dispatcher: false });
     });
   });
 

@@ -1,7 +1,6 @@
 import { vi } from 'vitest';
 import { supabaseAdmin } from '../lib/supabase';
 import { prisma } from '../lib/prisma';
-import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { clearAllSwitchCaches } from '../lib/permissions/switches/cache';
 import { SWITCH_CATALOG } from '../lib/permissions/switches/catalog';
@@ -26,6 +25,7 @@ export const TEST_USERS = {
     first_name: 'Test',
     last_name: 'Admin',
     role: 'ADMIN' as const,
+    is_admin: true,
     is_active: true,
     organization_id: ALPHA_ORG_ID,
   },
@@ -35,6 +35,7 @@ export const TEST_USERS = {
     first_name: 'Test',
     last_name: 'Dispatcher',
     role: 'DISPATCHER' as const,
+    is_admin: false,
     is_active: true,
     organization_id: ALPHA_ORG_ID,
   },
@@ -44,6 +45,7 @@ export const TEST_USERS = {
     first_name: 'Test',
     last_name: 'Sales',
     role: 'SALES' as const,
+    is_admin: false,
     is_active: true,
     organization_id: ALPHA_ORG_ID,
   },
@@ -53,6 +55,7 @@ export const TEST_USERS = {
     first_name: 'Test',
     last_name: 'Tech',
     role: 'TECHNICIAN' as const,
+    is_admin: false,
     is_active: true,
     organization_id: ALPHA_ORG_ID,
   },
@@ -62,6 +65,7 @@ export const TEST_USERS = {
     first_name: 'Org',
     last_name: 'B',
     role: 'ADMIN' as const,
+    is_admin: true,
     is_active: true,
     organization_id: ORG_B_ID,
   },
@@ -72,6 +76,7 @@ export const TEST_USERS = {
     first_name: 'Real',
     last_name: 'Org',
     role: 'ADMIN' as const,
+    is_admin: true,
     is_active: true,
     organization_id: REAL_ORG_ID,
   },
@@ -122,21 +127,9 @@ export function mockAuthAs(userKey: TestUserKey, orgOverrides: Partial<typeof TE
     }
   );
 
-  // prisma.rolePermission.findMany — attachAbility middleware loads grants for non-ADMIN users.
-  // Return the default grants for this role so canDo() checks pass in tests.
-  if (user.role !== 'ADMIN') {
-    const roleGrants = DEFAULT_GRANTS.filter((g) => g.role === user.role);
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue(roleGrants);
-  }
-
-  // attachAbility ALSO loads per-user permission overrides (RBAC Phase 2). Re-establish the
-  // "no overrides" default here so vi.resetAllMocks() in a test's beforeEach doesn't leave
-  // userPermissionOverride.findMany returning undefined (→ attachAbility 500). A test that
-  // exercises overrides re-mocks userPermissionOverride.findMany itself.
-  (prisma.userPermissionOverride.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
-
-  // ...and resolves the person's permission switches (Roles & Permissions M2): no stored values, so
-  // every switch comes from the built-in preset of the role. Same reasoning as the override default.
+  // attachAbility resolves the person's permission switches (Roles & Permissions M2): no stored values, so
+  // every switch comes from the built-in preset of the role. Re-established here so vi.resetAllMocks() in a test's
+  // beforeEach doesn't leave the reads returning undefined (→ attachAbility 500).
   (prisma.permissionUserSwitch.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
   (prisma.permissionRoleSwitch.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
   // A person's resolved switches are cached by person for a minute; a fresh sign-in starts clean.
@@ -193,26 +186,34 @@ export function attachedInvoiceWhere(userId: string) {
 }
 
 /**
- * What the creator rule reaches, written out from the PRD (not read back from the code): an estimate or invoice
- * the person made, while they are attached to its lead or job, or for good when it is for a customer alone.
+ * The documents a person made for a customer alone, written out from the PRD (not read back from the code): an
+ * estimate or invoice with no lead and no job. It is the one arm of Their own besides being attached (P7).
  */
 const customerOnlyEstimateWhere = { lead_id: null, job_id: null, job: null };
-export function creatorEstimateWhere(userId: string) {
-  return { created_by: userId, OR: [customerOnlyEstimateWhere, ...attachedEstimateWhere(userId)] };
+export function ownDocumentsEstimateWhere(userId: string) {
+  return { created_by: userId, ...customerOnlyEstimateWhere };
 }
-export function creatorInvoiceWhere(userId: string) {
+export function ownDocumentsInvoiceWhere(userId: string) {
   return {
     created_by_id: userId,
-    OR: [
-      { AND: [{ job_id: null }, { OR: [{ estimate_id: null }, { estimate: customerOnlyEstimateWhere }] }] },
-      ...attachedInvoiceWhere(userId),
-    ],
+    AND: [{ job_id: null }, { OR: [{ estimate_id: null }, { estimate: customerOnlyEstimateWhere }] }],
   };
 }
 
 /** The kept "Through own leads" reach Sales holds on Estimates and Invoices: the person is an assignee of the lead. */
 export const ownLeadsEstimateWhere = (userId: string) => ({ lead: { lead_assignees: { some: { user_id: userId } } } });
 export const ownLeadsInvoiceWhere = (userId: string) => ({ job: { estimate: ownLeadsEstimateWhere(userId) } });
+
+/**
+ * Sales' reach over an estimate (P6): the Leads scope (Attached, the Sales preset) and the kept Through own leads Jobs value,
+ * each an arm of its own. The invoice twin adds the deposit invoice with no job, which follows its estimate.
+ */
+export const salesEstimateArms = (userId: string) => [{ lead: { OR: attachedLeadWhere(userId) } }, ownLeadsEstimateWhere(userId)];
+export const salesInvoiceArms = (userId: string) => [
+  ownLeadsInvoiceWhere(userId),
+  { AND: [{ job_id: null }, { estimate: { OR: salesEstimateArms(userId) } }] },
+];
+
 
 /**
  * Give the signed-in person's role these stored switch values (a Data Scope such as
@@ -230,12 +231,12 @@ export function mockRoleSwitches(values: Record<string, boolean | string>) {
 }
 
 /**
- * Re-mock a role's grants as its DEFAULT_GRANTS minus the named (action, subject) pairs, and drop
- * the grant cache so the next request picks them up. Call AFTER `mockAuthAs`, which installs the
+ * Take the named (action, subject) pairs away from a role by turning off the switches that stand for them, and
+ * drop the grant cache so the next request picks them up. Call AFTER `mockAuthAs`, which installs the
  * unmodified defaults.
  *
  * Exists because a role default is not a fixed fact. `read Pricing` is the live example: it is
- * written by the Roles UI "See financial data" switch, so "a price-blind technician" is a real,
+ * written by the Roles UI "See costs" switch, so "a price-blind technician" is a real,
  * supported configuration - but since the technician-ownership spec (Part C) it is no longer the
  * DEFAULT one. Suites that assert the price-blind projection have to build that principal on
  * purpose now instead of inheriting it, or they quietly stop testing anything:
@@ -244,10 +245,6 @@ export function mockRoleSwitches(values: Record<string, boolean | string>) {
  *   mockRoleGrantsWithout('TECHNICIAN', ['read', 'Pricing']);
  */
 export function mockRoleGrantsWithout(role: string, ...omit: [action: string, subject: string][]) {
-  const grants = DEFAULT_GRANTS.filter(
-    (g) => g.role === role && !omit.some(([a, s]) => g.action === a && g.subject === s),
-  );
-  (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue(grants);
   clearPermissionCache();
   // A grant the switch catalog owns (the Leads and Jobs rows, Assign work to other people, ...) no longer
   // comes from the role's stored grants, so leaving it out of them changes nothing. Taking it away from
@@ -1032,4 +1029,22 @@ export function withLedgerReads<T extends Record<string, any>>(tx: T): T {
   t.refund ??= {};
   t.refund.findMany ??= vi.fn().mockResolvedValue([]);
   return tx;
+}
+
+/**
+ * Make this person the company's Owner for the mocked client (ticket 26: only the Owner changes Admins). The Owner is read in
+ * two places: `ownerOfCompany` (organization.findUnique selecting owner_user_id) before a change, and the company lock
+ * (`lockCompanyForAdminChange`, a raw SELECT ... FOR NO KEY UPDATE) inside it. Every other call keeps its own mock.
+ */
+export function mockCompanyOwner(userId: string) {
+  const findUnique = prisma.organization.findUnique as unknown as ReturnType<typeof vi.fn>;
+  const before = findUnique.getMockImplementation() as ((...a: unknown[]) => unknown) | undefined;
+  findUnique.mockImplementation((args?: { select?: Record<string, unknown> }) =>
+    args?.select?.owner_user_id ? Promise.resolve({ owner_user_id: userId }) : before ? before(args) : Promise.resolve(undefined));
+  const queryRaw = prisma.$queryRaw as unknown as ReturnType<typeof vi.fn>;
+  const rawBefore = queryRaw.getMockImplementation() as ((...a: unknown[]) => unknown) | undefined;
+  queryRaw.mockImplementation((strings: TemplateStringsArray | string, ...values: unknown[]) =>
+    (Array.isArray(strings) ? strings.join('') : String(strings)).includes('owner_user_id FROM organizations')
+      ? Promise.resolve([{ owner_user_id: userId }])
+      : rawBefore ? rawBefore(strings, ...values) : Promise.resolve([]));
 }

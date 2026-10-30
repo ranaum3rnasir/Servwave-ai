@@ -104,7 +104,7 @@ suite('the job detail carries the customer contact set (real database)', () => {
     expect(res.body.job.customer.emails).toEqual([]);
   });
 
-  it('answers forbidden once the person is taken off the job, and not found for another company or a missing id', async () => {
+  it('answers not found once the person is taken off the job, the same as for another company or a missing id', async () => {
     const { org, customer } = await fx.newOrg();
     await fillContactSet(customer);
     const me = await personWith(org, { view_customers: false, jobs_scope: 'attached' });
@@ -114,7 +114,7 @@ suite('the job detail carries the customer contact set (real database)', () => {
 
     await fx.removeCrew(job.visitId!, me.id);
     const afterRemoval = await (await fx.signedInAs(me)).get(`/api/jobs/${job.id}`);
-    expect(afterRemoval.status).toBe(403);
+    expect(afterRemoval.status).toBe(404);
     expect(JSON.stringify(afterRemoval.body)).not.toContain('example.test');
 
     const other = await fx.newOrg();

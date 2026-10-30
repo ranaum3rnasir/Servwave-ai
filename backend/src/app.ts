@@ -4,12 +4,16 @@ import * as Sentry from '@sentry/node';
 import cors from 'cors';
 import helmet from 'helmet';
 import { requestLogger } from './middleware/requestLogger';
+import { markRouteCheck } from './middleware/routeCheck';
 import { env } from './config/env';
 import { parseCorsOrigins } from './lib/cors-origins';
+import { SWITCHES_STAMP_HEADER } from './lib/permissions/switches/stamp';
 import { generalLimiter } from './middleware/rate-limit';
+import { omitPricesFromAnswers } from './lib/permissions/prices';
 import { publicBodyLimit } from './middleware/publicBodyLimit';
 import { auditAccessDenied } from './middleware/auditAccessDenied';
 import { originVerify } from './middleware/originVerify';
+import { refuseNonCanonicalIds } from './middleware/canonicalIds';
 import { unscopedRequest } from './middleware/unscopedRequest';
 import { reviewAttentionScope } from './middleware/reviewAttentionScope';
 import { realtimePingScope } from './middleware/realtimePingScope';
@@ -102,12 +106,14 @@ app.set('trust proxy', 1);
 
 // Middleware
 // same-origin-allow-popups: the embedded payout flow opens its sign-in in a popup that must reach its opener.
-app.use(helmet({ frameguard: { action: 'deny' }, crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' } }));
+app.use(markRouteCheck('step', helmet({ frameguard: { action: 'deny' }, crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' } })));
 // maxAge caches the CORS preflight (OPTIONS) response; without it browsers re-preflight
 // every few seconds, adding a round-trip to most requests. Browsers clamp to their own cap.
 // Auth is bearer-token only (no cookies anywhere in the app), so credentials:true is
 // dead weight — omit it to shrink the surface (F-62).
-app.use(cors({ origin: parseCorsOrigins(env), maxAge: 86400 }));
+// The switches version stamp (P17) is a custom response header, which the browser hides from a cross-origin page
+// unless it is exposed: without this the app could never read it.
+app.use(markRouteCheck('step', cors({ origin: parseCorsOrigins(env), maxAge: 86400, exposedHeaders: [SWITCHES_STAMP_HEADER] })));
 app.use(requestLogger);
 
 // Webhook routes (must be before express.json() for raw body,
@@ -124,11 +130,11 @@ app.use('/api/webhooks', unscopedRequest, webhookRoutes);
 // same signature under its own 640kb ceiling (publicBodyLimit below).
 // Express applies the FIRST matching parser; a body already parsed by the
 // copilot-scoped parser is not re-parsed here (it short-circuits on req._body).
-app.use('/api/copilot', express.json({ limit: '5mb' }));
+app.use('/api/copilot', markRouteCheck('step', express.json({ limit: '5mb' })));
 // The unauthenticated public and auth routes get tighter ceilings (64kb-640kb, per route). Mounted
 // before the 1mb parser for the same first-parser-wins reason; see middleware/publicBodyLimit.ts.
 app.use(publicBodyLimit());
-app.use(express.json({ limit: '1mb' }));
+app.use(markRouteCheck('step', express.json({ limit: '1mb' })));
 
 // Origin verification — reject any traffic that did NOT come through Cloudflare.
 // Cloudflare injects a secret X-Origin-Verify header on every request it forwards
@@ -205,6 +211,10 @@ app.get('/api', (_req, res) => {
 // registers a response 'finish' listener and never alters the response. Mounted here
 // so it does not observe /health or the /api info route (neither ever 403s).
 app.use(auditAccessDenied);
+
+// P11: a signed-in person without See prices gets every answer with its prices left out (lib/permissions/prices.ts).
+// Mounted ahead of the routers; it decides when the answer is sent, so each route's own sign-in and ability apply first.
+app.use('/api', omitPricesFromAnswers);
 
 // Routes
 app.use('/api/auth', authRoutes);
@@ -533,10 +543,17 @@ if (process.env.NODE_ENV !== 'production') {
 
 assertNoTestRoutesInProduction(app);
 
+// A record id in any spelling but the canonical one names nothing (security review SR-1, SR-2, SR-7): every route gets one
+// step, after its sign-in and permission gates, that answers such an id 404 before anything reads the record. After the last
+// route, so every router is covered. The webhook router is left out: vendor callbacks name no record of ours in their path,
+// and their bodies are the vendor's own (read raw, and checked by signature or token in each handler).
+refuseNonCanonicalIds(app, [webhookRoutes]);
+
 // 404 handler
-app.use((_req, res) => {
+// Marked 'closed' (it answers 404 to everyone and touches nothing), so the route test knows it from a handler at the root.
+app.use(markRouteCheck('closed', (_req: express.Request, res: express.Response) => {
   res.status(404).json({ error: 'Not found' });
-});
+}));
 
 // Sentry error handler — registered after all controllers/routes and before our
 // own error-handling middleware, so it captures the error then hands off. No-op

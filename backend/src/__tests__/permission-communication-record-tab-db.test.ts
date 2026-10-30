@@ -74,7 +74,7 @@ suite('the record Communication tab shows the whole job or lead (real database)'
       organizationId: org, roleKey: key,
       values: {
         view_jobs: true, jobs_scope: 'attached', view_leads: true, leads_scope: 'attached', view_customers: true,
-        access_communication: true, view_communication: true, communication_scope: 'linked_to_me', ...values,
+        access_communication: true, view_communication: true, communication_scope: 'attached', ...values,
       },
       actorId: null, reason: 'manual',
     });
@@ -205,7 +205,7 @@ suite('the record Communication tab shows the whole job or lead (real database)'
       const { org, admin, customer } = await newOrg();
       const person = await narrowPerson(org);
       const job = await fx.addJob(org, customer, { crew: [admin.id] });
-      expect((await (await person.api()).get(`/api/jobs/${job.id}/communications`)).status).toBe(403);
+      expect((await (await person.api()).get(`/api/jobs/${job.id}/communications`)).status).toBe(404);
     });
 
     it('keeps the tab and what opens from it for a person with Access Communication off, while the section stays closed', async () => {
@@ -234,7 +234,7 @@ suite('the record Communication tab shows the whole job or lead (real database)'
       const estimateEmail = await addEmail(org, { jobId: job.id, leadId: lead.id, customerId: customer });
       const someoneElses = await addEmail(org, { customerId: customer });
 
-      for (const scope of ['linked_to_me', 'all']) {
+      for (const scope of ['attached', 'all']) {
         const on = await narrowPerson(org, { communication_scope: scope });
         const job2 = await fx.addJob(org, customer, { crew: [on.id] });
         const mine = await addEmail(org, { jobId: job2.id, customerId: customer });
@@ -264,7 +264,7 @@ suite('the record Communication tab shows the whole job or lead (real database)'
       expect(tab.status).toBe(200);
       expect(tabIds(tab.body)).toEqual(expect.arrayContaining([call, text.id, email]));
       expect((await api.get(`/api/communication/calls/${call}`)).status).toBe(200);
-      expect((await api.get(`/api/leads/${theirs.id}/communications`)).status).toBe(403);
+      expect((await api.get(`/api/leads/${theirs.id}/communications`)).status).toBe(404);
 
       const wide = await narrowPerson(org, { leads_scope: 'all' });
       const all = await (await wide.api()).get(`/api/leads/${theirs.id}/communications`);

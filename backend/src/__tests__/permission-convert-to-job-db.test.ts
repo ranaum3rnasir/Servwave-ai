@@ -150,7 +150,8 @@ suite('converting a lead to a job: who may, and whether they may open the result
 
       const res = await convert(await stranger.api(), c);
 
-      expect(res.status).toBe(403);
+      // The estimates hang off a lead they cannot reach, so they answer like missing ones (ticket 33).
+      expect(res.status).toBe(404);
       expect(await jobsFor(c)).toBe(0);
     });
 
@@ -194,7 +195,7 @@ suite('converting a lead to a job: who may, and whether they may open the result
       expect(Object.keys(res.body.job).sort()).toEqual(['id', 'job_number']);
       expect(await jobsFor(c)).toBe(1);
       // The answer is true: the server does refuse that job page to them.
-      expect((await api.get(`/api/jobs/${res.body.job.id}`)).status).toBe(403);
+      expect((await api.get(`/api/jobs/${res.body.job.id}`)).status).toBe(404);
     });
   });
 

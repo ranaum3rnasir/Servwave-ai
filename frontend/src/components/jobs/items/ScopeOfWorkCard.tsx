@@ -114,7 +114,7 @@ export interface ScopeOfWorkCardProps {
    * control is ABSENT rather than disabled, matching internal_cost's treatment above and
    * AddLineDialog's stated absent-not-disabled convention.
    *
-   * Distinct from `canSeePricing` on purpose: that is cost/margin ("See financial data"), this is
+   * Distinct from `canSeePricing` on purpose: that is cost/margin ("See costs"), this is
    * the customer-facing price. On Job the two happen to be driven by the same ability; on the
    * other two surfaces they are not, which is exactly why this cannot be folded into that flag.
    */

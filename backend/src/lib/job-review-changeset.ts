@@ -125,7 +125,7 @@ export interface ReviewChangeSetInput {
   decisions: readonly ReviewDecision[];
   /** The customer's own name fields as they stand now, shown beside the job's value of a changed name (S06.11). */
   customerNow?: { first_name: string; last_name: string; company_name: string | null };
-  /** "See financial data": costs appear in the summary only with it. Prices always do. */
+  /** "See costs": costs appear in the summary only with it. Prices always do. */
   mayCosts: boolean;
   /**
    * When the round was finished, for a job in Ready to close (S06.20): what changed after it is listed apart as "Since the

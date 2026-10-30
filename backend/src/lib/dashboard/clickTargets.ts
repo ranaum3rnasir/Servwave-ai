@@ -5,21 +5,21 @@ import type { SwitchValue } from '../permissions/switches/catalog';
  *
  * The server decides, per person, and sends the address or nothing: the page draws an element with no address but does
  * not make it clickable, and holds no address of its own. A page opens for a person on the switches that route's guard
- * asks for (a list page: its View and Show switches; a page that is not a record type: its Access switch), so each
+ * asks for (a list page: its View switch; a page that is not a record type: its Access switch), so each
  * target here lists exactly those, and a test reads them back from the routed guards so the two cannot drift.
  */
 export const CLICK_TARGETS = {
-  invoices_list: { path: '/invoices', needs: ['view_invoices', 'show_invoices_page'] },
+  invoices_list: { path: '/invoices', needs: ['view_invoices'] },
   payments_report: { path: '/reports/payments', needs: ['access_reports'] },
   unpaid_report: { path: '/reports/unpaid-invoices', needs: ['access_reports'] },
   conversion_report: { path: '/reports/estimate-conversion', needs: ['access_reports'] },
   reports: { path: '/reports', needs: ['access_reports'] },
-  estimates_list: { path: '/estimates', needs: ['view_estimates', 'show_estimates_page'] },
-  service_plans_list: { path: '/service-plans', needs: ['view_service_plans', 'show_service_plans_page'] },
+  estimates_list: { path: '/estimates', needs: ['view_estimates'] },
+  service_plans_list: { path: '/service-plans', needs: ['view_service_plans'] },
   schedule: { path: '/schedule', needs: ['access_schedule'] },
-  jobs_list: { path: '/jobs', needs: ['view_jobs', 'show_jobs_page'] },
-  leads_list: { path: '/leads', needs: ['view_leads', 'show_leads_page'] },
-  payments_page: { path: '/payments', needs: ['view_payments', 'show_payments_page'] },
+  jobs_list: { path: '/jobs', needs: ['view_jobs'] },
+  leads_list: { path: '/leads', needs: ['view_leads'] },
+  payments_page: { path: '/payments', needs: ['view_payments'] },
 } as const satisfies Record<string, { path: string; needs: readonly string[] }>;
 
 /** The Leads list filtered to "No owner" (the Owner filter's option; the Leads page reads the same address). */

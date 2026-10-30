@@ -86,8 +86,8 @@ suite('the customer\'s estimate decisions on the record Communication tab (real 
       organizationId: org, roleKey: key,
       values: {
         view_jobs: true, jobs_scope: 'attached', view_leads: true, leads_scope: 'attached', view_customers: true,
-        view_estimates: true, estimates_scope: 'attached', access_communication: true, view_communication: true,
-        communication_scope: 'linked_to_me', ...values,
+        view_estimates: true, access_communication: true, view_communication: true,
+        communication_scope: 'attached', ...values,
       },
       actorId: null, reason: 'manual',
     });
@@ -283,7 +283,7 @@ suite('the customer\'s estimate decisions on the record Communication tab (real 
   });
 
   describe('who gets an entry', () => {
-    it('leaves it out for a person on the job who cannot open the estimate, and gives it to the estimate\'s creator', async () => {
+    it('leaves it out for a person on the job who cannot open the estimate, the estimate\'s creator included (P7)', async () => {
       const { org, customer } = await newOrg();
       const creator = await personWith(org, { ...ESTIMATES_VIEW_OFF });
       const colleague = await personWith(org, { ...ESTIMATES_VIEW_OFF });
@@ -292,7 +292,9 @@ suite('the customer\'s estimate decisions on the record Communication tab (real 
       const approved = await addPortalDecision(org, estimate.id, 'APPROVED');
 
       const mine = await (await creator.api()).get(`/api/jobs/${job.id}/communications`);
-      expect(entriesOf(mine.body).map((e) => e.id)).toEqual([approved]);
+      expect(mine.status).toBe(200);
+      expect(entriesOf(mine.body)).toEqual([]);
+      expect(approved).toBeTruthy();
 
       const theirs = await (await colleague.api()).get(`/api/jobs/${job.id}/communications`);
       expect(theirs.status).toBe(200);
@@ -301,7 +303,7 @@ suite('the customer\'s estimate decisions on the record Communication tab (real 
 
     it('gives it to a person whose estimates data scope is All, on a job they are not on', async () => {
       const { org, admin, customer } = await newOrg();
-      const wide = await personWith(org, { jobs_scope: 'all', estimates_scope: 'all' });
+      const wide = await personWith(org, { jobs_scope: 'all', leads_scope: 'all' });
       const job = await fx.addJob(org, customer, { crew: [admin.id] });
       const estimate = await fx.addEstimate(org, customer, admin.id, { jobId: job.id });
       const approved = await addPortalDecision(org, estimate.id, 'APPROVED');
@@ -315,11 +317,12 @@ suite('the customer\'s estimate decisions on the record Communication tab (real 
     it('leaves a job\'s entry out for a person who can open the customer but not the job, and keeps a customer-only estimate\'s', async () => {
       const { org, admin, customer } = await newOrg();
       // Opens the customer through a lead they are on, never the job.
-      const person = await personWith(org, { estimates_scope: 'all' });
+      const person = await personWith(org, { jobs_scope: 'attached', leads_scope: 'attached' });
       await fx.addLead(org, customer, { assignees: [person.id] });
       const job = await fx.addJob(org, customer, { crew: [admin.id] });
       const jobEstimate = await fx.addEstimate(org, customer, admin.id, { jobId: job.id });
-      const customerEstimate = await fx.addEstimate(org, customer, admin.id);
+      // Theirs, made for the customer alone: the one estimate with no lead or job a narrow scope reaches (P7).
+      const customerEstimate = await fx.addEstimate(org, customer, person.id);
       await addPortalDecision(org, jobEstimate.id, 'APPROVED');
       const customerOnly = await addPortalDecision(org, customerEstimate.id, 'APPROVED');
 
@@ -330,7 +333,7 @@ suite('the customer\'s estimate decisions on the record Communication tab (real 
 
     it('lists every entry for a person who can open the customer\'s job', async () => {
       const { org, admin, customer } = await newOrg();
-      const person = await personWith(org, { estimates_scope: 'all' });
+      const person = await personWith(org, { jobs_scope: 'all', leads_scope: 'all' });
       const job = await fx.addJob(org, customer, { crew: [person.id] });
       const jobEstimate = await fx.addEstimate(org, customer, admin.id, { jobId: job.id });
       const customerEstimate = await fx.addEstimate(org, customer, admin.id);
@@ -345,7 +348,7 @@ suite('the customer\'s estimate decisions on the record Communication tab (real 
   describe('what the entries are not', () => {
     it('never appear in a section list or an unread count, and send no alert', async () => {
       const { org, admin, customer } = await newOrg();
-      const person = await personWith(org, { communication_scope: 'all', jobs_scope: 'all', estimates_scope: 'all' });
+      const person = await personWith(org, { communication_scope: 'all', jobs_scope: 'all', leads_scope: 'all' });
       const job = await fx.addJob(org, customer, { crew: [person.id] });
       const estimate = await fx.addEstimate(org, customer, admin.id, { jobId: job.id });
       const api = await person.api();

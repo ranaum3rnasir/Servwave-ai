@@ -1,6 +1,6 @@
 /**
  * Roles & Permissions S07.17 - the routed Price Book page is view only without the Price Book boxes, shows no cost
- * without See financial data, and offers its download only with Export price book.
+ * without See costs, and offers its download only with Export price book.
  *
  * Every ability below is the grant list the switches compile to (read / create / update / delete / export on
  * PriceBook, read on Pricing), never a role name. The page is the real routed file; only the data hooks are
@@ -98,6 +98,8 @@ const EDIT: AbilityRule = { action: 'update', subject: 'PriceBook' };
 const DELETE: AbilityRule = { action: 'delete', subject: 'PriceBook' };
 const EXPORT: AbilityRule = { action: 'export', subject: 'PriceBook' };
 const FINANCIAL: AbilityRule = { action: 'read', subject: 'Pricing' };
+/** "See prices": what the customer is charged. Without it a bundle shows no price line at all (priceBookBundlesWithoutPrices.test.tsx). */
+const PRICES: AbilityRule = { action: 'read', subject: 'Prices' };
 
 function renderPage(...rules: AbilityRule[]) {
   return renderWithProviders(<PriceBookPage />, {
@@ -187,9 +189,9 @@ describe('S07.17 - the Items grid Visibility cell follows the Edit box', () => {
   });
 });
 
-describe('S07.17 - cost, markup and margin show only with See financial data', () => {
+describe('S07.17 - cost, markup and margin show only with See costs', () => {
   it('shows a bundle card no margin, markup or profitability figure without it, and no 0% or 100% in their place', async () => {
-    renderPage(VIEW);
+    renderPage(VIEW, PRICES);
     await screen.findByText('Costed hinge');
     await openTab(/groups/i, 'Rekey Bundle');
 
@@ -226,7 +228,7 @@ describe('S07.17 - cost, markup and margin show only with See financial data', (
   });
 
   it('opens an item with its sell price but no unit cost, margin or markup without it', async () => {
-    renderPage(VIEW);
+    renderPage(VIEW, PRICES);
     fireEvent.click((await screen.findByText('Costed hinge')).closest('tr')!);
     const dialog = await screen.findByRole('dialog');
 
@@ -247,7 +249,7 @@ describe('S07.17 - cost, markup and margin show only with See financial data', (
   });
 
   it('saves an edit without a cost when the person cannot see costs, so the hidden cost is not overwritten with 0', async () => {
-    renderPage(VIEW, EDIT);
+    renderPage(VIEW, EDIT, PRICES);
     fireEvent.click((await screen.findByText('Costed hinge')).closest('tr')!);
     fireEvent.click(await screen.findByRole('button', { name: 'Save Changes' }));
 
@@ -276,16 +278,18 @@ describe('S07.17 - cost, markup and margin show only with See financial data', (
       return screen.findByRole('dialog');
     }
 
-    it('has no Cost or Profitability column without See financial data', async () => {
-      const dialog = await openBundle();
+    it('has no Cost or Profitability column without See costs', async () => {
+      const dialog = await openBundle(PRICES);
       expect(within(dialog).getByRole('columnheader', { name: 'Price' })).toBeInTheDocument();
       expect(within(dialog).queryByRole('columnheader', { name: 'Cost' })).not.toBeInTheDocument();
       expect(within(dialog).queryByRole('columnheader', { name: 'Profitability' })).not.toBeInTheDocument();
       expect(within(dialog).queryByRole('group', { name: /profitability for/i })).not.toBeInTheDocument();
     });
 
-    it('has both columns with See financial data', async () => {
-      const dialog = await openBundle(FINANCIAL);
+    // See costs needs See prices (the catalog's Requires), and margin and markup are worked out from the price, so a real
+    // holder of See costs holds both.
+    it('has both columns with See costs (and the See prices it needs)', async () => {
+      const dialog = await openBundle(FINANCIAL, PRICES);
       expect(within(dialog).getByRole('columnheader', { name: 'Cost' })).toBeInTheDocument();
       expect(within(dialog).getByRole('columnheader', { name: 'Profitability' })).toBeInTheDocument();
     });
@@ -311,7 +315,7 @@ describe('S07.17 - cost, markup and margin show only with See financial data', (
       return screen.findByRole('dialog');
     }
 
-    it('has no Default Markup field without See financial data, and saving leaves the stored markup as it was', async () => {
+    it('has no Default Markup field without See costs, and saving leaves the stored markup as it was', async () => {
       const dialog = await openBrand();
       expect(within(dialog).queryByText('Default Markup')).not.toBeInTheDocument();
 
@@ -320,13 +324,13 @@ describe('S07.17 - cost, markup and margin show only with See financial data', (
       expect(h.upsertBrand.mock.calls[0]![0].defaultMarkupPct).toBe(1.4);
     });
 
-    it('has the Default Markup field with See financial data', async () => {
+    it('has the Default Markup field with See costs', async () => {
       const dialog = await openBrand(FINANCIAL);
       expect(within(dialog).getByText('Default Markup')).toBeInTheDocument();
     });
   });
 
-  it('puts no cost, margin or markup column in the download, with or without See financial data', async () => {
+  it('puts no cost, margin or markup column in the download, with or without See costs', async () => {
     for (const rules of [[VIEW, EXPORT], [VIEW, EXPORT, FINANCIAL]]) {
       h.downloadCSV.mockClear();
       const { unmount } = renderPage(...rules);

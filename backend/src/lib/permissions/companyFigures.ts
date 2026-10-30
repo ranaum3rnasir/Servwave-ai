@@ -1,8 +1,7 @@
 /**
  * M4 - company-figures redaction (Roles & Permissions, PRD 1, slice S01.16).
  *
- * Company-wide money - dashboard money tiles, chart amounts, revenue on the scoreboards, dollar amounts in the
- * activity feed, report totals - is shown only to a person who holds "See company figures"
+ * Company-wide money - dashboard money tiles, chart amounts, revenue on the scoreboards, report totals - is shown only to a person who holds "See company figures"
  * (`canSeeCompanyFigures` in enforce.ts). Everything here runs on a payload an endpoint has already built, for a
  * person who does not hold it, and leaves the money out: the key is gone, never zero or null, so a screen cannot
  * mistake "hidden" for "nothing". Counts, rates, dates and the per-record prices of a record the person can open
@@ -10,23 +9,6 @@
  *
  * PRD 8 (call and agent revenue) builds on `canSeeCompanyFigures` and adds its own redaction beside these.
  */
-
-const AMOUNT = String.raw`-?\$\s?\d[\d,]*(?:\.\d+)?`;
-
-/**
- * A line of text with its dollar amounts taken out, along with the little word that introduced each one
- * ("Payment of $12.50 received" reads "Payment received"). A parenthetical that holds an amount goes whole
- * ("(plus $2.00 tip)"), and so does a dot-separated trailing amount ("Acme · 5 days past due · $1,200").
- */
-export function redactDollarAmounts(text: string): string {
-  return text
-    .replace(new RegExp(String.raw`\s*\([^()]*${AMOUNT}[^()]*\)`, 'g'), '')
-    .replace(new RegExp(String.raw`\s*[·;,]\s*${AMOUNT}`, 'g'), '')
-    .replace(new RegExp(String.raw`\s+(?:of|to|for|by)\s+${AMOUNT}`, 'g'), '')
-    .replace(new RegExp(String.raw`\s*${AMOUNT}`, 'g'), '')
-    .replace(/\s{2,}/g, ' ')
-    .trim();
-}
 
 type Json = Record<string, any>;
 
@@ -41,7 +23,7 @@ const COMPANY_FIGURE_TILES = ['kpi.recurring', 'revenue_by_job_type', 'smart_ins
  * The dashboard answer for a person without See company figures (PRD 9). The endpoint already builds every money tile
  * over the person's own set ("Yours"), so this is the backstop and leaves that money alone: it takes out what is the
  * company's only - the Company figures tiles, the monthly revenue goal and its percentage, the revenue column on both
- * scoreboards and on lead sources - and the dollar amounts in the activity feed. The key is gone, never zero. A price
+ * scoreboards and on lead sources. The key is gone, never zero. A price
  * on a record the person can open (an overdue invoice's amount) is not a company figure and stays.
  */
 export function redactDashboardCompanyFigures<T extends Json>(answer: T): T {
@@ -62,9 +44,6 @@ export function redactDashboardCompanyFigures<T extends Json>(answer: T): T {
     // A tile whose loader failed holds an error marker, not a list: it has nothing to redact.
     for (const id of ['tech_scoreboard', 'dispatch_scoreboard', 'lead_sources']) {
       if (Array.isArray(data[id])) data[id] = withoutKeys(data[id] as Json[], ['revenue']);
-    }
-    if (Array.isArray(data.recent_activity)) {
-      data.recent_activity = (data.recent_activity as Json[]).map((e) => ({ ...e, description: redactDollarAmounts(String(e.description ?? '')) }));
     }
     out.data = data;
   }
@@ -116,7 +95,7 @@ export function redactArAgingReport<T extends Json>(report: T): Json {
 
 /**
  * The jobs report's margin and cost keys. `profit` is a margin word (and the cost columns beside it are costs), so
- * they follow See financial data (`canSeeCosts`), not See company figures: a person without it gets each job's
+ * they follow See costs (`canSeeCosts`), not See company figures: a person without it gets each job's
  * prices (billed, paid, subtotal, tax, tip) and none of these.
  */
 const JOBS_REPORT_COST_KEYS = ['profit', 'itemCost', 'laborCost', 'cardExpenses', 'techExpenses'];

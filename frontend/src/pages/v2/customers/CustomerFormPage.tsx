@@ -44,6 +44,7 @@ import { v2Path, preferV2Path } from '../uiV2';
 import { useRecordVisit } from '../pageBreadcrumbs';
 import { DuplicateCustomerDialog } from './components/duplicateCustomerDialog';
 import { shrinkPhotoForUpload } from '@/lib/attachments/shrinkPhotoForUpload';
+import { useNoOptionsLabel } from '@/lib/useIsAdmin';
 
 type CustomerFormData = z.infer<typeof customerSchema>;
 
@@ -160,6 +161,7 @@ function Field({
  * `customer-form`, `customer-form-submit`, `customer-billing-group`.
  */
 export default function CustomerFormPage() {
+  const noOptions = useNoOptionsLabel('add some in Settings');
   const { id } = useParams<{ id: string }>();
   const location = useLocation();
   const queryClient = useQueryClient();
@@ -835,7 +837,7 @@ export default function CustomerFormPage() {
                   options={
                     resolvedSourceOptions.length > 0
                       ? resolvedSourceOptions.map((s) => ({ value: s, label: s }))
-                      : [{ value: '__none__', label: 'No options - add some in Settings', disabled: true }]
+                      : [{ value: '__none__', label: noOptions, disabled: true }]
                   }
                 />
               </Field>
@@ -1133,7 +1135,7 @@ export default function CustomerFormPage() {
                             options={
                               resolvedTermsOptions.length > 0
                                 ? resolvedTermsOptions.map((t) => ({ value: t, label: t }))
-                                : [{ value: '__none__', label: 'No options - add some in Settings', disabled: true }]
+                                : [{ value: '__none__', label: noOptions, disabled: true }]
                             }
                           />
                         </Field>

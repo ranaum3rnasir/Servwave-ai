@@ -112,9 +112,9 @@ export function JobStagesSection({ jobId }: { jobId: string }) {
   // S07.4 - the response already leaves these out for a person without the switch; the section follows the switches too.
   const { showCost, showVendor } = useStageLineDisclosure();
   // S07.5 - an attached person without View stock reads the job's stages here, but the Staging tab behind the link is not theirs.
-  // The link follows the Stock page route's own gate (View stock and Show Stock page), so it is never one that bounces to the dashboard.
+  // The link follows the Stock page route's own gate (View stock), so it is never one that bounces to the dashboard.
   const mine = useMySwitches()?.values;
-  const canOpenInventory = switchOn(mine, 'view_stock') && switchOn(mine, 'show_stock_page');
+  const canOpenInventory = switchOn(mine, 'view_stock');
 
   if (isError) return null;
 

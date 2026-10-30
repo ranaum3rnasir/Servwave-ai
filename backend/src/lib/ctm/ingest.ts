@@ -958,7 +958,8 @@ export async function ingestSms(
   // isDeliverableThread + resolveSmsDestination's user branch).
   // Compose-to-number deliberately does NOT pass it - see the option's own
   // note in smsThread.ts.
-  const { thread, match } = await findOrCreateSmsThreadByNumber(db, orgId, counterpart, {
+  // Nobody is signed in here: the number resolves for the whole company.
+  const { thread, match } = await findOrCreateSmsThreadByNumber(db, orgId, counterpart, (n) => matchByPhone(db, orgId, n), {
     matchStaff: true,
   });
 

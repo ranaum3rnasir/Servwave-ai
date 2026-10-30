@@ -27,7 +27,7 @@ const ROLES = ['ADMIN', 'DISPATCHER', 'SALES', 'TECHNICIAN'] as const;
 const OWN_VIA_JOB = { job: { estimate: { lead: { lead_assignees: { some: { user_id: '{{userId}}' } } } } } };
 
 const grantsFor = (role: string) => DEFAULT_GRANTS.filter((g) => g.role === role);
-const abilityFor = (role: string) => defineAbilityFor({ id: 'user-1', role }, grantsFor(role));
+const abilityFor = (role: string) => defineAbilityFor({ is_admin: role === 'ADMIN', id: 'user-1', role }, grantsFor(role));
 const actionsFor = (role: string) =>
   DEFAULT_GRANTS.filter((g) => g.role === role && g.subject === SUBJECT)
     .map((g) => g.action)
@@ -143,7 +143,7 @@ describe('CASL — ability resolution per role', () => {
 describe('Approve logistic orders — the switch reaches only the orders the holder can open', () => {
   const holder = (role: 'TECHNICIAN' | 'SALES' | 'DISPATCHER', values: Record<string, boolean | string> = {}) =>
     compileSwitchGrants({ ...presetSwitchSet(role), approve_logistic_orders: true, view_logistic_orders: true, ...values });
-  const person = { id: 'p1', role: 'TECHNICIAN' };
+  const person = { id: 'p1', role: 'TECHNICIAN', is_admin: false };
 
   it('gives a Technician-based approver the approve grant, but a read scoped to their own jobs and leads, never org-wide', () => {
     const grants = holder('TECHNICIAN');
@@ -156,13 +156,13 @@ describe('Approve logistic orders — the switch reaches only the orders the hol
   });
 
   it('keeps a Sales-based approver on the kept Through own leads reach, plus the leads they can open', () => {
-    const where = scopeWhereFor({ id: 's1', role: 'SALES' }, SUBJECT, holder('SALES'));
+    const where = scopeWhereFor({ is_admin: false, id: 's1', role: 'SALES' }, SUBJECT, holder('SALES'));
     expect(JSON.stringify(where)).toContain('lead_assignees');
     expect(where).not.toEqual({});
   });
 
   it('gives a Dispatcher-based approver with Jobs and Leads scope All every order, unconditionally', () => {
-    expect(scopeWhereFor({ id: 'd1', role: 'DISPATCHER' }, SUBJECT, holder('DISPATCHER'))).toEqual({});
+    expect(scopeWhereFor({ is_admin: false, id: 'd1', role: 'DISPATCHER' }, SUBJECT, holder('DISPATCHER'))).toEqual({});
   });
 
   it('gives nothing to a person without View logistic orders: the Requires keeps approval off with it', () => {

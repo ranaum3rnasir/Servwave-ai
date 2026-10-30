@@ -9,6 +9,7 @@ import { withOrgContext } from '../middleware/withOrgContext';
 import { multerErrorHandler, megabytes } from '../middleware/multerErrors';
 import * as invAssetsController from '../controllers/inv-assets.controller';
 import { MAX_PHOTO_SIZE } from '../controllers/inv-assets.controller';
+import { answerOutOfReachAsMissing, reachableAsset } from '../lib/permissions/outOfReachIsMissing';
 
 const router = Router();
 const photoUpload = multer({
@@ -45,5 +46,9 @@ router.post('/assets/:id/note', canDo('update', 'Inventory'), validate(invAssets
 // consumption drops the org AsyncLocalStorage scope (learning "multer drops
 // the ALS tenant context"; same order as attachment.routes.ts).
 router.post('/assets/:id/photo', canDo('update', 'Inventory'), photoUpload.single('file'), photoMulterErrors, withOrgContext, invAssetsController.uploadAssetPhoto);
+
+// Ticket 33: a record out of the person's reach answers exactly like a missing one on every route above that names its id
+// (lib/permissions/outOfReachIsMissing.ts). Keep this after the last route.
+answerOutOfReachAsMissing(router, { param: 'id', notFound: 'Asset not found', reaches: reachableAsset });
 
 export default router;

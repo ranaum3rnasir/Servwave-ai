@@ -33,6 +33,8 @@ const linkOf = (values: Record<string, SwitchValue>, id: string) => {
   expect(t, `${id} is eligible`).toBeDefined();
   return t!.link;
 };
+/** The tile's link, or null when the tile is not offered at all: either way there is nothing to click. */
+const linkIfOffered = (values: Record<string, SwitchValue>, id: string) => eligibleTiles(values).find((x) => x.id === id)?.link ?? null;
 
 describe('the click-target table', () => {
   it('names only switches the switch catalog holds', () => {
@@ -72,11 +74,10 @@ describe('the click-target table', () => {
 });
 
 describe('the Payments page target (P9)', () => {
-  it('opens /payments, with its attention-chip query, only with View payments and Show Payments page', () => {
+  it('opens /payments, with its attention-chip query, only with View payments', () => {
     expect(CLICK_TARGETS.payments_page.path).toBe('/payments');
     expect(clickTarget('payments_page', everythingBut(), '?tab=payments&chip=attention')).toBe('/payments?tab=payments&chip=attention');
     expect(clickTarget('payments_page', everythingBut('view_payments'), '?tab=payments&chip=attention')).toBeNull();
-    expect(clickTarget('payments_page', everythingBut('show_payments_page'), '?tab=payments&chip=attention')).toBeNull();
   });
 });
 
@@ -93,69 +94,68 @@ describe('each tile carries the target its switches allow', () => {
     expect(linkOf(everythingBut(), 'kpi.avg_ticket')).toBe('/reports');
   });
 
-  it('has no target for Monthly Revenue and its chart without Show Invoices page, and one with it', () => {
+  it('has no target for Monthly Revenue and its chart without View invoices, and one with it', () => {
     for (const id of ['kpi.revenue_mtd', 'revenue_chart']) {
-      expect(linkOf(everythingBut('show_invoices_page'), id), id).toBeNull();
+      expect(linkIfOffered(everythingBut('view_invoices'), id), id).toBeNull();
       expect(linkOf(everythingBut(), id), id).toBe('/invoices');
     }
   });
 
-  it('opens the lists for Jobs This Week, Open Leads and Deposits Awaiting when View and Show are both on', () => {
+  it('opens the lists for Jobs This Week, Open Leads and Deposits Awaiting when View is on', () => {
     expect(linkOf(everythingBut(), 'kpi.jobs_week')).toBe('/jobs');
     expect(linkOf(everythingBut(), 'kpi.open_leads')).toBe('/leads');
     expect(linkOf(everythingBut(), 'kpi.deposits')).toBe('/estimates');
-    expect(linkOf(everythingBut('show_jobs_page'), 'kpi.jobs_week')).toBeNull();
-    expect(linkOf(everythingBut('show_leads_page'), 'kpi.open_leads')).toBeNull();
-    expect(linkOf(everythingBut('show_estimates_page'), 'kpi.deposits')).toBeNull();
+    expect(linkIfOffered(everythingBut('view_jobs'), 'kpi.jobs_week')).toBeNull();
+    expect(linkIfOffered(everythingBut('view_leads'), 'kpi.open_leads')).toBeNull();
+    expect(linkIfOffered(everythingBut('view_estimates'), 'kpi.deposits')).toBeNull();
   });
 
-  it('opens the Jobs list filtered to Unscheduled from Unscheduled jobs, only with View jobs and Show Jobs page', () => {
+  it('opens the Jobs list filtered to Unscheduled from Unscheduled jobs, only with View jobs', () => {
     expect(linkOf(everythingBut(), 'unscheduled_jobs')).toBe('/jobs?status=UNSCHEDULED');
-    expect(linkOf(everythingBut('show_jobs_page'), 'unscheduled_jobs')).toBeNull();
+    expect(linkIfOffered(everythingBut('view_jobs'), 'unscheduled_jobs')).toBeNull();
     // Without View jobs the tile is not offered at all.
     expect(eligibleTiles(everythingBut('view_jobs')).some((t) => t.id === 'unscheduled_jobs')).toBe(false);
   });
 
-  it('opens the Jobs list filtered to the Office review queue from Office review queue, only with View jobs and Show Jobs page', () => {
+  it('opens the Jobs list filtered to the Office review queue from Office review queue, only with View jobs', () => {
     expect(linkOf(everythingBut(), 'office_review_queue')).toBe('/jobs?in_office_review=true');
-    expect(linkOf(everythingBut('show_jobs_page'), 'office_review_queue')).toBeNull();
+    expect(linkIfOffered(everythingBut('view_jobs'), 'office_review_queue')).toBeNull();
     expect(linkOf(everythingBut('view_jobs'), 'office_review_queue')).toBeNull();
     // Without Office review the tile is not offered at all.
     expect(eligibleTiles(everythingBut('office_review')).some((t) => t.id === 'office_review_queue')).toBe(false);
   });
 
-  it('opens the Jobs list from Jobs this month, only with View jobs and Show Jobs page', () => {
+  it('opens the Jobs list from Jobs this month, only with View jobs', () => {
     expect(linkOf(everythingBut(), 'jobs_this_month')).toBe('/jobs');
-    expect(linkOf(everythingBut('show_jobs_page'), 'jobs_this_month')).toBeNull();
+    expect(linkIfOffered(everythingBut('view_jobs'), 'jobs_this_month')).toBeNull();
     // Without View jobs the tile is not offered at all.
     expect(eligibleTiles(everythingBut('view_jobs')).some((t) => t.id === 'jobs_this_month')).toBe(false);
   });
 
-  it('opens the Jobs list from Completed jobs value, only with View jobs and Show Jobs page, carrying the Completed this month filter', () => {
+  it('opens the Jobs list from Completed jobs value, only with View jobs, carrying the Completed this month filter', () => {
     expect(linkOf(everythingBut(), 'completed_jobs_value')).toBe('/jobs?completed_this_month=true');
-    expect(linkOf(everythingBut('show_jobs_page'), 'completed_jobs_value')).toBeNull();
+    expect(linkIfOffered(everythingBut('view_jobs'), 'completed_jobs_value')).toBeNull();
     // Without View jobs the tile is not offered at all.
     expect(eligibleTiles(everythingBut('view_jobs')).some((t) => t.id === 'completed_jobs_value')).toBe(false);
   });
 
-  it('opens the Estimates list filtered to Draft from Estimates still to send, only with View estimates and Show Estimates page', () => {
+  it('opens the Estimates list filtered to Draft from Estimates still to send, only with View estimates', () => {
     expect(linkOf(everythingBut(), 'estimates_to_send')).toBe('/estimates?status=DRAFT');
-    expect(linkOf(everythingBut('show_estimates_page'), 'estimates_to_send')).toBeNull();
+    expect(linkIfOffered(everythingBut('view_estimates'), 'estimates_to_send')).toBeNull();
     // Without View estimates the tile is not offered at all.
     expect(eligibleTiles(everythingBut('view_estimates')).some((t) => t.id === 'estimates_to_send')).toBe(false);
   });
 
-  it('opens the Schedule\'s No crew filter from Missing crew, only with Access Schedule (View jobs and Show Jobs page do not decide it)', () => {
+  it('opens the Schedule\'s No crew filter from Missing crew, only with Access Schedule (View jobs does not decide it)', () => {
     expect(linkOf(everythingBut(), 'missing_crew')).toBe('/schedule?filter=no_crew');
     expect(linkOf(everythingBut('access_schedule'), 'missing_crew')).toBeNull();
-    expect(linkOf(everythingBut('show_jobs_page'), 'missing_crew')).toBe('/schedule?filter=no_crew');
     // Without View jobs the tile is not offered at all.
     expect(eligibleTiles(everythingBut('view_jobs')).some((t) => t.id === 'missing_crew')).toBe(false);
   });
 
-  it('opens the Leads list filtered to No owner from Missing lead owner, only with View leads and Show Leads page', () => {
+  it('opens the Leads list filtered to No owner from Missing lead owner, only with View leads', () => {
     expect(linkOf(everythingBut(), 'missing_lead_owner')).toBe('/leads?assigned_to=NO_OWNER');
-    expect(linkOf(everythingBut('show_leads_page'), 'missing_lead_owner')).toBeNull();
+    expect(linkIfOffered(everythingBut('view_leads'), 'missing_lead_owner')).toBeNull();
     // Without View leads the tile is not offered at all.
     expect(eligibleTiles(everythingBut('view_leads')).some((t) => t.id === 'missing_lead_owner')).toBe(false);
   });
@@ -170,12 +170,12 @@ describe('each tile carries the target its switches allow', () => {
   it('opens the Jobs list from the scoreboards and Jobs by Status, the Reports page from Revenue by Job Type, the Service plans list from Recurring', () => {
     for (const id of ['tech_scoreboard', 'dispatch_scoreboard', 'jobs_by_status']) {
       expect(linkOf(everythingBut(), id), id).toBe('/jobs');
-      expect(linkOf(everythingBut('show_jobs_page'), id), id).toBeNull();
+      expect(linkIfOffered(everythingBut('view_jobs'), id), id).toBeNull();
     }
     expect(linkOf(everythingBut(), 'revenue_by_job_type')).toBe('/reports');
     expect(linkOf(everythingBut('access_reports'), 'revenue_by_job_type')).toBeNull();
     expect(linkOf(everythingBut(), 'kpi.recurring')).toBe('/service-plans');
-    expect(linkOf(everythingBut('show_service_plans_page'), 'kpi.recurring')).toBeNull();
+    expect(linkIfOffered(everythingBut('view_service_plans'), 'kpi.recurring')).toBeNull();
   });
 
   it('gives a tile whose rows carry their own targets, or that opens nothing, no tile-level target', () => {
@@ -191,8 +191,8 @@ describe('a Revenue Pipeline stage carries the target of the list page it names'
   const stages = buildPipeline({ leads: 1, estimatesAmount: 1, approvedAmount: 1, depositAmount: 1, jobAmount: 1, invoicedAmount: 1, paidAmount: 1 });
   const linkByKey = (values: Record<string, SwitchValue>) => Object.fromEntries(linkPipelineStages(stages, values).map((s) => [s.key, s.link]));
 
-  it('has no target on the Invoiced and Paid stages without Show Invoices page', () => {
-    const links = linkByKey(everythingBut('show_invoices_page'));
+  it('has no target on the Invoiced and Paid stages without View invoices', () => {
+    const links = linkByKey(everythingBut('view_invoices'));
     expect(links.invoiced).toBeNull();
     expect(links.paid).toBeNull();
     expect(links.estimates).toBe('/estimates');
@@ -212,9 +212,9 @@ describe('a Revenue Pipeline stage carries the target of the list page it names'
   });
 
   it('leaves a stage without a target when its list page is closed, whichever page that is', () => {
-    expect(linkByKey(everythingBut('show_estimates_page'))).toMatchObject({ estimates: null, approved: null, deposit: null, leads: '/leads' });
-    expect(linkByKey(everythingBut('show_jobs_page')).job).toBeNull();
-    expect(linkByKey(everythingBut('show_leads_page')).leads).toBeNull();
+    expect(linkByKey(everythingBut('view_estimates'))).toMatchObject({ estimates: null, approved: null, deposit: null, leads: '/leads' });
+    expect(linkByKey(everythingBut('view_jobs')).job).toBeNull();
+    expect(linkByKey(everythingBut('view_leads')).leads).toBeNull();
   });
 
   it('keeps every other field of the stage as built', () => {
@@ -238,11 +238,11 @@ describe('a Smart Insights card carries its list page\'s target only when the pe
   });
 
   it('gives a card no target when its list page is closed to the person', () => {
-    expect(linkById(everythingBut('show_invoices_page')).past_due_ar).toBeNull();
-    expect(linkById(everythingBut('show_leads_page')).top_source).toBeNull();
+    expect(linkById(everythingBut('view_invoices')).past_due_ar).toBeNull();
+    expect(linkById(everythingBut('view_leads')).top_source).toBeNull();
     expect(linkById(everythingBut('view_estimates')).pipeline_nudge).toBeNull();
     // The other cards are unaffected.
-    expect(linkById(everythingBut('show_invoices_page')).top_source).toBe('/leads');
+    expect(linkById(everythingBut('view_invoices')).top_source).toBe('/leads');
   });
 });
 

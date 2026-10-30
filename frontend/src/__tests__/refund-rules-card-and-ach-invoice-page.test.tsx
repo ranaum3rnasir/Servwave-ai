@@ -59,6 +59,7 @@ vi.mock('@/components/estimates/RefundDepositDialog', () => ({ RefundDepositDial
 
 const mockApi = vi.mocked(api);
 
+// The payments and balance on the page are prices, so an office person holds See prices (P11).
 const officeGrants = [
   { action: 'read', subject: 'Invoice' },
   { action: 'update', subject: 'Invoice' },
@@ -68,6 +69,7 @@ const officeGrants = [
   { action: 'void_payment', subject: 'Invoice' },
   { action: 'void', subject: 'Invoice' },
   { action: 'read', subject: 'Pricing' },
+  { action: 'read', subject: 'Prices' },
 ] as const;
 const withoutRefund = buildAbility([...officeGrants]);
 const withRefund = buildAbility([...officeGrants, { action: 'refund', subject: 'Invoice' }]);

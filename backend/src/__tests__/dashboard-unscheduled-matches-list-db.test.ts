@@ -104,7 +104,7 @@ suite('the Unscheduled jobs tile agrees with the Jobs list it opens (real databa
     await fx.addCustomRole(w.org, 'unsched-attached', 'TECHNICIAN', { madeFromBlank: true, copyGrants: false });
     await setRoleSwitchValues({
       organizationId: w.org, roleKey: 'unsched-attached', actorId: null, reason: 'manual',
-      values: { ...allOff, view_jobs: true, show_jobs_page: true, jobs_scope: 'attached' },
+      values: { ...allOff, view_jobs: true, jobs_scope: 'attached' },
     });
     const role = await db.customRole.findFirstOrThrow({ where: { organization_id: w.org, key: 'unsched-attached' } });
     const me = await fx.addUser(w.org, 'unsched-attached-user', 'TECHNICIAN', { customRoleId: role.id });

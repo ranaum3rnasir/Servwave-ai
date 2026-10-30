@@ -11,7 +11,7 @@
  *
  * Unchanged: the `useAssets(filters, 1)` query and its filter shape (the
  * retired toggle still switches between sending `status: 'ACTIVE'` and sending
- * no status at all), the 300ms search debounce, `useUsers` for the assignee
+ * no status at all), the 300ms search debounce, `usePeople` for the assignee
  * picker, the `useDeleteAsset` mutation with its delete-confirmation guard and
  * both toast strings, and the two empty states (filtered vs nothing-yet, the
  * second keeping its create action).
@@ -41,8 +41,9 @@ import {
 } from 'lucide-react';
 
 import { useAssets, useDeleteAsset, type Asset, type AssetFilters } from '@/lib/api/inventory';
-import { useUsers } from '@/lib/api/users';
+import { usePeople } from '@/lib/api/users';
 import { useAppAbility } from '@/contexts/AbilityContext';
+import { reachesBeyondOwn, useMySwitches } from '@/lib/api/mySwitches';
 import { useConfirm } from '@/hooks/useConfirm';
 import { AssetDialog } from '@/components/inventory/assets/AssetDialog';
 import { AssetActionDialog, type AssetActionMode } from '@/components/inventory/assets/AssetActionDialog';
@@ -250,9 +251,9 @@ export function AssetsView({ onToast }: { onToast: (msg: string) => void }) {
   const canCreateInventory = ability.can('create', 'Inventory');
   const canUpdateInventory = ability.can('update', 'Inventory');
   const canDeleteInventory = ability.can('delete', 'Inventory');
-  // The server returns only the assets the person holds without See all assets; the holder filter and the
-  // Assignee column are then pointless, so they go.
-  const canSeeAllAssets = ability.can('see_all_assets', 'Inventory');
+  // On Assets scope Attached the server returns only the assets the person holds; the holder filter and the
+  // Assignee column are then pointless, so they go. Team and All list other people's assets, so they stay.
+  const canSeeAllAssets = reachesBeyondOwn(useMySwitches()?.values, 'assets_scope');
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search), 300);
@@ -272,7 +273,7 @@ export function AssetsView({ onToast }: { onToast: (msg: string) => void }) {
 
   const assetsQuery = useAssets(filters, 1);
   const assets = useMemo(() => assetsQuery.data?.data ?? [], [assetsQuery.data]);
-  const usersQuery = useUsers();
+  const usersQuery = usePeople();
   const users = usersQuery.data ?? [];
   const deleteAsset = useDeleteAsset();
 

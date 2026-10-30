@@ -24,10 +24,9 @@ const STOCK_ROWS: Record<string, Row> = {
   'Create stock': [true, false, false, false],
   'Edit stock': [true, false, false, false],
   'Delete stock': [true, false, false, false],
-  'Show Stock page': [true, true, false, true],
   'Export stock': [true, true, false, false],
   'See inventory activity': [true, true, true, false],
-  'See all assets': [true, true, true, false],
+  'Assets scope': ['all', 'all', 'all', 'attached'],
   'Inventory view': ['counter', 'counter', 'counter', 'field'],
   'Restrict stock to own van': [false, false, false, false],
   'Pick up staged items': [true, false, true, true],
@@ -38,7 +37,6 @@ const PURCHASE_ORDER_ROWS: Record<string, Row> = {
   'Create purchase orders': [true, false, false, false],
   'Edit purchase orders': [true, false, false, false],
   'Delete purchase orders': [true, false, false, false],
-  'Show Purchase Orders page': [true, true, false, false],
   'Export purchase orders': [true, true, false, false],
 };
 const VENDOR_ROWS: Record<string, Row> = {
@@ -46,7 +44,6 @@ const VENDOR_ROWS: Record<string, Row> = {
   'Create vendors': [true, false, false, false],
   'Edit vendors': [true, false, false, false],
   'Delete vendors': [true, false, false, false],
-  'Show Vendors page': [true, true, false, false],
   'Export vendors': [true, true, false, false],
 };
 const LOGISTIC_ORDER_ROWS: Record<string, Row> = {
@@ -54,7 +51,6 @@ const LOGISTIC_ORDER_ROWS: Record<string, Row> = {
   'Create logistic orders': [true, true, true, false],
   'Edit logistic orders': [true, true, true, false],
   'Delete logistic orders': [true, true, false, false],
-  'Show Logistic Orders page': [true, true, false, false],
   'Approve logistic orders': [true, false, false, false],
   'Process logistic orders': [true, false, true, false],
   'Cancel logistic orders': [true, false, true, false],
@@ -64,7 +60,6 @@ const PRICE_BOOK_ROWS: Record<string, Row> = {
   'Create price book items': [true, false, false, false],
   'Edit price book items': [true, false, false, false],
   'Delete price book items': [true, false, false, false],
-  'Show Price Book page': [true, true, true, true],
   'Export price book': [true, true, false, false],
 };
 
@@ -139,8 +134,8 @@ describe('the row rule and Requires in the Inventory group', () => {
     }
   });
 
-  it('puts See inventory activity and See all assets under View stock, and Approve, Process and Cancel under View logistic orders', () => {
-    for (const label of ['See inventory activity', 'See all assets']) expect(entryOf(label).requires, label).toEqual([keyOfLabel('View stock')]);
+  it('puts See inventory activity under View stock, and Approve, Process and Cancel under View logistic orders', () => {
+    for (const label of ['See inventory activity']) expect(entryOf(label).requires, label).toEqual([keyOfLabel('View stock')]);
     for (const label of ['Approve logistic orders', 'Process logistic orders', 'Cancel logistic orders']) {
       expect(entryOf(label).requires, label).toEqual([keyOfLabel('View logistic orders')]);
     }
@@ -152,8 +147,8 @@ describe('the row rule and Requires in the Inventory group', () => {
     }
     const set = {
       ...presetSwitchSet('ADMIN'),
-      view_stock: false, create_stock: false, edit_stock: false, delete_stock: false, show_stock_page: false, export_stock: false,
-      see_inventory_activity: false, see_all_assets: false,
+      view_stock: false, create_stock: false, edit_stock: false, delete_stock: false, export_stock: false,
+      see_inventory_activity: false, assets_scope: 'attached',
       // Turning the whole Stock row off must leave these valid and on.
       pick_up_staged_items: true, record_pickup_for_someone_else: true, restrict_stock_to_own_van: true, inventory_view: 'field',
     };
@@ -211,11 +206,15 @@ describe('what Create and Approve logistic orders stand for', () => {
     expect(entry.requires).toEqual([]);
   });
 
-  it('makes See all assets a check of its own on the asset routes, standing for no row of the role editor', () => {
-    const entry = entryOf('See all assets');
-    expect(entry.pending).toBeUndefined();
-    expect(entry.grants.map((g) => `${g.action}:${g.subject}`)).toEqual(['see_all_assets:Inventory']);
-    expect(entry.serverChecks).toEqual(['asset-list', 'asset-detail', 'asset-events']);
+  it('makes Assets scope the Stock row\'s one scope switch (P6): the standard three choices, narrowing the asset routes rather than refusing by a check of its own', () => {
+    const entry = entryOf('Assets scope');
+    expect(entry.key).toBe('assets_scope');
+    expect(entry.kind).toBe('choice');
+    expect(entry.choices).toEqual(['attached', 'team', 'all']);
+    expect(entry.grants).toEqual([]);
+    expect(entry.requires).toEqual([]);
+    expect(entry.pending).toBeDefined();
+    expect(entry.presets).toEqual({ ADMIN: 'all', SALES: 'all', DISPATCHER: 'all', TECHNICIAN: 'attached' });
   });
 });
 
@@ -275,7 +274,7 @@ describe('what Edit vendors stands for', () => {
 
 describe('the reach of purchase orders and logistic orders, compiled from a person\'s switches', () => {
   const holder = (values: Record<string, boolean | string>) => compileSwitchGrants({ ...presetSwitchSet('ADMIN'), ...values });
-  const person = { id: 'p1', role: 'DISPATCHER', department_id: null, location_id: null };
+  const person = { id: 'p1', role: 'DISPATCHER', is_admin: false, department_id: null, location_id: null };
   const grantsFor = (grants: ReturnType<typeof holder>, subject: string, action = 'read') =>
     grants.filter((g) => g.subject === subject && g.action === action);
 

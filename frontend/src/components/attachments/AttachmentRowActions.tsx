@@ -7,8 +7,8 @@
  * Trigger is a real `ui/dropdown-menu` (Radix), not a row of icon buttons — prior art
  * `components/workflows/StepNode.tsx`'s per-row kebab. Items: Download (always, anyone who can
  * see the list) and Rename (only when `renamable !== false` and the row's own
- * server answer says `can_rename`; a row with no answer falls back to `ability.can('update',
- * 'Attachment')` — never a role name, OQ4. Roles & Permissions S04.24: a rename or delete that only the
+ * server answer says `can_rename`; a row with no answer falls back to the record's Edit (uploads are the record's own
+ * data, P10) — never a role name, OQ4. Roles & Permissions S04.24: a rename or delete that only the
  * completed-job lock withholds is drawn disabled, with `lockedReason` printed under it). Delete is rendered here only
  * when the call site passes `onDelete` (mobile slice 15): the tile's own Delete control is
  * hidden until hover on a desktop, so the menu is how a keyboard user, and anyone who never sees

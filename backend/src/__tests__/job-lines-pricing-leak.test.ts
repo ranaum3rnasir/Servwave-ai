@@ -198,7 +198,7 @@ describe('GET /api/jobs/:id/line-items — pricing leak', () => {
     const line = res.body.lines[0];
     expect(line.unit_cost).toBeUndefined();
     expect(line.markup_percent).toBeUndefined();
-    // S01.15: See financial data covers costs only, so the line keeps its price.
+    // S01.15: See costs covers costs only, so the line keeps its price.
     expect(line.unit_price).toBe(1000);
     expect(line.line_total).toBe(1000);
     // Work detail is preserved.

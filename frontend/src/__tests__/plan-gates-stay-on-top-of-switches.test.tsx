@@ -48,13 +48,13 @@ const MODULES: Array<{ name: string; feature: string; pages: Array<{ path: strin
   {
     name: 'Service Plans',
     feature: 'service_plans',
-    pages: [{ path: '/service-plans', opens: ['View service plans', 'Show Service Plans page'] }],
+    pages: [{ path: '/service-plans', opens: ['View service plans'] }],
   },
   {
     name: 'Automations',
     feature: 'automations',
     pages: [
-      { path: '/automations', opens: ['View automations', 'Show Automations page'] },
+      { path: '/automations', opens: ['View automations'] },
       { path: '/automations/new', opens: ['Create automations'] },
       { path: '/automations/abc', opens: ['View automations'] },
     ],
@@ -62,7 +62,7 @@ const MODULES: Array<{ name: string; feature: string; pages: Array<{ path: strin
   {
     name: 'Inventory',
     feature: 'inventory',
-    pages: [{ path: '/inventory', opens: ['View stock', 'Show Stock page'] }],
+    pages: [{ path: '/inventory', opens: ['View stock'] }],
   },
 ];
 

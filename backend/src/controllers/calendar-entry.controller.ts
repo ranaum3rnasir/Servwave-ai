@@ -7,6 +7,8 @@ import { validationFailure } from '../middleware/validate';
 import {
   validateParticipantRefs,
   resolveParticipantDisplay,
+  participantsForViewer,
+  EnrichedParticipant,
   ParticipantInput,
   ParticipantRow,
 } from '../lib/calendar-entries/participants';
@@ -125,6 +127,11 @@ type SelectedEntry = {
   [key: string]: unknown;
 };
 
+/** The entry as the viewer may see it: see `participantsForViewer`. */
+async function forViewer<T extends { participants: EnrichedParticipant[] }>(req: Request, entry: T): Promise<T> {
+  return { ...entry, participants: await participantsForViewer(req, entry.participants) };
+}
+
 async function withEnrichedParticipants(entry: SelectedEntry, orgId: string) {
   const participants = await resolveParticipantDisplay(orgId, entry.participants);
   return { ...entry, participants };
@@ -158,8 +165,8 @@ function toParticipantData(orgId: string, entryId: string, participants: Partici
  * `tenantWhere(req)` above via a plain object spread, never replacing it, so a same-named
  * customer in another org (a different row, a different id) can never leak through this filter.
  *
- * Without "See all calendar entries" the list is narrowed to the entries that name the caller as a user
- * participant (S04.8, withCalendarEntryRule), the customer tab's included.
+ * The list is narrowed to the entries the caller's Events scope reaches (withCalendarEntryRule: Attached = the entries that
+ * name the caller as a user participant), the customer tab's included.
  */
 export async function list(req: Request, res: Response) {
   try {
@@ -171,14 +178,14 @@ export async function list(req: Request, res: Response) {
     if (customer_id) where.participants = { some: { kind: 'CUSTOMER', customer_id } };
 
     const entries = await prisma.calendarEntry.findMany({
-      where: withCalendarEntryRule(req, where),
+      where: await withCalendarEntryRule(req, where),
       select: CALENDAR_ENTRY_SELECT,
       orderBy: { start: 'asc' },
     });
 
     const orgId = req.user!.organization_id;
     const allParticipants = entries.flatMap((e) => e.participants as ParticipantRow[]);
-    const enriched = await resolveParticipantDisplay(orgId, allParticipants);
+    const enriched = await participantsForViewer(req, await resolveParticipantDisplay(orgId, allParticipants));
     const byId = new Map(enriched.map((p) => [p.id, p]));
 
     res.json({
@@ -270,7 +277,7 @@ export async function create(req: Request, res: Response) {
       scheduledMessage: notify_message,
     });
 
-    res.status(201).json({ calendar_entry, ...(notify_customer ? { notify } : {}) });
+    res.status(201).json({ calendar_entry: await forViewer(req, calendar_entry), ...(notify_customer ? { notify } : {}) });
   } catch (err) {
     logger.error('Create calendar entry error:', err);
     res.status(500).json({ error: 'Failed to create calendar entry' });
@@ -279,14 +286,14 @@ export async function create(req: Request, res: Response) {
 
 /**
  * GET /api/calendar-entries/:id — tenant-scoped detail; a cross-org id is a 404, not the row. So is an entry the
- * caller does not take part in, unless they hold "See all calendar entries" (S04.8, withCalendarEntryRule).
+ * caller's Events scope does not reach (withCalendarEntryRule).
  */
 export async function getOne(req: Request, res: Response) {
   try {
     const id = param(req, 'id');
 
     const entry = await prisma.calendarEntry.findFirst({
-      where: withCalendarEntryRule(req, { id, ...tenantWhere(req) }),
+      where: await withCalendarEntryRule(req, { id, ...tenantWhere(req) }),
       select: CALENDAR_ENTRY_SELECT,
     });
     if (!entry) {
@@ -295,7 +302,7 @@ export async function getOne(req: Request, res: Response) {
     }
 
     const calendar_entry = await withEnrichedParticipants(entry as SelectedEntry, req.user!.organization_id);
-    res.json({ calendar_entry });
+    res.json({ calendar_entry: await forViewer(req, calendar_entry) });
   } catch (err) {
     logger.error('Get calendar entry error:', err);
     res.status(500).json({ error: 'Failed to get calendar entry' });
@@ -432,7 +439,7 @@ export async function update(req: Request, res: Response) {
       scheduledMessage: notify_message,
     });
 
-    res.json({ calendar_entry, ...(notify_customer ? { notify } : {}) });
+    res.json({ calendar_entry: await forViewer(req, calendar_entry), ...(notify_customer ? { notify } : {}) });
   } catch (err) {
     logger.error('Update calendar entry error:', err);
     res.status(500).json({ error: 'Failed to update calendar entry' });

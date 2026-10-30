@@ -14,8 +14,9 @@
  *      Both columns are checked: the ADMIN dialog writes the data-URI into `photo_url`, while the
  *      estimate line only reads `image_url`, so an item can look image-less on the estimate row
  *      while the catalog already holds one.
- *   3. Estimate row scope (R6): `estimate_id` is optional and, when supplied, is validated as a
- *      uuid, then routed through the SAME `loadGuardedEstimate` + `isMutationBlocked` guard every
+ *   3. Estimate row scope (R6): `estimate_id` is optional and, when supplied, must be a canonical id
+ *      of an estimate in the requester's reach (anything else is the one 404 a missing estimate gets,
+ *      re-audit P2-4), then routed through the SAME `loadGuardedEstimate` + `isMutationBlocked` guard every
  *      other line/scope mutation uses, plus a linkage check (the estimate must carry a line
  *      pointed at this item). When absent, a scoped fallback only asks "does the requester have
  *      ANY estimate inside their own row scope" — the linkage adds no real restriction on top of
@@ -34,14 +35,14 @@
  * `update Estimate` too — is accepted by this route on the same terms as SALES.
  */
 import { Request, Response } from 'express';
-import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { supabaseAdmin } from '../lib/supabase';
 import { tenantWhere } from '../lib/tenant';
 import { logAudit } from '../lib/audit';
 import { sniffMatchesDeclared } from '../lib/file-sniff';
-import { scopeWhereForReq } from '../lib/permissions/enforce';
+import { canAccessRow, scopeWhereForReq } from '../lib/permissions/enforce';
+import { isCanonicalId } from '../lib/ids/canonicalId';
 import { ESTIMATE_PHOTO_MIMES, MAX_ESTIMATE_PHOTO_BYTES, safeFileName } from './estimate-photos.controller';
 import { loadGuardedEstimate, isMutationBlocked } from './estimate-lines.controller';
 
@@ -70,20 +71,23 @@ export async function fillItemImage(req: Request, res: Response) {
       return;
     }
 
-    const body = (req.body ?? {}) as Record<string, unknown>;
-    const rawEstimateId = typeof body.estimate_id === 'string' && body.estimate_id.length > 0
-      ? body.estimate_id
+    // Read straight off the body (a multipart field once multer has run), so the body-id source guard
+    // (permission-body-id-guard.test.ts) sees it.
+    const rawEstimateId: string | undefined = typeof req.body?.estimate_id === 'string' && req.body.estimate_id.length > 0
+      ? req.body.estimate_id
       : undefined;
 
     if (rawEstimateId) {
-      if (!z.string().uuid().safeParse(rawEstimateId).success) {
-        // Same 404 the guard itself gives for a missing/cross-org estimate — a malformed id and a
-        // genuinely-absent row are indistinguishable to the client by design.
+      // One answer for an estimate that is missing, another company's, out of the person's reach, malformed or spelled any
+      // way but the canonical lower-case id (re-audit P2-4, ticket 33's rule): the 404 a missing estimate gets, so the upload
+      // never tells which estimates exist. Checked here because the field arrives in a multipart form, after the route's own
+      // id guard has run.
+      if (!isCanonicalId(rawEstimateId) || !(await canAccessRow(req, 'Estimate', prisma.estimate, rawEstimateId))) {
         res.status(404).json({ error: 'Estimate not found' });
         return;
       }
       const estimate = await loadGuardedEstimate(req, res, rawEstimateId);
-      if (!estimate) return; // loadGuardedEstimate already wrote the 404/403.
+      if (!estimate) return; // loadGuardedEstimate already wrote the 404 (another company's estimate).
       if (isMutationBlocked(estimate, res)) return;
       if (!estimate.line_items.some((l) => l.price_book_item_id === item.id)) {
         res.status(403).json({ error: 'Insufficient permissions' });

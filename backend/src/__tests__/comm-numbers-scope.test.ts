@@ -57,7 +57,7 @@ describe.each([
   ['GET /communication/numbers', '/api/communication/numbers'],
   ['POST /communication/numbers/sync-if-stale', '/api/communication/numbers/sync-if-stale'],
 ])('%s on "Linked to me"', (_name, path) => {
-  const NARROW = { communication_scope: 'linked_to_me' } as const;
+  const NARROW = { communication_scope: 'attached' } as const;
 
   it('returns only the numbers linked to the person', async () => {
     linkNumbers(LINKED);
@@ -103,7 +103,7 @@ describe.each([
 describe('the numbers list when the main line is not set', () => {
   it('returns nothing to a person with no number, even with the switch on', async () => {
     mockPrisma.phoneNumber.findFirst.mockResolvedValue(null);
-    expect(await listFor('dispatcher', { communication_scope: 'linked_to_me', see_main_line_when_no_number: true })).toEqual([]);
+    expect(await listFor('dispatcher', { communication_scope: 'attached', see_main_line_when_no_number: true })).toEqual([]);
     expect(mockPrisma.phoneNumber.findMany as Mock).toHaveBeenCalled();
   });
 });

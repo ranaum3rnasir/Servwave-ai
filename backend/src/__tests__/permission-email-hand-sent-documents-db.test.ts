@@ -138,9 +138,9 @@ suite('hand-sent estimates, invoices and the pickup email go from the sender\'s 
       organizationId: w.org, roleKey: key,
       values: {
         view_jobs: true, jobs_scope: 'attached', view_leads: true, leads_scope: 'attached', view_customers: true,
-        view_estimates: true, estimates_scope: 'attached', edit_estimates: true,
-        view_invoices: true, invoices_scope: 'attached', edit_invoices: true,
-        access_communication: true, show_email: true, view_communication: true, communication_scope: 'linked_to_me',
+        view_estimates: true, edit_estimates: true,
+        view_invoices: true, edit_invoices: true,
+        access_communication: true, show_email: true, view_communication: true, communication_scope: 'attached',
         contact_customers: true,
         ...values,
       },
@@ -506,7 +506,8 @@ suite('hand-sent estimates, invoices and the pickup email go from the sender\'s 
   async function rungBy(providerId: string, w: World) {
     const key = `email_inbound:${providerId}`;
     const rows = await db.notification.findMany({
-      where: { dedup_key: { in: [key, `${key}:why`] } }, select: { recipients: { select: { recipient_id: true } } },
+      // One alert per list the bells open (M1): every one of them has a key that starts with the reply's.
+      where: { dedup_key: { startsWith: key } }, select: { recipients: { select: { recipient_id: true } } },
     });
     return rows.flatMap((r) => r.recipients.map((x) => x.recipient_id)).filter((id) => id !== w.admin.id).sort();
   }

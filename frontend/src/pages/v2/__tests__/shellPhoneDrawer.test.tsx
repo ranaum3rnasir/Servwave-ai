@@ -93,6 +93,7 @@ beforeEach(() => {
         first_name: 'Test',
         last_name: 'Technician',
         role: 'ADMIN',
+        is_admin: true,
         org_features: ['phone', 'email'],
       },
       isAuthenticated: true,

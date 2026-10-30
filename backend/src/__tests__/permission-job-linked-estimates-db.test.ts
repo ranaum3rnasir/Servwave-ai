@@ -66,22 +66,22 @@ suite("a job's attached estimates are the ones the person can open (real databas
   });
 
   it('lists the estimate to a person who can open it', async () => {
-    const w = await world({ view_estimates: true, estimates_scope: 'all' });
+    const w = await world({ view_estimates: true, jobs_scope: 'all', leads_scope: 'all' });
     const res = await w.api.get(`/api/jobs/${w.job}`);
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(attachedIds(res.body)).toEqual([w.office]);
   });
 
-  it('lists the estimates on a job the person is attached to under Attached scope, and not one beyond their reach', async () => {
-    const w = await world({ view_estimates: true, estimates_scope: 'attached' });
+  it('lists the estimates on a job the person is attached to under Attached scope, and opens no job beyond their reach', async () => {
+    const w = await world({ view_estimates: true, jobs_scope: 'attached', leads_scope: 'attached' });
     // A second job nobody on this person's side is crewed on, with its own estimate attached.
     const other = await fx.addJob(w.org, w.customer, { crew: [w.admin.id] });
     const beyond = await fx.addEstimate(w.org, w.customer, w.admin.id, { jobId: other.id });
     const mine = await w.api.get(`/api/jobs/${w.job}`);
     expect(attachedIds(mine.body)).toEqual([w.office]);
-    // A job the person reaches (Jobs scope All) but is not crewed on: its estimate is outside Attached.
+    // A job the person is not crewed on is not theirs to open under Attached, so its estimate cannot be read through it (P6).
     const there = await w.api.get(`/api/jobs/${other.id}`);
-    expect(there.status, JSON.stringify(there.body)).toBe(200);
-    expect(attachedIds(there.body)).not.toContain(beyond.id);
+    expect(there.status, JSON.stringify(there.body)).toBe(404);
+    expect(JSON.stringify(there.body)).not.toContain(beyond.id);
   });
 });

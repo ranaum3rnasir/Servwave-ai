@@ -106,7 +106,7 @@ suite('Spider sweep (real database)', () => {
   afterAll(async () => {
     const quietly = (p: Promise<unknown>) => p.catch(() => undefined);
     for (const org of orgs) {
-      for (const table of ['notifications', 'timeline_events', 'leads', 'phone_numbers', 'role_permissions', 'customers', 'users']) {
+      for (const table of ['notifications', 'timeline_events', 'leads', 'phone_numbers', 'customers', 'users']) {
         await quietly(db.$executeRawUnsafe(`DELETE FROM ${table} WHERE organization_id = '${org}'`));
       }
       await quietly(db.organization.deleteMany({ where: { id: org } }));
@@ -139,9 +139,6 @@ suite('Spider sweep (real database)', () => {
       },
     });
     for (const g of DEFAULT_GRANTS) {
-      await db.rolePermission.create({
-        data: { organization_id: org, role: g.role, action: g.action, subject: g.subject, conditions: (g.conditions ?? undefined) as never },
-      });
     }
     await db.phoneNumber.create({
       data: { organization_id: org, e164: '+16175550000', sms_enabled: true, ctm_number_id: `TPN-${tag}`, status: 'active', is_org_default: true },
@@ -159,7 +156,7 @@ suite('Spider sweep (real database)', () => {
     const email = `p${++seq}-${org.slice(0, 8)}@example.test`;
     await db.user.create({
       data: {
-        id, organization_id: org, email, first_name: `${role.toLowerCase()}${seq}`, last_name: 'Tester', role,
+        id, organization_id: org, email, first_name: `${role.toLowerCase()}${seq}`, last_name: 'Tester', role, is_admin: role === 'ADMIN',
         phone: opts.phone ?? null, is_active: opts.active ?? true, has_login: opts.login ?? true,
       },
     });

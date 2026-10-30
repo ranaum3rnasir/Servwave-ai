@@ -9,8 +9,9 @@
    holder of the user mailbox it sits in, the person who sent the mail being answered by hand, the record's Owner or Sold By, its
    crew, its Dispatcher and the conversation's assignee, each only if active, holding Access Communication and able to read the
    conversation under their scope (and, for an estimate or an invoice, to open that estimate or invoice). Only when lane 1 finds
-   nobody: the people linked to the main mailbox who can read it, else the holders of Manage roles and permissions, with the
-   reason line. Holders of the matching "Alert me about every ..." switch get a copy. A reply in an ordinary conversation rings
+   nobody: the people linked to the main mailbox who can read it, else the company's Admins (the holders of Manage roles and
+   permissions until that switch retired, AL-18), with the reason line. Holders of the matching "Alert me about every ..." switch
+   get a copy; an Admin holds every switch, so an Admin is always one, and a person found both ways is told once, without the line. A reply in an ordinary conversation rings
    its assignee, else its mailbox's holder (the main mailbox's readers). Bell only. An empty chain is logged.
 
    People are on custom roles (never a built-in role name) holding exactly the switch values under test, plus the Admin box.
@@ -112,18 +113,20 @@ suite('a customer\'s reply rings the record\'s people through M6 (real database)
   /** A person on a fresh custom role of this base holding exactly these switch values, with the Email page open. */
   async function personWith(org: string, values: Record<string, boolean | string> = {}, base: Role = 'DISPATCHER'): Promise<Who> {
     const key = `rpb-role-${++sequence}`;
+    // `is_admin: true` makes the person an Admin (the flag, AL-18): it is not a switch, so it never reaches the role.
+    const { is_admin: asAdmin, ...switchValues } = values;
     const role = await fx.addCustomRole(org, key, base);
     await setRoleSwitchValues({
       organizationId: org, roleKey: key,
       values: {
         view_jobs: true, jobs_scope: 'attached', view_leads: true, leads_scope: 'attached', view_customers: true,
-        view_estimates: true, estimates_scope: 'attached', view_invoices: true, invoices_scope: 'attached',
-        access_communication: true, show_email: true, view_communication: true, communication_scope: 'linked_to_me',
-        ...values,
+        view_estimates: true, view_invoices: true,
+        access_communication: true, show_email: true, view_communication: true, communication_scope: 'attached',
+        ...switchValues,
       },
       actorId: null, reason: 'manual',
     });
-    const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
+    const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id, isAdmin: asAdmin === true });
     return Object.assign(person, { api: () => fx.signedInAs(person) });
   }
 
@@ -211,19 +214,22 @@ suite('a customer\'s reply rings the record\'s people through M6 (real database)
    * switch, so it is always a copy holder ("Alert me about every ...") and is told apart (`admin`) rather than mixed into the lists.
    */
   async function bells(providerId: string, w: World) {
+    // One alert per list the bells open (M1): the conversation's own mailbox has the plain key, "My mailbox" adds `:mine`; the alert
+    // with the reason line adds `:why` before it. Every one of them is this reply's.
     const key = `email_inbound:${providerId}`;
     const rows = await db.notification.findMany({
-      where: { dedup_key: { in: [key, `${key}:why`] } },
+      where: { dedup_key: { startsWith: key } },
       select: { dedup_key: true, title: true, body: true, data: true, object_type: true, object_id: true, recipients: { select: { recipient_id: true, priority: true } } },
     });
-    const plain = rows.find((r) => r.dedup_key === key);
-    const why = rows.find((r) => r.dedup_key === `${key}:why`);
-    const ids = (r: typeof plain) => (r?.recipients ?? []).map((x) => x.recipient_id).filter((id) => id !== w.admin.id).sort();
-    const adminIn = (r: typeof plain) => (r?.recipients ?? []).some((x) => x.recipient_id === w.admin.id);
+    const isWhy = (r: (typeof rows)[number]) => r.dedup_key!.slice(key.length).startsWith(':why');
+    const ids = (list: typeof rows) => list.flatMap((r) => r.recipients.map((x) => x.recipient_id)).filter((id) => id !== w.admin.id).sort();
+    const plain = rows.filter((r) => !isWhy(r));
+    const why = rows.filter(isWhy);
+    const adminIn = rows.some((r) => r.recipients.some((x) => x.recipient_id === w.admin.id));
     return {
       plain: ids(plain), why: ids(why),
-      reason: ((why?.data ?? {}) as { fallback_reason?: string }).fallback_reason ?? null,
-      all: [...ids(plain), ...ids(why)].sort(), admin: adminIn(plain) || adminIn(why), rows,
+      reason: ((why[0]?.data ?? {}) as { fallback_reason?: string }).fallback_reason ?? null,
+      all: [...ids(plain), ...ids(why)].sort(), admin: adminIn, rows,
     };
   }
   const sorted = (...people: Person[]) => people.map((p) => p.id).sort();
@@ -397,12 +403,13 @@ suite('a customer\'s reply rings the record\'s people through M6 (real database)
 
       const rung = await bells((await receive(convo)).providerId, w);
 
-      // View estimates off: not rung, except for the estimate's own creator while attached (the creator rule).
-      expect(rung.all).toEqual(sorted(soldBy, crew, creator, blind, leadOwner, creatorNoView));
+      // View estimates off: not rung, the estimate's own creator included (P7).
+      expect(rung.all).toEqual(sorted(soldBy, crew, creator, blind, leadOwner));
       expect(rung.all).not.toContain(noView.id);
+      expect(rung.all).not.toContain(creatorNoView.id);
     });
 
-    it('an invoice\'s: rings the people of its job, and never a person who cannot open the invoice, except its attached creator', async () => {
+    it('an invoice\'s: rings the people of its job, and never a person who cannot open the invoice, its creator included', async () => {
       const w = await newOrg();
       const [soldBy, crew] = [await personWith(w.org), await personWith(w.org)];
       const [noView, creatorNoView] = [
@@ -415,8 +422,9 @@ suite('a customer\'s reply rings the record\'s people through M6 (real database)
 
       const rung = await bells((await receive(convo)).providerId, w);
 
-      expect(rung.all).toEqual(sorted(soldBy, crew, creatorNoView));
+      expect(rung.all).toEqual(sorted(soldBy, crew));
       expect(rung.all).not.toContain(noView.id);
+      expect(rung.all).not.toContain(creatorNoView.id);
     });
 
     it('a deposit invoice with no job: rings the people of its estimate\'s job', async () => {
@@ -435,13 +443,18 @@ suite('a customer\'s reply rings the record\'s people through M6 (real database)
 
   describe('when lane 1 finds nobody', () => {
     const JOB_REASON = 'This job has no Dispatcher or Sold By who can take this reply';
+    // Whoever is told must find the conversation in the Email list the bell opens (M1, Ran 2026-10-28 "stop those copies"):
+    // a notice about a job nobody is on is listed to a person on All, not to one on "Linked to me" who only reaches the job.
+    const listsEveryConversation = { communication_scope: 'all' };
 
-    it('rings the people linked to the main mailbox who can read it, with the reason line, and nobody else it did not name', async () => {
+    it('rings the people linked to the main mailbox who can read it AND find it in the Email list, with the reason line, and nobody else it did not name', async () => {
       const w = await newOrg();
-      const linked = await personWith(w.org, allJobs);
+      const linked = await personWith(w.org, { ...allJobs, ...listsEveryConversation });
+      const linkedAttached = await personWith(w.org, allJobs);
       const linkedBlind = await personWith(w.org);
-      const manager = await personWith(w.org, { ...allJobs, view_users: true, manage_roles_and_permissions: true });
+      const admin = await personWith(w.org, { is_admin: true });
       await linkToMain(w, linked);
+      await linkToMain(w, linkedAttached);
       await linkToMain(w, linkedBlind);
       const job = await fx.addJob(w.org, w.customer, {});
       const convo = await conversation(w, { record: { type: 'job', id: job.id }, job: job.id });
@@ -451,46 +464,54 @@ suite('a customer\'s reply rings the record\'s people through M6 (real database)
       expect(rung.why).toEqual(sorted(linked));
       expect(rung.reason).toBe(JOB_REASON);
       expect(rung.all).not.toContain(linkedBlind.id);
-      expect(rung.all, 'the Manage roles holders are only for when no linked person can take it').not.toContain(manager.id);
+      // Opens every job, but on "Linked to me" the notice is in none of their lists: not told (M1).
+      expect(rung.all).not.toContain(linkedAttached.id);
+      // An Admin holds Alert me about every job, so they have a copy, without the line: never the fallback while a linked person takes it.
+      expect(rung.plain).toEqual(sorted(admin));
+      expect(rung.why).not.toContain(admin.id);
       // The Admin box holds Alert me about every job, so it has a copy, without the line.
       expect(rung.admin).toBe(true);
     });
 
-    it('rings the holders of Manage roles and permissions who can read it, with the reason line, when nobody is linked', async () => {
+    it('tells the Admins when nobody is linked, as holders of every copy switch, so without the reason line, and no non-Admin who is not on the record', async () => {
       const w = await newOrg();
-      const manager = await personWith(w.org, { ...allJobs, view_users: true, manage_roles_and_permissions: true });
-      const managerBlind = await personWith(w.org, { view_users: true, manage_roles_and_permissions: true });
+      // An Admin whose own switches reach no job: the switches do not narrow an Admin.
+      const admin = await personWith(w.org, { is_admin: true, jobs_scope: 'attached' });
+      const bystander = await personWith(w.org, allJobs);
       const job = await fx.addJob(w.org, w.customer, {});
       const convo = await conversation(w, { record: { type: 'job', id: job.id }, job: job.id });
 
       const rung = await bells((await receive(convo)).providerId, w);
 
-      expect(rung.why).toEqual(sorted(manager));
-      expect(rung.reason).toBe(JOB_REASON);
-      // A holder who cannot read the conversation is told nothing about it: no alert without details.
-      expect(rung.all).not.toContain(managerBlind.id);
-      expect(await db.notificationRecipient.count({ where: { recipient_id: managerBlind.id } })).toBe(0);
+      expect(rung.plain).toEqual(sorted(admin));
+      expect(rung.why).toEqual([]);
+      expect(rung.admin).toBe(true);
+      // A non-Admin is never the fallback, however much they can read.
+      expect(rung.all).not.toContain(bystander.id);
+      expect(await db.notificationRecipient.count({ where: { recipient_id: bystander.id } })).toBe(0);
     });
 
     it('says the same for a lead, and for a record with no job or lead', async () => {
       const w = await newOrg();
-      const manager = await personWith(w.org, { leads_scope: 'all', invoices_scope: 'all', ...allJobs, view_users: true, manage_roles_and_permissions: true });
+      // A linked reader takes what the record's people cannot; the Admin box is a copy holder and is told apart. On All, so the
+      // Email list the bell opens shows them the conversation (M1).
+      const linked = await personWith(w.org, { leads_scope: 'all', ...allJobs, ...listsEveryConversation });
+      await linkToMain(w, linked);
       const lead = await fx.addLead(w.org, w.customer, {});
       const customerOnly = await fx.addInvoice(w.org, w.customer, {});
 
       const onLead = await bells((await receive(await conversation(w, { record: { type: 'lead', id: lead.id }, lead: lead.id }))).providerId, w);
       expect(onLead.reason).toBe('This lead has no Dispatcher or Owner who can take this reply');
-      expect(onLead.why).toEqual(sorted(manager));
+      expect(onLead.why).toEqual(sorted(linked));
 
-      // The Admin box is a copy holder for an invoice, and a person who is covering and has a copy is told once, without the line.
-      await db.user.update({ where: { id: w.admin.id }, data: { is_active: false }, select: { id: true } });
       const onInvoice = await bells((await receive(await conversation(w, { record: { type: 'invoice', id: customerOnly.id } }))).providerId, w);
       expect(onInvoice.reason).toBe('Nobody on this conversation\'s record can take this reply');
+      expect(onInvoice.why).toEqual(sorted(linked));
     });
 
     it('is logged when the chain ends with nobody, with the kind of alert, the conversation and the company, and nothing of the customer', async () => {
       const w = await newOrg();
-      // The Admin box holds every switch and so is always a last resort; out of the way, nobody is left.
+      // The Admin box holds every switch and is the last resort (an Admin, AL-18); out of the way, nobody is left.
       await db.user.update({ where: { id: w.admin.id }, data: { is_active: false }, select: { id: true } });
       const job = await fx.addJob(w.org, w.customer, {});
       const convo = await conversation(w, { record: { type: 'job', id: job.id }, job: job.id });
@@ -523,13 +544,17 @@ suite('a customer\'s reply rings the record\'s people through M6 (real database)
       { kind: 'invoice', switch: 'alert_every_invoice' },
     ] as const;
 
-    it.each(kinds)('a reply on a $kind\'s conversation copies the holders of $switch who can read it, and no other kind\'s', async ({ kind }) => {
+    it.each(kinds)('a reply on a $kind\'s conversation copies the holders of $switch who can read it and find it in the Email list, and no other kind\'s', async ({ kind }) => {
       const w = await newOrg();
-      const everyScope = { jobs_scope: 'all', leads_scope: 'all', estimates_scope: 'all', invoices_scope: 'all' };
+      // On All the Email list shows every conversation, so a copy there can be followed.
+      const everyScope = { jobs_scope: 'all', leads_scope: 'all', communication_scope: 'all' };
       const holders: Record<string, Who> = {};
       for (const k of kinds) holders[k.kind] = await personWith(w.org, { ...everyScope, [k.switch]: true });
+      const matching = kinds.find((k) => k.kind === kind)!.switch;
       // Holds the matching switch, but a scope that reaches none of it: not copied.
-      const cannotRead = await personWith(w.org, { [kinds.find((k) => k.kind === kind)!.switch]: true });
+      const cannotRead = await personWith(w.org, { [matching]: true });
+      // Holds it and reaches the record, but on "Linked to me" the conversation is in none of their lists: not copied (M1).
+      const cannotFind = await personWith(w.org, { jobs_scope: 'all', leads_scope: 'all', [matching]: true });
       const crew = await personWith(w.org);
       const job = await fx.addJob(w.org, w.customer, { crew: [crew.id] });
       const lead = await fx.addLead(w.org, w.customer, { owner: crew.id });
@@ -542,12 +567,17 @@ suite('a customer\'s reply rings the record\'s people through M6 (real database)
 
       expect(rung.all).toEqual(sorted(crew, holders[kind]!));
       expect(rung.all).not.toContain(cannotRead.id);
+      expect(rung.all).not.toContain(cannotFind.id);
     });
 
     it('copies even when lane 1 found nobody, and tells a person found both ways once, without the reason line', async () => {
       const w = await newOrg();
-      const copy = await personWith(w.org, { ...allJobs, alert_every_job: true });
-      const both = await personWith(w.org, { ...allJobs, alert_every_job: true, view_users: true, manage_roles_and_permissions: true });
+      // On All, so the copy can be followed in the Email list (M1).
+      const copy = await personWith(w.org, { ...allJobs, communication_scope: 'all', alert_every_job: true });
+      // An Admin: a copy holder and the fallback at once (AL-18), told once.
+      const both = await personWith(w.org, { is_admin: true });
+      // The same copy switch on "Linked to me": the notice is in none of their lists, so no copy (M1).
+      const cannotFind = await personWith(w.org, { ...allJobs, alert_every_job: true });
       const job = await fx.addJob(w.org, w.customer, {});
       const convo = await conversation(w, { record: { type: 'job', id: job.id }, job: job.id });
 
@@ -555,25 +585,60 @@ suite('a customer\'s reply rings the record\'s people through M6 (real database)
 
       expect(rung.plain).toEqual(sorted(copy, both));
       expect(rung.why).toEqual([]);
+      expect(rung.all).not.toContain(cannotFind.id);
     });
   });
 
   // ─── A reply in an ordinary conversation ───────────────────────────────────────────────────────────────────────────────
 
   describe('a reply in an ordinary conversation', () => {
-    it('rings its assignee, interrupting, and nobody else', async () => {
+    it('rings the mailbox\'s holder, never an assignee who cannot open the reply itself, though they open another message of the conversation (M1)', async () => {
+      const w = await newOrg();
+      const holder = await personWith(w.org);
+      const assignee = await personWith(w.org);
+      const box = await userMailbox(w.org, holder);
+      // The assignee is crewed on a job of ANOTHER customer: the message that went out on that job opens for them, nothing else
+      // of the conversation does. The customer's reply is tied to the conversation's customer only.
+      const elsewhere = randomUUID();
+      await db.customer.create({ data: { id: elsewhere, organization_id: w.org, customer_number: `C-m1-${elsewhere.slice(0, 6)}`, kind: 'PERSON', segment: 'RESIDENTIAL', first_name: 'Other', last_name: 'Customer' } });
+      const theirJob = await fx.addJob(w.org, elsewhere, { crew: [assignee.id] });
+      const convo = await conversation(w, { mailbox: box, assignee: assignee.id, job: theirJob.id });
+      expect((await (await assignee.api()).get(`/api/communication/emails/${convo.sent}`)).status).toBe(200);
+
+      const reply = await receive(convo);
+
+      expect((await (await assignee.api()).get(`/api/communication/emails/${reply.row.id}`)).status).toBe(404);
+      const rung = await bells(reply.providerId, w);
+      expect(rung.all).toEqual(sorted(holder));
+      expect(rung.all).not.toContain(assignee.id);
+      // Nothing of the reply (its subject, its sender) reaches the assignee through the bell.
+      const told = await db.notificationRecipient.count({ where: { recipient_id: assignee.id, notification: { organization_id: w.org } } });
+      expect(told).toBe(0);
+    });
+
+    it('rings its assignee, interrupting, and nobody else, when the assignee can reach it; and the mailbox\'s holder instead of an assignee who cannot (M1)', async () => {
       const w = await newOrg();
       const assignee = await personWith(w.org);
       const holder = await personWith(w.org);
       const colleague = await personWith(w.org, { communication_scope: 'all' });
       const box = await userMailbox(w.org, holder);
-      const convo = await conversation(w, { mailbox: box, assignee: assignee.id });
+      // The assignee reaches it by holding the mailbox (handed to them): being assigned alone opens nothing.
+      const reaching = await personWith(w.org);
+      const leaver = await personWith(w.org);
+      const handed = await userMailbox(w.org, leaver, reaching);
+      const convo = await conversation(w, { mailbox: handed, assignee: reaching.id });
 
       const rung = await bells((await receive(convo)).providerId, w);
 
-      expect(rung.all).toEqual(sorted(assignee));
+      expect(rung.all).toEqual(sorted(reaching));
       expect(rung.all).not.toContain(colleague.id);
-      expect(priorityOf(rung).get(assignee.id)).toBe('INTERRUPT');
+      expect(priorityOf(rung).get(reaching.id)).toBe('INTERRUPT');
+
+      // An assignee who does not hold the mailbox the conversation sits in cannot read it, so cannot take it.
+      const outside = await conversation(w, { mailbox: box, assignee: assignee.id });
+      const fallback = await bells((await receive(outside)).providerId, w);
+      expect(fallback.all).toEqual(sorted(holder));
+      expect(fallback.all).not.toContain(assignee.id);
       // No record, so no "Alert me about every": the Admin box gets nothing either.
       expect(rung.admin).toBe(false);
     });
@@ -589,7 +654,7 @@ suite('a customer\'s reply rings the record\'s people through M6 (real database)
       const linkOf = (r: Awaited<ReturnType<typeof bells>>) => r.rows.map((x) => (x.data as { link_path?: string }).link_path);
       expect(linkOf(rung)).toEqual([`/communication/inbox?mailbox=${box}&thread=${convo.thread}`]);
 
-      // The holders of Manage roles and permissions told because nobody is linked are sent to the main mailbox's conversation.
+      // The Admins told because nobody is linked are sent to the main mailbox's conversation.
       const covering = await bells((await receive(nobodyLinked)).providerId, w);
       expect(linkOf(covering)).toEqual([`/communication/inbox?mailbox=${w.main}&thread=${nobodyLinked.thread}`]);
     });
@@ -609,11 +674,27 @@ suite('a customer\'s reply rings the record\'s people through M6 (real database)
       expect(assigneeGone.all).toEqual(sorted(holder));
     });
 
+    // Pre-PR review CR-6: under Team, a person with no department has no teammates, but their own mailbox is still theirs (the
+    // Email page always lists it, communicationScope.heldMailboxesFor). The reply in it rings them, and they can be assigned it.
+    it('rings a Team-scope holder with no department for a reply in their own mailbox, and the conversation can be assigned to them', async () => {
+      const w = await newOrg();
+      const loner = await personWith(w.org, { communication_scope: 'team' });
+      expect((await db.user.findUniqueOrThrow({ where: { id: loner.id } })).department_id).toBeNull();
+      const box = await userMailbox(w.org, loner);
+      const c = await conversation(w, { mailbox: box });
+
+      const rang = await bells((await receive(c)).providerId, w);
+      expect(rang.all).toEqual(sorted(loner));
+
+      const assigned = await (await fx.signedInAs(w.admin)).patch(`/api/communication/emails/threads/${c.thread}/assign`, { user_id: loner.id });
+      expect(assigned.status).toBe(200);
+    });
+
     it('in the main mailbox rings the people linked to it who can read it, and not the others', async () => {
       const w = await newOrg();
       const linked = await personWith(w.org);
       const linkedAway = await personWith(w.org);
-      const manager = await personWith(w.org, { view_users: true, manage_roles_and_permissions: true });
+      const admin = await personWith(w.org, { is_admin: true });
       await linkToMain(w, linked);
       await linkToMain(w, linkedAway);
       await db.user.update({ where: { id: linkedAway.id }, data: { is_active: false }, select: { id: true } });
@@ -623,23 +704,32 @@ suite('a customer\'s reply rings the record\'s people through M6 (real database)
       const rung = await bells((await receive(convo)).providerId, w);
 
       expect(rung.plain).toEqual(sorted(linked));
-      expect(rung.all).not.toContain(manager.id);
+      // An Admin is the fallback only while nobody active is linked.
+      expect(rung.all).not.toContain(admin.id);
       expect(rung.reason).toBeNull();
 
-      // With an assignee who can take it, the assignee is rung and the linked people are not.
+      // With an assignee who can take it (a reader of the main mailbox), the assignee is rung and the other linked people are not.
       const assignee = await personWith(w.org);
+      await linkToMain(w, assignee);
       const assigned = await bells((await receive(await conversation(w, { assignee: assignee.id }))).providerId, w);
       expect(assigned.all).toEqual(sorted(assignee));
+
+      // An assignee who does not read the main mailbox cannot take it (being assigned opens nothing, M1): the linked people are rung.
+      const outsider = await personWith(w.org);
+      const notTaken = await bells((await receive(await conversation(w, { assignee: outsider.id }))).providerId, w);
+      expect(notTaken.all).not.toContain(outsider.id);
+      expect(notTaken.plain).toEqual(sorted(linked, assignee));
     });
 
-    it('in the main mailbox rings the holders of Manage roles and permissions while nobody is linked, saying so', async () => {
+    it('in the main mailbox rings the Admins while nobody is linked, saying so, and no non-Admin', async () => {
       const w = await newOrg();
-      const manager = await personWith(w.org, { view_users: true, manage_roles_and_permissions: true });
-      const bystander = await personWith(w.org);
+      const admin = await personWith(w.org, { is_admin: true });
+      const bystander = await personWith(w.org, { communication_scope: 'all' });
 
       const rung = await bells((await receive(await conversation(w, {}))).providerId, w);
 
-      expect(rung.why).toEqual(sorted(manager));
+      expect(rung.why).toEqual(sorted(admin));
+      expect(rung.admin).toBe(true);
       expect(rung.reason).toBe('Nobody is linked to the main mailbox');
       expect(rung.all).not.toContain(bystander.id);
     });
@@ -681,7 +771,10 @@ suite('a customer\'s reply rings the record\'s people through M6 (real database)
       const { alertEmailReply } = await import('../services/notifications/emailReplyAlerts.js');
       const w = await newOrg();
       const crew = await personWith(w.org);
-      const manager = await personWith(w.org, { ...allJobs, view_users: true, manage_roles_and_permissions: true });
+      // A linked reader takes the job nobody is on, with the reason line (an Admin would be told as a copy holder, without it). On
+      // All, so the Email list the bell opens shows them the conversation (M1).
+      const linked = await personWith(w.org, { ...allJobs, communication_scope: 'all' });
+      await linkToMain(w, linked);
       const withCrew = await fx.addJob(w.org, w.customer, { crew: [crew.id] });
       const withNobody = await fx.addJob(w.org, w.customer, {});
 
@@ -691,7 +784,7 @@ suite('a customer\'s reply rings the record\'s people through M6 (real database)
         const before = await db.notification.count({ where: { organization_id: w.org } });
         emitSpy.mockClear();
         const again = await alertEmailReply({
-          organizationId: w.org, threadId: convo.thread, providerMessageId: reply.providerId, senderLabel: 'Angel', subject: 'Re: Your visit',
+          organizationId: w.org, threadId: convo.thread, providerMessageId: reply.providerId, emailId: reply.row.id, senderLabel: 'Angel', subject: 'Re: Your visit',
         });
         expect(again).toEqual([]);
         // Nothing was worked out for it: the alert is not even handed to the bell.
@@ -699,7 +792,7 @@ suite('a customer\'s reply rings the record\'s people through M6 (real database)
         expect(await db.notification.count({ where: { organization_id: w.org } })).toBe(before);
       }
       expect(await db.notificationRecipient.count({ where: { recipient_id: crew.id } })).toBe(1);
-      expect(await db.notificationRecipient.count({ where: { recipient_id: manager.id } })).toBe(1);
+      expect(await db.notificationRecipient.count({ where: { recipient_id: linked.id } })).toBe(1);
       const keys = (await db.notification.findMany({ where: { organization_id: w.org }, select: { dedup_key: true } })).map((n) => n.dedup_key!);
       expect(keys.filter((k) => k.endsWith(':why'))).toHaveLength(1);
     });
@@ -733,7 +826,7 @@ suite('a customer\'s reply rings the record\'s people through M6 (real database)
       try {
         const reply = await receive(convo);
         const direct = await alertEmailReply({
-          organizationId: w.org, threadId: convo.thread, providerMessageId: reply.providerId, senderLabel: 'Angel', subject: 'Re: Your visit',
+          organizationId: w.org, threadId: convo.thread, providerMessageId: reply.providerId, emailId: reply.row.id, senderLabel: 'Angel', subject: 'Re: Your visit',
         });
 
         expect(direct).toEqual([]);

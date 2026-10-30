@@ -6,7 +6,8 @@ import {
   fetchPaymentsExport, useAttention, usePaymentsList, usePaymentsSummary, type PaymentRow, type PaymentsListParams,
 } from '@/lib/api/paymentsPage';
 import { downloadCSV, toCSV } from '@/lib/csv';
-import { paymentsRegistry } from '@/lib/filters/registries/payments';
+import { useCanSeePrices } from '@/contexts/AbilityContext';
+import { paymentsRegistry, paymentsRegistryFor } from '@/lib/filters/registries/payments';
 import { useFilterState } from '@/lib/filters/useFilterState';
 import type { FacetOption, FilterState } from '@/lib/filters/types';
 import { useScheduleTimezone } from '@/lib/schedule-tz';
@@ -26,7 +27,7 @@ import { ATTENTION_FETCH_LIMIT } from '../attentionCardItems';
 import { PAYMENT_CHIPS, PaymentsToolbar, type PaymentChip } from '../components/PaymentsToolbar';
 import { useDrawerHost } from '../drawerHost';
 import { stackForItem } from '../drawerStack';
-import { buildPaymentColumns, SORTABLE_COLUMNS, toPaymentExportRow } from '../components/paymentsColumns';
+import { buildPaymentColumns, PAYMENT_PRICE_COLUMN_IDS, SORTABLE_COLUMNS, toPaymentExportRow } from '../components/paymentsColumns';
 import type { PaymentsTabProps } from '../types';
 
 const DEFAULT_SORT: SortingState = [{ id: 'date', desc: true }];
@@ -56,7 +57,10 @@ export default function PaymentsTab({ range, tabState }: PaymentsTabProps) {
   const attentionOn = chip === 'attention';
   const attView = params.get('attView') === 'resolved' ? 'resolved' : 'open';
 
-  const { value: filters, setValue: setFilters, listParams: facetParams } = useFilterState(paymentsRegistry);
+  // P11: without See prices there is no Amount facet and no Amount, Fee or Net column.
+  const canSeePrices = useCanSeePrices();
+  const registry = paymentsRegistryFor(canSeePrices);
+  const { value: filters, setValue: setFilters, listParams: facetParams } = useFilterState(registry);
 
   const [sorting, setSorting] = useState<SortingState>(DEFAULT_SORT);
   const [pageSize, setPageSize] = useState(25);
@@ -96,7 +100,7 @@ export default function PaymentsTab({ range, tabState }: PaymentsTabProps) {
   const rows = list.data?.payments ?? [];
   const pagination = list.data?.pagination;
 
-  const anyFacet = paymentsRegistry.some((f) => facetSelectionCount(filters[f.key]) > 0);
+  const anyFacet = registry.some((f) => facetSelectionCount(filters[f.key]) > 0);
   // "shown of total" only describes the facets alone: a search or a status chip narrows past them.
   const showCount = !q && chip === 'all';
   const anythingApplied = Boolean(q) || anyFacet || chip !== 'all';
@@ -109,14 +113,17 @@ export default function PaymentsTab({ range, tabState }: PaymentsTabProps) {
   const toggleSort = useCallback((columnId: string) => {
     if (SORTABLE_COLUMNS.has(columnId)) setSorting((prev) => toggleColumnSort(prev, columnId, ALWAYS_SORTED));
   }, [setSorting]);
-  const columns = useMemo(() => buildPaymentColumns({ sorting, onToggleSort: toggleSort, timeZone }), [sorting, toggleSort, timeZone]);
+  const columns = useMemo(
+    () => buildPaymentColumns({ sorting, onToggleSort: toggleSort, timeZone }).filter((c) => canSeePrices || !PAYMENT_PRICE_COLUMN_IDS.has(String(c.id))),
+    [sorting, toggleSort, timeZone, canSeePrices],
+  );
 
   const [exporting, setExporting] = useState(false);
   const exportCsv = async () => {
     setExporting(true);
     try {
       const all = await fetchPaymentsExport(filterQuery);
-      downloadCSV(toCSV(all.map((p) => toPaymentExportRow(p, timeZone))), `payments-${range.from}-${range.to}.csv`);
+      downloadCSV(toCSV(all.map((p) => toPaymentExportRow(p, timeZone, canSeePrices))), `payments-${range.from}-${range.to}.csv`);
       toast.success(`Exported ${all.length} ${all.length === 1 ? 'payment' : 'payments'}`);
     } catch (err) {
       toast.error(extractApiError(err, 'Could not export payments.'));
@@ -161,7 +168,7 @@ export default function PaymentsTab({ range, tabState }: PaymentsTabProps) {
       />
       {!attentionOn && anyFacet && (
         <AppliedFilterBar
-          registry={paymentsRegistry}
+          registry={registry}
           value={filters}
           onChange={onFilters}
           resolveOptions={NO_OPTIONS}

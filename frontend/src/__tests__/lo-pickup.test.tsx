@@ -58,7 +58,7 @@ function detail(status: LogisticOrderStatus, actions: LogisticOrderDetail['actio
 
 function serve(order: LogisticOrderDetail, showOrdersPage = true) {
   mockApi.get.mockImplementation((async (url: string, config?: { params?: Record<string, unknown> }) => {
-    if (url === '/api/permission-switches/me') return { data: { admin_box: false, values: { show_logistic_orders_page: showOrdersPage }, rules: [] } };
+    if (url === '/api/permission-switches/me') return { data: { admin_box: false, values: { view_logistic_orders: showOrdersPage }, rules: [] } };
     if (url === `/api/logistic-orders/${ORDER_ID}`) return { data: order };
     if (url === '/api/logistic-orders') {
       const limit = Number(config?.params?.limit ?? 50);
@@ -92,7 +92,7 @@ async function showOnJob(rules: AbilityRule[]) {
 
 /** Shows the order list on the Inventory page's Logistic Orders tab. */
 async function showOnInventory(rules: AbilityRule[]) {
-  seedMySwitches({ show_logistic_orders_page: true });
+  seedMySwitches({ view_logistic_orders: true });
   renderWithProviders(<InventoryPage />, { initialEntries: ['/inventory/logistic-orders'], ability: buildAbility(rules) });
   await screen.findByText('LO00001');
 }

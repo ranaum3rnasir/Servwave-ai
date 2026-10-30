@@ -61,8 +61,8 @@ describe('GET /api/estimates/:id/notes — per-row RBAC (in-tenant cross-user re
       .get(`/api/estimates/${ESTIMATE_FIXTURE.id}/notes`)
       .set(authHeader('sales'));
 
-    expect(res.status).toBe(403);
-    expect(res.body).toEqual({ error: 'Insufficient permissions' });
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Estimate not found' });
     expect(mockPrisma.note.findMany).not.toHaveBeenCalled();
   });
 
@@ -124,8 +124,8 @@ describe('POST /api/estimates/:id/notes — per-row RBAC (in-tenant cross-user w
       .set(authHeader('sales'))
       .send({ content: 'sneaky cross-user note' });
 
-    expect(res.status).toBe(403);
-    expect(res.body).toEqual({ error: 'Insufficient permissions' });
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Estimate not found' });
     expect(mockPrisma.note.create).not.toHaveBeenCalled();
   });
 

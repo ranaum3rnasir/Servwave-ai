@@ -35,7 +35,6 @@ const mockPrisma = prisma as unknown as {
   };
   timelineEvent: { findMany: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn> };
   invoice: { findMany: ReturnType<typeof vi.fn> };
-  userPermissionOverride: { findMany: ReturnType<typeof vi.fn> };
   $transaction: ReturnType<typeof vi.fn>;
 };
 

@@ -70,7 +70,7 @@ export async function resolveSpiderRecipients(
 
   // Nobody configured, or the configured people reach nobody for this lead: the Admins.
   const admins = await db.user.findMany({
-    where: { organization_id: orgId, ...CAN_SIGN_IN, role: 'ADMIN' },
+    where: { organization_id: orgId, ...CAN_SIGN_IN, is_admin: true },
     select: RECIPIENT_SELECT,
     orderBy: { id: 'asc' },
   });

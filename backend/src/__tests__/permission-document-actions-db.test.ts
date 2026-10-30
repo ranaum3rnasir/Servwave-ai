@@ -2,9 +2,9 @@
    Roles & Permissions, PRD 4, slice S04.27 - invoice and estimate page actions from the per-record answer.
 
    The invoice page and the estimate page draw send, edit, delete, copy payment link and record payment from the
-   server's answer for THIS record: `actions` on the record's own read. A creator with View off gets send, edit and
-   delete on the record they made (the creator rule) and none on anyone else's; copy payment link and record payment
-   follow Send payment links and Record payments, which the creator rule never grants. No role name is asked.
+   server's answer for THIS record: `actions` on the record's own read. Each action stands on its own switch (Edit,
+   Delete, Send payment links, Record payments) and the record being in the person's reach; who made the record opens
+   nothing by itself, and with View off the record is refused (P7). No role name is asked.
 
    Everything goes through the public interface: the invoice and estimate routes, called as people on custom roles
    (never a built-in role name). Real migrated database (TEST_DATABASE_URL); the suite skips when it is unset. Every
@@ -40,8 +40,10 @@ const ALL_OFF: Record<string, SwitchValue> = Object.fromEntries(
 
 /** What opening the job takes, with View invoices and View estimates off: the Technician preset's reach. */
 const FIELD_WORKER = { view_jobs: true, jobs_scope: 'attached', view_invoices: false, view_estimates: false };
-const SEES_INVOICES = { ...FIELD_WORKER, view_invoices: true, invoices_scope: 'all' };
-const SEES_ESTIMATES = { ...FIELD_WORKER, view_estimates: true, estimates_scope: 'all' };
+const SEES_INVOICES = { ...FIELD_WORKER, view_invoices: true, jobs_scope: 'all', leads_scope: 'all' };
+const SEES_ESTIMATES = { ...FIELD_WORKER, view_estimates: true, jobs_scope: 'all', leads_scope: 'all' };
+/** View invoices on at Attached: the invoices of the jobs the person is on. */
+const SEES_OWN_INVOICES = { ...FIELD_WORKER, view_invoices: true, jobs_scope: 'attached', leads_scope: 'attached' };
 
 suite('invoice and estimate page actions from the per-record answer (real database)', () => {
   const db = realClient as PrismaClient;
@@ -59,7 +61,7 @@ suite('invoice and estimate page actions from the per-record answer (real databa
   async function personWith(org: string, values: Record<string, SwitchValue>): Promise<Person & { api: () => Promise<Api> }> {
     const key = `doc-actions-role-${++sequence}`;
     const role = await fx.addCustomRole(org, key, 'TECHNICIAN');
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...values }, actorId: null, reason: 'manual' });
+    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, see_prices: true, ...values }, actorId: null, reason: 'manual' });
     const person = await fx.addUser(org, `worker${sequence}`, 'TECHNICIAN', { customRoleId: role.id, basedOnRoleKey: key });
     return { ...person, api: () => fx.signedInAs(person) };
   }
@@ -79,13 +81,12 @@ suite('invoice and estimate page actions from the per-record answer (real databa
   }
 
   describe('the invoice page', () => {
-    it('lists send, edit and delete on the invoice a creator made, with View invoices off, and nothing money', async () => {
+    it('refuses the invoice a creator made when View invoices is off', async () => {
       const { org, customer, admin } = await fx.newOrg();
       const me = await personWith(org, FIELD_WORKER);
       const world = await jobWithTwoInvoices(org, customer, me, admin.id);
-      const api = await me.api();
 
-      expect(await invoiceActions(api, world.mine)).toEqual(['edit', 'send', 'delete']);
+      expect((await (await me.api()).get(`/api/invoices/${world.mine}`)).status).toBe(403);
     });
 
     it('opens no one else\'s invoice to a creator with View invoices off', async () => {
@@ -96,14 +97,14 @@ suite('invoice and estimate page actions from the per-record answer (real databa
       expect((await (await me.api()).get(`/api/invoices/${world.theirs}`)).status).toBe(403);
     });
 
-    it('lists nothing to edit, send or delete on another person\'s invoice a viewer can open, and all three on their own', async () => {
+    it('lists nothing to edit, send or delete on any invoice a viewer can open, the one they made included', async () => {
       const { org, customer, admin } = await fx.newOrg();
       const me = await personWith(org, SEES_INVOICES);
       const world = await jobWithTwoInvoices(org, customer, me, admin.id);
       const api = await me.api();
 
       expect(await invoiceActions(api, world.theirs)).toEqual([]);
-      expect(await invoiceActions(api, world.mine)).toEqual(['edit', 'send', 'delete']);
+      expect(await invoiceActions(api, world.mine)).toEqual([]);
     });
 
     it('lists edit and send on another person\'s invoice with Edit invoices on, delete only with Delete invoices on', async () => {
@@ -118,13 +119,13 @@ suite('invoice and estimate page actions from the per-record answer (real databa
 
     it('lists copy payment link only with Send payment links on, and record payment only with Record payments on', async () => {
       const { org, customer, admin } = await fx.newOrg();
-      const linker = await personWith(org, { ...FIELD_WORKER, send_payment_links: true });
-      const collector = await personWith(org, { ...FIELD_WORKER, record_payments: true, allowed_payment_methods: ['CASH'] });
+      const linker = await personWith(org, { ...SEES_OWN_INVOICES, send_payment_links: true });
+      const collector = await personWith(org, { ...SEES_OWN_INVOICES, record_payments: true, allowed_payment_methods: ['CASH'] });
       const worldA = await jobWithTwoInvoices(org, customer, linker, admin.id);
       const worldB = await jobWithTwoInvoices(org, customer, collector, admin.id);
 
-      expect(await invoiceActions(await linker.api(), worldA.mine)).toEqual(['edit', 'send', 'delete', 'copy_payment_link']);
-      expect(await invoiceActions(await collector.api(), worldB.mine)).toEqual(['edit', 'send', 'delete', 'record_payment']);
+      expect(await invoiceActions(await linker.api(), worldA.mine)).toEqual(['copy_payment_link']);
+      expect(await invoiceActions(await collector.api(), worldB.mine)).toEqual(['record_payment']);
     });
 
     it('lists the money actions on an invoice a viewer can open but did not make, when the money switches are on', async () => {
@@ -144,21 +145,21 @@ suite('invoice and estimate page actions from the per-record answer (real databa
         .toEqual(['edit', 'send', 'delete', 'copy_payment_link', 'record_payment']);
     });
 
-    it('takes the creator\'s actions away on the next read once they are off the job', async () => {
+    it('takes the invoice away on the next read once they are off the job', async () => {
       const { org, customer, admin } = await fx.newOrg();
-      const me = await personWith(org, FIELD_WORKER);
+      const me = await personWith(org, { ...SEES_OWN_INVOICES, edit_invoices: true });
       const world = await jobWithTwoInvoices(org, customer, me, admin.id);
       const api = await me.api();
-      expect(await invoiceActions(api, world.mine)).toEqual(['edit', 'send', 'delete']);
+      expect(await invoiceActions(api, world.mine)).toEqual(['edit', 'send']);
 
       const visit = await db.visit.findFirstOrThrow({ where: { job_id: world.jobId }, select: { id: true } });
       await fx.removeCrew(visit.id, me.id);
-      expect((await api.get(`/api/invoices/${world.mine}`)).status).toBe(403);
+      expect((await api.get(`/api/invoices/${world.mine}`)).status).toBe(404);
     });
   });
 
   describe('the estimate page', () => {
-    it('lists edit, send, delete and cancel on the estimate a creator made, with View estimates off', async () => {
+    it('refuses the estimates a creator made on their job when View estimates is off', async () => {
       const { org, customer, admin } = await fx.newOrg();
       const me = await personWith(org, FIELD_WORKER);
       const job = await fx.addJob(org, customer, { crew: [me.id] });
@@ -166,9 +167,7 @@ suite('invoice and estimate page actions from the per-record answer (real databa
       const theirs = await fx.addEstimate(org, customer, admin.id, { jobId: job.id });
       const api = await me.api();
 
-      const own = await api.get(`/api/estimates/${mine.id}`);
-      expect(own.status).toBe(200);
-      expect(own.body.estimate.actions).toEqual(['edit', 'send', 'delete', 'cancel']);
+      expect((await api.get(`/api/estimates/${mine.id}`)).status).toBe(403);
       expect((await api.get(`/api/estimates/${theirs.id}`)).status).toBe(403);
     });
 

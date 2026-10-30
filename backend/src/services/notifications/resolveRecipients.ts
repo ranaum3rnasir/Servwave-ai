@@ -418,7 +418,7 @@ export function resolveRecipients(ctx: ResolveContext): RecipientSpec[] {
 
     // ── MAILBOX ─────────────────────────────────────────────────────────────────
     // A user mailbox created without an address (S10.3). The caller found the people: the new user for the first
-    // verb, the active holders of Edit users (by the switch-holder lookup, never a role name) for the second.
+    // verb, the active Admins (by the switch-holder lookup, never a role name) for the second.
     case 'mailbox.address_needed':
     case 'mailbox.address_needed_admin': {
       strArr('recipient_ids').forEach(id => raw.push(spec(id, FEED)));
@@ -487,7 +487,7 @@ export function resolveRecipients(ctx: ResolveContext): RecipientSpec[] {
 
     // ── BILLING: payments-account lifecycle (Task 1.8) ───────────────────────────
     // The payments-account alerts (S06.29) have no record: the caller (noRecordAlerts.ts) walked the chain from its second step,
-    // so every id is in lane_two_ids (the active holders of Company settings, else the Manage roles and permissions holders)
+    // so every id is in lane_two_ids (the company's active Admins)
     // and none was found by a role. The good news is on the feed; the ones that need the owner interrupt and ask for action.
     case 'billing.payments_activated':
     case 'billing.payouts_activated':
@@ -504,7 +504,7 @@ export function resolveRecipients(ctx: ResolveContext): RecipientSpec[] {
     }
 
     // ── TEAM ─────────────────────────────────────────────────────────────────────
-    // Invite accepted (S06.29): no record, so the holders of Invite users (else the Manage roles and permissions holders) found by
+    // Invite accepted (S06.29): no record, so the Admins found by
     // the caller; the person who accepted is the actor and falls out at dedupe().
     case 'team.invite_accepted': {
       chainIds().forEach(id => raw.push(spec(id, FEED)));
@@ -513,7 +513,7 @@ export function resolveRecipients(ctx: ResolveContext): RecipientSpec[] {
 
     // ── INVENTORY ────────────────────────────────────────────────────────────────
     // The inventory alerts have no record (S06.29): the caller (noRecordAlerts.ts) found the active holders of the alert's switch,
-    // else the Manage roles and permissions holders. A stock approval asks them to act; the others are only told.
+    // else the Admins. A stock approval asks them to act; the others are only told.
     case 'inventory.stock_approval_requested': {
       chainIds().forEach(id => raw.push(spec(id, INTERRUPT, true))); // needs_action = APPROVE_STOCK / DENY_STOCK
       break;

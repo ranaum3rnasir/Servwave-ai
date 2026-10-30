@@ -121,7 +121,7 @@ suite('a lead has a Dispatcher (real database)', () => {
       const lead = await fx.addLead(org, customer);
 
       const refused = await setDispatcher(await holder.api(), lead.id, target.id);
-      expect(refused.status).toBe(403);
+      expect(refused.status).toBe(404);
       expect(await dispatcherOf(lead.id)).toBeNull();
     });
 
@@ -301,11 +301,24 @@ suite('a lead has a Dispatcher (real database)', () => {
   });
 
   describe('deleting the Dispatcher', () => {
-    it('succeeds for a deactivated user who is a lead\'s Dispatcher, and empties the field', async () => {
+    it('is refused for a deactivated user who is a lead\'s Dispatcher: a record\'s people are history (P19), and nothing changes', async () => {
       const { org, customer, admin } = await fx.newOrg();
       const api = await fx.signedInAs(admin);
       const gone = await personWith(org, { can_be_dispatcher: true }, 'TECHNICIAN', { active: false });
       const lead = await fx.addLead(org, customer, { dispatcher: gone.id });
+
+      const deleted = await api.delete(`/api/users/${gone.id}/permanent`);
+      expect(deleted.status).toBe(409);
+      expect(deleted.body.error).toContain("can't be permanently deleted");
+      expect(await db.user.count({ where: { id: gone.id } })).toBe(1);
+      expect(await dispatcherOf(lead.id)).toBe(gone.id);
+    });
+
+    it('succeeds for a deactivated user who is on no record, and leaves every lead as it was', async () => {
+      const { org, customer, admin } = await fx.newOrg();
+      const api = await fx.signedInAs(admin);
+      const gone = await personWith(org, { can_be_dispatcher: true }, 'TECHNICIAN', { active: false });
+      const lead = await fx.addLead(org, customer, {});
 
       const deleted = await api.delete(`/api/users/${gone.id}/permanent`);
       expect(deleted.status).toBe(200);

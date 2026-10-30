@@ -110,6 +110,7 @@ vi.mock('@/lib/api/inventory', async (importOriginal) => {
 const readOnlyAbility = () =>
   buildAbility([
     { action: 'read', subject: 'PriceBook' },
+    { action: 'read', subject: 'Prices' },
     { action: 'read', subject: 'Pricing' },
   ]);
 
@@ -119,6 +120,7 @@ const writeAbility = () =>
     { action: 'create', subject: 'PriceBook' },
     { action: 'update', subject: 'PriceBook' },
     { action: 'delete', subject: 'PriceBook' },
+    { action: 'read', subject: 'Prices' },
     { action: 'read', subject: 'Pricing' },
   ]);
 
@@ -141,7 +143,7 @@ describe('#2009 — Price Book ability gate (routed v2 page)', () => {
 
       // Items tab.
       expect(screen.queryByRole('button', { name: /Add Item/i })).not.toBeInTheDocument();
-      // The download is its own box (Export price book, S07.17): View price book and See financial data do not
+      // The download is its own box (Export price book, S07.17): View price book and See costs do not
       // carry it.
       expect(screen.queryByRole('button', { name: /Export/i })).not.toBeInTheDocument();
       expect(screen.getByRole('button', { name: /Columns/i })).toBeInTheDocument();
@@ -257,6 +259,7 @@ describe('#2009 — Price Book ability gate (routed v2 page)', () => {
       // ability itself carries no role, which is the point (AC10).
       const dispatcherShapedAbility = buildAbility([
         { action: 'read', subject: 'PriceBook' },
+        { action: 'read', subject: 'Prices' },
         { action: 'read', subject: 'Pricing' },
       ]);
       renderPriceBook(dispatcherShapedAbility);

@@ -55,35 +55,35 @@ export function inventoryV2Routes() {
     <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN']} />}>
       <Route element={<V2AppLayout />}>
         <Route element={<RequireFeature feature="inventory" />}>
-          {/* The Stock page and its tabs follow View stock and Show Stock page; the Logistic Orders tab, Price Book,
-              Purchase Orders and Vendors each follow their own pair. A person refused goes to their dashboard. */}
-          <Route element={<RequirePageAccess all={['view_stock', 'show_stock_page']} />}>
+          {/* The Stock page and its tabs follow View stock; the Logistic Orders tab, Price Book,
+              Purchase Orders and Vendors each follow their own View. A person refused goes to their dashboard. */}
+          <Route element={<RequirePageAccess all={['view_stock']} />}>
             <Route path="/inventory" element={<InventoryPage />} />
             <Route path="/inventory/staging" element={<InventoryPage />} />
             <Route path="/inventory/assets" element={<InventoryPage />} />
             <Route path="/inventory/low-stock" element={<InventoryPage />} />
             <Route path="/inventory/activity" element={<InventoryPage />} />
           </Route>
-          <Route element={<RequirePageAccess all={['view_logistic_orders', 'show_logistic_orders_page']} />}>
+          <Route element={<RequirePageAccess all={['view_logistic_orders']} />}>
             <Route path="/inventory/logistic-orders" element={<InventoryPage />} />
           </Route>
           {/* One logistic order, opened from its alert or a job: a record route, so it sits outside the list guard above
-              (Show Logistic Orders page hides the list and the menu entry, not the order). The page asks the server. */}
+              (the order opens whatever the list switches say). The page asks the server. */}
           <Route path="/inventory/logistic-orders/:orderId" element={<LogisticOrderRecordPage />} />
           <Route
             path="/inventory/approvals"
             element={<Navigate to={v2Path('/inventory')} replace />}
           />
-          <Route element={<RequirePageAccess all={['view_price_book', 'show_price_book_page']} />}>
+          <Route element={<RequirePageAccess all={['view_price_book']} />}>
             <Route path="/inventory/price-book" element={<InventoryPriceBookPage />} />
           </Route>
-          <Route element={<RequirePageAccess all={['view_purchase_orders', 'show_purchase_orders_page']} />}>
+          <Route element={<RequirePageAccess all={['view_purchase_orders']} />}>
             <Route path="/inventory/purchase-orders" element={<PurchaseOrdersPage />} />
           </Route>
           {/* One purchase order, opened from a job: a record route, so it sits outside the list guard above (Show
               Purchase Orders page hides the list and the menu entry, not the order). The page asks the server. */}
           <Route path="/inventory/purchase-orders/:poId" element={<PurchaseOrderRecordPage />} />
-          <Route element={<RequirePageAccess all={['view_vendors', 'show_vendors_page']} />}>
+          <Route element={<RequirePageAccess all={['view_vendors']} />}>
             <Route path="/inventory/vendors" element={<VendorsPage />} />
           </Route>
         </Route>

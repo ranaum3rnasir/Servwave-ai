@@ -98,7 +98,7 @@ suite('nightly payment reconcile (real database)', () => {
       },
     });
     await db.user.create({
-      data: { id: user, organization_id: org, email: `admin-${tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN' },
+      data: { id: user, organization_id: org, email: `admin-${tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN', is_admin: true },
     });
     await db.customer.create({
       data: { id: customer, organization_id: org, customer_number: `C-${tag}`, kind: 'PERSON', segment: 'RESIDENTIAL', first_name: 'Pat', last_name: 'Payer' },
@@ -153,7 +153,7 @@ suite('nightly payment reconcile (real database)', () => {
       for (const table of ['timeline_events', 'notifications', 'invoices', 'customers', 'users']) {
         await db.$executeRawUnsafe(`DELETE FROM ${table} WHERE organization_id = '${org}'::uuid`);
       }
-      await db.$executeRawUnsafe(`DELETE FROM audit_logs WHERE org_id = '${org}'::uuid`);
+      // audit_logs is not cleared: the database refuses any delete there (M14, ticket 25), and its rows hold no foreign key.
       await db.organization.delete({ where: { id: org } });
     }
     await db.$disconnect();

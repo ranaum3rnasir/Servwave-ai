@@ -56,7 +56,7 @@ suite('money on the job follows invoice access (real database)', () => {
   async function personWith(org: string, values: Record<string, SwitchValue>): Promise<Person & { api: () => Promise<Api>; roleKey: string }> {
     const key = `job-money-role-${++sequence}`;
     const role = await fx.addCustomRole(org, key, 'TECHNICIAN');
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...values }, actorId: null, reason: 'manual' });
+    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, see_prices: true, ...values }, actorId: null, reason: 'manual' });
     const person = await fx.addUser(org, `worker${sequence}`, 'TECHNICIAN', { customRoleId: role.id, basedOnRoleKey: key });
     return { ...person, roleKey: key, api: () => fx.signedInAs(person) };
   }
@@ -79,7 +79,7 @@ suite('money on the job follows invoice access (real database)', () => {
   }
 
   describe('the invoices listed on the job', () => {
-    it('with View invoices off, lists the invoices the person made on the job and not the office\'s, with payments only on the first', async () => {
+    it('with View invoices off, lists no invoice and no payment, not even the ones the person made on the job (P7)', async () => {
       const { org, customer, admin } = await fx.newOrg();
       const me = await personWith(org, OPENING);
       const world = await jobWithTwoInvoices({ me, org, customer, officeUser: admin.id });
@@ -87,16 +87,25 @@ suite('money on the job follows invoice access (real database)', () => {
 
       const res = await api.get(`/api/jobs/${world.jobId}/financials`);
       expect(res.status).toBe(200);
-      expect(res.body.invoices.map((i: { id: string }) => i.id)).toEqual([world.mine]);
-      expect(res.body.payments.map((p: { reference_number: string }) => p.reference_number)).toEqual(['MINE-1']);
-      // The listed invoice carries its own money: prices follow the record the person can open.
+      expect(res.body.invoices).toEqual([]);
+      expect(res.body.payments).toEqual([]);
+    });
+
+    it('with View invoices on at Their own, lists the invoices on the job the person is on with their money', async () => {
+      const { org, customer, admin } = await fx.newOrg();
+      const me = await personWith(org, { ...OPENING, view_invoices: true, jobs_scope: 'attached', leads_scope: 'attached' });
+      const world = await jobWithTwoInvoices({ me, org, customer, officeUser: admin.id });
+
+      const res = await (await me.api()).get(`/api/jobs/${world.jobId}/financials`);
+      expect(res.status).toBe(200);
+      expect(res.body.invoices.map((i: { id: string }) => i.id).sort()).toEqual([world.mine, world.theirs].sort());
       expect(Number(res.body.invoices[0].total_amount)).toBe(100);
       expect(Number(res.body.invoices[0].amount_due)).toBe(70);
     });
 
     it('lists every invoice on the job, and every payment, for a person whose View invoices scope reaches them', async () => {
       const { org, customer, admin } = await fx.newOrg();
-      const me = await personWith(org, { ...OPENING, view_invoices: true, invoices_scope: 'all' });
+      const me = await personWith(org, { ...OPENING, view_invoices: true, jobs_scope: 'all', leads_scope: 'all' });
       const world = await jobWithTwoInvoices({ me, org, customer, officeUser: admin.id });
 
       const res = await (await me.api()).get(`/api/jobs/${world.jobId}/financials`);
@@ -104,19 +113,19 @@ suite('money on the job follows invoice access (real database)', () => {
       expect(res.body.payments).toHaveLength(2);
     });
 
-    it('lists nothing from the office, and nothing of the person\'s own once they are taken off the job', async () => {
+    it('lists nothing once the person is taken off the job', async () => {
       const { org, customer, admin } = await fx.newOrg();
-      const me = await personWith(org, { ...OPENING, jobs_scope: 'all' });
+      const me = await personWith(org, { ...OPENING, view_invoices: true });
       const world = await jobWithTwoInvoices({ me, org, customer, officeUser: admin.id });
       const api = await me.api();
-      expect((await api.get(`/api/jobs/${world.jobId}/financials`)).body.invoices).toHaveLength(1);
+      expect((await api.get(`/api/jobs/${world.jobId}/financials`)).body.invoices).toHaveLength(2);
 
       const visit = await db.visit.findFirstOrThrow({ where: { job_id: world.jobId }, select: { id: true } });
       await fx.removeCrew(visit.id, me.id);
+      // The job itself is no longer theirs to open, so its money goes with it (an invoice follows the Jobs scope, P6).
       const after = await api.get(`/api/jobs/${world.jobId}/financials`);
-      expect(after.status).toBe(200);
-      expect(after.body.invoices).toEqual([]);
-      expect(after.body.payments).toEqual([]);
+      expect(after.status).toBe(404);
+      expect(after.body.invoices).toBeUndefined();
     });
 
     it('also keeps the invoices the person cannot open out of the job page\'s own invoice list', async () => {
@@ -126,7 +135,7 @@ suite('money on the job follows invoice access (real database)', () => {
 
       const res = await (await me.api()).get(`/api/jobs/${world.jobId}`);
       expect(res.status).toBe(200);
-      expect(res.body.job.invoices.map((i: { id: string }) => i.id)).toEqual([world.mine]);
+      expect(res.body.job.invoices).toEqual([]);
       // A delete decision still knows the job has invoices.
       expect(res.body.job.invoice_count).toBe(2);
     });
@@ -165,7 +174,7 @@ suite('money on the job follows invoice access (real database)', () => {
   describe('collecting on a locked job', () => {
     it.each(['COMPLETED', 'CANCELLED'] as const)('still records a payment and sends a payment link on the person\'s invoice on a %s job', async (status) => {
       const { org, customer, admin } = await fx.newOrg();
-      const me = await personWith(org, { ...OPENING, edit_jobs: true, record_payments: true, send_payment_links: true, allowed_payment_methods: ['CHECK', 'CASH'] });
+      const me = await personWith(org, { ...OPENING, view_invoices: true, jobs_scope: 'attached', leads_scope: 'attached', edit_jobs: true, record_payments: true, send_payment_links: true, allowed_payment_methods: ['CHECK', 'CASH'] });
       const world = await jobWithTwoInvoices({ me, org, customer, officeUser: admin.id, status });
       const api = await me.api();
 

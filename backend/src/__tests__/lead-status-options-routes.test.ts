@@ -52,7 +52,6 @@ beforeEach(() => {
   db.recordContactEntry.findMany.mockResolvedValue([]);
   db.lead.updateMany.mockResolvedValue({ count: 1 });
   db.timelineEvent.create.mockResolvedValue({});
-  db.rolePermission.findMany.mockResolvedValue([]);
   db.$transaction.mockImplementation((fn: (tx: unknown) => Promise<unknown>) => fn(prisma));
 });
 

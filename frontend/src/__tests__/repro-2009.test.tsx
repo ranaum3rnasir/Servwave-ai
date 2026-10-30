@@ -84,10 +84,12 @@ vi.mock('@/lib/api/inventory', async (importOriginal) => {
   };
 });
 
+// The Price column is a price (See prices, P11) and Unit Cost is cost (Pricing); a read-only requester holds both.
 const readOnlyAbility = () =>
   buildAbility([
     { action: 'read', subject: 'PriceBook' },
     { action: 'read', subject: 'Pricing' },
+    { action: 'read', subject: 'Prices' },
   ]);
 
 const writeAbility = () =>
@@ -96,6 +98,7 @@ const writeAbility = () =>
     { action: 'create', subject: 'PriceBook' },
     { action: 'update', subject: 'PriceBook' },
     { action: 'read', subject: 'Pricing' },
+    { action: 'read', subject: 'Prices' },
   ]);
 
 function renderPriceBook(ability: ReturnType<typeof readOnlyAbility>) {

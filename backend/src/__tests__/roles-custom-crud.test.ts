@@ -8,15 +8,17 @@ import { clearPermissionCache } from '../lib/permissions/permissionCache';
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
+  // A custom role's change and its audit row are one transaction (re-audit N23): the stub runs it on the mocked client.
+  (prisma.$transaction as any).mockImplementation((fn: any) => fn(prisma));
 });
 
 describe('GET /api/roles - custom roles', () => {
   it('appends the org custom roles after the 4 system roles, type: custom', async () => {
     mockAuthAs('admin');
     // One person in the Admin box and two on the custom role (whose base role is also Admin): three people, each counted once.
-    const onRole = { id: 'u-copy', role: 'ADMIN', custom_role_id: 'cr-1', based_on_role_key: 'office-manager', custom_role: { key: 'office-manager' } };
+    const onRole = { id: 'u-copy', role: 'ADMIN', is_admin: false, custom_role_id: 'cr-1', based_on_role_key: 'office-manager', custom_role: { key: 'office-manager' } };
     (prisma.user.findMany as any).mockResolvedValue([
-      { id: 'u-box', role: 'ADMIN', custom_role_id: null, based_on_role_key: null, custom_role: null },
+      { id: 'u-box', role: 'ADMIN', is_admin: true, custom_role_id: null, based_on_role_key: null, custom_role: null },
       onRole,
       { ...onRole, id: 'u-copy-2' },
     ]);
@@ -71,8 +73,16 @@ describe('POST /api/roles - create', () => {
   const stubTransaction = () => {
     const upsert = vi.fn().mockResolvedValue({});
     const logRows = vi.fn().mockResolvedValue({ count: 0 });
+    // Since ticket 37 the save holds the role (one raw lock statement) and reads its current values inside the transaction,
+    // so the stub answers those reads the way the mocked client outside it does.
     (prisma.$transaction as any).mockImplementation((fn: any) =>
-      fn({ permissionRoleSwitch: { upsert }, permissionChangeLog: { createMany: logRows } }),
+      fn({
+        $queryRaw: vi.fn().mockResolvedValue([]),
+        permissionRoleSwitch: { upsert, findMany: prisma.permissionRoleSwitch.findMany },
+        customRole: { findFirst: prisma.customRole.findFirst, create: prisma.customRole.create, delete: prisma.customRole.delete },
+        permissionChangeLog: { createMany: logRows },
+        auditLog: { create: prisma.auditLog.create },
+      }),
     );
     return { upsert, logRows };
   };
@@ -92,7 +102,6 @@ describe('POST /api/roles - create', () => {
       organization_id: ALPHA_ORG_ID, key: 'senior-dispatch', label: 'Senior Dispatch', base_role: 'DISPATCHER',
     });
     // The role-permission table is no longer a source, so nothing is written to it.
-    expect(prisma.rolePermission.createMany).not.toHaveBeenCalled();
     expect(upsert).not.toHaveBeenCalled();
   });
 
@@ -104,7 +113,6 @@ describe('POST /api/roles - create', () => {
 
     expect(res.status).toBe(201);
     expect(res.body).toMatchObject({ role: 'office-manager', base_role: 'ADMIN', type: 'custom', fullAccess: false });
-    expect(prisma.rolePermission.createMany).not.toHaveBeenCalled();
   });
 
   it('copies another role\'s current switch values onto the new role when clone_grants_from is given', async () => {
@@ -125,7 +133,6 @@ describe('POST /api/roles - create', () => {
     expect(res.status).toBe(201);
     const stored = new Map(upsert.mock.calls.map(([arg]) => [arg.create.switch_key, arg.create]));
     expect(stored.get('delete_customers')).toMatchObject({ role_key: 'junior-dispatch', organization_id: ALPHA_ORG_ID, value: true });
-    expect(prisma.rolePermission.findMany).not.toHaveBeenCalled();
   });
 
   it('cloning from literal ADMIN stores the Admin preset on the new role (ADMIN itself has no stored set)', async () => {
@@ -145,7 +152,6 @@ describe('POST /api/roles - create', () => {
     const stored = new Map(upsert.mock.calls.map(([arg]) => [arg.create.switch_key, arg.create.value]));
     expect(stored.get('delete_customers')).toBe(true);
     expect(stored.get('jobs_scope')).toBe('all');
-    expect(prisma.rolePermission.findMany).not.toHaveBeenCalled();
   });
 
   it('400s a key that collides with a system role name (case-insensitive)', async () => {

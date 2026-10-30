@@ -3,7 +3,8 @@
 
    Finishing a review moves the job to Ready to close and one bell alert goes out: "J00123 is ready to close". Lane 1 is
    the job's people (its stored Sold By, crew and Dispatcher); lane 2 is EVERY Close jobs holder who can open the job,
-   whether or not the job has a Dispatcher (closing is their step), else the Manage roles and permissions holders; holders
+   whether or not the job has a Dispatcher (closing is their step), else the company's Admins (who hold Close jobs like
+   every switch, so they are found at the step already); holders
    of Alert me about every job get a copy. "Someone" is active, can open the job and is not the person who finished the
    review. Nobody comes from a role name. Its link opens the job itself (no panel), where the banner offers Mark Done. A
    job that goes back and is finished again alerts again; Mark Done raises no alert.
@@ -53,11 +54,12 @@ const ALL_OFF: Record<string, SwitchValue> = Object.fromEntries(
   SWITCH_CATALOG.map((s) => [s.key, s.kind === 'choice' ? s.choices![0]! : s.kind === 'list' ? [] : false]),
 );
 
-const opensJobs = { view_jobs: true, jobs_scope: 'all', view_invoices: true, invoices_scope: 'all' };
+const opensJobs = { view_jobs: true, jobs_scope: 'all', view_invoices: true, leads_scope: 'all' };
 /** The finisher: holds Office review (the only switch Finish review asks) and Close jobs, to prove the actor is never told. */
 const finisherValues = { ...opensJobs, office_review: true, close_jobs: true };
 const closerValues = { ...opensJobs, close_jobs: true };
-const managerValues = { ...opensJobs, manage_roles_and_permissions: true, view_users: true };
+// An Admin (the flag, AL-18): holds every switch, Close jobs and the copy switches included, and opens every job.
+const adminValues = { ...opensJobs, is_admin: true, view_users: true };
 
 type Api = Awaited<ReturnType<ReturnType<typeof switchFixture>['signedInAs']>>;
 
@@ -75,9 +77,11 @@ suite('the Ready to close alert (real database)', () => {
   /** A person on a fresh custom role holding exactly these switch values over everything else off. */
   async function personWith(org: string, values: Record<string, SwitchValue>, base: Role = 'DISPATCHER'): Promise<Person> {
     const key = `ready-alert-role-${++sequence}`;
+    // `is_admin: true` makes the person an Admin (the flag, AL-18): it is not a switch, so it never reaches the role.
+    const { is_admin: asAdmin, ...switchValues } = values;
     const role = await fx.addCustomRole(org, key, base);
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...values }, actorId: null, reason: 'manual' });
-    return fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
+    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...switchValues }, actorId: null, reason: 'manual' });
+    return fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id, isAdmin: asAdmin === true });
   }
 
   /** A company with nobody but built people, so only they can be alerted. */
@@ -181,10 +185,10 @@ suite('the Ready to close alert (real database)', () => {
     expect(alerts.every((n) => n.body === null)).toBe(true);
   });
 
-  it('with no Close jobs holder who can open the job: the Manage roles and permissions holders, with the why line', async () => {
+  it('with no other Close jobs holder who can open the job: an Admin, who holds the step, with no why line', async () => {
     const { org, customer } = await quietOrg();
     const me = await personWith(org, finisherValues);
-    const manager = await personWith(org, managerValues);
+    const admin = await personWith(org, adminValues);
     const cannotOpen = await personWith(org, { view_jobs: true, jobs_scope: 'attached', close_jobs: true });
     const noSwitch = await personWith(org, opensJobs);
     const job = await reviewJob(org, customer, {});
@@ -192,10 +196,11 @@ suite('the Ready to close alert (real database)', () => {
     await finish(await fx.signedInAs(me), job.id);
 
     const alerts = await alertsFor(job.id);
-    expect(recipientsOf(alerts)).toEqual(ids(manager));
+    expect(recipientsOf(alerts)).toEqual(ids(admin));
     expect(recipientsOf(alerts)).not.toContain(cannotOpen.id);
     expect(recipientsOf(alerts)).not.toContain(noSwitch.id);
-    expect(whyFor(alerts, manager)).toBe('Nobody who can close jobs can open this job.');
+    // Closing is the step's own (no Dispatcher to cover for), and an Admin holds it: no "nobody who can close jobs" line.
+    expect(whyFor(alerts, admin)).toBeNull();
   });
 
   it('a Dispatcher who did the action is not told, and does not stop the Close jobs holders from being told', async () => {

@@ -63,7 +63,7 @@ suite('a send that names its record opens its conversation in a mailbox (real da
   async function newUser(orgId: string) {
     const id = randomUUID();
     await db.user.create({
-      data: { id, email: `u${id.slice(0, 8)}@example.test`, first_name: 'Sam', last_name: 'Sender', role: 'ADMIN', organization_id: orgId },
+      data: { id, email: `u${id.slice(0, 8)}@example.test`, first_name: 'Sam', last_name: 'Sender', role: 'ADMIN', is_admin: true, organization_id: orgId },
     });
     return id;
   }

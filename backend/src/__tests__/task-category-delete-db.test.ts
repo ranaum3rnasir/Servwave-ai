@@ -52,7 +52,7 @@ suite('deleting a task category (real database)', () => {
     });
     const adminId = randomUUID();
     await prisma.user.create({
-      data: { id: adminId, email: `admin-${tag}@example.test`, first_name: 'Ada', last_name: 'Admin', role: 'ADMIN', organization_id: orgId },
+      data: { id: adminId, email: `admin-${tag}@example.test`, first_name: 'Ada', last_name: 'Admin', role: 'ADMIN', is_admin: true, organization_id: orgId },
     });
     const catId = randomUUID();
     const otherCatId = randomUUID();

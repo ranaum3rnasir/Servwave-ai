@@ -9,7 +9,7 @@ import { tieOf, showsOnJob, showsOnLead, isGuardedRecordType, type RecordTie } f
  * A record conversation is an `email_threads` row with origin "record" and the record it is about (S10.4). Which job or
  * lead it is tied to is worked out here from that record, on every read (`recordTie.ts` holds the rule): the rows are
  * loaded fresh and nothing is stored. A conversation about an estimate or an invoice goes onto the tab only when the
- * person can also open that estimate or invoice (the creator rule included), asked of the two openers.
+ * person can also open that estimate or invoice, asked of the two openers.
  *
  * Bounded by design, because the hosted database allows one connection and a tab can hold dozens of conversations: the
  * record is read in one query, the estimates and the invoices that could be tied to it in one each, and the openers in
@@ -169,7 +169,7 @@ export async function tiedRecordConversations(
     }))
     .filter((i) => shows(i.tie));
 
-  // Only the estimates and invoices the person can open (the creator rule included) bring their conversation along.
+  // Only the estimates and invoices the person can open bring their conversation along.
   const [openEstimates, openInvoices] = await Promise.all([
     openers.estimate(estimateTies.map((e) => e.id)),
     openers.invoice(invoiceTies.map((i) => i.id)),

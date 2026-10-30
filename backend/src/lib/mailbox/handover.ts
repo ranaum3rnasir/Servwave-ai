@@ -7,7 +7,7 @@
  * with none given it is the main mailbox, so a deactivation is never blocked for want of an answer.
  *
  *   Handed to MAIN   every conversation in the mailbox moves into the main mailbox in ONE set-based write, a started one
- *                    reading origin "moved" (so the main mailbox's readers do not list it under "Linked to me") with the
+ *                    reading origin "moved" (so the main mailbox's readers do not list it under Attached) with the
  *                    mailbox it came from, a record conversation keeping origin "record" so it still follows its record
  *                    (a person with Invoices View off must not reach an invoice conversation through any mailbox). The
  *                    mailbox reads "merged", nobody holds it, and it keeps its owner and its address rows: the inbound
@@ -21,7 +21,7 @@
  * A leaver who HOLDS someone else's mailbox (one handed to them earlier) hands that one on in the same write, to the same
  * target: a mailbox is never left held by a person who can no longer sign in.
  *
- * LATER MOVES (S10.22), `moveMailbox`: a holder of Edit users hands a leaver's mailbox to another person or to the main
+ * LATER MOVES (S10.22), `moveMailbox`: an Admin hands a leaver's mailbox to another person or to the main
  * mailbox from the Users page. Person to person changes the holder. Person to main is the merge above. Main to a person
  * reverses the merge for that mailbox only: the conversations that came from it (`moved_from_mailbox_id`) go back into it, a
  * "moved" one reading "started" again (a user mailbox lists by mailbox, never by origin; a record conversation keeps
@@ -38,6 +38,8 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 import { z } from 'zod';
 import { logger } from '../logger';
 import { mainMailboxIdOf } from './conversations';
+import { OwnerOnlyRefusal } from '../users/owner';
+import { sameUserId } from '../users/sameUserId';
 
 type Tx = Prisma.TransactionClient;
 
@@ -59,7 +61,9 @@ export async function resolveHandoverTarget(
 ): Promise<HandoverTarget | null> {
   const { raw } = args;
   if (raw === undefined || raw === null || raw === 'main') return { kind: 'main' };
-  if (typeof raw !== 'string' || !z.string().uuid().safeParse(raw).success || raw === args.leaverId) return null;
+  // The leaver's own id is refused however it is written (verifier V2, F2): compared as ids, not strings, so their id in
+  // capitals is still them, and their mail is never handed to the person leaving.
+  if (typeof raw !== 'string' || !z.string().uuid().safeParse(raw).success || sameUserId(raw, args.leaverId)) return null;
   const person = await db.user.findFirst({
     where: { id: raw, organization_id: args.organizationId, is_active: true },
     select: { id: true },
@@ -117,7 +121,7 @@ async function giveToPerson(tx: Tx, organizationId: string, mailboxIds: string[]
  */
 export async function handOverMailbox(
   tx: Tx,
-  args: { organizationId: string; userId: string; target: HandoverTarget },
+  args: { organizationId: string; userId: string; target: HandoverTarget; actorId: string },
 ): Promise<HandoverOutcome> {
   const { organizationId, userId, target } = args;
   const boxes = await tx.mailbox.findMany({
@@ -126,9 +130,19 @@ export async function handOverMailbox(
       kind: 'user',
       OR: [{ user_id: userId, status: { in: ['active', 'address_needed'] } }, { holder_user_id: userId, status: 'handed' }],
     },
-    select: { id: true, user_id: true },
+    select: { id: true, user_id: true, user: { select: { is_admin: true } } },
   });
   if (boxes.length === 0) return { handed: 'none' };
+  // A mailbox that came from an Admin is the Owner's to hand on (ticket 26, re-audit N8), wherever it sits now: moving it later
+  // is already the Owner's alone (moveUserMailbox), so a leaver who held it for an Admin hands it on only by the Owner's hand.
+  // Thrown inside the caller's transaction, so the deactivation rolls back and nothing moves.
+  const fromAnAdmin = boxes.find((b) => b.user_id !== null && b.user_id !== args.actorId && b.user?.is_admin === true);
+  // The Owner is read on the transaction's own client, never through a helper that can fall back to the global one: on a pool
+  // of one connection that second read would wait out the pool timeout (tx-pool-static-scan.test.ts).
+  if (fromAnAdmin) {
+    const org = await tx.organization.findUnique({ where: { id: organizationId }, select: { owner_user_id: true } });
+    if (!sameUserId(org?.owner_user_id, args.actorId)) throw new OwnerOnlyRefusal(fromAnAdmin.user_id);
+  }
   // The leaver's own mailbox first, then the ones they held for others.
   const ids = [...boxes].sort((a, b) => Number(b.user_id === userId) - Number(a.user_id === userId)).map((b) => b.id);
 
@@ -140,7 +154,7 @@ export async function handOverMailbox(
 }
 
 /**
- * Before a person is deleted for good (S10.24, Delete users on a deactivated person with no blocking history): leave no mailbox
+ * Before a person is deleted for good (S10.24, an Admin's permanent delete of a deactivated person with no blocking history): leave no mailbox
  * that the delete would strand. Deleting the user clears `user_id` and `holder_user_id` on their mailboxes (the foreign keys are
  * SET NULL, so no mailbox row ever blocks a delete), and a mailbox that is neither merged nor held by anyone else would then
  * sit unread with its address delivering into it. So a mailbox the person owns or holds that nobody ELSE holds, and that is

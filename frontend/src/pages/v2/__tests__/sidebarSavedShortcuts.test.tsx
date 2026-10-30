@@ -106,8 +106,8 @@ describe('v2 sidebar - saved shortcuts follow the menu', () => {
     expect(menu()).not.toContain('Price Book');
   });
 
-  it('draws a saved shortcut to a record page only with both its View and its Show on', async () => {
-    answerMe(on('view_jobs', 'access_billing'));
+  it('draws a saved shortcut to a record page only with its View on', async () => {
+    answerMe(on('access_billing'));
     const first = renderShell();
     await drawn('Billing');
     first.unmount();
@@ -115,7 +115,7 @@ describe('v2 sidebar - saved shortcuts follow the menu', () => {
     localStorage.setItem(`servwave:nav-layout:${USER_ID}`, JSON.stringify(SAVED_LAYOUT));
     localStorage.setItem(`servwave:nav-layout-version:${USER_ID}`, String(CURRENT_LAYOUT_VERSION));
 
-    answerMe(on('view_jobs', 'show_jobs_page', 'access_billing'));
+    answerMe(on('view_jobs', 'access_billing'));
     renderShell();
     await drawn('Jobs', 'Billing');
   });
@@ -128,31 +128,29 @@ describe('v2 sidebar - saved shortcuts follow the menu', () => {
     await act(async () => {
       client.setQueryData(['permission-switches', 'me', USER_ID], {
         admin_box: false,
-        values: on('access_billing', 'view_jobs', 'show_jobs_page', 'access_reports'),
+        values: on('access_billing', 'view_jobs', 'access_reports'),
       });
     });
     await drawn('Jobs', 'Billing', 'Revenue', 'Job Profitability');
     expect(JSON.parse(localStorage.getItem(`servwave:nav-layout:${USER_ID}`) ?? '[]')).toEqual(SAVED_LAYOUT);
   });
 
-  it('draws a saved Price Book shortcut on View price book + Show Price Book page and on neither alone', async () => {
+  it('draws a saved Price Book shortcut on View price book, and not without it', async () => {
+    answerMe(on('access_billing'));
+    const without = renderShell();
+    await drawn('Billing');
+    without.unmount();
+    localStorage.clear();
+    localStorage.setItem(`servwave:nav-layout:${USER_ID}`, JSON.stringify(SAVED_LAYOUT));
+    localStorage.setItem(`servwave:nav-layout-version:${USER_ID}`, String(CURRENT_LAYOUT_VERSION));
+
     answerMe(on('view_price_book', 'access_billing'));
-    const viewOnly = renderShell();
-    await drawn('Billing');
-    viewOnly.unmount();
-
-    answerMe(on('show_price_book_page', 'access_billing'));
-    const showOnly = renderShell();
-    await drawn('Billing');
-    showOnly.unmount();
-
-    answerMe(on('view_price_book', 'show_price_book_page', 'access_billing'));
     renderShell();
     await drawn('Billing', 'Price Book');
   });
 
   it('keeps a saved Price Book shortcut hidden when the rest of Inventory is on without it', async () => {
-    answerMe(on('view_stock', 'show_stock_page', 'view_vendors', 'show_vendors_page', 'access_billing'));
+    answerMe(on('view_stock', 'view_vendors', 'access_billing'));
     renderShell();
     await drawn('Billing');
     expect(menu()).not.toContain('Price Book');

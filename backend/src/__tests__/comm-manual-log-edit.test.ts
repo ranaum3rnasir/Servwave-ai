@@ -338,16 +338,14 @@ function mockAuthAsAdminDerivedCustomRole(switches: Record<string, boolean | str
   mockAuthAs('admin');
   mockPrisma.user.findUnique.mockResolvedValue({
     ...TEST_USERS.admin,
+    // Admin is a flag on the person (AL-03): this principal is NOT one, so it resolves through its role's switches.
+    is_admin: false,
     custom_role_id: 'cc000000-0000-0000-0000-0000000000c1',
     // MUST be selected alongside custom_role_id - grantRoleKey throws without it (a 500), rather
     // than silently falling back to the wider base role.
     custom_role: { key: CUSTOM_ROLE_KEY },
     organization: { is_demo: false, plan: 'SCALE', trial_ends_at: null, feature_overrides: {} },
   });
-  mockPrisma.rolePermission.findMany.mockResolvedValue(
-    // A narrowed set, keyed on the CUSTOM role - not ADMIN's, which does not exist as rows at all.
-    DEFAULT_GRANTS.filter((g) => g.role === 'SALES').map((g) => ({ ...g, role: CUSTOM_ROLE_KEY })),
-  );
   mockRoleSwitches(switches);
   clearTokenCache();
   clearPermissionCache();
@@ -803,7 +801,8 @@ describe('an edit re-points an entry between a lead and a job', () => {
 
     // Org B's own admin can re-point onto org B's lead — the id is real and reachable by someone.
     mockAuthAs('orgB_admin');
-    entryStore({ ...storedEntry(), organization_id: ORG_B_ID } as any);
+    // Org B's entry hangs off org B's own lead (an entry's current anchor must be one its company can reach).
+    entryStore({ ...storedEntry(), lead_id: ORG_B_LEAD.id, organization_id: ORG_B_ID } as any);
     const owner = await request(app)
       .put(ENDPOINT)
       .set(authHeader('orgB_admin'))

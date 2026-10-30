@@ -62,6 +62,8 @@ const ROUTE_GUARDS: Record<string, string[]> = {
   // Password reset (spec §5.3): signed-out pages. A reset never signs anyone in.
   '/forgot-password': [],
   '/reset-password': [],
+  // Make Owner approval (ticket 27): opened from the Owner's email, like a reset link; the emailed link is the proof.
+  '/approve-owner': [],
   '/p/estimates/:id': [],
   '/p/invoices/:id': [],
 
@@ -77,33 +79,33 @@ const ROUTE_GUARDS: Record<string, string[]> = {
 
   // The app root, and the plain authenticated pages.
   '/': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
-  '/customers': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequirePageAccess(all=view_customers+show_customers_page)'],
-  '/customers/new': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequirePageAccess(all=create_customers+show_customers_page)'],
+  '/customers': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequirePageAccess(all=view_customers)'],
+  '/customers/new': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequirePageAccess(all=create_customers)'],
   '/customers/:id/edit': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
   '/customers/:id': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
   '/customers/:customerId/statement': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
-  '/estimates': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequirePageAccess(all=view_estimates+show_estimates_page)'],
+  '/estimates': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequirePageAccess(all=view_estimates)'],
   '/estimates/new': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
   '/estimates/:id': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
   // #2030 — a past version. Same guard stack as the workspace it belongs to: the route is meant
   // to be shareable with a colleague, and the API's own per-row ownership check is what decides
   // whether this particular estimate resolves for them.
   '/estimates/:id/versions/:version': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
-  '/jobs': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequirePageAccess(all=view_jobs+show_jobs_page)'],
+  '/jobs': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequirePageAccess(all=view_jobs)'],
   '/jobs/new': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
   '/jobs/:id': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
   '/jobs/:jobId/statement': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
-  '/invoices': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequirePageAccess(all=view_invoices+show_invoices_page)'],
-  '/payments': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequirePageAccess(all=view_payments+show_payments_page)'],
+  '/invoices': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequirePageAccess(all=view_invoices)'],
+  '/payments': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequirePageAccess(all=view_payments)'],
   '/invoices/:id': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
   '/schedule': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequirePageAccess(all=access_schedule)'],
-  '/tasks': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequirePageAccess(all=view_tasks+show_tasks_page)'],
+  '/tasks': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequirePageAccess(all=view_tasks)'],
 
-  // Standalone invoice authoring - Standalone invoices plus Show Invoices page (Roles & Permissions S02.29), no
+  // Standalone invoice authoring - Standalone invoices (Roles & Permissions S02.29), no
   // role list: the backend decides the create on Standalone invoices. Technicians invoice only via their own job.
   '/invoices/new': [
     'ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)',
-    'RequirePageAccess(all=standalone_invoices+show_invoices_page)',
+    'RequirePageAccess(all=standalone_invoices)',
   ],
 
   // Reports - Access Reports (Billing's one report: Access Billing or Access Reports), no role list (S02.29);
@@ -126,11 +128,11 @@ const ROUTE_GUARDS: Record<string, string[]> = {
   ],
 
   // The old Users stub is gone (Roles & Permissions PRD 2, S02.5): the address redirects to /settings/users,
-  // which decides on Show Users & Teams page, so no role list stays on it.
+  // which decides on View users, so no role list stays on it.
   '/users': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
 
   // Leads, entitlement-gated.
-  '/leads': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(leads)', 'RequirePageAccess(all=view_leads+show_leads_page)'],
+  '/leads': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(leads)', 'RequirePageAccess(all=view_leads)'],
   '/leads/new': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(leads)', 'RequirePageAccess(all=create_leads)'],
   '/leads/:id/edit': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(leads)'],
   '/leads/:id': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(leads)'],
@@ -138,16 +140,15 @@ const ROUTE_GUARDS: Record<string, string[]> = {
   '/service-plans': [
     'ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)',
     'RequireFeature(service_plans)',
-    'RequirePageAccess(all=view_service_plans+show_service_plans_page)',
+    'RequirePageAccess(all=view_service_plans)',
   ],
 
-  // Automations - the entitlement, then the person's switches (S02.29), no role list: the list on View automations plus
-  // Show Automations page, a new automation on Create automations, an existing one on View automations. The backend
+  // Automations - the entitlement, then the person's switches (S02.29), no role list: the list on View automations, a new automation on Create automations, an existing one on View automations. The backend
   // decides every /api/workflows/* request on the same switches.
   '/automations': [
     'ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)',
     'RequireFeature(automations)',
-    'RequirePageAccess(all=view_automations+show_automations_page)',
+    'RequirePageAccess(all=view_automations)',
   ],
   '/automations/new': [
     'ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)',
@@ -167,32 +168,32 @@ const ROUTE_GUARDS: Record<string, string[]> = {
 
   // Inventory, entitlement-gated. `/inventory/approvals` is a redirect rather
   // than a page, and is gated the same way so it cannot become a hole.
-  '/inventory': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)', 'RequirePageAccess(all=view_stock+show_stock_page)'],
+  '/inventory': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)', 'RequirePageAccess(all=view_stock)'],
   // Spider, the lead watcher (#2619): Admins only, and only behind the Spider gate (the `spider`
   // feature AND, while the launch is demo-only, a demo company).
-  '/spider': ['ProtectedRoute(roles=ADMIN, fallback=false)', 'RequireSpider'],
+  '/spider': ['ProtectedRoute(adminOnly, fallback=false)', 'RequireSpider'],
   // Its starting summary (#2794): every role, behind the same gate; the server gives each person
   // only their own leads.
   '/spider/summary': ['ProtectedRoute(roles=ANY, fallback=false)', 'RequireSpider'],
-  '/inventory/staging': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)', 'RequirePageAccess(all=view_stock+show_stock_page)'],
-  '/inventory/assets': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)', 'RequirePageAccess(all=view_stock+show_stock_page)'],
-  '/inventory/low-stock': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)', 'RequirePageAccess(all=view_stock+show_stock_page)'],
-  '/inventory/activity': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)', 'RequirePageAccess(all=view_stock+show_stock_page)'],
+  '/inventory/staging': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)', 'RequirePageAccess(all=view_stock)'],
+  '/inventory/assets': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)', 'RequirePageAccess(all=view_stock)'],
+  '/inventory/low-stock': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)', 'RequirePageAccess(all=view_stock)'],
+  '/inventory/activity': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)', 'RequirePageAccess(all=view_stock)'],
   '/inventory/logistic-orders': [
     'ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)',
     'RequireFeature(inventory)',
-    'RequirePageAccess(all=view_logistic_orders+show_logistic_orders_page)',
+    'RequirePageAccess(all=view_logistic_orders)',
   ],
   '/inventory/approvals': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)'],
   '/inventory/price-book': [
     'ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)',
     'RequireFeature(inventory)',
-    'RequirePageAccess(all=view_price_book+show_price_book_page)',
+    'RequirePageAccess(all=view_price_book)',
   ],
   '/inventory/purchase-orders': [
     'ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)',
     'RequireFeature(inventory)',
-    'RequirePageAccess(all=view_purchase_orders+show_purchase_orders_page)',
+    'RequirePageAccess(all=view_purchase_orders)',
   ],
   // One purchase order, opened from a job: a record route, so no list guard (the page asks the server).
   // One logistic order, opened from its alert or a job: a record route, so no list guard (the page asks the server).
@@ -201,7 +202,7 @@ const ROUTE_GUARDS: Record<string, string[]> = {
   '/inventory/vendors': [
     'ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)',
     'RequireFeature(inventory)',
-    'RequirePageAccess(all=view_vendors+show_vendors_page)',
+    'RequirePageAccess(all=view_vendors)',
   ],
 
   // Communication: TWO entitlements, not one. The CTM channels stay on `phone`
@@ -228,7 +229,8 @@ const ROUTE_GUARDS: Record<string, string[]> = {
   ],
   '/communication/inbox': ['ProtectedRoute(roles=ANY, fallback=false)', 'RequireCommunicationSection', 'RequireFeature(email)', 'RequirePageAccess(all=show_email)'],
 
-  // Settings: NO route-level role guard on any tab, and that is deliberate.
+  // Settings: the setup of the company and the management of people and roles sit behind RequireAdmin (AL-18, ticket 36, 36b);
+  // My Profile, Locations and ServWave Payments (the payout switch's second door) have no route-level guard, deliberately.
   // Every authenticated user of any role can deep-link to any settings page;
   // the nav LIST is CASL-filtered inside SettingsLayout, but the routes are
   // open, except /settings/users and /settings/roles, which follow a switch and
@@ -237,14 +239,15 @@ const ROUTE_GUARDS: Record<string, string[]> = {
   // even on the two comm-gated tabs: the entitlement gates their nav entry and
   // each of those pages gates itself.
   '/settings': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
-  '/settings/company': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
-  '/settings/branding': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
+  '/settings/company': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireAdmin'],
+  '/settings/branding': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireAdmin'],
   '/settings/locations': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
-  // These two follow a switch (S02.5): Show Users & Teams page, and Manage roles and permissions.
-  '/settings/users': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireUsersTeamsPage'],
-  '/settings/roles': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireManageRoles'],
-  // A person's own switches (S02.9): Manage roles and permissions, like the Roles page.
-  '/settings/users/:userId/permissions': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireManageRoles'],
+  // User and role management is Admin-only (AL-18): the Admin flag, never a switch.
+  '/settings/users': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireAdmin'],
+  '/settings/roles': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireAdmin'],
+  // A person's own switches (S02.9), like the Roles page.
+  '/settings/users/:userId/permissions': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireAdmin'],
+  // Login & Security is every person's own sign-in (their password and email code): no route guard (36b).
   '/settings/security': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
   // The two retired addresses (Payments & Lists, Payout account & verification) are redirects outside the Settings shell.
   '/settings/payments': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
@@ -253,8 +256,8 @@ const ROUTE_GUARDS: Record<string, string[]> = {
   // no-access page to anyone with neither Edit company settings nor Manage payout account.
   '/settings/servwave-payments': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
   // Lists (V7-01): the same open stack; the page gates itself on Edit company settings.
-  '/settings/lists': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
-  '/settings/job-sub-statuses': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
+  '/settings/lists': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireAdmin'],
+  '/settings/job-sub-statuses': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireAdmin'],
   // Decline-reasons slice B. Same open stack as every sibling - but NOT for the reason
   // the settings tabs were once open. "A 403-driven empty list" is not what a non-admin got here: this
   // page's GET is gated on the coarser `read Estimate` on purpose (slice C needs a rep to read
@@ -263,13 +266,14 @@ const ROUTE_GUARDS: Record<string, string[]> = {
   // `update Organization` and renders NotAuthorizedPage - see DeclineReasonsPage.tsx, and
   // `settings-decline-reasons.test.tsx` for the assertions. This row records only that no ROUTE
   // guard was added, which is still true.
-  '/settings/decline-reasons': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
+  '/settings/decline-reasons': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireAdmin'],
   // Job cancel reasons (S06.14): the same open stack, and the page gates itself on `update Organization` like its sibling.
-  '/settings/job-cancel-reasons': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
-  '/settings/phone-sms': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
-  '/settings/phone-numbers': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
-  '/settings/inventory': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
-  '/settings/schedule-colors': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
+  '/settings/job-cancel-reasons': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireAdmin'],
+  // The phone service and phone numbers are an Admin's alone (M8, D3).
+  '/settings/phone-sms': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireAdmin'],
+  '/settings/phone-numbers': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireAdmin'],
+  '/settings/inventory': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireAdmin'],
+  '/settings/schedule-colors': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireAdmin'],
   '/settings/profile': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
   // `/settings/lead-statuses` is the retired Lead Statuses tab: a redirect to the settings home,
   // under the same parent (and so the same stack) as every sibling above.
@@ -278,8 +282,8 @@ const ROUTE_GUARDS: Record<string, string[]> = {
   // under the same parent as every sibling above. Same stack as the rest of
   // settings, which is the point: re-homing them changed their chrome, not who
   // may open them.
-  '/settings/tax-rates': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
-  '/settings/email-sender': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
+  '/settings/tax-rates': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireAdmin'],
+  '/settings/email-sender': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireAdmin'],
   // No entry for '/settings/custom-fields' - the tab is held out of the
   // 2026-08-17 release, so there is no route for a guard stack to describe.
 };
@@ -315,7 +319,7 @@ describe('the route parser', () => {
     const invoicesNew = routes.find((r) => r.path === '/invoices/new');
     expect(invoicesNew?.guards).toEqual([
       'ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)',
-      'RequirePageAccess(all=standalone_invoices+show_invoices_page)',
+      'RequirePageAccess(all=standalone_invoices)',
     ]);
   });
 
@@ -368,10 +372,11 @@ describe('guard stacks', () => {
    * edit to the pin which quietly opens a page has to argue with something
    * other than itself.
    */
-  it('leaves exactly the seven public paths unguarded', () => {
+  it('leaves exactly the eight public paths unguarded', () => {
     const unguarded = routes.filter((r) => r.guards.length === 0).map((r) => r.path).sort();
     expect(unguarded).toEqual([
       '/accept-invite',
+      '/approve-owner',
       '/auth/callback',
       '/forgot-password',
       '/login',

@@ -11,7 +11,7 @@
  *
  * `setAvatar`/`deleteAvatar` back BOTH route pairs — `/api/users/me/avatar` (no capability
  * check; any authenticated user manages their own) and `/api/users/:id/avatar`
- * (`canDo('update', 'User')`, admin-on-behalf-of) — resolveTargetUser is the only branch point.
+ * (`requireAdmin`, an Admin on someone's behalf, AL-18) — resolveTargetUser is the only branch point.
  */
 import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
@@ -22,6 +22,7 @@ import { logAudit } from '../lib/audit';
 import { sniffMatchesDeclared } from '../lib/file-sniff';
 import { signAvatarPaths, removeAvatarObject } from '../lib/avatar';
 import { loadSharp } from '../lib/load-sharp';
+import { refuseUnlessOwnerFor } from '../lib/users/owner';
 
 const STORAGE_BUCKET = 'attachments';
 const AVATAR_MIMES = ['image/jpeg', 'image/png', 'image/webp'];
@@ -33,12 +34,14 @@ async function resolveTargetUser(req: Request, res: Response): Promise<{ id: str
   const targetId = (req.params.id as string | undefined) ?? req.user!.id;
   const user = await prisma.user.findFirst({
     where: { id: targetId, ...tenantWhere(req) },
-    select: { id: true, avatar_path: true },
+    select: { id: true, avatar_path: true, is_admin: true },
   });
   if (!user) {
     res.status(404).json({ error: 'User not found' });
     return null;
   }
+  // An Admin's profile photo is the Owner's to change (ticket 26); one's own is one's own.
+  if (await refuseUnlessOwnerFor(req, res, user)) return null;
   return user;
 }
 

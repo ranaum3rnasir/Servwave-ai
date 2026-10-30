@@ -204,7 +204,7 @@ export function AddVendorDialog({
           />
         </Field>
 
-        {/* The account number is a cost detail (See financial data): no field without it. */}
+        {/* The account number is a cost detail (See costs): no field without it. */}
         {showAccountNumber && (
           <FormField label="Account Number">
             <Input

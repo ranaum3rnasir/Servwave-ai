@@ -1,5 +1,5 @@
 // Roles & Permissions S07.4 - the staging dialogs and the job page's staging section show a line's vendor only with
-// View vendors and its unit cost only with See financial data (read Vendor / read Pricing), and offer no write control
+// View vendors and its unit cost only with See costs (read Vendor / read Pricing), and offer no write control
 // without Edit stock (update Inventory). Abilities are built from the switches' grants, never from a role name. The
 // Staging tab body has its own suite beside it (pages/v2/inventory/__tests__/stagingScreensHonest.test.tsx).
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -94,7 +94,7 @@ describe('stage detail dialog - Edit stock gates every write control', () => {
 });
 
 describe('stage detail dialog - line vendor and unit cost', () => {
-  it('shows neither without View vendors and See financial data', async () => {
+  it('shows neither without View vendors and See costs', async () => {
     renderDetail([VIEW_STOCK]);
 
     await screen.findByText('Line items (1)');
@@ -103,14 +103,14 @@ describe('stage detail dialog - line vendor and unit cost', () => {
     expect(screen.queryByText(/\$0\.00/)).toBeNull();
   });
 
-  it('shows the vendor with View vendors and the unit cost with See financial data', async () => {
+  it('shows the vendor with View vendors and the unit cost with See costs', async () => {
     renderDetail([VIEW_STOCK, VIEW_VENDORS, SEE_FINANCIAL_DATA]);
 
     expect(await screen.findByText(/Northwind Supply/)).toBeInTheDocument();
     expect(screen.getByText(/\$12\.50/)).toBeInTheDocument();
   });
 
-  it('draws no unit cost for a line the response sent without one, even with See financial data', async () => {
+  it('draws no unit cost for a line the response sent without one, even with See costs', async () => {
     const noCost = makeStage();
     delete noCost.items[0]!.unitCost;
     renderDetail([VIEW_STOCK, SEE_FINANCIAL_DATA], noCost);
@@ -132,7 +132,7 @@ describe('pickup ticket preview - vendor column and cost figures', () => {
     expect(screen.queryByText(/\$0\.00/)).toBeNull();
   });
 
-  it('shows the vendor with View vendors and the cost figures with See financial data', async () => {
+  it('shows the vendor with View vendors and the cost figures with See costs', async () => {
     renderPreview([VIEW_STOCK, VIEW_VENDORS, SEE_FINANCIAL_DATA]);
 
     expect(await screen.findByText(/Northwind Supply/)).toBeInTheDocument();
@@ -164,7 +164,7 @@ describe("job page staging section - the response's lines, read only", () => {
     expect(screen.queryByText(/12\.50/)).toBeNull();
   });
 
-  it('shows the vendor with View vendors and the unit cost with See financial data', async () => {
+  it('shows the vendor with View vendors and the unit cost with See costs', async () => {
     renderWithProviders(<JobStagesSection jobId="job-1" />, {
       ability: buildAbility([VIEW_STOCK, VIEW_VENDORS, SEE_FINANCIAL_DATA]),
     });
@@ -173,7 +173,7 @@ describe("job page staging section - the response's lines, read only", () => {
     expect(screen.getByText(/\$12\.50/)).toBeInTheDocument();
   });
 
-  it('offers the link into the Inventory page only to someone the Stock page route lets in (View stock and Show Stock page)', async () => {
+  it('offers the link into the Inventory page only to someone the Stock page route lets in (View stock)', async () => {
     // An attached person with View stock off reads the job's stages, but the Staging tab behind the link is not theirs.
     answerSwitches({});
     const none = renderWithProviders(<JobStagesSection jobId="job-1" />, { ability: buildAbility([]) });
@@ -181,15 +181,15 @@ describe("job page staging section - the response's lines, read only", () => {
     expect(screen.queryByRole('link', { name: /Open in Inventory/ })).toBeNull();
     none.unmount();
 
-    // View stock without Show Stock page: the route sends them to the dashboard, so the link is not drawn.
-    answerSwitches({ view_stock: true, show_stock_page: false });
+    // View stock off: the route sends them to the dashboard, so the link is not drawn.
+    answerSwitches({ view_stock: false });
     const hidden = renderWithProviders(<JobStagesSection jobId="job-1" />, { ability: buildAbility([VIEW_STOCK]) });
     await screen.findByText(/Dome Camera/);
     await waitFor(() => expect(mockApi.get).toHaveBeenCalledWith('/api/permission-switches/me'));
     expect(screen.queryByRole('link', { name: /Open in Inventory/ })).toBeNull();
     hidden.unmount();
 
-    answerSwitches({ view_stock: true, show_stock_page: true });
+    answerSwitches({ view_stock: true });
     renderWithProviders(<JobStagesSection jobId="job-1" />, { ability: buildAbility([VIEW_STOCK]) });
     expect(await screen.findByRole('link', { name: /Open in Inventory/ })).toBeInTheDocument();
   });

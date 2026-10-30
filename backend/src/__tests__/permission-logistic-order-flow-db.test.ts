@@ -166,7 +166,7 @@ suite('logistic orders: reach and flow follow switches (real database)', () => {
       // Every other logistic-order switch is on, so only Create can explain a refusal.
       const others = { edit_logistic_orders: true, delete_logistic_orders: true, approve_logistic_orders: true, process_logistic_orders: true, cancel_logistic_orders: true };
       const without = await personWith(org, { ...others, create_logistic_orders: false });
-      const withIt = await personWith(org, { ...others, create_logistic_orders: true });
+      const withIt = await personWith(org, { ...others, edit_logistic_orders: true, create_logistic_orders: true });
       const myJob = await fx.addJob(org, customer, { crew: [without.id, withIt.id] });
       const otherJob = await fx.addJob(org, customer, { crew: [someone.id] });
 
@@ -193,7 +193,7 @@ suite('logistic orders: reach and flow follow switches (real database)', () => {
       const { org, customer } = await newOrg();
       const stock = await addStockedItem(org);
       const someone = await fx.addUser(org, `rep${++sequence}`, 'SALES');
-      const rep = await personWith(org, { jobs_scope: 'through_own_leads', leads_scope: 'attached', create_logistic_orders: true }, { base: 'SALES' });
+      const rep = await personWith(org, { jobs_scope: 'through_own_leads', leads_scope: 'attached', edit_logistic_orders: true, create_logistic_orders: true }, { base: 'SALES' });
       const myLead = await fx.addLead(org, customer, { assignees: [rep.id] });
       const theirLead = await fx.addLead(org, customer, { assignees: [someone.id] });
       const fromMine = await fx.addJob(org, customer, { fromLead: myLead.id });
@@ -223,7 +223,7 @@ suite('logistic orders: reach and flow follow switches (real database)', () => {
       const api = await me.api();
       expect((await api.post(`/api/logistic-orders/${draft}/submit`)).status).toBe(403);
 
-      await setRoleSwitchValues({ organizationId: org, roleKey: me.roleKey, values: { create_logistic_orders: true }, actorId: null, reason: 'manual' });
+      await setRoleSwitchValues({ organizationId: org, roleKey: me.roleKey, values: { edit_logistic_orders: true, create_logistic_orders: true }, actorId: null, reason: 'manual' });
       expect((await api.post(`/api/logistic-orders/${draft}/submit`)).status).toBe(200);
     });
   });

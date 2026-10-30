@@ -1,7 +1,7 @@
 /**
  * Pure SQL / report builders for the entitlement ops skills.
  *
- * These functions compute everything in TypeScript (reusing DEFAULT_GRANTS, the
+ * These functions compute everything in TypeScript (reusing the
  * resolver, and the catalog) and emit **idempotent** SQL or a report string. They
  * NEVER open a DB connection — the skill applies the SQL via Supabase MCP. This is
  * the single source of truth: grant seeding and plan math are never reimplemented
@@ -9,7 +9,6 @@
  */
 import type { PlanTier } from './catalog';
 import { isKnownFeature, isGrantableFeature, catalogEntry } from './catalog';
-import { DEFAULT_GRANTS } from '../permissions/defaultGrants';
 import { starterTaskCategoriesSql } from '../tasks/categories';
 import { listRowsFromOrgJsonSql } from '../org-list-sql';
 import { issueMainMailboxSql } from '../mailbox/provision-sql';
@@ -98,8 +97,7 @@ const DEFAULT_FEATURE_OVERRIDES = '{"phone": false}';
 
 /**
  * One idempotent SQL batch to fully provision a new tenant:
- *   org row (real address, plan, trial, phone OFF) + all DEFAULT_GRANTS
- *   (conditions preserved) + 9 app_settings rows + non-CARD accepted_payment_methods + the frozen
+ *   org row (real address, plan, trial, phone OFF) + 9 app_settings rows + non-CARD accepted_payment_methods + the frozen
  *   company part and main mailbox.
  * Every statement is ON CONFLICT DO NOTHING so a re-run is a no-op. Never writes
  * placeholder address data.
@@ -123,9 +121,8 @@ export function buildCreateOrgSql(input: {
   const { orgId, name, email, state, addressLine1, city, postalCode, plan, trialEndsAtISO } = input;
 
   // These INSERTs bypass Prisma (applied as raw SQL via MCP), so Prisma's
-  // client-side @updatedAt and @default(uuid()) do NOT fire. `updated_at` (both
-  // tables) and role_permissions `id` are NOT NULL with no DB default, so they
-  // must be supplied here or the INSERT aborts. `created_at` has a real
+  // client-side @updatedAt and @default(uuid()) do NOT fire. `updated_at` is NOT
+  // NULL with no DB default, so it must be supplied here or the INSERT aborts. `created_at` has a real
   // DEFAULT now() and is safely omitted.
   const orgInsert =
     `INSERT INTO "organizations" ` +
@@ -135,19 +132,6 @@ export function buildCreateOrgSql(input: {
     `${lit(orgId)}, ${lit(name)}, ${lit(email)}, ${lit(state)}, ${lit(addressLine1)}, ${lit(city)}, ${lit(postalCode)}, ` +
     `'', '', '', ${lit(plan)}, ${trialEndsAtISO ? lit(trialEndsAtISO) : 'NULL'}, ` +
     `'${DEFAULT_ACCEPTED_PAYMENTS}'::jsonb, '${DEFAULT_FEATURE_OVERRIDES}'::jsonb, now()) ON CONFLICT DO NOTHING;`;
-
-  // Conditions mapper copied from src/lib/e2e-org.ts:79 — preserve row-scope templates
-  // (OWN_LEAD, OWN_JOB, …). Dropping them silently grants org-wide access.
-  // id via gen_random_uuid() (PG13+ core); ON CONFLICT on the (org,role,action,
-  // subject) unique key keeps re-runs idempotent despite the fresh random id.
-  const grantValues = DEFAULT_GRANTS.map((g) => {
-    const conditions = (g as { conditions?: Record<string, unknown> }).conditions;
-    const condSql = conditions == null ? 'NULL' : `${lit(JSON.stringify(conditions))}::jsonb`;
-    return `(gen_random_uuid(), ${lit(orgId)}, ${lit(g.role)}, ${lit(g.action)}, ${lit(g.subject)}, ${condSql}, now())`;
-  }).join(',\n  ');
-  const grantInsert =
-    `INSERT INTO "role_permissions" ("id", "organization_id", "role", "action", "subject", "conditions", "updated_at") VALUES\n  ` +
-    `${grantValues}\nON CONFLICT DO NOTHING;`;
 
   const settingsValues = APP_SETTINGS.map(([k, v]) => `(${lit(orgId)}, ${lit(k)}, ${lit(v)})`).join(',\n  ');
   const settingsInsert =
@@ -186,7 +170,7 @@ export function buildCreateOrgSql(input: {
   // Idempotent: a company that already has a main mailbox is left alone.
   const mainMailbox = issueMainMailboxSql(lit(orgId));
 
-  return [orgInsert, grantInsert, settingsInsert, taxRatesInsert, taskCategoriesInsert, listRowsInsert, paymentsUpdate, mainMailbox].join('\n\n');
+  return [orgInsert, settingsInsert, taxRatesInsert, taskCategoriesInsert, listRowsInsert, paymentsUpdate, mainMailbox].join('\n\n');
 }
 
 // --- Audit report (read-only) --------------------------------------------------
@@ -209,11 +193,10 @@ export interface AuditData {
     is_demo: boolean;
   };
   users: Array<{ email: string; role: string; has_login: boolean }>;
-  grants: Array<{ role: string; action: string; subject: string; conditions: unknown }>;
 }
 
 export function buildAuditReport(data: AuditData): string {
-  const { org, users, grants } = data;
+  const { org, users } = data;
   const source = {
     plan: org.plan as never,
     trial_ends_at: org.trial_ends_at ? new Date(org.trial_ends_at) : null,
@@ -244,32 +227,6 @@ export function buildAuditReport(data: AuditData): string {
   out.push(`   Active logins: ${logins.length} / ${allowed ?? '∞'}${over ? '  ⚠️  OVERAGE' : ''}`);
   out.push(`   (Seat caps are REPORTED, never enforced — v1 scope.)`);
   for (const u of users) out.push(`   - ${u.email} (${u.role})${u.has_login ? '' : ' [staff, no login]'}`);
-
-  out.push(`\n━━ Grant health ━━`);
-  // DEFAULT_GRANTS covers SALES/DISPATCHER/TECHNICIAN only — ADMIN is a CASL
-  // superuser via defineAbility's role short-circuit and holds no rows.
-  const actual = new Map(grants.map((rp) => [`${rp.role}:${rp.action}:${rp.subject}`, rp.conditions]));
-  const missing = DEFAULT_GRANTS.filter((g) => !actual.has(`${g.role}:${g.action}:${g.subject}`));
-  // A grant present but with conditions stripped is WORSE than a missing one:
-  // it silently widens row scope (SALES reads every lead instead of own).
-  const unscoped = DEFAULT_GRANTS.filter((g) => {
-    const expected = (g as { conditions?: unknown }).conditions;
-    if (expected == null) return false;
-    const key = `${g.role}:${g.action}:${g.subject}`;
-    return actual.has(key) && actual.get(key) == null;
-  });
-
-  if (missing.length === 0 && unscoped.length === 0) {
-    out.push(`   ✅ All ${DEFAULT_GRANTS.length} DEFAULT_GRANTS present and correctly scoped`);
-  }
-  if (missing.length > 0) {
-    out.push(`   ⚠️  ${missing.length} missing (those roles will 403):`);
-    for (const g of missing) out.push(`      ${g.role} ${g.action} ${g.subject}`);
-  }
-  if (unscoped.length > 0) {
-    out.push(`   🔴 ${unscoped.length} present but UNSCOPED — row isolation is broken:`);
-    for (const g of unscoped) out.push(`      ${g.role} ${g.action} ${g.subject}`);
-  }
 
   return out.join('\n');
 }

@@ -65,14 +65,14 @@ const REASON = {
 
 /** What opening a job, its invoices, its files and its customer takes. */
 const OPENING = {
-  view_jobs: true, jobs_scope: 'all', create_jobs: true, view_attachments: true,
-  view_invoices: true, invoices_scope: 'all', view_customers: true,
+  view_jobs: true, jobs_scope: 'all', edit_jobs: true, create_jobs: true,
+  view_invoices: true, leads_scope: 'all', view_customers: true,
 };
 
 /** Everything that makes a person able to make every change below: the Change locked jobs key is what opens a locked job. */
 const EVERY_CHANGE = {
   ...OPENING, edit_jobs: true, edit_job_line_items: true, apply_discounts: true, edit_invoices: true,
-  edit_invoice_line_items: true, delete_attachments: true, edit_job_and_lead_contact_details: true,
+  edit_invoice_line_items: true, edit_job_and_lead_contact_details: true,
   record_payments: true, allowed_payment_methods: ['CASH'], add_notes: true, change_locked_jobs: true,
 };
 
@@ -105,7 +105,7 @@ suite('Ready to close returns to Office review on an unusual change (real databa
   async function personWith(org: string, values: Record<string, SwitchValue>, base: Role = 'DISPATCHER') {
     const key = `ready-return-role-${++sequence}`;
     const role = await fx.addCustomRole(org, key, base);
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...values }, actorId: null, reason: 'manual' });
+    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, see_prices: true, ...values }, actorId: null, reason: 'manual' });
     const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
     // A send by hand goes out from the sender's own mailbox (PRD 10, S10.12).
     await fx.addUserMailbox(org, person);

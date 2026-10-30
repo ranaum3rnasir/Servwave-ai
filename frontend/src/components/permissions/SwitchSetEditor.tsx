@@ -29,7 +29,7 @@ import { choiceLabel, optionLabel, valueText } from './switchValueText';
  * M12 - the shared switch-set editor (Roles & Permissions, PRD 2).
  *
  * Takes the catalog the server reads out, a set of switch values, whether it may be edited and a change callback,
- * and hands back the edited set. It draws only what the catalog says: the Data Scope block, then each group's module
+ * and hands back the edited set. It draws only what the catalog says: the Money row, then each group's module
  * rows, with a switch nested under the one it narrows and the catalog's help text behind every switch. It keeps no
  * list of switches, labels or help text of its own, so the Roles page and a person's Permissions page cannot drift.
  *
@@ -76,17 +76,22 @@ const LINES_GRID = cn('grid grid-cols-1 gap-x-8 gap-y-1 md:grid-cols-2 xl:grid-c
 export default function SwitchSetEditor({ catalog, values, editable, onChange, basedOn, acceptedMethods }: EditorProps) {
   const byKey = useMemo(() => new Map(catalog.switches.map((s) => [s.key, s])), [catalog]);
   const ctx: DrawContext = { byKey, values, editable, basedOn, acceptedMethods, set: (key, value) => onChange(clearDependents(catalog, { ...values, [key]: value })) };
-  const { dataScope, groups } = catalog.layout;
+  const { money, groups } = catalog.layout;
+  const moneyKeys = money.map((m) => m.key);
+  const moneyChildren = (key: string) => money.filter((m) => m.parent === key);
 
   return (
     <div className="space-y-4">
-      <Block title="Data Scope" onCount={switchesOn(dataScope, ctx)}>
+      <Block title="Money" onCount={switchesOn(moneyKeys, ctx)}>
         <ul className="space-y-0.5">
-          {dataScope.map((key) => (
-            <li key={key}>
-              <SwitchLine sw={ctx.byKey.get(key)} ctx={ctx} />
-            </li>
-          ))}
+          {money
+            .filter((m) => m.parent === null)
+            .map((m) => (
+              <li key={m.key}>
+                <SwitchLine sw={ctx.byKey.get(m.key)} ctx={ctx} />
+                <Nested items={moneyChildren(m.key)} childrenOf={moneyChildren} ctx={ctx} rowView={undefined} />
+              </li>
+            ))}
         </ul>
       </Block>
       {groups.map((group) => (
@@ -113,7 +118,7 @@ function switchesOn(keys: string[], ctx: DrawContext): { on: number; of: number 
 }
 
 /**
- * A titled card: a group of the catalog, or the Data Scope block. Its heading carries no switch. The heading folds the
+ * A titled card: a group of the catalog, or the Money block. Its heading carries no switch. The heading folds the
  * card away; folded, the card says how many of its switches are on. A card draws open, and stays as the person left it
  * while another role is picked.
  */

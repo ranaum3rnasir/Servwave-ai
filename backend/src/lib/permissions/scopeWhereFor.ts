@@ -7,6 +7,8 @@ export const MATCH_NOTHING = { id: { in: [] as string[] } } as const;
 type ScopeUser = {
   id: string;
   role: string;
+  /** The Admin flag (P15). */
+  is_admin: boolean;
   // SRVW-138: set when the user holds an org-defined custom role. Only consulted to
   // decide whether the ADMIN short-circuit applies (isSuperUser) - the grants
   // themselves arrive already resolved in the `grants` argument.
@@ -75,7 +77,7 @@ function referencesRequiredToken(o: unknown, token: string): boolean {
  *   no read grant                  → MATCH_NOTHING
  *   one conditional read           → that substituted condition
  *   multiple conditional reads     → { OR: [...] } of each substituted condition
- * FAIL-CLOSED: a Team/Location condition whose token resolves to null contributes MATCH_NOTHING
+ * FAIL-CLOSED: a Team condition whose token resolves to null contributes MATCH_NOTHING
  * (never the fail-open `*_id: null` match) — i.e. that one grant is dropped from the union; if it
  * was the only read, the result is MATCH_NOTHING.
  *
@@ -105,17 +107,13 @@ export function scopeWhereFor(
   const ctx = {
     userId: user.id,
     teamId: user.department_id ?? null,
-    locationId: user.location_id ?? null,
   };
   const resolved: Record<string, unknown>[] = [];
   for (const g of readGrants) {
     const conds = g.conditions as Record<string, unknown>;
-    // Fail-closed: a Team/Location condition whose token is null is dropped (its MATCH_NOTHING
+    // Fail-closed: a Team condition whose token is null is dropped (its MATCH_NOTHING
     // contributes nothing to an OR union) rather than fail-open matching `*_id: null`.
     if (referencesRequiredToken(conds, '{{teamId}}') && (user.department_id ?? null) === null) {
-      continue;
-    }
-    if (referencesRequiredToken(conds, '{{locationId}}') && (user.location_id ?? null) === null) {
       continue;
     }
     const sub = substituteConditions(conds, ctx) ?? {};

@@ -1,7 +1,7 @@
 /**
  * Roles & Permissions S07.4 - the Staging tab renders what the server returns and shows only what the person's
  * switches allow. Abilities are built from the switches' grants (Create stock = create Inventory, Edit stock =
- * update Inventory, See financial data = read Pricing, View vendors = read Vendor), never from a role name.
+ * update Inventory, See costs = read Pricing, View vendors = read Vendor), never from a role name.
  *
  * Drives the routed Staging tab body (`pages/v2/inventory/components/stagingView`, the file InventoryPage mounts).
  */
@@ -134,8 +134,8 @@ describe('Staging tab - line vendor follows View vendors', () => {
   });
 });
 
-describe('Staging tab - line unit cost follows See financial data', () => {
-  it('has no unit cost, blank or zero, without See financial data', () => {
+describe('Staging tab - line unit cost follows See costs', () => {
+  it('has no unit cost, blank or zero, without See costs', () => {
     renderTab([VIEW_STOCK, VIEW_VENDORS]);
 
     expect(screen.queryByText(/12\.50/)).toBeNull();
@@ -143,13 +143,13 @@ describe('Staging tab - line unit cost follows See financial data', () => {
     expect(screen.queryByText(/\$0\.00/)).toBeNull();
   });
 
-  it('shows the unit cost with See financial data', () => {
+  it('shows the unit cost with See costs', () => {
     renderTab([VIEW_STOCK, SEE_FINANCIAL_DATA]);
 
     expect(screen.getByText(/\$12\.50/)).toBeInTheDocument();
   });
 
-  it('leaves a line whose response has no cost without a cost, even with See financial data', () => {
+  it('leaves a line whose response has no cost without a cost, even with See costs', () => {
     const noCost = stage();
     delete noCost.items[0]!.unitCost;
     h.stages = [noCost];

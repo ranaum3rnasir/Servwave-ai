@@ -14,7 +14,7 @@ import {
 vi.mock('@/lib/attachments/uploadAttachment', () => ({ uploadAttachment: vi.fn() }));
 const upload = vi.mocked(uploadAttachment);
 
-const CAN_UPLOAD = buildAbility([{ action: 'create', subject: 'Attachment' }]);
+const CAN_UPLOAD = buildAbility([{ action: 'update', subject: 'Invoice' }]);
 const user = () => userEvent.setup();
 
 async function openForm(ability = CAN_UPLOAD) {

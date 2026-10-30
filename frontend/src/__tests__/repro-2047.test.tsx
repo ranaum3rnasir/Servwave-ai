@@ -63,15 +63,19 @@ const TAB_ATTACHMENT = {
 
 const fullAttachmentAbility = () =>
   buildAbility([
-    { action: 'read', subject: 'Attachment' },
-    { action: 'update', subject: 'Attachment' },
-    { action: 'delete', subject: 'Attachment' },
+    // Uploads are the record's own data (P10): the record's Edit renames and removes its files.
+    { action: 'update', subject: 'Job' },
+    { action: 'update', subject: 'Lead' },
+    { action: 'update', subject: 'Invoice' },
+    { action: 'update', subject: 'Customer' },
+    { action: 'update', subject: 'Task' },
   ]);
 
 const noUpdateAttachmentAbility = () =>
   buildAbility([
-    { action: 'read', subject: 'Attachment' },
-    { action: 'delete', subject: 'Attachment' },
+    { action: 'read', subject: 'Job' },
+    { action: 'read', subject: 'Lead' },
+    { action: 'read', subject: 'Invoice' },
   ]);
 
 /** Opens the row's actions control and returns once it is open. Fails (correctly) on base,
@@ -86,7 +90,7 @@ beforeEach(() => {
 });
 
 describe('repro-2047 — AttachmentsPanel row actions', () => {
-  it('exposes Download and Rename for a user with update Attachment', async () => {
+  it('exposes Download and Rename for a user with the Edit of the record', async () => {
     mockApi.get.mockResolvedValue({ data: { attachments: [IMAGE_ATTACHMENT] } });
     const user = userEvent.setup();
     renderWithProviders(<AttachmentsPanel entityType="INVOICE" entityId="inv-1" />, {
@@ -116,7 +120,7 @@ describe('repro-2047 — AttachmentsPanel row actions', () => {
 });
 
 describe('repro-2047 — AttachmentSection row actions', () => {
-  it('exposes Download and Rename for a user with update Attachment', async () => {
+  it('exposes Download and Rename for a user with the Edit of the record', async () => {
     mockApi.get.mockResolvedValue({ data: { attachments: [IMAGE_ATTACHMENT] } });
     const user = userEvent.setup();
     renderWithProviders(<AttachmentSection entityType="LEAD" entityId="lead-1" />, {
@@ -132,7 +136,7 @@ describe('repro-2047 — AttachmentSection row actions', () => {
 });
 
 describe('repro-2047 — AttachmentsTabBody row actions', () => {
-  it('exposes Download and Rename for a user with update Attachment', async () => {
+  it('exposes Download and Rename for a user with the Edit of the record', async () => {
     const user = userEvent.setup();
     renderWithProviders(
       <AttachmentsTabBody jobId="job-1" attachments={[TAB_ATTACHMENT]} />,

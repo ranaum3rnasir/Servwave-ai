@@ -66,10 +66,6 @@ function schedule(body: Record<string, unknown> = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  mockPrisma.rolePermission.findMany.mockImplementation(
-    (args: { where: { role: string } }) =>
-      Promise.resolve(DEFAULT_GRANTS.filter((g) => g.role === args.where.role)),
-  );
   // findActiveWalkthrough - the lead's earliest LIVE visit. Reset EXPLICITLY: clearAllMocks
   // wipes recorded calls but keeps implementations, so the one reschedule case below would
   // otherwise hand every later test a pre-existing live visit.

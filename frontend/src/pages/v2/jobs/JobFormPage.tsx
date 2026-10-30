@@ -47,6 +47,7 @@ import { ScheduleClashNotice } from '../_shared/scheduleClashNotice';
 import type { ScheduleConflictItem } from '../_shared/scheduleConflict';
 import { v2Path } from '../uiV2';
 import { useRecordVisit } from '../pageBreadcrumbs';
+import { useNoOptionsLabel } from '@/lib/useIsAdmin';
 
 type ServiceLocation = {
   id: string;
@@ -152,6 +153,7 @@ function CreateJobForm({
   preselectedCustomerId?: string | null;
   prefillPhone?: string | null;
 }) {
+  const noOptions = useNoOptionsLabel();
   const { data: org } = useOrganization();
   // The schedule fields are zoneless wall-clock in the ORG's zone, not the
   // browser's, so the payload builder needs the zone to resolve them - without
@@ -563,7 +565,7 @@ function CreateJobForm({
                     options={
                       jobTypeOptions.length > 0
                         ? jobTypeOptions.map((t) => ({ value: t, label: t }))
-                        : [{ value: '__none__', label: 'No options - add in Settings', disabled: true }]
+                        : [{ value: '__none__', label: noOptions, disabled: true }]
                     }
                   />
                 </Field>
@@ -576,7 +578,7 @@ function CreateJobForm({
                     options={
                       sourceOptions.length > 0
                         ? sourceOptions.map((s) => ({ value: s, label: s }))
-                        : [{ value: '__none__', label: 'No options - add in Settings', disabled: true }]
+                        : [{ value: '__none__', label: noOptions, disabled: true }]
                     }
                   />
                 </Field>

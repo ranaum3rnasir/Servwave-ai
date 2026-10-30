@@ -63,7 +63,7 @@ suite('slot eligibility (real database)', () => {
   const candidate = async (person: Person) => {
     const row = await db.user.findUniqueOrThrow({
       where: { id: person.id },
-      select: { id: true, organization_id: true, role: true, is_active: true, custom_role_id: true, custom_role: { select: { key: true } } },
+      select: { id: true, organization_id: true, role: true, is_admin: true, is_active: true, custom_role_id: true, custom_role: { select: { key: true } } },
     });
     return row;
   };

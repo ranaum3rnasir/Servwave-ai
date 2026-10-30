@@ -14,7 +14,7 @@ import type { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { tenantWhere } from '../lib/tenant';
-import { scopeWhereForReq } from '../lib/permissions/enforce';
+import { canSeePrices, scopeWhereForReq } from '../lib/permissions/enforce';
 import { createRefund, getStripeForOrg, listPaymentIntentRefunds } from '../lib/stripe';
 import { logAudit } from '../lib/audit';
 import { logger } from '../lib/logger';
@@ -202,7 +202,7 @@ export async function attachPaymentNeedingAttention(req: Request, res: Response)
     const orgId = req.user!.organization_id;
     const actor = { id: req.user!.id, name: `${req.user!.first_name} ${req.user!.last_name}`.trim() };
     if (kind === 'REFUND') {
-      const refund = await prisma.$transaction((tx) => bookRefundOnInvoice(tx, { organizationId: orgId, captureId: capture.id, invoiceId: target.id, actor }));
+      const refund = await prisma.$transaction((tx) => bookRefundOnInvoice(tx, { organizationId: orgId, captureId: capture.id, invoiceId: target.id, actor, figures: canSeePrices(req) }));
       await clearUnappliedCaptureAlerts(prisma, orgId, capture.source_key);
       void logAudit({
         action: 'billing.unapplied_capture_attached', resourceType: 'Invoice', resourceId: target.id, orgId, actorId: actor.id,
@@ -215,9 +215,9 @@ export async function attachPaymentNeedingAttention(req: Request, res: Response)
     const payer = await readCapturePayer(capture);
     await assertNoUncountedRefund(capture);
     const booked = await prisma.$transaction((tx) => bookCaptureOnInvoice(tx, {
-      organizationId: orgId, capture, invoiceId: target.id, payer, actor,
+      organizationId: orgId, capture, invoiceId: target.id, payer, actor, figures: canSeePrices(req),
       note: (number) => `Attached to ${number}`,
-      history: (number, amount, who) => `Payment of ${amount} from payments needing attention attached to ${number} by ${who}`,
+      history: (number, who) => `Payment from payments needing attention attached to ${number} by ${who}`,
     }), { timeout: 20_000 });
     await afterCaptureBooked({ organizationId: orgId, capture, booked, actor, via: 'attach' });
     res.json({
@@ -306,7 +306,7 @@ export async function refundPaymentNeedingAttention(req: Request, res: Response)
   }
   // A body whose amount is not a number or text (a boolean, an object) is the same "not an amount" answer as text that is not a number.
   const body = refundBodySchema.safeParse(plainBody(req));
-  const asked = body.success ? parseRefundAmount(body.data.amount, leftCents) : { error: NOT_AN_AMOUNT };
+  const asked = body.success ? parseRefundAmount(body.data.amount, leftCents, canSeePrices(req)) : { error: NOT_AN_AMOUNT };
   if (asked.error) {
     res.status(400).json({ error: asked.error, field: 'amount' });
     return;
@@ -499,8 +499,8 @@ export async function refundPaymentNeedingAttention(req: Request, res: Response)
             entity_type: 'INVOICE',
             entity_id: record.invoice.id,
             event_type: 'PAYMENT_SENT_BACK',
-            description: `$${((amountCents ?? recordCents ?? 0) / 100).toFixed(2)} that could not be recorded on this invoice was sent back to the customer`,
-            metadata: { unapplied_capture_id: record.id, processor_refund_id: refund.id, reason: record.reason },
+            description: 'A payment that could not be recorded on this invoice was sent back to the customer',
+            metadata: { unapplied_capture_id: record.id, processor_refund_id: refund.id, reason: record.reason, amount: (amountCents ?? recordCents ?? 0) / 100 },
             created_by: req.user!.id,
           },
         });
@@ -551,14 +551,15 @@ const dollars = (cents: number): string => `$${(cents / 100).toLocaleString('en-
 
 /**
  * The amount typed for a partial refund, in cents. None typed = the rest of the record. Anything that is not a number
- * above zero, or is above what is left, is refused with the two sentences the dialog shows.
+ * above zero, or is above what is left, is refused with the two sentences the dialog shows. What is left is a figure, so a
+ * person without See prices (`figures` false) is told to enter a smaller amount, not how much (re-audit P2-2).
  */
-function parseRefundAmount(raw: number | string | null | undefined, leftCents: number | undefined): { cents?: number; error?: string } {
+function parseRefundAmount(raw: number | string | null | undefined, leftCents: number | undefined, figures: boolean): { cents?: number; error?: string } {
   if (raw === undefined || raw === null || raw === '') return {};
   const n = typeof raw === 'number' ? raw : raw.trim() !== '' ? Number(raw) : NaN;
   const cents = Math.round(n * 100);
   if (!Number.isFinite(n) || cents <= 0) return { error: NOT_AN_AMOUNT };
-  if (leftCents != null && cents > leftCents) return { error: `Enter ${dollars(leftCents)} or less.` };
+  if (leftCents != null && cents > leftCents) return { error: figures ? `Enter ${dollars(leftCents)} or less.` : 'Enter a smaller amount.' };
   return { cents };
 }
 

@@ -300,7 +300,7 @@ export default function Header() {
               <UserIcon className="mr-2 h-4 w-4" />
               My Profile
             </DropdownMenuItem>
-            <DropdownMenuItem onClick={() => requestLeave(() => navigate('/settings/company'))} className="cursor-pointer">
+            <DropdownMenuItem onClick={() => requestLeave(() => navigate(user?.is_admin === true ? '/settings/company' : '/settings/profile'))} className="cursor-pointer">
               <SettingsIcon className="mr-2 h-4 w-4" />
               Settings
             </DropdownMenuItem>

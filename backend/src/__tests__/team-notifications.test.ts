@@ -13,6 +13,7 @@ import { prisma } from '../lib/prisma';
 import { supabaseAdmin } from '../lib/supabase';
 import * as email from '../lib/email';
 import { signInviteToken } from '../lib/invite-token';
+import { inviteMarkFor } from '../lib/invite-link';
 import { TEST_USERS, TEST_ORG, ALPHA_ORG_ID, mockAuthAs, authHeader } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { clearTokenCache } from '../middleware/authenticate';
@@ -128,7 +129,6 @@ beforeEach(() => {
   mockPrisma.timeEntry.findMany.mockResolvedValue([]);
   mockPrisma.timeClockOtReview.findMany.mockResolvedValue([]);
   mockPrisma.user.findMany.mockResolvedValue([]);
-  mockPrisma.userPermissionOverride.findMany.mockResolvedValue([]);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -159,12 +159,17 @@ describe('a clock-in raises no alert', () => {
 
 describe('team.invite_accepted via acceptInvite', () => {
   it('emits after a successful password-set with correct verb, object.type, object.id, and dedupKey', async () => {
-    mockPrisma.user.findUnique.mockResolvedValue(INVITED_ROW);
+    // The person's one live invite: the link's id is the one their row holds.
+    mockPrisma.user.findUnique.mockResolvedValue({ ...INVITED_ROW, has_login: true, password_hash: inviteMarkFor('live-invite-id') });
+    (mockPrisma.user as unknown as { updateMany: ReturnType<typeof vi.fn> }).updateMany.mockResolvedValue({ count: 1 });
+    // After the provider makes the login the row is re-read under a lock (H2, ticket 22): still able to sign in.
+    mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => unknown) => fn(mockPrisma));
+    mockPrisma.$queryRaw.mockResolvedValue([{ is_active: true, has_login: true }]);
     mockSupabase.auth.admin.createUser.mockResolvedValue({
       data: { user: { id: 'supa-new-id' } },
       error: null,
     });
-    const token = signInviteToken(INVITE_UID, INVITE_EMAIL);
+    const token = signInviteToken(INVITE_UID, INVITE_EMAIL, undefined, 'live-invite-id');
 
     const res = await request(app)
       .post('/api/auth/accept-invite')
@@ -198,11 +203,14 @@ describe('team.invite_accepted via acceptInvite', () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('team.invite_accepted via googleFinalize', () => {
-  it('emits after a successful Google finalize with correct verb, object.type, object.id, and dedupKey', async () => {
+  // An invite sets has_login when it is sent, so a person without it is one whose sign-in was revoked (or who never had one):
+  // H2 (ticket 22) refuses them at Google, and no "invite accepted" alert goes out.
+  it('does NOT emit, and refuses, for a person whose login is off (has_login false)', async () => {
     mockSupabase.auth.getUser.mockResolvedValue({
       data: { user: { id: INVITE_UID, email: INVITE_EMAIL } },
       error: null,
     });
+    mockSupabase.auth.admin.deleteUser.mockResolvedValue({ data: null, error: null });
     // resolveAppUser lookups (by id, by email) + mfa check
     mockPrisma.user.findUnique.mockImplementation((args: any) => {
       if (args.select && 'mfa_email_enrolled' in args.select) {
@@ -210,8 +218,6 @@ describe('team.invite_accepted via googleFinalize', () => {
       }
       return Promise.resolve(INVITED_ROW);
     });
-    mockPrisma.rolePermission.findMany.mockResolvedValue([]);
-    mockPrisma.userPermissionOverride.findMany.mockResolvedValue([]);
     mockPrisma.permissionUserSwitch.findMany.mockResolvedValue([]);
     mockPrisma.permissionRoleSwitch.findMany.mockResolvedValue([]);
 
@@ -219,17 +225,8 @@ describe('team.invite_accepted via googleFinalize', () => {
       .post('/api/auth/google/finalize')
       .set('Authorization', 'Bearer google-token');
 
-    expect(res.status).toBe(200);
-
-    expect(mockEmit).toHaveBeenCalledTimes(1);
-    const call = mockEmit.mock.calls[0][0];
-    expect(call.verb).toBe('team.invite_accepted');
-    expect(call.object.type).toBe('USER');
-    expect(call.object.id).toBe(INVITE_UID);
-    expect(call.dedupKey).toBe(`team.invite_accepted:${INVITE_UID}`);
-    expect(call.organizationId).toBe(ALPHA_ORG_ID);
-    expect(call.actorId).toBe(INVITE_UID);
-    expect(call.data.object_label).toBe('New Invitee');
+    expect(res.status).toBe(403);
+    expect(mockEmit).not.toHaveBeenCalled();
   });
 
   it('does NOT emit for a RETURNING user (has_login already true)', async () => {
@@ -244,8 +241,6 @@ describe('team.invite_accepted via googleFinalize', () => {
       }
       return Promise.resolve({ ...INVITED_ROW, has_login: true });
     });
-    mockPrisma.rolePermission.findMany.mockResolvedValue([]);
-    mockPrisma.userPermissionOverride.findMany.mockResolvedValue([]);
     mockPrisma.permissionUserSwitch.findMany.mockResolvedValue([]);
     mockPrisma.permissionRoleSwitch.findMany.mockResolvedValue([]);
 

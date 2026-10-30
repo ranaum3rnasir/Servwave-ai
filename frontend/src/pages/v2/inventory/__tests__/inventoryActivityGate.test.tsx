@@ -48,8 +48,8 @@ const movementCalls = () => mockApi.get.mock.calls.filter((c) => String(c[0]).st
 beforeEach(() => {
   vi.clearAllMocks();
   mockApi.get.mockImplementation((async (url: string) => {
-    // The Stock tabs show with View stock (the rule) and Show Stock page (a display switch from the person's own switches).
-    if (url === '/api/permission-switches/me') return { data: { admin_box: false, values: { show_stock_page: true }, rules: [] } };
+    // The Stock tabs show with View stock (the rule, also read from the person's own switches).
+    if (url === '/api/permission-switches/me') return { data: { admin_box: false, values: { view_stock: true }, rules: [] } };
     if (url.startsWith('/api/inventory/movements')) return { data: { data: [MOVEMENT], meta: { page: 1, limit: 25, total: 41, totalPages: 2 } } };
     if (url.startsWith('/api/inventory/items')) return { data: { data: ITEMS } };
     if (url.startsWith('/api/inventory/locations')) return { data: { locations: LOCATIONS } };

@@ -39,7 +39,7 @@ export interface PeopleThread {
 
 /**
  * The most conversations one person is given this way. A person on more records than this with a customer reply in each
- * (a Dispatcher over a whole company, say) gets the 500 whose customer replied most recently under "Linked to me", which
+ * (a Dispatcher over a whole company, say) gets the 500 whose customer replied most recently under Attached, which
  * is where unread mail is; the older ones stay on their record's Communication tab and open from there. The id list goes
  * into the Email page's filter, so it must not grow with the company.
  */
@@ -57,22 +57,23 @@ export type PeopleThreadsDb = Pick<PrismaClient, '$queryRaw'>;
  */
 export async function recordPeopleThreads(
   db: PeopleThreadsDb,
-  args: { organizationId: string; personId: string; limit?: number },
+  args: { organizationId: string; personId: string; personIds?: readonly string[]; limit?: number },
 ): Promise<PeopleThread[]> {
   const org = args.organizationId;
-  const me = args.personId;
+  // The people whose record conversations are asked for: the person alone, or (Communication scope Team) their department.
+  const people = [...(args.personIds ?? [args.personId])];
   const limit = args.limit ?? RECORD_PEOPLE_THREAD_CAP;
   return db.$queryRaw<PeopleThread[]>`
     WITH my_jobs AS (
-      SELECT id FROM jobs WHERE organization_id = ${org}::uuid AND salesperson_id = ${me}::uuid
-      UNION SELECT id FROM jobs WHERE organization_id = ${org}::uuid AND dispatcher_id = ${me}::uuid
+      SELECT id FROM jobs WHERE organization_id = ${org}::uuid AND salesperson_id = ANY(${people}::uuid[])
+      UNION SELECT id FROM jobs WHERE organization_id = ${org}::uuid AND dispatcher_id = ANY(${people}::uuid[])
       UNION SELECT v.job_id FROM visit_assignees a JOIN visits v ON v.id = a.visit_id
-        WHERE a.user_id = ${me}::uuid AND v.organization_id = ${org}::uuid AND v.job_id IS NOT NULL
+        WHERE a.user_id = ANY(${people}::uuid[]) AND v.organization_id = ${org}::uuid AND v.job_id IS NOT NULL
     ), my_leads AS (
-      SELECT id FROM leads WHERE organization_id = ${org}::uuid AND commission_owner_id = ${me}::uuid
-      UNION SELECT id FROM leads WHERE organization_id = ${org}::uuid AND dispatcher_id = ${me}::uuid
+      SELECT id FROM leads WHERE organization_id = ${org}::uuid AND commission_owner_id = ANY(${people}::uuid[])
+      UNION SELECT id FROM leads WHERE organization_id = ${org}::uuid AND dispatcher_id = ANY(${people}::uuid[])
       UNION SELECT v.lead_id FROM visit_assignees a JOIN visits v ON v.id = a.visit_id
-        WHERE a.user_id = ${me}::uuid AND v.organization_id = ${org}::uuid AND v.lead_id IS NOT NULL
+        WHERE a.user_id = ANY(${people}::uuid[]) AND v.organization_id = ${org}::uuid AND v.lead_id IS NOT NULL
     ), tied_estimates AS (
       SELECT id FROM estimates WHERE organization_id = ${org}::uuid AND job_id IN (SELECT id FROM my_jobs)
       UNION SELECT id FROM estimates WHERE organization_id = ${org}::uuid AND job_id IS NULL AND lead_id IN (SELECT id FROM my_leads)
@@ -81,7 +82,7 @@ export async function recordPeopleThreads(
       UNION ALL SELECT 'lead', id FROM my_leads
       UNION ALL SELECT 'estimate', id FROM tied_estimates
       UNION ALL SELECT 'estimate', e.id FROM estimates e JOIN leads l ON l.id = e.lead_id
-        WHERE e.organization_id = ${org}::uuid AND l.commission_owner_id = ${me}::uuid
+        WHERE e.organization_id = ${org}::uuid AND l.commission_owner_id = ANY(${people}::uuid[])
       UNION ALL SELECT 'invoice', id FROM invoices WHERE organization_id = ${org}::uuid AND job_id IN (SELECT id FROM my_jobs)
       UNION ALL SELECT 'invoice', id FROM invoices
         WHERE organization_id = ${org}::uuid AND job_id IS NULL AND estimate_id IN (SELECT id FROM tied_estimates)

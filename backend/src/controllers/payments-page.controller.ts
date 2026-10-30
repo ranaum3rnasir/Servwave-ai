@@ -8,6 +8,7 @@
  * account id or processor error text leaves this controller. Every query is scoped to the caller's company, and the queries run one after
  * another (the hosted pool allows one connection).
  */
+import { ignorePriceQuery } from '../lib/permissions/prices';
 import type { Request, Response } from 'express';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
@@ -25,7 +26,7 @@ import { invoiceRefundCap, REFUNDABLE_INVOICE_STATUSES, REFUNDABLE_PAYMENT_WHERE
 import { invoiceOpenerFor } from '../lib/permissions/invoiceAccess';
 import { customerBlockFor } from '../services/payments-page/customerBlock';
 import { openFailedRefundIds, paymentIdsWithOpenFailedRefund } from '../services/payment-attention/queries';
-import { scopeWhereForReq } from '../lib/permissions/enforce';
+import { canSeePrices, scopeWhereForReq } from '../lib/permissions/enforce';
 import { describeDisputeReason, describeFailure, describeRefundFailure } from '../lib/payment-failure-reasons';
 import { CHARGED_SQL, FEE_SQL, facetConditions, validStatuses } from '../lib/query/registries/payment.filters';
 import {
@@ -333,6 +334,7 @@ const OWN_PAYMENT_SORT_FIELDS: SortFieldMap = Object.assign(Object.create(null),
 // GET /api/payments-page/payments
 export async function listPayments(req: Request, res: Response) {
   try {
+    ignorePriceQuery(req);
     const built = await buildListQuery(req);
     if ('error' in built) {
       res.status(400).json({ error: built.error });
@@ -358,6 +360,7 @@ export async function listPayments(req: Request, res: Response) {
 // GET /api/payments-page/payments/export
 export async function exportPayments(req: Request, res: Response) {
   try {
+    ignorePriceQuery(req);
     const built = await buildListQuery(req);
     if ('error' in built) {
       res.status(400).json({ error: built.error });
@@ -478,6 +481,7 @@ export async function getPayment(req: Request, res: Response) {
         refunds: p.refunds.map((r) => ({ amount: Number(r.amount), state: r.state, createdAt: r.created_at })),
         dispute: dispute ? { status: dispute.status, createdAt: dispute.created_at, closedAt: dispute.closed_at } : null,
         payout: p.payout ? { reference: payoutReference(p.payout.id), arrivalDate: p.payout.arrival_date, status: p.payout.status } : null,
+        figures: canSeePrices(req),
       }),
       refundable_amount: refundable,
       // Refunding a payment with an open dispute can lose the money twice, so it waits for the dispute to close.

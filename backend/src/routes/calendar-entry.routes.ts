@@ -4,6 +4,7 @@ import { attachAbility } from '../middleware/attachAbility';
 import { canDo } from '../middleware/canGuard';
 import { validate } from '../middleware/validate';
 import * as ctrl from '../controllers/calendar-entry.controller';
+import { answerOutOfReachAsMissing, reachableCalendarEntry } from '../lib/permissions/outOfReachIsMissing';
 
 const router = Router();
 
@@ -17,5 +18,9 @@ router.patch('/:id', canDo('update', 'CalendarEntry'), validate(ctrl.updateCalen
 // action. Gated on the SAME grant as the drag itself (spec §4): update, not a bespoke one.
 router.post('/:id/notify-moved', canDo('update', 'CalendarEntry'),                                 ctrl.notifyMoved);
 router.delete('/:id', canDo('delete', 'CalendarEntry'),                                            ctrl.remove);
+
+// Ticket 33: a record out of the person's reach answers exactly like a missing one on every route above that names its id
+// (lib/permissions/outOfReachIsMissing.ts). Keep this after the last route.
+answerOutOfReachAsMissing(router, { param: 'id', notFound: 'Calendar entry not found', reaches: reachableCalendarEntry });
 
 export default router;

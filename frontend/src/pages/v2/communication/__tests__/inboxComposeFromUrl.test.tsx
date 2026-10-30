@@ -43,7 +43,7 @@ beforeEach(() => {
     if (url === '/api/communication/emails') return { data: { emails: [] } };
     if (url === '/api/communication/mailboxes') {
       const selected = (config?.params as { selected?: string } | undefined)?.selected ?? 'mine';
-      return { data: { scope: 'linked_to_me', selected, selected_label: null, selected_unread: 0, total_unread: 0, mine: { id: 'box-mine', unread: 0 }, held: [], main: { id: 'box-main', unread: 0 }, people: null } };
+      return { data: { scope: 'attached', selected, selected_label: null, selected_unread: 0, total_unread: 0, mine: { id: 'box-mine', unread: 0 }, held: [], main: { id: 'box-main', unread: 0 }, people: null } };
     }
     if (url === '/api/communication/email-groups') return { data: { groups: [] } };
     if (url === '/api/communication/forward-rules') return { data: { rules: [] } };

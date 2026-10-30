@@ -630,6 +630,23 @@ export function ComposeWindow({
       {/* To + Cc/Bcc toggle (Gmail-style: collapsed until opened) */}
       <div className="flex items-center gap-2 border-b border-border px-4 py-2">
         <span className="w-14 flex-none text-[12px] text-text-secondary">To</span>
+        {/* Teammates picked from the team list, sent by id: shown by name, never by address (M3, ticket 29). */}
+        {(state.toPeople ?? []).map((p) => (
+          <span
+            key={p.id}
+            className="inline-flex flex-none items-center gap-1 rounded-full bg-background-light px-2 py-0.5 text-[12px] text-text-primary"
+          >
+            {p.name}
+            <button
+              type="button"
+              aria-label={`Remove ${p.name}`}
+              onClick={() => onChange({ ...state, toPeople: (state.toPeople ?? []).filter((x) => x.id !== p.id) })}
+              className="text-text-secondary hover:text-text-primary"
+            >
+              <X className="h-3 w-3" />
+            </button>
+          </span>
+        ))}
         <input
           value={state.to}
           onChange={(e) => onChange({ ...state, to: e.target.value })}

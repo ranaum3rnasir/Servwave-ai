@@ -72,10 +72,9 @@ suite('both deactivation paths remove the login and hand the mailbox over (real 
 
     const key = `deactivation-role-${randomUUID().slice(0, 6)}`;
     const role = await fx.addCustomRole(org, key, 'DISPATCHER');
-    await setRoleSwitchValues({
-      organizationId: org, roleKey: key, values: { view_users: true, edit_users: true, delete_users: false }, actorId: null, reason: 'manual',
-    });
-    const editor: Person = await fx.addUser(org, 'editor', 'DISPATCHER', { customRoleId: role.id });
+    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { view_users: true }, actorId: null, reason: 'manual' });
+    // Deactivating is user management, the Admin flag's alone (AL-18).
+    const editor: Person = await fx.addUser(org, 'editor', 'DISPATCHER', { customRoleId: role.id, isAdmin: true });
 
     const leaver = await fx.addUser(org, `leaver${randomUUID().slice(0, 4)}`, 'SALES');
     const leaverBox = await fx.addUserMailbox(org, leaver);

@@ -28,7 +28,7 @@ const withSwitches = (values: Record<string, boolean | string>) => {
 const salesJobReach = (userId: string) => ({ job: { estimate: { lead: { lead_assignees: { some: { user_id: userId } } } } } });
 
 function reqWith(grants: Grant[], userId = 'u1'): Request {
-  const ability = defineAbilityFor({ id: userId, role: 'SALES' }, grants);
+  const ability = defineAbilityFor({ is_admin: false, id: userId, role: 'SALES' }, grants);
   return { ability } as unknown as Request;
 }
 
@@ -52,7 +52,7 @@ describe('can() enforcement helper', () => {
   });
 
   it('ADMIN (manage all) passes on any instance', () => {
-    const ability = defineAbilityFor({ id: 'admin', role: 'ADMIN' }, []);
+    const ability = defineAbilityFor({ is_admin: true, id: 'admin', role: 'ADMIN' }, []);
     const req = { ability } as unknown as Request;
     expect(can(req, 'delete', 'Job', { id: 'j9', assignees: [] })).toBe(true);
   });
@@ -73,8 +73,6 @@ function listReq(role: string, userId = 'u1'): Request {
 describe('scopeWhereForReq() — list-scope where fragment for controllers', () => {
   beforeEach(() => {
     clearPermissionCache();
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockReset();
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
     roleSwitchFind().mockReset();
     userSwitchFind().mockReset();
     roleSwitchFind().mockResolvedValue([]);
@@ -85,20 +83,17 @@ describe('scopeWhereForReq() — list-scope where fragment for controllers', () 
   it('ADMIN → no restriction ({}) without touching the DB', async () => {
     const where = await scopeWhereForReq(listReq('ADMIN'), 'Lead');
     expect(where).toEqual({});
-    expect(prisma.rolePermission.findMany).not.toHaveBeenCalled();
   });
 
   it('scopes from the person\'s switches alone — the switch-derived reach → owner where-fragment, no role-permission read', async () => {
     const where = await scopeWhereForReq(listReq('SALES'), 'PurchaseOrder');
     expect(where).toEqual(salesJobReach('u1'));
-    expect(prisma.rolePermission.findMany).not.toHaveBeenCalled();
   });
 
   it('a stored switch value changes the reach, and still no role-permission read', async () => {
     withSwitches({ view_purchase_orders: true, jobs_scope: 'attached' });
     const where = await scopeWhereForReq(listReq('TECHNICIAN'), 'PurchaseOrder');
     expect(where).toEqual({ job: { OR: attachedJobWhere('u1') } });
-    expect(prisma.rolePermission.findMany).not.toHaveBeenCalled();
   });
 
   it('FAIL-CLOSED: a non-ADMIN role without View purchase orders → MATCH_NOTHING (sees nothing)', async () => {
@@ -155,8 +150,6 @@ function rowReq(role: string, opts: { userId?: string; department_id?: string | 
 describe('canAccessRow() — SQL per-instance ownership (nested-safe, switch-driven, fail-closed)', () => {
   beforeEach(() => {
     clearPermissionCache();
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockReset();
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
     roleSwitchFind().mockReset();
     userSwitchFind().mockReset();
     roleSwitchFind().mockResolvedValue([]);
@@ -217,7 +210,6 @@ describe('canAccessRow() — SQL per-instance ownership (nested-safe, switch-dri
     const result = await canAccessRow(rowReq('ADMIN'), 'PurchaseOrder', delegate, 'i1');
     expect(result).toBe(true);
     expect(delegate.findFirst).not.toHaveBeenCalled();
-    expect(prisma.rolePermission.findMany).not.toHaveBeenCalled();
   });
 
   it('FAIL-CLOSED: no read grant → MATCH_NOTHING (id:{in:[]}) → findFirst null → false', async () => {

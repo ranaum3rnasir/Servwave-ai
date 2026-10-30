@@ -10,7 +10,7 @@ export type InvoiceOpener = (invoiceIds: readonly string[], db?: Prisma.Transact
 /**
  * The person's invoice reach, worked out once, and a function that asks which of some invoices it covers.
  *
- * The reach (their View invoices scope plus the creator rule) is read from the permission tables HERE, up front; the
+ * The reach (their View invoices scope) is read from the permission tables HERE, up front; the
  * returned function only asks the database about the named invoices, on the client it is given. That split is what lets a
  * caller that is inside an interactive transaction open the reach BEFORE the transaction and ask on the transaction's own
  * client: a query on the global client from inside a transaction needs a second pooled connection, and on a pool of one
@@ -35,7 +35,7 @@ export async function invoiceOpenerFor(req: Request, opts: { checkOrg?: boolean 
 
 /**
  * Which of these invoices the signed-in person can open: the rows their View invoices scope reaches plus the ones
- * they made while attached to the job (the creator rule), asked with the same fragment the invoice list uses. A
+ * they made while attached to the job , asked with the same fragment the invoice list uses. A
  * person with View invoices off gets only the creator rows, often none, and never an error.
  *
  * One query per call, however many invoices are named, and none at all for a person whose scope reaches every row.

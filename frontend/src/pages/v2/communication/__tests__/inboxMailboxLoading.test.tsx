@@ -46,7 +46,7 @@ function answerNetwork() {
     if (url === '/api/communication/mailboxes') {
       const selected = params.selected ?? 'mine';
       const body = {
-        scope: 'linked_to_me', selected, selected_label: null, selected_unread: 0, total_unread: 0,
+        scope: 'attached', selected, selected_label: null, selected_unread: 0, total_unread: 0,
         mine: { id: 'box-mine', unread: 0 }, held: [{ id: 'box-handed', name: 'Jane Smith', unread: 0 }, { id: 'box-empty', name: 'Empty Person', unread: 0 }],
         main: null, people: null,
       };

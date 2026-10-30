@@ -123,7 +123,7 @@ const ROUTE_PERMISSIONS: { action: string; subject: string; allowedRoles: string
   // Report
   { action: 'read',                 subject: 'Report',       allowedRoles: ['ADMIN','DISPATCHER'] },
   // Pricing (SRVW-140) - the dedicated grant canSeePricing keys on, written by the Roles UI
-  // "See financial data" switch. SALES/DISPATCHER hold it by default (preserving exactly what they
+  // "See costs" switch. SALES/DISPATCHER hold it by default (preserving exactly what they
   // saw the day before the repoint). TECHNICIAN joined them in the technician-ownership spec, Part
   // C: a technician who can add a line item to a job they created has to see what it costs and what
   // it sells for, and prices/totals/cost/margin are all this one grant.
@@ -152,7 +152,7 @@ describe('CASL parity with legacy authorize() lists', () => {
       const shouldAllow = route.allowedRoles.includes(role);
       it(`${role} ${shouldAllow ? 'CAN' : 'CANNOT'} ${route.action} ${route.subject}`, () => {
         const grants = DEFAULT_GRANTS.filter(g => g.role === role);
-        const ability = defineAbilityFor({ id: 'test-user-id', role }, grants);
+        const ability = defineAbilityFor({ is_admin: role === 'ADMIN', id: 'test-user-id', role }, grants);
         expect(ability.can(route.action as any, route.subject as any)).toBe(shouldAllow);
       });
     }
@@ -164,7 +164,7 @@ describe('CASL parity with legacy authorize() lists', () => {
 // the assertion can't be vacuous against the four built-in roles that all happen to have it.
 describe('perform_walkthrough Lead — a role without the grant CANNOT', () => {
   it('a custom role with NO grants cannot perform_walkthrough Lead', () => {
-    const ability = defineAbilityFor({ id: 'test-user-id', role: 'CUSTOM_NO_GRANTS' }, []);
+    const ability = defineAbilityFor({ is_admin: false, id: 'test-user-id', role: 'CUSTOM_NO_GRANTS' }, []);
     expect(ability.can('perform_walkthrough' as any, 'Lead' as any)).toBe(false);
   });
 });

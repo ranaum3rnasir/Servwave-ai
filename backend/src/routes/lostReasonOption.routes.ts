@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/authenticate';
 import { attachAbility } from '../middleware/attachAbility';
-import { canDo } from '../middleware/canGuard';
+import { canDo, requireAdminTo } from '../middleware/canGuard';
 import { validate } from '../middleware/validate';
 import * as lostReasonOptionController from '../controllers/lostReasonOption.controller';
 
@@ -31,11 +31,11 @@ router.use(authenticate, attachAbility);
  * router sits behind `authenticate`, which is what keeps the two apart.
  */
 router.get('/', canDo('read', 'Estimate'), lostReasonOptionController.list);
-router.post('/', canDo('update', 'Organization'), validate(lostReasonOptionController.createLostReasonOptionSchema), lostReasonOptionController.create);
+router.post('/', requireAdminTo('change company settings'), validate(lostReasonOptionController.createLostReasonOptionSchema), lostReasonOptionController.create);
 // Literal path segment BEFORE any ":code" route - the house ordering rule here, and it keeps a
 // future POST /:code/... from shadowing this one.
-router.post('/reorder', canDo('update', 'Organization'), validate(lostReasonOptionController.reorderLostReasonOptionsSchema), lostReasonOptionController.reorder);
-router.patch('/:code', canDo('update', 'Organization'), validate(lostReasonOptionController.updateLostReasonOptionSchema), lostReasonOptionController.update);
+router.post('/reorder', requireAdminTo('change company settings'), validate(lostReasonOptionController.reorderLostReasonOptionsSchema), lostReasonOptionController.reorder);
+router.patch('/:code', requireAdminTo('change company settings'), validate(lostReasonOptionController.updateLostReasonOptionSchema), lostReasonOptionController.update);
 
 // No DELETE. A reason is deactivated, never deleted (D4) - declined estimates already hold the
 // code and the conversion report groups on it - so there is nothing for a delete route to do

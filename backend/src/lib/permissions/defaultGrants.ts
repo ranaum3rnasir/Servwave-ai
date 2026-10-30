@@ -201,10 +201,12 @@ export const DEFAULT_GRANTS: RoleGrant[] = [
   { role: 'SALES', action: 'read',                 subject: 'Invoice',      conditions: OWN_INVOICE_VIA_LEAD },
   { role: 'SALES', action: 'manage_lines',         subject: 'Invoice',      conditions: OWN_INVOICE_VIA_LEAD },
   { role: 'SALES', action: 'read',                 subject: 'PriceBook'    },
-  // SRVW-140 - `read Pricing` is what canSeePricing keys on (the Roles UI "See financial data"
+  // SRVW-140 - `read Pricing` is what canSeePricing keys on (the Roles UI "See costs"
   // switch). SALES keeps cost/price visibility because a salesperson cannot author an estimate
   // without prices; this row preserves exactly what SALES saw before the repoint.
   { role: 'SALES', action: 'read',                 subject: 'Pricing'      },
+  // P11: every preset holds See prices, the root of the money chain, so the legacy rows carry it too.
+  { role: 'SALES', action: 'read',                 subject: 'Prices'       },
   { role: 'SALES', action: 'read',                 subject: 'Tag'          },
   { role: 'SALES', action: 'create',               subject: 'Tag'          },
   { role: 'SALES', action: 'read',                 subject: 'Department'   },
@@ -309,6 +311,7 @@ export const DEFAULT_GRANTS: RoleGrant[] = [
   { role: 'DISPATCHER', action: 'read',                 subject: 'Report'       },
   // SRVW-140 - see the SALES row above. DISPATCHER owns ops and already saw every cost.
   { role: 'DISPATCHER', action: 'read',                 subject: 'Pricing'      },
+  { role: 'DISPATCHER', action: 'read',                 subject: 'Prices'       },
   { role: 'DISPATCHER', action: 'read',                 subject: 'StateTaxRate' },
   { role: 'DISPATCHER', action: 'read',                 subject: 'AppSetting'   },
   { role: 'DISPATCHER', action: 'read',                 subject: 'Organization' },
@@ -423,8 +426,9 @@ export const DEFAULT_GRANTS: RoleGrant[] = [
   { role: 'TECHNICIAN', action: 'delete',              subject: 'Job',     conditions: CREATED_BY_ME },
   // Prices, totals, job cost and margin. Org-wide, not row-scoped: `Pricing` is not a
   // ScopeResource, so a condition here would be inert AND misleading. This is the same grant the
-  // Roles UI "See financial data" switch writes, and canSeePricing (enforce.ts) is its only reader.
+  // Roles UI "See costs" switch writes, and canSeePricing (enforce.ts) is its only reader.
   { role: 'TECHNICIAN', action: 'read',                subject: 'Pricing'  },
+  { role: 'TECHNICIAN', action: 'read',                subject: 'Prices'   },
   // Standalone estimates. Attaching one to an EXISTING job is not a route - estimates carry no
   // job_id, the link is Job.estimate_id - so it lands on PATCH /:id's field-level manage_lines
   // check (PR 2), not here.
@@ -462,7 +466,7 @@ export const DEFAULT_GRANTS: RoleGrant[] = [
   { role: 'TECHNICIAN', action: 'en_route',            subject: 'Job',     conditions: OWN_JOB },
   // Inventory P3: the catalog is org-wide reference data (same as SALES/DISPATCHER above) — the
   // tech picker feed + /api/inventory/my-van gate on it. Cost fields stay stripped server-side
-  // (canSeePricing = the `read Pricing` grant written by the Roles UI "See financial data"
+  // (canSeePricing = the `read Pricing` grant written by the Roles UI "See costs"
   // switch, which a bare tech lacks - SRVW-140; it was `read Invoice` before). Backfilled for
   // existing orgs by 20260717120000_technician_pricebook_read_backfill.
   { role: 'TECHNICIAN', action: 'read',                subject: 'PriceBook'    },

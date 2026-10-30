@@ -35,6 +35,9 @@ const BUILT_IN = [
   { role: 'TECHNICIAN', label: 'Technician', fullAccess: false, editable: true, userCount: 5, type: 'system' },
 ];
 
+// What the page lists: the server still sends the Administrator entry, but Admin is a flag on the person, not a role.
+const LISTED = BUILT_IN.filter((r) => !r.fullAccess);
+
 type Entry = Record<string, unknown> & { role: string; label: string; type: string; description?: string };
 
 /** What the server holds: the list entries, and each role's switch read. */
@@ -131,11 +134,11 @@ const rolesNamed = (width: number) =>
     : [];
 
 describe.each([['a wide window', WIDE], ['a narrow window', NARROW]] as const)('Built-in roles on %s', (_name, width) => {
-  it.each(BUILT_IN.map((r) => r.label))('%s has no rename or archive action', async (label) => {
+  it.each(LISTED.map((r) => r.label))('%s has no rename or archive action', async (label) => {
     windowWidth(width);
     const user = userEvent.setup();
     renderWithProviders(<RolesPage />);
-    if (label !== BUILT_IN[0]!.label) await pick(user, width, label);
+    if (label !== LISTED[0]!.label) await pick(user, width, label);
     await screen.findByRole('heading', { name: label });
     expect(screen.queryByRole('button', { name: /^(rename|archive)$/i })).toBeNull();
   });
@@ -154,11 +157,20 @@ describe.each([['a wide window', WIDE], ['a narrow window', NARROW]] as const)('
     expect(mockApi.put).toHaveBeenCalledWith(`/api/roles/${label.toUpperCase()}/permissions`, { values: { create_customers: !presetSet(label.toUpperCase() as BuiltInRoleKey).create_customers } });
   });
 
-  it('shows Administrator as the one Full access box', async () => {
+  it('does not list Administrator: Admin is a flag on the person, so there is no Full access box here', async () => {
     windowWidth(width);
+    const user = userEvent.setup();
     renderWithProviders(<RolesPage />);
-    expect(await screen.findByText('Full access')).toBeInTheDocument();
-    expect(screen.queryAllByRole('switch')).toHaveLength(0);
+    // The first role listed is the first one a person can be edited on.
+    await screen.findByRole('heading', { name: LISTED[0]!.label });
+    expect(screen.queryByText('Full access')).toBeNull();
+    if (width === WIDE) {
+      expect(rolesNamed(width).some((t) => t.startsWith('Administrator'))).toBe(false);
+    } else {
+      await user.click(screen.getByRole('combobox', { name: 'Role' }));
+      const options = (await screen.findAllByRole('option')).map((o) => o.textContent ?? '');
+      expect(options.some((t) => t.startsWith('Administrator'))).toBe(false);
+    }
   });
 });
 
@@ -301,14 +313,14 @@ describe.each([['a wide window', WIDE], ['a narrow window', NARROW]] as const)('
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(screen.queryByRole('heading', { name: 'Night desk' })).toBeNull();
     // The page falls back to the first role instead of an empty detail.
-    expect(await screen.findByText('Full access')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: LISTED[0]!.label })).toBeInTheDocument();
     if (width === WIDE) {
       expect(rolesNamed(width).some((t) => t.startsWith('Night desk'))).toBe(false);
     } else {
       await user.click(screen.getByRole('combobox', { name: 'Role' }));
       const options = (await screen.findAllByRole('option')).map((o) => o.textContent ?? '');
       expect(options.some((t) => t.startsWith('Night desk'))).toBe(false);
-      expect(options.length).toBe(BUILT_IN.length);
+      expect(options.length).toBe(LISTED.length);
     }
   });
 
@@ -334,7 +346,7 @@ describe.each([['a wide window', WIDE], ['a narrow window', NARROW]] as const)('
     await user.click(within(dialog).getByRole('button', { name: 'Archive role' }));
 
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    expect(await screen.findByText('Full access')).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: LISTED[0]!.label })).toBeInTheDocument();
     expect(archivedReads).toEqual([]);
   });
 

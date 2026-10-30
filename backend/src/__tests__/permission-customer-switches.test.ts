@@ -19,9 +19,8 @@ describe('the Customers and Service Plans rows', () => {
   const rows: Record<string, [boolean, boolean, boolean, boolean]> = {
     'View customers': [true, true, true, false],
     'Create customers': [true, true, true, false],
-    'Edit customers': [true, true, false, false],
+    'Edit customers': [true, true, true, false],
     'Delete customers': [true, false, false, false],
-    'Show Customers page': [true, true, false, false],
     'Export customers': [true, false, false, false],
     'Archive customers': [true, false, false, false],
     'Edit record ID numbers (customers)': [true, false, false, false],
@@ -32,7 +31,6 @@ describe('the Customers and Service Plans rows', () => {
     'Create service plans': [true, false, true, false],
     'Edit service plans': [true, false, true, false],
     'Delete service plans': [true, false, true, false],
-    'Show Service Plans page': [true, false, true, false],
   };
 
   it('hold every switch the slice lists, each with help text and a value for all four built-in roles', () => {
@@ -59,9 +57,11 @@ describe('the Customers and Service Plans rows', () => {
     expect(validateSwitchSet(technician)).toEqual([]);
   });
 
-  it('keep the row rule: Show, Create, Edit, Delete, Export, Archive and the id numbers need View customers, created date needs Edit customers', () => {
+  it('keep the row rule: Create, Edit, Delete, Export, Archive and the id numbers need View customers, created date needs Edit customers', () => {
     const view = keyOfLabel('View customers')!;
-    for (const label of ['Show Customers page', 'Create customers', 'Edit customers', 'Delete customers', 'Export customers', 'Archive customers', 'Edit record ID numbers (customers)']) {
+    // Create needs Edit as well as View (P2): nobody creates a record they could not edit.
+    expect(findSwitch(keyOfLabel('Create customers')!)!.requires).toEqual([view, keyOfLabel('Edit customers')!]);
+    for (const label of ['Edit customers', 'Delete customers', 'Export customers', 'Archive customers', 'Edit record ID numbers (customers)']) {
       expect(findSwitch(keyOfLabel(label)!)!.requires, label).toEqual([view]);
     }
     expect(findSwitch(keyOfLabel('Change customer created date')!)!.requires).toEqual([keyOfLabel('Edit customers')!]);
@@ -78,12 +78,13 @@ describe('the Customers and Service Plans rows', () => {
 
   it('give the Service Plans rows their own group and the row rule', () => {
     const view = keyOfLabel('View service plans')!;
-    for (const label of ['View service plans', 'Create service plans', 'Edit service plans', 'Delete service plans', 'Show Service Plans page']) {
+    for (const label of ['View service plans', 'Create service plans', 'Edit service plans', 'Delete service plans']) {
       expect(findSwitch(keyOfLabel(label)!)!.module, label).toBe('Service Plans');
     }
-    for (const label of ['Create service plans', 'Edit service plans', 'Delete service plans', 'Show Service Plans page']) {
+    for (const label of ['Edit service plans', 'Delete service plans']) {
       expect(findSwitch(keyOfLabel(label)!)!.requires, label).toEqual([view]);
     }
+    expect(findSwitch(keyOfLabel('Create service plans')!)!.requires).toEqual([view, keyOfLabel('Edit service plans')!]);
   });
 });
 
@@ -101,7 +102,7 @@ describe('the reach of a customer', () => {
     for (const scopes of [
       { leads_scope: 'attached', jobs_scope: 'all' },
       { leads_scope: 'all', jobs_scope: 'attached' },
-      { leads_scope: 'team', jobs_scope: 'location' },
+      { leads_scope: 'team', jobs_scope: 'team' },
     ]) {
       const reads = readOnCustomers(compiled(scopes));
       expect(reads.length, JSON.stringify(scopes)).toBeGreaterThan(0);
@@ -121,7 +122,7 @@ describe('the reach of a customer', () => {
 
   it('compiles no customer grant at all while View customers is off', () => {
     const grants = compiled({ leads_scope: 'all', jobs_scope: 'all' }, { view_customers: false, create_customers: false, edit_customers: false,
-      delete_customers: false, show_customers_page: false, export_customers: false, archive_customers: false,
+      delete_customers: false, export_customers: false, archive_customers: false,
       edit_customer_record_ids: false, change_customer_created_date: false });
     expect(grants.filter((g) => g.subject === 'Customer')).toEqual([]);
   });

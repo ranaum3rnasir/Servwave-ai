@@ -102,7 +102,8 @@ export function DisputeEvidenceForm({
   const queryClient = useQueryClient();
   const orgId = useAuthStore((s) => s.user?.organization_id);
   const ability = useAppAbility();
-  const mayUpload = ability.can('create', 'Attachment');
+  // A file on the dispute's invoice is the invoice's own data (P10): the invoice's Edit uploads it.
+  const mayUpload = ability.can('update', 'Invoice');
   const invoiceId = data.dispute.invoice?.id ?? null;
 
   const [files, setFiles] = useState<Files>(() => initialFiles(data));

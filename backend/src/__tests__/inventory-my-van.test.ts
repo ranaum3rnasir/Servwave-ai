@@ -17,8 +17,6 @@ import { clearPermissionCache } from '../lib/permissions/permissionCache';
 const mockPrisma = prisma as unknown as {
   inventoryLocation: { findFirst: ReturnType<typeof vi.fn> };
   stockBalance: { findMany: ReturnType<typeof vi.fn> };
-  rolePermission: { findMany: ReturnType<typeof vi.fn> };
-  userPermissionOverride: { findMany: ReturnType<typeof vi.fn> };
 };
 
 const VAN_ID = 'aaaaaaa1-0000-0000-0000-000000000099';
@@ -133,9 +131,6 @@ describe('GET /api/inventory/my-van', () => {
   });
 
   it('restricted:false for a technician who does not hold the switch (the preset), and a stored location_restricted override opens nothing', async () => {
-    mockPrisma.userPermissionOverride.findMany.mockResolvedValue([
-      { action: 'location_restricted', subject: 'Inventory', effect: 'allow' },
-    ]);
 
     const res = await request(app).get('/api/inventory/my-van').set(authHeader('technician'));
 

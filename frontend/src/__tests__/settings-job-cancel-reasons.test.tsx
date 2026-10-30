@@ -195,7 +195,7 @@ describe('Settings nav: Job Cancel Reasons', () => {
       selector({
         user: {
           id: 'u-1', email: 'a@test.com', first_name: 'Test', last_name: 'Admin',
-          role: 'ADMIN', org_is_demo: true, organization_id: 'org-demo', org_features: [],
+          role: 'ADMIN', is_admin: ability.can('update', 'Organization'), org_is_demo: true, organization_id: 'org-demo', org_features: [],
         },
         isAuthenticated: true, isLoading: false, error: null,
       })) as never);

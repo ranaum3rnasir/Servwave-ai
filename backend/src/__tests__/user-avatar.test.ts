@@ -5,7 +5,7 @@
  * Mirrors estimate-photos.test.ts's conventions (magic-byte fixtures, storage mock handles,
  * upload-before-DB-write ordering) applied to the self/admin avatar surface: `/me/avatar` has no
  * capability check (any authenticated user manages their own), `/:id/avatar` is gated
- * `canDo('update', 'User')` and shares the same handler — only the resolved target id and the
+ * `requireAdmin` (AL-18) and shares the same handler — only the resolved target id and the
  * capability check differ.
  *
  * Harness: supertest against app, prisma + supabase + sharp mocked.

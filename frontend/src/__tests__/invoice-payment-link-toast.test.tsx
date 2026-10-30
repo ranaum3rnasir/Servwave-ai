@@ -119,7 +119,10 @@ describe('InvoiceDetailPage - the payment-link toast never claims a status chang
     Object.defineProperty(navigator, 'clipboard', { value: { writeText: vi.fn().mockResolvedValue(undefined) }, configurable: true });
     const user = userEvent.setup();
     renderWithProviders(<InvoiceDetailPage />, {
-      ability: buildAbility([{ action: 'read', subject: 'Invoice' }, { action: 'send_payment_link', subject: 'Invoice' }]),
+      // The link opens the customer's priced page, so the copy needs See prices too (H6, ticket 34).
+      ability: buildAbility([
+        { action: 'read', subject: 'Invoice' }, { action: 'send_payment_link', subject: 'Invoice' }, { action: 'read', subject: 'Prices' },
+      ]),
     });
     await user.click(await screen.findByRole('button', { name: 'More actions' }));
     await user.click(await screen.findByRole('menuitem', { name: /copy payment link/i }));

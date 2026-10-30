@@ -58,7 +58,7 @@ suite("a lead's own phones, emails, name and company (real database)", () => {
   }
 
   /** Holds the pencil through Edit job and lead contact details alone. */
-  const contactOnly = { edit_job_and_lead_contact_details: true, edit_leads: false, leads_scope: 'attached' };
+  const contactOnly = { edit_job_and_lead_contact_details: true, edit_leads: false, create_leads: false, leads_scope: 'attached' };
   /** Holds the pencil through Edit leads alone. */
   const leadsOnly = { edit_job_and_lead_contact_details: false, edit_leads: true, leads_scope: 'attached' };
 
@@ -113,7 +113,7 @@ suite("a lead's own phones, emails, name and company (real database)", () => {
       const first = await api.post(base(lead.id), { kind: 'PHONE', value: '6175550199', label: 'Wife' });
       await api.post(base(lead.id), { kind: 'EMAIL', value: 'wife@example.test' });
       await db.recordContactEntry.update({ where: { id: (first.body.entries as Entry[])[0]!.id }, data: { removed_at: new Date() } });
-      const reader = await personWith(org, { view_customers: false, edit_job_and_lead_contact_details: false, edit_leads: false, leads_scope: 'all' });
+      const reader = await personWith(org, { view_customers: false, edit_job_and_lead_contact_details: false, edit_leads: false, create_leads: false, leads_scope: 'all' });
 
       const res = await (await fx.signedInAs(reader)).get(`/api/leads/${lead.id}`);
 
@@ -176,7 +176,7 @@ suite("a lead's own phones, emails, name and company (real database)", () => {
 
   describe('the gate on phones and emails', () => {
     it('refuses the add with Edit job and lead contact details off and Edit leads off, even with Add notes on', async () => {
-      const { lead, api } = await setup({ edit_job_and_lead_contact_details: false, edit_leads: false, add_notes: true, leads_scope: 'attached' });
+      const { lead, api } = await setup({ edit_job_and_lead_contact_details: false, edit_leads: false, create_leads: false, add_notes: true, leads_scope: 'attached' });
 
       const res = await api.post(base(lead.id), { kind: 'PHONE', value: '6175550199' });
 
@@ -192,20 +192,20 @@ suite("a lead's own phones, emails, name and company (real database)", () => {
     });
 
     it('does not let Edit jobs stand in for Edit leads', async () => {
-      const { lead, api } = await setup({ edit_job_and_lead_contact_details: false, edit_leads: false, edit_jobs: true, leads_scope: 'attached' });
+      const { lead, api } = await setup({ edit_job_and_lead_contact_details: false, edit_leads: false, create_leads: false, edit_jobs: true, leads_scope: 'attached' });
 
       const res = await api.post(base(lead.id), { kind: 'EMAIL', value: 'wife@example.test' });
 
       expect(res.status).toBe(403);
     });
 
-    it('asks who may open the lead first: forbidden once taken off it, not found for another company or a missing id', async () => {
+    it('asks who may open the lead first: not found once taken off it, the same as for another company or a missing id', async () => {
       const { me, lead, api } = await setup();
       expect((await api.post(base(lead.id), { kind: 'EMAIL', value: 'one@example.test' })).status).toBe(201);
 
       await db.lead.update({ where: { id: lead.id }, data: { commission_owner_id: null } });
       const off = await (await fx.signedInAs(me)).post(base(lead.id), { kind: 'EMAIL', value: 'two@example.test' });
-      expect(off.status).toBe(403);
+      expect(off.status).toBe(404);
 
       const other = await fx.newOrg();
       const foreign = await fx.addLead(other.org, other.customer, {});
@@ -256,7 +256,7 @@ suite("a lead's own phones, emails, name and company (real database)", () => {
     });
 
     it('takes the same gate as adding: refused with neither switch, accepted with Edit leads alone', async () => {
-      const refused = await setup({ edit_job_and_lead_contact_details: false, edit_leads: false, leads_scope: 'attached' });
+      const refused = await setup({ edit_job_and_lead_contact_details: false, edit_leads: false, create_leads: false, leads_scope: 'attached' });
       const accepted = await setup(leadsOnly);
 
       // A fresh sign-in for each call: the fixture's client holds one person at a time.
@@ -274,7 +274,7 @@ suite("a lead's own phones, emails, name and company (real database)", () => {
       const foreign = await fx.addLead(other.org, other.customer, {});
       const api = await fx.signedInAs(me);
 
-      expect((await api.post(changePath(lead.id), { kind: 'PHONE', replaces: '6175550101', value: '6175550188' })).status).toBe(403);
+      expect((await api.post(changePath(lead.id), { kind: 'PHONE', replaces: '6175550101', value: '6175550188' })).status).toBe(404);
       expect((await api.post(changePath(foreign.id), { kind: 'PHONE', replaces: '6175550101', value: '6175550188' })).status).toBe(404);
       expect((await api.post(changePath(randomUUID()), { kind: 'PHONE', replaces: '6175550101', value: '6175550188' })).status).toBe(404);
     });
@@ -317,23 +317,33 @@ suite("a lead's own phones, emails, name and company (real database)", () => {
       expect(again.body.error).toBe('That last name is already changed on this lead');
     });
 
-    it("lets the lead's creator, still on the lead, change the name through Edit leads' creator path, and not once taken off it", async () => {
+    it("refuses the lead's creator, still on the lead, a name change without Edit leads: having made the lead is no way in (P7)", async () => {
       const { org, customer } = await fx.newOrg();
-      const creator = await personWith(org, { edit_job_and_lead_contact_details: false, edit_leads: false, leads_scope: 'attached' });
+      const creator = await personWith(org, { edit_job_and_lead_contact_details: false, edit_leads: false, create_leads: false, leads_scope: 'attached' });
       const lead = await fx.addLead(org, customer, { owner: creator.id, createdBy: creator.id });
-      const api = await fx.signedInAs(creator);
+
+      const res = await (await fx.signedInAs(creator)).post(namePath(lead.id), { kind: 'FIRST_NAME', value: 'Patricia' });
+
+      expect(res.status).toBe(403);
+    });
+
+    it("lets a person with Edit leads change the name of a lead they are on, and not once taken off it", async () => {
+      const { org, customer } = await fx.newOrg();
+      const editor = await personWith(org, { edit_job_and_lead_contact_details: false, edit_leads: true, leads_scope: 'attached' });
+      const lead = await fx.addLead(org, customer, { owner: editor.id, createdBy: editor.id });
+      const api = await fx.signedInAs(editor);
 
       const on = await api.post(namePath(lead.id), { kind: 'FIRST_NAME', value: 'Patricia' });
       await db.lead.update({ where: { id: lead.id }, data: { commission_owner_id: null } });
-      const off = await (await fx.signedInAs(creator)).post(namePath(lead.id), { kind: 'COMPANY_NAME', value: 'Other Co' });
+      const off = await (await fx.signedInAs(editor)).post(namePath(lead.id), { kind: 'COMPANY_NAME', value: 'Other Co' });
 
       expect(on.status).toBe(201);
-      expect(off.status).toBe(403);
+      expect(off.status).toBe(404);
     });
 
     it('does not let a person attached to a lead they did not create, with Edit leads off, change a name', async () => {
       const { org, customer } = await fx.newOrg();
-      const someone = await personWith(org, { edit_job_and_lead_contact_details: false, edit_leads: false, leads_scope: 'attached' });
+      const someone = await personWith(org, { edit_job_and_lead_contact_details: false, edit_leads: false, create_leads: false, leads_scope: 'attached' });
       const maker = await personWith(org, {});
       const lead = await fx.addLead(org, customer, { owner: someone.id, createdBy: maker.id });
 
@@ -349,7 +359,7 @@ suite("a lead's own phones, emails, name and company (real database)", () => {
       const foreign = await fx.addLead(other.org, other.customer, {});
       const api = await fx.signedInAs(me);
 
-      expect((await api.post(namePath(lead.id), { kind: 'FIRST_NAME', value: 'Patricia' })).status).toBe(403);
+      expect((await api.post(namePath(lead.id), { kind: 'FIRST_NAME', value: 'Patricia' })).status).toBe(404);
       expect((await api.post(namePath(foreign.id), { kind: 'FIRST_NAME', value: 'Patricia' })).status).toBe(404);
       expect((await api.post(namePath(randomUUID()), { kind: 'FIRST_NAME', value: 'Patricia' })).status).toBe(404);
     });
@@ -396,7 +406,7 @@ suite("a lead's own phones, emails, name and company (real database)", () => {
       await setRoleSwitchValues({
         organizationId: org,
         roleKey: (await db.user.findUniqueOrThrow({ where: { id: author.id }, include: { custom_role: true } })).custom_role!.key,
-        values: { edit_job_and_lead_contact_details: false, edit_leads: false },
+        values: { edit_job_and_lead_contact_details: false, edit_leads: false, create_leads: false },
         actorId: null,
         reason: 'manual',
       });
@@ -454,8 +464,8 @@ suite("a lead's own phones, emails, name and company (real database)", () => {
       await db.lead.update({ where: { id: lead.id }, data: { commission_owner_id: null } });
       const api = await fx.signedInAs(me);
 
-      expect((await api.patch(`${base(lead.id)}/${entries[0]!.id}`, { label: 'x' })).status).toBe(403);
-      expect((await api.delete(`${base(lead.id)}/${entries[0]!.id}`)).status).toBe(403);
+      expect((await api.patch(`${base(lead.id)}/${entries[0]!.id}`, { label: 'x' })).status).toBe(404);
+      expect((await api.delete(`${base(lead.id)}/${entries[0]!.id}`)).status).toBe(404);
       expect((await api.patch(`${base(randomUUID())}/${entries[0]!.id}`, { label: 'x' })).status).toBe(404);
       expect((await api.delete(`${base(randomUUID())}/${entries[0]!.id}`)).status).toBe(404);
     });

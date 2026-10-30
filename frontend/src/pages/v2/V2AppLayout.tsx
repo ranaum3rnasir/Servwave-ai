@@ -168,6 +168,8 @@ export default function V2AppLayout() {
   const requestLeave = useSettingsGuard((s) => s.requestLeave);
 
   const user = useAuthStore((s) => s.user);
+  // Settings opens the company's details for an Admin and the one page everyone has (My Profile) for anyone else (36b, M17).
+  const settingsHome = user?.is_admin === true ? '/settings/company' : '/settings/profile';
   const logout = useAuthStore((s) => s.logout);
 
   // The navigation drawer's trigger carries an "on the clock" dot while this is true.
@@ -361,7 +363,7 @@ export default function V2AppLayout() {
             doors onto one destination. Settings is the one that reaches
             everything. */}
         <DropdownMenuItem
-          onClick={() => requestLeave(() => navigate(preferV2Path('/settings/company')))}
+          onClick={() => requestLeave(() => navigate(preferV2Path(settingsHome)))}
         >
           <SettingsIcon />
           Settings
@@ -446,7 +448,7 @@ export default function V2AppLayout() {
               tint={tintFor(displayName)}
               avatarSrc={organization?.logo_url ?? undefined}
               avatarAlt={orgLogoAlt}
-              onSettings={() => requestLeave(() => navigate(preferV2Path('/settings/company')))}
+              onSettings={() => requestLeave(() => navigate(preferV2Path(settingsHome)))}
               onSignOut={() => logout()}
             />
 

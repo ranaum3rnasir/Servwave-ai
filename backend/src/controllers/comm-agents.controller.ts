@@ -6,6 +6,7 @@ import { tenantWhere } from '../lib/tenant';
 import { blockedNumberKey, findBlockedNumber } from '../lib/communication/blockedNumbers';
 import { canSeeCallInsights, canSeeCompanyFigures } from '../lib/permissions/enforce';
 import { LONG_TEXT_MAX } from '../lib/text-limits';
+import { namesOnlyTeamMember, seesFullPeopleRecords } from '../lib/users/peopleRow';
 
 // ─── Zod Schemas ───────────────────────────────────────
 
@@ -250,12 +251,22 @@ export async function listForwardRules(req: Request, res: Response) {
 
 // ─── Team Member Handlers ──────────────────────────────
 
-// Maps active Users to the TeamMember mock shape.
+// Maps active Users to the TeamMember mock shape. M3 (ticket 29): an Admin gets each member's email and role; everyone
+// else gets id, name and online only (the inbox emails a teammate by id, POST /emails `to_user_ids`).
 export async function listTeamMembers(req: Request, res: Response) {
   try {
+    const where = { ...tenantWhere(req), is_active: true };
+    const orderBy = [{ first_name: 'asc' as const }, { last_name: 'asc' as const }];
+    if (!seesFullPeopleRecords(req)) {
+      const people = await prisma.user.findMany({ where, orderBy, select: { id: true, first_name: true, last_name: true, is_active: true } });
+      res.json({ members: people.map(namesOnlyTeamMember) });
+      return;
+    }
+
     const users = await prisma.user.findMany({
-      where: { ...tenantWhere(req), is_active: true },
-      orderBy: [{ first_name: 'asc' }, { last_name: 'asc' }],
+      where,
+      orderBy,
+      select: { id: true, first_name: true, last_name: true, email: true, role: true, is_active: true },
     });
 
     res.json({ members: users.map(toTeamMember) });

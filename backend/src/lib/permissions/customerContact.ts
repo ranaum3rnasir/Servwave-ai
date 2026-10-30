@@ -26,6 +26,9 @@
  * bare estimate sites, a decision this issue puts out of scope (see spec Ruling 1).
  */
 import type { Request } from 'express';
+import { prisma } from '../prisma';
+import { tenantWhere } from '../tenant';
+import { scopeWhereForReq } from './enforce';
 import { isCustomerReadableRow, isCustomerOnOpenRecord, stripCustomerProofKeys } from './customerScope';
 
 /** The seven keys a customer row must not carry when the requester cannot read that customer. */
@@ -241,11 +244,37 @@ export function redactCustomerContactFor<T>(req: Request, doc: T): T {
  * behavior-free wrapper: keeping it distinct from `redactCustomerContactFor` (rather than importing
  * the helper directly at every call site) is what the source-scanning guard test greps for, and it
  * is the one place a future second estimate-side transform could be added without touching 25 call
- * sites — see Ruling 1 in the spec for why this stays pure/synchronous and does not also apply
- * `stripEstimateCost` or `projectEstimateLeadWalkthrough`.
+ * sites — see Ruling 1 in the spec for why it does not also apply `stripEstimateCost` or
+ * `projectEstimateLeadWalkthrough`. It is async since re-audit N17: the estimate's invoices are cut to the person's
+ * invoice reach, which takes one query (`invoicesInReach` below).
  */
-export function presentEstimateDetail<T>(req: Request, doc: T): T {
-  return withoutDepositProcessorIds(redactCustomerContactFor(req, doc));
+export async function presentEstimateDetail<T>(req: Request, doc: T): Promise<T> {
+  return invoicesInReach(req, withoutDepositProcessorIds(redactCustomerContactFor(req, doc)));
+}
+
+/**
+ * Re-audit N17 (Ran, 2026-10-29): the estimate carries its deposit invoice (and a copied invoice), with number, status, amounts
+ * and payments. A signed-in person sees only the invoices they can open: none with View invoices off, and only those inside
+ * their invoice reach otherwise, the way the customer page's money sections ask (H3). The amounts left on a listed invoice are
+ * then a See prices matter, decided on the answer as for every other price (lib/permissions/prices.ts). A customer's own link
+ * (nobody signed in) keeps its deposit invoice. One query for a person whose reach is narrower than every invoice; none for
+ * an Admin or a company-wide reach.
+ */
+async function invoicesInReach<T>(req: Request, doc: T): Promise<T> {
+  if (!req.user) return doc;
+  const d = doc as { invoices?: unknown } | null;
+  if (!d || typeof d !== 'object' || !Array.isArray(d.invoices) || d.invoices.length === 0) return doc;
+  const listed = d.invoices as Array<{ id?: unknown }>;
+  if (!req.ability?.can('read', 'Invoice')) return { ...(d as object), invoices: [] } as T;
+  const scope = await scopeWhereForReq(req, 'Invoice');
+  if (Object.keys(scope).length === 0) return doc;
+  const ids = listed.map((inv) => inv?.id).filter((id): id is string => typeof id === 'string');
+  const reached = ids.length === 0 ? [] : await prisma.invoice.findMany({
+    where: { AND: [tenantWhere(req), scope, { id: { in: ids } }] },
+    select: { id: true },
+  });
+  const open = new Set((reached ?? []).map((r) => r.id));
+  return { ...(d as object), invoices: listed.filter((inv) => typeof inv?.id === 'string' && open.has(inv.id)) } as T;
 }
 
 /**

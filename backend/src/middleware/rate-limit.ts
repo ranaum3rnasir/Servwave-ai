@@ -7,6 +7,7 @@ import { getClientIp } from '../lib/audit';
 import { env } from '../config/env';
 import { logger } from '../lib/logger';
 import { reportSecuritySignal } from '../lib/security-signal';
+import { markReadsNoRecord } from '../lib/ids/canonicalId';
 
 const isDev = process.env.NODE_ENV !== 'production';
 const isTest = process.env.NODE_ENV === 'test';
@@ -389,7 +390,7 @@ if (ON) {
 /** General per-user/IP API limiter — replaces the old express-rate-limit general tier. */
 export const generalLimiter = generalLimiterImpl;
 /** Tighter limiter for expensive endpoints (PDF render, search, reports). */
-export const expensiveLimiter = expensiveLimiterImpl;
+export const expensiveLimiter = markReadsNoRecord(expensiveLimiterImpl);
 /** Per-IP limiter for public read endpoints (token-based public pages). */
 export const publicReadLimiter = publicReadLimiterImpl;
 /** Per-IP limiter for public action endpoints (approve/decline/checkout). */

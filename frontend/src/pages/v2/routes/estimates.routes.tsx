@@ -31,7 +31,7 @@ export function estimatesV2Routes() {
   return (
     <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN']} />}>
       <Route element={<V2AppLayout />}>
-        <Route element={<RequirePageAccess all={['view_estimates', 'show_estimates_page']} />}>
+        <Route element={<RequirePageAccess all={['view_estimates']} />}>
           <Route path="/estimates" element={<EstimatesPage />} />
         </Route>
         <Route path="/estimates/new" element={<NewEstimateRedirect />} />

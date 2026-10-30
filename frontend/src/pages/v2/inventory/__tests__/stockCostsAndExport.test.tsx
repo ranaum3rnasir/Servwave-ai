@@ -1,10 +1,10 @@
 /**
- * Roles & Permissions S07.15 - the Stock page hides cost without See financial data (never as $0) and its two
+ * Roles & Permissions S07.15 - the Stock page hides cost without See costs (never as $0) and its two
  * downloads follow Export stock.
  *
  * Mounted through the routed v2 `InventoryPage` with the HTTP layer mocked. Every person is built from switch
  * values: the ability is compiled from the grants the backend catalog gives each switch (the source of truth),
- * never from a role name. A person without See financial data is served items with no `unitCost` key at all, which
+ * never from a role name. A person without See costs is served items with no `unitCost` key at all, which
  * is what the server does (S01.15); the screen must not turn that absence into a figure.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -62,7 +62,7 @@ beforeEach(() => {
   served = WITH_COST;
   useInventoryAlertStore.setState({ pending: null, nonce: 0 });
   mockApi.get.mockImplementation((async (url: string) => {
-    if (url === '/api/permission-switches/me') return { data: { admin_box: false, values: { show_stock_page: true }, rules: [] } };
+    if (url === '/api/permission-switches/me') return { data: { admin_box: false, values: { view_stock: true }, rules: [] } };
     if (url.startsWith('/api/inventory/items')) return { data: { data: served } };
     if (url.startsWith('/api/inventory/locations')) return { data: { locations: LOCATIONS } };
     if (url.startsWith('/api/inventory/assets')) return { data: { data: [], meta: { total: 0 } } };
@@ -76,7 +76,7 @@ beforeEach(() => {
   }) as typeof mockApi.get);
 });
 
-const READ = ['View stock', 'View price book', 'View purchase orders', 'View vendors'];
+const READ = ['View stock', 'View price book', 'View purchase orders', 'View vendors', 'See prices'];
 
 function renderStock(...extra: string[]) {
   return renderWithProviders(<InventoryPage />, {
@@ -101,7 +101,7 @@ async function openDetail() {
 const button = (name: string | RegExp) => screen.queryByRole('button', { name });
 const columnHeader = (name: string) => screen.queryByRole('columnheader', { name: new RegExp(name, 'i') });
 
-describe('Items tab - a person without See financial data', () => {
+describe('Items tab - a person without See costs', () => {
   beforeEach(() => {
     served = WITHOUT_COST;
   });
@@ -144,9 +144,9 @@ describe('Items tab - a person without See financial data', () => {
   });
 });
 
-describe('Items tab - a person with See financial data', () => {
+describe('Items tab - a person with See costs', () => {
   it('sees the Inventory Value card with the real total, the Unit Cost column and the unit cost in the detail', async () => {
-    renderStock('See financial data');
+    renderStock('See costs');
     await screen.findByText('Brass Hinge');
 
     expect(screen.getByText('Inventory Value')).toBeInTheDocument();
@@ -163,7 +163,7 @@ describe('Items tab - a person with See financial data', () => {
 
 describe('Export and Export selected follow Export stock', () => {
   it('shows neither button without Export stock, even for a person who can select rows to restock', async () => {
-    renderStock('See financial data', 'Edit stock');
+    renderStock('See costs', 'Edit stock');
     await screen.findByText('Brass Hinge');
 
     expect(button(/^Export$/)).not.toBeInTheDocument();
@@ -240,7 +240,7 @@ describe('The downloaded file', () => {
     return downloads.files[0]!.csv;
   }
 
-  it('carries no cost column, not even an empty or 0.00 one, without See financial data', async () => {
+  it('carries no cost column, not even an empty or 0.00 one, without See costs', async () => {
     served = WITHOUT_COST;
     renderStock('Export stock');
     const csv = await exportAll();
@@ -252,8 +252,8 @@ describe('The downloaded file', () => {
     expect(csv).not.toContain('0.00,9.00');
   });
 
-  it('carries the cost column with the real costs with See financial data', async () => {
-    renderStock('Export stock', 'See financial data');
+  it('carries the cost column with the real costs with See costs', async () => {
+    renderStock('Export stock', 'See costs');
     const csv = await exportAll();
 
     const [header, ...rows] = csv.split('\r\n');
@@ -262,7 +262,7 @@ describe('The downloaded file', () => {
     expect(rows.some((r) => r.includes('LCK-1') && r.includes('10.00'))).toBe(true);
   });
 
-  it('Export selected leaves the cost column out too without See financial data', async () => {
+  it('Export selected leaves the cost column out too without See costs', async () => {
     served = WITHOUT_COST;
     renderStock('Export stock');
     await screen.findByText('Brass Hinge');

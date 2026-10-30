@@ -39,8 +39,47 @@ export function prepareMigrationsDir(migration: string, reach: MigrationReach, t
   return dir;
 }
 
-/** The Prisma deploy command over a prepared directory; throws with its output when it fails. */
+/**
+ * The hosted database's stub auth helpers, for a database a test makes for itself. Once the cluster has the hosted
+ * database's `authenticated` role (CI makes it, ticket 37: scripts/ci-outside-roles.sql), the oldest guarded migration
+ * (20260623120000_add_audit_logs) writes a policy naming auth.uid(), so a fresh database needs the same NULL-answering
+ * auth.uid(), auth.role() and auth.jwt() that script gives CI's own database. It touches only this database, makes only
+ * what is missing, and does nothing on a cluster without the role (a plain Postgres), where the migrations name no auth
+ * helper and a test database should keep no auth schema.
+ */
+const AUTH_STUBS_SQL = `DO $auth_stubs$
+BEGIN
+  IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+    CREATE SCHEMA IF NOT EXISTS auth;
+    IF to_regprocedure('auth.uid()') IS NULL THEN
+      CREATE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql AS 'SELECT NULL::uuid';
+    END IF;
+    IF to_regprocedure('auth.role()') IS NULL THEN
+      CREATE FUNCTION auth.role() RETURNS text LANGUAGE sql AS 'SELECT NULL::text';
+    END IF;
+    IF to_regprocedure('auth.jwt()') IS NULL THEN
+      CREATE FUNCTION auth.jwt() RETURNS jsonb LANGUAGE sql AS 'SELECT NULL::jsonb';
+    END IF;
+  END IF;
+END
+$auth_stubs$;`;
+
+/** Gives the database at `dbUrl` the stub auth helpers (see AUTH_STUBS_SQL); throws with the output when it fails. */
+export function stubAuthHelpers(dbUrl: string): void {
+  const run = spawnSync(process.execPath, [PRISMA_CLI, 'db', 'execute', '--url', dbUrl, '--stdin'], {
+    input: AUTH_STUBS_SQL,
+    env: { ...process.env, PRISMA_HIDE_UPDATE_MESSAGE: '1' },
+    encoding: 'utf8',
+  });
+  if (run.status !== 0) throw new Error(`auth stubs failed:\n${run.stdout}\n${run.stderr}`);
+}
+
+/**
+ * The Prisma deploy command over a prepared directory; throws with its output when it fails. The database gets the stub
+ * auth helpers first, so every database a test makes and migrates meets the migrations the way CI's own database does.
+ */
 export function deployFrom(dbUrl: string, dir: string): string {
+  stubAuthHelpers(dbUrl);
   const run = spawnSync(process.execPath, [PRISMA_CLI, 'migrate', 'deploy', '--schema', join(dir, 'schema.prisma')], {
     cwd: dir,
     env: { ...process.env, DATABASE_URL: dbUrl, DIRECT_URL: dbUrl, PRISMA_HIDE_UPDATE_MESSAGE: '1' },

@@ -14,7 +14,7 @@ import { screen } from '@testing-library/react';
 import { renderWithProviders } from './helpers';
 import api from '@/lib/axios';
 
-vi.mock('@/lib/api/users', () => ({ useUsers: () => ({ data: [] }) }));
+vi.mock('@/lib/api/users', () => ({ usePeople: () => ({ data: [] }) }));
 
 import ServicePlansPage from '@/pages/service-plans/ServicePlansPage';
 

@@ -512,7 +512,7 @@ export async function search(req: Request, res: Response) {
     addOrFilter(invBaseWhere, [
       { invoice_number: contains(q) },
       // Searched by the invoice's own customer, not only its job's: an invoice the person created for a
-      // customer alone is theirs to open (the creator rule) and has no job to be found through.
+      // customer alone is theirs to open  and has no job to be found through.
       { customer: { OR: nameFieldsOr(q) } },
       { job: { customer: { OR: nameFieldsOr(q) } } },
     ]);
@@ -564,8 +564,8 @@ export async function search(req: Request, res: Response) {
     // via `req.ability!.can('read', 'CalendarEntry')`, rather than `scopeWhereForReq`. Still
     // fail-closed: no `read CalendarEntry` grant → ability.can() is false → the bucket is
     // skipped → `[]`, and the table is never queried for that caller — never a leak.
-    // Row scope (S04.8): without "See all calendar entries" only the entries that name the caller as
-    // a user participant come back (withCalendarEntryRule), the same rule as the entries list.
+    // Row scope: the entries the caller's Events scope reaches come back (withCalendarEntryRule), the same rule as the
+    // entries list.
     const skipCalendarEntries = !isScheduleScope || !req.ability!.can('read', 'CalendarEntry' as Subject);
     const entryBaseWhere: Record<string, unknown> = { ...orgWhere, title: contains(q) };
     if (hasDateRange) {
@@ -577,9 +577,10 @@ export async function search(req: Request, res: Response) {
         { end: { gte: rangeStartDate! } },
       ]);
     }
-    const entryQueries = skipCalendarEntries
+    const entryWhere = skipCalendarEntries ? null : await withCalendarEntryRule(req, entryBaseWhere);
+    const entryQueries = entryWhere === null
       ? []
-      : [safeQuery(() => prisma.calendarEntry.findMany({ where: withCalendarEntryRule(req, entryBaseWhere), take: LIMIT, orderBy: { start: 'asc' }, select: CALENDAR_ENTRY_SEARCH_SELECT }))];
+      : [safeQuery(() => prisma.calendarEntry.findMany({ where: entryWhere, take: LIMIT, orderBy: { start: 'asc' }, select: CALENDAR_ENTRY_SEARCH_SELECT }))];
 
     // ─── Run all queries in parallel ────────────────────
     const allQueries = [...jobQueries, ...customerQueries, ...leadQueries, ...estQueries, ...invQueries, ...planQueries, ...entryQueries];

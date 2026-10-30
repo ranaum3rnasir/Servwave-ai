@@ -53,7 +53,7 @@ const VISIT = {
 };
 
 /** Mount the routed job page with the answer the server would give this person. */
-function mount(over: Record<string, unknown> = {}, entry = '/') {
+function mount(over: Record<string, unknown> = {}, entry = '/', as = ability) {
   const job = {
     id: JOB_ID, job_number: 'J00013', status: 'READY_TO_CLOSE', scope_notes: null, estimated_duration: null, completion_notes: null,
     scheduled_start: '2026-10-02T13:00:00.000Z', scheduled_end: '2026-10-02T15:00:00.000Z', started_at: null,
@@ -72,7 +72,7 @@ function mount(over: Record<string, unknown> = {}, entry = '/') {
     if (url.includes(`/api/jobs/${JOB_ID}`)) return { data: { job } } as never;
     return { data: {} } as never;
   });
-  return renderWithProviders(<JobDetailPage />, { ability, initialEntries: [entry] });
+  return renderWithProviders(<JobDetailPage />, { ability: as, initialEntries: [entry] });
 }
 
 const markDoneCalls = () => mockApi.post.mock.calls.filter(([url]) => String(url).endsWith('/mark-done'));
@@ -134,6 +134,24 @@ describe('the Ready to close banner', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Mark Done, $350.00 still owed' }));
     await waitFor(() => expect(markDoneCalls()).toHaveLength(1));
     expect(markDoneCalls()[0]).toEqual([`/api/jobs/${JOB_ID}/mark-done`, { confirmed_amount: 350 }]);
+  });
+
+  // Pre-PR review CR-1: a person without See prices is never sent the amount owed, so they confirm that a balance is owed,
+  // not a figure. The press says so to the server, which accepts it only from someone who cannot see prices.
+  it('asks a person without See prices to confirm that a balance is owed, and sends that confirmation, not a figure', async () => {
+    const priceBlind = buildAbility([{ action: 'manage', subject: 'all' }, { action: 'read', subject: 'Prices', inverted: true }]);
+    const { amount_owed: _hidden, ...withoutAmount } = offered(350);
+    mount({ ready_to_close: withoutAmount }, '/', priceBlind);
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Mark Done' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Mark this job Done?' });
+    expect(within(dialog).getByText(/A balance is still owed on J00013/)).toBeInTheDocument();
+    expect(dialog.textContent).not.toMatch(/\$/);
+
+    await user.click(within(dialog).getByRole('button', { name: 'Mark Done, balance still owed' }));
+    await waitFor(() => expect(markDoneCalls()).toHaveLength(1));
+    expect(markDoneCalls()[0]).toEqual([`/api/jobs/${JOB_ID}/mark-done`, { confirmed_without_amount: true }]);
   });
 
   it('sends nothing when the person backs out of the amount confirmation', async () => {

@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from 'util';
 import { SWITCH_CATALOG, sameSwitchValue, type SwitchEntry, type SwitchValue } from './catalog';
+import { renamedSwitchKey } from './presetMigrationRenames';
 import { loadPresetMigrationSnapshot, parsePresetMigrationSql, type PresetMigrationSnapshot } from './presetMigrationSnapshot';
 
 /**
@@ -14,6 +15,99 @@ import { loadPresetMigrationSnapshot, parsePresetMigrationSql, type PresetMigrat
  *    with no stored row resolves to the catalog preset), and so is a changed grant mapping: the mapping is read once,
  *    to translate the custom roles that existed when the migration ran.
  */
+/**
+ * A preset value that a LATER migration (written after the applied preset migration, as its drift report asks) moved on
+ * stored rows. The catalog holds `now`; the applied migration still writes `was`; the follow-up carries the stored rows from
+ * one to the other, so the catalog having moved is no longer drift. Add an entry here in the same change as the follow-up
+ * migration that does the move, and list ONLY moves that migration really makes.
+ */
+export interface PresetFollowUpMove {
+  role: string;
+  key: string;
+  was: SwitchValue;
+  now: SwitchValue;
+}
+export const PRESET_FOLLOW_UPS: ReadonlyArray<{ migration: string; moves: readonly PresetFollowUpMove[]; retired?: readonly string[] }> = [
+  {
+    // M8: the built-in rows that still equal the old preset take the new one (Create requires Edit; Technician and Dispatcher).
+    migration: '20261028100300_permission_create_requires_edit',
+    moves: [
+      { role: 'TECHNICIAN', key: 'edit_leads', was: false, now: true },
+      { role: 'TECHNICIAN', key: 'edit_estimates', was: false, now: true },
+      { role: 'TECHNICIAN', key: 'edit_jobs', was: false, now: true },
+      { role: 'TECHNICIAN', key: 'record_payments', was: true, now: false },
+      { role: 'TECHNICIAN', key: 'send_payment_links', was: true, now: false },
+      { role: 'DISPATCHER', key: 'edit_customers', was: false, now: true },
+      { role: 'DISPATCHER', key: 'edit_estimates', was: false, now: true },
+    ],
+  },
+  {
+    // M9a (AL-08): the four See-all toggles became each module's scope switch (the stored rows are renamed and their
+    // value mapped), and Communication scope's "Linked to me" became Attached. `retired` lists the keys that migration
+    // removed from the catalog; the scope switches that replace them are new keys, so they carry no move.
+    migration: '20261028100500_permission_reach_toggles_become_scope',
+    retired: ['see_all_tasks', 'see_all_calendar_entries', 'see_all_assets', 'see_everyones_timesheets'],
+    moves: [
+      { role: 'SALES', key: 'communication_scope', was: 'linked_to_me', now: 'attached' },
+      { role: 'DISPATCHER', key: 'communication_scope', was: 'linked_to_me', now: 'attached' },
+      { role: 'TECHNICIAN', key: 'communication_scope', was: 'linked_to_me', now: 'attached' },
+    ],
+  },
+  {
+    // M5 (AL-07): uploads and notes are the record's own data, so the four attachment switches and Delete other people's
+    // notes are gone and their stored rows deleted. The record's View and Edit decide, with no preset to carry.
+    migration: '20261028100600_permission_attachments_notes_with_record',
+    retired: ['view_attachments', 'upload_attachments', 'edit_attachments', 'delete_attachments', 'delete_others_notes'],
+    moves: [],
+  },
+  {
+    // M6 (AL-06b): estimates and invoices follow the Jobs and Leads scope, so their two scope switches are gone and their stored
+    // rows deleted. The reach a role held there is not carried to the Jobs or Leads scope: it was a separate choice.
+    migration: '20261028101000_permission_document_scopes_retire',
+    retired: ['estimates_scope', 'invoices_scope'],
+    moves: [],
+  },
+  {
+    // M9b (AL-10): display-only switches retire (a page opens with its module's View, the sidebar follows View), and their
+    // stored rows are deleted.
+    migration: '20261028100700_permission_display_switches_retire',
+    retired: [
+      'show_customers_page', 'show_leads_page', 'show_jobs_page', 'show_estimates_page', 'show_invoices_page',
+      'show_service_plans_page', 'show_automations_page', 'show_tasks_page', 'show_users_teams_page', 'show_stock_page',
+      'show_purchase_orders_page', 'show_vendors_page', 'show_logistic_orders_page', 'show_price_book_page', 'phone_usage_bar',
+    ],
+    moves: [],
+  },
+  {
+    // M13 (AL-18): user and role management is the Admin flag's alone, so the five switches that stood for it are gone and
+    // their stored rows deleted. No other switch takes their place.
+    migration: '20261028130000_retire_user_role_switches',
+    retired: ['create_users', 'invite_users', 'edit_users', 'delete_users', 'manage_roles_and_permissions'],
+    moves: [],
+  },
+  {
+    // M17 (ticket 36b): setting up the company is the Admin flag's alone, so the Company settings switch is gone and its stored
+    // rows deleted. No other switch takes its place.
+    migration: '20261029120000_retire_company_settings_switch',
+    retired: ['company_settings'],
+    moves: [],
+  },
+];
+
+/** True when a later migration removed this key from the catalog on purpose (and carried its stored rows elsewhere). */
+export function retiredByFollowUp(key: string): boolean {
+  return PRESET_FOLLOW_UPS.some((f) => f.retired?.includes(key));
+}
+
+/** The follow-up move that carries `role`'s `key` from what the applied migration wrote to the catalog's value, if one does. */
+export function followUpPresetMove(role: string, key: string, now: SwitchValue): PresetFollowUpMove | undefined {
+  for (const f of PRESET_FOLLOW_UPS) {
+    const move = f.moves.find((m) => m.role === role && m.key === key && sameSwitchValue(m.now, now));
+    if (move) return move;
+  }
+  return undefined;
+}
+
 export interface PresetMigrationDrift {
   /** What differs between the SQL on disk and the frozen snapshot; empty when the file is as applied. */
   fileEdited: string[];
@@ -47,9 +141,10 @@ export function presetMigrationDrift(
   const removed: string[] = [];
   const kindChanged: PresetMigrationDrift['kindChanged'] = [];
   for (const sw of snapshot.switches) {
-    const live = byKey.get(sw.key);
+    // A later migration may have renamed the key; the stored rows were carried to the new one.
+    const live = byKey.get(sw.key) ?? byKey.get(renamedSwitchKey(sw.key) ?? '');
     if (!live) {
-      removed.push(sw.key);
+      if (!retiredByFollowUp(sw.key)) removed.push(sw.key);
       continue;
     }
     if (live.kind !== sw.kind) kindChanged.push({ key: sw.key, was: sw.kind, now: live.kind });
@@ -57,7 +152,11 @@ export function presetMigrationDrift(
     for (const [role, values] of Object.entries(snapshot.presets)) {
       const was = values[sw.key] as SwitchValue;
       const now = live.presets[role as keyof SwitchEntry['presets']];
-      if (!sameSwitchValue(was, now)) roles.push({ role, was, now });
+      if (sameSwitchValue(was, now)) continue;
+      // A later migration already carries the stored rows from `was` to `now`: not drift.
+      const move = followUpPresetMove(role, sw.key, now);
+      if (move && sameSwitchValue(move.was, was)) continue;
+      roles.push({ role, was, now });
     }
     if (roles.length > 0) changed.push({ key: sw.key, roles });
   }

@@ -4,10 +4,10 @@ import { prisma } from './prisma';
 import { supabaseAdmin } from './supabase';
 import { env } from '../config/env';
 import { purgeCustomerSubtree, purgeOrganization } from './purge';
-import { DEFAULT_GRANTS } from './permissions/defaultGrants';
 import { seedStarterTaskCategories } from './tasks/categories';
 import { seedListRows } from './org-list-rows';
 import { createCompanyWithMainMailbox, issueUserMailbox } from './mailbox/register';
+import { setFirstOwner } from './users/first-owner';
 
 export const E2E_ORG_NAME_PREFIX = 'e2e-qa-';
 export const E2E_EMAIL_DOMAIN = 'e2e-qa.invalid';
@@ -79,22 +79,6 @@ export async function provisionTestOrg(): Promise<ProvisionedOrg> {
     deposit_default_percentage: 30,
   });
 
-  // Seed the org's role-permission rows from DEFAULT_GRANTS, the same as a real org gets on creation. Nothing reads
-  // them for access any more (a person's access comes from their switches, whose presets need no stored rows); they
-  // are kept so the table looks the way a real org's does.
-  await prisma.rolePermission.createMany({
-    data: DEFAULT_GRANTS.map((g) => {
-      const conditions = (g as { conditions?: Record<string, unknown> }).conditions;
-      return {
-        organization_id: orgId,
-        role: g.role,
-        action: g.action,
-        subject: g.subject,
-        conditions: conditions == null ? Prisma.JsonNull : (conditions as Prisma.InputJsonValue),
-      };
-    }),
-  });
-
   // Every new organization starts with the three starter task categories.
   await seedStarterTaskCategories(prisma, orgId);
   // The job type and source lists as rows, copied from the organization's own column defaults.
@@ -114,10 +98,12 @@ export async function provisionTestOrg(): Promise<ProvisionedOrg> {
     await tx.user.create({
       data: {
         id: adminUserId, email: adminEmail, first_name: 'E2E', last_name: 'Admin',
-        role: 'ADMIN', is_active: true, has_login: true, organization_id: orgId,
+        role: 'ADMIN', is_admin: true, is_active: true, has_login: true, organization_id: orgId,
       },
     });
     await issueUserMailbox(tx, { id: adminUserId, organization_id: orgId, first_name: 'E2E', last_name: 'Admin' });
+    // The person the company is set up for is its Owner (AL-16), as onboarding makes one.
+    await setFirstOwner(tx, orgId, adminUserId);
   });
 
   return { organizationId: orgId, adminEmail, adminPassword, adminUserId, runId };

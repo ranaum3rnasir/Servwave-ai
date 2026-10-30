@@ -5,7 +5,8 @@ import { logger } from '../lib/logger';
 import { supabaseAdmin } from '../lib/supabase';
 import { tenantWhere } from '../lib/tenant';
 import { logAudit } from '../lib/audit';
-import { canSeeCosts } from '../lib/permissions/enforce';
+import { canSeeCosts, scopeWhereForReq } from '../lib/permissions/enforce';
+import { canReadCustomerById } from '../lib/permissions/customerScope';
 import { canStageOnJob, stageReachWhere } from '../lib/permissions/stageScope';
 import { sniffMatchesDeclared } from '../lib/file-sniff';
 import { applyStockMovement } from './inv-stock.controller';
@@ -73,14 +74,21 @@ async function signStagePhotoUrls(stages: any[]): Promise<Map<string, string>> {
 // ─── Org-validated FK guard (closes the P1 cross-org injection gap) ──────────
 // Before persisting an inbound job_id/customer_id, confirm the referenced row
 // belongs to the requesting org. Returns an error message string (→ 400) or null.
-async function validateJobAndCustomer(req: Request, jobId?: string | null, customerId?: string | null): Promise<string | null> {
+/**
+ * A job or customer named in the body must exist here and be within the person's reach; one out of reach answers exactly
+ * like one that does not exist (spec story 47). A job is reached the way staging reaches it (`canStageOnJob`); asked only
+ * when the stage lands on it (`checkJobReach`), so an edit that leaves a stage on its job is not refused for it.
+ */
+async function validateJobAndCustomer(
+  req: Request, jobId?: string | null, customerId?: string | null, checkJobReach = true,
+): Promise<string | null> {
   if (jobId) {
     const job = await prisma.job.findFirst({ where: { id: jobId, ...tenantWhere(req) }, select: { id: true } });
-    if (!job) return 'Invalid job_id';
+    if (!job || (checkJobReach && !(await canStageOnJob(req, jobId)))) return 'Invalid job_id';
   }
   if (customerId) {
     const customer = await prisma.customer.findFirst({ where: { id: customerId, ...tenantWhere(req) }, select: { id: true } });
-    if (!customer) return 'Invalid customer_id';
+    if (!customer || !(await canReadCustomerById(req, customerId))) return 'Invalid customer_id';
   }
   return null;
 }
@@ -119,7 +127,7 @@ async function resolveReceiveLocationId(req: Request): Promise<string | null> {
 // ─── Mappers (snake_case Prisma row → camelCase mock contract) ──────────
 
 // What a stage line may disclose to the person asking (Roles & Permissions, PRD 7). unitCost is a PO-derived
-// item cost: it rides on the response only for a person who holds See financial data (canSeeCosts). The vendor
+// item cost: it rides on the response only for a person who holds See costs (canSeeCosts). The vendor
 // name rides on it only for a person who holds View vendors. Without either the key is gone, never zero or blank.
 type LineDisclosure = { withCost: boolean; withVendor: boolean };
 
@@ -356,8 +364,9 @@ export async function createJobStage(req: Request, res: Response) {
 
     // ─── P2 4c: stage-from-PO — server-side linkage + atomic claim ────────────
     if (body.stagedFromPurchaseOrderId) {
+      // A purchase order out of the person's reach answers exactly like a missing one (spec story 47).
       const po = await prisma.purchaseOrder.findFirst({
-        where: { id: body.stagedFromPurchaseOrderId, ...tenantWhere(req) },
+        where: { id: body.stagedFromPurchaseOrderId, ...tenantWhere(req), ...(await scopeWhereForReq(req, 'PurchaseOrder')) },
         include: { lines: { orderBy: { created_at: 'asc' } } },
       });
       if (!po) { res.status(400).json({ error: 'Invalid purchase_order_id' }); return; }
@@ -457,8 +466,9 @@ export async function createJobStage(req: Request, res: Response) {
     let linkedPo: { id: string; po_number: string; staged_as_job_stage_id: string | null } | null = null;
     let linkedSkus = new Set<string>();
     if (body.linkedPurchaseOrderId) {
+      // A purchase order out of the person's reach answers exactly like a missing one (spec story 47).
       const po = await prisma.purchaseOrder.findFirst({
-        where: { id: body.linkedPurchaseOrderId, ...tenantWhere(req) },
+        where: { id: body.linkedPurchaseOrderId, ...tenantWhere(req), ...(await scopeWhereForReq(req, 'PurchaseOrder')) },
         select: {
           id: true, po_number: true, staged_as_job_stage_id: true,
           lines: { select: { item_sku: true } },
@@ -556,7 +566,7 @@ export async function updateJobStage(req: Request, res: Response) {
 
     const body = req.body;
 
-    const fkError = await validateJobAndCustomer(req, body.jobId, body.customerId);
+    const fkError = await validateJobAndCustomer(req, body.jobId, body.customerId, (body.jobId ?? null) !== existing.job_id);
     if (fkError) { res.status(400).json({ error: fkError }); return; }
 
     // Moving a stage onto another job (or off its job) needs reach to the place it lands, as creating one does.
@@ -684,8 +694,10 @@ export async function receiveStageLine(req: Request, res: Response) {
     if (!destinationId) {
       res.status(400).json({
         error: 'NO_STOCK_LOCATION',
-        message:
-          'No inventory location is configured for this organization. Add a location (or set the default receiving location in Settings) before receiving parts.',
+        // The default receiving location is set on a Settings page only an Admin can open (36b, M17), so only an Admin is pointed at it.
+        message: req.user!.is_admin
+          ? 'No inventory location is configured for this organization. Add a location (or set the default receiving location in Settings) before receiving parts.'
+          : 'No inventory location is configured for this organization. Add a location before receiving parts.',
       });
       return;
     }

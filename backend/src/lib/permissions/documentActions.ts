@@ -2,7 +2,9 @@ import type { Request } from 'express';
 import type { Action } from './catalog';
 import { prisma } from '../prisma';
 import { canActOnRow } from './enforce';
-import { creatorCanOpen, creatorRuleOpens, type CreatorSubject } from './creatorRule';
+
+/** The two kinds of document these answers cover. */
+type DocumentSubject = 'Estimate' | 'Invoice';
 
 /**
  * M3 - the access resolver's per-record answer for an invoice or an estimate (Roles & Permissions, PRD 4): which of the
@@ -10,12 +12,9 @@ import { creatorCanOpen, creatorRuleOpens, type CreatorSubject } from './creator
  * an action on the list, so none shows that the record's routes would refuse. They replace the invoice page's role-name
  * check; the answer asks the same switches the routes ask, never a role.
  *
- * An action is listed when either of two things holds, the same two the route guard (`canDoOrCreator`) accepts:
- *   - the person holds the switch behind it and the record is within its scope (a holder of Edit invoices edits other
- *     people's invoices in scope), or
- *   - the creator rule opens it (send, edit and delete on a record the person made and can still see, whatever their
- *     View and Edit switches say). The rule never opens a money action, so record payment and copy payment link stand
- *     on Record payments and Send payment links alone.
+ * An action is listed when the person holds the switch behind it and the record is within its scope (P7): the same
+ * single test the route guard makes. Who made the record opens nothing by itself. Record payment and copy payment link
+ * stand on Record payments and Send payment links.
  *
  * Whether the record is in a state the action fits (a draft to send, a sent invoice to resend) is the page's own
  * reading of the record's status; this answer is only about who may.
@@ -50,21 +49,15 @@ const ESTIMATE_VERBS: ReadonlyArray<readonly [EstimateAction, Action]> = [
 
 async function actionsFor<A extends string>(
   req: Request,
-  subject: CreatorSubject,
+  subject: DocumentSubject,
   id: string,
   verbs: ReadonlyArray<readonly [A, Action]>,
   only?: readonly A[],
 ): Promise<A[]> {
   verbs = only ? verbs.filter(([action]) => only.includes(action)) : verbs;
   const delegate = subject === 'Invoice' ? prisma.invoice : prisma.estimate;
-  // Asked at most once, and only when a verb the person does not hold could still be the creator's.
-  let creatorOwns: Promise<boolean> | undefined;
-  const madeByPerson = () => (creatorOwns ??= creatorCanOpen(req.user!, subject, id));
-
-  const answers = await Promise.all(verbs.map(async ([, verb]) => {
-    if (req.ability!.can(verb, subject) && (await canActOnRow(req, subject, delegate, id, verb))) return true;
-    return creatorRuleOpens(subject, verb) && (await madeByPerson());
-  }));
+  const answers = await Promise.all(verbs.map(async ([, verb]) =>
+    req.ability!.can(verb, subject) && (await canActOnRow(req, subject, delegate, id, verb))));
   return verbs.filter((_, i) => answers[i]).map(([action]) => action);
 }
 

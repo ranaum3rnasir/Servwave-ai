@@ -16,33 +16,33 @@ const teamJobGrant: Grant = {
 
 describe('scopeWhereFor', () => {
   it('ADMIN → no restriction ({})', () => {
-    expect(scopeWhereFor({ id: 'u1', role: 'ADMIN' }, 'Lead', [])).toEqual({});
+    expect(scopeWhereFor({ is_admin: true, id: 'u1', role: 'ADMIN' }, 'Lead', [])).toEqual({});
   });
   it('Owned (Lead) → assignee-match on the M2M join', () => {
-    expect(scopeWhereFor({ id: 'u1', role: 'SALES' }, 'Lead', [ownLeadGrant])).toEqual({
+    expect(scopeWhereFor({ is_admin: false, id: 'u1', role: 'SALES' }, 'Lead', [ownLeadGrant])).toEqual({
       lead_assignees: { some: { user_id: 'u1' } },
     });
   });
   it('unconditional read grant → All ({})', () => {
     expect(
-      scopeWhereFor({ id: 'u1', role: 'DISPATCHER' }, 'Lead', [
+      scopeWhereFor({ is_admin: false, id: 'u1', role: 'DISPATCHER' }, 'Lead', [
         { action: 'read', subject: 'Lead', conditions: null },
       ]),
     ).toEqual({});
   });
   it('no read grant for the resource → matches nothing', () => {
-    expect(scopeWhereFor({ id: 'u1', role: 'SALES' }, 'Job', [])).toEqual(MATCH_NOTHING);
+    expect(scopeWhereFor({ is_admin: false, id: 'u1', role: 'SALES' }, 'Job', [])).toEqual(MATCH_NOTHING);
   });
   it('Team scope with a department → resolves {{teamId}} from department_id', () => {
     expect(
-      scopeWhereFor({ id: 'u1', role: 'SALES', department_id: 'dep-7' }, 'Job', [teamJobGrant]),
+      scopeWhereFor({ is_admin: false, id: 'u1', role: 'SALES', department_id: 'dep-7' }, 'Job', [teamJobGrant]),
     ).toEqual({
       assignees: { some: { user: { department_id: 'dep-7' } } },
     });
   });
   it('FAIL-CLOSED: Team scope with NO department → matches nothing (never matches dept-less rows)', () => {
     expect(
-      scopeWhereFor({ id: 'u1', role: 'SALES', department_id: null }, 'Job', [teamJobGrant]),
+      scopeWhereFor({ is_admin: false, id: 'u1', role: 'SALES', department_id: null }, 'Job', [teamJobGrant]),
     ).toEqual(MATCH_NOTHING);
   });
 
@@ -58,7 +58,7 @@ describe('scopeWhereFor', () => {
   // + created_by-self, which cannot broaden a lead-anchored row).
   it('F-004 / §8: default SALES `read Estimate` grant → own-via-lead OR own lead-less-created scope', () => {
     const salesGrants = DEFAULT_GRANTS.filter((g) => g.role === 'SALES');
-    expect(scopeWhereFor({ id: 'u1', role: 'SALES' }, 'Estimate', salesGrants)).toEqual({
+    expect(scopeWhereFor({ is_admin: false, id: 'u1', role: 'SALES' }, 'Estimate', salesGrants)).toEqual({
       OR: [
         { lead: { lead_assignees: { some: { user_id: 'u1' } } } },
         { AND: [{ lead_id: null }, { created_by: 'u1' }] },

@@ -110,7 +110,7 @@ suite('See company figures strips company-wide money, on the server (real databa
     // the only difference between them is the money.
     const wide = {
       view_jobs: true, view_leads: true, view_estimates: true, view_invoices: true, view_service_plans: true, view_tasks: true,
-      leads_scope: 'all', jobs_scope: 'all', estimates_scope: 'all', invoices_scope: 'all',
+      leads_scope: 'all', jobs_scope: 'all',
     };
     const person = async (name: string, figures: boolean) => {
       const roleKey = `figures-${name}`;
@@ -118,7 +118,7 @@ suite('See company figures strips company-wide money, on the server (real databa
       await setRoleSwitchValues({
         organizationId: org, roleKey, actorId: null, reason: 'manual',
         values: {
-          ...allOff, ...wide, [ACCESS_REPORTS]: true, [SEE_COMPANY_FIGURES]: figures,
+          ...allOff, see_prices: true, ...wide, [ACCESS_REPORTS]: true, [SEE_COMPANY_FIGURES]: figures,
           view_communication: true, access_communication: true, see_call_insights: true, communication_scope: 'all',
         },
       });
@@ -165,7 +165,15 @@ suite('See company figures strips company-wide money, on the server (real databa
     await db.timelineEvent.create({
       data: {
         organization_id: org, entity_type: 'INVOICE', entity_id: paid.id, event_type: 'PAYMENT_RECEIVED', created_by: admin.id,
-        description: `Payment of $${MONEY.collected.toFixed(2)} received via Check (plus $2.00 tip)`,
+        description: 'Payment received via Check (plus a tip)',
+        metadata: { amount: MONEY.collected, tip_amount: 2 },
+      },
+    });
+    // An entry stored before the writers stopped naming figures still says one. Nothing scans it: it is shown as stored.
+    await db.timelineEvent.create({
+      data: {
+        organization_id: org, entity_type: 'INVOICE', entity_id: paid.id, event_type: 'INVOICE_SENT', created_by: admin.id,
+        description: 'Customer says $500 is the most they can do',
       },
     });
 
@@ -254,17 +262,20 @@ suite('See company figures strips company-wide money, on the server (real databa
       },
     },
     {
-      check: 'dashboard-activity-amounts',
+      check: 'dashboard-activity-unchanged',
       path: '/api/dashboard',
       money: [],
       kept: ['data.recent_activity.0.description', 'data.recent_activity.0.created_at'],
       extra: (on, off) => {
         const paymentEvent = (body: { data: { recent_activity: { event_type: string; description: string }[] } }) =>
           body.data.recent_activity.find((e) => e.event_type === 'PAYMENT_RECEIVED');
-        expect(paymentEvent(on)!.description).toBe('Payment of $1234.56 received via Check (plus $2.00 tip)');
-        expect(paymentEvent(off)!.description).toBe('Payment received via Check');
+        // No text is scanned (Ran, 2026-10-28): the words name no figure, so they are the same for everyone.
+        expect(paymentEvent(on)!.description).toBe('Payment received via Check (plus a tip)');
+        expect(paymentEvent(off)!.description).toBe('Payment received via Check (plus a tip)');
+        const said = (body: { data: { recent_activity: { description: string }[] } }) => body.data.recent_activity.find((e) => e.description.includes('$500'));
+        expect(said(off)!.description).toBe('Customer says $500 is the most they can do');
+        expect(said(on)!.description).toBe('Customer says $500 is the most they can do');
         expect(off.data.recent_activity).toHaveLength(on.data.recent_activity.length);
-        expect(JSON.stringify(off.data.recent_activity)).not.toMatch(/\$\d/);
       },
     },
     {

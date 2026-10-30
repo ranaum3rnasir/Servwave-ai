@@ -27,6 +27,8 @@ import {
 import { loadTagsByEntity, loadTagsForEntity } from '../lib/tags';
 import { allocateNumber, allocateContainerEstimateNumber } from '../lib/numbering';
 import { withNumberCollisionRetry } from '../lib/number-collision-retry';
+import { ignorePriceQuery } from '../lib/permissions/prices';
+import { leadReachWhere } from '../lib/permissions/targetReach';
 import { scopeWhereForReq, canAccessRow, canSeeCosts, canSeeCompanyFigures } from '../lib/permissions/enforce';
 import { changesDiscount, changesLineDiscounts, refusedForDiscount } from '../lib/permissions/discountWrite';
 import { refusedForStandalone } from '../lib/permissions/standaloneCreate';
@@ -93,6 +95,8 @@ import { isOnJobCrew } from '../lib/job-crew';
 import { validationFailure, checkStructure, TOO_COMPLEX_MESSAGE } from '../middleware/validate';
 import { manualPaymentMethodSchema } from '../lib/payment-methods';
 import { refuseDisallowedPaymentMethod } from '../lib/permissions/paymentMethods';
+import { publicLinkToken } from '../lib/publicLinkToken';
+import { actorNamesById, historyRowForNonAdmin, seesFullPeopleRecords } from '../lib/users/peopleRow';
 
 // ─── Select Objects ────────────────────────────────────
 
@@ -1036,8 +1040,7 @@ async function deriveTaxRateFromLead(
  * May the requester open this estimate? Answered by the same scope that powers the list (Estimates
  * scope, through `scopeWhereForReq`), so list and detail cannot disagree: an estimate is reachable
  * through its lead or its job under Attached, Team, Location and "Through own leads", and every row
- * under All, plus the estimates the person made (the creator rule: while attached, or for good when for a
- * customer alone), which `scopeWhereForReq` adds for every role.
+ * under All, plus the estimates the person made for a customer alone (P7), which the scope adds as an arm of its own.
  */
 async function canAccessEstimate(estimate: object | null, req: Request): Promise<boolean> {
   if (!estimate) return false;
@@ -1099,6 +1102,7 @@ export async function buildEstimateListWhere(req: Request): Promise<{ where: Rec
 
 export async function list(req: Request, res: Response) {
   try {
+    ignorePriceQuery(req);
     const { page, limit, skip } = parsePagination(req.query as { page?: string; limit?: string });
     const sort = parseSortParams(req.query as any, ESTIMATE_SORT_FIELDS);
     if (!sort.ok) {
@@ -1202,6 +1206,7 @@ const EXPORT_ROW_CAP = 50_000;
  */
 export async function exportAll(req: Request, res: Response) {
   try {
+    ignorePriceQuery(req);
     const { where } = await buildEstimateListWhere(req);
     const estimates = await prisma.estimate.findMany({
       where,
@@ -1259,7 +1264,9 @@ export async function create(req: Request, res: Response) {
           customer: { select: { tax_exempt: true } },
         },
       });
-      if (!lead) { res.status(404).json({ error: 'Lead not found' }); return; }
+      // A lead out of the person's reach answers exactly like a missing one (spec story 47), before its status is said.
+      // Create estimates reaches a lead the person can open (Attached covers its assignees, Owner, Dispatcher and walkthrough crew).
+      if (!lead || !(await canAccessRow(req, 'Lead', prisma.lead, lead_id))) { res.status(404).json({ error: 'Lead not found' }); return; }
 
       if (TERMINAL_LEAD_STATUSES.includes(lead.status)) {
         res.status(400).json({ error: `Cannot create estimate for a ${lead.status.toLowerCase()} lead` });
@@ -1268,12 +1275,6 @@ export async function create(req: Request, res: Response) {
       // Bug #39 - never block estimate CREATION on the walkthrough: a DRAFT must always persist so
       // in-progress work is never lost. D8/D9 (PR-B2): send() no longer gates on a walkthrough
       // requirement at all - it only records silent instrumentation (see send()).
-      // Create estimates reaches a lead the person can open (Attached covers its assignees, Owner, Dispatcher and walkthrough crew).
-      if (!(await canAccessRow(req, 'Lead', prisma.lead, lead_id))) {
-        res.status(403).json({ error: 'Insufficient permissions' });
-        return;
-      }
-
       container = 'lead';
       containerId = lead_id;
       resolvedLeadId = lead_id;
@@ -1328,12 +1329,9 @@ export async function create(req: Request, res: Response) {
           customer: { select: { tax_exempt: true } },
         },
       });
-      if (!job) { res.status(404).json({ error: 'Job not found' }); return; }
-      // Create estimates reaches a job the person can open (Attached covers its crew, Sold By and Dispatcher).
-      if (!(await canAccessRow(req, 'Job', prisma.job, job_id))) {
-        res.status(403).json({ error: 'Insufficient permissions' });
-        return;
-      }
+      // Create estimates reaches a job the person can open (Attached covers its crew, Sold By and Dispatcher); one out of
+      // reach answers exactly like a missing one (spec story 47).
+      if (!job || !(await canAccessRow(req, 'Job', prisma.job, job_id))) { res.status(404).json({ error: 'Job not found' }); return; }
       container = 'job';
       containerId = job_id;
       resolvedJobId = job_id;
@@ -1454,7 +1452,7 @@ export async function create(req: Request, res: Response) {
     });
 
     void logAudit({ req, action: 'estimate.created', resourceType: 'Estimate', resourceId: estimate.id, metadata: { estimate_number: estimate.estimate_number } });
-    res.status(201).json({ estimate: presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(await resolveEstimatePhotoUrls(estimate)), req)) });
+    res.status(201).json({ estimate: await presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(await resolveEstimatePhotoUrls(estimate)), req)) });
   } catch (err) {
     logger.error('Create estimate error:', err);
     res.status(500).json({ error: 'Failed to create estimate' });
@@ -1604,7 +1602,7 @@ export async function createFromJobItems(req: Request, res: Response) {
       req, action: 'estimate.created', resourceType: 'Estimate', resourceId: estimate.id,
       metadata: { estimate_number: estimate.estimate_number, job_id: job.id },
     });
-    res.status(201).json({ estimate: presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(await resolveEstimatePhotoUrls(estimate)), req)) });
+    res.status(201).json({ estimate: await presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(await resolveEstimatePhotoUrls(estimate)), req)) });
   } catch (err) {
     logger.error('Create estimate from job items error:', err);
     res.status(500).json({ error: 'Failed to create estimate' });
@@ -1668,7 +1666,9 @@ export async function attachToJob(req: Request, res: Response) {
       where: { id: job_id, ...tenantWhere(req) },
       select: { id: true, customer_id: true, source_plan_id: true, lead_id: true, visits: { select: { assignees: { select: { user_id: true } } } } },
     });
-    if (!job) { res.status(404).json({ error: 'Job not found' }); return; }
+    // A job out of the person's reach answers exactly like a missing one (spec story 47), before its plan link or its
+    // customer is compared.
+    if (!job || !(await canAccessRow(req, 'Job', prisma.job, job_id))) { res.status(404).json({ error: 'Job not found' }); return; }
     if (job.source_plan_id) {
       res.status(400).json({ error: 'This job is a service plan visit and cannot take an attached estimate - the plan was already paid upfront.' });
       return;
@@ -1741,7 +1741,7 @@ export async function attachToJob(req: Request, res: Response) {
       req, action: 'estimate.attached_to_job', resourceType: 'Estimate', resourceId: estimate.id,
       metadata: { job_id: job.id, estimate_number: updated.estimate_number },
     });
-    res.json({ estimate: presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(await resolveEstimatePhotoUrls(updated)), req)) });
+    res.json({ estimate: await presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(await resolveEstimatePhotoUrls(updated)), req)) });
   } catch (err) {
     logger.error('Attach estimate to job error:', err);
     res.status(500).json({ error: 'Failed to attach estimate to job' });
@@ -1768,13 +1768,14 @@ export async function getById(req: Request, res: Response) {
       return;
     }
 
-    // Sales guard
+    // An estimate outside the person's reach answers exactly like one that does not exist, so the answer never
+    // confirms the id is real (P7). A person with View estimates off is refused at the route, before this.
     if (!(await canAccessEstimate(estimate, req))) {
-      res.status(403).json({ error: 'Insufficient permissions' });
+      res.status(404).json({ error: 'Estimate not found' });
       return;
     }
 
-    // SRVW-103 - after the 403 guard, so no tag query fires for a row the caller cannot read.
+    // SRVW-103 - after the 404 guard, so no tag query fires for a row the caller cannot read.
     // The spread allocates a new object whether or not stripEstimateCost returned a copy.
     const tags = await loadTagsForEntity(req, 'ESTIMATE', estimate.id);
     // #2053 round 2 — a scope block written before this feature (or never itself re-saved) has
@@ -1785,9 +1786,9 @@ export async function getById(req: Request, res: Response) {
     const estimateWithScopeDefaults = { ...estimate, scopes: withOptionalDefaults(asScopeArray(estimate.scopes)) };
     const presented = stripEstimateCost(projectEstimateLeadWalkthrough(await resolveEstimatePhotoUrls(estimateWithScopeDefaults)), req);
     // What this person may do on this estimate, asked of the record as it stands: the estimate page draws a button only
-    // for a listed action (M3), and the routes behind the buttons ask the same switches and the creator rule.
+    // for a listed action (M3), and the routes behind the buttons ask the same switches.
     const actions = await estimateActionsFor(req, estimate.id);
-    res.json({ estimate: { ...presentEstimateDetail(req, { ...presented, tags }), actions } });
+    res.json({ estimate: { ...(await presentEstimateDetail(req, { ...presented, tags })), actions } });
   } catch (err) {
     logger.error('Get estimate error:', err);
     res.status(500).json({ error: 'Failed to get estimate' });
@@ -1904,7 +1905,7 @@ export async function update(req: Request, res: Response) {
     // normally, same as any other anchor.
 
     // R3 (2026-07-21) — labor_hours/overhead_mode/overhead_value are staff-only cost-model inputs
-    // (D2/D8). A requester without See financial data (canSeeCosts) must not be
+    // (D2/D8). A requester without See costs (canSeeCosts) must not be
     // able to blindly set them either — mirrors the read-side strip in stripEstimateCost.
     if (
       (labor_hours !== undefined || overhead_mode !== undefined || overhead_value !== undefined)
@@ -2151,7 +2152,7 @@ export async function update(req: Request, res: Response) {
         await expireDepositCheckoutsOnMaterialEdit(existing.id, req.user!.organization_id);
       }
       void logAudit({ req, action: 'estimate.updated', resourceType: 'Estimate', resourceId: param(req, 'id'), metadata: { fields: Object.keys(req.body) } });
-      res.json({ estimate: presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(await resolveEstimatePhotoUrls(estimate)), req)) });
+      res.json({ estimate: await presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(await resolveEstimatePhotoUrls(estimate)), req)) });
     } else {
       // No line items change — update metadata, recalculate totals if tax/discount changed
       const needsRecalc = tax_rate !== undefined || discount_type !== undefined || discount_value !== undefined;
@@ -2244,7 +2245,7 @@ export async function update(req: Request, res: Response) {
         await expireDepositCheckoutsOnMaterialEdit(existing.id, req.user!.organization_id);
       }
       void logAudit({ req, action: 'estimate.updated', resourceType: 'Estimate', resourceId: param(req, 'id'), metadata: { fields: Object.keys(req.body) } });
-      res.json({ estimate: presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(await resolveEstimatePhotoUrls(estimate)), req)) });
+      res.json({ estimate: await presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(await resolveEstimatePhotoUrls(estimate)), req)) });
     }
   } catch (err) {
     logger.error('Update estimate error:', err);
@@ -2260,6 +2261,11 @@ async function deleteEstimateInternal(
   req: Request,
   id: string,
 ): Promise<{ ok: true } | { ok: false; status: number; error: string }> {
+  // Reach first, before anything about the estimate is read (spec story 47): out of reach answers like a missing one, for
+  // the delete route and the bulk delete alike, so the bulk answer is not an existence or status oracle.
+  if (!(await canAccessRow(req, 'Estimate', prisma.estimate, id))) {
+    return { ok: false, status: 404, error: 'Estimate not found' };
+  }
   const existing = await prisma.estimate.findUnique({
     where: { id, ...tenantWhere(req) },
     select: { id: true, status: true, created_by: true, lead: { select: { lead_assignees: { select: { user_id: true } } } } },
@@ -2941,8 +2947,9 @@ async function commitFirstSend(
         entity_id: existing.id,
         event_type: 'DEPOSIT_REQUESTED',
         description: dType === 'FIXED'
-          ? `Deposit of $${depositAmount.toFixed(2)} requested`
-          : `Deposit of $${depositAmount.toFixed(2)} requested (${depositPercent}%)`,
+          ? 'Deposit requested'
+          : `Deposit requested (${depositPercent}%)`,
+        metadata: { amount: depositAmount },
         created_by: req.user!.id,
       },
     });
@@ -3055,8 +3062,9 @@ async function sendEstimateInternal(
   // a terminal status's resend is presented to staff as "Send a copy" and skips the SENT
   // timeline entry below the transaction, so the estimate's history doesn't misleadingly
   // suggest it went back into active negotiation.
+  // Out of reach answers like a missing estimate (spec story 47), for the send route and the bulk reminder alike.
   if (!(await canAccessEstimate(existing, req))) {
-    return { ok: false, status: 403, error: 'Insufficient permissions' };
+    return { ok: false, status: 404, error: 'Estimate not found' };
   }
 
   // #2090 ruling 18 - a SUPERSEDED estimate is not a document that can go out. Its public link
@@ -3454,7 +3462,7 @@ export async function send(req: Request, res: Response) {
       res.status(result.status).json({ error: result.error, ...(result.code ? { code: result.code } : {}) });
       return;
     }
-    res.json({ estimate: presentEstimateDetail(req, stripEstimateCostIfFound(projectEstimateLeadWalkthrough(result.estimate as LifecycleEstimate), req)) });
+    res.json({ estimate: await presentEstimateDetail(req, stripEstimateCostIfFound(projectEstimateLeadWalkthrough(result.estimate as LifecycleEstimate), req)) });
   } catch (err) {
     logger.error('Send estimate error:', err);
     res.status(500).json({ error: 'Failed to send estimate' });
@@ -3481,6 +3489,12 @@ export async function bulkSendReminders(req: Request, res: Response) {
 
     for (const id of ids) {
       try {
+        // Reach first, before anything about the estimate is read (spec story 47): an estimate out of the person's reach is
+        // skipped exactly as a missing one, so the answer never tells a closed or sendable estimate from an id that isn't there.
+        if (!(await canAccessRow(req, 'Estimate', prisma.estimate, id))) {
+          failed.push({ id, error: 'Estimate not found' });
+          continue;
+        }
         const existing = await prisma.estimate.findUnique({
           where: { id, ...tenantWhere(req) },
           select: { status: true },
@@ -3832,8 +3846,8 @@ export async function recordEstimatePayment(req: Request, res: Response) {
           entity_id: existing.id,
           event_type: 'DEPOSIT_PAID',
           description: isFullyPaid
-            ? `Deposit of $${body.amount.toFixed(2)} recorded via ${body.payment_method} for estimate ${existing.estimate_number}`
-            : `Deposit of $${body.amount.toFixed(2)} recorded via ${body.payment_method} for estimate ${existing.estimate_number} (partial — $${newAmountDue.toFixed(2)} remaining)`,
+            ? `Deposit recorded via ${body.payment_method} for estimate ${existing.estimate_number}`
+            : `Deposit recorded via ${body.payment_method} for estimate ${existing.estimate_number} (partial)`,
           metadata: {
             method: body.payment_method,
             amount: body.amount,
@@ -3909,7 +3923,7 @@ export async function recordEstimatePayment(req: Request, res: Response) {
     }
 
     void logAudit({ req, action: 'estimate.deposit_paid', resourceType: 'Estimate', resourceId: existing.id, metadata: { amount: body.amount, fully_paid: isFullyPaid } });
-    res.json({ estimate: presentEstimateDetail(req, stripEstimateCostIfFound(projectEstimateLeadWalkthrough(estimate), req)) });
+    res.json({ estimate: await presentEstimateDetail(req, stripEstimateCostIfFound(projectEstimateLeadWalkthrough(estimate), req)) });
   } catch (err) {
     if (err instanceof DepositNotPayableError) {
       res.status(409).json({ error: DEPOSIT_NOT_PAYABLE_MESSAGE });
@@ -4003,7 +4017,7 @@ export async function cancel(req: Request, res: Response) {
       estimateId: existing.id,
     });
 
-    res.json({ estimate: presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(estimate), req)) });
+    res.json({ estimate: await presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(estimate), req)) });
   } catch (err) {
     logger.error('Cancel estimate error:', err);
     res.status(500).json({ error: 'Failed to cancel estimate' });
@@ -4153,7 +4167,7 @@ export async function markSent(req: Request, res: Response) {
       actorId: req.user?.id ?? null,
     });
 
-    res.json({ estimate: presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(estimate), req)) });
+    res.json({ estimate: await presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(estimate), req)) });
   } catch (err) {
     logger.error('Mark estimate sent error:', err);
     res.status(500).json({ error: 'Failed to mark estimate as sent' });
@@ -4230,6 +4244,11 @@ async function setStatusInternal(
   legacyTransition?: 'backtodraft' | 'backtosent',
   reason: { lost_reason?: string; cancelled_reason?: string } = {},
 ): Promise<{ ok: true; estimate: unknown } | { ok: false; status: number; error: string }> {
+  // Reach first, before the status is read (spec story 47): out of reach answers like a missing estimate, so neither the
+  // status route nor the bulk status change tells the person what state an estimate they cannot open is in.
+  if (!(await canAccessRow(req, 'Estimate', prisma.estimate, id))) {
+    return { ok: false, status: 404, error: 'Estimate not found' };
+  }
   const existing = await prisma.estimate.findUnique({
     where: { id, ...tenantWhere(req) },
     select: {
@@ -4426,7 +4445,7 @@ export async function setStatus(req: Request, res: Response) {
       res.status(result.status).json({ error: result.error });
       return;
     }
-    res.json({ estimate: presentEstimateDetail(req, stripEstimateCostIfFound(projectEstimateLeadWalkthrough(result.estimate as LifecycleEstimate), req)) });
+    res.json({ estimate: await presentEstimateDetail(req, stripEstimateCostIfFound(projectEstimateLeadWalkthrough(result.estimate as LifecycleEstimate), req)) });
   } catch (err) {
     logger.error('Set estimate status error:', err);
     res.status(500).json({ error: 'Failed to update estimate status' });
@@ -4548,7 +4567,7 @@ export async function approveInternal(req: Request, res: Response) {
     // above (identical business event), but the audit/history label must not read "by customer"
     // for a staff-recorded verbal win.
     void logAudit({ req, action: 'estimate.approved_internal', resourceType: 'Estimate', resourceId: existing.id });
-    res.json({ estimate: presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(estimate), req)) });
+    res.json({ estimate: await presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(estimate), req)) });
   } catch (err) {
     logger.error('Approve estimate internally error:', err);
     res.status(500).json({ error: 'Failed to approve estimate' });
@@ -4663,7 +4682,7 @@ export async function declineInternal(req: Request, res: Response) {
     // Distinct audit action from the public route's 'estimate.declined' — see the matching
     // comment in approveInternal above.
     void logAudit({ req, action: 'estimate.declined_internal', resourceType: 'Estimate', resourceId: existing.id, metadata: { lost_reason } });
-    res.json({ estimate: presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(estimate), req)) });
+    res.json({ estimate: await presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(estimate), req)) });
   } catch (err) {
     logger.error('Decline estimate internally error:', err);
     res.status(500).json({ error: 'Failed to decline estimate' });
@@ -4800,7 +4819,7 @@ export async function voidApproval(req: Request, res: Response) {
     });
 
     void logAudit({ req, action: 'estimate.approval_voided', resourceType: 'Estimate', resourceId: existing.id });
-    res.json({ estimate: presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(estimate), req)) });
+    res.json({ estimate: await presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(estimate), req)) });
   } catch (err) {
     logger.error('Void estimate approval error:', err);
     res.status(500).json({ error: 'Failed to void approval' });
@@ -4843,8 +4862,10 @@ export async function duplicate(req: Request, res: Response) {
       return;
     }
 
+    // An estimate outside the person's reach answers exactly like one that does not exist (M2), so a copy-out
+    // of a record they cannot open is refused without confirming the id is real.
     if (!(await canAccessEstimate(existing, req))) {
-      res.status(403).json({ error: 'Insufficient permissions' });
+      res.status(404).json({ error: 'Estimate not found' });
       return;
     }
 
@@ -4854,8 +4875,8 @@ export async function duplicate(req: Request, res: Response) {
     //   • same lead (target omitted / equals source) → version/option; carry source tax.
     //   • different lead → cross-customer reuse; lines + scope carry, but tax RE-DERIVES
     //     from the target lead's service-location. Validate the target is in this tenant.
-    // (Minimal-coherent: no SALES target-ownership guard this phase — same-tenant only;
-    // flagged for product review.)
+    // M2: the target lead must be one the person can OPEN (their Leads scope, the same reach the lead's own routes
+    // use), else it answers the 404 a missing lead does and nothing is created.
     const targetLeadIdInput: string | undefined = req.body?.target_lead_id;
     const targetLeadId = targetLeadIdInput ?? existing.lead_id;
     const isCrossLead = !!targetLeadIdInput && targetLeadIdInput !== existing.lead_id;
@@ -4870,16 +4891,20 @@ export async function duplicate(req: Request, res: Response) {
     // a cross-lead duplicate re-derives both from the TARGET lead, same as tax re-derives above.
     let targetCustomerId = existing.customer_id;
     let targetServiceLocationId = existing.service_location_id;
-    if (isCrossLead) {
-      const targetLead = await prisma.lead.findUnique({
-        where: { id: targetLeadIdInput as string, ...tenantWhere(req) },
-        select: { id: true, customer_id: true, service_location_id: true, customer: { select: { tax_exempt: true } } },
-      });
-      if (!targetLead) {
-        res.status(404).json({ error: 'Target lead not found' });
-        return;
-      }
-      effectiveTaxRate = await deriveTaxRateFromLead(prisma, targetLeadIdInput as string, orgId);
+    // The lead the copy lands on is checked whether it is another lead or the source's own: an estimate can be reached
+    // through its job while its lead is not (M2), and a same-lead copy would still write onto that lead.
+    const targetLead = targetLeadId
+      ? await prisma.lead.findFirst({
+          where: await leadReachWhere(req, targetLeadId),
+          select: { id: true, customer_id: true, service_location_id: true, customer: { select: { tax_exempt: true } } },
+        })
+      : null;
+    if (targetLeadId && !targetLead) {
+      res.status(404).json({ error: 'Target lead not found' });
+      return;
+    }
+    if (isCrossLead && targetLead) {
+      effectiveTaxRate = await deriveTaxRateFromLead(prisma, targetLeadId as string, orgId);
       targetCustomerId = targetLead.customer_id;
       targetServiceLocationId = targetLead.service_location_id;
       duplicateCustomerIsExempt = Boolean(targetLead.customer?.tax_exempt);
@@ -4966,7 +4991,7 @@ export async function duplicate(req: Request, res: Response) {
     // photo could not be copied.
     const withPhotos = await withCopiedScopePhotos(estimate, sourceEstimateId, orgId);
 
-    res.status(201).json({ estimate: presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(await resolveEstimatePhotoUrls(withPhotos)), req)) });
+    res.status(201).json({ estimate: await presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(await resolveEstimatePhotoUrls(withPhotos)), req)) });
   } catch (err) {
     logger.error('Duplicate estimate error:', err);
     res.status(500).json({ error: 'Failed to duplicate estimate' });
@@ -5152,7 +5177,7 @@ export async function revise(req: Request, res: Response) {
       resourceId: revised.id,
       metadata: { estimate_number: revised.estimate_number, revised_from: existing.estimate_number, revised_from_id: existing.id },
     });
-    res.json({ estimate: presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(await resolveEstimatePhotoUrls(revisedWithPhotos)), req)) });
+    res.json({ estimate: await presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(await resolveEstimatePhotoUrls(revisedWithPhotos)), req)) });
   } catch (err) {
     logger.error('Revise estimate error:', err);
     res.status(500).json({ error: 'Failed to revise estimate' });
@@ -5240,7 +5265,13 @@ export async function getHistory(req: Request, res: Response) {
       take: 200,
     });
 
-    res.json({ events });
+    // Who did each thing, by name (N6). Only an Admin gets the stored row, login address, browser and all.
+    const names = await actorNamesById(req, events.map((e) => e.actor_id));
+    res.json({
+      events: seesFullPeopleRecords(req)
+        ? events.map((e) => ({ ...e, actor_name: e.actor_id ? names.get(e.actor_id) ?? null : null }))
+        : events.map((e) => historyRowForNonAdmin(e, names)),
+    });
   } catch (err) {
     logger.error('Get estimate history error:', err);
     res.status(500).json({ error: 'Failed to get estimate history' });
@@ -5607,9 +5638,10 @@ export async function copyToInvoice(req: Request, res: Response) {
 
 export async function getPublic(req: Request, res: Response) {
   try {
-    const token = req.query.token as string;
+    // N0: only a plain-text token opens the link; an object or a list would be a database filter.
+    const token = publicLinkToken(req);
     if (!token) {
-      res.status(400).json({ error: 'Token is required' });
+      res.status(404).json({ error: 'Estimate not found' });
       return;
     }
 
@@ -5704,7 +5736,7 @@ export async function getPublic(req: Request, res: Response) {
       // never projects it. Applied anyway so that a future widening of the shared document
       // projection is stripped here rather than served, and so this site reads like every other
       // detail-shaped one (the source-scanning guard checks exactly that).
-      estimate: presentEstimateDetail(req, await presentPublicEstimate(estimate)),
+      estimate: await presentEstimateDetail(req, await presentPublicEstimate(estimate)),
       organization,
       terms: termsSetting?.value ?? null,
       payment_options: options,
@@ -6052,9 +6084,10 @@ async function applyCustomerSelections(
  */
 export async function updatePublicSelections(req: Request, res: Response) {
   try {
-    const token = req.query.token as string;
+    // N0: only a plain-text token opens the link; an object or a list would be a database filter.
+    const token = publicLinkToken(req);
     if (!token) {
-      res.status(400).json({ error: 'Token is required' });
+      res.status(404).json({ error: 'Estimate not found' });
       return;
     }
 
@@ -6090,7 +6123,7 @@ export async function updatePublicSelections(req: Request, res: Response) {
       where: { id: estimate.id },
       select: estimatePublicSelect,
     });
-    res.json({ estimate: presentEstimateDetail(req, await presentPublicEstimate(fresh)) });
+    res.json({ estimate: await presentEstimateDetail(req, await presentPublicEstimate(fresh)) });
   } catch (err) {
     logger.error('Public estimate selection error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -6099,9 +6132,10 @@ export async function updatePublicSelections(req: Request, res: Response) {
 
 export async function approvePublic(req: Request, res: Response) {
   try {
-    const token = req.query.token as string;
+    // N0: only a plain-text token opens the link; an object or a list would be a database filter.
+    const token = publicLinkToken(req);
     if (!token) {
-      res.status(400).json({ error: 'Token is required' });
+      res.status(404).json({ error: 'Estimate not found' });
       return;
     }
 
@@ -6599,7 +6633,6 @@ export async function approvePublic(req: Request, res: Response) {
         estimateNumber: est.estimate_number,
         customerName: custName,
         paymentMethod: payment_method!,
-        depositAmount: Number(est.invoices?.[0]?.total_amount || 0),
       });
     }).catch(() => {});
 
@@ -6709,9 +6742,10 @@ export const declinePublicSchema = z.object({
  */
 export async function getPublicDeclineReasons(req: Request, res: Response) {
   try {
-    const token = req.query.token as string;
+    // N0: only a plain-text token opens the link; an object or a list would be a database filter.
+    const token = publicLinkToken(req);
     if (!token) {
-      res.status(400).json({ error: 'Token is required' });
+      res.status(404).json({ error: 'Estimate not found' });
       return;
     }
 
@@ -6734,9 +6768,10 @@ export async function getPublicDeclineReasons(req: Request, res: Response) {
 
 export async function declinePublic(req: Request, res: Response) {
   try {
-    const token = req.query.token as string;
+    // N0: only a plain-text token opens the link; an object or a list would be a database filter.
+    const token = publicLinkToken(req);
     if (!token) {
-      res.status(400).json({ error: 'Token is required' });
+      res.status(404).json({ error: 'Estimate not found' });
       return;
     }
 
@@ -7018,7 +7053,7 @@ export async function waiveDeposit(req: Request, res: Response) {
       });
     }
 
-    const response: Record<string, unknown> = { estimate: presentEstimateDetail(req, stripEstimateCostIfFound(estimate, req)) };
+    const response: Record<string, unknown> = { estimate: await presentEstimateDetail(req, stripEstimateCostIfFound(estimate, req)) };
 
     if (action === 'waive') {
       // Waiving the deposit approves the estimate — same automation event as the other approval
@@ -7440,7 +7475,7 @@ export const getPdf = async (req: Request, res: Response): Promise<void> => {
     // reads `c.email || ''` / `formatPhoneDisplay(c.phone)`, both null-safe). getPublicPdf below
     // is untouched — it renders on behalf of the organization for the customer, not a requester.
     // Redaction is the LAST transform, after the document normaliser (#1997's own contract).
-    const pdfSource = presentEstimateDetail(req, toEstimateDocument(estimate));
+    const pdfSource = await presentEstimateDetail(req, toEstimateDocument(estimate));
     const buffer = await generateEstimatePdf(pdfSource as any, org as any, (org.estimate_template ?? 'alpha-classic') as any);
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="estimate-${estimate.estimate_number}.pdf"`);
@@ -7457,7 +7492,7 @@ export const getPdf = async (req: Request, res: Response): Promise<void> => {
 export const getPublicPdf = async (req: Request, res: Response): Promise<void> => {
   try {
     const id = req.params['id'] as string;
-    const token = req.query.token as string | undefined;
+    const token = publicLinkToken(req);
     if (!token) {
       res.status(404).json({ error: 'Estimate not found' });
       return;
@@ -7524,7 +7559,7 @@ export async function listCreators(req: Request, res: Response) {
       where: {
         ...tenantWhere(req),
         OR: [
-          { is_active: true, role: { in: ['ADMIN', 'SALES'] } },
+          { is_active: true, OR: [{ is_admin: true }, { role: 'SALES' }] },
           { created_estimates: { some: {} } },
         ],
       },

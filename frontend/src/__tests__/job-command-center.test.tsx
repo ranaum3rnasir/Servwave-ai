@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders, ALL_JOB_ACTIONS } from './helpers';
+import { renderWithProviders, ALL_JOB_ACTIONS, seesPrices } from './helpers';
 import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
 import { buildAbility } from '@/lib/ability';
 import { catalogToggle } from './support/backendSwitchCatalog';
@@ -103,6 +103,8 @@ describe('JobDetailPage - command-center tab scaffold', () => {
       { action: 'read', subject: 'Inventory' },
       { action: 'read', subject: 'Estimate' },
       { action: 'read', subject: 'Invoice' },
+      // The Payments tab is for a person who sees prices (P11).
+      { action: 'read', subject: 'Prices' },
     ]);
     mockJobAndFinancials();
 
@@ -134,6 +136,7 @@ describe('JobDetailPage - command-center tab scaffold', () => {
       { action: 'read', subject: 'Inventory' },
       { action: 'read', subject: 'Estimate' },
       { action: 'read', subject: 'Invoice' },
+      { action: 'read', subject: 'Prices' },
     ]);
     mockJobAndFinancials();
 
@@ -197,7 +200,8 @@ describe('JobDetailPage — Command Center header', () => {
   it('renders the info-band labels: Next Visit, Service, and the money block (Technician + Status cards removed)', async () => {
     mockJobAndFinancials();
 
-    renderWithProviders(<JobDetailPage />);
+    // The money block is for a person who sees prices (P11).
+    renderWithProviders(<JobDetailPage />, { ability: seesPrices });
 
     await screen.findByRole('heading', { name: /J00001/ });
 
@@ -431,7 +435,7 @@ describe('JobDetailPage — R3 "View All" Communication link', () => {
 
 // SRVW-140 - the frontend mirror of the backend `canSeePricing` predicate. It used to read
 // ability.can('read','Invoice'); it now reads ability.can('read','Pricing'), the grant the Roles
-// UI "See financial data" switch writes. The Payments TAB stays on read Invoice (that is an
+// UI "See costs" switch writes. The Payments TAB stays on read Invoice (that is an
 // invoice-RECORD surface) - locked separately in job-payments-tab.test.tsx.
 describe('JobDetailPage - Items tab cost/margin gate (read Pricing)', () => {
   const openItemsTab = async () => {

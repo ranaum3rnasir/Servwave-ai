@@ -53,7 +53,7 @@ function answerNetwork() {
     if (url === '/api/communication/mailboxes') {
       return {
         data: {
-          scope: 'linked_to_me', selected: params.selected ?? 'mine', selected_label: null, selected_unread: 0, total_unread: 0,
+          scope: 'attached', selected: params.selected ?? 'mine', selected_label: null, selected_unread: 0, total_unread: 0,
           mine: { id: 'box-mine', unread: 0 }, held: [], main: null, people: null,
           needs_review: { selected: all.length, total: all.length },
         },

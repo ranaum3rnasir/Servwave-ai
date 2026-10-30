@@ -3,8 +3,8 @@
  *
  * The owner emails that ride beside the money and payments-account alerts (lib/owner-payment-notices, lib/payments-notifications) used
  * to go to every active person on the Admin role. They go to the same people the bell's step 2 and step 3 reach: the active holders of
- * the alert's step switch (Access Billing for invoice and payment money, who must also be able to open the invoice; Company settings
- * for the payments account), else the holders of Manage roles and permissions. Not the record's people, not the Dispatcher and not the
+ * the alert's step switch (Access Billing for invoice and payment money, who must also be able to open the invoice; the Admins
+ * for the payments account, since the Company settings switch retired), else the Admins. Not the record's people, not the Dispatcher and not the
  * holders of an "Alert me about every ..." copy: an email is for whoever has to act. Nobody comes from a role name.
  *
  * One batched read of the company's people and their switches, one of the access check when there is an invoice to open, one of the

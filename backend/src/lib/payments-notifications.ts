@@ -1,5 +1,6 @@
 import { alertSwitchHolders, isNoRecordAlertVerb } from '../services/notifications/noRecordAlerts';
 import { stepHolderEmails } from '../services/notifications/stepHolderEmails';
+import { ADMINS } from './permissions/switchHolders';
 import { WHY_KEY } from '../services/notifications/alertChain';
 import { prisma } from './prisma';
 import { env } from '../config/env';
@@ -14,8 +15,9 @@ import { PAYOUT_ACCOUNT_PATH } from './owner-payment-notices';
  * status they describe has committed. Every notice carries a dedup key per account, so the two
  * writers seeing the same change send one notification.
  *
- * Who is told (Roles & Permissions, S06.29): the active holders of Company settings, else the holders of Manage roles and
- * permissions (noRecordAlerts.ts), in the bell and in the email alike. Nobody comes from a role name.
+ * Who is told (Roles & Permissions, S06.29): the company's active Admins (noRecordAlerts.ts), in the bell and in the email alike.
+ * They were the holders of Company settings until that switch retired (36b, M17): setting up the company, and so the payments
+ * account, is the Admin flag's alone. Nobody comes from a role name.
  */
 
 export function paymentsNotifDedupKey(verb: string, dedup: string): string {
@@ -53,7 +55,7 @@ export interface AccountNoticeToSend {
   verb: string;
   organizationId: string;
   dedup: string;
-  /** The occurrence also emails the people it reaches (the Company settings holders, else the managers), the first time it is notified. */
+  /** The occurrence also emails the people it reaches (the Admins), the first time it is notified. */
   emailAdmins: boolean;
   /** Action-needed: the requirements it is about; the notice says what to do about them. */
   requirements?: readonly string[];
@@ -89,16 +91,16 @@ export async function sendAccountNotices(notices: readonly AccountNoticeToSend[]
 }
 
 async function notificationAlreadyExists(orgId: string, dedupKey: string): Promise<boolean> {
-  // The alert keeps its key for the people who hold Company settings and suffixes it for the managers who cover when nobody does.
+  // The alert keeps its key for the Admins and suffixes it for anyone told with a why line (kept for the shape every alert shares).
   const existing = await prisma.notification.findFirst({ where: { organization_id: orgId, dedup_key: { in: [dedupKey, dedupKey + WHY_KEY] } } });
   return !!existing;
 }
 
-/** The co-branded action-needed email to the people the alert reaches: the holders of Company settings, else of Manage roles and permissions. */
+/** The co-branded action-needed email to the people the alert reaches: the Admins. */
 async function emailActionNeededToHolders(orgId: string, orgName: string | null): Promise<void> {
   const recipients = await stepHolderEmails({
     organizationId: orgId,
-    stepSwitch: 'company_settings',
+    stepSwitch: ADMINS,
     record: null,
     words: { record: 'company', step: 'change company settings', alert: 'payments action needed email' },
   });

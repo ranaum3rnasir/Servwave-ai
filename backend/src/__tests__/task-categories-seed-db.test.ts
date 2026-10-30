@@ -100,7 +100,6 @@ suite('task category starters (real database)', () => {
     const quietly = (p: Promise<unknown>) => p.catch(() => undefined);
     for (const id of created) {
       await quietly(prisma.taskCategory.deleteMany({ where: { organization_id: id } }));
-      await quietly(prisma.rolePermission.deleteMany({ where: { organization_id: id } }));
       await quietly(prisma.appSetting.deleteMany({ where: { organization_id: id } }));
       await quietly(prisma.$executeRawUnsafe('DELETE FROM org_tax_rates WHERE organization_id = $1::uuid', id));
       await quietly(prisma.organization.deleteMany({ where: { id } }));

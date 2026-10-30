@@ -75,7 +75,7 @@ export function showsOnLead(tie: RecordTie, lead: { id: string; jobIds: readonly
 
 /**
  * A conversation about an estimate or an invoice shows on a job's or lead's tab only to people who can also open that
- * estimate or invoice (the creator rule included). Every other kind shows to anyone who can open the record.
+ * estimate or invoice. Every other kind shows to anyone who can open the record.
  */
 export const GUARDED_RECORD_TYPES = ['estimate', 'invoice'] as const;
 export type GuardedRecordType = (typeof GUARDED_RECORD_TYPES)[number];

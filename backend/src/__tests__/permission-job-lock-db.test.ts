@@ -51,17 +51,20 @@ const ALL_OFF: Record<string, SwitchValue> = Object.fromEntries(
 /** The wording the slice gives every refusal and every disabled control (the PRD's own text, not read from the code). */
 const LOCK_MESSAGE = 'This job is locked. Only someone who can change locked jobs can change it.';
 
-/** What opening the job takes, with no action switch on. */
+/**
+ * What opening the job takes, with no action switch on. No Edit jobs (and so no Create jobs, which requires it, AL-04): the
+ * case "still asks the ordinary switch" depends on the holder not having it.
+ */
 const OPENING = {
-  view_jobs: true, jobs_scope: 'all', create_jobs: true, view_attachments: true,
-  view_invoices: true, invoices_scope: 'all', view_estimates: true, estimates_scope: 'all',
+  view_jobs: true, jobs_scope: 'all',
+  view_invoices: true, leads_scope: 'all', view_estimates: true,
 };
 
 /** The ordinary switch of every change the lock covers, all on: the lock is the only thing left that can refuse. */
 const ORDINARY = {
   edit_jobs: true, edit_job_line_items: true, apply_discounts: true, assign_people_to_jobs: true, assign_work_to_others: true,
   schedule_visits: true, mark_on_my_way: true, mark_arrived: true, start_and_finish_visits: true, edit_job_record_ids: true,
-  delete_jobs: true, add_notes: true, upload_attachments: true, create_invoices: true,
+  delete_jobs: true, add_notes: true, edit_invoices: true, create_invoices: true,
 };
 
 suite('the completed-job lock (real database)', () => {
@@ -81,7 +84,7 @@ suite('the completed-job lock (real database)', () => {
   async function personWith(org: string, values: Record<string, SwitchValue>, base: Role = 'DISPATCHER') {
     const key = `job-lock-role-${++sequence}`;
     const role = await fx.addCustomRole(org, key, base);
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...values }, actorId: null, reason: 'manual' });
+    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, see_prices: true, ...values }, actorId: null, reason: 'manual' });
     const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
     return Object.assign(person, { api: () => fx.signedInAs(person) });
   }
@@ -197,9 +200,9 @@ suite('the completed-job lock (real database)', () => {
         expect(res.body.error).not.toBe(LOCK_MESSAGE);
       });
 
-      it('takes a note and a file from a person with Add notes and Upload attachments', async () => {
+      it('takes a note and a file from a person with Add notes and the job\'s Edit (an upload is the job\'s own data)', async () => {
         const { org, customer } = await fx.newOrg();
-        const me = await personWith(org, { ...OPENING, add_notes: true, upload_attachments: true });
+        const me = await personWith(org, { ...OPENING, add_notes: true, edit_jobs: true });
         const job = await fx.addJob(org, customer, { status, crew: [me.id] });
         const api = await me.api();
         const note = await api.post(`/api/jobs/${job.id}/notes`, { content: 'seen on the finished job' });
@@ -211,7 +214,7 @@ suite('the completed-job lock (real database)', () => {
 
       it('keeps money, invoices and the close-out moves open', async () => {
         const { org, customer } = await fx.newOrg();
-        const me = await personWith(org, { ...OPENING, ...ORDINARY, create_estimates: true, duplicate_jobs: true, complete_jobs: true, cancel_jobs: true });
+        const me = await personWith(org, { ...OPENING, ...ORDINARY, edit_estimates: true, create_estimates: true, create_jobs: true, duplicate_jobs: true, complete_jobs: true, cancel_jobs: true });
         const job = await fx.addJob(org, customer, { status, crew: [me.id] });
         const api = await me.api();
         const open: [string, Promise<{ status: number; body: Record<string, unknown> }>][] = [
@@ -319,7 +322,7 @@ suite('the completed-job lock (real database)', () => {
     const me = await personWith(org, { ...OPENING, ...ORDINARY, jobs_scope: 'attached' });
     const job = await fx.addJob(org, customer, { status: 'COMPLETED', crew: [colleague.id] });
     const res = await (await me.api()).patch(`/api/jobs/${job.id}`, { description: 'changed' });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(res.body.error).not.toBe(LOCK_MESSAGE);
   });
 

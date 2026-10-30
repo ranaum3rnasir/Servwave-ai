@@ -25,7 +25,7 @@ function mockOrg(features: string[]) {
     selector({
       user: {
         id: 'u-1', email: 'admin@test.com', first_name: 'Test', last_name: 'Admin',
-        role: 'ADMIN', org_is_demo: true, organization_id: 'org-demo', org_features: features,
+        role: 'ADMIN', is_admin: true, org_is_demo: true, organization_id: 'org-demo', org_features: features,
       },
       isAuthenticated: true, isLoading: false, error: null,
     })) as never);

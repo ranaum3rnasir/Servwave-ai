@@ -3,7 +3,7 @@
 
    One alert LISTS the unusual items (the panel's own reason and title for each), through the chain: lane 1 the job's people
    (stored Sold By, crew, Dispatcher); lane 2 the Dispatcher, else the Office review holders who can open the job, else the
-   Manage roles and permissions holders; copies to "Alert me about every job" holders. "Someone" is active, can open the
+   company's Admins (who hold Office review like every switch, so they are found at the step already); copies to "Alert me about every job" holders. "Someone" is active, can open the
    job and is not the person who made the change. High priority, bell only; its link opens the review panel.
 
    It is raised (1) when a job ENTERS Office review (Complete) with unusual items already in its window, (2) when a NEW
@@ -66,21 +66,21 @@ const REASON = {
 } as const;
 
 const OPENING = {
-  view_jobs: true, jobs_scope: 'all', create_jobs: true, view_attachments: true,
-  view_invoices: true, invoices_scope: 'all', view_customers: true,
+  view_jobs: true, jobs_scope: 'all', edit_jobs: true, create_jobs: true,
+  view_invoices: true, leads_scope: 'all', view_customers: true,
 };
 
 /** Everything that makes a person able to make every change below: the Change locked jobs key is what opens a locked job. */
 const EVERY_CHANGE = {
   ...OPENING, edit_jobs: true, edit_job_line_items: true, apply_discounts: true, edit_invoices: true,
-  edit_invoice_line_items: true, delete_attachments: true, edit_job_and_lead_contact_details: true,
-  record_payments: true, allowed_payment_methods: ['CASH'], add_notes: true, upload_attachments: true,
-  delete_others_notes: true, change_locked_jobs: true, void_payments: true, refund_payments: true, view_payments: true,
+  edit_invoice_line_items: true, edit_job_and_lead_contact_details: true,
+  record_payments: true, allowed_payment_methods: ['CASH'], add_notes: true, change_locked_jobs: true, void_payments: true, refund_payments: true, view_payments: true,
 };
 
 /** The people who must act on a review. */
 const REVIEWER = { ...OPENING, office_review: true };
-const managerValues = { ...OPENING, manage_roles_and_permissions: true, view_users: true };
+// An Admin (the flag, AL-18): holds every switch, Office review and the copy switches included, and opens every job.
+const adminValues = { ...OPENING, is_admin: true, view_users: true };
 
 type Res = { status: number; body: Record<string, any> };
 
@@ -108,9 +108,11 @@ suite('the Office review attention alert (real database, one connection)', () =>
 
   async function personWith(org: string, values: Record<string, SwitchValue>, base: Role = 'DISPATCHER') {
     const key = `review-attention-role-${++sequence}`;
+    // `is_admin: true` makes the person an Admin (the flag, AL-18): it is not a switch, so it never reaches the role.
+    const { is_admin: asAdmin, ...switchValues } = values;
     const role = await fx.addCustomRole(org, key, base);
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...values }, actorId: null, reason: 'manual' });
-    const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
+    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, see_prices: true, ...switchValues }, actorId: null, reason: 'manual' });
+    const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id, isAdmin: asAdmin === true });
     // A send by hand goes out from the sender's own mailbox (PRD 10, S10.12).
     await fx.addUserMailbox(org, person);
     return Object.assign(person, { api: () => fx.signedInAs(person) });
@@ -430,7 +432,7 @@ suite('the Office review attention alert (real database, one connection)', () =>
 
     it('a delete the lock refuses raises none', async () => {
       const w = await world('DONE');
-      const noKey = await personWith(w.org, { ...OPENING, delete_attachments: true });
+      const noKey = await personWith(w.org, { ...OPENING, });
       const res = await (await noKey.api()).delete(`/api/attachments/job/${w.job.id}/${w.job.file}`);
       expect(res.status).toBe(403);
       expect(await attention(w.job.id)).toEqual([]);
@@ -542,19 +544,21 @@ suite('the Office review attention alert (real database, one connection)', () =>
         expect(whyFor(alerts, soldBy)).toBe(`${REASON.file}: File: Front door.png`);
       });
 
-      it('with no Office review holder who can open the job: the Manage roles and permissions holders, with the matching why line', async () => {
+      it('with no other Office review holder who can open the job: an Admin, who holds the step, never a "nobody can review" line', async () => {
         const { org, customer, admin } = await quietOrg();
         const me = await personWith(org, completerValues);
-        const manager = await personWith(org, managerValues);
+        const anAdmin = await personWith(org, adminValues);
         const noSwitch = await personWith(org, OPENING);
         const job = await jobWithUnusualItems(org, customer, admin);
 
         await complete(me, job.id);
 
         const alerts = await attention(job.id);
-        expect(recipientsOf(alerts)).toEqual(ids(manager));
+        expect(recipientsOf(alerts)).toEqual(ids(anAdmin));
         expect(recipientsOf(alerts)).not.toContain(noSwitch.id);
-        expect(whyFor(alerts, manager)).toBe('This job has no Dispatcher and nobody who can review jobs can open it.');
+        // An Admin also holds Alert me about every job, so they are told once, without the why line: the alert's last line is
+        // the unusual item, never "nobody who can review jobs".
+        expect(whyFor(alerts, anAdmin)).toBe(`${REASON.file}: File: Front door.png`);
       });
 
       it('a Dispatcher who did the action sends the chain to step 2 with the matching why line; the actor is never alerted', async () => {

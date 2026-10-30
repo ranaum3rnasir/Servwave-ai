@@ -1,11 +1,11 @@
 /* =============================================================================
-   Roles & Permissions, PRD 1, slice S01.15 - See financial data covers costs only, stripped on the server.
+   Roles & Permissions, PRD 1, slice S01.15 - See costs covers costs only, stripped on the server.
 
    Everything goes through the public interface: the routes, called as a person on a custom role (never a
    built-in role name) who holds exactly the switch values under test. Real migrated database
    (TEST_DATABASE_URL); the suite skips when it is unset. Every org it creates is removed again.
 
-   One row per server check the catalog lists for See financial data. For each row the same request is made
+   One row per server check the catalog lists for See costs. For each row the same request is made
    with the switch on and with it off:
      - on: every cost field is on the response;
      - off: every cost field is absent (the key is gone, never zero or null) and every price field is still there.
@@ -53,7 +53,7 @@ import { SWITCH_CATALOG } from '../lib/permissions/switches/catalog';
 const suite = realClient ? describe : describe.skip;
 
 const keyOf = (label: string) => SWITCH_CATALOG.find((s) => s.label === label)!.key;
-const SEE_FINANCIAL_DATA = keyOf('See financial data');
+const SEE_FINANCIAL_DATA = keyOf('See costs');
 /** Figures no price, total or tax on the test records can equal, so finding one on a document means a cost was carried. */
 const PDF_COST = { unitCost: 41.37, markup: 151.3, scopeCost: 25.91 };
 
@@ -73,7 +73,7 @@ function hasKey(body: unknown, path: string): boolean {
   return holder != null && typeof holder === 'object' && steps[steps.length - 1]! in (holder as object);
 }
 
-suite('See financial data hides costs only, on the server (real database)', () => {
+suite('See costs hides costs only, on the server (real database)', () => {
   const db = realClient as PrismaClient;
   const fx = switchFixture(db, async () => (await import('../app.js')).default as never);
   const orgs: string[] = [];
@@ -120,8 +120,7 @@ suite('See financial data hides costs only, on the server (real database)', () =
     await setRoleSwitchValues({
       organizationId: org, roleKey, actorId: null, reason: 'manual',
       values: {
-        ...allOff,
-        estimates_scope: 'all', invoices_scope: 'all', jobs_scope: 'all', leads_scope: 'all',
+        ...allOff, see_prices: true, jobs_scope: 'all', leads_scope: 'all',
         [keyOf('View estimates')]: true, [keyOf('View invoices')]: true, [keyOf('View jobs')]: true,
         [keyOf('Edit job line items')]: true,
         // The exports are their own switches (S01.23); the list-and-export probe downloads all three.
@@ -315,7 +314,7 @@ suite('See financial data hides costs only, on the server (real database)', () =
     },
   ];
 
-  it('has a row for every server check the catalog lists for See financial data', () => {
+  it('has a row for every server check the catalog lists for See costs', () => {
     const listed = SWITCH_CATALOG.find((s) => s.key === SEE_FINANCIAL_DATA)!.serverChecks;
     expect(probes.map((p) => p.check).sort()).toEqual([...listed].sort());
   });
@@ -441,8 +440,7 @@ suite('See financial data hides costs only, on the server (real database)', () =
         await setRoleSwitchValues({
           organizationId: world.org, roleKey, actorId: null, reason: 'manual',
           values: {
-            ...allOn, [SEE_FINANCIAL_DATA]: false,
-            estimates_scope: 'all', invoices_scope: 'all', jobs_scope: 'all', leads_scope: 'all',
+            ...allOn, [SEE_FINANCIAL_DATA]: false, jobs_scope: 'all', leads_scope: 'all',
           },
         });
         const person = await fx.addUser(world.org, 'estimatedoer', 'TECHNICIAN', { customRoleId: role.id });
@@ -494,7 +492,7 @@ suite('See financial data hides costs only, on the server (real database)', () =
     });
 
     // Copy to invoice answers with the NEW INVOICE, built from the estimate's cost model. It is open to
-    // the Dispatcher base, whose preset has See financial data off, so the default case is exposed.
+    // the Dispatcher base, whose preset has See costs off, so the default case is exposed.
     it('leaves every cost out of the invoice that copying an estimate to an invoice answers with', async () => {
       // A company of its own: the shared one already holds an invoice whose number the next one would take.
       const { org, customer, admin } = await fx.newOrg();
@@ -506,7 +504,7 @@ suite('See financial data hides costs only, on the server (real database)', () =
       });
       await setRoleSwitchValues({
         organizationId: org, roleKey: 'estimate-copier', actorId: null, reason: 'manual',
-        values: { [SEE_FINANCIAL_DATA]: false, invoices_scope: 'all', estimates_scope: 'all' },
+        values: { [SEE_FINANCIAL_DATA]: false, jobs_scope: 'all', leads_scope: 'all' },
       });
       const person = await fx.addUser(org, 'estimatecopier', 'DISPATCHER', { customRoleId: copier.id });
       const api = await fx.signedInAs(person);

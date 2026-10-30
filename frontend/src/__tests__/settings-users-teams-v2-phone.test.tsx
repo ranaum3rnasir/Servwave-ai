@@ -12,6 +12,7 @@ import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import { renderWithProviders } from './helpers';
 import { buildAbility } from '@/lib/ability';
+import { FIXTURE_CATALOG } from './support/permissionCatalogFixture';
 import UsersTeamsPage from '@/pages/v2/settings/UsersTeamsPage';
 
 const mockApi = vi.mocked(api);
@@ -39,6 +40,12 @@ function mockUsers(users: unknown[]) {
   mockApi.get.mockImplementation((url: string) => {
     if (url === '/api/users') return Promise.resolve({ data: { users } });
     if (url === '/api/departments') return Promise.resolve({ data: { departments: [] } });
+    // The edit dialog draws the person's own settings from the switch catalog and the person's switch set. An Admin box
+    // has no settings, so the dialog under test shows only the details this file is about (P15: Admin is a flag).
+    if (url === '/api/permission-switches/catalog') return Promise.resolve({ data: FIXTURE_CATALOG });
+    if (/^\/api\/users\/[^/]+\/permissions$/.test(url)) {
+      return Promise.resolve({ data: { user_id: 'u1', admin_box: true, editable: false, values: {}, differences: [], difference_count: 0 } });
+    }
     return Promise.resolve({ data: {} });
   });
 }

@@ -166,7 +166,7 @@ async function watchersOutsidePool(
   if (pool.scope === 'org') return [];
   const rows = await prisma.user.findMany({
     where: { id: { in: [...ids] }, organization_id: orgId },
-    select: { id: true, role: true, department_id: true },
+    select: { id: true, role: true, is_admin: true, department_id: true },
   });
   const byId = new Map(rows.map((r) => [r.id, r]));
   return ids.filter((id) => {
@@ -208,7 +208,7 @@ async function enrichTaskList<T extends { id: string; assignee_ids: unknown; lin
     { ability: req.ability },
   );
   const [names, fileCounts] = await Promise.all([
-    resolveUserNames(orgId, tasks.flatMap((t) => toIdSet(t.assignee_ids))),
+    resolveUserNames(orgId, tasks.flatMap((t) => toIdSet(t.assignee_ids)), true),
     taskAttachmentCounts(orgId, tasks.map((t) => t.id)),
   ]);
   const now = new Date();
@@ -234,14 +234,14 @@ export async function list(req: Request, res: Response) {
     const { linked_entity_type, linked_entity_id } = req.query as Record<string, string | undefined>;
 
     // #245 — listing an entity's tasks requires access to that entity (SQL row check).
-    if (linked_entity_type && linked_entity_id && !seesAllTasks(req)) {
+    if (linked_entity_type && linked_entity_id && !(await seesAllTasks(req))) {
       if (!(await canAccessLinkedEntity(req, linked_entity_type, linked_entity_id))) {
         res.status(403).json({ error: 'Insufficient permissions' });
         return;
       }
     }
 
-    const where = taskVisibilityWhere(req, { linked_entity_type, linked_entity_id });
+    const where = await taskVisibilityWhere(req, { linked_entity_type, linked_entity_id });
 
     if (isPagedTaskQuery(req.query)) {
       const parsed = taskPageQuerySchema.safeParse(req.query);
@@ -445,7 +445,7 @@ export async function create(req: Request, res: Response) {
       });
     }
 
-    const names = await resolveUserNames(orgId, toIdSet(task.assignee_ids));
+    const names = await resolveUserNames(orgId, toIdSet(task.assignee_ids), true);
     res.status(201).json({ task: { ...task, assignees: withNames(toIdSet(task.assignee_ids), names) } });
   } catch (err) {
     if (isMissingTaskCategoryError(err)) {
@@ -774,7 +774,7 @@ export async function getOne(req: Request, res: Response) {
     // #01 - same scoped resolver as the list. Reaching here does NOT imply entity access: an
     // assignee or watcher passes canAccessTask on that arm alone, so the link can still redact.
     const [names, labels, fileCounts] = await Promise.all([
-      resolveUserNames(orgId, allUserIds),
+      resolveUserNames(orgId, allUserIds, true),
       resolveEntityLabels(
         req.user!,
         task.linked_entity_type && task.linked_entity_id
@@ -1048,12 +1048,9 @@ export async function entityAccess(req: Request, res: Response) {
     }
 
     // Existence first: a link to a row that is gone would otherwise read as "nobody can see it"
-    // and flag the entire roster.
-    const exists = await ENTITY_DELEGATES[entity_type].findFirst({
-      where: { id: entity_id, ...tenantWhere(req) },
-      select: { id: true },
-    });
-    if (!exists) {
+    // and flag the entire roster. A record out of the caller's reach answers exactly like one that is gone (spec story 47):
+    // otherwise the answer would confirm the record exists and name who can open it.
+    if (!(await canAccessLinkedEntity(req, entity_type, entity_id))) {
       res.status(404).json({ error: 'Linked entity not found' });
       return;
     }
@@ -1065,6 +1062,7 @@ export async function entityAccess(req: Request, res: Response) {
         role: true,
         organization_id: true,
         custom_role_id: true,
+        is_admin: true,
         // grantRoleKey throws when custom_role_id is set without the relation loaded - deliberately,
         // because the fallback would be the BASE role's wider grant set.
         custom_role: { select: { key: true } },
@@ -1105,13 +1103,13 @@ export async function summary(req: Request, res: Response) {
       return;
     }
     // #245 — a summary of an entity's tasks requires access to that entity (SQL row check).
-    if (!seesAllTasks(req)) {
+    if (!(await seesAllTasks(req))) {
       if (!(await canAccessLinkedEntity(req, linked_entity_type, linked_entity_id))) {
         res.status(403).json({ error: 'Insufficient permissions' });
         return;
       }
     }
-    const where = taskVisibilityWhere(req, { linked_entity_type, linked_entity_id });
+    const where = await taskVisibilityWhere(req, { linked_entity_type, linked_entity_id });
     const tasks = await prisma.task.findMany({
       where, select: { status: true, priority: true, due_at: true, completed_at: true },
     });

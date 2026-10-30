@@ -66,8 +66,8 @@ function itemWith(unitCost: number | undefined, sellPrice: number): Item {
   };
 }
 
-/** "See financial data" — the same gate every sibling cost editor reads. */
-const pricingAbility = () => buildAbility([{ action: 'read', subject: 'Pricing' }]);
+/** "See costs" — the same gate every sibling cost editor reads. */
+const pricingAbility = () => buildAbility([{ action: 'read', subject: 'Prices' }, { action: 'read', subject: 'Pricing' }]);
 
 function renderDialog(
   unitCost: number | undefined,
@@ -87,7 +87,7 @@ function renderDialog(
       editItem={itemWith(unitCost, sellPrice)}
     />,
     // No ability at all is the deny-everything posture, which is what a viewer
-    // without "See financial data" gets.
+    // without "See costs" gets.
     canSeePricing ? { ability: pricingAbility() } : undefined,
   );
 }

@@ -125,7 +125,7 @@ suite('the customer link by address (real database, real webhook route)', () => 
       organizationId: org, roleKey: `${key}-${seq}`,
       values: {
         view_jobs: true, jobs_scope: 'all', view_leads: true, leads_scope: 'all', view_customers: true,
-        access_communication: true, show_email: true, view_communication: true, communication_scope: 'linked_to_me',
+        access_communication: true, show_email: true, view_communication: true, communication_scope: 'attached',
         contact_customers: true, attach_conversations: true, ...values,
       },
       actorId: null, reason: 'manual',

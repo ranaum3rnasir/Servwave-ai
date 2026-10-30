@@ -4,7 +4,7 @@
  *
  * `conversationAlertRecipients` names the people of the alert: the record's people, the holders of All, the people linked to the
  * company number and, for a text, the reply's sender, every one of them through the access filter. When that answer is EMPTY the
- * call or text would reach no one. Then, and only then, the holders of Manage roles and permissions are told, with the reason line
+ * call or text would reach no one. Then, and only then, the Admins are told, with the reason line
  * below, the company number it came in on and the time in the COMPANY's zone. "Empty" is the lookup's answer, not a re-derivation of
  * "unlinked and tied to no record": a conversation tied to a job whose people cannot read it, with nobody on All, is nobody too, and
  * is not silent either. The reason line is PRD 8's sentence and is the only one; it fits every empty answer.
@@ -30,7 +30,7 @@
  */
 
 import { logger } from '../../lib/logger';
-import { MANAGE_ROLES_SWITCH, activeSwitchHolders } from '../../lib/permissions/switchHolders';
+import { activeAdmins } from '../../lib/permissions/switchHolders';
 import { DEFAULT_TIMEZONE, formatDateTimeInZone, getOrgTimezone } from '../../lib/timezone';
 import { filterRecipientsByAccess } from './filterByAccess';
 import type { ConversationAlert, ConversationSubject } from './conversationAlertRecipients';
@@ -86,8 +86,8 @@ function timeInCompanyZone(at: Date, zone: string): string {
 }
 
 /**
- * The alerts of the fallback for a call or text nobody would be told about: none when the company has no active holder of Manage
- * roles and permissions (one log line), else the full alert for the holders who can read the conversation and the alert without
+ * The alerts of the fallback for a call or text nobody would be told about: none when the company has no active Admin (one log
+ * line), else the full alert for the Admins who can read the conversation and the alert without
  * caller details for those who cannot, each only when it has people.
  */
 export async function nobodyFallbackRows(
@@ -96,7 +96,7 @@ export async function nobodyFallbackRows(
   caller: { data: Record<string, unknown>; label: string | undefined },
 ): Promise<FallbackRow[]> {
   const { organizationId } = alert;
-  const holders = await activeSwitchHolders(organizationId, MANAGE_ROLES_SWITCH);
+  const holders = await activeAdmins(organizationId);
   if (holders.length === 0) {
     // The kind of alert, the call or conversation and the company, and nothing the customer said or is called.
     logger.warn('[conversationAlert] nobody to tell', {

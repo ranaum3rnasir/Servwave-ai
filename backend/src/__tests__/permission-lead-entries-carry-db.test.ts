@@ -38,7 +38,7 @@ vi.mock('../lib/numbering', () => {
 });
 
 import { switchFixture, type Person } from './permission-switches-fixture';
-import { setRoleSwitchValues } from '../lib/permissions/switches/store';
+import { resolveSwitches, setRoleSwitchValues } from '../lib/permissions/switches/store';
 import { SWITCH_CATALOG, type SwitchValue } from '../lib/permissions/switches/catalog';
 
 const suite = realClient ? describe : describe.skip;
@@ -78,17 +78,21 @@ suite("carrying a lead's entries onto the job at conversion (real database)", ()
   /** The author of the lead's entries: holds every switch. */
   const author = (org: string, name = 'Ana') => personWith(org, ALL_ON, name);
 
-  /** The converter holds the switches a conversion needs and NOTHING that edits a contact detail. */
+  /**
+   * The converter holds the switches a conversion needs and no switch of its own for a contact detail: not Edit job and
+   * lead contact details, and not Edit leads. Create jobs requires Edit jobs (AL-04), so it holds Edit jobs too; that is
+   * the one switch left that lets a person add a job-only phone by hand, and no conversion can do without it.
+   */
   const converterWithoutContactEdit = (org: string) =>
     personWith(org, {
       create_jobs: true,
+      edit_jobs: true,
       view_estimates: true,
       view_jobs: true,
       jobs_scope: 'all',
       leads_scope: 'all',
       edit_job_and_lead_contact_details: false,
-      edit_jobs: false,
-      edit_leads: false,
+      edit_leads: false, create_leads: false,
     }, 'Con');
 
   /** A lead with a customer that has a phone, an email and a name, and `estimates` WON estimates ready to convert. */
@@ -244,7 +248,7 @@ suite("carrying a lead's entries onto the job at conversion (real database)", ()
       expect(sentences.some((d) => d.startsWith('First name Pat changed to Patrick, carried from the lead'))).toBe(true);
     });
 
-    it('is not checked against the converter: the converter really holds no switch that edits a contact detail, and the job still gets the entries', async () => {
+    it('is not checked against the converter: the converter holds neither Edit job and lead contact details nor Edit leads, and the job still gets the entries', async () => {
       const { org, admin, customer } = await fx.newOrg();
       const ana = await author(org);
       const c = await leadToConvert(org, customer, admin.id, estimates);
@@ -254,9 +258,12 @@ suite("carrying a lead's entries onto the job at conversion (real database)", ()
 
       const job = await convert(converterApi, c);
 
-      // The converter cannot add a phone to the job by hand ...
-      const byHand = await converterApi.post(`/api/jobs/${job.id}/contact-entries`, { kind: 'PHONE', value: '6175550777' });
-      expect(byHand.status).toBe(403);
+      // The converter really holds neither contact switch of its own ...
+      const stored = await db.user.findUniqueOrThrow({ where: { id: converter.id }, include: { custom_role: true } });
+      const held = await resolveSwitches({ is_admin: stored.is_admin, id: converter.id, organization_id: org, role: stored.role, custom_role: stored.custom_role });
+      expect(held.edit_job_and_lead_contact_details).toBe(false);
+      expect(held.edit_leads).toBe(false);
+      // (It does hold Edit jobs, which Create jobs requires, AL-04, so it can no longer be shown refused a hand-added job phone.)
       // ... and the copy still landed.
       expect(await jobEntries(job.id)).toHaveLength(2);
     });

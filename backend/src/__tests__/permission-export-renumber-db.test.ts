@@ -64,7 +64,7 @@ suite('export and record ID numbers follow their own switches (real database)', 
     { name: 'estimates', view: 'view_estimates', exportKey: 'export_estimates', list: '/api/estimates', exportPath: '/api/estimates/export' },
     { name: 'invoices', view: 'view_invoices', exportKey: 'export_invoices', list: '/api/invoices', exportPath: '/api/invoices/export' },
   ];
-  const everyScope = { leads_scope: 'all', jobs_scope: 'all', estimates_scope: 'all', invoices_scope: 'all' };
+  const everyScope = { leads_scope: 'all', jobs_scope: 'all' };
 
   describe('Export', () => {
     it.each(modules)('refuses the $name export to a custom role with View on and Export off, and lets it in with Export on', async (m) => {

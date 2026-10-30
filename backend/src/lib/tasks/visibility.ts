@@ -1,31 +1,43 @@
 import type { Request } from 'express';
 import { tenantWhere } from '../tenant';
 import { accessibleEntityRefs, entityAccessScope, entityRefKey, ENTITY_DELEGATES } from './entityAccess';
+import { moduleReachFor, reachCovers, reachWhere } from '../permissions/moduleReach';
 
 export interface TaskListFilters { linked_entity_type?: string; linked_entity_id?: string; }
 
 /**
- * Does the caller see every task in the company (the "See all tasks" switch)? The one question the list, the
- * open check, the linked-record list and summary and the activity feed's file names all ask, so a custom role
- * copied from Admin is held to its switch like any other role. Fails closed with no ability attached.
+ * Does the caller's Tasks scope reach every task in the company (Tasks scope All)? The one question the list, the open
+ * check, the linked-record list and summary and the activity feed's file names all ask, so a custom role copied from
+ * Admin is held to its scope like any other role. Fails closed with no person attached.
  */
-export function seesAllTasks(req: Request): boolean {
-  return req.ability?.can('see_all', 'Task') ?? false;
+export async function seesAllTasks(req: Request): Promise<boolean> {
+  return (await moduleReachFor(req, 'Task')).kind === 'all';
 }
 
-export function taskVisibilityWhere(req: Request, filters: TaskListFilters): Record<string, unknown> {
+/**
+ * The tasks the caller lists. A task with a linked record is listed through that record's page (the filter below); the
+ * company-wide list narrows to the tasks the Tasks scope reaches: Attached (assignee or watcher), Team (someone in the
+ * caller's department is) or All.
+ */
+export async function taskVisibilityWhere(req: Request, filters: TaskListFilters): Promise<Record<string, unknown>> {
   const where: Record<string, unknown> = { ...tenantWhere(req) };
   if (filters.linked_entity_type && filters.linked_entity_id) {
     where.linked_entity_type = filters.linked_entity_type;
     where.linked_entity_id = filters.linked_entity_id;
     return where;
   }
-  if (!seesAllTasks(req)) {
-    const me = req.user!.id;
+  const reach = await moduleReachFor(req, 'Task');
+  if (reach.kind !== 'all') {
     // Design §4 — `created_by = me` is deliberately NOT an arm: creating is an event, not a role.
-    where.OR = [{ assignee_ids: { has: me } }, { watcher_ids: { has: me } }];
+    Object.assign(where, reachWhere('Task', reach));
   }
   return where;
+}
+
+/** The people a task names: its assignees and its watchers. */
+function taskPeople(task: { assignee_ids: unknown; watcher_ids: unknown }): string[] {
+  const ids = (v: unknown) => (Array.isArray(v) ? (v as string[]) : []);
+  return [...ids(task.assignee_ids), ...ids(task.watcher_ids)];
 }
 
 /**
@@ -48,7 +60,7 @@ export async function canAccessLinkedEntity(
 
 /**
  * Per-row (own-or-linked) access policy for a loaded task (#245):
- *   See all tasks → always; principal (assignee / watcher) → always;
+ *   Tasks scope All → always; a person the scope reaches (assignee / watcher, or their team's) → always;
  *   otherwise linked → the caller must be able to access the linked entity;
  *   unlinked non-principal → denied.
  * Reads only fields the handlers' existing tenant findFirst already loaded.
@@ -67,10 +79,8 @@ export async function canAccessTask(
     linked_entity_id: string | null;
   },
 ): Promise<boolean> {
-  if (seesAllTasks(req)) return true;
-  const me = req.user!.id;
-  if (Array.isArray(task.assignee_ids) && (task.assignee_ids as string[]).includes(me)) return true;
-  if (Array.isArray(task.watcher_ids) && (task.watcher_ids as string[]).includes(me)) return true;
+  const reach = await moduleReachFor(req, 'Task');
+  if (reach.kind === 'all' || reachCovers(reach, taskPeople(task))) return true;
   if (task.linked_entity_type && task.linked_entity_id) {
     return canAccessLinkedEntity(req, task.linked_entity_type, task.linked_entity_id);
   }
@@ -78,8 +88,8 @@ export async function canAccessTask(
 }
 
 /**
- * `canAccessTask` for a whole list at once: which of these tasks can the caller open? The same rule - See all tasks,
- * assignee or watcher, otherwise whoever can open the linked record - but the linked records are asked in ONE batched
+ * `canAccessTask` for a whole list at once: which of these tasks can the caller open? The same rule - Tasks scope All,
+ * a person the scope reaches, otherwise whoever can open the linked record - but the linked records are asked in ONE batched
  * read (at most one query per kind of record) instead of one probe per task. Never call `canAccessTask` in a loop over
  * a feed: on the hosted database's single connection a probe per task is a request that takes seconds.
  */
@@ -87,13 +97,12 @@ export async function openableTaskIds(
   req: Request,
   tasks: Array<{ id: string; assignee_ids: unknown; watcher_ids: unknown; linked_entity_type: string | null; linked_entity_id: string | null }>,
 ): Promise<Set<string>> {
-  if (seesAllTasks(req)) return new Set(tasks.map((t) => t.id));
-  const me = req.user!.id;
+  const reach = await moduleReachFor(req, 'Task');
+  if (reach.kind === 'all') return new Set(tasks.map((t) => t.id));
   const open = new Set<string>();
   const linked: Array<(typeof tasks)[number] & { linked_entity_type: string; linked_entity_id: string }> = [];
   for (const task of tasks) {
-    if (Array.isArray(task.assignee_ids) && (task.assignee_ids as string[]).includes(me)) open.add(task.id);
-    else if (Array.isArray(task.watcher_ids) && (task.watcher_ids as string[]).includes(me)) open.add(task.id);
+    if (reachCovers(reach, taskPeople(task))) open.add(task.id);
     else if (task.linked_entity_type && task.linked_entity_id) linked.push({ ...task, linked_entity_type: task.linked_entity_type, linked_entity_id: task.linked_entity_id });
   }
   if (linked.length === 0) return open;

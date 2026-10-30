@@ -108,7 +108,7 @@ export const DEFAULT_AUTOMATIONS: DefaultAutomation[] = [
     trigger_type: 'ESTIMATE_APPROVED',
     recipients: ['creator'],
     subject: 'Estimate {{estimate.number}} — Approved',
-    body: '{{customer.full_name}} approved estimate {{estimate.number}} ({{estimate.total}}).',
+    body: '{{customer.full_name}} approved estimate {{estimate.number}}.',
     seed_enabled: true,
   },
   {
@@ -119,7 +119,7 @@ export const DEFAULT_AUTOMATIONS: DefaultAutomation[] = [
     trigger_type: 'ESTIMATE_DECLINED',
     recipients: ['creator'],
     subject: 'Estimate {{estimate.number}} — Declined',
-    body: '{{customer.full_name}} declined estimate {{estimate.number}} ({{estimate.total}}).',
+    body: '{{customer.full_name}} declined estimate {{estimate.number}}.',
     seed_enabled: true,
   },
   {

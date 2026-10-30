@@ -25,10 +25,6 @@ const mockPrisma = prisma as any;
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  mockPrisma.rolePermission.findMany.mockImplementation(
-    (args: { where: { role: string } }) =>
-      Promise.resolve(DEFAULT_GRANTS.filter((g) => g.role === args.where.role)),
-  );
 });
 
 describe('list selects expose the customer email the composer needs', () => {

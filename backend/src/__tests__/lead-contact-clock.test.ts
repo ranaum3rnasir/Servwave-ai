@@ -841,7 +841,7 @@ describe('contact clock — the hand-correction door (POST /api/leads/:id/contac
       .set(authHeader('sales'))
       .send({ contacted_at: CORRECTION_AT });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(p.lead.update).not.toHaveBeenCalled();
   });
 

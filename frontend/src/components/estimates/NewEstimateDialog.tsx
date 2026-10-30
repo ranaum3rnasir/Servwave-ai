@@ -366,7 +366,7 @@ export function NewEstimateDialog({ open, onOpenChange, preSelectedCustomerId, o
 
         {/* Divider + Add new client */}
         <div className="shrink-0 px-6 pb-[max(1.5rem,var(--safe-bottom,0px))] pt-2">
-          {/* The standalone New Customer: only with Create customers + Show Customers page (S02.26). */}
+          {/* The standalone New Customer: only with Create customers + View customers (S02.26). */}
           {entries.addNewClient && (
             <>
               <div className="flex items-center gap-3 mb-4">

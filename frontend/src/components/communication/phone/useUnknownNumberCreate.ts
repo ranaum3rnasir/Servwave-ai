@@ -5,7 +5,7 @@ import { useMySwitches } from '@/lib/api/mySwitches';
 /**
  * What the Texts inbox ("Unknown number") and the dialer ("No match for <number>") offer for a number that belongs to
  * no customer (Roles & Permissions S02.27). Create customer is not offered to anyone; the number becomes a lead or a
- * job, under the same pairs as Create New's New Lead and New Job: Create + the page's Show. Each target is the form's
+ * job, under the same pairs as Create New's New Lead and New Job: Create + the record type's View. Each target is the form's
  * path with the caller's number in `?phone=`, which the form puts in its new-customer part. A person holding neither
  * pair gets no target, so the panel shows the number and nothing to press.
  */

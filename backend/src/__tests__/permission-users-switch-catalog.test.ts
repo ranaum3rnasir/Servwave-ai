@@ -1,6 +1,7 @@
 /* =============================================================================
    Roles & Permissions, PRD 1, slice S01.12 - the Users, Departments and Locations groups of the switch
-   catalog, including Invite users, Manage roles and permissions and the three eligibility switches.
+   catalog: View users and the three eligibility switches. Create users, Invite users, Edit users, Delete users and Manage
+   roles and permissions retired (AL-18, M13): managing people and roles is the Admin flag's alone.
 
    Pure: no database. The expected values are the PRD's catalog table, written out as literals here (they
    are the source of truth the catalog is built from), never read back from the catalog.
@@ -20,12 +21,6 @@ type Row = [admin: boolean, sales: boolean, dispatcher: boolean, technician: boo
 
 const USER_ROWS: Record<string, Row> = {
   'View users': [true, false, true, true],
-  'Create users': [true, false, false, false],
-  'Invite users': [true, false, false, false],
-  'Edit users': [true, false, false, false],
-  'Delete users': [true, false, false, false],
-  'Show Users & Teams page': [true, false, false, false],
-  'Manage roles and permissions': [true, false, false, false],
   'Can own leads / be Sold By': [true, true, false, true],
   'Can be a dispatcher': [true, false, true, false],
   'Can be on a crew': [true, true, false, true],
@@ -97,22 +92,9 @@ describe('the Users, Departments and Locations rows of the switch catalog', () =
     }
   });
 
-  it('turns Invite users on in the Admin preset only', () => {
-    const invite = entryOf('Invite users');
-    const on = BUILT_IN_ROLES.filter((role) => invite.presets[role] === true);
-    expect(on).toEqual(['ADMIN']);
-  });
 });
 
 describe('Requires in the Users, Departments and Locations groups', () => {
-  it('puts every other Users switch that acts on a person, and the invite and role switches, under View users', () => {
-    for (const label of [
-      'Create users', 'Invite users', 'Edit users', 'Delete users', 'Show Users & Teams page', 'Manage roles and permissions',
-    ]) {
-      expect(entryOf(label).requires, label).toEqual([keyOfLabel('View users')]);
-    }
-  });
-
   it('needs nothing for the three eligibility switches: they say who may fill a slot, not what a person may open', () => {
     for (const label of ['Can own leads / be Sold By', 'Can be a dispatcher', 'Can be on a crew']) {
       expect(entryOf(label).requires, label).toEqual([]);
@@ -125,34 +107,21 @@ describe('Requires in the Users, Departments and Locations groups', () => {
   });
 
   it('puts create, edit and delete of departments and of locations under their View', () => {
-    for (const label of ['Create departments', 'Edit departments', 'Delete departments']) {
+    for (const label of ['Edit departments', 'Delete departments']) {
       expect(entryOf(label).requires, label).toEqual([keyOfLabel('View departments')]);
     }
-    for (const label of ['Create locations', 'Edit locations', 'Delete locations']) {
+    // Create requires Edit (AL-04).
+    expect(entryOf('Create departments').requires).toEqual([keyOfLabel('View departments'), keyOfLabel('Edit departments')]);
+    for (const label of ['Edit locations', 'Delete locations']) {
       expect(entryOf(label).requires, label).toEqual([keyOfLabel('View locations')]);
     }
-  });
-
-  it('refuses Invite users and Manage roles and permissions on with View users off', () => {
-    const set = { ...presetSwitchSet('ADMIN'), view_users: false };
-    const refused = validateSwitchSet(set).map((v) => v.switchKey);
-    expect(refused).toContain(keyOfLabel('Invite users'));
-    expect(refused).toContain(keyOfLabel('Manage roles and permissions'));
+    expect(entryOf('Create locations').requires).toEqual([keyOfLabel('View locations'), keyOfLabel('Edit locations')]);
   });
 });
 
 describe('what these switches compile into', () => {
-  it('maps the user switches onto the User subject, with Invite users as an action of its own', () => {
+  it('maps View users onto reading the User subject, and nothing else', () => {
     expect(pairs('View users')).toEqual(['read:User']);
-    expect(pairs('Create users')).toEqual(['create:User']);
-    expect(pairs('Invite users')).toEqual(['invite:User']);
-    expect(pairs('Edit users')).toEqual(['update:User']);
-    expect(pairs('Delete users')).toEqual(['delete:User']);
-    expect(pairs('Show Users & Teams page')).toEqual([]);
-  });
-
-  it('gives Manage roles and permissions an action of its own on Role, and carries the role read and edit grants the role routes still guard on', () => {
-    expect(pairs('Manage roles and permissions')).toEqual(['manage_roles:Role', 'read:Role', 'update:Role']);
   });
 
   it('leaves the eligibility switches to PRD 3', () => {
@@ -181,8 +150,12 @@ describe('what these switches compile into', () => {
     }
   });
 
-  it('compiles the Admin preset into every Users switch', () => {
-    const grants = compileSwitchGrants(presetSwitchSet('ADMIN')).map((g) => `${g.action}:${g.subject}`);
-    expect(grants).toEqual(expect.arrayContaining(['create:User', 'invite:User', 'update:User', 'delete:User', 'manage_roles:Role']));
+  it('compiles no preset, the Admin one included, into user or role management: that is the Admin flag\'s alone (AL-18)', () => {
+    for (const role of BUILT_IN_ROLES) {
+      const grants = compileSwitchGrants(presetSwitchSet(role)).map((g) => `${g.action}:${g.subject}`);
+      for (const never of ['create:User', 'invite:User', 'update:User', 'delete:User', 'manage_roles:Role', 'read:Role', 'update:Role']) {
+        expect(grants, `${role} ${never}`).not.toContain(never);
+      }
+    }
   });
 });

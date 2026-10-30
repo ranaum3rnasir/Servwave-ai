@@ -39,10 +39,15 @@ export const NO_MAILBOX_LABEL = "No mailbox connected";
 export type TeamMember = {
   id: string;
   name: string;
-  email: string;
-  role: string;
+  /** An Admin's team list only (M3, ticket 29). Everyone else emails a teammate by id: the server finds the address. */
+  email?: string;
+  /** An Admin's team list only (M3, ticket 29): a role names who the Admins are. */
+  role?: string;
   online?: boolean;
 };
+
+/** A teammate the compose window sends to by id (M3, ticket 29): shown by name, resolved to an address by the server. */
+export type ComposePerson = { id: string; name: string };
 
 
 // Email groups (distribution lists). Owner can email a whole team at once and
@@ -133,6 +138,8 @@ export type ComposeState = ComposeOrigin & {
   mode: "new" | "reply" | "forward";
   account: AccountId;
   to: string;
+  /** Teammates picked from the team list, sent by id beside the typed `to` addresses (M3, ticket 29). */
+  toPeople?: ComposePerson[];
   /** Gmail-style Cc/Bcc - collapsed behind a "Cc/Bcc" toggle in the composer
    *  chrome until the sender opens it. Absent/empty means "not shown" as
    *  well as "nothing to send". */

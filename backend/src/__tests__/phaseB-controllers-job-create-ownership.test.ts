@@ -25,13 +25,11 @@ import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 const mockPrisma = prisma as unknown as {
   job: { findUnique: ReturnType<typeof vi.fn>; findFirst: ReturnType<typeof vi.fn> };
   lead: { findFirst: ReturnType<typeof vi.fn> };
-  estimate: { findUnique: ReturnType<typeof vi.fn> };
+  estimate: { findUnique: ReturnType<typeof vi.fn>; findFirst: ReturnType<typeof vi.fn> };
   customer: { findUnique: ReturnType<typeof vi.fn> };
   serviceLocation: { findFirst: ReturnType<typeof vi.fn> };
   invoice: { findFirst: ReturnType<typeof vi.fn> };
   jobAssignee: { createMany: ReturnType<typeof vi.fn> };
-  userPermissionOverride: { findMany: ReturnType<typeof vi.fn> };
-  rolePermission: { findMany: ReturnType<typeof vi.fn> };
   $transaction: ReturnType<typeof vi.fn>;
 };
 
@@ -53,9 +51,6 @@ const ESTIMATE_OWNED_BY_TECH = {
 
 
 function grantTechCreateJob() {
-  mockPrisma.userPermissionOverride.findMany.mockResolvedValue([
-    { action: 'create', subject: 'Job', effect: 'allow' },
-  ]);
 }
 
 // #1996 security follow-up: TECHNICIAN's existing-customer branch now requires `read Customer`
@@ -63,10 +58,6 @@ function grantTechCreateJob() {
 // This suite is about crew auto-assignment ownership, not that gate — grant it on top of
 // TECHNICIAN's role defaults so the customer_id lookups in this file resolve to a readable row.
 function grantTechReadCustomer() {
-  mockPrisma.rolePermission.findMany.mockResolvedValue([
-    ...DEFAULT_GRANTS.filter((g) => g.role === 'TECHNICIAN'),
-    { role: 'TECHNICIAN', action: 'read', subject: 'Customer' },
-  ]);
   clearPermissionCache();
 }
 
@@ -80,6 +71,8 @@ beforeEach(() => {
   mockPrisma.invoice.findFirst.mockResolvedValue(null); // no blocking deposit invoice
   mockPrisma.job.findFirst.mockResolvedValue(null);      // no existing job for the estimate
   mockPrisma.lead.findFirst.mockResolvedValue({ id: 'lead-1' }); // the lead opens for the requester
+  // The estimate is within the requester's reach (ticket 33 asks that first; one out of reach answers like a missing one).
+  mockPrisma.estimate.findFirst.mockResolvedValue({ id: ESTIMATE_APPROVED_FIXTURE.id });
   mockPrisma.customer.findUnique.mockResolvedValue({ id: CUSTOMER_FIXTURE.id });
   mockPrisma.serviceLocation.findFirst.mockResolvedValue({ id: LOCATION_FIXTURE.id });
 

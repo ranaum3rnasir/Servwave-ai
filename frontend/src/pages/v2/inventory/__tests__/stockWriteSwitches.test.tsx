@@ -45,7 +45,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   useInventoryAlertStore.setState({ pending: null, nonce: 0 });
   mockApi.get.mockImplementation((async (url: string) => {
-    if (url === '/api/permission-switches/me') return { data: { admin_box: false, values: { show_stock_page: true }, rules: [] } };
+    if (url === '/api/permission-switches/me') return { data: { admin_box: false, values: { view_stock: true }, rules: [] } };
     if (url.startsWith('/api/inventory/items')) return { data: { data: ITEMS } };
     if (url.startsWith('/api/inventory/locations')) return { data: { locations: LOCATIONS } };
     if (url.startsWith('/api/inventory/assets')) return { data: { data: [], meta: { total: 0 } } };

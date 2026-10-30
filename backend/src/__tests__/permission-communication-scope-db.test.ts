@@ -72,6 +72,7 @@ suite('the call log and call detail follow Communication scope (real database)',
     org: string,
     values: Record<string, boolean | string>,
     base: Role = 'DISPATCHER',
+    departmentId?: string,
   ): Promise<Person & { api: () => Promise<Api> }> {
     const key = `scope-role-${++sequence}`;
     const role = await fx.addCustomRole(org, key, base);
@@ -80,7 +81,7 @@ suite('the call log and call detail follow Communication scope (real database)',
       values: { view_jobs: true, jobs_scope: 'attached', access_communication: true, view_communication: true, ...values },
       actorId: null, reason: 'manual',
     });
-    const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
+    const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id, departmentId });
     return Object.assign(person, { api: () => fx.signedInAs(person) });
   }
 
@@ -122,7 +123,7 @@ suite('the call log and call detail follow Communication scope (real database)',
       const { org, admin } = await newOrg();
       const mine = await addNumber(org, 'run-linked');
       const other = await addNumber(org, 'run-unlinked');
-      const person = await personWith(org, { communication_scope: 'linked_to_me' }, 'TECHNICIAN');
+      const person = await personWith(org, { communication_scope: 'attached' }, 'TECHNICIAN');
       const onMine = await addCall(org, { numberId: mine });
       const onOther = await addCall(org, { numberId: other });
 
@@ -141,7 +142,7 @@ suite('the call log and call detail follow Communication scope (real database)',
     it('lists a call a person placed or answered on a number that is not linked to them', async () => {
       const { org } = await newOrg();
       const other = await addNumber(org, 'run-unlinked');
-      const person = await personWith(org, { communication_scope: 'linked_to_me' });
+      const person = await personWith(org, { communication_scope: 'attached' });
       const theirs = await addCall(org, { numberId: other, agentId: person.id });
       const someoneElses = await addCall(org, { numberId: other, agentId: (await personWith(org, {})).id });
       const ids = idsOf((await (await person.api()).get('/api/communication/calls')).body);
@@ -152,8 +153,8 @@ suite('the call log and call detail follow Communication scope (real database)',
     it('shows a number to everyone it is linked to', async () => {
       const { org, admin } = await newOrg();
       const shared = await addNumber(org, 'run-shared');
-      const a = await personWith(org, { communication_scope: 'linked_to_me' });
-      const b = await personWith(org, { communication_scope: 'linked_to_me' }, 'SALES');
+      const a = await personWith(org, { communication_scope: 'attached' });
+      const b = await personWith(org, { communication_scope: 'attached' }, 'SALES');
       await link(admin, shared, [a, b]);
       const call = await addCall(org, { numberId: shared });
       expect(idsOf((await (await a.api()).get('/api/communication/calls')).body)).toContain(call);
@@ -164,7 +165,7 @@ suite('the call log and call detail follow Communication scope (real database)',
       const { org, admin } = await newOrg();
       const main = await addNumber(org, 'run-main-line', { orgDefault: true });
       // The main-line switch is off here: it is the one thing besides a tick that shows a person the main line.
-      const person = await personWith(org, { communication_scope: 'linked_to_me', see_main_line_when_no_number: false });
+      const person = await personWith(org, { communication_scope: 'attached', see_main_line_when_no_number: false });
       const call = await addCall(org, { numberId: main });
       expect(idsOf((await (await person.api()).get('/api/communication/calls')).body)).not.toContain(call);
 
@@ -178,7 +179,7 @@ suite('the call log and call detail follow Communication scope (real database)',
       const tiedToNothing = await addCall(org, { numberId: number });
       const noNumber = await addCall(org);
 
-      const narrow = await personWith(org, { communication_scope: 'linked_to_me' });
+      const narrow = await personWith(org, { communication_scope: 'attached' });
       const narrowIds = idsOf((await (await narrow.api()).get('/api/communication/calls')).body);
       expect(narrowIds).not.toContain(tiedToNothing);
       expect(narrowIds).not.toContain(noNumber);
@@ -204,19 +205,19 @@ suite('the call log and call detail follow Communication scope (real database)',
       const onMain = await addCall(org, { numberId: main });
       const onOther = await addCall(org, { numberId: other });
 
-      const on = await personWith(org, { communication_scope: 'linked_to_me', see_main_line_when_no_number: true }, 'TECHNICIAN');
+      const on = await personWith(org, { communication_scope: 'attached', see_main_line_when_no_number: true }, 'TECHNICIAN');
       const onIds = idsOf((await (await on.api()).get('/api/communication/calls')).body);
       expect(onIds).toContain(onMain);
       expect(onIds).not.toContain(onOther);
 
-      const off = await personWith(org, { communication_scope: 'linked_to_me', see_main_line_when_no_number: false }, 'TECHNICIAN');
+      const off = await personWith(org, { communication_scope: 'attached', see_main_line_when_no_number: false }, 'TECHNICIAN');
       expect(idsOf((await (await off.api()).get('/api/communication/calls')).body)).not.toContain(onMain);
     });
 
     it('lists only the placed and answered calls with the switch off, and a main-line call tied to a job they can open still opens from the job', async () => {
       const { org, admin, customer } = await newOrg();
       const main = await addNumber(org, 'run-main-line', { orgDefault: true });
-      const person = await personWith(org, { communication_scope: 'linked_to_me', see_main_line_when_no_number: false });
+      const person = await personWith(org, { communication_scope: 'attached', see_main_line_when_no_number: false });
       const job = await fx.addJob(org, customer, { crew: [person.id] });
       const otherJob = await fx.addJob(org, customer, { crew: [admin.id] });
       const placed = await addCall(org, { numberId: main, agentId: person.id });
@@ -233,7 +234,7 @@ suite('the call log and call detail follow Communication scope (real database)',
       const { org, admin } = await newOrg();
       const main = await addNumber(org, 'run-main-line', { orgDefault: true });
       const mine = await addNumber(org, 'run-linked');
-      const person = await personWith(org, { communication_scope: 'linked_to_me', see_main_line_when_no_number: true });
+      const person = await personWith(org, { communication_scope: 'attached', see_main_line_when_no_number: true });
       const onMain = await addCall(org, { numberId: main });
 
       expect(idsOf((await (await person.api()).get('/api/communication/calls')).body)).toContain(onMain);
@@ -262,13 +263,13 @@ suite('the call log and call detail follow Communication scope (real database)',
       const main = await addNumber(org, 'run-main-line', { orgDefault: true });
       const mine = await addNumber(org, 'run-linked');
       const other = await addNumber(org, 'run-unlinked');
-      const narrow = await personWith(org, { communication_scope: 'linked_to_me', see_main_line_when_no_number: true });
+      const narrow = await personWith(org, { communication_scope: 'attached', see_main_line_when_no_number: true });
 
       expect(numberIds((await (await narrow.api()).get('/api/communication/numbers')).body)).toEqual([main]);
       await link(admin, mine, [narrow]);
       expect(numberIds((await (await narrow.api()).get('/api/communication/numbers')).body)).toEqual([mine]);
 
-      const noFallback = await personWith(org, { communication_scope: 'linked_to_me', see_main_line_when_no_number: false });
+      const noFallback = await personWith(org, { communication_scope: 'attached', see_main_line_when_no_number: false });
       expect(numberIds((await (await noFallback.api()).get('/api/communication/numbers')).body)).toEqual([]);
 
       const wide = await personWith(org, { communication_scope: 'all', see_main_line_when_no_number: false });
@@ -279,7 +280,7 @@ suite('the call log and call detail follow Communication scope (real database)',
       const { org } = await newOrg();
       const main = await addNumber(org, 'run-main-line', { orgDefault: true });
       await addNumber(org, 'run-unlinked');
-      const narrow = await personWith(org, { communication_scope: 'linked_to_me', see_main_line_when_no_number: true });
+      const narrow = await personWith(org, { communication_scope: 'attached', see_main_line_when_no_number: true });
       const res = await (await narrow.api()).post('/api/communication/numbers/sync-if-stale', {});
       expect(res.status).toBe(200);
       expect(numberIds(res.body)).toEqual([main]);
@@ -291,7 +292,7 @@ suite('the call log and call detail follow Communication scope (real database)',
       const { org, admin, customer } = await newOrg();
       const mine = await addNumber(org, 'run-linked');
       const other = await addNumber(org, 'run-unlinked');
-      const person = await personWith(org, { communication_scope: 'linked_to_me' });
+      const person = await personWith(org, { communication_scope: 'attached' });
       const job = await fx.addJob(org, customer, { crew: [person.id] });
       const otherJob = await fx.addJob(org, customer, { crew: [admin.id] });
       await link(admin, mine, [person]);
@@ -314,12 +315,12 @@ suite('the call log and call detail follow Communication scope (real database)',
       const call = await addCall(org, { numberId: other, customerId: customer });
 
       const canView = await personWith(org, {
-        communication_scope: 'linked_to_me', view_customers: true, view_leads: true, jobs_scope: 'all', leads_scope: 'all',
+        communication_scope: 'attached', view_customers: true, view_leads: true, jobs_scope: 'all', leads_scope: 'all',
       });
       expect((await (await canView.api()).get(`/api/communication/calls/${call}`)).status).toBe(200);
 
       const cannot = await personWith(org, {
-        ...EVERY_TOGGLE_OFF, access_communication: true, view_communication: true, communication_scope: 'linked_to_me',
+        ...EVERY_TOGGLE_OFF, access_communication: true, view_communication: true, communication_scope: 'attached',
       });
       expect((await (await cannot.api()).get(`/api/communication/calls/${call}`)).status).toBe(404);
     });
@@ -342,7 +343,7 @@ suite('the call log and call detail follow Communication scope (real database)',
       const { org, admin } = await newOrg();
       const mine = await addNumber(org, 'run-linked');
       const other = await addNumber(org, 'run-unlinked');
-      const person = await personWith(org, { communication_scope: 'linked_to_me', see_main_line_when_no_number: false }, 'TECHNICIAN');
+      const person = await personWith(org, { communication_scope: 'attached', see_main_line_when_no_number: false }, 'TECHNICIAN');
       await link(admin, mine, [person]);
 
       const onOther = await addCall(org, { numberId: other, outboundTo: DIALLED });
@@ -361,7 +362,7 @@ suite('the call log and call detail follow Communication scope (real database)',
     it('answers for a call tied to nothing on an unlinked number only to a person on All', async () => {
       const { org } = await newOrg();
       const call = await addCall(org, { numberId: await addNumber(org, 'run-unlinked'), outboundTo: DIALLED });
-      expect(await outcomeFor(await personWith(org, { communication_scope: 'linked_to_me' }))).toBeNull();
+      expect(await outcomeFor(await personWith(org, { communication_scope: 'attached' }))).toBeNull();
       expect((await outcomeFor(await personWith(org, { communication_scope: 'all' })))?.id).toBe(call);
     });
 
@@ -369,8 +370,8 @@ suite('the call log and call detail follow Communication scope (real database)',
       const { org } = await newOrg();
       const main = await addNumber(org, 'run-main-line', { orgDefault: true });
       const call = await addCall(org, { numberId: main, outboundTo: DIALLED });
-      const on = await personWith(org, { communication_scope: 'linked_to_me', see_main_line_when_no_number: true }, 'TECHNICIAN');
-      const off = await personWith(org, { communication_scope: 'linked_to_me', see_main_line_when_no_number: false }, 'TECHNICIAN');
+      const on = await personWith(org, { communication_scope: 'attached', see_main_line_when_no_number: true }, 'TECHNICIAN');
+      const off = await personWith(org, { communication_scope: 'attached', see_main_line_when_no_number: false }, 'TECHNICIAN');
       expect((await outcomeFor(on))?.id).toBe(call);
       expect(await outcomeFor(off)).toBeNull();
     });
@@ -387,8 +388,8 @@ suite('the call log and call detail follow Communication scope (real database)',
         data: { id: randomUUID(), organization_id: org, thread_id: thread, direction: 'in', body: 'run-text', ts: new Date(), status: 'received', phone_number_id: main },
         select: { id: true },
       });
-      const on = await personWith(org, { communication_scope: 'linked_to_me', see_main_line_when_no_number: true });
-      const off = await personWith(org, { communication_scope: 'linked_to_me', see_main_line_when_no_number: false });
+      const on = await personWith(org, { communication_scope: 'attached', see_main_line_when_no_number: true });
+      const off = await personWith(org, { communication_scope: 'attached', see_main_line_when_no_number: false });
       expect((await (await on.api()).get('/api/communication/unread-counts')).body.sms).toBe(1);
       expect((await (await off.api()).get('/api/communication/unread-counts')).body.sms).toBe(0);
     });
@@ -426,8 +427,8 @@ suite('the call log and call detail follow Communication scope (real database)',
 
     it('lists the conversations in a mailbox the person holds, not a colleague\'s, nor customer-only or loose mail', async () => {
       const { org, customer } = await newOrg();
-      const person = await personWith(org, { communication_scope: 'linked_to_me' }, 'TECHNICIAN');
-      const colleague = await personWith(org, { communication_scope: 'linked_to_me' });
+      const person = await personWith(org, { communication_scope: 'attached' }, 'TECHNICIAN');
+      const colleague = await personWith(org, { communication_scope: 'attached' });
       const mine = await addMailbox(org, person.id);
       const theirs = await addMailbox(org, colleague.id);
       const inMine = await addEmail(org, mine);
@@ -448,7 +449,7 @@ suite('the call log and call detail follow Communication scope (real database)',
       const theirs = await addMailbox(org, colleague.id);
       const inTheirs = await addEmail(org, theirs);
 
-      const fallback = await personWith(org, { communication_scope: 'linked_to_me', see_main_line_when_no_number: true });
+      const fallback = await personWith(org, { communication_scope: 'attached', see_main_line_when_no_number: true });
       expect(emailIds((await (await fallback.api()).get('/api/communication/emails')).body)).not.toContain(inTheirs);
 
       const wide = await personWith(org, { communication_scope: 'all' });
@@ -457,7 +458,7 @@ suite('the call log and call detail follow Communication scope (real database)',
 
     it('opens a job-tied message outside the person\'s mailboxes through the job only, and every message of their own mailbox', async () => {
       const { org, admin, customer } = await newOrg();
-      const person = await personWith(org, { communication_scope: 'linked_to_me' });
+      const person = await personWith(org, { communication_scope: 'attached' });
       const colleague = await personWith(org, {});
       const mine = await addMailbox(org, person.id);
       const theirs = await addMailbox(org, colleague.id);
@@ -476,7 +477,7 @@ suite('the call log and call detail follow Communication scope (real database)',
 
     it('counts unread email the way the Email page lists it', async () => {
       const { org } = await newOrg();
-      const person = await personWith(org, { communication_scope: 'linked_to_me' });
+      const person = await personWith(org, { communication_scope: 'attached' });
       const colleague = await personWith(org, {});
       const mine = await addMailbox(org, person.id);
       const theirs = await addMailbox(org, colleague.id);
@@ -530,7 +531,7 @@ suite('the call log and call detail follow Communication scope (real database)',
       const { org, admin, customer } = await newOrg();
       const mine = await addNumber(org, 'run-linked');
       const other = await addNumber(org, 'run-unlinked');
-      const person = await personWith(org, { communication_scope: 'linked_to_me' }, 'TECHNICIAN');
+      const person = await personWith(org, { communication_scope: 'attached' }, 'TECHNICIAN');
       await link(admin, mine, [person]);
       const thread = await addThread(org, { customerId: customer });
       const onMine = await addText(org, thread, { numberId: mine });
@@ -552,7 +553,7 @@ suite('the call log and call detail follow Communication scope (real database)',
       const { org, admin, customer } = await newOrg();
       const mine = await addNumber(org, 'run-linked');
       const other = await addNumber(org, 'run-unlinked');
-      const person = await personWith(org, { communication_scope: 'linked_to_me' }, 'TECHNICIAN');
+      const person = await personWith(org, { communication_scope: 'attached' }, 'TECHNICIAN');
       const onMine = await addThread(org, { customerId: customer });
       await addText(org, onMine, { numberId: mine });
       const onOther = await addThread(org);
@@ -571,7 +572,7 @@ suite('the call log and call detail follow Communication scope (real database)',
     it('keeps a text sent from the Organization default number in the sender\'s list with no linked number, and never lists a text with no number through the fallback', async () => {
       const { org, customer } = await newOrg();
       const main = await addNumber(org, 'run-main-line', { orgDefault: true });
-      const person = await personWith(org, { communication_scope: 'linked_to_me', see_main_line_when_no_number: false }, 'TECHNICIAN');
+      const person = await personWith(org, { communication_scope: 'attached', see_main_line_when_no_number: false }, 'TECHNICIAN');
       const mineThread = await addThread(org, { customerId: customer });
       await addText(org, mineThread, { numberId: main, direction: 'out', sentBy: person.id });
       const mainLineThread = await addThread(org);
@@ -581,7 +582,7 @@ suite('the call log and call detail follow Communication scope (real database)',
       expect(threadIds(off.body)).toContain(mineThread);
       expect(threadIds(off.body)).not.toContain(mainLineThread);
 
-      const on = await personWith(org, { communication_scope: 'linked_to_me', see_main_line_when_no_number: true }, 'TECHNICIAN');
+      const on = await personWith(org, { communication_scope: 'attached', see_main_line_when_no_number: true }, 'TECHNICIAN');
       const noNumberThread = await addThread(org);
       await addText(org, noNumberThread);
       const onList = await (await on.api()).get('/api/communication/threads');
@@ -592,7 +593,7 @@ suite('the call log and call detail follow Communication scope (real database)',
     it('lists the customer\'s reply to a text the person sent from the Organization default number, and no other main-line text (S08.6)', async () => {
       const { org, customer } = await newOrg();
       const main = await addNumber(org, 'run-main-line', { orgDefault: true });
-      const person = await personWith(org, { communication_scope: 'linked_to_me', see_main_line_when_no_number: false }, 'TECHNICIAN');
+      const person = await personWith(org, { communication_scope: 'attached', see_main_line_when_no_number: false }, 'TECHNICIAN');
       const colleague = await personWith(org, {});
       const minute = (n: number) => new Date(Date.UTC(2026, 9, 1, 10, n));
 
@@ -627,7 +628,7 @@ suite('the call log and call detail follow Communication scope (real database)',
 
     it('lists the person\'s own staff conversation, and not another person\'s', async () => {
       const { org } = await newOrg();
-      const person = await personWith(org, { communication_scope: 'linked_to_me' }, 'TECHNICIAN');
+      const person = await personWith(org, { communication_scope: 'attached' }, 'TECHNICIAN');
       const colleague = await personWith(org, {});
       const mineThread = await addThread(org, { staffUserId: person.id });
       await addText(org, mineThread);
@@ -642,7 +643,7 @@ suite('the call log and call detail follow Communication scope (real database)',
     it('opens a conversation from a job the person is on with their own messages and the job\'s, leaving out another job\'s', async () => {
       const { org, admin, customer } = await newOrg();
       const unlinked = await addNumber(org, 'run-unlinked');
-      const person = await personWith(org, { communication_scope: 'linked_to_me' });
+      const person = await personWith(org, { communication_scope: 'attached' });
       const myJob = await fx.addJob(org, customer, { crew: [person.id] });
       const otherJob = await fx.addJob(org, customer, { crew: [admin.id] });
       const thread = await addThread(org, { customerId: customer });
@@ -666,7 +667,7 @@ suite('the call log and call detail follow Communication scope (real database)',
     it('refuses a reply into a conversation the person cannot read, and still sends a new text to any number', async () => {
       const { org, customer } = await newOrg();
       const unlinked = await addNumber(org, 'run-unlinked');
-      const person = await personWith(org, { communication_scope: 'linked_to_me', contact_customers: true });
+      const person = await personWith(org, { communication_scope: 'attached', contact_customers: true });
       const thread = await addThread(org, { customerId: customer });
       await addText(org, thread, { numberId: unlinked });
       const api = await person.api();
@@ -682,7 +683,7 @@ suite('the call log and call detail follow Communication scope (real database)',
       const { org, admin, customer } = await newOrg();
       const mine = await addNumber(org, 'run-linked');
       const other = await addNumber(org, 'run-unlinked');
-      const person = await personWith(org, { communication_scope: 'linked_to_me' });
+      const person = await personWith(org, { communication_scope: 'attached' });
       await link(admin, mine, [person]);
       const ownThread = await addThread(org, { customerId: customer });
       await addText(org, ownThread, { numberId: mine });
@@ -701,6 +702,110 @@ suite('the call log and call detail follow Communication scope (real database)',
       const thread = await addThread(org);
       await addText(org, thread);
       expect(threadIds((await (await fx.signedInAs(admin)).get('/api/communication/threads')).body)).toContain(thread);
+    });
+  });
+
+  describe('Communication scope Team (P6: Attached for everyone in the person\'s department)', () => {
+    async function twoDepartments(org: string) {
+      return { north: await fx.addDepartment(org, 'North'), south: await fx.addDepartment(org, 'South') };
+    }
+
+    it('lists the calls on a number linked to anyone in the department and the calls a teammate answered, not another department\'s, and nothing of the team without a department', async () => {
+      const { org, admin } = await newOrg();
+      const { north, south } = await twoDepartments(org);
+      const me = await personWith(org, { communication_scope: 'team' }, 'DISPATCHER', north);
+      const mate = await personWith(org, { communication_scope: 'attached' }, 'TECHNICIAN', north);
+      const stranger = await personWith(org, { communication_scope: 'attached' }, 'TECHNICIAN', south);
+      const mateNumber = await addNumber(org, 'run-mate');
+      const strangerNumber = await addNumber(org, 'run-stranger');
+      await link(admin, mateNumber, [mate]);
+      await link(admin, strangerNumber, [stranger]);
+      const onMateNumber = await addCall(org, { numberId: mateNumber });
+      const answeredByMate = await addCall(org, { agentId: mate.id });
+      const onStrangerNumber = await addCall(org, { numberId: strangerNumber });
+      const answeredByStranger = await addCall(org, { agentId: stranger.id });
+
+      const list = await (await me.api()).get('/api/communication/calls');
+      expect(list.status).toBe(200);
+      expect(idsOf(list.body)).toEqual(expect.arrayContaining([onMateNumber, answeredByMate]));
+      for (const id of [onStrangerNumber, answeredByStranger]) expect(idsOf(list.body)).not.toContain(id);
+      expect((await (await me.api()).get(`/api/communication/calls/${onMateNumber}`)).status).toBe(200);
+      expect((await (await me.api()).get(`/api/communication/calls/${onStrangerNumber}`)).status).toBe(404);
+
+      const loner = await personWith(org, { communication_scope: 'team' });
+      const none = await (await loner.api()).get('/api/communication/calls');
+      expect(idsOf(none.body)).not.toContain(onMateNumber);
+      expect(idsOf(none.body)).not.toContain(answeredByMate);
+    });
+
+    it('lists the texts on a teammate\'s number and the ones a teammate sent, not another department\'s', async () => {
+      const { org, admin, customer } = await newOrg();
+      const { north, south } = await twoDepartments(org);
+      const me = await personWith(org, { communication_scope: 'team' }, 'DISPATCHER', north);
+      const mate = await personWith(org, { communication_scope: 'attached' }, 'TECHNICIAN', north);
+      const stranger = await personWith(org, { communication_scope: 'attached' }, 'TECHNICIAN', south);
+      const mateNumber = await addNumber(org, 'run-mate');
+      const strangerNumber = await addNumber(org, 'run-stranger');
+      await link(admin, mateNumber, [mate]);
+      await link(admin, strangerNumber, [stranger]);
+      const thread = await (async () => {
+        const id = randomUUID();
+        await db.messageThread.create({ data: { id, organization_id: org, channel: 'sms', campaign_type: 'customer_care', customer_id: customer } });
+        return id;
+      })();
+      const text = async (fields: { numberId?: string; sentBy?: string }) => {
+        const id = randomUUID();
+        await db.message.create({
+          data: {
+            id, organization_id: org, thread_id: thread, direction: fields.sentBy ? 'out' : 'in', body: 'run-text', ts: new Date(),
+            status: 'received', phone_number_id: fields.numberId ?? null, sent_by_user_id: fields.sentBy ?? null,
+          },
+        });
+        return id;
+      };
+      const onMate = await text({ numberId: mateNumber });
+      const sentByMate = await text({ sentBy: mate.id });
+      const onStranger = await text({ numberId: strangerNumber });
+
+      const res = await (await me.api()).get('/api/communication/threads');
+      expect(res.status).toBe(200);
+      const ids = (res.body.threads.find((t: { id: string }) => t.id === thread)?.messages ?? []).map((m: { id: string }) => m.id);
+      expect(ids).toEqual(expect.arrayContaining([onMate, sentByMate]));
+      expect(ids).not.toContain(onStranger);
+    });
+
+    it('lists the conversations in a mailbox a teammate holds, not another department\'s, nor loose mail', async () => {
+      const { org } = await newOrg();
+      const { north, south } = await twoDepartments(org);
+      const me = await personWith(org, { communication_scope: 'team' }, 'DISPATCHER', north);
+      const mate = await personWith(org, { communication_scope: 'attached' }, 'TECHNICIAN', north);
+      const stranger = await personWith(org, { communication_scope: 'attached' }, 'TECHNICIAN', south);
+      const mailbox = async (holder: Person) => {
+        const id = randomUUID();
+        await db.mailbox.create({ data: { id, organization_id: org, kind: 'user', user_id: holder.id, holder_user_id: holder.id, status: 'active' } });
+        return id;
+      };
+      const email = async (mailboxId: string | null) => {
+        const threadId = randomUUID();
+        if (mailboxId) await db.emailThread.create({ data: { id: threadId, organization_id: org, mailbox_id: mailboxId, origin: 'started' } });
+        const id = randomUUID();
+        await db.email.create({
+          data: {
+            id, organization_id: org, account: 'user', from: { name: null, email: 'someone@example.com' }, to: 'office@example.com',
+            subject: 'run-email', snippet: 's', body: ['b'], at: '1:00 PM', ts: BigInt(Date.now()), folder: 'inbox', thread_id: mailboxId ? threadId : null,
+          },
+        });
+        return id;
+      };
+      const inMate = await email(await mailbox(mate));
+      const inStranger = await email(await mailbox(stranger));
+      const loose = await email(null);
+
+      const res = await (await me.api()).get('/api/communication/emails');
+      expect(res.status).toBe(200);
+      const ids = res.body.emails.map((e: { id: string }) => e.id);
+      expect(ids).toContain(inMate);
+      for (const id of [inStranger, loose]) expect(ids).not.toContain(id);
     });
   });
 });

@@ -60,7 +60,7 @@ beforeEach(() => {
 describe('GET /communication/calls on "Linked to me"', () => {
   beforeEach(() => {
     mockAuthAs('dispatcher');
-    mockRoleSwitches({ communication_scope: 'linked_to_me', see_main_line_when_no_number: false, view_jobs: true, jobs_scope: 'attached' });
+    mockRoleSwitches({ communication_scope: 'attached', see_main_line_when_no_number: false, view_jobs: true, jobs_scope: 'attached' });
   });
 
   it('lists the calls on a linked number and the calls the person placed, and nothing else', async () => {
@@ -96,7 +96,7 @@ describe('GET /communication/calls on "Linked to me"', () => {
     const first = visible(capturedWhere(mockPrisma.callSession.findMany as Mock, 0));
 
     mockAuthAs('technician');
-    mockRoleSwitches({ communication_scope: 'linked_to_me' });
+    mockRoleSwitches({ communication_scope: 'attached' });
     linkNumbers(LINKED);
     await request(app).get('/api/communication/calls').set(authHeader('technician'));
     const second = visible(capturedWhere(mockPrisma.callSession.findMany as Mock, 1));
@@ -128,7 +128,7 @@ describe('GET /communication/calls on "All"', () => {
 describe('GET /communication/calls/:id', () => {
   beforeEach(() => {
     mockAuthAs('dispatcher');
-    mockRoleSwitches({ communication_scope: 'linked_to_me', view_jobs: true, jobs_scope: 'attached' });
+    mockRoleSwitches({ communication_scope: 'attached', view_jobs: true, jobs_scope: 'attached' });
     linkNumbers(LINKED);
   });
 
@@ -160,7 +160,7 @@ describe('GET /communication/calls/:id', () => {
 });
 
 describe('the main-line fallback on the call log and call detail', () => {
-  const SIGNED_IN = { communication_scope: 'linked_to_me', view_jobs: true, jobs_scope: 'attached' } as const;
+  const SIGNED_IN = { communication_scope: 'attached', view_jobs: true, jobs_scope: 'attached' } as const;
 
   async function logFor(role: 'dispatcher' | 'technician', switches: Record<string, boolean | string>) {
     mockAuthAs(role);
@@ -237,7 +237,7 @@ describe('GET /communication/calls/outcome ("did my call connect") follows the s
 
   beforeEach(() => {
     mockAuthAs('dispatcher');
-    mockRoleSwitches({ communication_scope: 'linked_to_me', see_main_line_when_no_number: false, view_jobs: true, jobs_scope: 'attached' });
+    mockRoleSwitches({ communication_scope: 'attached', see_main_line_when_no_number: false, view_jobs: true, jobs_scope: 'attached' });
     linkNumbers(LINKED);
   });
 
@@ -257,9 +257,9 @@ describe('GET /communication/calls/outcome ("did my call connect") follows the s
 
   it('reflects the main-line fallback, on and off', async () => {
     linkNumbers();
-    mockRoleSwitches({ communication_scope: 'linked_to_me', see_main_line_when_no_number: true, view_jobs: true, jobs_scope: 'attached' });
+    mockRoleSwitches({ communication_scope: 'attached', see_main_line_when_no_number: true, view_jobs: true, jobs_scope: 'attached' });
     expect(await answers(ON_MAIN_LINE)).toBe(true);
-    mockRoleSwitches({ communication_scope: 'linked_to_me', see_main_line_when_no_number: false, view_jobs: true, jobs_scope: 'attached' });
+    mockRoleSwitches({ communication_scope: 'attached', see_main_line_when_no_number: false, view_jobs: true, jobs_scope: 'attached' });
     expect(await answers(ON_MAIN_LINE)).toBe(false);
   });
 

@@ -560,7 +560,7 @@ describe('#2043 — nav registry, Inventory group children (wrong subject)', () 
   it('shows Purchase Orders / Vendors nav rows to an ability with read Inventory but neither read PurchaseOrder nor read Vendor (must NOT — the child is keyed on the wrong subject)', () => {
     const inventoryOnly = buildAbility([{ action: 'read', subject: 'Inventory' }]);
     // Roles & Permissions S02.20: the rows follow the person's switches, so this person holds only Stock's pair.
-    const labels = rowsFor(build(inventoryOnly, { view_stock: true, show_stock_page: true })).map((r) => r.dest.label);
+    const labels = rowsFor(build(inventoryOnly, { view_stock: true })).map((r) => r.dest.label);
 
     expect(labels).not.toContain('Purchase Orders');
     expect(labels).not.toContain('Vendors');
@@ -573,9 +573,9 @@ describe('#2043 — nav registry, Inventory group children (wrong subject)', () 
       { action: 'read', subject: 'Vendor' },
     ]);
     const labels = rowsFor(build(fullRead, {
-      view_stock: true, show_stock_page: true,
-      view_purchase_orders: true, show_purchase_orders_page: true,
-      view_vendors: true, show_vendors_page: true,
+      view_stock: true,
+      view_purchase_orders: true,
+      view_vendors: true,
     })).map((r) => r.dest.label);
 
     expect(labels).toContain('Purchase Orders');

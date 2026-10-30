@@ -14,7 +14,10 @@
 export interface EstimateActivityEvent {
   id: string;
   action: string;
+  /** The login address of who did it: sent to an Admin only (re-audit N6). */
   actor_email?: string | null;
+  /** Who did it, by name: what everyone else gets. */
+  actor_name?: string | null;
   metadata?: Record<string, unknown> | null;
   created_at: string;
 }

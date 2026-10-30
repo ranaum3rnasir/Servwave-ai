@@ -1,9 +1,8 @@
 /* =============================================================================
    Roles & Permissions, PRD 1, slice S01.19 - the catalog is the only source of what a person may do.
 
-   A role-permission row and a per-person override row (today's grant sources) are kept in the database for
-   rollback but are no longer read: only a person's switches, and the fixed reads every signed-in person has,
-   decide access. A custom role copied from Admin is an ordinary switch set; only the built-in Admin with no
+   The old role-permission and per-person override tables are gone (migration M10): only a person's switches, and
+   the fixed reads every signed-in person has, decide access. A custom role copied from Admin is an ordinary switch set; only the built-in Admin with no
    custom role is the Admin box.
 
    Everything goes through the public interface: the routes, called as people on built-in roles and on custom
@@ -59,40 +58,28 @@ suite('the catalog is the only source of access (real database)', () => {
     return Object.assign(person, { api: () => fx.signedInAs(person) });
   }
 
-  describe('a role-permission row and a per-person override row change nobody\'s access', () => {
-    it('does not hand a grant to a person whose switches do not carry it, whatever their role\'s rows or their own override rows say', async () => {
+  describe('only a person\'s switches decide what they may do', () => {
+    it('does not hand a grant to a person whose switches do not carry it', async () => {
       const { org, customer } = await fx.newOrg();
       const job = await fx.addJob(org, customer);
       // Reaches every job, but holds no switch that carries the renumber grant.
       const person = await personWith(org, { view_jobs: true, jobs_scope: 'all' });
-      // The rows an old Roles editor and the old per-person dialog would have written.
-      const roleKey = (await db.customRole.findFirstOrThrow({ where: { organization_id: org, key: { startsWith: 'source-role-' } } })).key;
-      await db.rolePermission.create({ data: { organization_id: org, role: roleKey, action: 'renumber', subject: 'Job' } });
-      await db.userPermissionOverride.create({
-        data: { organization_id: org, user_id: person.id, action: 'renumber', subject: 'Job', effect: 'allow' },
-      });
-
       const res = await (await person.api()).post(`/api/jobs/${job.id}/number/preview`, { number: 'J-9001' });
       expect(res.status).toBe(403);
     });
 
-    it('does not take a grant away from a person whose switches carry it, whatever a deny override row says', async () => {
+    it('lets a person whose switches carry a grant use it', async () => {
       const { org, customer } = await fx.newOrg();
       const job = await fx.addJob(org, customer);
       const dispatcher = await fx.addUser(org, 'dispatcher', 'DISPATCHER');
-      await db.userPermissionOverride.create({
-        data: { organization_id: org, user_id: dispatcher.id, action: 'read', subject: 'Job', effect: 'deny' },
-      });
-      await db.rolePermission.deleteMany({ where: { organization_id: org, role: 'DISPATCHER' } });
 
       const res = await (await fx.signedInAs(dispatcher)).get(`/api/jobs/${job.id}`);
       expect(res.status).toBe(200);
     });
 
-    it('lets a person with no role-permission rows at all read the reference data every signed-in person reads', async () => {
+    it('lets a person read the reference data every signed-in person reads', async () => {
       const { org } = await fx.newOrg();
       const technician = await fx.addUser(org, 'tech', 'TECHNICIAN');
-      await db.rolePermission.deleteMany({ where: { organization_id: org } });
       const api = await fx.signedInAs(technician);
 
       for (const path of ['/api/tags', '/api/task-categories', '/api/notifications']) {
@@ -119,7 +106,7 @@ suite('the catalog is the only source of access (real database)', () => {
       const lead = await fx.addUser(org, 'lead', 'ADMIN', { customRoleId: created.body.id });
       expect((await (await fx.signedInAs(lead)).get('/api/users')).status).toBe(200);
 
-      await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { view_users: false, create_users: false, invite_users: false, edit_users: false, delete_users: false, show_users_teams_page: false, manage_roles_and_permissions: false }, actorId: null, reason: 'manual' });
+      await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { view_users: false }, actorId: null, reason: 'manual' });
       expect((await (await fx.signedInAs(lead)).get('/api/users')).status).toBe(403);
       expect((await adminApi.get('/api/users')).status).toBe(200);
     });

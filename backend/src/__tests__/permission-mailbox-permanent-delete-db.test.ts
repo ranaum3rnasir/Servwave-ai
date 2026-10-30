@@ -15,8 +15,8 @@
        refused;
      - a mailbox nobody holds (the user was switched off without a handover, or held someone else's) is merged into the main
        mailbox in the SAME transaction as the delete, its conversations with it, and nothing is left unheld;
-     - a user with real history, an active user, and the missing Delete users switch are refused as before, and a refused
-       delete changes nothing in the mailbox world;
+     - a user with real history, an active user, and a non-Admin are refused as before, and a refused delete changes nothing
+       in the mailbox world;
      - no foreign key from the mailbox tables to users blocks a delete (read from the database itself);
      - a message the user sent keeps its recorded From.
 
@@ -118,20 +118,22 @@ suite('permanent delete keeps working with mailboxes (real database, real routes
   /** A person on a fresh custom role holding exactly the switch values under test, with the Email page open. */
   async function personWith(org: string, values: Record<string, boolean | string> = {}, opts: { name?: string; mailbox?: boolean } = {}): Promise<Who> {
     const key = `pd-role-${++sequence}`;
+    // `is_admin: true` makes the person an Admin (the flag, AL-18): it is not a switch, so it never reaches the role.
+    const { is_admin: asAdmin, ...switchValues } = values;
     const role = await fx.addCustomRole(org, key, 'DISPATCHER' as Role);
     await setRoleSwitchValues({
       organizationId: org, roleKey: key,
       values: {
         view_jobs: true, jobs_scope: 'attached', view_leads: true, leads_scope: 'attached', view_customers: true,
-        view_estimates: true, estimates_scope: 'attached', view_invoices: true, invoices_scope: 'attached',
-        access_communication: true, show_email: true, view_communication: true, communication_scope: 'linked_to_me',
+        view_estimates: true, view_invoices: true,
+        access_communication: true, show_email: true, view_communication: true, communication_scope: 'attached',
         contact_customers: true,
-        ...values,
+        ...switchValues,
       },
       actorId: null, reason: 'manual',
     });
     const first = opts.name ?? `P${sequence}`;
-    const person = await fx.addUser(org, first, 'DISPATCHER', { customRoleId: role.id });
+    const person = await fx.addUser(org, first, 'DISPATCHER', { customRoleId: role.id, isAdmin: asAdmin === true });
     if (opts.mailbox !== false) await fx.addUserMailbox(org, person);
     return Object.assign(person, { first, api: () => fx.signedInAs(person) });
   }
@@ -139,8 +141,8 @@ suite('permanent delete keeps working with mailboxes (real database, real routes
   const tagOf = () => randomUUID().replace(/-/g, '').replace(/[0-9]/g, (d) => 'abcdefghij'[Number(d)]!).slice(0, 8);
 
   /**
-   * A company with a frozen company part and its main mailbox; a holder of Edit users (no Delete users); a holder of Delete
-   * users (no Edit users); a reader of the main mailbox; and a person who could take a mailbox over.
+   * A company with a frozen company part and its main mailbox; two Admins (managing people is the Admin flag's alone, AL-18),
+   * one who deactivates and one who deletes; a reader of the main mailbox; and a person who could take a mailbox over.
    */
   async function world() {
     const made = await fx.newOrg();
@@ -153,8 +155,8 @@ suite('permanent delete keeps working with mailboxes (real database, real routes
     await db.mailbox.create({ data: { id: main, organization_id: org, kind: 'main', status: 'active' } });
     await db.mailboxAddress.create({ data: { local_part: part, organization_id: org, mailbox_id: main, is_primary: true } });
 
-    const editor = await personWith(org, { view_users: true, edit_users: true, delete_users: false });
-    const deleter = await personWith(org, { view_users: true, edit_users: false, delete_users: true });
+    const editor = await personWith(org, { view_users: true, is_admin: true });
+    const deleter = await personWith(org, { view_users: true, is_admin: true });
     const reader = await personWith(org);
     await db.mailboxReader.create({ data: { organization_id: org, mailbox_id: main, user_id: reader.id } });
     const heir = await personWith(org, {}, { name: 'Hank' });
@@ -436,32 +438,20 @@ suite('permanent delete keeps working with mailboxes (real database, real routes
       expect(await mailboxRow(box)).toMatchObject({ user_id: leaver.id, status: 'active' });
     });
 
-    it('refuses permanent delete and the two-step login reset without Delete users, even with Edit users, and changes nothing', async () => {
+    it('refuses permanent delete and the two-step login reset to a non-Admin, and changes nothing', async () => {
       const w = await world();
       const { leaver, box } = await leaverWith(w, 'Una');
       await db.user.update({ where: { id: leaver.id }, data: { is_active: false, mfa_email_enrolled: true }, select: { id: true } });
-      const editorOnly = await w.editor.api();
+      const nonAdmin = await w.reader.api();
 
-      expect((await editorOnly.delete(`/api/users/${leaver.id}/permanent`)).status).toBe(403);
-      expect((await editorOnly.post(`/api/users/${leaver.id}/mfa/reset`)).status).toBe(403);
+      expect((await nonAdmin.delete(`/api/users/${leaver.id}/permanent`)).status).toBe(403);
+      expect((await nonAdmin.post(`/api/users/${leaver.id}/mfa/reset`)).status).toBe(403);
 
       expect(await userRow(leaver.id)).toMatchObject({ mfa_email_enrolled: true });
       expect(await mailboxRow(box)).toMatchObject({ user_id: leaver.id, holder_user_id: leaver.id, status: 'active' });
 
-      // Delete users alone does the delete and the reset, and does not stand in for Edit users.
+      // An Admin does the reset.
       expect((await (await w.deleter.api()).post(`/api/users/${leaver.id}/mfa/reset`)).status).toBe(200);
-      expect((await deactivate(w.deleter, leaver)).status).toBe(403);
-    });
-
-    it('lets a holder of Edit users alone deactivate and hand over, and not delete', async () => {
-      const w = await world();
-      const { person, mailbox } = await invite(w, 'Ivy', 'Mistake');
-
-      expect((await deactivate(w.editor, person, w.heir.id)).status).toBe(200);
-      expect((await permanentDelete(w.editor, person)).status).toBe(403);
-
-      expect(await userRow(person.id)).not.toBeNull();
-      expect(await mailboxRow(mailbox.id)).toMatchObject({ user_id: person.id, holder_user_id: w.heir.id, status: 'handed' });
     });
   });
 

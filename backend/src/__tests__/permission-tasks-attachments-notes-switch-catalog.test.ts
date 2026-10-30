@@ -1,6 +1,7 @@
 /* =============================================================================
-   Roles & Permissions, PRD 1, slice S01.11 - the Tasks, Events, Attachments and Notes groups of the switch
-   catalog, and the Edit jobs / Edit leads switches that notes no longer ride on.
+   Roles & Permissions, PRD 1, slice S01.11 - the Tasks, Events and Notes groups of the switch catalog, and the
+   Edit jobs / Edit leads switches that notes no longer ride on. Uploads are the record's own data (P10, A8d), so the
+   Attachments group and Delete other people's notes are gone.
 
    Pure: no database. The expected values are the PRD's catalog table, written out as literals here (they
    are the source of truth the catalog is built from), never read back from the catalog.
@@ -16,38 +17,30 @@ import {
 import { validateSwitchSet } from '../lib/permissions/switches/validate';
 import { compileSwitchGrants } from '../lib/permissions/switches/store';
 
-type Row = [admin: boolean, sales: boolean, dispatcher: boolean, technician: boolean];
+type Row = [admin: boolean | string, sales: boolean | string, dispatcher: boolean | string, technician: boolean | string];
 
 const TASK_ROWS: Record<string, Row> = {
   'View tasks': [true, true, true, true],
   'Create tasks': [true, true, true, true],
   'Edit tasks': [true, true, true, true],
   'Delete tasks': [true, true, true, false],
-  'Show Tasks page': [true, true, true, true],
   'Assign tasks to others': [true, false, true, false],
-  'See all tasks': [true, false, true, false],
+  // The See-all toggle is the module's one scope switch now (P6): Attached, Team or All, Dispatcher on All as before.
+  'Tasks scope': ['all', 'attached', 'all', 'attached'],
 };
 const EVENT_ROWS: Record<string, Row> = {
   'View events': [true, false, true, true],
   'Create events': [true, false, true, false],
   'Edit events': [true, false, true, false],
   'Delete events': [true, false, true, false],
-  'See all calendar entries': [true, false, true, false],
-};
-const ATTACHMENT_ROWS: Record<string, Row> = {
-  'View attachments': [true, true, true, true],
-  'Upload attachments': [true, true, true, true],
-  'Edit attachments': [true, true, true, false],
-  'Delete attachments': [true, true, true, false],
+  'Events scope': ['all', 'attached', 'all', 'attached'],
 };
 const NOTE_ROWS: Record<string, Row> = {
   'Add notes': [true, true, true, true],
-  "Delete other people's notes": [true, false, true, false],
 };
 const GROUPS: Record<string, Record<string, Row>> = {
   Tasks: TASK_ROWS,
   Events: EVENT_ROWS,
-  Attachments: ATTACHMENT_ROWS,
   Notes: NOTE_ROWS,
 };
 
@@ -59,7 +52,7 @@ const entryOf = (label: string) => {
 };
 const pairs = (label: string) => entryOf(label).grants.map((g) => `${g.action}:${g.subject}`);
 
-describe('the Tasks, Events, Attachments and Notes rows of the switch catalog', () => {
+describe('the Tasks, Events and Notes rows of the switch catalog', () => {
   it('hold every switch the PRD lists, in its group, with the four preset values and help text', () => {
     for (const [group, rows] of Object.entries(GROUPS)) {
       for (const [label, [admin, sales, dispatcher, technician]] of Object.entries(rows)) {
@@ -101,64 +94,67 @@ describe('the Tasks, Events, Attachments and Notes rows of the switch catalog', 
   });
 });
 
-describe('Requires in the Tasks, Events, Attachments and Notes groups', () => {
+describe('Requires in the Tasks, Events and Notes groups', () => {
   it('puts every other Tasks switch under View tasks', () => {
-    for (const label of ['Create tasks', 'Edit tasks', 'Delete tasks', 'Show Tasks page', 'Assign tasks to others', 'See all tasks']) {
+    for (const label of ['Edit tasks', 'Delete tasks', 'Assign tasks to others']) {
       expect(entryOf(label).requires, label).toEqual([keyOfLabel('View tasks')]);
     }
+    // Create needs Edit (P2, AL-04).
+    expect(entryOf('Create tasks').requires).toEqual([keyOfLabel('View tasks'), keyOfLabel('Edit tasks')]);
+    // A scope is a choice over the module's rows, not a verb: it needs nothing and offers the standard three.
+    expect(entryOf('Tasks scope').requires).toEqual([]);
+    expect(entryOf('Tasks scope').choices).toEqual(['attached', 'team', 'all']);
   });
 
-  it('puts every other Events switch under View events, See all calendar entries included', () => {
-    for (const label of ['Create events', 'Edit events', 'Delete events', 'See all calendar entries']) {
+  it('puts every other Events switch under View events, and Events scope is the standard three-choice scope', () => {
+    for (const label of ['Edit events', 'Delete events']) {
       expect(entryOf(label).requires, label).toEqual([keyOfLabel('View events')]);
     }
+    expect(entryOf('Create events').requires).toEqual([keyOfLabel('View events'), keyOfLabel('Edit events')]);
+    expect(entryOf('Events scope').requires).toEqual([]);
+    expect(entryOf('Events scope').choices).toEqual(['attached', 'team', 'all']);
   });
 
-  it('puts upload, edit and delete of attachments under View attachments', () => {
-    for (const label of ['Upload attachments', 'Edit attachments', 'Delete attachments']) {
-      expect(entryOf(label).requires, label).toEqual([keyOfLabel('View attachments')]);
+  it('has no Attachments switch and no Delete-other-people\'s-notes switch: uploads and notes are the record\'s own data (P10)', () => {
+    const keys = SWITCH_CATALOG.map((x) => x.key);
+    for (const retired of ['view_attachments', 'upload_attachments', 'edit_attachments', 'delete_attachments', 'delete_others_notes']) {
+      expect(keys, retired).not.toContain(retired);
     }
+    expect(SWITCH_CATALOG.some((x) => x.module === 'Attachments')).toBe(false);
+    expect(SWITCH_CATALOG.some((x) => x.grants.some((g) => g.subject === 'Attachment' || (g.action as string) === 'delete_others_note'))).toBe(false);
   });
 
-  it('needs nothing for the two note switches: a note belongs to the job or lead the person can open', () => {
+  it('needs nothing for Add notes: a note belongs to the job or lead the person can open', () => {
     for (const label of Object.keys(NOTE_ROWS)) expect(entryOf(label).requires, label).toEqual([]);
-    const noView = { ...presetSwitchSet('ADMIN'), view_tasks: false, view_events: false, view_attachments: false };
+    const noView = { ...presetSwitchSet('ADMIN'), view_tasks: false, view_events: false };
     const refused = validateSwitchSet(noView).map((v) => v.switchKey);
     expect(refused).not.toContain(keyOfLabel('Add notes'));
-    expect(refused).not.toContain(keyOfLabel("Delete other people's notes"));
   });
 
-  it('refuses See all tasks on with View tasks off', () => {
-    const set = { ...presetSwitchSet('ADMIN'), view_tasks: false };
-    expect(validateSwitchSet(set).some((v) => v.switchKey === keyOfLabel('See all tasks'))).toBe(true);
+  it('refuses a value Tasks scope does not offer, and has no See-all toggle left (P6)', () => {
+    const set = { ...presetSwitchSet('ADMIN'), tasks_scope: 'everyone' };
+    expect(validateSwitchSet(set).some((v) => v.switchKey === keyOfLabel('Tasks scope'))).toBe(true);
+    expect(SWITCH_CATALOG.map((s) => s.label)).not.toContain('See all tasks');
+    expect(SWITCH_CATALOG.map((s) => s.label)).not.toContain('See all calendar entries');
   });
 });
 
 describe('what these switches compile into', () => {
-  it('maps the task switches onto the Task subject, with See all tasks as an action of its own', () => {
+  it('maps the task switches onto the Task subject; Tasks scope compiles into no grant of its own', () => {
     expect(pairs('View tasks')).toEqual(['read:Task']);
     expect(pairs('Create tasks')).toEqual(['create:Task']);
     expect(pairs('Edit tasks')).toEqual(['update:Task']);
     expect(pairs('Delete tasks')).toEqual(['delete:Task']);
     expect(pairs('Assign tasks to others')).toEqual(['assign:Task']);
-    expect(pairs('See all tasks')).toEqual(['see_all:Task']);
-    expect(pairs('Show Tasks page')).toEqual([]);
+    expect(pairs('Tasks scope')).toEqual([]);
   });
 
-  it('maps the event switches onto the CalendarEntry subject, See all calendar entries onto its own action', () => {
+  it('maps the event switches onto the CalendarEntry subject; Events scope compiles into no grant of its own', () => {
     expect(pairs('View events')).toEqual(['read:CalendarEntry']);
     expect(pairs('Create events')).toEqual(['create:CalendarEntry']);
     expect(pairs('Edit events')).toEqual(['update:CalendarEntry']);
     expect(pairs('Delete events')).toEqual(['delete:CalendarEntry']);
-    expect(entryOf('See all calendar entries').pending).toBeUndefined();
-    expect(pairs('See all calendar entries')).toEqual(['see_all:CalendarEntry']);
-  });
-
-  it('maps the attachment switches onto the Attachment subject', () => {
-    expect(pairs('View attachments')).toEqual(['read:Attachment']);
-    expect(pairs('Upload attachments')).toEqual(['create:Attachment']);
-    expect(pairs('Edit attachments')).toEqual(['update:Attachment']);
-    expect(pairs('Delete attachments')).toEqual(['delete:Attachment']);
+    expect(pairs('Events scope')).toEqual([]);
   });
 
   it('gives Add notes an action of its own on jobs and on leads, apart from Edit jobs and Edit leads', () => {
@@ -168,27 +164,18 @@ describe('what these switches compile into', () => {
     expect(pairs('Edit jobs')).not.toContain('add_note:Job');
   });
 
-  it('gives Delete other people\'s notes an action of its own on jobs and on leads (S04.25 built the check)', () => {
-    expect(entryOf("Delete other people's notes").pending).toBeUndefined();
-    expect(pairs("Delete other people's notes").sort()).toEqual(['delete_others_note:Job', 'delete_others_note:Lead']);
-    expect(pairs("Delete other people's notes")).not.toContain('delete:Attachment');
-    expect(pairs('Add notes')).not.toContain('delete_others_note:Job');
-  });
-
-  it('compiles the Technician preset into Add notes but no job or lead edit, and no task-wide or attachment delete', () => {
+  it('compiles the Technician preset into Add notes and Edit jobs and leads (Their own, AL-04), and no task-wide delete', () => {
     const tech = compileSwitchGrants(presetSwitchSet('TECHNICIAN')).map((g) => `${g.action}:${g.subject}`);
-    expect(tech).toEqual(expect.arrayContaining(['add_note:Job', 'add_note:Lead', 'read:Attachment', 'create:Attachment']));
-    expect(tech).not.toContain('update:Job');
-    expect(tech).not.toContain('update:Lead');
-    expect(tech).not.toContain('see_all:Task');
-    expect(tech).not.toContain('delete:Attachment');
+    expect(tech).toEqual(expect.arrayContaining(['add_note:Job', 'add_note:Lead']));
+    expect(tech).toEqual(expect.arrayContaining(['update:Job', 'update:Lead']));
     expect(tech).not.toContain('assign:Task');
   });
 
-  it('compiles the Dispatcher preset into See all tasks and the Admin preset into every task switch', () => {
+  it('compiles the Dispatcher preset into assigning tasks and editing jobs and leads; the scope is a value, not a grant', () => {
     const dispatcher = compileSwitchGrants(presetSwitchSet('DISPATCHER')).map((g) => `${g.action}:${g.subject}`);
-    expect(dispatcher).toEqual(expect.arrayContaining(['see_all:Task', 'assign:Task', 'update:Job', 'update:Lead']));
-    const sales = compileSwitchGrants(presetSwitchSet('SALES')).map((g) => `${g.action}:${g.subject}`);
-    expect(sales).not.toContain('see_all:Task');
+    expect(dispatcher).toEqual(expect.arrayContaining(['assign:Task', 'update:Job', 'update:Lead']));
+    expect(dispatcher.some((g) => g.startsWith('see_all'))).toBe(false);
+    expect(presetSwitchSet('DISPATCHER').tasks_scope).toBe('all');
+    expect(presetSwitchSet('SALES').tasks_scope).toBe('attached');
   });
 });

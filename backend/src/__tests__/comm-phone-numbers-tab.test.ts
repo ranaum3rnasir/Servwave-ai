@@ -23,7 +23,6 @@ vi.mock('../lib/comm-usage', async (importOriginal) => ({
 const mockPrisma = prisma as any;
 const NUMBER_ID = 'a1000000-0000-4000-8000-000000000001';
 const TAB = SWITCH_CATALOG.find((s) => s.label === 'Phone numbers tab')!.key;
-const USAGE = SWITCH_CATALOG.find((s) => s.label === 'Phone usage bar')!.key;
 const EDIT = SWITCH_CATALOG.find((s) => s.label === 'Edit communication records')!.key;
 
 const SECTION_OPEN = { access_communication: true, view_communication: true };
@@ -52,7 +51,9 @@ beforeEach(() => {
 
 describe('the Phone numbers tab, on the server', () => {
   it('names its switches in the catalog', () => {
-    expect([TAB, USAGE, EDIT]).toEqual(['phone_numbers_tab', 'phone_usage_bar', 'edit_communication_records']);
+    expect([TAB, EDIT]).toEqual(['phone_numbers_tab', 'edit_communication_records']);
+    // The usage bar has no switch of its own any more (P1): it follows the Phone numbers tab.
+    expect(SWITCH_CATALOG.map((s) => s.key)).not.toContain('phone_usage_bar');
   });
 
   describe.each([
@@ -116,21 +117,21 @@ describe('the Phone numbers tab, on the server', () => {
 });
 
 describe('the Phone usage bar, on the server', () => {
-  it('answers the usage endpoint with the switch on', async () => {
-    const res = await request(app).get('/api/communication/usage').set(as('technician', { [USAGE]: true }));
+  it('answers the usage endpoint with the Phone numbers tab on', async () => {
+    const res = await request(app).get('/api/communication/usage').set(as('technician', { [TAB]: true }));
     expect(res.status).toBe(200);
     expect(res.body.calling.used).toBe(3);
   });
 
-  it('refuses the usage endpoint with the switch off', async () => {
+  it('refuses the usage endpoint with the Phone numbers tab off', async () => {
     for (const role of ['dispatcher', 'technician'] as const) {
-      const res = await request(app).get('/api/communication/usage').set(as(role, { [USAGE]: false }));
+      const res = await request(app).get('/api/communication/usage').set(as(role, { [TAB]: false }));
       expect(res.status, role).toBe(403);
     }
   });
 
-  it('does not let the Phone numbers tab stand in for the usage bar', async () => {
-    const res = await request(app).get('/api/communication/usage').set(as('dispatcher', { [TAB]: true, [USAGE]: false }));
-    expect(res.status).toBe(403);
+  it('opens on the tab alone, with no usage switch to hold', async () => {
+    const res = await request(app).get('/api/communication/usage').set(as('dispatcher', { [TAB]: true }));
+    expect(res.status).toBe(200);
   });
 });

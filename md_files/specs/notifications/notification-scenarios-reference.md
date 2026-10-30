@@ -57,7 +57,7 @@ run before dispatch, so a version published before the retirement is skipped rat
 The Automation Center keeps exactly **one door** into this pipeline, stated here so nobody has to
 discover it by grepping: pressing **Test** in the workflow builder with "send to me" ticked emits
 `automation.message` to the person who pressed it
-(`backend/src/controllers/workflow.controller.ts:766`). That is a receipt the actor asked for,
+(`backend/src/controllers/workflow.controller.ts:772`). That is a receipt the actor asked for,
 delivered synchronously to one person, not a workflow run notifying anybody. It is classified
 `self` for that reason. One door is the whole count, and it is asserted rather than remembered -
 `backend/src/services/automations/__tests__/retired-in-app-step-references.test.ts` fails if a

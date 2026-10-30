@@ -66,7 +66,6 @@ function mockConditionedCustomerRead(_role: string, _rowId: string) {
  */
 function mockGrantsPlusExtra(role: string, extra: { action: string; subject: string }) {
   const rows = [...DEFAULT_GRANTS.filter((g) => g.role === role), { role, ...extra }];
-  mockPrisma.rolePermission.findMany.mockResolvedValue(rows);
   clearPermissionCache();
 }
 

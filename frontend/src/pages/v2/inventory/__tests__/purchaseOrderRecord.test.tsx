@@ -1,8 +1,8 @@
 /**
  * Roles & Permissions S07.10 - a purchase order opened from a job opens on View purchase orders alone.
  *
- * The single-order address (`/inventory/purchase-orders/:poId`) is a record route: it carries no list or Show guard
- * (the Purchase Orders list page is the one Show Purchase Orders page hides), and the page asks the server. With the
+ * The single-order address (`/inventory/purchase-orders/:poId`) is a record route: it carries no list guard
+ * (the order opens whatever the list switches say), and the page asks the server. With the
  * order readable it draws the order; with the server's refusal, or without View purchase orders at all, it draws a
  * plain not-found state that says nothing about whether the order exists. The HTTP layer is mocked; the page is the one
  * the route renders.
@@ -48,7 +48,7 @@ function serve(po: 'found' | 'refused' | 'missing', answer: Record<string, unkno
       if (po === 'found') return { data: { purchaseOrder: answer } };
       throw Object.assign(new Error('refused'), { response: { status: po === 'refused' ? 403 : 404, data: { error: 'x' } } });
     }
-    if (url === '/api/permission-switches/me') return { data: { admin_box: false, values: { show_purchase_orders_page: false }, rules: [] } };
+    if (url === '/api/permission-switches/me') return { data: { admin_box: false, values: { view_purchase_orders: false }, rules: [] } };
     return { data: { data: [], locations: [], activity: [], users: [], total: 0 } };
   }) as typeof mockApi.get);
 }
@@ -66,7 +66,7 @@ beforeEach(() => {
 });
 
 describe('a purchase order opened from a job', () => {
-  it('opens on View purchase orders alone, with the Show page switch off', async () => {
+  it('opens on View purchase orders alone, with the list switch off', async () => {
     serve('found');
     open([READ_POS]);
     expect(await screen.findByText(/PO-1001/)).toBeInTheDocument();

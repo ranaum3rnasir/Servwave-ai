@@ -17,7 +17,9 @@ const layout: CatalogLayout = buildCatalogLayout(SWITCH_CATALOG);
 
 const allModules = () => layout.groups.flatMap((g) => g.modules);
 const placedKeys = (): string[] => [
-  ...layout.dataScope,
+  ...layout.money.map((m) => m.key),
+  // Per-person settings are edited on the person's profile, not in the module rows (P1/A1), but each is still placed once.
+  ...layout.settings,
   ...allModules().flatMap((m) => [...m.lines, ...(m.scope ? [m.scope] : []), ...m.extras.map((e) => e.key)]),
 ];
 const rowOf = (module: string) => allModules().find((m) => m.module === module)!;
@@ -30,19 +32,19 @@ describe('the catalog layout', () => {
   });
 
   it('places the two switches another stream registered on the company record like any other', () => {
-    // View payments and payouts moved to the Invoices and payments group (payments go-live P8), beside Show Payments page.
+    // View payments and payouts moved to the Invoices and payments group (payments go-live P8).
     expect(rowOf('Settings').extras.map((e) => e.key)).toEqual(expect.arrayContaining(['manage_payout_account']));
-    expect(rowOf('Invoices').extras.map((e) => e.key)).toEqual(expect.arrayContaining(['view_payments', 'show_payments_page']));
+    expect(rowOf('Invoices').extras.map((e) => e.key)).toEqual(expect.arrayContaining(['view_payments']));
   });
 
   it('puts every module of the catalog in a named group, none left over', () => {
-    const catalogModules = new Set(SWITCH_CATALOG.map((s) => s.module).filter((m) => m !== 'Data Scope'));
+    const catalogModules = new Set(SWITCH_CATALOG.map((s) => s.module).filter((m) => m !== 'Data Scope' && m !== 'Money'));
     expect(new Set(allModules().map((m) => m.module))).toEqual(catalogModules);
   });
 
   it('gives the groups the PRD order, Inventory and Communication being headings over their modules', () => {
     expect(layout.groups.map((g) => g.label)).toEqual([
-      'Customers', 'Leads', 'Estimates', 'Jobs and visits', 'Invoices and payments', 'Attachments', 'Notes',
+      'Customers', 'Leads', 'Estimates', 'Jobs and visits', 'Invoices and payments', 'Notes',
       'Tasks and events', 'Inventory', 'Service Plans and Automations', 'Communication', 'Team and settings',
       'Time tracking', 'Pages',
     ]);
@@ -52,20 +54,48 @@ describe('the catalog layout', () => {
     expect(group('Pages').modules.map((m) => m.module)).toEqual(['Pages']);
   });
 
-  it('holds only See company figures and See financial data in the Data Scope block, See financial data last', () => {
-    expect(layout.dataScope).toEqual(['see_company_figures', 'see_financial_data']);
+  it('draws the three money classes as one Money row: See prices, with See costs and See company figures nested under it', () => {
+    expect(layout.money).toEqual([
+      { key: 'see_prices', parent: null },
+      { key: 'see_costs', parent: 'see_prices' },
+      { key: 'see_company_figures', parent: 'see_prices' },
+    ]);
+    // The money switches are a row of their own, not a module group and not a scope.
+    expect(allModules().map((m) => m.module)).not.toContain('Money');
+  });
+
+  it('keeps Edit and Create on the first line of their row although they also Require See prices', () => {
+    // See prices is the root of the money chain, not what the row narrows, so it does not move a switch off the row's lines.
+    expect(rowOf('Estimates').lines).toEqual(expect.arrayContaining(['view_estimates', 'edit_estimates']));
+    expect(rowOf('Invoices').lines).toEqual(expect.arrayContaining(['view_invoices', 'edit_invoices']));
+    expect(rowOf('Estimates').extras.find((e) => e.key === 'create_estimates')?.parent).toBe('edit_estimates');
+    expect(rowOf('Invoices').extras.find((e) => e.key === 'create_invoices')?.parent).toBe('edit_invoices');
   });
 
   it('puts a scope choice on the row of the records it narrows', () => {
     expect(rowOf('Leads').scope).toBe('leads_scope');
     expect(rowOf('Jobs').scope).toBe('jobs_scope');
-    expect(rowOf('Estimates').scope).toBe('estimates_scope');
-    expect(rowOf('Invoices').scope).toBe('invoices_scope');
-    expect(allModules().filter((m) => m.scope).map((m) => m.module).sort()).toEqual(['Estimates', 'Invoices', 'Jobs', 'Leads']);
+    // Estimates and invoices have no scope choice of their own (P6): their rows say they follow the leads and jobs.
+    expect(rowOf('Estimates').scope).toBeNull();
+    expect(rowOf('Estimates').scopeNote).not.toBeNull();
+    expect(rowOf('Invoices').scope).toBeNull();
+    expect(rowOf('Invoices').scopeNote).not.toBeNull();
+    // The modules that are not record anchors carry their one scope switch on their own row too (P6, AL-08).
+    expect(rowOf('Tasks').scope).toBe('tasks_scope');
+    expect(rowOf('Events').scope).toBe('events_scope');
+    expect(rowOf('Stock').scope).toBe('assets_scope');
+    expect(rowOf('Time tracking').scope).toBe('timesheets_scope');
+    expect(rowOf('Communication').scope).toBe('communication_scope');
+    expect(allModules().filter((m) => m.scope).map((m) => m.module).sort()).toEqual([
+      'Communication', 'Events', 'Jobs', 'Leads', 'Stock', 'Tasks', 'Time tracking',
+    ]);
+    // A scope switch sits on its row's dropdown only, never again among the row's switches.
+    const placed = new Set(allModules().flatMap((m) => [...m.lines, ...m.extras.map((e) => e.key)]));
+    for (const key of ['tasks_scope', 'events_scope', 'assets_scope', 'timesheets_scope', 'communication_scope']) expect(placed.has(key), key).toBe(false);
   });
 
   it('gives the modules that have no scope of their own the line saying their reach follows the leads and jobs', () => {
-    const noScopeOfTheirOwn = ['Customers', 'Purchase Orders', 'Logistic Orders'];
+    const noScopeOfTheirOwn = ['Customers', 'Estimates', 'Invoices', 'Purchase Orders', 'Logistic Orders'];
     for (const module of noScopeOfTheirOwn) expect(rowOf(module).scopeNote, module).toBe('Follows the leads and jobs this person can open.');
     // Every other row carries no such line: the scoped four have a control instead, the rest are not about records.
     const others = allModules().filter((m) => !noScopeOfTheirOwn.includes(m.module));
@@ -75,20 +105,29 @@ describe('the catalog layout', () => {
 
   it('draws the line from the catalog\'s grants, not from a list of module names', () => {
     const reachedThroughRecords = new Set(
-      SWITCH_CATALOG.filter((s) => s.grants.some((g) => g.scoped === 'Customer' || g.scoped === 'PurchaseOrder' || g.scoped === 'LogisticOrder' || g.scoped === 'LogisticOrderOnJob')).map((s) => s.module),
+      SWITCH_CATALOG.filter((s) => s.grants.some((g) => g.scoped === 'Customer' || g.scoped === 'Estimate' || g.scoped === 'Invoice' || g.scoped === 'PurchaseOrder' || g.scoped === 'LogisticOrder' || g.scoped === 'LogisticOrderOnJob')).map((s) => s.module),
     );
     expect(allModules().filter((m) => m.scopeNote).map((m) => m.module).sort()).toEqual([...reachedThroughRecords].sort());
   });
 
-  it('opens a row with View, Create, Edit, Delete, Show and Export, only those the catalog gives the module', () => {
-    expect(rowOf('Leads').lines).toEqual(['view_leads', 'create_leads', 'edit_leads', 'delete_leads', 'show_leads_page', 'export_leads']);
+  it('opens a row with View, Create, Edit, Delete and Export, only those the catalog gives the module', () => {
+    // Create requires Edit (P2, AL-04), so a Create is nested under its Edit and is not a first-line switch of the row.
+    expect(rowOf('Leads').lines).toEqual(['view_leads', 'edit_leads', 'delete_leads', 'export_leads']);
     expect(rowOf('Customers').lines).toEqual([
-      'view_customers', 'create_customers', 'edit_customers', 'delete_customers', 'show_customers_page', 'export_customers',
+      'view_customers', 'edit_customers', 'delete_customers', 'export_customers',
     ]);
-    expect(rowOf('Departments').lines).toEqual(['view_departments', 'create_departments', 'edit_departments', 'delete_departments']);
-    expect(rowOf('Attachments').lines).toEqual(['view_attachments', 'upload_attachments', 'edit_attachments', 'delete_attachments']);
-    expect(rowOf('Users').lines).toEqual(['view_users', 'create_users', 'edit_users', 'delete_users', 'show_users_teams_page']);
+    expect(rowOf('Departments').lines).toEqual(['view_departments', 'edit_departments', 'delete_departments']);
+    // Uploads are the record's own data (P10): there is no Attachments row.
+    expect(allModules().map((m) => m.module)).not.toContain('Attachments');
+    // Managing people is the Admin flag's alone (AL-18): nothing in the Users row needs View users any more, so it stands alone
+    // under the row instead of opening it.
+    expect(rowOf('Users').lines).toEqual([]);
+    expect(rowOf('Users').extras.find((e) => e.key === 'view_users')).toEqual({ key: 'view_users', parent: null });
     expect(rowOf('Communication').lines).toEqual(['view_communication', 'edit_communication_records', 'delete_communication_records']);
+    const createOf = (module: string, key: string) => rowOf(module).extras.find((e) => e.key === key)?.parent;
+    expect(createOf('Leads', 'create_leads')).toBe('edit_leads');
+    expect(createOf('Customers', 'create_customers')).toBe('edit_customers');
+    expect(createOf('Departments', 'create_departments')).toBe('edit_departments');
   });
 
   it('gives the Pages, Settings, Notes and Time tracking rows no View line', () => {
@@ -124,11 +163,12 @@ describe('the catalog layout', () => {
   it('keeps the round-3 and round-4 switches in the rows the PRD names', () => {
     const inRow = (module: string, key: string) => rowOf(module).extras.some((e) => e.key === key);
     expect(inRow('Leads', 'reopen_leads')).toBe(true);
-    expect(inRow('Leads', 'alert_every_lead')).toBe(true);
-    expect(inRow('Jobs', 'alert_every_job')).toBe(true);
-    expect(inRow('Estimates', 'alert_every_estimate')).toBe(true);
+    // The alert switches are per-person settings now: they leave the module rows for the person's profile.
+    for (const key of ['alert_every_lead', 'alert_every_job', 'alert_every_estimate', 'alert_every_invoice']) {
+      expect(layout.settings, key).toContain(key);
+    }
+    expect(inRow('Leads', 'alert_every_lead')).toBe(false);
     expect(inRow('Estimates', 'apply_discounts')).toBe(true);
-    expect(inRow('Invoices', 'alert_every_invoice')).toBe(true);
     expect(inRow('Invoices', 'record_payments')).toBe(true);
     expect(inRow('Invoices', 'refund_payments')).toBe(true);
     expect(inRow('Stock', 'pick_up_staged_items')).toBe(true);
@@ -161,8 +201,9 @@ describe('what the screens draw, as the PRD words it', () => {
     expect(preset('assign_people_to_leads').SALES).toBe(false);
   });
 
-  it('shows See everyone\'s timesheets alone in Time tracking, with no clock-in location or timeclock-settings switch', () => {
-    expect(labelsOf('Time tracking')).toEqual(["See everyone's timesheets"]);
+  it('shows no switch in Time tracking but its Timesheets scope, with no clock-in location or timeclock-settings switch', () => {
+    expect(labelsOf('Time tracking')).toEqual([]);
+    expect(rowOf('Time tracking').scope).toBe('timesheets_scope');
     expect(SWITCH_CATALOG.filter((s) => /clock-in|location|timeclock/i.test(s.label) && s.module !== 'Locations')).toEqual([]);
   });
 
@@ -176,10 +217,11 @@ describe('what the screens draw, as the PRD words it', () => {
     expect(labelsOf('Leads')).toEqual(expect.arrayContaining(['Mark leads lost', 'Reopen leads']));
   });
 
-  it('holds the four "Alert me about every ..." switches in their modules, on for the Admin preset only', () => {
+  it('holds the four "Alert me about every ..." switches among the person settings, on for the Admin preset only', () => {
     const alerts: Array<[string, string]> = [['Jobs', 'alert_every_job'], ['Leads', 'alert_every_lead'], ['Estimates', 'alert_every_estimate'], ['Invoices', 'alert_every_invoice']];
     for (const [module, key] of alerts) {
-      expect(rowOf(module).extras.map((e) => e.key), key).toContain(key);
+      expect(layout.settings, key).toContain(key);
+      expect(rowOf(module).extras.map((e) => e.key), key).not.toContain(key);
       expect(preset(key)).toEqual({ ADMIN: true, SALES: false, DISPATCHER: false, TECHNICIAN: false });
     }
   });
@@ -203,7 +245,7 @@ describe('what the screens draw, as the PRD words it', () => {
   it('gives the eligibility switches no requirement, so they are never tied to Create leads or Create jobs', () => {
     for (const key of ['can_own_leads', 'can_be_dispatcher', 'can_be_on_crew']) {
       expect(findSwitch(key)!.requires, key).toEqual([]);
-      expect(rowOf('Users').extras.find((e) => e.key === key)?.parent, key).toBeNull();
+      expect(layout.settings, key).toContain(key);
     }
   });
 });

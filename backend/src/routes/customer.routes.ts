@@ -3,6 +3,7 @@ import { authenticate } from '../middleware/authenticate';
 import { attachAbility } from '../middleware/attachAbility';
 import { attachCustomerScope } from '../lib/permissions/customerScope';
 import { canDo } from '../middleware/canGuard';
+import { markRouteCheck } from '../middleware/routeCheck';
 import { validate } from '../middleware/validate';
 import { requireUuidParam } from '../middleware/requireUuidParam';
 import { expensiveLimiter } from '../middleware/rate-limit';
@@ -33,7 +34,7 @@ router.post('/bulk-tag', canDo('update', 'Customer'), validate(tagController.bul
 // customer pages. The estimate and invoice forms keep today's rule: creating one is not enough, the
 // subject-level `read Customer` probe (the same fail-closed check `comm-calls.controller.ts::
 // canReadCustomers` uses) must pass too, so a role with no customer reach at all still gets a 403.
-const PICKER_GUARD = (req: Request, res: Response, next: NextFunction) => {
+const PICKER_GUARD = markRouteCheck('permission', (req: Request, res: Response, next: NextFunction) => {
   const ability = req.ability;
   if (!ability) {
     res.status(401).json({ error: 'Not authenticated' });
@@ -46,7 +47,7 @@ const PICKER_GUARD = (req: Request, res: Response, next: NextFunction) => {
     return;
   }
   next();
-};
+});
 router.get('/picker', PICKER_GUARD, customerController.picker);
 router.get(
   '/picker/:id',

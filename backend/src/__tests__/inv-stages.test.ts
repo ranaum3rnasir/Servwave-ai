@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { mockAuthAs, authHeader, ALPHA_ORG_ID, ORG_B_ID, TEST_USERS, CUSTOMER_FIXTURE, JOB_STAGE_FIXTURE, INVENTORY_LOCATION_FIXTURE, PRICE_BOOK_ITEM_FIXTURE, PURCHASE_ORDER_FIXTURE } from './helpers';
+import { mockAuthAs, mockRoleSwitches, authHeader, ALPHA_ORG_ID, ORG_B_ID, TEST_USERS, CUSTOMER_FIXTURE, JOB_STAGE_FIXTURE, INVENTORY_LOCATION_FIXTURE, PRICE_BOOK_ITEM_FIXTURE, PURCHASE_ORDER_FIXTURE } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { sendStagePickupEmail } from '../lib/email';
 
@@ -705,6 +705,26 @@ describe('POST /api/inventory/job-stages/receive - destination location required
     expect(res.body.error).toBe('NO_STOCK_LOCATION');
     expect(mockPrisma.jobStageLine.update).not.toHaveBeenCalled();
     expect(mockPrisma.stockMovement.create).not.toHaveBeenCalled();
+  });
+
+  it('points only an Admin at the Settings page that sets the default receiving location (36b: a non-Admin cannot open it)', async () => {
+    const stage = { ...JOB_STAGE_FIXTURE, staged_location_id: null };
+    const answer = async (who: 'admin' | 'dispatcher') => {
+      mockAuthAs(who);
+      if (who === 'dispatcher') mockRoleSwitches({ view_stock: true, edit_stock: true });
+      mockPrisma.jobStage.findFirst.mockResolvedValue(stage);
+      mockPrisma.organization.findUnique.mockResolvedValue({ default_inventory_location_id: null });
+      mockPrisma.inventoryLocation.findFirst.mockResolvedValue(null);
+      mockPrisma.$transaction.mockImplementation(async (fn: any) => fn(mockPrisma));
+      return request(app).post('/api/inventory/job-stages/receive').set(authHeader(who)).send({ stageId: stage.id, itemId: stage.items[0].id });
+    };
+    const admin = await answer('admin');
+    expect(admin.body.error).toBe('NO_STOCK_LOCATION');
+    expect(admin.body.message).toContain('default receiving location in Settings');
+    const other = await answer('dispatcher');
+    expect(other.status).toBe(400);
+    expect(other.body.error).toBe('NO_STOCK_LOCATION');
+    expect(other.body.message).toBe('No inventory location is configured for this organization. Add a location before receiving parts.');
   });
 
   it('still receives when the org default resolves even with no staged location', async () => {

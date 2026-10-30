@@ -7,7 +7,7 @@ import { ALL_ACCEPTED, type CatalogSwitch, type SwitchValue } from '@/lib/api/pe
  * is never worded two ways: On / Off for a toggle, the choice's label for a choice, the chosen members for a list.
  */
 
-/** A choice's stored value as the words a person reads: "linked_to_me" is "Linked to me". */
+/** A choice's stored value as the words a person reads: "team" is "Team". */
 export function choiceLabel(value: string): string {
   const spaced = value.replace(/_/g, ' ');
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);

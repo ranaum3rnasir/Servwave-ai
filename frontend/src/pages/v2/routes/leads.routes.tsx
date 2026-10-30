@@ -27,7 +27,7 @@ export function leadsV2Routes() {
     <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN']} />}>
       <Route element={<V2AppLayout />}>
         <Route element={<RequireFeature feature="leads" />}>
-          <Route element={<RequirePageAccess all={['view_leads', 'show_leads_page']} />}>
+          <Route element={<RequirePageAccess all={['view_leads']} />}>
             <Route path="/leads" element={<LeadsPage />} />
           </Route>
           {/* The standalone New Lead follows Create leads: a person without it goes to their dashboard, like every other

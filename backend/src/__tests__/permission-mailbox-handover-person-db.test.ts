@@ -15,7 +15,7 @@
      - a later move person -> person, person -> main and main -> person carries the conversations and the addresses, restores
        what the merge changed, and the previous holder loses it on the very next request;
      - a person who leaves while holding someone else's mailbox hands that one on too, with their own;
-     - a later move is refused without Edit users, for an active owner, for a target that is no active person, and across
+     - a later move is refused to a non-Admin, for an active owner, for a target that is no active person, and across
        companies; the Users list says where a leaver's mailbox went;
      - the whole move runs on a ONE-connection pool (the hosted database's) and costs the same statements for 0 or 1,000
        conversations.
@@ -140,20 +140,22 @@ suite('handing a mailbox to a person, and moving it later (real database, real r
   /** A person on a fresh custom role holding exactly the switch values under test, with the Email page open and a mailbox of their own. */
   async function personWith(org: string, values: Record<string, boolean | string> = {}, opts: { name?: string; mailbox?: boolean } = {}): Promise<Who> {
     const key = `ph-role-${++sequence}`;
+    // `is_admin: true` makes the person an Admin (the flag, AL-18): it is not a switch, so it never reaches the role.
+    const { is_admin: asAdmin, ...switchValues } = values;
     const role = await fx.addCustomRole(org, key, 'DISPATCHER' as Role);
     await setRoleSwitchValues({
       organizationId: org, roleKey: key,
       values: {
         view_jobs: true, jobs_scope: 'attached', view_leads: true, leads_scope: 'attached', view_customers: true,
-        view_estimates: true, estimates_scope: 'attached', view_invoices: true, invoices_scope: 'attached',
-        access_communication: true, show_email: true, view_communication: true, communication_scope: 'linked_to_me',
+        view_estimates: true, view_invoices: true,
+        access_communication: true, show_email: true, view_communication: true, communication_scope: 'attached',
         contact_customers: true,
-        ...values,
+        ...switchValues,
       },
       actorId: null, reason: 'manual',
     });
     const first = opts.name ?? `P${sequence}`;
-    const person = await fx.addUser(org, first, 'DISPATCHER', { customRoleId: role.id });
+    const person = await fx.addUser(org, first, 'DISPATCHER', { customRoleId: role.id, isAdmin: asAdmin === true });
     if (opts.mailbox !== false) await fx.addUserMailbox(org, person);
     return Object.assign(person, { first, api: () => fx.signedInAs(person) });
   }
@@ -190,7 +192,7 @@ suite('handing a mailbox to a person, and moving it later (real database, real r
   }
 
   /**
-   * A company with its main mailbox; the person who moves mailboxes (Edit users on, Delete users off); a reader of the main
+   * A company with its main mailbox; the person who moves mailboxes (an Admin); a reader of the main
    * mailbox; a leaver with a mailbox and an address who holds a started conversation and an invoice conversation; two people
    * who could take the mailbox over (each with an address of their own); and a stranger.
    */
@@ -204,7 +206,7 @@ suite('handing a mailbox to a person, and moving it later (real database, real r
     await db.mailbox.create({ data: { id: main, organization_id: org, kind: 'main', status: 'active' } });
     await db.mailboxAddress.create({ data: { local_part: `co${tag}`, organization_id: org, mailbox_id: main, is_primary: true } });
 
-    const editor = await personWith(org, { view_users: true, edit_users: true, delete_users: false });
+    const editor = await personWith(org, { view_users: true, is_admin: true });
     const reader = await personWith(org);
     await db.mailboxReader.create({ data: { organization_id: org, mailbox_id: main, user_id: reader.id } });
     const heir = await personWith(org, {}, { name: 'Hank' });
@@ -502,17 +504,16 @@ suite('handing a mailbox to a person, and moving it later (real database, real r
   });
 
   describe('a refused move', () => {
-    it('is refused without Edit users, and changes nothing', async () => {
+    it('is refused to a non-Admin, and changes nothing', async () => {
       const w = await world();
       expect((await deactivate(w, w.leaver, w.heir.id)).status).toBe(200);
-      const without = await personWith(w.org, { view_users: true, edit_users: false });
+      const without = await personWith(w.org, { view_users: true });
 
       const res = await move(without, w.leaver.id, w.second.id);
 
       expect(res.status).toBe(403);
       expect(await mailboxRow(w.leaverBox)).toMatchObject({ status: 'handed', holder_user_id: w.heir.id });
-      // Delete users does not stand in for Edit users.
-      const deleter = await personWith(w.org, { view_users: true, edit_users: false, delete_users: true });
+      const deleter = await personWith(w.org, { view_users: true });
       expect((await move(deleter, w.leaver.id, 'main')).status).toBe(403);
       expect(await mailboxRow(w.leaverBox)).toMatchObject({ status: 'handed', holder_user_id: w.heir.id });
     });

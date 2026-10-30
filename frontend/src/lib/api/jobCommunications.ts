@@ -95,19 +95,18 @@ export interface CommItem {
  * whether the action is allowed. The two agreeing is what makes the UI honest; the two
  * disagreeing costs a 403 the user should not have been offered, never an edit that lands.
  *
- * `role`, the BASE role, because that is the field the API's own check reads — an ADMIN-derived
- * custom role is still the organisation's admin and is still the person expected to clean up
- * after a leaver. Mirroring it here is the point; diverging would be the bug.
+ * An Admin (the flag on the person, P15) is the person expected to clean up after a leaver. Mirroring the API's
+ * own check here is the point; diverging would be the bug.
  *
  * FAILS CLOSED on an entry with no `loggedById`. A payload that does not say who logged it cannot
  * establish that this viewer did.
  */
 export function canModifyLoggedEntry(
   item: CommItem,
-  viewer: { id?: string; role?: string },
+  viewer: { id?: string; is_admin?: boolean },
 ): boolean {
   if (!item.manuallyLogged || !item.loggedById) return false;
-  return item.loggedById === viewer.id || viewer.role === 'ADMIN';
+  return item.loggedById === viewer.id || viewer.is_admin === true;
 }
 
 /**

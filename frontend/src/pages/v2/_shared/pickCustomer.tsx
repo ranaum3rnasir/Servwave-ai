@@ -20,6 +20,7 @@ import {
 import { Input } from '@/ui-kit/components/ui/input';
 import { PhoneInput } from '@/ui-kit/components/form/phoneInput';
 import { Label } from '@/ui-kit/components/ui/label';
+import { useAppAbility } from '@/contexts/AbilityContext';
 
 /**
  * v2 pick-or-create-customer control.
@@ -262,6 +263,8 @@ export function PickCustomerFields({
   onDismissDuplicate,
   isOverriding = false,
 }: PickCustomerFieldsProps) {
+  // A new customer typed into a lead, job or invoice form is a Create customers action (A7); without it the form only attaches an existing one.
+  const mayAddCustomer = useAppAbility().can('create', 'Customer');
   const [showDropdown, setShowDropdown] = useState(false);
   const [activeSearchField, setActiveSearchField] = useState<CustomerContactField | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -420,6 +423,9 @@ export function PickCustomerFields({
           {dropdownFor('email')}
         </div>
       </div>
+      {!mayAddCustomer && !selectedCustomer && (
+        <p className="text-muted-foreground text-xs">Choose an existing customer. Adding a new one needs permission to create customers.</p>
+      )}
       {required && (
         <p className="text-muted-foreground text-xs">Provide a phone number or an email above.</p>
       )}

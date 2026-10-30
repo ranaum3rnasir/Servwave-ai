@@ -2,7 +2,7 @@
 /**
  * Roles & Permissions, PRD 2, slice S02.26 - the new-estimate dialog offers only the ways out the person may take.
  *
- * "Add new client" (the standalone New Customer) shows only with Create customers + Show Customers page; "Create new lead"
+ * "Add new client" (the standalone New Customer) shows only with Create customers + View customers; "Create new lead"
  * for the picked customer only with Create leads; "Create estimate without a lead" only with Standalone estimates. There
  * are two live copies of the dialog (the one behind Create New and the Estimates list, the one behind the dashboard's
  * "New" menu), and each is asserted directly and through every opener. Each person is a custom role described by its
@@ -90,9 +90,9 @@ describe.each(DIALOGS)('%s', (_name, Dialog) => {
 
   describe('Add new client', () => {
     it.each([
-      ['Create customers and Show Customers page both on', ['Create customers', 'Show Customers page'], true],
-      ['Create customers off', ['Show Customers page'], false],
-      ['Show Customers page off', ['Create customers'], false],
+      ['Create customers and View customers both on', ['Create customers', 'View customers'], true],
+      ['Create customers off', ['View customers'], false],
+      ['View customers off', ['Create customers'], false],
     ])('%s: shown is %s', async (_case, labels, shown) => {
       await openFor([...labels as string[], 'Create leads']);
 
@@ -137,9 +137,9 @@ describe.each(DIALOGS)('%s', (_name, Dialog) => {
   });
 });
 
-/** What a built-in role's preset values give a person who can also open the dialog (Create estimates + Show Estimates page). */
+/** What a built-in role's preset values give a person who can also open the dialog (Create estimates + View estimates). */
 function personFromPreset(role: PresetRole) {
-  return personWith([...new Set([...presetSwitchLabels(role), 'Create estimates', 'Show Estimates page'])]);
+  return personWith([...new Set([...presetSwitchLabels(role), 'Create estimates', 'View estimates'])]);
 }
 
 /** Each opener of the dialog, rendered through its routed file. Each resolves once the dialog is on screen. */
@@ -171,8 +171,8 @@ const OPENERS: Array<[string, (person: ReturnType<typeof personWith>) => Promise
 ];
 
 describe.each(OPENERS)('opened from %s', (_name, open) => {
-  it.each(['TECHNICIAN', 'DISPATCHER'] as PresetRole[])("a person with the %s preset's values sees no Add new client", async (role) => {
-    const person = personFromPreset(role);
+  it("a person with the TECHNICIAN preset's values sees no Add new client", async () => {
+    const person = personFromPreset('TECHNICIAN');
     serve(person.values);
 
     await open(person);
@@ -182,8 +182,10 @@ describe.each(OPENERS)('opened from %s', (_name, open) => {
     expect(screen.queryByRole('button', ADD_NEW_CLIENT)).not.toBeInTheDocument();
   });
 
-  it("a person with the SALES preset's values sees Add new client", async () => {
-    const person = personFromPreset('SALES');
+  // The Dispatcher preset holds Create customers and View customers; the Customers page no longer has a switch of its own to
+  // hide the entry, so it follows the two (P-AL-10).
+  it.each(['SALES', 'DISPATCHER'] as PresetRole[])("a person with the %s preset's values sees Add new client", async (role) => {
+    const person = personFromPreset(role);
     serve(person.values);
 
     await open(person);

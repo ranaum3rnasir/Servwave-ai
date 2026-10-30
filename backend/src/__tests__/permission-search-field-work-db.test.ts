@@ -70,12 +70,12 @@ suite('top search for field work (real database)', () => {
     return Object.assign(person, { api: () => fx.signedInAs(person) });
   }
 
-  /** Create invoices turned on for the person's role, the way the Roles screen grants it. */
-  async function allowCreatingInvoices(org: string, person: Person) {
+  /** View invoices turned on at Their own for the person's role, the way the Roles screen grants it. */
+  async function allowViewingInvoices(org: string, person: Person) {
     const user = await db.user.findUniqueOrThrow({ where: { id: person.id }, select: { custom_role: { select: { key: true } } } });
-    const role = user.custom_role!.key;
-    const has = await db.rolePermission.findFirst({ where: { organization_id: org, role, action: 'create', subject: 'Invoice' } });
-    if (!has) await db.rolePermission.create({ data: { organization_id: org, role, action: 'create', subject: 'Invoice' } });
+    await setRoleSwitchValues({
+      organizationId: org, roleKey: user.custom_role!.key, values: { view_invoices: true, jobs_scope: 'attached', leads_scope: 'attached' }, actorId: null, reason: 'manual',
+    });
   }
 
   const word = () => `Quokka${++sequence}x${randomUUID().slice(0, 6)}`;
@@ -178,18 +178,24 @@ suite('top search for field work (real database)', () => {
     expect(result.leads).toEqual([w.mine.lead]);
   });
 
-  it('finds an invoice they created on their job once Create invoices is on, and not another person\'s invoice on the same job', async () => {
+  it('finds the invoices of their job once View invoices is on, and none of an invoice on a job they are not on', async () => {
     const w = await fieldWork();
-    await allowCreatingInvoices(w.org, w.me);
+    await allowViewingInvoices(w.org, w.me);
     const mine = await fx.addInvoice(w.org, w.customer, { jobId: w.mine.job, createdBy: w.me.id });
     const colleagues = await fx.addInvoice(w.org, w.customer, { jobId: w.mine.job, createdBy: w.admin.id });
     const onOthersJob = await fx.addInvoice(w.org, w.customer, { jobId: w.others.job, createdBy: w.me.id });
 
     const result = await found(await w.me.api(), w.name);
-    expect(result.invoices).toEqual([mine.id]);
-    expect(JSON.stringify(result)).not.toContain(colleagues.id);
-    // Made by them, but on a job they are not on: the creator rule needs the attachment.
+    expect([...result.invoices].sort()).toEqual([mine.id, colleagues.id].sort());
+    // Made by them, but on a job they are not on: Their own needs the attachment.
     expect(JSON.stringify(result)).not.toContain(onOthersJob.id);
+  });
+
+  it('finds no invoice with View invoices off, not even one they made on their own job', async () => {
+    const w = await fieldWork();
+    await fx.addInvoice(w.org, w.customer, { jobId: w.mine.job, createdBy: w.me.id });
+
+    expect((await found(await w.me.api(), w.name)).invoices).toEqual([]);
   });
 
   it('returns no customer group with View customers off', async () => {
@@ -236,7 +242,7 @@ suite('top search for field work (real database)', () => {
 
   it('drops the job and their invoice on it on the very next request after they are taken off the job', async () => {
     const w = await fieldWork();
-    await allowCreatingInvoices(w.org, w.me);
+    await allowViewingInvoices(w.org, w.me);
     const api = await w.me.api();
     const mine = await fx.addInvoice(w.org, w.customer, { jobId: w.mine.job, createdBy: w.me.id });
     const visitId = (await db.visit.findFirstOrThrow({ where: { job_id: w.mine.job }, select: { id: true } })).id;
@@ -258,7 +264,7 @@ suite('top search for field work (real database)', () => {
 
   it('gives a person with company-wide scope every job, lead, estimate and customer, as before', async () => {
     const w = await fieldWork();
-    const office = await personFrom(w.org, 'DISPATCHER', { jobs_scope: 'all', leads_scope: 'all', estimates_scope: 'all', invoices_scope: 'all' });
+    const office = await personFrom(w.org, 'DISPATCHER', { jobs_scope: 'all', leads_scope: 'all' });
     const result = await found(await office.api(), w.name);
 
     expect(result.jobs).toEqual([w.mine.job, w.others.job].sort());

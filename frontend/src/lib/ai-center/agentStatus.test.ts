@@ -105,9 +105,9 @@ describe('the status an agent shows', () => {
 describe('who may manage Spider', () => {
   // The same check production uses (useIsSpiderAdmin): an Admin. The registry reuses it.
   it.each([
-    ['an Admin', { role: 'ADMIN' }, true],
-    ['a Sales user', { role: 'SALES' }, false],
-    ['a Technician', { role: 'TECHNICIAN' }, false],
+    ['an Admin', { role: 'ADMIN', is_admin: true }, true],
+    ['a Sales user', { role: 'SALES', is_admin: false }, false],
+    ['a Technician', { role: 'TECHNICIAN', is_admin: false }, false],
     ['nobody', null, false],
   ])('%s', (_label, user, expected) => {
     expect(isSpiderAdminUser(user)).toBe(expected);

@@ -8,7 +8,7 @@ import { logAudit } from '../lib/audit';
 // Admin management of the many-to-many User<->PhoneNumber mapping (comm caller-ID
 // overhaul slice 3). These endpoints populate what resolveOutboundNumber (slice 2)
 // reads: which users may send from which numbers, each user's default, and the
-// org default. Every handler is admin-gated (canDo('update','Organization')) and
+// org default. Every handler is admin-gated (requireAdminTo, the Admin flag) and
 // tenant-scoped — a number/user outside the caller's org is a 404.
 //
 // ASSIGNMENT DOES NOT TOUCH ROUTING (2026-08-12). It used to: assigning a number

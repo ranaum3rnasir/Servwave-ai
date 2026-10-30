@@ -46,6 +46,10 @@ export interface MarkDoneArgs {
   switches: Pick<CloseOutSwitches, 'close_jobs' | 'close_jobs_with_money_owed'>;
   /** The amount (dollars) the person confirmed, null when they were not asked. */
   confirmedAmount: number | null;
+  /** The person cannot see prices (CR-1): no refusal names an amount, and they may confirm without one. */
+  figureHidden?: boolean;
+  /** A person without See prices confirmed that money is owed (the figure-free confirmation). */
+  confirmedOwed?: boolean;
 }
 
 export interface MarkDoneResult {
@@ -56,7 +60,6 @@ export interface MarkDoneResult {
   owed_amount: number;
 }
 
-const dollars = (amount: number) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(amount);
 
 export async function markJobDone(args: MarkDoneArgs): Promise<MarkDoneResult> {
   const { orgId, jobId, actor, switches } = args;
@@ -74,7 +77,7 @@ export async function markJobDone(args: MarkDoneArgs): Promise<MarkDoneResult> {
 
     await lockJobInvoices(tx, orgId, jobId);
     const { owedCents } = await readJobMoneyOwed({ orgId, jobId, db: tx });
-    const decision = decideCloseOutMove({ move: 'mark_done', status: locked.status, switches, markDone: { owedCents, confirmedCents } });
+    const decision = decideCloseOutMove({ move: 'mark_done', status: locked.status, switches, markDone: { owedCents, confirmedCents, figureHidden: args.figureHidden, confirmedOwed: args.confirmedOwed } });
     if (!decision.allowed) throw new MarkDoneRefusal(decision, owedCents);
 
     const closedAt = new Date();
@@ -93,7 +96,7 @@ export async function markJobDone(args: MarkDoneArgs): Promise<MarkDoneResult> {
         entity_id: jobId,
         event_type: JOB_MARKED_DONE_EVENT,
         description: owedCents > 0
-          ? `Job ${locked.job_number} marked Done with ${dollars(owed)} still owed`
+          ? `Job ${locked.job_number} marked Done with money still owed`
           : `Job ${locked.job_number} marked Done`,
         metadata: { from: 'READY_TO_CLOSE', to: decision.next, owed_amount: owed, closed_by_name: actor.name },
         created_by: actor.id,

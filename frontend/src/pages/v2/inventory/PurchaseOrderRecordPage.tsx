@@ -17,8 +17,8 @@ import { usePurchaseOrderReceive } from './components/poReceive';
 /**
  * /inventory/purchase-orders/:poId - ONE purchase order, opened from a link on a job.
  *
- * A record route, like a job's or an estimate's: it carries no list or Show guard, because Show Purchase Orders page
- * hides the list page and its menu entry, not the order. The page asks the server; View purchase orders is the only
+ * A record route, like a job's or an estimate's: it carries no list guard, because the order opens whatever the
+ * list switches say. The page asks the server; View purchase orders is the only
  * thing that opens an order. Without it the page never asks, and a refusal or a missing order draws the same plain
  * not-found state, so the screen says nothing about whether the order exists.
  */

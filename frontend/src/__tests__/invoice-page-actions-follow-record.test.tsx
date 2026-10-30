@@ -101,8 +101,11 @@ function signedInWithRole(role: string) {
     })) as never);
 }
 
-/** A person whose switches grant nothing on invoices: they reach the page by the creator rule alone. */
-const NO_INVOICE_SWITCHES = () => buildAbility([]);
+/**
+ * A person whose switches grant nothing on invoices: they reach the page by the creator rule alone. They hold See prices
+ * (P11) because the PDF preview the menu tests anchor on is the invoice's prices.
+ */
+const NO_INVOICE_SWITCHES = () => buildAbility([{ action: 'read', subject: 'Prices' }]);
 
 async function openMenu() {
   const user = userEvent.setup();
@@ -138,6 +141,7 @@ describe('InvoiceDetailPage - the buttons follow the answer for this invoice', (
       ability: buildAbility([
         { action: 'read', subject: 'Invoice' }, { action: 'update', subject: 'Invoice' }, { action: 'send', subject: 'Invoice' },
         { action: 'delete', subject: 'Invoice' }, { action: 'record_payment', subject: 'Invoice' }, { action: 'send_payment_link', subject: 'Invoice' },
+        { action: 'read', subject: 'Prices' },
       ]),
     });
 

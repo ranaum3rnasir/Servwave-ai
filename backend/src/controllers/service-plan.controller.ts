@@ -26,6 +26,7 @@ import { whyNotSlot } from '../lib/permissions/slotEligibility';
 // The SAME per-member eligibility check the /jobs crew doors run. Imported rather than re-rolled
 // so this door cannot drift from them on either the tenant clause or the error strings.
 import { validateCrew } from './job.controller';
+import { canReadCustomerById } from '../lib/permissions/customerScope';
 
 const param = (req: Request, name: string): string => req.params[name] as string;
 
@@ -81,8 +82,24 @@ export const createPlanSchema = planObject
     path: ['visit_cadence'],
   });
 
-// PATCH accepts any subset; the controller enforces the edit-lock (DRAFT = free, ACTIVE = name/sold_by only).
-export const updatePlanSchema = planObject.partial().strip();
+/** The refusal for an edit that names the plan's customer or address, the same whatever the id is (ticket 33b). */
+export const PLAN_CUSTOMER_IS_FIXED = "A plan's customer and service address can't be changed. Create a new plan instead.";
+
+// PATCH accepts any subset of the plan's own fields; the controller enforces the edit-lock (DRAFT = free, ACTIVE =
+// name/sold_by/materials only). The customer and the address are fixed once the plan exists (Ran, 2026-10-29: "editing a
+// plan can no longer change its customer or address"): an edit that names either is refused with this one answer, before
+// anything is looked up, so another customer, another company's, a missing one and one the person cannot read all get the
+// same answer and nothing is stored.
+export const updatePlanSchema = planObject
+  .omit({ customer_id: true, service_location_id: true })
+  .partial()
+  .extend({ customer_id: z.unknown().optional(), service_location_id: z.unknown().optional() })
+  .strip()
+  .superRefine((d, ctx) => {
+    if (d.customer_id !== undefined || d.service_location_id !== undefined) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: PLAN_CUSTOMER_IS_FIXED, path: [] });
+    }
+  });
 
 /** Shape of the recurrence inputs the controller reads off create/update bodies. */
 type RecurrenceInput = {
@@ -214,6 +231,8 @@ export const createPlan = async (req: Request, res: Response) => {
       where: { id: data.customer_id, ...tenantWhere(req) },
       select: { id: true },
     });
+    // The plan form picks its customer from the org-wide picker, so any customer of the company may be chosen (Ran's picker
+    // ruling, 2026-10-28); a customer that is not this company's answers as missing.
     if (!customer) {
       res.status(404).json({ error: 'Customer not found' });
       return;
@@ -287,7 +306,12 @@ export const createPlan = async (req: Request, res: Response) => {
       });
     }), { label: 'service_plan.create' });
 
-    res.status(201).json({ servicePlan: attachDerived(plan as never, new Date()) });
+    // A customer the person cannot read is shown no more than the picker shows of it: its name and its city.
+    const created = attachDerived(plan as never, new Date()) as Record<string, unknown> & { service_location?: Record<string, unknown> | null };
+    if (!(await canReadCustomerById(req, data.customer_id)) && created.service_location) {
+      created.service_location = { id: created.service_location.id, city: created.service_location.city, address_line1: null, state: null };
+    }
+    res.status(201).json({ servicePlan: created });
   } catch (err) {
     logger.error('createPlan error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -395,8 +419,9 @@ export const updatePlan = async (req: Request, res: Response) => {
       return;
     }
 
-    // DRAFT — free edit, including a full line-item / materials replacement when provided.
-    const { line_items, material_lines, ...scalars } = data;
+    // DRAFT — free edit, including a full line-item / materials replacement when provided. The customer and address are
+    // never written here (the schema refuses them; dropped again so no future schema change can spread them in).
+    const { line_items, material_lines, customer_id: _customer, service_location_id: _location, ...scalars } = data;
     const orgId = req.user!.organization_id;
 
     // Resolve materials snapshots BEFORE the tx (pool-safe). undefined = don't touch; [] = clear;
@@ -718,7 +743,7 @@ export const scheduleVisit = async (req: Request, res: Response) => {
       ? await prisma.user.findFirst({
           where: { id: plan.sold_by, ...tenantWhere(req) },
           select: {
-            id: true, organization_id: true, role: true, based_on_role_key: true, custom_role_id: true,
+            id: true, organization_id: true, role: true, based_on_role_key: true, custom_role_id: true, is_admin: true,
             custom_role: { select: { key: true } }, is_active: true, first_name: true, last_name: true,
           },
         })

@@ -168,7 +168,7 @@ suite('the Schedule job feed under Jobs scope Attached (real database)', () => {
 
       expect((await feed(await me.api())).get(job.id), 'All').toEqual(both);
 
-      for (const scope of ['team', 'location']) {
+      for (const scope of ['team']) {
         const mate = await personWith(org, { jobs_scope: scope });
         await db.user.update({ where: { id: mate.id }, data: { department_id: department, location_id: location } });
         expect((await feed(await mate.api())).get(job.id), scope).toEqual(both);

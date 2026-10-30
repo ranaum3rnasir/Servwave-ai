@@ -24,10 +24,15 @@ router.get('/payouts', viewPayments, paymentsPageController.listPayouts);
 router.get('/payouts/:id', viewPayments, paymentsPageController.getPayout);
 router.get('/payouts/:id/payments', viewPayments, paymentsPageController.listPayoutPayments);
 
-// Payments go-live V7-10a - Documents tab. The list needs View payments; the Upload dialog's "Find" list needs
-// Create attachments (it only helps a person who can upload) and returns only records the caller can open.
+// Payments go-live V7-10a - Documents tab. The list needs View payments; the Upload dialog's "Find" list needs Edit on
+// the kind of record a file can go on (an upload is the record's own data and needs the record's Edit, P10), so it only
+// helps a person who can upload, and returns only records the caller can open.
 router.get('/documents', viewPayments, paymentsPageController.listDocuments);
-router.get('/documents/targets', canDo('create', 'Attachment'), paymentsPageController.listDocumentTargets);
+router.get(
+  '/documents/targets',
+  canDoAny([['update', 'Invoice'], ['update', 'Job'], ['update', 'Customer']]),
+  paymentsPageController.listDocumentTargets,
+);
 
 // Payments go-live P4 - Needs attention: one list, its resolved history and its actions. Reading needs View payments;
 // each action has its own switch (Refund payments, Send payment links, Manage payout account), checked again per

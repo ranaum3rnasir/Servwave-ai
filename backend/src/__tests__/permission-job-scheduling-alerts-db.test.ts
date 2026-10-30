@@ -4,8 +4,8 @@
 
    Each used to go to "every Admin and every Dispatcher" by role (and the crew). Now each goes through the chain: lane 1 is the
    job's people (its stored Sold By, crew and Dispatcher); lane 2 is who must act (the job's Dispatcher, else the holders of
-   Assign people to jobs who can open the job, else the Manage roles and permissions holders, stopping at the first step that
-   finds someone); holders of Alert me about every job get a copy. "Someone" is active, can open the job and is not the person
+   Assign people to jobs who can open the job, else the company's Admins, stopping at the first step that finds someone; an Admin
+   holds every switch, so since AL-18 an Admin who can be told is found at the step already); holders of Alert me about every job get a copy. "Someone" is active, can open the job and is not the person
    who did the action. Nobody comes from a role name.
 
    One table drives all four verbs, so a row of the chain is checked the same way for each. Everything goes through the public
@@ -63,7 +63,8 @@ const ALL_OFF: Record<string, SwitchValue> = Object.fromEntries(
 /** What a person needs to be named on a job at all: to be allowed on a crew, as Sold By and as Dispatcher. */
 const slots = { can_be_on_crew: true, can_own_leads: true, can_be_dispatcher: true };
 const opensJobs = { view_jobs: true, jobs_scope: 'all', ...slots };
-const managerValues = { ...opensJobs, manage_roles_and_permissions: true, view_users: true };
+// An Admin (the flag, AL-18): the chain's last fallback, who also holds every switch (the step and Alert me about every job).
+const managerValues = { ...opensJobs, is_admin: true, view_users: true };
 const STEP = 'assign_people_to_jobs';
 const stepValues = { ...opensJobs, [STEP]: true };
 
@@ -148,9 +149,11 @@ suite('the scheduling and parts alerts (real database)', () => {
   /** A person on a fresh custom role holding exactly these switch values (every other switch off). */
   async function personWith(org: string, values: Record<string, SwitchValue>, base: Role = 'DISPATCHER'): Promise<Person> {
     const key = `job-scheduling-role-${++sequence}`;
+    // `is_admin: true` makes the person an Admin (the flag, AL-18): it is not a switch, so it never reaches the role.
+    const { is_admin: asAdmin, ...switchValues } = values;
     const role = await fx.addCustomRole(org, key, base);
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...values }, actorId: null, reason: 'manual' });
-    return fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
+    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...switchValues }, actorId: null, reason: 'manual' });
+    return fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id, isAdmin: asAdmin === true });
   }
 
   /** A company with nobody but built people, so only they can be alerted. */
@@ -173,7 +176,7 @@ suite('the scheduling and parts alerts (real database)', () => {
       objectType: 'JOB',
       title: (placed) => `Job created: ${placed.jobNumber}`,
       wordings: 1,
-      actorValues: { ...opensJobs, create_jobs: true, assign_people_to_jobs: true },
+      actorValues: { ...opensJobs, edit_jobs: true, create_jobs: true, assign_people_to_jobs: true },
       crewPriority: 'INTERRUPT',
       dispatcherPriority: 'INTERRUPT',
       holderPriority: 'INTERRUPT',
@@ -331,7 +334,7 @@ suite('the scheduling and parts alerts (real database)', () => {
       for (const who of [holder, dispatcherRole, adminRole, me]) expect(got).not.toContain(who.id);
     });
 
-    it('without a Dispatcher: lane 1 plus every step switch holder on a custom role who can open the job; an Admin-role person with the switch off is not one', async () => {
+    it('without a Dispatcher: lane 1 plus every step switch holder who can open the job, an Admin included; an Admin-role person with the switch off is not one', async () => {
       const { org, customer } = await quietOrg();
       const me = await actor(org);
       const soldBy = await personWith(org, opensJobs);
@@ -347,11 +350,12 @@ suite('the scheduling and parts alerts (real database)', () => {
       const placed = await take(row, cast(org, customer, me, { soldBy }));
 
       const got = recipientsOf(await alertsFor(row.verb, placed.objectId));
-      expect(got).toEqual(ids(soldBy, holder, secondHolder, ...placed.crew));
-      for (const who of [adminSwitchOff, cannotOpen, gone, manager]) expect(got).not.toContain(who.id);
+      // An Admin (the flag) holds every switch, so they are a step holder like the two on custom roles.
+      expect(got).toEqual(ids(soldBy, holder, secondHolder, manager, ...placed.crew));
+      for (const who of [adminSwitchOff, cannotOpen, gone]) expect(got).not.toContain(who.id);
     });
 
-    it('without a Dispatcher and with no step holder who can open the job: the Manage roles and permissions holders, with the why line', async () => {
+    it('without a Dispatcher and with no step holder on a custom role who can open the job: the Admins, as holders of the step, told once without a why line', async () => {
       const { org, customer } = await quietOrg();
       const me = await actor(org);
       const manager = await personWith(org, managerValues);
@@ -364,7 +368,9 @@ suite('the scheduling and parts alerts (real database)', () => {
       expect(recipientsOf(alerts)).toEqual(ids(manager, ...placed.crew));
       expect(recipientsOf(alerts)).not.toContain(cannotOpen.id);
       expect(recipientsOf(alerts)).not.toContain(noSwitch.id);
-      expect(whyFor(alerts, manager)).toBe('This job has no Dispatcher and nobody who can assign people to jobs can open it.');
+      // The Admin holds the step's switch, so the chain stops at the step and never says "nobody who can". They also hold Alert me
+      // about every job, and a person who covers lane 2 and has a copy is told once, without the why line.
+      expect(whyFor(alerts, manager)).toBeNull();
     });
 
     it('a job with Sold By and crew but no Dispatcher still alerts the step holders', async () => {
@@ -436,7 +442,7 @@ suite('the scheduling and parts alerts (real database)', () => {
       expect(recipientsOf(first)).not.toContain(blindFollower.id);
       expect(rowFor(first, follower)).toMatchObject({ priority: 'FEED', needs_action: false });
 
-      // No Dispatcher and nobody holding the step: the follower is told as a copy and the chain still goes on to the managers.
+      // No Dispatcher and no step holder on a custom role: the follower is told as a copy, and the chain still reaches an Admin.
       const manager = await personWith(org, managerValues);
       const bare = await take(row, cast(org, customer, me));
       expect(recipientsOf(await alertsFor(row.verb, bare.objectId))).toEqual(ids(follower, manager, ...bare.crew));

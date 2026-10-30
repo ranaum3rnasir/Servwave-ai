@@ -5,37 +5,18 @@ import { tenantWhere } from '../tenant';
 import { lockBindsPerson } from './jobLock';
 
 /**
- * Who may rename or remove a file (Roles & Permissions, PRD 4, S04.24): one answer for the attachment routes and for
- * the per-file answer the list sends, so a control is drawn only where the route would let the request in.
+ * Who may rename or remove a file (Roles & Permissions P10, A8d): uploads are the record's own data. Anyone who can open
+ * the record sees its files, and anyone with the record's Edit adds, renames and removes them, another person's included.
+ * There is no attachments switch: the caller has already opened the record the file hangs on and asks the record's Edit
+ * (`checkEntityEdit` in the attachment controller), and this module answers what the completed-job lock leaves of it.
  *
- * The Attachments switches decide, and the caller has already opened the record the file hangs on:
- *  - Edit attachments renames anyone's file, Delete attachments removes anyone's;
- *  - without Delete attachments a person removes only the files they uploaded themselves, on any record they can open;
- *  - on a TASK the uploader may also rename their own file (visits-and-task-categories slice 12).
- * Then the completed-job lock wins over all of it: on a locked job, and on the invoices of a locked job, nobody changes
- * a file, their own upload included, without Change locked jobs. A lead's files never take the job lock.
+ * The completed-job lock wins over all of it: on a locked job, and on the invoices of a locked job, nobody changes a file,
+ * their own upload included, without Change locked jobs. A lead's files never take the job lock.
  *
  * One exception (S06.9): while the job is in Office review, a person who holds Office review and can open the job is not
- * bound by the lock on these files, and the switches above still decide what they may do. The files are the review's own
+ * bound by the lock on these files, and the record's Edit still decides what they may do. The files are the review's own
  * edits ('file' in jobLock.ts); note deletes are not, and noteChange.ts names no review edit.
  */
-
-/** The refusal for a delete of someone else's file by a person without Delete attachments. */
-export const OWN_UPLOADS_ONLY_MESSAGE = 'You can only delete files you uploaded.';
-
-export type AttachmentChange = 'update' | 'delete';
-
-/** Do the person's switches (or the own-upload rule) let them change this file, before the lock is asked? */
-export function mayChangeAttachment(
-  req: Request,
-  action: AttachmentChange,
-  entityType: AttachmentEntity,
-  uploadedBy: string,
-): boolean {
-  if (req.ability?.can(action, 'Attachment')) return true;
-  if (uploadedBy !== req.user!.id) return false;
-  return action === 'delete' || entityType === 'TASK';
-}
 
 /**
  * Does the completed-job lock bind the person on the files of this record? A job's own files and the files on its
@@ -53,21 +34,12 @@ export async function fileLockBinds(req: Request, entityType: AttachmentEntity, 
 export interface FileChangeAnswer {
   can_delete: boolean;
   can_rename: boolean;
-  /** Controls the person's switches allow but the lock withholds, so the page can show them disabled with the reason. */
+  /** Controls the person's Edit allows but the lock withholds, so the page can show them disabled with the reason. */
   locked_actions: Array<'delete' | 'rename'>;
 }
 
-/** The per-file answer, given whether the lock binds the person on this record. */
-export function fileChangeAnswer(
-  req: Request,
-  entityType: AttachmentEntity,
-  uploadedBy: string,
-  locked: boolean,
-): FileChangeAnswer {
-  const mayDelete = mayChangeAttachment(req, 'delete', entityType, uploadedBy);
-  const mayRename = mayChangeAttachment(req, 'update', entityType, uploadedBy);
-  const lockedActions: FileChangeAnswer['locked_actions'] = [];
-  if (locked && mayDelete) lockedActions.push('delete');
-  if (locked && mayRename) lockedActions.push('rename');
-  return { can_delete: mayDelete && !locked, can_rename: mayRename && !locked, locked_actions: lockedActions };
+/** The per-file answer, given whether the person holds the record's Edit and whether the lock binds them on this record. */
+export function fileChangeAnswer(canEditRecord: boolean, locked: boolean): FileChangeAnswer {
+  const lockedActions: FileChangeAnswer['locked_actions'] = locked && canEditRecord ? ['delete', 'rename'] : [];
+  return { can_delete: canEditRecord && !locked, can_rename: canEditRecord && !locked, locked_actions: lockedActions };
 }

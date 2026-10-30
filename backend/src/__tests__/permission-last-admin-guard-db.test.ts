@@ -2,7 +2,8 @@
    Roles & Permissions, PRD 1 - the last-admin guard counts the Admin box only. A person on a custom role copied from
    Admin has the base role Admin but no full access, so they are not an admin that keeps the company reachable. The
    guard refuses to deactivate, demote, move off the Admin box (to a built-in role or to any custom role, one based on
-   Admin included) or revoke the login of the last person in the Admin box.
+   Admin included) or revoke the login of the last person in the Admin box. Only an Admin may manage people at all (AL-18), so
+   a copy of Admin that tries is refused at the route, and the guard is what is left when an Admin is the one acting.
 
    Everything goes through the public interface: the user routes, called as the company's Admin. Real migrated database
    (TEST_DATABASE_URL); the suite skips when it is unset. Every org it creates is removed again.
@@ -25,6 +26,7 @@ const { realClient } = vi.hoisted(() => {
 vi.mock('../lib/prisma', () => ({ prisma: realClient }));
 
 import { switchFixture } from './permission-switches-fixture';
+import { ADMIN_ONLY_MESSAGE } from '../middleware/canGuard';
 
 const suite = realClient ? describe : describe.skip;
 
@@ -38,7 +40,8 @@ suite('the last-admin guard counts the Admin box only (real database)', () => {
   afterAll(() => fx.cleanup());
 
   let sequence = 0;
-  const REFUSED = /last active admin/;
+  // A copy of Admin is not an Admin: the route refuses them before any handler runs (AL-18).
+  const REFUSED = new RegExp(`^${ADMIN_ONLY_MESSAGE.replace(/\./g, '\\.')}$`);
 
   /**
    * A company with one person in the Admin box (the target) and one on a custom role copied from Admin, who does the
@@ -46,6 +49,9 @@ suite('the last-admin guard counts the Admin box only (real database)', () => {
    */
   async function company() {
     const { org, admin } = await fx.newOrg();
+    // A company with no Owner (as migration M11 leaves one with no candidate): the target is protected only by the last-admin
+    // guard under test here, not by being the Owner (AL-16).
+    await db.organization.update({ where: { id: org }, data: { owner_user_id: null } });
     await db.user.update({ where: { id: admin.id }, data: { has_login: true } });
     const copy = await fx.addCustomRole(org, `admin-copy-${++sequence}`, 'ADMIN', { copyGrants: false });
     const actor = await fx.addUser(org, `copy${++sequence}`, 'ADMIN', { customRoleId: copy.id, basedOnRoleKey: copy.key });
@@ -59,10 +65,10 @@ suite('the last-admin guard counts the Admin box only (real database)', () => {
     const { boxed, api } = await company();
     const a = await api();
     const patched = await a.patch(`/api/users/${boxed.id}`, { is_active: false });
-    expect(patched.status).toBe(409);
+    expect(patched.status).toBe(403);
     expect(patched.body.error).toMatch(REFUSED);
     const deleted = await a.delete(`/api/users/${boxed.id}`);
-    expect(deleted.status).toBe(409);
+    expect(deleted.status).toBe(403);
     expect(deleted.body.error).toMatch(REFUSED);
     expect(await stateOf(boxed.id)).toMatchObject({ is_active: true });
   });
@@ -70,7 +76,7 @@ suite('the last-admin guard counts the Admin box only (real database)', () => {
   it('refuses to demote the only Admin-box person to a built-in role', async () => {
     const { boxed, api } = await company();
     const res = await (await api()).patch(`/api/users/${boxed.id}`, { role: 'SALES' });
-    expect(res.status).toBe(409);
+    expect(res.status).toBe(403);
     expect(res.body.error).toMatch(REFUSED);
     expect(await stateOf(boxed.id)).toMatchObject({ role: 'ADMIN', custom_role_id: null });
   });
@@ -79,27 +85,29 @@ suite('the last-admin guard counts the Admin box only (real database)', () => {
     const { org, boxed, copy, api } = await company();
     const a = await api();
     const toCopy = await a.patch(`/api/users/${boxed.id}`, { role: 'ADMIN', custom_role_id: copy.id });
-    expect(toCopy.status).toBe(409);
+    expect(toCopy.status).toBe(403);
     expect(toCopy.body.error).toMatch(REFUSED);
 
     const team = await fx.addCustomRole(org, `team-${++sequence}`, 'DISPATCHER', { copyGrants: false });
     const toTeam = await a.patch(`/api/users/${boxed.id}`, { role: 'DISPATCHER', custom_role_id: team.id });
-    expect(toTeam.status).toBe(409);
+    expect(toTeam.status).toBe(403);
     expect(await stateOf(boxed.id)).toMatchObject({ role: 'ADMIN', custom_role_id: null });
   });
 
   it('refuses to revoke the login of the only Admin-box person', async () => {
     const { boxed, api } = await company();
     const res = await (await api()).post(`/api/users/${boxed.id}/revoke-login`);
-    expect(res.status).toBe(409);
+    expect(res.status).toBe(403);
     expect(res.body.error).toMatch(REFUSED);
     expect(await stateOf(boxed.id)).toMatchObject({ has_login: true });
   });
 
   it('allows the same changes while another Admin-box person is active', async () => {
-    const { org, boxed, copy, api } = await company();
-    await fx.addUser(org, `second${++sequence}`, 'ADMIN');
-    const a = await api();
+    const { org, boxed, copy } = await company();
+    const second = await fx.addUser(org, `second${++sequence}`, 'ADMIN');
+    // Changing an Admin is the Owner's alone (ticket 26): the second Admin-box person is the company's Owner here.
+    await db.organization.update({ where: { id: org }, data: { owner_user_id: second.id } });
+    const a = await fx.signedInAs(second);
     expect((await a.patch(`/api/users/${boxed.id}`, { role: 'ADMIN', custom_role_id: copy.id })).status).toBe(200);
     expect(await stateOf(boxed.id)).toMatchObject({ role: 'ADMIN', custom_role_id: copy.id });
     expect((await a.patch(`/api/users/${boxed.id}`, { role: 'ADMIN', custom_role_id: null })).status).toBe(200);

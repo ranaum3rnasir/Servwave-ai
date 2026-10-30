@@ -6,6 +6,7 @@ import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { getInitials } from "@/lib/utils";
 import { DialogList } from '@/ui-kit/components/ui/dialogList';
+import { useIsAdmin } from '@/lib/useIsAdmin';
 
 const AVATAR_TINTS = [
   "bg-primary-subtle text-primary-dark",
@@ -46,6 +47,7 @@ export function ManageDirectoryModal({
   onEmailGroup: (g: EmailGroup) => void;
   flash: (m: string) => void;
 }) {
+  const isAdmin = useIsAdmin();
   const [tab, setTab] = useState(initialTab);
 
   // Two headed sections, expressed as the option type's `group` so the count
@@ -155,7 +157,7 @@ export function ManageDirectoryModal({
             <div className="space-y-1.5">
               <p className="mb-2 text-[12px] text-text-secondary">
                 Everyone on your account. Click <span className="font-medium text-text-secondary">Email</span> to start a
-                message. The roster itself is managed in Settings → Users.
+                message.{isAdmin && ' The roster itself is managed in Settings → Users.'}
               </p>
               {members.map((m) => (
                 <div key={m.id} className="flex items-center gap-3 rounded-lg border border-border px-3 py-2">
@@ -166,9 +168,11 @@ export function ManageDirectoryModal({
                   </span>
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-[13px] font-semibold text-text-primary">{m.name}</p>
-                    <p className="truncate text-[12px] text-text-secondary">
-                      {m.role} · {m.email}
-                    </p>
+                    {(m.role || m.email) && (
+                      <p className="truncate text-[12px] text-text-secondary">
+                        {[m.role, m.email].filter(Boolean).join(" · ")}
+                      </p>
+                    )}
                   </div>
                   <button
                     type="button"

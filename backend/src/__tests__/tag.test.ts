@@ -19,7 +19,6 @@ const mockPrisma = prisma as unknown as {
   tag: { findFirst: ReturnType<typeof vi.fn>; findUnique: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn> };
   $transaction: ReturnType<typeof vi.fn>;
   tagAssignment: { findUnique: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> };
-  rolePermission: { findMany: ReturnType<typeof vi.fn> };
 };
 
 beforeEach(() => {
@@ -149,7 +148,7 @@ describe('POST /api/jobs/:id/tags - row-scope gate', () => {
       .set(authHeader('technician'))
       .send({ tag_id: TAG_FIXTURE.id });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockPrisma.tagAssignment.create).not.toHaveBeenCalled();
   });
 
@@ -179,7 +178,7 @@ describe('DELETE /api/jobs/:id/tags/:tagId - row-scope gate', () => {
       .delete(`/api/jobs/${SCOPED_JOB_ID}/tags/${TAG_FIXTURE.id}`)
       .set(authHeader('technician'));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockPrisma.tagAssignment.delete).not.toHaveBeenCalled();
   });
 });
@@ -196,7 +195,7 @@ describe('POST /api/leads/:id/tags - row-scope gate', () => {
       .set(authHeader('sales'))
       .send({ tag_id: TAG_FIXTURE.id });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockPrisma.tagAssignment.create).not.toHaveBeenCalled();
   });
 
@@ -224,7 +223,7 @@ describe('DELETE /api/leads/:id/tags/:tagId - row-scope gate', () => {
       .delete(`/api/leads/${LEAD_FIXTURE.id}/tags/${TAG_FIXTURE.id}`)
       .set(authHeader('sales'));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockPrisma.tagAssignment.delete).not.toHaveBeenCalled();
   });
 });
@@ -244,7 +243,7 @@ describe('POST /api/estimates/:id/tags - row-scope gate', () => {
       .set(authHeader('sales'))
       .send({ tag_id: TAG_FIXTURE.id });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockPrisma.tagAssignment.create).not.toHaveBeenCalled();
   });
 });
@@ -260,7 +259,7 @@ describe('DELETE /api/estimates/:id/tags/:tagId - row-scope gate', () => {
       .delete(`/api/estimates/${ESTIMATE_FIXTURE.id}/tags/${TAG_FIXTURE.id}`)
       .set(authHeader('sales'));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockPrisma.tagAssignment.delete).not.toHaveBeenCalled();
   });
 });
@@ -271,7 +270,7 @@ describe('POST /api/invoices/:id/tags - row-scope gate', () => {
   // Attached while it keeps `update Invoice`.
   it('403s a DISPATCHER whose Invoices scope is narrowed to Attached and does not reach this invoice', async () => {
     mockAuthAs('dispatcher');
-    mockRoleSwitches({ invoices_scope: 'attached' });
+    mockRoleSwitches({ jobs_scope: 'attached', leads_scope: 'attached' });
     mockPrisma.invoice.findFirst.mockImplementation((args: { where: Record<string, unknown> }) =>
       Promise.resolve(args.where.OR ? null : { id: INVOICE_FIXTURE.id }));
 
@@ -280,7 +279,7 @@ describe('POST /api/invoices/:id/tags - row-scope gate', () => {
       .set(authHeader('dispatcher'))
       .send({ tag_id: TAG_FIXTURE.id });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockPrisma.tagAssignment.create).not.toHaveBeenCalled();
   });
 });

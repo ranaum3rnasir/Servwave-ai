@@ -15,8 +15,8 @@ import { buildAbility } from '@/lib/ability';
 // are about invoice RECORDS and must NOT move - repointing them would hide real invoice
 // surfaces from a user who is allowed to see them. Every case below goes red if either does.
 // HONEST NOTE: this file passes before the fix too; it exists to fail if the wrong site moves.
-const invoiceReadAbility = buildAbility([{ action: 'read', subject: 'Invoice' }]);
-const recordPaymentAbility = buildAbility([{ action: 'read', subject: 'Invoice' }, { action: 'record_payment', subject: 'Invoice' }]);
+const invoiceReadAbility = buildAbility([{ action: 'read', subject: 'Invoice' }, { action: 'read', subject: 'Prices' }]);
+const recordPaymentAbility = buildAbility([{ action: 'read', subject: 'Invoice' }, { action: 'read', subject: 'Prices' }, { action: 'record_payment', subject: 'Invoice' }]);
 
 // floating-ui (under Radix dropdown) does `new ResizeObserver(...)`
 class ResizeObserverStub {

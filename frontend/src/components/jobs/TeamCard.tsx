@@ -16,6 +16,7 @@ import { AssigneeSelect } from '@/components/crm/AssigneeSelect';
 import { setJobDispatcher, setJobSoldBy } from '@/lib/api/jobs';
 import { toast } from '@/components/ui/use-toast';
 import { PhoneContactActions } from '@/components/contact/PhoneContactActions';
+import { DeactivatedMark } from '@/components/people/DeactivatedMark';
 import type { DialerEntityContext } from '@/stores/dialer.store';
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -40,6 +41,8 @@ interface TeamPerson {
   first_name?: string | null;
   last_name?: string | null;
   role?: string | null;
+  /** False for a person who has been deactivated: their name stays on the job, marked (P19). */
+  is_active?: boolean;
   phone?: string | null;
   email?: string | null;
   avatar_url?: string | null;
@@ -127,7 +130,10 @@ function PersonRow({
           </AvatarFallback>
         </Avatar>
         <div className="min-w-0">
-          <p className="text-sm font-semibold text-text-primary truncate">{fullName}</p>
+          <p className="flex items-center gap-2 text-sm font-semibold text-text-primary">
+            <span className="truncate">{fullName}</span>
+            <DeactivatedMark person={person} />
+          </p>
           {subtitle && <p className="text-xs text-text-secondary mt-0.5 truncate">{subtitle}</p>}
         </div>
       </div>

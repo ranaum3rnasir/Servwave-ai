@@ -151,6 +151,7 @@ describe('v2 JobDetailPage', () => {
       { action: 'read', subject: 'Inventory' },
       { action: 'read', subject: 'Estimate' },
       { action: 'read', subject: 'Invoice' },
+      { action: 'read', subject: 'Prices' },
     ]);
     mockApi.get.mockImplementation(async (url: string) => {
       if (url.includes('/financials')) return { data: FINANCIALS };

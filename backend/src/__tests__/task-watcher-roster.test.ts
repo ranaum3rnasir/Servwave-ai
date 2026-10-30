@@ -30,6 +30,7 @@ type CastRow = {
   first_name: string;
   last_name: string;
   role: 'ADMIN' | 'SALES' | 'DISPATCHER' | 'TECHNICIAN';
+  is_admin: boolean;
   is_active: boolean;
   organization_id: string;
   department_id: string | null;
@@ -51,6 +52,7 @@ const person = (
   first_name: id,
   last_name: 'X',
   role,
+  is_admin: role === 'ADMIN',
   is_active: true,
   organization_id: ALPHA_ORG_ID,
   department_id,
@@ -128,8 +130,6 @@ beforeEach(() => {
   // department. Without this, case two is answered out of case one's session and the cohort is
   // computed from a department the actor no longer has - a false green that looks like a pass.
   clearTokenCache();
-  mockPrisma.rolePermission.findMany.mockImplementation((a: any) =>
-    Promise.resolve(DEFAULT_GRANTS.filter((g) => g.role === a.where.role)));
   // Apply the REAL where and the REAL select. Applying the select is what makes the
   // field-absence assertions below mean something: a widened `assignableSelect` would put
   // email back on the wire here, exactly as it would in production.

@@ -17,7 +17,7 @@ vi.mock('@/lib/axios', () => ({
 }));
 
 vi.mock('@/lib/api/users', () => ({
-  useUsers: () => ({ data: [{ id: 'u1', first_name: 'Ada', last_name: 'K', email: 'a@b.test' }] }),
+  usePeople: () => ({ data: [{ id: 'u1', first_name: 'Ada', last_name: 'K', email: 'a@b.test' }] }),
 }));
 
 const CUSTOMER_ID = 'cus-1';

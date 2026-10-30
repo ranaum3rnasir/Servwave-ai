@@ -5,7 +5,7 @@
  * received, Card payment could not be applied, Invoice voided and Credit applied go out through M6's two lanes (alertChain.ts),
  * and so do the sibling money alerts the PRD table is silent on (a bank payment started, cleared or failed; a dispute closed;
  * a refund that failed): the record's people are always told; whoever must act is the record's Dispatcher, else the holders of
- * Access Billing who can open the invoice, else the Manage roles and permissions holders; holders of "Alert me about every invoice
+ * Access Billing who can open the invoice, else the Admins; holders of "Alert me about every invoice
  * and payment" get a copy. Nobody comes from a role name, and the person who did it is never told.
  *
  *   An invoice's record is its job when it has one, else its estimate's job, else its estimate's lead (recordTie, the one rule for
@@ -14,7 +14,7 @@
  *   "customer owner" recipient is gone: it was the Owner of the lead the job came from, who is the job's Sold By already.
  *
  *   These alerts name an invoice and usually an amount, so everyone who is told must be able to open the INVOICE (View invoices and
- *   its scope, the creator rule included) as well as the job or lead: the chain asks both, in one batched read each, and a
+ *   its scope) as well as the job or lead: the chain asks both, in one batched read each, and a
  *   person who can open one but not the other is not "someone", so the chain goes on to the next step. An alert never says more to
  *   a person than the screens show them.
  *

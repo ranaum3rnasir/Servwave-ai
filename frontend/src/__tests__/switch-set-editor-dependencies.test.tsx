@@ -12,7 +12,7 @@ import userEvent from '@testing-library/user-event';
 import { TooltipProvider } from '@/ui-kit/components/ui/tooltip';
 import SwitchSetEditor from '@/components/permissions/SwitchSetEditor';
 import type { SwitchSet } from '@/lib/api/permissionSwitches';
-import { FIXTURE_CATALOG, FIXTURE_LAYOUT, FIXTURE_SWITCHES, catalogSwitch } from './support/permissionCatalogFixture';
+import { FIXTURE_CATALOG, FIXTURE_DRAWN_SWITCHES, FIXTURE_LAYOUT, FIXTURE_SWITCHES, catalogSwitch } from './support/permissionCatalogFixture';
 
 function Harness({ initial, onChange }: { initial: SwitchSet; onChange?: (next: SwitchSet) => void }) {
   const [values, setValues] = useState(initial);
@@ -123,7 +123,7 @@ describe('SwitchSetEditor, any other requirement', () => {
   it('draws no note and no grey on a set whose requirements are all met', () => {
     render(<Harness initial={allOn()} />);
     expect(screen.queryAllByText(/^Requires /)).toHaveLength(0);
-    for (const s of FIXTURE_SWITCHES.filter((x) => x.kind === 'toggle')) expect(toggleOf(s.key), s.label).toBeEnabled();
+    for (const s of FIXTURE_DRAWN_SWITCHES.filter((x) => x.kind === 'toggle')) expect(toggleOf(s.key), s.label).toBeEnabled();
   });
 });
 
@@ -198,7 +198,7 @@ describe('SwitchSetEditor, switches that need nothing', () => {
     }
   });
 
-  it('keeps the eligibility switches off Create leads and Create jobs: no warning, no grey, the set sent unchanged', async () => {
+  it('keeps the eligibility settings off Create leads and Create jobs: no warning, no grey, not drawn, the set sent unchanged', async () => {
     const eligibility = ['can_own_leads', 'can_be_dispatcher', 'can_be_on_crew'];
     const onChange = vi.fn();
     const user = userEvent.setup();
@@ -209,7 +209,8 @@ describe('SwitchSetEditor, switches that need nothing', () => {
     for (const key of ['create_leads', 'create_jobs']) expect(toggleOf(key), key).toBeEnabled();
     for (const key of eligibility) {
       expect(catalogSwitch(key).requires).toEqual([]);
-      expect(toggleOf(key), key).toBeEnabled();
+      // A per-person setting (P1): edited on the person's profile, never drawn by the switch editor.
+      expect(screen.queryByRole('switch', { name: catalogSwitch(key).label }), key).toBeNull();
     }
     // Flipping an unrelated switch hands back the whole set with Create leads and Create jobs still on.
     await user.click(toggleOf('show_phone'));

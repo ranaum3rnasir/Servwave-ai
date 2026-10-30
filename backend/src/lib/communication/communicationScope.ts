@@ -1,6 +1,7 @@
 import type { Request } from 'express';
 import { prisma } from '../prisma';
 import { scopeWhereForReq } from '../permissions/enforce';
+import { isSuperUser } from '../permissions/effectiveRole';
 import { relationScopeFilter, anchorInheritedWhere } from '../permissions/anchorVisibility';
 import type { ChannelVisibility } from '../job-communications';
 import { resolveSwitches } from '../permissions/switches/store';
@@ -12,6 +13,7 @@ import { substituteConditions } from '../permissions/substituteConditions';
 import { MATCH_NOTHING } from '../permissions/scopeWhereFor';
 import { recordPeopleThreads, type PeopleThread } from './recordPeopleThreads';
 import { emailFeatureOn } from './emailFeature';
+import { departmentMemberIds } from '../permissions/moduleReach';
 
 /**
  * M11 Communication scope (Roles & Permissions PRD 8).
@@ -33,7 +35,12 @@ import { emailFeatureOn } from './emailFeature';
 
 type Where = Record<string, unknown>;
 
-export type CommunicationScopeValue = 'linked_to_me' | 'all';
+/**
+ * The Communication scope (P6): Attached (the section lists what is the person's own: the numbers linked to them, their
+ * own and handed-over mailboxes, the calls and texts they took part in), Team (the same for everyone in their
+ * department) or All. The people whose own rows count are `CommunicationScopeInputs.personIds`.
+ */
+export type CommunicationScopeValue = 'attached' | 'team' | 'all';
 
 /**
  * The filter on an email message or an `email_threads` row that matches nothing: what every reader gets while the company's
@@ -53,19 +60,26 @@ export interface RecordReach {
 }
 
 export interface CommunicationScopeInputs {
+  /** The person asking. */
   personId: string;
+  /**
+   * The people whose own conversations the section lists: the person alone under Attached, everyone in their department
+   * under Team (the person included, when they have a department; none, and so nothing of their own, when they have none:
+   * P3). Left out, it is the person alone.
+   */
+  personIds?: readonly string[];
   scope: CommunicationScopeValue;
-  /** The company numbers ticked against the person on Settings > Caller ID. The Organization default number is among
+  /** The company numbers ticked against the person (or, under Team, against anyone in their department) on Settings > Caller ID. The Organization default number is among
    *  them only when it is ticked there; sending from it does not link a person to it. */
   linkedNumberIds: readonly string[];
   /** Holds "See the main line when I have no number". Read only when the person has no linked number. */
   seeMainLineWhenNoNumber: boolean;
   /** The Organization default number (the main line), or null when the organization has none. */
   orgDefaultNumberId: string | null;
-  /** The mailboxes whose email conversations the person reads under "Linked to me": the ones they HOLD (PRD 10, S10.7):
+  /** The mailboxes whose email conversations the person reads under Attached: the ones they HOLD (PRD 10, S10.7):
    *  their own, and each one handed to them (`Mailbox.holder_user_id` is the person). The main-line fallback never adds one. */
   mailboxIds: readonly string[];
-  /** The company's main mailbox, when the person READS it (PRD 10, S10.8), else null: see `mainMailboxReadFor`. Under "Linked to me"
+  /** The company's main mailbox, when the person READS it (PRD 10, S10.8), else null: see `mainMailboxReadFor`. Under Attached
    *  it lists only the conversations started in it after go-live. Nothing but the Email page reads it. */
   mainMailboxId: string | null;
   /** The record conversations the person reaches through their record (S10.7): the ids the loader found the person can
@@ -76,7 +90,7 @@ export interface CommunicationScopeInputs {
   repliedMessageIds: readonly string[];
   reach: RecordReach;
   /** The record conversations the person gets as one of the record's people (S10.9), found by `recordPeopleThreadsTheyReach`:
-   *  present only where the Email section lists them ("Linked to me"). */
+   *  present only where the Email section lists them (Attached). */
   recordPeopleThreadIds?: readonly string[];
 }
 
@@ -129,6 +143,15 @@ export function replyAttributedMessageIds(personId: string, messages: readonly R
   return [...replySendersOf(messages)].filter(([, sender]) => sender === personId).map(([id]) => id);
 }
 
+/** The people whose own conversations the section lists (see `CommunicationScopeInputs.personIds`). */
+const peopleOf = (i: Pick<CommunicationScopeInputs, 'personId' | 'personIds'>): readonly string[] => i.personIds ?? [i.personId];
+
+/** The column is the person, or is any of the people when there are several (none matches nothing). */
+const byPeople = (column: string, ids: readonly string[]): Where => (ids.length === 1 ? { [column]: ids[0] } : { [column]: { in: [...ids] } });
+
+/** A column filter for one person (equality) or several (`in`), so the one-person query keeps the shape it always had. */
+const oneOrIn = (ids: readonly string[]): string | { in: string[] } => (ids.length === 1 ? ids[0]! : { in: [...ids] });
+
 /** The inputs that decide which company numbers are the person's. */
 type NumberInputs = Pick<CommunicationScopeInputs, 'linkedNumberIds' | 'seeMainLineWhenNoNumber' | 'orgDefaultNumberId'>;
 
@@ -136,20 +159,20 @@ type NumberInputs = Pick<CommunicationScopeInputs, 'linkedNumberIds' | 'seeMainL
  * The company numbers the section treats as the person's: the ones ticked against them, or, for a person with none
  * who holds the main-line switch, the Organization default number. A person with at least one linked number never
  * gets the fallback, whatever the switch says. Under "All" the section does not narrow by number, so this is read
- * only under "Linked to me".
+ * only under Attached.
  */
 export function effectiveLinkedNumberIds(i: NumberInputs): string[] {
   if (i.linkedNumberIds.length > 0) return [...i.linkedNumberIds];
   return i.seeMainLineWhenNoNumber && i.orgDefaultNumberId ? [i.orgDefaultNumberId] : [];
 }
 
-/** The calls the section list shows under "Linked to me": a linked number, or a call the person placed or answered. */
+/** The calls the section list shows under Attached: a linked number, or a call the person placed or answered. */
 function ownCallBranches(i: CommunicationScopeInputs): Where[] {
   const numberIds = effectiveLinkedNumberIds(i);
   return [
     ...(numberIds.length > 0 ? [{ phone_number_id: { in: numberIds } }] : []),
     // `agent_id` holds the ServWave user who placed an outbound call or answered an inbound one.
-    { agent_id: i.personId },
+    byPeople('agent_id', peopleOf(i)),
   ];
 }
 
@@ -167,7 +190,7 @@ function recordBranches(reach: RecordReach, { vendor = true }: { vendor?: boolea
 }
 
 /**
- * The `where` for the call log. Under "All" it is {} (every call); under "Linked to me" it is an `{ OR }`, so a handler
+ * The `where` for the call log. Under "All" it is {} (every call); under Attached it is an `{ OR }`, so a handler
  * that also builds its own search OR must merge with `addOrFilter` (lib/permissions/whereCompose).
  */
 export function callsInSectionWhere(inputs: CommunicationScopeInputs): Where {
@@ -203,19 +226,24 @@ const ORDINARY_THREAD: Where = {
 };
 
 /**
- * What makes a conversation the person's, apart from its record (PRD 10, "Section email rule"): it sits in a mailbox they
- * hold, it is assigned to them, or they wrote in it (a message they sent from the app).
+ * What makes a conversation the person's own correspondence, apart from its record (PRD 10, "Section email rule"): it sits
+ * in a mailbox they hold, it is assigned to them, or they wrote in it (a message they sent from the app).
+ *
+ * Only the mailbox OPENS a conversation (finding M1, ticket 31): mail reach is per message, so being assigned a
+ * conversation or replying in it grants nothing beyond what the person already reaches. The other two only NARROW what
+ * the section already shows ("My mailbox", `mailboxSelectionWhere`), and the reach rule (`threadsInSectionWhere`) reads
+ * the mailbox alone.
  */
-function theirConversationBranches(personId: string, mailboxIds: readonly string[]): Where[] {
+function theirConversationBranches(personIds: readonly string[], mailboxIds: readonly string[]): Where[] {
   return [
     ...(mailboxIds.length > 0 ? [{ mailbox_id: { in: [...mailboxIds] } }] : []),
-    { assigned_to_user_id: personId },
-    { emails: { some: { sent_by_user_id: personId } } },
+    byPeople('assigned_to_user_id', personIds),
+    { emails: { some: byPeople('sent_by_user_id', personIds) } },
   ];
 }
 
 /**
- * What the main mailbox lists to a person who reads it, under "Linked to me" (PRD 10, "What the main mailbox lists"): the
+ * What the main mailbox lists to a person who reads it, under Attached (PRD 10, "What the main mailbox lists"): the
  * conversations STARTED in it, that is with origin "started", which is the marker S10.4 gives a conversation that came to
  * be in a mailbox after go-live. That leaves out, by the origin alone, the record conversations (they follow their
  * record), the migrated ones (what was there before go-live) and the ones moved in from a leaver's mailbox (S10.21 writes
@@ -231,25 +259,28 @@ function mainMailboxThreads(mainMailboxId: string, reach: RecordReach): Where {
 }
 
 /**
- * The `where` on `email_threads` for the person's conversations under "Linked to me": an ordinary conversation that is
- * theirs, or a record conversation whose record they can still open (`recordThreadIds`, found by the loader). Written
+ * The `where` on `email_threads` for the person's conversations under Attached: an ordinary conversation in a mailbox
+ * they hold, or one the main mailbox lists to its reader, or a record conversation whose record they can still open (`recordThreadIds`, found by the loader). Written
  * ONCE here: the Email list, the single read, mark read, reply, the attachment link and every unread count all go
  * through it.
  */
 function threadsInSectionWhere(i: CommunicationScopeInputs): Where {
-  return {
-    OR: [
-      { AND: [ORDINARY_THREAD, { OR: theirConversationBranches(i.personId, i.mailboxIds) }] },
-      ...(i.mainMailboxId ? [mainMailboxThreads(i.mainMailboxId, i.reach)] : []),
-      ...(i.recordThreadIds.length > 0 ? [{ id: { in: [...i.recordThreadIds] } }] : []),
-      ...(i.recordPeopleThreadIds && i.recordPeopleThreadIds.length > 0 ? [{ id: { in: [...i.recordPeopleThreadIds] } }] : []),
-    ],
-  };
+  const branches: Where[] = [
+    // An ordinary conversation is reached through the mailbox it sits in, never through an assignment or a message the
+    // person wrote in it (M1): either would open every message of a conversation they may read only message by message.
+    ...(i.mailboxIds.length > 0 ? [{ AND: [ORDINARY_THREAD, { mailbox_id: { in: [...i.mailboxIds] } }] }] : []),
+    ...(i.mainMailboxId ? [mainMailboxThreads(i.mainMailboxId, i.reach)] : []),
+    ...(i.recordThreadIds.length > 0 ? [{ id: { in: [...i.recordThreadIds] } }] : []),
+    ...(i.recordPeopleThreadIds && i.recordPeopleThreadIds.length > 0 ? [{ id: { in: [...i.recordPeopleThreadIds] } }] : []),
+  ];
+  // A person with no mailbox, no main mailbox to read and no record conversation reaches no conversation. Said outright: an
+  // empty `OR` nested under an `AND` is read by the database client as no condition at all, which would open every one.
+  return branches.length > 0 ? { OR: branches } : NO_EMAIL;
 }
 
 /**
  * The `where` for the Email page's message list. An email conversation (an `email_threads` row) sits in one mailbox, so
- * under "Linked to me" a message is listed when its conversation is the person's (see `threadsInSectionWhere`); a tie to
+ * under Attached a message is listed when its conversation is the person's (see `threadsInSectionWhere`); a tie to
  * a job, lead or customer plays no part for an ordinary one, and a loose system email (no conversation, so no mailbox) is
  * not listed. Under "All" every message. The main-line fallback is for calls and texts only: it never opens a mailbox.
  */
@@ -283,7 +314,7 @@ export type MailboxSelection = { kind: 'mine' } | { kind: 'mailbox'; id: string 
 /**
  * The `where` for a selection, spread beside the section scope (under `AND`, as both own the `thread` key). "My
  * mailbox" is the person's own correspondence: their own mailbox, what is assigned to them, what they wrote in and, under
- * "Linked to me", the record conversations they get as one of the record's people (`recordPeopleThreadIds`, from the section).
+ * Attached, the record conversations they get as one of the record's people (`recordPeopleThreadIds`, from the section).
  */
 export function mailboxSelectionWhere(
   selection: MailboxSelection, person: { id: string; ownMailboxId: string | null; recordPeopleThreadIds?: readonly string[] },
@@ -297,7 +328,7 @@ export function mailboxSelectionWhere(
       return {
         thread: {
           OR: [
-            ...theirConversationBranches(person.id, person.ownMailboxId ? [person.ownMailboxId] : []),
+            ...theirConversationBranches([person.id], person.ownMailboxId ? [person.ownMailboxId] : []),
             ...(person.recordPeopleThreadIds && person.recordPeopleThreadIds.length > 0 ? [{ id: { in: [...person.recordPeopleThreadIds] } }] : []),
           ],
         },
@@ -306,7 +337,7 @@ export function mailboxSelectionWhere(
 }
 
 /**
- * The text messages the section list shows under "Linked to me": a message on a linked company number (inbound or
+ * The text messages the section list shows under Attached: a message on a linked company number (inbound or
  * outbound), one the person sent from the app, an inbound reply attributed to them, and anything in their own staff
  * conversation (the one keyed to them). A message with no company number matches none of these unless they sent it, so
  * the main-line fallback never lists it.
@@ -315,9 +346,9 @@ function ownTextBranches(i: CommunicationScopeInputs): Where[] {
   const numberIds = effectiveLinkedNumberIds(i);
   return [
     ...(numberIds.length > 0 ? [{ phone_number_id: { in: numberIds } }] : []),
-    { sent_by_user_id: i.personId },
+    byPeople('sent_by_user_id', peopleOf(i)),
     ...(i.repliedMessageIds.length > 0 ? [{ id: { in: [...i.repliedMessageIds] } }] : []),
-    { thread: { user_id: i.personId } },
+    { thread: byPeople('user_id', peopleOf(i)) },
   ];
 }
 
@@ -339,7 +370,7 @@ function textRecordBranches(reach: RecordReach): Where[] {
 
 /**
  * The `where` for the nested messages of a text conversation in the section list, and the one that decides which
- * conversations are listed (see `textThreadHolding`). Under "All" it is {} (every message); under "Linked to me" an
+ * conversations are listed (see `textThreadHolding`). Under "All" it is {} (every message); under Attached an
  * `{ OR }`.
  */
 export function textsInSectionWhere(inputs: CommunicationScopeInputs): Where {
@@ -369,7 +400,7 @@ export function textThreadHolding(messages: Where): Where {
 /**
  * The rows a record's Communication tab may list, one filter per source (S08.8). A tab asks one question, "may this
  * person open the record this row hangs off", and the section scope (company numbers, mailboxes) plays no part in it:
- * a person on "Linked to me" reads a job's whole tab, from any number or mailbox, whenever they can open the job.
+ * a person on Attached reads a job's whole tab, from any number or mailbox, whenever they can open the job.
  * Each row is judged by the same job > lead > customer precedence as a single read, so on a customer's tab a row tied
  * to a job needs that job, one tied to a lead (and no job) needs that lead, and a customer-only row needs the customer.
  * The job and lead tabs fetch rows by their own tie, so the record's own gate and this filter agree there, and the
@@ -381,11 +412,11 @@ export function textThreadHolding(messages: Where): Where {
  *
  * The customer's estimate decisions (S08.9) hang off an estimate, which carries its own job, lead and customer, so the
  * same precedence reads its columns; on top of it the person must be able to open the estimate itself, which
- * `estimateScope` (the Estimates row scope, creator rule included) says.
+ * `estimateScope` (the Estimates row scope) says.
  *
  * A payment received (S08.10) hangs off an invoice, which reads the same way through its own job, else its estimate's job,
  * else its estimate's lead, else its customer; on top of it the person must be able to open the invoice, which
- * `invoiceScope` (the Invoices row scope, creator rule included) says.
+ * `invoiceScope` (the Invoices row scope) says.
  */
 export function recordTabWhere(reach: RecordReach, estimateScope: Where, invoiceScope: Where): ChannelVisibility {
   const estimateReach = (): Where => {
@@ -435,7 +466,7 @@ export function recordTabWhere(reach: RecordReach, estimateScope: Where, invoice
 
 /**
  * The `where` for the company numbers list: every number under "All", the person's own (the main line included when the
- * fallback covers them) under "Linked to me". Spread it beside the tenant filter.
+ * fallback covers them) under Attached. Spread it beside the tenant filter.
  */
 export function numbersInSectionWhere(inputs: CommunicationScopeInputs): Where {
   if (inputs.scope === 'all') return {};
@@ -446,17 +477,32 @@ export function numbersInSectionWhere(inputs: CommunicationScopeInputs): Where {
 
 /** Anything but an explicit "All" is the narrow value, so an unknown stored value never widens the section. */
 export function scopeValueOf(raw: unknown): CommunicationScopeValue {
-  return raw === 'all' ? 'all' : 'linked_to_me';
+  if (raw === 'all') return 'all';
+  if (raw === 'team') return 'team';
+  return 'attached';
+}
+
+/**
+ * The people whose own conversations a scope lists for this person: themself under Attached, everyone in their
+ * department under Team (none when they have no department, so nothing of their own: P3), nobody under All (it does not
+ * narrow by person).
+ */
+export async function peopleForScope(
+  user: { id: string; organization_id: string; department_id?: string | null }, scope: CommunicationScopeValue,
+): Promise<string[]> {
+  if (scope === 'attached') return [user.id];
+  if (scope === 'team') return departmentMemberIds(user.organization_id, user.department_id);
+  return [];
 }
 
 /** The company numbers ticked against the person on Settings > Caller ID, read from the database on every call. */
-async function linkedNumberIdsFor(req: Request): Promise<string[]> {
+async function linkedNumberIdsFor(req: Request, people: readonly string[]): Promise<string[]> {
   const user = req.user!;
   const links = await prisma.userPhoneNumber.findMany({
-    where: { user_id: user.id, phone_number: { organization_id: user.organization_id } },
+    where: { user_id: oneOrIn(people), phone_number: { organization_id: user.organization_id } },
     select: { phone_number_id: true },
   });
-  return links.map((l) => l.phone_number_id);
+  return [...new Set(links.map((l) => l.phone_number_id))];
 }
 
 async function scopeValueForReq(req: Request): Promise<CommunicationScopeValue> {
@@ -467,8 +513,8 @@ async function scopeValueForReq(req: Request): Promise<CommunicationScopeValue> 
  * The number links and the main-line fallback inputs, read from the database on every call. The Organization default
  * number is looked up only when the fallback could apply (no linked number and the switch on).
  */
-async function numberInputsForReq(req: Request): Promise<NumberInputs> {
-  const [linkedNumberIds, switches] = await Promise.all([linkedNumberIdsFor(req), resolveSwitches(req.user!)]);
+async function numberInputsForReq(req: Request, people: readonly string[]): Promise<NumberInputs> {
+  const [linkedNumberIds, switches] = await Promise.all([linkedNumberIdsFor(req, people), resolveSwitches(req.user!)]);
   const seeMainLineWhenNoNumber = switches.see_main_line_when_no_number === true;
   const needsMainLine = linkedNumberIds.length === 0 && seeMainLineWhenNoNumber;
   const orgDefault = needsMainLine
@@ -486,11 +532,16 @@ async function numberInputsForReq(req: Request): Promise<NumberInputs> {
  * someone else; this reads that column, so a mailbox handed to a person is theirs from the day those slices write it, with
  * no change here. A mailbox merged into the main one is held by nobody. `own` is the one issued to the person themselves.
  */
-export async function heldMailboxesFor(req: Request, { withMain = true }: { withMain?: boolean } = {}): Promise<HeldMailboxes> {
+export async function heldMailboxesFor(
+  req: Request, { withMain = true, people }: { withMain?: boolean; people?: readonly string[] } = {},
+): Promise<HeldMailboxes> {
   const user = req.user!;
+  // Under Team the mailboxes held by anyone in the person's department are read as the person's own are; the others
+  // listed beside "My mailbox" are every one of them but the person's own.
+  const holders = people ?? await peopleForScope(user, await scopeValueForReq(req));
   const [rows, main] = await Promise.all([
     prisma.mailbox.findMany({
-      where: { organization_id: user.organization_id, holder_user_id: user.id, status: { not: 'merged' } },
+      where: { organization_id: user.organization_id, holder_user_id: oneOrIn([...new Set([user.id, ...holders])]), status: { not: 'merged' } },
       select: { id: true, user_id: true, user: { select: { first_name: true, last_name: true } } },
     }),
     withMain ? mainMailboxReadFor(req) : null,
@@ -507,13 +558,13 @@ export async function heldMailboxesFor(req: Request, { withMain = true }: { with
 }
 
 /**
- * The company's main mailbox, when the person reads it through a link or as a holder of Manage roles and permissions
- * (PRD 10, "Who reads the main mailbox"), else null. People on All read it as they read every mailbox, so this never
+ * The company's main mailbox, when the person reads it through a link or as an Admin (PRD 10, "Who reads the main mailbox";
+ * the holders of Manage roles and permissions until that switch retired, AL-18), else null. People on All read it as they read every mailbox, so this never
  * stands for them. Read afresh on every request, so linking or unlinking shows on the next one.
  *
  * ONE statement, whoever asks: the company's main mailbox, whether the person is linked to it, and whether anybody ACTIVE is
  * (a deactivated person's link is ignored). The person reads it when they are linked, or when nobody active is and they
- * hold Manage roles and permissions (their ability, so no read). It never grows with the people linked or the mail in it.
+ * are an Admin (the flag on the signed-in person, so no read). It never grows with the people linked or the mail in it.
  */
 async function mainMailboxReadFor(req: Request): Promise<string | null> {
   const user = req.user!;
@@ -526,34 +577,35 @@ async function mainMailboxReadFor(req: Request): Promise<string | null> {
     LIMIT 1`;
   const main = rows[0];
   if (!main) return null;
-  const reads = main.linked || (!main.anyone && (req.ability?.can('manage_roles', 'Role') ?? false));
+  const reads = main.linked || (!main.anyone && isSuperUser(user));
   return reads ? main.id : null;
 }
 
 /** The mailboxes a person holds: all of them, the one issued to them, and the others (handed over) with whose they were. */
 export interface HeldMailboxes {
   held: string[];
-  /** The main mailbox, when the person reads it under "Linked to me" (see `mainMailboxReadFor`). */
+  /** The main mailbox, when the person reads it under Attached (see `mainMailboxReadFor`). */
   main: string | null;
   own: string | null;
   handedOver: { id: string; ownerName: string | null }[];
 }
 
 /**
- * The inbound texts attributed to the person as replies, read from the database on every call. Only the conversations
- * they have sent a text in can hold one, so those are the only messages fetched.
+ * The inbound texts attributed to the people as replies, read from the database on every call. Only the conversations
+ * one of them has sent a text in can hold one, so those are the only messages fetched.
  */
-async function repliedMessageIdsFor(req: Request): Promise<string[]> {
+async function repliedMessageIdsFor(req: Request, people: readonly string[]): Promise<string[]> {
   const user = req.user!;
+  if (people.length === 0) return [];
   const candidates = await prisma.message.findMany({
     where: {
       organization_id: user.organization_id,
       phone_number_id: { not: null },
-      thread: { messages: { some: { sent_by_user_id: user.id, phone_number_id: { not: null } } } },
+      thread: { messages: { some: { sent_by_user_id: oneOrIn(people), phone_number_id: { not: null } } } },
     },
     select: { id: true, thread_id: true, direction: true, phone_number_id: true, sent_by_user_id: true, ts: true, created_at: true },
   });
-  return replyAttributedMessageIds(user.id, candidates);
+  return people.flatMap((id) => replyAttributedMessageIds(id, candidates));
 }
 
 /** What the person can open, as the access resolver answers it now. */
@@ -570,11 +622,12 @@ async function reachForReq(req: Request): Promise<RecordReach> {
 async function inputsForReq(
   req: Request, scope: CommunicationScopeValue, { withReplies = false }: { withReplies?: boolean } = {},
 ): Promise<CommunicationScopeInputs> {
+  const people = await peopleForScope(req.user!, scope);
   const [numberInputs, repliedMessageIds, reach] = await Promise.all([
-    numberInputsForReq(req), withReplies ? repliedMessageIdsFor(req) : [], reachForReq(req),
+    numberInputsForReq(req, people), withReplies ? repliedMessageIdsFor(req, people) : [], reachForReq(req),
   ]);
   // The calls and texts never read the mailbox inputs: email has its own loader (`emailInputsForReq`).
-  return { personId: req.user!.id, scope, ...numberInputs, mailboxIds: [], mainMailboxId: null, recordThreadIds: [], repliedMessageIds, reach };
+  return { personId: req.user!.id, personIds: people, scope, ...numberInputs, mailboxIds: [], mainMailboxId: null, recordThreadIds: [], repliedMessageIds, reach };
 }
 
 /**
@@ -612,18 +665,19 @@ async function emailInputsForReq(
   req: Request, scope: CommunicationScopeValue, candidates: RecordCandidates, known?: HeldMailboxes,
 ): Promise<{ inputs: CommunicationScopeInputs; mailboxes: HeldMailboxes }> {
   // Under All the section does not narrow and the mailbox list reads the main mailbox itself, so nothing asks about it.
-  const mailboxes = known ?? await heldMailboxesFor(req, { withMain: scope !== 'all' });
+  const people = await peopleForScope(req.user!, scope);
+  const mailboxes = known ?? await heldMailboxesFor(req, { withMain: scope !== 'all', people });
   const { held } = mailboxes;
   // Under All the section does not narrow, so there is no record to ask about.
   const reach = scope === 'all' ? EVERYTHING_REACHED : await reachForReq(req);
-  const recordThreadIds = scope === 'all' ? [] : await recordThreadsTheyReach(req, reach, held, candidates);
+  const recordThreadIds = scope === 'all' ? [] : await recordThreadsTheyReach(req, reach, held, candidates, people);
   // The record's people come to the Email list and the counts only: opening one conversation needs the record alone, which
   // `recordThreadIds` above already holds for the conversation a read names.
-  const recordPeopleThreadIds = scope === 'all' || candidates.kind !== 'theirs' ? [] : await recordPeopleThreadsTheyReach(req, reach);
+  const recordPeopleThreadIds = scope === 'all' || candidates.kind !== 'theirs' ? [] : await recordPeopleThreadsTheyReach(req, reach, people);
   return {
     mailboxes,
     inputs: {
-      personId: req.user!.id, scope, linkedNumberIds: [], seeMainLineWhenNoNumber: false, orgDefaultNumberId: null,
+      personId: req.user!.id, personIds: people, scope, linkedNumberIds: [], seeMainLineWhenNoNumber: false, orgDefaultNumberId: null,
       mailboxIds: held, mainMailboxId: mailboxes.main, recordThreadIds, repliedMessageIds: [], reach, recordPeopleThreadIds,
     },
   };
@@ -662,19 +716,19 @@ async function rowsInScope(req: Request, ids: string[], scope: Where, find: Find
  * the record"). A conversation about a job, lead or customer is reachable while the person can open that job, lead or
  * customer; one about a calendar entry (which joins nothing, so it is tied to the customer it was sent to) while they can
  * open that customer; one about an estimate or an invoice only while they can also open that estimate or invoice, the
- * creator rule included (S10.5's two openers, reused). Wherever it sits, whoever it is assigned to, whoever wrote in it.
+ * (S10.5's two openers, reused). Wherever it sits, whoever it is assigned to, whoever wrote in it.
  *
  * Bounded however many conversations there are, for the hosted database's one connection: one read for the candidates,
  * one for the customers a calendar entry conversation names, then at most one read per kind of record (none for a person whose scope reaches every row of that kind). Nothing is
  * asked per conversation, and nothing is kept between requests.
  */
 async function recordThreadsTheyReach(
-  req: Request, reach: RecordReach, held: readonly string[], candidates: RecordCandidates,
+  req: Request, reach: RecordReach, held: readonly string[], candidates: RecordCandidates, people: readonly string[],
 ): Promise<string[]> {
   const user = req.user!;
   let which: Where;
   if (candidates.kind === 'theirs') {
-    which = { OR: theirConversationBranches(user.id, held) };
+    which = { OR: theirConversationBranches(people, held) };
   } else if (candidates.kind === 'held') {
     // The conversations a held reply in these mailboxes belongs to: a relation filter, so still one statement.
     if (candidates.mailboxIds.length === 0) return [];
@@ -752,7 +806,7 @@ function scopeHoldsAttached(scope: Where, attached: Where): boolean {
  * filter: ONE mechanism with the conversations of their own mailboxes (`recordThreadsTheyReach`), a list of conversation
  * ids found from the records. `recordPeopleThreads` finds, in one statement that starts at the person's own jobs and leads,
  * the record conversations with a customer reply that they are a record person of; this keeps the ones whose record they
- * can still open (their row scope on the job or lead, on the estimate or on the invoice, the creator rule included), so
+ * can still open (their row scope on the job or lead, on the estimate or on the invoice), so
  * losing record reach removes the conversation on the next request.
  *
  * Reading the scope costs nothing for a person whose scope reaches every row, or whose scope has the Attached rows as an arm
@@ -760,17 +814,20 @@ function scopeHoldsAttached(scope: Where, attached: Where): boolean {
  * and no read is needed. Any other scope (None, Through own leads, a Team or Location scope) is asked of the table, one read
  * for each kind of record the conversations are about. Bounded either way, however many conversations there are.
  */
-async function recordPeopleThreadsTheyReach(req: Request, reach: RecordReach): Promise<string[]> {
+async function recordPeopleThreadsTheyReach(req: Request, reach: RecordReach, people: readonly string[]): Promise<string[]> {
   const user = req.user!;
-  const threads = await recordPeopleThreads(prisma, { organizationId: user.organization_id, personId: user.id });
+  if (people.length === 0) return [];
+  const threads = await recordPeopleThreads(prisma, { organizationId: user.organization_id, personId: user.id, personIds: people });
   if (threads.length === 0) return [];
 
   const [estimateScope, invoiceScope] = await Promise.all([scopeWhereForReq(req, 'Estimate'), scopeWhereForReq(req, 'Invoice')]);
   const attached = (subject: 'Job' | 'Lead' | 'Estimate' | 'Invoice') =>
     substituteConditions(attachedReach(subject), { userId: user.id }) as Where;
   const idsOf = (type: PeopleThread['record_type']) => threads.filter((t) => t.record_type === type).map((t) => t.record_id);
+  // The Attached rows are the viewer's own: the shortcut holds only when the record's people are the viewer alone.
+  const onlyMe = people.length === 1 && people[0] === user.id;
   const reached = async (type: PeopleThread['record_type'], subject: 'Job' | 'Lead' | 'Estimate' | 'Invoice', scope: Where, find: FindRows) =>
-    scopeHoldsAttached(scope, attached(subject)) ? new Set(idsOf(type)) : rowsInScope(req, idsOf(type), scope, find);
+    onlyMe && scopeHoldsAttached(scope, attached(subject)) ? new Set(idsOf(type)) : rowsInScope(req, idsOf(type), scope, find);
   const reachedRecords: Record<PeopleThread['record_type'], Set<string>> = {
     job: await reached('job', 'Job', reach.job, (where) => prisma.job.findMany({ where, select: { id: true } })),
     lead: await reached('lead', 'Lead', reach.lead, (where) => prisma.lead.findMany({ where, select: { id: true } })),
@@ -782,7 +839,7 @@ async function recordPeopleThreadsTheyReach(req: Request, reach: RecordReach): P
 
 /**
  * A mailbox the Email page can be asked to show. "mine" and "all" are words; anything else is a mailbox id. Anything the
- * person may not open (a colleague's mailbox under "Linked to me", an id that is not a mailbox of their company) falls
+ * person may not open (a colleague's mailbox under Attached, an id that is not a mailbox of their company) falls
  * back to their own mailbox, so a stale link or a shared one never shows more than the section does.
  */
 export async function resolveMailboxSelection(
@@ -813,9 +870,9 @@ function hiddenEmailSection(req: Request): EmailSection {
   const mailboxes: HeldMailboxes = { held: [], main: null, own: null, handedOver: [] };
   const reach: RecordReach = { job: { ...MATCH_NOTHING }, lead: { ...MATCH_NOTHING }, customer: { ...MATCH_NOTHING }, vendors: false };
   return {
-    scope: 'linked_to_me', personId: req.user!.id, where: NO_EMAIL, mailboxes,
+    scope: 'attached', personId: req.user!.id, where: NO_EMAIL, mailboxes,
     inputs: {
-      personId: req.user!.id, scope: 'linked_to_me', linkedNumberIds: [], seeMainLineWhenNoNumber: false, orgDefaultNumberId: null,
+      personId: req.user!.id, scope: 'attached', linkedNumberIds: [], seeMainLineWhenNoNumber: false, orgDefaultNumberId: null,
       mailboxIds: [], mainMailboxId: null, recordThreadIds: [], repliedMessageIds: [], reach,
     },
   };
@@ -832,7 +889,7 @@ export async function emailSectionForReq(req: Request): Promise<EmailSection> {
 
 /**
  * The `where` on emails that narrows the section to one selection of the Email page: "My mailbox" (the person's own
- * correspondence and, under "Linked to me", the record conversations they get as one of the record's people), one mailbox,
+ * correspondence and, under Attached, the record conversations they get as one of the record's people), one mailbox,
  * or all of them. The main mailbox is the one place a record conversation is NOT listed for its people (PRD 10, "What the
  * main mailbox lists"): there it lists what the section lists without them, which leaves a conversation that is theirs only
  * as one of the record's people to "My mailbox" and the section.
@@ -894,6 +951,19 @@ export async function emailReadWhereForReq(req: Request, target: EmailTarget): P
   return emailReadWhere((await emailInputsForReq(req, scope, { kind: 'target', target })).inputs);
 }
 
+/**
+ * Controller-facing (re-audit N16): the filter for an `email_threads` row a person may change AS A WHOLE (assign it, archive it,
+ * snooze it). Those change it for everyone who reads it, so it takes the conversation itself being the person's: in a mailbox
+ * they hold or read, or a record conversation whose record they can open (`threadsInSectionWhere`, the rule the Email list
+ * uses). Reading one message of it through a record (M1, ticket 31) is not enough. Under "All", every conversation.
+ */
+export async function emailThreadSectionWhereForReq(req: Request, threadId: string): Promise<Where> {
+  if (!emailFeatureOn(req)) return NO_EMAIL;
+  const scope = await scopeValueForReq(req);
+  if (scope === 'all') return {};
+  return threadsInSectionWhere((await emailInputsForReq(req, scope, { kind: 'target', target: { threadId } })).inputs);
+}
+
 /** Controller-facing: the filter for an `email_threads` row, which is readable when any message in it is. */
 export async function emailThreadReadWhereForReq(req: Request, threadId: string): Promise<Where> {
   const messages = await emailReadWhereForReq(req, { threadId });
@@ -932,12 +1002,12 @@ export async function textReadScopeForReq(req: Request): Promise<TextScope> {
 export async function numberIdsInSectionForReq(req: Request): Promise<string[] | null> {
   const scope = await scopeValueForReq(req);
   if (scope === 'all') return null;
-  return effectiveLinkedNumberIds(await numberInputsForReq(req));
+  return effectiveLinkedNumberIds(await numberInputsForReq(req, await peopleForScope(req.user!, scope)));
 }
 
 /**
  * Controller-facing: the row filter for the company numbers list. Spread it beside `tenantWhere(req)`. Under "All" it
- * is {} (every number); under "Linked to me" it limits the list to the person's own numbers.
+ * is {} (every number); under Attached it limits the list to the person's own numbers.
  */
 export async function numbersInSectionWhereForReq(req: Request): Promise<Where> {
   const ids = await numberIdsInSectionForReq(req);
@@ -973,8 +1043,8 @@ export async function heldRecordReachWhereForReq(
 /**
  * Controller-facing, for linking a held message (S10.18): the `where` on `email_threads` for the conversations among these ids
  * the person can reach: the target of a link must be one. {} on All (every conversation of the company), else the same
- * conversation rule as the Email list (a conversation of a mailbox they hold or read, theirs by assignment or by writing in it,
- * or a record conversation whose record they can open). Matches nothing while the Email plan feature is off.
+ * conversation rule as the Email list (a conversation of a mailbox they hold or read, or a record conversation whose record they
+ * can open; being assigned it or having written in it counts for nothing, M1). Matches nothing while the Email plan feature is off.
  */
 export async function emailThreadReachWhereForReq(req: Request, threadIds: readonly string[]): Promise<Where> {
   if (!emailFeatureOn(req)) return NO_EMAIL;

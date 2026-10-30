@@ -96,7 +96,8 @@ const ADMIN = TEST_USERS.admin;
 /** An active, assignable, in-org user who is neither the rep nor the booker. */
 const COLLEAGUE = TEST_USERS.technician;
 
-const ROW_REFUSAL = 'Insufficient permissions';
+// A lead out of the person's reach answers exactly like a missing one (ticket 33).
+const ROW_REFUSAL = 'Lead not found';
 
 const MINUTE = 60_000;
 const DAY = 24 * 60 * MINUTE;
@@ -223,9 +224,6 @@ function wireWorld(leadRow: Record<string, unknown> = repsLead()) {
 /** Sign in, with grants answered PER ROLE so one role's rows are never handed to another. */
 function signIn(who: TestUserKey) {
   mockAuthAs(who);
-  mockPrisma.rolePermission.findMany.mockImplementation((args: { where: { role: string } }) =>
-    Promise.resolve(DEFAULT_GRANTS.filter((g) => g.role === args.where.role)),
-  );
   clearPermissionCache();
 }
 
@@ -577,7 +575,7 @@ describe('the row scope in THIS file is really evaluated', () => {
         walkthrough_duration_minutes: 60,
       });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(res.body.error).toBe(ROW_REFUSAL);
     expect(mockPrisma.visit.create).not.toHaveBeenCalled();
   });

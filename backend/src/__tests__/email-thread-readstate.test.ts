@@ -25,6 +25,11 @@ import { mockAuthAs, mockRoleSwitches, authHeader, ALPHA_ORG_ID, TEST_USERS } fr
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 import { matchesWhere, type Row } from './whereMatcher';
 
+// Who can reach a conversation is the conversation-readers rule, proven against the real database in
+// permission-email-message-reach-db.test.ts; here the assign route's answer to it is what is under test (M1).
+const { readersMock } = vi.hoisted(() => ({ readersMock: vi.fn() }));
+vi.mock('../lib/communication/conversationReaders', () => ({ readersOfConversation: readersMock }));
+
 /** The conversation a stored message sits in when it was started here: not a record conversation, nobody's assignee. */
 const ORDINARY_THREAD = { mailbox_id: 'b1000000-0000-4000-8000-0000000000aa', origin: 'started', record_type: null, assigned_to_user_id: null, emails: [] };
 
@@ -51,10 +56,6 @@ function mockRowScopedEditor() {
   const grants = DEFAULT_GRANTS.filter((g) => g.role === 'TECHNICIAN').map(
     ({ role: _role, ...g }) => g,
   );
-  (prisma.rolePermission.findMany as Mock).mockResolvedValue([
-    ...grants,
-    { action: 'update', subject: 'Communication', conditions: null },
-  ]);
 }
 
 function sentDispatchDefault() {
@@ -320,9 +321,10 @@ describe('Traffic Cop - compose-time race guard on a reply', () => {
 // ═══ 4. PATCH /emails/threads/:id/assign ═════════════════════════════════════
 
 describe('PATCH /api/communication/emails/threads/:id/assign', () => {
-  it('assigns a thread (admin, unrestricted)', async () => {
+  it('assigns a thread (admin, unrestricted) to someone who can reach it, asking the conversation-readers rule about that person', async () => {
     mockAuthAs('admin');
-    p.user.findFirst.mockResolvedValue({ id: DISPATCHER_ID });
+    p.user.findFirst.mockResolvedValue({ id: DISPATCHER_ID, organization_id: ALPHA_ORG_ID });
+    readersMock.mockResolvedValue(new Set([DISPATCHER_ID]));
     p.emailThread.updateMany.mockResolvedValue({ count: 1 });
     p.emailThread.findFirst.mockResolvedValue({
       id: 'a1111111-1111-4111-8111-111111111111', assigned_to_user_id: DISPATCHER_ID, archived: false, snoozed_until: null,
@@ -337,6 +339,25 @@ describe('PATCH /api/communication/emails/threads/:id/assign', () => {
     expect(res.status).toBe(200);
     expect(res.body.thread.assignedToUserId).toBe(DISPATCHER_ID);
     expect(p.emailThread.updateMany.mock.calls[0][0].data).toEqual({ assigned_to_user_id: DISPATCHER_ID });
+    expect(readersMock).toHaveBeenCalledWith(
+      [expect.objectContaining({ id: DISPATCHER_ID })], 'email', 'd0000000-0000-4000-8000-000000000001', ALPHA_ORG_ID,
+    );
+  });
+
+  it('refuses to assign a thread to someone who cannot reach any of it, and writes nothing (M1)', async () => {
+    mockAuthAs('admin');
+    p.user.findFirst.mockResolvedValue({ id: DISPATCHER_ID, organization_id: ALPHA_ORG_ID });
+    p.emailThread.findFirst.mockResolvedValue({ id: 'd0000000-0000-4000-8000-000000000001' });
+    readersMock.mockResolvedValue(new Set());
+
+    const res = await request(app)
+      .patch('/api/communication/emails/threads/d0000000-0000-4000-8000-000000000001/assign')
+      .set(authHeader('admin'))
+      .send({ user_id: DISPATCHER_ID });
+
+    expect(res.status).toBe(422);
+    expect(res.body.code).toBe('ASSIGNEE_CANNOT_REACH');
+    expect(p.emailThread.updateMany).not.toHaveBeenCalled();
   });
 
   it('clears assignment when user_id is null', async () => {
@@ -370,10 +391,10 @@ describe('PATCH /api/communication/emails/threads/:id/assign', () => {
     expect(p.emailThread.updateMany).not.toHaveBeenCalled();
   });
 
-  it('a technician cannot assign a thread anchored to a job they cannot see', async () => {
+  it('a technician cannot assign a thread anchored to a job they cannot see: 404 before the assignee is looked at', async () => {
     mockRowScopedEditor();
     p.user.findFirst.mockResolvedValue({ id: DISPATCHER_ID });
-    p.emailThread.updateMany.mockResolvedValue({ count: 0 });
+    p.emailThread.findFirst.mockResolvedValue(null);
 
     const res = await request(app)
       .patch('/api/communication/emails/threads/d0000000-0000-4000-8000-000000000002/assign')
@@ -381,19 +402,24 @@ describe('PATCH /api/communication/emails/threads/:id/assign', () => {
       .send({ user_id: DISPATCHER_ID });
 
     expect(res.status).toBe(404);
-    const where = p.emailThread.updateMany.mock.calls[0][0].where;
+    expect(p.emailThread.updateMany).not.toHaveBeenCalled();
+    expect(readersMock).not.toHaveBeenCalled();
+    const where = p.emailThread.findFirst.mock.calls[0][0].where;
     const parentRow = (job: Row): Row => ({
       id: 'd0000000-0000-4000-8000-000000000002',
       organization_id: ALPHA_ORG_ID,
       emails: [{ job_id: (job as any).id, job, lead_id: null, lead: null, customer_id: null, vendor_id: null }],
     });
-    expect(matchesWhere(parentRow(MY_JOB as Row), where)).toBe(true);
+    // Re-audit N16: a message on the technician's own job does not make the conversation theirs to change as a whole; that
+    // takes the conversation being in a mailbox they hold or read, or a record conversation they open.
+    expect(matchesWhere(parentRow(MY_JOB as Row), where)).toBe(false);
     expect(matchesWhere(parentRow(OTHER_JOB as Row), where)).toBe(false);
   });
 
-  it('a technician CAN assign a thread anchored to their own job', async () => {
+  it('a technician CAN assign a thread anchored to their own job, to themselves when they reach it', async () => {
     mockRowScopedEditor();
-    p.user.findFirst.mockResolvedValue({ id: TECH_ID });
+    p.user.findFirst.mockResolvedValue({ id: TECH_ID, organization_id: ALPHA_ORG_ID });
+    readersMock.mockResolvedValue(new Set([TECH_ID]));
     p.emailThread.updateMany.mockResolvedValue({ count: 1 });
     p.emailThread.findFirst.mockResolvedValue({
       id: 'th-my-job', assigned_to_user_id: TECH_ID, archived: false, snoozed_until: null,
@@ -540,7 +566,7 @@ describe('GET /api/communication/emails?assignment=... filtering', () => {
   // catch this, since an admin's section filter is empty (nothing to collide with).
   it('a "Linked to me" caller\'s assignment views NARROW the mailbox scope, never replace it', async () => {
     mockRowScopedEditor();
-    mockRoleSwitches({ edit_communication_records: true, communication_scope: 'linked_to_me' });
+    mockRoleSwitches({ edit_communication_records: true, communication_scope: 'attached' });
     const MY_BOX = 'b1000000-0000-4000-8000-000000000001';
     const COLLEAGUE_BOX = 'b1000000-0000-4000-8000-000000000002';
     p.mailbox.findMany.mockResolvedValue([{ id: MY_BOX }]);
@@ -568,9 +594,9 @@ describe('GET /api/communication/emails?assignment=... filtering', () => {
     await request(app).get('/api/communication/emails?assignment=mine').set(authHeader('technician'));
     const mine = p.email.findMany.mock.calls[0][0].where;
     expect(matchesWhere(myBoxMine, mine)).toBe(true);
-    // Assigned to the caller, so it is theirs to work even in a colleague's mailbox (PRD 10, S10.7) ...
-    expect(matchesWhere({ ...myBoxMine, thread: { ...ORDINARY_THREAD, mailbox_id: COLLEAGUE_BOX, assigned_to_user_id: TECH_ID } }, mine)).toBe(true);
-    // ... and a colleague's conversation assigned to someone else is not.
+    // Assigned to the caller in a colleague's mailbox: the assignment opens nothing (M1), so "Mine" does not list it ...
+    expect(matchesWhere({ ...myBoxMine, thread: { ...ORDINARY_THREAD, mailbox_id: COLLEAGUE_BOX, assigned_to_user_id: TECH_ID } }, mine)).toBe(false);
+    // ... nor a colleague's conversation assigned to someone else.
     expect(matchesWhere({ ...myBoxMine, thread: { ...ORDINARY_THREAD, mailbox_id: COLLEAGUE_BOX, assigned_to_user_id: 'someone-else' } }, mine)).toBe(false);
     expect(matchesWhere(myBoxAssignedActive, mine)).toBe(false);
     p.mailbox.findMany.mockResolvedValue([]);
@@ -793,7 +819,9 @@ describe('EmailThread scoping - remaining gaps on the shared updateEmailThread p
       organization_id: ALPHA_ORG_ID,
       emails: [{ job_id: (job as any).id, job, lead_id: null, lead: null, customer_id: null, vendor_id: null }],
     });
-    expect(matchesWhere(parentRow(MY_JOB as Row), where)).toBe(true);
+    // Re-audit N16: a message on the technician's own job does not make the conversation theirs to change as a whole; that
+    // takes the conversation being in a mailbox they hold or read, or a record conversation they open.
+    expect(matchesWhere(parentRow(MY_JOB as Row), where)).toBe(false);
     expect(matchesWhere(parentRow(OTHER_JOB as Row), where)).toBe(false);
   });
 

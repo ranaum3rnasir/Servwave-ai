@@ -20,7 +20,6 @@ import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 const mockPrisma = prisma as unknown as {
   job: { findUnique: ReturnType<typeof vi.fn>; findMany: ReturnType<typeof vi.fn>; findFirst: ReturnType<typeof vi.fn> };
-  userPermissionOverride: { findMany: ReturnType<typeof vi.fn> };
   invoice: { findMany: ReturnType<typeof vi.fn> };
   estimate: { findMany: ReturnType<typeof vi.fn> };
 };

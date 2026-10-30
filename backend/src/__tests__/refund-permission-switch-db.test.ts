@@ -86,12 +86,11 @@ suite('refund permission switch (real database)', () => {
       },
     });
     await db.user.create({
-      data: { id: admin.id, organization_id: org, email: admin.email, first_name: 'Test', last_name: 'Admin', role: 'ADMIN' },
+      data: { id: admin.id, organization_id: org, email: admin.email, first_name: 'Test', last_name: 'Admin', role: 'ADMIN', is_admin: true },
     });
     await db.user.create({
       data: { id: dispatcher.id, organization_id: org, email: dispatcher.email, first_name: 'Dee', last_name: 'Spatch', role: 'DISPATCHER' },
     });
-    await db.rolePermission.create({ data: { organization_id: org, role: 'DISPATCHER', action: 'read', subject: 'Invoice' } });
     await db.customer.create({
       data: { id: customer, organization_id: org, customer_number: `C-${tag}`, kind: 'PERSON', segment: 'RESIDENTIAL', first_name: 'Pat', last_name: 'Payer' },
     });
@@ -129,8 +128,6 @@ suite('refund permission switch (real database)', () => {
   afterAll(async () => {
     const quietly = (p: Promise<unknown>) => p.catch(() => undefined);
     for (const org of orgs) {
-      await quietly(db.$executeRawUnsafe(`DELETE FROM user_permission_overrides WHERE organization_id = '${org}'`));
-      await quietly(db.$executeRawUnsafe(`DELETE FROM role_permissions WHERE organization_id = '${org}'`));
       await quietly(db.$executeRawUnsafe(`DELETE FROM refunds WHERE organization_id = '${org}'`));
       await quietly(db.$executeRawUnsafe(`DELETE FROM payments WHERE invoice_id IN (SELECT id FROM invoices WHERE organization_id = '${org}')`));
       for (const table of ['timeline_events', 'notifications', 'invoices']) {

@@ -230,8 +230,8 @@ describe('PODetailDialog — over-receive guards (QA-606)', () => {
 describe('PODetailDialog — staged-PO gating (QA-611)', () => {
   it('disables the receive action with the staging hint + link; receive mode is unreachable', async () => {
     const staged: PurchaseOrder = { ...SENT_PO, id: 'po-staged', stagedAsJobStageId: 'stage-1' };
-    // The pointer is for a person who may open the Staging page (View stock and Show Stock page).
-    seedMySwitches({ view_stock: true, show_stock_page: true });
+    // The pointer is for a person who may open the Staging page (View stock).
+    seedMySwitches({ view_stock: true });
     renderWithProviders(
       <PODetailDialog open onClose={vi.fn()} po={staged} onReceive={vi.fn()} />,
       { ability: inventoryWriteAbility() },

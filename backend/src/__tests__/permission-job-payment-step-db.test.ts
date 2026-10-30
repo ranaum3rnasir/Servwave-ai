@@ -41,7 +41,7 @@ const ALL_OFF: Record<string, SwitchValue> = Object.fromEntries(
 /** What opening the job takes. */
 const OPEN_JOBS = { view_jobs: true, jobs_scope: 'all' };
 /** What opening every invoice takes. */
-const OPEN_INVOICES = { view_invoices: true, invoices_scope: 'all' };
+const OPEN_INVOICES = { view_invoices: true, jobs_scope: 'all', leads_scope: 'all' };
 /** What posting a payment takes, on top of opening the invoice. A method the person may use is part of it. */
 const RECORD = { record_payments: true, allowed_payment_methods: ['CASH'] };
 
@@ -64,7 +64,7 @@ suite('the Payment Received step on switches (real database)', () => {
   async function personWith(org: string, values: Record<string, SwitchValue>, base: Role = 'DISPATCHER') {
     const key = `pay-step-role-${++sequence}`;
     const role = await fx.addCustomRole(org, key, base);
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...values }, actorId: null, reason: 'manual' });
+    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, see_prices: true, ...values }, actorId: null, reason: 'manual' });
     const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
     return Object.assign(person, { api: () => fx.signedInAs(person) });
   }
@@ -89,13 +89,14 @@ suite('the Payment Received step on switches (real database)', () => {
       expect((await pay(await me.api(), invoice)).status).toBe(201);
     });
 
-    it('is offered to a custom role with Invoices View off on an invoice it created, and the route lets the payment in', async () => {
+    it('is greyed for a custom role with Invoices View off even on an invoice it created, and the route refuses the payment (P7)', async () => {
       const s = await fx.newOrg();
       const me = await personWith(s.org, { ...OPEN_JOBS, ...RECORD });
       const { job, invoice } = await jobWithInvoice(s, [me.id], me.id);
 
-      expect(await stepOf(await me.api(), job)).toEqual({ offered: true, reason: null });
-      expect((await pay(await me.api(), invoice)).status).toBe(201);
+      expect(await stepOf(await me.api(), job)).toEqual({ offered: false, reason: CANNOT_OPEN });
+      expect((await pay(await me.api(), invoice)).status).toBe(404);
+      expect((await db.payment.count({ where: { invoice_id: invoice } }))).toBe(0);
     });
 
     it("is greyed with the can't-open words for Record payments on and Invoices View off on someone else's invoice, and the route refuses the payment", async () => {
@@ -104,7 +105,7 @@ suite('the Payment Received step on switches (real database)', () => {
       const { job, invoice } = await jobWithInvoice(s, [me.id]);
 
       expect(await stepOf(await me.api(), job)).toEqual({ offered: false, reason: CANNOT_OPEN });
-      expect((await pay(await me.api(), invoice)).status).toBe(403);
+      expect((await pay(await me.api(), invoice)).status).toBe(404);
       expect((await db.payment.count({ where: { invoice_id: invoice } }))).toBe(0);
     });
 
@@ -154,7 +155,7 @@ suite('the Payment Received step on switches (real database)', () => {
   describe('a job with no invoice yet', () => {
     it('is offered to a person who holds Record payments and Create invoices', async () => {
       const s = await fx.newOrg();
-      const me = await personWith(s.org, { ...OPEN_JOBS, ...OPEN_INVOICES, ...RECORD, create_invoices: true });
+      const me = await personWith(s.org, { ...OPEN_JOBS, ...OPEN_INVOICES, ...RECORD, edit_invoices: true, create_invoices: true });
       const job = await fx.addJob(s.org, s.customer, { crew: [me.id] });
 
       expect(await stepOf(await me.api(), job.id)).toEqual({ offered: true, reason: null });
@@ -170,7 +171,7 @@ suite('the Payment Received step on switches (real database)', () => {
 
     it('is greyed with the no-permission words without Record payments', async () => {
       const s = await fx.newOrg();
-      const me = await personWith(s.org, { ...OPEN_JOBS, ...OPEN_INVOICES, create_invoices: true });
+      const me = await personWith(s.org, { ...OPEN_JOBS, ...OPEN_INVOICES, edit_invoices: true, create_invoices: true });
       const job = await fx.addJob(s.org, s.customer, { crew: [me.id] });
 
       expect(await stepOf(await me.api(), job.id)).toEqual({ offered: false, reason: NO_RECORD });
@@ -178,7 +179,7 @@ suite('the Payment Received step on switches (real database)', () => {
 
     it('is not offered, and says nothing, on a service plan visit job: the plan was paid upfront', async () => {
       const s = await fx.newOrg();
-      const me = await personWith(s.org, { ...OPEN_JOBS, ...OPEN_INVOICES, ...RECORD, create_invoices: true });
+      const me = await personWith(s.org, { ...OPEN_JOBS, ...OPEN_INVOICES, ...RECORD, edit_invoices: true, create_invoices: true });
       const plan = await fx.addServicePlan(s.org, s.customer);
       const job = await fx.addJob(s.org, s.customer, { crew: [me.id], sourcePlan: plan.id });
 

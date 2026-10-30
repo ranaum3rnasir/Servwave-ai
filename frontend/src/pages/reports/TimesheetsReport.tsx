@@ -13,7 +13,7 @@ import { token } from '@/design-system';
 import { findReport } from '@/lib/reports/report-catalog';
 import { ReportShell } from './ReportShell';
 import { EmployeePayrollCard } from '@/components/timeclock/EmployeePayrollCard';
-import { useAppAbility } from '@/contexts/AbilityContext';
+import { reachesBeyondOwn, useMySwitches } from '@/lib/api/mySwitches';
 import { usePunches, useOtReviews, useUpsertOtReview } from '@/lib/api/timeclock';
 import { formatPlace } from '@/lib/timeclock/place';
 import { buildSessions, isLate, type Session } from '@/lib/timeclock/aggregate';
@@ -45,10 +45,9 @@ type EmpRow = {
 
 export default function TimesheetsReport() {
   const report = findReport('timesheets');
-  // Whoever holds "See everyone's timesheets" sees the whole company; everyone else only their own punches.
-  // The server enforces the same rule regardless of what we ask for.
-  const ability = useAppAbility();
-  const scope = ability.can('see_all', 'Timeclock') ? 'org' : 'me';
+  // A Timesheets scope of Team or All asks for the organisation's view (the people that scope reaches); Attached only the
+  // person's own punches. The server enforces the same rule regardless of what we ask for.
+  const scope = reachesBeyondOwn(useMySwitches()?.values, 'timesheets_scope') ? 'org' : 'me';
   // ISO-week period_keys must be bucketed in the ORG timezone (not the viewer's
   // browser zone) so every admin agrees with the backend on boundary punches.
   const { data: org } = useOrganization();

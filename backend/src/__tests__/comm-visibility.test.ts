@@ -416,10 +416,6 @@ function mockRowScopedEditor() {
   const grants = DEFAULT_GRANTS.filter((g) => g.role === 'TECHNICIAN').map(
     ({ role: _role, ...g }) => g,
   );
-  (prisma.rolePermission.findMany as Mock).mockResolvedValue([
-    ...grants,
-    { action: 'update', subject: 'Communication', conditions: null },
-  ]);
 }
 
 describe('reassign mutations are scoped on the update AND the refetch', () => {

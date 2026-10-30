@@ -13,6 +13,8 @@ export interface UserRow {
   first_name: string;
   last_name: string;
   role: UserRole;
+  /** Whether the person is an Admin (P15): the flag on the person, never the role name. */
+  is_admin?: boolean;
   // SRVW-138/139 - `role` above stays the BASE role; a custom role layers grants on top of it.
   // `custom_role_id` is the custom_roles.id FK; `custom_role` is the row's key/label for display.
   custom_role_id?: string | null;
@@ -34,7 +36,14 @@ export interface UserRow {
   /** The person's own switches turn Access Communication or Show Email off: they cannot read their mailbox. */
   email_page_closed?: boolean;
   is_active: boolean;
+  /** Set when an Admin erased this deactivated person's personal data: they read as "Former user" and cannot be brought back. */
+  erased_at?: string | null;
   has_login: boolean;
+  /** A revoke that could not finish: sign-in is off, but Revoke is still offered so the Admin can try again (H2). */
+  revoke_pending?: boolean;
+  /** Make Owner (ticket 27): this person could become the Owner (an active Admin who has signed in). Only ever true on the
+   *  Owner's own list; false for everyone else. */
+  owner_eligible?: boolean;
   phone: string | null;
   phone_ext: string | null;
   /** Signed URL to the uploaded profile photo, or null for the initials tile. Never a stock/
@@ -81,7 +90,8 @@ export interface InviteUserPayload {
 export interface InviteResult {
   user: UserRow;
   email_sent: boolean;
-  invite_url: string;
+  /** Handed back to the Owner only on a resend (ticket 26); absent for anyone else. */
+  invite_url?: string;
 }
 
 export interface UpdateUserPayload {
@@ -89,6 +99,8 @@ export interface UpdateUserPayload {
   last_name?: string;
   role?: UserRole;
   custom_role_id?: string | null;
+  /** Grant or take away Admin. Left out, a change of role carries the flag with it. */
+  is_admin?: boolean;
   is_active?: boolean;
   phone?: string | null;
   phone_ext?: string | null;
@@ -102,8 +114,23 @@ export interface UpdateMePayload {
   phone_ext?: string | null;
 }
 
+/** The people list as an Admin gets it: the full record. Admin screens only (Users & Teams, a person's switches, Spider). */
 export function useUsers() {
   return useQuery<UserRow[]>({
+    queryKey: ['users', 'all'],
+    queryFn: () => api.get('/api/users').then((r) => r.data.users),
+  });
+}
+
+/**
+ * A person on the people list as a non-Admin gets them (M3, ticket 29): id, name, avatar and whether they are active,
+ * and nothing else. An Admin's full row has all of these too, so a screen typed on this works for everyone.
+ */
+export type PersonName = Pick<UserRow, 'id' | 'first_name' | 'last_name' | 'is_active'> & { avatar_url?: string | null };
+
+/** The same people list, typed for a screen anyone may open: it can read only what every requester gets. */
+export function usePeople() {
+  return useQuery<UserRow[], Error, PersonName[]>({
     queryKey: ['users', 'all'],
     queryFn: () => api.get('/api/users').then((r) => r.data.users),
   });
@@ -257,10 +284,12 @@ export function useSendInvite() {
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ['users'] });
       toast({
-        title: data.email_sent ? 'Invitation sent' : 'Invite link ready - email not sent',
+        title: data.email_sent ? 'Invitation sent' : data.invite_url ? 'Invite link ready - email not sent' : 'Invite not sent',
         description: data.email_sent
           ? `${data.user.email} can now set a password or sign in with Google.`
-          : `Could not email the invite. Copy this link to share it manually: ${data.invite_url}`,
+          : data.invite_url
+            ? `Could not email the invite. Copy this link to share it manually: ${data.invite_url}`
+            : 'Could not email the invite. Please try again.',
         variant: data.email_sent ? undefined : 'destructive',
       });
     },
@@ -348,6 +377,89 @@ export function useDeactivateUser() {
   });
 }
 
+/** Erase a deactivated person's personal data (an Admin's step). The row and every record that names them stay. */
+export function useErasePersonalData() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.post(`/api/users/${id}/erase-personal-data`).then((r) => r.data),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['tasks'] });
+      return qc.invalidateQueries({ queryKey: ['users'] });
+    },
+    onError: (err) =>
+      toast({
+        title: 'Erase failed',
+        description: extractApiError(err, 'Could not erase their personal data'),
+        variant: 'destructive',
+      }),
+  });
+}
+
+export type ReassignModuleKey = 'tasks' | 'leads' | 'jobs';
+
+/** What deactivating a person leaves open: per module, how many open records name them. Counts only. */
+export interface DeactivationSummary {
+  person: { id: string; first_name: string; last_name: string; is_active: boolean };
+  modules: Array<{ key: ReassignModuleKey; label: string; open: number }>;
+  total: number;
+}
+
+export function useDeactivationSummary(userId: string | undefined) {
+  return useQuery<DeactivationSummary>({
+    queryKey: ['users', userId, 'deactivation-summary'],
+    queryFn: () => api.get(`/api/users/${userId}/deactivation-summary`).then((r) => r.data),
+    enabled: !!userId,
+    // The numbers are read when the dialog opens and must be the current ones.
+    staleTime: 0,
+  });
+}
+
+const NOT_MOVED_NOUN: Record<ReassignModuleKey, [string, string]> = {
+  tasks: ['open task', 'open tasks'],
+  leads: ['open lead', 'open leads'],
+  jobs: ['open job', 'open jobs'],
+};
+
+/** "1 open lead, 2 open jobs" for the records a reassign could not move, or null when it moved everything. */
+export function notMovedText(skipped: Partial<Record<ReassignModuleKey, number>> | undefined): string | null {
+  const parts = (Object.keys(NOT_MOVED_NOUN) as ReassignModuleKey[])
+    .filter((k) => (skipped?.[k] ?? 0) > 0)
+    .map((k) => `${skipped![k]} ${NOT_MOVED_NOUN[k][skipped![k] === 1 ? 0 : 1]}`);
+  return parts.length ? parts.join(', ') : null;
+}
+
+/** Move a person's open records of the chosen modules to another active person (an Admin's optional step). */
+export function useReassignOpenRecords() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, toUserId, modules }: { id: string; toUserId: string; modules: ReassignModuleKey[] }) =>
+      api.post(`/api/users/${id}/reassign`, { to_user_id: toUserId, modules }).then((r) => r.data as {
+        moved: Record<ReassignModuleKey, number>;
+        skipped: Record<ReassignModuleKey, number>;
+      }),
+    onSuccess: (result) => {
+      void qc.invalidateQueries({ queryKey: ['tasks'] });
+      void qc.invalidateQueries({ queryKey: ['leads'] });
+      void qc.invalidateQueries({ queryKey: ['jobs'] });
+      // A status never claims success for a failure (CR-5): what the person taking over could not hold is said, by module.
+      const left = notMovedText(result?.skipped);
+      if (left) {
+        toast({
+          title: 'Some open records were not moved',
+          description: `${left} could not be moved: the person you chose can't hold those spots. They stay with the person you deactivated.`,
+          variant: 'destructive',
+        });
+      }
+    },
+    onError: (err) =>
+      toast({
+        title: 'Reassign failed',
+        description: extractApiError(err, 'Could not move their open records'),
+        variant: 'destructive',
+      }),
+  });
+}
+
 export function useDeleteUser() {
   const qc = useQueryClient();
   return useMutation({
@@ -362,16 +474,27 @@ export function useDeleteUser() {
   });
 }
 
+/** Shown when Revoke got no answer from the server: it may or may not have finished, and the list (read again) says which. */
+export const REVOKE_LOGIN_UNCONFIRMED_MESSAGE = 'Revoke login may not have finished. Check the list and try again.';
+
+function revokeLoginErrorText(err: unknown): string {
+  const serverMessage = (err as { response?: { data?: { error?: unknown } } })?.response?.data?.error;
+  return typeof serverMessage === 'string' && serverMessage.trim() ? serverMessage : REVOKE_LOGIN_UNCONFIRMED_MESSAGE;
+}
+
 export function useRevokeLogin() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) =>
       api.post(`/api/users/${id}/revoke-login`).then((r) => r.data.user as UserRow),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['users'] }),
+    // Success or not, the list is read again, so the row shows what the server holds (H2: a failed revoke changes nothing).
+    onSettled: () => qc.invalidateQueries({ queryKey: ['users'] }),
+    // The server's own words: a failed revoke says the person can still sign in (H2). Never reports success, and never shows
+    // raw network text: with no answer at all, nobody knows whether it finished, so it says only that.
     onError: (err) =>
       toast({
-        title: 'Could not disable login',
-        description: extractApiError(err, 'Failed to disable login'),
+        title: 'Could not revoke login',
+        description: revokeLoginErrorText(err),
         variant: 'destructive',
       }),
   });
@@ -404,6 +527,17 @@ export function useSendPasswordReset() {
     onSuccess: ({ email }) => toast({ title: `Reset link sent to ${email}.` }),
     onError: (err) =>
       toast({ title: 'Password reset not sent', description: passwordResetErrorText(err), variant: 'destructive' }),
+  });
+}
+
+/**
+ * Make Owner (ticket 27, D1): ask to hand the company to this person. Nothing changes yet: the server emails the signed-in Owner
+ * a one-time approval link. The caller shows the "check your email" step; a refusal shows the server's words.
+ */
+export function useMakeOwner() {
+  return useMutation({
+    mutationFn: (id: string) =>
+      api.post(`/api/users/${id}/make-owner`, undefined, { silentErrors: true }).then((r) => r.data as { email_sent: true }),
   });
 }
 

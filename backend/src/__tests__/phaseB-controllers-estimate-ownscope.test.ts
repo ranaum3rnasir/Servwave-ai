@@ -30,7 +30,6 @@ const mockPrisma = prisma as unknown as {
   lead: { findUnique: ReturnType<typeof vi.fn>; findFirst: ReturnType<typeof vi.fn> };
   priceBookItem: { findMany: ReturnType<typeof vi.fn> };
   stateTaxRate: { findFirst: ReturnType<typeof vi.fn> };
-  userPermissionOverride: { findMany: ReturnType<typeof vi.fn> };
   $transaction: ReturnType<typeof vi.fn>;
 };
 
@@ -51,9 +50,6 @@ const ESTIMATE_OWNED_BY_OTHER = {
 };
 
 function grantTech(action: string) {
-  mockPrisma.userPermissionOverride.findMany.mockResolvedValue([
-    { action, subject: 'Estimate', effect: 'allow' },
-  ]);
 }
 
 beforeEach(() => {
@@ -78,7 +74,7 @@ describe('GET /api/estimates/:id — Phase B own-scope (no role-literal leak)', 
     mockPrisma.estimate.findFirst.mockResolvedValue(null); // outside their Attached reach
 
     const res = await request(app).get('/api/estimates/est-2').set(authHeader('technician'));
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it('SALES is still own-scoped: 200 on own lead, 403 on another (regression)', async () => {
@@ -94,7 +90,7 @@ describe('GET /api/estimates/:id — Phase B own-scope (no role-literal leak)', 
     mockPrisma.estimate.findUnique.mockResolvedValue(ESTIMATE_OWNED_BY_OTHER);
     mockPrisma.estimate.findFirst.mockResolvedValue(null);
     const otherRes = await request(app).get('/api/estimates/est-2').set(authHeader('sales'));
-    expect(otherRes.status).toBe(403);
+    expect(otherRes.status).toBe(404);
   });
 
   it('DISPATCHER (unconditional read) reads any estimate', async () => {
@@ -124,7 +120,7 @@ describe('GET /api/estimates/:id — a lead-less estimate follows the scope, not
     mockPrisma.estimate.findFirst.mockResolvedValue(null);
 
     const res = await request(app).get('/api/estimates/est-3').set(authHeader('technician'));
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it('SALES CANNOT read a lead-less estimate they created either: no created-by path in their scope', async () => {
@@ -136,7 +132,7 @@ describe('GET /api/estimates/:id — a lead-less estimate follows the scope, not
     mockPrisma.estimate.findFirst.mockResolvedValue(null);
 
     const res = await request(app).get('/api/estimates/est-3').set(authHeader('sales'));
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it('DISPATCHER (Estimates scope All) reads any lead-less estimate', async () => {
@@ -190,7 +186,7 @@ describe('POST /api/estimates — Phase B create parent-ownership (granted tech)
     mockPrisma.lead.findFirst.mockResolvedValue(null);
 
     const res = await request(app).post('/api/estimates').set(authHeader('technician')).send(validBody);
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   // Was: "strict (un-granted) tech is blocked at the route guard (403)". `create Estimate` became a
@@ -224,7 +220,7 @@ describe('POST /api/estimates — Phase B create parent-ownership (granted tech)
     mockPrisma.lead.findFirst.mockResolvedValue(null);
 
     const res = await request(app).post('/api/estimates').set(authHeader('technician')).send(validBody);
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 
   it('SALES create is still own-scoped: 403 on a lead they do not own (regression)', async () => {
@@ -237,6 +233,6 @@ describe('POST /api/estimates — Phase B create parent-ownership (granted tech)
     mockPrisma.lead.findFirst.mockResolvedValue(null);
 
     const res = await request(app).post('/api/estimates').set(authHeader('sales')).send(validBody);
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
   });
 });

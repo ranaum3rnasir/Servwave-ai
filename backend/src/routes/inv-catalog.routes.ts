@@ -3,6 +3,7 @@ import { authenticate } from '../middleware/authenticate';
 import { attachAbility } from '../middleware/attachAbility';
 import { requireFeature } from '../middleware/requireFeature';
 import { canDo } from '../middleware/canGuard';
+import { markRouteCheck } from '../middleware/routeCheck';
 import { validate } from '../middleware/validate';
 import * as invCatalog from '../controllers/inv-catalog.controller';
 
@@ -13,8 +14,8 @@ router.use(authenticate, requireFeature('inventory'), attachAbility);
 // Catalog writes moved to /api/price-book/* (P0 §D4) — single write path. The
 // old routes stay mounted but answer 410 Gone so a stale client fails loudly
 // instead of silently writing through a dead, unaudited path.
-const gone = (_req: Request, res: Response) =>
-  res.status(410).json({ error: 'GONE', message: 'Catalog writes moved to /api/price-book/*' });
+const gone = markRouteCheck('closed', (_req: Request, res: Response) =>
+  res.status(410).json({ error: 'GONE', message: 'Catalog writes moved to /api/price-book/*' }));
 
 // ─── Items ──────────────────────────────────────────────
 // Reads stay here (stock-enriched camelCase mapItem + stock_balances):

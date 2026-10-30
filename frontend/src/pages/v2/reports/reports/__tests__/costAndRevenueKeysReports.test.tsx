@@ -3,7 +3,7 @@
  * for a person who may not see margin, cost or revenue.
  *
  * The server leaves the margin and cost keys (profit, itemCost, laborCost, cardExpenses, techExpenses) off each job
- * row without See financial data, and revenueTouched / prevRevenueTouched off each person without See company
+ * row without See costs, and revenueTouched / prevRevenueTouched off each person without See company
  * figures (the keys are gone, never zero). The pages must then offer no column or tile for them and draw no "NaN",
  * keeping the prices and counts beside them. Each test renders the page twice, once with the switch and once
  * without, so a column that is missing for the wrong reason (an empty page) cannot pass.
@@ -59,7 +59,7 @@ beforeEach(() => {
 });
 
 describe('Jobs report (routed page) against the real answer', () => {
-  it('draws the margin and cost columns with See financial data', async () => {
+  it('draws the margin and cost columns with See costs', async () => {
     serve('/api/reports/jobs', JOBS_WITH_COSTS);
     renderWithProviders(<JobsReport />, { ability: COSTS_ON });
     expect(await screen.findByText('Acme 41')).toBeInTheDocument();

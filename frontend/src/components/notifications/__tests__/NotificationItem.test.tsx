@@ -133,7 +133,7 @@ describe('NotificationItem - the preview of an inbound text', () => {
 
 /**
  * A logistic order submitted for approval names a LOGISTIC_ORDER. It used to fall through to the dashboard, so an approver whose
- * Show Logistic Orders page switch is off (the list page hidden) never reached the order. It opens the order's own record page,
+ * View logistic orders list access was off never reached the order. It opens the order's own record page,
  * a route that carries no list guard (S07.9).
  */
 describe('notificationDeepLink - LOGISTIC_ORDER', () => {

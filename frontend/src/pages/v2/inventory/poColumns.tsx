@@ -94,7 +94,7 @@ export function buildOpenPOColumns({
   onPreview: (po: PurchaseOrder) => void;
   onReceive: (po: PurchaseOrder) => void;
   selectable?: boolean;
-  /** The Total column exists only for a person who may see costs (See financial data): no column, never a $0. */
+  /** The Total column exists only for a person who may see costs (See costs): no column, never a $0. */
   showTotal: boolean;
 }): ColumnDef<PurchaseOrder, unknown>[] {
   const columns: ColumnDef<PurchaseOrder, unknown>[] = [

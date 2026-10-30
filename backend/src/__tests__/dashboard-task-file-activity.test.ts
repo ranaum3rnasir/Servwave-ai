@@ -75,7 +75,7 @@ beforeEach(() => {
 describe('GET /api/dashboard - task file names in the activity feed', () => {
   it('a dispatcher without See all tasks who is not on the task does not see its events at all (PRD 9: a task event follows the task rule)', async () => {
     mockAuthAs('dispatcher');
-    mockRoleSwitches({ see_all_tasks: false });
+    mockRoleSwitches({ tasks_scope: 'attached' });
     stubTask({ assignee_ids: [TEST_USERS.technician.id], watcher_ids: [] });
 
     const res = await request(app).get('/api/dashboard').set(authHeader('dispatcher'));
@@ -96,7 +96,7 @@ describe('GET /api/dashboard - task file names in the activity feed', () => {
 
   it('a dispatcher without See all tasks who is on the task sees the names', async () => {
     mockAuthAs('dispatcher');
-    mockRoleSwitches({ see_all_tasks: false });
+    mockRoleSwitches({ tasks_scope: 'attached' });
     stubTask({ assignee_ids: [], watcher_ids: [DISPATCHER] });
 
     const res = await request(app).get('/api/dashboard').set(authHeader('dispatcher'));
@@ -106,7 +106,7 @@ describe('GET /api/dashboard - task file names in the activity feed', () => {
 
   it('a task that no longer exists hides the names from someone without See all tasks', async () => {
     mockAuthAs('dispatcher');
-    mockRoleSwitches({ see_all_tasks: false });
+    mockRoleSwitches({ tasks_scope: 'attached' });
     stubTask(null);
 
     const res = await request(app).get('/api/dashboard').set(authHeader('dispatcher'));

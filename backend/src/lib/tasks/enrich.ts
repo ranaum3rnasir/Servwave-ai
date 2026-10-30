@@ -120,11 +120,18 @@ export function entityLabelFields(
   };
 }
 
-export async function resolveUserNames(orgId: string, ids: string[]): Promise<Map<string, string>> {
+/** What follows the name of a person who has been deactivated, wherever a task shows who it is assigned to (P19). */
+export const DEACTIVATED_NAME_SUFFIX = ' (Deactivated)';
+
+/**
+ * id -> display name. With `marked`, a deactivated person's name carries `DEACTIVATED_NAME_SUFFIX`: deactivating changes no
+ * record, so a task still names them and the reader is told. The activity feed asks unmarked (it states what happened then).
+ */
+export async function resolveUserNames(orgId: string, ids: string[], marked = false): Promise<Map<string, string>> {
   const out = new Map<string, string>();
   const unique = [...new Set(ids.filter(Boolean))];
   if (!unique.length) return out;
-  const rows = await prisma.user.findMany({ where: { id: { in: unique }, organization_id: orgId }, select: { id: true, first_name: true, last_name: true } });
-  rows.forEach((u) => out.set(u.id, userFullName(u)));
+  const rows = await prisma.user.findMany({ where: { id: { in: unique }, organization_id: orgId }, select: { id: true, first_name: true, last_name: true, is_active: true } });
+  rows.forEach((u) => out.set(u.id, userFullName(u) + (marked && u.is_active === false ? DEACTIVATED_NAME_SUFFIX : '')));
   return out;
 }

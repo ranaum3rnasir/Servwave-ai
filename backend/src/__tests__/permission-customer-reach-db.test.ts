@@ -200,8 +200,7 @@ suite('customers are reached through jobs and leads (real database)', () => {
   });
 
   describe('Customers View off', () => {
-    const technicianLike = { view_customers: false, create_customers: false, edit_customers: false, delete_customers: false,
-      show_customers_page: false, export_customers: false, archive_customers: false, edit_customer_record_ids: false,
+    const technicianLike = { view_customers: false, create_customers: false, edit_customers: false, delete_customers: false, export_customers: false, archive_customers: false, edit_customer_record_ids: false,
       change_customer_created_date: false };
 
     it('refuses a customer detail read, while the name, phone and address arrive on a job the person can open', async () => {
@@ -226,7 +225,7 @@ suite('customers are reached through jobs and leads (real database)', () => {
       const { org, admin } = await fx.newOrg();
       const me = await personWith(org, {
         ...technicianLike, view_invoices: true, view_estimates: true,
-        leads_scope: 'attached', jobs_scope: 'attached', invoices_scope: 'attached', estimates_scope: 'attached',
+        leads_scope: 'attached', jobs_scope: 'attached',
       }, { base: 'TECHNICIAN' });
       const customer = await addCustomer(org, { phone: '+16175550142', name: 'Dana' });
       const job = await fx.addJob(org, customer, { crew: [me.id] });
@@ -245,7 +244,7 @@ suite('customers are reached through jobs and leads (real database)', () => {
 
     it('still withholds the contact of a customer from an invoice that has no job or lead, when the person cannot read the customer', async () => {
       const { org } = await fx.newOrg();
-      const me = await personWith(org, { ...technicianLike, view_invoices: true, invoices_scope: 'all' }, { base: 'TECHNICIAN' });
+      const me = await personWith(org, { ...technicianLike, view_invoices: true, jobs_scope: 'all', leads_scope: 'all' }, { base: 'TECHNICIAN' });
       const customer = await addCustomer(org, { phone: '+16175550142', name: 'Dana' });
       const invoice = await fx.addInvoice(org, customer);
       const api = await me.api();
@@ -256,44 +255,42 @@ suite('customers are reached through jobs and leads (real database)', () => {
       expect(res.body.invoice.customer).not.toHaveProperty('phone');
     });
 
-    it('withholds the contact from an invoice reached by Invoices scope All when the person cannot open the job it sits on', async () => {
+    it('does not reach an invoice on a job the person cannot open: an invoice follows the Jobs scope (P6)', async () => {
       const { org } = await fx.newOrg();
       const me = await personWith(org, {
-        ...technicianLike, view_invoices: true, invoices_scope: 'all', leads_scope: 'attached', jobs_scope: 'attached',
+        ...technicianLike, view_invoices: true, leads_scope: 'attached', jobs_scope: 'attached',
       }, { base: 'TECHNICIAN' });
       const customer = await addCustomer(org, { phone: '+16175550142', name: 'Dana' });
       const job = await fx.addJob(org, customer, {});
       const invoice = await fx.addInvoice(org, customer, { jobId: job.id });
       const api = await me.api();
 
-      expect((await api.get(`/api/jobs/${job.id}`)).status).toBe(403);
-      const res = await api.get(`/api/invoices/${invoice.id}`);
-      expect(res.status).toBe(200);
-      expect(res.body.invoice.customer).not.toHaveProperty('phone');
-      expect(res.body.invoice.job.customer).not.toHaveProperty('phone');
+      expect((await api.get(`/api/jobs/${job.id}`)).status).toBe(404);
+      expect((await api.get(`/api/invoices/${invoice.id}`)).status).toBe(404);
     });
 
-    it('withholds the contact from an estimate reached by Estimates scope All when the person cannot open the lead it sits on', async () => {
+    it('keeps the contact on an estimate reached through its job: the job\'s customer is theirs to open whatever lead the estimate also sits on', async () => {
       const { org, admin } = await fx.newOrg();
       const me = await personWith(org, {
-        ...technicianLike, view_estimates: true, estimates_scope: 'all', leads_scope: 'attached', jobs_scope: 'attached',
+        ...technicianLike, view_estimates: true, leads_scope: 'attached', jobs_scope: 'all',
       }, { base: 'TECHNICIAN' });
       const customer = await addCustomer(org, { phone: '+16175550142', name: 'Dana' });
       const lead = await fx.addLead(org, customer, {});
-      const estimate = await fx.addEstimate(org, customer, admin.id, { leadId: lead.id });
+      const job = await fx.addJob(org, customer, {});
+      const estimate = await fx.addEstimate(org, customer, admin.id, { leadId: lead.id, jobId: job.id });
       const api = await me.api();
 
       const res = await api.get(`/api/estimates/${estimate.id}`);
       expect(res.status).toBe(200);
-      expect(res.body.estimate.customer ?? res.body.estimate.lead.customer).not.toHaveProperty('phone');
+      expect(res.body.estimate.customer ?? res.body.estimate.lead.customer).toMatchObject({ phone: '+16175550142' });
     });
 
     it('keeps the contact on an invoice whose job the person reaches as its Sold By, or through their team', async () => {
       const { org } = await fx.newOrg();
-      const soldByMe = await personWith(org, { ...technicianLike, view_invoices: true, invoices_scope: 'all', jobs_scope: 'attached' }, { base: 'TECHNICIAN' });
+      const soldByMe = await personWith(org, { ...technicianLike, view_invoices: true, jobs_scope: 'attached' }, { base: 'TECHNICIAN' });
       const department = await fx.addDepartment(org, 'crew');
       const teamMate = await fx.addUser(org, 'mate', 'TECHNICIAN', { departmentId: department });
-      const onTeam = await personWith(org, { ...technicianLike, view_invoices: true, invoices_scope: 'all', jobs_scope: 'team' }, { base: 'TECHNICIAN' });
+      const onTeam = await personWith(org, { ...technicianLike, view_invoices: true, jobs_scope: 'team' }, { base: 'TECHNICIAN' });
       await db.user.update({ where: { id: onTeam.id }, data: { department_id: department } });
       const customer = await addCustomer(org, { phone: '+16175550142', name: 'Dana' });
       const soldJob = await fx.addJob(org, customer, { soldBy: soldByMe.id });
@@ -311,7 +308,7 @@ suite('customers are reached through jobs and leads (real database)', () => {
 
     it('answers the customer picker and the duplicate check in the new lead form for a person who can create leads', async () => {
       const { org } = await fx.newOrg();
-      const me = await personWith(org, { ...technicianLike, create_leads: true, leads_scope: 'attached', jobs_scope: 'attached' }, { base: 'TECHNICIAN' });
+      const me = await personWith(org, { ...technicianLike, edit_leads: true, create_leads: true, leads_scope: 'attached', jobs_scope: 'attached' }, { base: 'TECHNICIAN' });
       const existing = await addCustomer(org, { name: 'Pickme', phone: '+16175550177', email: 'pickme@example.test' });
       const api = await me.api();
 
@@ -328,7 +325,7 @@ suite('customers are reached through jobs and leads (real database)', () => {
 
     it('shows the duplicate-check match in full to the Dispatcher of one of its leads, and redacted to a person on none', async () => {
       const { org } = await fx.newOrg();
-      const values = { view_customers: true, create_leads: true, leads_scope: 'attached', jobs_scope: 'attached' };
+      const values = { view_customers: true, edit_leads: true, create_leads: true, leads_scope: 'attached', jobs_scope: 'attached' };
       const dispatcher = await personWith(org, values, { base: 'TECHNICIAN' });
       const stranger = await personWith(org, values, { base: 'TECHNICIAN' });
       const existing = await addCustomer(org, { name: 'Dispatched', phone: '+16175550188', email: 'dispatched@example.test' });
@@ -356,7 +353,7 @@ suite('customers are reached through jobs and leads (real database)', () => {
 
     it('is accepted on Create service plans and refused on the standalone customer create, with Create customers off', async () => {
       const { org } = await fx.newOrg();
-      const me = await personWith(org, { ...allScopes, create_customers: false, create_service_plans: true }, { base: 'ADMIN' });
+      const me = await personWith(org, { ...allScopes, create_customers: false, edit_service_plans: true, create_service_plans: true }, { base: 'ADMIN' });
       const api = await me.api();
 
       const refused = await api.post('/api/customers', body);
@@ -370,7 +367,7 @@ suite('customers are reached through jobs and leads (real database)', () => {
 
     it('is refused without Create service plans, even with Create customers on', async () => {
       const { org } = await fx.newOrg();
-      const me = await personWith(org, { ...allScopes, create_customers: true, create_service_plans: false, edit_service_plans: false, delete_service_plans: false, show_service_plans_page: false }, { base: 'ADMIN' });
+      const me = await personWith(org, { ...allScopes, edit_customers: true, create_customers: true, create_service_plans: false, edit_service_plans: false, delete_service_plans: false }, { base: 'ADMIN' });
       const api = await me.api();
 
       expect((await api.post('/api/service-plans/customers', body)).status).toBe(403);
@@ -419,13 +416,13 @@ suite('customers are reached through jobs and leads (real database)', () => {
       expect((await asTechnician.get(`/api/customers/${techsCustomer}`)).status).toBe(403);
     });
 
-    it('lets Dispatcher open every customer but not edit one, and not export the list', async () => {
+    it('lets Dispatcher open and edit every customer (Create customers needs Edit), but not export the list', async () => {
       const { org, customer } = await fx.newOrg();
       const dispatcher = await fx.addUser(org, 'dee', 'DISPATCHER');
       const api = await fx.signedInAs(dispatcher);
 
       expect(await opens(api, customer)).toBe(true);
-      expect((await api.patch(`/api/customers/${customer}`, { first_name: 'Changed' })).status).toBe(403);
+      expect((await api.patch(`/api/customers/${customer}`, { first_name: 'Changed' })).status).toBe(200);
       expect((await api.get('/api/customers/export')).status).toBe(403);
     });
   });
@@ -486,7 +483,7 @@ suite('customers are reached through jobs and leads (real database)', () => {
       expect(probes.map((p) => `${p.switchKey}:${p.check}`).sort()).toEqual([...listed].sort());
       for (const s of SWITCH_CATALOG.filter(mine)) expect(s.serverChecks.length > 0 || Boolean(s.pending), s.key).toBe(true);
       const pending = SWITCH_CATALOG.filter((s) => mine(s) && s.serverChecks.length === 0);
-      expect(pending.map((s) => s.key).sort()).toEqual(['copy_customer_email', 'copy_customer_phone', 'show_customers_page', 'show_service_plans_page']);
+      expect(pending.map((s) => s.key).sort()).toEqual(['copy_customer_email', 'copy_customer_phone']);
       for (const s of pending) expect(s.pending, s.key).toMatch(/PRD \d+|Display only/);
     });
 

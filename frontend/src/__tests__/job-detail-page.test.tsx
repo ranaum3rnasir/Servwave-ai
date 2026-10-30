@@ -327,6 +327,7 @@ describe('JobDetailPage — Items tab: Scope of Work + Internal Costs (Batch 3)'
       { action: 'read', subject: 'Job' },
       { action: 'manage_lines', subject: 'Job', conditions: { created_by_id: TECH_ID } },
       { action: 'read', subject: 'Pricing' },
+      { action: 'read', subject: 'Prices' },
     ] as never);
 
     async function openItemsTab(created_by_id: string, actions: string[]) {

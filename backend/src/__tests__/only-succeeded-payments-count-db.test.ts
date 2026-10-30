@@ -68,7 +68,7 @@ suite('only SUCCEEDED payments count (real database)', () => {
       },
     });
     await db.user.create({
-      data: { id: user, organization_id: org, email: `admin-${tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN' },
+      data: { id: user, organization_id: org, email: `admin-${tag}@example.test`, first_name: 'Test', last_name: 'Admin', role: 'ADMIN', is_admin: true },
     });
     await db.customer.create({
       data: { id: customer, organization_id: org, customer_number: `C-${tag}`, kind: 'PERSON', segment: 'RESIDENTIAL', first_name: 'Pat', last_name: 'Payer' },
@@ -237,7 +237,9 @@ suite('only SUCCEEDED payments count (real database)', () => {
     expect(entries).toHaveLength(1);
     expect(entries[0].metadata).toMatchObject({ reason: 'INVOICE_NOT_PAYABLE', payment_id: processing, charged_cents: 5000, unapplied_cents: 5000 });
     expect(entries[0].description).toContain(`INV-${f.org.slice(0, 8)}`);
-    expect(entries[0].description).toContain('$50.00');
+    // The words name no figure (M4); it is on the entry's metadata (charged_cents, unapplied_cents), behind See prices.
+    expect(entries[0].description).not.toMatch(/\$\s*\d/);
+    expect(entries[0].description).toContain('was not applied');
     expect(alerts).toHaveLength(1);
     expect(audits).toHaveLength(1);
     // Staff-facing copy names no vendor.
@@ -267,7 +269,8 @@ suite('only SUCCEEDED payments count (real database)', () => {
     const { entries, alerts, audits } = await unappliedRecord(f);
     expect(entries).toHaveLength(1);
     expect(entries[0].metadata).toMatchObject({ reason: 'OVERPAYMENT', payment_id: processing, charged_cents: 10000, unapplied_cents: 3000 });
-    expect(entries[0].description).toContain('$30.00');
+    expect(entries[0].description).not.toMatch(/\$\s*\d/);
+    expect(entries[0].description).toContain('was more than the balance due');
     expect(alerts).toHaveLength(1);
     expect(audits).toHaveLength(1);
     for (const text of [entries[0].description, alerts[0].title, alerts[0].body ?? '']) {

@@ -1,4 +1,6 @@
-import { SCOPE_SWITCH_KEY, type ScopedSubject, type SwitchEntry } from './catalog';
+import { SCOPE_SWITCH_KEY, type SwitchEntry } from './catalog';
+import { MODULE_SCOPE_KEY } from './moduleScopes';
+import { isPersonSetting } from './settings';
 
 /**
  * Where each switch sits on the Roles page and a person's Permissions page (Roles & Permissions, PRD 2, M12).
@@ -16,7 +18,6 @@ const GROUPS: ReadonlyArray<{ label: string; modules: readonly string[] }> = [
   { label: 'Estimates', modules: ['Estimates'] },
   { label: 'Jobs and visits', modules: ['Jobs'] },
   { label: 'Invoices and payments', modules: ['Invoices'] },
-  { label: 'Attachments', modules: ['Attachments'] },
   { label: 'Notes', modules: ['Notes'] },
   { label: 'Tasks and events', modules: ['Tasks', 'Events'] },
   { label: 'Inventory', modules: ['Stock', 'Purchase Orders', 'Vendors', 'Logistic Orders', 'Price Book'] },
@@ -28,9 +29,18 @@ const GROUPS: ReadonlyArray<{ label: string; modules: readonly string[] }> = [
 ];
 
 /** The module whose records each scope choice narrows; the choice sits on that module's row. */
-const SCOPE_ROW: Record<ScopedSubject, string> = { Lead: 'Leads', Job: 'Jobs', Estimate: 'Estimates', Invoice: 'Invoices' };
+const SCOPE_ROW: Record<'Lead' | 'Job', string> = { Lead: 'Leads', Job: 'Jobs' };
 
 const DATA_SCOPE = 'Data Scope';
+
+/** The module of the three money classes (P11). They are drawn as one Money row at the top of the screen, not as a group. */
+const MONEY = 'Money';
+
+/**
+ * The root of the money chain (P11). A Create, Edit or Record payments switch Requires it besides its row's View, but it is
+ * not what the switch narrows on the row, so it does not move the switch off the row's first line or under another switch.
+ */
+const MONEY_ROOT = 'see_prices';
 
 /** What a module row says in place of a scope control when its records are reached through leads and jobs (M3). */
 const FOLLOWS_RECORDS_NOTE = 'Follows the leads and jobs this person can open.';
@@ -61,9 +71,14 @@ export interface LayoutGroup {
 }
 
 export interface CatalogLayout {
-  /** The money lines at the top of the screen, See financial data last. */
-  dataScope: string[];
+  /** The one Money row at the top of the screen: See prices, with See costs and See company figures nested under it (P11). */
+  money: LayoutExtra[];
   groups: LayoutGroup[];
+  /**
+   * The per-person settings (P1, A1): catalog keys the Permissions screens do not draw, edited on the person's profile.
+   * In catalog order.
+   */
+  settings: string[];
 }
 
 /** How a switch of a module with a View is recognised as one of the row's first-line switches. */
@@ -72,7 +87,6 @@ const LINE_RULES: ReadonlyArray<(s: SwitchEntry, view: SwitchEntry) => boolean> 
   (s) => /^(create|upload)_/.test(s.key),
   (s) => s.key.startsWith('edit_'),
   (s) => s.key.startsWith('delete_'),
-  (s) => /^show_.+_page$/.test(s.key),
   (s) => s.key.startsWith('export_'),
 ];
 
@@ -85,9 +99,10 @@ function rowLines(switches: SwitchEntry[]): string[] {
   if (!view) return [];
   const lines: string[] = [];
   for (const rule of LINE_RULES) {
-    const match = switches.find(
-      (s) => !lines.includes(s.key) && rule(s, view) && (s.key === view.key || (s.requires.length === 1 && s.requires[0] === view.key && !s.requiresAny)),
-    );
+    const match = switches.find((s) => {
+      const needs = s.requires.filter((r) => r !== MONEY_ROOT);
+      return !lines.includes(s.key) && rule(s, view) && (s.key === view.key || (needs.length === 1 && needs[0] === view.key && !s.requiresAny));
+    });
     if (match) lines.push(match.key);
   }
   return lines;
@@ -106,28 +121,38 @@ function buildModule(module: string, switches: SwitchEntry[], scope: string | nu
     });
   // A module whose grants are scoped to a customer, purchase order or logistic order has no Data Scope choice of its own.
   const reachedThroughRecords = switches.some((s) =>
-    s.grants.some((g) => g.scoped === 'Customer' || g.scoped === 'PurchaseOrder' || g.scoped === 'LogisticOrder' || g.scoped === 'LogisticOrderOnJob'),
+    s.grants.some((g) => g.scoped === 'Customer' || g.scoped === 'Estimate' || g.scoped === 'Invoice' || g.scoped === 'PurchaseOrder' || g.scoped === 'LogisticOrder' || g.scoped === 'LogisticOrderOnJob'),
   );
   return { module, label: module, lines, scope, scopeNote: reachedThroughRecords && !scope ? FOLLOWS_RECORDS_NOTE : null, extras };
 }
 
-export function buildCatalogLayout(catalog: readonly SwitchEntry[]): CatalogLayout {
-  const scopeKeys = new Set<string>(Object.values(SCOPE_SWITCH_KEY));
-  const dataScope = catalog.filter((s) => s.module === DATA_SCOPE && !scopeKeys.has(s.key)).map((s) => s.key);
+export function buildCatalogLayout(allEntries: readonly SwitchEntry[]): CatalogLayout {
+  // A setting is not a switch: it is edited on the person's profile, so the Permissions screens never draw it.
+  const catalog = allEntries.filter((s) => !isPersonSetting(s.key));
+  const scopeKeys = new Set<string>([...Object.values(SCOPE_SWITCH_KEY), ...Object.values(MODULE_SCOPE_KEY)]);
+  const money = catalog.filter((s) => s.module === MONEY).map((s): LayoutExtra => ({
+    key: s.key,
+    // A class that needs another class is drawn under it: the root stands alone.
+    parent: s.requires.find((r) => catalog.some((o) => o.module === MONEY && o.key === r)) ?? null,
+  }));
 
   const scopeOf = new Map<string, string>(
-    (Object.keys(SCOPE_SWITCH_KEY) as ScopedSubject[]).map((subject) => [SCOPE_ROW[subject], SCOPE_SWITCH_KEY[subject]]),
+    [
+      ...(Object.keys(SCOPE_SWITCH_KEY) as Array<'Lead' | 'Job'>).map((subject): [string, string] => [SCOPE_ROW[subject], SCOPE_SWITCH_KEY[subject]]),
+      ...Object.entries(MODULE_SCOPE_KEY),
+    ],
   );
   const modulesInCatalog: string[] = [];
   for (const s of catalog) {
-    if (s.module !== DATA_SCOPE && !modulesInCatalog.includes(s.module)) modulesInCatalog.push(s.module);
+    if (s.module !== DATA_SCOPE && s.module !== MONEY && !modulesInCatalog.includes(s.module)) modulesInCatalog.push(s.module);
   }
   const placed = new Set(GROUPS.flatMap((g) => g.modules));
   // A module the groups above do not name still gets a row, in a group of its own after the others.
   const groups = [...GROUPS, ...modulesInCatalog.filter((m) => !placed.has(m)).map((m) => ({ label: m, modules: [m] }))];
 
   return {
-    dataScope,
+    money,
+    settings: allEntries.filter((s) => isPersonSetting(s.key)).map((s) => s.key),
     groups: groups
       .map((g) => ({
         label: g.label,

@@ -142,7 +142,7 @@ export function CustomerCommunicationsTab({ customerId }: { customerId: string }
               // enforces both again on the write - this decides what to OFFER. Same predicate and
               // same reasoning as the lead and job tabs.
               it.manuallyLogged
-                ? canLogPast && canModifyLoggedEntry(it, { id: viewer?.id, role: viewer?.role })
+                ? canLogPast && canModifyLoggedEntry(it, { id: viewer?.id, is_admin: viewer?.is_admin })
                   ? () => setEditingEntryId(it.id)
                   : undefined
                 : canAccessComms

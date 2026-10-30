@@ -110,7 +110,7 @@ suite('the Email plan feature off: token replies are kept, hidden and silent (re
         organizationId: org, roleKey: `${key}-${seq}`,
         values: {
           view_jobs: true, jobs_scope: 'attached', view_leads: true, leads_scope: 'attached', view_customers: true,
-          view_estimates: true, estimates_scope: 'attached', view_invoices: true, invoices_scope: 'attached',
+          view_estimates: true, view_invoices: true,
           access_communication: true, show_email: true, view_communication: true, ...values,
         },
         actorId: null, reason: 'manual',
@@ -119,7 +119,7 @@ suite('the Email plan feature off: token replies are kept, hidden and silent (re
       return Object.assign(person, { api: () => fx.signedInAs(person) });
     };
     // On the job's crew, so one of the record's people; and a reader of every mailbox.
-    const crew = await roleOf('crew', { communication_scope: 'linked_to_me' });
+    const crew = await roleOf('crew', { communication_scope: 'attached' });
     const wide = await roleOf('wide', { communication_scope: 'all' });
     const adminBox: Person & { api: () => ReturnType<typeof fx.signedInAs> } = Object.assign(admin, { api: () => fx.signedInAs(admin) });
 
@@ -366,12 +366,17 @@ suite('the Email plan feature off: token replies are kept, hidden and silent (re
       const fresh = await receive(w, w.onJob.token, { note: 'One more thing, please.' });
 
       expect(fresh.row).toMatchObject({ thread_id: w.onJob.thread, inbound_match: 'MATCHED', unread: true });
-      expect(emitSpy).toHaveBeenCalledTimes(1);
-      expect(emitSpy.mock.calls[0]![0]).toMatchObject({ verb: 'communication.email_inbound', dedupKey: `email_inbound:${fresh.providerId}` });
-      expect(await db.notification.count({ where: { organization_id: w.org, dedup_key: `email_inbound:${fresh.providerId}` } })).toBe(1);
+      // One alert per list the bells open (M1), every one of them this reply's.
+      expect(emitSpy.mock.calls.length).toBeGreaterThan(0);
+      for (const [call] of emitSpy.mock.calls) {
+        expect(call).toMatchObject({ verb: 'communication.email_inbound' });
+        expect(String(call.dedupKey).startsWith(`email_inbound:${fresh.providerId}`)).toBe(true);
+      }
+      const alerts = emitSpy.mock.calls.length;
+      expect(await db.notification.count({ where: { organization_id: w.org, dedup_key: { startsWith: `email_inbound:${fresh.providerId}` } } })).toBe(alerts);
       expect(publishEmailsSpy).toHaveBeenCalledTimes(1);
       // Only the new reply rang: the one kept while the feature was off still has no bell.
-      expect(await ringsOf(w.org)).toBe(1);
+      expect(await ringsOf(w.org)).toBe(alerts);
     });
   });
 
@@ -384,8 +389,9 @@ suite('the Email plan feature off: token replies are kept, hidden and silent (re
       const reply = await receive(w, w.onJob.token);
 
       expect(reply.row).toMatchObject({ thread_id: w.onJob.thread, inbound_match: 'MATCHED' });
-      expect(emitSpy).toHaveBeenCalledTimes(1);
-      expect(await ringsOf(w.org)).toBe(1);
+      // It rings as normal: one alert per list the bells open (M1).
+      expect(emitSpy.mock.calls.length).toBeGreaterThan(0);
+      expect(await ringsOf(w.org)).toBe(emitSpy.mock.calls.length);
       const list = await (await w.wide.api()).get('/api/communication/emails?mailbox=all');
       expect(list.status).toBe(200);
       expect((list.body.emails as { id: string }[]).map((e) => e.id)).toContain(reply.row!.id);

@@ -75,7 +75,7 @@ suite('staging reach follows the record\'s people and the stock switches (real d
   ): Promise<Person & { api: () => Promise<Api> }> {
     const key = `staging-reach-role-${++sequence}`;
     const role = await fx.addCustomRole(org, key, base);
-    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, ...values }, actorId: null, reason: 'manual' });
+    await setRoleSwitchValues({ organizationId: org, roleKey: key, values: { ...ALL_OFF, see_prices: true, ...values }, actorId: null, reason: 'manual' });
     const person = await fx.addUser(org, `p${sequence}`, base, { customRoleId: role.id });
     // A send by hand goes out from the sender's own mailbox (PRD 10, S10.12).
     await fx.addUserMailbox(org, person);
@@ -232,12 +232,12 @@ suite('staging reach follows the record\'s people and the stock switches (real d
   });
 
   describe('stage lines', () => {
-    it('carry unit cost only with See financial data, and the vendor name only with View vendors', async () => {
+    it('carry unit cost only with See costs, and the vendor name only with View vendors', async () => {
       const cases: { values: Record<string, boolean>; cost: boolean; vendor: boolean }[] = [
         { values: {}, cost: false, vendor: false },
-        { values: { see_financial_data: true }, cost: true, vendor: false },
+        { values: { see_costs: true }, cost: true, vendor: false },
         { values: { view_vendors: true }, cost: false, vendor: true },
-        { values: { see_financial_data: true, view_vendors: true }, cost: true, vendor: true },
+        { values: { see_costs: true, view_vendors: true }, cost: true, vendor: true },
       ];
       for (const c of cases) {
         const { org, me, mine } = await orgWithJobs({ view_stock: true, view_jobs: true, ...c.values });
@@ -268,13 +268,13 @@ suite('staging reach follows the record\'s people and the stock switches (real d
 
   describe('stage writes', () => {
     it('create a stage only with Create stock, and only on a job the person reaches', async () => {
-      const { org, me, mine, theirs } = await orgWithJobs({ view_stock: true, view_jobs: true, create_stock: true });
+      const { org, me, mine, theirs } = await orgWithJobs({ view_stock: true, view_jobs: true, edit_stock: true, create_stock: true });
       const api = await me.api();
 
       const own = await api.post('/api/inventory/job-stages', { ...STAGE_BODY, jobId: mine.id });
       expect(own.status).toBe(201);
       const other = await api.post('/api/inventory/job-stages', { ...STAGE_BODY, jobId: theirs.id });
-      expect(other.status).toBe(403);
+      expect(other.status).toBe(400);  // out of reach answers like a missing job (ticket 33)
       const noJob = await api.post('/api/inventory/job-stages', { ...STAGE_BODY });
       expect(noJob.status).toBe(403);
       expect(await db.jobStage.count({ where: { organization_id: org } })).toBe(1);
@@ -285,7 +285,7 @@ suite('staging reach follows the record\'s people and the stock switches (real d
     });
 
     it('create a stage on any job and with no job for Jobs scope All', async () => {
-      const { org, me, theirs } = await orgWithJobs({ view_stock: true, view_jobs: true, jobs_scope: 'all', create_stock: true });
+      const { org, me, theirs } = await orgWithJobs({ view_stock: true, view_jobs: true, jobs_scope: 'all', edit_stock: true, create_stock: true });
       const api = await me.api();
       expect((await api.post('/api/inventory/job-stages', { ...STAGE_BODY, jobId: theirs.id })).status).toBe(201);
       expect((await api.post('/api/inventory/job-stages', { ...STAGE_BODY })).status).toBe(201);
@@ -347,7 +347,7 @@ suite('staging reach follows the record\'s people and the stock switches (real d
       const { org, me, mine, theirs } = await orgWithJobs({ view_stock: true, view_jobs: true, edit_stock: true });
       const stage = await addStage(org, { jobId: mine.id });
       const api = await me.api();
-      expect((await api.patch(`/api/inventory/job-stages/${stage.id}`, { jobId: theirs.id })).status).toBe(403);
+      expect((await api.patch(`/api/inventory/job-stages/${stage.id}`, { jobId: theirs.id })).status).toBe(400);  // out of reach answers like a missing job (ticket 33)
       expect((await db.jobStage.findUnique({ where: { id: stage.id } }))!.job_id).toBe(mine.id);
       const another = await fx.addJob(org, (await db.job.findUniqueOrThrow({ where: { id: mine.id } })).customer_id!, { crew: [me.id] });
       expect((await api.patch(`/api/inventory/job-stages/${stage.id}`, { jobId: another.id })).status).toBe(200);

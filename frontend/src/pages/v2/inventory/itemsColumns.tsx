@@ -177,7 +177,7 @@ export function buildItemColumns({
   canUpdateInventory?: boolean;
   canCreatePurchaseOrder?: boolean;
   canDeletePriceBook?: boolean;
-  /** S07.15 - the Unit Cost column is drawn only for a person with See financial data. Without it the server sends
+  /** S07.15 - the Unit Cost column is drawn only for a person with See costs. Without it the server sends
    *  no cost at all, and a column of dashes would still say there is one. */
   canSeeCosts?: boolean;
 }): ColumnDef<Item, unknown>[] {

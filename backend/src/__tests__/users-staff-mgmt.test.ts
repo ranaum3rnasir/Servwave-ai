@@ -3,7 +3,7 @@ import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import { supabaseAdmin } from '../lib/supabase';
-import { TEST_USERS, TEST_ORG, mockAuthAs, authHeader } from './helpers';
+import { TEST_USERS, TEST_ORG, mockAuthAs, authHeader, mockCompanyOwner } from './helpers';
 import { EMAIL_ALREADY_REGISTERED_MSG } from '../lib/user-email-guard';
 import { USER_PHONE_INVALID_MESSAGE } from '../lib/user-phone';
 
@@ -25,6 +25,7 @@ const mockPrisma = prisma as unknown as {
     findFirst: ReturnType<typeof vi.fn>;
     findMany: ReturnType<typeof vi.fn>;
     update: ReturnType<typeof vi.fn>;
+    updateMany: ReturnType<typeof vi.fn>;
     create: ReturnType<typeof vi.fn>;
     count: ReturnType<typeof vi.fn>;
   };
@@ -46,6 +47,8 @@ const mockSupabaseAdmin = supabaseAdmin as unknown as {
 beforeEach(() => {
   vi.clearAllMocks();
   mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => unknown) => fn(mockPrisma));
+  // The signed-in Admin is the company's Owner: acting on another Admin is the Owner's alone (ticket 26).
+  mockCompanyOwner(TEST_USERS.admin.id);
 });
 
 // After mockAuthAs(...), resolve both the admin (auth middleware's resolveAppUser
@@ -222,33 +225,48 @@ describe('a blank or absent phone is accepted on every door', () => {
 describe('POST /api/users/:id/revoke-login', () => {
   const TARGET = '00000000-0000-0000-0000-0000000000e1';
 
-  it('clears has_login, blanks password_hash, and deletes the Supabase auth user', async () => {
+  it('clears has_login, replaces password_hash (any invite link dies), and deletes the Supabase auth user', async () => {
     mockAuthAs('admin');
-    authPlusTarget({ id: TARGET, email: 'rev@test.com', role: 'TECHNICIAN', is_active: true, has_login: true });
+    const target = { id: TARGET, email: 'rev@test.com', role: 'TECHNICIAN', is_active: true, has_login: true };
+    authPlusTarget(target);
+    // The write turns the row off; the read after the provider is clear then sees it off (ticket 22: "done" only then).
+    mockPrisma.user.updateMany.mockImplementation(async ({ data }: { data: { has_login?: boolean } }) => {
+      if (data.has_login === false) target.has_login = false;
+      return { count: 1 };
+    });
     mockSupabaseAdmin.auth.admin.listUsers.mockResolvedValue({
       data: { users: [{ id: 'sb1', email: 'rev@test.com' }], nextPage: null }, error: null,
     });
     mockSupabaseAdmin.auth.admin.deleteUser.mockResolvedValue({ data: {}, error: null });
-    mockPrisma.user.update.mockResolvedValue({ id: TARGET, has_login: false });
 
     const res = await request(app).post(`/api/users/${TARGET}/revoke-login`).set(authHeader('admin')).send({});
     expect(res.status).toBe(200);
     expect(mockSupabaseAdmin.auth.admin.deleteUser).toHaveBeenCalledWith('sb1');
-    expect(mockPrisma.user.update.mock.calls[0][0].data).toMatchObject({ has_login: false, password_hash: '' });
+    // The row is turned off first, holding this revoke's own mark while it waits on the provider (H2, ticket 22).
+    const off = mockPrisma.user.updateMany.mock.calls[0][0].data;
+    expect(off.has_login).toBe(false);
+    expect(String(off.password_hash)).toMatch(/^revoking:/);
+    // Once the provider is seen clear, that is recorded on the row (an empty column is never proof).
+    expect(mockPrisma.user.updateMany.mock.calls.some((c) => (c[0] as { data: { password_hash?: string } }).data.password_hash === 'revoked:confirmed')).toBe(true);
   });
 
-  it('is idempotent when has_login is already false (no Supabase call, no update)', async () => {
+  it('is idempotent when has_login is already false: the provider is asked, and with no login there it is done (no update)', async () => {
     mockAuthAs('admin');
     authPlusTarget({ id: TARGET, email: 'rev@test.com', role: 'TECHNICIAN', is_active: true, has_login: false });
+    mockSupabaseAdmin.auth.admin.listUsers.mockResolvedValue({ data: { users: [], nextPage: null }, error: null });
+    // The provider holds none: that is recorded on the row (its one conditional write lands).
+    mockPrisma.user.updateMany.mockResolvedValue({ count: 1 });
     const res = await request(app).post(`/api/users/${TARGET}/revoke-login`).set(authHeader('admin')).send({});
     expect(res.status).toBe(200);
+    // Ticket 22: an off row is not proof the provider is clear, so it is asked.
+    expect(mockSupabaseAdmin.auth.admin.listUsers).toHaveBeenCalled();
     expect(mockSupabaseAdmin.auth.admin.deleteUser).not.toHaveBeenCalled();
     expect(mockPrisma.user.update).not.toHaveBeenCalled();
   });
 
   it('blocks revoking login from the last active admin (409)', async () => {
     mockAuthAs('admin');
-    authPlusTarget({ id: TARGET, email: 'admin2@test.com', role: 'ADMIN', is_active: true, has_login: true });
+    authPlusTarget({ id: TARGET, email: 'admin2@test.com', role: 'ADMIN', is_admin: true, is_active: true, has_login: true });
     mockPrisma.user.count.mockResolvedValue(1);
     const res = await request(app).post(`/api/users/${TARGET}/revoke-login`).set(authHeader('admin')).send({});
     expect(res.status).toBe(409);
@@ -285,7 +303,7 @@ describe('DELETE /api/users/:id (deactivate)', () => {
 
   it('blocks deactivating the last active admin (409)', async () => {
     mockAuthAs('admin');
-    authPlusTarget({ id: TARGET, email: 'admin3@test.com', role: 'ADMIN', is_active: true, has_login: true });
+    authPlusTarget({ id: TARGET, email: 'admin3@test.com', role: 'ADMIN', is_admin: true, is_active: true, has_login: true });
     mockPrisma.user.count.mockResolvedValue(1);
     const res = await request(app).delete(`/api/users/${TARGET}`).set(authHeader('admin'));
     expect(res.status).toBe(409);
@@ -300,7 +318,7 @@ describe('PATCH /api/users/:id last-admin guard', () => {
   it('blocks demoting the last active admin (409)', async () => {
     mockAuthAs('admin');
     const TARGET = '00000000-0000-0000-0000-0000000000e3';
-    authPlusTarget({ id: TARGET, email: 'a@test.com', role: 'ADMIN', is_active: true, has_login: true });
+    authPlusTarget({ id: TARGET, email: 'a@test.com', role: 'ADMIN', is_admin: true, is_active: true, has_login: true });
     mockPrisma.user.count.mockResolvedValue(1);
     const res = await request(app).patch(`/api/users/${TARGET}`).set(authHeader('admin')).send({ role: 'SALES' });
     expect(res.status).toBe(409);
@@ -310,7 +328,7 @@ describe('PATCH /api/users/:id last-admin guard', () => {
   it('allows editing the last admin name (not a demote/deactivate)', async () => {
     mockAuthAs('admin');
     const TARGET = '00000000-0000-0000-0000-0000000000e4';
-    authPlusTarget({ id: TARGET, email: 'a@test.com', role: 'ADMIN', is_active: true, has_login: true });
+    authPlusTarget({ id: TARGET, email: 'a@test.com', role: 'ADMIN', is_admin: true, is_active: true, has_login: true });
     mockPrisma.user.count.mockResolvedValue(1);
     mockPrisma.user.update.mockResolvedValue({ id: TARGET, first_name: 'New' });
     const res = await request(app).patch(`/api/users/${TARGET}`).set(authHeader('admin')).send({ first_name: 'New' });

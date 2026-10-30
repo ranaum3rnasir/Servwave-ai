@@ -5,6 +5,7 @@ import { tenantWhere } from '../tenant';
 import { logger } from '../logger';
 import { canAccessRow } from './enforce';
 import { TERMINAL_LEAD_STATUSES } from '../../services/lead-stage.service';
+import { CANONICAL_ID, isOtherSpellingOfId } from '../ids/canonicalId';
 
 /**
  * The closed-lead lock (Roles & Permissions, PRD 5, S05.14): one answer to "is this lead closed for writes to its own
@@ -40,18 +41,23 @@ export async function leadClosedFor(req: Request, leadId: string, status?: LeadS
   return canAccessRow(req, 'Lead', prisma.lead, leadId);
 }
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
  * Route guard for a write to a lead's own contact entries: refuses with the closed-lead message when the lead in `:id`
  * is closed. It sits after the route's own switch guard, so a person without the switch still gets that refusal first.
- * A malformed id or a lead that is not there falls through to the handler, which answers as it always has.
+ * A uuid spelled any way but the canonical one answers 404 "Lead not found", never steps aside (security review, side
+ * finding): the handler's own lookup would still find the lead by that spelling. A malformed id or a lead that is not there
+ * falls through to the handler, which answers as it always has.
  */
 export function refuseWhenLeadClosed() {
   return async (req: Request, res: Response, next: NextFunction) => {
     try {
       const id = String(req.params.id ?? '');
-      if (!UUID.test(id)) {
+      if (isOtherSpellingOfId(id)) {
+        res.status(404).json({ error: 'Lead not found' });
+        return;
+      }
+      if (!CANONICAL_ID.test(id)) {
         next();
         return;
       }

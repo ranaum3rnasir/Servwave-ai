@@ -91,7 +91,7 @@ export const SCHEDULE_EVENT_COLOR_TOKENS = [
 // `findUnique`/`update` with no `select` shipped the WHOLE row, including anything ever added to
 // this model, to every authenticated user. The real danger is forward-looking: Phase 2 (M2) adds
 // `labor_rate`/`overhead_mode`/`overhead_value` — internal cost/margin config that must stay behind
-// See financial data (§2.1) — as plain columns on this same model. An explicit select means a NEW
+// See costs (§2.1) — as plain columns on this same model. An explicit select means a NEW
 // column never appears in a response until a developer deliberately adds it here and consciously
 // decides who should see it, instead of it leaking by omission the moment the migration lands.
 
@@ -380,7 +380,7 @@ function presentOrganization<T extends { ctm_account_id: string | null; ctm_sms_
 export const getOrganization = async (req: Request, res: Response) => {
   try {
     // R3 — cost defaults (labor_rate/overhead_*) are merged in ONLY for a requester who can see
-    // costs (See financial data). Every other role gets exactly organizationScalarSelect, unchanged.
+    // costs (See costs). Every other role gets exactly organizationScalarSelect, unchanged.
     const org = await prisma.organization.findUnique({
       where: { id: req.user!.organization_id },
       select: canSeeCosts(req) ? { ...organizationScalarSelect, ...organizationCostSelect } : organizationScalarSelect,
@@ -595,7 +595,7 @@ export const updateOrganization = async (req: Request, res: Response) => {
         where: { id: orgId },
         data: body,
         // R3 — same canSeeCosts-conditional select as getOrganization. In practice this route is
-        // ADMIN-only (canDo('update', 'Organization')) and ADMIN always sees pricing, but the
+        // Admin-only (requireAdminTo) and an Admin always sees pricing, but the
         // explicit condition keeps the two handlers from being able to drift apart.
         select: canSeeCosts(req) ? { ...organizationScalarSelect, ...organizationCostSelect } : organizationScalarSelect,
       });
@@ -685,7 +685,7 @@ export const emailSenderSchema = z
 /**
  * GET /api/organization/email-sender - what the Sender Address page shows: the company's main address, the company part
  * in it and the domain after the @. Read through the resolver every automated send takes its From from, so the page and
- * the mail can never disagree. Company settings alone opens it: the page must work for a person who cannot read the
+ * the mail can never disagree. The Admin flag alone opens it: the page must work for a person who cannot read the
  * Email page (the sending-identity read the compose box uses is part of that section).
  */
 export const getEmailSender = async (req: Request, res: Response) => {

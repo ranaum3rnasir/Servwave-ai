@@ -6,6 +6,7 @@ import { Briefcase, ClipboardList, CreditCard, Receipt, Send, StickyNote } from 
 
 import api from '@/lib/axios';
 import { formatCurrency } from '@/lib/utils';
+import { useCanSeePrices } from '@/contexts/AbilityContext';
 import { orgDayDiff, formatInstant, useScheduleTimezone } from '@/lib/schedule-tz';
 import { EmptyState } from '@/ui-kit/components/data/emptyState';
 import { Badge } from '@/ui-kit/components/ui/badge';
@@ -270,6 +271,8 @@ export function LeadsTab({ view, timeZone, onNavigate }: {
   onNavigate: (id: string) => void;
 }) {
   const phone = useRecordCards();
+  // P11: a lead's estimated value sums its estimates' prices, so it follows See prices.
+  const showPrices = useCanSeePrices();
   const leads = view.rows;
   if (view.status !== 'ready') return <ListStatus view={view} noun="leads" />;
   if (leads.length === 0) return <EmptyState title="No leads yet." />;
@@ -291,7 +294,7 @@ export function LeadsTab({ view, timeZone, onNavigate }: {
               fields: [
                 { label: 'Walkthrough', value: <div data-testid="lead-walkthrough"><WalkthroughCell lead={lead} timeZone={timeZone} /></div> },
                 { label: 'Estimates', value: estCount > 0 ? <Badge variant="softBlue" size="pill">{estCount}</Badge> : DASH },
-                { label: 'Est. Value', value: <Muted>{estValue > 0 ? formatCurrency(estValue) : '-'}</Muted> },
+                ...(showPrices ? [{ label: 'Est. Value', value: <Muted>{estValue > 0 ? formatCurrency(estValue) : '-'}</Muted> }] : []),
                 { label: 'Owner', value: <Muted>{leadOwnerName(lead.commission_owner)}</Muted> },
                 { label: 'Date', value: <Muted>{formatDate(lead.created_at)}</Muted> },
               ],
@@ -313,7 +316,7 @@ export function LeadsTab({ view, timeZone, onNavigate }: {
             <TableHead>Service Request</TableHead>
             <TableHead>Walkthrough</TableHead>
             <TableHead>Estimates</TableHead>
-            <TableHead>Est. Value</TableHead>
+            {showPrices && <TableHead>Est. Value</TableHead>}
             <TableHead>Owner</TableHead>
             <TableHead>Date</TableHead>
           </TableRow>
@@ -334,9 +337,11 @@ export function LeadsTab({ view, timeZone, onNavigate }: {
                 <TableCell>
                   {estCount > 0 ? <Badge variant="softBlue" size="pill">{estCount}</Badge> : DASH}
                 </TableCell>
-                <TableCell>
-                  <Muted>{estValue > 0 ? formatCurrency(estValue) : '-'}</Muted>
-                </TableCell>
+                {showPrices && (
+                  <TableCell>
+                    <Muted>{estValue > 0 ? formatCurrency(estValue) : '-'}</Muted>
+                  </TableCell>
+                )}
                 <TableCell>
                   <Muted>{leadOwnerName(lead.commission_owner)}</Muted>
                 </TableCell>
@@ -364,6 +369,7 @@ export function EstimatesTab({
   onNavigate: (id: string) => void;
 }) {
   const phone = useRecordCards();
+  const showPrices = useCanSeePrices();
   if (isLoading) {
     return (
       <div className="flex flex-col gap-2 p-4">
@@ -387,7 +393,7 @@ export function EstimatesTab({
           onOpen: () => onNavigate(est.id),
           fields: [
             { label: 'Service Request', value: <Muted>{est.lead ? truncate(est.lead.service_request) : '-'}</Muted> },
-            { label: 'Total', value: <Money>{formatCurrency(est.total_amount)}</Money> },
+            ...(showPrices ? [{ label: 'Total', value: <Money>{formatCurrency(est.total_amount)}</Money> }] : []),
             { label: 'Created', value: <Muted>{formatDate(est.created_at)}</Muted> },
           ],
         }))}
@@ -402,7 +408,7 @@ export function EstimatesTab({
           <TableHead>Estimate #</TableHead>
           <TableHead>Service Request</TableHead>
           <TableHead>Status</TableHead>
-          <TableHead>Total</TableHead>
+          {showPrices && <TableHead>Total</TableHead>}
           <TableHead>Created</TableHead>
         </TableRow>
       </TableHeader>
@@ -419,7 +425,7 @@ export function EstimatesTab({
               </Muted>
             </TableCell>
             <TableCell>{est.status ? <StatusChip domain="estimate" status={est.status} /> : '-'}</TableCell>
-            <TableCell><Money>{formatCurrency(est.total_amount)}</Money></TableCell>
+            {showPrices && <TableCell><Money>{formatCurrency(est.total_amount)}</Money></TableCell>}
             <TableCell><Muted>{formatDate(est.created_at)}</Muted></TableCell>
           </TableRow>
         ))}
@@ -561,6 +567,7 @@ export function InvoicesTab({ invoices }: { invoices: CustomerInvoice[] }) {
   // this from cache rather than issuing a second request.
   const timeZone = useScheduleTimezone();
   const phone = useRecordCards();
+  const showPrices = useCanSeePrices();
 
   if (invoices.length === 0) return <EmptyState icon={<Receipt />} title="No invoices yet." />;
 
@@ -582,20 +589,24 @@ export function InvoicesTab({ invoices }: { invoices: CustomerInvoice[] }) {
             aside: (
               <span className="flex items-center gap-1.5">
                 <StatusChip domain="invoice" status={inv.status} />
-                <ProcessingBadge amount={inv.processing_amount} />
+                {showPrices && <ProcessingBadge amount={inv.processing_amount} />}
               </span>
             ),
             // The card is the invoice's one link (the table's number cell is the link there).
             to: preferV2Path(`/invoices/${inv.id}`),
             fields: [
               { label: 'Job #', value: <MutedMono>{inv.job_number ?? '-'}</MutedMono> },
-              { label: 'Total', value: <MutedMoney>{formatCurrency(inv.total_amount)}</MutedMoney> },
-              {
-                label: 'Amount Due',
-                value: isVoided ? DASH : due > 0
-                  ? <Badge variant="softRed" size="pill">{formatCurrency(inv.amount_due)}</Badge>
-                  : <Badge variant="softGreen" size="pill">Paid</Badge>,
-              },
+              ...(showPrices
+                ? [
+                    { label: 'Total', value: <MutedMoney>{formatCurrency(inv.total_amount)}</MutedMoney> },
+                    {
+                      label: 'Amount Due',
+                      value: isVoided ? DASH : due > 0
+                        ? <Badge variant="softRed" size="pill">{formatCurrency(inv.amount_due)}</Badge>
+                        : <Badge variant="softGreen" size="pill">Paid</Badge>,
+                    },
+                  ]
+                : []),
               {
                 label: 'Due Date',
                 value: !inv.due_date ? DASH : isOverdue
@@ -616,8 +627,8 @@ export function InvoicesTab({ invoices }: { invoices: CustomerInvoice[] }) {
           <TableHead>Invoice #</TableHead>
           <TableHead>Job #</TableHead>
           <TableHead>Status</TableHead>
-          <TableHead>Total</TableHead>
-          <TableHead>Amount Due</TableHead>
+          {showPrices && <TableHead>Total</TableHead>}
+          {showPrices && <TableHead>Amount Due</TableHead>}
           <TableHead>Due Date</TableHead>
         </TableRow>
       </TableHeader>
@@ -654,17 +665,19 @@ export function InvoicesTab({ invoices }: { invoices: CustomerInvoice[] }) {
               <TableCell>
                 <span className="flex items-center gap-1.5">
                   <StatusChip domain="invoice" status={inv.status} />
-                  <ProcessingBadge amount={inv.processing_amount} />
+                  {showPrices && <ProcessingBadge amount={inv.processing_amount} />}
                 </span>
               </TableCell>
-              <TableCell><MutedMoney>{formatCurrency(inv.total_amount)}</MutedMoney></TableCell>
-              <TableCell>
-                {/* "Paid" vs an outstanding balance is a STATE, so it is a badge
-                    rather than a coloured string on the call site. */}
-                {isVoided ? DASH : due > 0
-                  ? <Badge variant="softRed" size="pill">{formatCurrency(inv.amount_due)}</Badge>
-                  : <Badge variant="softGreen" size="pill">Paid</Badge>}
-              </TableCell>
+              {showPrices && <TableCell><MutedMoney>{formatCurrency(inv.total_amount)}</MutedMoney></TableCell>}
+              {showPrices && (
+                <TableCell>
+                  {/* "Paid" vs an outstanding balance is a STATE, so it is a badge
+                      rather than a coloured string on the call site. */}
+                  {isVoided ? DASH : due > 0
+                    ? <Badge variant="softRed" size="pill">{formatCurrency(inv.amount_due)}</Badge>
+                    : <Badge variant="softGreen" size="pill">Paid</Badge>}
+                </TableCell>
+              )}
               <TableCell>
                 {/* The org clock, not `formatDate` - that renders in the VIEWER's zone, so a
                     red overdue pill could frame a day that has not arrived yet where the

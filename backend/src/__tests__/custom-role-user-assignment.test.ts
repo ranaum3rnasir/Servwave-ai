@@ -4,7 +4,7 @@ import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import { supabaseAdmin } from '../lib/supabase';
-import { mockAuthAs, authHeader, ALPHA_ORG_ID } from './helpers';
+import { mockAuthAs, authHeader, ALPHA_ORG_ID, mockCompanyOwner } from './helpers';
 import { update } from '../controllers/user.controller';
 
 vi.mock('../lib/email', () => ({ sendUserInviteEmail: vi.fn().mockResolvedValue(true) }));
@@ -37,6 +37,8 @@ function mockRes() {
 beforeEach(() => {
   vi.clearAllMocks();
   (mockPrisma as unknown as { $transaction: ReturnType<typeof vi.fn> }).$transaction.mockImplementation(async (fn: (tx: unknown) => unknown) => fn(mockPrisma));
+  // The caller ('admin-id') is the company's Owner: making an Admin is the Owner's alone (ticket 26).
+  mockCompanyOwner('admin-id');
 });
 
 const OFFICE_MANAGER = { id: '00000000-0000-0000-0000-0000000000c1', organization_id: ALPHA_ORG_ID, key: 'office-manager', base_role: 'ADMIN', archived_at: null };
@@ -107,6 +109,7 @@ describe('user.controller update() - custom_role_id consistency', () => {
       params: { id: targetId },
       body: { role: 'ADMIN', custom_role_id: '00000000-0000-0000-0000-0000000000c1' },
       user: { id: 'admin-id', organization_id: ALPHA_ORG_ID, role: 'ADMIN' },
+      headers: {},
     } as unknown as Request;
 
     await update(req, mockRes());
@@ -126,6 +129,7 @@ describe('user.controller update() - custom_role_id consistency', () => {
       params: { id: targetId },
       body: { custom_role_id: '00000000-0000-0000-0000-0000000000c1' },
       user: { id: 'admin-id', organization_id: ALPHA_ORG_ID, role: 'ADMIN' },
+      headers: {},
     } as unknown as Request;
 
     const res = mockRes();
@@ -146,6 +150,7 @@ describe('user.controller update() - custom_role_id consistency', () => {
       params: { id: targetId },
       body: { role: 'SALES' },
       user: { id: 'admin-id', organization_id: ALPHA_ORG_ID, role: 'ADMIN' },
+      headers: {},
     } as unknown as Request;
 
     const res = mockRes();
@@ -157,20 +162,22 @@ describe('user.controller update() - custom_role_id consistency', () => {
 
   it('clearing custom_role_id to null needs no base_role match and skips the lookup', async () => {
     const targetId = 'target-4';
-    mockPrisma.user.findFirst.mockResolvedValue({ id: targetId, organization_id: ALPHA_ORG_ID, role: 'ADMIN', custom_role_id: '00000000-0000-0000-0000-0000000000c1' });
+    mockPrisma.user.findFirst.mockResolvedValue({ id: targetId, organization_id: ALPHA_ORG_ID, role: 'ADMIN', is_admin: false, custom_role_id: '00000000-0000-0000-0000-0000000000c1' });
     mockPrisma.user.update.mockResolvedValue({ id: targetId });
 
     const req = {
       params: { id: targetId },
       body: { custom_role_id: null },
-      user: { id: 'admin-id', organization_id: ALPHA_ORG_ID, role: 'ADMIN' },
+      user: { id: 'admin-id', organization_id: ALPHA_ORG_ID, role: 'ADMIN', is_admin: true },
+      headers: {},
     } as unknown as Request;
 
     await update(req, mockRes());
 
     expect(mockPrisma.customRole.findFirst).not.toHaveBeenCalled();
     expect(mockPrisma.user.update).toHaveBeenCalledOnce();
-    expect(mockPrisma.user.update.mock.calls[0][0].data).toEqual({ custom_role_id: null });
+    // Back on the Administrator role with no custom role: that role is an Admin (the flag follows the picker's Administrator entry).
+    expect(mockPrisma.user.update.mock.calls[0][0].data).toEqual({ custom_role_id: null, is_admin: true });
   });
 
   it('a PATCH touching neither role nor custom_role_id does no consistency lookup at all', async () => {
@@ -182,6 +189,7 @@ describe('user.controller update() - custom_role_id consistency', () => {
       params: { id: targetId },
       body: { is_active: false },
       user: { id: 'admin-id', organization_id: ALPHA_ORG_ID, role: 'ADMIN' },
+      headers: {},
     } as unknown as Request;
 
     await update(req, mockRes());

@@ -60,7 +60,7 @@ function detail(status: LogisticOrderStatus, actions: LogisticOrderDetail['actio
 
 function serve(order: LogisticOrderDetail, showOrdersPage = true) {
   mockApi.get.mockImplementation((async (url: string, config?: { params?: Record<string, unknown> }) => {
-    if (url === '/api/permission-switches/me') return { data: { admin_box: false, values: { show_logistic_orders_page: showOrdersPage }, rules: [] } };
+    if (url === '/api/permission-switches/me') return { data: { admin_box: false, values: { view_logistic_orders: showOrdersPage }, rules: [] } };
     if (url === `/api/logistic-orders/${ORDER_ID}`) return { data: order };
     if (url === '/api/logistic-orders') {
       const limit = Number(config?.params?.limit ?? 50);
@@ -91,7 +91,7 @@ async function showOnJob(rules: AbilityRule[]) {
 
 /** Shows the order list on the Inventory page's Logistic Orders tab. */
 async function showOnInventory(rules: AbilityRule[]) {
-  seedMySwitches({ show_logistic_orders_page: true });
+  seedMySwitches({ view_logistic_orders: true });
   renderWithProviders(<InventoryPage />, { initialEntries: ['/inventory/logistic-orders'], ability: buildAbility(rules) });
   await screen.findByText('LO00001');
 }
@@ -177,7 +177,7 @@ describe.each(SCREENS)('%s - the New logistic order button follows Create logist
 });
 
 describe('an order opened from the job', () => {
-  it('opens with Show Logistic Orders page off and View logistic orders on, and the sheet carries its buttons', async () => {
+  it('opens with View logistic orders on, and the sheet carries its buttons', async () => {
     serve(detail('PENDING_APPROVAL', ['approve']), false);
     await showOnJob([READ_ORDERS, READ_JOBS]);
     await openOrder();

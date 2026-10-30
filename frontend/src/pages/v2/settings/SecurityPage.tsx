@@ -4,6 +4,7 @@ import { useOrganization, useUpdateOrganization } from '@/lib/api/organization';
 import api from '@/lib/axios';
 import { extractApiError } from '@/lib/utils';
 import { useAuthStore } from '@/stores/auth.store';
+import { useIsAdmin } from '@/lib/useIsAdmin';
 import { supabase } from '@/lib/supabase';
 import { dropStoredAuthSession } from '@/lib/auth-listener';
 
@@ -27,7 +28,9 @@ import { SettingRow } from './components/field';
  *
  * Three independent mechanisms, deliberately NOT unified:
  *   1. SMS 2FA is an ORG-level policy on the organization record, saved through
- *      the shared Save bar.
+ *      the shared Save bar. It is the company's setup, so the Admin flag's alone (36b, M17): its card is drawn for an Admin
+ *      only, and the one write behind it (PATCH /api/organization) is refused to anyone else. Every person keeps 2 and 3,
+ *      which are their own sign-in.
  *   2. Email OTP is a PER-USER enrollment on /api/auth/mfa/*, raw axios, local
  *      state only. It must never route through useUpdateOrganization - that
  *      flips the dormant org flag instead.
@@ -97,6 +100,7 @@ function passwordErrorText(err: unknown): string {
   return PASSWORD_FAILED;
 }
 export default function SecurityPage() {
+  const isAdmin = useIsAdmin();
   const { data: org } = useOrganization();
   const update = useUpdateOrganization();
   const { registerSaver } = useSettingsBar();
@@ -242,6 +246,8 @@ export default function SecurityPage() {
   const isDirty = !!org && sms !== (org.mfa_sms_enabled ?? false);
 
   useEffect(() => {
+    // Only an Admin has a policy to save: no saver means no Save bar on a page that has nothing to save.
+    if (!isAdmin) return;
     registerSaver({
       save: async () => {
         await update.mutateAsync({ mfa_sms_enabled: sms });
@@ -252,7 +258,7 @@ export default function SecurityPage() {
       isDirty,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isDirty, sms]);
+  }, [isDirty, sms, isAdmin]);
 
   // Turning SMS 2FA on is a setup step (a modal), not a silent flip; turning it
   // off just disables the policy.
@@ -309,19 +315,21 @@ export default function SecurityPage() {
 
   return (
     <div className="max-w-2xl space-y-6">
-      <Section title="Two-Factor Authentication">
-        <SettingRow
-          title="Require SMS verification at login"
-          hint="A one-time code is texted to each user when they sign in."
-          control={
-            <Switch
-              checked={sms}
-              onCheckedChange={onToggleSms}
-              aria-label="Require SMS verification at login"
-            />
-          }
-        />
-      </Section>
+      {isAdmin && (
+        <Section title="Two-Factor Authentication">
+          <SettingRow
+            title="Require SMS verification at login"
+            hint="A one-time code is texted to each user when they sign in."
+            control={
+              <Switch
+                checked={sms}
+                onCheckedChange={onToggleSms}
+                aria-label="Require SMS verification at login"
+              />
+            }
+          />
+        </Section>
+      )}
 
       <Section
         title="Email authentication"

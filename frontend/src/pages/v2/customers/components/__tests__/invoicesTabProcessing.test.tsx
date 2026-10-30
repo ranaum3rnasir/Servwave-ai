@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderWithProviders, seesPrices } from '@/__tests__/helpers';
 import { InvoicesTab, type CustomerInvoice } from '../detailTabs';
 
 vi.mock('@/lib/api/organization', async (importOriginal) => {
@@ -21,17 +21,19 @@ function invoice(over: Partial<CustomerInvoice> = {}): CustomerInvoice {
 }
 
 // Payments go-live slice 28 conductor ruling D1: every staff invoice list badges bank money in flight.
+// The processing amount is a price, so the tab is drawn for a person who holds See prices (P11).
 describe('Customer Invoices tab - bank payment processing (D1)', () => {
   it('badges the invoice that has a payment clearing, and only that one', () => {
     renderWithProviders(
       <InvoicesTab invoices={[invoice({ processing_amount: 100 }), invoice({ id: 'inv-2', invoice_number: 'I00393', processing_amount: 0 })]} />,
+      { ability: seesPrices },
     );
     expect(screen.getAllByTestId('processing-badge')).toHaveLength(1);
     expect(screen.getByText('Processing $100.00')).toBeInTheDocument();
   });
 
   it('shows no badge when the payload predates the field', () => {
-    renderWithProviders(<InvoicesTab invoices={[invoice()]} />);
+    renderWithProviders(<InvoicesTab invoices={[invoice()]} />, { ability: seesPrices });
     expect(screen.queryByTestId('processing-badge')).not.toBeInTheDocument();
   });
 });

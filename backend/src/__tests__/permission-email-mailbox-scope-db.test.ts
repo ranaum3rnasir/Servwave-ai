@@ -88,8 +88,8 @@ suite('the Email page lists mailboxes by M11\'s rule (real database)', () => {
       organizationId: org, roleKey: key,
       values: {
         view_jobs: true, jobs_scope: 'attached', view_leads: true, leads_scope: 'attached', view_customers: true,
-        view_estimates: true, estimates_scope: 'attached', view_invoices: true, invoices_scope: 'attached',
-        access_communication: true, show_email: true, view_communication: true, communication_scope: 'linked_to_me',
+        view_estimates: true, view_invoices: true,
+        access_communication: true, show_email: true, view_communication: true, communication_scope: 'attached',
         ...values,
       },
       actorId: null, reason: 'manual',
@@ -172,7 +172,7 @@ suite('the Email page lists mailboxes by M11\'s rule (real database)', () => {
     (await (await person.api()).get(`/api/communication/emails/${id}`)).status === 200;
 
   describe('under "Linked to me" and All', () => {
-    it('lists the own mailbox and not a colleague\'s, except what is assigned to the person or what they wrote in', async () => {
+    it('lists the own mailbox and not a colleague\'s, not even what is assigned to the person or what they wrote in (M1)', async () => {
       const { org, customer } = await newOrg();
       const person = await personWith(org, {});
       const colleague = await personWith(org, {});
@@ -186,8 +186,14 @@ suite('the Email page lists mailboxes by M11\'s rule (real database)', () => {
       });
 
       const ids = await listed(person);
-      expect(ids).toEqual(expect.arrayContaining([inMine.first, ...assigned.ids, ...wroteIn.ids]));
-      expect(ids).not.toContain(inTheirs.first);
+      expect(ids).toContain(inMine.first);
+      for (const id of [inTheirs.first, ...assigned.ids, ...wroteIn.ids]) {
+        expect(ids, id).not.toContain(id);
+        expect(await opens(person, id), id).toBe(false);
+      }
+      // "My mailbox" narrows the section: it cannot bring them back either.
+      const mineOnly = await listed(person, '?mailbox=mine');
+      for (const id of [...assigned.ids, ...wroteIn.ids]) expect(mineOnly, id).not.toContain(id);
     });
 
     it('lists a mailbox handed to the person, by whoever it was issued to', async () => {
@@ -271,9 +277,9 @@ suite('the Email page lists mailboxes by M11\'s rule (real database)', () => {
       }
     });
 
-    it('opens an invoice conversation for the person who made the invoice while they are on the job, and not once they are taken off it (attachment wins)', async () => {
+    it('opens an invoice conversation for the person who made the invoice while they are on the job with View invoices on, and not once they are taken off it (attachment wins)', async () => {
       const { org, customer } = await newOrg();
-      const creator = await personWith(org, { ...INVOICES_VIEW_OFF });
+      const creator = await personWith(org, { view_invoices: true, jobs_scope: 'attached', leads_scope: 'attached' });
       const mine = await userMailbox(org, creator);
       const job = await fx.addJob(org, customer, { crew: [creator.id] });
       const invoice = await fx.addInvoice(org, customer, { jobId: job.id, createdBy: creator.id });
@@ -300,7 +306,7 @@ suite('the Email page lists mailboxes by M11\'s rule (real database)', () => {
       for (const id of conv.ids) expect(await opens(person, id)).toBe(true);
     });
 
-    it('does not list a pre-migration conversation to a person who merely reads the company, but opens it through a job they can open and lists it when it is assigned to them', async () => {
+    it('does not list a pre-migration conversation to a person who merely reads the company, opens it through a job they can open, and neither lists nor opens it for being assigned to them (M1)', async () => {
       const { org, admin, customer } = await newOrg();
       const person = await personWith(org, {});
       const main = await mainMailbox(org);
@@ -313,9 +319,10 @@ suite('the Email page lists mailboxes by M11\'s rule (real database)', () => {
       const ids = await listed(person);
       expect(ids).not.toContain(onMyJob.first);
       expect(ids).not.toContain(onOtherJob.first);
-      expect(ids).toContain(assigned.first);
+      expect(ids).not.toContain(assigned.first);
       expect(await opens(person, onMyJob.first)).toBe(true);
       expect(await opens(person, onOtherJob.first)).toBe(false);
+      expect(await opens(person, assigned.first)).toBe(false);
     });
 
     it('does not let assignment or a message the person wrote reopen a record conversation they can no longer open', async () => {
@@ -442,17 +449,18 @@ suite('the Email page lists mailboxes by M11\'s rule (real database)', () => {
       await addConversation(org, mine, customer, { record: { type: 'invoice', id: invoice.id }, messages: [{ direction: 'out', jobId: job.id }, { direction: 'in' }] });
 
       const list = await mailboxList(person);
-      expect(list.scope).toBe('linked_to_me');
-      expect(list.mine).toMatchObject({ id: mine, unread: 3 });
+      expect(list.scope).toBe('attached');
+      // The conversation assigned to the person from a colleague's mailbox is counted nowhere: assignment opens nothing (M1).
+      expect(list.mine).toMatchObject({ id: mine, unread: 2 });
       expect(list.held).toEqual([expect.objectContaining({ id: handed, unread: 1 })]);
       expect(list.main).toBeNull();
       expect(list.people).toBeNull();
-      expect(list.total_unread).toBe(4);
-      expect(list.selected_unread).toBe(3);
+      expect(list.total_unread).toBe(3);
+      expect(list.selected_unread).toBe(2);
       expect((await mailboxList(person, `?selected=${handed}`)).selected_unread).toBe(1);
-      // The mailbox itself, picked by its id, counts its own conversations only (not the one assigned from a colleague's).
+      // The mailbox itself, picked by its id, counts its own conversations only.
       expect((await mailboxList(person, `?selected=${mine}`)).selected_unread).toBe(2);
-      expect(await badge(person)).toBe(4);
+      expect(await badge(person)).toBe(3);
       // What the page lists under "My mailbox" is what its count says.
       expect(await listed(person, '?mailbox=mine')).toHaveLength(list.mine!.unread);
     });

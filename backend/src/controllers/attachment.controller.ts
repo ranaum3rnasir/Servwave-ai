@@ -9,14 +9,8 @@ import { logger } from '../lib/logger';
 import { supabaseAdmin } from '../lib/supabase';
 import { tenantWhere } from '../lib/tenant';
 import { canAccessTask } from '../lib/tasks/visibility';
-import { canAccessRow } from '../lib/permissions/enforce';
-import {
-  OWN_UPLOADS_ONLY_MESSAGE,
-  fileChangeAnswer,
-  fileLockBinds,
-  mayChangeAttachment,
-  type AttachmentChange,
-} from '../lib/permissions/attachmentChange';
+import { canAccessRow, canActOnRow } from '../lib/permissions/enforce';
+import { fileChangeAnswer, fileLockBinds } from '../lib/permissions/attachmentChange';
 import { JOB_LOCKED_CODE, JOB_LOCKED_MESSAGE } from '../lib/permissions/jobLock';
 import { canReadCustomerById } from '../lib/permissions/customerScope';
 import { sniffMatchesDeclared } from '../lib/file-sniff';
@@ -143,7 +137,7 @@ const ENTITY_TOTAL_EXCEEDED =
 //
 // TASK (visits-and-task-categories slice 12): a task's files belong to the task alone. They are
 // never folded into the linked job, lead or customer, and their access is the task's own
-// visibility rule (see `checkEntityAccess`), not the per-role switch.
+// visibility rule (see `checkEntityAccess`) and, to change them, its Edit (`checkEntityEdit`).
 const VALID_ENTITY_TYPES: AttachmentEntity[] = ['CUSTOMER', 'LEAD', 'JOB', 'INVOICE', 'TASK'];
 
 // ─── Schemas ─────────────────────────────────────────────
@@ -250,11 +244,11 @@ function findTaskForAccess(taskId: string, req: Request) {
 /**
  * May the caller open the record this file hangs on? The record's own access rule decides, the same one that
  * lets the person open the job, lead, invoice or customer itself (the access resolver), so a person's Data
- * Scope and the creator rule apply and no role name does. The Attachments switches then decide what they may
+ * Scope applies and no role name does. The Attachments switches then decide what they may
  * do with the files on it.
  */
 export async function checkEntityAccess(entityType: AttachmentEntity, entityId: string, req: Request): Promise<boolean> {
-  // A task's files are exactly as private as the task (`canAccessTask`): See all tasks; assignee or watcher; anyone
+  // A task's files are exactly as private as the task (`canAccessTask`): Tasks scope All; a person the scope reaches; anyone
   // else only through the linked record they can already open. An existence check would let a person in who
   // may not open the task.
   if (entityType === 'TASK') {
@@ -275,36 +269,32 @@ export async function checkEntityAccess(entityType: AttachmentEntity, entityId: 
   }
 }
 
-// ─── Rename / remove ─────────────────────────────────────
-
-function isTaskEntityParam(req: Request): boolean {
-  return param(req, 'entityType').toUpperCase() === 'TASK';
-}
-
 /**
- * Route guard for PATCH and DELETE. The grant passes as it always has. Without it, the request goes on to the
- * handler, which holds it to `mayChangeAttachment` once the row is in hand - a route guard runs before the row
- * exists, so it cannot test who uploaded it (the same split `task.routes.ts` uses for a technician deleting
- * their own to-do). That is a TASK request of either kind, and a delete by a person who can see attachments at
- * all (View attachments); every other request keeps `canDo`'s exact 401/403 answer.
+ * May the caller change the files of this record? Uploads are the record's own data (P10, A8d): the record's Edit adds,
+ * renames and removes them, another person's included, and no attachments switch exists. Asked after the caller has
+ * opened the record (`checkEntityAccess`), so a person who cannot open it never learns it exists; a person who can open it
+ * and holds no Edit is refused with a 403.
+ *
+ * The Edit is the record's own: Edit jobs on the job, Edit leads on the lead, Edit invoices on the invoice, Edit customers
+ * on the customer, Edit tasks on the task, each at the row scope the person holds for it.
  */
-export function attachmentChangeGuard(action: AttachmentChange) {
-  return (req: Request, res: Response, next: NextFunction) => {
-    if (!req.ability) {
-      res.status(401).json({ error: 'Not authenticated' });
-      return;
+export async function checkEntityEdit(entityType: AttachmentEntity, entityId: string, req: Request): Promise<boolean> {
+  switch (entityType) {
+    case 'JOB':      return !!req.ability?.can('update', 'Job') && canActOnRow(req, 'Job', prisma.job, entityId, 'update');
+    case 'LEAD':     return !!req.ability?.can('update', 'Lead') && canActOnRow(req, 'Lead', prisma.lead, entityId, 'update');
+    case 'INVOICE':  return !!req.ability?.can('update', 'Invoice') && canActOnRow(req, 'Invoice', prisma.invoice, entityId, 'update');
+    case 'CUSTOMER': return !!req.ability?.can('update', 'Customer') && canReadCustomerById(req, entityId);
+    case 'TASK': {
+      if (!req.ability?.can('update', 'Task')) return false;
+      const task = await findTaskForAccess(entityId, req);
+      return !!task && canAccessTask(req, task);
     }
-    const mayReachHandler =
-      req.ability.can(action, 'Attachment')
-      || isTaskEntityParam(req)
-      || (action === 'delete' && req.ability.can('read', 'Attachment'));
-    if (!mayReachHandler) {
-      res.status(403).json({ error: 'Insufficient permissions' });
-      return;
-    }
-    next();
-  };
+    default:         return false;
+  }
 }
+
+/** The answer for a record the caller cannot open (or that does not exist): the same words, so existence is not told. */
+const NOT_FOUND = { error: 'Entity not found' } as const;
 
 // ─── Handlers ────────────────────────────────────────────
 
@@ -318,8 +308,9 @@ export async function listAttachments(req: Request, res: Response) {
       return;
     }
 
+    // Anyone who can open the record reads its files; anyone else is told it is not found.
     if (!(await checkEntityAccess(entityType, entityId, req))) {
-      res.status(403).json({ error: 'Insufficient permissions' });
+      res.status(404).json(NOT_FOUND);
       return;
     }
 
@@ -349,6 +340,7 @@ export async function listAttachments(req: Request, res: Response) {
     // control only where the route would let the request in, and draws it disabled with the lock as the reason when
     // it is the lock alone that stops them.
     const locked = await fileLockBinds(req, entityType, entityId);
+    const canEditRecord = await checkEntityEdit(entityType, entityId, req);
 
     const signed = await Promise.all(
       rows.map(async (row) => {
@@ -356,7 +348,7 @@ export async function listAttachments(req: Request, res: Response) {
         return {
           ...rest,
           file_url: await buildAccessUrl(storage_path, row.file_url),
-          ...fileChangeAnswer(req, entityType, row.uploader.id, locked),
+          ...fileChangeAnswer(canEditRecord, locked),
         };
       }),
     );
@@ -496,7 +488,12 @@ export async function uploadAttachment(req: Request, res: Response) {
       return;
     }
 
+    // Not found for a person who cannot open the record; refused for one who can open it and holds no Edit on it (P10).
     if (!(await checkEntityAccess(entityType, entityId, req))) {
+      res.status(404).json(NOT_FOUND);
+      return;
+    }
+    if (!(await checkEntityEdit(entityType, entityId, req))) {
       res.status(403).json({ error: 'Insufficient permissions' });
       return;
     }
@@ -734,6 +731,10 @@ export async function createDirectUploadUrl(req: Request, res: Response) {
     }
 
     if (!(await checkEntityAccess(entityType, entityId, req))) {
+      res.status(404).json(NOT_FOUND);
+      return;
+    }
+    if (!(await checkEntityEdit(entityType, entityId, req))) {
       res.status(403).json({ error: 'Insufficient permissions' });
       return;
     }
@@ -904,6 +905,10 @@ export async function completeDirectUpload(req: Request, res: Response) {
       return;
     }
     if (!(await checkEntityAccess(entityType, entityId, req))) {
+      res.status(404).json(NOT_FOUND);
+      return;
+    }
+    if (!(await checkEntityEdit(entityType, entityId, req))) {
       res.status(403).json({ error: 'Insufficient permissions' });
       return;
     }
@@ -1060,7 +1065,7 @@ export async function updateAttachment(req: Request, res: Response) {
     }
 
     if (!(await checkEntityAccess(entityType, entityId, req))) {
-      res.status(403).json({ error: 'Insufficient permissions' });
+      res.status(404).json(NOT_FOUND);
       return;
     }
 
@@ -1076,12 +1081,12 @@ export async function updateAttachment(req: Request, res: Response) {
       res.status(404).json({ error: 'Attachment not found' });
       return;
     }
-    // The completed-job lock wins over the grant and over the own-upload rule.
+    // The completed-job lock wins over the record's Edit.
     if (await fileLockBinds(req, entityType as AttachmentEntity, entityId)) {
       res.status(403).json({ error: JOB_LOCKED_MESSAGE, code: JOB_LOCKED_CODE });
       return;
     }
-    if (!mayChangeAttachment(req, 'update', entityType as AttachmentEntity, existing.uploaded_by)) {
+    if (!(await checkEntityEdit(entityType, entityId, req))) {
       res.status(403).json({ error: 'Insufficient permissions' });
       return;
     }
@@ -1132,7 +1137,7 @@ export async function deleteAttachment(req: Request, res: Response) {
     }
 
     if (!(await checkEntityAccess(entityType, entityId, req))) {
-      res.status(403).json({ error: 'Insufficient permissions' });
+      res.status(404).json(NOT_FOUND);
       return;
     }
 
@@ -1150,8 +1155,8 @@ export async function deleteAttachment(req: Request, res: Response) {
       res.status(403).json({ error: JOB_LOCKED_MESSAGE, code: JOB_LOCKED_CODE });
       return;
     }
-    if (!mayChangeAttachment(req, 'delete', entityType as AttachmentEntity, existing.uploaded_by)) {
-      res.status(403).json({ error: OWN_UPLOADS_ONLY_MESSAGE });
+    if (!(await checkEntityEdit(entityType, entityId, req))) {
+      res.status(403).json({ error: 'Insufficient permissions' });
       return;
     }
     // Payments go-live P10: a file attached to a dispute stays until it is removed from the dispute. The database

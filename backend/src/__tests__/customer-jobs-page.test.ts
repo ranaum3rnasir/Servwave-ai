@@ -127,11 +127,14 @@ describe('GET /api/customers/:id/jobs — numbered pages', () => {
       { id: 'inv-foreign', status: 'PAID', organization_id: ORG_B_ID, job_id: 'job-1' },
     ];
     mockAuthAs('admin');
-    mockPrisma.job.findMany.mockImplementation(async ({ select }: { select: { invoices: { where?: { organization_id?: string } } } }) => {
-      const where = select.invoices.where ?? {};
+    type Where = { organization_id?: string; AND?: Where[] };
+    // The tenant filter, at the top or as an arm of an AND (the invoice reach rides beside it, H3).
+    const tenantOf = (w: Where): string | undefined => w.organization_id ?? (w.AND ?? []).map(tenantOf).find(Boolean);
+    mockPrisma.job.findMany.mockImplementation(async ({ select }: { select: { invoices: { where?: Where } } }) => {
+      const org = tenantOf(select.invoices.where ?? {});
       const invoices = invoiceTable
         .filter((i) => i.job_id === 'job-1')
-        .filter((i) => where.organization_id === undefined || i.organization_id === where.organization_id)
+        .filter((i) => org === undefined || i.organization_id === org)
         .map(({ id, status }) => ({ id, status }));
       return [jobRow(1, { invoices })];
     });

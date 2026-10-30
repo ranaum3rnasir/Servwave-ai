@@ -44,8 +44,8 @@ const USER = {
   org_features: ['leads', 'service_plans', 'automations', 'inventory', 'phone', 'email'],
 };
 
-/** The Jobs entry shows with View jobs and Show jobs page; the queue switches ride on top. */
-const JOBS = { view_jobs: true, show_jobs_page: true };
+/** The Jobs entry shows with View jobs; the queue switches ride on top. */
+const JOBS = { view_jobs: true };
 
 /** What the server answers the two reads with, changeable between renders. */
 let queueAnswer: Record<string, number>;

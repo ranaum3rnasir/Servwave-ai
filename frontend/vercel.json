@@ -29,6 +29,12 @@
       "headers": [
         { "key": "Referrer-Policy", "value": "no-referrer" }
       ]
+    },
+    {
+      "source": "/approve-owner",
+      "headers": [
+        { "key": "Referrer-Policy", "value": "no-referrer" }
+      ]
     }
   ]
 }

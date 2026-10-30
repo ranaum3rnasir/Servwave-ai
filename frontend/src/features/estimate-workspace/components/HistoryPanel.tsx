@@ -175,7 +175,7 @@ export function HistoryPanel({ open, onClose, estimateId }: { open: boolean; onC
                     </p>
                     <p className="text-xs text-text-secondary">
                       {whenLabel(entry.event.created_at)}
-                      {entry.event.actor_email && ` · ${entry.event.actor_email}`}
+                      {(entry.event.actor_name || entry.event.actor_email) && ` · ${entry.event.actor_name || entry.event.actor_email}`}
                     </p>
                   </li>
                 ),
