@@ -6,9 +6,9 @@ import { renderWithProviders } from '@/__tests__/helpers';
 import { buildAbility } from '@/lib/ability';
 import { uploadAttachment } from '@/lib/attachments/uploadAttachment';
 
-import { DisputeDrawer } from '../components/DisputeDrawer';
+import { DISPUTE_URL, DisputeStage } from './disputeHarness';
 import {
-  DISPUTE_ID, INVOICE_ID, file, invoiceFile, makeEvidence, mockApi, serveDispute, type InvoiceFile,
+  INVOICE_ID, file, invoiceFile, makeEvidence, mockApi, serveDispute, type InvoiceFile,
 } from './disputeFixtures';
 
 vi.mock('@/lib/attachments/uploadAttachment', () => ({ uploadAttachment: vi.fn() }));
@@ -19,8 +19,8 @@ const user = () => userEvent.setup();
 
 async function openForm(ability = CAN_UPLOAD) {
   const u = user();
-  renderWithProviders(<DisputeDrawer disputeId={DISPUTE_ID} onClose={vi.fn()} />, { ability });
-  await u.click(await screen.findByRole('button', { name: 'Add evidence' }));
+  renderWithProviders(<DisputeStage />, { ability, initialEntries: [DISPUTE_URL] });
+  await u.click(await screen.findByRole('button', { name: 'Respond' }));
   const dialog = await screen.findByRole('dialog');
   await within(dialog).findByRole('group', { name: 'Receipt' });
   return { u, dialog };

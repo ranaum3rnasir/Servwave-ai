@@ -10,6 +10,7 @@ import { isPhoneConnected, isSmsReady } from '@/lib/api/phoneConnected';
 import { fmtPhone, isFinalCallStatus } from '@/lib/api/communication-shared';
 import { toast } from '@/components/ui/use-toast';
 import { extractApiError } from '@/lib/utils';
+import { invalidateAllLeadViews, invalidateLeadViews } from '@/lib/api/jobCommunications';
 import type {
   CallSession, CallTranscriptTurn, PhoneCustomer, PhoneAgent, Message, MessageThread, TextTemplate,
   TextAutomation, BlockedNumber, BlockReason, CallFlow, CallGroup, WAChat, EmailGroup,
@@ -1443,12 +1444,14 @@ export const useStartTrainingSession = () => useCommMutation<unknown>('/api/comm
 
 // ─── SMS send (slice 6) ─────────────────────────────────────────────────────
 
-/** 201 response of POST /api/communication/sms. `delivery` is present only
- *  when CTM delivery was attempted: 'failed' means the row exists but the
- *  carrier send bounced (the message row is already stamped failed).
+/** 201 response of POST /api/communication/sms. `delivery` is present whenever
+ *  delivery was considered for an outbound text to a deliverable thread:
+ *  'sent' means the provider accepted it, 'failed' means the row exists but
+ *  the provider rejected it, and 'skipped' means it was recorded but never
+ *  left (a gate held it back). The row's `status`/`statusReason` say why.
  *  `threadId` is present only on compose-to-number sends (slice H7) — the
  *  server-resolved conversation the text landed in. */
-export type SendSmsResult = { message?: Message; threadId?: string; delivery?: 'sent' | 'failed' };
+export type SendSmsResult = { message?: Message; threadId?: string; delivery?: 'sent' | 'failed' | 'skipped' };
 
 /** Human copy for a blocked SMS send — maps the compliance gate's 409
  *  `{ error, code }` to short UI strings, falls back to the server's error
@@ -1477,11 +1480,15 @@ export function useSendSms() {
   return useMutation<
     SendSmsResult,
     unknown,
-    { threadId?: string; customerId?: string; toNumber?: string; body: string; jobId?: string }
+    { threadId?: string; customerId?: string; toNumber?: string; body: string; jobId?: string; leadId?: string }
   >({
     mutationFn: (args) =>
       api.post('/api/communication/sms', args).then((r) => r.data as SendSmsResult),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['communication'] }),
+    onSuccess: (_data, args) => {
+      qc.invalidateQueries({ queryKey: ['communication'] });
+      // A text filed on a lead can move it from New to Contacted (SPEC-4 §6.8).
+      if (args.leadId) invalidateLeadViews(qc, args.leadId);
+    },
     onError: () => qc.invalidateQueries({ queryKey: ['communication'] }),
   });
 }
@@ -1529,7 +1536,12 @@ export function useReassignSmsLead() {
   return useMutation({
     mutationFn: ({ messageId, leadId }: { messageId: string; leadId: string | null }) =>
       api.patch(`/api/communication/sms/${messageId}/lead`, { lead_id: leadId }).then((r) => r.data as ConversationLinkResult),
-    onSuccess: () => invalidateConversationLinks(qc),
+    onSuccess: () => {
+      invalidateConversationLinks(qc);
+      // An attached text that went out moves a New lead to Contacted (SPEC-4 §6.2), and a text taken
+      // off a lead can move the lead it left back to New (D7): every lead view refetches.
+      invalidateAllLeadViews(qc);
+    },
     onError: () => qc.invalidateQueries({ queryKey: ['communication'] }),
   });
 }
@@ -1553,7 +1565,12 @@ export function useReassignEmailLead() {
   return useMutation({
     mutationFn: ({ emailId, leadId }: { emailId: string; leadId: string | null }) =>
       api.patch(`/api/communication/emails/${emailId}/lead`, { lead_id: leadId }).then((r) => r.data as ConversationLinkResult),
-    onSuccess: () => invalidateConversationLinks(qc),
+    onSuccess: () => {
+      invalidateConversationLinks(qc);
+      // An attached email that was sent or delivered moves a New lead to Contacted (SPEC-4 §6.4), and an email taken off
+      // a lead can move the lead it left back to New (D7): every lead view refetches.
+      invalidateAllLeadViews(qc);
+    },
     onError: () => qc.invalidateQueries({ queryKey: ['communication'] }),
   });
 }

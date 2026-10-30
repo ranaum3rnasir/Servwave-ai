@@ -478,4 +478,37 @@ suite('completed card checkouts through the reconciler (real database)', () => {
     expect(await db.notification.count({ where: { organization_id: f.org, verb: 'billing.disputed' } })).toBe(1);
     expect(await f.readInvoice()).toMatchObject({ status: 'DISPUTED' });
   });
+
+  // V7-12a pins (no overpaid invoices, BE-14 rows 3 and 4): money that is more than what is owed, or
+  // that arrives for an invoice already paid, never lands on the invoice. It is written down as a
+  // payment not recorded, for the office to refund or attach.
+  it('a capture larger than the balance books nothing: the invoice is unchanged and the whole charge is recorded as not applied', async () => {
+    const f = await orgWithInvoice({ total: 500 });
+
+    await f.deliver(f.session({ amount_total: 60000 }));
+
+    expect(await f.payments()).toHaveLength(0);
+    const invoice = await f.readInvoice();
+    expect(invoice.status).toBe('SENT');
+    expect(Number(invoice.amount_due)).toBe(500);
+    const rows = await f.unrecorded();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].metadata).toMatchObject({ reason: 'AMOUNT_MISMATCH', expected_cents: 50000, charged_cents: 60000 });
+  });
+
+  it('paid twice: the first checkout books and pays the invoice, the second one is recorded as not applied and books no second payment', async () => {
+    const f = await orgWithInvoice({ total: 500 });
+
+    await f.deliver(f.session());
+    await f.deliver(f.session({ id: `cs_second_${f.tag}`, payment_intent: `pi_second_${f.tag}` }));
+
+    const card = (await f.payments()).filter((p) => p.method === 'CARD');
+    expect(card).toHaveLength(1);
+    const invoice = await f.readInvoice();
+    expect(invoice.status).toBe('PAID');
+    expect(Number(invoice.amount_due)).toBe(0);
+    const rows = await f.unrecorded();
+    expect(rows).toHaveLength(1);
+    expect(rows[0].metadata).toMatchObject({ reason: 'INVOICE_NOT_PAYABLE', charged_cents: 50000 });
+  });
 });

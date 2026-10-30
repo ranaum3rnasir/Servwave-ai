@@ -1,5 +1,11 @@
+import { expect } from 'vitest';
+import { screen, waitFor } from '@testing-library/react';
+
 import type { AttentionItem, AttentionResponse, AttentionType, AttentionView } from '@/lib/api/paymentsPage';
 
+import { AttentionCard } from '../components/AttentionCard';
+import { PaymentsDrawerHost } from '../components/PaymentsDrawerHost';
+import { PaymentsDrawerProvider } from '../drawerHost';
 import { mockApi, serve, type ServeOptions } from './paymentsFixtures';
 
 const KEY_ID = (i: number) => `00000000-0000-4000-9000-${String(i).padStart(12, '0')}`;
@@ -7,7 +13,7 @@ const KEY_ID = (i: number) => `00000000-0000-4000-9000-${String(i).padStart(12, 
 const BY_TYPE: Record<AttentionType, Partial<AttentionItem>> = {
   failed_payment: { title: 'Bank payment failed', detail: 'The bank returned the payment', actions: ['contact_customer', 'mark_resolved'] },
   failed_refund: {
-    title: 'Refund failed', detail: 'The refund did not reach the customer', actions: ['refund_again', 'mark_settled'],
+    title: 'Refund failed', detail: 'The refund did not reach the customer', actions: ['refund_again', 'mark_resolved'],
   },
   dispute: {
     title: 'Dispute needs a response', detail: 'Product not received', actions: ['respond'],
@@ -34,11 +40,15 @@ export function makeItem(i: number, type: AttentionType = 'failed_payment', over
     respond_by: null,
     days_left: null,
     payment_id: type === 'failed_payout' || type.startsWith('unmatched') ? null : `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+    payment_reference: type === 'failed_payout' || type.startsWith('unmatched') ? null : `PMT-${String(i).padStart(6, '0')}`,
+    dispute_reference: type === 'dispute' ? `DSP-${String(i).padStart(6, '0')}` : null,
+    reference: type === 'unmatched_payment' ? `RCV-${String(i).padStart(6, '0')}` : type === 'unmatched_refund' ? `REF-${String(i).padStart(6, '0')}` : null,
+    dispute_status: type === 'dispute' ? 'NEEDS_RESPONSE' : null,
     payout_id: type === 'failed_payout' ? `po-${i}` : null,
     payout_reference: type === 'failed_payout' ? `PO-ABC${i}` : null,
     dispute_id: type === 'dispute' ? `dp-${i}` : null,
     invoice: noInvoice ? null : { id: `inv-${i}`, number: `INV-${1000 + i}` },
-    customer: noInvoice ? null : { id: `c${i}`, name: `Customer ${i}` },
+    customer: noInvoice ? null : { id: `c${i}`, name: `Customer ${i}`, customer_number: `C-${1000 + i}` },
     restricted: false,
     actions: [],
     refund_again: type === 'failed_refund'
@@ -52,7 +62,7 @@ export function makeItem(i: number, type: AttentionType = 'failed_payment', over
 export const resolvedItem = (i: number, over: Partial<AttentionItem> = {}) =>
   makeItem(i, 'failed_payment', {
     status: 'resolved', actions: [], resolved_at: '2026-10-10T12:00:00.000Z', resolved_by_name: 'Pat Admin',
-    resolution: { text: 'Marked resolved', note: 'Called them' }, ...over,
+    resolution: { text: 'Handled outside ServWave', note: null }, ...over,
   });
 
 export interface AttentionServe extends ServeOptions {
@@ -73,6 +83,11 @@ export function serveAttention({ open = [], resolved = [], tooDeep, failFirst = 
   let failed = 0;
   const base = mockApi.get.getMockImplementation()!;
   mockApi.get.mockImplementation(((url: string, config?: { params?: Record<string, unknown> }) => {
+    const byKey = /^\/api\/payments-page\/attention\/([^/]+)$/.exec(url);
+    if (byKey) {
+      const found = [...open, ...resolved].find((x) => x.key === byKey[1]);
+      return found ? Promise.resolve({ data: found }) : Promise.reject({ response: { status: 404, data: { error: 'Not found' } } });
+    }
     if (url !== '/api/payments-page/attention') return (base as (...a: unknown[]) => unknown)(url, config);
     if (failed < failFirst) {
       failed += 1;
@@ -99,4 +114,21 @@ export function serveAttention({ open = [], resolved = [], tooDeep, failFirst = 
     };
     return Promise.resolve({ data: body });
   }) as never);
+}
+
+/** The Needs-attention card once it has finished loading (the card is on the page from the first render, frame first). */
+export async function findCard(): Promise<HTMLElement> {
+  const region = await screen.findByRole('region', { name: /Needs attention/ });
+  await waitFor(() => expect(screen.queryByRole('status', { name: /Loading what needs attention/ })).not.toBeInTheDocument());
+  return region;
+}
+
+/** The Needs-attention card with the page's drawer host beside it, the way PaymentsPage mounts them. */
+export function CardWithDrawer() {
+  return (
+    <PaymentsDrawerProvider>
+      <AttentionCard />
+      <PaymentsDrawerHost />
+    </PaymentsDrawerProvider>
+  );
 }

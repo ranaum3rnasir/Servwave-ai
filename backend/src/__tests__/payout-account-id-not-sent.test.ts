@@ -61,6 +61,31 @@ describe('no processor account id in a response to the browser', () => {
     expect(leaksAnId(res.body)).toBe(false);
   });
 
+  it('GET /stripe/status carries the four verification values and no requirement key', async () => {
+    useRow(SECRET_ACCOUNT_ID);
+    Object.assign(row, { stripe_requirements_due: [], stripe_verification: {
+      business_details: 'verified', owner_identity: 'action_needed', bank_account: 'pending', tax_id: 'verified',
+    } });
+    const res = await request(app).get('/api/organization/stripe/status').set(authHeader('admin'));
+    expect(res.status).toBe(200);
+    expect(res.body.verification).toEqual({ business_details: 'verified', owner_identity: 'action_needed', bank_account: 'pending', tax_id: 'verified' });
+    expect(leaksAnId(res.body)).toBe(false);
+    expect(JSON.stringify(res.body.verification)).not.toMatch(/individual\.|external_account|verification\./);
+  });
+
+  it('a refresh against an account asking for a document stores and returns values only, never the key', async () => {
+    useRow(SECRET_ACCOUNT_ID);
+    vi.mocked(retrieveAccount).mockResolvedValue({
+      id: SECRET_ACCOUNT_ID, charges_enabled: true, payouts_enabled: true, details_submitted: true,
+      requirements: { currently_due: ['individual.verification.document'], past_due: [], pending_verification: [], eventually_due: [], disabled_reason: null },
+    } as never);
+    const res = await request(app).post('/api/organization/stripe/refresh-status').set(authHeader('admin'));
+    expect(res.status).toBe(200);
+    expect(res.body.verification).toEqual({ business_details: 'verified', owner_identity: 'action_needed', bank_account: 'pending', tax_id: 'verified' });
+    expect(JSON.stringify(res.body.verification)).not.toContain('individual.');
+    expect(leaksAnId(res.body)).toBe(false);
+  });
+
   it('GET /stripe/status says connected: false for an org with no account', async () => {
     useRow(null);
     const res = await request(app).get('/api/organization/stripe/status').set(authHeader('admin'));

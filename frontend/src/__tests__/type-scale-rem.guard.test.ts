@@ -45,7 +45,7 @@ const WATCHED: Record<string, string> = {
   // Schedule toolbar.
   'pages/v2/schedule/components/toolbarSizing.ts': 'the toolbar text size',
   'pages/v2/schedule/components/compactToolbar.tsx': 'the phone toolbar',
-  'pages/v2/schedule/components/segmented.tsx': 'toolbar segmented control',
+  'pages/v2/_shared/segmented.tsx': 'toolbar segmented control',
   'pages/v2/schedule/components/scheduleSearch.tsx': 'toolbar search',
   'pages/v2/schedule/components/settingsGearDropdown.tsx': 'toolbar settings menu',
   'pages/v2/schedule/components/menuSurface.tsx': 'toolbar menu items',

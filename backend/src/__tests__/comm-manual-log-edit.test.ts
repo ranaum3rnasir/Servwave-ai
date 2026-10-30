@@ -15,6 +15,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
+import { logger } from '../lib/logger';
 import { clearTokenCache } from '../middleware/authenticate';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { mockAuthAs, mockRoleSwitches, authHeader, ALPHA_ORG_ID, ORG_B_ID, LEAD_FIXTURE, TEST_USERS } from './helpers';
@@ -1441,5 +1442,560 @@ describe('the timezone-shifting suites restore the process zone exactly', () => 
     // Asserting the type rather than a particular zone keeps this true on any machine and on CI.
     expect(typeof Intl.DateTimeFormat().resolvedOptions().timeZone).toBe('string');
     expect(Intl.DateTimeFormat().resolvedOptions().timeZone).toBeTruthy();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SPEC-4 D6 (slice 4.3): A CORRECTION THAT MOVES THE ENTRY ONTO A LEAD.
+//
+// Re-pointing an outbound entry onto a lead is how it reaches that lead's page, and that is
+// reaching out to the lead: the lead moves New -> Contacted, dated at the entry's saved time and
+// credited to the colleague who had the conversation. A correction to an entry that stays on its
+// lead is not a contact, and neither is a flip from inbound to outbound, even inside a move.
+//
+// The leads below behave the way Postgres does under `updateMany` (the WHERE the code emitted is
+// evaluated, `contacted_at: null` and `status IN ('NEW')` included), so each assertion is about
+// the lead's stored state and its History, not the shape of a write.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const LEAD_A_ID = LEAD_ID;
+const LEAD_B_ID = 'e0000000-0000-0000-0000-00000000000b';
+/** The colleague who had the conversation. Deliberately not the admin who corrects the entry. */
+const PERFORMER_ID = TEST_USERS.sales.id;
+/** EDIT_BODY's 09:30 on the org's clock (New York, UTC-4 in August). */
+const SAVED_AT = new Date('2026-08-25T13:30:00.000Z');
+
+/** Two New leads of the requester's organisation, plus one of org B, stored as Postgres would. */
+function newLeadsOnFile() {
+  const leads: any[] = [
+    { id: LEAD_A_ID, organization_id: ALPHA_ORG_ID, status: 'NEW', contacted_at: null },
+    { id: LEAD_B_ID, organization_id: ALPHA_ORG_ID, status: 'NEW', contacted_at: null },
+    { ...ORG_B_LEAD, status: 'NEW', contacted_at: null },
+  ];
+  const history: any[] = [];
+  anchorStores();
+  mockPrisma.lead.findFirst.mockImplementation(({ where }: any) =>
+    Promise.resolve(leads.find((l) => matchesWhere(l, where)) ?? null),
+  );
+  mockPrisma.lead.updateMany.mockImplementation(({ where, data }: any) => {
+    const hit = leads.filter((l) => matchesWhere(l, where));
+    hit.forEach((l) => Object.assign(l, data));
+    return Promise.resolve({ count: hit.length });
+  });
+  mockPrisma.timelineEvent.create.mockImplementation(({ data }: any) => {
+    history.push(data);
+    return Promise.resolve({ id: `ev-${history.length}`, ...data });
+  });
+  mockPrisma.user.findFirst.mockResolvedValue({ id: PERFORMER_ID });
+  return {
+    lead: (id: string) => leads.find((l) => l.id === id),
+    /** The History rows written for a lead. */
+    historyOf: (id: string) => history.filter((h) => h.entity_type === 'LEAD' && h.entity_id === id),
+  };
+}
+
+/** A logged entry as stored before the edit. */
+function onFile(overrides: Record<string, unknown>) {
+  const row = storedEntry({ performed_by: PERFORMER_ID, ...overrides });
+  stubStored(row);
+  stubUpdate(row);
+  return row;
+}
+
+/** The body that saves the entry onto `anchor`, outbound unless said otherwise. */
+function saveOnto(anchor: Record<string, string>, overrides: Record<string, unknown> = {}) {
+  const { lead_id: _lead, ...rest } = EDIT_BODY;
+  return request(app)
+    .put(ENDPOINT)
+    .set(authHeader('admin'))
+    .send({ ...rest, direction: 'out', performed_by: PERFORMER_ID, ...anchor, ...overrides });
+}
+
+/** The lead moved to Contacted by this entry: status, clock and one History row. */
+function expectReleasedBy(store: ReturnType<typeof newLeadsOnFile>, leadId: string) {
+  expect(store.lead(leadId)).toMatchObject({ status: 'CONTACTED', contacted_at: SAVED_AT });
+  expect(store.historyOf(leadId)).toEqual([
+    expect.objectContaining({
+      organization_id: ALPHA_ORG_ID,
+      event_type: 'STATUS_CHANGE',
+      description: 'Lead moved to Contacted: first outbound call',
+      metadata: { from: 'NEW', to: 'CONTACTED', via: 'first_outbound_call' },
+      created_by: PERFORMER_ID,
+      created_at: SAVED_AT,
+    }),
+  ]);
+}
+
+function expectUntouched(store: ReturnType<typeof newLeadsOnFile>, leadId: string) {
+  expect(store.lead(leadId)).toMatchObject({ status: 'NEW', contacted_at: null });
+  expect(store.historyOf(leadId)).toEqual([]);
+}
+
+describe('a correction that moves the entry onto a lead', () => {
+  beforeEach(() => {
+    mockAuthAs('admin');
+    orgTimezone(NY);
+  });
+
+  it('attaching an outbound customer entry to a New lead moves the lead to Contacted at the entry\'s saved time, credited to its performer', async () => {
+    const store = newLeadsOnFile();
+    onFile({ lead_id: null, customer_id: ALPHA_CUSTOMER.id, direction: 'OUT' });
+
+    const res = await saveOnto({ lead_id: LEAD_B_ID });
+
+    expect(res.status).toBe(200);
+    expect(res.body.entry.leadId).toBe(LEAD_B_ID);
+    expectReleasedBy(store, LEAD_B_ID);
+  });
+
+  it('moving an outbound entry from a job onto a New lead moves the lead to Contacted', async () => {
+    const store = newLeadsOnFile();
+    onFile({ lead_id: null, job_id: JOB_ID, direction: 'OUT' });
+
+    const res = await saveOnto({ lead_id: LEAD_B_ID });
+
+    expect(res.status).toBe(200);
+    expectReleasedBy(store, LEAD_B_ID);
+  });
+
+  it('moving an outbound entry from lead A onto New lead B releases B only, and leaves A as it was', async () => {
+    const store = newLeadsOnFile();
+    const FIRST_TOUCH = new Date('2026-08-01T13:00:00.000Z');
+    Object.assign(store.lead(LEAD_A_ID), { status: 'CONTACTED', contacted_at: FIRST_TOUCH });
+    onFile({ lead_id: LEAD_A_ID, direction: 'OUT' });
+
+    const res = await saveOnto({ lead_id: LEAD_B_ID });
+
+    expect(res.status).toBe(200);
+    expectReleasedBy(store, LEAD_B_ID);
+    expect(store.lead(LEAD_A_ID)).toMatchObject({ status: 'CONTACTED', contacted_at: FIRST_TOUCH });
+    expect(store.historyOf(LEAD_A_ID)).toEqual([]);
+  });
+
+  // D6: a direction flip is a correction, not a contact. Passes before this slice; it pins the rule.
+  it('correcting an entry on the lead from inbound to outbound releases nothing', async () => {
+    const store = newLeadsOnFile();
+    onFile({ lead_id: LEAD_A_ID, direction: 'IN' });
+
+    const res = await saveOnto({ lead_id: LEAD_A_ID });
+
+    expect(res.status).toBe(200);
+    expect(res.body.entry.direction).toBe('out');
+    expectUntouched(store, LEAD_A_ID);
+  });
+
+  // Ran, 24 Oct: a move plus a flip in one save does not count (the three-save workaround is accepted).
+  it('moving an inbound customer entry onto the lead and making it outbound in the same save releases nothing', async () => {
+    const store = newLeadsOnFile();
+    onFile({ lead_id: null, customer_id: ALPHA_CUSTOMER.id, direction: 'IN' });
+
+    const res = await saveOnto({ lead_id: LEAD_B_ID });
+
+    expect(res.status).toBe(200);
+    expect(res.body.entry).toMatchObject({ leadId: LEAD_B_ID, direction: 'out' });
+    expectUntouched(store, LEAD_B_ID);
+  });
+
+  it('moving an inbound entry onto the lead and keeping it inbound releases nothing', async () => {
+    const store = newLeadsOnFile();
+    onFile({ lead_id: null, customer_id: ALPHA_CUSTOMER.id, direction: 'IN' });
+
+    const res = await saveOnto({ lead_id: LEAD_B_ID }, { direction: 'in' });
+
+    expect(res.status).toBe(200);
+    expectUntouched(store, LEAD_B_ID);
+  });
+
+  it('correcting the time and notes of an outbound entry already on a New lead releases nothing', async () => {
+    const store = newLeadsOnFile();
+    onFile({ lead_id: LEAD_A_ID, direction: 'OUT' });
+
+    const res = await saveOnto({ lead_id: LEAD_A_ID }, { notes: 'Corrected notes.', occurred_at: '2026-08-24T10:00' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.entry.notes).toBe('Corrected notes.');
+    expectUntouched(store, LEAD_A_ID);
+  });
+
+  it('correcting the time of an outbound entry already on a contacted lead does not move its first contact time', async () => {
+    const store = newLeadsOnFile();
+    const FIRST_TOUCH = new Date('2026-08-26T20:00:00.000Z');
+    Object.assign(store.lead(LEAD_A_ID), { status: 'CONTACTED', contacted_at: FIRST_TOUCH });
+    onFile({ lead_id: LEAD_A_ID, direction: 'OUT', occurred_at: FIRST_TOUCH });
+
+    const res = await saveOnto({ lead_id: LEAD_A_ID });
+
+    expect(res.status).toBe(200);
+    expect(res.body.entry.occurredAt).toBe(SAVED_AT.toISOString());
+    expect(store.lead(LEAD_A_ID)).toMatchObject({ status: 'CONTACTED', contacted_at: FIRST_TOUCH });
+    expect(store.historyOf(LEAD_A_ID)).toEqual([]);
+  });
+
+  it.each([
+    ['a job', { job_id: JOB_ID }],
+    ['the customer', { customer_id: ALPHA_CUSTOMER.id }],
+  ])('moving an outbound entry from a lead to %s releases nothing anywhere', async (_where, anchor) => {
+    const store = newLeadsOnFile();
+    onFile({ lead_id: LEAD_A_ID, direction: 'OUT' });
+
+    const res = await saveOnto(anchor);
+
+    expect(res.status).toBe(200);
+    expect(res.body.entry.leadId).toBeNull();
+    expect(mockPrisma.lead.updateMany).not.toHaveBeenCalled();
+    expectUntouched(store, LEAD_A_ID);
+    expectUntouched(store, LEAD_B_ID);
+  });
+
+  it('moving an outbound entry onto a lead already past New changes neither its status nor its first contact time', async () => {
+    const store = newLeadsOnFile();
+    const FIRST_TOUCH = new Date('2026-08-01T13:00:00.000Z');
+    Object.assign(store.lead(LEAD_B_ID), { status: 'ESTIMATED', contacted_at: FIRST_TOUCH });
+    onFile({ lead_id: null, customer_id: ALPHA_CUSTOMER.id, direction: 'OUT' });
+
+    const res = await saveOnto({ lead_id: LEAD_B_ID });
+
+    expect(res.status).toBe(200);
+    expect(store.lead(LEAD_B_ID)).toMatchObject({ status: 'ESTIMATED', contacted_at: FIRST_TOUCH });
+    expect(store.historyOf(LEAD_B_ID)).toEqual([]);
+  });
+
+  // SPEC-4 statement 19: the edit has plainly happened, so a bookkeeping failure must not turn it
+  // into a 500, and must not go unlogged. The contact writer rolls back to its savepoint.
+  it('still saves the edit (200) when recording the contact fails, and logs the failure', async () => {
+    newLeadsOnFile();
+    onFile({ lead_id: null, customer_id: ALPHA_CUSTOMER.id, direction: 'OUT' });
+    mockPrisma.lead.updateMany.mockRejectedValue(new Error('db down'));
+
+    const res = await saveOnto({ lead_id: LEAD_B_ID });
+
+    expect(res.status).toBe(200);
+    expect(res.body.entry.leadId).toBe(LEAD_B_ID);
+    expect(mockPrisma.manualCommunicationLog.update.mock.calls[0][0].data).toMatchObject({ lead_id: LEAD_B_ID });
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining(LEAD_B_ID), expect.any(Error));
+  });
+
+  it('records nothing on the lead when the edit itself fails (500)', async () => {
+    const store = newLeadsOnFile();
+    onFile({ lead_id: null, customer_id: ALPHA_CUSTOMER.id, direction: 'OUT' });
+    mockPrisma.manualCommunicationLog.update.mockRejectedValue(new Error('db down'));
+
+    const res = await saveOnto({ lead_id: LEAD_B_ID });
+
+    expect(res.status).toBe(500);
+    expect(mockPrisma.lead.updateMany).not.toHaveBeenCalled();
+    expectUntouched(store, LEAD_B_ID);
+  });
+
+  // The edit and the contact are one transaction: the INTERACTIVE form (the shared double refuses
+  // the batch form, and refuses the global client inside the callback), opened once, so the
+  // contact rides on the edit's own transaction rather than one of its own.
+  it('saves the edit and the contact in one interactive transaction', async () => {
+    const store = newLeadsOnFile();
+    onFile({ lead_id: null, customer_id: ALPHA_CUSTOMER.id, direction: 'OUT' });
+
+    const res = await saveOnto({ lead_id: LEAD_B_ID });
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.$transaction).toHaveBeenCalledWith(expect.any(Function));
+    expectReleasedBy(store, LEAD_B_ID);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// D7 (SPEC-4 §6.12.5, §7.2 #9 to #15): an edit or a delete takes a Contacted lead's last outbound
+// contact away.
+//
+// A lead stays Contacted only while an entry that would have released it is still on it. Lead A
+// below is Contacted because an outbound call made it so (its newest move into Contacted is
+// `via: first_outbound_call`), and the logged entry being edited is the only entry on it. When an
+// edit or a delete takes that entry off A, A goes back to New: status New, the first contact time
+// cleared, a fresh New stay, and one History row credited to the person who made the change, all
+// inside the edit's or the delete's own transaction.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The admin who corrects or removes the entry: the History row's actor. */
+const CHANGER_ID = TEST_USERS.admin.id;
+const FIRST_TOUCH = new Date('2026-08-01T13:00:00.000Z');
+
+/**
+ * The logged entries of the requester's org, stored as Postgres would: the door's own read by id,
+ * the update and the delete all act on them, and the reconsider's holding count reads them by its
+ * WHERE. Returns the store so a test can add a second entry.
+ */
+function entriesOnFile(...rows: any[]) {
+  const logs = rows.map((r) => ({ ...r }));
+  // A read hands back a copy, as Prisma does: the update edits the stored row in place, and the
+  // door's own read must still see the row as it was before it.
+  mockPrisma.manualCommunicationLog.findFirst.mockImplementation(({ where }: any) => {
+    const row = logs.find((l) => matchesWhere(l, where));
+    return Promise.resolve(row ? { ...row } : null);
+  });
+  mockPrisma.manualCommunicationLog.update.mockImplementation(({ where, data }: any) => {
+    const row = logs.find((l) => l.id === where.id);
+    Object.assign(row, data);
+    return Promise.resolve({ ...row });
+  });
+  mockPrisma.manualCommunicationLog.delete.mockImplementation(({ where }: any) => {
+    const i = logs.findIndex((l) => l.id === where.id);
+    const [row] = logs.splice(i, 1);
+    return Promise.resolve(row);
+  });
+  return logs;
+}
+
+/** Lead A, Contacted by an outbound contact (or by a person, via `via`), in the lead store. */
+function contactedLead(store: ReturnType<typeof newLeadsOnFile>, leadId: string, via = 'first_outbound_call') {
+  Object.assign(store.lead(leadId), { status: 'CONTACTED', contacted_at: FIRST_TOUCH, contacted_set_by: null });
+  mockPrisma.timelineEvent.findFirst.mockImplementation(({ where }: any) =>
+    Promise.resolve(where?.entity_id === leadId ? { metadata: { from: 'NEW', to: 'CONTACTED', via } } : null),
+  );
+}
+
+function expectMovedBackToNew(store: ReturnType<typeof newLeadsOnFile>, leadId: string) {
+  expect(store.lead(leadId)).toMatchObject({ status: 'NEW', contacted_at: null, returned_to_new_at: expect.any(Date) });
+  expect(store.historyOf(leadId)).toEqual([
+    expect.objectContaining({
+      organization_id: ALPHA_ORG_ID,
+      event_type: 'STATUS_CHANGE',
+      description: 'Lead moved back to New: no outbound contact left',
+      metadata: { from: 'CONTACTED', to: 'NEW', via: 'no_outbound_contact_left', entry_source: 'log', entry_id: ENTRY_ID },
+      created_by: CHANGER_ID,
+    }),
+  ]);
+}
+
+function expectStillContacted(store: ReturnType<typeof newLeadsOnFile>, leadId: string) {
+  expect(store.lead(leadId)).toMatchObject({ status: 'CONTACTED', contacted_at: FIRST_TOUCH });
+  expect(store.historyOf(leadId)).toEqual([]);
+}
+
+/** The lead row locks taken, in order (the reconsider locks the lead it looks at). */
+function lockedLeads(): string[] {
+  return (mockPrisma.$executeRaw.mock.calls as any[][])
+    .filter((c) => Array.isArray(c[0]) && c[0].join('?').includes('FOR NO KEY UPDATE'))
+    .map((c) => c[1]);
+}
+
+/** Every lead the request wrote to or locked, in the order it did so. */
+function leadTouchOrder(): string[] {
+  const writes = (mockPrisma.lead.updateMany.mock.calls as any[][]).map((c, i) => ({
+    id: c[0].where.id, at: mockPrisma.lead.updateMany.mock.invocationCallOrder[i],
+  }));
+  const locks = (mockPrisma.$executeRaw.mock.calls as any[][])
+    .map((c, i) => ({ c, at: mockPrisma.$executeRaw.mock.invocationCallOrder[i] }))
+    .filter(({ c }) => Array.isArray(c[0]) && c[0].join('?').includes('FOR NO KEY UPDATE'))
+    .map(({ c, at }) => ({ id: c[1], at }));
+  const order = [...writes, ...locks].sort((a, b) => a.at - b.at).map((t) => t.id);
+  return order.filter((id, i) => order.indexOf(id) === i);
+}
+
+describe('D7 — an edit or a delete leaves a Contacted lead', () => {
+  beforeEach(() => {
+    mockAuthAs('admin');
+    orgTimezone(NY);
+  });
+
+  it('moving A\'s only outbound entry to the customer moves A back to New, inside the edit\'s transaction', async () => {
+    const store = newLeadsOnFile();
+    contactedLead(store, LEAD_A_ID);
+    entriesOnFile(storedEntry({ performed_by: PERFORMER_ID, lead_id: LEAD_A_ID, direction: 'OUT' }));
+
+    const res = await saveOnto({ customer_id: ALPHA_CUSTOMER.id });
+
+    expect(res.status).toBe(200);
+    expect(res.body.entry.leadId).toBeNull();
+    expectMovedBackToNew(store, LEAD_A_ID);
+    expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+    // In a savepoint of the edit's transaction, so a failed move back rolls back alone.
+    expect(mockPrisma.$executeRawUnsafe).toHaveBeenCalledWith('SAVEPOINT lead_outbound_contact');
+  });
+
+  it('moving it to a job does the same', async () => {
+    const store = newLeadsOnFile();
+    contactedLead(store, LEAD_A_ID);
+    entriesOnFile(storedEntry({ performed_by: PERFORMER_ID, lead_id: LEAD_A_ID, direction: 'OUT' }));
+
+    const res = await saveOnto({ job_id: JOB_ID });
+
+    expect(res.status).toBe(200);
+    expectMovedBackToNew(store, LEAD_A_ID);
+  });
+
+  it('editing it from outbound to inbound on the same lead moves A back to New', async () => {
+    const store = newLeadsOnFile();
+    contactedLead(store, LEAD_A_ID);
+    entriesOnFile(storedEntry({ performed_by: PERFORMER_ID, lead_id: LEAD_A_ID, direction: 'OUT' }));
+
+    const res = await saveOnto({ lead_id: LEAD_A_ID }, { direction: 'in' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.entry.direction).toBe('in');
+    expectMovedBackToNew(store, LEAD_A_ID);
+  });
+
+  it.each([
+    ['A sorts before B', LEAD_A_ID, LEAD_B_ID],
+    ['A sorts after B', LEAD_B_ID, LEAD_A_ID],
+  ])('moving it to New lead B releases B and moves A back, the two leads written in ascending id order (%s)', async (_label, from, to) => {
+    const store = newLeadsOnFile();
+    contactedLead(store, from);
+    entriesOnFile(storedEntry({ performed_by: PERFORMER_ID, lead_id: from, direction: 'OUT' }));
+
+    const res = await saveOnto({ lead_id: to });
+
+    expect(res.status).toBe(200);
+    expect(store.lead(to)).toMatchObject({ status: 'CONTACTED', contacted_at: SAVED_AT });
+    expect(store.lead(from)).toMatchObject({ status: 'NEW', contacted_at: null });
+    expect(store.historyOf(from)).toHaveLength(1);
+    expect(leadTouchOrder()).toEqual([from, to].sort());
+  });
+
+  it('moving it to lead B AND flipping it to inbound in one save moves A back and releases nothing on B', async () => {
+    const store = newLeadsOnFile();
+    contactedLead(store, LEAD_A_ID);
+    entriesOnFile(storedEntry({ performed_by: PERFORMER_ID, lead_id: LEAD_A_ID, direction: 'OUT' }));
+
+    const res = await saveOnto({ lead_id: LEAD_B_ID }, { direction: 'in' });
+
+    expect(res.status).toBe(200);
+    expectMovedBackToNew(store, LEAD_A_ID);
+    expectUntouched(store, LEAD_B_ID);
+  });
+
+  it.each<[string, Record<string, unknown>]>([
+    ['new notes and time', { notes: 'Corrected notes.', occurred_at: '2026-08-24T10:00' }],
+    ['another channel', { channel: 'email', subject: 'Re: quote' }],
+    ['another person', { performed_by: TEST_USERS.admin.id }],
+  ])('an edit that keeps the outbound entry on A (%s) does not reconsider A', async (_label, overrides) => {
+    const store = newLeadsOnFile();
+    contactedLead(store, LEAD_A_ID);
+    entriesOnFile(storedEntry({ performed_by: PERFORMER_ID, lead_id: LEAD_A_ID, direction: 'OUT' }));
+
+    const res = await saveOnto({ lead_id: LEAD_A_ID }, overrides);
+
+    expect(res.status).toBe(200);
+    expect(lockedLeads()).toEqual([]);
+    expectStillContacted(store, LEAD_A_ID);
+  });
+
+  it('an inbound entry on A, edited or moved anywhere, never reconsiders A', async () => {
+    const store = newLeadsOnFile();
+    contactedLead(store, LEAD_A_ID);
+    entriesOnFile(storedEntry({ performed_by: PERFORMER_ID, lead_id: LEAD_A_ID, direction: 'IN' }));
+
+    const res = await saveOnto({ customer_id: ALPHA_CUSTOMER.id }, { direction: 'in' });
+
+    expect(res.status).toBe(200);
+    expect(lockedLeads()).toEqual([]);
+    expectStillContacted(store, LEAD_A_ID);
+  });
+
+  it('A keeps Contacted when another outbound entry is still on it', async () => {
+    const store = newLeadsOnFile();
+    contactedLead(store, LEAD_A_ID);
+    entriesOnFile(
+      storedEntry({ performed_by: PERFORMER_ID, lead_id: LEAD_A_ID, direction: 'OUT' }),
+      storedEntry({ id: '11110000-0000-0000-0000-000000000002', lead_id: LEAD_A_ID, direction: 'OUT' }),
+    );
+
+    const res = await saveOnto({ customer_id: ALPHA_CUSTOMER.id });
+
+    expect(res.status).toBe(200);
+    expect(lockedLeads()).toEqual([LEAD_A_ID]);
+    expectStillContacted(store, LEAD_A_ID);
+  });
+
+  it('a Contacted that a person set by hand is never undone', async () => {
+    const store = newLeadsOnFile();
+    contactedLead(store, LEAD_A_ID, 'manual_edit');
+    entriesOnFile(storedEntry({ performed_by: PERFORMER_ID, lead_id: LEAD_A_ID, direction: 'OUT' }));
+
+    const res = await saveOnto({ customer_id: ALPHA_CUSTOMER.id });
+
+    expect(res.status).toBe(200);
+    expectStillContacted(store, LEAD_A_ID);
+  });
+
+  it('deleting A\'s only outbound entry answers 204 and moves A back to New, inside the delete\'s own interactive transaction', async () => {
+    const store = newLeadsOnFile();
+    contactedLead(store, LEAD_A_ID);
+    const logs = entriesOnFile(storedEntry({ lead_id: LEAD_A_ID, direction: 'OUT' }));
+
+    const res = await request(app).delete(ENDPOINT).set(authHeader('admin'));
+
+    expect(res.status).toBe(204);
+    expect(logs).toEqual([]);
+    expectMovedBackToNew(store, LEAD_A_ID);
+    expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+    expect(mockPrisma.$transaction).toHaveBeenCalledWith(expect.any(Function));
+  });
+
+  it('deleting an inbound entry reconsiders nothing', async () => {
+    const store = newLeadsOnFile();
+    contactedLead(store, LEAD_A_ID);
+    entriesOnFile(storedEntry({ lead_id: LEAD_A_ID, direction: 'IN' }));
+
+    const res = await request(app).delete(ENDPOINT).set(authHeader('admin'));
+
+    expect(res.status).toBe(204);
+    expect(lockedLeads()).toEqual([]);
+    expectStillContacted(store, LEAD_A_ID);
+  });
+
+  // SPEC-4 statement 19, the D7 half: the person's change has plainly happened, so a failed move
+  // back must not turn it into a 500. The reconsider rolls back to its savepoint and is logged.
+  it('a failed move back still saves the edit (200) and the delete (204), keeps A Contacted, and is logged with the lead id', async () => {
+    const store = newLeadsOnFile();
+    contactedLead(store, LEAD_A_ID);
+    entriesOnFile(storedEntry({ performed_by: PERFORMER_ID, lead_id: LEAD_A_ID, direction: 'OUT' }));
+    mockPrisma.lead.updateMany.mockRejectedValue(new Error('db down'));
+
+    const edited = await saveOnto({ customer_id: ALPHA_CUSTOMER.id });
+
+    expect(edited.status).toBe(200);
+    expect(edited.body.entry.leadId).toBeNull();
+    expect(mockPrisma.$executeRawUnsafe).toHaveBeenCalledWith('ROLLBACK TO SAVEPOINT lead_outbound_contact');
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining(LEAD_A_ID));
+    expectStillContacted(store, LEAD_A_ID);
+
+    const store2 = newLeadsOnFile();
+    contactedLead(store2, LEAD_A_ID);
+    const logs = entriesOnFile(storedEntry({ lead_id: LEAD_A_ID, direction: 'OUT' }));
+    mockPrisma.lead.updateMany.mockRejectedValue(new Error('db down'));
+
+    const removed = await request(app).delete(ENDPOINT).set(authHeader('admin'));
+
+    expect(removed.status).toBe(204);
+    expect(logs).toEqual([]);
+    expectStillContacted(store2, LEAD_A_ID);
+  });
+
+  it('a failed update or delete answers 500 and writes nothing to the lead', async () => {
+    const store = newLeadsOnFile();
+    contactedLead(store, LEAD_A_ID);
+    entriesOnFile(storedEntry({ performed_by: PERFORMER_ID, lead_id: LEAD_A_ID, direction: 'OUT' }));
+    mockPrisma.manualCommunicationLog.update.mockRejectedValue(new Error('db down'));
+    mockPrisma.manualCommunicationLog.delete.mockRejectedValue(new Error('db down'));
+
+    expect((await saveOnto({ customer_id: ALPHA_CUSTOMER.id })).status).toBe(500);
+    expect((await request(app).delete(ENDPOINT).set(authHeader('admin'))).status).toBe(500);
+
+    expect(mockPrisma.lead.updateMany).not.toHaveBeenCalled();
+    expect(lockedLeads()).toEqual([]);
+    expectStillContacted(store, LEAD_A_ID);
+  });
+
+  it('another organisation\'s entry 404s on edit and delete, and reconsiders nothing', async () => {
+    const store = newLeadsOnFile();
+    contactedLead(store, LEAD_A_ID);
+    entriesOnFile({ ...storedEntry({ lead_id: LEAD_A_ID, direction: 'OUT' }), organization_id: ORG_B_ID });
+
+    expect((await saveOnto({ customer_id: ALPHA_CUSTOMER.id })).status).toBe(404);
+    expect((await request(app).delete(ENDPOINT).set(authHeader('admin'))).status).toBe(404);
+
+    expect(lockedLeads()).toEqual([]);
+    expectStillContacted(store, LEAD_A_ID);
   });
 });

@@ -9,7 +9,7 @@ import { DISPUTE_ID, makeEvidence, mockApi } from './disputeFixtures';
 
 const ROW1 = manyRows(3)[0]!;
 const dispute = (over: Partial<NonNullable<ReturnType<typeof makeDetail>['dispute']>> = {}) => ({
-  id: DISPUTE_ID, status: 'NEEDS_RESPONSE', reason_text: 'The customer does not recognize the charge', amount: 101,
+  id: DISPUTE_ID, reference: 'DSP-000001', status: 'NEEDS_RESPONSE', reason_text: 'The customer does not recognize the charge', amount: 101,
   respond_by: '2026-10-20T12:00:00.000Z', closed_at: null, ...over,
 });
 
@@ -28,65 +28,85 @@ beforeEach(() => {
   mockApi.get.mockReset();
 });
 
+const PAYMENT_DIALOG = { name: /^Payment PMT-/ };
+const dparam = () => new URLSearchParams(urlSearch()).get('d');
+
 describe('opening a dispute', () => {
-  it('opens from ?dispute= on a fresh load, and closing takes the address off', async () => {
+  it('opens from ?dispute= on a fresh load (read as d), and closing takes the address off', async () => {
     serveAll({ detail: makeDetail(ROW1) });
     const u = userEvent.setup();
     renderWithProviders(<TabHarness />, { initialEntries: [`/payments?dispute=${DISPUTE_ID}`] });
-    const drawer = await screen.findByRole('dialog', { name: 'Respond to dispute' });
+    const drawer = await screen.findByRole('dialog', { name: /^Dispute DSP-/ });
     expect(await within(drawer).findByText('5 days left')).toBeInTheDocument();
-    expect(urlSearch()).toContain(`dispute=${DISPUTE_ID}`);
+    await waitFor(() => expect(dparam()).toBe(`dispute:${DISPUTE_ID}`));
+    expect(urlSearch()).not.toContain('dispute=');
     await u.click(within(drawer).getByRole('button', { name: 'Close' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    expect(urlSearch()).not.toContain('dispute=');
+    expect(urlSearch()).not.toContain('d=');
   });
 
-  it('opens from Respond in the payment drawer, which gives way to the dispute drawer', async () => {
+  it('Respond to dispute in the payment drawer pushes the Dispute then the Respond view, and Back steps out one view at a time', async () => {
     serveAll({ detail: makeDetail(ROW1, { status: 'Disputed', dispute: dispute(), can_respond_dispute: true }) });
     const u = userEvent.setup();
-    renderWithProviders(<TabHarness />, { initialEntries: [`/payments?payment=${ROW1.id}`] });
-    const payment = await screen.findByRole('dialog', { name: 'Customer 1' });
-    await u.click(await within(payment).findByRole('button', { name: 'Respond' }));
-    const drawer = await screen.findByRole('dialog', { name: 'Respond to dispute' });
-    expect(within(drawer).getByRole('button', { name: 'Add evidence' })).toBeInTheDocument();
-    expect(urlSearch()).toContain(`dispute=${DISPUTE_ID}`);
-    expect(urlSearch()).not.toContain('payment=');
+    renderWithProviders(<TabHarness />, { initialEntries: [`/payments?d=payment:${ROW1.id}`] });
+    const payment = await screen.findByRole('dialog', PAYMENT_DIALOG);
+    await u.click(await within(payment).findByRole('button', { name: 'Respond to dispute' }));
+    const respond = await screen.findByRole('dialog', { name: 'Respond to dispute' });
+    expect(dparam()).toBe(`payment:${ROW1.id},dispute:${DISPUTE_ID},respond:${DISPUTE_ID}`);
+    await u.click(within(respond).getByRole('button', { name: 'Back to Dispute' }));
+    const dispute1 = await screen.findByRole('dialog', { name: /^Dispute DSP-/ });
+    expect(await within(dispute1).findByRole('button', { name: 'Respond' })).toBeInTheDocument();
+    expect(dparam()).toBe(`payment:${ROW1.id},dispute:${DISPUTE_ID}`);
+    await u.click(within(dispute1).getByRole('button', { name: 'Back to Payment' }));
+    expect(await screen.findByRole('dialog', PAYMENT_DIALOG)).toBeInTheDocument();
+    expect(dparam()).toBe(`payment:${ROW1.id}`);
   });
 
   it('offers a person who may not answer View, never Respond', async () => {
     serveAll({ detail: makeDetail(ROW1, { status: 'Disputed', dispute: dispute(), can_respond_dispute: false }) });
-    renderWithProviders(<TabHarness />, { initialEntries: [`/payments?payment=${ROW1.id}`] });
-    const payment = await screen.findByRole('dialog', { name: 'Customer 1' });
+    renderWithProviders(<TabHarness />, { initialEntries: [`/payments?d=payment:${ROW1.id}`] });
+    const payment = await screen.findByRole('dialog', PAYMENT_DIALOG);
     expect(await within(payment).findByRole('button', { name: 'View' })).toBeInTheDocument();
-    expect(within(payment).queryByRole('button', { name: 'Respond' })).not.toBeInTheDocument();
+    expect(within(payment).queryByRole('button', { name: /^Respond/ })).not.toBeInTheDocument();
   });
 
   it('offers View on a dispute that is already under review', async () => {
     serveAll({ detail: makeDetail(ROW1, { status: 'Disputed', dispute: dispute({ status: 'UNDER_REVIEW' }), can_respond_dispute: true }) });
-    renderWithProviders(<TabHarness />, { initialEntries: [`/payments?payment=${ROW1.id}`] });
-    const payment = await screen.findByRole('dialog', { name: 'Customer 1' });
+    renderWithProviders(<TabHarness />, { initialEntries: [`/payments?d=payment:${ROW1.id}`] });
+    const payment = await screen.findByRole('dialog', PAYMENT_DIALOG);
     expect(await within(payment).findByRole('button', { name: 'View' })).toBeInTheDocument();
-    expect(within(payment).queryByRole('button', { name: 'Respond' })).not.toBeInTheDocument();
+    expect(within(payment).queryByRole('button', { name: /^Respond/ })).not.toBeInTheDocument();
+  });
+
+  it('View pushes the Dispute on this Payment (Back goes to the Payment, the address adds a history entry)', async () => {
+    serveAll({ detail: makeDetail(ROW1, { status: 'Disputed', dispute: dispute(), can_respond_dispute: true }) });
+    const u = userEvent.setup();
+    renderWithProviders(<TabHarness />, { initialEntries: [`/payments?d=payment:${ROW1.id}`] });
+    const payment = await screen.findByRole('dialog', PAYMENT_DIALOG);
+    await u.click(await within(payment).findByRole('button', { name: 'View' }));
+    const drawer = await screen.findByRole('dialog', { name: /^Dispute DSP-/ });
+    expect(dparam()).toBe(`payment:${ROW1.id},dispute:${DISPUTE_ID}`);
+    expect(within(drawer).getByRole('button', { name: 'Back to Payment' })).toBeInTheDocument();
   });
 });
 
 describe('the dispute alert in the payment drawer', () => {
-  it('reads the reason and the deadline as one sentence block, with a space between them', async () => {
+  it('reads the reason, the deadline with its time and the time left as one text block, with spaces between', async () => {
     serveAll({ detail: makeDetail(ROW1, { status: 'Disputed', dispute: dispute(), can_respond_dispute: true }) });
-    renderWithProviders(<TabHarness />, { initialEntries: [`/payments?payment=${ROW1.id}`] });
-    const payment = await screen.findByRole('dialog', { name: 'Customer 1' });
-    const button = await within(payment).findByRole('button', { name: 'Respond' });
+    renderWithProviders(<TabHarness />, { initialEntries: [`/payments?d=payment:${ROW1.id}`] });
+    const payment = await screen.findByRole('dialog', PAYMENT_DIALOG);
+    const button = await within(payment).findByRole('button', { name: 'View' });
     const row = button.parentElement!;
     const block = row.children[0] as HTMLElement;
-    expect(block).toHaveTextContent('Dispute: The customer does not recognize the charge. Respond by Oct 20, 2026.');
+    expect(block.textContent).toMatch(/^Dispute: The customer does not recognize the charge\. Respond by Oct 20, 2026, \d{1,2}:\d{2}\s?[AP]M \(.+\)\.$/);
     // One text block beside the button, not two squeezed columns.
     expect(Array.from(row.children).filter((c) => c.tagName !== 'BUTTON')).toHaveLength(1);
   });
 
   it('shows the same alert without a deadline once the dispute is not waiting for an answer', async () => {
     serveAll({ detail: makeDetail(ROW1, { status: 'Disputed', dispute: dispute({ status: 'UNDER_REVIEW' }) }) });
-    renderWithProviders(<TabHarness />, { initialEntries: [`/payments?payment=${ROW1.id}`] });
-    const payment = await screen.findByRole('dialog', { name: 'Customer 1' });
+    renderWithProviders(<TabHarness />, { initialEntries: [`/payments?d=payment:${ROW1.id}`] });
+    const payment = await screen.findByRole('dialog', PAYMENT_DIALOG);
     expect(await within(payment).findByRole('status')).toHaveTextContent('Dispute under review. The customer does not recognize the charge.');
   });
 });

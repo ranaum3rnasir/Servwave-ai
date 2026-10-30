@@ -1,7 +1,7 @@
 # Let a Google-only user set a password by email
 
 **Type:** AFK
-**Status:** Built and reviewed locally (commit 6584ecea on feat/password-reset). Not yet on staging.
+**Status:** Released. On staging via #2881 (fcec40ed), on production via #2883 (main f7a0ab2a, 2026-10-26). Live-checked on staging (spec §2.2 C).
 **Spec sections:** §4.1 last bullet, §4.3 Google-only case
 
 ## Parent

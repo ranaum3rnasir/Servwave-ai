@@ -254,7 +254,7 @@ test.describe('Stage 3 — Lead (redesign C3)', () => {
   });
 
   // ── LEAD-09 ────────────────────────────────────────────────────────────
-  test('LEAD-09: WON lead blocks mark-lost (400) but a plain field PATCH is NOT blocked (200)', async () => {
+  test('LEAD-09: WON lead blocks mark-lost (409, reopen first) but a plain field PATCH is NOT blocked (200)', async () => {
     // Reach WON via record-payment on a deposit estimate.
     const w = await maEstimateSentWithDeposit(api, 9_000, 20);
     const pay = await api.markDepositReceived(w.estimateId, { payment_method: 'CHECK' });
@@ -262,24 +262,24 @@ test.describe('Stage 3 — Lead (redesign C3)', () => {
     const wonLead = await api.getLead(w.leadId);
     expect(wonLead.status).toBe('WON');
 
-    // mark-lost -> 400.
+    // mark-lost -> 409: a closed lead moves only through Reopen lead (S05.19).
     const lost = await api.markLeadLost(w.leadId, `try-lost-${api.suffix}`);
-    expect(lost.res.status()).toBe(400);
-    expect(String(lost.body.error)).toBe('Cannot mark a won lead as lost');
+    expect(lost.res.status()).toBe(409);
+    expect(String(lost.body.error)).toBe('To change the status, reopen the lead first.');
 
-    // BUT a plain detail PATCH (service_request) on a WON lead is NOT blocked: update() has no
-    // terminal-status guard, so it returns 200 and persists. This is the real current behavior.
+    // BUT a plain detail PATCH (service_request) on a WON lead is NOT blocked: update() locks only a
+    // status change on a closed lead (S05.19), so it returns 200 and persists. This is the real current behavior.
     const edit = await api.updateLead(w.leadId, { service_request: `won-edit-${api.suffix}` });
     expect(edit.res.status()).toBe(200);
     const reread = await api.getLead(w.leadId);
     expect(reread.service_request).toContain('won-edit-');
 
-    // Flagged for human: the plan's intent ("edit a WON lead -> 4xx") diverges from the code,
-    // which only blocks mark-lost (and location edits, via the unrelated estimate-freeze).
+    // Flagged for human: the plan's intent ("edit a WON lead -> 4xx") diverges from the code, which locks
+    // status changes and contact entries on a closed lead (S05.19) and location edits (the estimate-freeze), not plain fields.
     flagKnownBug(test.info(), {
       id: 'LEAD-09',
       spec: '§3 lead WON terminal guard',
-      current: 'A plain PATCH of service_request/notes on a WON lead returns 200 and persists — update() has no terminal-status guard; only mark-lost (and location edits) are blocked.',
+      current: 'A plain PATCH of service_request/notes on a WON lead returns 200 and persists. Only status changes (409, reopen first), contact entries and location edits are locked on a closed lead.',
       expected: "If the spec intends ALL edits blocked once WON, that guard is unimplemented. Needs a human decision on whether generic field edits should be frozen on a WON lead.",
     });
   });

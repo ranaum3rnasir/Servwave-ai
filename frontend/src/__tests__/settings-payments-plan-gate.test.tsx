@@ -10,12 +10,16 @@ import { useAuthStore } from '@/stores/auth.store';
 import { useLocation } from 'react-router-dom';
 import { buildAbility } from '@/lib/ability';
 import { renderWithProviders } from './helpers';
-import PaymentsListsPage from '@/pages/v2/settings/PaymentsListsPage';
+import ServwavePaymentsPage from '@/pages/v2/settings/ServwavePaymentsPage';
 
 const mockApi = vi.mocked(api);
-const OWNER = buildAbility([{ action: 'manage_payout_account', subject: 'Organization' }]);
+const PAGE_ABILITY = buildAbility([
+  { action: 'update', subject: 'Organization' },
+  { action: 'manage_payout_account', subject: 'Organization' },
+]);
 function Where() {
-  return <div data-testid="where">{useLocation().pathname}</div>;
+  const { pathname, hash } = useLocation();
+  return <div data-testid="where">{pathname}{hash}</div>;
 }
 
 vi.mock('@stripe/connect-js/pure', () => ({
@@ -24,6 +28,8 @@ vi.mock('@stripe/connect-js/pure', () => ({
 vi.mock('@stripe/react-connect-js', () => ({
   ConnectComponentsProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   ConnectAccountOnboarding: () => <div data-testid="connect-account-onboarding" />,
+  ConnectAccountManagement: () => <div />,
+  ConnectNotificationBanner: () => <div />,
 }));
 
 const ORG = {
@@ -73,11 +79,11 @@ beforeEach(() => {
 describe('Settings -> Payments for an org whose plan lacks online payments', () => {
   it('shows the plan message with the upgrade path, and no way to start onboarding', async () => {
     signedInAdminWith(['payments', 'invoices']);
-    const { container } = renderWithProviders(<PaymentsListsPage />);
+    const { container } = renderWithProviders(<ServwavePaymentsPage />, { ability: PAGE_ABILITY });
     await screen.findByDisplayValue('40'); // the org has loaded
 
-    expect(screen.getByText("Online payments aren't included in your plan.")).toBeInTheDocument();
-    const upgrade = screen.getByRole('link', { name: 'Contact us to upgrade' });
+    expect(screen.getByText("Online payments aren’t included in your plan.")).toBeInTheDocument();
+    const upgrade = screen.getByRole('link', { name: /^Contact us to upgrade/ });
     expect(upgrade).toHaveAttribute('href', expect.stringMatching(/^mailto:support@servwave\.com/));
     expect(screen.queryByRole('button', { name: /set up payments|resume setup|fix now/i })).not.toBeInTheDocument();
     expect(mockApi.post).not.toHaveBeenCalled();
@@ -86,11 +92,11 @@ describe('Settings -> Payments for an org whose plan lacks online payments', () 
 
   it('the online Card and Bank defaults read unavailable because of the plan', async () => {
     signedInAdminWith(['payments', 'invoices']);
-    renderWithProviders(<PaymentsListsPage />);
+    renderWithProviders(<ServwavePaymentsPage />, { ability: PAGE_ABILITY });
     await screen.findByDisplayValue('40');
 
-    expect(screen.getByRole('switch', { name: 'Credit card' })).toBeDisabled();
-    expect(screen.getByRole('switch', { name: 'Bank (ACH)' })).toBeDisabled();
+    expect(screen.getByRole('switch', { name: 'Credit card' })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('switch', { name: 'Bank (ACH)' })).toHaveAttribute('aria-disabled', 'true');
     expect(screen.getAllByText('Not included in your plan.')).toHaveLength(2);
     expect(screen.queryByText('Finish payout account verification first.')).not.toBeInTheDocument();
   });
@@ -108,52 +114,70 @@ describe('Settings -> Payments for an org that lost online payments but already 
     });
   }
 
-  it('still shows "Action needed" with Fix now, which opens setup on the existing account, beside the plan message', async () => {
+  // The plan card replaces card 1's status (V7 call C-40); the payout card still follows the real account, so the
+  // owner can finish what is due and get already-collected money paid out.
+  it('shows the plan card in place of the status, and the payout card still shows "Action needed" with the secure form', async () => {
     signedInAdminWith(['payments', 'invoices']);
     statusIs({
       ...NOT_CONNECTED,
       connected: true,
+      terms_accepted: true,
       stripe_details_submitted: true,
       stripe_charges_enabled: true,
       stripe_payouts_enabled: true,
       stripe_requirements_due: ['individual.verification.document'],
     });
-    const { container } = renderWithProviders(<><PaymentsListsPage /><Where /></>, { ability: OWNER });
+    const { container } = renderWithProviders(<><ServwavePaymentsPage /><Where /></>, {
+      ability: PAGE_ABILITY,
+      initialEntries: ['/settings/servwave-payments'],
+    });
 
+    expect(await screen.findByRole('heading', { name: 'Your plan' })).toBeInTheDocument();
+    expect(screen.getByText('Online payments aren’t included in your plan.')).toBeInTheDocument();
+    expect(screen.getByText('Customers can’t pay online right now. You can still keep your payout account up to date.')).toBeInTheDocument();
+    // No status badge or Fix now in card 1; the payout card carries the state.
+    expect(screen.queryByRole('button', { name: 'Fix now' })).not.toBeInTheDocument();
     expect(await screen.findByText('Action needed')).toBeInTheDocument();
-    expect(screen.getByText("Online payments aren't included in your plan.")).toBeInTheDocument();
-
-    // Payments go-live slice 34: fixing the account is the owner's page, on the existing account.
-    await userEvent.setup().click(screen.getByRole('button', { name: 'Fix now' }));
-    await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent('/settings/payout-account'));
+    // Something is due now, so the secure form mounts by itself on the existing account.
+    expect(screen.getByTestId('connect-account-onboarding')).toBeInTheDocument();
     expect(mockApi.post).not.toHaveBeenCalledWith('/api/organization/stripe/connect');
+    expect(screen.getByTestId('where')).toHaveTextContent(/^\/settings\/servwave-payments$/);
     expect(container.textContent).not.toMatch(/stripe|acct_/i);
   });
 
-  it('still shows the collected-awaiting-payout nudge', async () => {
+  it('with charges on and payouts pending, the secure area offers Finish setup (the bank nudge belongs to the status card)', async () => {
     signedInAdminWith(['payments', 'invoices']);
     statusIs({
       ...NOT_CONNECTED,
       connected: true,
+      terms_accepted: true,
       stripe_details_submitted: true,
       stripe_charges_enabled: true,
       stripe_payouts_enabled: false,
       collected_awaiting_payout: 250,
     });
-    renderWithProviders(<PaymentsListsPage />, { ability: OWNER });
+    renderWithProviders(<ServwavePaymentsPage />, { ability: PAGE_ABILITY });
 
-    expect(await screen.findByText(/You've collected \$250\.00/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Connect bank' })).toBeInTheDocument();
-    expect(screen.getByText("Online payments aren't included in your plan.")).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Finish setup' })).toBeInTheDocument();
+    expect(screen.getByText('Online payments aren’t included in your plan.')).toBeInTheDocument();
+    expect(screen.queryByText(/You’ve collected/)).not.toBeInTheDocument();
+  });
+
+  it('with no plan and no account there is no payout card to start from', async () => {
+    signedInAdminWith(['payments', 'invoices']);
+    renderWithProviders(<ServwavePaymentsPage />, { ability: PAGE_ABILITY });
+    await screen.findByDisplayValue('40');
+    expect(screen.queryByRole('heading', { name: 'Payout account & verification' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /accept terms/i })).not.toBeInTheDocument();
   });
 });
 
 describe('Settings -> Payments for an org whose plan includes online payments', () => {
   it('offers onboarding and shows no plan message', async () => {
     signedInAdminWith(['payments', 'invoices', 'online_payments']);
-    renderWithProviders(<PaymentsListsPage />, { ability: OWNER });
+    renderWithProviders(<ServwavePaymentsPage />, { ability: PAGE_ABILITY });
 
     expect(await screen.findByRole('button', { name: 'Set up payments' })).toBeInTheDocument();
-    expect(screen.queryByText("Online payments aren't included in your plan.")).not.toBeInTheDocument();
+    expect(screen.queryByText("Online payments aren’t included in your plan.")).not.toBeInTheDocument();
   });
 });

@@ -25,6 +25,7 @@ export const SETTINGS_V2_PATHS = [
   '/settings/payments',
   '/settings/payout-account',
   '/settings/servwave-payments',
+  '/settings/lists',
   '/settings/job-sub-statuses',
   '/settings/decline-reasons',
   '/settings/job-cancel-reasons',

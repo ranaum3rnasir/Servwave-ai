@@ -1,9 +1,10 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import { supabaseAdmin } from '../lib/supabase';
 import { clearTokenCache } from '../middleware/authenticate';
+import { env } from '../config/env';
 
 const mockPrisma = prisma as unknown as {
   user: {
@@ -283,5 +284,40 @@ describe('authenticate middleware confirmed-email fallback', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.user.role).toBe('ADMIN');
+  });
+});
+
+// SPEC-5: the Google finalize payload says whether the company is on the Spider pilot list.
+describe('POST /api/auth/google/finalize carries org_is_spider_pilot', () => {
+  const mutableEnv = env as { SPIDER_PILOT_ORG_IDS?: string };
+  const before = mutableEnv.SPIDER_PILOT_ORG_IDS;
+  afterEach(() => {
+    mutableEnv.SPIDER_PILOT_ORG_IDS = before;
+  });
+
+  const ROW_WITH_ORG = { ...ADMIN_ROW, organization: { is_demo: false, plan: 'SCALE', trial_ends_at: null, feature_overrides: {} } };
+  async function finalize() {
+    mockSupabase.auth.getUser.mockResolvedValue({
+      data: { user: { id: 'supa-admin-id', email: 'admin@acme.com', email_confirmed_at: '2026-01-01' } },
+      error: null,
+    });
+    mockPrisma.user.findUnique.mockImplementation((args: { where: { id?: string } }) =>
+      Promise.resolve(args.where.id === 'supa-admin-id' ? ROW_WITH_ORG : null),
+    );
+    return request(app).post('/api/auth/google/finalize').set('Authorization', 'Bearer google-token');
+  }
+
+  it('is true for a company on the list', async () => {
+    mutableEnv.SPIDER_PILOT_ORG_IDS = 'org-1';
+    const res = await finalize();
+    expect(res.status).toBe(200);
+    expect(res.body.user.org_is_spider_pilot).toBe(true);
+  });
+
+  it('is false for a company that is not on the list', async () => {
+    mutableEnv.SPIDER_PILOT_ORG_IDS = 'org-2';
+    const res = await finalize();
+    expect(res.status).toBe(200);
+    expect(res.body.user.org_is_spider_pilot).toBe(false);
   });
 });

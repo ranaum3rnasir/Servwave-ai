@@ -59,7 +59,7 @@ import { toNum } from './money';
 import { useConfirm } from '@/hooks/useConfirm';
 import { deleteLineItemPrompt } from '@/lib/confirmPrompts';
 import type { InvoiceLineItem } from '@/lib/api/jobs';
-import { splitDescription, useLineItemFields, type RowUpdatePatch } from './useLineItemFields';
+import { splitDescription, useLineItemFields, type RowUpdate } from './useLineItemFields';
 
 export interface LineItemRowProps {
   line: InvoiceLineItem;
@@ -67,7 +67,7 @@ export interface LineItemRowProps {
   canManage: boolean;
   /** Show the Cost column + the per-row margin sub-line. Mirrors the backend's canSeePricing gate. */
   canSeePricing: boolean;
-  onUpdate: (patch: RowUpdatePatch) => void;
+  onUpdate: RowUpdate;
   onDelete: () => void;
   /** Open the AddLineDialog in edit mode for this line. Gated on the SAME `canEdit` tier as the inline Qty/Price edits. */
   onEdit: () => void;
@@ -166,7 +166,7 @@ export function LineItemRow({
   // The draft text and commit rules of the money fields are shared with the phone card.
   const {
     qty, setQty, commitQty,
-    price, setPrice, commitPrice,
+    update, price, setPrice, commitPrice,
     cost, setCost, commitCost,
     discountType, discountValue, setDiscountValue, commitDiscount, changeDiscountType,
   } = useLineItemFields(line, onUpdate);
@@ -313,7 +313,7 @@ export function LineItemRow({
                   // the estimate's status: the payload is the rep's intent and the server decides
                   // which column it lands in, so this row never has to know about the send.
                   disabled={selectionsLocked || busy || !canEdit}
-                  onCheckedChange={(v) => onUpdate({ is_selected: v === true })}
+                  onCheckedChange={(v) => update({ is_selected: v === true })}
                   aria-label={checkboxLabel}
                 />
               </label>
@@ -547,7 +547,7 @@ export function LineItemRow({
           <Switch
             checked={line.is_taxable}
             disabled={busy}
-            onCheckedChange={(v) => onUpdate({ is_taxable: v })}
+            onCheckedChange={(v) => update({ is_taxable: v })}
             aria-label={`Taxable for ${name}`}
           />
         ) : (

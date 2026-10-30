@@ -249,10 +249,15 @@ export function terminalStaleReason(
         // Nothing is dropped: the new instant mints a new occurrence and the sweep re-enrols on
         // it, so a lead whose estimate is still outstanding two days after its SECOND trip is
         // chased on the second trip's clock instead of being alerted on the first trip's.
+        //
+        // A clock that has been CLEARED since is a mismatch too (SPEC-4 D7: a Contacted lead whose
+        // last outbound contact is taken away goes back to New and loses `contacted_at`). The run
+        // stops rather than firing against an empty anchor. The wording is the correction's, left
+        // as it is by the product owner's decision (24 Oct); a new contact mints a new occurrence.
         const moves = satisfiedBy.moves;
         if (moves && occurrence) {
           const current = state[moves.field];
-          if (current && current.toISOString() !== occurrence) return moves.superseded;
+          if (!current || current.toISOString() !== occurrence) return moves.superseded;
         }
         return null;
       }

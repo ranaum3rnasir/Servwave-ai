@@ -12,6 +12,7 @@ import {
   ListChecks,
   CheckCircle2,
   Loader2,
+  ArrowRight,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import type { NotificationView } from '@/lib/api/notifications';
@@ -19,6 +20,11 @@ import { useMarkRead, useMarkActed } from '@/lib/api/notifications';
 import { useToast } from '@/components/ui/use-toast';
 import { ACTION_HANDLERS } from './inlineActions';
 import { notificationDeepLink } from './notificationDeepLink';
+import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
+import { agentMedia } from '@/lib/ai-center/media';
+
+/** Spider's starting summary (#2794): its row carries Spider's portrait and "View summary", as the demo shows it. */
+const SPIDER_SUMMARY_VERB = 'spider.starting_summary';
 
 // ---------------------------------------------------------------------------
 // Category → color map
@@ -285,8 +291,17 @@ export function NotificationItem({ item }: NotificationItemProps) {
         aria-label={item.title}
         className="absolute inset-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/50"
       />
-      {/* Category icon */}
-      <CategoryIcon category={item.category} verb={item.verb} />
+      {/* Category icon (Spider's portrait for its starting summary) */}
+      {item.verb === SPIDER_SUMMARY_VERB ? (
+        <Avatar size="xs" className="shrink-0 bg-surface-light ring-1 ring-border">
+          <AvatarImage src={agentMedia('spider').still} alt="" className="object-cover" />
+          <AvatarFallback tone="solid" aria-hidden>
+            S
+          </AvatarFallback>
+        </Avatar>
+      ) : (
+        <CategoryIcon category={item.category} verb={item.verb} />
+      )}
 
       {/* Content */}
       <div className="min-w-0 flex-1">
@@ -314,6 +329,13 @@ export function NotificationItem({ item }: NotificationItemProps) {
         {/* Optional body subline */}
         {item.body != null && item.body.length > 0 && (
           <p className="mt-0.5 whitespace-pre-line text-xs text-text-secondary line-clamp-4">{item.body}</p>
+        )}
+
+        {item.verb === SPIDER_SUMMARY_VERB && (
+          <span className="mt-1.5 inline-flex items-center gap-1 text-xs font-bold text-ai-600" aria-hidden="true">
+            View summary
+            <ArrowRight className="h-3.5 w-3.5" />
+          </span>
         )}
 
         {/* Acted "Done" chip - shown when acted optimistically or from server */}

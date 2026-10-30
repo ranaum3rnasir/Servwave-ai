@@ -22,7 +22,7 @@ const mockPrisma = prisma as any;
 const EST_ID = ESTIMATE_FIXTURE.id;
 
 function arm(status: string, deposit: { status: string; amount_due: number; payments?: { amount: number }[] } | null) {
-  const writes = { estimateUpdates: [] as any[], leadTouched: false, timeline: [] as string[] };
+  const writes = { estimateUpdates: [] as any[], leadTouched: false, timeline: [] as string[], paymentCreates: 0, invoiceCreates: 0, invoiceUpdates: 0 };
   mockAuthAs('admin');
   mockPrisma.estimate.findUnique.mockResolvedValue({
     id: EST_ID, status, estimate_number: ESTIMATE_FIXTURE.estimate_number, total_amount: 1000, public_token: 'tok',
@@ -35,10 +35,10 @@ function arm(status: string, deposit: { status: string; amount_due: number; paym
     fn({
       invoice: {
         findFirst: vi.fn().mockResolvedValue(deposit && { id: 'dep-1', total_amount: 500, invoice_number: 'I00050', payments: [], ...deposit }),
-        create: vi.fn().mockResolvedValue({ id: 'dep-new', status: 'SENT', amount_due: 500, total_amount: 500, invoice_number: 'I00051' }),
-        update: vi.fn().mockResolvedValue({}),
+        create: vi.fn().mockImplementation(() => { writes.invoiceCreates += 1; return Promise.resolve({ id: 'dep-new', status: 'SENT', amount_due: 500, total_amount: 500, invoice_number: 'I00051' }); }),
+        update: vi.fn().mockImplementation(() => { writes.invoiceUpdates += 1; return Promise.resolve({}); }),
       },
-      payment: { create: vi.fn().mockResolvedValue({}) },
+      payment: { create: vi.fn().mockImplementation(() => { writes.paymentCreates += 1; return Promise.resolve({}); }) },
       estimate: {
         update: vi.fn().mockImplementation((a: any) => { writes.estimateUpdates.push(a.data); return Promise.resolve({}); }),
         findUnique: vi.fn().mockResolvedValue({ id: EST_ID, estimate_number: ESTIMATE_FIXTURE.estimate_number, status: 'WON', lead_id: ESTIMATE_FIXTURE.lead_id, lead: { commission_owner_id: null } }),
@@ -54,7 +54,7 @@ function arm(status: string, deposit: { status: string; amount_due: number; paym
   return writes;
 }
 
-const record = () => request(app).post(`/api/estimates/${EST_ID}/record-payment`).set(authHeader('admin')).send({ amount: 500, payment_method: 'CASH' });
+const record = (amount = 500) => request(app).post(`/api/estimates/${EST_ID}/record-payment`).set(authHeader('admin')).send({ amount, payment_method: 'CASH' });
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -129,5 +129,54 @@ describe('record-payment and the pay-later rules', () => {
     arm('WON', { status: 'SENT', amount_due: 500, payments: [{ amount: 200 }] });
     const rest = await request(app).post(`/api/estimates/${EST_ID}/record-payment`).set(authHeader('admin')).send({ amount: 300, payment_method: 'CASH' });
     expect(rest.status).toBe(200);
+  });
+});
+
+// V7-12a (no overpaid invoices): a deposit recorded by hand is never more than the deposit still due.
+describe('record-payment is capped at the open deposit balance', () => {
+  it('refuses $100.01 on a $100.00 deposit: 400 AMOUNT_ABOVE_BALANCE, nothing written', async () => {
+    const writes = arm('WON', { status: 'SENT', amount_due: 100 });
+
+    const res = await record(100.01);
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('AMOUNT_ABOVE_BALANCE');
+    expect(res.body.error).toBe('That is more than the $100.00 deposit still due. Enter $100.00 or less.');
+    expect(writes.paymentCreates).toBe(0);
+    expect(writes.invoiceUpdates).toBe(0);
+    expect(writes.timeline).toEqual([]);
+  });
+
+  it('after a partial payment, the cap is the remaining $70.00', async () => {
+    const writes = arm('WON', { status: 'PARTIAL', amount_due: 70 });
+
+    const refused = await record(70.01);
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toBe('That is more than the $70.00 deposit still due. Enter $70.00 or less.');
+    expect(writes.paymentCreates).toBe(0);
+
+    const ok = await record(70);
+    expect(ok.status).toBe(200);
+    expect(writes.paymentCreates).toBe(1);
+  });
+
+  it('the processing check still comes first', async () => {
+    arm('WON', { status: 'SENT', amount_due: 500, payments: [{ amount: 500 }] });
+
+    const res = await record(900);
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBeUndefined();
+    expect(res.body.error).toMatch(/still processing/i);
+  });
+
+  it('with no deposit invoice yet, the invoice is created for exactly the typed amount, whatever it is', async () => {
+    const writes = arm('SENT', null);
+
+    const res = await record(9000);
+
+    expect(res.status).toBe(200);
+    expect(writes.invoiceCreates).toBe(1);
+    expect(writes.paymentCreates).toBe(1);
   });
 });

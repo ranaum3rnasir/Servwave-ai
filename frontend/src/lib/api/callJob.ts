@@ -11,6 +11,7 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/axios';
 import type { ConversationLinkResult } from '@/lib/api/communication';
+import { invalidateAllLeadViews } from '@/lib/api/jobCommunications';
 
 /** Every surface that renders a call row, invalidated as one. */
 function useCallLinkInvalidation() {
@@ -28,13 +29,19 @@ function useCallLinkInvalidation() {
  *  detach took the call out of the person's reach).
  *  Callers update local state + toast on success ("act + cheap undo"). */
 export function useReassignCallJob() {
+  const qc = useQueryClient();
   const invalidate = useCallLinkInvalidation();
   return useMutation({
     mutationFn: ({ callId, jobId }: { callId: string; jobId: string | null }) =>
       api
         .patch(`/api/communication/calls/${callId}/job`, { job_id: jobId })
         .then((r) => r.data as ConversationLinkResult),
-    onSuccess: invalidate,
+    onSuccess: () => {
+      invalidate();
+      // Filing a call on a job re-points (or clears) its lead, which can move the lead it left back
+      // to New (SPEC-4 D7): every lead view refetches.
+      invalidateAllLeadViews(qc);
+    },
   });
 }
 
@@ -43,12 +50,18 @@ export function useReassignCallJob() {
  *  The endpoint shipped with the lead-attribution fix but had no caller until
  *  the attach picker gained a Leads group. */
 export function useReassignCallLead() {
+  const qc = useQueryClient();
   const invalidate = useCallLinkInvalidation();
   return useMutation({
     mutationFn: ({ callId, leadId }: { callId: string; leadId: string | null }) =>
       api
         .patch(`/api/communication/calls/${callId}/lead`, { lead_id: leadId })
         .then((r) => r.data as ConversationLinkResult),
-    onSuccess: invalidate,
+    onSuccess: () => {
+      invalidate();
+      // An attached outbound call moves a New lead to Contacted (SPEC-4 §6.3), and a call taken off a
+      // lead can move the lead it left back to New (D7): every lead view refetches.
+      invalidateAllLeadViews(qc);
+    },
   });
 }

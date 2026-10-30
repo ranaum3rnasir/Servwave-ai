@@ -105,6 +105,18 @@ describe('resolveRecipients — LEAD verbs', () => {
     expect(r.find(x => x.userId === 'disp1')).toBeUndefined();
   });
 
+  it('spider.starting_summary → the one pre-resolved person, on the feed (never a toast)', () => {
+    const r = resolveRecipients({ ...base, actorId: null, verb: 'spider.starting_summary', entity: { recipient_ids: ['u-1'] } });
+    expect(r).toEqual([expect.objectContaining({ userId: 'u-1', priority: 'FEED' })]);
+  });
+
+  it("spider.alert → every pre-resolved recipient gets FEED (Spider's own panel and frame interrupt; the bell never shows it)", () => {
+    const r = resolveRecipients({ ...base, actorId: null, verb: 'spider.alert',
+      entity: { id: 'l1', recipient_ids: ['admin1', 'sales1'] } });
+    expect(r).toContainEqual({ userId: 'admin1', priority: 'FEED', needs_action: false });
+    expect(r).toContainEqual({ userId: 'sales1', priority: 'FEED', needs_action: false });
+  });
+
   it('lead.reassigned_away → previous_owner_id gets FEED', () => {
     const r = resolveRecipients({ ...base, verb: 'lead.reassigned_away',
       entity: { id: 'l1', previous_owner_id: 'sales2' } });

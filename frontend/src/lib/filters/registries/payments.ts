@@ -25,7 +25,10 @@ export const paymentsRegistry: FacetConfig[] = [
       { value: 'refunded', label: 'Refunded' },
       { value: 'partially_refunded', label: 'Partially refunded' },
       { value: 'disputed', label: 'Disputed' },
+      { value: 'refund_failed', label: 'Refund failed' },
+      // The API sends both; a real state is never hidden (V7 C-23).
       { value: 'charged_back', label: 'Charged back' },
+      { value: 'voided', label: 'Voided' },
     ],
   },
   {
@@ -55,7 +58,7 @@ export const paymentsRegistry: FacetConfig[] = [
     key: 'payout_status',
     kind: 'multi',
     param: 'payout_status',
-    label: 'Payout',
+    label: 'Payout status',
     // lucide Landmark.
     icon: 'M3 22H21 M6 18V11 M10 18V11 M14 18V11 M18 18V11 M12 2L20 7H4Z',
     options: [

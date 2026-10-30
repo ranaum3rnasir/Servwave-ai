@@ -178,6 +178,49 @@ export function AgentControlRow({ agent, status, control, className, unsavedWarn
   );
 }
 
+/**
+ * The same on/off switch as the row above, on its own: for the agent's page header, where the
+ * contractor's design has no room for the row's two lines (Spider, Ran 15 Oct, D1). Same switch,
+ * same rule (an Admin can always use it), same turn-off question. Someone who may not manage the
+ * agent sees the On / Off chip instead.
+ */
+export function AgentSwitch({ agent, status, control, unsavedWarning }: ControlsProps & { unsavedWarning?: string }) {
+  const flow = useSwitchFlow(control, status.isSetUp || !!unsavedWarning);
+  if (status.status === 'loading') {
+    return <Skeleton data-agent-switch="loading" aria-hidden className="h-[30px] w-[52px]" />;
+  }
+  if (status.status !== 'on' && status.status !== 'off') return null;
+  const isOn = status.status === 'on';
+  const canSwitch = status.canManage && !!control.setActive;
+  if (!canSwitch) return <AgentStatusChip state={isOn ? 'on' : 'off'} />;
+  return (
+    <>
+      <Switch
+        size="lg"
+        tone="success"
+        stateLabel
+        checked={isOn}
+        busy={control.saving}
+        aria-label={`Switch ${agent.name} on or off`}
+        onCheckedChange={flow.request}
+      />
+      {status.copy && (
+        <TurnOffConfirm
+          name={agent.name}
+          warning={
+            unsavedWarning
+              ? [unsavedWarning, ...(status.isSetUp ? status.copy.turnOffWarning : [])]
+              : status.copy.turnOffWarning
+          }
+          open={flow.confirmOff}
+          onOpenChange={flow.setConfirmOff}
+          onConfirm={flow.turnOff}
+        />
+      )}
+    </>
+  );
+}
+
 function TurnOffConfirm({
   name,
   warning,

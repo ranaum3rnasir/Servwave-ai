@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { tenantWhere } from '../lib/tenant';
+import { equalsIgnoringCase } from '../lib/name-match';
 import { canAccessRow } from '../lib/permissions/enforce';
 import { canReadCustomerById } from '../lib/permissions/customerScope';
 import type { TagEntityType } from '../lib/tags';
@@ -104,15 +105,69 @@ async function entityExistsInOrg(
 
 // ─── Handlers ──────────────────────────────────────────
 
+type TagTx = Parameters<Parameters<typeof prisma.$transaction>[0]>[0];
+
+/**
+ * Tag names are unique per org ignoring case, enforced here (no lower(name) index exists: a raw
+ * index would show up as schema drift). The check and the write share one transaction behind a
+ * per-org advisory lock, so two simultaneous writes that differ only by case cannot both pass it.
+ */
+async function withTagNameLock<T>(orgId: string, work: (tx: TagTx) => Promise<T>): Promise<T> {
+  return prisma.$transaction(async (tx) => {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`tag-names:${orgId}`}))`;
+    return work(tx);
+  });
+}
+
+/** The tag in this org whose name equals `name` in any case; the exact-case row wins, then the oldest. */
+async function findTagIgnoringCase(tx: TagTx, orgId: string, name: string, excludeId?: string) {
+  const exact = await tx.tag.findFirst({
+    where: { organization_id: orgId, name, ...(excludeId ? { id: { not: excludeId } } : {}) },
+  });
+  if (exact) return exact;
+  return tx.tag.findFirst({
+    where: {
+      organization_id: orgId,
+      name: equalsIgnoringCase(name),
+      ...(excludeId ? { id: { not: excludeId } } : {}),
+    },
+    orderBy: { created_at: 'asc' },
+  });
+}
+
 /** GET /api/tags — list this org's tags (for autocomplete and the Settings card) */
 export async function list(req: Request, res: Response) {
   try {
-    const tags = await prisma.tag.findMany({
-      where: tenantWhere(req),
-      select: { id: true, name: true, color: true },
-      orderBy: { name: 'asc' },
-    });
-    res.json({ tags });
+    const orgId = req.user!.organization_id;
+    const [tags, assignmentCounts, legacyCounts] = await Promise.all([
+      prisma.tag.findMany({
+        where: tenantWhere(req),
+        select: { id: true, name: true, color: true },
+        orderBy: { name: 'asc' },
+      }),
+      // One grouped query for all five record types (customer, lead, estimate, job, invoice).
+      prisma.tagAssignment.groupBy({
+        by: ['tag_id'],
+        where: { organization_id: orgId },
+        _count: { _all: true },
+      }),
+      // Legacy lead links that never got a tag_assignments twin (N-6). A twinned link is already
+      // in the count above, so it is excluded here and never counted twice.
+      prisma.$queryRaw<{ tag_id: string; n: number }[]>`
+        SELECT lt.tag_id AS tag_id, count(*)::int AS n
+        FROM lead_tags lt
+        JOIN tags t ON t.id = lt.tag_id
+        WHERE t.organization_id = ${orgId}::uuid
+          AND NOT EXISTS (
+            SELECT 1 FROM tag_assignments ta
+            WHERE ta.tag_id = lt.tag_id AND ta.entity_type = 'LEAD' AND ta.entity_id = lt.lead_id
+          )
+        GROUP BY lt.tag_id`,
+    ]);
+    const used = new Map<string, number>();
+    for (const row of assignmentCounts) used.set(row.tag_id, row._count._all);
+    for (const row of legacyCounts) used.set(row.tag_id, (used.get(row.tag_id) ?? 0) + Number(row.n));
+    res.json({ tags: tags.map((t) => ({ ...t, usage_count: used.get(t.id) ?? 0 })) });
   } catch (err) {
     logger.error('List tags error:', err);
     res.status(500).json({ error: 'Failed to list tags' });
@@ -122,23 +177,25 @@ export async function list(req: Request, res: Response) {
 /** POST /api/tags — create a new tag (per-org) */
 export async function create(req: Request, res: Response) {
   try {
-    const { name, color } = req.body;
+    // Already parsed by `createTagSchema` on the route.
+    const { name, color } = req.body as z.infer<typeof createTagSchema>;
     const orgId = req.user!.organization_id;
 
-    const existing = await prisma.tag.findUnique({
-      where: { organization_id_name: { organization_id: orgId, name } },
+    const outcome = await withTagNameLock(orgId, async (tx) => {
+      const existing = await findTagIgnoringCase(tx, orgId, name);
+      if (existing) return { existing } as const;
+      const created = await tx.tag.create({
+        data: { name, color, organization_id: orgId },
+        select: { id: true, name: true, color: true },
+      });
+      return { created } as const;
     });
-    if (existing) {
-      res.status(409).json({ error: 'Tag already exists', tag: existing });
+    if ('existing' in outcome) {
+      res.status(409).json({ error: 'Tag already exists', tag: outcome.existing });
       return;
     }
 
-    const tag = await prisma.tag.create({
-      data: { name, color, organization_id: orgId },
-      select: { id: true, name: true, color: true },
-    });
-
-    res.status(201).json({ tag });
+    res.status(201).json({ tag: outcome.created });
   } catch (err) {
     logger.error('Create tag error:', err);
     res.status(500).json({ error: 'Failed to create tag' });
@@ -229,24 +286,23 @@ async function resolveTagId(
   }
 
   if (!tagId && body.name) {
-    let tag = await prisma.tag.findUnique({
-      where: { organization_id_name: { organization_id: orgId, name: body.name } },
-    });
-    if (!tag) {
+    const name = body.name;
+    // Match ignoring case and reuse the existing tag ("vip" finds "VIP"): no 409 on this path (C-15).
+    const resolved = await withTagNameLock(orgId, async (tx) => {
+      const found = await findTagIgnoringCase(tx, orgId, name);
+      if (found) return { tag: found } as const;
       // Minting a new tag name is the Create tags switch, whichever record route carried it (the lead creator
       // path opens the tag routes without it).
-      if (!req.ability?.can('create', 'Tag')) {
-        return { ok: false, status: 403, error: 'Insufficient permissions' };
-      }
-      tag = await prisma.tag.create({
-        data: {
-          name: body.name,
-          color: body.color || '#6B7280',
-          organization_id: orgId,
-        },
+      if (!req.ability?.can('create', 'Tag')) return { forbidden: true } as const;
+      const created = await tx.tag.create({
+        data: { name, color: body.color || '#6B7280', organization_id: orgId },
       });
+      return { tag: created } as const;
+    });
+    if ('forbidden' in resolved) {
+      return { ok: false, status: 403, error: 'Insufficient permissions' };
     }
-    tagId = tag.id;
+    tagId = resolved.tag.id;
   }
 
   if (!tagId) {
@@ -297,7 +353,8 @@ async function attachTagAssignment(
 export async function update(req: Request, res: Response): Promise<void> {
   try {
     const id = param(req, 'id');
-    const { name, color } = req.body as { name?: string; color?: string };
+    // Already parsed by `updateTagSchema` on the route.
+    const { name, color } = req.body as z.infer<typeof updateTagSchema>;
 
     // Scope by tenant first — prisma.tag.update() keys on the unique id alone and
     // would happily edit another org's row.
@@ -310,27 +367,27 @@ export async function update(req: Request, res: Response): Promise<void> {
       return;
     }
 
-    if (name) {
-      const clash = await prisma.tag.findUnique({
-        where: {
-          organization_id_name: { organization_id: req.user!.organization_id, name },
-        },
-        select: { id: true },
-      });
-      if (clash && clash.id !== id) {
-        res.status(409).json({ error: 'A tag with that name already exists' });
-        return;
+    const orgId = req.user!.organization_id;
+    const outcome = await withTagNameLock(orgId, async (tx) => {
+      if (name) {
+        const clash = await findTagIgnoringCase(tx, orgId, name, id);
+        if (clash) return { clash: true } as const;
       }
-    }
-
-    const tag = await prisma.tag.update({
-      where: { id },
-      data: {
-        ...(name !== undefined ? { name } : {}),
-        ...(color !== undefined ? { color } : {}),
-      },
-      select: { id: true, name: true, color: true },
+      const updated = await tx.tag.update({
+        where: { id },
+        data: {
+          ...(name !== undefined ? { name } : {}),
+          ...(color !== undefined ? { color } : {}),
+        },
+        select: { id: true, name: true, color: true },
+      });
+      return { updated } as const;
     });
+    if ('clash' in outcome) {
+      res.status(409).json({ error: 'A tag with that name already exists' });
+      return;
+    }
+    const tag = outcome.updated;
 
     res.json({ tag });
   } catch (err) {

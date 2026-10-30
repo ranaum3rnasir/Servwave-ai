@@ -67,6 +67,33 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
+/**
+ * BE-14d (D-16): an edit that would bring the total below what is already paid or credited is
+ * refused. Thrown inside the transaction by recomputeAndPersist, so the line or scope write that
+ * came before the recompute rolls back with it. Every catch below answers it via
+ * respondTotalBelowPaid; the amounts are formatted like the app's formatCurrency ($1,234.50).
+ */
+export class TotalBelowPaidError extends Error {
+  constructor(readonly newTotal: number, readonly covered: number) {
+    super('TOTAL_BELOW_PAID');
+    this.name = 'TotalBelowPaidError';
+  }
+}
+
+function formatUsd(n: number): string {
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(n);
+}
+
+/** 409 for TotalBelowPaidError; returns true when it answered so the caller can `return`. No "refund first" advice: a refund never reopens the balance (ADR 0004). */
+export function respondTotalBelowPaid(err: unknown, res: Response): boolean {
+  if (!(err instanceof TotalBelowPaidError)) return false;
+  res.status(409).json({
+    code: 'TOTAL_BELOW_PAID',
+    error: `This change would bring the invoice to ${formatUsd(err.newTotal)}, which is less than the ${formatUsd(err.covered)} already paid or credited on it. Keep the total at ${formatUsd(err.covered)} or more.`,
+  });
+  return true;
+}
+
 // --- Zod Schemas (validate() calls schema.parse(req.body) directly — no body: wrapper) ---
 
 export const addLineSchema = z.object({
@@ -318,14 +345,23 @@ async function recomputeAndPersist(
   // Preserve money already applied: amount_due = new total - deposit credit - cash - credits.
   // amount_paid is derived from the invoice's own pre-edit fields (robust to how payments are
   // stored), so a SENT/PARTIAL edit keeps recorded payments; a DRAFT yields amount_paid 0 ->
-  // unchanged behaviour. See amountPaidOf's JSDoc for the known clamp loss across two edits.
+  // unchanged behaviour.
   const amountPaid = amountPaidOf(
     Number(invoice.total_amount ?? 0),
     depositCredit,
     Number(invoice.amount_due ?? 0),
     creditsTotal,
   );
-  const amountDue = round2(Math.max(totals.total_amount - depositCredit - amountPaid - creditsTotal, 0));
+  // BE-14d (D-16): an edit that takes the total below what is already covered (deposit credit +
+  // cash + credits) is refused instead of being clamped to a zero balance. rawDue equals the old
+  // amount_due plus (new total - old total), so only an edit that LOWERS the total can trip this;
+  // a legacy invoice already overpaid in the data is not locked out of reorders or other edits that
+  // leave the total alone.
+  const covered = round2(depositCredit + amountPaid + creditsTotal);
+  const rawDue = totals.total_amount - covered;
+  if (rawDue < -0.005) throw new TotalBelowPaidError(totals.total_amount, covered);
+  // The max(..., 0) clamps below are guards only; the refusal above makes them unreachable.
+  const amountDue = round2(Math.max(rawDue, 0));
   // Status tracks the CASH position only, never the credited one: PAID with a paid_at is a claim
   // that money was collected, so a write-off must never settle and lock the document. cashBalance
   // is identical to amountDue whenever creditsTotal is 0, which is every uncredited invoice.
@@ -472,6 +508,7 @@ export async function addLine(req: Request, res: Response) {
     });
     res.json({ invoice: presentInvoiceDetail(req, stripInvoiceCost(updated, req)) });
   } catch (err) {
+    if (respondTotalBelowPaid(err, res)) return;
     logger.error('Error adding invoice line:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
@@ -540,6 +577,7 @@ export async function deleteLine(req: Request, res: Response) {
     });
     res.json({ invoice: presentInvoiceDetail(req, stripInvoiceCost(updated, req)) });
   } catch (err) {
+    if (respondTotalBelowPaid(err, res)) return;
     logger.error('Error deleting invoice line:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
@@ -898,6 +936,7 @@ export async function updateLine(req: Request, res: Response) {
     });
     res.json({ invoice: presentInvoiceDetail(req, stripInvoiceCost(updated, req)) });
   } catch (err) {
+    if (respondTotalBelowPaid(err, res)) return;
     // C2 legacy freeze: a qty edit on a SYNCED line was refused inside the tx (whole tx rolled back).
     if (err instanceof LegacyStockLineError) {
       legacyStockLineResponse(res);
@@ -969,6 +1008,7 @@ export async function reorderLines(req: Request, res: Response) {
     });
     res.json({ invoice: presentInvoiceDetail(req, stripInvoiceCost(result, req)) });
   } catch (err) {
+    if (respondTotalBelowPaid(err, res)) return;
     logger.error('Error reordering invoice lines:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
@@ -1020,6 +1060,7 @@ export async function updateBilling(req: Request, res: Response) {
     });
     res.json({ invoice: presentInvoiceDetail(req, stripInvoiceCost(updated, req)) });
   } catch (err) {
+    if (respondTotalBelowPaid(err, res)) return;
     logger.error('Error updating invoice billing:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
@@ -1078,6 +1119,7 @@ export async function addScope(req: Request, res: Response) {
     });
     res.json({ invoice: presentInvoiceDetail(req, stripInvoiceCost(updated, req)) });
   } catch (err) {
+    if (respondTotalBelowPaid(err, res)) return;
     logger.error('Error adding invoice scope:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
@@ -1140,6 +1182,7 @@ export async function updateScope(req: Request, res: Response) {
     });
     res.json({ invoice: presentInvoiceDetail(req, stripInvoiceCost(updated, req)) });
   } catch (err) {
+    if (respondTotalBelowPaid(err, res)) return;
     logger.error('Error updating invoice scope:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
@@ -1201,6 +1244,7 @@ export async function reorderScopes(req: Request, res: Response) {
     });
     res.json({ invoice: presentInvoiceDetail(req, stripInvoiceCost(result, req)) });
   } catch (err) {
+    if (respondTotalBelowPaid(err, res)) return;
     logger.error('Error reordering invoice scopes:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
@@ -1248,6 +1292,7 @@ export async function deleteScope(req: Request, res: Response) {
     });
     res.json({ invoice: presentInvoiceDetail(req, stripInvoiceCost(updated, req)) });
   } catch (err) {
+    if (respondTotalBelowPaid(err, res)) return;
     logger.error('Error deleting invoice scope:', err);
     res.status(500).json({ error: 'Internal server error' });
   }

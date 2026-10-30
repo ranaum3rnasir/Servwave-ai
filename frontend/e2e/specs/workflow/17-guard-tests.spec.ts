@@ -290,7 +290,7 @@ test.describe('20.2 Estimate send/approval guards', () => {
 });
 
 test.describe('20.3 Lead state guards', () => {
-  test('G-10: Mark lost on WON lead → 400', async () => {
+  test('G-10: Mark lost on WON lead → 409 (closed, reopen first)', async () => {
     // WON = estimate approved, lead status = WON
     const ctx = await leadToSentEstimate(api);
     await api.approveEstimatePublic(ctx.estimateId, ctx.publicToken, {
@@ -300,10 +300,11 @@ test.describe('20.3 Lead state guards', () => {
     const lead = await api.getLead(ctx.leadId);
     expect(lead.status).toBe('WON');
 
-    const { res, body } = await api.markLeadLost(ctx.leadId, 'Should fail — WON is terminal');
+    // A closed lead moves only through Reopen lead (S05.19).
+    const { res, body } = await api.markLeadLost(ctx.leadId, 'Should fail — WON is closed');
 
-    expect(res.status()).toBe(400);
-    expect(body.error).toBeTruthy();
+    expect(res.status()).toBe(409);
+    expect(body.error).toBe('To change the status, reopen the lead first.');
   });
 });
 

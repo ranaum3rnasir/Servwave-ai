@@ -351,7 +351,7 @@ export function SendEstimateDialog({
           <DialogTitle>Send Estimate</DialogTitle>
         </DialogHeader>
 
-        <PaymentsSetupBanner onSetup={() => navigate('/settings/payments')} />
+        <PaymentsSetupBanner onSetup={() => navigate('/settings/servwave-payments')} />
 
         {/* Resend warning */}
         {alreadySent && (

@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { partialMatchKey } from '@tanstack/react-query';
@@ -7,9 +7,9 @@ import { partialMatchKey } from '@tanstack/react-query';
 import { renderWithProviders } from '@/__tests__/helpers';
 import { paymentsPageKeys } from '@/lib/api/paymentsPage';
 
-import { DisputeDrawer } from '../components/DisputeDrawer';
+import { DISPUTE_URL, DisputeStage } from './disputeHarness';
 import { CAN_UPLOAD, openForm } from './disputeHarness';
-import { DISPUTE_ID, apiError, file, inDays, makeEvidence, mockApi, serveDispute } from './disputeFixtures';
+import { apiError, file, inDays, inHours, makeEvidence, mockApi, serveDispute } from './disputeFixtures';
 
 vi.mock('@/lib/attachments/uploadAttachment', () => ({ uploadAttachment: vi.fn() }));
 vi.mock('@/ui-kit/components/ui/sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() }, Toaster: () => null }));
@@ -33,15 +33,15 @@ describe('closing and reopening', () => {
   it('starts the form over from what the server holds when the drawer is closed and opened again', async () => {
     serveDispute();
     const u = userEvent.setup();
-    const view = renderWithProviders(<DisputeDrawer disputeId={DISPUTE_ID} onClose={vi.fn()} />, { ability: CAN_UPLOAD });
-    await u.click(await screen.findByRole('button', { name: 'Add evidence' }));
+    renderWithProviders(<DisputeStage />, { ability: CAN_UPLOAD, initialEntries: [DISPUTE_URL] });
+    await u.click(await screen.findByRole('button', { name: 'Respond' }));
     let dialog = await screen.findByRole('dialog');
     fireEvent.change(await within(dialog).findByLabelText('Your explanation'), { target: { value: 'Typed, never saved' } });
-    view.rerender(<DisputeDrawer disputeId={null} onClose={vi.fn()} />);
+    fireEvent.click(screen.getByText('stage-close'));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    view.rerender(<DisputeDrawer disputeId={DISPUTE_ID} onClose={vi.fn()} />);
-    // Back on step 1, not step 2, and the form is new.
-    await u.click(await screen.findByRole('button', { name: 'Add evidence' }));
+    fireEvent.click(screen.getByText('stage-open'));
+    // Back on the Dispute view, not the form, and the form is new.
+    await u.click(await screen.findByRole('button', { name: 'Respond' }));
     dialog = await screen.findByRole('dialog');
     expect(await within(dialog).findByLabelText('Your explanation')).toHaveValue('');
     expect(within(dialog).getByRole('button', { name: 'Submit evidence' })).toBeDisabled();
@@ -88,31 +88,34 @@ describe('after Submit, every payment view is marked stale', () => {
   });
 });
 
-describe('step 1 deadline', () => {
-  const tone = async (days: number | null, over: Parameters<typeof makeEvidence>[0] = {}) => {
+describe('the Dispute view deadline', () => {
+  const tone = async (respondBy: string, over: Parameters<typeof makeEvidence>[0] = {}) => {
     mockApi.get.mockReset();
-    serveDispute({ evidence: makeEvidence({ dispute: { respond_by: days === null ? null : inDays(days), days_left: days }, ...over }) });
-    renderWithProviders(<DisputeDrawer disputeId={DISPUTE_ID} onClose={vi.fn()} />);
+    serveDispute({ evidence: makeEvidence({ dispute: { respond_by: respondBy, days_left: 0 }, ...over }) });
+    renderWithProviders(<DisputeStage />, { initialEntries: [DISPUTE_URL] });
   };
+  const banner = async (text: string) => (await screen.findByText(text)).closest('[role="status"]');
 
   it('is calm at 5 days', async () => {
-    await tone(5);
-    expect(await screen.findByText('5 days left')).not.toHaveAttribute('data-tone', 'danger');
+    await tone(inDays(5));
+    expect(await banner('5 days left')).not.toHaveAttribute('data-tone', 'danger');
   });
 
-  it('turns urgent at 2 days', async () => {
-    await tone(2);
-    expect(await screen.findByText('2 days left')).toHaveAttribute('data-tone', 'danger');
+  it('stays calm at 2 days and turns urgent only under 48 hours', async () => {
+    await tone(inDays(2));
+    expect(await banner('2 days left')).not.toHaveAttribute('data-tone', 'danger');
+    cleanup();
+    await tone(inHours(47));
+    expect(await banner('47 hours left')).toHaveAttribute('data-tone', 'danger');
   });
 
-  it('says Due today at 0 days, urgent, while the response is still open', async () => {
-    await tone(0, { dispute: { respond_by: new Date(Date.now() + 3_600_000).toISOString(), days_left: 0 } });
-    expect(await screen.findByText('Due today')).toHaveAttribute('data-tone', 'danger');
+  it('says 1 hour left, urgent, in the last hour while the response is still open', async () => {
+    await tone(new Date(Date.now() + 1_800_000).toISOString());
+    expect(await banner('1 hour left')).toHaveAttribute('data-tone', 'danger');
   });
 
-  it('says the deadline passed once it is past', async () => {
-    await tone(0, { dispute: { respond_by: '2026-10-01T12:00:00.000Z', days_left: 0 }, can_edit: false });
-    expect(await screen.findByText('The deadline passed on Oct 1, 2026')).toBeInTheDocument();
+  it('says Past due once the time has passed', async () => {
+    await tone('2026-10-01T12:00:00.000Z', { can_edit: false });
+    expect(await screen.findByText('Past due', { selector: 'div' })).toBeInTheDocument();
   });
 });
-

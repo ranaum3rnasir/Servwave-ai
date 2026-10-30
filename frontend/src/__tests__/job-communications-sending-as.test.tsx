@@ -5,7 +5,7 @@
 // The REAL data hooks run; only the network layer is faked. An email written here goes out from the sender's OWN address
 // whoever the customer is; a person with no address of their own reads the address-needed sentence, and Send is disabled
 // with its reason readable by a screen reader. The same line is on the customer page (customerComposeSendingAs.test) and
-// the Email page (inboxSendingAs.test); the lead page has no email composer at all (leadCommunicationsNoEmailCompose.test).
+// the Email page (inboxSendingAs.test) and the lead page's Communication tab (leadCommunicationsEmailCompose.test).
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';

@@ -30,7 +30,7 @@ const ready = () => makeEvidence({
 const sent = () => makeEvidence({
   dispute: { status: 'UNDER_REVIEW' }, can_edit: false, can_submit: false,
   form: { version: 6, files: { receipt: file('a1', 'receipt.pdf') }, text: { uncategorized_text: 'Done.' } },
-  submitted: { at: '2026-10-14T15:00:00.000Z', by_name: 'Maya Ortiz', count: 1, files: [{ field: 'receipt', file_name: 'receipt.pdf' }] },
+  submitted: { at: '2026-10-14T15:00:00.000Z', by_name: 'Maya Ortiz', count: 1, files: [{ field: 'receipt', file_name: 'receipt.pdf', attachment_id: 'a1' }] },
 });
 
 const submitButton = (dialog: HTMLElement) => within(dialog).getByRole('button', { name: 'Submit evidence' });
@@ -139,7 +139,7 @@ describe('Submit evidence', () => {
     await u.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Submit evidence' })).not.toBeInTheDocument());
     expect(onClose).not.toHaveBeenCalled();
-    expect(screen.getByRole('dialog', { name: 'Add evidence' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Respond to dispute' })).toBeInTheDocument();
   });
 });
 

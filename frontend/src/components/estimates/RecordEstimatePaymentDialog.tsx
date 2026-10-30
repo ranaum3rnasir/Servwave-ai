@@ -121,6 +121,7 @@ export function RecordEstimatePaymentDialog({
 
   const handleAmountChange = (raw: string) => {
     setAmount(raw);
+    if (mutation.isError) mutation.reset();
     const amt = parseFloat(raw);
     if (!Number.isNaN(amt)) setPercentage(String(percentFromAmount(totalAmount, amt)));
   };
@@ -153,6 +154,14 @@ export function RecordEstimatePaymentDialog({
     },
   });
 
+  // The balance moved or is smaller than the typed amount: the server's sentence sits under the
+  // field. The dialog only holds the estimate's frozen deposit, not what is still due after a part
+  // payment, so there is no pre-check here: the person corrects the amount and tries again.
+  const capError =
+    (mutation.error as { response?: { data?: { code?: string } } } | null)?.response?.data?.code ===
+    'AMOUNT_ABOVE_BALANCE'
+      ? extractApiError(mutation.error, '')
+      : null;
   const amountValid = !Number.isNaN(parseFloat(amount)) && parseFloat(amount) > 0;
   const canSubmit = amountValid && Boolean(method) && Boolean(paidAt);
   // Nothing the person may record: the button is greyed and the field says why.
@@ -186,6 +195,7 @@ export function RecordEstimatePaymentDialog({
               label="Deposit amount *"
               htmlFor="rp-amount"
               hint={`Total estimate: ${formatCurrency(totalAmount)}`}
+              error={capError ? <span role="alert">{capError}</span> : undefined}
             >
               <Input
                 kind="money"
@@ -228,7 +238,7 @@ export function RecordEstimatePaymentDialog({
             />
           </FormField>
 
-          {mutation.error && (
+          {mutation.error && !capError && (
             <p className="text-sm text-danger">
               {extractApiError(mutation.error, 'Failed to record payment')}
             </p>

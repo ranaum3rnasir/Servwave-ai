@@ -119,4 +119,51 @@ suite('public invoice checkout offers payable-now (real database)', () => {
     expect(params.line_items.map((li: { price_data: { unit_amount: number } }) => li.price_data.unit_amount)).toEqual([6000]);
     expect(params.metadata).toMatchObject({ organizationId: org, invoiceId: invoice, kind: 'invoice', payableNowCents: '6000' });
   });
+
+  // V7-12a pin (no overpaid invoices, BE-14 row 1): the online pay page never takes more than is
+  // owed, card or bank; a tip is its own line and is never counted against the balance.
+  it.each(['card', 'bank'] as const)('a %s payment above what is payable now is refused with AMOUNT_ABOVE_PAYABLE_NOW; the tip rides on top', async (method) => {
+    const org = randomUUID();
+    orgs.push(org);
+    const tag = org.slice(0, 8);
+    const customer = randomUUID();
+    const invoice = randomUUID();
+    const token = `tok-cap-${tag}`;
+    await db.organization.create({
+      data: {
+        id: org, name: `v712a-cap-${tag}`, email: `cap-${tag}@example.test`,
+        address_line1: '1 Test Way', city: 'Testville', state: 'MA', postal_code: '02108',
+        estimate_terms: '', estimate_notes: '', estimate_payment_terms: '',
+        stripe_account_id: `acct_v712a_${tag}`, stripe_charges_enabled: true,
+        accepted_payment_methods: ['CHECK', 'CARD', 'ACH'], tips_enabled: true,
+      },
+    });
+    await db.customer.create({
+      data: { id: customer, organization_id: org, customer_number: `C-${tag}`, kind: 'PERSON', segment: 'RESIDENTIAL', first_name: 'Pat', last_name: 'Payer' },
+    });
+    await db.invoice.create({
+      data: {
+        id: invoice, organization_id: org, customer_id: customer, invoice_number: `INV-${tag}`, status: 'SENT',
+        subtotal: 100, tax_amount: 0, total_amount: 100, amount_due: 100, public_token: token, allow_partial_payment: true,
+      },
+    });
+    sessionsCreate.mockReset().mockResolvedValue({ id: `cs_${tag}`, url: 'https://checkout.example/cap' });
+    const checkout = (body: Record<string, unknown>) =>
+      request(app).post(`/api/invoices/${invoice}/public/checkout?token=${token}`).send({ method, ...body });
+
+    const tooMuch = await checkout({ amount: 100.01 });
+    expect(tooMuch.status).toBe(400);
+    expect(tooMuch.body.code).toBe('AMOUNT_ABOVE_PAYABLE_NOW');
+    expect(sessionsCreate).not.toHaveBeenCalled();
+
+    // The full balance plus a $30 tip (more than nothing, less than the invoice total) is accepted:
+    // two lines, the payment never above the $100.00 owed.
+    const ok = await checkout({ amount: 100, tip: 30 });
+    expect(ok.status).toBe(200);
+    const [params] = sessionsCreate.mock.calls[0];
+    expect(params.line_items.map((li: { price_data: { unit_amount: number; product_data: { name: string } } }) => [li.price_data.product_data.name.startsWith('Tip') ? 'Tip' : 'Payment', li.price_data.unit_amount])).toEqual([
+      ['Payment', 10000],
+      ['Tip', 3000],
+    ]);
+  });
 });

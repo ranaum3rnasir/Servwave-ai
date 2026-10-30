@@ -188,7 +188,7 @@ export function TabStrip({
 }
 
 export function TabPanel({
-  value, activeValue, keepMounted = false, children,
+  value, activeValue, keepMounted = false, animate = true, children,
 }: {
   value: string;
   activeValue: string;
@@ -199,6 +199,11 @@ export function TabPanel({
    * keep their queries and state alive behind a tab nobody is looking at.
    */
   keepMounted?: boolean;
+  /**
+   * Play the 20px entrance glide when the panel appears (default). A page whose panels sit under content that must
+   * not appear to move turns it off; the swap is then instant.
+   */
+  animate?: boolean;
   children: ReactNode;
 }) {
   const active = value === activeValue;
@@ -221,7 +226,7 @@ export function TabPanel({
       // Revealing a kept panel takes it from display:none back to shown, which replays the same
       // entrance animation a fresh mount gets.
       hidden={!active}
-      className="motion-safe:animate-tab-panel-in"
+      className={animate ? 'motion-safe:animate-tab-panel-in' : undefined}
     >
       {children}
     </div>

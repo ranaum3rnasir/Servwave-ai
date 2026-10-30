@@ -89,6 +89,20 @@ export function processingBlocksHandPaymentMessage(processingCents: number, what
   return `A bank payment of $${(processingCents / 100).toFixed(2)} is still processing on this ${what}. You can record only the part of the ${what} not covered by it.`;
 }
 
+/**
+ * V7-12 (no overpaid invoices): what staff read when a hand payment is above what is still owed.
+ * Amounts are formatted like the app's formatCurrency ($1,234.50, thousands separator) so the
+ * dialog and the server say the same thing. One helper serves the invoice and the deposit door so
+ * the two sentences cannot drift. `what` is "invoice" (balance due) or "deposit" (deposit still due).
+ */
+export function handPaymentAboveBalanceMessage(dueCents: number, what: 'invoice' | 'deposit'): string {
+  if (dueCents <= 0) return `There is nothing left to pay on this ${what}.`;
+  const due = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(dueCents / 100);
+  return what === 'invoice'
+    ? `That is more than the ${due} balance due. Enter ${due} or less.`
+    : `That is more than the ${due} deposit still due. Enter ${due} or less.`;
+}
+
 export function priceCheckout(input: CheckoutPricingInput): CheckoutPricing {
   const payableNowCents = input.payableNowCents ?? input.amountDueCents;
   if (payableNowCents <= 0) return { ok: false, error: 'NOTHING_PAYABLE_NOW' };

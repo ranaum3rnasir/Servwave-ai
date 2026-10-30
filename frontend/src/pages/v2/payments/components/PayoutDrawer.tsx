@@ -1,4 +1,4 @@
-import { useState, type MutableRefObject } from 'react';
+import { useState } from 'react';
 import { ChevronLeft, ChevronRight, Lock } from 'lucide-react';
 
 import {
@@ -7,7 +7,7 @@ import {
 import { formatCurrency } from '@/lib/utils';
 import { Alert } from '@/components/ui/alert';
 import { Button } from '@/ui-kit/components/ui/button';
-import { Sheet, SheetContent, SheetDescription, SheetFooter, SheetHeader, SheetTitle } from '@/ui-kit/components/ui/sheet';
+import { SheetFooter } from '@/ui-kit/components/ui/sheet';
 import { Skeleton } from '@/ui-kit/components/ui/skeleton';
 import {
   Table, TableBody, TableCell, TableFooter, TableHead, TableHeader, TableRow,
@@ -15,8 +15,9 @@ import {
 
 import { LoadError } from '../../_shared/loadError';
 import { StatusChip } from '../../_shared/statusChip';
+import { DrawerBody, DrawerCloseButton, DrawerHeaderBar, useDrawerHost } from '../drawerHost';
 import { formatPayoutDay } from '../payouts';
-import { PHONE_TAP_AREA } from '../phoneTap';
+import { CustomerIdLink } from './CustomerIdLink';
 import { UpdateBankAccountDialog } from './UpdateBankAccountDialog';
 
 /**
@@ -57,7 +58,15 @@ function PaymentLine({ payment, onOpen }: { payment: PayoutPaymentRow; onOpen: (
         ) : (
           <>
             {payment.customer.name}
-            <span className="text-muted-foreground block text-xs">{payment.invoice?.number}</span>
+            <span className="text-muted-foreground flex flex-wrap items-center gap-x-1.5 text-xs">
+              <span>{payment.invoice?.number}</span>
+              {payment.customer.customer_number && (
+                <>
+                  <span aria-hidden="true">·</span>
+                  <CustomerIdLink customer={payment.customer} />
+                </>
+              )}
+            </span>
           </>
         )}
         {payment.voided && <span className="mt-1 block"><StatusChip domain="paymentDisplay" status="Voided" /></span>}
@@ -134,103 +143,73 @@ function PayoutPayments({ payoutId, onOpenPayment }: { payoutId: string; onOpenP
 }
 
 /**
- * One payout, in a right-hand drawer (payments go-live P8). The list row (`seed`) shows at once; the detail fills in
- * the failure text and the payments. Its address is `?payout=`, so a refresh or a shared link reopens it.
+ * One payout, as a view of the drawer host (payments go-live P8, V7-07). The list row (a seed from the opener) shows at
+ * once; the detail fills in the failure text and the payments.
  *
  * A failed payout offers "Update bank account" when the payout's own actions say so (the server decides); it opens the
- * same dialog the Needs attention card uses.
+ * same dialog the Needs attention card uses. A payment row pushes the Payment view, so Back returns to this payout.
  */
-export function PayoutDrawer({
-  payoutId, seed, onClose, onOpenPayment, returnFocusRef,
-}: {
-  payoutId: string | null;
-  seed: PayoutRow | null;
-  onClose: () => void;
-  /** Opens one of the payout's payments in the payment drawer. */
-  onOpenPayment: (paymentId: string) => void;
-  /** The element that opened the drawer; it gets focus back on close. */
-  returnFocusRef?: MutableRefObject<HTMLElement | null>;
-}) {
+export function PayoutView({ payoutId }: { payoutId: string }) {
+  const host = useDrawerHost();
   const detailQuery = usePayoutDetail(payoutId);
   const detail: PayoutDetail | null = detailQuery.data ?? null;
+  const seed = (host.seedOf('payout', payoutId) as PayoutRow | undefined) ?? null;
   const shown: PayoutRow | null = detail ?? seed;
   const failedToLoad = detailQuery.isError && !shown;
   const canFix = Boolean(detail?.actions.update_bank_account);
   const [fixing, setFixing] = useState(false);
 
+  if (failedToLoad) {
+    return (
+      <>
+        <DrawerHeaderBar title="Payout" />
+        <div className="flex-1">
+          <LoadError title="Couldn’t load this payout." onRetry={() => void detailQuery.refetch()} retrying={detailQuery.isFetching} />
+        </div>
+        <SheetFooter><DrawerCloseButton /></SheetFooter>
+      </>
+    );
+  }
+  if (!shown) {
+    return (
+      <>
+        <DrawerHeaderBar title="Payout" />
+        <DrawerBody><Skeleton className="h-6 w-40" /><Skeleton className="h-10 w-32" /></DrawerBody>
+        <SheetFooter><DrawerCloseButton /></SheetFooter>
+      </>
+    );
+  }
   return (
-    <Sheet open={Boolean(payoutId)} onOpenChange={(next) => { if (!next) onClose(); }}>
-      <SheetContent
-        side="right"
-        showClose={false}
-        intent="content"
-        className={PHONE_TAP_AREA}
-        onCloseAutoFocus={(event) => {
-          const target = returnFocusRef?.current;
-          if (target?.isConnected) {
-            event.preventDefault();
-            target.focus();
-          }
-        }}
-      >
-        {failedToLoad ? (
-          <>
-            <SheetHeader>
-              <SheetTitle>Payout</SheetTitle>
-              <SheetDescription className="sr-only">Payout details</SheetDescription>
-            </SheetHeader>
-            <div className="flex-1">
-              <LoadError title="Couldn’t load this payout." onRetry={() => void detailQuery.refetch()} retrying={detailQuery.isFetching} />
-            </div>
-            <SheetFooter>
-              <Button type="button" variant="outline" className={PHONE_TAP} onClick={onClose}>Close</Button>
-            </SheetFooter>
-          </>
-        ) : !shown ? (
-          <>
-            <SheetHeader>
-              <SheetTitle>Payout</SheetTitle>
-              <SheetDescription className="sr-only">Payout details</SheetDescription>
-            </SheetHeader>
-            <div className="flex flex-1 flex-col gap-3 p-4"><Skeleton className="h-6 w-40" /><Skeleton className="h-10 w-32" /></div>
-          </>
-        ) : (
-          <>
-            <SheetHeader>
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <SheetTitle>Payout {shown.reference}</SheetTitle>
-                  <SheetDescription className="mt-1">
-                    {formatPayoutDay(shown.arrival_date)}
-                    {shown.destination_label ? ` · ${shown.destination_label}` : ''}
-                  </SheetDescription>
-                </div>
-                <StatusChip domain="payout" status={shown.status} />
-              </div>
-            </SheetHeader>
+    <>
+      <DrawerHeaderBar title={`Payout ${shown.reference}`} />
+      <DrawerBody>
+        <div>
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-[28px] leading-tight font-bold tabular-nums">{formatCurrency(shown.amount)}</div>
+            <StatusChip domain="payout" status={shown.status} />
+          </div>
+          <div className="text-text-secondary mt-1 text-[13.5px]">
+            {formatPayoutDay(shown.arrival_date)}
+            {shown.destination_label ? ` · ${shown.destination_label}` : ''}
+          </div>
+        </div>
 
-            <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4 pb-4">
-              <div className="pt-2 text-3xl font-semibold tabular-nums">{formatCurrency(shown.amount)}</div>
-
-              {detail?.status === 'FAILED' && (
-                <Alert tone="danger" role="alert">
-                  <p><b>Payout failed.</b> {detail.failure_text}</p>
-                </Alert>
-              )}
-
-              {payoutId && <PayoutPayments key={payoutId} payoutId={payoutId} onOpenPayment={onOpenPayment} />}
-            </div>
-
-            <SheetFooter>
-              {canFix && (
-                <Button type="button" className={PHONE_TAP} onClick={() => setFixing(true)}>Update bank account</Button>
-              )}
-              <Button type="button" variant="outline" className={PHONE_TAP} onClick={onClose}>Close</Button>
-            </SheetFooter>
-          </>
+        {detail?.status === 'FAILED' && (
+          <Alert tone="danger" role="alert">
+            <p><b>Payout failed.</b> {detail.failure_text}</p>
+          </Alert>
         )}
-      </SheetContent>
+
+        <PayoutPayments key={payoutId} payoutId={payoutId} onOpenPayment={(id) => host.push({ kind: 'payment', id })} />
+      </DrawerBody>
+
+      <SheetFooter>
+        {canFix && (
+          <Button type="button" className={PHONE_TAP} onClick={() => setFixing(true)}>Update bank account</Button>
+        )}
+        <DrawerCloseButton />
+      </SheetFooter>
       <UpdateBankAccountDialog open={fixing && canFix} onOpenChange={setFixing} />
-    </Sheet>
+    </>
   );
 }

@@ -134,6 +134,70 @@ export function payoutSummaryOf(acct: Stripe.Account): PayoutSummary {
   };
 }
 
+/** Payouts slice BE-3 (V7-02a): the four verification rows of the payout account page. */
+export type VerificationValue = 'verified' | 'pending' | 'not_started' | 'action_needed' | 'restricted';
+export type VerificationArea = 'business_details' | 'owner_identity' | 'bank_account' | 'tax_id';
+export type Verification = Record<VerificationArea, VerificationValue>;
+
+/** A rejected or disconnected account: every row reads restricted. */
+export const RESTRICTED_VERIFICATION: Verification = {
+  business_details: 'restricted', owner_identity: 'restricted', bank_account: 'restricted', tax_id: 'restricted',
+};
+
+const VERIFICATION_AREAS: readonly VerificationArea[] = ['business_details', 'owner_identity', 'bank_account', 'tax_id'];
+
+/**
+ * Pure: which of the four rows a requirement key belongs to. The order of the checks matters: the two
+ * tax keys under `individual.` are Tax ID, so they are tested before the `individual.` prefix; a key
+ * naming a verification (a document, say) is owner identity wherever it sits. Anything left over is
+ * business details, so an unrecognised key can never leave a row reading "verified".
+ */
+export function verificationAreaOf(key: string): VerificationArea {
+  if (key === 'company.tax_id' || key === 'individual.id_number' || key === 'individual.ssn_last_4') return 'tax_id';
+  if (key === 'external_account') return 'bank_account';
+  if (
+    key.startsWith('individual.') || key.startsWith('person_') || key.startsWith('representative.') || key.startsWith('relationship.') ||
+    key.startsWith('company.owners') || key.startsWith('company.directors') || key.startsWith('company.executives') ||
+    key.includes('verification')
+  ) return 'owner_identity';
+  return 'business_details';
+}
+
+/**
+ * Pure: the four verification rows of an account, read from its requirement lists. Never carries a
+ * requirement key or an account id; only the four values leave this function.
+ */
+export function verificationOf(acct: Stripe.Account): Verification {
+  const reason: string | null = acct.requirements?.disabled_reason ?? null;
+  if (reason && (reason.startsWith('rejected.') || reason === 'deauthorized')) return { ...RESTRICTED_VERIFICATION };
+
+  const dueNow = [...(acct.requirements?.past_due ?? []), ...(acct.requirements?.currently_due ?? [])];
+  const submitted = !!acct.details_submitted;
+  // Details are in, the account cannot take charges yet and nothing is asked of the owner: it is being reviewed.
+  if (submitted && !acct.charges_enabled && dueNow.length === 0) {
+    return { business_details: 'pending', owner_identity: 'pending', bank_account: 'pending', tax_id: 'pending' };
+  }
+
+  const areasOf = (keys: readonly string[] | null | undefined) => new Set((keys ?? []).map(verificationAreaOf));
+  const due = areasOf(dueNow);
+  const pending = areasOf(acct.requirements?.pending_verification);
+  const eventually = areasOf(acct.requirements?.eventually_due);
+  const hasBank = !!acct.external_accounts?.data?.some((e) => e.object === 'bank_account');
+
+  const out = {} as Verification;
+  for (const area of VERIFICATION_AREAS) {
+    let value: VerificationValue;
+    if (due.has(area)) value = 'action_needed';
+    else if (pending.has(area)) value = 'pending';
+    else if (!submitted && eventually.has(area)) value = 'not_started';
+    else value = 'verified';
+    // C-6: with no bank account on file the bank row is never verified.
+    if (area === 'bank_account' && !hasBank && value === 'verified') value = 'pending';
+    out[area] = value;
+  }
+  return out;
+}
+
 /** Test mode = the platform runs on a sandbox key. The exception in decideAccountStatus is gated on it. */
 function isTestModeKey(): boolean {
   const key = env.STRIPE_SECRET_KEY ?? '';
@@ -286,10 +350,20 @@ async function syncOnce(args: { organizationId: string; accountId: string; event
       const actions = event ? decide(event, snapshot) : decideAccountStatusSync(snapshot);
       const effects = await applyActions(tx, actions, { organizationId, eventId: event?.id ?? 'account-status-refresh' });
       // Payouts slice P2: the schedule and bank label come from the same account read, written beside the status.
+      // The verification rows (V7-02a) go in the same write. A failed-closed or kept refresh leaves them untouched.
       if (account && status?.outcome === 'refreshed' && effects.accountStatusWritten) {
         await tx.organization.updateMany({
           where: { id: organizationId, stripe_account_id: accountId },
-          data: { payout_summary: payoutSummaryOf(account) as unknown as Prisma.InputJsonValue },
+          data: {
+            payout_summary: payoutSummaryOf(account) as unknown as Prisma.InputJsonValue,
+            stripe_verification: verificationOf(account) as unknown as Prisma.InputJsonValue,
+          },
+        });
+      } else if (event?.type === 'account.application.deauthorized' && effects.accountStatusWritten) {
+        // A disconnected account has nothing to read: all four rows read restricted.
+        await tx.organization.updateMany({
+          where: { id: organizationId, stripe_account_id: accountId },
+          data: { stripe_verification: RESTRICTED_VERIFICATION as unknown as Prisma.InputJsonValue },
         });
       }
       const update = actions.find((a) => a.type === 'update_account_status');

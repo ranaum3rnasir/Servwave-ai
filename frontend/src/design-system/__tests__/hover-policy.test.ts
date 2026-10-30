@@ -177,6 +177,7 @@ const ALLOWED: Record<string, { count: number; why: string }> = {
   'src/pages/v2/leads/LeadDetailPage.tsx': { count: 1, why: 'decorative pencil in an estimate row; the whole row opens the estimate' },
   'src/components/data/ContactCell.tsx': { count: 1, why: 'used only by the v1 LeadsPage/CustomersPage, which no route renders' },
   'src/pages/inventory/PriceBookPage.tsx': { count: 3, why: 'v1 page; /inventory/price-book renders pages/v2/inventory/PriceBookPage' },
+  'src/pages/v2/spider/SpiderWatcherConfig.tsx': { count: 1, why: "an unselected lead row is opacity-65 at rest, never hidden; hover only brightens it (the contractor's Spider screen, copied as it is)" },
 };
 
 describe('hover-only reveals (TOUCH-04)', () => {

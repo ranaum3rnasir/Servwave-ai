@@ -1,41 +1,7 @@
 import { vi } from 'vitest';
 
 // Mock env before anything else imports it
-vi.mock('../config/env', () => ({
-  env: {
-    PORT: 3000,
-    NODE_ENV: 'test',
-    FRONTEND_URL: 'http://localhost:5173',
-    TAX_RATE: 0.0875,
-    DATABASE_URL: 'postgresql://test:test@localhost:5432/test',
-    SUPABASE_URL: 'https://test.supabase.co',
-    SUPABASE_SERVICE_ROLE_KEY: 'test-service-role-key',
-    // Copilot (Servy) — key present by default; the controller test mocks the
-    // gemini-generate service directly, so the SDK is never actually called.
-    GEMINI_API_KEY: 'test-gemini-key',
-    GEMINI_TEXT_MODEL: 'gemini-2.5-flash',
-    GEMINI_LIVE_MODEL: 'gemini-2.5-flash-native-audio-preview-12-2025',
-    COPILOT_VOICE_NAME: 'Puck',
-    COPILOT_SESSION_MINUTES: 30,
-    COPILOT_RATELIMIT_CAPACITY: 30,
-    COPILOT_RATELIMIT_REFILL_PER_MIN: 15,
-    // Email slice 6 - the inbound reply domain. Deliberately NOT the production
-    // default (reply.servwave.com): a test asserting against the real value
-    // would pass just as happily if the code hardcoded the domain instead of
-    // reading it from config.
-    EMAIL_REPLY_DOMAIN: 'reply.test.com',
-    // Mobile slice 21 - the bridge ring-first switch, at its real default (off),
-    // so every click-to-call suite keeps sending today's exact body.
-    CTM_BRIDGE_RING_CALLER: 'off',
-    CTM_BRIDGE_AGENT_IDS: new Map(),
-    // PRD 10 - the key a company purge hashes its mailbox addresses under. Present by default so a purge
-    // run against a stub transaction works; the suite that proves a missing key fails the purge takes it
-    // away itself.
-    MAILBOX_ADDRESS_HASH_KEY: 'test-mailbox-hash-key-0123456789abcdef',
-    // PRD 10 (S10.11) - the domain a person's own address is built on, so a hand-written email has an address to go out from.
-    MAILBOX_DOMAIN: 'mail.test.com',
-  },
-}));
+vi.mock('../config/env', async () => ({ env: (await import('./test-env.js')).testEnv }));
 
 // The live-update pings post to the vendor's broadcast door with plain fetch. A suite that does not stub fetch itself
 // must never reach the network through them, so that one address answers as the service does (202) and every other
@@ -204,6 +170,8 @@ vi.mock('../lib/stripe', () => ({
   listPayoutBalanceTransactions: vi.fn().mockResolvedValue([]),
   retrieveAccountPayout: vi.fn().mockResolvedValue(null),
   retrievePaymentIntentFailureCode: vi.fn().mockResolvedValue(null),
+  // V7-09a - how an unapplied capture was paid, read on demand. Default: the processor cannot say.
+  retrieveCapturePayerDetail: vi.fn().mockResolvedValue(null),
   // Payments go-live P10 - answering a dispute: one file token per upload, staging and submit resolve, and the
   // submission count reads zero until a suite says otherwise.
   uploadDisputeEvidenceFile: vi.fn().mockResolvedValue('file_test_evidence'),
@@ -344,7 +312,7 @@ vi.mock('../lib/email', () => ({
   sendRefundNotification: vi.fn().mockResolvedValue(undefined),
   sendInvoiceRefundNotification: vi.fn().mockResolvedValue(undefined),
   sendBankPaymentProcessingEmail: vi.fn().mockResolvedValue(undefined),
-  sendBankPaymentFailedEmail: vi.fn().mockResolvedValue(undefined),
+  sendBankPaymentFailedEmail: vi.fn().mockResolvedValue({ status: 'sent', providerMessageId: null, fromAddress: 'noreply@example.test', fromName: null }),
   sendDepositPaidAlert: vi.fn().mockResolvedValue(undefined),
   sendPaymentMethodSelectedAlert: vi.fn().mockResolvedValue(undefined),
   sendInvoiceEmail: vi.fn().mockResolvedValue({ status: 'sent' }),
@@ -533,6 +501,30 @@ vi.mock('../lib/prisma', () => ({
       deleteMany: vi.fn(),
       count: vi.fn().mockResolvedValue(0),
     },
+    // V7-03 - the Lists-page job types and lead/customer sources. findMany defaults to empty, so a suite that never touches
+    // the lists reads the org's JSON columns (the no-rows fallback).
+    jobType: {
+      findMany: vi.fn().mockResolvedValue([]),
+      findFirst: vi.fn(),
+      findUnique: vi.fn(),
+      create: vi.fn(),
+      createMany: vi.fn(),
+      update: vi.fn(),
+      updateMany: vi.fn(),
+      deleteMany: vi.fn(),
+      count: vi.fn().mockResolvedValue(0),
+    },
+    leadSource: {
+      findMany: vi.fn().mockResolvedValue([]),
+      findFirst: vi.fn(),
+      findUnique: vi.fn(),
+      create: vi.fn(),
+      createMany: vi.fn(),
+      update: vi.fn(),
+      updateMany: vi.fn(),
+      deleteMany: vi.fn(),
+      count: vi.fn().mockResolvedValue(0),
+    },
     leadAssignee: {
       findMany: vi.fn().mockResolvedValue([]),
       findFirst: vi.fn(),
@@ -606,6 +598,7 @@ vi.mock('../lib/prisma', () => ({
     },
     tagAssignment: {
       findMany: vi.fn().mockResolvedValue([]),
+      groupBy: vi.fn().mockResolvedValue([]),
       findUnique: vi.fn(),
       create: vi.fn(),
       delete: vi.fn(),

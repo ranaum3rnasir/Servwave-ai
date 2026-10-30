@@ -323,7 +323,7 @@ export function InvoiceLineItemsEditor({ invoice, estimateLines = [] }: InvoiceL
         onAdd={async (payload) => {
           await addMutation.mutateAsync(payload);
         }}
-        onUpdate={(lineId, patch) => updateMutation.mutate({ lineId, patch })}
+        onUpdate={(lineId, patch) => updateMutation.mutateAsync({ lineId, patch }).then(() => undefined)}
         onDelete={(lineId) => deleteMutation.mutate(lineId)}
         onReorder={(orderedIds) => reorderMutation.mutate(orderedIds)}
         // Money editing moved to Card A (<InvoiceReceiptCard> on InvoiceDetailPage.tsx) —

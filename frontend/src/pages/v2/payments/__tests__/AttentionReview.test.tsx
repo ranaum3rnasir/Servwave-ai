@@ -8,8 +8,7 @@ import { renderWithProviders } from '@/__tests__/helpers';
 import { catalogToggle } from '@/__tests__/support/backendSwitchCatalog';
 
 import PaymentsPage from '../PaymentsPage';
-import { AttentionCard } from '../components/AttentionCard';
-import { attentionCalls, makeItem, serveAttention } from './attentionFixtures';
+import { attentionCalls, makeItem, serveAttention, findCard, CardWithDrawer } from './attentionFixtures';
 import { TabHarness, makeRow, mockApi } from './paymentsFixtures';
 
 const OWNER = buildAbility(catalogToggle('Manage payout account').grants.map((g) => ({ action: g.action, subject: g.subject }) as never));
@@ -19,20 +18,20 @@ function Where() {
   return <div data-testid="where">{search}</div>;
 }
 const where = () => screen.getByTestId('where').textContent ?? '';
-const card = () => screen.findByRole('region', { name: /Needs attention/ });
+const card = () => findCard();
 
 beforeEach(() => mockApi.get.mockReset());
 
 describe('the failed payout line', () => {
   it('names the payout by its own reference when the item carries one', async () => {
     serveAttention({ open: [makeItem(4, 'failed_payout', { payout_reference: 'PO-7K2M9Q' })] });
-    renderWithProviders(<AttentionCard />, { initialEntries: ['/payments'] });
+    renderWithProviders(<CardWithDrawer />, { initialEntries: ['/payments'] });
     expect(await within(await card()).findByText('Payout PO-7K2M9Q · $104.00 · The bank account could not be credited')).toBeInTheDocument();
   });
 
   it('falls back to the date only when there is no reference', async () => {
     serveAttention({ open: [makeItem(4, 'failed_payout', { payout_reference: null })] });
-    renderWithProviders(<AttentionCard />, { initialEntries: ['/payments'] });
+    renderWithProviders(<CardWithDrawer />, { initialEntries: ['/payments'] });
     expect(await within(await card()).findByText('Payout of Oct 12 · $104.00 · The bank account could not be credited')).toBeInTheDocument();
   });
 });
@@ -40,7 +39,7 @@ describe('the failed payout line', () => {
 describe('Respond', () => {
   it('renders only when the item has a dispute to open', async () => {
     serveAttention({ open: [makeItem(3, 'dispute', { actions: ['respond'], dispute_id: null })] });
-    renderWithProviders(<AttentionCard />, { initialEntries: ['/payments'] });
+    renderWithProviders(<CardWithDrawer />, { initialEntries: ['/payments'] });
     const row = within(await card()).getByRole('listitem');
     expect(within(row).queryByRole('button', { name: 'Respond' })).not.toBeInTheDocument();
   });
@@ -82,18 +81,18 @@ describe('the payment drawer action slot', () => {
   });
 });
 
-describe('Show all and Resolved items', () => {
-  const stale = '/payments?tab=payouts&payout=po-1&payment=p-1&dispute=dp-1&type=dispute&page=3&q=abc&attView=resolved';
-  it.each([['Show all 7', 'attView=open'], ['Resolved items (1)', 'attView=resolved']])('%s lands on the full list', async (name, view) => {
+describe('View all and Resolved items', () => {
+  const stale = '/payments?tab=payouts&type=dispute&page=3&q=abc&attView=resolved';
+  it.each([['View all 7', 'attView=open'], ['Resolved items (1)', 'attView=resolved']])('%s lands on the full list', async (name, view) => {
     const u = userEvent.setup();
     serveAttention({ open: Array.from({ length: 7 }, (_, i) => makeItem(i + 1, 'failed_payment', { actions: [] })), resolved: [makeItem(50, 'failed_payment', { status: 'resolved' })] });
-    renderWithProviders(<><AttentionCard /><Where /></>, { initialEntries: [stale] });
+    renderWithProviders(<><CardWithDrawer /><Where /></>, { initialEntries: [stale] });
     await u.click(within(await card()).getByRole('button', { name }));
     const now = where();
     expect(now).toContain('tab=payments');
     expect(now).toContain('chip=attention');
     expect(now).toContain(view);
-    for (const key of ['payout=', 'payment=', 'dispute=', 'type=', 'page=', 'q=']) expect(now).not.toContain(key);
+    for (const key of ['d=', 'payout=', 'payment=', 'dispute=', 'type=', 'page=', 'q=']) expect(now).not.toContain(key);
   });
 });
 
@@ -101,7 +100,7 @@ describe('a failed load', () => {
   it('shows a small error with Retry instead of nothing, and the card comes back on Retry', async () => {
     const u = userEvent.setup();
     serveAttention({ open: [makeItem(1, 'failed_payment', { actions: [] })], failFirst: 1 });
-    renderWithProviders(<AttentionCard />, { initialEntries: ['/payments'] });
+    renderWithProviders(<CardWithDrawer />, { initialEntries: ['/payments'] });
     expect(await screen.findByText('Couldn’t load what needs attention.')).toBeInTheDocument();
     await u.click(screen.getByRole('button', { name: 'Retry' }));
     expect(await card()).toBeInTheDocument();
@@ -121,11 +120,11 @@ describe('the Needs attention chip', () => {
     }) as never);
   }
 
-  it('hides the top card while the table below already lists the same items', async () => {
+  it('keeps the top card, with all its rows, while the table below lists the same items', async () => {
     servePage(3);
     renderWithProviders(<PaymentsPage />, { initialEntries: ['/payments?tab=payments&chip=attention'], ability: OWNER });
     expect(await screen.findByRole('button', { name: 'Needs attention 3' })).toHaveAttribute('aria-pressed', 'true');
-    expect(screen.queryByRole('region', { name: /Needs attention/ })).not.toBeInTheDocument();
+    expect(within(await card()).getAllByRole('listitem')).toHaveLength(3);
   });
 
   it('shows the card again with the chip off', async () => {
@@ -138,7 +137,7 @@ describe('the Needs attention chip', () => {
 describe('the card header', () => {
   it('sits the title and Resolved items on one baseline', async () => {
     serveAttention({ open: [makeItem(1, 'failed_payment', { actions: [] })], resolved: [makeItem(50, 'failed_payment', { status: 'resolved' })] });
-    renderWithProviders(<AttentionCard />, { initialEntries: ['/payments'] });
+    renderWithProviders(<CardWithDrawer />, { initialEntries: ['/payments'] });
     const region = await card();
     const header = within(region).getByRole('button', { name: /Resolved items/ }).closest('[data-slot="card-header"]') as HTMLElement;
     expect(header.className).toMatch(/items-baseline|items-center/);

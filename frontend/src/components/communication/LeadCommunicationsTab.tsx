@@ -11,10 +11,16 @@
  * THIS lead's own rows (no self-link).
  *
  * Compose parity with the Job tab: a "Call customer" entry (in-app dialer with
- * lead context) + an SMS composer that stamps outgoing texts with this lead at
- * origin — both gated on comms-module access + create ability (a composer would
- * 403 for non-pilot orgs). Email-from-lead is intentionally omitted (the email
- * endpoint stamps job_id only, no lead_id yet).
+ * lead context) + a Text / Email composer that stamps outgoing texts and emails
+ * with this lead at origin — both gated on comms-module access + create ability
+ * (a composer would 403 for non-pilot orgs). The email endpoint stamps `lead_id`
+ * and records the lead's first outbound contact once the email is sent
+ * (SPEC-4 §6.6, Option A). The tab opens on Text, so a Spider draft lands in the
+ * text box, and only the Text path calls `onSent`.
+ *
+ * A text the server recorded but did not send (`delivery: 'skipped'` or `'failed'`) is not a
+ * contact (SPEC-6, D1): `onSent` is not called, and one line under the box says why, in the
+ * delivery wording the SMS inbox already uses.
  *
  * Manual Communication Log (2026-08-27): a "Log communication" entry in the SAME row, gated on
  * the new `log_past Communication` ability and on nothing else — see `canLogPast` below for why
@@ -26,18 +32,29 @@ import { MessageSquare, Phone, PencilLine } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { Skeleton } from '@/components/ui/skeleton';
-import { extractApiError } from '@/lib/utils';
+import { Input } from '@/components/ui/input';
+import { cn, extractApiError } from '@/lib/utils';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import { useFeature } from '@/lib/entitlements';
+import { composeSenderProps, deliveryNote, useSendingIdentity } from '@/lib/api/communication';
+import { SendingAsLine, sendBlockedReason } from '@/components/communication/inbox/ComposeWindow';
 import { requestCall } from '@/lib/communication/phoneTabHandoff';
 import { CommRow } from '@/components/communication/shared/CommRow';
 import { EntityCallDrawer } from '@/components/communication/shared/EntityCallDrawer';
 import { EntitySmsDrawer } from '@/components/communication/shared/EntitySmsDrawer';
 import { LogCommunicationDrawer } from '@/components/communication/shared/LogCommunicationDrawer';
 import { EmptyState } from '@/components/ui/empty-state';
-import { canModifyLoggedEntry, newestFirst, useLeadCommunications, useSendLeadSms } from '@/lib/api/jobCommunications';
+import {
+  canModifyLoggedEntry,
+  newestFirst,
+  useLeadCommunications,
+  useSendLeadEmail,
+  useSendLeadSms,
+} from '@/lib/api/jobCommunications';
 import { useAuthStore } from '@/stores/auth.store';
 import { useScheduleTimezone, formatInstant } from '@/lib/schedule-tz';
+
+type ComposeMode = 'sms' | 'email';
 
 function formatAt(at: string, tz: string) {
   return formatInstant(at, tz);
@@ -49,7 +66,9 @@ export function LeadCommunicationsTab({
   customerId,
   customerName,
   customerPhone,
+  customerEmail,
   initialMessage,
+  onSent,
 }: {
   leadId: string;
   /** The lead's L-number — stamped into the composer caption + call context. */
@@ -58,15 +77,28 @@ export function LeadCommunicationsTab({
   customerId?: string;
   customerName?: string;
   customerPhone?: string;
+  /** Customer's email — absent disables the Email compose mode. */
+  customerEmail?: string;
   /**
-   * Text to start the composer with - Spider's suggested follow-up when the lead was opened from a
-   * Spider alert (#2619). Capped at 500 characters; it is only ever sent by pressing Send.
+   * Text to start the composer with - the contractor's Spider draft when the lead was opened from a
+   * Spider alert card (#2619). Capped at 500 characters; it is only ever sent by pressing Send.
    */
   initialMessage?: string;
+  /**
+   * Called once a text has actually gone out (`delivery: 'sent'`). Not called for a text recorded
+   * but not sent, or failed. Text path only: an email sent from this tab never calls it.
+   */
+  onSent?: () => void;
 }) {
   const tz = useScheduleTimezone();
   const { data: items, isLoading, isError } = useLeadCommunications(leadId);
   const sendSms = useSendLeadSms(leadId);
+  const sendEmail = useSendLeadEmail(leadId);
+  // PRD 10 (S10.11): an email written here goes out from the sender's OWN address, whoever the
+  // customer is; the line says so, and a person with no address yet cannot send it.
+  const { data: sendingIdentity } = useSendingIdentity();
+  const sender = composeSenderProps(sendingIdentity);
+  const emailBlockedReason = sendBlockedReason(sender);
   const ability = useAppAbility();
   const canAccessComms = useFeature('phone');
   // Composer + call entry: the org must have comms-module access AND the user
@@ -87,7 +119,12 @@ export function LeadCommunicationsTab({
   // logger, or an organisation admin", and neither half can be answered from the ability alone.
   const viewer = useAuthStore((s) => s.user);
 
+  // Opens on Text, so the Spider draft (`initialMessage`) lands in the text box.
+  const [mode, setMode] = useState<ComposeMode>('sms');
   const [body, setBody] = useState(() => (initialMessage ?? '').slice(0, 500));
+  const [subject, setSubject] = useState('');
+  /** Why the last text was recorded but did not go out, with its tone. Cleared on typing or sending. */
+  const [notSent, setNotSent] = useState<{ text: string; failed: boolean } | null>(null);
   const [logOpen, setLogOpen] = useState(false);
   /** The entry the drawer is reopened on. Null while it is being used to record a new one. */
   const [editingEntryId, setEditingEntryId] = useState<string | null>(null);
@@ -97,10 +134,43 @@ export function LeadCommunicationsTab({
   // re-sources off the anchor-filtered by-id thread read, so this never needs the section gate.
   const [selectedSmsThreadId, setSelectedSmsThreadId] = useState<string | null>(null);
 
+  const sendPending = mode === 'sms' ? sendSms.isPending : sendEmail.isPending;
+
   const handleSend = () => {
     const trimmed = body.trim();
-    if (!trimmed || sendSms.isPending || !customerId) return;
-    sendSms.mutate({ customerId, body: trimmed }, { onSuccess: () => setBody('') });
+    if (!trimmed || sendPending || !customerId) return;
+    if (mode === 'sms') {
+      setNotSent(null);
+      sendSms.mutate(
+        { customerId, body: trimmed },
+        {
+          onSuccess: (res) => {
+            setBody(''); // recorded on the lead either way
+            if (res?.delivery === 'sent') {
+              onSent?.();
+            } else if (res?.delivery === 'skipped' || res?.delivery === 'failed') {
+              const note = deliveryNote({
+                direction: 'out',
+                status: res.message?.status ?? res.delivery,
+                statusReason: res.message?.statusReason,
+              });
+              setNotSent({ text: note.title, failed: note.tone === 'danger' });
+            }
+          },
+        },
+      );
+    } else {
+      if (!customerEmail || emailBlockedReason !== undefined) return;
+      sendEmail.mutate(
+        { to: customerEmail, subject: subject.trim(), body: trimmed },
+        {
+          onSuccess: () => {
+            setBody('');
+            setSubject('');
+          },
+        },
+      );
+    }
   };
 
   // Backend returns ascending (oldest first); the roll-up reads newest-first,
@@ -215,42 +285,111 @@ export function LeadCommunicationsTab({
         </ol>
       )}
 
-      {/* Composer — texts sent here are stamped with this lead at origin.
+      {/* Composer — texts and emails sent here are stamped with this lead at origin.
           Rendered only for comms-enabled orgs + users with create Communication;
           everyone else gets the clean read-only timeline. */}
       {canCompose && (
         <div className="mt-4 border-t border-border pt-3">
+          {/* Channel toggle — ocean active state (interactive chrome, never sage). */}
+          <div className="mb-2 flex items-center gap-2">
+            <div className="inline-flex rounded-lg border border-border bg-background-light p-0.5">
+              {(['sms', 'email'] as const).map((m) => (
+                <button
+                  key={m}
+                  type="button"
+                  aria-pressed={mode === m}
+                  disabled={m === 'email' && !customerEmail}
+                  onClick={() => setMode(m)}
+                  className={cn(
+                    'rounded-md px-2.5 py-1 text-xs font-semibold transition-colors',
+                    mode === m
+                      ? 'bg-primary text-on-fill shadow-sm'
+                      : 'text-text-secondary hover:text-text-primary',
+                    m === 'email' && !customerEmail && 'cursor-not-allowed opacity-50'
+                  )}
+                >
+                  {m === 'sms' ? 'Text' : 'Email'}
+                </button>
+              ))}
+            </div>
+            {!customerEmail && (
+              <span className="text-[11px] text-text-soft">No email on file for this customer.</span>
+            )}
+          </div>
+
+          {mode === 'email' && (
+            <SendingAsLine
+              address={sender.fromAddress}
+              name={sender.fromName}
+              addressNeeded={sender.addressNeeded}
+              className="mb-2 border-b-0 px-0 py-0"
+            />
+          )}
+          {mode === 'email' && (
+            <Input
+              value={subject}
+              onChange={(e) => setSubject(e.target.value)}
+              placeholder="Subject"
+              className="mb-2 h-9"
+            />
+          )}
           <div className="flex items-end gap-2">
             <Textarea
               rows={2}
               value={body}
-              onChange={(e) => setBody(e.target.value)}
+              onChange={(e) => {
+                setBody(e.target.value);
+                setNotSent(null);
+              }}
               onKeyDown={(e) => {
                 if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
                   e.preventDefault();
                   handleSend();
                 }
               }}
-              placeholder={`Text ${customerName ?? 'customer'}…`}
+              placeholder={
+                mode === 'sms' ? `Text ${customerName ?? 'customer'}…` : `Email ${customerName ?? 'customer'}…`
+              }
               className="min-h-0 flex-1 resize-none"
             />
             <Button
               variant="solid" tone="business"
               onClick={handleSend}
-              disabled={sendSms.isPending || !body.trim()}
+              disabled={sendPending || !body.trim() || (mode === 'email' && emailBlockedReason !== undefined)}
+              disabledReason={mode === 'email' ? emailBlockedReason : undefined}
             >
               Send
             </Button>
           </div>
-          {sendSms.isError && (
+          {mode === 'sms' && sendSms.isError && (
             <p className="mt-1.5 text-sm text-danger">
               {extractApiError(sendSms.error, 'Failed to send text')}
+            </p>
+          )}
+          {/* Mounted empty for as long as the composer is in text mode, and only its words change:
+              screen readers often skip a live region that appears already filled (SPEC-6 6.3). */}
+          {mode === 'sms' && (
+            <p
+              role="status"
+              className={cn(
+                'text-sm',
+                notSent && 'mt-1.5',
+                notSent?.failed ? 'text-danger' : 'text-text-secondary',
+              )}
+            >
+              {notSent?.text}
+            </p>
+          )}
+          {mode === 'email' && sendEmail.isError && (
+            <p className="mt-1.5 text-sm text-danger">
+              {extractApiError(sendEmail.error, 'Failed to send email')}
             </p>
           )}
           <p className="mt-1.5 flex items-center gap-2 text-[11px] text-text-soft">
             <span className="text-text-secondary/70 touch:!hidden">⌘↵ to send ·</span>
             <span>
-              Texts sent from this lead are tagged {leadLabel ?? 'to this lead'} automatically.
+              {mode === 'sms' ? 'Texts' : 'Emails'} sent from this lead are tagged {leadLabel ?? 'to this lead'}{' '}
+              automatically.
             </span>
           </p>
         </div>

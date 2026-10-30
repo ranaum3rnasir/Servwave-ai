@@ -221,6 +221,19 @@ describe('terminalStaleReason — LEAD_DATE_ANCHORED on a stage clock', () => {
       .toBeNull();
   });
 
+  // SPEC-4 D7 (risk pin, §7.4): a Contacted lead whose last outbound contact is taken away goes
+  // back to New and its first contact time is CLEARED. A run keyed on that contact time must stop,
+  // not fire against an empty anchor and not throw. The stop reason is today's correction wording,
+  // left as it is by Ran's decision (24 Oct, README 10d) and reported for him.
+  it('stops a run keyed on a contact time that D7 has since cleared, with the correction wording', () => {
+    const original = new Date('2026-08-24T09:00:00.000Z');
+    const cleared = { ...base, leadStatus: 'NEW', leadContactedAt: null } as EntityState;
+    expect(() => terminalStaleReason('LEAD_DATE_ANCHORED', original.toISOString(), cleared, now, 'after', 'lead.contacted_at'))
+      .not.toThrow();
+    expect(terminalStaleReason('LEAD_DATE_ANCHORED', original.toISOString(), cleared, now, 'after', 'lead.contacted_at'))
+      .toBe('First contact was corrected — this run was replaced by an updated one');
+  });
+
   it('stops a run keyed on the first trip once a later trip has been completed', () => {
     // THE decision that makes multi-visit leads measurable, and the reason the estimate clock is
     // anchored on the LATEST completion rather than the first. A salesperson who finishes trip 1,

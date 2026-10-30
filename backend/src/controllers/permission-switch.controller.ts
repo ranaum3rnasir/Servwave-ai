@@ -38,7 +38,7 @@ export function getCatalog(_req: Request, res: Response) {
 
 /**
  * GET /api/permission-switches/accepted-payment-methods - the signed-in person's company's effective accepted payment
- * methods (the methods ticked in Payments & Lists plus Credit Card while the card processor is live, or every method
+ * methods (the methods ticked in ServWave Payments plus Credit Card while the card processor is live, or every method
  * when none is ticked). What the Allowed payment methods editor offers and the payment dialogs filter by. Open to any
  * signed-in person of that company: it is the list the payment server check itself reads.
  */

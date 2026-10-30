@@ -16,7 +16,7 @@ import { ADDRESS_NEEDED_REFUSAL, handSenderOrRefusal, type HandSender } from '..
 import { sendEstimateEmail, sendEstimateWithDepositEmail, sendEstimateApprovedNotification, sendDepositReceivedConfirmation, sendDepositPaidAlert, sendPaymentMethodSelectedAlert } from '../lib/email';
 import type { EmailDispatchResult } from '../lib/email';
 import { createCheckoutSession, getStripeForOrg, isStripeConfigured, expireOpenCheckoutSessionsForInvoice } from '../lib/stripe';
-import { exceedsPayableNow, payableNowCents, priceCheckout, processingBlocksHandPaymentMessage, type CheckoutMethod } from '../lib/checkout-pricing';
+import { exceedsPayableNow, handPaymentAboveBalanceMessage, payableNowCents, priceCheckout, processingBlocksHandPaymentMessage, type CheckoutMethod } from '../lib/checkout-pricing';
 import { PROCESSING_PAYMENT_WHERE, paidCents, toCents } from '../lib/payment-ledger';
 import { tenantWhere } from '../lib/tenant';
 import {
@@ -3565,6 +3565,10 @@ class EstimateAlreadyApprovedError extends Error {}
 class DepositProcessingError extends Error {
   constructor(readonly processingCents: number) { super('deposit bank payment processing'); }
 }
+// V7-12 (no overpaid invoices): a hand deposit above what the open deposit invoice still owes.
+class DepositAmountAboveBalanceError extends Error {
+  constructor(readonly dueCents: number) { super('deposit amount above balance'); }
+}
 const DEPOSIT_NOT_PAYABLE_STATUSES: readonly string[] = ['PAID', 'VOIDED', 'REFUNDED', 'PARTIALLY_REFUNDED', 'DISPUTED'];
 const DEPOSIT_NOT_PAYABLE_MESSAGE =
   "This estimate's deposit invoice can't take a payment: it was voided or already paid. Reload to see where it stands.";
@@ -3684,6 +3688,11 @@ export async function recordEstimatePayment(req: Request, res: Response) {
         if (processingCents > 0 && exceedsPayableNow(toCents(depInv.amount_due), processingCents, toCents(body.amount))) {
           throw new DepositProcessingError(processingCents);
         }
+        // No overpaid invoices (V7-12): never more than the deposit still due. After the processing
+        // check, so a bank payment in flight keeps its own message. Nothing is written yet.
+        if (toCents(body.amount) > toCents(depInv.amount_due)) {
+          throw new DepositAmountAboveBalanceError(toCents(depInv.amount_due));
+        }
       }
       // When freshly created, the deposit invoice is opened with amount_due = body.amount, so the
       // payment fully covers it; track this so coverage math doesn't depend on the create() echo.
@@ -3736,6 +3745,7 @@ export async function recordEstimatePayment(req: Request, res: Response) {
 
       // Compute coverage using the proven formula from invoice.controller.ts:967-972.
       // depInv is now guaranteed to exist (found or just created).
+      // The cap above guarantees body.amount <= depInvDue; Math.max stays only as a guard.
       const newAmountDue = Math.round(Math.max(depInvDue - body.amount, 0) * 100) / 100;
       isFullyPaid = newAmountDue <= 0;
 
@@ -3907,6 +3917,10 @@ export async function recordEstimatePayment(req: Request, res: Response) {
     }
     if (err instanceof DepositProcessingError) {
       res.status(409).json({ error: processingBlocksHandPaymentMessage(err.processingCents, 'deposit') });
+      return;
+    }
+    if (err instanceof DepositAmountAboveBalanceError) {
+      res.status(400).json({ code: 'AMOUNT_ABOVE_BALANCE', error: handPaymentAboveBalanceMessage(err.dueCents, 'deposit') });
       return;
     }
     if (err instanceof EstimateAlreadyApprovedError) {

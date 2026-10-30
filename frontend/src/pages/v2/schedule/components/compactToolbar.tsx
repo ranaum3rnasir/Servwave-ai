@@ -18,7 +18,7 @@ import { Label } from '@/ui-kit/components/ui/label';
 import { SelectField } from '@/ui-kit/components/form/selectField';
 import { Sheet, SheetBody, SheetContent, SheetHeader, SheetTitle } from '@/ui-kit/components/ui/sheet';
 
-import { Segment, SegmentedGroup } from './segmented';
+import { Segment, SegmentedGroup } from '../../_shared/segmented';
 
 /**
  * Mobile slice 42 - the scheduler's toolbar on a phone, and on a phone held sideways.

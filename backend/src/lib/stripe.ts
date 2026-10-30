@@ -595,6 +595,68 @@ export async function retrievePaymentIntentFailureCode(accountId: string | null,
   }
 }
 
+/** What the unapplied item's drawer shows about how the money was paid. Words only: no id, no payer name, no error text. */
+export interface CapturePayerDetail {
+  method: 'card' | 'bank';
+  /** The card brand as the processor names it (visa, mastercard...); null for a bank payment. */
+  brand: string | null;
+  last4: string | null;
+  /** The bank's name for a bank payment; null for a card. */
+  bank_name: string | null;
+  description: string | null;
+}
+
+/** How long the drawer waits for the processor before it shows the item without the payer rows. */
+export const CAPTURE_PAYER_READ_TIMEOUT_MS = 3000;
+
+/** A description that carries one of the processor's own object ids is dropped rather than shown. */
+const PROCESSOR_ID_IN_TEXT = /\b(?:pi|ch|py|cs|acct|pm|re|evt|in|dp|po|txn|ba|card|src|seti|si|sub|cus)_[A-Za-z0-9]+/;
+
+/**
+ * V7 BE-10: how an unapplied capture was paid, read on demand from the processor and NEVER stored. The one deliberate
+ * exception to "ServWave's own records only" on the Payments page. Pinned to the capture's connected account, outside any
+ * database transaction. Returns only { method, brand, last4, bank_name, description }; null when there is no intent or
+ * account on the row, when the processor cannot say, errors, or takes longer than `timeoutMs`. It never throws and the
+ * processor's error text never leaves it, so the caller shows the item without the payer rows.
+ */
+export async function retrieveCapturePayerDetail(
+  accountId: string | null,
+  paymentIntentId: string | null,
+  timeoutMs: number = CAPTURE_PAYER_READ_TIMEOUT_MS,
+): Promise<CapturePayerDetail | null> {
+  if (!accountId || !paymentIntentId) return null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const read = _platformStripe().paymentIntents.retrieve(
+      paymentIntentId,
+      { expand: ['latest_charge'] },
+      { stripeAccount: accountId, timeout: timeoutMs },
+    );
+    const timedOut = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), timeoutMs);
+    });
+    const pi = await Promise.race([read, timedOut]);
+    if (!pi) return null;
+    const charge = typeof pi.latest_charge === 'object' && pi.latest_charge ? pi.latest_charge : null;
+    const details = charge?.payment_method_details;
+    const description = typeof pi.description === 'string' && pi.description.trim() && !PROCESSOR_ID_IN_TEXT.test(pi.description)
+      ? pi.description.trim()
+      : null;
+    if (details?.type === 'card' && details.card) {
+      return { method: 'card', brand: details.card.brand ?? null, last4: details.card.last4 ?? null, bank_name: null, description };
+    }
+    if (details?.type === 'us_bank_account' && details.us_bank_account) {
+      return { method: 'bank', brand: null, last4: details.us_bank_account.last4 ?? null, bank_name: details.us_bank_account.bank_name ?? null, description };
+    }
+    return null;
+  } catch {
+    // The caller decides what a missing read means; the processor's message is never passed on.
+    return null;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // Payments go-live P10: answering a dispute. Every call is pinned to the account the payment lives on (null = the
 // platform account, a legacy payment); the evidence rules are enforced by the caller before any of this runs.

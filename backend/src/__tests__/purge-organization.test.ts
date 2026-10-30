@@ -72,6 +72,9 @@ function fakeTx(orgName: string) {
     lostReasonOption: { deleteMany: del('lostReasonOption') },
     // Roles & Permissions S06.14 - the job cancel-reasons list, same RESTRICT hazard.
     jobCancelReasonOption: { deleteMany: del('jobCancelReasonOption') },
+    // V7-03 - the Lists-page job types and lead sources, same RESTRICT hazard.
+    jobType: { deleteMany: del('jobType') },
+    leadSource: { deleteMany: del('leadSource') },
     // Roles & Permissions S06.10 - the checks on an office review's items (org FK cascades, deleted explicitly).
     jobReviewItemCheck: { deleteMany: del('jobReviewItemCheck') },
     // Roles & Permissions S06.11 - the reviewer's decisions on the review's customer items (org FK cascades, deleted explicitly).

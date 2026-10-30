@@ -118,13 +118,15 @@ const PAGES: GateState[] = [
   // Added by slice 48 (reorder by tap): the settings lists that were drag-only.
   route('admin', 'settings-decline-reasons', fixed('/settings/decline-reasons')),
   route('admin', 'settings-job-sub-statuses', fixed('/settings/job-sub-statuses')),
-  route('admin', 'settings-payments', fixed('/settings/payments')),
+  route('admin', 'settings-payments', fixed('/settings/servwave-payments')),
+  // The Lists page (V7-04): four cards of rows. It saves every change on its own, so there is no Save button to find.
+  route('admin', 'settings-lists', fixed('/settings/lists')),
   // The status badge's other tints. The throwaway org's own state is not stable: it carries a
   // fake connected account, and the nightly account-status refresh on staging (07:30 UTC) fails
   // closed for it, moving the badge from "Active" to "Under review" in the middle of a long run.
   // The page must read at AA in every state, so each tint is measured on its own, stubbed.
-  route('admin', 'settings-payments-under-review', fixed('/settings/payments'), { prepare: stubStripeStatus({ charges: false }) }),
-  route('admin', 'settings-payments-paused', fixed('/settings/payments'), { prepare: stubStripeStatus({ charges: false, disabledReason: 'requirements.past_due' }) }),
+  route('admin', 'settings-payments-under-review', fixed('/settings/servwave-payments'), { prepare: stubStripeStatus({ charges: false }) }),
+  route('admin', 'settings-payments-paused', fixed('/settings/servwave-payments'), { prepare: stubStripeStatus({ charges: false, disabledReason: 'requirements.past_due' }) }),
   // public and auth (cold open, logged out)
   route('public', 'login', fixed('/login'), { anon: true }),
   route('public', 'accept-invite', fixed('/accept-invite'), { anon: true }),

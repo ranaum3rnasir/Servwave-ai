@@ -18,7 +18,7 @@ import { CustomerContactBlock } from '@/components/contact/CustomerContactBlock'
 import type { RecordContactEntry } from '@/lib/api/recordContactEntries';
 import { LEAD_STATUSES, isTerminalLeadStatus } from '@/lib/filters/registries/leads';
 import { useSpiderAvailable } from '@/lib/spider/gate';
-import { buildSpiderFollowUp, cameFromSpiderAlert } from '@/lib/spider/followUp';
+import { spiderDraftFrom } from '@/lib/spider/followUp';
 import { extractApiError, formatCurrency } from '@/lib/utils';
 import { AttachmentSection } from '@/components/crm/AttachmentSection';
 import { IconRail } from '@/components/crm/IconRail';
@@ -103,13 +103,19 @@ function WalkthroughDot({
  * infrastructure or to another module's migration, and rebuilding them here
  * would fork it. Recorded in the branch report.
  */
+/** The tabs a `?tab=` link may open (the contractor's list). */
+const LEAD_TABS = ['overview', 'walkthrough', 'estimates', 'attachments', 'communication', 'tasks'] as const;
+
 export default function LeadDetailPage() {
   const tz = useScheduleTimezone();
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const location = useLocation();
-  // Spider (#2619): a lead opened from a Spider alert offers a suggested follow-up in its text box.
-  const offerSpiderFollowUp = useSpiderAvailable() && cameFromSpiderAlert(location.state);
+  // Spider (#2619; the contractor's click, Ran 15 Oct D4): a lead opened from a Spider alert card at
+  // New starts its text box with his draft. The page never marks the alert read: the server ends it
+  // once a real contact moves the lead on (D1, Ran 20 Oct; SPEC-6).
+  const spiderAvailable = useSpiderAvailable();
+  const spiderDraft = spiderAvailable ? spiderDraftFrom(location.state) : undefined;
   const queryClient = useQueryClient();
   const ability = useAppAbility();
   const phone = useRecordCards();
@@ -123,9 +129,11 @@ export default function LeadDetailPage() {
 
   /**
    * Deep links: `?createJob=<estimateId>` opens the convert dialog with that
-   * estimate preselected, `?tab=walkthrough` opens the Walkthrough tab. Both are
-   * consumed and then stripped with `{ replace: true }`, so a reload lands on
-   * the default tab with no dialog.
+   * estimate preselected, `?tab=<tab>` opens that tab (the contractor's list, so
+   * a Spider alert card can open Communication, Walkthrough or Overview). Both
+   * are consumed and then stripped with `{ replace: true }`, so a reload lands on
+   * the default tab with no dialog. The strip keeps the router state, which
+   * carries a Spider card's draft.
    *
    * The legacy page read them in an effect and wrote state from it. Here they
    * seed state through lazy initialisers and the effect only strips the params -
@@ -133,26 +141,33 @@ export default function LeadDetailPage() {
    * same observable behaviour for every real entry point (both links arrive on a
    * fresh mount, from the leads list or from an estimate).
    *
-   * `?tab=` is whitelisted to exactly 'walkthrough' so an arbitrary value cannot
-   * select an invalid tab.
+   * `?tab=` is whitelisted to the page's tabs so an arbitrary value cannot
+   * select an invalid tab. A link that arrives while the page is already open
+   * (another lead's Spider card) switches the tab during render, the same
+   * observable behaviour without an effect writing state.
    */
   const [createJobOpen, setCreateJobOpen] = useState(() => Boolean(searchParams.get('createJob')));
   const [preselectEstimateId, setPreselectEstimateId] = useState<string | null>(
     () => searchParams.get('createJob'),
   );
-  const [activeTab, setActiveTab] = useState(
-    () => (searchParams.get('tab') === 'walkthrough' ? 'walkthrough' : 'overview'),
-  );
+  const tabParam = searchParams.get('tab');
+  const requestedTab = tabParam && (LEAD_TABS as readonly string[]).includes(tabParam) ? tabParam : null;
+  const [activeTab, setActiveTab] = useState(() => requestedTab ?? 'overview');
+  const [seenTabRequest, setSeenTabRequest] = useState(requestedTab);
+  if (requestedTab !== seenTabRequest) {
+    setSeenTabRequest(requestedTab);
+    if (requestedTab) setActiveTab(requestedTab);
+  }
 
   useEffect(() => {
     const hasCreateJob = searchParams.has('createJob');
-    const hasTab = searchParams.get('tab') === 'walkthrough';
+    const hasTab = searchParams.has('tab');
     if (!hasCreateJob && !hasTab) return;
     const next = new URLSearchParams(searchParams);
     if (hasCreateJob) next.delete('createJob');
     if (hasTab) next.delete('tab');
-    setSearchParams(next, { replace: true });
-  }, [searchParams, setSearchParams]);
+    setSearchParams(next, { replace: true, state: location.state });
+  }, [searchParams, setSearchParams, location.state]);
 
   const { data: lead, isLoading, isError, error, refetch, isFetching } = useQuery({
     queryKey: ['lead', id],
@@ -162,6 +177,10 @@ export default function LeadDetailPage() {
     },
     enabled: Boolean(id),
     retry: retryUnlessRefused,
+    // Estimate work (send, recall, payment, a new estimate) changes the lead's status, its menu and its estimates
+    // on the server, and none of it refreshes this key. Re-read on every open so a cached copy shows first and the
+    // server's answer replaces it (#2755).
+    refetchOnMount: 'always',
   });
 
   useRecordVisit('leads', lead?.lead_number as string | undefined);
@@ -189,6 +208,8 @@ export default function LeadDetailPage() {
       toast.error('Could not update the lead status', {
         description: extractApiError(err, 'The status change was not saved'),
       });
+      // A refusal usually means this page's copy of the lead is stale: re-read it so the menu shows the server's options (#2756).
+      queryClient.invalidateQueries({ queryKey: ['lead', id] });
     },
   });
 
@@ -266,6 +287,8 @@ export default function LeadDetailPage() {
     : SETTABLE_LEAD_STATUSES.filter(mayPickStatus);
   const canAssign = ability.can('assign', 'Lead');
   const canReadComms = ability.can('read', 'Communication');
+  // A `?tab=communication` link opened by someone who cannot read communications lands on Overview.
+  const visibleTab = activeTab === 'communication' && !canReadComms ? 'overview' : activeTab;
   const isNotTerminal = lead && !isTerminalLeadStatus(lead.status);
   const canMarkLost = isNotTerminal && ability.can('mark_lost', 'Lead');
   const isTerminal = lead && isTerminalLeadStatus(lead.status);
@@ -643,7 +666,7 @@ export default function LeadDetailPage() {
           {/* Tabs */}
           <TabStrip
             className="border-t"
-            value={activeTab}
+            value={visibleTab}
             onValueChange={setActiveTab}
             tabs={[
               { value: 'overview', label: 'Overview' },
@@ -676,7 +699,7 @@ export default function LeadDetailPage() {
             ]}
           />
 
-          <TabPanel value="overview" activeValue={activeTab}>
+          <TabPanel value="overview" activeValue={visibleTab}>
             <div className="flex flex-col lg:flex-row">
               {/* Left column (~65%) */}
               <div className="min-w-0 flex-[65]">
@@ -810,7 +833,7 @@ export default function LeadDetailPage() {
                   {/* Name, company, every phone and every email, drawn through the contact display policy (PRD 5), with the lead's own entries and the pencil (S05.13). */}
                   <CustomerContactBlock
                     customer={customer}
-                    context={{ leadId: id!, leadLabel: lead.lead_number as string }}
+                    context={{ leadId: id!, leadLabel: lead.lead_number as string, textCarriesLead: true }}
                     record={{ kind: 'lead', id: id!, mayEdit: canEdit, closed: Boolean(isTerminal), onReopen: canReopen ? () => setReopenOpen(true) : undefined }}
                     entries={lead.contact_entries as RecordContactEntry[] | undefined}
                     editCustomer
@@ -899,7 +922,7 @@ export default function LeadDetailPage() {
             </div>
           </TabPanel>
 
-          <TabPanel value="walkthrough" activeValue={activeTab}>
+          <TabPanel value="walkthrough" activeValue={visibleTab}>
             <WalkthroughTabContent
               key={walkthroughSyncKey(lead)}
               lead={lead}
@@ -914,13 +937,13 @@ export default function LeadDetailPage() {
             />
           </TabPanel>
 
-          <TabPanel value="attachments" activeValue={activeTab}>
+          <TabPanel value="attachments" activeValue={visibleTab}>
             <div className="p-5">
               <AttachmentSection entityType="LEAD" entityId={id!} />
             </div>
           </TabPanel>
 
-          <TabPanel value="estimates" activeValue={activeTab}>
+          <TabPanel value="estimates" activeValue={visibleTab}>
             <div className="p-5">
               <div className="mb-4 flex items-center justify-between">
                 <p className="text-muted-foreground text-xs font-semibold uppercase">
@@ -995,7 +1018,7 @@ export default function LeadDetailPage() {
             </div>
           </TabPanel>
 
-          <TabPanel value="tasks" activeValue={activeTab}>
+          <TabPanel value="tasks" activeValue={visibleTab}>
             <JobLeadTasksTab
               entity={{ type: 'LEAD', id: lead.id, label: `Lead from ${customerDisplayName(customer)}` }}
               jobType={(lead.job_type as string | null) ?? undefined}
@@ -1003,21 +1026,24 @@ export default function LeadDetailPage() {
           </TabPanel>
 
           {canReadComms && (
-            <TabPanel value="communication" activeValue={activeTab}>
+            <TabPanel value="communication" activeValue={visibleTab}>
               <div className="p-5">
                 <LeadCommunicationsTab
+                  key={spiderDraft ? location.key : 'communication'}
                   leadId={lead.id as string}
                   leadLabel={lead.lead_number as string}
                   customerId={customer.id}
                   customerName={customerLabel}
                   customerPhone={customer.phone ?? undefined}
-                  initialMessage={
-                    offerSpiderFollowUp
-                      ? buildSpiderFollowUp({
-                          status: lead.status as string,
-                          customerFirstName: customer.first_name,
-                          serviceRequest: lead.service_request as string | undefined,
-                        })
+                  customerEmail={customer.email ?? undefined}
+                  initialMessage={spiderDraft}
+                  onSent={
+                    spiderDraft
+                      ? () => {
+                          // The text went out: the card's draft is used up, so a reload starts clean. The alert
+                          // itself is ended by the server (the lead left New), never by this page (D1, SPEC-6).
+                          navigate(`${location.pathname}${location.search}`, { replace: true, state: null });
+                        }
                       : undefined
                   }
                 />

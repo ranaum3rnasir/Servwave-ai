@@ -231,14 +231,14 @@ describe('SendInvoiceDialog — customer contact redaction (#1997)', () => {
 });
 
 describe('SendInvoiceDialog — JIT accept-cards banner (Task 2.5)', () => {
-  it('admin: shows the banner when card payments are not yet enabled, and Set up navigates to /settings/payments', async () => {
+  it('admin: shows the banner when card payments are not yet enabled, and Set up navigates to /settings/servwave-payments', async () => {
     hoisted.org = { ...ORG, stripe_charges_enabled: false };
     const user = userEvent.setup();
     renderWithProviders(<SendInvoiceDialog {...baseProps()} />, { ability: ADMIN_ABILITY });
 
     expect(screen.getByText('Get paid faster - accept card payments.')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Set up' }));
-    expect(mockNavigate).toHaveBeenCalledWith('/settings/payments');
+    expect(mockNavigate).toHaveBeenCalledWith('/settings/servwave-payments');
   });
 
   it('non-admin: shows informational copy instead of a CTA the user can\'t act on', () => {

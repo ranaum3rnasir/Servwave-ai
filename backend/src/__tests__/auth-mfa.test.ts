@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
@@ -6,6 +6,7 @@ import { supabaseAdmin } from '../lib/supabase';
 import { sendMfaCodeEmail } from '../lib/email';
 import { clearTokenCache } from '../middleware/authenticate';
 import { hashCode, encryptRefreshToken } from '../lib/mfa-otp';
+import { env } from '../config/env';
 
 // mfa-otp reads process.env directly (MFA_TOKEN_ENC_KEY || SUPABASE_SERVICE_ROLE_KEY).
 // Pin a deterministic key so the controller's hash/encrypt matches the test's.
@@ -195,6 +196,80 @@ describe('POST /api/auth/login (email-OTP 2FA gate)', () => {
     expect(res.body.session).toMatchObject({ access_token: 'access-abc', refresh_token: 'refresh-xyz' });
     expect(mockPrisma.mfaEmailChallenge.create).not.toHaveBeenCalled();
     expect(mockSendMfa).not.toHaveBeenCalled();
+  });
+});
+
+// ═══════════════════════════════════════════════════════
+// SPEC-5: the login payload says whether the company is on the Spider pilot list
+// ═══════════════════════════════════════════════════════
+
+describe('the login payload carries org_is_spider_pilot', () => {
+  const mutableEnv = env as { SPIDER_PILOT_ORG_IDS?: string };
+  const before = mutableEnv.SPIDER_PILOT_ORG_IDS;
+  afterEach(() => {
+    mutableEnv.SPIDER_PILOT_ORG_IDS = before;
+  });
+
+  // The resolveAppUser row WITH its organization relation (a real, non-demo Scale company).
+  const ROW_WITH_ORG = { ...APP_USER, organization: { is_demo: false, plan: 'SCALE', trial_ends_at: null, feature_overrides: {} } };
+  function wireLoginRow() {
+    mockPrisma.user.findUnique.mockImplementation(
+      (args: { where: { id?: string }; select?: Record<string, boolean> }) => {
+        if (args.select && 'mfa_email_enrolled' in args.select) {
+          return Promise.resolve({ mfa_email_enrolled: false, first_name: APP_USER.first_name });
+        }
+        return Promise.resolve(args.where.id === APP_USER.id ? ROW_WITH_ORG : null);
+      },
+    );
+  }
+
+  it('is true on login for a company on the list', async () => {
+    mutableEnv.SPIDER_PILOT_ORG_IDS = ORG_ID;
+    mockSignInOk();
+    wireLoginRow();
+
+    const res = await request(app).post('/api/auth/login').send({ email: APP_USER.email, password: 'pw' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.user.org_is_spider_pilot).toBe(true);
+    expect(res.body.user.org_is_demo).toBe(false);
+  });
+
+  it('is false on login for a company that is not on the list', async () => {
+    mutableEnv.SPIDER_PILOT_ORG_IDS = '00000000-0000-4000-8000-0000000000b2';
+    mockSignInOk();
+    wireLoginRow();
+
+    const res = await request(app).post('/api/auth/login').send({ email: APP_USER.email, password: 'pw' });
+
+    expect(res.status).toBe(200);
+    expect(res.body.user.org_is_spider_pilot).toBe(false);
+  });
+
+  it('is true after the 2FA code for a company on the list', async () => {
+    mutableEnv.SPIDER_PILOT_ORG_IDS = ORG_ID;
+    const CODE = '654321';
+    mockPrisma.mfaEmailChallenge.findUnique.mockResolvedValue({
+      id: 'chal-p', user_id: APP_USER.id, code_hmac: hashCode(CODE),
+      enc_refresh_token: encryptRefreshToken(SESSION.refresh_token), purpose: 'LOGIN', attempts: 0,
+      expires_at: new Date(Date.now() + 5 * 60 * 1000), consumed_at: null,
+    });
+    mockPrisma.mfaEmailChallenge.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.mfaEmailChallenge.delete.mockResolvedValue({});
+    mockSupabase.auth.refreshSession.mockResolvedValue({
+      data: { session: { access_token: 'new-access', refresh_token: 'new-refresh', expires_at: 1893456999 } },
+      error: null,
+    });
+    mockPrisma.user.findUnique.mockResolvedValue(ROW_WITH_ORG);
+    mockSupabase.auth.getUser.mockResolvedValue({
+      data: { user: { id: APP_USER.id, email: APP_USER.email, email_confirmed_at: '2026-01-01' } },
+      error: null,
+    });
+
+    const res = await request(app).post('/api/auth/mfa/verify').send({ challengeId: 'chal-p', code: CODE });
+
+    expect(res.status).toBe(200);
+    expect(res.body.user.org_is_spider_pilot).toBe(true);
   });
 });
 

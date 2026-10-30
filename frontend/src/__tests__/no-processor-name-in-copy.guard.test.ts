@@ -25,6 +25,17 @@ import ts from 'typescript';
 
 const SRC = path.resolve(__dirname, '..');
 const VENDOR = /stripe/i;
+/**
+ * The other vendors CLAUDE.md names (phone service, database host, app host). Same rule, same allowance, applied to the
+ * screens the V7 payments build owns. The phone-service embed elsewhere in the app legitimately carries its own message
+ * names and host, so it is not swept here.
+ */
+const OTHER_VENDORS = /supabase|calltracking|onrender|render\.com|\bctm\b/i;
+const V7_SCREENS = [
+  'pages/v2/payments/', 'pages/v2/settings/lists/', 'pages/v2/settings/servwavePayments/', 'pages/v2/settings/ServwavePaymentsPage.tsx',
+  'components/payments/', 'components/contact/', 'components/ui/new-tab-link.tsx', 'components/form/MoveButtons.tsx',
+  'components/form/PaletteSwatchPicker.tsx', 'pages/v2/_shared/',
+];
 
 /** Literals that name the processor but are never rendered: API paths, packages, env names, internal keys. */
 const INTERNAL_LITERAL = [
@@ -90,6 +101,32 @@ describe('no processor name reaches a user (slice 33)', () => {
         if (!VENDOR.test(text)) continue;
         if (INTERNAL_LITERAL.some((re) => re.test(text.trim()))) continue;
         offenders.push(`${path.relative(SRC, file)}:${line}  ${JSON.stringify(text.trim().slice(0, 80))}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('no string, template piece or JSX text names the phone service, database host or app host, except internal keys and paths', () => {
+    const offenders: string[] = [];
+    const swept = files.filter((f) => V7_SCREENS.some((p) => path.relative(SRC, f).replace(/\\/g, '/').startsWith(p)));
+    expect(swept.length).toBeGreaterThan(40);
+    for (const file of swept) {
+      for (const { text, line } of textLiterals(file)) {
+        if (!OTHER_VENDORS.test(text)) continue;
+        if (INTERNAL_LITERAL.some((re) => re.test(text.trim()))) continue;
+        offenders.push(`${path.relative(SRC, file)}:${line}  ${JSON.stringify(text.trim().slice(0, 80))}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('copy on the V7 screens writes its contractions with the curly apostrophe', () => {
+    const offenders: string[] = [];
+    // The shared contact and load-more files predate V7 and carry their own wording; they are not swept here.
+    const own = V7_SCREENS.filter((p) => !p.startsWith('components/contact/') && p !== 'pages/v2/_shared/');
+    for (const file of files.filter((f) => own.some((p) => path.relative(SRC, f).replace(/\\/g, '/').startsWith(p)))) {
+      for (const { text, line } of textLiterals(file)) {
+        if (/[A-Za-z]n't\b/.test(text) && text.includes(' ')) offenders.push(`${path.relative(SRC, file)}:${line}  ${JSON.stringify(text.trim().slice(0, 80))}`);
       }
     }
     expect(offenders).toEqual([]);

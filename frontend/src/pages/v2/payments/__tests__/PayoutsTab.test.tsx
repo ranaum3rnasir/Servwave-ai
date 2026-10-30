@@ -97,7 +97,7 @@ describe('opening a payout', () => {
     const p = makePayout(1);
     open();
     await u.click(await screen.findByText('PO-000001'));
-    expect(urlSearch()).toContain(`payout=${p.id}`);
+    expect(new URLSearchParams(urlSearch()).get('d')).toBe(`payout:${p.id}`);
     expect(await screen.findByRole('dialog', { name: 'Payout PO-000001' })).toBeInTheDocument();
   });
 

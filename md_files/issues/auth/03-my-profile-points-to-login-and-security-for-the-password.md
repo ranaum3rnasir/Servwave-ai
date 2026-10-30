@@ -1,7 +1,7 @@
 # My Profile points to Login & Security for the password
 
 **Type:** AFK
-**Status:** Built and reviewed locally (commit e3f3d069 on feat/password-reset). Not yet on staging.
+**Status:** Released. On staging via #2876 (817c5cce), on production via #2883 (main f7a0ab2a, 2026-10-26). Live-checked on staging (spec §2.2 C).
 **Spec sections:** §4.1 (decision §9.1)
 
 ## Parent

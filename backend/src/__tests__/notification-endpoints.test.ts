@@ -365,3 +365,48 @@ describe('PATCH /:id/dismiss', () => {
     );
   });
 });
+
+// ─── Spider's records never reach the bell (D3) ──────────────────────────
+
+describe('the bell leaves both Spider verbs out of every bell query', () => {
+  const HIDES_SPIDER = {
+    notification: { verb: { notIn: expect.arrayContaining(['spider.alert', 'spider.frame']) } },
+  };
+
+  it('GET /api/notifications (the list, which also feeds the pop-up card)', async () => {
+    mockAuthAs('sales');
+    findMany.mockResolvedValue([]);
+    await request(app).get('/api/notifications').set(authHeader('sales'));
+    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining(HIDES_SPIDER) }));
+  });
+
+  it('GET /api/notifications/unread-count (both counts)', async () => {
+    mockAuthAs('sales');
+    countMock.mockResolvedValueOnce(0).mockResolvedValueOnce(0);
+    await request(app).get('/api/notifications/unread-count').set(authHeader('sales'));
+    expect(countMock).toHaveBeenNthCalledWith(1, expect.objectContaining({ where: expect.objectContaining(HIDES_SPIDER) }));
+    expect(countMock).toHaveBeenNthCalledWith(2, expect.objectContaining({ where: expect.objectContaining(HIDES_SPIDER) }));
+  });
+
+  it('PATCH /api/notifications/seen (opening the bell)', async () => {
+    mockAuthAs('sales');
+    updateMany.mockResolvedValue({ count: 0 });
+    await request(app).patch('/api/notifications/seen').set(authHeader('sales')).send({});
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining(HIDES_SPIDER) }));
+  });
+
+  it('POST /api/notifications/read-all ("Mark all read")', async () => {
+    mockAuthAs('sales');
+    updateMany.mockResolvedValue({ count: 0 });
+    await request(app).post('/api/notifications/read-all').set(authHeader('sales'));
+    expect(updateMany).toHaveBeenCalledWith(expect.objectContaining({ where: expect.objectContaining(HIDES_SPIDER) }));
+  });
+
+  it("PATCH /api/notifications/:id/read carries no verb filter: it is Spider's own mark path", async () => {
+    mockAuthAs('sales');
+    updateMany.mockResolvedValue({ count: 1 });
+    await request(app).patch('/api/notifications/11111111-1111-1111-1111-111111111111/read').set(authHeader('sales'));
+    const { where } = updateMany.mock.calls[0][0] as { where: Record<string, unknown> };
+    expect(where).not.toHaveProperty('notification');
+  });
+});

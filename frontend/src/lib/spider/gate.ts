@@ -2,18 +2,19 @@ import { useAuthStore } from '@/stores/auth.store';
 
 /**
  * Who has Spider, the lead watcher (#2619): the company owns the `spider` feature (Scale) AND,
- * while the launch is demo-only, it is a demo company. Every Spider surface checks this BEFORE
- * any Spider code loads or any Spider request is made.
+ * while the launch is limited, it is a demo company or a company on the server's Spider pilot list
+ * (SPEC-5). The server says which through `org_is_spider_pilot`; the app keeps no list of its own.
+ * Every Spider surface checks this BEFORE any Spider code loads or any Spider request is made.
  *
- * Fails closed on both halves - unlike useFeature, which fails open for a cached session that
+ * Fails closed on every half - unlike useFeature, which fails open for a cached session that
  * predates the feature payload - so a session without the flags never reaches Spider code.
- * Opening Spider to Scale customers later means deleting the `org_is_demo` half here and in
+ * Opening Spider to Scale customers later means deleting the demo/pilot half here and in
  * backend/src/services/spider/gate.ts.
  */
 export function spiderAvailableFor(
-  user: { org_features?: readonly string[]; org_is_demo?: boolean } | null | undefined,
+  user: { org_features?: readonly string[]; org_is_demo?: boolean; org_is_spider_pilot?: boolean } | null | undefined,
 ): boolean {
-  return (user?.org_features ?? []).includes('spider') && user?.org_is_demo === true;
+  return (user?.org_features ?? []).includes('spider') && (user?.org_is_demo === true || user?.org_is_spider_pilot === true);
 }
 
 export function useSpiderAvailable(): boolean {

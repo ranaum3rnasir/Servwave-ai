@@ -213,7 +213,7 @@ describe('Outbound sender identity', () => {
         organizationId: ORG_ID,
         to: 'admin@acme.test',
         orgName: 'Acme Plumbing',
-        fixUrl: 'https://app.example/settings/payments',
+        fixUrl: 'https://app.example/settings/servwave-payments',
       });
 
       expect(sentFrom()).toBe('no-reply@mail.servwave.test');

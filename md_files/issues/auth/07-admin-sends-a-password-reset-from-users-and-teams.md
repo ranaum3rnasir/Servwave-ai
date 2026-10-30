@@ -1,7 +1,7 @@
 # Admin sends a password reset from Users & Teams
 
 **Type:** AFK
-**Status:** Built and reviewed locally (commit 942f95d0 on feat/password-reset). Not yet on staging.
+**Status:** Released. On staging via #2882 (412fb90d), on production via #2883 (main f7a0ab2a, 2026-10-26). Live-checked on staging (spec §2.2 C).
 **Spec sections:** §7 (decision §9.4)
 
 ## Parent
@@ -21,7 +21,7 @@ An admin can help a locked-out employee without the auth dashboard or a script.
 
 ## Acceptance criteria
 
-- [ ] An admin confirms the action on a user with a login. That user gets the email and the admin sees "Reset link sent to {email}." *(Unit-tested; checked live on staging.)*
+- [x] An admin confirms the action on a user with a login. That user gets the email and the admin sees "Reset link sent to {email}." *(Checked live on staging 2026-10-25.)*
 - [x] The action isn't offered for a user without a login or a deactivated user, and the API returns 400 if it's called anyway.
 - [x] For a role without `update User`, the action is hidden and the API returns 403.
 - [x] The per-email limit stops an admin from sending a fourth link within 15 minutes.

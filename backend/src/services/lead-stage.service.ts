@@ -20,7 +20,10 @@
  *
  *   NOTHING IS EVER UN-SET. The single exception, `last_visit_completed_at`, is a deliberate
  *   re-anchoring mirror and is documented as such where it is written. The other is `won_at`, the day the
- *   lead last closed as Won: a lead reopened and won again counts at the new close. An earlier design had the
+ *   lead last closed as Won: a lead reopened and won again counts at the new close. And one case clears a
+ *   clock outright (SPEC-4 D7, Ran 24 Oct): `contacted_at` is cleared, only by `reconsiderLeadContact`
+ *   (lead-contact.service.ts), when a person's change leaves a Contacted lead with no outbound contact on
+ *   it; the lead goes back to New and `returned_to_new_at` re-anchors to start its fresh New stay. An earlier design had the
  *   completion clock CLEAR when a late visit was booked; that would have erased the evidence of a
  *   breach that had already occurred. D3 splits the questions instead, so no destructive write is
  *   needed anywhere. Ratified by the product owner: a recorded breach stands. Booking a later

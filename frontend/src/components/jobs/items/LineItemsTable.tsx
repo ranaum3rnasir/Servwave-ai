@@ -187,7 +187,8 @@ export interface LineItemsTableProps {
   onBackToPicker?: () => void;
 
   onAdd: (payload: LineAddPayload) => Promise<void>;
-  onUpdate: (lineId: string, patch: LineUpdatePatch) => void;
+  /** A row edit may return a promise that rejects when the server refuses it; the row then reverts its drafts. */
+  onUpdate: (lineId: string, patch: LineUpdatePatch) => void | Promise<void>;
   onDelete: (lineId: string) => void;
   /**
    * Persist a drag reorder. `orderedIds` is ALWAYS the complete top-to-bottom id list for every

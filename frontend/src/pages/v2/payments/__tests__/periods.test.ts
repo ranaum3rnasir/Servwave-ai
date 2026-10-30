@@ -81,7 +81,13 @@ describe('periodLabel', () => {
   it('names a preset, and gives a custom range its own dates', () => {
     expect(periodLabel({ key: '7', from: '', to: '' })).toBe('Last 7 days');
     expect(periodLabel({ key: 'month', from: '', to: '' })).toBe('This month');
-    expect(periodLabel({ key: 'custom', from: '2026-08-01', to: '2026-08-14' })).toBe('Aug 1 - Aug 14, 2026');
-    expect(periodLabel({ key: 'custom', from: '2025-12-20', to: '2026-01-03' })).toBe('Dec 20, 2025 - Jan 3, 2026');
+    expect(periodLabel({ key: 'custom', from: '2026-08-01', to: '2026-08-14' }, '2027')).toBe('Aug 1 - Aug 14, 2026');
+    expect(periodLabel({ key: 'custom', from: '2025-12-20', to: '2026-01-03' }, '2026')).toBe('Dec 20, 2025 - Jan 3, 2026');
+  });
+
+  it('leaves the year off a range inside the current year, and puts it on the end only when the range is in another year', () => {
+    expect(periodLabel({ key: 'custom', from: '2026-10-01', to: '2026-10-12' }, '2026')).toBe('Oct 1 - Oct 12');
+    expect(periodLabel({ key: 'custom', from: '2025-10-01', to: '2025-10-12' }, '2026')).toBe('Oct 1 - Oct 12, 2025');
+    expect(periodLabel({ key: 'custom', from: '2025-12-20', to: '2026-01-03' }, '2026')).toBe('Dec 20, 2025 - Jan 3, 2026');
   });
 });

@@ -40,7 +40,7 @@ import { deleteLineItemPrompt } from '@/lib/confirmPrompts';
 import { ProductThumb } from './ProductThumb';
 import { ClampedDescription } from './ClampedDescription';
 import { useLineImageUpload } from './useLineImageUpload';
-import { splitDescription, useLineItemFields, type RowUpdatePatch } from './useLineItemFields';
+import { splitDescription, useLineItemFields, type RowUpdate } from './useLineItemFields';
 import { toNum } from './money';
 import type { InvoiceLineItem } from '@/lib/api/jobs';
 
@@ -50,7 +50,7 @@ export interface LineItemCardProps {
   canManage: boolean;
   /** Show the Cost field + the margin / markup pair. Mirrors the backend's canSeePricing gate. */
   canSeePricing: boolean;
-  onUpdate: (patch: RowUpdatePatch) => void;
+  onUpdate: RowUpdate;
   onDelete: () => void;
   /** Open the shared AddLineDialog in edit mode for this line. */
   onEdit: () => void;
@@ -200,7 +200,7 @@ export function LineItemCard({
             className="mt-1"
             checked={checkboxChecked}
             disabled={selectionsLocked || busy || !canEdit}
-            onCheckedChange={(v) => onUpdate({ is_selected: v === true })}
+            onCheckedChange={(v) => f.update({ is_selected: v === true })}
             aria-label={`Include ${name}`}
           />
         )}
@@ -358,7 +358,7 @@ export function LineItemCard({
               id={id('taxable')}
               checked={line.is_taxable}
               disabled={busy}
-              onCheckedChange={(v) => onUpdate({ is_taxable: v })}
+              onCheckedChange={(v) => f.update({ is_taxable: v })}
               aria-label={`Taxable for ${name}`}
             />
           ) : (

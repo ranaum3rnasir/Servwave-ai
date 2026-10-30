@@ -242,6 +242,10 @@ suite('payments needing attention (real database)', () => {
     expect(after).toHaveLength(1);
     expect(after[0]).toMatchObject({ status: 'REFUNDED', can_refund: false });
     expect(typeof after[0].refunded_at).toBe('string');
+    // V7-05b: the refund door records who sent it back and when; it leaves the note for the partial-refund slice.
+    const row = await db.unappliedCapture.findUniqueOrThrow({ where: { id: item.id } });
+    expect(row).toMatchObject({ status: 'REFUNDED', resolved_by: f.admin.id, resolved_by_name: 'Test Admin', resolution_note: null });
+    expect(row.resolved_at).toBeInstanceOf(Date);
   });
 
   /** A refund object as the refund.* events carry it, for the refund ServWave sent for a record. */
@@ -887,6 +891,39 @@ suite('payments needing attention (real database)', () => {
     expect(after[0]).toMatchObject({ id: item.id, status: 'RESOLVED' });
     // Closed is closed: a second click changes nothing.
     expect((await api.post(`/api/payments-needing-attention/${item.id}/resolve`)).status).toBe(409);
+  });
+
+  it('V7-05b: resolving with a reason writes the four columns; a second resolve is 409 and rewrites nothing', async () => {
+    const f = await orgWithInvoice({ total: 120, status: 'VOIDED' });
+    await f.deliver('checkout.session.completed', f.session());
+    const api = signedInAs(f.admin);
+    const [item] = (await api.get('/api/payments-needing-attention')).body.items;
+    const res = await api.post(`/api/payments-needing-attention/${item.id}/resolve`).send({ reason: 'Duplicate entry' });
+    expect(res.status).toBe(200);
+    const row = await db.unappliedCapture.findUniqueOrThrow({ where: { id: item.id } });
+    expect(row).toMatchObject({ status: 'RESOLVED', resolved_by: f.admin.id, resolved_by_name: 'Test Admin', resolution_note: 'Duplicate entry' });
+    expect(row.resolved_at).toBeInstanceOf(Date);
+    const again = await api.post(`/api/payments-needing-attention/${item.id}/resolve`).send({ reason: 'Not our payment' });
+    expect(again.status).toBe(409);
+    const after = await db.unappliedCapture.findUniqueOrThrow({ where: { id: item.id } });
+    expect(after).toMatchObject({ resolution_note: 'Duplicate entry', resolved_by: f.admin.id });
+    expect(after.resolved_at).toEqual(row.resolved_at);
+  });
+
+  it('V7-05b: an unknown reason is 400 "Choose a reason." and the record stays open; no reason at all still works', async () => {
+    const f = await orgWithInvoice({ total: 120, status: 'VOIDED' });
+    await f.deliver('checkout.session.completed', f.session());
+    const api = signedInAs(f.admin);
+    const [item] = (await api.get('/api/payments-needing-attention')).body.items;
+    for (const reason of ['Returned the money another way', 'Because', '']) {
+      const bad = await api.post(`/api/payments-needing-attention/${item.id}/resolve`).send({ reason });
+      expect(bad.status, reason).toBe(400);
+      expect(bad.body.error).toBe('Choose a reason.');
+    }
+    expect((await db.unappliedCapture.findUniqueOrThrow({ where: { id: item.id } })).status).toBe('OPEN');
+    const ok = await api.post(`/api/payments-needing-attention/${item.id}/resolve`);
+    expect(ok.status).toBe(200);
+    expect(await db.unappliedCapture.findUniqueOrThrow({ where: { id: item.id } })).toMatchObject({ status: 'RESOLVED', resolution_note: null, resolved_by: f.admin.id });
   });
 
   it('an open payment dealt with another way can be marked resolved, and is then never sent back', async () => {

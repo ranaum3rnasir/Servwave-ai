@@ -8,6 +8,8 @@ export interface Tag {
   id: string;
   name: string;
   color: string;
+  /** Records carrying the tag (customers, leads, estimates, jobs, invoices); `GET /api/tags` sends it for Settings > Lists. */
+  usage_count?: number;
 }
 
 /**

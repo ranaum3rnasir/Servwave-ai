@@ -407,6 +407,8 @@ model Customer {
   @@index([organization_id])
   @@index([parent_id])
   @@index([bill_to_customer_id])
+  // V7-03: serves the lead-source used-by count and the rename rewrite on Customer.ad_source.
+  @@index([organization_id, ad_source])
   @@map("customers")
 }
 
@@ -482,10 +484,19 @@ model Lead {
   service_request                String
   // --- Lead stage clocks (spec #1751) --------------------------------------------------------
   // `contacted_at` predates them and keeps its name and its meaning: the FIRST human-originated
-  // outbound touch. D5 finally gives it writers - until then the only writer anywhere in the
-  // product was the demo seeder, which is why the dashboard's "needs follow-up" tile equals the
-  // open-lead count on every real org.
+  // outbound touch still on the lead. D5 finally gives it writers - until then the only writer
+  // anywhere in the product was the demo seeder, which is why the dashboard's "needs follow-up"
+  // tile equals the open-lead count on every real org. Cleared by D7 (SPEC-4, Ran 24 Oct): when a
+  // person takes a Contacted lead's last outbound contact away, `reconsiderLeadContact` moves the
+  // lead back to New and clears it.
   contacted_at                   DateTime?
+  // D7: when the lead last moved back to New because no outbound contact was left on it. Written
+  // only by `reconsiderLeadContact` (services/lead-contact.service.ts), in the same statement as the
+  // status and the cleared `contacted_at`. RE-ANCHORS on each move back (like
+  // last_visit_completed_at). Null for a lead that never moved back. Spider's New stay starts here
+  // when it is set, else at created_at (services/spider/config.ts spiderStageOf). No index: it is
+  // only ever read off a lead row already being loaded.
+  returned_to_new_at             DateTime?
   contacted_note                 String?
   // Who set contacted_at BY HAND, null when the automatic detection set it. D5 ratifies a human
   // correction door, and an anonymous correction is not auditable.
@@ -656,6 +667,8 @@ model Lead {
   // last_visit_completed_at, not walkthrough_first_completed_at: the estimate SLA anchors on the
   // re-anchoring clock, so that is the column candidatesForAnchor sweeps once a minute per org.
   @@index([organization_id, last_visit_completed_at])
+  // V7-03: serves the job-type used-by count and the rename rewrite on Lead.job_type.
+  @@index([organization_id, job_type])
   @@map("leads")
 }
 
@@ -1311,6 +1324,8 @@ model Job {
   @@index([salesperson_id])
   @@index([closed_by_id])
   @@index([organization_id])
+  // V7-03: serves the job-type used-by count and the rename rewrite on Job.job_type.
+  @@index([organization_id, job_type])
   @@map("jobs")
 }
 
@@ -1409,6 +1424,42 @@ model JobCancelReasonOption {
   @@unique([organization_id, code])
   @@index([organization_id, sort_order])
   @@map("job_cancel_reason_options")
+}
+
+/// V7-03: the per-org job type list as rows (it was the `Organization.job_type_options` JSON array, which stays for the
+/// deploy overlap). Archived, never deleted while a record carries the name; records store the TEXT, not this id.
+/// Case-insensitive name uniqueness is enforced in code inside the write transaction (no raw lower(name) index).
+model JobType {
+  id          String    @id @default(uuid()) @db.Uuid
+  name        String    @db.VarChar(50)
+  sort_order  Int       @default(0)
+  archived_at DateTime? @db.Timestamptz(6)
+  created_at  DateTime  @default(now())
+  updated_at  DateTime  @updatedAt
+
+  organization_id String       @db.Uuid
+  organization    Organization @relation(fields: [organization_id], references: [id])
+
+  @@unique([organization_id, name])
+  @@index([organization_id, sort_order])
+  @@map("job_types")
+}
+
+/// V7-03: the per-org lead/customer source list as rows (twin of JobType; was `Organization.source_options`).
+model LeadSource {
+  id          String    @id @default(uuid()) @db.Uuid
+  name        String    @db.VarChar(50)
+  sort_order  Int       @default(0)
+  archived_at DateTime? @db.Timestamptz(6)
+  created_at  DateTime  @default(now())
+  updated_at  DateTime  @updatedAt
+
+  organization_id String       @db.Uuid
+  organization    Organization @relation(fields: [organization_id], references: [id])
+
+  @@unique([organization_id, name])
+  @@index([organization_id, sort_order])
+  @@map("lead_sources")
 }
 
 model Invoice {
@@ -1845,7 +1896,7 @@ model DisputeEvidenceItem {
 
 // Payments go-live slice 11: money the processor captured that ServWave could not apply to an
 // invoice (or a refund that went out for a payment ServWave never recorded). Listed under
-// Settings > Payments as "Payments needing attention"; a person refunds it, never the system.
+// the Payments page as a Needs-attention item; a person refunds or attaches it, never the system.
 // One row per captured money (source_key), however many events or deliveries it sends.
 model UnappliedCapture {
   id                         String                 @id @default(uuid()) @db.Uuid
@@ -1864,9 +1915,21 @@ model UnappliedCapture {
   stripe_refund_id           String?                @unique
   // Refunds sent for this record that failed: never mark it REFUNDED (events arrive in any order).
   failed_refund_ids          String[]               @default([])
+  // V7-09b: dollars of this record already sent back (a partial refund leaves it OPEN with amount - refunded_amount), and
+  // the refunds counted into it, so one refund reported twice (the staff door and its event, a replay) counts once.
+  refunded_amount            Decimal                @default(0) @db.Decimal(12, 2)
+  counted_refund_ids         String[]               @default([])
+  // V7-09b: when a refund of this record last went out to the processor; attaching it to an invoice waits while it is fresh.
+  refund_started_at          DateTime?              @db.Timestamptz(6)
   source_key                 String
   status                     UnappliedCaptureStatus @default(OPEN)
   refunded_at                DateTime?
+  // Who closed it, when and why (V7-05b). Written by the resolve and refund doors; null for old rows and for
+  // closes by the reconciler, which knows no user. resolved_by is a plain uuid, no foreign key.
+  resolved_at                DateTime?
+  resolved_by                String?                @db.Uuid
+  resolved_by_name           String?
+  resolution_note            String?
   created_at                 DateTime               @default(now())
   updated_at                 DateTime               @updatedAt
 
@@ -2073,6 +2136,9 @@ model Attachment {
   description  String            @default("")
   uploaded_by  String            @db.Uuid
   created_at   DateTime          @default(now())
+  // Which screen created the file (V7-10a). 'PAYMENTS_DOCUMENTS' = uploaded from the Payments page's Documents
+  // tab; NULL = an ordinary attachment. The Documents list filters on it (partial index, see the migration).
+  source       String?
   uploader     User              @relation("AttachmentUploadedBy", fields: [uploaded_by], references: [id])
   dispute_evidence_items DisputeEvidenceItem[]
 
@@ -2773,6 +2839,8 @@ model Organization {
   stripe_payouts_enabled   Boolean   @default(false) // drives the connect-your-bank nudge
   // Payments go-live P2: { interval, weekly_anchor, delay_days, bank_label }, written by the account sync.
   payout_summary           Json?
+  // V7-02a: { business_details, owner_identity, bank_account, tax_id } each verified|pending|not_started|action_needed|restricted. Null until the first account sync.
+  stripe_verification      Json?
   stripe_details_submitted Boolean   @default(false) // finished the first onboarding pass
   stripe_requirements_due  Json      @default("[]") // requirements.currently_due → "action needed"
   stripe_disabled_reason   String? // requirements.disabled_reason (restricted/rejected/paused)
@@ -2974,6 +3042,7 @@ model Organization {
   // --- Spider lead watcher (#2619) ---
   spider_settings             SpiderSettings?
   spider_alerts               SpiderAlert[]
+  spider_summary              SpiderSummary?
   record_contact_entries      RecordContactEntry[]
   credits                     Credit[]
   deposit_credit_applications DepositCreditApplication[]
@@ -3093,6 +3162,10 @@ model Organization {
 
   // --- Roles & Permissions, PRD 6: the per-org job cancel-reasons list ---
   job_cancel_reason_options JobCancelReasonOption[]
+
+  // --- V7-03: the two Lists-page lists as rows (job types, lead/customer sources) ---
+  job_types    JobType[]
+  lead_sources LeadSource[]
 
   // Roles & Permissions S09.4: each person's saved home-page layout.
   user_dashboard_layouts UserDashboardLayout[]
@@ -6501,8 +6574,8 @@ model SpiderSettings {
   id                String    @id @default(uuid()) @db.Uuid
   organization_id   String    @unique @db.Uuid
   is_active         Boolean   @default(false)
-  // Set every time Spider is switched on. Time in a status is never counted from earlier than
-  // this, so switching on does not alert every old lead at once.
+  // Set every time Spider is switched on. Time in a stage counts from when the lead entered it, not
+  // from this (#2794): the starting summary is what stops switching on from alerting every old lead.
   activated_at      DateTime?
   // Per open status: { [LeadStatus]: { enabled, value, unit } }. Units: services/spider/config.ts.
   status_limits     Json      @default("{}")
@@ -6513,6 +6586,16 @@ model SpiderSettings {
   watch_all_leads   Boolean   @default(true)
   // Only read when watch_all_leads is off.
   selected_lead_ids String[]  @default([]) @db.Uuid
+  // The latest starting trigger (#2794) not yet acted on: Spider switched on, a stage switched on, a
+  // limit shortened, or more leads brought under watch. The sweep turns the backlog that is already
+  // past its limit into one starting summary once the settings have been quiet for a sweep
+  // interval, then clears it. NULL when nothing is waiting.
+  summary_trigger_at   DateTime?
+  // SWITCHED_ON | STAGE_ADDED | LIMIT_SHORTENED | SCOPE_WIDENED | SETTINGS_CHANGED (several kinds coalesced).
+  summary_trigger_kind String?
+  // When the waiting trigger first started waiting. Later saves move summary_trigger_at on, never this:
+  // the sweep acts at most 10 minutes after it, and gives up retrying a failed summary then.
+  summary_trigger_since DateTime?
   created_at        DateTime  @default(now())
   updated_at        DateTime  @updatedAt
 
@@ -6521,9 +6604,32 @@ model SpiderSettings {
   @@map("spider_settings")
 }
 
-// The Spider alert log: one row per lead per status visit Spider alerted on. The unique key is
-// the duplicate-prevention claim - the sweep writes this row FIRST and only a successful insert
-// sends. The limit is deliberately not part of the key, so editing a limit never re-alerts.
+// Spider's starting summary (#2794): the backlog already past its limit when Spider started watching
+// something new, reported once per recipient instead of one alert per lead. Only the latest summary of
+// a company is kept (one row per company); its leads are the alert-log rows that point at it.
+model SpiderSummary {
+  id              String   @id @default(uuid()) @db.Uuid
+  organization_id String   @unique @db.Uuid
+  created_at      DateTime @default(now())
+  // When the starting trigger happened, and which kind (spider_settings.summary_trigger_kind).
+  triggered_at    DateTime
+  trigger_kind    String
+  lead_count      Int      @default(0)
+  recipient_count Int      @default(0)
+  // Per channel, in plain words: { in_app: {outcome}, email: {outcome, recipients:[{user_id,outcome}]}, text: {...} }.
+  delivery        Json     @default("{}")
+
+  organization Organization  @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  alerts       SpiderAlert[]
+
+  @@map("spider_summaries")
+}
+
+// The Spider alert log: one row per lead per status visit per switched-on period Spider alerted
+// on (an alert, or a starting summary's claim). The unique key is the duplicate-prevention claim - the sweep writes this row FIRST and only a
+// successful insert sends. The key includes counted_from, so an off/on lets a still-stuck lead
+// alert once more (D5). The limit is deliberately not part of the key, so editing a limit never
+// re-alerts.
 model SpiderAlert {
   id                String     @id @default(uuid()) @db.Uuid
   organization_id   String     @db.Uuid
@@ -6531,7 +6637,9 @@ model SpiderAlert {
   status            LeadStatus
   // The instant the lead entered `status` (its latest STATUS_CHANGE into it, or its creation).
   entered_status_at DateTime
-  // When time in status started counting: the later of entered_status_at and activated_at.
+  // The later of entered_status_at and the company's activated_at when the row was written: names the
+  // switched-on period, so it is part of the claim key (D5). Time in the stage counts from
+  // entered_status_at (#2794).
   counted_from      DateTime
   limit_value       Int
   limit_unit        String
@@ -6543,12 +6651,44 @@ model SpiderAlert {
   // Spider texts that went out, so they count toward the company's texting usage.
   texts_sent        Int        @default(0)
 
-  organization Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
-  lead         Lead         @relation(fields: [lead_id], references: [id], onDelete: Cascade)
+  // A copy taken when the alert went out, for the History tab and its preview drawer (S3). NULL on
+  // alerts raised before these columns existed.
+  lead_number      String?
+  customer_id      String?    @db.Uuid
+  customer_name    String?
+  company_name     String?
+  service_request  String?
+  service_location String?
+  // "New" / "Contacted" / "Walkthrough Completed".
+  stage_name       String?
+  // Time in the stage when the alert went out, in the limit's unit (MINUTE / HOUR / DAY).
+  elapsed_value    Int?
+  elapsed_unit     String?
+  // { email: {enabled, status: SENT|FAILED|SKIPPED, sent, skipped, failed, error, skip_reason, from}, sms: {...}, in_app: {enabled, status} }.
+  channels         Json?
+  // [{ id, name, email, role, type: owner|user|admin }] - never a phone number.
+  recipients       Json?
+  email_subject    String?
+  email_body       String?
+  sms_message      String?
+  in_app_message   String?
 
-  @@unique([organization_id, lead_id, status, entered_status_at])
+  // ALERTED (one alert of its own) or SUMMARIZED (reported in a starting summary instead, #2794).
+  // Either way the row is the claim for the stage visit, so it never alerts separately.
+  kind       String  @default("ALERTED")
+  // The starting summary it was reported in; cleared when a newer summary replaces that one.
+  summary_id String? @db.Uuid
+
+  organization Organization   @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  lead         Lead           @relation(fields: [lead_id], references: [id], onDelete: Cascade)
+  summary      SpiderSummary? @relation(fields: [summary_id], references: [id], onDelete: SetNull)
+
+  // Named explicitly: Prisma's default name for this key truncates to the old 4-column key's name.
+  @@unique([organization_id, lead_id, status, entered_status_at, counted_from], map: "spider_alerts_visit_activation_key")
   @@index([organization_id, alerted_at])
+  @@index([organization_id, customer_id])
   @@index([lead_id])
+  @@index([summary_id])
   @@map("spider_alerts")
 }
 

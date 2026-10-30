@@ -1,6 +1,6 @@
 /* Payouts slice P2 - the account sync also stores the payout schedule and bank label, from the same account read. */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import type Stripe from 'stripe';
+import Stripe from 'stripe';
 import { prisma } from '../lib/prisma';
 import { retrieveAccount } from '../lib/stripe';
 import { env } from '../config/env';
@@ -52,7 +52,10 @@ describe('account sync: payout summary', () => {
     expect(mockRetrieveAccount).toHaveBeenCalledTimes(1);
     expect(summaryWrites()).toEqual([{
       where: { id: ORG, stripe_account_id: 'acct_live' },
-      data: { payout_summary: { interval: 'weekly', weekly_anchor: 'friday', delay_days: 2, bank_label: 'Test Bank ••6789' } },
+      data: {
+        payout_summary: { interval: 'weekly', weekly_anchor: 'friday', delay_days: 2, bank_label: 'Test Bank ••6789' },
+        stripe_verification: { business_details: 'verified', owner_identity: 'verified', bank_account: 'verified', tax_id: 'verified' },
+      },
     }]);
   });
 
@@ -86,5 +89,52 @@ describe('account sync: payout summary', () => {
     await refreshAccountStatus(ORG);
 
     expect(summaryWrites()).toEqual([]);
+  });
+});
+
+describe('account sync: verification rows (V7-02a)', () => {
+  it('stores the four rows in the same write as the payout summary', async () => {
+    mockRetrieveAccount.mockResolvedValue(account({
+      requirements: { currently_due: ['individual.verification.document'], disabled_reason: null },
+    }));
+
+    await refreshAccountStatus(ORG);
+
+    const writes = summaryWrites();
+    expect(writes).toHaveLength(1);
+    expect(writes[0].data.stripe_verification).toEqual({
+      business_details: 'verified', owner_identity: 'action_needed', bank_account: 'verified', tax_id: 'verified',
+    });
+  });
+
+  it('a rejected account stores all four rows as restricted', async () => {
+    mockRetrieveAccount.mockResolvedValue(account({
+      charges_enabled: false, requirements: { currently_due: [], disabled_reason: 'rejected.fraud' },
+    }));
+
+    await refreshAccountStatus(ORG);
+
+    expect(summaryWrites()[0].data.stripe_verification).toEqual({
+      business_details: 'restricted', owner_identity: 'restricted', bank_account: 'restricted', tax_id: 'restricted',
+    });
+  });
+
+  it('a failed-closed refresh leaves the stored rows untouched', async () => {
+    mockRetrieveAccount.mockRejectedValue(Object.assign(new Error('gone'), { code: 'account_invalid' }));
+
+    await refreshAccountStatus(ORG);
+
+    const everyWrite = mockPrisma.organization.updateMany.mock.calls.map((c) => c[0] as { data: Record<string, unknown> });
+    expect(everyWrite.some((w) => 'stripe_verification' in w.data)).toBe(false);
+  });
+
+  it('a kept refresh (platform error) writes nothing at all', async () => {
+    mockRetrieveAccount.mockRejectedValue(new Stripe.errors.StripeRateLimitError({
+      type: 'invalid_request_error', code: 'rate_limit', message: 'Too many requests', statusCode: 429,
+    } as never));
+
+    await refreshAccountStatus(ORG);
+
+    expect(mockPrisma.organization.updateMany).not.toHaveBeenCalled();
   });
 });

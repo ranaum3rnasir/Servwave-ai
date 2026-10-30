@@ -1,10 +1,14 @@
-import { useMemo, useState, type ReactNode } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Loader2 } from 'lucide-react';
+import { Info, Loader2 } from 'lucide-react';
 
 import api from '@/lib/axios';
 import { formatCurrency, extractApiError, formatTaxRatePercent } from '@/lib/utils';
+import { formatInstant, useScheduleTimezone } from '@/lib/schedule-tz';
+import { useUnappliedDetail } from '@/lib/api/paymentsPage';
+import { postAttached } from '@/lib/paymentsChannel';
+import { Alert } from '@/components/ui/alert';
 import { phoneFieldValue } from '@/ui-kit/lib/phoneField';
 import { useFormFlow } from '@/ui-kit/lib/formFlow';
 import { isRedactedMatch, type ExistingCustomer } from '@/components/customers/DuplicateCustomerDialog';
@@ -83,6 +87,18 @@ function defaultLocationId(customer: PickCustomer): string {
   return primary?.id ?? '';
 }
 
+const ID_SHAPE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** A query-string id, or null: the address is typed by anyone, and an id is put into a request path. */
+const idParam = (raw: string | null): string | null => (raw && ID_SHAPE.test(raw) ? raw : null);
+
+const errorCode = (err: unknown): string | undefined => (err as { response?: { data?: { code?: string } } } | null)?.response?.data?.code;
+const statusOf = (err: unknown): number | undefined => (err as { response?: { status?: number } } | null)?.response?.status;
+const totalRefused0 = (err: unknown) => errorCode(err) === 'INVOICE_TOTAL_BELOW_PAYMENT';
+const cents = (dollars: number) => Math.round(dollars * 100);
+const PAYMENT_DAY: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric', year: 'numeric' };
+const PRICE_ABOVE_ZERO = 'Enter a price above $0.00.';
+const TOTAL_BELOW_PAYMENT = (amount: number) => `The invoice must be at least ${formatCurrency(amount)} so the payment fits.`;
+
 /** The label that opens each unframed sidebar section. */
 function SectionLabel({ children }: { children: ReactNode }) {
   return (
@@ -101,7 +117,7 @@ function SectionLabel({ children }: { children: ReactNode }) {
  * the Total row is all the separation a four-line summary needs.
  */
 function TotalsSummary({
-  subtotal, taxAmount, total, taxExempt, previewTaxRate, showHint,
+  subtotal, taxAmount, total, taxExempt, previewTaxRate, showHint, paymentToRecord,
 }: {
   subtotal: number;
   taxAmount: number | null;
@@ -109,6 +125,8 @@ function TotalsSummary({
   taxExempt: boolean;
   previewTaxRate: number | null;
   showHint: boolean;
+  /** Capture mode: the payment this invoice will record, already worded. */
+  paymentToRecord?: string;
 }) {
   return (
     <div className="flex flex-col gap-2">
@@ -139,6 +157,12 @@ function TotalsSummary({
         <p className="text-muted-foreground text-xs">
           Tax is calculated from the service location on save.
         </p>
+      )}
+      {paymentToRecord && (
+        <dl className="flex flex-col gap-0.5 border-t pt-3 text-sm">
+          <dt className="text-muted-foreground">Payment to record</dt>
+          <dd className="font-medium tabular-nums">{paymentToRecord}</dd>
+        </dl>
       )}
     </div>
   );
@@ -171,6 +195,31 @@ export default function StandaloneInvoiceFormPage() {
   const queryClient = useQueryClient();
 
   const isBelowLg = useMediaQuery('(max-width: 1023.98px)');
+  const tz = useScheduleTimezone();
+
+  // -- Opened from elsewhere (read once) --------------------------------------
+  // `customer_id`: the customer page's "new invoice" link and the Payments drawer's "Create invoice" both land here with
+  // the customer chosen. `unapplied_payment_id`: capture mode, the invoice records that unapplied payment when saved.
+  const [searchParams] = useSearchParams();
+  const [customerParam] = useState(() => idParam(searchParams.get('customer_id')));
+  const [captureParam] = useState(() => idParam(searchParams.get('unapplied_payment_id')));
+
+  const captureRead = useUnappliedDetail(captureParam ? `unmatched_payment:${captureParam}` : null);
+  // Only a payment that is still open, and that this person may create an invoice for, turns the mode on. Anything else
+  // (gone, resolved, a refund, no right to) renders the normal page without a word.
+  const capture = useMemo(() => {
+    const d = captureRead.data;
+    if (!captureParam || !d) return null;
+    const usable = d.kind === 'PAYMENT' && d.status === 'open' && !d.restricted && d.actions.includes('create_invoice')
+      && d.amount != null && d.amount > 0;
+    return usable ? { amount: d.amount as number, receivedAt: d.payer?.received_at ?? d.created_at, description: d.payer?.description?.trim() || null, card: d.payer?.detail ?? null } : null;
+  }, [captureParam, captureRead.data]);
+  // Until the payment has been read (or failed to be), the page cannot know whether this is a capture: no Save yet.
+  const captureSettling = Boolean(captureParam) && captureRead.isPending;
+  const captureDay = capture ? formatInstant(capture.receivedAt, tz, PAYMENT_DAY) : null;
+  const paymentToRecord = capture
+    ? [formatCurrency(capture.amount), capture.card, captureDay].filter(Boolean).join(' · ')
+    : undefined;
 
   // -- Customer -------------------------------------------------------------
   const [contact, setContact] = useState<CustomerContactFields>(EMPTY_CONTACT);
@@ -191,6 +240,8 @@ export default function StandaloneInvoiceFormPage() {
   // -- Line items -----------------------------------------------------------
   const [lineItems, setLineItems] = useState<LineItem[]>([blankLineItem()]);
   const [lineErrors, setLineErrors] = useState<(string | undefined)[]>([]);
+  // Capture mode: the price messages, one per row, drawn under the price field.
+  const [priceErrors, setPriceErrors] = useState<(string | undefined)[]>([]);
   // Set by the first failed submit; from then on the messages follow what is typed.
   const [checkContact, setCheckContact] = useState(false);
   const contactErrors: ContactErrors = checkContact ? contactErrorsFor(contact) : {};
@@ -266,6 +317,19 @@ export default function StandaloneInvoiceFormPage() {
     return { subtotal, taxableSubtotal, taxAmount, total };
   }, [lineItems, previewTaxRate]);
 
+  // Capture mode: one line carrying the payment, filled in once when the payment has loaded.
+  const prefilled = useRef(false);
+  useEffect(() => {
+    if (!capture || prefilled.current) return;
+    prefilled.current = true;
+    // Never over lines the person has already typed.
+    setLineItems((current) =>
+      current.some((li) => li.name.trim() !== '' || (Number(li.unit_price) || 0) > 0)
+        ? current
+        : [{ ...blankLineItem(), name: capture.description ?? 'Payment received', quantity: 1, unit_price: capture.amount }],
+    );
+  }, [capture]);
+
   // -- Build the standalone POST body ---------------------------------------
   const buildPayload = () => {
     // Map LineItemsEditor's {name, detail} -> API {description}; coerce numbers;
@@ -298,7 +362,7 @@ export default function StandaloneInvoiceFormPage() {
       };
     }
 
-    return { customer_id: selectedCustomerId!, line_items, ...location };
+    return { customer_id: selectedCustomerId!, line_items, ...location, ...(capture ? { unapplied_capture_id: captureParam! } : {}) };
   };
 
   // -- Create-customer mutation ---------------------------------------------
@@ -332,15 +396,35 @@ export default function StandaloneInvoiceFormPage() {
     },
   });
 
+  // The first kept row carries a price message (a rejected total belongs to the invoice, and the price is what to change).
+  function showPriceError(message: string) {
+    const at = Math.max(0, lineItems.findIndex((li) => li.name.trim() !== '' || (Number(li.unit_price) || 0) > 0));
+    const next: (string | undefined)[] = [];
+    next[at] = message;
+    setPriceErrors(next);
+    flow.focusFirstInvalid();
+  }
+
   // -- Create-invoice mutation ----------------------------------------------
   const createInvoice = useMutation({
     mutationFn: async () => {
-      const { data } = await api.post('/api/invoices', buildPayload());
-      return data.invoice as { id: string };
+      // In capture mode the page words the refusals itself, so the shared error toast stays out of the way.
+      const { data } = capture
+        ? await api.post('/api/invoices', buildPayload(), { silentErrors: true })
+        : await api.post('/api/invoices', buildPayload());
+      return { invoice: data.invoice as { id: string; invoice_number?: string }, attached: Boolean(data.attached_capture) };
     },
-    onSuccess: (invoice) => {
+    onSuccess: ({ invoice, attached }) => {
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      // Tell the Payments tab this was opened from, so it refreshes itself and says so.
+      if (capture && attached && invoice.invoice_number) postAttached({ invoice_number: invoice.invoice_number, amount: capture.amount });
       navigate(v2Path(`/invoices/${invoice.id}`));
+    },
+    onError: (err: unknown) => {
+      // The server's own check of the same rule the page makes before posting (the preview total is blank while tax is unknown).
+      if (capture && errorCode(err) === 'INVOICE_TOTAL_BELOW_PAYMENT') {
+        showPriceError(TOTAL_BELOW_PAYMENT(capture.amount));
+      }
     },
   });
 
@@ -377,6 +461,23 @@ export default function StandaloneInvoiceFormPage() {
       });
     }
   };
+
+  // The address names a customer: choose them, defaulting the location. A customer who cannot be read leaves the blank form.
+  const preselectRead = useQuery({
+    queryKey: ['customer', customerParam, 'preselect'],
+    queryFn: async () => {
+      const { data } = await api.get(`/api/customers/picker/${customerParam}`);
+      return data.customer as PickCustomer | undefined;
+    },
+    enabled: Boolean(customerParam),
+    retry: false,
+  });
+  const preselected = useRef(false);
+  useEffect(() => {
+    if (preselected.current || !preselectRead.data) return;
+    preselected.current = true;
+    selectCustomer(preselectRead.data);
+  });
 
   const clearSelectedCustomer = () => {
     setSelectedCustomer(null);
@@ -447,6 +548,7 @@ export default function StandaloneInvoiceFormPage() {
 
   // -- Submit ---------------------------------------------------------------
   const handleSubmit = () => {
+    if (captureSettling) return;
     // Need a customer first: pick one, or create the authored one inline.
     if (!selectedCustomerId) {
       setCheckContact(true);
@@ -474,10 +576,39 @@ export default function StandaloneInvoiceFormPage() {
       return;
     }
     setLineErrors([]);
+    if (capture) {
+      // The payment has to fit on the invoice (no invoice ends up owing less than what was paid on it): every kept price is
+      // above zero, and the total with tax reaches the payment. The server checks the same, and has the last word.
+      const keptRow = (li: LineItem) => li.name.trim() !== '' || (Number(li.unit_price) || 0) > 0;
+      const zero = lineItems.map((li) => (keptRow(li) && !(Number(li.unit_price) > 0) ? PRICE_ABOVE_ZERO : undefined));
+      if (zero.some(Boolean)) {
+        setPriceErrors(zero);
+        flow.focusFirstInvalid();
+        return;
+      }
+      if (totals.total != null && cents(totals.total) < cents(capture.amount)) {
+        showPriceError(TOTAL_BELOW_PAYMENT(capture.amount));
+        return;
+      }
+    }
+    setPriceErrors([]);
     createInvoice.mutate();
   };
 
+  // In capture mode every refusal is worded at the top of the page, where the banner is, and brought into view.
+  const refusal = capture && createInvoice.isError && !totalRefused0(createInvoice.error)
+    ? extractApiError(createInvoice.error, 'The invoice could not be saved.')
+    : null;
+  const refusalRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!refusal) return;
+    refusalRef.current?.scrollIntoView?.({ block: 'center' });
+    refusalRef.current?.focus();
+  }, [refusal, createInvoice.submittedAt]);
   const submitting = createInvoice.isPending || (createCustomer.isPending && !dupExisting);
+  // A payment that is already attached or refunded cannot be saved against: no retry on this page.
+  const captureRefused = Boolean(capture) && statusOf(createInvoice.error) === 409;
+  const totalRefused = Boolean(capture) && errorCode(createInvoice.error) === 'INVOICE_TOTAL_BELOW_PAYMENT';
 
   const customerBlock = (
     <PickCustomerFields
@@ -500,16 +631,27 @@ export default function StandaloneInvoiceFormPage() {
 
   return (
     <div>
+      {capture && (
+        <Alert tone="neutral" role="status" className="mb-4 flex items-start gap-2">
+          <Info className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+          <p><b>This invoice will record {formatCurrency(capture.amount)} received on {captureDay}.</b></p>
+        </Alert>
+      )}
+      {refusal && (
+        <Alert ref={refusalRef} tone="danger" role="alert" tabIndex={-1} className="mb-4">
+          <p>{refusal}</p>
+        </Alert>
+      )}
       <PageHeader
         title="New Invoice"
         actions={
           <>
-            <Button type="button" variant="outline" onClick={() => navigate(-1)}>
+            <Button type="button" variant="outline" className="max-sm:h-11" onClick={() => navigate(-1)}>
               Cancel
             </Button>
-            <Button type="submit" form="standalone-invoice-form" disabled={submitting}>
+            <Button type="submit" className="max-sm:h-11" form="standalone-invoice-form" disabled={submitting || captureRefused || captureSettling}>
               {submitting && <Loader2 className="animate-spin" />}
-              {selectedCustomerId ? 'Create Invoice' : 'Continue'}
+              {selectedCustomerId ? (capture ? 'Save invoice' : 'Create Invoice') : 'Continue'}
             </Button>
           </>
         }
@@ -564,6 +706,7 @@ export default function StandaloneInvoiceFormPage() {
                 taxExempt={taxExempt}
                 previewTaxRate={previewTaxRate}
                 showHint={!taxExempt && previewTaxRate == null}
+                paymentToRecord={paymentToRecord}
               />
             </aside>
           )}
@@ -605,8 +748,12 @@ export default function StandaloneInvoiceFormPage() {
                 )}
                 <LineItemsEditor
                   value={lineItems}
-                  onChange={setLineItems}
+                  onChange={(next) => {
+                    setLineItems(next);
+                    setPriceErrors([]);
+                  }}
                   itemNameErrors={lineErrors}
+                  itemPriceErrors={priceErrors}
                 />
               </>
             )}
@@ -619,12 +766,13 @@ export default function StandaloneInvoiceFormPage() {
                 taxExempt={taxExempt}
                 previewTaxRate={previewTaxRate}
                 showHint={false}
+                paymentToRecord={paymentToRecord}
               />
             )}
           </div>
         </div>
 
-        {(createInvoice.isError || createCustomer.isError) && !dupExisting && (
+        {(createInvoice.isError || createCustomer.isError) && !dupExisting && !totalRefused && !refusal && (
           <p className="text-destructive mt-2 text-sm">
             {extractApiError(createInvoice.error ?? createCustomer.error, 'Failed to create invoice')}
           </p>

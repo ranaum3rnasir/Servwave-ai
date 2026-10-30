@@ -30,6 +30,7 @@ import dotenv from 'dotenv';
 import { randomUUID } from 'crypto';
 import { demoVisitsForLeadStatus } from './lib/demo-walkthrough-visits';
 import { demoLeadDispatcherId, demoPeopleForSlot } from './lib/demo-people-on-records';
+import { seedListRows } from './lib/org-list-rows';
 
 dotenv.config();
 
@@ -208,6 +209,8 @@ async function main() {
     const orgRow = await prisma.organization.findUnique({ where: { id: orgId } });
     if (!orgRow) throw new Error(`Alpha organization ${orgId} not found on this DB.`);
     const org = orgRow; // non-null binding so nested closures keep the narrowing
+    // The job type and source lists as rows (V7-03); a no-op when the org already has them.
+    await seedListRows(prisma, orgId);
     console.log(`\nSeeding demo data into "${org.name}" (${orgId})`);
     console.log(`Anchoring all dates to now = ${NOW.toISOString()}\n`);
 

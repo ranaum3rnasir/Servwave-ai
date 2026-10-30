@@ -53,8 +53,9 @@ export const CUSTOMER_PHONE_OWNER = 'customer';
  *
  * A CUSTOMER's phone passes `customer`. A person who may view customers goes by customer, as above. A person who
  * may not has no directory to find the customer in, so the composer is opened addressed to the number the person
- * tapped instead, carrying the name and the job or lead the number was tapped from: the text is filed on that
- * record, and the number is drawn under the copy rule (`owner`).
+ * tapped instead, carrying the name and the job the number was tapped from (and the lead, only when tapped on the
+ * lead's own page, `textCarriesLead`): the text is filed on that record, and the number is drawn under the copy
+ * rule (`owner`).
  */
 export function textPath(phone: string, context?: DialerEntityContext | null, customer?: CustomerTextAccess): string {
   const number = phone.trim();
@@ -63,13 +64,44 @@ export function textPath(phone: string, context?: DialerEntityContext | null, cu
     return `/communication/text?to=${encodeURIComponent(number)}`;
   }
   if (customer.viewCustomers && context?.customerId) {
-    return `/communication/text?customerId=${encodeURIComponent(context.customerId)}`;
+    // Tapped on the lead's own page (`textCarriesLead`, set there and nowhere else): the lead rides along, so the
+    // first reply on that customer's conversation is filed on the lead (SPEC-4 §6.8; the inbox drops it after that
+    // reply or on any change of conversation). A record that merely has a lead (an estimate, a payment's customer)
+    // keeps it on Call only.
+    const lead = context.textCarriesLead && context.leadId ? `&leadId=${encodeURIComponent(context.leadId)}` : '';
+    return `/communication/text?customerId=${encodeURIComponent(context.customerId)}${lead}`;
   }
   const params = new URLSearchParams({ to: number, owner: CUSTOMER_PHONE_OWNER });
   if (context?.customerName) params.set('name', context.customerName);
   if (context?.jobId) params.set('jobId', context.jobId);
-  if (context?.leadId) params.set('leadId', context.leadId);
+  // The lead rides along only from the lead's own page, as above (SPEC-4 §6.8); the job always does.
+  if (context?.textCarriesLead && context.leadId) params.set('leadId', context.leadId);
   return `/communication/text?${params.toString()}`;
+}
+
+/** The address parameters that open the Email page's compose window (read once, then stripped from the address). */
+export const COMPOSE_PARAMS = ['compose', 'to', 'subject', 'body', 'customerId', 'jobId', 'invoiceId'] as const;
+
+export interface ComposePathInput {
+  to: string;
+  subject: string;
+  body?: string;
+  customerId: string;
+  jobId?: string;
+  invoiceId?: string;
+}
+
+/**
+ * The Email page with its compose window open and filled in. The body can hold an invoice's public pay link, so the
+ * page reads `subject` and `body` once and removes them from the address (see InboxPage).
+ */
+export function composePath({ to, subject, body, customerId, jobId, invoiceId }: ComposePathInput): string {
+  const params = new URLSearchParams({ compose: '1', to, subject });
+  if (body) params.set('body', body);
+  params.set('customerId', customerId);
+  if (jobId) params.set('jobId', jobId);
+  if (invoiceId) params.set('invoiceId', invoiceId);
+  return `/communication/inbox?${params.toString()}`;
 }
 
 /**
@@ -100,6 +132,3 @@ export function isIosDevice(): boolean {
 export function openDeviceLink(href: string): void {
   window.location.assign(href);
 }
-
-/** The address parameters that open the Email page's compose window (read once, then stripped from the address). */
-export const COMPOSE_PARAMS = ['compose', 'to', 'subject', 'body', 'customerId', 'jobId', 'invoiceId'] as const;

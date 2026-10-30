@@ -22,6 +22,6 @@ describe('owner payment notice paths', () => {
   });
 
   it('leaves the payout account page where bank details are edited', () => {
-    expect(PAYOUT_ACCOUNT_PATH).toBe('/settings/payout-account');
+    expect(PAYOUT_ACCOUNT_PATH).toBe('/settings/servwave-payments#payout-account');
   });
 });

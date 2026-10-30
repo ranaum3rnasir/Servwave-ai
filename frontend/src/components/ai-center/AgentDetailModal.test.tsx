@@ -18,6 +18,8 @@ function signIn(user: Record<string, unknown>) {
 }
 const NO_SPIDER = { id: 'u1', role: 'ADMIN', org_is_demo: false, org_features: ['leads'] };
 const SPIDER_COMPANY = { id: 'u1', role: 'ADMIN', org_is_demo: true, org_features: ['leads', 'spider'] };
+// SPEC-5: a real (non-demo) company on the server's Spider pilot list.
+const PILOT_COMPANY = { id: 'u1', role: 'ADMIN', org_is_demo: false, org_is_spider_pilot: true, org_features: ['leads', 'spider'] };
 const STATUS = '/api/ai-farm/spider/status';
 const mockApi = vi.mocked(api);
 const ON = { isActive: true, isSetUp: true };
@@ -347,6 +349,33 @@ describe('AgentDetailModal: the control row', () => {
   });
 });
 
+// SPEC-5: a pilot company gets what a demo company gets.
+describe('AgentDetailModal: a company on the Spider pilot list', () => {
+  const row = (dialog: HTMLElement) => dialog.querySelector<HTMLElement>('[data-agent-control-row]');
+
+  it('an Admin sees the switch row, never "Coming soon" or the booking call', async () => {
+    signIn(PILOT_COMPANY);
+    spiderSwitch(OFF);
+    const dialog = openOn('spider');
+    const sw = await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' });
+    expect(sw).not.toBeChecked();
+    expect(within(row(dialog)!).getByText('Spider is off')).toBeInTheDocument();
+    expect(within(dialog).queryByText('Coming soon')).toBeNull();
+    expect(within(dialog).queryByText('Book a call about Spider')).toBeNull();
+  });
+
+  it('Sales sees the staff note and a read-only chip, no switch', async () => {
+    signIn({ ...PILOT_COMPANY, role: 'SALES' });
+    spiderSwitch(ON);
+    const dialog = openOn('spider');
+    expect(await within(dialog).findByText('Spider is on')).toBeInTheDocument();
+    expect(within(row(dialog)!).getByText('Watching your open leads')).toBeInTheDocument();
+    expect(row(dialog)!.querySelector('[data-agent-chip="on"]')).not.toBeNull();
+    expect(within(dialog).queryByRole('switch')).toBeNull();
+    expect(within(dialog).queryByText('Coming soon')).toBeNull();
+  });
+});
+
 describe('AgentDetailModal: switching Spider on and off', () => {
   it('turning on saves at once, with no question and no toast; the status line announces it', async () => {
     signIn(SPIDER_COMPANY);
@@ -371,8 +400,10 @@ describe('AgentDetailModal: switching Spider on and off', () => {
     const dialog = openOn('spider');
     await user.click(await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' }));
     const confirm = await screen.findByRole('alertdialog', { name: 'Turn off Spider?' });
-    expect(within(confirm).getByText(/Spider stops watching your leads and sends no new alerts\. Your statuses, time limits and who gets alerted are all kept\./)).toBeInTheDocument();
-    expect(within(confirm).getByText('When you turn it back on, time in a status counts from that moment.')).toBeInTheDocument();
+    // SPEC-2 (D4): turning off clears the open alerts, and History keeps them. SPEC-3 (D5) with #2794
+    // (Ran, 27 Oct): switching back on reports the leads still past their limit in one summary.
+    expect(within(confirm).getByText('Spider stops watching your leads and sends no new alerts. Any open Spider alerts are cleared for everyone, and Spider History keeps a record of them.')).toBeInTheDocument();
+    expect(within(confirm).getByText('Your statuses, time limits and who gets alerted are all kept. When you turn it back on, Spider sends one summary of the leads still past their time limit.')).toBeInTheDocument();
     const keep = within(confirm).getByRole('button', { name: 'Keep it on' });
     await waitFor(() => expect(keep).toHaveFocus());
     await user.click(keep);

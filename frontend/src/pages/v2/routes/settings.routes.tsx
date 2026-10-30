@@ -15,9 +15,14 @@ const UsersTeamsPage = lazy(() => import('../settings/UsersTeamsPage'));
 const RolesPage = lazy(() => import('../settings/RolesPage'));
 const PersonPermissionsPage = lazy(() => import('../settings/PersonPermissionsPage'));
 const SecurityPage = lazy(() => import('../settings/SecurityPage'));
-const ServwavePaymentsRedirect = lazy(() => import('../settings/ServwavePaymentsRedirect'));
-const PaymentsListsRoute = lazy(() => import('../settings/PaymentsListsRoute'));
-const PayoutAccountPage = lazy(() => import('../settings/PayoutAccountPage'));
+const ServwavePaymentsRoute = lazy(() => import('../settings/ServwavePaymentsRoute'));
+const LegacyPaymentsRedirect = lazy(() =>
+  import('../settings/LegacySettingsRedirects').then((m) => ({ default: m.LegacyPaymentsRedirect })),
+);
+const LegacyPayoutAccountRedirect = lazy(() =>
+  import('../settings/LegacySettingsRedirects').then((m) => ({ default: m.LegacyPayoutAccountRedirect })),
+);
+const ListsPage = lazy(() => import('../settings/ListsPage'));
 const JobSubStatusesPage = lazy(() => import('../settings/JobSubStatusesPage'));
 const DeclineReasonsPage = lazy(() => import('../settings/DeclineReasonsPage'));
 const JobCancelReasonsPage = lazy(() => import('../settings/JobCancelReasonsPage'));
@@ -110,11 +115,13 @@ export function settingsV2Routes() {
         <Route path="/users" element={<Navigate to="/settings/users" replace />} />
       </Route>
 
-      {/* The old Settings > ServWave Payments address (payments go-live P8): the area moved to the Payments page, and
-          this stays as a redirect so email links and bell notifications from before the move still land. It sits
-          outside the Settings shell, which a redirect has no reason to draw. */}
+      {/* The two retired Settings addresses (Payments & Lists, Payout account & verification). Saved bell rows, emails and
+          the hosted-setup return still carry them, so they stay routed and land on ServWave Payments with the query
+          string (or the #payout-account hash) kept. They sit outside the Settings shell: a redirect has no reason to draw
+          it or arm its unsaved-changes guard. */}
       <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN']} />}>
-        <Route path="/settings/servwave-payments" element={<ServwavePaymentsRedirect />} />
+        <Route path="/settings/payments" element={<LegacyPaymentsRedirect />} />
+        <Route path="/settings/payout-account" element={<LegacyPayoutAccountRedirect />} />
       </Route>
 
       {/* Organization Settings module - CASL-filtered per menu item (not ADMIN-gated) */}
@@ -136,8 +143,9 @@ export function settingsV2Routes() {
               <Route path="/settings/users/:userId/permissions" element={<PersonPermissionsPage />} />
             </Route>
             <Route path="/settings/security" element={<SecurityPage />} />
-            <Route path="/settings/payments" element={<PaymentsListsRoute />} />
-            <Route path="/settings/payout-account" element={<PayoutAccountPage />} />
+            {/* ServWave Payments: an old ?tab= link still goes to the Payments page, anything else is the settings page. */}
+            <Route path="/settings/servwave-payments" element={<ServwavePaymentsRoute />} />
+            <Route path="/settings/lists" element={<ListsPage />} />
             <Route path="/settings/job-sub-statuses" element={<JobSubStatusesPage />} />
             <Route path="/settings/decline-reasons" element={<DeclineReasonsPage />} />
             <Route path="/settings/job-cancel-reasons" element={<JobCancelReasonsPage />} />

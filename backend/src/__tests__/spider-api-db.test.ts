@@ -2,7 +2,7 @@
    Spider lead watcher (#2619) - Seam D: the API over HTTP, real app, real migrated database.
 
    Every Spider endpoint sits behind the Spider gate (the `spider` feature AND, while the launch is
-   demo-only, a demo company), answering 404 otherwise. Settings, History and switching Spider on
+   limited, a demo company or a company on the pilot list), answering 404 otherwise. Settings, History and switching Spider on
    or off are Admin-only (403 for Sales, Dispatcher and Technician); reading the status is open to
    every role; the unread-alerts list is every recipient's own.
 
@@ -23,7 +23,22 @@ const { realClient } = vi.hoisted(() => {
 
 vi.mock('../lib/prisma', () => ({ prisma: realClient }));
 
+// The sweep opens its lock on a connection of its own, from the app's database URL, so that URL
+// points at the same test database as the client above (as in spider-sweep-db.test.ts). Every
+// other value is the shared test env from setup.ts, because this suite boots the whole app. This
+// assumes the DB test files run one at a time against the test database (CI runs them with
+// --no-file-parallelism).
+vi.mock('../config/env', async () => {
+  const { testEnv } = await import('./test-env.js');
+  return { env: { ...testEnv, DATABASE_URL: process.env.TEST_DATABASE_URL ?? testEnv.DATABASE_URL } };
+});
+
+import { randomUUID as randomUUIDv4 } from 'crypto';
 import { switchFixture, type Person } from './permission-switches-fixture';
+import { recordLeadOutboundContact } from '../services/lead-contact.service';
+import { runSpiderSweep } from '../services/spider/sweep';
+// The mocked env above (the same object the app reads), so the pilot-list tests can set SPIDER_PILOT_ORG_IDS.
+import { env } from '../config/env';
 
 const suite = realClient ? describe : describe.skip;
 
@@ -40,9 +55,7 @@ function body(overrides: Record<string, unknown> = {}, limits: Record<string, Li
     status_limits: {
       NEW: { enabled: true, value: 2, unit: 'HOUR' },
       CONTACTED: { enabled: false, value: 1, unit: 'DAY' },
-      WALKTHROUGH_SCHEDULED: { enabled: false, value: 1, unit: 'DAY' },
       WALKTHROUGH_COMPLETED: { enabled: false, value: 1, unit: 'DAY' },
-      ESTIMATED: { enabled: false, value: 3, unit: 'DAY' },
       ...limits,
     },
     channels: { in_app: true, red_frame: true, email: false, text: false },
@@ -89,23 +102,38 @@ suite('Spider API (real database)', () => {
     };
   }
 
-  async function unreadSpiderAlert(org: string, recipient: string, leadId: string, extra: Record<string, unknown> = {}) {
+  /**
+   * An unread alert for the lead's current stage visit (a NEW lead, from its creation). `priority`
+   * lets a test store a row as older code did (#2803 wrote Spider alerts as INTERRUPT).
+   */
+  async function unreadSpiderAlert(
+    org: string, recipient: string, leadId: string, extra: Record<string, unknown> = {}, verb = 'spider.alert',
+    priority: 'FEED' | 'INTERRUPT' = 'FEED',
+  ) {
+    const { created_at } = await db.lead.findUniqueOrThrow({ where: { id: leadId }, select: { created_at: true } });
     const n = await db.notification.create({
       data: {
-        organization_id: org, verb: 'spider.alert', category: 'LEAD', priority: 'FEED',
+        organization_id: org, verb, category: 'LEAD', priority,
         object_type: 'LEAD', object_id: leadId, object_label: 'L-1', title: 'Spider',
-        data: { lead_number: 'L-1', customer_name: 'Pat Payer', status: 'NEW', status_label: 'New', ...extra },
+        data: {
+          lead_number: 'L-1', customer_name: 'Pat Payer', status: 'NEW', status_label: 'New',
+          entered_status_at: created_at.toISOString(), ...extra,
+        },
       },
     });
     return db.notificationRecipient.create({
-      data: { notification_id: n.id, organization_id: org, recipient_id: recipient, priority: 'FEED' },
+      data: { notification_id: n.id, organization_id: org, recipient_id: recipient, priority },
     });
   }
 
-  async function alertRow(org: string, leadId: string, recipientIds: string[], at: Date, delivery: object = {}) {
+  /** An alert raised at `at`; by default for a stage visit entered then, in a period it counts from. */
+  async function alertRow(
+    org: string, leadId: string, recipientIds: string[], at: Date, delivery: object = {},
+    visit: { enteredAt?: Date; countedFrom?: Date } = {},
+  ) {
     return db.spiderAlert.create({
       data: {
-        organization_id: org, lead_id: leadId, status: 'NEW', entered_status_at: at, counted_from: at,
+        organization_id: org, lead_id: leadId, status: 'NEW', entered_status_at: visit.enteredAt ?? at, counted_from: visit.countedFrom ?? visit.enteredAt ?? at,
         limit_value: 1, limit_unit: 'HOUR', alerted_at: at, recipient_ids: recipientIds, delivery,
       },
     });
@@ -140,6 +168,90 @@ suite('Spider API (real database)', () => {
       await db.organization.update({ where: { id: org }, data: { is_demo: true, feature_overrides: { spider: false } } });
       expect((await (await fx.signedInAs(admin)).get(SETTINGS)).status).toBe(404);
     });
+
+    // SPEC-5: demo companies plus the companies on the Spider pilot list (SPIDER_PILOT_ORG_IDS). The ids
+    // here are made up or the fixture's random ones. Set the list before signing in: the auth layer
+    // caches the resolved user by token.
+    const pilotEnv = env as { SPIDER_PILOT_ORG_IDS?: string };
+    async function withPilotList<T>(value: string | undefined, fn: () => Promise<T>): Promise<T> {
+      const before = pilotEnv.SPIDER_PILOT_ORG_IDS;
+      pilotEnv.SPIDER_PILOT_ORG_IDS = value;
+      try {
+        return await fn();
+      } finally {
+        pilotEnv.SPIDER_PILOT_ORG_IDS = before;
+      }
+    }
+    const SUMMARY = '/api/ai-farm/spider/history/summary';
+
+    it('still answers 404 everywhere for a non-demo company when the pilot list holds another id', async () => {
+      const { org, admin } = await fx.newOrg();
+      const { sales } = await staff(org);
+      await withPilotList('00000000-0000-4000-8000-0000000000b2', async () => {
+        for (const person of [admin, sales]) {
+          const api = await fx.signedInAs(person);
+          for (const res of [await api.get(SETTINGS), await api.put(SETTINGS, body()), await api.get(HISTORY), await api.get(UNREAD), await api.get(STATUS), await api.put(STATUS, { isActive: true })]) {
+            expect(res.status).toBe(404);
+            expect(res.body).toEqual({ error: 'FEATURE_DISABLED', feature: 'spider' });
+          }
+        }
+      });
+    });
+
+    it('opens for a non-demo Scale company on the pilot list: everything for its Admin, status and unread for Sales', async () => {
+      const { org, admin } = await fx.newOrg();
+      const { sales } = await staff(org);
+      await withPilotList(org, async () => {
+        const asAdmin = await fx.signedInAs(admin);
+        expect((await asAdmin.get(STATUS)).status).toBe(200);
+        expect((await asAdmin.put(STATUS, { isActive: true })).status).toBe(200);
+        expect((await asAdmin.get(SETTINGS)).status).toBe(200);
+        expect((await asAdmin.put(SETTINGS, body())).status).toBe(200);
+        expect((await asAdmin.get(HISTORY)).status).toBe(200);
+        expect((await asAdmin.get(SUMMARY)).status).toBe(200);
+        expect((await asAdmin.get(UNREAD)).status).toBe(200);
+
+        const asSales = await fx.signedInAs(sales);
+        expect((await asSales.get(SETTINGS)).status).toBe(403);
+        expect((await asSales.get(HISTORY)).status).toBe(403);
+        expect((await asSales.get(STATUS)).status).toBe(200);
+        expect((await asSales.get(UNREAD)).status).toBe(200);
+      });
+      // Still a real company: the list never makes it a demo company.
+      expect((await db.organization.findUniqueOrThrow({ where: { id: org } })).is_demo).toBe(false);
+    });
+
+    it.each([
+      ['below Scale', { plan: 'PRO' as const }],
+      ['with the feature switched off for it', { feature_overrides: { spider: false } }],
+    ])('answers 404 everywhere for a listed company %s, and creates nothing', async (_label, data) => {
+      const { org, admin } = await fx.newOrg();
+      await db.organization.update({ where: { id: org }, data });
+      await withPilotList(org, async () => {
+        const api = await fx.signedInAs(admin);
+        for (const res of [await api.get(SETTINGS), await api.put(SETTINGS, body()), await api.get(HISTORY), await api.get(UNREAD), await api.get(STATUS), await api.put(STATUS, { isActive: true })]) {
+          expect(res.status).toBe(404);
+          expect(res.body).toEqual({ error: 'FEATURE_DISABLED', feature: 'spider' });
+        }
+      });
+      expect(await db.spiderSettings.count({ where: { organization_id: org } })).toBe(0);
+    });
+
+    it('/api/auth/me says org_is_spider_pilot for a listed company only (never for an unlisted or a demo company)', async () => {
+      const listed = await fx.newOrg();
+      const unlisted = await fx.newOrg();
+      const demo = await spiderOrg();
+      await withPilotList(listed.org, async () => {
+        const me = async (person: Person) => (await (await fx.signedInAs(person)).get('/api/auth/me')).body.user;
+        const listedMe = await me(listed.admin);
+        expect(listedMe.org_is_spider_pilot).toBe(true);
+        expect(listedMe.org_is_demo).toBe(false);
+        expect((await me(unlisted.admin)).org_is_spider_pilot).toBe(false);
+        const demoMe = await me(demo.admin);
+        expect(demoMe.org_is_spider_pilot).toBe(false);
+        expect(demoMe.org_is_demo).toBe(true);
+      });
+    });
   });
 
   describe('settings', () => {
@@ -159,9 +271,8 @@ suite('Spider API (real database)', () => {
       expect(res.body.settings.watch_all_leads).toBe(true);
       // The screen draws its unit list from here: Minute, Hour and Day, no Second.
       expect(res.body.options.units.map((u: { value: string }) => u.value)).toEqual(['MINUTE', 'HOUR', 'DAY']);
-      expect(res.body.options.statuses.map((s: { value: string }) => s.value)).toEqual([
-        'NEW', 'CONTACTED', 'WALKTHROUGH_SCHEDULED', 'WALKTHROUGH_COMPLETED', 'ESTIMATED',
-      ]);
+      // The three stages Spider acts on (Ran, 15 Oct, D2).
+      expect(res.body.options.statuses.map((s: { value: string }) => s.value)).toEqual(['NEW', 'CONTACTED', 'WALKTHROUGH_COMPLETED']);
       expect((await api.put(SETTINGS, body())).status).toBe(200);
     });
 
@@ -181,56 +292,175 @@ suite('Spider API (real database)', () => {
       }
       // Nothing was stored by any of them: the settings are still the defaults the switch created.
       const { status_limits } = (await api.get(SETTINGS)).body.settings;
-      expect(Object.values(status_limits as Record<string, Limit>).every((l) => !l.enabled && l.value === 1 && l.unit === 'DAY')).toBe(true);
+      expect(Object.keys(status_limits)).toEqual(['NEW', 'CONTACTED', 'WALKTHROUGH_COMPLETED']);
+      expect(Object.values(status_limits as Record<string, Limit>).every((l) => !l.enabled && l.value === 1 && l.unit === 'MINUTE')).toBe(true);
     });
 
-    // Ran, 14 Oct: the switch first, then the setup. Spider may be saved on before any status is.
-    it('saves while on with no status switched on, and it reads on and not set up', async () => {
+    // Ran, 15 Oct (D3): the contractor's three required checks, on the server too, in his words.
+    it('refuses a save with no channel, no recipient or no stage switched on, in the contractor\'s words, storing nothing', async () => {
       const { org, admin } = await onOrg();
       const api = await fx.signedInAs(admin);
-      const res = await api.put(SETTINGS, body({}, { NEW: { enabled: false, value: 2, unit: 'HOUR' } }));
-      expect(res.status).toBe(200);
-      expect(res.body.settings.is_active).toBe(true);
-      expect(res.body.settings.activated_at).toBeTruthy();
-      expect(Object.values(res.body.settings.status_limits as Record<string, Limit>).some((l) => l.enabled)).toBe(false);
+      const row = () => db.spiderSettings.findUniqueOrThrow({ where: { organization_id: org } });
+      const before = await row();
+      const noChannel = { channels: { in_app: false, red_frame: false, email: false, text: false } };
+      const noRecipient = { recipients: { roles: [], user_ids: [], lead_owner: false } };
+      const noStage = { NEW: { enabled: false, value: 2, unit: 'HOUR' } };
+      const cases: [Record<string, unknown>, Record<string, Limit>, string[]][] = [
+        [noChannel, {}, ['Please select at least one Notification Channel (Email, SMS, In-App, or Red Frame).']],
+        [noRecipient, {}, ['Please assign at least one recipient (Admin Roles, Lead Owner, or Specific Users).']],
+        [{}, noStage, ['Please set at least one stage duration threshold greater than 0.']],
+        [{ ...noChannel, ...noRecipient }, noStage, [
+          'Please select at least one Notification Channel (Email, SMS, In-App, or Red Frame).',
+          'Please assign at least one recipient (Admin Roles, Lead Owner, or Specific Users).',
+          'Please set at least one stage duration threshold greater than 0.',
+        ]],
+      ];
+      for (const [overrides, limits, messages] of cases) {
+        const res = await api.put(SETTINGS, body(overrides, limits));
+        expect(res.status).toBe(400);
+        expect(res.body.error).toBe('Validation failed');
+        expect(res.body.details.map((d: { message: string }) => d.message)).toEqual(messages);
+      }
+      // Only another company's people chosen: nobody would be stored, so it is refused too.
+      const other = await spiderOrg();
+      const res = await api.put(SETTINGS, body({ recipients: { roles: [], user_ids: [other.admin.id], lead_owner: false } }));
+      expect(res.status).toBe(400);
+      expect(res.body.details.map((d: { message: string }) => d.message)).toEqual([
+        'Please assign at least one recipient (Admin Roles, Lead Owner, or Specific Users).',
+      ]);
+      expect(await row()).toEqual(before);
       expect((await api.get(STATUS)).body).toEqual({ isActive: true, isSetUp: false });
-      const { sales } = await staff(org);
-      expect((await (await fx.signedInAs(sales)).get(STATUS)).body).toEqual({ isActive: true, isSetUp: false });
     });
 
-    // The burst guard: while Spider was on with nothing switched on it watched nothing, so the
-    // first status it is given starts its clock again. Otherwise every lead that sat in that
-    // status since Spider was switched on would alert on the next sweep, all at once.
-    it('moves activated_at to now when an on Spider is given its first status, and only then', async () => {
+    // The frontend and backend deploy separately: the screen from before 15 Oct still sends the five
+    // statuses. Accepted, and the two that are no longer watched are dropped.
+    it('accepts a save carrying the retired Walkthrough Scheduled and Estimate Sent limits, and drops them', async () => {
+      const { org, admin } = await onOrg();
+      const api = await fx.signedInAs(admin);
+      const res = await api.put(SETTINGS, body({}, {
+        WALKTHROUGH_SCHEDULED: { enabled: true, value: 1, unit: 'DAY' },
+        ESTIMATED: { enabled: true, value: 3, unit: 'DAY' },
+      }));
+      expect(res.status).toBe(200);
+      expect(Object.keys(res.body.settings.status_limits)).toEqual(['NEW', 'CONTACTED', 'WALKTHROUGH_COMPLETED']);
+      const stored = (await db.spiderSettings.findUniqueOrThrow({ where: { organization_id: org } })).status_limits as Record<string, Limit>;
+      expect(Object.keys(stored).sort()).toEqual(['CONTACTED', 'NEW', 'WALKTHROUGH_COMPLETED']);
+    });
+
+    // #2794: no clock restart. Time in a stage counts from when the lead entered it; a save that
+    // starts watching something new records a starting trigger instead, so the backlog arrives as one
+    // starting summary.
+    it('never moves activated_at on a save, not even for the first status', async () => {
       const { org, admin } = await spiderOrg();
       const api = await fx.signedInAs(admin);
       const row = () => db.spiderSettings.findUniqueOrThrow({ where: { organization_id: org } });
-      const noStatus = { NEW: { enabled: false, value: 2, unit: 'HOUR' } };
-
-      // On from the AI Agentic Farm, before any setup.
       expect((await api.put(STATUS, { isActive: true })).status).toBe(200);
       const switchedOn = (await row()).activated_at!;
-      expect(switchedOn).not.toBeNull();
-
-      // Saved on again with still nothing switched on: nothing moves.
       await new Promise((r) => setTimeout(r, 15));
-      expect((await api.put(SETTINGS, body({}, noStatus))).status).toBe(200);
+      expect((await api.put(SETTINGS, body())).status).toBe(200);
       expect((await row()).activated_at).toEqual(switchedOn);
+    });
 
-      // The first status: the clock starts again from now.
-      await new Promise((r) => setTimeout(r, 15));
-      const before = Date.now();
-      const first = await api.put(SETTINGS, body());
-      expect(first.status).toBe(200);
-      const restarted = (await row()).activated_at!;
-      expect(restarted.getTime()).toBeGreaterThan(switchedOn.getTime());
-      expect(restarted.getTime()).toBeGreaterThanOrEqual(before - 1000);
-      expect(new Date(first.body.settings.activated_at).getTime()).toBe(restarted.getTime());
+    describe('the starting trigger (#2794)', () => {
+      const row = (org: string) => db.spiderSettings.findUniqueOrThrow({ where: { organization_id: org } });
+      const trigger = async (org: string) => {
+        const r = await row(org);
+        return { at: r.summary_trigger_at, kind: r.summary_trigger_kind };
+      };
+      const clear = (org: string) =>
+        db.spiderSettings.update({
+          where: { organization_id: org },
+          data: { summary_trigger_at: null, summary_trigger_kind: null, summary_trigger_since: null },
+        });
 
-      // A second status, or saving again, while already watching: nothing moves.
-      await new Promise((r) => setTimeout(r, 15));
-      expect((await api.put(SETTINGS, body({}, { CONTACTED: { enabled: true, value: 1, unit: 'DAY' } }))).status).toBe(200);
-      expect((await row()).activated_at).toEqual(restarted);
+      it('switching on records one; switching off, or on again while on, records none', async () => {
+        const { org, admin } = await spiderOrg();
+        const api = await fx.signedInAs(admin);
+        const before = Date.now();
+        expect((await api.put(STATUS, { isActive: true })).status).toBe(200);
+        const first = await trigger(org);
+        expect(first.kind).toBe('SWITCHED_ON');
+        expect(first.at!.getTime()).toBeGreaterThanOrEqual(before - 1000);
+
+        await clear(org);
+        expect((await api.put(STATUS, { isActive: true })).status).toBe(200);
+        expect(await trigger(org)).toEqual({ at: null, kind: null });
+        expect((await api.put(STATUS, { isActive: false })).status).toBe(200);
+        expect(await trigger(org)).toEqual({ at: null, kind: null });
+
+        // Back on after a pause.
+        expect((await api.put(STATUS, { isActive: true })).status).toBe(200);
+        expect((await trigger(org)).kind).toBe('SWITCHED_ON');
+      });
+
+      it('a save records one for a stage switched on, a limit shortened, or more leads watched, and none otherwise', async () => {
+        const { org, admin, customer } = await onOrg();
+        const api = await fx.signedInAs(admin);
+        const lead = await fx.addLead(org, customer);
+        const other = await fx.addLead(org, customer);
+        await clear(org);
+
+        // First stage switched on.
+        expect((await api.put(SETTINGS, body())).status).toBe(200);
+        expect((await trigger(org)).kind).toBe('STAGE_ADDED');
+        await clear(org);
+
+        // Recipients, channels, a longer limit, a stage switched off, fewer leads: none.
+        const quiet = [
+          body({ recipients: { roles: ['ADMIN'], user_ids: [], lead_owner: false } }),
+          body({ channels: { in_app: true, red_frame: false, email: true, text: true } }),
+          body({}, { NEW: { enabled: true, value: 5, unit: 'HOUR' } }),
+          body({ watch_all_leads: false, selected_lead_ids: [lead.id] }, { NEW: { enabled: true, value: 5, unit: 'HOUR' } }),
+        ];
+        for (const b of quiet) {
+          expect((await api.put(SETTINGS, b)).status).toBe(200);
+          expect(await trigger(org), JSON.stringify(b)).toEqual({ at: null, kind: null });
+        }
+
+        // A shorter limit.
+        expect((await api.put(SETTINGS, body({ watch_all_leads: false, selected_lead_ids: [lead.id] }, { NEW: { enabled: true, value: 1, unit: 'HOUR' } }))).status).toBe(200);
+        expect((await trigger(org)).kind).toBe('LIMIT_SHORTENED');
+        await clear(org);
+
+        // A lead added to the selection, then "Auto-select new leads" turned on.
+        expect((await api.put(SETTINGS, body({ watch_all_leads: false, selected_lead_ids: [lead.id, other.id] }, { NEW: { enabled: true, value: 1, unit: 'HOUR' } }))).status).toBe(200);
+        expect((await trigger(org)).kind).toBe('SCOPE_WIDENED');
+        await clear(org);
+        expect((await api.put(SETTINGS, body({}, { NEW: { enabled: true, value: 1, unit: 'HOUR' } }))).status).toBe(200);
+        expect((await trigger(org)).kind).toBe('SCOPE_WIDENED');
+
+        // A refused save records nothing, even one that would have started watching a new stage.
+        await clear(org);
+        const refused = body(
+          { channels: { in_app: false, red_frame: false, email: false, text: false } },
+          { CONTACTED: { enabled: true, value: 1, unit: 'DAY' } },
+        );
+        expect((await api.put(SETTINGS, refused)).status).toBe(400);
+        expect(await trigger(org)).toEqual({ at: null, kind: null });
+      });
+
+      it('folds a save into a trigger still waiting: switching on keeps its name, two kinds read as settings changed', async () => {
+        const { org, admin } = await spiderOrg();
+        const api = await fx.signedInAs(admin);
+        expect((await api.put(STATUS, { isActive: true })).status).toBe(200);
+        const switched = await trigger(org);
+        await new Promise((r) => setTimeout(r, 15));
+        expect((await api.put(SETTINGS, body())).status).toBe(200);
+        const folded = await trigger(org);
+        expect(folded.kind).toBe('SWITCHED_ON');
+        // The quiet period starts again from the latest save; the wait's bound still counts from the first.
+        expect(folded.at!.getTime()).toBeGreaterThan(switched.at!.getTime());
+        expect((await row(org)).summary_trigger_since).toEqual(switched.at);
+
+        await clear(org);
+        expect((await api.put(SETTINGS, body({}, { CONTACTED: { enabled: true, value: 1, unit: 'DAY' } }))).status).toBe(200);
+        // Nothing was waiting: a fresh wait starts at this save.
+        const fresh = await row(org);
+        expect(fresh.summary_trigger_since).toEqual(fresh.summary_trigger_at);
+        expect((await api.put(SETTINGS, body({}, { NEW: { enabled: true, value: 1, unit: 'HOUR' }, CONTACTED: { enabled: true, value: 1, unit: 'DAY' } }))).status).toBe(200);
+        expect((await trigger(org)).kind).toBe('SETTINGS_CHANGED');
+      });
+
     });
 
     // Ran, 14 Oct, layer 3: Spider's settings open only while it is on, and the switch is the only
@@ -249,7 +479,7 @@ suite('Spider API (real database)', () => {
       expect((await api.put(SETTINGS, body())).status).toBe(200);
       expect((await api.put(STATUS, { isActive: false })).status).toBe(200);
       const before = await db.spiderSettings.findUniqueOrThrow({ where: { organization_id: org } });
-      const off = await api.put(SETTINGS, body({ watch_all_leads: false }, { ESTIMATED: { enabled: true, value: 9, unit: 'DAY' } }));
+      const off = await api.put(SETTINGS, body({ watch_all_leads: false }, { WALKTHROUGH_COMPLETED: { enabled: true, value: 9, unit: 'DAY' } }));
       expect(off.status).toBe(409);
       expect(off.body).toEqual({ error: 'Spider is off. Turn it on to change its settings.' });
       expect(await db.spiderSettings.findUniqueOrThrow({ where: { organization_id: org } })).toEqual(before);
@@ -392,12 +622,13 @@ suite('Spider API (real database)', () => {
       expect(created.is_active).toBe(true);
       expect(created.activated_at!.getTime()).toBeGreaterThanOrEqual(before - 1000);
       expect((await api.get(STATUS)).body).toEqual({ isActive: true, isSetUp: false });
-      // The settings read as the defaults: every status off, the default channels, nobody chosen.
+      // The settings read as the contractor's defaults (Ran, 15 Oct, D3): every stage off, every
+      // channel on, all four roles and the lead's owner, new leads auto-selected.
       const { settings } = (await api.get(SETTINGS)).body;
       expect(settings.is_active).toBe(true);
       expect(Object.values(settings.status_limits as Record<string, Limit>).every((l) => !l.enabled)).toBe(true);
-      expect(settings.channels).toEqual({ in_app: true, red_frame: true, email: false, text: false });
-      expect(settings.recipients).toEqual({ roles: [], user_ids: [], lead_owner: false });
+      expect(settings.channels).toEqual({ in_app: true, red_frame: true, email: true, text: true });
+      expect(settings.recipients).toEqual({ roles: ['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN'], user_ids: [], lead_owner: true });
       expect(settings.watch_all_leads).toBe(true);
 
       // Off again with nothing set up: straight off.
@@ -443,7 +674,7 @@ suite('Spider API (real database)', () => {
       }
     });
 
-    it('switches on and off, moving activated_at only when it goes from off to on, and touches nothing else', async () => {
+    it('switches on and off, moving activated_at only when it goes from off to on, and changes no other setting', async () => {
       const { org, admin, customer } = await spiderOrg();
       const lead = await fx.addLead(org, customer);
       const api = await fx.signedInAs(admin);
@@ -454,7 +685,7 @@ suite('Spider API (real database)', () => {
           watch_all_leads: false,
           selected_lead_ids: [lead.id],
         },
-        { ESTIMATED: { enabled: true, value: 5, unit: 'DAY' } },
+        { WALKTHROUGH_COMPLETED: { enabled: true, value: 5, unit: 'DAY' } },
       );
       // Stored while off, as an earlier settings save left it.
       await db.spiderSettings.create({ data: { organization_id: org, is_active: false, ...saved } });
@@ -498,6 +729,80 @@ suite('Spider API (real database)', () => {
       expect((await (await fx.signedInAs(sales)).get(STATUS)).body).toEqual({ isActive: true, isSetUp: true });
     });
 
+    // Ran, 20 Oct (D4): turning Spider off ends every open Spider alert in the company, for every
+    // person who got it. History keeps the record; nothing is deleted.
+    it('switching off ends every open Spider alert in this company, for every person, and keeps History', async () => {
+      const { org, admin, customer } = await onOrg();
+      const { sales } = await staff(org);
+      const lead = await fx.addLead(org, customer);
+      const adminAlert = await unreadSpiderAlert(org, admin.id, lead.id);
+      const salesAlert = await unreadSpiderAlert(org, sales.id, lead.id);
+      const salesFrame = await unreadSpiderAlert(org, sales.id, lead.id, {}, 'spider.frame');
+      const logged = await alertRow(org, lead.id, [admin.id, sales.id], new Date(), { in_app: { outcome: 'Shown in the app' } });
+      const bellRow = await db.notification.create({
+        data: { organization_id: org, verb: 'lead.assigned', category: 'LEAD', priority: 'INTERRUPT', object_type: 'LEAD', object_id: lead.id, title: 'x' },
+      });
+      const bell = await db.notificationRecipient.create({
+        data: { notification_id: bellRow.id, organization_id: org, recipient_id: sales.id, priority: 'INTERRUPT' },
+      });
+      const api = await fx.signedInAs(admin);
+      const historyBefore = (await api.get(HISTORY)).body.items;
+      expect(historyBefore.map((i: { id: string }) => i.id)).toEqual([logged.id]);
+
+      const res = await api.put(STATUS, { isActive: false });
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ isActive: false, isSetUp: false });
+
+      for (const r of [adminAlert, salesAlert, salesFrame]) {
+        const stored = await db.notificationRecipient.findUnique({ where: { id: r.id } });
+        expect(stored, r.id).not.toBeNull();
+        expect(stored!.read_at, r.id).not.toBeNull();
+        expect(stored!.dismissed_at, r.id).toBeNull();
+      }
+      expect((await db.notificationRecipient.findUniqueOrThrow({ where: { id: bell.id } })).read_at).toBeNull();
+      expect((await api.get(HISTORY)).body.items).toEqual(historyBefore);
+      for (const person of [admin, sales]) {
+        const unread = (await (await fx.signedInAs(person)).get(UNREAD)).body;
+        expect(unread).toMatchObject({ alerts: [], frame: false });
+      }
+    });
+
+    it("switching off leaves another company's alerts and settings alone", async () => {
+      const a = await onOrg();
+      const b = await onOrg();
+      const aLead = await fx.addLead(a.org, a.customer);
+      const bLead = await fx.addLead(b.org, b.customer);
+      await unreadSpiderAlert(a.org, a.admin.id, aLead.id);
+      const bAlert = await unreadSpiderAlert(b.org, b.admin.id, bLead.id);
+      const bFrame = await unreadSpiderAlert(b.org, b.admin.id, bLead.id, {}, 'spider.frame');
+      const bBefore = await row(b.org);
+
+      expect((await (await fx.signedInAs(a.admin)).put(STATUS, { isActive: false })).status).toBe(200);
+
+      for (const r of [bAlert, bFrame]) {
+        expect((await db.notificationRecipient.findUniqueOrThrow({ where: { id: r.id } })).read_at).toBeNull();
+      }
+      expect(await row(b.org)).toEqual(bBefore);
+      expect((await (await fx.signedInAs(b.admin)).get(UNREAD)).body.alerts.map((x: { id: string }) => x.id)).toEqual([bAlert.id]);
+    });
+
+    it('switching off when already off ends anything still open', async () => {
+      const { org, admin, customer } = await spiderOrg();
+      const lead = await fx.addLead(org, customer);
+      const activatedAt = new Date(Date.now() - 3_600_000);
+      await db.spiderSettings.create({ data: { organization_id: org, is_active: false, activated_at: activatedAt } });
+      const leftover = await unreadSpiderAlert(org, admin.id, lead.id);
+
+      const res = await (await fx.signedInAs(admin)).put(STATUS, { isActive: false });
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ isActive: false, isSetUp: false });
+
+      expect((await db.notificationRecipient.findUniqueOrThrow({ where: { id: leftover.id } })).read_at).not.toBeNull();
+      const after = await row(org);
+      expect(after.is_active).toBe(false);
+      expect(after.activated_at).toEqual(activatedAt);
+    });
+
     it("switches only the caller's own company", async () => {
       const a = await spiderOrg();
       const b = await onOrg();
@@ -516,7 +821,7 @@ suite('Spider API (real database)', () => {
   });
 
   describe('unread alerts', () => {
-    it("returns only the caller's own unread Spider alerts, bounded, and the red-frame switch", async () => {
+    it("returns only the caller's own unread Spider alerts, and the in-app and red-frame switches", async () => {
       const { org, admin, customer } = await spiderOrg();
       const { sales } = await staff(org);
       const other = await spiderOrg();
@@ -537,24 +842,267 @@ suite('Spider API (real database)', () => {
       const res = await (await fx.signedInAs(sales)).get(UNREAD);
       expect(res.status).toBe(200);
       expect(res.body.alerts.map((a: { id: string }) => a.id)).toEqual([mine.id]);
-      expect(res.body.alerts[0]).toMatchObject({ lead_id: lead.id, customer_name: 'Pat Payer', status_label: 'New', address: '1 Test Way' });
+      // An alert raised before the contractor's fields were stored still fills his card.
+      expect(res.body.alerts[0]).toMatchObject({
+        lead_id: lead.id, customer_name: 'Pat Payer', stage_name: 'New', current_stage: 'New', service_location: '1 Test Way',
+      });
       // No settings row yet: the red frame is off.
       expect(res.body.red_frame).toBe(false);
 
       await switchOn(admin);
       await (await fx.signedInAs(admin)).put(SETTINGS, body({ channels: { in_app: true, red_frame: true, email: false, text: false } }));
-      expect((await (await fx.signedInAs(sales)).get(UNREAD)).body.red_frame).toBe(true);
-      // The frame marks an unread in-app alert: with in-app alerts off there is no frame.
+      expect((await (await fx.signedInAs(sales)).get(UNREAD)).body).toMatchObject({ in_app: true, red_frame: true });
+      // In-app switched off: the alerts already raised stay listed (his "currently disabled" panel),
+      // and the red frame follows its own switch.
       await (await fx.signedInAs(admin)).put(SETTINGS, body({ channels: { in_app: false, red_frame: true, email: false, text: false } }));
+      const off = (await (await fx.signedInAs(sales)).get(UNREAD)).body;
+      expect(off).toMatchObject({ in_app: false, red_frame: true });
+      expect(off.alerts).toHaveLength(1);
+      await (await fx.signedInAs(admin)).put(SETTINGS, body({ channels: { in_app: true, red_frame: false, email: false, text: false } }));
       expect((await (await fx.signedInAs(sales)).get(UNREAD)).body.red_frame).toBe(false);
     });
 
-    it('is bounded to 50 alerts', async () => {
+    it("returns the contractor's card fields as stored at alert time", async () => {
       const { org, admin, customer } = await spiderOrg();
       const lead = await fx.addLead(org, customer);
-      for (let i = 0; i < 55; i++) await unreadSpiderAlert(org, admin.id, lead.id);
+      await unreadSpiderAlert(org, admin.id, lead.id, {
+        company_name: 'Payer Homes', stage_name: 'New', service_location: '12 Elm Street, Testville, MA, 02108',
+        service_request: 'Fix the door', assigned_to: 'Rita Rep', stage_entered_at: '2026-10-01T09:00:00.000Z',
+        lead_created_at: '2026-09-28T09:00:00.000Z',
+        body: 'This lead was created 3 hours ago and has not yet been contacted.',
+      });
+      const [card] = (await (await fx.signedInAs(admin)).get(UNREAD)).body.alerts;
+      expect(card).toMatchObject({
+        lead_id: lead.id, lead_number: 'L-1', customer_name: 'Pat Payer', company_name: 'Payer Homes',
+        stage_name: 'New', current_stage: 'New', service_location: '12 Elm Street, Testville, MA, 02108',
+        service_request: 'Fix the door', assigned_to: 'Rita Rep', stage_entered_at: '2026-10-01T09:00:00.000Z',
+        lead_created_at: '2026-09-28T09:00:00.000Z',
+        message: 'This lead was created 3 hours ago and has not yet been contacted.',
+      });
+      expect(typeof card.created_at).toBe('string');
+    });
+
+    it('leaves out an alert whose lead left the stage, at once and without marking anything read', async () => {
+      const { org, admin, customer } = await spiderOrg();
+      const moved = await fx.addLead(org, customer);
+      const still = await fx.addLead(org, customer);
+      const movedAlert = await unreadSpiderAlert(org, admin.id, moved.id);
+      const stillAlert = await unreadSpiderAlert(org, admin.id, still.id);
+      const api = await fx.signedInAs(admin);
+      expect((await api.get(UNREAD)).body.alerts).toHaveLength(2);
+
+      await db.lead.update({ where: { id: moved.id }, data: { status: 'CONTACTED', contacted_at: new Date() } });
+      const res = await api.get(UNREAD);
+      expect(res.body.alerts.map((a: { id: string }) => a.id)).toEqual([stillAlert.id]);
+      // A read request writes nothing: the sweep marks the ended alert read.
+      expect((await db.notificationRecipient.findUniqueOrThrow({ where: { id: movedAlert.id } })).read_at).toBeNull();
+    });
+
+    // SPEC-6 (D1): the lead page no longer marks an alert read, so this is the whole of how a text
+    // ends one. The send door calls the release writer only for a text that went out; a text that
+    // was recorded but not sent leaves the lead New, and a text never ends a Contacted visit.
+    it('only a contact the server records ends an alert; a text that did not go out leaves it open', async () => {
+      const { org, admin, customer } = await onOrg();
+      // New watched at 2 hours, Contacted not watched: the sweep below raises nothing new.
+      await (await fx.signedInAs(admin)).put(SETTINGS, body());
+      const a = await fx.addLead(org, customer);
+      const b = await fx.addLead(org, customer);
+      const c = await fx.addLead(org, customer);
+      const contactedAt = new Date(Date.now() - 60_000);
+      await db.lead.update({ where: { id: c.id }, data: { status: 'CONTACTED', contacted_at: contactedAt } });
+      const alertA = await unreadSpiderAlert(org, admin.id, a.id);
+      const alertB = await unreadSpiderAlert(org, admin.id, b.id);
+      const alertC = await unreadSpiderAlert(org, admin.id, c.id, {
+        status: 'CONTACTED', status_label: 'Contacted', entered_status_at: contactedAt.toISOString(),
+      });
+      // B: the text the send door recorded but did not send (the phone system is not connected).
+      const thread = await db.messageThread.create({
+        data: { organization_id: org, customer_id: customer, channel: 'sms', campaign_type: 'conversational' },
+      });
+      try {
+        await db.message.create({
+          data: {
+            organization_id: org, thread_id: thread.id, direction: 'out', body: 'Hello', ts: new Date(),
+            status: 'skipped', status_reason: 'NOT_CONNECTED', lead_id: b.id, sent_by_user_id: admin.id,
+          },
+        });
+        // A and C: what the send door does once a text has gone out.
+        for (const lead of [a, c]) {
+          await recordLeadOutboundContact({ client: db }, {
+            leadId: lead.id, orgId: org, channel: 'text', direction: 'out', automated: false, at: new Date(), actorId: admin.id,
+          });
+        }
+
+        const listed = (await (await fx.signedInAs(admin)).get(UNREAD)).body.alerts.map((x: { id: string }) => x.id);
+        expect(listed.sort()).toEqual([alertB.id, alertC.id].sort());
+        // Reading the list writes nothing.
+        expect((await db.notificationRecipient.findUniqueOrThrow({ where: { id: alertA.id } })).read_at).toBeNull();
+
+        // The sweep's lock connection uses the test database (the file-level env mock above).
+        const result = await runSpiderSweep();
+        expect(result.ran).toBe(true);
+        expect(result.alertsEnded).toBeGreaterThanOrEqual(1);
+        const readAt = async (id: string) => (await db.notificationRecipient.findUniqueOrThrow({ where: { id } })).read_at;
+        expect(await readAt(alertA.id)).not.toBeNull();
+        expect(await readAt(alertB.id)).toBeNull();
+        expect(await readAt(alertC.id)).toBeNull();
+        expect((await db.lead.findUniqueOrThrow({ where: { id: b.id } })).status).toBe('NEW');
+      } finally {
+        await db.message.deleteMany({ where: { thread_id: thread.id } });
+        await db.messageThread.delete({ where: { id: thread.id } });
+      }
+    });
+
+    it("follows the Contacted rule (status New or Contacted only): a Contacted alert ends once the lead's status moves on", async () => {
+      const { org, admin, customer } = await spiderOrg();
+      const lead = await fx.addLead(org, customer);
+      const contactedAt = new Date(Date.now() - 3_600_000);
+      await db.lead.update({ where: { id: lead.id }, data: { status: 'CONTACTED', contacted_at: contactedAt } });
+      await unreadSpiderAlert(org, admin.id, lead.id, { status: 'CONTACTED', status_label: 'Contacted', entered_status_at: contactedAt.toISOString() });
+      const api = await fx.signedInAs(admin);
+      expect((await api.get(UNREAD)).body.alerts).toHaveLength(1);
+      // Walkthrough Scheduled with no booking timestamp: no longer "contacted, walkthrough not scheduled".
+      await db.lead.update({ where: { id: lead.id }, data: { status: 'WALKTHROUGH_SCHEDULED' } });
+      expect((await api.get(UNREAD)).body.alerts).toEqual([]);
+    });
+
+    it('names the current stage "Estimate" once the lead is Estimate Sent but still in Walkthrough Completed', async () => {
+      const { org, admin, customer } = await spiderOrg();
+      const lead = await fx.addLead(org, customer);
+      const done = new Date(Date.now() - 3_600_000);
+      await db.lead.update({
+        where: { id: lead.id },
+        data: { status: 'ESTIMATED', contacted_at: done, walkthrough_first_booked_at: done, last_visit_completed_at: done },
+      });
+      await unreadSpiderAlert(org, admin.id, lead.id, {
+        status: 'WALKTHROUGH_COMPLETED', status_label: 'Walkthrough Completed', entered_status_at: done.toISOString(),
+      });
+      const [card] = (await (await fx.signedInAs(admin)).get(UNREAD)).body.alerts;
+      expect(card).toMatchObject({ stage_name: 'Walkthrough Completed', current_stage: 'Estimate' });
+    });
+
+    it('Red Frame on its own (in-app off): a red-frame-only record shows the frame, never a card, and never reaches the bell', async () => {
+      const { org, admin, customer } = await spiderOrg();
+      const lead = await fx.addLead(org, customer);
+      await switchOn(admin);
+      const api = await fx.signedInAs(admin);
+      await api.put(SETTINGS, body({ channels: { in_app: false, red_frame: true, email: true, text: false } }));
+      const frameOnly = await unreadSpiderAlert(org, admin.id, lead.id, {}, 'spider.frame');
+
+      const res = (await api.get(UNREAD)).body;
+      expect(res).toMatchObject({ alerts: [], in_app: false, red_frame: true, frame: true });
+
+      // The bell: not listed, not counted, and "mark all read" leaves it alone.
+      const bell = (await api.get('/api/notifications')).body;
+      expect(bell.items.map((i: { id: string }) => i.id)).not.toContain(frameOnly.id);
+      expect((await api.get('/api/notifications/unread-count')).body.unseen).toBe(0);
+      // Marking everything seen in the bell leaves it alone too.
+      expect((await api.patch('/api/notifications/seen', {})).status).toBe(200);
+      expect((await db.notificationRecipient.findUniqueOrThrow({ where: { id: frameOnly.id } })).seen_at).toBeNull();
+      await api.post('/api/notifications/read-all', {});
+      expect((await db.notificationRecipient.findUniqueOrThrow({ where: { id: frameOnly.id } })).read_at).toBeNull();
+
+      // The lead leaves the stage: the frame goes at once (nothing written by the read).
+      await db.lead.update({ where: { id: lead.id }, data: { status: 'CONTACTED', contacted_at: new Date() } });
+      expect((await api.get(UNREAD)).body.frame).toBe(false);
+      expect((await db.notificationRecipient.findUniqueOrThrow({ where: { id: frameOnly.id } })).read_at).toBeNull();
+    });
+
+    it('an in-app Spider alert never reaches the bell: not listed, not counted, not seen and not read by it', async () => {
+      const { org, admin, customer } = await onOrg();
+      const lead = await fx.addLead(org, customer);
+      // Stored as #2803 wrote it (INTERRUPT), so the hide must not depend on the priority.
+      const spider = await unreadSpiderAlert(org, admin.id, lead.id, {}, 'spider.alert', 'INTERRUPT');
+      // An ordinary bell notification for the same person: the control, which the bell still handles.
+      const n = await db.notification.create({
+        data: { organization_id: org, verb: 'lead.assigned', category: 'LEAD', priority: 'INTERRUPT', object_type: 'LEAD', object_id: lead.id, title: 'x' },
+      });
+      const control = await db.notificationRecipient.create({
+        data: { notification_id: n.id, organization_id: org, recipient_id: admin.id, priority: 'INTERRUPT' },
+      });
+      const api = await fx.signedInAs(admin);
+
+      const ids = (body: { items: { id: string }[] }) => body.items.map(i => i.id);
+      expect(ids((await api.get('/api/notifications')).body)).toEqual([control.id]);
+      expect(ids((await api.get('/api/notifications?needs_action=true')).body)).not.toContain(spider.id);
+      expect((await api.get('/api/notifications/unread-count')).body.unseen).toBe(1);
+
+      // Opening the bell marks the control seen and leaves the Spider alert alone.
+      expect((await api.patch('/api/notifications/seen', {})).status).toBe(200);
+      expect((await db.notificationRecipient.findUniqueOrThrow({ where: { id: spider.id } })).seen_at).toBeNull();
+      expect((await db.notificationRecipient.findUniqueOrThrow({ where: { id: control.id } })).seen_at).not.toBeNull();
+
+      // "Mark all read" reads the control and leaves the Spider alert alone.
+      expect((await api.post('/api/notifications/read-all', {})).status).toBe(200);
+      expect((await db.notificationRecipient.findUniqueOrThrow({ where: { id: spider.id } })).read_at).toBeNull();
+      expect((await db.notificationRecipient.findUniqueOrThrow({ where: { id: control.id } })).read_at).not.toBeNull();
+
+      // Spider's own surfaces still have it: the card, and the red frame (on by default).
+      const unread = (await api.get(UNREAD)).body;
+      expect(unread.alerts.map((a: { id: string }) => a.id)).toEqual([spider.id]);
+      expect(unread).toMatchObject({ red_frame: true, frame: true });
+    });
+
+    it("Spider's own mark still works: PATCH /api/notifications/:id/read marks a Spider alert read", async () => {
+      const { org, admin, customer } = await onOrg();
+      const lead = await fx.addLead(org, customer);
+      const spider = await unreadSpiderAlert(org, admin.id, lead.id, {}, 'spider.alert', 'INTERRUPT');
+      const api = await fx.signedInAs(admin);
+      expect((await api.patch(`/api/notifications/${spider.id}/read`)).status).toBe(200);
+      expect((await db.notificationRecipient.findUniqueOrThrow({ where: { id: spider.id } })).read_at).not.toBeNull();
+      expect((await api.get(UNREAD)).body.alerts).toEqual([]);
+    });
+
+    it('older, already-read Spider alerts are not listed in the bell either', async () => {
+      const { org, admin, customer } = await onOrg();
+      const lead = await fx.addLead(org, customer);
+      const old = await unreadSpiderAlert(org, admin.id, lead.id, {}, 'spider.alert', 'INTERRUPT');
+      await db.notificationRecipient.update({ where: { id: old.id }, data: { read_at: new Date(), seen_at: new Date() } });
+      const bell = (await (await fx.signedInAs(admin)).get('/api/notifications')).body;
+      expect(bell.items.map((i: { id: string }) => i.id)).not.toContain(old.id);
+    });
+
+    // D4: while Spider is off nothing of it shows, whatever is stored (a failed clear, or a company
+    // that was already off). Display only: the read writes nothing.
+    it('returns no alerts and no frame while Spider is off, without writing anything', async () => {
+      const { org, admin, customer } = await onOrg();
+      const lead = await fx.addLead(org, customer);
+      const api = await fx.signedInAs(admin);
+      await api.put(SETTINGS, body({ channels: { in_app: true, red_frame: true, email: false, text: false } }));
+      const alert = await unreadSpiderAlert(org, admin.id, lead.id);
+      const frame = await unreadSpiderAlert(org, admin.id, lead.id, {}, 'spider.frame');
+      expect((await api.get(UNREAD)).body).toMatchObject({ frame: true });
+      expect((await api.get(UNREAD)).body.alerts).toHaveLength(1);
+
+      // Off as a leftover would be: straight in the database, past the switch and its clear.
+      await db.spiderSettings.update({ where: { organization_id: org }, data: { is_active: false } });
+      const res = await api.get(UNREAD);
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ alerts: [], in_app: true, red_frame: true, frame: false });
+      for (const r of [alert, frame]) {
+        expect((await db.notificationRecipient.findUniqueOrThrow({ where: { id: r.id } })).read_at).toBeNull();
+      }
+    });
+
+    it('shows no frame with the Red Frame switched off, whatever is recorded', async () => {
+      const { org, admin, customer } = await spiderOrg();
+      const lead = await fx.addLead(org, customer);
+      await switchOn(admin);
+      const api = await fx.signedInAs(admin);
+      await api.put(SETTINGS, body({ channels: { in_app: true, red_frame: false, email: false, text: false } }));
+      await unreadSpiderAlert(org, admin.id, lead.id);
+      await unreadSpiderAlert(org, admin.id, lead.id, {}, 'spider.frame');
+      const res = (await api.get(UNREAD)).body;
+      expect(res.alerts).toHaveLength(1);
+      expect(res).toMatchObject({ red_frame: false, frame: false });
+    });
+
+    it('is bounded to 100 alerts', async () => {
+      const { org, admin, customer } = await spiderOrg();
+      const lead = await fx.addLead(org, customer);
+      for (let i = 0; i < 105; i++) await unreadSpiderAlert(org, admin.id, lead.id);
       const res = await (await fx.signedInAs(admin)).get(UNREAD);
-      expect(res.body.alerts).toHaveLength(50);
+      expect(res.body.alerts).toHaveLength(100);
     });
 
     it('marking one read through the existing notification endpoint removes it from the list', async () => {
@@ -567,13 +1115,176 @@ suite('Spider API (real database)', () => {
     });
   });
 
+  describe('the starting summary (#2794)', () => {
+    const MINE = '/api/ai-farm/spider/summary';
+    const COMPANY = '/api/ai-farm/spider/summary/company';
+    const HOUR_MS = 3_600_000;
+
+    /** A summary as the sweep writes it: the summary row and each lead's summarized claim. */
+    async function summaryWith(org: string, leads: { id: string; to: string[]; enteredAgoMs: number; number: string }[], made = new Date()) {
+      await db.spiderSummary.deleteMany({ where: { organization_id: org } });
+      const s = await db.spiderSummary.create({
+        data: { organization_id: org, created_at: made, triggered_at: new Date(made.getTime() - 2 * 60_000), trigger_kind: 'SWITCHED_ON', lead_count: leads.length },
+      });
+      for (const l of leads) {
+        const lead = await db.lead.findUniqueOrThrow({ where: { id: l.id }, select: { created_at: true } });
+        await db.spiderAlert.create({
+          data: {
+            organization_id: org, lead_id: l.id, status: 'NEW', entered_status_at: lead.created_at, counted_from: lead.created_at,
+            limit_value: 2, limit_unit: 'HOUR', alerted_at: new Date(lead.created_at.getTime() + l.enteredAgoMs), recipient_ids: l.to,
+            kind: 'SUMMARIZED', summary_id: s.id, lead_number: l.number, customer_name: 'Pat Payer', service_location: '1 Test Way, Testville, MA',
+            stage_name: 'New',
+          },
+        });
+      }
+      return s;
+    }
+
+    it('gives each person their own leads only, most overdue first, any role; the company view is Admin-only', async () => {
+      const { org, admin, customer } = await onOrg();
+      const { sales, dispatcher } = await staff(org);
+      const a = await fx.addLead(org, customer, { owner: sales.id });
+      const b = await fx.addLead(org, customer);
+      const c = await fx.addLead(org, customer, { owner: sales.id });
+      await summaryWith(org, [
+        { id: a.id, to: [sales.id, admin.id], enteredAgoMs: 5 * HOUR_MS, number: 'L-A' },
+        { id: b.id, to: [admin.id], enteredAgoMs: 30 * HOUR_MS, number: 'L-B' },
+        { id: c.id, to: [sales.id, admin.id], enteredAgoMs: 52 * HOUR_MS, number: 'L-C' },
+      ]);
+
+      const mine = await (await fx.signedInAs(sales)).get(MINE);
+      expect(mine.status).toBe(200);
+      expect(mine.body.summary).toMatchObject({ scope: 'mine', total: 2, still_waiting: 2, moved_on: 0, show_owner: false, trigger_kind: 'SWITCHED_ON' });
+      expect(mine.body.summary.leads.map((l: { lead_number: string }) => l.lead_number)).toEqual(['L-C', 'L-A']);
+      expect(mine.body.summary.leads[0]).toMatchObject({
+        lead_id: c.id, customer_name: 'Pat Payer', address: '1 Test Way, Testville, MA', stage: 'NEW', stage_name: 'New',
+        in_stage: '2 days 4 hours', limit: '2 hours', over_by: '2 days 2 hours', owner_name: 'sales Tester', moved_on: false, moved_to: null,
+      });
+
+      // A person with nothing in it reads no summary; a non-Admin cannot read the company's.
+      expect((await (await fx.signedInAs(dispatcher)).get(MINE)).body).toEqual({ summary: null });
+      expect((await (await fx.signedInAs(sales)).get(COMPANY)).status).toBe(403);
+
+      const company = await (await fx.signedInAs(admin)).get(COMPANY);
+      expect(company.status).toBe(200);
+      expect(company.body.summary).toMatchObject({ scope: 'company', total: 3, show_owner: true });
+      expect(company.body.summary.leads.map((l: { lead_number: string }) => l.lead_number)).toEqual(['L-C', 'L-B', 'L-A']);
+      expect(company.body.summary.leads[1]).toMatchObject({ owner_name: null });
+    });
+
+    it('marks a lead that has since left that stage "moved on", with where it is now', async () => {
+      const { org, admin, customer } = await onOrg();
+      const a = await fx.addLead(org, customer);
+      const b = await fx.addLead(org, customer);
+      const c = await fx.addLead(org, customer);
+      await summaryWith(org, [
+        { id: a.id, to: [admin.id], enteredAgoMs: 5 * HOUR_MS, number: 'L-A' },
+        { id: b.id, to: [admin.id], enteredAgoMs: 6 * HOUR_MS, number: 'L-B' },
+        { id: c.id, to: [admin.id], enteredAgoMs: 7 * HOUR_MS, number: 'L-C' },
+      ]);
+      await db.lead.update({ where: { id: a.id }, data: { status: 'CONTACTED', contacted_at: new Date() } });
+      await db.lead.update({ where: { id: b.id }, data: { status: 'WON', won_at: new Date() } });
+
+      const res = await (await fx.signedInAs(admin)).get(MINE);
+      const byNumber = Object.fromEntries(res.body.summary.leads.map((l: { lead_number: string }) => [l.lead_number, l]));
+      expect(res.body.summary).toMatchObject({ total: 3, still_waiting: 1, moved_on: 2 });
+      expect(byNumber['L-A']).toMatchObject({ moved_on: true, moved_to: 'Contacted' });
+      expect(byNumber['L-B']).toMatchObject({ moved_on: true, moved_to: 'Won' });
+      expect(byNumber['L-C']).toMatchObject({ moved_on: false, moved_to: null });
+    });
+
+    it('reads null when there is no summary, 404 behind the gate, and never another company\'s', async () => {
+      const { admin } = await onOrg();
+      const other = await onOrg();
+      const lead = await fx.addLead(other.org, other.customer);
+      await summaryWith(other.org, [{ id: lead.id, to: [other.admin.id], enteredAgoMs: 5 * HOUR_MS, number: 'L-X' }]);
+      const api = await fx.signedInAs(admin);
+      expect((await api.get(MINE)).body).toEqual({ summary: null });
+      expect((await api.get(COMPANY)).body).toEqual({ summary: null });
+      expect((await (await fx.signedInAs(other.admin)).get(COMPANY)).body.summary.total).toBe(1);
+
+      const closed = await fx.newOrg();
+      const closedApi = await fx.signedInAs(closed.admin);
+      for (const res of [await closedApi.get(MINE), await closedApi.get(COMPANY)]) {
+        expect(res.status).toBe(404);
+        expect(res.body).toEqual({ error: 'FEATURE_DISABLED', feature: 'spider' });
+      }
+    });
+
+    it('History marks the leads reported in a starting summary', async () => {
+      const { org, admin, customer } = await onOrg();
+      const a = await fx.addLead(org, customer);
+      await summaryWith(org, [{ id: a.id, to: [admin.id], enteredAgoMs: 5 * HOUR_MS, number: 'L-A' }]);
+      const b = await fx.addLead(org, customer);
+      await alertRow(org, b.id, [admin.id], new Date());
+      const res = await (await fx.signedInAs(admin)).get(HISTORY);
+      const byLead = Object.fromEntries(res.body.items.map((i: { lead_id: string; in_starting_summary: boolean }) => [i.lead_id, i.in_starting_summary]));
+      expect(byLead).toEqual({ [a.id]: true, [b.id]: false });
+    });
+  });
+
   describe('history', () => {
-    it('is 403 for Sales, Dispatcher and Technician, and 200 for an Admin', async () => {
+    const SUMMARY = `${HISTORY}/summary`;
+    const FILTERS = `${HISTORY}/filters`;
+    const EXPORT = `${HISTORY}/export`;
+    const SEARCH = `${HISTORY}/search`;
+
+    /** An alert written with the alert-time copy (S3), as the sweep writes it. */
+    async function snapshotRow(org: string, leadId: string, at: Date, over: Record<string, unknown> = {}) {
+      return db.spiderAlert.create({
+        data: {
+          organization_id: org, lead_id: leadId, status: 'NEW', entered_status_at: at, counted_from: at,
+          limit_value: 1, limit_unit: 'HOUR', alerted_at: at, recipient_ids: [], delivery: {},
+          lead_number: 'L00001', customer_name: 'Pat Payer', company_name: null, service_location: '1 Test Way, Testville, MA',
+          stage_name: 'New', elapsed_value: 2, elapsed_unit: 'HOUR', recipients: [],
+          channels: {
+            email: { enabled: false, status: 'SKIPPED', sent: 0, skipped: 0, failed: 0, error: null, skip_reason: null },
+            sms: { enabled: false, status: 'SKIPPED', sent: 0, skipped: 0, failed: 0, error: null, skip_reason: null },
+            in_app: { enabled: true, status: 'SENT' },
+          },
+          ...over,
+        } as never,
+      });
+    }
+
+    const ids = (res: { body: { items: { id: string }[] } }) => res.body.items.map((i) => i.id);
+
+    it('every History endpoint is 403 for Sales, Dispatcher and Technician, 404 behind the gate, and 200 for an Admin', async () => {
       const { org, admin } = await spiderOrg();
       for (const person of Object.values(await staff(org)) as Person[]) {
-        expect((await (await fx.signedInAs(person)).get(HISTORY)).status).toBe(403);
+        const api = await fx.signedInAs(person);
+        for (const path of [HISTORY, SUMMARY, FILTERS, EXPORT]) expect((await api.get(path)).status).toBe(403);
+        for (const path of [SEARCH, EXPORT]) expect((await api.post(path, {})).status).toBe(403);
       }
-      expect((await (await fx.signedInAs(admin)).get(HISTORY)).status).toBe(200);
+      const api = await fx.signedInAs(admin);
+      for (const path of [HISTORY, SUMMARY, FILTERS, EXPORT]) expect((await api.get(path)).status).toBe(200);
+      for (const path of [SEARCH, EXPORT]) expect((await api.post(path, {})).status).toBe(200);
+
+      const gated = await fx.newOrg();
+      const gatedApi = await fx.signedInAs(gated.admin);
+      for (const path of [HISTORY, SUMMARY, FILTERS, EXPORT]) expect((await gatedApi.get(path)).status).toBe(404);
+      for (const path of [SEARCH, EXPORT]) expect((await gatedApi.post(path, {})).status).toBe(404);
+    });
+
+    // D5: a lead still stuck after Spider is switched back on alerts again for the same stage visit.
+    it('lists a re-alert as its own row, and the earlier row unchanged', async () => {
+      const { org, admin, customer } = await spiderOrg();
+      const lead = await fx.addLead(org, customer);
+      const t = Date.now();
+      const entered = new Date(t - 10_000);
+      const first = await alertRow(org, lead.id, [admin.id], new Date(t - 2_000), {}, { enteredAt: entered, countedFrom: entered });
+      const api = await fx.signedInAs(admin);
+      const before = await api.get(HISTORY);
+      expect(ids(before)).toEqual([first.id]);
+
+      // Switched off and on: the same visit, counted from the new switch-on.
+      const reAlert = await alertRow(org, lead.id, [admin.id], new Date(t - 1_000), {}, { enteredAt: entered, countedFrom: new Date(t - 5_000) });
+
+      const after = await api.get(HISTORY);
+      expect(after.status).toBe(200);
+      expect(after.body.total).toBe(2);
+      expect(ids(after)).toEqual([reAlert.id, first.id]);
+      expect(after.body.items[1]).toEqual(before.body.items[0]);
     });
 
     it('paginates newest first, clamps the page size to 100, and returns only this company', async () => {
@@ -590,10 +1301,10 @@ suite('Spider API (real database)', () => {
       const api = await fx.signedInAs(admin);
       const p1 = await api.get(`${HISTORY}?page=1&page_size=2`);
       expect(p1.status).toBe(200);
-      expect(p1.body.items.map((i: { id: string }) => i.id)).toEqual([newest.id, middle.id]);
+      expect(ids(p1)).toEqual([newest.id, middle.id]);
       expect(p1.body).toMatchObject({ total: 3, page: 1, page_size: 2, total_pages: 2 });
       const p2 = await api.get(`${HISTORY}?page=2&page_size=2`);
-      expect(p2.body.items.map((i: { id: string }) => i.id)).toEqual([oldest.id]);
+      expect(ids(p2)).toEqual([oldest.id]);
 
       const big = await api.get(`${HISTORY}?page_size=500`);
       expect(big.status).toBe(200);
@@ -603,39 +1314,281 @@ suite('Spider API (real database)', () => {
       expect((await api.get(`${HISTORY}?page=zero`)).status).toBe(400);
     });
 
-    it('shows delivery outcomes in plain words and never an email address or phone number', async () => {
+    it("shows the alert-time copy: the people's names, emails and roles (as the contractor did), never a phone number", async () => {
       const { org, admin, customer } = await spiderOrg();
       const tech = await fx.addUser(org, 'tech', 'TECHNICIAN');
       await db.user.update({ where: { id: tech.id }, data: { phone: '+16175550123' } });
-      await db.user.update({ where: { id: admin.id }, data: { phone: '(617) 555-0199' } });
       const lead = await fx.addLead(org, customer);
-      await alertRow(org, lead.id, [admin.id, tech.id], new Date(), {
-        in_app: { outcome: 'Shown in the app' },
-        email: { outcome: 'Email sent (1 of 2)', recipients: [
-          { user_id: admin.id, outcome: 'Email sent' },
-          { user_id: tech.id, outcome: 'Email skipped: address is suppressed' },
-        ] },
-        text: { outcome: 'Text message could not be delivered', recipients: [
-          { user_id: admin.id, outcome: 'Text message could not be delivered' },
-          { user_id: tech.id, outcome: 'Text message could not be delivered' },
-        ] },
+      const at = new Date();
+      await snapshotRow(org, lead.id, at, {
+        recipient_ids: [admin.id, tech.id],
+        lead_number: 'L00077',
+        company_name: 'Payer Homes',
+        service_request: 'Fix the door',
+        recipients: [
+          { id: admin.id, name: 'Test Admin', email: admin.email, role: 'ADMIN', type: 'admin' },
+          { id: tech.id, name: 'tech Tester', email: tech.email, role: 'TECHNICIAN', type: 'user' },
+        ],
+        channels: {
+          email: { enabled: true, status: 'SENT', sent: 1, skipped: 1, failed: 0, error: null, skip_reason: 'Recipient opted out', from: 'ServWave Spider Alerts <alerts@spider.servwave.com>' },
+          sms: { enabled: true, status: 'FAILED', sent: 0, skipped: 0, failed: 2, error: 'Text message delivery failed', skip_reason: null },
+          in_app: { enabled: true, status: 'SENT' },
+        },
+        email_subject: 'Spider Alert - Pat Payer (L00077)',
+        email_body: 'the email',
+        sms_message: 'the text',
+        in_app_message: 'the sentence',
       });
 
       const res = await (await fx.signedInAs(admin)).get(HISTORY);
       const [row] = res.body.items;
       expect(row).toMatchObject({
         lead_id: lead.id,
+        lead_number: 'L00077',
         customer_name: 'Pat Payer',
-        status_label: 'New',
-        channels: { in_app: 'Shown in the app', email: 'Email sent (1 of 2)', text: 'Text message could not be delivered' },
+        company_name: 'Payer Homes',
+        service_location: '1 Test Way, Testville, MA',
+        stage_name: 'New',
+        elapsed: { value: 2, unit: 'HOUR' },
+        alerted_at: at.toISOString(),
+        outcome: 'FAILED',
+        outcomes: {
+          email: { enabled: true, status: 'SENT', sent: 1, skipped: 1, failed: 0 },
+          sms: { enabled: true, status: 'FAILED', error: 'Text message delivery failed' },
+          in_app: { enabled: true, status: 'SENT' },
+        },
+        recipients: [
+          { id: admin.id, name: 'Test Admin', email: admin.email, role: 'ADMIN', type: 'admin' },
+          { id: tech.id, name: 'tech Tester', email: tech.email, role: 'TECHNICIAN', type: 'user' },
+        ],
+        email_subject: 'Spider Alert - Pat Payer (L00077)',
+        email_body: 'the email',
+        sms_message: 'the text',
+        in_app_message: 'the sentence',
       });
-      expect(row.recipients).toEqual(expect.arrayContaining([
-        { name: 'Test Admin', email_outcome: 'Email sent', text_outcome: 'Text message could not be delivered' },
-        { name: 'tech Tester', email_outcome: 'Email skipped: address is suppressed', text_outcome: 'Text message could not be delivered' },
+      expect(JSON.stringify(res.body)).not.toMatch(/555/);
+    });
+
+    it('an alert from before the copy shows its lead and people as they are now, its outcome read from our sentences, and no message text', async () => {
+      const { org, admin, customer } = await spiderOrg();
+      const lead = await fx.addLead(org, customer);
+      await alertRow(org, lead.id, [admin.id], new Date(), {
+        in_app: { outcome: 'Shown in the app' },
+        email: { outcome: 'Email alerts are switched off' },
+        text: { outcome: 'Text skipped: no phone number on profile', recipients: [{ user_id: admin.id, outcome: 'Text skipped: no phone number on profile' }] },
+      });
+      const [row] = (await (await fx.signedInAs(admin)).get(HISTORY)).body.items;
+      expect(row).toMatchObject({
+        lead_number: `L-${lead.id.slice(0, 8)}`,
+        customer_name: 'Pat Payer',
+        service_location: 'Service location on file',
+        stage_name: 'New',
+        outcome: 'SENT',
+        outcomes: {
+          email: { enabled: false, status: 'SKIPPED' },
+          sms: { enabled: true, status: 'SKIPPED', skipped: 1, skip_reason: 'no phone number' },
+          in_app: { enabled: true, status: 'SENT' },
+        },
+        recipients: [{ id: admin.id, name: 'Test Admin', email: admin.email, role: 'ADMIN', type: null }],
+        // The old screen's fields, in their old shape: a frontend deployed before this backend still renders.
+        status_label: 'New',
+        channels: { in_app: 'Shown in the app', email: 'Email alerts are switched off', text: 'Text skipped: no phone number on profile' },
+        email_body: null,
+        sms_message: null,
+        in_app_message: null,
+      });
+    });
+
+    it('searches every page, not just the one on screen: lead number, customer, company and address', async () => {
+      const { org, admin, customer } = await spiderOrg();
+      const lead = await fx.addLead(org, customer);
+      const t = Date.now();
+      // The match is the oldest of 30: on the second page of 25.
+      const target = await snapshotRow(org, lead.id, new Date(t - 60_000), {
+        lead_number: 'L09999', customer_name: 'Quinn Quarry', company_name: 'Quarry Works', service_location: '9 Granite Lane, Rockport',
+      });
+      for (let i = 0; i < 29; i++) await snapshotRow(org, lead.id, new Date(t - i * 1_000));
+      const api = await fx.signedInAs(admin);
+      for (const q of ['l09999', 'quinn', 'QUARRY works', 'granite']) {
+        const res = await api.get(`${HISTORY}?search=${encodeURIComponent(q)}`);
+        expect(res.body.total).toBe(1);
+        expect(ids(res)).toEqual([target.id]);
+      }
+    });
+
+    it('finds an alert from before the copy by its lead and customer as they are now', async () => {
+      const { org, admin, customer } = await spiderOrg();
+      const lead = await fx.addLead(org, customer);
+      await db.customer.update({ where: { id: customer }, data: { company_name: 'Payer Homes' } });
+      const legacy = await alertRow(org, lead.id, [admin.id], new Date());
+      const api = await fx.signedInAs(admin);
+      for (const q of [lead.id.slice(0, 8), 'payer', 'Payer Homes']) {
+        expect(ids(await api.get(`${HISTORY}?search=${encodeURIComponent(q)}`))).toEqual([legacy.id]);
+      }
+      expect((await api.get(`${HISTORY}?search=nobody`)).body.total).toBe(0);
+    });
+
+    it('filters by stage (Walkthrough includes older Walkthrough Scheduled alerts), across pages', async () => {
+      const { org, admin, customer } = await spiderOrg();
+      const lead = await fx.addLead(org, customer);
+      const t = Date.now();
+      const contacted = await snapshotRow(org, lead.id, new Date(t - 50_000), { status: 'CONTACTED', stage_name: 'Contacted' });
+      const completed = await snapshotRow(org, lead.id, new Date(t - 40_000), { status: 'WALKTHROUGH_COMPLETED', stage_name: 'Walkthrough Completed' });
+      const scheduled = await alertRow(org, lead.id, [admin.id], new Date(t - 30_000));
+      await db.spiderAlert.update({ where: { id: scheduled.id }, data: { status: 'WALKTHROUGH_SCHEDULED' } });
+      for (let i = 0; i < 26; i++) await snapshotRow(org, lead.id, new Date(t - i * 100));
+      const api = await fx.signedInAs(admin);
+      expect(ids(await api.get(`${HISTORY}?stage=CONTACTED`))).toEqual([contacted.id]);
+      expect(ids(await api.get(`${HISTORY}?stage=WALKTHROUGH`))).toEqual([scheduled.id, completed.id]);
+      expect(ids(await api.get(`${HISTORY}?stage=CONTACTED,WALKTHROUGH`))).toEqual([scheduled.id, completed.id, contacted.id]);
+      expect((await api.get(`${HISTORY}?stage=NEW`)).body.total).toBe(26);
+      expect((await api.get(`${HISTORY}?stage=WON`)).status).toBe(400);
+    });
+
+    it('filters by date ranges (any of them), by recipient, and by customer', async () => {
+      const { org, admin, customer } = await spiderOrg();
+      const sales = await fx.addUser(org, 'sales', 'SALES');
+      const otherCustomer = randomUUIDv4();
+      await db.customer.create({
+        data: { id: otherCustomer, organization_id: org, customer_number: `C-${otherCustomer.slice(0, 6)}`, kind: 'PERSON', segment: 'RESIDENTIAL', first_name: 'Olive', last_name: 'Other' },
+      });
+      const lead = await fx.addLead(org, customer);
+      const otherLead = await fx.addLead(org, otherCustomer);
+      const d = (day: number) => new Date(`2026-10-${String(day).padStart(2, '0')}T12:00:00.000Z`);
+      const oct1 = await snapshotRow(org, lead.id, d(1), { recipient_ids: [admin.id], customer_id: customer });
+      const oct5 = await snapshotRow(org, otherLead.id, d(5), { recipient_ids: [sales.id], customer_id: otherCustomer });
+      const oct9 = await alertRow(org, otherLead.id, [admin.id, sales.id], d(9));
+      const api = await fx.signedInAs(admin);
+      const range = (a: number, b: number) => `${d(a).toISOString().slice(0, 10)}T00:00:00.000Z~${d(b).toISOString().slice(0, 10)}T23:59:59.999Z`;
+
+      expect(ids(await api.get(`${HISTORY}?ranges=${range(4, 6)}`))).toEqual([oct5.id]);
+      expect(ids(await api.get(`${HISTORY}?ranges=${range(1, 1)},${range(9, 9)}`))).toEqual([oct9.id, oct1.id]);
+      expect(ids(await api.get(`${HISTORY}?recipients=${sales.id}`))).toEqual([oct9.id, oct5.id]);
+      expect(ids(await api.get(`${HISTORY}?customers=${otherCustomer}`))).toEqual([oct9.id, oct5.id]);
+      expect(ids(await api.get(`${HISTORY}?customers=${customer}`))).toEqual([oct1.id]);
+      expect((await api.get(`${HISTORY}?ranges=nonsense`)).status).toBe(400);
+    });
+
+    it("filters by role: the role stored at alert time, else the person's role now", async () => {
+      const { org, admin, customer } = await spiderOrg();
+      const dispatcher = await fx.addUser(org, 'dispatcher', 'DISPATCHER');
+      const lead = await fx.addLead(org, customer);
+      const t = Date.now();
+      // Stored as Sales when it went out, though the same person is a Dispatcher now.
+      const storedSales = await snapshotRow(org, lead.id, new Date(t - 3_000), {
+        recipient_ids: [dispatcher.id],
+        recipients: [{ id: dispatcher.id, name: 'dispatcher Tester', email: dispatcher.email, role: 'SALES', type: 'user' }],
+      });
+      const legacyDispatcher = await alertRow(org, lead.id, [dispatcher.id], new Date(t - 2_000));
+      const storedAdmin = await snapshotRow(org, lead.id, new Date(t - 1_000), {
+        recipient_ids: [admin.id],
+        recipients: [{ id: admin.id, name: 'Test Admin', email: admin.email, role: 'ADMIN', type: 'admin' }],
+      });
+      const api = await fx.signedInAs(admin);
+      expect(ids(await api.get(`${HISTORY}?roles=SALES`))).toEqual([storedSales.id]);
+      expect(ids(await api.get(`${HISTORY}?roles=DISPATCHER`))).toEqual([legacyDispatcher.id]);
+      expect(ids(await api.get(`${HISTORY}?roles=ADMIN,SALES`))).toEqual([storedAdmin.id, storedSales.id]);
+      expect((await api.get(`${HISTORY}?roles=OWNER`)).status).toBe(400);
+    });
+
+    it('his "Administrator (Owner)" also finds alerts that reached the lead\'s owner', async () => {
+      const { org, admin, customer } = await spiderOrg();
+      const rep = await fx.addUser(org, 'rep', 'SALES');
+      const lead = await fx.addLead(org, customer);
+      const t = Date.now();
+      const toOwner = await snapshotRow(org, lead.id, new Date(t - 2_000), {
+        recipient_ids: [rep.id],
+        recipients: [{ id: rep.id, name: 'rep Tester', email: rep.email, role: 'SALES', type: 'owner' }],
+      });
+      await snapshotRow(org, lead.id, new Date(t - 1_000), {
+        recipient_ids: [rep.id],
+        recipients: [{ id: rep.id, name: 'rep Tester', email: rep.email, role: 'SALES', type: 'user' }],
+      });
+      const api = await fx.signedInAs(admin);
+      expect(ids(await api.get(`${HISTORY}?roles=ADMIN`))).toEqual([toOwner.id]);
+    });
+
+    it('POST takes the toolbar in the body: 250 ticked customers load, and filter', async () => {
+      const { org, admin, customer } = await spiderOrg();
+      const lead = await fx.addLead(org, customer);
+      const row = await snapshotRow(org, lead.id, new Date(), { customer_id: customer });
+      const others = Array.from({ length: 249 }, () => randomUUIDv4());
+      const api = await fx.signedInAs(admin);
+      const res = await api.post(SEARCH, { page: 1, page_size: 25, customers: [customer, ...others] });
+      expect(res.status).toBe(200);
+      expect(ids(res)).toEqual([row.id]);
+      const none = await api.post(SEARCH, { customers: others });
+      expect(none.body.total).toBe(0);
+      const exp = await api.post(EXPORT, { customers: [customer, ...others] });
+      expect(exp.status).toBe(200);
+      expect(exp.body.items.map((i: { id: string }) => i.id)).toEqual([row.id]);
+      expect((await api.post(SEARCH, { customers: ['not-an-id'] })).status).toBe(400);
+    });
+
+    it('exports every filtered row, past one page, for this company only', async () => {
+      const { org, admin, customer } = await spiderOrg();
+      const other = await spiderOrg();
+      const lead = await fx.addLead(org, customer);
+      const otherLead = await fx.addLead(other.org, other.customer);
+      const t = Date.now();
+      for (let i = 0; i < 120; i++) await snapshotRow(org, lead.id, new Date(t - i * 1_000), { status: i % 2 ? 'CONTACTED' : 'NEW' });
+      await snapshotRow(other.org, otherLead.id, new Date(t));
+      const api = await fx.signedInAs(admin);
+      const all = await api.get(EXPORT);
+      expect(all.status).toBe(200);
+      expect(all.body).toMatchObject({ total: 120, truncated: false });
+      expect(all.body.items).toHaveLength(120);
+      const contacted = await api.get(`${EXPORT}?stage=CONTACTED`);
+      expect(contacted.body.items).toHaveLength(60);
+      expect(contacted.body.items.every((i: { status: string }) => i.status === 'CONTACTED')).toBe(true);
+    });
+
+    it('the summary counts every alert, and those newer than the last view', async () => {
+      const { org, admin, customer } = await spiderOrg();
+      const api = await fx.signedInAs(admin);
+      const lead = await fx.addLead(org, customer);
+      const t = Date.now();
+      await alertRow(org, lead.id, [admin.id], new Date(t - 10_000));
+      await alertRow(org, lead.id, [admin.id], new Date(t - 5_000));
+      await alertRow(org, lead.id, [admin.id], new Date(t - 1_000));
+
+      expect((await api.get(SUMMARY)).body).toEqual({ total: 3, new_since: 3 });
+      const since = new Date(t - 6_000).toISOString();
+      expect((await api.get(`${SUMMARY}?since=${since}`)).body).toEqual({ total: 3, new_since: 2 });
+      expect((await api.get(`${SUMMARY}?since=nonsense`)).status).toBe(400);
+    });
+
+    it("the summary counts only this company's alerts", async () => {
+      const mine = await spiderOrg();
+      const other = await spiderOrg();
+      const myLead = await fx.addLead(mine.org, mine.customer);
+      const theirLead = await fx.addLead(other.org, other.customer);
+      await alertRow(mine.org, myLead.id, [mine.admin.id], new Date());
+      for (let i = 0; i < 4; i++) await alertRow(other.org, theirLead.id, [other.admin.id], new Date(Date.now() - i * 1_000));
+      expect((await (await fx.signedInAs(mine.admin)).get(SUMMARY)).body).toEqual({ total: 1, new_since: 1 });
+      expect((await (await fx.signedInAs(other.admin)).get(SUMMARY)).body).toEqual({ total: 4, new_since: 4 });
+    });
+
+    it("the filter lists, as his: every person and every customer of this company, and no other company's", async () => {
+      const { org, admin, customer } = await spiderOrg();
+      const other = await spiderOrg();
+      const sales = await fx.addUser(org, 'sales', 'SALES');
+      const quiet = randomUUIDv4();
+      await db.customer.create({
+        data: { id: quiet, organization_id: org, customer_number: `C-${quiet.slice(0, 6)}`, kind: 'PERSON', segment: 'RESIDENTIAL', first_name: 'Never', last_name: 'Alerted' },
+      });
+      const lead = await fx.addLead(org, customer);
+      await alertRow(org, lead.id, [admin.id], new Date());
+      const res = await (await fx.signedInAs(admin)).get(FILTERS);
+      expect(res.body.recipients).toEqual(expect.arrayContaining([
+        { value: admin.id, label: 'Test Admin' },
+        { value: sales.id, label: 'sales Tester' },
       ]));
-      const json = JSON.stringify(res.body);
-      expect(json).not.toContain('@');
-      expect(json).not.toMatch(/555/);
+      expect(res.body.recipients.map((r: { value: string }) => r.value)).not.toContain(other.admin.id);
+      expect(res.body.customers).toEqual([
+        { value: quiet, label: 'Never Alerted' },
+        { value: customer, label: 'Pat Payer' },
+      ]);
     });
 
     it('still returns earlier alerts after Spider is switched off', async () => {
@@ -644,9 +1597,14 @@ suite('Spider API (real database)', () => {
       const api = await fx.signedInAs(admin);
       await api.put(STATUS, { isActive: true });
       const row = await alertRow(org, lead.id, [admin.id], new Date());
+      const record = await unreadSpiderAlert(org, admin.id, lead.id, { spider_alert_id: row.id });
+      const before = (await api.get(HISTORY)).body.items;
       await api.put(STATUS, { isActive: false });
+      // Switching off ended the alert's record; its History item is unchanged.
+      expect((await db.notificationRecipient.findUniqueOrThrow({ where: { id: record.id } })).read_at).not.toBeNull();
       const res = await api.get(HISTORY);
-      expect(res.body.items.map((i: { id: string }) => i.id)).toEqual([row.id]);
+      expect(ids(res)).toEqual([row.id]);
+      expect(res.body.items).toEqual(before);
     });
   });
 });

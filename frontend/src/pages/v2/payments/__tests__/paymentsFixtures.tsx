@@ -4,6 +4,8 @@ import { useLocation, useSearchParams } from 'react-router-dom';
 import api from '@/lib/axios';
 import type { PaymentDetail, PaymentRow, PaymentsListResponse, PaymentsSummary } from '@/lib/api/paymentsPage';
 
+import { PaymentsDrawerHost } from '../components/PaymentsDrawerHost';
+import { PaymentsDrawerProvider } from '../drawerHost';
 import PaymentsTab from '../tabs/PaymentsTab';
 
 export const mockApi = vi.mocked(api);
@@ -18,6 +20,7 @@ export const SUMMARY: PaymentsSummary = {
 export function makeRow(i: number, over: Partial<PaymentRow> = {}): PaymentRow {
   return {
     id: `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+    reference: `PMT-${String(i).padStart(6, '0')}`,
     date: new Date(Date.UTC(2026, 9, 12, 15, 0) - i * 3_600_000).toISOString(),
     status: 'Succeeded',
     method: 'CARD',
@@ -29,7 +32,7 @@ export function makeRow(i: number, over: Partial<PaymentRow> = {}): PaymentRow {
     refunded: 0,
     payout: null,
     payout_status: 'awaiting',
-    customer: { id: `c${i}`, name: `Customer ${i}` },
+    customer: { id: `c${i}`, name: `Customer ${i}`, customer_number: `C-${1000 + i}` },
     invoice: { id: `inv-${i}`, number: `INV-${1000 + i}` },
     restricted: false,
     ...over,
@@ -45,6 +48,8 @@ export function makeDetail(row: PaymentRow, over: Partial<PaymentDetail> = {}): 
     tip: 0,
     service_fee: 0,
     failure_text: null,
+    customer_block: { restricted: true, customer: null },
+    refund_failed: null,
     refunds: [],
     dispute: null,
     timeline: [{ label: 'Paid', at: row.date, note: null, tone: 'success' }],
@@ -126,7 +131,10 @@ export function TabHarness({ range = RANGE }: { range?: { from: string; to: stri
     });
   return (
     <>
-      <PaymentsTab range={range} tabState={{ params, setParams }} />
+      <PaymentsDrawerProvider>
+        <PaymentsTab range={range} tabState={{ params, setParams }} />
+        <PaymentsDrawerHost />
+      </PaymentsDrawerProvider>
       <Where />
     </>
   );

@@ -142,12 +142,25 @@ export async function reconcileOrg(orgId: string, opts: { now?: Date } = {}): Pr
       })).map((r) => r.stripe_payment_intent_id!),
     );
 
+    // V7-09b: money on a charge that is not in a Payment because it went back from "needing attention" (a partial refund of
+    // unapplied money, then the rest attached) or is still held there as an open item. Counted per payment intent.
+    const heldElsewhere = new Map<string, number>();
+    for (const rec of await prisma.unappliedCapture.findMany({
+      where: { organization_id: orgId, stripe_payment_intent_id: { in: intentIds } },
+      select: { stripe_payment_intent_id: true, status: true, amount: true, refunded_amount: true, source_key: true },
+    })) {
+      const refunded = toCents(rec.refunded_amount);
+      // Only money a failed refund handed back (its own open item): any other open record of a charge is the booking's to close.
+      const open = rec.status === 'OPEN' && rec.amount != null && rec.source_key.startsWith('returned:') ? toCents(rec.amount) - refunded : 0;
+      heldElsewhere.set(rec.stripe_payment_intent_id!, (heldElsewhere.get(rec.stripe_payment_intent_id!) ?? 0) + refunded + Math.max(open, 0));
+    }
+
     for (const c of charges) {
       const pi = paymentIntentOf(c.payment_intent);
       const payment = paymentByCharge.get(c.id) ?? (pi ? paymentByCharge.get(pi) : undefined);
       if (!payment) {
         if (c.status !== 'succeeded' || !inWindow(c.created)) continue;
-        // A charge on "Payments needing attention" is written down already: not drift.
+        // A charge on the Needs attention card is written down already: not drift.
         if (pi && recordedIntents.has(pi)) continue;
         result.findings.push({ kind: 'CHARGE_NO_PAYMENT', ref: c.id, detail: `charge ${c.id} of ${c.amount} cents has no payment row and no record` });
         continue;
@@ -164,7 +177,8 @@ export async function reconcileOrg(orgId: string, opts: { now?: Date } = {}): Pr
       }
       if (c.status !== 'succeeded' || !fresh) continue;
       // The card was charged the payment's face value plus the customer's service fee and tip.
-      const expected = toCents(payment.amount) + toCents(payment.service_fee_amount ?? 0) + toCents(payment.tip_amount ?? 0);
+      const expected = toCents(payment.amount) + toCents(payment.service_fee_amount ?? 0) + toCents(payment.tip_amount ?? 0)
+        + (pi ? heldElsewhere.get(pi) ?? 0 : 0);
       if (c.amount !== expected) {
         result.findings.push({ kind: 'AMOUNT_MISMATCH', ref: payment.id, detail: `charge ${c.id} is ${c.amount} cents, payment ${payment.id} is ${expected} cents` });
       }
@@ -351,7 +365,7 @@ function paymentIntentOf(pi: unknown): string | null {
   return null;
 }
 
-/** Write money the ledger holds no trace of onto "Payments needing attention", once (source key). */
+/** Write money the ledger holds no trace of onto the Needs attention card, once (source key). */
 async function writeDown(
   orgId: string,
   account: string,
@@ -497,8 +511,9 @@ async function reconcileRefunds(ctx: StepContext): Promise<void> {
       }
       continue;
     }
-    // A stray refund already written down on "Payments needing attention".
-    const record = await prisma.unappliedCapture.findFirst({ where: { organization_id: orgId, stripe_refund_id: r.id } });
+    // A stray refund already written down on the Needs attention card.
+    // V7-09b: a partial refund ServWave sent is counted on its record without being the record's refund id.
+    const record = await prisma.unappliedCapture.findFirst({ where: { organization_id: orgId, OR: [{ stripe_refund_id: r.id }, { counted_refund_ids: { has: r.id } }] } });
     if (record) {
       // The record was written from the refund's first event whatever its state: a refund that
       // failed sent nothing back, so its record is closed with the final state.
@@ -586,12 +601,12 @@ async function reconcileRefunds(ctx: StepContext): Promise<void> {
   // A refund made outside the list on a payment that is still open on "needing attention".
   const open = await prisma.unappliedCapture.findMany({
     where: { organization_id: orgId, status: 'OPEN', reason: { not: 'REFUND_UNMATCHED' }, stripe_payment_intent_id: { not: null } },
-    select: { id: true, stripe_payment_intent_id: true, stripe_refund_id: true, failed_refund_ids: true },
+    select: { id: true, stripe_payment_intent_id: true, stripe_refund_id: true, failed_refund_ids: true, counted_refund_ids: true },
   });
   for (const rec of open) {
     const outside = listed.find((r) =>
       paymentIntentOf(r.payment_intent) === rec.stripe_payment_intent_id
-      && r.id !== rec.stripe_refund_id && !rec.failed_refund_ids.includes(r.id)
+      && r.id !== rec.stripe_refund_id && !rec.failed_refund_ids.includes(r.id) && !rec.counted_refund_ids.includes(r.id)
       && refundStateOf(r.status) !== 'FAILED' && inWindow(r.created));
     if (outside) {
       result.findings.push({ kind: 'CAPTURE_REFUNDED_OUTSIDE', ref: rec.id, detail: `refund ${outside.id} went out on payment intent ${rec.stripe_payment_intent_id}, which is still open on needing attention` });

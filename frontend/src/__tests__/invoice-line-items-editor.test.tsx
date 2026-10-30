@@ -417,6 +417,46 @@ describe('InvoiceLineItemsEditor', () => {
       expect(dialog.queryByText(/also save to price book/i)).not.toBeInTheDocument();
     });
 
+    // V7-11b made the editor's onUpdate return the mutation's promise, so a refusal reaches the dialog.
+    it('a refused edit keeps the dialog open with the server\'s sentence inline, and the person can fix it and save again', async () => {
+      vi.mocked(invoicesApi.updateInvoiceLine).mockRejectedValueOnce({
+        response: { data: { error: 'The invoice total cannot fall below what is already paid.' } },
+      });
+      renderWithProviders(<InvoiceLineItemsEditor invoice={invoice()} />, { ability: pricingAbility() });
+
+      await userEvent.click(screen.getByRole('button', { name: /edit compressor swap/i }));
+      const dialog = within(screen.getByRole('dialog'));
+      const priceInput = dialog.getByLabelText(/^price \(\$\)$/i);
+      await userEvent.clear(priceInput);
+      await userEvent.type(priceInput, '10');
+      await userEvent.click(dialog.getByRole('button', { name: /save changes/i }));
+
+      expect(await dialog.findByText('The invoice total cannot fall below what is already paid.')).toBeInTheDocument();
+      // Still open, on the same line, with what was typed and the button usable again.
+      expect(dialog.getByText('Edit line item')).toBeInTheDocument();
+      expect(Number((dialog.getByLabelText(/^price \(\$\)$/i) as HTMLInputElement).value)).toBe(10);
+      expect(dialog.getByRole('button', { name: /save changes/i })).toBeEnabled();
+
+      await userEvent.click(dialog.getByRole('button', { name: /save changes/i }));
+      await waitFor(() => expect(screen.queryByText('Edit line item')).not.toBeInTheDocument());
+      expect(invoicesApi.updateInvoiceLine).toHaveBeenCalledTimes(2);
+    });
+
+    it('a refused edit with a plain error shows its message inline and stays open', async () => {
+      vi.mocked(invoicesApi.updateInvoiceLine).mockRejectedValueOnce(new Error('Could not reach the server.'));
+      renderWithProviders(<InvoiceLineItemsEditor invoice={invoice()} />, { ability: pricingAbility() });
+
+      await userEvent.click(screen.getByRole('button', { name: /edit compressor swap/i }));
+      const dialog = within(screen.getByRole('dialog'));
+      const qtyInput = dialog.getByLabelText('Quantity');
+      await userEvent.clear(qtyInput);
+      await userEvent.type(qtyInput, '4');
+      await userEvent.click(dialog.getByRole('button', { name: /save changes/i }));
+
+      expect(await dialog.findByText('Could not reach the server.')).toBeInTheDocument();
+      expect(dialog.getByText('Edit line item')).toBeInTheDocument();
+    });
+
     it('submits an edit through updateInvoiceLine with only the changed fields, including cost derived from markup', async () => {
       renderWithProviders(<InvoiceLineItemsEditor invoice={invoice()} />, { ability: pricingAbility() });
 

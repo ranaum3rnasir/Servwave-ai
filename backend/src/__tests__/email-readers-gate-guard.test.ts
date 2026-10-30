@@ -54,6 +54,9 @@ const READERS: Record<string, { why: string; mentions?: RegExp }> = {
   'lib/inbound-attachments.ts': {
     why: 'brings a stored received message\'s files over (S10.17): reads only which stored copies still have files on their way and which it already stored, to finish the store, whatever the plan feature says (kept mail keeps its files, hidden like the message); nothing it reads is returned to anyone',
   },
+  'services/lead-contact.service.ts': {
+    why: 'SPEC-4 D7: whether a sent, human, outbound email still holds its lead in Contacted; reads one id (never content), whatever the plan feature says (a sent email on the lead keeps it Contacted, the conservative direction); nothing it reads is returned to anyone',
+  },
   'services/notifications/emailReplyAlerts.ts': {
     why: 'the customer-reply alert (S10.10): reads the conversation and the mail that went out to decide who to ring, after asking the plan feature, and rings nobody while it is off; nothing it reads is returned',
     mentions: /orgEmailFeatureOn\(/,

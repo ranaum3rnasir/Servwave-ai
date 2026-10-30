@@ -26,6 +26,9 @@ const { realClient } = vi.hoisted(() => {
 vi.mock('../lib/prisma', () => ({ prisma: realClient }));
 
 import { getStripeForOrg } from '../lib/stripe';
+import { claimContact, releaseContactClaim } from '../lib/payment-attention-contact';
+import { CHECKOUT_INVOICE_SELECT, runCheckoutEffects } from '../services/payment-reconciler/checkout-effects';
+import type { AppliedEffects } from '../services/payment-reconciler/apply';
 import { sendBankPaymentProcessingEmail, sendBankPaymentFailedEmail, sendPaymentReceivedEmail } from '../lib/email';
 
 const processingSender = sendBankPaymentProcessingEmail as unknown as ReturnType<typeof vi.fn>;
@@ -43,6 +46,7 @@ suite('bank payment emails to the customer (real database)', () => {
   });
   beforeEach(() => {
     for (const fn of [processingSender, failedSender, receiptSender]) fn.mockClear();
+    failedSender.mockReset().mockResolvedValue({ status: 'sent', providerMessageId: null, fromAddress: 'noreply@example.test', fromName: null });
     retrievePaymentIntent.mockReset();
     vi.mocked(getStripeForOrg).mockReturnValue({
       stripe: {
@@ -246,5 +250,166 @@ suite('bank payment emails to the customer (real database)', () => {
     const { payUrl } = failedSender.mock.calls[0][0] as { payUrl: string };
     expect(new URL(payUrl).pathname).toBe(`/p/estimates/${estimate}`);
     expect(new URL(payUrl).searchParams.get('token')).toBe(estimateToken);
+  });
+  // ---- V7-13 part 2 (BE-13d): path 1 (the debit fails while clearing) emails first, then the alert says what happened ------
+  describe('a debit that fails while clearing: the customer is emailed first, and the office alert says what really happened', () => {
+    const ASKED = 'PAYMENT_CUSTOMER_ASKED_TO_PAY_AGAIN';
+    const failedAlert = async (f: { org: string }) => (await db.notification.findMany({ where: { organization_id: f.org, verb: 'billing.bank_payment_failed' } }))[0];
+    const askedRows = (f: { org: string }) => db.timelineEvent.findMany({ where: { organization_id: f.org, event_type: ASKED } });
+
+    it('with an email on file: the customer gets the email, the alert says so, and one history row is filed against the item', async () => {
+      const f = await fixture({ total: 500 });
+      await f.completed();
+      await f.failed();
+
+      await vi.waitFor(async () => expect(await failedAlert(f)).toBeTruthy());
+      expect(failedSender).toHaveBeenCalledTimes(1);
+      expect((await failedAlert(f)).body).toBe('Amount: $500.00. No money moved. We emailed the customer a link to pay again.');
+      const payment = await db.payment.findFirstOrThrow({ where: { invoice_id: f.invoice } });
+      const rows = await askedRows(f);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ description: 'Customer emailed a link to pay again', created_by: null, entity_id: f.invoice, metadata: { item_key: `failed_payment:${payment.id}` } });
+    });
+
+    it('no email on file: no email, no history row, and the alert no longer says a link was sent', async () => {
+      const f = await fixture({ total: 500 });
+      await db.customer.update({ where: { id: f.customer }, data: { email: null } });
+      await f.completed();
+      await f.failed();
+
+      await vi.waitFor(async () => expect(await failedAlert(f)).toBeTruthy());
+      expect(failedSender).not.toHaveBeenCalled();
+      const { body } = await failedAlert(f);
+      expect(body).toBe('Amount: $500.00. No money moved. No email was sent because this customer has no email address on file. Contact them to pay again.');
+      expect(body).not.toMatch(/has been sent/);
+      expect(await askedRows(f)).toHaveLength(0);
+    });
+
+    it('a suppressed address reads bounced; a forced failure reads could not be sent; neither leaves a history row', async () => {
+      const a = await fixture({ total: 500 });
+      await a.completed();
+      failedSender.mockResolvedValueOnce({ status: 'skipped', reason: 'suppressed' });
+      await a.failed();
+      await vi.waitFor(async () => expect(await failedAlert(a)).toBeTruthy());
+      expect((await failedAlert(a)).body).toBe('Amount: $500.00. No money moved. No email was sent because earlier emails to this customer\u2019s address bounced. Contact them to pay again.');
+      expect(await askedRows(a)).toHaveLength(0);
+
+      const b = await fixture({ total: 500 });
+      await b.completed();
+      failedSender.mockResolvedValueOnce({ status: 'skipped', reason: 'org_disabled' });
+      await b.failed();
+      await vi.waitFor(async () => expect(await failedAlert(b)).toBeTruthy());
+      expect((await failedAlert(b)).body).toBe('Amount: $500.00. No money moved. The email to the customer could not be sent. Contact them to pay again.');
+
+      const c = await fixture({ total: 500 });
+      await c.completed();
+      failedSender.mockRejectedValueOnce(new Error('network down'));
+      await c.failed();
+      await vi.waitFor(async () => expect(await failedAlert(c)).toBeTruthy());
+      expect((await failedAlert(c)).body).toContain('could not be sent');
+      expect(await askedRows(c)).toHaveLength(0);
+    });
+
+    // N-19: the mail layer's other ways to skip a send all read "could not be sent"; only a suppressed address reads bounced.
+    it.each(['no_api_key', 'no_recipient', 'address_needed', 'foreign_mailbox'])('a send skipped for %s reads could not be sent, with no history row', async (reason) => {
+      const f = await fixture({ total: 500 });
+      await f.completed();
+      failedSender.mockResolvedValueOnce({ status: 'skipped', reason });
+      await f.failed();
+      await vi.waitFor(async () => expect(await failedAlert(f)).toBeTruthy());
+      expect((await failedAlert(f)).body).toBe('Amount: $500.00. No money moved. The email to the customer could not be sent. Contact them to pay again.');
+      expect(await askedRows(f)).toHaveLength(0);
+    });
+
+    it('an invoice already PAID by another payment, or DISPUTED, gets no Pay Again email and the alert says it cannot be paid online (C-38)', async () => {
+      const paid = await fixture({ total: 500 });
+      await paid.completed();
+      await db.invoice.update({ where: { id: paid.invoice }, data: { status: 'PAID', amount_due: 0 } });
+      await paid.failed();
+      await vi.waitFor(async () => expect(await failedAlert(paid)).toBeTruthy());
+      expect((await failedAlert(paid)).body).toBe('Amount: $500.00. No money moved. No email was sent because this invoice cannot be paid online right now.');
+
+      const disputed = await fixture({ total: 500 });
+      await disputed.completed();
+      await db.invoice.update({ where: { id: disputed.invoice }, data: { status: 'DISPUTED' } });
+      await disputed.failed();
+      await vi.waitFor(async () => expect(await failedAlert(disputed)).toBeTruthy());
+      expect((await failedAlert(disputed)).body).toBe('Amount: $500.00. No money moved. No email was sent because this invoice cannot be paid online right now.');
+      expect(failedSender).not.toHaveBeenCalled();
+      expect(await askedRows(paid)).toHaveLength(0);
+    });
+
+    // BE-13d: a VOIDED invoice is not PAID/DISPUTED, so the unchanged sentence applies (C-38 covers only those two).
+    it('a VOIDED invoice gets no Pay Again email and the alert keeps the unchanged "no longer open for payment" sentence (BE-13d)', async () => {
+      const voided = await fixture({ total: 500 });
+      await voided.completed();
+      await db.invoice.update({ where: { id: voided.invoice }, data: { status: 'VOIDED' } });
+      await voided.failed();
+      await vi.waitFor(async () => expect(await failedAlert(voided)).toBeTruthy());
+      expect((await failedAlert(voided)).body).toBe('Amount: $500.00. No money moved. The invoice is no longer open for payment.');
+      expect(failedSender).not.toHaveBeenCalled();
+    });
+
+    it('a second automatic email for the same item inside 10 minutes is not sent', async () => {
+      const f = await fixture({ total: 500 });
+      await f.completed();
+      const payment = await db.payment.findFirstOrThrow({ where: { invoice_id: f.invoice } });
+      await db.timelineEvent.create({
+        data: {
+          organization_id: f.org, entity_type: 'INVOICE', entity_id: f.invoice, event_type: ASKED,
+          description: 'Customer emailed a link to pay again', metadata: { item_key: `failed_payment:${payment.id}` },
+        },
+      });
+      await f.failed();
+      await vi.waitFor(async () => expect(await failedAlert(f)).toBeTruthy());
+      expect(failedSender).not.toHaveBeenCalled();
+      expect((await failedAlert(f)).body).toContain('We emailed the customer a link to pay again.');
+      expect(await askedRows(f)).toHaveLength(1);
+
+      // Past the window the item can be asked again.
+      await db.timelineEvent.updateMany({ where: { organization_id: f.org, event_type: ASKED }, data: { created_at: new Date(Date.now() - 11 * 60 * 1000) } });
+      expect(await claimContact({ organizationId: f.org, invoiceId: f.invoice, itemKey: `failed_payment:${payment.id}`, createdBy: null })).not.toBeNull();
+    });
+
+    it('two attempts to email the same item at the same moment claim it once (the automatic path takes the endpoint\'s lock)', async () => {
+      const f = await fixture({ total: 500 });
+      await f.completed();
+      const payment = await db.payment.findFirstOrThrow({ where: { invoice_id: f.invoice } });
+      const args = { organizationId: f.org, invoiceId: f.invoice, itemKey: `failed_payment:${payment.id}`, createdBy: null };
+      const claims = await Promise.all([claimContact(args), claimContact(args), claimContact(args)]);
+      expect(claims.filter((c) => c !== null)).toHaveLength(1);
+      expect(await askedRows(f)).toHaveLength(1);
+      // Giving the claim back (no email left) frees the item again.
+      await releaseContactClaim(f.org, claims.find((c) => c !== null)!, f.invoice);
+      expect(await askedRows(f)).toHaveLength(0);
+      expect(await claimContact(args)).not.toBeNull();
+    });
+
+    it('a debit that fails before its completion arrived is written down FAILED, the customer is emailed, and the history row names that payment', async () => {
+      const f = await fixture({ total: 500 });
+      await f.failed();
+      await vi.waitFor(async () => expect(await failedAlert(f)).toBeTruthy());
+      expect(failedSender).toHaveBeenCalledTimes(1);
+      const payment = await db.payment.findFirstOrThrow({ where: { invoice_id: f.invoice } });
+      expect(payment.state).toBe('FAILED');
+      const rows = await askedRows(f);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].metadata).toMatchObject({ item_key: `failed_payment:${payment.id}` });
+    });
+
+    it('a failed notice that names no payment still emails the customer, and files no history row', async () => {
+      const f = await fixture({ total: 500 });
+      const invoice = await db.invoice.findFirstOrThrow({ where: { id: f.invoice }, select: CHECKOUT_INVOICE_SELECT });
+      const effects = {
+        unappliedCaptures: [], settledPayments: [], expireCheckouts: [], bookedPayments: [], disputeNotices: [], bankReturnNotices: [],
+        bankNotices: [{ type: 'notify_bank_payment', kind: 'failed', invoiceId: f.invoice, amountCents: 50000, deposit: false, payAgain: true, eventId: `evt_pay31_${f.tag}_np` }],
+      } as unknown as AppliedEffects;
+      await runCheckoutEffects(effects, {
+        organization: { id: f.org, name: null, stripe_payouts_enabled: true }, account: undefined, paymentIntentId: null, invoice,
+      });
+      expect(failedSender).toHaveBeenCalledTimes(1);
+      expect(await askedRows(f)).toHaveLength(0);
+      expect((await failedAlert(f)).body).toBe('Amount: $500.00. No money moved. We emailed the customer a link to pay again.');
+    });
   });
 });

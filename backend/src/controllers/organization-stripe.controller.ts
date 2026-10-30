@@ -10,7 +10,7 @@ import {
 } from '../lib/legal';
 import { createConnectedAccount, createAccountSession, createAccountLink, retrieveAccount } from '../lib/stripe';
 import { mccForIndustry } from '../lib/stripe-mcc';
-import { refreshAccountStatus } from '../lib/account-status';
+import { refreshAccountStatus, type Verification, type VerificationValue } from '../lib/account-status';
 import { SESSION_SURFACES, type SessionSurface } from '../lib/account-session-surfaces';
 import { requestHasOnlinePayments, ONLINE_PAYMENTS_NOT_IN_PLAN_REFUSAL } from '../lib/online-payments-plan';
 
@@ -152,6 +152,18 @@ export async function createStripeAccountSession(req: Request, res: Response) {
   }
 }
 
+/** The stored verification rows, cut to exactly the four values; null until the first account sync. */
+function verificationForBrowser(stored: unknown): Verification | null {
+  if (!stored || typeof stored !== 'object') return null;
+  const v = stored as Record<string, unknown>;
+  return {
+    business_details: v.business_details as VerificationValue,
+    owner_identity: v.owner_identity as VerificationValue,
+    bank_account: v.bank_account as VerificationValue,
+    tax_id: v.tax_id as VerificationValue,
+  };
+}
+
 export async function getStripeStatus(req: Request, res: Response) {
   try {
     const org = await prisma.organization.findUnique({
@@ -159,6 +171,7 @@ export async function getStripeStatus(req: Request, res: Response) {
       select: {
         stripe_account_id: true, stripe_charges_enabled: true, stripe_payouts_enabled: true,
         stripe_details_submitted: true, stripe_requirements_due: true, stripe_disabled_reason: true,
+        stripe_verification: true,
       },
     });
     if (!org) { res.status(404).json({ error: 'Organization not configured' }); return; }
@@ -177,7 +190,8 @@ export async function getStripeStatus(req: Request, res: Response) {
       collected_awaiting_payout = Number(agg._sum.amount ?? 0);
     }
     // The processor's account id stays on the server: the browser gets whether the org is connected, nothing more.
-    const { stripe_account_id, ...rest } = org;
+    // The verification column is renamed on the way out and cut to its four values, so nothing else stored in it can reach the browser.
+    const { stripe_account_id, stripe_verification, ...rest } = org;
     const connected = Boolean(stripe_account_id);
     // Whether the current payments terms are on file: the payout account page asks for an embedded session only
     // once they are, so it needs to know before it asks.
@@ -185,7 +199,7 @@ export async function getStripeStatus(req: Request, res: Response) {
       where: { organization_id: req.user!.organization_id, context: 'payments_onboarding', terms_version: CURRENT_PAYMENTS_TERMS_VERSION },
       select: { id: true },
     });
-    res.json({ ...rest, connected, terms_accepted: Boolean(termsRow), collected_awaiting_payout });
+    res.json({ ...rest, verification: verificationForBrowser(stripe_verification), connected, terms_accepted: Boolean(termsRow), collected_awaiting_payout });
   } catch (err) {
     logger.error('getStripeStatus error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -213,8 +227,8 @@ export async function createStripeAccountLink(req: Request, res: Response) {
     const org = await prisma.organization.findUnique({ where: { id: orgId }, select: { stripe_account_id: true } });
     if (!org?.stripe_account_id) { res.status(409).json({ error: 'Start setup first.' }); return; }
     await assertPaymentsTermsAccepted(orgId);
-    const refreshUrl = `${env.FRONTEND_URL}/settings/payments`;
-    // ?onboarding=return makes the settings page re-read the account status on arrival.
+    const refreshUrl = `${env.FRONTEND_URL}/settings/servwave-payments`;
+    // ?onboarding=return makes the ServWave Payments settings page re-read the account status on arrival.
     const returnUrl = `${refreshUrl}?onboarding=return`;
     const url = await createAccountLink(org.stripe_account_id, refreshUrl, returnUrl);
     res.json({ url });

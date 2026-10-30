@@ -16,7 +16,7 @@ interface TaskCategoriesDialogProps {
 
 /**
  * The manage panel as a dialog - what the admin-only "Categories" button on the Tasks page opens.
- * The Settings card (Payments & Lists) hosts the same TaskCategoryManager in a card instead.
+ * The Settings > Lists card hosts the same TaskCategoryManager in a card instead.
  */
 function TaskCategoriesDialog({ open, onOpenChange }: TaskCategoriesDialogProps) {
   const [adding, setAdding] = useState(false);

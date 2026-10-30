@@ -15,7 +15,7 @@ import { toast } from '@/ui-kit/components/ui/sonner';
 import type { AttentionItem } from '@/lib/api/paymentsPage';
 
 import PaymentsPage from '../PaymentsPage';
-import { makeItem, resolvedItem, serveAttention } from './attentionFixtures';
+import { makeItem, resolvedItem, serveAttention, findCard } from './attentionFixtures';
 import { mockApi } from './paymentsFixtures';
 
 vi.mock('@/ui-kit/components/ui/sonner', async (importOriginal) => ({
@@ -38,7 +38,7 @@ function serve(open: AttentionItem[], resolved: AttentionItem[] = []) {
   }) as never);
 }
 const page = (entry = '/payments') => renderWithProviders(<PaymentsPage />, { initialEntries: [entry], ability: OWNER });
-const card = () => screen.findByRole('region', { name: /Needs attention/ });
+const card = () => findCard();
 const user = () => userEvent.setup();
 /** With nothing open the card is gone; the chip then shows the table, and its Resolved toggle the history. */
 const openResolved = async (u: ReturnType<typeof user>) => {
@@ -76,7 +76,8 @@ describe('a row', () => {
     page();
     const row = within(await card()).getByRole('listitem');
     expect(row.textContent!.match(/Not tied to an invoice/g)).toHaveLength(1);
-    expect(within(row).queryByRole('link')).not.toBeInTheDocument();
+    // The title opens the item's own drawer (V7-09c); nothing else in the row is a link.
+    expect(within(row).getAllByRole('link').map((l) => l.textContent)).toEqual(['Money received that is not on an invoice']);
   });
 
   it('a refund that went out for a payment ServWave never recorded has nothing to send back', async () => {
@@ -90,13 +91,14 @@ describe('a row', () => {
 });
 
 describe('Refund', () => {
-  it('asks first, naming the amount, and calls nothing until confirmed; Cancel calls nothing and closes', async () => {
+  it('asks first with an amount field starting at the whole amount, and calls nothing until Refund; Cancel calls nothing and closes', async () => {
     serve([unmatchedPayment()]);
     page();
     const u = user();
     await u.click(within(within(await card()).getByRole('listitem')).getByRole('button', { name: 'Refund' }));
     const dialog = await screen.findByRole('dialog');
-    expect(within(dialog).getByText('$75.00 goes back to the customer.')).toBeInTheDocument();
+    expect(within(dialog).getByLabelText('Amount')).toHaveValue('75.00');
+    expect(within(dialog).getByText('$75.00 left to refund')).toBeInTheDocument();
     expect(mockPost).not.toHaveBeenCalled();
     await u.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
@@ -116,11 +118,11 @@ describe('Refund', () => {
     page();
     const u = user();
     await u.click(within(within(await card()).getByRole('listitem')).getByRole('button', { name: 'Refund' }));
-    await u.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Refund $75.00' }));
+    await u.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Refund' }));
     await waitFor(() => expect(mockPost).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(screen.queryByRole('region', { name: /Needs attention/ })).not.toBeInTheDocument());
+    await waitFor(() => expect(within(screen.getByRole('region', { name: /Needs attention/ })).getByText('Nothing needs attention')).toBeInTheDocument());
     await openResolved(u);
-    const cell = await within(await screen.findByRole('table')).findByText('Refunded');
+    const cell = await within(await screen.findByRole('table')).findByText('Resolved: Refunded');
     const row = cell.closest('tr')!;
     expect(within(row).queryByRole('button')).not.toBeInTheDocument();
   });
@@ -134,10 +136,10 @@ describe('Refund', () => {
     const region = await card();
     await u.click(within(within(region).getByRole('listitem')).getByRole('button', { name: 'Refund' }));
     const dialog = await screen.findByRole('dialog');
-    await u.click(within(dialog).getByRole('button', { name: 'Refund $75.00' }));
+    await u.click(within(dialog).getByRole('button', { name: 'Refund' }));
     expect(await within(dialog).findByText(message)).toBeInTheDocument();
     expect(mockToast.success).not.toHaveBeenCalled();
-    expect(within(dialog).getByRole('button', { name: 'Refund $75.00' })).toBeEnabled();
+    expect(within(dialog).getByRole('button', { name: 'Refund' })).toBeEnabled();
     expect(region).toBeInTheDocument();
     expect(dialog.textContent).not.toMatch(/stripe/i);
   });
@@ -151,7 +153,7 @@ describe('Mark resolved', () => {
     serve(open, resolved);
     mockPost.mockImplementation((() => {
       open.splice(0, 1);
-      resolved.push({ ...item, status: 'resolved', actions: [], resolved_at: '2026-10-12T20:00:00.000Z', resolved_by_name: 'Pat Admin', resolution: { text: 'Resolved', note: null } });
+      resolved.push({ ...item, status: 'resolved', actions: [], resolved_at: '2026-10-12T20:00:00.000Z', resolved_by_name: 'Pat Admin', resolution: { text: 'Handled outside ServWave', note: null } });
       return Promise.resolve({ data: { item: {} } });
     }) as never);
     page();
@@ -159,23 +161,22 @@ describe('Mark resolved', () => {
     await u.click(within(within(await card()).getByRole('listitem')).getByRole('button', { name: 'Mark resolved' }));
     await u.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Mark resolved' }));
     await waitFor(() => expect(mockPost).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(screen.queryByRole('region', { name: /Needs attention/ })).not.toBeInTheDocument());
+    await waitFor(() => expect(within(screen.getByRole('region', { name: /Needs attention/ })).getByText('Nothing needs attention')).toBeInTheDocument());
     await openResolved(u);
     expect(mockPost.mock.calls[0]![0]).toBe(`/api/payments-needing-attention/${item.key.split(':')[1]}/resolve`);
-    const cell = await within(await screen.findByRole('table')).findByText('Resolved', { selector: 'span' });
+    const cell = await within(await screen.findByRole('table')).findByText('Resolved: Handled outside ServWave', { selector: 'span' });
     expect(within(cell.closest('tr')!).queryByRole('button')).not.toBeInTheDocument();
   });
 });
 
 describe('the card as a whole', () => {
-  it('an empty list says Nothing needs attention, and the card itself is not drawn', async () => {
+  it('an empty list says Nothing needs attention on the card, which stays on the page', async () => {
     serve([]);
     page('/payments?chip=attention');
-    expect(await screen.findByText('Nothing needs attention')).toBeInTheDocument();
-    expect(screen.queryByRole('region', { name: /Needs attention/ })).not.toBeInTheDocument();
+    expect(within(await findCard()).getByText('Nothing needs attention')).toBeInTheDocument();
   });
 
-  it('names ServWave Payments in its confirmation and never the processor anywhere on the card or in its dialogs', async () => {
+  it('never names the processor anywhere on the card, in its dialogs or in the refund toast', async () => {
     serve([unmatchedPayment()]);
     mockPost.mockResolvedValue({ data: { item: {} } });
     page();
@@ -185,8 +186,8 @@ describe('the card as a whole', () => {
     await u.click(within(within(region).getByRole('listitem')).getByRole('button', { name: 'Refund' }));
     const dialog = await screen.findByRole('dialog');
     expect(dialog.textContent).not.toMatch(/stripe/i);
-    await u.click(within(dialog).getByRole('button', { name: 'Refund $75.00' }));
-    await waitFor(() => expect(mockToast.success).toHaveBeenCalledWith(expect.stringContaining('ServWave Payments')));
+    await u.click(within(dialog).getByRole('button', { name: 'Refund' }));
+    await waitFor(() => expect(mockToast.success).toHaveBeenCalledWith('Refunded $75.00'));
     expect(String(mockToast.success.mock.calls[0]![0])).not.toMatch(/stripe/i);
   });
 
@@ -218,6 +219,9 @@ describe('dates read in the company time zone', () => {
     expect(dateCell).toBeInTheDocument();
     expect(screen.queryByText('Oct 13, 2026')).not.toBeInTheDocument();
     await user().click(screen.getByRole('button', { name: 'Resolved (1)' }));
-    expect(await screen.findByText('Oct 13, 2026 by Pat Admin')).toBeInTheDocument();
+    // The table shows the item's own date (in the company's zone) and, in Actions, who resolved it.
+    expect(await screen.findByText('Pat Admin')).toBeInTheDocument();
+    expect(screen.getByText('Oct 12, 2026')).toBeInTheDocument();
+    expect(screen.queryByText('Oct 13, 2026')).not.toBeInTheDocument();
   });
 });

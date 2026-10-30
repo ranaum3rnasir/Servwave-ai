@@ -307,8 +307,8 @@ suite('the billing alerts (real database)', () => {
     },
     {
       verb: 'billing.bank_payment_failed', ...SYSTEM, ...INTERRUPTS, title: (n) => `Bank payment failed for ${n}`,
-      body: 'Amount: $300.00. No money moved. The invoice is no longer open for payment.',
-      prepare: noPrep, act: notice('billing.bank_payment_failed', { amount: '300.00' }, 'evt1'),
+      body: 'Amount: $300.00. No money moved. We emailed the customer a link to pay again.',
+      prepare: noPrep, act: notice('billing.bank_payment_failed', { amount: '300.00', customer_notice: 'sent' }, 'evt1'),
     },
     {
       verb: 'billing.refund_failed', ...SYSTEM, ...INTERRUPTS, title: (n) => `Refund failed for ${n}`,

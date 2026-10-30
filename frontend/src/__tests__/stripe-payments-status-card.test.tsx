@@ -1,4 +1,5 @@
-// Payments Phase 2, Task 2.3 — 8-state status card (spec §6.4 truth table + §6.8 copy).
+// Payments Phase 2, Task 2.3 — 8-state status card (spec §6.4 truth table + §6.8 copy), now the body of card 1 on
+// Settings > ServWave Payments (V7 spec 5.3).
 // `deriveStripeState` is a pure function: each of the 8 rows gets its own test using the
 // exact input shape named in the task brief's Step 1, plus an aggregate test proving the
 // 8 canonical inputs are pairwise mutually exclusive (no shape maps to two states).
@@ -8,10 +9,9 @@ import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from './helpers';
 import {
   deriveStripeState,
-  PaymentsStatusCard,
+  PaymentsStatusBody,
 } from '@/components/payments/PaymentsStatusCard';
 import { type StripeStatus } from '@/lib/api/organization';
-import { useAuthStore } from '@/stores/auth.store';
 
 const BASE_STATUS: StripeStatus = {
   connected: false,
@@ -192,6 +192,17 @@ vi.mock('@/lib/api/organization', async (importOriginal) => {
   };
 });
 
+/** The card body, fed from the same fixtures the page hands it. */
+function PaymentsStatusCard({ onOpenSetup }: { onOpenSetup?: () => void }) {
+  return (
+    <PaymentsStatusBody
+      status={hoisted.status}
+      acceptedMethods={hoisted.org?.accepted_payment_methods}
+      onGoToPayout={onOpenSetup}
+    />
+  );
+}
+
 beforeEach(() => {
   hoisted.status = { ...BASE_STATUS };
   hoisted.isLoading = false;
@@ -325,7 +336,7 @@ describe('PaymentsStatusCard', () => {
     async (_name, overrides) => {
       hoisted.status = { ...BASE_STATUS, ...overrides };
       const { container } = renderWithProviders(<PaymentsStatusCard onOpenSetup={vi.fn()} />);
-      await screen.findByText('ServWave Payments');
+      await screen.findAllByText(/./);
 
       const text = container.textContent!;
       expect(text).not.toMatch(/0\.5%/);
@@ -373,22 +384,14 @@ describe('PaymentsStatusCard', () => {
     renderWithProviders(<PaymentsStatusCard onOpenSetup={vi.fn()} />);
 
     expect(await screen.findByText(/\$1,234\.50/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Snooze' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Snooze for 7 days' })).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: 'Snooze' }));
+    await user.click(screen.getByRole('button', { name: 'Snooze for 7 days' }));
     expect(screen.queryByText(/\$1,234\.50/)).not.toBeInTheDocument();
-  });
-
-  it('renders a loading skeleton (not the title) while the status query is pending', () => {
-    hoisted.isLoading = true;
-    hoisted.status = undefined as unknown as StripeStatus;
-    const { container } = renderWithProviders(<PaymentsStatusCard onOpenSetup={vi.fn()} />);
-
-    expect(screen.queryByText(/ServWave Payments/)).not.toBeInTheDocument();
-    // Positively assert the Skeleton placeholder itself renders — without this, a
-    // regression that dropped <Skeleton> entirely (rendering an empty Card) would
-    // still pass on the negative assertion above alone.
-    expect(container.querySelector('.animate-pulse')).toBeInTheDocument();
+    // The snooze is kept for 7 days under the existing key, so a remount stays hidden.
+    const until = Number(localStorage.getItem('servwave.payments.bank-nudge.snoozed-until'));
+    expect(until).toBeGreaterThan(Date.now() + 6.9 * 864e5);
+    expect(until).toBeLessThanOrEqual(Date.now() + 7 * 864e5);
   });
 
   it('never renders a card/bank/SSN input field itself', async () => {
@@ -405,14 +408,7 @@ describe('PaymentsStatusCard', () => {
   });
 });
 
-// Slice 34b - the card names the methods that are on, and follows the plan.
-function planFeatures(features: string[]) {
-  vi.mocked(useAuthStore).mockImplementation(((selector: (s: Record<string, unknown>) => unknown) =>
-    selector({
-      user: { id: 'u1', role: 'ADMIN', organization_id: 'o1', org_features: features },
-      isAuthenticated: true, isLoading: false, error: null,
-    })) as never);
-}
+// Slice 34b - the card names the methods that are on.
 const ACTIVE: StripeStatus = {
   ...BASE_STATUS,
   connected: true,
@@ -421,32 +417,45 @@ const ACTIVE: StripeStatus = {
   stripe_payouts_enabled: true,
 };
 
-describe('PaymentsStatusCard - methods and plan (slice 34b)', () => {
+describe('PaymentsStatusBody - methods (slice 34b)', () => {
   it.each([
     [['CARD'], 'Customers can now pay your invoices by card.'],
     [['ACH'], 'Customers can now pay your invoices by bank transfer.'],
     [['CARD', 'ACH'], 'Customers can now pay your invoices by card or bank transfer.'],
   ])('names every method that is on: %j', async (methods, sentence) => {
-    planFeatures(['online_payments']);
     hoisted.status = ACTIVE;
     hoisted.org = { accepted_payment_methods: ['CASH', ...methods] };
     const { container } = renderWithProviders(<PaymentsStatusCard onOpenSetup={vi.fn()} />);
     expect(container.textContent).toContain(sentence);
   });
+});
 
-  it('follows the plan: with online payments out of the plan it does not promise customers can pay', async () => {
-    planFeatures(['payments']);
-    hoisted.status = ACTIVE;
-    hoisted.org = { accepted_payment_methods: ['CARD', 'ACH'] };
-    const { container } = renderWithProviders(<PaymentsStatusCard onOpenSetup={vi.fn()} />);
-    expect(container.textContent).not.toMatch(/Customers can now pay/);
-    expect(container.textContent).toContain('ServWave Payments active');
+describe('PaymentsStatusBody - the call to action per state (V7 spec 5.3)', () => {
+  it.each([
+    ['1 not connected', {}, 'Set up payments'],
+    ['2 in progress', { connected: true }, 'Resume setup'],
+    ['6 action needed', { connected: true, stripe_details_submitted: true, stripe_charges_enabled: true, stripe_payouts_enabled: true, stripe_requirements_due: ['x'] }, 'Fix now'],
+    ['7 paused', { connected: true, stripe_details_submitted: true, stripe_disabled_reason: 'requirements.past_due' }, 'Fix now'],
+  ])('state %s has the button %s', async (_n, overrides, label) => {
+    hoisted.status = { ...BASE_STATUS, ...overrides };
+    renderWithProviders(<PaymentsStatusCard onOpenSetup={vi.fn()} />);
+    expect(await screen.findByRole('button', { name: label })).toBeInTheDocument();
   });
 
-  it('follows the plan in the charges-live, bank-pending state too', async () => {
-    planFeatures(['payments']);
-    hoisted.status = { ...ACTIVE, stripe_payouts_enabled: false };
-    const { container } = renderWithProviders(<PaymentsStatusCard onOpenSetup={vi.fn()} />);
-    expect(container.textContent).not.toMatch(/Pay button/);
+  it.each([
+    ['3 under review', { connected: true, stripe_details_submitted: true }],
+    ['4 bank pending', { connected: true, stripe_details_submitted: true, stripe_charges_enabled: true }],
+    ['5 active', ACTIVE],
+    ['8 unavailable', { connected: true, stripe_disabled_reason: 'rejected.fraud' }],
+  ])('state %s has no main button', async (_n, overrides) => {
+    hoisted.status = { ...BASE_STATUS, ...overrides };
+    renderWithProviders(<PaymentsStatusCard onOpenSetup={vi.fn()} />);
+    expect(screen.queryByRole('button', { name: /set up payments|resume setup|fix now/i })).not.toBeInTheDocument();
+  });
+
+  it('uses the curly apostrophe in the state 4 message', async () => {
+    hoisted.status = { ...BASE_STATUS, connected: true, stripe_details_submitted: true, stripe_charges_enabled: true };
+    renderWithProviders(<PaymentsStatusCard />);
+    expect(await screen.findByText('You’re set - send this invoice with a Pay button now.')).toBeInTheDocument();
   });
 });

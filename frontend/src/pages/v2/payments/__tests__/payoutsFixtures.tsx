@@ -4,6 +4,8 @@ import type {
   PayoutDetail, PayoutPaymentRow, PayoutPaymentsResponse, PayoutRow, PayoutsListResponse, PayoutTotals,
 } from '@/lib/api/paymentsPage';
 
+import { PaymentsDrawerHost } from '../components/PaymentsDrawerHost';
+import { PaymentsDrawerProvider } from '../drawerHost';
 import PayoutsTab from '../tabs/PayoutsTab';
 import { RANGE, makeDetail, makeRow, mockApi, serve as serveBase } from './paymentsFixtures';
 
@@ -25,7 +27,7 @@ export const manyPayouts = (n: number) => Array.from({ length: n }, (_, i) => ma
 export function makePayoutPayment(i: number, over: Partial<PayoutPaymentRow> = {}): PayoutPaymentRow {
   return {
     id: `00000000-0000-4000-a000-${String(i).padStart(12, '0')}`,
-    customer: { id: `c${i}`, name: `Payer ${i}` },
+    customer: { id: `c${i}`, name: `Payer ${i}`, customer_number: `C-${3000 + i}` },
     invoice: { id: `inv-${i}`, number: `INV-${2000 + i}` },
     restricted: false,
     voided: false,
@@ -118,7 +120,7 @@ export function servePayouts(opts: ServePayoutsOptions = {}) {
       const hit = all.find((r) => r.id === payment[1]);
       if (hit) {
         return Promise.resolve({
-          data: makeDetail(makeRow(1, { id: hit.id, customer: hit.customer, invoice: hit.invoice, restricted: hit.restricted }), { can_refund: false }),
+          data: makeDetail(makeRow(1, { id: hit.id, customer: hit.customer && { ...hit.customer, customer_number: 'C-1001' }, invoice: hit.invoice, restricted: hit.restricted }), { can_refund: false }),
         });
       }
     }
@@ -152,7 +154,10 @@ export function PayoutsHarness({ range = RANGE }: { range?: { from: string; to: 
     });
   return (
     <>
-      <PayoutsTab range={range} tabState={{ params, setParams }} />
+      <PaymentsDrawerProvider>
+        <PayoutsTab range={range} tabState={{ params, setParams }} />
+        <PaymentsDrawerHost />
+      </PaymentsDrawerProvider>
       <Where />
     </>
   );

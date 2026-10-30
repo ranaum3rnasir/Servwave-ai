@@ -1,12 +1,12 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useLocation } from 'react-router-dom';
 
 import { renderWithProviders } from '@/__tests__/helpers';
 
-import { AttentionCard } from '../components/AttentionCard';
-import { makeItem, serveAttention } from './attentionFixtures';
+import { makeItem, serveAttention, findCard, CardWithDrawer } from './attentionFixtures';
+import { DISPUTE_ID, makeEvidence } from './disputeFixtures';
 import { mockApi } from './paymentsFixtures';
 
 
@@ -15,25 +15,24 @@ function Where() {
   return <div data-testid="where">{search}</div>;
 }
 
+const openItem = makeItem(3, 'dispute', { actions: ['respond'], dispute_id: DISPUTE_ID });
+
 beforeEach(() => mockApi.get.mockReset());
 
 describe('Respond, with the dispute drawer part of the page', () => {
-  it('opens the dispute drawer address and calls nothing', async () => {
-    serveAttention({ open: [makeItem(3, 'dispute', { actions: ['respond'] })] });
-    renderWithProviders(<><AttentionCard /><Where /></>, { initialEntries: ['/payments?tab=payouts'] });
-    const row = within(await screen.findByRole('region', { name: /Needs attention/ })).getByRole('listitem');
+  it('opens its Payment, the Dispute and the Respond view as one stack, and calls nothing', async () => {
+    serveAttention({ open: [openItem] });
+    const base = mockApi.get.getMockImplementation()!;
+    mockApi.get.mockImplementation(((url: string, config?: unknown) => {
+      if (url === `/api/payments-page/disputes/${DISPUTE_ID}/evidence`) return Promise.resolve({ data: makeEvidence() });
+      if (typeof url === 'string' && url.startsWith('/api/attachments/')) return Promise.resolve({ data: { attachments: [] } });
+      return (base as (...a: unknown[]) => unknown)(url, config);
+    }) as never);
+    renderWithProviders(<><CardWithDrawer /><Where /></>, { initialEntries: ['/payments?tab=payouts'] });
+    const row = within(await findCard()).getByRole('listitem');
     await userEvent.setup().click(within(row).getByRole('button', { name: 'Respond' }));
-    expect(screen.getByTestId('where').textContent).toContain('dispute=dp-3');
-    expect(screen.getByTestId('where').textContent).toContain('tab=payments');
+    const item = openItem;
+    expect(new URLSearchParams(screen.getByTestId('where').textContent!).get('d')).toBe(`payment:${item.payment_id},dispute:${DISPUTE_ID},respond:${DISPUTE_ID}`);
     expect(mockApi.post).not.toHaveBeenCalled();
-  });
-
-  it('from the payment drawer it gives way: the payment address comes off', async () => {
-    serveAttention({ open: [makeItem(3, 'dispute', { actions: ['respond'] })] });
-    renderWithProviders(<><AttentionCard /><Where /></>, { initialEntries: ['/payments?tab=payments&payment=pay-9'] });
-    const row = within(await screen.findByRole('region', { name: /Needs attention/ })).getByRole('listitem');
-    await userEvent.setup().click(within(row).getByRole('button', { name: 'Respond' }));
-    expect(screen.getByTestId('where').textContent).toContain('dispute=dp-3');
-    expect(screen.getByTestId('where').textContent).not.toContain('payment=');
   });
 });

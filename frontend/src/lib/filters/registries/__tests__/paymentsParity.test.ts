@@ -30,14 +30,18 @@ describe('the payments filter registry matches the backend registry', () => {
     expect(facet('status').param).toBe('status');
   });
 
-  it('offers the seven statuses the page shows, under their display names', () => {
+  it('offers the statuses the page shows, under their display names (Charged back and Voided stay: the API sends them)', () => {
     const labels = facet('status').options!.map((o) => o.label);
-    expect(labels).toEqual(['Succeeded', 'Pending', 'Failed', 'Refunded', 'Partially refunded', 'Disputed', 'Charged back']);
+    expect(labels).toEqual(['Succeeded', 'Pending', 'Failed', 'Refunded', 'Partially refunded', 'Disputed', 'Refund failed', 'Charged back', 'Voided']);
   });
 
   it('method options are the backend methods, labelled for people', () => {
     expect(values('method').sort()).toEqual([...listOf('PAYMENT_METHODS')].sort());
     expect(facet('method').options!.map((o) => o.label).sort()).toEqual(['Bank (ACH)', 'Credit card']);
+  });
+
+  it('labels the payout facet "Payout status"', () => {
+    expect(facet('payout_status').label).toBe('Payout status');
   });
 
   it('payout status options are the backend keys', () => {

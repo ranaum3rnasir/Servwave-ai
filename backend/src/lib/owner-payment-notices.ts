@@ -19,7 +19,7 @@ import { renderTemplate } from '../services/notifications/templates';
 export const PAYMENTS_ATTENTION_PATH = '/payments?tab=payments&chip=attention';
 
 /** Slice 33b: where the owner acts on the payout account (the "account action needed" notices). */
-export const PAYOUT_ACCOUNT_PATH = '/settings/payout-account';
+export const PAYOUT_ACCOUNT_PATH = '/settings/servwave-payments#payout-account';
 /** Slice 33b: the Payments page on its disputed view, where a dispute is answered. */
 export const DISPUTES_PATH = '/payments?tab=payments&chip=disputed';
 const DISPUTE_VERBS = new Set(['billing.disputed', 'billing.chargeback', 'billing.dispute_closed']);

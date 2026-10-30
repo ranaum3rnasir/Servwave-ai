@@ -19,7 +19,12 @@ import {
   SMS_ROUTER_RECENCY_WINDOW_DAYS,
   type JobTextCandidate,
 } from '../lib/sms-reply-router';
-import { recordLeadOutboundContact } from '../services/lead-contact.service';
+import {
+  reconsiderLeadLeftBehind,
+  recordLeadContactOnLink,
+  recordLeadOutboundContact,
+  TEXT_WENT_OUT,
+} from '../services/lead-contact.service';
 import { SMS_BODY_MAX, LONG_TEXT_MAX } from '../lib/text-limits';
 
 // ─── Zod Schemas ───────────────────────────────────────
@@ -869,7 +874,7 @@ export async function sendMessage(req: Request, res: Response) {
     //
     // Awaited, and never able to throw — see lead-contact.service.ts. The text has already gone
     // out by this point; a bookkeeping failure must not turn that into a 500.
-    if (message.status === 'sent' || message.status === 'delivered') {
+    if (TEXT_WENT_OUT.includes(message.status ?? '')) {
       // `{ client }`: the clock stamp and the New -> Contacted move (#2618) run in one transaction
       // of their own. The sender is the authenticated caller.
       await recordLeadOutboundContact({ client: prisma }, {
@@ -980,6 +985,13 @@ export async function reassignMessageJob(req: Request, res: Response) {
 // at send time (sendMessage's explicit leadId), so without this a message
 // that missed its lead attribution could never be corrected. lead_id: null
 // clears.
+//
+// Attaching an outbound text that went out to a lead is reaching out to that
+// lead (SPEC-4 D1): it is recorded through the shared link rule
+// (recordLeadContactOnLink), dated at the text's own time and credited to its
+// sender. Taking a text that held a lead off it (a detach, or a move to another
+// lead) reconsiders the lead it left (SPEC-4 D7): a Contacted lead with no
+// outbound contact left goes back to New, credited to the person who moved it.
 export const reassignMessageLeadSchema = z.object({
   lead_id: z.string().uuid('lead_id must be a valid id').nullable(),
 });
@@ -990,6 +1002,21 @@ export async function reassignMessageLead(req: Request, res: Response) {
     // the refetch alike.
     const visibility = (await textReadScopeForReq(req)).messages;
     let data: { lead_id: string | null };
+    // The stored row before this write, read on an attach and a detach alike, under the same filter
+    // as the update below, so the row read is the row written: the link rule (and D7) need its lead,
+    // direction, provenance, status, time and sender.
+    let before: {
+      lead_id: string | null; direction: string; automated: boolean | null; status: string | null;
+      ts: Date; sent_by_user_id: string | null; organization_id: string;
+    } | undefined;
+    const readBefore = async () => {
+      const [row] = await prisma.message.findMany({
+        where: { id: req.params.id as string, ...tenantWhere(req), thread: JOB_ATTRIBUTABLE_THREAD_WHERE, ...visibility },
+        select: { lead_id: true, direction: true, automated: true, status: true, ts: true, sent_by_user_id: true, organization_id: true },
+        take: 1,
+      });
+      return row;
+    };
     if (req.body.lead_id != null) {
       const msgThread = await prisma.messageThread.findFirst({
         where: {
@@ -1019,8 +1046,15 @@ export async function reassignMessageLead(req: Request, res: Response) {
         res.status(404).json({ error: 'Lead not found' });
         return;
       }
+      before = await readBefore();
+      if (!before) {
+        res.status(404).json({ error: 'Message not found' });
+        return;
+      }
       data = { lead_id: lead.id };
     } else {
+      // A row the person cannot reach reads nothing here; the update below answers the 404, as before.
+      before = await readBefore();
       data = { lead_id: null };
     }
 
@@ -1031,6 +1065,34 @@ export async function reassignMessageLead(req: Request, res: Response) {
     if (result.count === 0) {
       res.status(404).json({ error: 'Message not found' });
       return;
+    }
+
+    // After the write, with the plain client, as the send door does: the link is done, and a
+    // bookkeeping failure is logged by the service and never fails it. Awaited, never throws.
+    if (before && data.lead_id) {
+      await recordLeadContactOnLink({ client: prisma }, {
+        source: 'text',
+        channel: 'text',
+        orgId: before.organization_id,
+        leadIdBefore: before.lead_id,
+        leadIdAfter: data.lead_id,
+        directionBefore: before.direction,
+        directionAfter: before.direction,
+        automated: before.automated,
+        deliveryStatus: before.status,
+        at: before.ts,
+        actorId: before.sent_by_user_id,
+      });
+    }
+    // D7: the lead the text left, if it held it. Also after the write and with the plain client;
+    // never throws, so a failed move back leaves the detach or move standing.
+    if (before) {
+      const row = { direction: before.direction, automated: before.automated, deliveryStatus: before.status };
+      await reconsiderLeadLeftBehind({ client: prisma }, {
+        source: 'text',
+        before: { leadId: before.lead_id, ...row },
+        after: { leadId: data.lead_id, ...row },
+      }, { orgId: before.organization_id, actorId: req.user!.id, entryId: req.params.id as string });
     }
 
     const [message] = await prisma.message.findMany({

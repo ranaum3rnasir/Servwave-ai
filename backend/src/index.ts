@@ -11,6 +11,7 @@ import { refreshAllAccountStatuses } from './lib/account-status';
 import { sweepUncapturedFees } from './lib/reconcile-stripe-fees';
 import { runNightlyReconcile } from './services/payment-reconcile';
 import { runSpiderSweep } from './services/spider/sweep';
+import { spiderPilotListBootLine } from './services/spider/gate';
 import { sweepReceivedAttachments } from './lib/inbound-attachments';
 
 const server = app.listen(env.PORT, '0.0.0.0', () => {
@@ -65,6 +66,7 @@ logger.info('Automation Center poller scheduled (every minute)');
 cron.schedule('*/2 * * * *', () => {
   runSpiderSweep().catch((err) => logger.error('spider sweep failed', err));
 });
+logger.info(spiderPilotListBootLine());
 
 // Received-mail attachments (PRD 10, S10.17) — every 10 minutes: received messages whose files were still on their way after the
 // first try (the provider was unreachable, the process stopped mid-way) are tried again, a fixed number of times each. Cross-company,

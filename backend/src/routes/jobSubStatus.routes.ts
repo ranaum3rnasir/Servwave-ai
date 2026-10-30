@@ -11,7 +11,7 @@ router.use(authenticate, attachAbility);
 
 // SRVW-112 - gating mirrors org-tax-rate.routes.ts: the WRITES reuse the existing
 // `update Organization` grant (this is an org-settings catalog, the same population that already
-// edits job_type_options on the Payments & Lists page) rather than minting a new CASL Subject.
+// edits the job types and sources lists under Settings > Lists) rather than minting a new CASL Subject.
 // The READ is reference data: every form and every job page needs these labels, so every signed-in
 // person reads the list with no switch.
 router.get('/', jobSubStatusController.list);

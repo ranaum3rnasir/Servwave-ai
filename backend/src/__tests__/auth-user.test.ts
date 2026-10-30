@@ -1,5 +1,6 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { prisma } from '../lib/prisma';
+import { env } from '../config/env';
 import { resolveAppUser } from '../lib/auth-user';
 
 const mockPrisma = prisma as unknown as {
@@ -44,6 +45,7 @@ const APP_USER = {
   department_id: null,
   location_id: null,
   org_is_demo: false,
+  org_is_spider_pilot: false,
   org_plan: 'SCALE',
   org_features: [
     'customers', 'jobs', 'estimates', 'invoices', 'payments',
@@ -55,8 +57,15 @@ const APP_USER = {
   ],
 };
 
+const mutableEnv = env as { SPIDER_PILOT_ORG_IDS?: string };
+const pilotListBefore = mutableEnv.SPIDER_PILOT_ORG_IDS;
+
 beforeEach(() => {
   vi.clearAllMocks();
+});
+
+afterEach(() => {
+  mutableEnv.SPIDER_PILOT_ORG_IDS = pilotListBefore;
 });
 
 describe('resolveAppUser', () => {
@@ -143,5 +152,24 @@ describe('resolveAppUser', () => {
     const result = await resolveAppUser({ id: 'x', email: 'nobody@acme.com', email_confirmed_at: '2026-01-01' });
 
     expect(result).toBeNull();
+  });
+
+  // SPEC-5: whether the user's company is on the Spider pilot list (SPIDER_PILOT_ORG_IDS).
+  it('sets org_is_spider_pilot for a company on the Spider pilot list, without making it a demo company', async () => {
+    mutableEnv.SPIDER_PILOT_ORG_IDS = 'org-1';
+    mockPrisma.user.findUnique.mockResolvedValue(ROW);
+
+    const result = await resolveAppUser({ id: 'app-id', email: 'alice@acme.com', email_confirmed_at: '2026-01-01' });
+
+    expect(result).toEqual({ ...APP_USER, org_is_spider_pilot: true });
+  });
+
+  it('fails closed on org_is_spider_pilot when the organization relation is missing, even for a listed id', async () => {
+    mutableEnv.SPIDER_PILOT_ORG_IDS = 'org-1';
+    mockPrisma.user.findUnique.mockResolvedValue({ ...ROW, organization: null });
+
+    const result = await resolveAppUser({ id: 'app-id', email: 'alice@acme.com', email_confirmed_at: '2026-01-01' });
+
+    expect(result?.org_is_spider_pilot).toBe(false);
   });
 });

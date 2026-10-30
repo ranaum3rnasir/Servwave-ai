@@ -4,7 +4,8 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/axios';
-import { useOrganization, useUpdateOrganization } from '@/lib/api/organization';
+import { useOrganization } from '@/lib/api/organization';
+import { useAddJobType } from '@/lib/api/jobTypes';
 import { useAssignableUsers } from '@/lib/api/users';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import type { AppAbility } from '@/lib/ability';
@@ -143,8 +144,8 @@ function CreateLeadForm({
   // backend eligible_for=owner filter mirrors the create-time eligibility guard.
   // DEAD v1 twin - kept in step with pages/v2/leads/LeadFormPage. Not invested in.
   const { data: assignableOwners = [] } = useAssignableUsers({ purpose: 'directory', eligibleFor: 'owner' });
-  // Inline "+ Add new job type" (#388) — persist to org.job_type_options; null = row closed.
-  const updateOrg = useUpdateOrganization();
+  // Inline "+ Add new job type" (#388) — adds a row via POST /api/job-types; null = row closed.
+  const addJobType = useAddJobType();
   const [addingJobType, setAddingJobType] = useState<string | null>(null);
   const commitJobType = () => {
     const trimmed = (addingJobType ?? '').trim();
@@ -152,7 +153,7 @@ function CreateLeadForm({
     form.setValue('job_type', trimmed);
     const existing = org?.job_type_options ?? [];
     if (!existing.includes(trimmed)) {
-      updateOrg.mutate({ job_type_options: [...existing, trimmed] });
+      addJobType.mutate(trimmed);
     }
     setAddingJobType(null);
   };
@@ -718,8 +719,8 @@ function EditLeadForm({
   const { data: org } = useOrganization();
   // EditLeadForm has no ability prop — resolve it here for the #388 add-type gate.
   const ability = useAppAbility();
-  // Inline "+ Add new job type" (#388) — persist to org.job_type_options; null = row closed.
-  const updateOrg = useUpdateOrganization();
+  // Inline "+ Add new job type" (#388) — adds a row via POST /api/job-types; null = row closed.
+  const addJobType = useAddJobType();
   const [addingJobType, setAddingJobType] = useState<string | null>(null);
   const [showSchedule, setShowSchedule] = useState(
     Boolean(lead.scheduled_start || lead.scheduled_end)
@@ -763,7 +764,7 @@ function EditLeadForm({
     form.setValue('job_type', trimmed);
     const existing = org?.job_type_options ?? [];
     if (!existing.includes(trimmed)) {
-      updateOrg.mutate({ job_type_options: [...existing, trimmed] });
+      addJobType.mutate(trimmed);
     }
     setAddingJobType(null);
   };

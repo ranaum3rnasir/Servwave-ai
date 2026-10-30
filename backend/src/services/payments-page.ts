@@ -8,7 +8,7 @@ import { statusLabel, methodLabel, type DbPaymentMethod } from './payments-repor
 import { describePaymentDetail } from '../lib/payment-display';
 
 export type PaymentDisplayStatus =
-  | 'Succeeded' | 'Pending' | 'Failed' | 'Disputed' | 'Charged back' | 'Voided' | 'Refunded' | 'Partially refunded';
+  | 'Succeeded' | 'Pending' | 'Failed' | 'Disputed' | 'Refund failed' | 'Charged back' | 'Voided' | 'Refunded' | 'Partially refunded';
 
 export type PayoutStatusKey = 'awaiting' | 'in_transit' | 'paid' | 'failed';
 
@@ -22,6 +22,8 @@ export interface StatusInput {
   voidCategory: string | null;
   /** A dispute on this payment is NEEDS_RESPONSE or UNDER_REVIEW. */
   openDispute: boolean;
+  /** A refund of this payment failed and no person or later refund has dealt with it (FAILED_REFUND_OPEN). */
+  refundFailedOpen: boolean;
 }
 
 const cents = (n: number): number => Math.round(n * 100);
@@ -29,13 +31,14 @@ const dollars = (c: number): number => c / 100;
 
 /**
  * How a payment reads on the page. A processing payment is Pending and a failed one Failed whatever else is recorded;
- * a collected one is Disputed while a dispute is open, then (via the report's own statusLabel) Charged back, Refunded,
+ * a collected one is Disputed while a dispute is open, then Refund failed while a failed refund is unhandled, then (via the report's own statusLabel) Charged back, Refunded,
  * Partially refunded or Voided, else Succeeded.
  */
 export function paymentDisplayStatus(p: StatusInput): PaymentDisplayStatus {
   if (p.state === 'PROCESSING') return 'Pending';
   if (p.state === 'FAILED') return 'Failed';
   if (p.openDispute) return 'Disputed';
+  if (p.refundFailedOpen) return 'Refund failed';
   const label = statusLabel({
     amount: p.amount,
     refundedAt: p.succeededRefundTotal > 0 ? new Date(0) : null,
@@ -61,7 +64,13 @@ export function feeOf(p: { stripeFee: number | null; platformFee: number | null 
 
 /** A payout's short display code, from ServWave's own row id (never the processor's payout id). */
 export function payoutReference(id: string): string {
-  return `PO-${id.replace(/-/g, '').slice(0, 8).toUpperCase()}`;
+  return shortCode('PO-', id);
+}
+
+/** A short display code: the prefix plus the first 8 hex of a ServWave row's uuid, uppercased. Never a processor id. */
+export type ShortCodePrefix = 'PO-' | 'PMT-' | 'DSP-' | 'RCV-' | 'REF-';
+export function shortCode(prefix: ShortCodePrefix, id: string): string {
+  return `${prefix}${id.replace(/-/g, '').slice(0, 8).toUpperCase()}`;
 }
 
 /** Where a payment's money is: not paid out yet, on its way, paid, or the payout failed. Null when it is not collected money. */
@@ -200,9 +209,10 @@ export interface PaymentRowInput {
   bankLast4: string | null;
   refunds: Array<{ amount: number; state: 'PENDING' | 'SUCCEEDED' | 'FAILED' }>;
   openDispute: boolean;
+  refundFailedOpen: boolean;
   payout: { id: string; status: string; arrivalDate: Date | null } | null;
   invoice: { id: string; number: string };
-  customer: { id: string; name: string };
+  customer: { id: string; name: string; customer_number: string };
 }
 
 const dayOf = (d: Date | null): string | null => (d ? d.toISOString().slice(0, 10) : null);
@@ -225,9 +235,11 @@ export function toPageRow(p: PaymentRowInput, restricted: boolean) {
   const refunded = succeededRefundTotal(p.refunds);
   return {
     id: p.id,
+    reference: shortCode('PMT-', p.id),
     date: p.paidAt.toISOString(),
     status: paymentDisplayStatus({
       state: p.state, amount: p.amount, succeededRefundTotal: refunded, voidedAt: p.voidedAt, voidCategory: p.voidCategory, openDispute: p.openDispute,
+      refundFailedOpen: p.refundFailedOpen,
     }),
     method: p.method,
     method_label: methodLabel(p.method),

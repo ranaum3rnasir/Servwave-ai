@@ -17,8 +17,10 @@ import { prisma } from '../lib/prisma';
 import { tenantWhere } from '../lib/tenant';
 import { logger } from '../lib/logger';
 import { logAudit } from '../lib/audit';
+import { buildAccessUrl } from '../lib/attachment-access';
 import { invoiceOpenerFor } from '../lib/permissions/invoiceAccess';
-import { customerNameOf } from '../services/payments-page';
+import { customerNameOf, shortCode } from '../services/payments-page';
+import { customerBlockFor } from '../services/payments-page/customerBlock';
 import {
   uploadDisputeEvidenceFile, stageDisputeEvidence, submitDisputeEvidence, retrieveDisputeSubmissionCount,
 } from '../lib/stripe';
@@ -52,7 +54,7 @@ class Refusal extends Error {
 }
 
 const disputeInclude = {
-  payment: { select: { card_brand: true, stripe_account_id: true } },
+  payment: { select: { id: true, card_brand: true, stripe_account_id: true } },
   evidence_items: true,
   invoice: {
     select: {
@@ -140,6 +142,9 @@ function stateOf(req: Request, d: Loaded, refusedField: string | null = null) {
   return {
     dispute: {
       id: d.id,
+      reference: shortCode('DSP-', d.id),
+      opened_at: d.created_at.toISOString(),
+      payment: { id: d.payment_id, reference: shortCode('PMT-', d.payment_id) },
       status: d.status,
       reason_text: describeReason(d.reason),
       amount: Number(d.amount),
@@ -164,7 +169,7 @@ function stateOf(req: Request, d: Loaded, refusedField: string | null = null) {
           at: d.evidence_submitted_at ? d.evidence_submitted_at.toISOString() : null,
           by_name: d.evidence_submitted_by_name,
           count: d.evidence_submission_count,
-          files: FILE_FIELDS.flatMap((f) => items.filter((i) => i.evidence_field === f).map((i) => ({ field: f, file_name: i.file_name }))),
+          files: FILE_FIELDS.flatMap((f) => items.filter((i) => i.evidence_field === f).map((i) => ({ field: f, file_name: i.file_name, attachment_id: i.attachment_id }))),
         }
       : null,
     can_edit: canEdit,
@@ -215,9 +220,40 @@ export async function getEvidence(req: Request, res: Response) {
       res.status(404).json({ error: NOT_FOUND });
       return;
     }
-    res.json(stateOf(req, d));
+    res.json({ ...stateOf(req, d), customer_block: await customerBlockFor({ invoiceId: d.invoice_id }, req) });
   } catch (e) {
     refuse(res, e, 'read');
+  }
+}
+
+// GET /api/payments-page/disputes/:id/evidence/files/:attachmentId
+// A short-lived signed link to one evidence file of this dispute, plus the facts the preview shows. The file must be one
+// of this dispute's evidence rows and an attachment of this company; nothing about the storage object is returned.
+export async function getEvidenceFile(req: Request, res: Response) {
+  try {
+    const d = await load(req, String(req.params.id));
+    if (!d) {
+      res.status(404).json({ error: NOT_FOUND });
+      return;
+    }
+    const attachmentId = String(req.params.attachmentId);
+    const item = UUID.safeParse(attachmentId).success ? d.evidence_items.find((i) => i.attachment_id === attachmentId) : undefined;
+    const att = item
+      ? await prisma.attachment.findFirst({ where: { id: item.attachment_id, ...tenantWhere(req) }, select: { storage_path: true, file_url: true } })
+      : null;
+    if (!item || !att) {
+      res.status(404).json({ error: FILE_NOT_FOUND });
+      return;
+    }
+    res.json({
+      url: await buildAccessUrl(att.storage_path, att.file_url),
+      file_name: item.file_name,
+      mime: item.mime,
+      size_bytes: item.size_bytes,
+      page_count: item.page_count,
+    });
+  } catch (e) {
+    refuse(res, e, 'file read');
   }
 }
 

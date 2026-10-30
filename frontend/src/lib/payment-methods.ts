@@ -6,7 +6,7 @@ import type { PaymentMethod } from '@/lib/api/organization';
 export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   CARD: 'Credit Card',
   // Still distinct from CARD: this is the org running cards on its own processor/terminal, which
-  // the Payments & Lists picker must be able to tell apart from card payments we process.
+  // the ServWave Payments picker must be able to tell apart from card payments we process.
   EXTERNAL_CARD: 'Card (outside ServWave)',
   // Payments go-live slice 28: ACH names the online bank debit only; a hand-recorded transfer is just a
   // bank transfer.

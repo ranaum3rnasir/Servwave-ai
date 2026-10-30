@@ -46,7 +46,11 @@ export interface RawRow {
   invoice_id: string | null;
   invoice_number: string | null;
   invoice_status: string | null;
+  /** Unapplied money only: the meant-for invoice's total and whether another succeeded payment of the same amount sits on it. */
+  invoice_total: Prisma.Decimal | null;
+  same_amount_paid: boolean | null;
   customer_id: string | null;
+  customer_number: string | null;
   first_name: string | null;
   last_name: string | null;
   company_name: string | null;
@@ -68,6 +72,12 @@ export interface RawRow {
   pay_paid_at: Date | null;
   rf_reason: string | null;
   rf_category: string | null;
+  /** Unapplied money only: the capture already sits on a payment row (source key `payment:<id>`), so it is never attached or turned into an invoice. */
+  on_payment_row: boolean | null;
+  /** failed_payment only: when the bank returned the debit (its lost bank-return dispute closed), else null. */
+  returned_at: Date | null;
+  /** failed_payment only: the payment cleared and was voided by the return (never true for a debit that failed before clearing). */
+  returned_after_clearing: boolean | null;
 }
 
 const S = Prisma.sql;
@@ -86,7 +96,8 @@ function columns(c: Partial<Record<keyof RawRow, Prisma.Sql>> & { key: Prisma.Sq
     ${t('amount', 'numeric')} AS amount, ${t('code', 'text')} AS code,
     ${t('payment_id', 'uuid')} AS payment_id, ${t('payout_id', 'uuid')} AS payout_id, ${t('dispute_id', 'uuid')} AS dispute_id,
     ${t('invoice_id', 'uuid')} AS invoice_id, ${t('invoice_number', 'text')} AS invoice_number, ${t('invoice_status', 'text')} AS invoice_status,
-    ${t('customer_id', 'uuid')} AS customer_id, ${t('first_name', 'text')} AS first_name, ${t('last_name', 'text')} AS last_name,
+    ${t('invoice_total', 'numeric')} AS invoice_total, ${t('same_amount_paid', 'boolean')} AS same_amount_paid,
+    ${t('customer_id', 'uuid')} AS customer_id, ${t('customer_number', 'text')} AS customer_number, ${t('first_name', 'text')} AS first_name, ${t('last_name', 'text')} AS last_name,
     ${t('company_name', 'text')} AS company_name, ${t('customer_email', 'text')} AS customer_email,
     ${c.is_open} AS is_open,
     ${t('res_kind', 'text')} AS res_kind, ${t('res_note', 'text')} AS res_note, ${t('res_by', 'text')} AS res_by, ${t('res_at', 'timestamp')} AS res_at,
@@ -94,11 +105,13 @@ function columns(c: Partial<Record<keyof RawRow, Prisma.Sql>> & { key: Prisma.Sq
     ${t('src_status', 'text')} AS src_status, ${t('is_bank_return', 'boolean')} AS is_bank_return, ${t('due_by', 'timestamp')} AS due_by,
     ${t('resolved_ts', 'timestamp')} AS resolved_ts, ${t('refundable', 'boolean')} AS refundable,
     ${t('pay_method', 'text')} AS pay_method, ${t('pay_paid_at', 'timestamp')} AS pay_paid_at,
-    ${t('rf_reason', 'text')} AS rf_reason, ${t('rf_category', 'text')} AS rf_category`;
+    ${t('rf_reason', 'text')} AS rf_reason, ${t('rf_category', 'text')} AS rf_category,
+    ${t('on_payment_row', 'boolean')} AS on_payment_row,
+    ${t('returned_at', 'timestamp')} AS returned_at, ${t('returned_after_clearing', 'boolean')} AS returned_after_clearing`;
 }
 
 const CUSTOMER_COLUMNS = {
-  customer_id: S`c.id`, first_name: S`c.first_name`, last_name: S`c.last_name`, company_name: S`c.company_name`, customer_email: S`c.email`,
+  customer_id: S`c.id`, customer_number: S`c.customer_number`, first_name: S`c.first_name`, last_name: S`c.last_name`, company_name: S`c.company_name`, customer_email: S`c.email`,
 };
 const RESOLUTION_COLUMNS = { res_kind: S`r.resolution`, res_note: S`r.note`, res_by: S`r.resolved_by_name`, res_at: S`r.resolved_at` };
 
@@ -136,28 +149,46 @@ const FAILED_PAYMENT_FROM = (f: Filters) => S`FROM payments p
     WHERE t.covered >= p.amount
     ORDER BY t.paid_at ASC LIMIT 1
   ) lp ON TRUE
-  WHERE i.organization_id = ${f.orgId}::uuid AND p.state = 'FAILED' AND p.method = 'ACH' AND p.voided_at IS NULL
-    AND NOT EXISTS (SELECT 1 FROM disputes d WHERE d.payment_id = p.id)
+  LEFT JOIN LATERAL (
+    -- The day the bank took a debit back: its bank-return dispute was lost. Both returns (V7-13): late (the payment
+    -- SUCCEEDED, then was voided) and early (the payment FAILED by the return).
+    SELECT COALESCE(d.closed_at, d.updated_at) AS at FROM disputes d
+    WHERE d.organization_id = i.organization_id AND d.payment_id = p.id AND d.is_bank_return AND d.status = 'LOST'
+    ORDER BY COALESCE(d.closed_at, d.updated_at) DESC LIMIT 1
+  ) br ON TRUE
+  WHERE i.organization_id = ${f.orgId}::uuid AND p.method = 'ACH'
+    AND (
+      (p.state = 'FAILED' AND p.voided_at IS NULL AND NOT EXISTS (SELECT 1 FROM disputes d WHERE d.payment_id = p.id))
+      OR (br.at IS NOT NULL AND (p.state = 'FAILED' OR p.voided_at IS NOT NULL))
+    )
     AND ${invoiceFilter(f, S`i.id`)} AND ${onlyRow(f, S`p.id`)} AND ${forPayment(f, S`p.id`)}`;
 
 const failedPayment: Branch = {
   types: ['failed_payment'],
   select: (f, view) => S`SELECT ${columns({
-    key: S`'failed_payment:' || p.id::text`, type: S`'failed_payment'::text`, date: S`p.paid_at`, is_open: FAILED_PAYMENT_OPEN,
+    key: S`'failed_payment:' || p.id::text`, type: S`'failed_payment'::text`, date: S`COALESCE(br.at, p.paid_at)`, is_open: FAILED_PAYMENT_OPEN,
     amount: S`p.amount`, code: S`p.failure_code`, payment_id: S`p.id`, invoice_id: S`i.id`, invoice_number: S`i.invoice_number`, invoice_status: S`i.status::text`,
     ...CUSTOMER_COLUMNS, ...RESOLUTION_COLUMNS, later_method: S`lp.method::text`, later_at: S`lp.paid_at`,
+    returned_at: S`br.at`, returned_after_clearing: S`(p.voided_at IS NOT NULL)`,
   })} ${FAILED_PAYMENT_FROM(f)} AND ${viewCond(view, FAILED_PAYMENT_OPEN)}`,
   count: (f) => S`SELECT 'failed_payment'::text AS type, COUNT(*) FILTER (WHERE ${FAILED_PAYMENT_OPEN}) AS open, COUNT(*) FILTER (WHERE NOT ${FAILED_PAYMENT_OPEN}) AS resolved ${FAILED_PAYMENT_FROM(f)}`,
 };
 
 // ---- failed_refund -----------------------------------------------------------------------------------------------
 
-const FAILED_REFUND_OPEN = S`(r.id IS NULL AND lr.created_at IS NULL)`;
-const FAILED_REFUND_FROM = (f: Filters) => S`FROM refunds rf
-  JOIN invoices i ON i.id = rf.invoice_id AND i.organization_id = rf.organization_id
-  JOIN customers c ON c.id = i.customer_id
-  LEFT JOIN payments pay ON pay.id = rf.payment_id
-  LEFT JOIN payment_attention_resolutions r ON r.organization_id = rf.organization_id AND r.item_key = 'failed_refund:' || rf.id::text
+/** The aliases of the failed-refund FROM, so the same definition can sit inside another query without shadowing its tables. */
+interface RefundAliases { rf: string; i: string; c: string; pay: string; r: string; lr: string }
+const DEFAULT_ALIASES: RefundAliases = { rf: 'rf', i: 'i', c: 'c', pay: 'pay', r: 'r', lr: 'lr' };
+const raw = (n: string) => Prisma.raw(n);
+
+/** Open = nobody resolved it and no later PENDING or SUCCEEDED refund covers it. ONE definition, read by the list, the status and its filter. */
+const failedRefundOpen = (a: RefundAliases) => S`(${raw(a.r)}.id IS NULL AND ${raw(a.lr)}.created_at IS NULL)`;
+const FAILED_REFUND_OPEN = failedRefundOpen(DEFAULT_ALIASES);
+const failedRefundFromClause = (f: Filters, a: RefundAliases, org: Prisma.Sql = S`${f.orgId}::uuid`) => S`FROM refunds ${raw(a.rf)}
+  JOIN invoices ${raw(a.i)} ON ${raw(a.i)}.id = ${raw(a.rf)}.invoice_id AND ${raw(a.i)}.organization_id = ${raw(a.rf)}.organization_id
+  JOIN customers ${raw(a.c)} ON ${raw(a.c)}.id = ${raw(a.i)}.customer_id
+  LEFT JOIN payments ${raw(a.pay)} ON ${raw(a.pay)}.id = ${raw(a.rf)}.payment_id
+  LEFT JOIN payment_attention_resolutions ${raw(a.r)} ON ${raw(a.r)}.organization_id = ${raw(a.rf)}.organization_id AND ${raw(a.r)}.item_key = 'failed_refund:' || ${raw(a.rf)}.id::text
   LEFT JOIN LATERAL (
     -- Settled once the refunds that did not FAIL (PENDING or SUCCEEDED) after this failure add up to at least the
     -- failed refunds on the payment from this one onward, so one refund settles one failure and a partial one settles
@@ -165,18 +196,49 @@ const FAILED_REFUND_FROM = (f: Filters) => S`FROM refunds rf
     -- as its own failed item.
     SELECT t.created_at, u.first_name, u.last_name FROM (
       SELECT q.created_at, q.refunded_by, SUM(q.amount) OVER () AS total FROM refunds q
-      WHERE q.organization_id = rf.organization_id AND q.payment_id = rf.payment_id AND q.state IN ('PENDING', 'SUCCEEDED') AND q.from_unapplied_capture = FALSE
-        AND q.created_at > rf.created_at
+      WHERE q.organization_id = ${raw(a.rf)}.organization_id AND q.payment_id = ${raw(a.rf)}.payment_id AND q.state IN ('PENDING', 'SUCCEEDED') AND q.from_unapplied_capture = FALSE
+        AND q.created_at > ${raw(a.rf)}.created_at
     ) t LEFT JOIN users u ON u.id = t.refunded_by
     WHERE t.total >= (
       SELECT SUM(x.amount) FROM refunds x
-      WHERE x.organization_id = rf.organization_id AND x.payment_id = rf.payment_id AND x.state = 'FAILED' AND x.from_unapplied_capture = FALSE
-        AND x.created_at >= rf.created_at
+      WHERE x.organization_id = ${raw(a.rf)}.organization_id AND x.payment_id = ${raw(a.rf)}.payment_id AND x.state = 'FAILED' AND x.from_unapplied_capture = FALSE
+        AND x.created_at >= ${raw(a.rf)}.created_at
     )
     ORDER BY t.created_at DESC LIMIT 1
-  ) lr ON TRUE
-  WHERE rf.organization_id = ${f.orgId}::uuid AND rf.state = 'FAILED' AND rf.from_unapplied_capture = FALSE
-    AND ${invoiceFilter(f, S`i.id`)} AND ${onlyRow(f, S`rf.id`)} AND ${forPayment(f, S`rf.payment_id`)}`;
+  ) ${raw(a.lr)} ON TRUE
+  WHERE ${raw(a.rf)}.organization_id = ${org} AND ${raw(a.rf)}.state = 'FAILED' AND ${raw(a.rf)}.from_unapplied_capture = FALSE
+    AND ${invoiceFilter(f, S`${raw(a.i)}.id`)} AND ${onlyRow(f, S`${raw(a.rf)}.id`)} AND ${forPayment(f, S`${raw(a.rf)}.payment_id`)}`;
+const FAILED_REFUND_FROM = (f: Filters) => failedRefundFromClause(f, DEFAULT_ALIASES);
+
+const OPEN_FILTERS = (orgId: string): Filters => ({ orgId, narrowed: false, searchInvoiceIds: null, types: null });
+
+/** Which of these payments have a failed refund nobody has dealt with. One query for the whole page, scoped to the company. */
+export async function paymentIdsWithOpenFailedRefund(orgId: string, paymentIds: readonly string[]): Promise<Set<string>> {
+  if (paymentIds.length === 0) return new Set();
+  const rows = await prisma.$queryRaw<Array<{ payment_id: string }>>(
+    S`SELECT DISTINCT rf.payment_id::text AS payment_id ${FAILED_REFUND_FROM(OPEN_FILTERS(orgId))}
+      AND ${FAILED_REFUND_OPEN} AND rf.payment_id = ANY(${[...paymentIds]}::text[]::uuid[])`,
+  );
+  return new Set(rows.map((r) => r.payment_id));
+}
+
+/** The ids of this payment's failed refunds that are still open: the same definition, so the detail and the list agree. */
+export async function openFailedRefundIds(orgId: string, paymentId: string): Promise<Set<string>> {
+  const rows = await prisma.$queryRaw<Array<{ id: string }>>(
+    S`SELECT rf.id::text AS id ${FAILED_REFUND_FROM(OPEN_FILTERS(orgId))} AND ${FAILED_REFUND_OPEN} AND rf.payment_id = ${paymentId}::uuid`,
+  );
+  return new Set(rows.map((r) => r.id));
+}
+
+/**
+ * An EXISTS (...) over the payment alias `p` of another query: true when that payment has an open failed refund. Same
+ * definition as the list. `org` is the company expression of that query (its invoice's organization_id), so the refunds
+ * read are the same company's.
+ */
+export function openFailedRefundExists(org: Prisma.Sql): Prisma.Sql {
+  const a: RefundAliases = { rf: 'fr_rf', i: 'fr_i', c: 'fr_c', pay: 'fr_pay', r: 'fr_r', lr: 'fr_lr' };
+  return S`EXISTS (SELECT 1 ${failedRefundFromClause(OPEN_FILTERS(''), a, org)} AND ${failedRefundOpen(a)} AND fr_rf.payment_id = p.id)`;
+}
 
 const failedRefund: Branch = {
   types: ['failed_refund'],
@@ -252,10 +314,20 @@ const unapplied: Branch = {
   types: ['unmatched_payment', 'unmatched_refund'],
   select: (f, view) => S`SELECT ${columns({
     key: S`${UNAPPLIED_TYPE} || ':' || ua.id::text`, type: UNAPPLIED_TYPE, date: S`ua.created_at`, is_open: UNAPPLIED_OPEN,
-    amount: S`ua.amount`, code: S`ua.reason`, invoice_id: S`i.id`, invoice_number: S`i.invoice_number`, invoice_status: S`i.status::text`, ...CUSTOMER_COLUMNS,
+    // V7-09b: what is on the item now: the amount less what already went back (an item attached or resolved after a partial
+    // refund shows what it held then). An item closed by a refund keeps the whole amount.
+    amount: S`(CASE WHEN ua.status = 'REFUNDED' THEN ua.amount ELSE ua.amount - ua.refunded_amount END)`, code: S`ua.reason`, invoice_id: S`i.id`, invoice_number: S`i.invoice_number`, invoice_status: S`i.status::text`, ...CUSTOMER_COLUMNS,
     src_status: S`ua.status::text`, resolved_ts: S`COALESCE(ua.refunded_at, ua.updated_at)`,
+    // Who closed it and why (V7-05b); null on rows from before the columns and on closes by the reconciler.
+    res_note: S`ua.resolution_note`, res_by: S`ua.resolved_by_name`, res_at: S`ua.resolved_at`,
+    // What the reason texts need (spec 7.15). The twin test leaves out the capture's own payment row (source key payment:<uuid>).
+    invoice_total: S`i.total_amount`,
+    same_amount_paid: S`(i.id IS NOT NULL AND ua.amount IS NOT NULL AND EXISTS (
+      SELECT 1 FROM payments tw WHERE tw.invoice_id = i.id AND tw.state = 'SUCCEEDED' AND tw.voided_at IS NULL AND tw.amount = ua.amount
+        AND tw.id::text IS DISTINCT FROM substring(ua.source_key from '^payment:(.+)$')))`,
     // Money that can go back from here: a payment (not a stray refund) whose connected account is on record.
-    refundable: S`(ua.reason <> 'REFUND_UNMATCHED' AND ua.stripe_payment_intent_id IS NOT NULL AND ua.stripe_account_id IS NOT NULL)`,
+    refundable: S`(ua.reason <> 'REFUND_UNMATCHED' AND ua.stripe_payment_intent_id IS NOT NULL AND ua.stripe_account_id IS NOT NULL AND ua.amount - ua.refunded_amount > 0)`,
+    on_payment_row: S`(ua.source_key LIKE 'payment:%')`,
   })} ${UNAPPLIED_FROM(f, f.types?.filter((t) => unapplied.types.includes(t)) ?? null)} AND ${viewCond(view, UNAPPLIED_OPEN)}`,
   count: (f, type) => S`SELECT ${Prisma.raw(`'${type}'`)}::text AS type, COUNT(*) FILTER (WHERE ${UNAPPLIED_OPEN}) AS open, COUNT(*) FILTER (WHERE NOT ${UNAPPLIED_OPEN}) AS resolved ${UNAPPLIED_FROM(f, [type])}`,
 };

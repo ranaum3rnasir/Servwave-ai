@@ -8,11 +8,6 @@ export interface PaymentsTabState {
   params: URLSearchParams;
   /** Set (string) or remove (null) keys of the page's query string. Period and tab keys are the frame's. */
   setParams: (patch: Record<string, string | null>) => void;
-  /**
-   * Go to the Payouts tab with one payout open (a payment's "Paid out in ..." link). The frame keeps the period and
-   * drops the leaving tab's own keys (chip, search, filters, the open payment).
-   */
-  openPayout?: (payoutId: string) => void;
 }
 
 export interface PaymentsTabProps {

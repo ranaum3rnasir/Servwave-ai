@@ -31,7 +31,7 @@ const SUMMARY: PaymentsSummary = {
   refunds: 250,
   count: 18,
   fees_pending: 0,
-  next_payout: { amount: 3210.5, in_transit: 1800, date: '2026-10-15', schedule_text: 'every Monday', bank_label: 'Chase ending 4242' },
+  next_payout: { amount: 3210.5, in_transit: 1800, date: '2026-10-15', schedule_text: 'Weekly on Mondays', bank_label: 'Chase ending 4242' },
 };
 const EMPTY: PaymentsSummary = {
   collected: 0, fees: 0, net: 0, refunds: 0, count: 0, fees_pending: 0,
@@ -113,7 +113,7 @@ describe('KPI tiles', () => {
     expect(screen.getByText('$12,105.60')).toBeInTheDocument();
     expect(screen.getByText('Refunds $250.00')).toBeInTheDocument();
     expect(screen.getByText('$3,210.50')).toBeInTheDocument();
-    expect(screen.getByText('Thu, Oct 15')).toBeInTheDocument();
+    expect(screen.getByText('Oct 15, Thursday')).toBeInTheDocument();
     expect(screen.getByText('In transit $1,800.00')).toBeInTheDocument();
   });
 
@@ -128,18 +128,17 @@ describe('KPI tiles', () => {
     open();
     const help = await screen.findByRole('button', { name: 'More about Next payout' });
     await u.hover(help);
-    expect(screen.queryByText(/Payouts go to/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Estimated\. This is money/)).not.toBeInTheDocument();
     await u.click(help);
-    expect(await screen.findByText('Payouts go to Chase ending 4242 every Monday. This is the money from payments not yet in a payout.')).toBeInTheDocument();
+    expect(await screen.findByText(/^Estimated\. This is money you collected online that is not in a payout yet/)).toBeInTheDocument();
   });
 
-  it('drops the destination from the note when the API sends none', async () => {
+  it('marks the tile Estimated, and names no bank in the note', async () => {
     const u = user();
-    serve({ summary: () => ({ data: { ...SUMMARY, next_payout: { ...SUMMARY.next_payout, bank_label: null, schedule_text: null } } }) });
     open();
+    expect(await screen.findByText('Estimated')).toBeInTheDocument();
     await u.click(await screen.findByRole('button', { name: 'More about Next payout' }));
-    expect(await screen.findByText('This is the money from payments not yet in a payout.')).toBeInTheDocument();
-    expect(screen.queryByText(/Payouts go to/)).not.toBeInTheDocument();
+    expect(await screen.findByText(/^Estimated\. This is money/)).not.toHaveTextContent(/Chase|4242/);
   });
 
   it('puts the "?" on Next payout only', async () => {
@@ -221,7 +220,8 @@ describe('KPI tiles', () => {
     await pickPeriod(u, 'Last 7 days');
     await waitFor(() => expect(lastRange()).toEqual({ from: '2026-10-06', to: '2026-10-12' }));
     expect(screen.getByText('$12,480.00')).toBeInTheDocument();
-    expect(document.querySelectorAll('[data-slot="skeleton"]')).toHaveLength(0);
+    // The Needs-attention card has its own frame (and skeleton rows while it loads); the tiles must show none.
+    expect(document.querySelectorAll('[data-slot="skeleton"]:not([role=region] *)')).toHaveLength(0);
 
     await act(async () => release({ data: { ...SUMMARY, collected: 99 } }));
     expect(await screen.findByText('$99.00')).toBeInTheDocument();
@@ -300,7 +300,7 @@ describe('period', () => {
       await waitFor(() => expect(lastRange()).toEqual({ from: '2026-10-05', to: '2026-10-05' }));
       await expectSearch('?period=custom&from=2026-10-05&to=2026-10-05');
       await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Custom range' })).not.toBeInTheDocument());
-      expect(screen.getByRole('combobox', { name: 'Period' })).toHaveTextContent('Oct 5 - Oct 5, 2026');
+      expect(screen.getByRole('combobox', { name: 'Period' })).toHaveTextContent('Oct 5 - Oct 5');
     });
 
     it('rejects 367 days and accepts 366', async () => {
@@ -405,7 +405,7 @@ describe('an org that is not set up', () => {
     serve({ status: NOT_SET_UP });
     open();
     expect(await screen.findByText('Payments are not set up yet')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Set up your payout account' })).toHaveAttribute('href', '/settings/payout-account');
+    expect(screen.getByRole('link', { name: 'Set up your payout account' })).toHaveAttribute('href', '/settings/servwave-payments#payout-account');
     expect(screen.queryByRole('tab')).not.toBeInTheDocument();
     expect(summaryCalls()).toHaveLength(0);
   });

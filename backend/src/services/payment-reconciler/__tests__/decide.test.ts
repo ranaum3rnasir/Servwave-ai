@@ -190,9 +190,16 @@ describe('decide: the refund sent for a payment needing attention', () => {
 
   it('marks its record REFUNDED and writes nothing else when the money never sat on a payment row', () => {
     expect(decide(refundEvent('refund.created'), snapshot({ attentionRecord: attention('OPEN') })))
-      .toEqual([{ type: 'mark_unapplied_capture_refunded', recordId: 'uc_1', processorRefundId: 're_1' }]);
+      .toEqual([{ type: 'mark_unapplied_capture_refunded', recordId: 'uc_1', processorRefundId: 're_1', refundCents: 5000, closes: false }]);
     expect(decide(refundEvent('refund.updated', { status: 'pending' }), snapshot({ payment: null, attentionRecord: attention('OPEN') })))
-      .toEqual([{ type: 'mark_unapplied_capture_refunded', recordId: 'uc_1', processorRefundId: 're_1' }]);
+      .toEqual([{ type: 'mark_unapplied_capture_refunded', recordId: 'uc_1', processorRefundId: 're_1', refundCents: 5000, closes: false }]);
+  });
+
+  it('V7-09b: the action carries the refund\'s cents and whether it gives back the whole rest, so a partial refund does not close the record', () => {
+    expect(decide(refundEvent('refund.created', { amount: 4000 }), snapshot({ attentionRecord: attention('OPEN') })))
+      .toEqual([{ type: 'mark_unapplied_capture_refunded', recordId: 'uc_1', processorRefundId: 're_1', refundCents: 4000, closes: false }]);
+    expect(decide(refundEvent('refund.created', { amount: 4000, metadata: { unapplied_capture_closes: '1' } }), snapshot({ attentionRecord: attention('OPEN') })))
+      .toEqual([{ type: 'mark_unapplied_capture_refunded', recordId: 'uc_1', processorRefundId: 're_1', refundCents: 4000, closes: true }]);
   });
 
   it('does nothing once the record already reads REFUNDED (the list stored it first)', () => {
@@ -201,17 +208,17 @@ describe('decide: the refund sent for a payment needing attention', () => {
 
   it('a failed refund reopens the record it refunded, and only that refund', () => {
     expect(decide(refundEvent('refund.failed', { status: 'failed' }), snapshot({ payment: null, attentionRecord: attention('REFUNDED', 're_1') })))
-      .toEqual([{ type: 'reopen_unapplied_capture', recordId: 'uc_1', processorRefundId: 're_1' }]);
+      .toEqual([{ type: 'reopen_unapplied_capture', recordId: 'uc_1', processorRefundId: 're_1', refundCents: 5000 }]);
     // Another refund holds the record: it stays REFUNDED; the failure is only kept on it.
     expect(decide(refundEvent('refund.failed', { status: 'failed' }), snapshot({ payment: null, attentionRecord: attention('REFUNDED', 're_other') })))
-      .toEqual([{ type: 'note_unapplied_capture_refund_failed', recordId: 'uc_1', processorRefundId: 're_1' }]);
+      .toEqual([{ type: 'note_unapplied_capture_refund_failed', recordId: 'uc_1', processorRefundId: 're_1', refundCents: 5000 }]);
   });
 
   // Fix round 2: the processor does not promise event order. A refund known to have failed never
   // marks its record REFUNDED, whatever arrives after the failure.
   it('a failure that lands while the record is still OPEN is kept on the record, and changes nothing else', () => {
     expect(decide(refundEvent('refund.failed', { status: 'failed' }), snapshot({ payment: null, attentionRecord: attention('OPEN') })))
-      .toEqual([{ type: 'note_unapplied_capture_refund_failed', recordId: 'uc_1', processorRefundId: 're_1' }]);
+      .toEqual([{ type: 'note_unapplied_capture_refund_failed', recordId: 'uc_1', processorRefundId: 're_1', refundCents: 5000 }]);
     // Already kept: a second failure event for the same refund adds nothing.
     expect(decide(refundEvent('refund.failed', { status: 'failed' }), snapshot({ payment: null, attentionRecord: { ...attention('OPEN'), failedRefundIds: ['re_1'] } })))
       .toEqual([]);
@@ -223,7 +230,7 @@ describe('decide: the refund sent for a payment needing attention', () => {
     expect(decide(refundEvent('refund.updated', { status: 'succeeded' }), snapshot({ payment: null, attentionRecord: reopened }))).toEqual([]);
     // A new refund for the same record still marks it.
     expect(decide(refundEvent('refund.created', { id: 're_2' }), snapshot({ payment: null, attentionRecord: reopened })))
-      .toEqual([{ type: 'mark_unapplied_capture_refunded', recordId: 'uc_1', processorRefundId: 're_2' }]);
+      .toEqual([{ type: 'mark_unapplied_capture_refunded', recordId: 'uc_1', processorRefundId: 're_2', refundCents: 5000, closes: false }]);
   });
 });
 
@@ -235,7 +242,7 @@ describe('decide: the refund sent for a payment needing attention that sat on a 
 
   it('the refund lands before the list stored it: the record reads REFUNDED and the refund comes off the payment, once', () => {
     expect(decide(refundEvent('refund.created', { amount: 3000, status: 'pending' }), snapshot({ attentionRecord: onPayment('OPEN') }))).toEqual([
-      { type: 'mark_unapplied_capture_refunded', recordId: 'uc_1', processorRefundId: 're_1' },
+      { type: 'mark_unapplied_capture_refunded', recordId: 'uc_1', processorRefundId: 're_1', refundCents: 3000, closes: false },
       // The excess is face money: booked as it is, never as a refund made outside ServWave.
       { type: 'record_refund', processorRefundId: 're_1', invoiceId: 'inv_1', paymentId: 'pay_row_1', method: 'CARD', amountCents: 3000, state: 'PENDING', unapplied: true },
     ]);
@@ -246,7 +253,7 @@ describe('decide: the refund sent for a payment needing attention that sat on a 
     expect(decide(refundEvent('refund.updated', { status: 'succeeded' }), snapshot({ refund: row, attentionRecord: onPayment('REFUNDED', 're_1') })))
       .toEqual([{ type: 'set_refund_state', refundId: 'refund_row_1', invoiceId: 'inv_1', to: 'SUCCEEDED' }]);
     expect(decide(refundEvent('refund.failed', { status: 'failed' }), snapshot({ refund: row, attentionRecord: onPayment('REFUNDED', 're_1') }))).toEqual([
-      { type: 'reopen_unapplied_capture', recordId: 'uc_1', processorRefundId: 're_1' },
+      { type: 'reopen_unapplied_capture', recordId: 'uc_1', processorRefundId: 're_1', refundCents: 5000 },
       { type: 'set_refund_state', refundId: 'refund_row_1', invoiceId: 'inv_1', to: 'FAILED' },
     ]);
     // A replay of a state the row already holds changes nothing.

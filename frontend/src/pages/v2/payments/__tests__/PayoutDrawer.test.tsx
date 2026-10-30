@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
@@ -10,6 +10,12 @@ import {
   PayoutsHarness, makePayout, makePayoutPayment, payoutPaymentCalls, servePayouts,
 } from './payoutsFixtures';
 
+let switches: Record<string, boolean> = {};
+vi.mock('@/lib/api/mySwitches', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/api/mySwitches')>()),
+  useMySwitches: () => ({ admin_box: false, values: switches }),
+}));
+
 const user = () => userEvent.setup();
 const OWNER = buildAbility([{ action: 'manage_payout_account', subject: 'Organization' }, { action: 'view_payments', subject: 'Organization' }]);
 const FAILED = makePayout(1, { status: 'FAILED' });
@@ -18,6 +24,7 @@ const open = (entry: string, ability = OWNER) => renderWithProviders(<PayoutsHar
 const drawer = (name: string) => screen.findByRole('dialog', { name });
 
 beforeEach(() => {
+  switches = {};
   mockApi.get.mockReset();
   servePayouts({ payouts: [FAILED, PAID, ...Array.from({ length: 10 }, (_, i) => makePayout(i + 3))] });
 });
@@ -167,18 +174,18 @@ describe('rows', () => {
     const restricted = (await within(dialog).findByText('Restricted')).closest('tr')!;
     expect(restricted).not.toHaveAttribute('tabindex');
     await u.click(restricted);
-    expect(urlSearch()).not.toContain('payment=');
+    expect(urlSearch()).not.toContain('payment');
   });
 
-  it('a normal row opens the payment drawer and puts it in the address', async () => {
+  it('a normal row pushes the Payment onto the Payout and puts both in the address', async () => {
     const u = user();
     open(`/payments?tab=payouts&payout=${PAID.id}`);
     const dialog = await drawer('Payout PO-000002');
     await u.click(await within(dialog).findByText('Payer 2'));
-    expect(urlSearch()).toContain(`payment=${NORMAL.id}`);
-    expect(urlSearch()).toContain(`payout=${PAID.id}`);
-    // The payout drawer stays underneath; the payment drawer opens on top of it.
-    expect(await screen.findByRole('dialog', { name: 'Payer 2' })).toBeInTheDocument();
+    await waitFor(() => expect(new URLSearchParams(urlSearch()).get('d')).toBe(`payout:${PAID.id},payment:${NORMAL.id}`));
+    // The same drawer now shows the Payment, with Back to the Payout.
+    expect(await screen.findByRole('dialog', { name: /^Payment PMT-/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Back to Payout' })).toBeInTheDocument();
   });
 
   it('a voided row says so and counts nothing', async () => {
@@ -213,7 +220,7 @@ describe('closing', () => {
     await within(dialog).findByText('Payer 1');
     await u.click(within(dialog).getByRole('button', { name: 'Close' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    expect(urlSearch()).not.toContain('payout=');
+    expect(urlSearch()).not.toContain('d=');
     await waitFor(() => expect(row).toHaveFocus());
   });
 
@@ -223,7 +230,7 @@ describe('closing', () => {
     await drawer('Payout PO-000002');
     await u.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    expect(urlSearch()).not.toContain('payout=');
+    expect(urlSearch()).not.toContain('d=');
   });
 
   it('says so when the payout cannot be read, with Retry and Close', async () => {
@@ -231,17 +238,18 @@ describe('closing', () => {
     open('/payments?tab=payouts&payout=00000000-0000-4000-9000-0000000000ff');
     expect(await screen.findByText('Couldn’t load this payout.')).toBeInTheDocument();
     const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getAllByRole('button').map((b) => b.textContent)).toEqual(['Retry', 'Close']);
+    expect(within(dialog).getAllByRole('button').map((b) => b.getAttribute('aria-label') ?? b.textContent)).toEqual(['Close drawer', 'Retry', 'Close']);
   });
 });
 
 describe('reload', () => {
-  it('?payout= and ?payment= together reopen both drawers without hanging, the payment on top', async () => {
+  it('?d= with a payout and a payment settles without hanging: one drawer, the payment on top, Back to the payout', async () => {
     const pay = makePayoutPayment(2);
     servePayouts({ payouts: [PAID], paymentsOf: { [PAID.id]: [pay] } });
-    open(`/payments?tab=payouts&payout=${PAID.id}&payment=${pay.id}`);
-    expect(await screen.findByRole('dialog', { name: 'Payer 2' })).toBeInTheDocument();
-    expect(screen.getAllByRole('dialog', { hidden: true }).map((d) => d.getAttribute('aria-labelledby')).length).toBe(2);
+    open(`/payments?tab=payouts&d=payout:${PAID.id},payment:${pay.id}`);
+    expect(await screen.findByRole('dialog', { name: /^Payment PMT-/ })).toBeInTheDocument();
+    expect(screen.getAllByRole('dialog', { hidden: true })).toHaveLength(1);
+    expect(screen.getByRole('button', { name: 'Back to Payout' })).toBeInTheDocument();
   });
 });
 
@@ -254,6 +262,34 @@ describe('keyboard', () => {
     expect(row).toHaveAttribute('tabindex', '0');
     row.focus();
     fireEvent.keyDown(row, { key: 'Enter' });
-    await waitFor(() => expect(urlSearch()).toContain('payment='));
+    await waitFor(() => expect(new URLSearchParams(urlSearch()).get('d')).toContain(',payment:'));
+  });
+});
+
+describe('the customer ID under each payment row (V7-07a)', () => {
+  it('is a new-tab link to the customer for a person who may view customers, and opening it does not open the payment', async () => {
+    switches = { view_customers: true };
+    open(`/payments?tab=payouts&payout=${PAID.id}`);
+    const dialog = await drawer('Payout PO-000002');
+    await within(dialog).findByText('Payer 1');
+    const link = within(dialog).getAllByRole('link', { name: /^C-3001/ })[0]!;
+    expect(link).toHaveAttribute('href', '/customers/c1');
+    expect(link).toHaveAttribute('target', '_blank');
+    await user().click(link);
+    expect(screen.getByRole('dialog', { name: 'Payout PO-000002' })).toBeInTheDocument();
+    expect(new URLSearchParams(urlSearch()).get('d')).toBe(`payout:${PAID.id}`);
+  });
+
+  it('is plain text for a person who may not view customers, and a restricted row shows none', async () => {
+    servePayouts({
+      payouts: [PAID],
+      paymentsOf: { [PAID.id]: [makePayoutPayment(1), makePayoutPayment(2, { restricted: true, customer: null, invoice: null })] },
+    });
+    open(`/payments?tab=payouts&payout=${PAID.id}`);
+    const dialog = await drawer('Payout PO-000002');
+    await within(dialog).findByText('Payer 1');
+    expect(within(dialog).getByText('C-3001')).toBeInTheDocument();
+    expect(within(dialog).queryByRole('link', { name: /C-3001/ })).not.toBeInTheDocument();
+    expect(within(dialog).queryByText('C-3002')).not.toBeInTheDocument();
   });
 });

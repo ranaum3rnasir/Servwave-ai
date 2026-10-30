@@ -60,7 +60,7 @@ describe('the chip and the segmented control', () => {
     open('/payments?chip=attention&attView=resolved');
     expect(await screen.findByRole('button', { name: 'Resolved (3)' })).toHaveAttribute('aria-pressed', 'true');
     await waitFor(() => expect(lastAttention()).toMatchObject({ view: 'resolved' }));
-    expect(await screen.findAllByText('Marked resolved')).toHaveLength(3);
+    expect(await screen.findAllByText('Resolved: Handled outside ServWave')).toHaveLength(3);
   });
 
   it('replaces the payments list, the Filter popover and Export', async () => {
@@ -70,7 +70,7 @@ describe('the chip and the segmented control', () => {
     expect(listCalls()).toHaveLength(0);
     expect(screen.queryByRole('button', { name: /^Filter/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Export' })).not.toBeInTheDocument();
-    expect(screen.getByRole('combobox', { name: 'Type' })).toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Type' })).not.toBeInTheDocument();
   });
 });
 
@@ -79,21 +79,22 @@ describe('the table', () => {
     serveAttention({ open: [], resolved: [resolvedItem(7)] });
     open('/payments?chip=attention&attView=resolved');
     const headers = (await screen.findAllByRole('columnheader')).map((h) => h.textContent);
-    expect(headers).toEqual(['Date', 'What happened', 'Customer', 'Invoice', 'Amount', 'Status']);
+    expect(headers).toEqual(['Date', 'Item', 'Customer', 'Invoice', 'Status', 'Amount', 'Actions']);
     await settledText('Bank payment failed');
     const row = bodyRows()[0]!;
     expect(within(row).getByText('Bank payment failed')).toBeInTheDocument();
     expect(within(row).getByText('Customer 7')).toBeInTheDocument();
     expect(within(row).getByText('INV-1007')).toBeInTheDocument();
     expect(within(row).getByText('$107.00')).toBeInTheDocument();
-    expect(within(row).getByText('Marked resolved')).toBeInTheDocument();
-    expect(within(row).getByText('Oct 10, 2026 by Pat Admin')).toBeInTheDocument();
+    expect(within(row).getByText('Resolved: Handled outside ServWave')).toBeInTheDocument();
+    expect(within(row).getByText('Pat Admin')).toBeInTheDocument();
   });
 
-  it('shows Open as the status of an open item', async () => {
+  it('shows the kind of an open item as its status', async () => {
     serveAttention({ open: openItems(1) });
     open();
-    expect(await settledText('Open')).toBeInTheDocument();
+    await settledText('Bank payment failed');
+    expect(within(bodyRows()[0]!).getByText('Failed')).toBeInTheDocument();
   });
 
   it('a restricted row shows the lock and names no one', async () => {
@@ -125,16 +126,6 @@ describe('the table', () => {
     await waitFor(() => expect(bodyRows()).toHaveLength(1));
   });
 
-  it('the type select narrows by type', async () => {
-    const u = user();
-    serveAttention({ open: [makeItem(1, 'failed_payment', { actions: [] }), makeItem(2, 'dispute', { actions: [] })] });
-    open();
-    await u.click(await screen.findByRole('combobox', { name: 'Type' }));
-    await u.click(await screen.findByRole('option', { name: 'Disputes' }));
-    await waitFor(() => expect(lastAttention()).toMatchObject({ type: ['dispute'] }));
-    expect(urlSearch()).toContain('type=dispute');
-  });
-
   it('says so when nothing needs attention, and when nothing is resolved yet', async () => {
     serveAttention({ open: [], resolved: [] });
     open();
@@ -162,28 +153,28 @@ describe('the table', () => {
     }) as never);
     await u.type(screen.getByRole('searchbox', { name: /Search/ }), 'x');
     expect(await screen.findByText('Narrow with search or a type filter')).toBeInTheDocument();
-    expect(screen.getByText('Search or choose a type to narrow')).toBeInTheDocument();
+    expect(screen.getByText('Search to narrow')).toBeInTheDocument();
   });
 });
 
 describe('opening a row', () => {
-  it('a payment row opens the payment drawer', async () => {
+  it('a payment row opens its Payment then the item', async () => {
     const u = user();
     const item = makeItem(1, 'failed_payment', { actions: [] });
     serveAttention({ open: [item], rows: manyRows(3) });
     open();
-    await u.click(await screen.findByText('Customer 1'));
-    expect(urlSearch()).toContain(`payment=${item.payment_id}`);
-    expect(await screen.findByRole('dialog', { name: 'Customer 1' })).toBeInTheDocument();
+    await u.click(await settledText('Customer 1'));
+    expect(new URLSearchParams(urlSearch()).get('d')).toBe(`payment:${item.payment_id},item:${item.key}`);
+    expect(await screen.findByRole('dialog', { name: 'Bank payment failed' })).toBeInTheDocument();
   });
 
-  it('a payout row addresses the payout drawer', async () => {
+  it('a payout row opens its Payout then the item', async () => {
     const u = user();
-    serveAttention({ open: [makeItem(4, 'failed_payout', { actions: [] })] });
+    const item = makeItem(4, 'failed_payout', { actions: [] });
+    serveAttention({ open: [item] });
     open();
     await u.click(await settledText('Payout failed'));
-    expect(urlSearch()).toContain('tab=payouts');
-    expect(urlSearch()).toContain('payout=po-4');
+    expect(new URLSearchParams(urlSearch()).get('d')).toBe(`payout:po-4,item:${item.key}`);
   });
 
   it('unmatched money has no drawer', async () => {
@@ -191,8 +182,7 @@ describe('opening a row', () => {
     serveAttention({ open: [makeItem(5, 'unmatched_payment', { actions: [] })] });
     open();
     await u.click(await screen.findByText('Money received that is not on an invoice'));
-    expect(urlSearch()).not.toContain('payment=');
-    expect(urlSearch()).not.toContain('payout=');
+    expect(urlSearch()).not.toContain('d=');
   });
 });
 
@@ -203,7 +193,7 @@ describe('the payment drawer\'s action slot', () => {
     const other = makeItem(2, 'failed_payment', { payment_id: rows[1]!.id, actions: ['mark_resolved'] });
     serveAttention({ open: [mine, other], rows });
     open(`/payments?payment=${rows[0]!.id}`);
-    const dialog = await screen.findByRole('dialog', { name: 'Customer 1' });
+    const dialog = await screen.findByRole('dialog', { name: 'Payment PMT-000001' });
     expect(await within(dialog).findByRole('button', { name: 'Contact customer' })).toBeInTheDocument();
     expect(within(dialog).getAllByRole('button', { name: 'Mark resolved' })).toHaveLength(1);
     expect(within(dialog).getByRole('button', { name: 'Close' })).toBeInTheDocument();
@@ -215,7 +205,7 @@ describe('the payment drawer\'s action slot', () => {
     const mine = makeItem(1, 'failed_payment', { payment_id: rows[0]!.id, actions: ['contact_customer'] });
     serveAttention({ open: [...filler, mine], rows });
     open(`/payments?payment=${rows[0]!.id}`);
-    const dialog = await screen.findByRole('dialog', { name: 'Customer 1' });
+    const dialog = await screen.findByRole('dialog', { name: 'Payment PMT-000001' });
     expect(await within(dialog).findByRole('button', { name: 'Contact customer' })).toBeInTheDocument();
   });
 });

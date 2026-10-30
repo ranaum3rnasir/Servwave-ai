@@ -4156,30 +4156,24 @@ describe('POST /api/invoices/:id/payments', () => {
     expect(capturedUpdateData.status).toBe('PAID');
   });
 
-  it('allows overpayment, records the real money, flags the excess (refund-the-excess default)', async () => {
+  it('refuses a payment above the balance (400 AMOUNT_ABOVE_BALANCE): no payment row, no overpayment timeline row', async () => {
     mockAuthAs('admin');
     const invoice = buildPaymentInvoice({ amount_due: 500 });
     mockPrisma.invoice.findUnique.mockResolvedValue(invoice);
 
-    let capturedPaymentData: any;
-    const timelineCalls: any[] = [];
+    const paymentCreate = vi.fn();
+    const invoiceUpdate = vi.fn();
+    const timelineCreate = vi.fn().mockResolvedValue({});
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn(withLedgerReads({
         job: { update: vi.fn().mockResolvedValue({}) },
-        payment: {
-          create: vi.fn().mockImplementation((args: any) => {
-            capturedPaymentData = args.data;
-            return { ...PAYMENT_FIXTURE, ...args.data, collector: { id: TEST_USERS.admin.id, first_name: 'Test', last_name: 'Admin' } };
-          }),
-        },
+        payment: { create: paymentCreate },
         $executeRaw: vi.fn().mockResolvedValue(1), // recordPayment locks the invoice row
         invoice: {
           findUniqueOrThrow: vi.fn().mockResolvedValue({ amount_due: 500, status: 'SENT' }),
-          update: vi.fn().mockImplementation((args: any) => buildInvoiceDetail({ status: 'PAID', amount_due: 0, ...args.data })),
+          update: invoiceUpdate,
         },
-        timelineEvent: {
-          create: vi.fn().mockImplementation((args: any) => { timelineCalls.push(args); return {}; }),
-        },
+        timelineEvent: { create: timelineCreate },
       }));
     });
 
@@ -4188,14 +4182,12 @@ describe('POST /api/invoices/:id/payments', () => {
       .set(authHeader('admin'))
       .send({ amount: 600, method: 'CASH' });
 
-    expect(res.status).toBe(201);
-    // The real $600 is recorded (not clamped).
-    expect(Number(capturedPaymentData.amount)).toBe(600);
-    // The $100 excess is flagged on the timeline.
-    const overpayEvent = timelineCalls.find((c) => c.data.event_type === 'OVERPAYMENT_FLAGGED');
-    expect(overpayEvent).toBeDefined();
-    expect(Number(overpayEvent.data.metadata.overpaid)).toBe(100);
-    expect(res.body.overpaid).toBe(100);
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('AMOUNT_ABOVE_BALANCE');
+    expect(res.body.error).toBe('That is more than the $500.00 balance due. Enter $500.00 or less.');
+    expect(paymentCreate).not.toHaveBeenCalled();
+    expect(invoiceUpdate).not.toHaveBeenCalled();
+    expect(timelineCreate).not.toHaveBeenCalled();
   });
 
   it('allows recording a payment on a DRAFT invoice (send-first no longer required)', async () => {
@@ -4670,7 +4662,7 @@ describe('POST /api/invoices/:id/payments', () => {
       expect(capturedPaymentData.tip_amount).toBeNull();
     });
 
-    it('a tip that pushes amount + tip over the balance does not flag overpayment or flip PAID early', async () => {
+    it('a tip that pushes amount + tip over the balance is accepted, is not capped by the balance and does not flip PAID early', async () => {
       mockAuthAs('admin');
       const invoice = buildPaymentInvoice({ amount_due: 500 });
       mockPrisma.invoice.findUnique.mockResolvedValue(invoice);
@@ -4697,7 +4689,7 @@ describe('POST /api/invoices/:id/payments', () => {
       });
 
       // $400 amount (< $500 due) + $200 tip: amount+tip ($600) exceeds the balance, but amount
-      // alone does not — overpayment/isFullyPaid must be computed from amount only.
+      // alone does not — the cap and isFullyPaid are computed from amount only.
       const res = await request(app)
         .post(`/api/invoices/${INVOICE_SENT_FIXTURE.id}/payments`)
         .set(authHeader('admin'))
@@ -4705,7 +4697,6 @@ describe('POST /api/invoices/:id/payments', () => {
 
       expect(res.status).toBe(201);
       expect(capturedInvoiceUpdateData.status).toBe('PARTIAL');
-      expect(res.body.overpaid).toBe(0);
       expect(timelineCalls.find((c) => c.data.event_type === 'OVERPAYMENT_FLAGGED')).toBeUndefined();
     });
 

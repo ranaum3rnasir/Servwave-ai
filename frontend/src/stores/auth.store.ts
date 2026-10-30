@@ -29,6 +29,9 @@ export interface User {
   // True when the user's org is flagged is_demo — gates the mock-first Reports.
   // Optional: a cached pre-flag payload may omit it; treated as false (real org).
   org_is_demo?: boolean;
+  // True when the user's company is on the server's Spider pilot list (SPEC-5); the Spider gate
+  // also needs the feature. Optional: a session cached before it shipped lacks it and fails closed.
+  org_is_spider_pilot?: boolean;
   // Effective plan + resolved feature keys from the login / me payload.
   // Optional: a user cached before this shipped has neither — useFeature()
   // fails OPEN on undefined so existing sessions are not locked out at deploy.

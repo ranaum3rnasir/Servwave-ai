@@ -18,6 +18,9 @@ declare global {
         has_login?: boolean;
         organization_id: string;
         org_is_demo?: boolean;
+        // On the Spider pilot list (SPEC-5). Optional like the other org flags; requireSpider reads the
+        // list from organization_id itself, never from this.
+        org_is_spider_pilot?: boolean;
         // Effective plan + resolved feature keys, flattened from the organization
         // relation by auth-user.ts. OPTIONAL on purpose: a cached JWT minted
         // before this shipped, or a test mock, may omit them — every consumer

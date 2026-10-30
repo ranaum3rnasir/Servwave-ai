@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { openFailedRefundExists } from '../../../services/payment-attention/queries';
 
 /**
  * Payments page facet registry (payments go-live P3). The wire param names are the contract the frontend registry
@@ -18,7 +19,7 @@ import { Prisma } from '@prisma/client';
  */
 
 export const PAYMENT_STATUS_SLUGS = [
-  'succeeded', 'pending', 'failed', 'disputed', 'charged_back', 'voided', 'refunded', 'partially_refunded',
+  'succeeded', 'pending', 'failed', 'disputed', 'refund_failed', 'charged_back', 'voided', 'refunded', 'partially_refunded',
 ] as const;
 export type PaymentStatusSlug = (typeof PAYMENT_STATUS_SLUGS)[number];
 
@@ -42,24 +43,29 @@ export const FEE_SQL = Prisma.sql`(CASE WHEN p.stripe_fee_amount IS NULL AND p.p
 
 const OPEN_DISPUTE = Prisma.sql`EXISTS (SELECT 1 FROM disputes d WHERE d.payment_id = p.id AND d.status IN ('NEEDS_RESPONSE', 'UNDER_REVIEW'))`;
 const HAS_REFUND = Prisma.sql`EXISTS (SELECT 1 FROM refunds r WHERE r.payment_id = p.id AND r.state = 'SUCCEEDED')`;
+// A refund of the payment failed and nobody has dealt with it: the attention list's own definition, on this query's company.
+const REFUND_FAILED_OPEN = openFailedRefundExists(Prisma.sql`i.organization_id`);
 const REFUNDED_SUM = Prisma.sql`(SELECT COALESCE(SUM(r.amount), 0) FROM refunds r WHERE r.payment_id = p.id AND r.state = 'SUCCEEDED')`;
 
 /** The SQL predicate that produces one display status. */
 export function statusPredicate(slug: PaymentStatusSlug): Prisma.Sql {
   const collected = Prisma.sql`p.state = 'SUCCEEDED'`;
   const noOpenDispute = Prisma.sql`NOT ${OPEN_DISPUTE}`;
+  // Refund failed sits before Refunded, Charged back and Voided in the display order, so those leave its rows out.
+  const noFailedRefund = Prisma.sql`NOT ${REFUND_FAILED_OPEN}`;
   switch (slug) {
     case 'pending': return Prisma.sql`p.state = 'PROCESSING'`;
     case 'failed': return Prisma.sql`p.state = 'FAILED'`;
     case 'disputed': return Prisma.sql`(${collected} AND ${OPEN_DISPUTE})`;
+    case 'refund_failed': return Prisma.sql`(${collected} AND ${noOpenDispute} AND ${REFUND_FAILED_OPEN})`;
     case 'charged_back':
-      return Prisma.sql`(${collected} AND ${noOpenDispute} AND p.voided_at IS NOT NULL AND p.void_category = 'CHARGEBACK' AND NOT ${HAS_REFUND})`;
+      return Prisma.sql`(${collected} AND ${noOpenDispute} AND ${noFailedRefund} AND p.voided_at IS NOT NULL AND p.void_category = 'CHARGEBACK' AND NOT ${HAS_REFUND})`;
     case 'voided':
-      return Prisma.sql`(${collected} AND ${noOpenDispute} AND p.voided_at IS NOT NULL AND p.void_category IS DISTINCT FROM 'CHARGEBACK' AND NOT ${HAS_REFUND})`;
+      return Prisma.sql`(${collected} AND ${noOpenDispute} AND ${noFailedRefund} AND p.voided_at IS NOT NULL AND p.void_category IS DISTINCT FROM 'CHARGEBACK' AND NOT ${HAS_REFUND})`;
     // A refund wins over a void, as in the report's statusLabel.
-    case 'refunded': return Prisma.sql`(${collected} AND ${noOpenDispute} AND ${HAS_REFUND} AND ${REFUNDED_SUM} >= p.amount)`;
-    case 'partially_refunded': return Prisma.sql`(${collected} AND ${noOpenDispute} AND ${HAS_REFUND} AND ${REFUNDED_SUM} < p.amount)`;
-    case 'succeeded': return Prisma.sql`(${collected} AND ${noOpenDispute} AND p.voided_at IS NULL AND NOT ${HAS_REFUND})`;
+    case 'refunded': return Prisma.sql`(${collected} AND ${noOpenDispute} AND ${noFailedRefund} AND ${HAS_REFUND} AND ${REFUNDED_SUM} >= p.amount)`;
+    case 'partially_refunded': return Prisma.sql`(${collected} AND ${noOpenDispute} AND ${noFailedRefund} AND ${HAS_REFUND} AND ${REFUNDED_SUM} < p.amount)`;
+    case 'succeeded': return Prisma.sql`(${collected} AND ${noOpenDispute} AND ${noFailedRefund} AND p.voided_at IS NULL AND NOT ${HAS_REFUND})`;
   }
 }
 

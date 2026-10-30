@@ -27,6 +27,12 @@ export function describeFailure(code: string | null | undefined): string {
   return Object.prototype.hasOwnProperty.call(WORDS, code) ? WORDS[code] : FAILURE_FALLBACK;
 }
 
+/** Why a refund did not reach the customer; the refund's own fallback sentence when the reason is unknown. */
+export function describeRefundFailure(code: string | null | undefined): string {
+  const d = describeFailure(code);
+  return d === FAILURE_FALLBACK ? 'The refund did not reach the customer' : d;
+}
+
 const DISPUTE_FALLBACK = 'The customer disputed this payment';
 
 const DISPUTE_WORDS: Record<string, string> = {

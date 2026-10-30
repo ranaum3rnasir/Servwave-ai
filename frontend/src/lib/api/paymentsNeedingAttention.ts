@@ -37,9 +37,22 @@ function useRowAction(action: 'refund' | 'resolve') {
   });
 }
 
-/** Send the whole payment back (for an overpayment, the part not applied). */
+/** Send money back: all of it, or `amount` of it (a partial leaves the item open with what is left). */
 export function useRefundPaymentNeedingAttention() {
-  return useRowAction('refund');
+  return useMutation({
+    mutationFn: ({ id, amount }: { id: string; amount?: number }) =>
+      api.post(`${ENDPOINT}/${id}/refund`, amount == null ? undefined : { amount }, { silentErrors: true })
+        .then((r) => r.data.item as PaymentNeedingAttention),
+  });
+}
+
+/** Record the money on an open invoice that can take all of it. The server refuses anything else (409, with a sentence). */
+export function useAttachPaymentNeedingAttention() {
+  return useMutation({
+    mutationFn: ({ id, invoiceId }: { id: string; invoiceId: string }) =>
+      api.post(`${ENDPOINT}/${id}/attach`, { invoice_id: invoiceId }, { silentErrors: true })
+        .then((r) => r.data as { item: PaymentNeedingAttention; invoice: { id: string; number?: string; status?: string } }),
+  });
 }
 
 /** Close a row a person dealt with another way. Moves no money. */

@@ -19,6 +19,32 @@ describe('renderTemplate — brief verbatim tests', () => {
     expect(t).toMatchObject({ category: 'DISPATCH', priority: 'INTERRUPT', action_type: null, needs_action: false });
   });
 
+  it('renders spider.starting_summary with the sweep\'s title and body, on the feed (no toast), as a summary object', () => {
+    const t = renderTemplate('spider.starting_summary', {
+      title: 'Spider is on. 12 of your leads were already past their limit.',
+      body: 'Your starting summary',
+    });
+    expect(t).toMatchObject({
+      category: 'LEAD',
+      object_type: 'SPIDER_SUMMARY',
+      priority: 'FEED',
+      needs_action: false,
+      title: 'Spider is on. 12 of your leads were already past their limit.',
+      body: 'Your starting summary',
+    });
+  });
+
+  it("renders spider.alert with the contractor's title, body and FEED priority", () => {
+    const t = renderTemplate('spider.alert', {
+      object_label: 'L00042', customer_name: 'Pat Payer',
+      title: 'Spider Alert - Pat Payer (L00042)', body: 'This lead was created 2 days ago and has not yet been contacted.',
+    });
+    expect(t).toMatchObject({
+      category: 'LEAD', object_type: 'LEAD', priority: 'FEED', action_type: null, needs_action: false,
+      title: 'Spider Alert - Pat Payer (L00042)', body: 'This lead was created 2 days ago and has not yet been contacted.',
+    });
+  });
+
   // INVERTED by the multi-assignee change: task.assigned is no longer deferred. This
   // assertion is the load-bearing one for design §5 — emit() silently returns [] on an
   // unregistered verb, so an un-inverted `false` here would sit green while the whole
@@ -128,10 +154,10 @@ describe('VERB_RULES', () => {
   // NOT mean "has an actor": twelve event verbs never carry one, because a webhook or a
   // system detector is the cause. Only a sweep is `time`, and there are exactly two sweeps
   // (invoiceDueCron.ts:65-80) plus Spider's lead-watcher sweep (services/spider/sweep.ts,
-  // #2619). If this list ever needs editing, the emit sites moved.
+  // #2619), which also emits the starting summary (#2794). If this list ever needs editing, the emit sites moved.
   it('only the cron-emitted invoice reminders and the Spider sweep are time-driven, and every always-actorless event verb names itself in an exception', () => {
     const timeDriven = verbs.filter((v) => VERB_RULES[v].timing === 'time');
-    expect(timeDriven.sort()).toEqual(['billing.invoice_due_soon', 'billing.invoice_overdue', 'spider.alert']);
+    expect(timeDriven.sort()).toEqual(['billing.invoice_due_soon', 'billing.invoice_overdue', 'spider.alert', 'spider.starting_summary']);
 
     // Re-derived from the emit sites, not from Spec A's draft list, which named eleven and
     // got three wrong (estimate.approved, estimate.deposit_paid and billing.payment_received

@@ -185,8 +185,26 @@ describe.each(PAGES)('$name', ({ render, context, nameLinks }) => {
     await user.click(await screen.findByRole('button', { name: '(555) 000-1234' }));
     await user.click(await screen.findByRole('menuitem', { name: 'Text' }));
 
+    // Only the lead's own page carries the lead on a Text (SPEC-4 §6.8); the estimate's lead stays off it, while
+    // its Call (above) still carries it.
     expect(mockNavigate).toHaveBeenCalledWith(`/communication/text?customerId=${CUSTOMER.id}`);
     expect(document.querySelector('a[href^="sms:"]')).toBeNull();
+  });
+
+  it('opens the composer by the tapped number, without the lead, for a person with View customers off', async () => {
+    const user = userEvent.setup();
+    render({ ...EVERYTHING_ON, view: false });
+
+    await user.click(await screen.findByRole('button', { name: '(555) 000-1234' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Text' }));
+
+    // A Text carries the lead only from the lead's own page (SPEC-4 §6.8), whichever way the composer is opened.
+    expect(mockNavigate).toHaveBeenCalledTimes(1);
+    const url = new URL(String(mockNavigate.mock.lastCall?.[0]), 'https://app.test');
+    expect(url.pathname).toBe('/communication/text');
+    expect(url.searchParams.get('owner')).toBe('customer');
+    expect(url.searchParams.get('to')).toBe('5550001234');
+    expect(url.searchParams.has('leadId')).toBe(false);
   });
 
   it('shows the digits with no copy control, no selection and no native link with Copy customer phone off', async () => {

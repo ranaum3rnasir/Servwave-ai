@@ -25,9 +25,17 @@ vi.mock('@stripe/connect-js/pure', () => ({ loadConnectAndInitialize: vi.fn(() =
 vi.mock('@stripe/react-connect-js', () => ({
   ConnectComponentsProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   ConnectAccountOnboarding: () => <div />,
+  ConnectAccountManagement: () => <div />,
+  ConnectNotificationBanner: () => <div />,
 }));
 
-const { default: PaymentsListsPage } = await import('@/pages/v2/settings/PaymentsListsPage');
+const { default: ServwavePaymentsPage } = await import('@/pages/v2/settings/ServwavePaymentsPage');
+const { default: ListsPage } = await import('@/pages/v2/settings/ListsPage');
+
+const PAGE_ABILITY = buildAbility([
+  { action: 'update', subject: 'Organization' },
+  { action: 'manage_payout_account', subject: 'Organization' },
+]);
 
 const mockApi = vi.mocked(api);
 
@@ -59,8 +67,17 @@ function serve(org: Record<string, unknown> = ORG) {
 async function renderPage(org: Record<string, unknown> = ORG, opts: { ability?: ReturnType<typeof buildAbility> } = {}) {
   serve(org);
   const user = userEvent.setup();
-  const view = renderWithProviders(<PaymentsListsPage />, opts.ability ? { ability: opts.ability } : undefined);
+  const view = renderWithProviders(<ServwavePaymentsPage />, { ability: opts.ability ?? PAGE_ABILITY });
   await screen.findByDisplayValue('40');
+  return { user, ...view };
+}
+
+/** The Lists half (Tags, Task categories) still lives on the trimmed lists page. */
+async function renderLists(ability: ReturnType<typeof buildAbility>) {
+  serve();
+  const user = userEvent.setup();
+  const view = renderWithProviders(<ListsPage />, { ability });
+  await screen.findByText('Lead/Customer sources');
   return { user, ...view };
 }
 
@@ -93,11 +110,11 @@ describe('W1 labels', () => {
 
 describe('W1 no redundant subtitles', () => {
   it('shows no description line under the three named headers', async () => {
-    await renderPage(ORG, { ability: buildAbility([{ action: 'refund', subject: 'Invoice' }, { action: 'update', subject: 'Organization' }]) });
+    await renderPage(ORG, { ability: buildAbility([{ action: 'refund', subject: 'Invoice' }, { action: 'update', subject: 'Organization' }, { action: 'manage_payout_account', subject: 'Organization' }]) });
     // The attention list left Settings in P8 (its "no description line" check moves to the Payments page card).
     expect(screen.queryByRole('heading', { name: 'Payments needing attention' })).not.toBeInTheDocument();
 
-    for (const title of ['Accepted Payment Methods', 'Default Deposit', 'Tips']) {
+    for (const title of ['Accepted payment methods', 'Default deposit', 'Tips']) {
       const heading = screen.getByRole('heading', { name: title });
       // The header block holds the title (and at most a "?" button), never a grey sentence.
       const header = heading.closest('.min-w-0') as HTMLElement;
@@ -111,9 +128,10 @@ describe('W1 no redundant subtitles', () => {
 
   it('a "?" next to Tips opens a popover with the own-amount sentence on click', async () => {
     const { user } = await renderPage();
-    expect(screen.queryByText('Customers can also enter their own amount or skip the tip.')).not.toBeInTheDocument();
+    const sentence = /They can also enter their own amount or skip the tip\./;
+    expect(screen.queryByText(sentence)).not.toBeInTheDocument();
     await user.click(within(cardOf('Tips')).getByRole('button', { name: /more about tips/i }));
-    expect(await screen.findByText('Customers can also enter their own amount or skip the tip.')).toBeInTheDocument();
+    expect(await screen.findByText(sentence)).toBeInTheDocument();
   });
 });
 
@@ -128,19 +146,20 @@ const LISTS_ABILITY = () =>
 
 describe('W1 Tags and Task categories cards', () => {
   it('show no grey description; the must-know line sits behind a "?"', async () => {
-    const { user } = await renderPage(ORG, { ability: LISTS_ABILITY() });
+    const { user } = await renderLists(LISTS_ABILITY());
     for (const title of ['Tags', 'Task categories']) {
       const heading = await screen.findByRole('heading', { name: title });
-      expect((heading.closest('.min-w-0') as HTMLElement).querySelectorAll('p')).toHaveLength(1);
+      // The title block holds the title and its "?", never a sentence.
+      expect((heading.parentElement as HTMLElement).querySelectorAll('p')).toHaveLength(1);
     }
     expect(screen.queryByText(/Tags used across customers/)).not.toBeInTheDocument();
     expect(screen.queryByText(/Shown to everyone who can see a task/)).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: /more about tags/i }));
-    expect(await screen.findByText('Changes save immediately and apply everywhere.')).toBeInTheDocument();
+    expect(await screen.findByText('Labels you put on customers, jobs and leads to group and filter them.')).toBeInTheDocument();
   });
 
   it('the "?" trigger is a 44px tap target on a phone width', async () => {
-    await renderPage(ORG, { ability: LISTS_ABILITY() });
+    await renderLists(LISTS_ABILITY());
     const trigger = (await screen.findAllByRole('button', { name: /^more about/i }))[0];
     expect(trigger.className).toContain('max-sm:size-11');
     expect(trigger.className).toContain('touch:size-11');
@@ -157,7 +176,7 @@ describe('W1 tips layout', () => {
     for (const n of [1, 2, 3]) {
       const field = screen.getByRole('textbox', { name: `Choice ${n}` });
       expect(row).toContainElement(field);
-      expect(field.closest('[data-slot="input-wrapper"]')).toHaveTextContent('%');
+      expect(field.parentElement).toHaveTextContent('%');
     }
   });
 });
@@ -207,28 +226,33 @@ describe('W1 tips validation and the failed-save trail', () => {
     expect(scroll).toHaveBeenCalled();
   });
 
-  it('the banner counts the bad fields and its link focuses the first one', async () => {
+  it('the summary shows from two bad fields on, counts them, and each line jumps to its field', async () => {
     const { user } = await renderPage();
     await setChoice(user, 2, '');
     await expect(registeredSave?.()).rejects.toThrow();
-    expect(await screen.findByText('Fix 1 field to save')).toBeInTheDocument();
+    // One bad field: the message under it is enough (spec 5.10 step 3).
+    expect(await screen.findByText('Enter a whole number from 1 to 50.')).toBeInTheDocument();
+    expect(screen.queryByText('Fix 1 field to save')).not.toBeInTheDocument();
 
     await setChoice(user, 3, '99');
     await expect(registeredSave?.()).rejects.toThrow();
     expect(await screen.findByText('Fix 2 fields to save')).toBeInTheDocument();
 
     screen.getByRole('textbox', { name: 'Choice 1' }).focus();
-    await user.click(screen.getByRole('button', { name: /Go to Choice 2/ }));
+    const lines = within(screen.getByRole('alert')).getAllByRole('button');
+    expect(lines).toHaveLength(2);
+    await user.click(lines[0]!);
     expect(screen.getByRole('textbox', { name: 'Choice 2' })).toHaveFocus();
   });
 
-  it('fixing the field clears its message and the banner', async () => {
+  it('fixing a tip box clears the tip messages and the summary', async () => {
     const { user } = await renderPage();
     await setChoice(user, 2, '');
+    await setChoice(user, 3, '99');
     await expect(registeredSave?.()).rejects.toThrow();
-    await screen.findByText('Fix 1 field to save');
+    await screen.findByText('Fix 2 fields to save');
     await user.keyboard('18');
-    expect(screen.queryByText('Fix 1 field to save')).not.toBeInTheDocument();
+    expect(screen.queryByText('Fix 2 fields to save')).not.toBeInTheDocument();
     expect(screen.queryByText('Enter a whole number from 1 to 50.')).not.toBeInTheDocument();
   });
 
@@ -239,7 +263,7 @@ describe('W1 tips validation and the failed-save trail', () => {
     await user.keyboard('150');
     await expect(registeredSave?.()).rejects.toThrow();
     expect(pct).toHaveFocus();
-    expect(await screen.findByText('Fix 1 field to save')).toBeInTheDocument();
+    expect(await screen.findByText('Enter a deposit percentage between 0 and 100.')).toBeInTheDocument();
     expect(pct).toHaveAccessibleDescription('Enter a deposit percentage between 0 and 100.');
   });
 });

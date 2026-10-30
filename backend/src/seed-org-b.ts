@@ -2,6 +2,7 @@ import { PrismaClient } from '@prisma/client';
 import { createClient } from '@supabase/supabase-js';
 import dotenv from 'dotenv';
 import { seedStarterTaskCategories } from './lib/tasks/categories';
+import { seedListRows } from './lib/org-list-rows';
 
 dotenv.config();
 
@@ -46,6 +47,7 @@ async function main() {
     console.log(`Org B upserted: ${ORG_B_ID}`);
     // The starter task categories every new org gets (idempotent - safe on re-runs).
     await seedStarterTaskCategories(prisma, ORG_B_ID);
+    await seedListRows(prisma, ORG_B_ID);
 
     // 2. Create Supabase auth + Prisma admin user
     const email = process.env.ORG_B_ADMIN_EMAIL || 'admin@orgb-test.com';

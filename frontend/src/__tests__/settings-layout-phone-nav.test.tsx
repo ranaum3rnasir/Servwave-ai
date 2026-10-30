@@ -44,6 +44,15 @@ function DirtyPage() {
   return <Where />;
 }
 
+/** A settings page with a saver but nothing to save yet, so the shell draws its Save bar. */
+function SaverPage() {
+  const { registerSaver } = useSettingsBar();
+  useEffect(() => {
+    registerSaver({ save: () => {}, discard: () => {}, isDirty: false });
+  }, [registerSaver]);
+  return <Where />;
+}
+
 function renderShell(start = '/settings/phone-numbers', page = <Where />) {
   return renderWithProviders(
     <Routes>
@@ -83,9 +92,9 @@ describe('Settings shell at phone width', () => {
     expect(sideNav.contains(picker())).toBe(false);
   });
 
-  it('lets the header strip wrap so Save and Close stay on screen', () => {
-    renderShell();
-    const save = screen.getByRole('button', { name: 'Save Changes' });
+  it('lets the header strip wrap so Save and Close stay on screen', async () => {
+    renderShell('/settings/phone-numbers', <SaverPage />);
+    const save = await screen.findByRole('button', { name: 'Save Changes' });
     const close = screen.getByRole('button', { name: 'Close settings' });
     const actions = save.parentElement!;
     expect(actions).toBe(close.parentElement);

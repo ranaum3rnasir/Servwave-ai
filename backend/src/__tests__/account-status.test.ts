@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import Stripe from 'stripe';
-import { decideAccountStatus } from '../lib/account-status';
+import { decideAccountStatus, verificationOf, verificationAreaOf, RESTRICTED_VERIFICATION } from '../lib/account-status';
 
 // Real SDK error classes, built the way the SDK builds them from a response body, so the
 // fixtures carry the shape the processor actually sends (measured in the sandbox 2026-10-06:
@@ -169,5 +169,123 @@ describe('decideAccountStatus (pure)', () => {
       outcome: 'failed_closed',
       flags: { stripe_charges_enabled: false },
     });
+  });
+});
+
+// BE-3 (V7-02a): the four verification rows, computed from the requirement lists of the account read.
+describe('verificationAreaOf (the key -> row mapping)', () => {
+  it.each([
+    ['external_account', 'bank_account'],
+    // The two tax keys sit under `individual.` but belong to Tax ID: the order of the checks matters.
+    ['individual.id_number', 'tax_id'],
+    ['individual.ssn_last_4', 'tax_id'],
+    ['company.tax_id', 'tax_id'],
+    ['individual.first_name', 'owner_identity'],
+    ['individual.dob.day', 'owner_identity'],
+    ['person_abc123.address.line1', 'owner_identity'],
+    ['representative.email', 'owner_identity'],
+    ['relationship.owner', 'owner_identity'],
+    ['company.owners_provided', 'owner_identity'],
+    ['company.directors_provided', 'owner_identity'],
+    ['company.executives_provided', 'owner_identity'],
+    ['company.verification.document', 'owner_identity'],
+    ['business_profile.url', 'business_details'],
+    ['business_profile.mcc', 'business_details'],
+    ['company.name', 'business_details'],
+    ['company.address.city', 'business_details'],
+    ['tos_acceptance.date', 'business_details'],
+  ] as const)('%s -> %s', (key, area) => {
+    expect(verificationAreaOf(key)).toBe(area);
+  });
+});
+
+describe('verificationOf (pure)', () => {
+  const bank = { object: 'list', data: [{ object: 'bank_account', bank_name: 'Test Bank', last4: '6789' }] };
+  const acct = (over: {
+    submitted?: boolean; charges?: boolean; disabled?: string | null; due?: string[]; past?: string[]; pending?: string[];
+    eventually?: string[]; bank?: boolean;
+  } = {}) => ({
+    id: 'acct_fixture', object: 'account',
+    details_submitted: over.submitted ?? true, charges_enabled: over.charges ?? true, payouts_enabled: true,
+    external_accounts: over.bank === false ? { object: 'list', data: [] } : bank,
+    requirements: {
+      currently_due: over.due ?? [], past_due: over.past ?? [], pending_verification: over.pending ?? [],
+      eventually_due: over.eventually ?? [], disabled_reason: over.disabled ?? null,
+    },
+  }) as unknown as Stripe.Account;
+
+  it('state 2: setup in progress', () => {
+    expect(verificationOf(acct({
+      submitted: false, charges: false, bank: false,
+      pending: ['individual.verification.document'], eventually: ['external_account', 'individual.id_number'],
+    }))).toEqual({ business_details: 'verified', owner_identity: 'pending', bank_account: 'not_started', tax_id: 'not_started' });
+  });
+
+  it('state 3: details submitted, charges off, nothing due -> all four pending', () => {
+    expect(verificationOf(acct({ charges: false, pending: ['business_profile.url'] })))
+      .toEqual({ business_details: 'pending', owner_identity: 'pending', bank_account: 'pending', tax_id: 'pending' });
+    expect(verificationOf(acct({ charges: false })))
+      .toEqual({ business_details: 'pending', owner_identity: 'pending', bank_account: 'pending', tax_id: 'pending' });
+  });
+
+  it('state 4: charges on, no bank on file and no bank key due now -> bank pending, the rest verified', () => {
+    expect(verificationOf(acct({ bank: false, eventually: ['external_account'] })))
+      .toEqual({ business_details: 'verified', owner_identity: 'verified', bank_account: 'pending', tax_id: 'verified' });
+  });
+
+  it('state 5: everything on file and clear -> all verified', () => {
+    expect(verificationOf(acct())).toEqual({ business_details: 'verified', owner_identity: 'verified', bank_account: 'verified', tax_id: 'verified' });
+  });
+
+  it('state 6: an identity document is due -> owner identity action_needed', () => {
+    expect(verificationOf(acct({ due: ['individual.verification.document'] })))
+      .toEqual({ business_details: 'verified', owner_identity: 'action_needed', bank_account: 'verified', tax_id: 'verified' });
+  });
+
+  it('state 7: the bank key is past due and no bank on file -> bank action_needed', () => {
+    expect(verificationOf(acct({ bank: false, charges: true, past: ['external_account'] })))
+      .toEqual({ business_details: 'verified', owner_identity: 'verified', bank_account: 'action_needed', tax_id: 'verified' });
+  });
+
+  it('state 8: rejected or deauthorized -> all four restricted', () => {
+    const restricted = { business_details: 'restricted', owner_identity: 'restricted', bank_account: 'restricted', tax_id: 'restricted' };
+    expect(verificationOf(acct({ disabled: 'rejected.fraud', charges: false }))).toEqual(restricted);
+    expect(verificationOf(acct({ disabled: 'rejected.terms_of_service' }))).toEqual(restricted);
+    expect(verificationOf(acct({ disabled: 'deauthorized' }))).toEqual(restricted);
+    expect(RESTRICTED_VERIFICATION).toEqual(restricted);
+  });
+
+  // C-6: without a bank account on file the bank row is never verified.
+  it('bank row (C-6): no bank on file never reads verified', () => {
+    expect(verificationOf(acct({ bank: false })).bank_account).toBe('pending');
+    expect(verificationOf(acct({ bank: false, due: ['external_account'] })).bank_account).toBe('action_needed');
+    expect(verificationOf(acct({ bank: false, past: ['external_account'] })).bank_account).toBe('action_needed');
+    expect(verificationOf(acct({ bank: false, pending: [] })).bank_account).not.toBe('verified');
+  });
+
+  it('a bank on file with nothing due reads verified', () => {
+    expect(verificationOf(acct()).bank_account).toBe('verified');
+  });
+
+  it('due now beats pending beats not started, per row', () => {
+    const v = verificationOf(acct({
+      submitted: false, charges: false,
+      due: ['business_profile.url'], pending: ['business_profile.mcc', 'individual.verification.document'],
+      eventually: ['individual.id_number'],
+    }));
+    expect(v.business_details).toBe('action_needed');
+    expect(v.owner_identity).toBe('pending');
+    expect(v.tax_id).toBe('not_started');
+  });
+
+  it('an eventually-due key only means not_started before details are submitted', () => {
+    expect(verificationOf(acct({ eventually: ['individual.id_number'] })).tax_id).toBe('verified');
+  });
+
+  it('returns exactly the four values and no requirement key or account id', () => {
+    const v = verificationOf(acct({ due: ['individual.verification.document', 'external_account'] }));
+    expect(Object.keys(v).sort()).toEqual(['bank_account', 'business_details', 'owner_identity', 'tax_id']);
+    const text = JSON.stringify(v);
+    expect(text).not.toMatch(/acct_|individual\.|external_account/);
   });
 });

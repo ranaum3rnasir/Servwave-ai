@@ -20,7 +20,7 @@ import {
 import { JOB_LOCKED_CODE, JOB_LOCKED_MESSAGE } from '../lib/permissions/jobLock';
 import { canReadCustomerById } from '../lib/permissions/customerScope';
 import { sniffMatchesDeclared } from '../lib/file-sniff';
-import { ALLOWED_MIME_TYPES, ALLOWED_TYPES_LABEL } from '../lib/attachment-types';
+import { ALLOWED_MIME_TYPES, ALLOWED_TYPES_LABEL, PAYMENTS_DOCUMENTS_SOURCE } from '../lib/attachment-types';
 import { canBeUnusual } from '../lib/job-review-changeset';
 import { returnToReviewOnUnusualChange } from '../lib/job-review-return';
 import { queueReviewAttention } from '../services/notifications/reviewAttentionQueue';
@@ -40,6 +40,7 @@ import {
   verifyUploadTicket,
 } from '../lib/attachment-direct-upload';
 import { LONG_TEXT_MAX } from '../lib/text-limits';
+import { plainBody } from '../lib/request-body';
 
 // ─── Constants ───────────────────────────────────────────
 
@@ -173,9 +174,29 @@ export const directUploadCompleteSchema = z.object({
   ticket: z.string().min(1),
   display_name: z.string().trim().min(1).max(255),
   description: z.string().max(LONG_TEXT_MAX),
+  // V7-10a: set by the Payments page's Documents tab only (see `readUploadSource`).
+  source: z.literal(PAYMENTS_DOCUMENTS_SOURCE).optional(),
 });
 
 // ─── Helpers ─────────────────────────────────────────────
+
+/** The records the Documents tab can attach a file to; a marked file on any other kind could never be listed. */
+const DOCUMENTS_ENTITY_TYPES: readonly string[] = ['INVOICE', 'JOB', 'CUSTOMER'];
+
+/**
+ * The optional `source` field of an upload: absent or empty is null, `PAYMENTS_DOCUMENTS` is accepted on an
+ * invoice, job or customer, anything else is refused (the caller answers 400, before any byte is stored).
+ */
+function readUploadSource(raw: unknown, entityType: string): { ok: true; source: string | null } | { ok: false } {
+  const read = uploadSourceSchema.safeParse(raw);
+  if (!read.success) return { ok: false };
+  if (read.data === undefined || read.data === null || read.data === '') return { ok: true, source: null };
+  if (!DOCUMENTS_ENTITY_TYPES.includes(entityType)) return { ok: false };
+  return { ok: true, source: PAYMENTS_DOCUMENTS_SOURCE };
+}
+
+/** The `source` field as sent: absent, null or empty, or exactly the Documents marker. Anything else (a list, a number, other text) is refused. */
+const uploadSourceSchema = z.union([z.literal(PAYMENTS_DOCUMENTS_SOURCE), z.literal(''), z.null()]).optional();
 
 function param(req: Request, name: string): string {
   return req.params[name] as string;
@@ -464,6 +485,12 @@ export async function uploadAttachment(req: Request, res: Response) {
       return;
     }
 
+    const sourceRead = readUploadSource(plainBody(req).source, entityType);
+    if (!sourceRead.ok) {
+      res.status(400).json({ error: 'Invalid source' });
+      return;
+    }
+
     if (!(await checkEntityExists(entityType, entityId, req))) {
       res.status(404).json({ error: 'Entity not found' });
       return;
@@ -576,6 +603,7 @@ export async function uploadAttachment(req: Request, res: Response) {
         description: (description || '').trim(),
         uploaded_by: req.user!.id,
         organization_id: orgId,
+        source: sourceRead.source,
         // Audit: the uploading user. uploaded_by above already names them, but it is a required
         // relation, so it cannot survive DELETE /api/users/:id/permanent - created_by_name can.
         ...createdByUser(req),
@@ -807,11 +835,8 @@ export async function completeDirectUpload(req: Request, res: Response) {
       return;
     }
 
-    const { ticket: rawTicket, display_name: displayName, description } = req.body as {
-      ticket: string;
-      display_name: string;
-      description: string;
-    };
+    // Already parsed by `directUploadCompleteSchema` on the route.
+    const { ticket: rawTicket, display_name: displayName, description, source } = req.body as z.infer<typeof directUploadCompleteSchema>;
 
     const ticket = verifyUploadTicket(rawTicket);
     if (!ticket) {
@@ -860,6 +885,15 @@ export async function completeDirectUpload(req: Request, res: Response) {
         storagePath: ticket.path,
       });
       res.status(403).json({ error: 'Insufficient permissions' });
+      return;
+    }
+
+    // The marker is only meaningful on a record the Documents tab lists. The object already landed, so a
+    // refusal removes it (after the ticket is proven the caller's own: it is not a colleague's object to destroy) rather than leaving an unreferenced file behind.
+    const sourceRead = readUploadSource(source, entityType);
+    if (!sourceRead.ok) {
+      await discardStoredObject(ticket.path);
+      res.status(400).json({ error: 'Invalid source' });
       return;
     }
 
@@ -975,6 +1009,7 @@ export async function completeDirectUpload(req: Request, res: Response) {
         // else — but the row should have ONE provenance, and it is the same one
         // `tenantWhere` uses for every read on this request.
         organization_id: req.user!.organization_id,
+        source: sourceRead.source,
         ...createdByUser(req),
       },
       select: {

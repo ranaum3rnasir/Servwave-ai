@@ -26,11 +26,19 @@ export interface SpiderRecipient {
   last_name: string;
   email: string;
   phone: string | null;
+  role: string;
+  /**
+   * How the person was chosen, as the contractor's alert log names it: the lead's `owner`, a chosen
+   * `user`, or `admin` - by a chosen role, or as the Admins Spider falls back to.
+   */
+  chosen_as: SpiderRecipientType;
 }
+
+export type SpiderRecipientType = 'owner' | 'user' | 'admin';
 
 type Db = PrismaClient | Prisma.TransactionClient;
 
-const RECIPIENT_SELECT = { id: true, first_name: true, last_name: true, email: true, phone: true } as const;
+const RECIPIENT_SELECT = { id: true, first_name: true, last_name: true, email: true, phone: true, role: true } as const;
 const CAN_SIGN_IN = { is_active: true, has_login: true } as const;
 
 export async function resolveSpiderRecipients(
@@ -50,7 +58,13 @@ export async function resolveSpiderRecipients(
       select: RECIPIENT_SELECT,
       orderBy: { id: 'asc' },
     });
-    const reached = await keepThoseWhoCanSeeTheLead(users, orgId, leadId);
+    const chosenAs = (id: string): SpiderRecipientType =>
+      recipients.lead_owner && ownerId === id ? 'owner' : recipients.user_ids.includes(id) ? 'user' : 'admin';
+    const reached = await keepThoseWhoCanSeeTheLead(
+      users.map((u) => ({ ...u, chosen_as: chosenAs(u.id) })),
+      orgId,
+      leadId,
+    );
     if (reached.length > 0) return reached;
   }
 
@@ -60,7 +74,11 @@ export async function resolveSpiderRecipients(
     select: RECIPIENT_SELECT,
     orderBy: { id: 'asc' },
   });
-  return keepThoseWhoCanSeeTheLead(admins, orgId, leadId);
+  return keepThoseWhoCanSeeTheLead(
+    admins.map((u) => ({ ...u, chosen_as: 'admin' as const })),
+    orgId,
+    leadId,
+  );
 }
 
 async function keepThoseWhoCanSeeTheLead(

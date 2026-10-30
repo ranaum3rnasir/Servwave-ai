@@ -27,7 +27,14 @@ export function splitDescription(description: string): { name: string; detail: s
   return { name: parts[0] || '', detail: parts.slice(1).join('\n') };
 }
 
-export function useLineItemFields(line: InvoiceLineItem, onUpdate: (patch: RowUpdatePatch) => void) {
+/**
+ * What a row's `onUpdate` may return. A caller that can say "the server refused this" returns a promise that rejects;
+ * the row then puts every draft back to the saved value, so a rejected price (an invoice total that would fall below
+ * what is already paid) is not left sitting in the input. A caller that returns nothing keeps the old behaviour.
+ */
+export type RowUpdate = (patch: RowUpdatePatch) => void | Promise<unknown>;
+
+export function useLineItemFields(line: InvoiceLineItem, rowUpdate: RowUpdate) {
   const [qty, setQty] = useState(String(toNum(line.quantity)));
   const [price, setPrice] = useState(String(toNum(line.unit_price)));
   const [cost, setCost] = useState(line.unit_cost != null ? String(toNum(line.unit_cost)) : '');
@@ -63,6 +70,20 @@ export function useLineItemFields(line: InvoiceLineItem, onUpdate: (patch: RowUp
     setDiscountValue(line.discount_value != null ? String(toNum(line.discount_value)) : '');
   }
 
+  const revertDrafts = () => {
+    setQty(String(toNum(line.quantity)));
+    setPrice(String(toNum(line.unit_price)));
+    setCost(line.unit_cost != null ? String(toNum(line.unit_cost)) : '');
+    setDiscountType(line.discount_type ?? '');
+    setDiscountValue(line.discount_value != null ? String(toNum(line.discount_value)) : '');
+  };
+  const onUpdate = (patch: RowUpdatePatch) => {
+    const result = rowUpdate(patch);
+    if (result && typeof (result as Promise<unknown>).then === 'function') {
+      (result as Promise<unknown>).catch(revertDrafts);
+    }
+  };
+
   const commitQty = () => {
     const n = parseFloat(qty);
     if (!isNaN(n) && n > 0 && n !== toNum(line.quantity)) onUpdate({ quantity: n });
@@ -95,6 +116,8 @@ export function useLineItemFields(line: InvoiceLineItem, onUpdate: (patch: RowUp
   };
 
   return {
+    /** `onUpdate` for a direct edit (a switch): a refusal reverts the drafts the same way. */
+    update: onUpdate,
     qty, setQty, commitQty,
     price, setPrice, commitPrice,
     cost, setCost, commitCost,

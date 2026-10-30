@@ -30,9 +30,8 @@ describe('InfoPopover', () => {
     const importers = await Promise.all([
       import('@/components/communication/phone/TextingView'),
       import('@/components/communication/phone/CallMaskingView'),
-      import('@/pages/v2/settings/PaymentsListsPage'),
-      import('@/pages/v2/settings/components/taskCategoriesSettingsCard'),
-      import('@/pages/v2/settings/components/tagsSettingsCard'),
+      import('@/pages/v2/settings/ListsPage'),
+      import('@/pages/v2/settings/lists/ListCard'),
     ]);
     for (const mod of importers) expect(mod).toBeTruthy();
   });

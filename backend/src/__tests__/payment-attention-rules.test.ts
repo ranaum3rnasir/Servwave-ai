@@ -6,10 +6,10 @@ import { describe, it, expect } from 'vitest';
 import {
   classifyDispute, classifyFailedPayment, classifyFailedPayout, classifyFailedRefund, classifyUnapplied, itemKey, parseItemKey,
 } from '../services/payment-attention/rules';
-import { unappliedReasonText } from '../lib/unapplied-reason-text';
+import { unappliedReasonTexts } from '../lib/unapplied-reason-text';
 
 const at = new Date('2026-10-05T12:00:00Z');
-const person = { text: 'Marked resolved', by: 'Pat Admin', note: 'Called the customer', at };
+const person = { text: 'Called the customer', by: 'Pat Admin', note: 'Called the customer', at };
 
 describe('failed_payment', () => {
   const base = { resolution: null, invoiceStatus: 'SENT', later: null };
@@ -29,7 +29,7 @@ describe('failed_payment', () => {
   });
   it('a person\'s resolution wins over everything and carries the note and name', () => {
     expect(classifyFailedPayment({ ...base, invoiceStatus: 'PAID', resolution: { kind: 'RESOLVED', note: person.note, by: person.by, at } }))
-      .toEqual({ open: false, text: 'Marked resolved', by: 'Pat Admin', note: 'Called the customer', at });
+      .toEqual({ open: false, text: 'Called the customer', by: 'Pat Admin', note: 'Called the customer', at });
   });
 });
 
@@ -37,7 +37,12 @@ describe('failed_refund', () => {
   it('is open until a later non-failed (pending or succeeded) refund of at least the amount, or a person, closes it', () => {
     expect(classifyFailedRefund({ resolution: null, later: null })).toEqual({ open: true });
     expect(classifyFailedRefund({ resolution: null, later: { by: 'Sam Refunder', at } })).toEqual({ open: false, text: 'Refunded again', by: 'Sam Refunder', note: null, at });
-    expect(classifyFailedRefund({ resolution: { kind: 'SETTLED', note: null, by: 'Pat Admin', at }, later: null })).toMatchObject({ open: false, text: 'Marked settled', by: 'Pat Admin' });
+    expect(classifyFailedRefund({ resolution: { kind: 'SETTLED', note: null, by: 'Pat Admin', at }, later: null })).toMatchObject({ open: false, text: 'Marked resolved', by: 'Pat Admin' });
+  });
+  it('words a person\'s resolution as the plain reason (no prefix, C-21), and never says "settled"', () => {
+    const r = classifyFailedRefund({ resolution: { kind: 'SETTLED', note: 'Returned the money another way', by: 'Pat Admin', at }, later: null });
+    expect(r).toEqual({ open: false, text: 'Returned the money another way', by: 'Pat Admin', note: 'Returned the money another way', at });
+    expect(JSON.stringify(r)).not.toMatch(/settled|Resolved: /i);
   });
 });
 
@@ -66,6 +71,16 @@ describe('unmatched captures', () => {
     expect(classifyUnapplied({ status: 'REFUNDED', refundedAt: at, updatedAt: new Date(0) })).toMatchObject({ open: false, text: 'Refunded', at });
     expect(classifyUnapplied({ status: 'RESOLVED', refundedAt: null, updatedAt: at })).toMatchObject({ open: false, text: 'Marked resolved', at });
   });
+  it('words a resolved capture with its reason, by and date when it has them', () => {
+    const resolvedAt = new Date('2026-10-06T09:00:00Z');
+    expect(classifyUnapplied({ status: 'RESOLVED', refundedAt: null, updatedAt: at, note: 'Duplicate entry', by: 'Pat Admin', at: resolvedAt }))
+      .toEqual({ open: false, text: 'Duplicate entry', by: 'Pat Admin', note: 'Duplicate entry', at: resolvedAt });
+    expect(classifyUnapplied({ status: 'RESOLVED', refundedAt: null, updatedAt: at, note: null, by: 'Pat Admin', at: resolvedAt }))
+      .toEqual({ open: false, text: 'Marked resolved', by: 'Pat Admin', note: null, at: resolvedAt });
+  });
+  it('keeps REFUNDED as "Refunded", whatever else the row carries', () => {
+    expect(classifyUnapplied({ status: 'REFUNDED', refundedAt: at, updatedAt: at, note: 'Duplicate entry', by: 'Pat Admin', at: null })).toMatchObject({ open: false, text: 'Refunded', at });
+  });
 });
 
 describe('item keys', () => {
@@ -79,42 +94,59 @@ describe('item keys', () => {
   });
 });
 
-describe('unapplied reason text (moved server-side, wording unchanged)', () => {
-  it('words "not payable" from the invoice\'s current state', () => {
-    expect(unappliedReasonText('INVOICE_NOT_PAYABLE', 'PAID')).toBe('Paid after the invoice was already paid in full.');
-    expect(unappliedReasonText('INVOICE_NOT_PAYABLE', 'VOIDED')).toBe('Paid after the invoice was voided.');
-    expect(unappliedReasonText('INVOICE_NOT_PAYABLE', 'SENT')).toBe('Paid while the invoice was not open for payment.');
-    expect(unappliedReasonText('INVOICE_NOT_PAYABLE', null)).toBe('Paid while the invoice was not open for payment.');
+describe('unapplied reason text (spec 7.15, exact strings)', () => {
+  const base = { invoiceStatus: null, invoiceNumber: null, invoiceTotal: null, amount: null, sameAmountPaid: false } as const;
+  const words = (reason: string, over: Partial<Parameters<typeof unappliedReasonTexts>[0]> = {}) => unappliedReasonTexts({ reason, ...base, ...over });
+
+  it('words an amount mismatch with both sums', () => {
+    expect(words('AMOUNT_MISMATCH', { amount: 25, invoiceTotal: 600, invoiceNumber: 'INV-12' })).toEqual({
+      short: 'Amount did not match the invoice', long: '$25.00 was paid against an invoice of $600.00.',
+    });
+    expect(words('AMOUNT_MISMATCH').long).toBe('Amount did not match the invoice.');
   });
-  // Moved from the Settings card's wording test (payments go-live P8): the reason follows the invoice's real state.
-  it.each([
-    ['DRAFT', /not open for payment/i, /voided|already paid/i],
-    ['REFUNDED', /not open for payment/i, /voided|already paid/i],
-    ['PAID', /already paid in full/i, /voided/i],
-    ['VOIDED', /voided/i, /already paid/i],
-  ])('an invoice that was %s is worded from that state alone', (status, says, doesNotSay) => {
-    const text = unappliedReasonText('INVOICE_NOT_PAYABLE', status);
-    expect(text).toMatch(says);
-    expect(text).not.toMatch(doesNotSay);
+  it('words the two deposit reasons', () => {
+    expect(words('DEPOSIT_SUPERSEDED')).toEqual({
+      short: 'Deposit no longer fits the estimate', long: 'The estimate changed after the deposit was requested, so this deposit no longer fits it.',
+    });
+    expect(words('DEPOSIT_ON_HOLD')).toEqual({ short: 'Deposit was on hold when it was paid', long: 'Deposit was on hold when it was paid.' });
   });
-  it('words an org-level row as "not tied to an invoice" for every reason that means no invoice', () => {
-    for (const reason of ['INVOICE_NOT_FOUND', 'WRONG_ORG']) {
-      expect(unappliedReasonText(reason, null)).toBe('Not tied to an invoice in this account.');
+  it('tells "paid twice" from "already paid" by a same-amount payment, and voided from the rest', () => {
+    const inv = { invoiceNumber: 'INV-7' };
+    expect(words('INVOICE_NOT_PAYABLE', { ...inv, invoiceStatus: 'PAID', sameAmountPaid: true })).toEqual({
+      short: 'Invoice paid twice', long: 'INV-7 was paid twice. It was already paid in full, and this is the second payment.',
+    });
+    expect(words('INVOICE_NOT_PAYABLE', { ...inv, invoiceStatus: 'PAID', sameAmountPaid: false })).toEqual({
+      short: 'Invoice was already paid', long: 'INV-7 was already paid in full, by another payment, when this one arrived.',
+    });
+    expect(words('INVOICE_NOT_PAYABLE', { ...inv, invoiceStatus: 'VOIDED' })).toEqual({
+      short: 'Invoice was voided', long: 'INV-7 was voided before this payment arrived.',
+    });
+    for (const status of ['SENT', 'DRAFT', 'REFUNDED', null]) {
+      expect(words('INVOICE_NOT_PAYABLE', { ...inv, invoiceStatus: status }).short, String(status)).toBe('Paid while the invoice was not open for payment');
     }
-    expect(unappliedReasonText('REFUND_UNMATCHED', null)).not.toMatch(/stripe/i);
+    // A same-amount twin only matters when the invoice is PAID.
+    expect(words('INVOICE_NOT_PAYABLE', { ...inv, invoiceStatus: 'VOIDED', sameAmountPaid: true }).short).toBe('Invoice was voided');
   });
-  it('words the estimate-deposit reasons and never names the payment processor', () => {
-    expect(unappliedReasonText('DEPOSIT_SUPERSEDED', null)).toMatch(/estimate changed after this deposit was sent/i);
-    expect(unappliedReasonText('DEPOSIT_ON_HOLD', null)).toMatch(/deposit was on hold/i);
-    expect(unappliedReasonText('AMOUNT_MISMATCH', null)).toBe('The amount paid did not match the amount owed.');
-    expect(unappliedReasonText('DOCUMENT_MISMATCH', null)).toBe('Paid for a different document than the invoice it named.');
-    for (const reason of ['OVERPAYMENT', 'AMOUNT_MISMATCH', 'DEPOSIT_SUPERSEDED', 'DEPOSIT_ON_HOLD', 'INVOICE_NOT_FOUND', 'WRONG_ORG', 'DOCUMENT_MISMATCH', 'REFUND_UNMATCHED']) {
-      expect(unappliedReasonText(reason, null), reason).not.toMatch(/stripe/i);
+  it('words a refund with and without an invoice reference', () => {
+    expect(words('REFUND_UNMATCHED', { invoiceNumber: 'INV-9' })).toEqual({
+      short: 'Refund has no invoice reference', long: 'The refund was sent without an invoice reference, so INV-9 does not show it.',
+    });
+    expect(words('REFUND_UNMATCHED')).toEqual({ short: 'Refund has no invoice reference', long: 'The refund was sent without an invoice reference.' });
+  });
+  it('gives the short-only reasons their short text plus a full stop, and falls back for an unknown one', () => {
+    const cases: Array<[string, string]> = [
+      ['OVERPAYMENT', 'Paid more than was owed'],
+      ['INVOICE_NOT_FOUND', 'Payment is not tied to an invoice'],
+      ['WRONG_ORG', 'Payment is not tied to an invoice'],
+      ['DOCUMENT_MISMATCH', 'Paid for a different document than the invoice'],
+      ['SOMETHING_NEW', 'Could not be applied to an invoice'],
+    ];
+    for (const [reason, short] of cases) expect(words(reason), reason).toEqual({ short, long: `${short}.` });
+  });
+  it('never names the payment processor or carries a processor id', () => {
+    for (const reason of ['OVERPAYMENT', 'AMOUNT_MISMATCH', 'DEPOSIT_SUPERSEDED', 'DEPOSIT_ON_HOLD', 'INVOICE_NOT_FOUND', 'WRONG_ORG', 'DOCUMENT_MISMATCH', 'REFUND_UNMATCHED', 'INVOICE_NOT_PAYABLE', 'X']) {
+      const t = words(reason, { invoiceNumber: 'INV-1', invoiceStatus: 'PAID', amount: 5, invoiceTotal: 9 });
+      expect(`${t.short} ${t.long}`, reason).not.toMatch(/stripe|\b(pi|re|dp|po|acct)_/i);
     }
-  });
-  it('words the other reasons and falls back for an unknown one', () => {
-    expect(unappliedReasonText('OVERPAYMENT', null)).toBe('Paid more than the balance due. This is the part that was not applied.');
-    expect(unappliedReasonText('REFUND_UNMATCHED', null)).toBe('A refund went out of your ServWave Payments account for a payment ServWave has no record of.');
-    expect(unappliedReasonText('SOMETHING_NEW', null)).toBe('Could not be applied to an invoice.');
   });
 });

@@ -39,6 +39,7 @@ import { linkTargetsOf } from './components/linkTargets';
 import { NeedsReviewView } from './components/needsReview';
 import { READER_FULLSCREEN } from './components/readerOverlay';
 import { ReadingPane } from './components/readingPane';
+import { COMPOSE_PARAMS } from '@/components/contact/contactHrefs';
 import { useRecordVisit } from '../pageBreadcrumbs';
 
 /**
@@ -137,7 +138,7 @@ export default function InboxPage() {
   // Undefined until it loads, and on the plans/roles that cannot reach the
   // endpoint - the compose surfaces fall back to their honest "no mailbox"
   // placeholder for exactly that gap rather than rendering a guess.
-  const { data: sendingIdentity } = useSendingIdentity();
+  const { data: sendingIdentity, isSuccess: identityLoaded, isError: identityFailed } = useSendingIdentity();
   // PRD 10 (S10.11): the identity is the PERSON's own (their address and "<name> at <company>"), the same lookup the send
   // resolves its From header with, and there is no choice of another. `sendingEnabled` defaults to true while the query is
   // in flight - see ComposeWindow's sendingEnabled doc - and a person with no address yet cannot send by hand.
@@ -407,6 +408,34 @@ export default function InboxPage() {
 
   // 'system' is the only account id left: the Gmail provider was removed.
   const defaultAccount: AccountId = 'system';
+
+  // A link from elsewhere in the app (a failed payment's Contact customer, say) opens the compose window already
+  // filled in: `?compose=1&to=&subject=&body=&customerId=&jobId=&invoiceId=`. It runs once, after the sending identity
+  // has answered, and then removes every compose parameter from the address, so a pay link in the body never sits in
+  // the history or in an error report. The `mailbox` parameter is left alone.
+  const [composedFromAddress, setComposedFromAddress] = useState(false);
+  if (!composedFromAddress && (identityLoaded || identityFailed) && searchParams.get('compose') === '1') {
+    const get = (key: string) => searchParams.get(key) ?? undefined;
+    setComposedFromAddress(true);
+    setCompose({
+      mode: 'new',
+      account: 'system',
+      to: get('to') ?? '',
+      subject: get('subject') ?? '',
+      body: get('body') ?? '',
+      customerId: get('customerId'),
+      jobId: get('jobId'),
+      invoiceId: get('invoiceId'),
+    });
+  }
+  useEffect(() => {
+    if (!composedFromAddress || searchParams.get('compose') !== '1') return;
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      for (const key of COMPOSE_PARAMS) next.delete(key);
+      return next;
+    }, { replace: true });
+  }, [composedFromAddress, searchParams, setSearchParams]);
 
   function startCompose() {
     setCompose({ mode: 'new', account: defaultAccount, to: '', subject: '', body: '' });

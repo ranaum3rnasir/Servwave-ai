@@ -91,7 +91,7 @@ function resolveFacetOptions(
   return [];
 }
 
-function CheckboxFacet({
+export function CheckboxFacet({
   facet, value, onChange, options, renderOption,
 }: {
   facet: FacetConfig;
@@ -390,6 +390,8 @@ export interface FilterPopoverProps {
   onClearAll?: () => void;
   /** Extra classes for the phone sheet (a page that needs larger tap targets there). The popover is unchanged. */
   sheetClassName?: string;
+  /** Extra classes for the Filter button (a toolbar that lines it up with a 40px search box). */
+  triggerClassName?: string;
 }
 
 /** The Filter button's rectangle and the window it sits in, read when the panel opens or the window resizes. */
@@ -403,7 +405,7 @@ function measurePlacement(trigger: HTMLElement | null): FilterPlacement {
 
 export function FilterPopover({
   registry, value, onChange, resolveOptions, resolveMax, statusDomain, renderOption, renderFacet,
-  facetTimezones, subtitle, extraCount = 0, hasExtraConstraint = false, onClearAll, sheetClassName,
+  facetTimezones, subtitle, extraCount = 0, hasExtraConstraint = false, onClearAll, sheetClassName, triggerClassName,
 }: FilterPopoverProps) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -522,7 +524,14 @@ export function FilterPopover({
     <>
       <Popover open={open && !isSheet} onOpenChange={handleOpenChange}>
         <PopoverTrigger asChild>
-          <Button ref={triggerRef} variant="outline" size="sm" aria-expanded={open}>
+          <Button
+            ref={triggerRef}
+            variant="outline"
+            size="sm"
+            className={triggerClassName}
+            aria-expanded={open}
+            aria-label={appliedCount > 0 ? `Filter, ${appliedCount} applied` : undefined}
+          >
             <ListFilter />
             Filter
             {appliedCount > 0 && <Badge variant="softBlue" size="pill">{appliedCount}</Badge>}
@@ -613,6 +622,8 @@ export function FilterPopover({
         <SheetContent
           side="bottom"
           data-filter-sheet=""
+          // The sheet has no trigger of its own (the Filter button belongs to the popover), so say where focus goes back to.
+          onCloseAutoFocus={(event) => { event.preventDefault(); triggerRef.current?.focus(); }}
           style={{ maxHeight: `${placement.maxHeight}px` }}
           className={cn('max-h-none', sheetClassName)}
         >

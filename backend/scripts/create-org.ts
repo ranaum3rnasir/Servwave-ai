@@ -17,6 +17,7 @@ import { runUnscoped } from '../src/lib/tenant-context';
 import { createCompanyWithMainMailbox } from '../src/lib/mailbox/register';
 import { DEFAULT_GRANTS } from '../src/lib/permissions/defaultGrants';
 import { seedStarterTaskCategories, STARTER_TASK_CATEGORIES } from '../src/lib/tasks/categories';
+import { seedListRows } from '../src/lib/org-list-rows';
 import { orgFeatures, effectivePlan } from '../src/lib/entitlements/resolve';
 import { buildCreateOrgSql } from '../src/lib/entitlements/ops-sql';
 import type { PlanTier } from '../src/lib/entitlements/catalog';
@@ -107,6 +108,8 @@ async function main() {
 
     // Every new organization starts with the three starter task categories.
     await seedStarterTaskCategories(prisma, orgId);
+    // ...and the job type and source lists as rows, copied from the organization's own column defaults.
+    await seedListRows(prisma, orgId);
   });
 
   const source = { plan, trial_ends_at, feature_overrides: {} };

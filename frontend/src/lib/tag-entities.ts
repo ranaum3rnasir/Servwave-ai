@@ -4,7 +4,7 @@
  *
  * Tagging spans five entity types (SRVW-103). Two surfaces have to know that
  * set: TagInput, which writes a tag onto one record and refetches that record's
- * detail query, and TagsSettingsCard, which renames, recolours or deletes a tag
+ * detail query, and the Settings > Lists Tags card, which renames, recolours or deletes a tag
  * org-wide and so has to drop every cached payload carrying a copy of it.
  *
  * They drifted once already: TagInput was widened from two types to five while

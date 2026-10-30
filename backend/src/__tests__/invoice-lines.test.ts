@@ -859,11 +859,11 @@ describe('PATCH /api/invoices/:id/line-items/:lineId — edit line (update Invoi
     expect(mockPrisma.invoiceLineItem.update).toHaveBeenCalled();
   });
 
-  it('editing a PARTIAL invoice so the balance is fully covered → amount_due 0 + status PAID (locks)', async () => {
+  it('editing a PARTIAL invoice so the balance is fully covered (total lands exactly on what is paid) → amount_due 0 + status PAID (locks)', async () => {
     mockAuthAs('admin');
-    // Old: total 1080, paid 900 → amount_due 180 (amount_paid derived = 900).
-    mockPrisma.invoice.findUnique.mockResolvedValue(invoiceRow({ status: 'PARTIAL', totalAmount: 1080, amountDue: 180 }));
-    // Re-fetch returns one line at 500 → new total 540 (500 + 8% tax) < 900 paid.
+    // Old: total 1080, paid 540 -> amount_due 540 (amount_paid derived = 540).
+    mockPrisma.invoice.findUnique.mockResolvedValue(invoiceRow({ status: 'PARTIAL', totalAmount: 1080, amountDue: 540 }));
+    // Re-fetch returns one line at 500 -> new total 540 (500 + 8% tax) = exactly the 540 paid.
     mockPrisma.invoiceLineItem.findMany.mockResolvedValue([
       { ...existingLines()[0], unit_price: 500, line_total: 500 },
     ]);
@@ -975,58 +975,30 @@ describe('PATCH /api/invoices/:id/line-items/:lineId — edit line (update Invoi
     expect(mockPrisma.invoice.findUnique.mock.calls[0][0].select.credits).toBeTruthy();
   });
 
-  it('two-edit characterization: a total-reducing edit no longer locks, and the clamped cash is not recoverable', async () => {
+  it('BE-14d: the old two-edit loss is unreachable - the total-reducing edit is refused, so nothing is clamped', async () => {
     mockAuthAs('admin');
-    // Total 1080, $200 really collected, $400 written off -> amount_due 480, PARTIAL.
+    // Total 1080, $200 really collected, $400 written off -> amount_due 480, PARTIAL. Covered = 600.
     mockPrisma.invoice.findUnique.mockResolvedValue(
       invoiceRow({ status: 'PARTIAL', totalAmount: 1080, amountDue: 480, credits: [{ amount: 400 }] }),
     );
-    // EDIT A: cut the line to 500 -> subtotal 500, tax 40, new total 540.
+    // Cut the line to 500 -> new total 540, below the 600 covered. Before BE-14d this clamped
+    // amount_due at 0 and destroyed $60 of the recoverable cash figure.
     mockPrisma.invoiceLineItem.findMany.mockResolvedValue([
       { ...existingLines()[0], unit_price: 500, line_total: 500 },
     ]);
     mockPrisma.invoice.update.mockImplementation((args: any) => Promise.resolve(detailAfter(args.data)));
 
-    const resA = await request(app)
+    const res = await request(app)
       .patch(`/api/invoices/${INVOICE_ID}/line-items/${LINE_ID}`)
       .set(authHeader('admin'))
       .send({ unit_price: 500 });
 
-    expect(resA.status).toBe(200);
-    const dataA = mockPrisma.invoice.update.mock.calls[0][0].data;
-    expect(Number(dataA.total_amount)).toBe(540);
-    expect(Number(dataA.amount_due)).toBe(0);
-    // Before the fix this persisted PAID + paid_at, which LOCKS the invoice and makes edit B
-    // impossible. Keying status on cash only ($340 of the $540 still uncollected) keeps it open.
-    expect(dataA.status).toBe('PARTIAL');
-    expect(dataA.paid_at).toBeUndefined();
-
-    // EDIT B: raise the total back to 1080, off the state edit A actually persisted.
-    mockPrisma.invoice.findUnique.mockResolvedValue(
-      invoiceRow({
-        status: (dataA.status as string) ?? 'PARTIAL',
-        totalAmount: Number(dataA.total_amount),
-        amountDue: Number(dataA.amount_due),
-        credits: [{ amount: 400 }],
-      }),
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('TOTAL_BELOW_PAID');
+    expect(res.body.error).toBe(
+      'This change would bring the invoice to $540.00, which is less than the $600.00 already paid or credited on it. Keep the total at $600.00 or more.',
     );
-    mockPrisma.invoiceLineItem.findMany.mockResolvedValue(existingLines());
-
-    const resB = await request(app)
-      .patch(`/api/invoices/${INVOICE_ID}/line-items/${LINE_ID}`)
-      .set(authHeader('admin'))
-      .send({ unit_price: 1000 });
-
-    expect(resB.status).toBe(200);
-    const dataB = mockPrisma.invoice.update.mock.calls[1][0].data;
-    // 540 is WRONG. The truth is 480 (1080 total - 200 real cash - 400 credit). Edit A clamped
-    // amount_due at 0, and amount_due is the only persisted anchor the cash figure is derived
-    // from, so $60 of real cash was destroyed there: edit B re-derives 140 collected, not 200,
-    // and over-bills the customer by 60. This is the structural loss documented in amountPaidOf's
-    // JSDoc - it is locked here deliberately, not endorsed. Closing it needs a persisted
-    // collected-cash column, which is out of scope for this card.
-    expect(Number(dataB.amount_due)).toBe(540);
-    expect(dataB.status).toBe('PARTIAL');
+    expect(mockPrisma.invoice.update).not.toHaveBeenCalled();
   });
 
   it('blocks editing a line on a VOIDED invoice → 400', async () => {
@@ -2164,5 +2136,180 @@ describe('#2053 AC10 — shared line/scope schemas stay estimate-blind', () => {
     const parsed = updateLineSchema.parse({ description: 'x', is_optional: true, is_selected: false });
     expect(parsed).not.toHaveProperty('is_optional');
     expect(parsed).not.toHaveProperty('is_selected');
+  });
+});
+
+
+// ════════════════════════════════════════════════════════════════════════════
+// BE-14d (D-16) - an edit that would take the total below what is already paid or credited is
+// refused with 409 TOTAL_BELOW_PAID. Nine handlers call recomputeAndPersist; each answers it.
+// The prisma mock cannot roll back, so the rollback itself is proved in
+// invoice-lines-total-below-paid-db.test.ts against a real database.
+// ════════════════════════════════════════════════════════════════════════════
+describe('BE-14d - refuse an edit below what is covered', () => {
+  const REFUSAL = (total: string, covered: string) =>
+    `This change would bring the invoice to ${total}, which is less than the ${covered} already paid or credited on it. Keep the total at ${covered} or more.`;
+  // PARTIAL, total 1080, $500 collected -> amount_due 580, covered 500.
+  const partial = () => invoiceRow({ status: 'PARTIAL', totalAmount: 1080, amountDue: 580 });
+  const lowLine = (price: number) => [{ ...existingLines()[0], unit_price: price, line_total: price }];
+  const SCOPE_ID = 'cc000000-0000-0000-0000-000000000001';
+
+  beforeEach(() => {
+    mockPrisma.invoice.update.mockImplementation((args: any) => Promise.resolve(detailAfter(args.data)));
+  });
+
+  function expectRefused(res: request.Response, total: string, covered = '$500.00') {
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('TOTAL_BELOW_PAID');
+    expect(res.body.error).toBe(REFUSAL(total, covered));
+    expect(res.body.error).not.toMatch(/refund/i);
+  }
+
+  it('addLine', async () => {
+    mockAuthAs('admin');
+    mockPrisma.invoice.findUnique.mockResolvedValue(partial());
+    mockPrisma.invoiceLineItem.findMany.mockResolvedValue(lowLine(100));
+    const res = await request(app).post(`/api/invoices/${INVOICE_ID}/line-items`).set(authHeader('admin'))
+      .send({ description: 'x', quantity: 1, unit_price: 5, is_taxable: true });
+    expectRefused(res, '$108.00');
+    expect(mockPrisma.invoice.update).not.toHaveBeenCalled();
+  });
+
+  it('deleteLine', async () => {
+    mockAuthAs('admin');
+    mockPrisma.invoice.findUnique.mockResolvedValue(partial());
+    mockPrisma.invoiceLineItem.findMany.mockResolvedValue([]);
+    const res = await request(app).delete(`/api/invoices/${INVOICE_ID}/line-items/${LINE_ID}`).set(authHeader('admin'));
+    expectRefused(res, '$0.00');
+    expect(mockPrisma.invoice.update).not.toHaveBeenCalled();
+  });
+
+  it('updateLine', async () => {
+    mockAuthAs('admin');
+    mockPrisma.invoice.findUnique.mockResolvedValue(partial());
+    mockPrisma.invoiceLineItem.findMany.mockResolvedValue(lowLine(100));
+    const res = await request(app).patch(`/api/invoices/${INVOICE_ID}/line-items/${LINE_ID}`).set(authHeader('admin'))
+      .send({ unit_price: 100 });
+    expectRefused(res, '$108.00');
+    expect(mockPrisma.invoice.update).not.toHaveBeenCalled();
+  });
+
+  it('reorderLines (wiring: a drifted row whose lines no longer add up to its stored total)', async () => {
+    mockAuthAs('admin');
+    const a = { ...existingLines()[0], id: LINE_ID, sequence: 1, unit_price: 50, line_total: 50 };
+    const b = { ...existingLines()[0], id: 'aa000000-0000-0000-0000-000000000002', sequence: 2, unit_price: 50, line_total: 50 };
+    mockPrisma.invoice.findUnique.mockResolvedValue(partial());
+    mockPrisma.invoiceLineItem.findMany.mockResolvedValue([a, b]);
+    mockPrisma.invoiceLineItem.update.mockResolvedValue({});
+    const res = await request(app).patch(`/api/invoices/${INVOICE_ID}/line-items/reorder`).set(authHeader('admin'))
+      .send({ order: [b.id, a.id] });
+    expectRefused(res, '$108.00');
+  });
+
+  it('updateBilling (a bigger discount)', async () => {
+    mockAuthAs('admin');
+    mockPrisma.invoice.findUnique.mockResolvedValue(partial());
+    mockPrisma.invoiceLineItem.findMany.mockResolvedValue(existingLines());
+    const res = await request(app).patch(`/api/invoices/${INVOICE_ID}/billing`).set(authHeader('admin'))
+      .send({ discount_amount: 900 });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('TOTAL_BELOW_PAID');
+    expect(res.body.error).toContain('already paid or credited on it. Keep the total at $500.00 or more.');
+    expect(mockPrisma.invoice.update).not.toHaveBeenCalled();
+  });
+
+  describe('scopes', () => {
+    const scope = (flat_price: number) => scopeFixture({ id: SCOPE_ID, flat_price });
+    beforeEach(() => mockPrisma.invoiceLineItem.findMany.mockResolvedValue([]));
+
+    it('addScope', async () => {
+      mockAuthAs('admin');
+      mockScopeReads([], [scope(100)], { status: 'PARTIAL', totalAmount: 1080, amountDue: 580 });
+      const res = await request(app).post(`/api/invoices/${INVOICE_ID}/scopes`).set(authHeader('admin')).send({ title: 'T', flat_price: 100 });
+      expectRefused(res, '$108.00');
+    });
+    it('updateScope', async () => {
+      mockAuthAs('admin');
+      mockScopeReads([scope(900)], [scope(100)], { status: 'PARTIAL', totalAmount: 1080, amountDue: 580 });
+      const res = await request(app).patch(`/api/invoices/${INVOICE_ID}/scopes/0`).set(authHeader('admin')).send({ flat_price: 100 });
+      expectRefused(res, '$108.00');
+    });
+    it('reorderScopes (wiring: a drifted row)', async () => {
+      mockAuthAs('admin');
+      const two = [scope(50), scopeFixture({ id: 'cc000000-0000-0000-0000-000000000002', flat_price: 50 })];
+      mockScopeReads(two, [two[1], two[0]], { status: 'PARTIAL', totalAmount: 1080, amountDue: 580 });
+      const res = await request(app).patch(`/api/invoices/${INVOICE_ID}/scopes/reorder`).set(authHeader('admin'))
+        .send({ order: [two[1].id, two[0].id] });
+      expectRefused(res, '$108.00');
+    });
+    it('deleteScope', async () => {
+      mockAuthAs('admin');
+      mockScopeReads([scope(900), scopeFixture({ id: 'cc000000-0000-0000-0000-000000000002', flat_price: 100 })], [scopeFixture({ id: 'cc000000-0000-0000-0000-000000000002', flat_price: 100 })], { status: 'PARTIAL', totalAmount: 1080, amountDue: 580 });
+      const res = await request(app).delete(`/api/invoices/${INVOICE_ID}/scopes/0`).set(authHeader('admin'));
+      expectRefused(res, '$108.00');
+    });
+  });
+
+  it('an edit that lands exactly on covered saves, and an edit that raises the total saves', async () => {
+    mockAuthAs('admin');
+    mockPrisma.invoice.findUnique.mockResolvedValue(invoiceRow({ status: 'PARTIAL', totalAmount: 1080, amountDue: 540 }));
+    mockPrisma.invoiceLineItem.findMany.mockResolvedValue(lowLine(500));
+    const exact = await request(app).patch(`/api/invoices/${INVOICE_ID}/line-items/${LINE_ID}`).set(authHeader('admin')).send({ unit_price: 500 });
+    expect(exact.status).toBe(200);
+    expect(mockPrisma.invoice.update.mock.calls[0][0].data.status).toBe('PAID');
+
+    mockPrisma.invoice.findUnique.mockResolvedValue(partial());
+    mockPrisma.invoiceLineItem.findMany.mockResolvedValue(lowLine(2000));
+    const raise = await request(app).patch(`/api/invoices/${INVOICE_ID}/line-items/${LINE_ID}`).set(authHeader('admin')).send({ unit_price: 2000 });
+    expect(raise.status).toBe(200);
+  });
+
+  it('a reorder on an invoice with payments saves', async () => {
+    mockAuthAs('admin');
+    const a = { ...existingLines()[0], id: LINE_ID, sequence: 1 };
+    const b = { ...existingLines()[0], id: 'aa000000-0000-0000-0000-000000000002', sequence: 2, unit_price: 0, line_total: 0 };
+    mockPrisma.invoice.findUnique.mockResolvedValue(partial());
+    mockPrisma.invoiceLineItem.findMany.mockResolvedValue([a, b]);
+    mockPrisma.invoiceLineItem.update.mockResolvedValue({});
+    const res = await request(app).patch(`/api/invoices/${INVOICE_ID}/line-items/reorder`).set(authHeader('admin')).send({ order: [b.id, a.id] });
+    expect(res.status).toBe(200);
+  });
+
+  it('a legacy overpaid row (stored due 0, total below cash) is not locked out of an edit that leaves the total alone', async () => {
+    mockAuthAs('admin');
+    // total 540 but 700 collected -> stored amount_due clamped to 0 earlier; derived paid = 540.
+    mockPrisma.invoice.findUnique.mockResolvedValue(invoiceRow({ status: 'PARTIAL', totalAmount: 540, amountDue: 0 }));
+    mockPrisma.invoiceLineItem.findMany.mockResolvedValue(lowLine(500));
+    const res = await request(app).patch(`/api/invoices/${INVOICE_ID}/line-items/${LINE_ID}`).set(authHeader('admin')).send({ description: 'x' });
+    expect(res.status).toBe(200);
+  });
+
+  it('a credit-noted invoice counts the credit in covered', async () => {
+    mockAuthAs('admin');
+    // total 1080, $300 cash + $400 credit -> due 380, covered 700.
+    mockPrisma.invoice.findUnique.mockResolvedValue(
+      invoiceRow({ status: 'PARTIAL', totalAmount: 1080, amountDue: 380, credits: [{ amount: 400 }] }),
+    );
+    mockPrisma.invoiceLineItem.findMany.mockResolvedValue(lowLine(600));
+    const res = await request(app).patch(`/api/invoices/${INVOICE_ID}/line-items/${LINE_ID}`).set(authHeader('admin')).send({ unit_price: 600 });
+    expectRefused(res, '$648.00', '$700.00');
+  });
+
+  it('formats amounts like formatCurrency: thousands separator and cents', async () => {
+    mockAuthAs('admin');
+    // total 1080, paid 1070.05 -> due 9.95. New total 0 -> refused; covered $1,070.05.
+    mockPrisma.invoice.findUnique.mockResolvedValue(invoiceRow({ status: 'PARTIAL', totalAmount: 1080, amountDue: 9.95 }));
+    mockPrisma.invoiceLineItem.findMany.mockResolvedValue([]);
+    const res = await request(app).delete(`/api/invoices/${INVOICE_ID}/line-items/${LINE_ID}`).set(authHeader('admin'));
+    expectRefused(res, '$0.00', '$1,070.05');
+  });
+
+  it('a deposit-credit invoice counts the deposit in covered', async () => {
+    mockAuthAs('admin');
+    const row = { ...invoiceRow({ status: 'SENT', totalAmount: 1080, amountDue: 580 }), deposit_credit: 500 };
+    mockPrisma.invoice.findUnique.mockResolvedValue(row);
+    mockPrisma.invoiceLineItem.findMany.mockResolvedValue(lowLine(100));
+    const res = await request(app).patch(`/api/invoices/${INVOICE_ID}/line-items/${LINE_ID}`).set(authHeader('admin')).send({ unit_price: 100 });
+    expectRefused(res, '$108.00', '$500.00');
   });
 });

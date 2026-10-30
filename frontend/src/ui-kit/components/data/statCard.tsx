@@ -34,7 +34,8 @@ import { useFitToWidth } from "@/ui-kit/lib/useFitToWidth";
 // JSX children, and JSX children beat a spread `children` prop, so anything a
 // call site passed used to vanish without a word. It is a type error now.
 export interface StatCardProps extends Omit<React.ComponentProps<"button">, "value" | "children"> {
-  label: string;
+  /** Text, or a small row (the label, a pill, a help button) when the tile needs more than a word. */
+  label: React.ReactNode;
   value: React.ReactNode;
   /** Renders a 3px semantic rail on the left edge. */
   tone?: "brand" | "green" | "blue" | "amber" | "red" | "purple";

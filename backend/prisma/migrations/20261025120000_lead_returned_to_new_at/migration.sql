@@ -1,0 +1,17 @@
+-- SPEC-4 D7 (Ran, 24 Oct): a lead stays Contacted only while an outbound contact is on it. When a
+-- person takes its last one away, the lead goes back to New, and Spider counts a fresh New stay from
+-- that moment. Spider anchors the New stage at created_at, so a lead back in New would repeat its
+-- first stay's claim key and never alert again; this column gives the stay its own instant.
+--
+-- One nullable column: no default, no backfill (null means "never moved back", which is every
+-- existing lead), no index (read only alongside the lead row the sweep and the list already load).
+-- Adding a nullable column with no default is a catalog-only change in Postgres: it takes a brief
+-- ACCESS EXCLUSIVE lock on "leads" and rewrites nothing, so it is safe on a live table.
+--
+-- Idempotent and portable per .claude/skills/writing-migrations: IF NOT EXISTS, no Supabase roles,
+-- RLS untouched. Old code ignores the column, so the backend can deploy first.
+--
+-- Going back: roll back the CODE; the column can stay (unread). If it must go:
+--   ALTER TABLE "leads" DROP COLUMN IF EXISTS "returned_to_new_at";
+-- Forward-only otherwise.
+ALTER TABLE "leads" ADD COLUMN IF NOT EXISTS "returned_to_new_at" TIMESTAMP(3);

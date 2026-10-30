@@ -59,10 +59,17 @@ describe('Refund', () => {
     const { result } = renderHook(() => attention.useRefundPaymentNeedingAttention(), { wrapper: wrapper() });
 
     let row: unknown;
-    await act(async () => { row = await result.current.mutateAsync('uc-1'); });
+    await act(async () => { row = await result.current.mutateAsync({ id: 'uc-1' }); });
 
-    expect(mockApi.post).toHaveBeenCalledWith(`${ENDPOINT}/uc-1/refund`);
+    expect(mockApi.post).toHaveBeenCalledWith(`${ENDPOINT}/uc-1/refund`, undefined, { silentErrors: true });
     expect(row).toEqual(refunded);
+  });
+
+  it('a partial refund sends the amount in the body', async () => {
+    mockApi.post.mockResolvedValue({ data: { item: { ...OPEN_PAYMENT, amount: 60 } } });
+    const { result } = renderHook(() => attention.useRefundPaymentNeedingAttention(), { wrapper: wrapper() });
+    await act(async () => { await result.current.mutateAsync({ id: 'uc-1', amount: 40 }); });
+    expect(mockApi.post).toHaveBeenCalledWith(`${ENDPOINT}/uc-1/refund`, { amount: 40 }, { silentErrors: true });
   });
 
   it('a refund that could not be sent surfaces the server\'s ServWave wording, with no processor name', async () => {
@@ -70,7 +77,7 @@ describe('Refund', () => {
     mockApi.post.mockRejectedValue({ isAxiosError: true, response: { status: 502, data: { error: message } } });
     const { result } = renderHook(() => attention.useRefundPaymentNeedingAttention(), { wrapper: wrapper() });
 
-    await act(async () => { await result.current.mutateAsync('uc-1').catch(() => undefined); });
+    await act(async () => { await result.current.mutateAsync({ id: 'uc-1' }).catch(() => undefined); });
     await waitFor(() => expect(result.current.isError).toBe(true));
 
     const shown = extractApiError(result.current.error, 'Could not refund.');

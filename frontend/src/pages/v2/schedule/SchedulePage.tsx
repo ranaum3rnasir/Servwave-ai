@@ -186,7 +186,7 @@ import { Label } from '@/ui-kit/components/ui/label';
 import { TimeField } from '@/ui-kit/components/form/timeField';
 import { MenuItem, MenuSurface } from './components/menuSurface';
 import { EventPeekCard } from './components/eventPeekCard';
-import { Segment, SegmentedGroup } from './components/segmented';
+import { Segment, SegmentedGroup } from '../_shared/segmented';
 import { CompactToolbar } from './components/compactToolbar';
 import { DayWidenButton, WidenedDayContext } from './components/dayWidenButton';
 import { MonthDayCell, MonthDayCountsContext } from './components/monthDayCell';

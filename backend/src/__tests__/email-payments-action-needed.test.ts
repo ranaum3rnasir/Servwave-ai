@@ -46,7 +46,7 @@ const BASE_PARAMS = {
   organizationId: ORG_ID,
   to: 'admin@acme.com',
   orgName: 'Acme Plumbing',
-  fixUrl: 'http://localhost:5173/settings/payments',
+  fixUrl: 'http://localhost:5173/settings/servwave-payments',
 };
 
 describe('sendPaymentsActionNeededEmail (Task 1.9 — co-branded action-needed email)', () => {

@@ -1,7 +1,7 @@
 /**
  * Payments go-live slice 29 (D17): the rules a refund through ServWave Payments follows, for card
  * and bank (ACH) payments alike. Every door that sends money back (the invoice refund, the credit
- * give-back, "Payments needing attention") asks these before it calls the processor.
+ * give-back, the Needs attention card) asks these before it calls the processor.
  *
  * The messages reach the refund dialogs, so they name no processor.
  */

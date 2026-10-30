@@ -1,48 +1,37 @@
 /**
- * Spider's suggested follow-up text (#2619, Spider 8/8). Offered in a lead's text box only when
- * the lead was opened from a Spider alert at a company that passes the Spider gate. It is never
- * sent on its own: the person edits it, or clears it, and presses Send.
+ * Opening a lead from a Spider alert card (Ran, 15 Oct, D4: the contractor's click). The card
+ * opens the tab for the lead's stage; at New it opens Communication with his pre-filled draft,
+ * "Hello {name}, following up regarding your {service} (Stage: New)." The draft is never sent on
+ * its own: the person edits it, or clears it, and presses Send. Nothing on the lead page marks the
+ * alert read; the server ends it once a real contact moves the lead on (D1, SPEC-6).
+ *
+ * His click put the draft (with the customer's name) and the alert id in the address bar; here
+ * they travel in the router state, and only the tab is in the address.
  */
 
-/** The longest suggestion the text box will take. */
+/** The longest draft the text box will take (his cap). */
 export const SPIDER_FOLLOW_UP_MAX_CHARS = 500;
 
-const STAGE_LABEL: Record<string, string> = {
-  NEW: 'New',
-  CONTACTED: 'Contacted',
-  WALKTHROUGH_SCHEDULED: 'Walkthrough Scheduled',
-  WALKTHROUGH_COMPLETED: 'Walkthrough Completed',
-  ESTIMATED: 'Estimate Sent',
-};
-
-const NEXT_STEP: Record<string, string> = {
-  NEW: 'When is a good time for a quick call about what you need?',
-  CONTACTED: 'Would you like to set up a time for us to come out and take a look?',
-  WALKTHROUGH_SCHEDULED: 'Just checking that the time we booked to come out still works for you.',
-  WALKTHROUGH_COMPLETED: 'Thanks for having us out. Is there anything else we should know before we send your estimate?',
-  ESTIMATED: 'Do you have any questions about the estimate we sent?',
-};
-
-export function capFollowUp(text: string): string {
-  return text.slice(0, SPIDER_FOLLOW_UP_MAX_CHARS);
-}
-
-export function buildSpiderFollowUp(lead: {
-  status: string;
-  customerFirstName?: string | null;
-  serviceRequest?: string | null;
-}): string {
-  const name = lead.customerFirstName?.trim();
-  const greeting = name ? `Hello ${name},` : 'Hello,';
-  const service = lead.serviceRequest?.trim();
-  const about = service ? ` about ${service}` : '';
-  const stage = STAGE_LABEL[lead.status];
-  const stageNote = stage ? ` (stage: ${stage})` : '';
-  const next = NEXT_STEP[lead.status] ?? 'How can we help with next steps?';
-  return capFollowUp(`${greeting} I am following up on your request${about}${stageNote}. ${next}`);
-}
-
 /** Router state a Spider alert card navigates to a lead with. */
-export function cameFromSpiderAlert(state: unknown): boolean {
-  return !!state && typeof state === 'object' && (state as { spiderFollowUp?: unknown }).spiderFollowUp === true;
+export interface SpiderLeadLinkState {
+  /** The notification-recipient id of the alert that was clicked. Nothing on the lead page reads it. */
+  spiderAlertId?: string;
+  /** His pre-filled draft for the Communication tab. */
+  spiderDraft?: string;
+}
+
+/** The lead page with the tab the contractor's click opens. */
+export function spiderLeadLink(leadId: string, tab: string): string {
+  return `/leads/${leadId}?tab=${encodeURIComponent(tab)}`;
+}
+
+function field(state: unknown, key: keyof SpiderLeadLinkState): string | undefined {
+  if (!state || typeof state !== 'object') return undefined;
+  const v = (state as Record<string, unknown>)[key];
+  return typeof v === 'string' && v.length > 0 ? v : undefined;
+}
+
+/** The pre-filled draft a Spider alert card opened this lead with, capped at 500 characters. */
+export function spiderDraftFrom(state: unknown): string | undefined {
+  return field(state, 'spiderDraft')?.slice(0, SPIDER_FOLLOW_UP_MAX_CHARS);
 }

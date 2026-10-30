@@ -118,6 +118,15 @@ describe('uploadAttachment — multipart path (everything that is not video)', (
     expect(form.get('file')).toBe(file);
   });
 
+  it('carries the Documents-tab source marker as a multipart part, and sends none when it is not asked for', async () => {
+    await uploadAttachment({ entityType: 'invoice', entityId: 'inv-1', file: docOf(), source: 'PAYMENTS_DOCUMENTS' });
+    expect((mockApi.post.mock.calls[0]![1] as FormData).get('source')).toBe('PAYMENTS_DOCUMENTS');
+
+    mockApi.post.mockClear();
+    await uploadAttachment({ entityType: 'invoice', entityId: 'inv-1', file: docOf() });
+    expect((mockApi.post.mock.calls[0]![1] as FormData).has('source')).toBe(false);
+  });
+
   it('defaults description to empty rather than omitting the part', async () => {
     await uploadAttachment({
       entityType: 'lead',
@@ -285,5 +294,20 @@ describe('uploadAttachment — direct path (video)', () => {
 
     options.onSuccess?.({});
     await done;
+  });
+});
+
+describe('uploadAttachment - the source marker on the direct path', () => {
+  it('passes the marker to the verify-and-record call', async () => {
+    mintOnce();
+    const pending = uploadAttachment({
+      entityType: 'job', entityId: 'job-1', file: videoOf(), displayName: 'Clip', source: 'PAYMENTS_DOCUMENTS',
+    });
+    await settle();
+    lastChunkedUpload().options.onSuccess?.({});
+    await pending;
+    const completeCall = mockApi.post.mock.calls[1]!;
+    expect(completeCall[0]).toBe('/api/attachments/job/job-1/direct-upload/complete');
+    expect((completeCall[1] as { source?: string }).source).toBe('PAYMENTS_DOCUMENTS');
   });
 });

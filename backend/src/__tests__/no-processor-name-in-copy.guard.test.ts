@@ -28,6 +28,8 @@ import { renderTemplate, VERB_RULES } from '../services/notifications/templates'
 
 const SRC = path.resolve(__dirname, '..');
 const VENDOR = /stripe/i;
+/** Every vendor CLAUDE.md names; a RENDERED notification may carry none of them. */
+const ANY_VENDOR = /stripe|supabase|calltracking|onrender|render\.com|\bctm\b/i;
 
 const COPY_PROPERTIES = /^(error|message|warning|title|body|subject|label|summary|description|reason|text|html|hint|detail|note|[a-z_]*_warning|[a-z_]*_message)$/i;
 
@@ -136,6 +138,31 @@ describe('no processor name reaches a user from the backend (slice 33)', () => {
           rendered += 1;
           const text = `${t.title} ${t.body ?? ''}`;
           if (VENDOR.test(text)) offenders.push(`${verb}/${variant}/${reason}: ${text.slice(0, 80)}`);
+        }
+      }
+    }
+    expect(rendered).toBeGreaterThan(100);
+    expect(offenders).toEqual([]);
+  });
+
+  it('the bank-payment office alerts name no vendor in any outcome ending', () => {
+    const outcomes = ['sent', 'no_email', 'bounced', 'not_sent', 'not_open', 'missing'];
+    let rendered = 0;
+    const offenders: string[] = [];
+    for (const verb of Object.keys(VERB_RULES)) {
+      for (const outcome of outcomes) {
+        for (const cleared of ['yes', 'no', '']) {
+          for (const cannotPay of ['', 'yes']) {
+            const data = {
+              amount: '125.00', invoice_number: 'I00001', object_label: 'Invoice I00001', customer_name: 'Pat Example',
+              variant: 'bank_return', cleared, cannot_pay: cannotPay, ...(outcome === 'missing' ? {} : { customer_notice: outcome }),
+            };
+            let t;
+            try { t = renderTemplate(verb, data); } catch { continue; }
+            rendered += 1;
+            const text = `${t.title} ${t.body ?? ''}`;
+            if (ANY_VENDOR.test(text)) offenders.push(`${verb}/${outcome}/${cleared}: ${text.slice(0, 80)}`);
+          }
         }
       }
     }

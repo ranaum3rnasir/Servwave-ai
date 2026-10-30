@@ -10,7 +10,7 @@ import { Routes, Route } from 'react-router-dom';
 import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
 import SettingsLayout from '@/pages/v2/settings/SettingsLayout';
-import PaymentsListsRoute from '@/pages/v2/settings/PaymentsListsRoute';
+import ListsPage from '@/pages/v2/settings/ListsPage';
 import { renderWithProviders } from './helpers';
 
 const mockApi = vi.mocked(api);
@@ -36,7 +36,7 @@ const renderAt = (ability: ReturnType<typeof buildAbility>) =>
   renderWithProviders(
     <Routes>
       <Route path="/settings" element={<SettingsLayout />}>
-        <Route path="/settings/payments" element={<PaymentsListsRoute />} />
+        <Route path="/settings/payments" element={<ListsPage />} />
       </Route>
     </Routes>,
     { ability, initialEntries: ['/settings/payments'] },
@@ -71,9 +71,12 @@ describe('Settings > Payments reached by URL', () => {
     expect(screen.queryByRole('button', { name: /discard/i })).not.toBeInTheDocument();
   });
 
-  it('still offers the bar to someone who can edit company settings', async () => {
-    mockApi.get.mockResolvedValue({ data: { id: 'o1', accepted_payment_methods: ['CASH'], source_options: [], job_type_options: [] } });
+  // Lists saves each change on its own and registers no saver, so there is no bar even for someone who may edit settings.
+  it('shows the page to someone who can edit company settings, with no Discard / Save bar', async () => {
+    mockApi.get.mockResolvedValue({ data: { items: [], counts: { active: 0, archived: 0 } } });
     renderAt(COMPANY_ADMIN);
-    expect(await screen.findByRole('button', { name: /save changes/i })).toBeInTheDocument();
+    expect(await screen.findByText('Job types')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /save changes/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /discard/i })).not.toBeInTheDocument();
   });
 });

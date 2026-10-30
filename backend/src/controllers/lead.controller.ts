@@ -131,6 +131,21 @@ const leadListSelect = {
   // (projectBoardWalkthroughVisits). List-only, so the shared snapshot select stays as it is.
   visits: { select: { ...walkthroughSnapshotSelect, ...visitLocationSelect, scheduled_end: true, is_all_day: true, assignees: { select: { user_id: true, user: { select: { id: true, first_name: true, last_name: true, phone: true } } } } } },
   contacted_at: true,
+  // Spider's "Select Contacts for Alert" list (Ran, 15 Oct: the contractor's screen reads leads from
+  // this list) decides each lead's stage and time in it from these, the same timestamps the Spider
+  // sweep reads (services/spider/config.ts spiderStageOf), and shows the lead's service address.
+  // `returned_to_new_at` starts a lead's New stay after it moved back to New (SPEC-4 D7).
+  returned_to_new_at: true,
+  walkthrough_first_booked_at: true,
+  last_visit_completed_at: true,
+  first_estimate_sent_at: true,
+  won_at: true,
+  lost_at: true,
+  cancelled_at: true,
+  service_address_line1: true,
+  service_address_line2: true,
+  service_zip: true,
+  service_location: { select: { address_line1: true, address_line2: true, city: true, state: true, zip: true } },
   // email: see the job list select - the walkthrough composer needs it too (SRVW-243).
   customer: { select: { id: true, customer_number: true, first_name: true, last_name: true, company_name: true, phone: true, email: true, ad_source: true, service_locations: { where: { is_primary: true }, take: 1, select: { city: true, state: true } } } },
   // Scheduler redesign: the SINGLE owner (commission_owner) + the MULTI performer set.

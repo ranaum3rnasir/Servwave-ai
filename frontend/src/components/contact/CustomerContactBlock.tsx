@@ -55,6 +55,13 @@ import {
 
 // ─── One value ─────────────────────────────────────────────────────────────────
 
+/** A call is attributed exactly as before: the Text-only `textCarriesLead` hint (SPEC-4 §6.8) stays off it. */
+function callOnly(context: DialerEntityContext | undefined): DialerEntityContext | undefined {
+  if (!context) return context;
+  const { textCarriesLead: _textOnly, ...call } = context;
+  return call;
+}
+
 function CopyValueButton({ value, label, reveal = false }: { value: string; label: string; reveal?: boolean }) {
   const [copied, setCopied] = useState(false);
   return (
@@ -131,7 +138,7 @@ export function PhoneValue({ kind, phone, extension, name, context, recordOnly, 
             key: 'call',
             label: 'Call',
             icon: <Phone className="size-4" aria-hidden />,
-            onSelect: () => requestCall(phone, context),
+            onSelect: () => requestCall(phone, callOnly(context)),
           },
           {
             key: 'text',
@@ -589,7 +596,7 @@ function ContactActions({
 
   const call =
     !d || !phone ? null : d.call === 'in_app_dial' ? (
-      <Button variant="outline" size="sm" onClick={() => requestCall(phone, context)}>
+      <Button variant="outline" size="sm" onClick={() => requestCall(phone, callOnly(context))}>
         <Phone aria-hidden /> Call
       </Button>
     ) : d.call === 'native_link' ? (

@@ -38,6 +38,7 @@ import { LONG_TEXT_MAX } from '@/lib/textLimits';
 import { toast } from '@/ui-kit/components/ui/sonner';
 
 import { BackLink } from '../_shared/backLink';
+import { RadioRow } from '../_shared/radioRow';
 import { DateField } from '@/ui-kit/components/form/dateField';
 import { v2Path, preferV2Path } from '../uiV2';
 import { useRecordVisit } from '../pageBreadcrumbs';
@@ -137,26 +138,6 @@ function Field({
       {children}
       {error && <p data-error-for={htmlFor} className="text-destructive text-[12px] font-medium">{error}</p>}
     </div>
-  );
-}
-
-/** A radio row built from primitives - the kit ships no RadioGroup. */
-function RadioRow({ checked, onClick, label }: { checked: boolean; onClick: () => void; label: string }) {
-  return (
-    <Button
-      type="button"
-      role="radio"
-      aria-checked={checked}
-      variant="ghost"
-      size="sm"
-      onClick={onClick}
-      className="h-auto justify-start gap-2.5 px-0 font-normal"
-    >
-      <span className={checked ? 'border-brand grid size-4 place-items-center rounded-full border' : 'border-input grid size-4 place-items-center rounded-full border'}>
-        {checked && <span className="bg-brand size-2 rounded-full" />}
-      </span>
-      <span className={checked ? 'font-medium' : undefined}>{label}</span>
-    </Button>
   );
 }
 

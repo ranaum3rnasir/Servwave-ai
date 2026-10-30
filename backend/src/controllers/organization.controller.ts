@@ -21,6 +21,7 @@ import { isReservedLocalPart } from '../lib/mailbox/address-core';
 import { runUnscoped } from '../lib/tenant-context';
 import { loadSharp } from '../lib/load-sharp';
 import { syncOrgBranding } from '../lib/stripe-branding';
+import { activeListsForOrg } from '../lib/org-list-rows';
 import { LONG_TEXT_MAX, VERY_LONG_TEXT_MAX } from '../lib/text-limits';
 
 /** Matches lib/email.ts's own cap, so a value that validates here can never be
@@ -251,14 +252,8 @@ export const patchOrgSchema = z.object({
   customer_next_number: z.number().int().positive().optional(),
   service_plan_next_number: z.number().int().positive().optional(),
   accepted_payment_methods: acceptedPaymentMethodsSchema.optional(),
-  source_options: z
-    .array(z.string().trim().min(1, 'Option cannot be empty').max(50))
-    .max(100, 'Cannot exceed 100 options')
-    .optional(),
-  job_type_options: z
-    .array(z.string().trim().min(1, 'Option cannot be empty').max(50))
-    .max(100, 'Cannot exceed 100 options')
-    .optional(),
+  // source_options / job_type_options are NOT accepted here any more (V7-03d): the lists are rows edited through
+  // /api/lead-sources and /api/job-types. The schema is strict, so a stale client gets a 400.
   billing_terms_options: z
     .array(z.string().trim().min(1, 'Option cannot be empty').max(50))
     .max(100, 'Cannot exceed 100 options')
@@ -354,6 +349,14 @@ export const patchOrgSchema = z.object({
  * seeing the phone as set up. Remove the key in a later cleanup, once no
  * frontend reads it.
  */
+/**
+ * The org record with its two Lists-page lists built from the ACTIVE rows (V7-03). An org with no rows yet keeps the
+ * JSON columns the select already carries (the deploy overlap before the backfill). Both handlers call this one.
+ */
+async function presentOrganizationWithLists<T extends { ctm_account_id: string | null; ctm_sms_ready: boolean; stripe_account_id: string | null }>(org: T, orgId: string) {
+  return presentOrganization({ ...org, ...(await activeListsForOrg(orgId)) });
+}
+
 function presentOrganization<T extends { ctm_account_id: string | null; ctm_sms_ready: boolean; stripe_account_id: string | null }>(org: T) {
   const phoneConnected = Boolean(org.ctm_account_id);
   // The payout account's processor id is never sent, and neither is a key named for it: only `stripe_connected`.
@@ -386,7 +389,7 @@ export const getOrganization = async (req: Request, res: Response) => {
       res.status(404).json({ error: 'Organization not configured' });
       return;
     }
-    res.json(presentOrganization(org));
+    res.json(await presentOrganizationWithLists(org, req.user!.organization_id));
   } catch (err) {
     logger.error('getOrganization error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -578,24 +581,6 @@ export const updateOrganization = async (req: Request, res: Response) => {
       }
 
       // Dedupe option arrays (case-insensitive, preserve first occurrence)
-      if (Array.isArray(body.source_options)) {
-        const seen = new Set<string>();
-        body.source_options = (body.source_options as string[]).filter(s => {
-          const key = s.toLowerCase();
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        });
-      }
-      if (Array.isArray(body.job_type_options)) {
-        const seen = new Set<string>();
-        body.job_type_options = (body.job_type_options as string[]).filter(s => {
-          const key = s.toLowerCase();
-          if (seen.has(key)) return false;
-          seen.add(key);
-          return true;
-        });
-      }
       if (Array.isArray(body.billing_terms_options)) {
         const seen = new Set<string>();
         body.billing_terms_options = (body.billing_terms_options as string[]).filter(s => {
@@ -620,7 +605,7 @@ export const updateOrganization = async (req: Request, res: Response) => {
     if ('brand_color' in body) void syncOrgBranding(orgId);
     await writeSettingsAudit(req, 'organization.updated', { fields: Object.keys(body) });
     void logAudit({ req, action: 'organization.updated', resourceType: 'Organization', resourceId: req.user!.organization_id, metadata: { fields: Object.keys(body) } });
-    res.json(presentOrganization(updated));
+    res.json(await presentOrganizationWithLists(updated, orgId));
   } catch (err) {
     if (err instanceof HttpError) {
       res.status(err.status).json({ error: err.message });

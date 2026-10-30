@@ -97,7 +97,7 @@ export const VERBS_WITHOUT_ROLE_LISTS: ReadonlySet<string> = new Set([
   'team.invite_accepted',
   'task.assigned', 'task.watching', 'task.completed', 'task.cancelled', 'task.removed', 'task.commented', 'task.deleted',
   'calendar_entry.scheduled', 'calendar_entry.moved', 'calendar_entry.cancelled',
-  'automation.message', 'mailbox.address_needed', 'mailbox.address_needed_admin', 'spider.alert',
+  'automation.message', 'mailbox.address_needed', 'mailbox.address_needed_admin', 'spider.alert', 'spider.starting_summary',
   'lo.submitted', 'lo.approved',
   'security.new_signin', 'security.password_changed', 'security.mfa_enabled', 'security.mfa_disabled',
   'communication.call_missed', 'communication.sms_inbound', 'communication.email_inbound',
@@ -428,7 +428,15 @@ export function resolveRecipients(ctx: ResolveContext): RecipientSpec[] {
     // ── SPIDER ──────────────────────────────────────────────────────────────────
     case 'spider.alert': {
       // Pre-resolved by Spider's single recipient rule (services/spider/recipients.ts), the
-      // same list its email and text use, so every channel reaches the same people.
+      // same list its email and text use, so every channel reaches the same people. FEED: Spider's
+      // own button, panel and red frame are its interrupting surfaces, and the bell never shows it
+      // (bellHiddenVerbs.ts, D3).
+      strArr('recipient_ids').forEach(id => raw.push(spec(id, FEED)));
+      break;
+    }
+    case 'spider.starting_summary': {
+      // One person's starting summary (#2794), pre-resolved by the sweep from Spider's one recipient
+      // rule. FEED: listed in the bell, never a toast.
       strArr('recipient_ids').forEach(id => raw.push(spec(id, FEED)));
       break;
     }

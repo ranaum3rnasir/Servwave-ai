@@ -134,8 +134,15 @@ export const SCROLL_BOX_FOCUS_CLASS =
  * `email-body`: the HTML body of a received message in the inbox reader. A sender's table or
  * image can be wider than a phone, and cannot be reflowed (it is the sender's markup); it scrolls
  * inside the message box and never widens the page (mobile slice 46).
+ *
+ * `payments-quick-filters`: the Payments page's row of quick-filter chips (All, Succeeded, ... Needs attention).
+ * The approved v7 payments mockup draws it as one row that scrolls sideways (`.chips { overflow-x: auto }`) and the
+ * spec (7.4) says so; seven pill chips with counts are wider than a phone, and wrapping them would push the table
+ * down. The chips are buttons, so the row is already reachable from the keyboard.
  */
-export const OTHER_INTENDED_X_SCROLLERS = ['tab-strip', 'dialog-line-table', 'lifecycle-rail', 'record-list', 'line-items-table', 'email-body'] as const;
+export const OTHER_INTENDED_X_SCROLLERS = [
+  'tab-strip', 'dialog-line-table', 'lifecycle-rail', 'record-list', 'line-items-table', 'email-body', 'payments-quick-filters',
+] as const;
 
 /**
  * The attributes of a dialog's line-table scroll box (see `dialog-line-table`

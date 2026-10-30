@@ -82,6 +82,8 @@ export interface LineItemsEditorProps {
   onChange: (next: LineItem[]) => void;
   /** Per-row "name" validation messages (index-aligned). */
   itemNameErrors?: (string | undefined)[];
+  /** Per-row "price" messages (index-aligned), drawn under the price field. */
+  itemPriceErrors?: (string | undefined)[];
   /** Keep at least one row (Trash disabled at length 1). Defaults to true. */
   minOneRow?: boolean;
 }
@@ -156,7 +158,7 @@ function ProfitabilityPair({
   );
 }
 
-export function LineItemsEditor({ value, onChange, itemNameErrors, minOneRow = true }: LineItemsEditorProps) {
+export function LineItemsEditor({ value, onChange, itemNameErrors, itemPriceErrors, minOneRow = true }: LineItemsEditorProps) {
   // JS-gated breakpoint (NOT CSS lg:hidden dual-render): only ONE layout variant
   // is ever in the DOM — see useMediaQuery docs for why (portals, a11y, jsdom).
   // Same literal query as StandaloneInvoiceFormPage so the effect dep is stable.
@@ -165,6 +167,7 @@ export function LineItemsEditor({ value, onChange, itemNameErrors, minOneRow = t
   // (`data-error-for`) and a failed submit can land on it.
   const nameIdBase = useId();
   const nameId = (idx: number) => `${nameIdBase}-name-${idx}`;
+  const priceId = (idx: number) => `${nameIdBase}-price-${idx}`;
   const [pbQuery, setPbQuery] = useState('');
   const [pbSuggestions, setPbSuggestions] = useState<PriceBookSearchResult[]>([]);
   const [pbShowDropdown, setPbShowDropdown] = useState(false);
@@ -540,15 +543,20 @@ export function LineItemsEditor({ value, onChange, itemNameErrors, minOneRow = t
                   />
 
                   {/* Price */}
-                  <Input
-                    kind="money"
-                    step="0.01"
-                    min="0"
-                    placeholder="0.00"
-                    value={item.unit_price as number | string}
-                    onChange={(e) => updateItem(idx, { unit_price: e.target.value === '' ? ('' as unknown as number) : Number(e.target.value) })}
-                    size="xs"
-                  />
+                  <div>
+                    <Input
+                      id={priceId(idx)}
+                      kind="money"
+                      step="0.01"
+                      min="0"
+                      placeholder="0.00"
+                      value={item.unit_price as number | string}
+                      onChange={(e) => updateItem(idx, { unit_price: e.target.value === '' ? ('' as unknown as number) : Number(e.target.value) })}
+                      size="xs"
+                      aria-invalid={itemPriceErrors?.[idx] ? true : undefined}
+                      aria-describedby={itemPriceErrors?.[idx] ? `${priceId(idx)}-error` : undefined}
+                    />
+                  </div>
 
                   {/* Cost + Margin */}
                   <div>
@@ -632,6 +640,9 @@ export function LineItemsEditor({ value, onChange, itemNameErrors, minOneRow = t
                     </button>
                   </div>
                 </div>
+                )}
+                {!isBelowLg && itemPriceErrors?.[idx] && (
+                  <p id={`${priceId(idx)}-error`} data-error-for={priceId(idx)} role="alert" className="mt-1 text-xs text-danger">{itemPriceErrors[idx]}</p>
                 )}
 
                 {/* Mobile stacked card — the ONLY variant mounted below lg (JS-gated, never
@@ -737,6 +748,7 @@ export function LineItemsEditor({ value, onChange, itemNameErrors, minOneRow = t
                     <div>
                       <span className="text-[10px] font-medium text-text-secondary uppercase tracking-wide block mb-0.5">Price</span>
                       <Input
+                        id={priceId(idx)}
                         kind="money"
                         step="0.01"
                         min="0"
@@ -744,8 +756,13 @@ export function LineItemsEditor({ value, onChange, itemNameErrors, minOneRow = t
                         value={item.unit_price as number | string}
                         onChange={(e) => updateItem(idx, { unit_price: e.target.value === '' ? ('' as unknown as number) : Number(e.target.value) })}
                         size="xs"
+                        aria-invalid={itemPriceErrors?.[idx] ? true : undefined}
+                      aria-describedby={itemPriceErrors?.[idx] ? `${priceId(idx)}-error` : undefined}
                       />
                     </div>
+                    {itemPriceErrors?.[idx] && (
+                      <p id={`${priceId(idx)}-error`} data-error-for={priceId(idx)} role="alert" className="col-span-2 text-xs text-danger">{itemPriceErrors[idx]}</p>
+                    )}
                     <div>
                       <span className="text-[10px] font-medium text-text-secondary uppercase tracking-wide block mb-0.5">Cost</span>
                       <Input

@@ -7,7 +7,7 @@
  * slice, never recomputed the way the module computes them.
  */
 import { describe, it, expect } from 'vitest';
-import { payableNowCents, priceCheckout, type CheckoutMethod } from '../checkout-pricing';
+import { handPaymentAboveBalanceMessage, payableNowCents, priceCheckout, type CheckoutMethod } from '../checkout-pricing';
 
 const DESCRIPTION = 'Payment for Invoice I00042';
 
@@ -178,5 +178,25 @@ describe('priceCheckout - no fees for any method (D9, D4)', () => {
       payableNowCents: 10000,
       platformFeeCents: 0,
     });
+  });
+});
+
+describe('handPaymentAboveBalanceMessage (V7-12: no overpaid invoices)', () => {
+  it('formats the balance like the app does: a thousands separator and two decimals', () => {
+    expect(handPaymentAboveBalanceMessage(123450, 'invoice')).toBe(
+      'That is more than the $1,234.50 balance due. Enter $1,234.50 or less.',
+    );
+    expect(handPaymentAboveBalanceMessage(5, 'invoice')).toBe('That is more than the $0.05 balance due. Enter $0.05 or less.');
+  });
+
+  it('says "deposit still due" for a deposit', () => {
+    expect(handPaymentAboveBalanceMessage(10000, 'deposit')).toBe(
+      'That is more than the $100.00 deposit still due. Enter $100.00 or less.',
+    );
+  });
+
+  it('says there is nothing left to pay when the balance is zero', () => {
+    expect(handPaymentAboveBalanceMessage(0, 'invoice')).toBe('There is nothing left to pay on this invoice.');
+    expect(handPaymentAboveBalanceMessage(0, 'deposit')).toBe('There is nothing left to pay on this deposit.');
   });
 });

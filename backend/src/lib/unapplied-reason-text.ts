@@ -1,32 +1,62 @@
 /**
- * Why money the processor took could not be applied to an invoice, in plain words. Moved server-side from the
- * Settings card (payments go-live P4) so the Needs attention list words it once for every screen. It uses the STORED
- * reason and the invoice's CURRENT status: "paid after the invoice was closed" is told from the invoice's real state.
+ * Why money the processor took could not be applied to an invoice, in plain words (spec 7.15). The server words it once
+ * for every screen: `short` is the card, table and alert text, `long` the sentence after it. It uses the STORED reason and
+ * the invoice's CURRENT state: "paid after the invoice was closed" is told from the invoice's real status, and "paid
+ * twice" from an earlier payment of the same amount. Never a processor id or error text.
  */
-const REASON_TEXT: Record<string, string> = {
-  // INVOICE_NOT_PAYABLE is worded from the invoice's state: see unappliedReasonText().
-  OVERPAYMENT: 'Paid more than the balance due. This is the part that was not applied.',
-  AMOUNT_MISMATCH: 'The amount paid did not match the amount owed.',
-  DEPOSIT_SUPERSEDED: 'The estimate changed after this deposit was sent, so the amount paid is no longer the amount owed.',
-  DEPOSIT_ON_HOLD: 'Paid while the deposit was on hold (the estimate was back in draft).',
-  INVOICE_NOT_FOUND: 'Not tied to an invoice in this account.',
-  WRONG_ORG: 'Not tied to an invoice in this account.',
-  DOCUMENT_MISMATCH: 'Paid for a different document than the invoice it named.',
-  REFUND_UNMATCHED: 'A refund went out of your ServWave Payments account for a payment ServWave has no record of.',
-};
+export interface UnappliedReasonInput {
+  reason: string;
+  /** The meant-for invoice's current status, or null when the capture sits on no invoice. */
+  invoiceStatus: string | null | undefined;
+  invoiceNumber: string | null | undefined;
+  invoiceTotal: number | null | undefined;
+  /** The money on the capture, in dollars. */
+  amount: number | null | undefined;
+  /** A succeeded payment on the invoice has the same amount as this one (not counting the capture's own payment row). */
+  sameAmountPaid: boolean | null | undefined;
+}
 
-const FALLBACK_REASON = 'Could not be applied to an invoice.';
+export interface UnappliedReasonText { short: string; long: string }
 
-export function unappliedReasonText(reason: string, invoiceStatus: string | null | undefined): string {
-  if (reason === 'INVOICE_NOT_PAYABLE') {
-    switch (invoiceStatus) {
-      case 'PAID':
-        return 'Paid after the invoice was already paid in full.';
-      case 'VOIDED':
-        return 'Paid after the invoice was voided.';
-      default:
-        return 'Paid while the invoice was not open for payment.';
+const money = (n: number): string => `$${n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}`;
+const plain = (short: string): UnappliedReasonText => ({ short, long: `${short}.` });
+
+export function unappliedReasonTexts(i: UnappliedReasonInput): UnappliedReasonText {
+  const inv = i.invoiceNumber || 'The invoice';
+  switch (i.reason) {
+    case 'AMOUNT_MISMATCH': {
+      const short = 'Amount did not match the invoice';
+      return i.amount != null && i.invoiceTotal != null
+        ? { short, long: `${money(i.amount)} was paid against an invoice of ${money(i.invoiceTotal)}.` }
+        : plain(short);
     }
+    case 'DEPOSIT_SUPERSEDED':
+      return { short: 'Deposit no longer fits the estimate', long: 'The estimate changed after the deposit was requested, so this deposit no longer fits it.' };
+    case 'DEPOSIT_ON_HOLD':
+      return plain('Deposit was on hold when it was paid');
+    case 'INVOICE_NOT_PAYABLE':
+      if (i.invoiceStatus === 'PAID' && i.sameAmountPaid) {
+        return { short: 'Invoice paid twice', long: `${inv} was paid twice. It was already paid in full, and this is the second payment.` };
+      }
+      if (i.invoiceStatus === 'PAID') {
+        return { short: 'Invoice was already paid', long: `${inv} was already paid in full, by another payment, when this one arrived.` };
+      }
+      if (i.invoiceStatus === 'VOIDED') return { short: 'Invoice was voided', long: `${inv} was voided before this payment arrived.` };
+      return plain('Paid while the invoice was not open for payment');
+    case 'REFUND_UNMATCHED': {
+      const short = 'Refund has no invoice reference';
+      return i.invoiceNumber
+        ? { short, long: `The refund was sent without an invoice reference, so ${i.invoiceNumber} does not show it.` }
+        : { short, long: 'The refund was sent without an invoice reference.' };
+    }
+    case 'OVERPAYMENT':
+      return plain('Paid more than was owed');
+    case 'INVOICE_NOT_FOUND':
+    case 'WRONG_ORG':
+      return plain('Payment is not tied to an invoice');
+    case 'DOCUMENT_MISMATCH':
+      return plain('Paid for a different document than the invoice');
+    default:
+      return plain('Could not be applied to an invoice');
   }
-  return Object.prototype.hasOwnProperty.call(REASON_TEXT, reason) ? REASON_TEXT[reason] : FALLBACK_REASON;
 }

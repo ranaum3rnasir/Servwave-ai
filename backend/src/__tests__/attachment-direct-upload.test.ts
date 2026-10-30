@@ -302,6 +302,44 @@ describe('POST .../direct-upload/complete — verifying the landed object', () =
     expect(storage.remove).not.toHaveBeenCalled();
   });
 
+  it('stores the Documents-tab marker when the complete step carries it, and null when it does not', async () => {
+    for (const [source, expected] of [['PAYMENTS_DOCUMENTS', 'PAYMENTS_DOCUMENTS'], [undefined, null]] as const) {
+      mockPrisma.attachment.create.mockClear();
+      const minted = await mintVideo();
+      storage.info.mockResolvedValue({ data: { size: 5 * MB, contentType: 'video/mp4' }, error: null });
+      stubHeadBytes(mp4Head());
+
+      const res = await complete({
+        ticket: minted.body.upload.ticket,
+        display_name: 'Walkthrough',
+        description: '',
+        ...(source ? { source } : {}),
+      });
+
+      expect(res.status, String(source)).toBe(201);
+      expect(mockPrisma.attachment.create).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ source: expected }) }),
+      );
+    }
+  });
+
+  it('refuses any other marker value and creates no row', async () => {
+    mockPrisma.attachment.create.mockClear();
+    const minted = await mintVideo();
+    storage.info.mockResolvedValue({ data: { size: 5 * MB, contentType: 'video/mp4' }, error: null });
+    stubHeadBytes(mp4Head());
+
+    const res = await complete({
+      ticket: minted.body.upload.ticket,
+      display_name: 'Walkthrough',
+      description: '',
+      source: 'SOMETHING_ELSE',
+    });
+
+    expect(res.status).toBe(400);
+    expect(mockPrisma.attachment.create).not.toHaveBeenCalled();
+  });
+
   it('rejects and DELETES an object whose real size exceeds the cap despite a small declared size', async () => {
     const minted = await mintVideo({ file_size: 1 * MB });
     storage.info.mockResolvedValue({
@@ -640,6 +678,49 @@ describe('the ticket binds the upload to one org, one entity and one moment', ()
     expect(mockPrisma.attachment.create).not.toHaveBeenCalled();
     // Not this caller's object to destroy either.
     expect(storage.remove).not.toHaveBeenCalled();
+  });
+});
+
+describe('the Documents-tab marker on a record kind the tab does not list', () => {
+  const LEAD_ID = 'l0000000-0000-0000-0000-0000000000d2';
+
+  /** Mints a video ticket on a LEAD (a kind the marker is refused on) as the admin. */
+  async function mintOnLead() {
+    mockPrisma.lead.findUnique.mockImplementation(async () => ({ id: LEAD_ID }));
+    const res = await request(app)
+      .post(`/api/attachments/lead/${LEAD_ID}/direct-upload`)
+      .set(authHeader('admin'))
+      .send({ file_name: 'walkthrough.mp4', content_type: 'video/mp4', file_size: 5 * MB });
+    expect(res.status).toBe(201);
+    return res.body.upload as { ticket: string; path: string };
+  }
+  const completeOnLead = (who: Principal, ticket: string) => request(app)
+    .post(`/api/attachments/lead/${LEAD_ID}/direct-upload/complete`)
+    .set(authHeader(who))
+    .send({ ticket, display_name: 'Walkthrough', description: '', source: 'PAYMENTS_DOCUMENTS' });
+
+  it('answers 400 and removes the landed object when the minting user completes it', async () => {
+    const upload = await mintOnLead();
+    storage.remove.mockClear();
+
+    const res = await completeOnLead('admin', upload.ticket);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('Invalid source');
+    expect(storage.remove).toHaveBeenCalledWith([upload.path]);
+    expect(mockPrisma.attachment.create).not.toHaveBeenCalled();
+  });
+
+  it('does NOT remove the object when a colleague holding the ticket sends a bad marker', async () => {
+    const upload = await mintOnLead();
+    storage.remove.mockClear();
+    mockAuthAs('dispatcher');
+
+    const res = await completeOnLead('dispatcher', upload.ticket);
+
+    expect(res.status).toBe(403);
+    expect(storage.remove).not.toHaveBeenCalled();
+    expect(mockPrisma.attachment.create).not.toHaveBeenCalled();
   });
 });
 

@@ -1,6 +1,6 @@
 /**
  * Settings > Inventory - org stock policy (Inventory P1 section 7). Follows the
- * PaymentsListsPage skeleton: react-hook-form + dirty-only PATCH via the shared
+ * ServwavePaymentsPage skeleton: react-hook-form + dirty-only PATCH via the shared
  * settings Save bar (useSettingsBar().registerSaver).
  *
  *   - default_inventory_location_id - pre-selected when receiving stock and deducting

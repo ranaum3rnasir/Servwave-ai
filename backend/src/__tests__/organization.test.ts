@@ -348,7 +348,7 @@ describe('PATCH /api/organization — accepted_payment_methods (§4.5)', () => {
   });
 });
 
-describe('PATCH /api/organization — source_options and job_type_options', () => {
+describe('PATCH /api/organization — the two Lists keys are gone (V7-03d)', () => {
   beforeEach(() => {
     mockAuthAs('admin');
     (prisma.$transaction as any).mockImplementation((fn: any) => fn(prisma));
@@ -359,71 +359,33 @@ describe('PATCH /api/organization — source_options and job_type_options', () =
     );
   });
 
-  it('persists source_options and deduplicates case-insensitively', async () => {
-    const res = await request(app)
-      .patch('/api/organization')
-      .set(authHeader('admin'))
-      .send({ source_options: ['Google', 'Referral', 'google'] });
+  // The list rules (dedupe, 50 characters, 100 items, no empty names) now live on /api/job-types and
+  // /api/lead-sources (job-types-db and lead-sources-db suites). This PATCH refuses the keys outright.
+  const staleBodies: Array<[string, Record<string, unknown>]> = [
+    ['source_options', { source_options: ['Google', 'Referral', 'google'] }],
+    ['job_type_options', { job_type_options: ['Cabinet Install', 'Repair'] }],
+    ['an over-long item', { source_options: ['A'.repeat(51)] }],
+    ['101 items', { source_options: Array.from({ length: 101 }, (_, i) => `Option ${i}`) }],
+    ['100 items', { job_type_options: Array.from({ length: 100 }, (_, i) => `Type ${i}`) }],
+    ['an empty-string item', { source_options: [''] }],
+    ['an empty array', { source_options: [] }],
+  ];
 
-    expect(res.status).toBe(200);
-    // Controller deduplicates; only unique values should be persisted
-    const updateArgs = (prisma.organization.update as any).mock.calls[0][0];
-    expect(updateArgs.data.source_options).toEqual(['Google', 'Referral']);
-  });
-
-  it('persists job_type_options', async () => {
-    const res = await request(app)
-      .patch('/api/organization')
-      .set(authHeader('admin'))
-      .send({ job_type_options: ['Cabinet Install', 'Repair'] });
-
-    expect(res.status).toBe(200);
-    expect(res.body.job_type_options).toEqual(['Cabinet Install', 'Repair']);
-  });
-
-  it('rejects an item longer than 50 chars', async () => {
-    const res = await request(app)
-      .patch('/api/organization')
-      .set(authHeader('admin'))
-      .send({ source_options: ['A'.repeat(51)] });
+  it.each(staleBodies)('answers 400 and writes nothing for %s', async (_label, body) => {
+    const res = await request(app).patch('/api/organization').set(authHeader('admin')).send(body);
 
     expect(res.status).toBe(400);
+    expect(prisma.organization.update).not.toHaveBeenCalled();
   });
 
-  it('rejects more than 100 items', async () => {
+  it('refuses the keys even when sent next to a valid field, and saves nothing', async () => {
     const res = await request(app)
       .patch('/api/organization')
       .set(authHeader('admin'))
-      .send({ source_options: Array.from({ length: 101 }, (_, i) => `Option ${i}`) });
+      .send({ phone: '555-0100', job_type_options: ['Repair'] });
 
     expect(res.status).toBe(400);
-  });
-
-  it('accepts exactly 100 items', async () => {
-    const res = await request(app)
-      .patch('/api/organization')
-      .set(authHeader('admin'))
-      .send({ job_type_options: Array.from({ length: 100 }, (_, i) => `Type ${i}`) });
-
-    expect(res.status).toBe(200);
-  });
-
-  it('rejects empty-string items', async () => {
-    const res = await request(app)
-      .patch('/api/organization')
-      .set(authHeader('admin'))
-      .send({ source_options: [''] });
-
-    expect(res.status).toBe(400);
-  });
-
-  it('accepts an empty array', async () => {
-    const res = await request(app)
-      .patch('/api/organization')
-      .set(authHeader('admin'))
-      .send({ source_options: [] });
-
-    expect(res.status).toBe(200);
+    expect(prisma.organization.update).not.toHaveBeenCalled();
   });
 });
 

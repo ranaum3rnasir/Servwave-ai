@@ -2,8 +2,10 @@
  * Payments go-live P3 - the Payments page's read API.
  *
  * Every number and row comes from ServWave's own records (the payments ledger, refunds, disputes and
- * payouts), never from a live read of the processor. No processor id, account id or processor error text
- * leaves this controller. Every query is scoped to the caller's company, and the queries run one after
+ * payouts), never from a live read of the processor. The ONE exception is an unapplied item's drawer (V7-09a), which
+ * asks the processor, on demand and never stored, how that money was paid (card or bank); that read lives in
+ * services/payment-attention/unapplied-detail.ts and lib/stripe.ts (retrieveCapturePayerDetail). No processor id,
+ * account id or processor error text leaves this controller. Every query is scoped to the caller's company, and the queries run one after
  * another (the hosted pool allows one connection).
  */
 import type { Request, Response } from 'express';
@@ -21,13 +23,16 @@ import { buildPaginationMeta, parsePagination, parseSortParams, respondInvalidSo
 import { PAYMENT_PAGE_SORT_FIELDS, type SortFieldMap } from '../lib/sortFields';
 import { invoiceRefundCap, REFUNDABLE_INVOICE_STATUSES, REFUNDABLE_PAYMENT_WHERE } from '../lib/refund-cap';
 import { invoiceOpenerFor } from '../lib/permissions/invoiceAccess';
+import { customerBlockFor } from '../services/payments-page/customerBlock';
+import { openFailedRefundIds, paymentIdsWithOpenFailedRefund } from '../services/payment-attention/queries';
 import { scopeWhereForReq } from '../lib/permissions/enforce';
-import { describeDisputeReason, describeFailure } from '../lib/payment-failure-reasons';
+import { describeDisputeReason, describeFailure, describeRefundFailure } from '../lib/payment-failure-reasons';
 import { CHARGED_SQL, FEE_SQL, facetConditions, validStatuses } from '../lib/query/registries/payment.filters';
 import {
-  buildTimeline, customerNameOf, nextPayoutDate, payoutReference, payoutScheduleText, readPayoutSummary,
+  buildTimeline, customerNameOf, shortCode, nextPayoutDate, payoutReference, payoutScheduleText, readPayoutSummary,
   succeededRefundTotal, toPageRow, type PaymentRowInput,
 } from '../services/payments-page';
+import { findTargets, listDocuments as listUploadedDocuments, TARGET_KINDS, type TargetKind } from '../services/payments-documents';
 
 const cents = (n: unknown): number => Math.round(Number(n ?? 0) * 100);
 const dollars = (c: number): number => c / 100;
@@ -162,7 +167,7 @@ const ROW_SELECT = {
   invoice: {
     select: {
       id: true, invoice_number: true,
-      customer: { select: { id: true, first_name: true, last_name: true, company_name: true } },
+      customer: { select: { id: true, customer_number: true, first_name: true, last_name: true, company_name: true } },
     },
   },
   payout: { select: { id: true, status: true, arrival_date: true } },
@@ -174,7 +179,7 @@ type RowRecord = Prisma.PaymentGetPayload<{ select: typeof ROW_SELECT }>;
 
 const num = (v: unknown): number | null => (v == null ? null : Number(v));
 
-function rowInputOf(p: RowRecord): PaymentRowInput {
+function rowInputOf(p: RowRecord, refundFailed: ReadonlySet<string>): PaymentRowInput {
   return {
     id: p.id,
     amount: Number(p.amount),
@@ -195,16 +200,19 @@ function rowInputOf(p: RowRecord): PaymentRowInput {
     bankLast4: p.bank_last4,
     refunds: p.refunds.map((r) => ({ amount: Number(r.amount), state: r.state })),
     openDispute: p.disputes.some((d) => d.status === 'NEEDS_RESPONSE' || d.status === 'UNDER_REVIEW'),
+    refundFailedOpen: refundFailed.has(p.id),
     payout: p.payout ? { id: p.payout.id, status: p.payout.status, arrivalDate: p.payout.arrival_date } : null,
     invoice: { id: p.invoice.id, number: p.invoice.invoice_number },
-    customer: { id: p.invoice.customer.id, name: customerNameOf(p.invoice.customer) },
+    customer: { id: p.invoice.customer.id, name: customerNameOf(p.invoice.customer), customer_number: p.invoice.customer.customer_number },
   };
 }
 
 /** The rows mapped for this caller: one reach lookup for the whole page, then one question about its invoices. */
 async function mapRows(req: Request, records: RowRecord[]) {
   const openable = await (await invoiceOpenerFor(req, { checkOrg: true }))([...new Set(records.map((r) => r.invoice.id))]);
-  return records.map((r) => toPageRow(rowInputOf(r), !openable.has(r.invoice.id)));
+  // One question for the whole page: which of these payments have a failed refund nobody has dealt with.
+  const refundFailed = await paymentIdsWithOpenFailedRefund(req.user!.organization_id, records.map((r) => r.id));
+  return records.map((r) => toPageRow(rowInputOf(r, refundFailed), !openable.has(r.invoice.id)));
 }
 
 function amountBound(raw: unknown): number | null {
@@ -249,7 +257,9 @@ async function searchCondition(req: Request, q: unknown): Promise<Prisma.Sql | n
   });
   const parts: Prisma.Sql[] = [];
   if (invoices.length > 0) parts.push(Prisma.sql`i.id = ANY(${invoices.map((r) => r.id)}::text[]::uuid[])`);
-  if (/^[0-9a-f-]{4,36}$/i.test(text)) parts.push(Prisma.sql`p.id::text LIKE ${text.toLowerCase() + '%'}`);
+  // The code the page shows (PMT- plus the first 8 hex of the id) finds the payment too: strip it, then the id-prefix test.
+  const idText = text.replace(/^PMT-/i, '');
+  if (/^[0-9a-f-]{4,36}$/i.test(idText)) parts.push(Prisma.sql`p.id::text LIKE ${idText.toLowerCase() + '%'}`);
   return Prisma.sql`(${parts.length > 0 ? Prisma.join(parts, ' OR ') : Prisma.sql`FALSE`})`;
 }
 
@@ -389,7 +399,7 @@ export async function getPayment(req: Request, res: Response) {
         ...ROW_SELECT,
         failure_code: true,
         refunds: {
-          select: { amount: true, state: true, created_at: true, reason_category: true, refunded_by_user: { select: { first_name: true, last_name: true } } },
+          select: { id: true, amount: true, state: true, failure_code: true, created_at: true, reason_category: true, refunded_by_user: { select: { first_name: true, last_name: true } } },
           orderBy: { created_at: 'asc' },
         },
         disputes: { select: { id: true, status: true, reason: true, amount: true, evidence_due_by: true, closed_at: true, created_at: true }, orderBy: { created_at: 'desc' } },
@@ -401,7 +411,12 @@ export async function getPayment(req: Request, res: Response) {
       res.status(404).json({ error: 'Payment not found' });
       return;
     }
-    const row = toPageRow(rowInputOf(p as unknown as RowRecord), false);
+    const refundFailed = await paymentIdsWithOpenFailedRefund(req.user!.organization_id, [p.id]);
+    const row = toPageRow(rowInputOf(p as unknown as RowRecord, refundFailed), false);
+    const openRefundIds = refundFailed.has(p.id) ? await openFailedRefundIds(req.user!.organization_id, p.id) : new Set<string>();
+    const openFailedRefund = openRefundIds.size > 0
+      ? ([...p.refunds].filter((r) => openRefundIds.has(r.id)).sort((a, b) => b.created_at.getTime() - a.created_at.getTime())[0] ?? null)
+      : null;
     const openDispute = p.disputes.some((d) => d.status === 'NEEDS_RESPONSE' || d.status === 'UNDER_REVIEW');
     const canRefundRight = Boolean(req.ability?.can('refund', 'Invoice'));
     const dispute = p.disputes.find((d) => d.status === 'NEEDS_RESPONSE' || d.status === 'UNDER_REVIEW') ?? p.disputes[0] ?? null;
@@ -428,6 +443,15 @@ export async function getPayment(req: Request, res: Response) {
       tip: num(p.tip_amount) ?? 0,
       service_fee: num(p.service_fee_amount) ?? 0,
       failure_text: failureText,
+      customer_block: await customerBlockFor({ invoiceId: p.invoice.id }, req),
+      // The newest failed refund nobody has dealt with, for the drawer's alert; null when there is none.
+      refund_failed: openFailedRefund
+        ? {
+            amount: Number(openFailedRefund.amount),
+            failure_text: describeRefundFailure(openFailedRefund.failure_code),
+            date: openFailedRefund.created_at.toISOString(),
+          }
+        : null,
       refunds: p.refunds.map((r) => ({
         amount: Number(r.amount),
         state: r.state,
@@ -438,6 +462,7 @@ export async function getPayment(req: Request, res: Response) {
       dispute: dispute
         ? {
             id: dispute.id,
+            reference: shortCode('DSP-', dispute.id),
             status: dispute.status,
             reason_text: describeDisputeReason(dispute.reason),
             amount: Number(dispute.amount),
@@ -610,7 +635,7 @@ export async function listPayoutPayments(req: Request, res: Response) {
     const rows = (await mapRows(req, records)).map((r) => {
       const voided = voidedIds.has(r.id);
       return {
-        id: r.id, customer: r.customer, invoice: r.invoice, restricted: r.restricted,
+        id: r.id, reference: r.reference, customer: r.customer, invoice: r.invoice, restricted: r.restricted,
         voided,
         charged_amount: r.amount,
         amount: voided ? 0 : r.amount,
@@ -630,5 +655,31 @@ export async function listPayoutPayments(req: Request, res: Response) {
   } catch (error) {
     logger.error('payments-page payout payments failed', error);
     res.status(500).json({ error: 'Could not load the payments in this payout' });
+  }
+}
+
+// GET /api/payments-page/documents?page=&limit=  (V7-10a) - the files uploaded from the Documents tab, newest first.
+export async function listDocuments(req: Request, res: Response) {
+  try {
+    res.json(await listUploadedDocuments(req, parsePagination(req.query as { page?: string; limit?: string })));
+  } catch (error) {
+    logger.error('payments-page documents failed', error);
+    res.status(500).json({ error: 'Could not load documents' });
+  }
+}
+
+// GET /api/payments-page/documents/targets?kind=invoice|job|customer&q=  (V7-10a) - the Upload dialog's "Find" list.
+export async function listDocumentTargets(req: Request, res: Response) {
+  try {
+    const kind = String(req.query.kind ?? '');
+    if (!TARGET_KINDS.includes(kind)) {
+      res.status(400).json({ error: 'kind must be invoice, job or customer' });
+      return;
+    }
+    const q = String(req.query.q ?? '').trim().slice(0, 100);
+    res.json({ targets: await findTargets(req, kind as TargetKind, q) });
+  } catch (error) {
+    logger.error('payments-page document targets failed', error);
+    res.status(500).json({ error: 'Could not search' });
   }
 }

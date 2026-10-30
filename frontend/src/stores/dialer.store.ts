@@ -11,6 +11,8 @@ export interface DialerEntityContext {
   leadLabel?: string;
   customerId?: string;
   customerName?: string;
+  /** Set only by the lead's own page: a Text started there carries `leadId` (SPEC-4 §6.8). Calls ignore it. */
+  textCarriesLead?: boolean;
 }
 
 /** Cross-page launcher for the header GlobalDialer (#572). A page sets

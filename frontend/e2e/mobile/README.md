@@ -172,7 +172,7 @@ a finding that is a calendar event card overlapping another card in time
 
 A trap worth knowing: the throwaway org carries a fake connected payments account, and the nightly
 account-status refresh on the staging backend (07:30 UTC) fails it closed, so on a run that straddles
-that time `/settings/payments` shows the "Under review" badge instead of "Active". The route must read
+that time `/settings/servwave-payments` shows the "Under review" badge instead of "Active". The route must read
 at AA in every state; `settings-payments-under-review` and `settings-payments-paused` measure the
 other tints on their own (the status read stubbed), so a state change under a run is not a flake.
 The gate also measures a page again, once, when a navigation destroys the page under a check.

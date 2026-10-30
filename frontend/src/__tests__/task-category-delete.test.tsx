@@ -22,11 +22,18 @@ import { useTasksStore } from '@/stores/tasksStore';
 import { useTaskDetailStore } from '@/stores/taskDetailStore';
 import ListView from '@/pages/v2/tasks/views/listView';
 import TasksHubPage from '@/pages/v2/tasks/TasksHubPage';
-import PaymentsListsPage from '@/pages/v2/settings/PaymentsListsPage';
+import ListsPage from '@/pages/v2/settings/ListsPage';
 import { buildAbility } from '@/lib/ability';
+import { toast } from '@/ui-kit/components/ui/sonner';
 
 const ADMIN = buildAbility([{ action: 'manage', subject: 'all' }]);
 const mockApi = vi.mocked(api);
+const toastMock = vi.mocked(toast);
+
+vi.mock('@/ui-kit/components/ui/sonner', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/ui-kit/components/ui/sonner')>()),
+  toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn(), dismiss: vi.fn() }),
+}));
 
 vi.mock('@/lib/api/users', () => ({
   useAssignableUsers: vi.fn(() => ({ data: [], isLoading: false })),
@@ -102,7 +109,7 @@ beforeEach(() => {
 const openDelete = async (name: string) => {
   const user = userEvent.setup();
   await user.click(await screen.findByRole('button', { name: `Delete ${name}` }));
-  const dialog = await screen.findByRole('dialog', { name: `Delete "${name}"?` });
+  const dialog = await screen.findByRole('dialog', { name: `Delete “${name}”?` });
   return { user, dialog };
 };
 
@@ -128,8 +135,12 @@ describe('the manage panel rows', () => {
     expect(await within(dialog).findByRole('button', { name: 'Delete Part order' })).toBeInTheDocument();
     hub.unmount();
 
-    renderWithProviders(<PaymentsListsPage />, { ability: ADMIN });
-    expect(await screen.findByRole('button', { name: 'Delete Part order' })).toBeInTheDocument();
+    renderWithProviders(<ListsPage />, { ability: ADMIN });
+    // On the Lists page it sits in the row's More menu as "Delete…".
+    const user2 = userEvent.setup();
+    await user2.click(await screen.findByRole('button', { name: 'More actions for Part order' }));
+    await user2.click(await screen.findByRole('menuitem', { name: 'Delete…' }));
+    expect(await screen.findByRole('dialog', { name: 'Delete “Part order”?' })).toBeInTheDocument();
   });
 });
 
@@ -138,7 +149,8 @@ describe('the delete dialog', () => {
     renderWithProviders(<TaskCategoryManager />);
     const { dialog } = await openDelete('Part order');
 
-    expect(within(dialog).getByText('14 tasks use this category: 11 open, 3 done.')).toBeInTheDocument();
+    expect(dialog).toHaveTextContent('14 tasks use this category: 11 open, 3 done.');
+    expect(within(dialog).getByText('14 tasks').tagName).toBe('STRONG');
     expect(within(dialog).getByRole('radio', { name: /Keep the tasks/ })).toHaveAttribute('aria-checked', 'true');
     expect(within(dialog).getByRole('radio', { name: /Move them to another category/ })).toHaveAttribute('aria-checked', 'false');
     expect(within(dialog).getByRole('radio', { name: /Also delete the 14 tasks/ })).toHaveAttribute('aria-checked', 'false');
@@ -152,7 +164,7 @@ describe('the delete dialog', () => {
 
     const { dialog } = await openDelete('Part order');
 
-    await waitFor(() => expect(within(dialog).getByText('15 tasks use this category: 12 open, 3 done.')).toBeInTheDocument());
+    await waitFor(() => expect(dialog).toHaveTextContent('15 tasks use this category: 12 open, 3 done.'));
   });
 
   it('keep: deletes the category and the tasks lose their chip', async () => {
@@ -185,7 +197,7 @@ describe('the delete dialog', () => {
     expect(within(dialog).getByText('Pick a category for all 14.')).toBeInTheDocument();
     const confirm = within(dialog).getByRole('button', { name: 'Delete category' });
     expect(confirm).toBeDisabled();
-    await user.click(within(dialog).getByRole('combobox', { name: 'Move the tasks to' }));
+    await user.click(within(dialog).getByRole('combobox', { name: 'Move tasks to' }));
     // The category being deleted is not a destination.
     expect(screen.queryByRole('option', { name: 'Part order' })).not.toBeInTheDocument();
     await user.click(await screen.findByRole('option', { name: 'Follow-up' }));
@@ -212,7 +224,7 @@ describe('the delete dialog', () => {
     const confirm = within(dialog).getByRole('button', { name: 'Delete category and 14 tasks' });
     expect(confirm).toBeDisabled();
 
-    const field = within(dialog).getByRole('textbox', { name: 'Type Part order to confirm' });
+    const field = within(dialog).getByRole('textbox', { name: 'Type “Part order” to confirm' });
     await user.type(field, 'part order');
     expect(confirm).toBeDisabled();
     await user.clear(field);
@@ -234,7 +246,7 @@ describe('the delete dialog', () => {
     const { user, dialog } = await openDelete('Part order');
 
     await user.click(within(dialog).getByRole('radio', { name: /Also delete the 14 tasks/ }));
-    await user.type(within(dialog).getByRole('textbox', { name: 'Type Part order to confirm' }), 'Part order');
+    await user.type(within(dialog).getByRole('textbox', { name: 'Type “Part order” to confirm' }), 'Part order');
     await user.click(within(dialog).getByRole('button', { name: 'Delete category and 14 tasks' }));
 
     await waitFor(() =>
@@ -253,7 +265,7 @@ describe('the delete dialog', () => {
     renderWithProviders(<TaskCategoryManager />);
     const { user, dialog } = await openDelete('Part order');
     await user.click(within(dialog).getByRole('radio', { name: /Also delete the 14 tasks/ }));
-    await user.type(within(dialog).getByRole('textbox', { name: 'Type Part order to confirm' }), 'Part order');
+    await user.type(within(dialog).getByRole('textbox', { name: 'Type “Part order” to confirm' }), 'Part order');
     // A task joined the category after the dialog read its count.
     serverList = serverList.map((c) => (c.id === PART_ORDER.id ? { ...c, task_counts: { open: 12, done: 3 } } : c));
     mockApi.delete.mockRejectedValueOnce(
@@ -273,7 +285,7 @@ describe('the delete dialog', () => {
     expect(
       await within(dialog).findByText('The number of tasks in this category changed. Check the new count and try again.'),
     ).toBeInTheDocument();
-    await waitFor(() => expect(within(dialog).getByText('15 tasks use this category: 12 open, 3 done.')).toBeInTheDocument());
+    await waitFor(() => expect(dialog).toHaveTextContent('15 tasks use this category: 12 open, 3 done.'));
     expect(within(dialog).getByRole('button', { name: 'Delete category and 15 tasks' })).toBeInTheDocument();
     expect(useTasksStore.getState().tasks).toEqual([]);
   });
@@ -301,6 +313,91 @@ describe('the delete dialog', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Delete category' }));
 
     expect(await within(dialog).findByText('The name you typed does not match the category.')).toBeInTheDocument();
-    expect(screen.getByRole('dialog', { name: 'Delete "Part order"?' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Delete “Part order”?' })).toBeInTheDocument();
+  });
+
+  it('a wrong typed name only keeps the button disabled: no error line appears (C-12)', async () => {
+    renderWithProviders(<TaskCategoryManager />);
+    const { user, dialog } = await openDelete('Part order');
+    await user.click(within(dialog).getByRole('radio', { name: /Also delete the 14 tasks/ }));
+    await user.type(within(dialog).getByRole('textbox', { name: 'Type “Part order” to confirm' }), 'Part ordr');
+    expect(within(dialog).getByRole('button', { name: 'Delete category and 14 tasks' })).toBeDisabled();
+    expect(within(dialog).queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('says "1 task uses" for one and "2 tasks use" for two, in the line and in the third tile (C-17)', async () => {
+    serverList = serverList.map((c) => (c.id === FOLLOW_UP.id ? { ...c, task_counts: { open: 1, done: 0 } } : c.id === INTERNAL.id ? { ...c, task_counts: { open: 1, done: 1 } } : c));
+    renderWithProviders(<TaskCategoryManager />);
+    const one = await openDelete('Follow-up');
+    expect(one.dialog).toHaveTextContent('1 task uses this category: 1 open, 0 done.');
+    expect(within(one.dialog).getByRole('radio', { name: /Also delete the 1 task$/ })).toBeInTheDocument();
+    await one.user.click(within(one.dialog).getByRole('button', { name: 'Cancel' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+
+    const two = await openDelete('Internal');
+    expect(two.dialog).toHaveTextContent('2 tasks use this category: 1 open, 1 done.');
+    expect(within(two.dialog).getByRole('radio', { name: /Also delete the 2 tasks$/ })).toBeInTheDocument();
+  });
+
+  it('keeps the existing hint under "Move them to another category" (C-42)', async () => {
+    renderWithProviders(<TaskCategoryManager />);
+    const { dialog } = await openDelete('Part order');
+    expect(within(dialog).getByRole('radio', { name: /Move them to another category/ })).toHaveAccessibleDescription('Pick a category for all 14.');
+  });
+
+  it('the move tile and its select are off when no other category exists', async () => {
+    serverList = serverList.filter((c) => c.id === PART_ORDER.id);
+    renderWithProviders(<TaskCategoryManager />);
+    const { user, dialog } = await openDelete('Part order');
+    const move = within(dialog).getByRole('radio', { name: /Move them to another category/ });
+    expect(move).toHaveAttribute('aria-disabled', 'true');
+    await user.click(move);
+    expect(move).toHaveAttribute('aria-checked', 'false');
+    expect(within(dialog).getByRole('radio', { name: /Keep the tasks/ })).toHaveAttribute('aria-checked', 'true');
+  });
+});
+
+describe('the Saved toasts a finished delete raises (no Undo)', () => {
+  const run = async (pick: (user: ReturnType<typeof userEvent.setup>, dialog: HTMLElement) => Promise<void>, name = 'Part order') => {
+    // The fake server counts the tasks in the store that carry the category.
+    if (name === 'Part order') useTasksStore.setState({ tasks: [makeTask()], loaded: true });
+    renderWithProviders(<TaskCategoryManager />);
+    const { user, dialog } = await openDelete(name);
+    await pick(user, dialog);
+    await waitFor(() => expect(mockApi.delete).toHaveBeenCalled());
+    const { savedToasts } = await import('./listsFake');
+    await waitFor(async () => expect((await savedToasts(toastMock)).length).toBeGreaterThan(0));
+    const saved = (await savedToasts(toastMock)).at(-1)!;
+    expect(saved.undo).toBeUndefined();
+    return saved.text;
+  };
+
+  it('keep', async () => {
+    expect(await run(async (user, dialog) => user.click(within(dialog).getByRole('button', { name: 'Delete category' })))).toBe('Saved · Deleted “Part order”, tasks kept');
+  });
+
+  it('move names the target', async () => {
+    expect(
+      await run(async (user, dialog) => {
+        await user.click(within(dialog).getByRole('radio', { name: /Move them to another category/ }));
+        await user.click(within(dialog).getByRole('combobox', { name: 'Move tasks to' }));
+        await user.click(await screen.findByRole('option', { name: 'Follow-up' }));
+        await user.click(within(dialog).getByRole('button', { name: 'Delete category' }));
+      }),
+    ).toBe('Saved · Deleted “Part order”, tasks moved to “Follow-up”');
+  });
+
+  it('delete the tasks counts them', async () => {
+    expect(
+      await run(async (user, dialog) => {
+        await user.click(within(dialog).getByRole('radio', { name: /Also delete the 14 tasks/ }));
+        await user.type(within(dialog).getByRole('textbox', { name: 'Type “Part order” to confirm' }), 'Part order');
+        await user.click(within(dialog).getByRole('button', { name: 'Delete category and 14 tasks' }));
+      }),
+    ).toBe('Saved · Deleted “Part order” and 1 task');
+  });
+
+  it('a category no task used', async () => {
+    expect(await run(async (user, dialog) => user.click(within(dialog).getByRole('button', { name: 'Delete category' })), 'Internal')).toBe('Saved · Deleted category “Internal”');
   });
 });

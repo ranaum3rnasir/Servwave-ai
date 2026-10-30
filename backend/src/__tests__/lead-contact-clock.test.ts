@@ -28,12 +28,14 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
+import { logger } from '../lib/logger';
 import { clearTokenCache } from '../middleware/authenticate';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { ingestCall, ingestSms } from '../lib/ctm/ingest';
 import * as ctmClient from '../lib/ctm/client';
 import { _resetCtmSmsDoubleFireGuard } from '../lib/ctm/sendSms';
-import { ALPHA_ORG_ID, TEST_USERS, mockAuthAs, authHeader, matchesScopeWhere, CUSTOMER_FIXTURE, LEAD_FIXTURE } from './helpers';
+import { ALPHA_ORG_ID, TEST_USERS, mockAuthAs, mockRoleSwitches, authHeader, matchesScopeWhere, CUSTOMER_FIXTURE, LEAD_FIXTURE } from './helpers';
+import { dispatchAutomationEvent } from '../services/automations/dispatch';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const p = prisma as any;
@@ -856,5 +858,1048 @@ describe('contact clock — the hand-correction door (POST /api/leads/:id/contac
 
     expect(res.status).toBe(400);
     expect(p.lead.update).not.toHaveBeenCalled();
+  });
+});
+
+// ─── Linking an existing communication to a lead (SPEC-4 §6.2, §7.1) ────────────────────────
+//
+// The attach doors on the customer page file a communication that already exists onto a lead.
+// The rule they share (lead-contact.service.ts `contactFromLeadLink`) is table-tested in
+// lead-contact-on-link.test.ts; these tests show what a REQUEST to the text door causes to be
+// written: the clock stamp at the text's own instant, and the New -> Contacted move credited to
+// the person who SENT the text (not the person who attached it), or neither.
+
+/** The person who sent the text. Deliberately not the dispatcher who attaches it. */
+const SENDER_ID = TEST_USERS.sales.id;
+const TEXT_SENT_AT = new Date('2026-10-20T13:45:00.000Z');
+
+/** A customer-level outbound human text that went out. Each test changes one thing. */
+function storedText(overrides: Record<string, unknown> = {}) {
+  return {
+    id: MSG_ID, direction: 'out', body: 'Following up on your request', ts: TEXT_SENT_AT,
+    status: 'sent', automated: false, job_id: null, job_label: null, lead_id: null,
+    sent_by_user_id: SENDER_ID, organization_id: ALPHA_ORG_ID, ...overrides,
+  };
+}
+
+/**
+ * The stored message row, kept by the mock the way Postgres keeps it: `updateMany` writes its
+ * `lead_id`, and every read sees the current row. So the door's read before its write sees the
+ * row as it was, and its refetch after sees the link.
+ */
+function mockStoredText(row: Record<string, unknown>) {
+  const stored = { ...row };
+  p.message.updateMany.mockImplementation(({ data }: any) => {
+    Object.assign(stored, data);
+    return Promise.resolve({ count: 1 });
+  });
+  p.message.findMany.mockImplementation(() => Promise.resolve([{ ...stored }]));
+  mockCustomerThread({ lead_id: null });
+  p.lead.findUnique.mockResolvedValue(LEAD_ROW);
+  p.timelineEvent.create.mockResolvedValue({});
+}
+
+function attachText(leadId: string | null, role: 'dispatcher' | 'sales' = 'dispatcher') {
+  return request(app)
+    .patch(`/api/communication/sms/${MSG_ID}/lead`)
+    .set(authHeader(role))
+    .send({ lead_id: leadId });
+}
+
+/** The New -> Contacted status writes: `lead.updateMany` calls that write `status`. */
+function statusMoves() {
+  return (p.lead.updateMany.mock.calls as any[][])
+    .map((c) => c[0])
+    .filter((a) => a?.data && 'status' in a.data);
+}
+
+/** The lead History rows the request wrote. */
+function leadHistory() {
+  return (p.timelineEvent.create.mock.calls as any[][])
+    .map((c) => c[0].data)
+    .filter((d) => d.entity_type === 'LEAD');
+}
+
+/** Nothing at all was written to any lead: no clock, no status, no History. */
+function expectNoLeadWrite() {
+  expect(p.lead.updateMany).not.toHaveBeenCalled();
+  expect(leadHistory()).toEqual([]);
+}
+
+describe('contact clock — linking an existing communication to a lead (PATCH /api/communication/sms/:id/lead)', () => {
+  beforeEach(() => {
+    // These cases are about attribution, not the Text page's scope: a person on All reads every conversation.
+    mockRoleSwitches({ communication_scope: 'all' });
+  });
+
+  it.each(['sent', 'delivered'])(
+    'attaching a %s outbound text to a New lead stamps the clock at the text\'s own time and moves the lead, credited to its sender',
+    async (status) => {
+      mockAuthAs('dispatcher');
+      mockStoredText(storedText({ status }));
+
+      const res = await attachText(LEAD_ID);
+
+      expect(res.status).toBe(200);
+      expect(res.body.message.leadId).toBe(LEAD_ID);
+      expect(clockWrites()).toEqual([
+        { where: { id: LEAD_ID, organization_id: ALPHA_ORG_ID, contacted_at: null }, data: { contacted_at: TEXT_SENT_AT } },
+      ]);
+      expect(statusMoves()).toEqual([
+        { where: { id: LEAD_ID, organization_id: ALPHA_ORG_ID, status: { in: ['NEW'] } }, data: { status: 'CONTACTED' } },
+      ]);
+      expect(leadHistory()).toEqual([
+        expect.objectContaining({
+          organization_id: ALPHA_ORG_ID, entity_id: LEAD_ID, event_type: 'STATUS_CHANGE',
+          description: 'Lead moved to Contacted: first outbound text',
+          metadata: { from: 'NEW', to: 'CONTACTED', via: 'first_outbound_text' },
+          created_by: SENDER_ID,
+          created_at: TEXT_SENT_AT,
+        }),
+      ]);
+    },
+  );
+
+  it.each(['skipped', 'failed', 'queued', null])(
+    'attaching a text that never went out (status %s) links it and writes nothing to the lead',
+    async (status) => {
+      mockAuthAs('dispatcher');
+      mockStoredText(storedText({ status }));
+
+      const res = await attachText(LEAD_ID);
+
+      expect(res.status).toBe(200);
+      expect(res.body.message.leadId).toBe(LEAD_ID);
+      expectNoLeadWrite();
+    },
+  );
+
+  it('attaching an AUTOMATED text writes nothing to the lead', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredText(storedText({ automated: true }));
+
+    const res = await attachText(LEAD_ID);
+
+    expect(res.status).toBe(200);
+    expectNoLeadWrite();
+  });
+
+  it('attaching an INBOUND text from the customer writes nothing to the lead', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredText(storedText({ direction: 'in', status: 'received', sent_by_user_id: null }));
+
+    const res = await attachText(LEAD_ID);
+
+    expect(res.status).toBe(200);
+    expectNoLeadWrite();
+  });
+
+  it('re-attaching a text to the lead it is already on writes nothing to the lead', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredText(storedText({ lead_id: LEAD_ID }));
+
+    const res = await attachText(LEAD_ID);
+
+    expect(res.status).toBe(200);
+    expectNoLeadWrite();
+  });
+
+  it('detaching a sent text from a New lead writes nothing to the lead', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredText(storedText({ lead_id: LEAD_ID }));
+
+    const res = await attachText(null);
+
+    expect(res.status).toBe(200);
+    expect(p.message.updateMany.mock.calls[0][0].data).toEqual({ lead_id: null });
+    expectNoLeadWrite();
+  });
+
+  // The text is linked by the time the contact is recorded. A bookkeeping failure must not turn a
+  // link that plainly happened into a 500 (SPEC-4 statement 19), and it must not go unlogged.
+  it('still answers 200, with the text linked, when recording the contact fails, and logs it', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredText(storedText());
+    p.lead.updateMany.mockRejectedValue(new Error('db down'));
+
+    const res = await attachText(LEAD_ID);
+
+    expect(res.status).toBe(200);
+    expect(res.body.message.leadId).toBe(LEAD_ID);
+    expect(p.message.updateMany.mock.calls[0][0].data).toEqual({ lead_id: LEAD_ID });
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining(LEAD_ID), expect.any(Error));
+  });
+
+  describe('the existing not-found answers still apply and record nothing', () => {
+    it('another company\'s lead', async () => {
+      mockAuthAs('dispatcher');
+      mockStoredText(storedText());
+      p.lead.findUnique.mockResolvedValue(null);
+
+      const res = await attachText(LEAD_ID);
+
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({ error: 'Lead not found' });
+      expect(p.message.updateMany).not.toHaveBeenCalled();
+      expectNoLeadWrite();
+    });
+
+    it('another customer\'s lead', async () => {
+      mockAuthAs('dispatcher');
+      mockStoredText(storedText());
+      p.lead.findUnique.mockResolvedValue({ ...LEAD_ROW, customer_id: 'c0000000-0000-0000-0000-000000000099' });
+
+      const res = await attachText(LEAD_ID);
+
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({ error: 'Lead not found' });
+      expect(p.message.updateMany).not.toHaveBeenCalled();
+      expectNoLeadWrite();
+    });
+
+    it('a lead out of the person\'s reach', async () => {
+      mockAuthAs('sales');
+      mockStoredText(storedText());
+      p.lead.findUnique.mockImplementation(({ where }: any) =>
+        Promise.resolve(
+          matchesScopeWhere(where, {
+            ...LEAD_ROW,
+            organization_id: ALPHA_ORG_ID,
+            // Assigned to a colleague: SALES reads Lead conditioned on OWN_LEAD.
+            lead_assignees: [{ user_id: TEST_USERS.dispatcher.id }],
+          })
+            ? LEAD_ROW
+            : null,
+        ),
+      );
+
+      const res = await attachText(LEAD_ID, 'sales');
+
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({ error: 'Lead not found' });
+      expect(p.message.updateMany).not.toHaveBeenCalled();
+      expectNoLeadWrite();
+    });
+  });
+});
+
+// SPEC-4 §6.7 / §7.1 #10: the lead's Communication tab sends `{ customerId, body, leadId }`. This
+// path already releases once the text goes out; these two tests pin it so it keeps doing so.
+describe('contact clock — a text sent from the lead\'s Communication tab (POST /api/communication/sms)', () => {
+  function sendFromLeadTab() {
+    return request(app)
+      .post('/api/communication/sms')
+      .set(authHeader('dispatcher'))
+      .send({ customerId: CUSTOMER_FIXTURE.id, body: 'Hi, following up on your request', leadId: LEAD_ID });
+  }
+
+  it('on a company whose texts go out: the text is filed on the lead, stamps the clock and moves the lead', async () => {
+    mockAuthAs('dispatcher');
+    mockDeliveringOrg();
+    // The customer resolve and the destination read share this mock: one row answers both.
+    p.customer.findFirst.mockResolvedValue({ id: CUSTOMER_FIXTURE.id, phone: '5551234567' });
+    mockCustomerThread({ lead_id: null });
+    mockLeadResolve();
+    mockMessageCreate();
+
+    const res = await sendFromLeadTab();
+
+    expect(res.status).toBe(201);
+    expect(res.body.delivery).toBe('sent');
+    expect(p.message.create.mock.calls[0][0].data).toMatchObject({ lead_id: LEAD_ID, direction: 'out' });
+    expect(clockWrites()).toEqual([
+      { where: { id: LEAD_ID, organization_id: ALPHA_ORG_ID, contacted_at: null }, data: { contacted_at: sentMessageTs() } },
+    ]);
+    expect(statusMoves()).toEqual([
+      { where: { id: LEAD_ID, organization_id: ALPHA_ORG_ID, status: { in: ['NEW'] } }, data: { status: 'CONTACTED' } },
+    ]);
+    expect(leadHistory()).toEqual([
+      expect.objectContaining({
+        entity_id: LEAD_ID, description: 'Lead moved to Contacted: first outbound text', created_by: TEST_USERS.dispatcher.id,
+      }),
+    ]);
+  });
+
+  it('on a company whose texts do not go out: the text is filed on the lead, and the lead is left alone', async () => {
+    mockAuthAs('dispatcher');
+    p.customer.findFirst.mockResolvedValue({ id: CUSTOMER_FIXTURE.id, phone: '5551234567' });
+    mockCustomerThread({ lead_id: null });
+    mockLeadResolve();
+    mockMessageCreate();
+    p.message.update.mockResolvedValue({ id: MSG_ID });
+
+    const res = await sendFromLeadTab();
+
+    expect(res.status).toBe(201);
+    expect(res.body.delivery).toBe('skipped');
+    expect(p.message.create.mock.calls[0][0].data).toMatchObject({ lead_id: LEAD_ID, direction: 'out' });
+    expect(clockWrites()).toEqual([]);
+    expect(statusMoves()).toEqual([]);
+  });
+});
+
+// ─── Attaching a call or an email to a lead (SPEC-4 §6.3, §6.4, §7.1 #5 to #9) ──────────────
+//
+// The call and email attach doors use the same shared link rule as the text door above. These
+// tests show what a REQUEST to each door causes to be written to the lead: the clock stamp at the
+// communication's own instant, and the New -> Contacted move credited to the person who made the
+// call or sent the email (not the person who attached it), or nothing at all.
+
+const CALL_STARTED_AT = new Date('2026-10-20T14:10:00.000Z');
+/** emails.ts is epoch milliseconds: the instant the email was sent. */
+const EMAIL_SENT_AT = new Date('2026-10-20T15:20:00.000Z');
+const JOB_ID = 'f0000000-0000-0000-0000-0000000000c1';
+
+/** A customer-level outbound call. Each test changes one thing. */
+function storedCall(overrides: Record<string, unknown> = {}) {
+  return {
+    id: CALL_ID, direction: 'out', from_number: '+15550100001', to_number: '+15550100002',
+    tracking_source: null, status: 'completed', answered_by: { kind: 'none' },
+    started_at: CALL_STARTED_AT, duration_sec: 60, customer_id: CUSTOMER_FIXTURE.id,
+    lead_id: null, vendor_id: null, job_id: null, job_label: null,
+    agent_id: SENDER_ID, organization_id: ALPHA_ORG_ID, ...overrides,
+  };
+}
+
+/**
+ * The stored call row, kept by the mock the way Postgres keeps it: `updateMany` writes the link,
+ * and every read sees the current row.
+ */
+function mockStoredCall(row: Record<string, unknown>) {
+  const stored = { ...row };
+  p.callSession.updateMany.mockImplementation(({ data }: any) => {
+    Object.assign(stored, data);
+    return Promise.resolve({ count: 1 });
+  });
+  p.callSession.findMany.mockImplementation(() => Promise.resolve([{ ...stored }]));
+  p.lead.findUnique.mockResolvedValue(LEAD_ROW);
+  p.job.findFirst.mockResolvedValue(null); // the lead has no job yet
+  p.timelineEvent.create.mockResolvedValue({});
+}
+
+function attachCall(leadId: string | null, role: 'dispatcher' | 'sales' = 'dispatcher') {
+  return request(app)
+    .patch(`/api/communication/calls/${CALL_ID}/lead`)
+    .set(authHeader(role))
+    .send({ lead_id: leadId });
+}
+
+/** A customer-level outbound human email that was sent. Each test changes one thing. */
+function storedEmail(overrides: Record<string, unknown> = {}) {
+  return {
+    id: EMAIL_ID, account: 'user', from: { name: null, email: 'office@mail.test.com' },
+    to: [{ name: null, email: 'angel@example.com' }], subject: 'About your enquiry', snippet: '',
+    body: ['Following up on your request.'], ts: BigInt(EMAIL_SENT_AT.getTime()),
+    direction: 'out', automated: false, delivery_status: 'SENT',
+    customer_id: CUSTOMER_FIXTURE.id, lead_id: null, vendor_id: null, job_id: null, job_label: null,
+    thread_id: null, labels: null, attachments: null, email_attachments: [],
+    customer: null, lead: null, vendor: null,
+    sent_by_user_id: SENDER_ID, organization_id: ALPHA_ORG_ID, ...overrides,
+  };
+}
+
+function mockStoredEmail(row: Record<string, unknown>) {
+  const stored = { ...row };
+  p.email.updateMany.mockImplementation(({ data }: any) => {
+    Object.assign(stored, data);
+    return Promise.resolve({ count: 1 });
+  });
+  p.email.findFirst.mockImplementation(() => Promise.resolve({ ...stored }));
+  p.lead.findUnique.mockResolvedValue(LEAD_ROW);
+  p.timelineEvent.create.mockResolvedValue({});
+}
+
+function attachEmail(leadId: string | null, role: 'dispatcher' | 'sales' = 'dispatcher') {
+  return request(app)
+    .patch(`/api/communication/emails/${EMAIL_ID}/lead`)
+    .set(authHeader(role))
+    .send({ lead_id: leadId });
+}
+
+/** The lead's History row for a release, dated at the contact and credited to its maker. */
+function releaseRow(channel: 'call' | 'email', at: Date) {
+  return expect.objectContaining({
+    organization_id: ALPHA_ORG_ID, entity_id: LEAD_ID, event_type: 'STATUS_CHANGE',
+    description: `Lead moved to Contacted: first outbound ${channel}`,
+    metadata: { from: 'NEW', to: 'CONTACTED', via: `first_outbound_${channel}` },
+    created_by: SENDER_ID,
+    created_at: at,
+  });
+}
+
+/** SPEC-4 statement 21: an attach sends no pop-up, bell row, email or text, and runs no automation. */
+function expectNothingWokenUpByAttach() {
+  expect(dispatchAutomationEvent).not.toHaveBeenCalled();
+  expect(p.notification.create).not.toHaveBeenCalled();
+  expect(p.notification.createMany).not.toHaveBeenCalled();
+  expect(p.notificationRecipient.create).not.toHaveBeenCalled();
+  expect(p.notificationRecipient.createMany).not.toHaveBeenCalled();
+}
+
+/** A lead SALES cannot open: assigned to a colleague, and SALES reads Lead conditioned on OWN_LEAD. */
+function mockLeadOutOfSalesReach() {
+  p.lead.findUnique.mockImplementation(({ where }: any) =>
+    Promise.resolve(
+      matchesScopeWhere(where, {
+        ...LEAD_ROW,
+        organization_id: ALPHA_ORG_ID,
+        lead_assignees: [{ user_id: TEST_USERS.dispatcher.id }],
+      })
+        ? LEAD_ROW
+        : null,
+    ),
+  );
+}
+
+describe('contact clock — attaching a call to a lead (PATCH /api/communication/calls/:id/lead)', () => {
+  beforeEach(() => {
+    mockRoleSwitches({ communication_scope: 'all' });
+  });
+
+  it('attaching an outbound call to a New lead stamps the clock at the call\'s start and moves the lead, credited to its agent', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredCall(storedCall());
+
+    const res = await attachCall(LEAD_ID);
+
+    expect(res.status).toBe(200);
+    expect(res.body.call.leadId).toBe(LEAD_ID);
+    expect(clockWrites()).toEqual([
+      { where: { id: LEAD_ID, organization_id: ALPHA_ORG_ID, contacted_at: null }, data: { contacted_at: CALL_STARTED_AT } },
+    ]);
+    expect(statusMoves()).toEqual([
+      { where: { id: LEAD_ID, organization_id: ALPHA_ORG_ID, status: { in: ['NEW'] } }, data: { status: 'CONTACTED' } },
+    ]);
+    expect(leadHistory()).toEqual([releaseRow('call', CALL_STARTED_AT)]);
+    expectNothingWokenUpByAttach();
+  });
+
+  it('attaching an INBOUND call writes nothing to the lead', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredCall(storedCall({ direction: 'in', agent_id: null }));
+
+    const res = await attachCall(LEAD_ID);
+
+    expect(res.status).toBe(200);
+    expect(res.body.call.leadId).toBe(LEAD_ID);
+    expectNoLeadWrite();
+  });
+
+  it('re-attaching a call to the lead it is already on writes nothing to the lead', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredCall(storedCall({ lead_id: LEAD_ID }));
+
+    const res = await attachCall(LEAD_ID);
+
+    expect(res.status).toBe(200);
+    expectNoLeadWrite();
+  });
+
+  it('detaching an outbound call from a New lead writes nothing to the lead', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredCall(storedCall({ lead_id: LEAD_ID }));
+
+    const res = await attachCall(null);
+
+    expect(res.status).toBe(200);
+    expect(p.callSession.updateMany.mock.calls[0][0].data).toEqual({ lead_id: null, job_id: null, job_label: null });
+    expectNoLeadWrite();
+  });
+
+  it('still answers 200, with the call linked, when recording the contact fails, and logs it', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredCall(storedCall());
+    p.lead.updateMany.mockRejectedValue(new Error('db down'));
+
+    const res = await attachCall(LEAD_ID);
+
+    expect(res.status).toBe(200);
+    expect(res.body.call.leadId).toBe(LEAD_ID);
+    expect(p.callSession.updateMany.mock.calls[0][0].data).toMatchObject({ lead_id: LEAD_ID });
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining(LEAD_ID), expect.any(Error));
+  });
+
+  describe('the existing not-found answers still apply and record nothing', () => {
+    it('another company\'s lead', async () => {
+      mockAuthAs('dispatcher');
+      mockStoredCall(storedCall());
+      p.lead.findUnique.mockResolvedValue(null);
+
+      const res = await attachCall(LEAD_ID);
+
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({ error: 'Lead not found' });
+      expect(p.callSession.updateMany).not.toHaveBeenCalled();
+      expectNoLeadWrite();
+    });
+
+    it('a lead out of the person\'s reach', async () => {
+      mockAuthAs('sales');
+      mockStoredCall(storedCall());
+      mockLeadOutOfSalesReach();
+
+      const res = await attachCall(LEAD_ID, 'sales');
+
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({ error: 'Lead not found' });
+      expect(p.callSession.updateMany).not.toHaveBeenCalled();
+      expectNoLeadWrite();
+    });
+  });
+});
+
+// SPEC-4 §5: attaching a call to a JOB also files it on the job's lead, but that is an attach to a
+// job, not to the lead, and it releases nothing.
+describe('contact clock — attaching a call to a job (PATCH /api/communication/calls/:id/job)', () => {
+  beforeEach(() => {
+    mockRoleSwitches({ communication_scope: 'all' });
+  });
+
+  it('filing an outbound call on a job of the lead writes nothing to the lead', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredCall(storedCall());
+    p.job.findUnique.mockResolvedValue({ id: JOB_ID, job_number: 'J00201', estimate: { lead_id: LEAD_ID } });
+
+    const res = await request(app)
+      .patch(`/api/communication/calls/${CALL_ID}/job`)
+      .set(authHeader('dispatcher'))
+      .send({ job_id: JOB_ID });
+
+    expect(res.status).toBe(200);
+    expect(p.callSession.updateMany.mock.calls[0][0].data).toEqual({ job_id: JOB_ID, job_label: 'J00201', lead_id: LEAD_ID });
+    expectNoLeadWrite();
+  });
+});
+
+describe('contact clock — attaching an email to a lead (PATCH /api/communication/emails/:id/lead)', () => {
+  beforeEach(() => {
+    mockRoleSwitches({ communication_scope: 'all' });
+  });
+
+  it.each(['SENT', 'DELIVERED'])(
+    'attaching a %s outbound email to a New lead stamps the clock at its send time and moves the lead, credited to its sender',
+    async (delivery_status) => {
+      mockAuthAs('dispatcher');
+      mockStoredEmail(storedEmail({ delivery_status }));
+
+      const res = await attachEmail(LEAD_ID);
+
+      expect(res.status).toBe(200);
+      expect(res.body.email.leadId).toBe(LEAD_ID);
+      expect(clockWrites()).toEqual([
+        { where: { id: LEAD_ID, organization_id: ALPHA_ORG_ID, contacted_at: null }, data: { contacted_at: EMAIL_SENT_AT } },
+      ]);
+      expect(statusMoves()).toEqual([
+        { where: { id: LEAD_ID, organization_id: ALPHA_ORG_ID, status: { in: ['NEW'] } }, data: { status: 'CONTACTED' } },
+      ]);
+      expect(leadHistory()).toEqual([releaseRow('email', EMAIL_SENT_AT)]);
+      expectNothingWokenUpByAttach();
+    },
+  );
+
+  it.each(['BOUNCED', 'FAILED', 'QUEUED', 'DEFERRED', 'COMPLAINED', null])(
+    'attaching an email that was not sent or delivered (status %s) links it and writes nothing to the lead',
+    async (delivery_status) => {
+      mockAuthAs('dispatcher');
+      mockStoredEmail(storedEmail({ delivery_status }));
+
+      const res = await attachEmail(LEAD_ID);
+
+      expect(res.status).toBe(200);
+      expect(res.body.email.leadId).toBe(LEAD_ID);
+      expectNoLeadWrite();
+    },
+  );
+
+  it('attaching an AUTOMATED email writes nothing to the lead', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredEmail(storedEmail({ automated: true, sent_by_user_id: null }));
+
+    const res = await attachEmail(LEAD_ID);
+
+    expect(res.status).toBe(200);
+    expectNoLeadWrite();
+  });
+
+  it('attaching an INBOUND email from the customer writes nothing to the lead', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredEmail(storedEmail({ direction: 'in', delivery_status: null, sent_by_user_id: null }));
+
+    const res = await attachEmail(LEAD_ID);
+
+    expect(res.status).toBe(200);
+    expectNoLeadWrite();
+  });
+
+  it('re-attaching an email to the lead it is already on writes nothing to the lead', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredEmail(storedEmail({ lead_id: LEAD_ID }));
+
+    const res = await attachEmail(LEAD_ID);
+
+    expect(res.status).toBe(200);
+    expectNoLeadWrite();
+  });
+
+  it('detaching a sent email from a New lead writes nothing to the lead', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredEmail(storedEmail({ lead_id: LEAD_ID }));
+
+    const res = await attachEmail(null);
+
+    expect(res.status).toBe(200);
+    expect(p.email.updateMany.mock.calls[0][0].data).toEqual({ lead_id: null });
+    expectNoLeadWrite();
+  });
+
+  it('still answers 200, with the email linked, when recording the contact fails, and logs it', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredEmail(storedEmail());
+    p.lead.updateMany.mockRejectedValue(new Error('db down'));
+
+    const res = await attachEmail(LEAD_ID);
+
+    expect(res.status).toBe(200);
+    expect(res.body.email.leadId).toBe(LEAD_ID);
+    expect(p.email.updateMany.mock.calls[0][0].data).toEqual({ lead_id: LEAD_ID });
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining(LEAD_ID), expect.any(Error));
+  });
+
+  describe('the existing not-found answers still apply and record nothing', () => {
+    it('another company\'s lead', async () => {
+      mockAuthAs('dispatcher');
+      mockStoredEmail(storedEmail());
+      p.lead.findUnique.mockResolvedValue(null);
+
+      const res = await attachEmail(LEAD_ID);
+
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({ error: 'Lead not found' });
+      expect(p.email.updateMany).not.toHaveBeenCalled();
+      expectNoLeadWrite();
+    });
+
+    it('another customer\'s lead', async () => {
+      mockAuthAs('dispatcher');
+      mockStoredEmail(storedEmail());
+      p.lead.findUnique.mockResolvedValue({ ...LEAD_ROW, customer_id: 'c0000000-0000-0000-0000-000000000099' });
+
+      const res = await attachEmail(LEAD_ID);
+
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({ error: 'Lead not found' });
+      expect(p.email.updateMany).not.toHaveBeenCalled();
+      expectNoLeadWrite();
+    });
+
+    it('a lead out of the person\'s reach', async () => {
+      mockAuthAs('sales');
+      mockStoredEmail(storedEmail());
+      mockLeadOutOfSalesReach();
+
+      const res = await attachEmail(LEAD_ID, 'sales');
+
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({ error: 'Lead not found' });
+      expect(p.email.updateMany).not.toHaveBeenCalled();
+      expectNoLeadWrite();
+    });
+  });
+});
+
+// ─── D7: an outbound entry leaves a Contacted lead (SPEC-4 §6.12.5, §7.1 #11 to #20) ─────────
+//
+// Lead A is Contacted because an outbound text made it so (its newest move into Contacted is
+// `via: first_outbound_text`), and the entry the request moves is the only one holding it, unless a
+// test says otherwise. These tests show what a REQUEST to each door causes to be written to lead A:
+// the move back to New (one status write that clears the clock and starts a fresh New stay, and one
+// History row credited to the person who made the change), or nothing at all. The rule's query form
+// and its concurrency are proved on Postgres in lead-contact-moves-new-to-contacted-db.test.ts.
+
+const LEAD_A = LEAD_ID;
+const LEAD_B = 'e0000000-0000-0000-0000-0000000000c2';
+const LEAD_B_ROW = { id: LEAD_B, lead_number: 'L00202', customer_id: CUSTOMER_FIXTURE.id };
+/** The person making the change: the dispatcher the requests below sign in as. */
+const CHANGER_ID = TEST_USERS.dispatcher.id;
+
+/** The contact-clock STAMPS (`WHERE contacted_at IS NULL`), not the move back's own clearing write. */
+function clockStamps() {
+  return clockWrites().filter((w) => w.where && 'contacted_at' in w.where);
+}
+
+type HoldingTable = 'message' | 'email' | 'callSession' | 'manualCommunicationLog';
+
+/**
+ * Lead A as the reconsider reads it under its lock, and what is left on it. `holding` names the
+ * tables that still have a holding entry on A; `via` is its newest move into Contacted (null: none).
+ */
+function mockLeadA(opts: { status?: string; contactedSetBy?: string | null; via?: string | null; holding?: HoldingTable[] } = {}) {
+  const { status = 'CONTACTED', contactedSetBy = null, via = 'first_outbound_text', holding = [] } = opts;
+  p.lead.findFirst.mockImplementation(({ where }: any) =>
+    Promise.resolve(where?.id === LEAD_A && where?.organization_id === ALPHA_ORG_ID ? { status, contacted_set_by: contactedSetBy } : null),
+  );
+  for (const table of ['message', 'callSession', 'manualCommunicationLog'] as const) {
+    p[table].findFirst.mockResolvedValue(holding.includes(table) ? { id: `held-by-${table}` } : null);
+  }
+  // The email door reads its own row through findFirst too (by id); the holding count reads without one.
+  const doorRead = p.email.findFirst.getMockImplementation();
+  p.email.findFirst.mockImplementation((args: any) => {
+    if (args?.where?.id) return doorRead ? doorRead(args) : Promise.resolve(null);
+    return Promise.resolve(holding.includes('email') ? { id: 'held-by-email' } : null);
+  });
+  p.timelineEvent.findFirst.mockResolvedValue(via ? { metadata: { from: 'NEW', to: 'CONTACTED', via } } : null);
+  p.timelineEvent.create.mockResolvedValue({});
+}
+
+/** The lead row lock the reconsider takes first, on lead A in the request's company. */
+function leadLocks() {
+  return (p.$executeRaw.mock.calls as any[][]).filter(
+    (c) => Array.isArray(c[0]) && c[0].join('?').includes('FOR NO KEY UPDATE') && c.includes(LEAD_A) && c.includes(ALPHA_ORG_ID),
+  );
+}
+
+/** The holding counts the reconsider ran, one per table it reached. */
+function holdingCounts() {
+  return (['message', 'email', 'callSession', 'manualCommunicationLog'] as const).flatMap((table) =>
+    (p[table].findFirst.mock.calls as any[][]).map((c) => c[0]).filter((a) => a?.where && !a.where.id),
+  );
+}
+
+/** Lead A moved back to New by this request, credited to the person, with the entry's ids kept. */
+function expectMovedBack(entrySource: string, entryId: string) {
+  expect(leadLocks()).toHaveLength(1);
+  const backToNew = statusMoves().filter((m) => m.data.status === 'NEW');
+  expect(backToNew).toEqual([
+    {
+      where: { id: LEAD_A, organization_id: ALPHA_ORG_ID, status: { in: ['CONTACTED'] } },
+      data: { status: 'NEW', contacted_at: null, returned_to_new_at: expect.any(Date) },
+    },
+  ]);
+  expect(leadHistory().filter((h) => h.entity_id === LEAD_A)).toEqual([
+    expect.objectContaining({
+      organization_id: ALPHA_ORG_ID, entity_type: 'LEAD', entity_id: LEAD_A, event_type: 'STATUS_CHANGE',
+      description: 'Lead moved back to New: no outbound contact left',
+      metadata: { from: 'CONTACTED', to: 'NEW', via: 'no_outbound_contact_left', entry_source: entrySource, entry_id: entryId },
+      created_by: CHANGER_ID,
+    }),
+  ]);
+  // Every count, the lock and the write are scoped to the request's company and to lead A.
+  for (const count of holdingCounts()) expect(count.where).toMatchObject({ organization_id: ALPHA_ORG_ID, lead_id: LEAD_A });
+}
+
+/** Lead A was left exactly as it was: no status write, no History row. */
+function expectLeadAKept() {
+  expect(statusMoves().filter((m) => m.where.id === LEAD_A)).toEqual([]);
+  expect(leadHistory().filter((h) => h.entity_id === LEAD_A)).toEqual([]);
+}
+
+/** SPEC-4 statement 21, the D7 half: the only row written is the lead's STATUS_CHANGE. */
+function expectNothingWokenUpByMoveAway() {
+  expectNothingWokenUpByAttach();
+  for (const [args] of p.timelineEvent.create.mock.calls as any[][]) expect(args.data.event_type).toBe('STATUS_CHANGE');
+}
+
+describe('D7 — an outbound entry leaves a Contacted lead (the text door, PATCH /api/communication/sms/:id/lead)', () => {
+  beforeEach(() => {
+    mockRoleSwitches({ communication_scope: 'all' });
+  });
+
+  it('detaching the lead\'s only sent text moves the lead back to New, credited to the person who detached it', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredText(storedText({ lead_id: LEAD_A }));
+    mockLeadA();
+
+    const res = await attachText(null);
+
+    expect(res.status).toBe(200);
+    expect(p.message.updateMany.mock.calls[0][0].data).toEqual({ lead_id: null });
+    expectMovedBack('text', MSG_ID);
+    // Nothing is stamped: a move back writes no contact clock.
+    expect(clockStamps()).toEqual([]);
+    expectNothingWokenUpByMoveAway();
+  });
+
+  it('moving it to New lead B releases B and moves A back to New', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredText(storedText({ lead_id: LEAD_A }));
+    p.lead.findUnique.mockResolvedValue(LEAD_B_ROW);
+    mockLeadA();
+
+    const res = await attachText(LEAD_B);
+
+    expect(res.status).toBe(200);
+    expect(res.body.message.leadId).toBe(LEAD_B);
+    expect(clockStamps()).toEqual([
+      { where: { id: LEAD_B, organization_id: ALPHA_ORG_ID, contacted_at: null }, data: { contacted_at: TEXT_SENT_AT } },
+    ]);
+    expect(statusMoves().filter((m) => m.where.id === LEAD_B)).toEqual([
+      { where: { id: LEAD_B, organization_id: ALPHA_ORG_ID, status: { in: ['NEW'] } }, data: { status: 'CONTACTED' } },
+    ]);
+    expectMovedBack('text', MSG_ID);
+  });
+
+  it.each<HoldingTable>(['message', 'email', 'callSession', 'manualCommunicationLog'])(
+    'A keeps Contacted while another holding entry is on it (%s)',
+    async (table) => {
+      mockAuthAs('dispatcher');
+      mockStoredText(storedText({ lead_id: LEAD_A }));
+      mockLeadA({ holding: [table] });
+
+      const res = await attachText(null);
+
+      expect(res.status).toBe(200);
+      expect(leadLocks()).toHaveLength(1);
+      expectLeadAKept();
+    },
+  );
+
+  it.each<[string, Record<string, unknown>]>([
+    ['an inbound text', { direction: 'in', status: 'received', sent_by_user_id: null }],
+    ['an automated text', { automated: true }],
+    ['a skipped text', { status: 'skipped' }],
+    ['a failed text', { status: 'failed' }],
+    ['a queued text', { status: 'queued' }],
+  ])('detaching %s, which never held A, takes no lock, counts nothing and writes nothing', async (_label, row) => {
+    mockAuthAs('dispatcher');
+    mockStoredText(storedText({ lead_id: LEAD_A, ...row }));
+    mockLeadA();
+
+    const res = await attachText(null);
+
+    expect(res.status).toBe(200);
+    expect(leadLocks()).toEqual([]);
+    expect(holdingCounts()).toEqual([]);
+    expectNoLeadWrite();
+  });
+
+  it.each(['NEW', 'WALKTHROUGH_SCHEDULED', 'WALKTHROUGH_COMPLETED', 'ESTIMATED', 'WON', 'LOST'])(
+    'a lead that reads %s under the lock keeps its status',
+    async (status) => {
+      mockAuthAs('dispatcher');
+      mockStoredText(storedText({ lead_id: LEAD_A }));
+      mockLeadA({ status });
+
+      const res = await attachText(null);
+
+      expect(res.status).toBe(200);
+      expectNoLeadWrite();
+    },
+  );
+
+  it.each<[string, Parameters<typeof mockLeadA>[0]]>([
+    ['its contact time was set by hand', { contactedSetBy: TEST_USERS.admin.id }],
+    ['its newest move into Contacted was a status change by hand', { via: 'manual_edit' }],
+    ['its newest move into Contacted was the contact time set by hand', { via: 'contact_set_by_hand' }],
+    ['it moved back to Contacted when a walkthrough was cancelled', { via: 'walkthrough_cancelled' }],
+    ['it has no recorded move into Contacted', { via: null }],
+  ])('a Contacted that a person set is never undone: %s', async (_label, lead) => {
+    mockAuthAs('dispatcher');
+    mockStoredText(storedText({ lead_id: LEAD_A }));
+    mockLeadA(lead);
+
+    const res = await attachText(null);
+
+    expect(res.status).toBe(200);
+    expectNoLeadWrite();
+  });
+
+  it.each<[string, () => void]>([
+    ['the lock', () => p.$executeRaw.mockRejectedValueOnce(new Error('lock timeout'))],
+    ['the lead write', () => p.lead.updateMany.mockRejectedValue(new Error('db down'))],
+  ])('when %s fails: still 200, the text is detached, the failure is logged with the lead id', async (_label, fail) => {
+    mockAuthAs('dispatcher');
+    mockStoredText(storedText({ lead_id: LEAD_A }));
+    mockLeadA();
+    fail();
+
+    const res = await attachText(null);
+
+    expect(res.status).toBe(200);
+    expect(p.message.updateMany.mock.calls[0][0].data).toEqual({ lead_id: null });
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining(LEAD_A));
+    // Nothing of the move back stands: the History row is never reached.
+    expect(leadHistory()).toEqual([]);
+  });
+
+  it('a text out of the person\'s reach 404s exactly as today and reconsiders nothing', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredText(storedText({ lead_id: LEAD_A }));
+    p.message.findMany.mockResolvedValue([]);
+    p.message.updateMany.mockResolvedValue({ count: 0 });
+    mockLeadA();
+
+    const res = await attachText(null);
+
+    expect(res.status).toBe(404);
+    expect(res.body).toEqual({ error: 'Message not found' });
+    expect(leadLocks()).toEqual([]);
+    expectNoLeadWrite();
+  });
+});
+
+describe('D7 — the email door (PATCH /api/communication/emails/:id/lead)', () => {
+  beforeEach(() => {
+    mockRoleSwitches({ communication_scope: 'all' });
+  });
+
+  it('detaching the lead\'s only sent email moves the lead back to New', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredEmail(storedEmail({ lead_id: LEAD_A }));
+    mockLeadA({ via: 'first_outbound_email' });
+
+    const res = await attachEmail(null);
+
+    expect(res.status).toBe(200);
+    expect(p.email.updateMany.mock.calls[0][0].data).toEqual({ lead_id: null });
+    expectMovedBack('email', EMAIL_ID);
+    expectNothingWokenUpByMoveAway();
+  });
+
+  it('moving it to New lead B releases B and moves A back to New', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredEmail(storedEmail({ lead_id: LEAD_A }));
+    p.lead.findUnique.mockResolvedValue(LEAD_B_ROW);
+    mockLeadA({ via: 'first_outbound_email' });
+
+    const res = await attachEmail(LEAD_B);
+
+    expect(res.status).toBe(200);
+    expect(clockStamps()).toEqual([
+      { where: { id: LEAD_B, organization_id: ALPHA_ORG_ID, contacted_at: null }, data: { contacted_at: EMAIL_SENT_AT } },
+    ]);
+    expectMovedBack('email', EMAIL_ID);
+  });
+
+  it('a bounced email detached never held A: nothing is reconsidered', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredEmail(storedEmail({ lead_id: LEAD_A, delivery_status: 'BOUNCED' }));
+    mockLeadA({ via: 'first_outbound_email' });
+
+    const res = await attachEmail(null);
+
+    expect(res.status).toBe(200);
+    expect(leadLocks()).toEqual([]);
+    expectNoLeadWrite();
+  });
+
+  it('when the move back fails: still 200, detached, logged with the lead id', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredEmail(storedEmail({ lead_id: LEAD_A }));
+    mockLeadA({ via: 'first_outbound_email' });
+    p.lead.updateMany.mockRejectedValue(new Error('db down'));
+
+    const res = await attachEmail(null);
+
+    expect(res.status).toBe(200);
+    expect(p.email.updateMany.mock.calls[0][0].data).toEqual({ lead_id: null });
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining(LEAD_A));
+  });
+});
+
+describe('D7 — the call doors (PATCH /api/communication/calls/:id/lead and /job)', () => {
+  beforeEach(() => {
+    mockRoleSwitches({ communication_scope: 'all' });
+  });
+
+  it('detaching the lead\'s only outbound call from the lead moves the lead back to New', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredCall(storedCall({ lead_id: LEAD_A }));
+    mockLeadA({ via: 'first_outbound_call' });
+
+    const res = await attachCall(null);
+
+    expect(res.status).toBe(200);
+    expectMovedBack('call', CALL_ID);
+    expectNothingWokenUpByMoveAway();
+  });
+
+  it('moving it to New lead B releases B and moves A back to New', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredCall(storedCall({ lead_id: LEAD_A }));
+    p.lead.findUnique.mockResolvedValue({ id: LEAD_B });
+    mockLeadA({ via: 'first_outbound_call' });
+
+    const res = await attachCall(LEAD_B);
+
+    expect(res.status).toBe(200);
+    expect(clockStamps()).toEqual([
+      { where: { id: LEAD_B, organization_id: ALPHA_ORG_ID, contacted_at: null }, data: { contacted_at: CALL_STARTED_AT } },
+    ]);
+    expectMovedBack('call', CALL_ID);
+  });
+
+  it('an inbound call detached never held A: nothing is reconsidered', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredCall(storedCall({ lead_id: LEAD_A, direction: 'in', agent_id: null }));
+    mockLeadA({ via: 'first_outbound_call' });
+
+    const res = await attachCall(null);
+
+    expect(res.status).toBe(200);
+    expect(leadLocks()).toEqual([]);
+    expectNoLeadWrite();
+  });
+
+  function fileOnJob(jobId: string | null) {
+    return request(app)
+      .patch(`/api/communication/calls/${CALL_ID}/job`)
+      .set(authHeader('dispatcher'))
+      .send({ job_id: jobId });
+  }
+
+  it.each<[string, string | null]>([
+    ['a job of another lead', LEAD_B],
+    ['a job with no lead', null],
+  ])('filing the lead\'s only outbound call on %s moves the lead back to New, and releases nothing', async (_label, jobLead) => {
+    mockAuthAs('dispatcher');
+    mockStoredCall(storedCall({ lead_id: LEAD_A }));
+    p.job.findUnique.mockResolvedValue({ id: JOB_ID, job_number: 'J00201', estimate: jobLead ? { lead_id: jobLead } : null });
+    mockLeadA({ via: 'first_outbound_call' });
+
+    const res = await fileOnJob(JOB_ID);
+
+    expect(res.status).toBe(200);
+    expect(p.callSession.updateMany.mock.calls[0][0].data).toEqual({ job_id: JOB_ID, job_label: 'J00201', lead_id: jobLead });
+    expect(clockStamps()).toEqual([]);
+    expectMovedBack('call', CALL_ID);
+  });
+
+  it('detaching the call from its job, which clears its lead, moves the lead back to New', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredCall(storedCall({ lead_id: LEAD_A, job_id: JOB_ID, job_label: 'J00201' }));
+    mockLeadA({ via: 'first_outbound_call' });
+
+    const res = await fileOnJob(null);
+
+    expect(res.status).toBe(200);
+    expect(p.callSession.updateMany.mock.calls[0][0].data).toEqual({ job_id: null, job_label: null, lead_id: null });
+    expectMovedBack('call', CALL_ID);
+  });
+
+  it('filing the call on a job of the same lead keeps it on the lead: nothing is reconsidered', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredCall(storedCall({ lead_id: LEAD_A }));
+    p.job.findUnique.mockResolvedValue({ id: JOB_ID, job_number: 'J00201', estimate: { lead_id: LEAD_A } });
+    mockLeadA({ via: 'first_outbound_call' });
+
+    const res = await fileOnJob(JOB_ID);
+
+    expect(res.status).toBe(200);
+    expect(leadLocks()).toEqual([]);
+    expectNoLeadWrite();
+  });
+
+  it('when the move back fails: still 200, filed, logged with the lead id', async () => {
+    mockAuthAs('dispatcher');
+    mockStoredCall(storedCall({ lead_id: LEAD_A }));
+    p.job.findUnique.mockResolvedValue({ id: JOB_ID, job_number: 'J00201', estimate: null });
+    mockLeadA({ via: 'first_outbound_call' });
+    p.lead.updateMany.mockRejectedValue(new Error('db down'));
+
+    const res = await fileOnJob(JOB_ID);
+
+    expect(res.status).toBe(200);
+    expect(p.callSession.updateMany.mock.calls[0][0].data).toMatchObject({ job_id: JOB_ID, lead_id: null });
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining(LEAD_A));
   });
 });

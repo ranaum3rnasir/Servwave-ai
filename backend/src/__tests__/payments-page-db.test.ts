@@ -175,7 +175,7 @@ suite('Payments page read API (real database)', () => {
       expect(body.payments.map((r) => r.id)).toEqual([failed, paid]);
       const row = body.payments[1];
       expect(row).toMatchObject({
-        id: paid, status: 'Partially refunded', method: 'CARD', method_label: 'Credit card', method_detail: 'Visa •••• 4242',
+        id: paid, status: 'Refund failed', method: 'CARD', method_label: 'Credit card', method_detail: 'Visa •••• 4242',
         amount: 108, fee: 3.5, net: 104.5, refunded: 20, payout: null, payout_status: 'awaiting', restricted: false,
         customer: { id: customer, name: 'Pat Payer' }, invoice: { id: invoice },
       });
@@ -676,7 +676,7 @@ suite('Payments page read API (real database)', () => {
         for (const r of body.payments) {
           seen.push(r.id);
           sumNet += r.net;
-          expect(Object.keys(r).sort()).toEqual(['amount', 'charged_amount', 'customer', 'fee', 'id', 'invoice', 'net', 'refunded', 'restricted', 'voided']);
+          expect(Object.keys(r).sort()).toEqual(['amount', 'charged_amount', 'customer', 'fee', 'id', 'invoice', 'net', 'reference', 'refunded', 'restricted', 'voided']);
         }
       }
       expect(new Set(seen).size).toBe(30);
@@ -1130,6 +1130,180 @@ suite('Payments page read API (real database)', () => {
       // By default a company-wide caller's opener answers for the ids it is given; asked to check the company it keeps only this company's.
       expect([...(await (await invoiceOpenerFor(req))([mine, theirs]))].sort()).toEqual([mine, theirs].sort());
       expect([...(await (await invoiceOpenerFor(req, { checkOrg: true }))([mine, theirs]))]).toEqual([mine]);
+    });
+  });
+
+  describe('V7-05a: Refund failed, short codes, customer number', () => {
+    const resolveFailed = (org: string, refundId: string, by: string) =>
+      db.paymentAttentionResolution.create({
+        data: { organization_id: org, item_key: `failed_refund:${refundId}`, resolution: 'SETTLED', note: null, resolved_by: by, resolved_by_name: 'Riley Resolver' },
+      });
+    async function failedRefund(org: string, invoiceId: string, paymentId: string, by: string, amount = 25, createdAt?: Date) {
+      const r = await db.refund.create({
+        data: {
+          ...(createdAt ? { created_at: createdAt } : {}), organization_id: org, invoice_id: invoiceId, payment_id: paymentId, amount, method: 'CARD',
+          reason_category: 'CUSTOMER_REQUEST', refunded_by: by, state: 'FAILED', failure_code: 'insufficient_funds',
+        },
+      });
+      return r.id;
+    }
+    const statusOf = async (api: Api, id: string) => (await listOf(api, WINDOW)).payments.find((r) => r.id === id)?.status;
+
+    it('reads Refund failed only for a failed refund nobody has dealt with', async () => {
+      const { org, customer, admin } = await newOrg();
+      const invoice = await invoiceIn(org, customer);
+      const open = await addPayment(invoice, { paidAt: iso('2026-10-05T16:00:00Z') });
+      const handled = await addPayment(invoice, { paidAt: iso('2026-10-05T16:01:00Z') });
+      const covered = await addPayment(invoice, { paidAt: iso('2026-10-05T16:02:00Z') });
+      const plain = await addPayment(invoice, { paidAt: iso('2026-10-05T16:03:00Z') });
+      await failedRefund(org, invoice, open, admin.id);
+      await resolveFailed(org, await failedRefund(org, invoice, handled, admin.id), admin.id);
+      await failedRefund(org, invoice, covered, admin.id, 25, iso('2026-10-06T10:00:00Z'));
+      await addRefund(org, invoice, covered, admin.id, 25, 'SUCCEEDED', iso('2026-10-06T11:00:00Z'));
+      const api = await (await finance(org)).api();
+      expect(await statusOf(api, open)).toBe('Refund failed');
+      expect(await statusOf(api, handled)).toBe('Succeeded');
+      expect(await statusOf(api, covered)).toBe('Partially refunded');
+      expect(await statusOf(api, plain)).toBe('Succeeded');
+    });
+
+    it('never sets the flag from another company\'s refund', async () => {
+      const a = await newOrg();
+      const b = await newOrg();
+      const invoiceA = await invoiceIn(a.org, a.customer);
+      const invoiceB = await invoiceIn(b.org, b.customer);
+      const payment = await addPayment(invoiceA, { paidAt: iso('2026-10-05T16:00:00Z') });
+      // A refund row that belongs to company B but points at company A's payment.
+      await failedRefund(b.org, invoiceB, payment, b.admin.id);
+      expect(await statusOf(await (await finance(a.org)).api(), payment)).toBe('Succeeded');
+    });
+
+    it('filters on refund_failed and every other status leaves those rows out', async () => {
+      const { org, customer, admin } = await newOrg();
+      const invoice = await invoiceIn(org, customer);
+      const at = (n: number) => iso(`2026-10-05T16:0${n}:00Z`);
+      const succeededFailed = await addPayment(invoice, { paidAt: at(0) });
+      const partlyFailed = await addPayment(invoice, { paidAt: at(1) });
+      const chargedBackFailed = await addPayment(invoice, { paidAt: at(2), voidedAt: at(2), voidCategory: 'CHARGEBACK' });
+      const voidedFailed = await addPayment(invoice, { paidAt: at(3), voidedAt: at(3), voidCategory: 'ERROR' });
+      const refundedFailed = await addPayment(invoice, { paidAt: at(4), amount: 50 });
+      const plain = await addPayment(invoice, { paidAt: at(5) });
+      await addRefund(org, invoice, partlyFailed, admin.id, 10, 'SUCCEEDED', iso('2026-10-04T10:00:00Z'));
+      await addRefund(org, invoice, refundedFailed, admin.id, 50, 'SUCCEEDED', iso('2026-10-04T10:00:00Z'));
+      for (const p of [succeededFailed, partlyFailed, chargedBackFailed, voidedFailed, refundedFailed]) await failedRefund(org, invoice, p, admin.id);
+      const api = await (await finance(org)).api();
+      const ids = async (status: string) => (await listOf(api, `${WINDOW}&status=${status}`)).payments.map((r) => r.id).sort();
+      expect(await ids('refund_failed')).toEqual([succeededFailed, partlyFailed, chargedBackFailed, voidedFailed, refundedFailed].sort());
+      expect(await ids('succeeded')).toEqual([plain]);
+      for (const status of ['refunded', 'partially_refunded', 'charged_back', 'voided']) {
+        expect(await ids(status), status).toEqual([]);
+      }
+    });
+
+    it('writes Refund failed into the export', async () => {
+      const { org, customer, admin } = await newOrg();
+      const invoice = await invoiceIn(org, customer);
+      const p = await addPayment(invoice, { paidAt: iso('2026-10-05T16:00:00Z') });
+      await failedRefund(org, invoice, p, admin.id);
+      const res = await (await (await finance(org)).api()).get(`/api/payments-page/payments/export?${WINDOW}`);
+      expect(res.body.payments.map((r: Row) => r.status)).toEqual(['Refund failed']);
+    });
+
+    it('asks the database once per page for the flag, not once per row', async () => {
+      const { org, customer, admin } = await newOrg();
+      const invoice = await invoiceIn(org, customer);
+      for (let i = 0; i < 6; i++) {
+        const p = await addPayment(invoice, { paidAt: iso(`2026-10-05T16:0${i}:00Z`) });
+        if (i % 2 === 0) await failedRefund(org, invoice, p, admin.id);
+      }
+      const api = await (await finance(org)).api();
+      const spy = vi.spyOn(db, '$queryRaw');
+      try {
+        const body = await listOf(api, WINDOW);
+        expect(body.payments.filter((r) => r.status === 'Refund failed').length).toBe(3);
+        const flagQueries = spy.mock.calls.filter((c) => JSON.stringify(c[0]).includes('failed_refund:'));
+        expect(flagQueries.length).toBe(1);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('returns refund_failed on the detail: the newest open one, with the reason in plain words', async () => {
+      const { org, customer, admin } = await newOrg();
+      const invoice = await invoiceIn(org, customer);
+      const p = await addPayment(invoice, { paidAt: iso('2026-10-05T16:00:00Z') });
+      const clear = await addPayment(invoice, { paidAt: iso('2026-10-05T17:00:00Z') });
+      await failedRefund(org, invoice, p, admin.id, 10, iso('2026-10-06T10:00:00Z'));
+      await failedRefund(org, invoice, p, admin.id, 30, iso('2026-10-07T10:00:00Z'));
+      const api = await (await finance(org)).api();
+      const res = await api.get(`/api/payments-page/payments/${p}`);
+      expect(res.body.status).toBe('Refund failed');
+      expect(res.body.refund_failed).toMatchObject({ amount: 30, date: '2026-10-07T10:00:00.000Z' });
+      expect(typeof res.body.refund_failed.failure_text).toBe('string');
+      expect(res.body.refund_failed.failure_text.length).toBeGreaterThan(0);
+      expect(JSON.stringify(res.body.refund_failed)).not.toMatch(/\bre_[A-Za-z0-9]|stripe/i);
+      expect((await api.get(`/api/payments-page/payments/${clear}`)).body.refund_failed).toBeNull();
+    });
+
+    it('picks the newest OPEN failed refund, not a newer one a person already resolved', async () => {
+      const { org, customer, admin } = await newOrg();
+      const invoice = await invoiceIn(org, customer);
+      const p = await addPayment(invoice, { paidAt: iso('2026-10-05T16:00:00Z') });
+      await failedRefund(org, invoice, p, admin.id, 10, iso('2026-10-06T10:00:00Z'));
+      await resolveFailed(org, await failedRefund(org, invoice, p, admin.id, 30, iso('2026-10-07T10:00:00Z')), admin.id);
+      const res = await (await (await finance(org)).api()).get(`/api/payments-page/payments/${p}`);
+      expect(res.body.status).toBe('Refund failed');
+      expect(res.body.refund_failed).toMatchObject({ amount: 10, date: '2026-10-06T10:00:00.000Z' });
+    });
+
+    it('falls back to the plain sentence when the failed refund has no reason code', async () => {
+      const { org, customer, admin } = await newOrg();
+      const invoice = await invoiceIn(org, customer);
+      const p = await addPayment(invoice, { paidAt: iso('2026-10-05T16:00:00Z') });
+      const id = await failedRefund(org, invoice, p, admin.id);
+      await db.refund.update({ where: { id }, data: { failure_code: null } });
+      const res = await (await (await finance(org)).api()).get(`/api/payments-page/payments/${p}`);
+      expect(res.body.refund_failed.failure_text).toBe('The refund did not reach the customer');
+    });
+
+    it('finds a payment by its PMT- code in any case, and returns the code and customer number on rows, detail, export and payout rows', async () => {
+      const { org, customer, tag } = await newOrg();
+      const invoice = await invoiceIn(org, customer);
+      const payout = await addPayout(org);
+      const p = await addPayment(invoice, { paidAt: iso('2026-10-05T16:00:00Z'), payoutId: payout.id });
+      await addPayment(invoice, { paidAt: iso('2026-10-05T16:01:00Z') });
+      const code = `PMT-${p.replace(/-/g, '').slice(0, 8).toUpperCase()}`;
+      const api = await (await finance(org)).api();
+      for (const q of [code, code.toLowerCase(), p.slice(0, 8)]) {
+        expect((await listOf(api, `${WINDOW}&q=${q}`)).payments.map((r) => r.id), q).toEqual([p]);
+      }
+      const row = (await listOf(api, WINDOW)).payments.find((r) => r.id === p)!;
+      expect(row.reference).toBe(code);
+      expect(row.customer).toEqual({ id: customer, name: 'Pat Payer', customer_number: `C-${tag}` });
+      expect((await api.get(`/api/payments-page/payments/${p}`)).body).toMatchObject({ reference: code, customer: { customer_number: `C-${tag}` } });
+      expect((await api.get(`/api/payments-page/payments/export?${WINDOW}`)).body.payments.find((r: Row) => r.id === p).reference).toBe(code);
+      const inPayout = (await api.get(`/api/payments-page/payouts/${payout.id}/payments`)).body.payments[0];
+      expect(inPayout).toMatchObject({ reference: code, customer: { customer_number: `C-${tag}` } });
+    });
+
+    it('puts a DSP- code on the dispute of the payment detail', async () => {
+      const { org, customer } = await newOrg();
+      const invoice = await invoiceIn(org, customer);
+      const p = await addPayment(invoice, { paidAt: iso('2026-10-05T16:00:00Z') });
+      const d = await addDispute(org, invoice, p, 'NEEDS_RESPONSE');
+      const res = await (await (await finance(org)).api()).get(`/api/payments-page/payments/${p}`);
+      expect(res.body.dispute.reference).toBe(`DSP-${d.id.replace(/-/g, '').slice(0, 8).toUpperCase()}`);
+      expect(JSON.stringify(res.body.dispute)).not.toContain(d.stripe_dispute_id);
+    });
+
+    it('reads a bank payment returned after it cleared as Charged back, and one returned before as Failed (N-18)', async () => {
+      const { org, customer } = await newOrg();
+      const invoice = await invoiceIn(org, customer);
+      const after = await addPayment(invoice, { method: 'ACH', paidAt: iso('2026-10-05T16:00:00Z'), voidedAt: iso('2026-10-08T10:00:00Z'), voidCategory: 'CHARGEBACK' });
+      const before = await addPayment(invoice, { method: 'ACH', state: 'FAILED', failureCode: 'insufficient_funds', paidAt: iso('2026-10-05T16:01:00Z') });
+      const api = await (await finance(org)).api();
+      expect(await statusOf(api, after)).toBe('Charged back');
+      expect(await statusOf(api, before)).toBe('Failed');
     });
   });
 });

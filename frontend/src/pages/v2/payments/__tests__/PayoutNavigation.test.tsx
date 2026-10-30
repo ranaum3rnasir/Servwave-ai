@@ -38,22 +38,21 @@ beforeEach(() => {
 });
 
 describe('Paid out in a payout reference', () => {
-  it('leaves the Payments tab for the Payouts tab with that payout open, and drops the payment and the tab\'s own filters', async () => {
+  it('pushes the Payout on top of the Payment where it is, with Back to the Payment; the tab and the period stay put', async () => {
     const u = userEvent.setup();
-    renderWithProviders(<><PaymentsPage /><Where /></>, { initialEntries: [`/payments?period=7&chip=succeeded&payment=${ROW.id}`] });
-    const dialog = await screen.findByRole('dialog', { name: 'Customer 1' });
+    renderWithProviders(<><PaymentsPage /><Where /></>, { initialEntries: [`/payments?period=7&chip=succeeded&d=payment:${ROW.id}`] });
+    const dialog = await screen.findByRole('dialog', { name: `Payment ${ROW.reference}` });
     await u.click(await within(dialog).findByRole('button', { name: PAYOUT.reference }));
 
     expect(await screen.findByRole('dialog', { name: `Payout ${PAYOUT.reference}` })).toBeInTheDocument();
-    await waitFor(() => expect(search().get('tab')).toBe('payouts'));
-    expect(search().get('payout')).toBe(PAYOUT.id);
+    await waitFor(() => expect(search().get('d')).toBe(`payment:${ROW.id},payout:${PAYOUT.id}`));
     expect(search().get('period')).toBe('7');
-    expect(search().has('payment')).toBe(false);
-    expect(search().has('chip')).toBe(false);
-    expect(screen.getByRole('tab', { name: 'Payouts', hidden: true })).toHaveAttribute('aria-selected', 'true');
+    expect(search().get('chip')).toBe('succeeded');
+    expect(search().has('tab')).toBe(false);
+    expect(screen.getByRole('button', { name: 'Back to Payment' })).toBeInTheDocument();
   });
 
-  it('a payment opened from a payout and its own "Paid out in" link closes the payment and shows the payout', async () => {
+  it('a payment opened from a payout and its own "Paid out in" link cut the stack back to the payout', async () => {
     const u = userEvent.setup();
     const pay = makePayoutPayment(1);
     mockApi.get.mockReset();
@@ -65,16 +64,15 @@ describe('Paid out in a payout reference', () => {
         return Promise.resolve({ data: { connected: true, terms_accepted: true, stripe_charges_enabled: true, stripe_payouts_enabled: true, stripe_details_submitted: true, stripe_requirements_due: [], stripe_disabled_reason: null, collected_awaiting_payout: 0 } });
       }
       if (url === `/api/payments-page/payments/${pay.id}`) {
-        const row = makeRow(1, { id: pay.id, customer: pay.customer, invoice: pay.invoice, payout: { id: PAYOUT.id, reference: PAYOUT.reference, status: 'PAID', arrival_date: null } });
+        const row = makeRow(1, { id: pay.id, customer: pay.customer && { ...pay.customer, customer_number: 'C-1001' }, invoice: pay.invoice, payout: { id: PAYOUT.id, reference: PAYOUT.reference, status: 'PAID', arrival_date: null } });
         return Promise.resolve({ data: makeDetail(row, { can_refund: false, timeline: [{ label: `Paid out in ${PAYOUT.reference}`, at: row.date, note: null, tone: 'neutral' }] }) });
       }
       return (inner as (a: string, b?: unknown) => unknown)(url, config);
     }) as never);
-    renderWithProviders(<><PaymentsPage /><Where /></>, { initialEntries: [`/payments?tab=payouts&payout=${PAYOUT.id}&payment=${pay.id}`] });
-    const paymentDrawer = await screen.findByRole('dialog', { name: 'Payer 1' });
+    renderWithProviders(<><PaymentsPage /><Where /></>, { initialEntries: [`/payments?tab=payouts&d=payout:${PAYOUT.id},payment:${pay.id}`] });
+    const paymentDrawer = await screen.findByRole('dialog', { name: /^Payment PMT-/ });
     await u.click(await within(paymentDrawer).findByRole('button', { name: PAYOUT.reference }));
-    await waitFor(() => expect(search().has('payment')).toBe(false));
-    expect(search().get('payout')).toBe(PAYOUT.id);
+    await waitFor(() => expect(search().get('d')).toBe(`payout:${PAYOUT.id}`));
     expect(await screen.findByRole('dialog', { name: `Payout ${PAYOUT.reference}` })).toBeInTheDocument();
   });
 });

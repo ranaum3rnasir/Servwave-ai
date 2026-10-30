@@ -21,7 +21,7 @@ interface Tag {
 
 // SRVW-103 - one lookup per TagEntity value: the write route segment, and the detail
 // query key the host page reads so an add/remove refetches it. Shared with
-// TagsSettingsCard via `@/lib/tag-entities` so the two cannot disagree on the set.
+// the Lists page Tags card via `@/lib/tag-entities` so the two cannot disagree on the set.
 type EntityType = TagEntityType;
 
 interface TagInputProps {

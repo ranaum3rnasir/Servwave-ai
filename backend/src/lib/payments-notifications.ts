@@ -29,7 +29,7 @@ export async function emitPaymentsNotif(
   await alertSwitchHolders({
     verb, organizationId: orgId, actorId: null,
     object: { type: 'ORGANIZATION', id: orgId, label: orgName ?? 'ServWave Payments' },
-    // Slice 33b: every account notice opens the Payout account & verification page, where the owner acts on it.
+    // Slice 33b: every account notice opens the ServWave Payments settings page (payout account card), where the owner acts on it.
     data: { link_path: PAYOUT_ACCOUNT_PATH, ...data }, dedupKey: paymentsNotifDedupKey(verb, dedup),
   });
 }
@@ -45,8 +45,8 @@ export function whatToDoAbout(requirements: readonly string[]): string {
     identity ? 'confirm the identity details ServWave Payments asks for, such as the owner\'s ID document' : '',
     bank ? 'check your bank account details' : '',
   ].filter(Boolean);
-  if (steps.length === 0) return 'Open Settings > Payments and finish the missing details.';
-  return `Open Settings > Payments and ${steps.join(', then ')}.`;
+  if (steps.length === 0) return 'Open Settings > ServWave Payments and finish the missing details.';
+  return `Open Settings > ServWave Payments and ${steps.join(', then ')}.`;
 }
 
 export interface AccountNoticeToSend {

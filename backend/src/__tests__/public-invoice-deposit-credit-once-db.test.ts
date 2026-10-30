@@ -16,6 +16,7 @@ import request from 'supertest';
 import { randomUUID } from 'crypto';
 import type { RequestListener, Server } from 'http';
 import { listenOnLoopback, closeServer } from './loopback-app';
+import { applyDepositCreditsWithPayments, computeDepositCredit } from '../lib/deposit-credit';
 
 // One factory for every client in this file (see job-cancel-payment-race-db.test.ts for why).
 const { realClient } = vi.hoisted(() => {
@@ -46,7 +47,7 @@ suite('public invoice: the deposit credit is printed once (real database)', () =
     const quietly = (p: Promise<unknown>) => p.catch(() => undefined);
     for (const org of orgs) {
       await quietly(db.$executeRawUnsafe(`DELETE FROM payments WHERE invoice_id IN (SELECT id FROM invoices WHERE organization_id = '${org}')`));
-      for (const table of ['timeline_events', 'notifications', 'audit_logs', 'invoices', 'customers', 'users']) {
+      for (const table of ['deposit_credit_applications', 'timeline_events', 'notifications', 'audit_logs', 'invoices', 'customers', 'users']) {
         await quietly(db.$executeRawUnsafe(`DELETE FROM ${table} WHERE organization_id = '${org}'`));
       }
       await quietly(db.organization.deleteMany({ where: { id: org } }));
@@ -129,5 +130,53 @@ suite('public invoice: the deposit credit is printed once (real database)', () =
 
     expect(res.body.invoice.payments).toEqual([]);
     expect(printedDue(res.body)).toBe(Number(res.body.invoice.amount_due));
+  });
+
+  // V7-12a pin (no overpaid invoices, BE-14 row 9): two paid deposits cannot credit an invoice for
+  // more than it is worth, in the read pass or when the credit is written.
+  it('two paid $800 deposits on a $1,000 invoice credit $1,000 in total: $800 then $200, never $1,600', async () => {
+    const org = randomUUID();
+    orgs.push(org);
+    const tag = org.slice(0, 8);
+    const customer = randomUUID();
+    await db.organization.create({
+      data: {
+        id: org, name: `v712a-dep-${tag}`, email: `dep-${tag}@example.test`,
+        address_line1: '1 Test Way', city: 'Testville', state: 'MA', postal_code: '02108',
+        estimate_terms: '', estimate_notes: '', estimate_payment_terms: '',
+      },
+    });
+    await db.customer.create({
+      data: { id: customer, organization_id: org, customer_number: `C-${tag}`, kind: 'PERSON', segment: 'RESIDENTIAL', first_name: 'Pat', last_name: 'Payer' },
+    });
+    const deposits = [randomUUID(), randomUUID()];
+    for (const [i, id] of deposits.entries()) {
+      await db.invoice.create({
+        data: {
+          id, organization_id: org, customer_id: customer, invoice_number: `DEP-${tag}-${i}`, kind: 'DEPOSIT',
+          status: 'PAID', subtotal: 800, tax_amount: 0, total_amount: 800, amount_due: 0,
+        },
+      });
+      await db.payment.create({
+        data: { invoice_id: id, amount: 800, method: 'CHECK', paid_at: new Date(), state: 'SUCCEEDED', created_by_source: 'USER' },
+      });
+    }
+    const target = randomUUID();
+    await db.invoice.create({
+      data: {
+        id: target, organization_id: org, customer_id: customer, invoice_number: `INV-${tag}`, status: 'DRAFT',
+        subtotal: 1000, tax_amount: 0, total_amount: 1000, amount_due: 1000,
+      },
+    });
+
+    const { credit, applied } = await db.$transaction(async (tx) => ({
+      credit: await computeDepositCredit(tx, deposits.map((id) => ({ id })), 1000),
+      applied: await applyDepositCreditsWithPayments(tx, deposits.map((id) => ({ id })), target, 1000, org),
+    }));
+
+    expect(credit).toBe(1000);
+    expect(applied.map((a) => a.amount)).toEqual([800, 200]);
+    const rows = await db.depositCreditApplication.findMany({ where: { target_invoice_id: target } });
+    expect(rows.reduce((sum, r) => sum + Number(r.amount), 0)).toBe(1000);
   });
 });

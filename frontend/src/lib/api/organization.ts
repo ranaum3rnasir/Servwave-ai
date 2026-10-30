@@ -224,6 +224,16 @@ export function useUploadLogo() {
   });
 }
 
+export type VerificationValue = 'not_started' | 'pending' | 'action_needed' | 'verified' | 'restricted';
+
+/** The four verification rows of the payout account. Null until the account has been read for the first time. */
+export interface StripeVerification {
+  business_details: VerificationValue;
+  owner_identity: VerificationValue;
+  bank_account: VerificationValue;
+  tax_id: VerificationValue;
+}
+
 export interface StripeStatus {
   /** Whether the org has a payout account. The processor's id is never sent to the browser. */
   connected: boolean;
@@ -234,6 +244,8 @@ export interface StripeStatus {
   stripe_details_submitted: boolean;
   stripe_requirements_due: string[];
   stripe_disabled_reason: string | null;
+  /** Optional while rolling out: absent or null means "not read yet", and the page shows no rows. */
+  verification?: StripeVerification | null;
   collected_awaiting_payout: number; // §6.6 deferred-bank nudge $X (0 unless charges live + payouts pending)
 }
 

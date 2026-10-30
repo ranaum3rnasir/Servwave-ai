@@ -5,7 +5,7 @@ import app from '../app';
 import { prisma } from '../lib/prisma';
 import { retrieveAccount } from '../lib/stripe';
 import { env } from '../config/env';
-import { mockAuthAs, authHeader, ALPHA_ORG_ID } from './helpers';
+import { mockAuthAs, mockRoleSwitches, authHeader, ALPHA_ORG_ID } from './helpers';
 
 const mockPrisma = prisma as unknown as {
   organization: { findUnique: ReturnType<typeof vi.fn>; updateMany: ReturnType<typeof vi.fn> };
@@ -86,6 +86,40 @@ describe('POST /api/organization/stripe/refresh-status (return from onboarding)'
     expect(res.status).toBe(403);
     expect(mockRetrieveAccount).not.toHaveBeenCalled();
     expect(mockPrisma.organization.updateMany).not.toHaveBeenCalled();
+  });
+
+  describe('the gate is Manage payout account OR update Organization', () => {
+    const okAccount = {
+      id: 'acct_bogus', charges_enabled: true, payouts_enabled: true, details_submitted: true,
+      requirements: { currently_due: [], disabled_reason: null },
+    } as unknown as Stripe.Account;
+    const post = () => request(app).post('/api/organization/stripe/refresh-status').set(authHeader('sales'));
+
+    it('a person holding only Manage payout account gets 200 (the embedded form calls this when it closes)', async () => {
+      mockAuthAs('sales');
+      mockRoleSwitches({ manage_payout_account: true, company_settings: false });
+      mockRetrieveAccount.mockResolvedValue(okAccount);
+      const res = await post();
+      expect(res.status).toBe(200);
+      expect(mockRetrieveAccount).toHaveBeenCalledWith('acct_bogus');
+    });
+
+    it('a person holding only update Organization still gets 200', async () => {
+      mockAuthAs('sales');
+      mockRoleSwitches({ manage_payout_account: false, company_settings: true });
+      mockRetrieveAccount.mockResolvedValue(okAccount);
+      const res = await post();
+      expect(res.status).toBe(200);
+    });
+
+    it('a person holding neither gets 403 and nothing is read or written', async () => {
+      mockAuthAs('sales');
+      mockRoleSwitches({ manage_payout_account: false, company_settings: false, view_payments: true });
+      const res = await post();
+      expect(res.status).toBe(403);
+      expect(mockRetrieveAccount).not.toHaveBeenCalled();
+      expect(mockPrisma.organization.updateMany).not.toHaveBeenCalled();
+    });
   });
 
   it('answers with a ServWave error and no vendor name when the refresh itself breaks', async () => {

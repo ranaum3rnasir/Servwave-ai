@@ -14,9 +14,10 @@ const MAX_ENTRIES = 100;
  * carries over: a forward navigation opened the next page part-way down, and Back landed wherever
  * the page before had left the scroller. The rule:
  *
- *   - forward navigation (PUSH) opens at the top;
- *   - a redirect (REPLACE) to another path opens at the top, to the same path (a filter or tab
- *     written into the URL) leaves the position alone;
+ *   - forward navigation (PUSH) to another path opens at the top; a PUSH that changes only the
+ *     query string (a tab, chip or filter written into the URL) leaves the position alone;
+ *   - a redirect (REPLACE) to another path opens at the top, to the same path leaves the position
+ *     alone;
  *   - Back and Forward (POP) restore the position that history entry had when it was left. The
  *     page it returns to may still be loading, so the restore retries for a moment and gives up
  *     the instant the user touches, wheels or keys the scroller.
@@ -58,10 +59,11 @@ export function useShellScroll(target: RefObject<HTMLElement | null>): void {
     if (navType === 'POP') {
       const saved = positions.current.get(location.key) ?? 0;
       cancelRestore.current = restore(el, saved);
-    } else if (navType === 'PUSH' || previousPath !== location.pathname) {
+    } else if (previousPath !== location.pathname) {
       scrollElementTo(el, 0);
     }
-    // A REPLACE on the same path keeps the position.
+    // A PUSH or REPLACE that changes only the query string (a tab, chip, filter or open drawer written into the URL)
+    // keeps the position.
     return () => {
       cancelRestore.current?.();
       cancelRestore.current = null;

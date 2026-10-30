@@ -9,9 +9,15 @@ export const mockApi = vi.mocked(api);
 
 export const DISPUTE_ID = '11111111-1111-4111-8111-111111111111';
 export const INVOICE_ID = '22222222-2222-4222-8222-222222222222';
+export const PAYMENT_ID = '33333333-3333-4333-8333-333333333333';
+export const DISPUTE_REF = 'DSP-A1B2C3D4';
+export const OPENED_AT = '2026-10-01T15:00:00.000Z';
+export const FILE_URL = 'https://files.example.test/evidence-file';
 
 const DAY = 86_400_000;
-export const inDays = (n: number) => new Date(Date.now() + n * DAY).toISOString();
+// A few minutes over, so a test that reads "N days left" is not one clock tick short of the boundary.
+export const inDays = (n: number) => new Date(Date.now() + n * DAY + 300_000).toISOString();
+export const inHours = (n: number) => new Date(Date.now() + n * 3_600_000 + 300_000).toISOString();
 
 export const emptyFiles = (): Record<string, EvidenceFile | null> =>
   Object.fromEntries(EVIDENCE_FILE_FIELDS.map((f) => [f, null]));
@@ -31,7 +37,8 @@ export function makeEvidence(over: Over = {}): DisputeEvidenceState {
   const { dispute, form, ...rest } = over;
   return {
     dispute: {
-      id: DISPUTE_ID, status: 'NEEDS_RESPONSE', reason_text: 'The customer does not recognize the charge', amount: 250,
+      id: DISPUTE_ID, reference: DISPUTE_REF, opened_at: OPENED_AT, payment: { id: PAYMENT_ID, reference: 'PMT-000041' },
+      status: 'NEEDS_RESPONSE', reason_text: 'The customer does not recognize the charge', amount: 250,
       respond_by: inDays(5), days_left: 5, is_bank_return: false, closed_at: null, outcome: null,
       customer_name: 'Dana Whitfield', invoice: { id: INVOICE_ID, number: 'INV-1042' },
       ...dispute,
@@ -46,6 +53,10 @@ export function makeEvidence(over: Over = {}): DisputeEvidenceState {
     totals: { bytes: 0, pages: 0, chars: 0 },
     limits: { max_bytes: 4_500_000, max_pages: 49, max_chars: 150_000, types: ['application/pdf', 'image/jpeg', 'image/png'] },
     submitted: null,
+    customer_block: {
+      restricted: false, id: 'c-1', customer_number: 'C-1001', name: 'Dana Whitfield', company: null, address: null,
+      phone: null, email: null, job: null, lead: null, invoice: { id: INVOICE_ID, number: 'INV-1042' },
+    },
     can_edit: true,
     can_submit: false,
     recommended: ['receipt', 'customer_communication', 'service_documentation', 'uncategorized_text'],
@@ -63,16 +74,24 @@ export const invoiceFile = (id: string, name: string, over: Partial<InvoiceFile>
 });
 
 export interface ServeDispute {
+  /** Answers for a file's link; a function can throw to fail it. */
+  link?: (attachmentId: string) => Record<string, unknown> | Promise<Record<string, unknown>>;
   evidence?: DisputeEvidenceState | (() => DisputeEvidenceState | Promise<DisputeEvidenceState>);
   files?: InvoiceFile[] | (() => InvoiceFile[]);
 }
 
 /** Routes GET calls the drawer makes. A function for `evidence` is called on every read, so a refetch can answer differently. */
-export function serveDispute({ evidence = makeEvidence(), files = [] }: ServeDispute = {}) {
+export function serveDispute({ evidence = makeEvidence(), files = [], link }: ServeDispute = {}) {
   mockApi.get.mockImplementation(((url: string) => {
     if (url === '/api/organization') return Promise.resolve({ data: { timezone: 'America/Los_Angeles' } });
     if (url === `/api/payments-page/disputes/${DISPUTE_ID}/evidence`) {
       return Promise.resolve(typeof evidence === 'function' ? evidence() : evidence).then((d) => ({ data: d }));
+    }
+    const fileRoute = url.match(new RegExp(`^/api/payments-page/disputes/${DISPUTE_ID}/evidence/files/(.+)$`));
+    if (fileRoute) {
+      const id = fileRoute[1]!;
+      return Promise.resolve(link ? link(id) : { url: `${FILE_URL}/${id}`, file_name: 'x', mime: 'application/pdf', size_bytes: 1, page_count: 1 })
+        .then((d) => ({ data: d }));
     }
     if (url.startsWith('/api/attachments/')) {
       return Promise.resolve({ data: { attachments: typeof files === 'function' ? files() : files } });

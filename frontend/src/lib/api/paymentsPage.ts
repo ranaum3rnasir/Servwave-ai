@@ -1,4 +1,4 @@
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery, type QueryClient } from '@tanstack/react-query';
 
 import api from '@/lib/axios';
 import { useAuthStore } from '@/stores/auth.store';
@@ -38,10 +38,17 @@ export const paymentsPageKeys = {
     ['payments-page', 'summary', orgId, from, to] as const,
   attention: (orgId: string | undefined, view: AttentionView, params: AttentionParams) =>
     ['payments-page', 'attention', orgId, view, params] as const,
+  attentionItem: (orgId: string | undefined, key: string) => ['payments-page', 'attention-item', orgId, key] as const,
+  unappliedDetail: (orgId: string | undefined, key: string) => ['payments-page', 'unapplied-detail', orgId, key] as const,
+  captureInvoices: (orgId: string | undefined, id: string, q: string) =>
+    ['payments-page', 'capture-invoices', orgId, id, q] as const,
   payouts: (orgId: string | undefined, page: number) => ['payments-page', 'payouts', orgId, page] as const,
   payout: (orgId: string | undefined, id: string) => ['payments-page', 'payout', orgId, id] as const,
   payoutPayments: (orgId: string | undefined, id: string, page: number) =>
     ['payments-page', 'payout-payments', orgId, id, page] as const,
+  documents: (orgId: string | undefined, page: number) => ['payments-page', 'documents', orgId, page] as const,
+  documentTargets: (orgId: string | undefined, kind: DocumentTargetKind, q: string) =>
+    ['payments-page', 'document-targets', orgId, kind, q] as const,
 };
 
 /**
@@ -64,11 +71,14 @@ export function usePaymentsSummary({ from, to }: { from: string; to: string }, {
 
 /** How a payment reads on the page (the API's words; `Voided` is not a facet but a row can wear it). */
 export type PaymentDisplayStatus =
-  | 'Succeeded' | 'Pending' | 'Failed' | 'Disputed' | 'Charged back' | 'Voided' | 'Refunded' | 'Partially refunded';
+  | 'Succeeded' | 'Pending' | 'Failed' | 'Disputed' | 'Charged back' | 'Voided' | 'Refunded' | 'Partially refunded'
+  | 'Refund failed';
 
 /** One row of the Payments tab. A row the caller cannot open has `restricted: true` and no customer or invoice. */
 export interface PaymentRow {
   id: string;
+  /** The short code the page shows for this payment ("PMT-XXXXXX"). */
+  reference: string;
   /** ISO instant. */
   date: string;
   status: PaymentDisplayStatus;
@@ -83,7 +93,7 @@ export interface PaymentRow {
   refunded: number;
   payout: { id: string; reference: string; status: string; arrival_date: string | null } | null;
   payout_status: 'awaiting' | 'in_transit' | 'paid' | 'failed' | null;
-  customer: { id: string; name: string } | null;
+  customer: { id: string; name: string; customer_number: string } | null;
   invoice: { id: string; number: string } | null;
   restricted: boolean;
 }
@@ -95,15 +105,37 @@ export interface PaymentTimelineEntry {
   tone: 'neutral' | 'success' | 'warning' | 'danger';
 }
 
+/** Who the customer is and what the money belongs to; a viewer who cannot open the invoice gets the restricted form. */
+export type PaymentCustomerBlock =
+  | {
+      restricted: false;
+      id: string;
+      customer_number: string;
+      name: string;
+      company: string | null;
+      address: string | null;
+      /** Phone and email only for a viewer who may see payments. */
+      phone: string | null;
+      email: string | null;
+      job: { id: string; number: string; type: string | null } | null;
+      lead: { id: string; number: string } | null;
+      invoice: { id: string; number: string };
+    }
+  | { customer: null; restricted: true };
+
 export interface PaymentDetail extends PaymentRow {
   invoice_amount: number;
   tip: number;
   service_fee: number;
   /** The ServWave-worded reason, only for a Failed payment. */
   failure_text: string | null;
+  customer_block: PaymentCustomerBlock;
+  /** The newest failed refund nobody has dealt with; null when there is none. */
+  refund_failed: { amount: number; failure_text: string; date: string } | null;
   refunds: Array<{ amount: number; state: 'PENDING' | 'SUCCEEDED' | 'FAILED'; created_at: string; reason_category: string | null; by: string | null }>;
   dispute: {
     id: string;
+    reference: string;
     status: string;
     reason_text: string;
     amount: number;
@@ -191,7 +223,8 @@ export type AttentionView = 'open' | 'resolved';
 export type AttentionType =
   | 'failed_payment' | 'failed_refund' | 'dispute' | 'failed_payout' | 'unmatched_payment' | 'unmatched_refund';
 export type AttentionActionId =
-  | 'contact_customer' | 'mark_resolved' | 'refund_again' | 'mark_settled' | 'respond' | 'update_bank_account' | 'refund';
+  | 'contact_customer' | 'mark_resolved' | 'refund_again' | 'respond' | 'update_bank_account' | 'refund'
+  | 'attach_to_invoice' | 'create_invoice';
 
 /** One item as the server shows it to this caller (P4). `actions` is what THIS caller may do, in display order. */
 export interface AttentionItem {
@@ -210,14 +243,23 @@ export interface AttentionItem {
   respond_by: string | null;
   days_left: number | null;
   payment_id: string | null;
+  /** The short codes the pages show; null when the item has none (or is restricted). */
+  payment_reference: string | null;
+  dispute_reference: string | null;
+  /** Unapplied money only: "RCV-" for a payment received, "REF-" for a refund sent. */
+  reference: string | null;
+  /** The dispute's own status, for a dispute item; null for every other kind. */
+  dispute_status: 'NEEDS_RESPONSE' | 'UNDER_REVIEW' | 'WON' | 'LOST' | 'CLOSED' | null;
   payout_id: string | null;
   /** The short reference the payouts list shows ("PO-XXXXXX"); only on a failed payout. */
   payout_reference: string | null;
   dispute_id: string | null;
   invoice: { id: string; number: string } | null;
-  customer: { id: string; name: string } | null;
+  customer: { id: string; name: string; customer_number: string } | null;
   restricted: boolean;
   actions: AttentionActionId[];
+  /** A failed bank payment's prefilled email for Contact customer (subject, and a body that may hold the pay link). */
+  compose?: { subject: string; body: string } | null;
   refund_again: {
     invoice_id: string;
     payment_id: string;
@@ -247,14 +289,113 @@ export interface AttentionParams {
  * One page of Needs attention items. The card, the chip's badge and the history table all read through this hook, so
  * their counts come from the same answer and never disagree. The previous page stays on screen while the next loads.
  */
-export function useAttention(view: AttentionView, params: AttentionParams = {}, { enabled = true }: { enabled?: boolean } = {}) {
+export function useAttention(view: AttentionView, params: AttentionParams = {}, { enabled = true, silentErrors = false }: { enabled?: boolean; silentErrors?: boolean } = {}) {
   const orgId = useAuthStore((s) => s.user?.organization_id);
   return useQuery({
     queryKey: paymentsPageKeys.attention(orgId, view, params),
     queryFn: () =>
-      api.get('/api/payments-page/attention', { params: { view, ...params } }).then((r) => r.data as AttentionResponse),
+      api.get('/api/payments-page/attention', { params: { view, ...params }, ...(silentErrors ? { silentErrors: true } : {}) }).then((r) => r.data as AttentionResponse),
     placeholderData: keepPreviousData,
     enabled,
+  });
+}
+
+/**
+ * One attention item by its key (`<type>:<source id>`), open or resolved, in the same shape as a list row. A drawer opened
+ * from an address has only the key, so it reads the item here rather than filtering the list. Gated by view_payments,
+ * so a view-only person can open the drawer; the item's actions keep their own switches.
+ */
+export function useAttentionItem(key: string | null) {
+  const orgId = useAuthStore((s) => s.user?.organization_id);
+  return useQuery({
+    queryKey: paymentsPageKeys.attentionItem(orgId, key ?? ''),
+    queryFn: () => api.get(`/api/payments-page/attention/${key}`).then((r) => r.data as AttentionItem),
+    enabled: Boolean(key),
+    retry: false,
+  });
+}
+
+// ---- Unapplied money (V7-09) ------------------------------------------------------------------------------------------
+
+/** The invoice an unapplied item points at, by status word the server uses. */
+export type MeantForInvoice = { id: string; number: string; status: string | null; total: number | null };
+
+/** One invoice the money could be attached to (the drawer's suggestions and the Attach dialog's search rows). */
+export interface AttachableInvoice {
+  id: string;
+  number: string;
+  customer: string;
+  due_date: string | null;
+  job_type: string | null;
+  /** The invoice total. */
+  amount: number;
+  /** What is still due on it. */
+  balance: number;
+  /** What it can take now: the amount due less a bank debit still clearing. Never above `balance`. */
+  payable_now: number;
+  /** The invoice the money was meant for. */
+  meant: boolean;
+  /** False when the invoice owes less than the payment: shown, but cannot be chosen. */
+  can_attach: boolean;
+  /** Search rows only. */
+  status?: string;
+  same_amount?: boolean;
+}
+
+/** One unapplied payment or refund as its drawer reads it (`GET /api/payments-page/attention/:key` for an unapplied key). */
+export interface UnappliedDetail {
+  id: string;
+  key: string;
+  kind: 'PAYMENT' | 'REFUND';
+  title: string;
+  status: 'open' | 'resolved';
+  /** The amount still on the item (after any partial refund). */
+  amount: number | null;
+  reference: string | null;
+  created_at: string;
+  reason_short: string;
+  reason_long: string;
+  restricted: boolean;
+  meant_for: { invoice: MeantForInvoice | null };
+  customer_block: PaymentCustomerBlock | null;
+  payer: {
+    received_at: string;
+    reference: string;
+    method_label?: string;
+    detail?: string;
+    description?: string;
+  } | null;
+  suggested_invoices: AttachableInvoice[];
+  resolved_at: string | null;
+  resolved_by_name: string | null;
+  resolution: { text: string; note: string | null } | null;
+  actions: AttentionActionId[];
+}
+
+/** The key's type word: `unmatched_payment:{id}` and `unmatched_refund:{id}` are the unapplied kinds. */
+export const isUnappliedKey = (key: string) => key.startsWith('unmatched_payment:') || key.startsWith('unmatched_refund:');
+
+/** An unapplied item's drawer detail, read by its attention key (the same route as the failed items). */
+export function useUnappliedDetail(key: string | null) {
+  const orgId = useAuthStore((s) => s.user?.organization_id);
+  return useQuery({
+    queryKey: paymentsPageKeys.unappliedDetail(orgId, key ?? ''),
+    queryFn: () => api.get(`/api/payments-page/attention/${key}`).then((r) => r.data as UnappliedDetail),
+    enabled: Boolean(key),
+    retry: false,
+  });
+}
+
+/** The Attach dialog's search: invoices this item could go on, `q` matching number or customer, answered by the server. */
+export function useCaptureInvoices(id: string, q: string, { enabled = true }: { enabled?: boolean } = {}) {
+  const orgId = useAuthStore((s) => s.user?.organization_id);
+  return useQuery({
+    queryKey: paymentsPageKeys.captureInvoices(orgId, id, q),
+    queryFn: () =>
+      api.get(`/api/payments-needing-attention/${id}/invoices`, { params: q ? { q } : {} }).then((r) => (r.data as { items: AttachableInvoice[] }).items),
+    enabled,
+    placeholderData: keepPreviousData,
+    retry: false,
   });
 }
 
@@ -286,10 +427,17 @@ export interface EvidenceFile {
 export interface DisputeEvidenceState {
   dispute: {
     id: string;
+    /** The ServWave-worded code ("DSP-XXXXXXXX"), never a processor id. */
+    reference: string;
+    /** When the dispute was opened (ISO). */
+    opened_at: string;
+    /** The payment that was disputed, for the link back to its drawer. */
+    payment: { id: string; reference: string };
     status: 'NEEDS_RESPONSE' | 'UNDER_REVIEW' | 'WON' | 'LOST' | 'CLOSED';
     reason_text: string;
     amount: number;
     respond_by: string | null;
+    /** Whole days, rounded up by the server. Kept for older callers; the deadline is worded from `respond_by`. */
     days_left: number | null;
     is_bank_return: boolean;
     closed_at: string | null;
@@ -312,8 +460,13 @@ export interface DisputeEvidenceState {
     at: string | null;
     by_name: string | null;
     count: number;
-    files: Array<{ field: string; file_name: string }>;
+    files: Array<{ field: string; file_name: string; attachment_id: string }>;
   } | null;
+  /**
+   * The customer block of the dispute's invoice. Only the read (GET) carries it: a save, a stage and a submit answer
+   * without it, so a mutation answer is merged over the cached state with `setDisputeEvidenceState`.
+   */
+  customer_block?: PaymentCustomerBlock;
   can_edit: boolean;
   can_submit: boolean;
   recommended: string[];
@@ -336,6 +489,52 @@ export function useDisputeEvidence(id: string | null) {
     queryKey: disputeEvidenceKeys.one(orgId, id ?? ''),
     queryFn: () => api.get(`/api/payments-page/disputes/${id}/evidence`).then((r) => r.data as DisputeEvidenceState),
     enabled: Boolean(id),
+    retry: false,
+  });
+}
+
+/**
+ * Put a mutation's answer in the cache without losing the customer block the read brought (the answers do not carry it).
+ */
+export function setDisputeEvidenceState(
+  queryClient: QueryClient, orgId: string | undefined, id: string, next: DisputeEvidenceState,
+) {
+  queryClient.setQueryData<DisputeEvidenceState>(disputeEvidenceKeys.one(orgId, id), (prev) => ({
+    ...next,
+    customer_block: next.customer_block ?? prev?.customer_block,
+  }));
+}
+
+/** A file of a dispute's evidence, opened for preview or download: a 1 hour link and what the list already knew. */
+export interface DisputeEvidenceFileLink {
+  url: string;
+  file_name: string;
+  mime: string;
+  size_bytes: number;
+  page_count: number | null;
+}
+
+export const disputeEvidenceFileKeys = {
+  one: (orgId: string | undefined, id: string, attachmentId: string) =>
+    ['payments-page', 'dispute-evidence-file', orgId, id, attachmentId] as const,
+};
+
+export const fetchDisputeEvidenceFile = (disputeId: string, attachmentId: string) =>
+  api.get(`/api/payments-page/disputes/${disputeId}/evidence/files/${attachmentId}`, { silentErrors: true })
+    .then((r) => r.data as DisputeEvidenceFileLink);
+
+/**
+ * The link to one evidence file, fetched only when a file is opened. The link is good for an hour, so the answer is
+ * trusted for 50 minutes and never reused past that; a failure is not retried (the dialog's own Retry asks again).
+ */
+export function useDisputeEvidenceFile(disputeId: string | null, attachmentId: string | null) {
+  const orgId = useAuthStore((s) => s.user?.organization_id);
+  return useQuery({
+    queryKey: disputeEvidenceFileKeys.one(orgId, disputeId ?? '', attachmentId ?? ''),
+    queryFn: () => fetchDisputeEvidenceFile(disputeId!, attachmentId!),
+    enabled: Boolean(disputeId && attachmentId),
+    staleTime: 50 * 60_000,
+    gcTime: 50 * 60_000,
     retry: false,
   });
 }
@@ -384,7 +583,7 @@ export interface PayoutDetail extends PayoutRow {
 /** One payment inside a payout. A row the caller cannot open has `restricted: true` and no customer or invoice. */
 export interface PayoutPaymentRow {
   id: string;
-  customer: { id: string; name: string } | null;
+  customer: { id: string; name: string; customer_number: string } | null;
   invoice: { id: string; number: string } | null;
   restricted: boolean;
   /** A chargeback or other void: the row is listed, counts nothing, and its figures are 0. */
@@ -452,5 +651,69 @@ export function usePayoutPayments(id: string | null, page: number) {
     enabled: Boolean(id),
     placeholderData: keepPreviousData,
     retry: false,
+  });
+}
+
+// ---- Documents ------------------------------------------------------------------------------------------------------
+
+export type DocumentTargetKind = 'invoice' | 'job' | 'customer';
+
+/** One file uploaded from the Documents tab. `id`, `label` and `download_url` are null on a record the caller cannot open. */
+export interface DocumentRow {
+  id: string;
+  name: string;
+  type: 'Uploaded';
+  /** An instant (ISO). */
+  date: string;
+  size: number | null;
+  attached_to: { kind: DocumentTargetKind; id: string | null; label: string | null } | null;
+  /** Signed, valid for an hour. */
+  download_url: string | null;
+}
+
+export interface DocumentsResponse {
+  documents: DocumentRow[];
+  pagination: { page: number; limit: number; total: number; totalPages: number };
+}
+
+export const DOCUMENTS_PAGE_SIZE = 25;
+/** The signed links last an hour, so a cached page is re-read well before one can expire. */
+export const DOCUMENTS_STALE_MS = 10 * 60 * 1000;
+
+/** One page of uploaded documents, newest first. Not filtered by the period picker. */
+export function useDocuments(page: number) {
+  const orgId = useAuthStore((s) => s.user?.organization_id);
+  return useQuery({
+    queryKey: paymentsPageKeys.documents(orgId, page),
+    queryFn: () =>
+      api.get('/api/payments-page/documents', { params: { page, limit: DOCUMENTS_PAGE_SIZE } }).then((r) => r.data as DocumentsResponse),
+    placeholderData: keepPreviousData,
+    staleTime: DOCUMENTS_STALE_MS,
+  });
+}
+
+/** A direct re-read of one page (for a download whose signed link went stale). */
+export const fetchDocumentsPage = (page: number) =>
+  api.get('/api/payments-page/documents', { params: { page, limit: DOCUMENTS_PAGE_SIZE }, silentErrors: true }).then((r) => r.data as DocumentsResponse);
+
+/** One record the Upload dialog can attach to. `amount` and `due_date` come with invoices only. */
+export interface DocumentTarget {
+  id: string;
+  main: string;
+  sub: string | null;
+  amount?: number;
+  due_date?: string | null;
+}
+
+/** The dialog's "Find" list: records the caller can open, matched on the server. An empty `q` lists the newest. */
+export function useDocumentTargets(kind: DocumentTargetKind, q: string) {
+  const orgId = useAuthStore((s) => s.user?.organization_id);
+  return useQuery({
+    queryKey: paymentsPageKeys.documentTargets(orgId, kind, q),
+    queryFn: () =>
+      api.get('/api/payments-page/documents/targets', { params: { kind, q } }).then((r) => (r.data as { targets: DocumentTarget[] }).targets),
+    // Typing keeps the last list on screen, but switching kind never shows another kind's records.
+    placeholderData: (previous, previousQuery) => (previousQuery?.queryKey[3] === kind ? previous : undefined),
+    staleTime: 30_000,
   });
 }

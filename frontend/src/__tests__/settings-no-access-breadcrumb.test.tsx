@@ -8,13 +8,7 @@ import { useSettingsGuard } from '@/stores/settingsGuard.store';
 import { buildAbility } from '@/lib/ability';
 import SettingsLayout from '@/pages/v2/settings/SettingsLayout';
 import { useNavHistory } from '@/pages/v2/navHistory.store';
-import PayoutAccountPage from '@/pages/v2/settings/PayoutAccountPage';
 import { renderWithProviders } from './helpers';
-
-vi.mock('@/lib/api/organization', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/api/organization')>();
-  return { ...actual, useStripeStatus: () => ({ data: undefined, isLoading: true, isError: false }) };
-});
 
 const NOBODY = buildAbility([]);
 
@@ -43,10 +37,11 @@ function visitPage(path: string) {
 
 describe('settings breadcrumb on a page the visitor cannot see in the nav', () => {
   it('names each page instead of repeating "Settings"', () => {
-    for (const p of ['payments', 'roles', 'job-sub-statuses', 'tax-rates']) visitPage(`/settings/${p}`);
+    for (const p of ['servwave-payments', 'lists', 'roles', 'job-sub-statuses', 'tax-rates']) visitPage(`/settings/${p}`);
     const labels = useNavHistory.getState().visits.map((v) => v.label);
     expect(labels).toEqual([
-      'Settings · Payments & Lists',
+      'Settings · ServWave Payments',
+      'Settings · Lists',
       'Settings · Roles & Permissions',
       'Settings · Job Sub-Statuses',
       'Settings · Tax Rates',
@@ -59,28 +54,21 @@ describe('settings breadcrumb on a page the visitor cannot see in the nav', () =
   });
 });
 
-// O3 (payments go-live 33b fix round): a page that sends a refused visitor back to Settings must not stay in the
-// trail, and neither must the bare hop through /settings. The visitor ends with the trail they would have had
-// opening Company Profile directly.
-describe('settings breadcrumb after a no-access redirect', () => {
-  const arriveIn = (path: string) => {
+// O3 (payments go-live 33b fix round): the bare hop through /settings is not a step in the trail, so a visitor sent
+// there ends with the trail they would have had opening Company Profile directly. (The Payout account page used to be
+// the page that bounced a refused visitor; V7-01 retired it as a nav row and its address is now a redirect, so the
+// refused-page case went with it. The bare hop is still covered here.)
+describe('settings breadcrumb after the bare /settings hop', () => {
+  it('names only where the visitor now is', () => {
     renderWithProviders(
       <Routes>
         <Route path="/settings" element={<SettingsLayout />}>
           <Route index element={<Navigate to="/settings/company" replace />} />
           <Route path="/settings/company" element={<p>company page</p>} />
-          <Route path="/settings/payout-account" element={<PayoutAccountPage />} />
         </Route>
       </Routes>,
-      { ability: NOBODY, initialEntries: [path] },
+      { ability: NOBODY, initialEntries: ['/settings'] },
     );
-    return useNavHistory.getState().visits.map((v) => v.label);
-  };
-
-  it.each(['/settings/payout-account'])(
-    'names only where the visitor now is after being refused at %s',
-    (path) => {
-      expect(arriveIn(path)).toEqual(['Settings · Company Profile']);
-    },
-  );
+    expect(useNavHistory.getState().visits.map((v) => v.label)).toEqual(['Settings · Company Profile']);
+  });
 });

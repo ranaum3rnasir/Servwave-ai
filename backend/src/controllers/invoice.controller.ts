@@ -23,7 +23,7 @@ import {
 import type { EmailDispatchResult } from '../lib/email';
 import { cancelPaymentIntent, createCheckoutSession, createRefund, getStripeForOrg, isStripeConfigured, expireCheckoutSession, expireOpenCheckoutSessionsForInvoice } from '../lib/stripe';
 import { orgPaymentCapabilities, paymentOptionsFor, storedMethodsOverride, tipPresetAmountsCents } from '../lib/payment-options';
-import { exceedsPayableNow, payableNowCents, priceCheckout, processingBlocksHandPaymentMessage, type CheckoutMethod } from '../lib/checkout-pricing';
+import { exceedsPayableNow, handPaymentAboveBalanceMessage, payableNowCents, priceCheckout, processingBlocksHandPaymentMessage, type CheckoutMethod } from '../lib/checkout-pricing';
 import { generateInvoicePdf } from '../lib/pdf';
 import { invoicePdfSelect, toInvoiceForPdf } from '../lib/pdf/invoice-select';
 import { scopeWhereForReq, canAccessRow, canSeeCosts } from '../lib/permissions/enforce';
@@ -75,6 +75,10 @@ import { manualPaymentMethodSchema } from '../lib/payment-methods';
 import { creditCoveredStatus } from '../lib/invoice-money-status';
 import { refusedForStandalone } from '../lib/permissions/standaloneCreate';
 import { refuseDisallowedPaymentMethod } from '../lib/permissions/paymentMethods';
+import {
+  AttachRefusal, afterCaptureBooked, assertAttachable, assertNoUncountedRefund, bookCaptureOnInvoice, canActOnCapture, leftCentsOf, loadCapture, readCapturePayer,
+  type Booked, type CaptureForBooking,
+} from '../services/payment-attention/attach';
 import { REFUND_ROW_METADATA_KEY, completeReservedRefund, releaseIfRefused, reserveRefund } from '../lib/in-app-refund';
 import {
   BANK_PAYMENT_NOT_CANCELLABLE_MESSAGE, BANK_PAYMENT_PROCESSING_MESSAGE, BANK_REFUND_WINDOW_MESSAGE, ONLY_PROCESSING_BANK_PAYMENT_CANCELS_MESSAGE,
@@ -145,9 +149,18 @@ export const createInvoiceSchema = z.object({
   line_items: z.array(invoiceLineItemInput).optional(),
   service_location_id: z.string().min(1).optional(),
   address: locationAddressSchema.optional(),
+  // V7-09b (BE-11): the unapplied payment this new standalone invoice records. Standalone anchor only.
+  unapplied_capture_id: z.string().uuid().optional(),
 }).superRefine((data, ctx) => {
   const hasJob = Boolean(data.job_id);
   const hasCustomer = Boolean(data.customer_id);
+  if (hasJob && data.unapplied_capture_id) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'A payment can only be recorded on a new invoice for a customer, not on a job invoice',
+      path: ['unapplied_capture_id'],
+    });
+  }
   if (hasJob === hasCustomer) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -951,8 +964,30 @@ async function createStandaloneInvoice(req: Request, res: Response) {
 
   const ownedLineCreates = buildOwnedLineCreates(authoredItems);
 
+  // V7-09b (BE-11): this invoice records an unapplied payment. Everything that can refuse does so before the invoice
+  // exists: the right to send money back is needed (the payment is being taken off the list), the item must be open and
+  // not already on a payment row, and how it was paid is read once, outside the transaction.
+  let capture: CaptureForBooking | null = null;
+  let payer: Awaited<ReturnType<typeof readCapturePayer>> | null = null;
   try {
-    const invoice = await withNumberCollisionRetry(() => prisma.$transaction(async (tx) => {
+    if (body.unapplied_capture_id) {
+      if (!req.ability?.can('refund', 'Invoice')) return res.status(403).json({ error: 'You do not have permission to record this payment.' });
+      capture = await loadCapture(req, body.unapplied_capture_id.toLowerCase());
+      if (!capture) return res.status(404).json({ error: 'Payment not found' });
+      if (!(await canActOnCapture(req, capture.id))) return res.status(403).json({ error: 'Insufficient permissions' });
+      assertAttachable(capture, 'PAYMENT');
+      payer = await readCapturePayer(capture);
+      await assertNoUncountedRefund(capture);
+    }
+  } catch (err) {
+    if (err instanceof AttachRefusal) return res.status(err.status).json({ code: err.code, error: err.message, ...err.extra });
+    logger.error('Error preparing the payment for a new standalone invoice:', err);
+    return res.status(500).json({ error: 'Internal server error' });
+  }
+  const actor = { id: req.user!.id, name: `${req.user!.first_name} ${req.user!.last_name}`.trim() };
+
+  try {
+    const result = await withNumberCollisionRetry(() => prisma.$transaction(async (tx) => {
       // Resolve the tax location. Explicit id / address → resolveOrAccreteLocation (ownership-
       // checked + find-or-create). Otherwise default to the customer's primary location if any.
       // A tax-exempt customer needs no location (tax is 0 regardless).
@@ -992,6 +1027,14 @@ async function createStandaloneInvoice(req: Request, res: Response) {
       const totalAmount = roundMoney(subtotal + taxAmount);
       const dueDate = calculateDueDate(customer.payment_type, new Date());
 
+      // The payment must fit on the invoice it is recorded on: a total below it rolls everything back, no invoice made.
+      if (capture && Math.round(totalAmount * 100) < leftCentsOf(capture)) {
+        throw new AttachRefusal(
+          400, 'INVOICE_TOTAL_BELOW_PAYMENT',
+          `The invoice must be at least ${new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(leftCentsOf(capture) / 100)} so the payment fits.`,
+        );
+      }
+
       const invoiceNumber = await allocateNumber(tx, 'invoice', req.user!.organization_id);
 
       const created = await tx.invoice.create({
@@ -1028,8 +1071,17 @@ async function createStandaloneInvoice(req: Request, res: Response) {
         },
       });
 
-      return created;
+      if (!capture || !payer) return { invoice: created, booked: null as Booked | null };
+      // The same booking attach uses, under the invoice and item locks: the whole amount goes on, PAID when the total is
+      // exactly the payment, PARTIAL when larger. Re-run in full by the number-collision retry (a fresh transaction).
+      const booked = await bookCaptureOnInvoice(tx, {
+        organizationId: req.user!.organization_id, capture, invoiceId: created.id, payer, actor,
+        note: (number) => `Invoice ${number} created, payment recorded`,
+        history: (number, amount, who) => `Payment of ${amount} from payments needing attention recorded on the new invoice ${number} by ${who}`,
+      });
+      return { invoice: await tx.invoice.findFirstOrThrow({ where: { id: created.id, organization_id: req.user!.organization_id }, select: invoiceDetailSelect }), booked };
     }), { label: 'invoice.create' });
+    const { invoice, booked } = result;
 
     void logAudit({
       req,
@@ -1038,8 +1090,15 @@ async function createStandaloneInvoice(req: Request, res: Response) {
       resourceId: invoice.id,
       metadata: { invoice_number: invoice.invoice_number },
     });
-    res.status(201).json({ invoice: presentInvoiceDetail(req, stripInvoiceCost(invoice, req)) });
+    if (capture && booked) await afterCaptureBooked({ organizationId: req.user!.organization_id, capture, booked, actor, via: 'new_invoice' });
+    res.status(201).json({
+      invoice: presentInvoiceDetail(req, stripInvoiceCost(invoice, req)),
+      ...(booked ? { attached_capture: true } : {}),
+    });
   } catch (err) {
+    if (err instanceof AttachRefusal) {
+      return res.status(err.status).json({ code: err.code, error: err.message, ...err.extra });
+    }
     if (err instanceof LocationResolutionError) {
       return res.status(400).json({ error: err.message });
     }
@@ -2516,6 +2575,11 @@ class InvoiceNotPayableError extends Error {}
 class HandPaymentProcessingError extends Error {
   constructor(readonly processingCents: number) { super('bank payment processing'); }
 }
+// V7-12 (no overpaid invoices): thrown when a hand payment is larger than the balance still due.
+// Thrown before anything is written, so the transaction rolls back clean.
+class AmountAboveBalanceError extends Error {
+  constructor(readonly dueCents: number) { super('amount above balance'); }
+}
 
 export async function recordPayment(req: Request, res: Response) {
   try {
@@ -2555,8 +2619,8 @@ export async function recordPayment(req: Request, res: Response) {
       return res.status(400).json({ error: RECORD_PAYMENT_NOT_PAYABLE });
     }
 
-    // Overpayment (§8): amount > amount_due is ALLOWED — record the real money received,
-    // flag the excess, default refund-the-excess (no pre-lock reject).
+    // No overpaid invoices (V7-12): a payment above the balance is refused under the row lock
+    // below, where the balance is current. The tip is not part of `amount` and is not capped.
 
     if (!(await canAccessRow(req, 'Invoice', prisma.invoice, param(req, 'id')))) {
       return res.status(403).json({ error: 'Not authorized' });
@@ -2587,8 +2651,10 @@ export async function recordPayment(req: Request, res: Response) {
         throw new HandPaymentProcessingError(processingCents);
       }
 
-      // Overpayment: clamp amount_due at 0; the excess is the recorded-money overage.
-      const overpaid = Math.round(Math.max(amount - currentDue, 0) * 100) / 100;
+      // Never more than the balance (V7-12). The clamp below stays only as a guard.
+      if (toCents(amount) > toCents(lockedInvoice.amount_due)) {
+        throw new AmountAboveBalanceError(toCents(lockedInvoice.amount_due));
+      }
       const newAmountDue = Math.round(Math.max(currentDue - amount, 0) * 100) / 100;
       const isFullyPaid = newAmountDue <= 0;
 
@@ -2705,23 +2771,7 @@ export async function recordPayment(req: Request, res: Response) {
         });
       }
 
-      // Overpayment (§8): flag the excess; default policy is refund-the-excess (executed
-      // by an admin via the unified refund flow). We surface it on the timeline now.
-      if (overpaid > 0) {
-        await tx.timelineEvent.create({
-          data: {
-            organization_id: req.user!.organization_id,
-            entity_type: 'INVOICE',
-            entity_id: param(req, 'id'),
-            event_type: 'OVERPAYMENT_FLAGGED',
-            description: `Overpayment of $${overpaid.toFixed(2)} received on invoice ${invoice.invoice_number} — refund the excess`,
-            metadata: { overpaid, default_action: 'refund_excess' },
-            created_by: req.user?.id,
-          },
-        });
-      }
-
-      return { invoice: updatedInvoice, payment, isFullyPaid, overpaid };
+      return { invoice: updatedInvoice, payment, isFullyPaid };
     });
 
     // Slice 14: a link opened before this payment asks for the old balance. Post-commit and
@@ -2807,13 +2857,16 @@ export async function recordPayment(req: Request, res: Response) {
       resourceId: param(req, 'id'),
       metadata: { amount, fully_paid: result.isFullyPaid },
     });
-    res.status(201).json({ invoice: presentInvoiceDetail(req, stripInvoiceCost(result.invoice, req)), payment: withoutProcessorIdKeys(result.payment), overpaid: result.overpaid });
+    res.status(201).json({ invoice: presentInvoiceDetail(req, stripInvoiceCost(result.invoice, req)), payment: withoutProcessorIdKeys(result.payment) });
   } catch (err: any) {
     if (err instanceof InvoiceNotPayableError) {
       return res.status(400).json({ error: RECORD_PAYMENT_NOT_PAYABLE });
     }
     if (err instanceof HandPaymentProcessingError) {
       return res.status(409).json({ error: processingBlocksHandPaymentMessage(err.processingCents, 'invoice') });
+    }
+    if (err instanceof AmountAboveBalanceError) {
+      return res.status(400).json({ code: 'AMOUNT_ABOVE_BALANCE', error: handPaymentAboveBalanceMessage(err.dueCents, 'invoice') });
     }
     logger.error('Error recording payment:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -3730,7 +3783,7 @@ export async function refundInvoice(req: Request, res: Response) {
     const recordOnInvoice = async (tx: Prisma.TransactionClient, refundRowId: string) => {
       // Totals and status from the ledger rows by the ledger's one rule (lib/payment-ledger.ts): a
       // refund still on its way back (PENDING) has given nothing back yet, one on a charged-back
-      // payment left with it, and money sent back from "Payments needing attention" was never the
+      // payment left with it, and money sent back from the Needs attention card was never the
       // invoice's. A refund NEVER reopens amount_due; status drops PAID→PARTIALLY_REFUNDED→REFUNDED
       // (docs/adr/0004-refund-never-reopens-amount-due.md). It also re-stamps each payment.
       await rederiveRefundTotals(tx, { invoiceId: invoice.id, organizationId: req.user!.organization_id });

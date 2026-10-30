@@ -75,6 +75,11 @@ export interface UploadAttachmentArgs {
    * behind, and rejects with `UPLOAD_CANCELLED_MESSAGE`. No attachment row is created.
    */
   signal?: AbortSignal;
+  /**
+   * Marks the row as one the Payments > Documents tab lists. Sent as a part of the multipart body and in the
+   * direct-upload verify call, and left out entirely when not asked for, so every other surface is unchanged.
+   */
+  source?: 'PAYMENTS_DOCUMENTS';
 }
 
 /**
@@ -224,6 +229,7 @@ async function uploadDirect(args: UploadAttachmentArgs): Promise<void> {
     ticket: upload.ticket,
     display_name: displayName,
     description,
+    ...(args.source ? { source: args.source } : {}),
   });
 
   // Cleared AFTER the row exists, not before. If the verify call is the thing that failed, the
@@ -247,6 +253,7 @@ async function uploadThroughServer(args: UploadAttachmentArgs): Promise<void> {
   formData.append('file', file);
   formData.append('display_name', displayName);
   formData.append('description', description);
+  if (args.source) formData.append('source', args.source);
 
   await api.post(`/api/attachments/${entityType}/${entityId}`, formData, {
     headers: { 'Content-Type': 'multipart/form-data' },

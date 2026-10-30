@@ -27,7 +27,9 @@ import { alertEstimate } from '../notifications/leadEstimateAlerts';
 import { alertInvoice } from '../notifications/invoiceBillingAlerts';
 import { notifyOwners } from '../../lib/owner-payment-notices';
 import { dispatchAutomationEvent } from '../automations/dispatch';
-import type { AppliedEffects, BookedPayment } from './apply';
+import { greetingNameOf } from '../../lib/bank-payment-failed-text';
+import { claimContact, failedPaymentItemKey, releaseContactClaim } from '../../lib/payment-attention-contact';
+import type { AppliedEffects, BankNotice, BankReturnNotice, BookedPayment } from './apply';
 
 /** The invoice details the post-commit effects need (customer, job, estimate). Read before the transaction. */
 export const CHECKOUT_INVOICE_SELECT = {
@@ -97,9 +99,17 @@ export async function runCheckoutEffects(effects: AppliedEffects, ctx: CheckoutE
     logger.info(`Bank payment ${notice.kind} on invoice ${notice.invoiceId} (org ${ctx.organization.id}): ${notice.amountCents} cents`
       + `${notice.deposit ? ', deposit' : ''}${notice.payAgain ? ', customer to be sent a pay-again link' : ''}`);
   }
-  await notifyOwnersOfBankPayments(effects, ctx);
-  await emailBankNoticesToCustomer(effects, ctx);
+  // V7-13 (BE-13d): the customer is emailed FIRST, so the owner's alert says what really happened to them.
+  const outcomes = await emailBankNoticesToCustomer(effects, ctx);
+  await notifyOwnersOfBankPayments(effects, ctx, outcomes);
 }
+
+/**
+ * What became of the email to the customer after a bank payment failed or was returned (the office alert says it in
+ * words). `not_open`: the invoice cannot be paid online right now (PAID by another payment, DISPUTED, VOIDED), so no
+ * email was sent. `bounced`: the address is suppressed after an earlier bounce. `not_sent`: any other failure.
+ */
+export type CustomerNoticeOutcome = 'sent' | 'not_open' | 'no_email' | 'bounced' | 'not_sent';
 
 const BANK_NOTICE_VERBS = {
   started: 'billing.bank_payment_started',
@@ -120,7 +130,11 @@ function customerLabel(invoice: CheckoutInvoice): string {
  * notice is keyed on the ledger event that caused it, so a replay sends nothing; a notice this event
  * did not cause never reaches here (applyActions drops it).
  */
-async function notifyOwnersOfBankPayments(effects: AppliedEffects, ctx: CheckoutEffectsContext): Promise<void> {
+async function notifyOwnersOfBankPayments(
+  effects: AppliedEffects,
+  ctx: CheckoutEffectsContext,
+  outcomes: ReadonlyMap<BankNotice, CustomerNoticeOutcome>,
+): Promise<void> {
   const invoice = ctx.invoice;
   if (!invoice) return;
   const customerName = customerLabel(invoice);
@@ -134,7 +148,11 @@ async function notifyOwnersOfBankPayments(effects: AppliedEffects, ctx: Checkout
       data: {
         amount: (notice.amountCents / 100).toFixed(2),
         ...(customerName ? { customer_name: customerName } : {}),
-        ...(notice.payAgain ? { pay_again: 'yes' } : {}),
+        // What happened to the customer (failed notices only); a notice with no outcome says nothing about them.
+        ...(notice.kind === 'failed' && outcomes.has(notice) ? { customer_notice: outcomes.get(notice) } : {}),
+        // C-38: only an invoice PAID by another payment or DISPUTED "cannot be paid online"; any other closed one keeps
+        // the plain "no longer open for payment" sentence.
+        ...(notice.kind === 'failed' && outcomes.get(notice) === 'not_open' && (invoice.status === 'PAID' || invoice.status === 'DISPUTED') ? { cannot_pay: 'yes' } : {}),
       },
       dedupKey: `${verb}:${notice.eventId}`,
       actionLabel: 'Open the invoice',
@@ -150,7 +168,7 @@ function noticeCustomer(invoice: CheckoutInvoice) {
   return {
     id: customer.id,
     email: customer.email,
-    name: [customer.first_name, customer.last_name].filter(Boolean).join(' ') || customer.company_name || 'Customer',
+    name: greetingNameOf(customer),
   };
 }
 
@@ -172,33 +190,99 @@ export function payAgainUrl(invoice: { id: string; kind: string; public_token: s
  * own errors, and an email problem must not fail the event that settled the money. Each ledger
  * event is applied once, so each notice is sent once.
  */
-async function emailBankNoticesToCustomer(effects: AppliedEffects, ctx: CheckoutEffectsContext): Promise<void> {
+async function emailBankNoticesToCustomer(effects: AppliedEffects, ctx: CheckoutEffectsContext): Promise<Map<BankNotice, CustomerNoticeOutcome>> {
+  const outcomes = new Map<BankNotice, CustomerNoticeOutcome>();
   const invoice = ctx.invoice;
-  if (!invoice) return;
+  if (!invoice) return outcomes;
   const customer = noticeCustomer(invoice);
-  if (!customer) return;
-  const record = {
+  const common = customer ? { organizationId: invoice.organization_id, to: customer.email, customerName: customer.name, invoiceNumber: invoice.invoice_number, record: noticeRecord(invoice, customer.id) } : null;
+  for (const notice of effects.bankNotices) {
+    if (notice.invoiceId !== invoice.id) continue;
+    const amount = notice.amountCents / 100;
+    if (notice.kind === 'failed') {
+      // A failure on an invoice no longer open for payment owes the customer nothing to retry.
+      outcomes.set(notice, await emailPayAgain(invoice, {
+        payAgain: notice.payAgain, amountCents: notice.amountCents, paymentId: notice.paymentId,
+      }));
+      continue;
+    }
+    if (!common) continue;
+    if (notice.kind === 'started') await sendBankPaymentProcessingEmail({ ...common, amount });
+    else await emailBankReceipt(effects, invoice, common);
+  }
+  return outcomes;
+}
+
+/** The filing for a customer email about a bank payment: the invoice, its customer and job. */
+function noticeRecord(invoice: CheckoutInvoice, customerId: string) {
+  return {
     organizationId: invoice.organization_id,
-    customerId: customer.id,
+    customerId,
     jobId: invoice.job?.id,
     jobLabel: invoice.job?.job_number,
     entityType: 'invoice' as const,
     entityId: invoice.id,
   };
-  const common = { organizationId: invoice.organization_id, to: customer.email, customerName: customer.name, invoiceNumber: invoice.invoice_number, record };
-  for (const notice of effects.bankNotices) {
-    if (notice.invoiceId !== invoice.id) continue;
-    const amount = notice.amountCents / 100;
-    if (notice.kind === 'started') {
-      await sendBankPaymentProcessingEmail({ ...common, amount });
-    } else if (notice.kind === 'failed') {
-      // A failure on an invoice no longer open for payment owes the customer nothing to retry.
-      if (!notice.payAgain) continue;
-      const payUrl = payAgainUrl(invoice);
-      await sendBankPaymentFailedEmail({ ...common, amount, ...(payUrl ? { payUrl } : {}) });
-    } else {
-      await emailBankReceipt(effects, invoice, common);
+}
+
+/**
+ * The "Bank Payment Failed" email with the Pay Again button, to the invoice's customer, and what became of it. Guards, in
+ * order: the invoice cannot be paid online right now (`not_open`, nothing sent); the customer has no email (`no_email`);
+ * the item was emailed inside the throttle window (`sent`, nothing sent again); then the send itself. The item's history
+ * row ("Customer emailed a link to pay again") is claimed under the same lock the Contact customer endpoint takes and
+ * stays only after a real send. Never throws: an email problem must not fail the event.
+ */
+async function emailPayAgain(
+  invoice: CheckoutInvoice,
+  notice: { payAgain: boolean; amountCents: number; paymentId?: string },
+): Promise<CustomerNoticeOutcome> {
+  try {
+    if (!notice.payAgain) return 'not_open';
+    const customer = noticeCustomer(invoice);
+    if (!customer) return 'no_email';
+    // Without a payment id there is no item to file the history row against: still email, skip the row.
+    let claimId: string | null = null;
+    if (notice.paymentId) {
+      claimId = await claimContact({ organizationId: invoice.organization_id, invoiceId: invoice.id, itemKey: failedPaymentItemKey(notice.paymentId), createdBy: null });
+      if (claimId === null) return 'sent';
     }
+    const payUrl = payAgainUrl(invoice);
+    let result: Awaited<ReturnType<typeof sendBankPaymentFailedEmail>>;
+    try {
+      result = await sendBankPaymentFailedEmail({
+        organizationId: invoice.organization_id, to: customer.email, customerName: customer.name, invoiceNumber: invoice.invoice_number,
+        amount: notice.amountCents / 100, ...(payUrl ? { payUrl } : {}), record: noticeRecord(invoice, customer.id),
+      });
+    } catch (error) {
+      if (claimId) await releaseContactClaim(invoice.organization_id, claimId, invoice.id);
+      throw error;
+    }
+    // The sender reports a blocked or failed send as a result instead of throwing; only a real send stays recorded and throttled.
+    if (result?.status === 'sent') return 'sent';
+    if (claimId) await releaseContactClaim(invoice.organization_id, claimId, invoice.id);
+    return result.status === 'skipped' && result.reason === 'suppressed' ? 'bounced' : 'not_sent';
+  } catch (error) {
+    logger.error(`Could not email the customer about a failed bank payment on invoice ${invoice.id}`, error);
+    return 'not_sent';
+  }
+}
+
+/**
+ * V7-13 (BE-13a): the bank took back a payment, early or late. The customer gets the same "Bank Payment Failed" email with
+ * Pay Again as for a debit that failed while clearing, unless the invoice cannot be paid online right now (C-38). Loads
+ * the invoice after the commit, scoped to the org. Post-commit and never throws.
+ */
+export async function emailBankReturnToCustomer(notice: BankReturnNotice, organizationId: string): Promise<CustomerNoticeOutcome> {
+  try {
+    const invoice = await prisma.invoice.findFirst({
+      where: { id: notice.invoiceId, organization_id: organizationId },
+      select: CHECKOUT_INVOICE_SELECT,
+    });
+    if (!invoice) return 'not_sent';
+    return await emailPayAgain(invoice, notice);
+  } catch (error) {
+    logger.error(`Could not email the customer about a returned bank payment on invoice ${notice.invoiceId}`, error);
+    return 'not_sent';
   }
 }
 

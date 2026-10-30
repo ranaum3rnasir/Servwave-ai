@@ -182,7 +182,7 @@ export function SendInvoiceDialog({
           <SheetTitle>{isResend ? 'Resend' : 'Send'} Invoice {invoiceNumber}</SheetTitle>
         </SheetHeader>
 
-        <PaymentsSetupBanner onSetup={() => navigate('/settings/payments')} />
+        <PaymentsSetupBanner onSetup={() => navigate('/settings/servwave-payments')} />
 
         <div className="space-y-4">
           {handSender.known && (

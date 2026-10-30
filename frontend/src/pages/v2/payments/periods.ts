@@ -72,12 +72,18 @@ function shortDay(day: string, withYear: boolean): string {
   return `${MONTHS[Number(m) - 1]} ${Number(d)}${withYear ? `, ${y}` : ''}`;
 }
 
-/** What the picker shows: the preset's name, or a custom range's own dates. */
-export function periodLabel(period: Period): string {
+/**
+ * What the picker shows: the preset's name, or a custom range's own dates ("Oct 1 - Oct 12"). The year is on the
+ * start only when the two years differ, and on the end when they differ or the range is not in `currentYear`
+ * (the org's today, 'YYYY'), so a range in another year never reads as this year's.
+ */
+export function periodLabel(period: Period, currentYear: string = orgToday('UTC').slice(0, 4)): string {
   const preset = PRESETS.find((p) => p.key === period.key);
   if (preset) return preset.label;
-  const sameYear = period.from.slice(0, 4) === period.to.slice(0, 4);
-  return `${shortDay(period.from, !sameYear)} - ${shortDay(period.to, true)}`;
+  const fromYear = period.from.slice(0, 4);
+  const toYear = period.to.slice(0, 4);
+  const yearsDiffer = fromYear !== toYear;
+  return `${shortDay(period.from, yearsDiffer)} - ${shortDay(period.to, yearsDiffer || toYear !== currentYear)}`;
 }
 
 /** The query-string parts that describe a period (a preset needs only its key; the default is left out). */

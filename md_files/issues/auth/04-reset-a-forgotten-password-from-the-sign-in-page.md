@@ -1,7 +1,7 @@
 # Reset a forgotten password from the sign-in page
 
 **Type:** AFK
-**Status:** Built and reviewed locally (commits 45cc759f, c174bba7 on feat/password-reset). Not yet on staging.
+**Status:** Released. On staging via #2877 (ff4f8772), on production via #2883 (main f7a0ab2a, 2026-10-26). Live-checked on staging (spec §2.2 C). Sign-out fix in #2885 (bb942069), found by the live check.
 **Spec sections:** §3, §5.1 to §5.4 (except breached-password retry, slice 05)
 
 ## Parent
@@ -26,9 +26,9 @@ No vendor name appears on either page or in the email.
 ## Acceptance criteria
 
 - [x] "Forgot password?" on sign-in opens the forgot page with the typed email filled in.
-- [ ] A registered active user gets one email from ServWave within a minute. Its link opens "Choose a new password". *(Unit-tested with the sender mocked; checked live on staging.)*
+- [x] A registered active user gets one email from ServWave within a minute. Its link opens "Choose a new password". *(Checked live on staging; the email arrived in about 1 s.)*
 - [x] An unknown email gets the identical message and response, and no email is sent. So do a deactivated user and a user whose login was revoked.
-- [ ] A valid link sets a new password and lands on sign-in with the notice. The new password works, the old one fails, and 2FA (if enrolled) is still asked. *(Unit-tested; the real sign-in is checked on staging.)*
+- [x] A valid link sets a new password and lands on sign-in with the notice. The new password works, the old one fails, and 2FA (if enrolled) is still asked. *(Checked live on staging; the test user had no 2FA, so the 2FA part is covered by unit tests only.)*
 - [x] A used or over-1-hour link shows the invalid message with "Send a new link".
 - [x] A fourth request for the same email within 15 minutes leaves the UI message unchanged and sends no email.
 - [x] Backend tests cover every branch above with the email sender mocked. Frontend tests cover the forgot page's single message, the reset page's invalid state, and the token being stripped from the URL.

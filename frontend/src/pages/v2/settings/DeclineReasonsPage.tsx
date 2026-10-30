@@ -40,13 +40,13 @@ const UNDEACTIVATABLE_CODE = 'OTHER';
  *
  * Sits with Job Sub-Statuses and Tax Rates in ADVANCED, because it is the same
  * kind of thing both are: a per-organisation list of words the product then offers
- * somewhere else. It is its own tab rather than a section of Payments & Lists for the same
+ * somewhere else. It is its own tab rather than a section of the old Payments & Lists page for the same
  * reason those two are - that page's lists are string arrays on the organisation row saved
  * through the settings save bar, and this one is a table with codes, an active flag and an order
  * the admin owns, saved a row at a time.
  *
  * EVERY ROW SAVES IMMEDIATELY, through its own request, so this page does NOT register with the
- * settings save bar. That matches Job Sub-Statuses and differs from Payments & Lists; the two
+ * settings save bar. That matches Job Sub-Statuses and differs from the old Payments & Lists page; the two
  * shapes are both already in this shell.
  *
  * BOTH PICKERS READ THIS LIST NOW (slice C). The staff decline dialog resolves it from the same

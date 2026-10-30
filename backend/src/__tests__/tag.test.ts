@@ -17,6 +17,7 @@ const mockPrisma = prisma as unknown as {
   job: { findFirst: ReturnType<typeof vi.fn> };
   lead: { findFirst: ReturnType<typeof vi.fn> };
   tag: { findFirst: ReturnType<typeof vi.fn>; findUnique: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn> };
+  $transaction: ReturnType<typeof vi.fn>;
   tagAssignment: { findUnique: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn>; delete: ReturnType<typeof vi.fn> };
   rolePermission: { findMany: ReturnType<typeof vi.fn> };
 };
@@ -24,7 +25,10 @@ const mockPrisma = prisma as unknown as {
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  mockPrisma.tag.findFirst.mockResolvedValue({ id: TAG_FIXTURE.id, name: 'Urgent', color: '#EF4444' });
+  // A name lookup (find-or-create ignores case) goes through findFirst inside a transaction; by-id lookups keep their fixture.
+  mockPrisma.$transaction.mockImplementation(async (work: (tx: unknown) => unknown) => work(prisma));
+  mockPrisma.tag.findFirst.mockImplementation((args: { where: { id?: unknown } }) =>
+    Promise.resolve(typeof args.where.id === 'string' ? { id: TAG_FIXTURE.id, name: 'Urgent', color: '#EF4444' } : null));
   mockPrisma.tag.findUnique.mockResolvedValue({ id: TAG_FIXTURE.id, name: 'Urgent', color: '#EF4444' });
   mockPrisma.tagAssignment.findUnique.mockResolvedValue(null);
   mockPrisma.tagAssignment.create.mockResolvedValue({ tag_id: TAG_FIXTURE.id });

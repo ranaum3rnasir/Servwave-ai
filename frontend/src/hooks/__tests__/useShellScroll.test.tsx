@@ -57,6 +57,20 @@ describe('useShellScroll', () => {
     expect(el.scrollTop).toBe(0);
   });
 
+  it('keeps the position on a forward navigation that changes only the query string (a tab, chip or filter)', async () => {
+    const { el, userScrollTo } = mount();
+    userScrollTo(700);
+    act(() => { go('/list?tab=2'); });
+    await wait(100);
+    expect(el.scrollTop).toBe(700);
+    act(() => { go('/list?tab=2&chip=attention'); });
+    await wait(100);
+    expect(el.scrollTop).toBe(700);
+    act(() => { go('/elsewhere'); });
+    await wait(100);
+    expect(el.scrollTop).toBe(0);
+  });
+
   it('puts Back and Forward at the position each entry was left at', async () => {
     const { el, userScrollTo } = mount();
     userScrollTo(700);

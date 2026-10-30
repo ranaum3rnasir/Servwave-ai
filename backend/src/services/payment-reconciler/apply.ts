@@ -11,8 +11,11 @@ import type { PaymentState, Prisma } from '@prisma/client';
 import { logger } from '../../lib/logger';
 import { fromCents, rederiveRefundTotals, settlePaymentInTx, settleRefundInTx, toCents, UNAPPLIED_REFUND_REASON, type SettledPayment } from '../../lib/payment-ledger';
 import { systemVoidPaymentForChargeback } from '../../controllers/invoice.controller';
+import { checkoutOpenStatus } from '../../lib/public-pay-state';
 import { CREATED_BY_CLIENT } from '../../lib/created-by';
-import { clearUnappliedCaptureAlerts, resolveChargeRecordsForBookedPayment, writeUnappliedCaptureEntry, type UnappliedCapture } from '../../lib/unapplied-capture';
+import {
+  clearUnappliedCaptureAlerts, countRefundOnCapture, resolveChargeRecordsForBookedPayment, uncountRefundOnCapture, writeUnappliedCaptureEntry, type UnappliedCapture,
+} from '../../lib/unapplied-capture';
 import { transitionLeadStatus } from '../lead-stage.service';
 import { recordJobMoneyMovement } from '../../lib/job-change-history';
 import type { LedgerAction } from './decide';
@@ -49,6 +52,27 @@ export interface BookedPayment {
 /** A dispute the owner must hear about once the transaction commits (slice 32 adds the email). */
 export type DisputeNotice = Extract<LedgerAction, { type: 'notify_dispute' }>;
 
+/**
+ * V7-13 (BE-13a): a bank payment the bank took back (a late return voided it, an early one failed it), so the customer is
+ * asked to pay again once the transaction commits. Pushed only when this event moved the payment, so a replay sends nothing.
+ */
+export interface BankReturnNotice {
+  eventId: string;
+  disputeId: string;
+  invoiceId: string;
+  paymentId: string;
+  /** The payment's own face amount (what the customer owes again), not the dispute amount, which includes the tip. */
+  amountCents: number;
+  deposit: boolean;
+  /**
+   * The invoice can be paid online right now: open (SENT or PARTIAL), not DISPUTED (including while another dispute is
+   * open), and not already covered by another payment. False means no Pay Again email goes out (C-38).
+   */
+  payAgain: boolean;
+  /** The invoice is VOIDED: it stays voided and the customer is never asked to pay it. */
+  voided: boolean;
+}
+
 /** What the caller does after the transaction commits (audit rows, alerts, emails). */
 export interface AppliedEffects {
   /** Refunds that moved to SUCCEEDED in this event (a bank refund the processor confirmed): the customer is told after commit. */
@@ -77,6 +101,8 @@ export interface AppliedEffects {
   failedRefunds: FailedRefund[];
   /** Payouts slice P2: bank payments this event marked FAILED; their failure code is looked up after the commit. */
   failedPayments: Array<{ paymentId: string }>;
+  /** V7-13: bank payments the bank took back in this event; the customer is emailed after the commit (BE-13a). */
+  bankReturnNotices: BankReturnNotice[];
 }
 
 /** A refund that failed: on an invoice, or the one sent for a payment needing attention (recordId). */
@@ -99,12 +125,14 @@ export async function applyActions(
 ): Promise<AppliedEffects> {
   const effects: AppliedEffects = {
     settledRefunds: [], externalRefunds: [], bookedPayments: [], unappliedCaptures: [], disputeNotices: [], expireCheckouts: [], bankNotices: [],
-    settledPayments: [], reopenedInvoices: [], accountStatusWritten: false, accountNotices: [], failedRefunds: [], failedPayments: [],
+    settledPayments: [], reopenedInvoices: [], accountStatusWritten: false, accountNotices: [], failedRefunds: [], failedPayments: [], bankReturnNotices: [],
   };
   // Whether the settle step just before a bank notice moved the payment. decide() read its snapshot
   // before the invoice lock, so something else may have moved it first; the cleared and failed
   // notices (customer and owner) then stay unsent, as the receipt always did. Null = no settle step.
   let settleMoved: boolean | null = null;
+  // The payment a record_payment action just wrote FAILED: the bank notice that follows it names it.
+  let justFailedPaymentId: string | null = null;
   for (const action of actions) {
     switch (action.type) {
       case 'record_refund': {
@@ -165,29 +193,34 @@ export async function applyActions(
       case 'record_payment': {
         const booked = await recordPayment(tx, action, ctx);
         effects.bookedPayments.push(booked);
-        if (booked.state === 'FAILED') effects.failedPayments.push({ paymentId: booked.paymentId });
+        if (booked.state === 'FAILED') {
+          effects.failedPayments.push({ paymentId: booked.paymentId });
+          justFailedPaymentId = booked.paymentId;
+        }
         break;
       }
-      case 'mark_unapplied_capture_refunded':
-        await tx.unappliedCapture.updateMany({
-          // A RESOLVED record is marked too: a refund that went out is always stored.
-          where: { id: action.recordId, organization_id: ctx.organizationId, status: { in: ['OPEN', 'RESOLVED'] } },
-          data: { status: 'REFUNDED', stripe_refund_id: action.processorRefundId, refunded_at: new Date() },
+      case 'mark_unapplied_capture_refunded': {
+        // V7-09b: counted once per refund under the record's lock; the record reads REFUNDED only when the whole amount
+        // is back (a RESOLVED record is marked too: a refund that went out is always stored).
+        const { closed } = await countRefundOnCapture(tx, {
+          organizationId: ctx.organizationId, recordId: action.recordId, refundId: action.processorRefundId, refundCents: action.refundCents, closes: action.closes,
         });
         // Slice 32: the row is dealt with, so its alert is read.
-        {
+        if (closed) {
           const marked = await tx.unappliedCapture.findFirst({
             where: { id: action.recordId, organization_id: ctx.organizationId }, select: { source_key: true },
           });
           if (marked) await clearUnappliedCaptureAlerts(tx, ctx.organizationId, marked.source_key);
         }
         break;
+      }
       case 'reopen_unapplied_capture':
         await tx.unappliedCapture.updateMany({
           where: { id: action.recordId, organization_id: ctx.organizationId, status: 'REFUNDED', stripe_refund_id: action.processorRefundId },
           // Kept on the record: a late event for this refund never marks it REFUNDED again.
           data: { status: 'OPEN', stripe_refund_id: null, refunded_at: null, failed_refund_ids: { push: action.processorRefundId } },
         });
+        await uncountRefundOnCapture(tx, { organizationId: ctx.organizationId, recordId: action.recordId, refundId: action.processorRefundId, refundCents: action.refundCents });
         effects.failedRefunds.push({ processorRefundId: action.processorRefundId, invoiceId: null, recordId: action.recordId });
         logger.warn(`Refund ${action.processorRefundId} of payment needing attention ${action.recordId} (org ${ctx.organizationId}) failed; listed as open again`);
         break;
@@ -198,6 +231,8 @@ export async function applyActions(
           where: { id: action.recordId, organization_id: ctx.organizationId, NOT: { failed_refund_ids: { has: action.processorRefundId } } },
           data: { failed_refund_ids: { push: action.processorRefundId } },
         });
+        // A partial refund already counted comes back to the record (and reopens it if that had closed it).
+        await uncountRefundOnCapture(tx, { organizationId: ctx.organizationId, recordId: action.recordId, refundId: action.processorRefundId, refundCents: action.refundCents });
         effects.failedRefunds.push({ processorRefundId: action.processorRefundId, invoiceId: null, recordId: action.recordId });
         logger.warn(`Refund ${action.processorRefundId} of payment needing attention ${action.recordId} (org ${ctx.organizationId}) failed before it was stored`);
         break;
@@ -229,12 +264,19 @@ export async function applyActions(
         if (paid) effects.settledPayments.push({ changed: true, becamePaid: true, invoice: paid, unapplied: null });
         break;
       }
-      case 'void_disputed_payment':
-        effects.reopenedInvoices.push(...await voidDisputedPayment(tx, action, ctx));
+      case 'void_disputed_payment': {
+        const voided = await voidDisputedPayment(tx, action, ctx);
+        effects.reopenedInvoices.push(...voided.reopened);
+        // A lost card dispute is not a bank return and is left alone.
+        if (voided.notice && action.bankReturn) effects.bankReturnNotices.push({ ...voided.notice, eventId: ctx.eventId, disputeId: action.processorDisputeId });
         break;
-      case 'fail_disputed_payment':
-        if (await failDisputedPayment(tx, action, ctx)) effects.failedPayments.push({ paymentId: action.paymentId });
+      }
+      case 'fail_disputed_payment': {
+        const failed = await failDisputedPayment(tx, action, ctx);
+        if (failed) effects.failedPayments.push({ paymentId: action.paymentId });
+        if (failed && action.bankReturn) effects.bankReturnNotices.push({ ...failed, eventId: ctx.eventId, disputeId: action.processorDisputeId });
         break;
+      }
       case 'flag_partial_chargeback':
         await flagPartialChargeback(tx, action, ctx);
         break;
@@ -245,8 +287,12 @@ export async function applyActions(
         effects.expireCheckouts.push(action.invoiceId);
         break;
       case 'notify_bank_payment':
-        if (settleMoved !== false) effects.bankNotices.push({ ...action, eventId: ctx.eventId });
+        // A debit that failed before its checkout completed was written down FAILED by the record just above: name it.
+        if (settleMoved !== false) {
+          effects.bankNotices.push({ ...action, ...(!action.paymentId && action.kind === 'failed' && justFailedPaymentId ? { paymentId: justFailedPaymentId } : {}), eventId: ctx.eventId });
+        }
         settleMoved = null;
+        justFailedPaymentId = null;
         break;
       case 'settle_payment': {
         const settled = await settleBankPayment(tx, action, ctx);
@@ -277,9 +323,9 @@ export async function applyActions(
  * Book a card payment the processor captured and decide() found applicable: the payment row, the
  * invoice's balance and status, its history, and (a deposit paid in full) the estimate approved
  * and the lead won. The invoice is locked; decide() judged the amount against the balance read
- * under this same lock.
+ * under this same lock. Exported for V7-09b: attaching unapplied money to an invoice books it the same way.
  */
-async function recordPayment(
+export async function recordPayment(
   tx: Prisma.TransactionClient,
   action: Extract<LedgerAction, { type: 'record_payment' }>,
   ctx: ApplyContext,
@@ -673,14 +719,15 @@ async function voidDisputedPayment(
   tx: Prisma.TransactionClient,
   action: Extract<LedgerAction, { type: 'void_disputed_payment' }>,
   ctx: ApplyContext,
-): Promise<string[]> {
+): Promise<{ reopened: string[]; notice: Omit<BankReturnNotice, 'eventId' | 'disputeId'> | null }> {
   await lockInvoice(tx, action.invoiceId, ctx.organizationId);
   const payment = await tx.payment.findFirstOrThrow({
     where: { id: action.paymentId, invoice: { id: action.invoiceId, organization_id: ctx.organizationId } },
     select: { id: true, amount: true, method: true, stripe_payment_intent_id: true, voided_at: true, state: true },
   });
-  // Only a SUCCEEDED payment took the balance down, so only it can reopen the balance.
-  if (payment.voided_at || payment.state !== 'SUCCEEDED') return [];
+  // Only a SUCCEEDED payment took the balance down, so only it can reopen the balance. Nothing was voided here, so a
+  // replayed event owes the customer nothing.
+  if (payment.voided_at || payment.state !== 'SUCCEEDED') return { reopened: [], notice: null };
   const invoice = await tx.invoice.findFirstOrThrow({
     where: { id: action.invoiceId, organization_id: ctx.organizationId },
     select: { id: true, amount_due: true, total_amount: true, status: true, kind: true, invoice_number: true },
@@ -696,7 +743,44 @@ async function voidDisputedPayment(
     await updateInvoiceInOrg(tx, action.invoiceId, ctx.organizationId, { status: 'DISPUTED' });
   }
   await rederiveRefundTotals(tx, { invoiceId: action.invoiceId, organizationId: ctx.organizationId });
-  return reopened;
+  // The invoice as it stands after the void, under the same lock.
+  const after = await tx.invoice.findFirstOrThrow({
+    where: { id: action.invoiceId, organization_id: ctx.organizationId },
+    select: { status: true, kind: true, total_amount: true },
+  });
+  const deposit = after.kind === 'DEPOSIT';
+  return {
+    reopened,
+    notice: {
+      invoiceId: action.invoiceId,
+      paymentId: payment.id,
+      amountCents: toCents(payment.amount),
+      deposit,
+      voided: after.status === 'VOIDED',
+      // Reopened (a VOIDED invoice is never asked to pay), open for online payment (a DISPUTED one, including while
+      // another dispute is open, is not), and not already covered by another payment (C-38).
+      payAgain: reopened.includes(action.invoiceId) && checkoutOpenStatus(after.status, deposit)
+        && !(await paidByOtherPayments(tx, { invoiceId: action.invoiceId, organizationId: ctx.organizationId, exceptPaymentId: payment.id, totalAmount: after.total_amount })),
+    },
+  };
+}
+
+/**
+ * Whether the invoice's other live payments (a SUCCEEDED or PROCESSING one, the deposit credit included) already cover
+ * its total: then the customer owes nothing to pay again, and asking them would be wrong (C-38). Read under the lock.
+ */
+async function paidByOtherPayments(
+  tx: Prisma.TransactionClient,
+  args: { invoiceId: string; organizationId: string; exceptPaymentId: string; totalAmount: Prisma.Decimal | number },
+): Promise<boolean> {
+  const others = await tx.payment.findMany({
+    where: {
+      invoice: { id: args.invoiceId, organization_id: args.organizationId },
+      id: { not: args.exceptPaymentId }, voided_at: null, state: { in: ['SUCCEEDED', 'PROCESSING'] },
+    },
+    select: { amount: true },
+  });
+  return others.reduce((sum, p) => sum + toCents(p.amount), 0) >= toCents(args.totalAmount);
 }
 
 /**
@@ -708,16 +792,16 @@ async function failDisputedPayment(
   tx: Prisma.TransactionClient,
   action: Extract<LedgerAction, { type: 'fail_disputed_payment' }>,
   ctx: ApplyContext,
-): Promise<boolean> {
+): Promise<Omit<BankReturnNotice, 'eventId' | 'disputeId'> | null> {
   await lockInvoice(tx, action.invoiceId, ctx.organizationId);
   const failed = await tx.payment.updateMany({
     where: { id: action.paymentId, state: 'PROCESSING', invoice: { id: action.invoiceId, organization_id: ctx.organizationId } },
     data: { state: 'FAILED' },
   });
-  if (failed.count === 0) return false;
+  if (failed.count === 0) return null;
   const invoice = await tx.invoice.findFirstOrThrow({
     where: { id: action.invoiceId, organization_id: ctx.organizationId },
-    select: { invoice_number: true },
+    select: { invoice_number: true, status: true, kind: true, total_amount: true },
   });
   const taken = action.bankReturn ? 'The bank returned the payment' : 'A lost dispute took back the payment';
   await tx.timelineEvent.create({
@@ -731,7 +815,22 @@ async function failDisputedPayment(
       metadata: { processor_dispute_id: action.processorDisputeId, payment_id: action.paymentId, event_id: ctx.eventId },
     },
   });
-  return true;
+  // What the customer owes again is the payment's own face amount, not the dispute amount (which includes the tip).
+  const payment = await tx.payment.findFirstOrThrow({
+    where: { id: action.paymentId, invoice: { id: action.invoiceId, organization_id: ctx.organizationId } },
+    select: { amount: true },
+  });
+  const deposit = invoice.kind === 'DEPOSIT';
+  return {
+    invoiceId: action.invoiceId,
+    paymentId: action.paymentId,
+    amountCents: toCents(payment.amount),
+    deposit,
+    voided: invoice.status === 'VOIDED',
+    // Open for online payment as read under the lock (a DISPUTED invoice is not), and not already covered by another payment (C-38).
+    payAgain: checkoutOpenStatus(invoice.status, deposit)
+      && !(await paidByOtherPayments(tx, { invoiceId: action.invoiceId, organizationId: ctx.organizationId, exceptPaymentId: action.paymentId, totalAmount: invoice.total_amount })),
+  };
 }
 
 /** The staff-facing record of money that was captured and not applied. Names no processor. */

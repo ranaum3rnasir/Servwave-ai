@@ -428,13 +428,15 @@ const PAYMENT_STATE: Record<string, StatusEntry> = {
 // into one of these words; the keys are those words exactly.
 const PAYMENT_DISPLAY_STATUS: Record<string, StatusEntry> = {
   'Succeeded': { label: 'Succeeded', intent: 'success' },
-  'Pending': { label: 'Pending', intent: 'warning' },
+  'Pending': { label: 'Pending', intent: 'info' },
   'Failed': { label: 'Failed', intent: 'danger' },
-  'Refunded': { label: 'Refunded', intent: 'neutral' },
+  'Refunded': { label: 'Refunded', intent: 'danger' },
   'Partially refunded': { label: 'Partially refunded', intent: 'warning' },
   'Disputed': { label: 'Disputed', intent: 'danger' },
   'Charged back': { label: 'Charged back', intent: 'danger' },
   'Voided': { label: 'Voided', intent: 'neutral' },
+  // A refund the processor could not complete: the money did not leave, so it never reads as a success.
+  'Refund failed': { label: 'Refund failed', intent: 'danger' },
 };
 
 // Payout statuses on the Payments page (payments go-live P8). LABEL-ONLY: payouts keep a text status column, so
@@ -462,7 +464,7 @@ const DISPUTE_STATUS: Record<string, StatusEntry> = {
   NEEDS_RESPONSE: { label: 'Needs response', intent: 'danger' },
   UNDER_REVIEW: { label: 'Under review', intent: 'warning' },
   WON: { label: 'Won', intent: 'success' },
-  LOST: { label: 'Lost', intent: 'danger' },
+  LOST: { label: 'Lost', intent: 'neutral' },
   CLOSED: { label: 'Closed', intent: 'neutral' },
 };
 

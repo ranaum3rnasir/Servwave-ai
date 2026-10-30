@@ -19,6 +19,7 @@ import { DndContext } from '@dnd-kit/core';
 import { SortableContext } from '@dnd-kit/sortable';
 import api from '@/lib/axios';
 import { renderWithProviders } from './helpers';
+import { buildAbility } from '@/lib/ability';
 import { RecordPaymentDialog } from '@/components/invoices/RecordPaymentDialog';
 import { LineItemRow } from '@/components/jobs/items/LineItemRow';
 import type { InvoiceLineItem } from '@/lib/api/jobs';
@@ -36,12 +37,20 @@ vi.mock('@stripe/connect-js/pure', () => ({ loadConnectAndInitialize: vi.fn(() =
 vi.mock('@stripe/react-connect-js', () => ({
   ConnectComponentsProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   ConnectAccountOnboarding: () => <div />,
+  ConnectAccountManagement: () => <div />,
+  ConnectNotificationBanner: () => <div />,
 }));
 
 // Imported after the mocks above so the page picks up the captured saver.
-const { default: PaymentsListsPage } = await import('@/pages/v2/settings/PaymentsListsPage');
+const { default: ServwavePaymentsPage } = await import('@/pages/v2/settings/ServwavePaymentsPage');
 
 const mockApi = vi.mocked(api);
+
+const PAGE_ABILITY = buildAbility([
+  { action: 'update', subject: 'Organization' },
+  { action: 'manage_payout_account', subject: 'Organization' },
+]);
+
 
 /** A money or quantity field: text, decimal keypad, nothing a number input would carry. */
 function expectDecimalField(el: HTMLElement) {
@@ -166,7 +175,7 @@ describe('Payments & Lists: the default deposit saved on the org (mobile slice 3
     ['25', 25],
   ])('percentage typed %s saves %s', async (typed, saved) => {
     const user = userEvent.setup();
-    renderWithProviders(<PaymentsListsPage />);
+    renderWithProviders(<ServwavePaymentsPage />, { ability: PAGE_ABILITY });
     const pct = await screen.findByDisplayValue('40');
     expectDecimalField(pct);
     await user.tripleClick(pct);
@@ -180,7 +189,7 @@ describe('Payments & Lists: the default deposit saved on the org (mobile slice 3
     ['1,500', 1500],
   ])('fixed amount typed %s saves %s', async (typed, saved) => {
     const user = userEvent.setup();
-    renderWithProviders(<PaymentsListsPage />);
+    renderWithProviders(<ServwavePaymentsPage />, { ability: PAGE_ABILITY });
     await screen.findByDisplayValue('40');
     await user.click(screen.getByRole('radio', { name: 'Fixed amount' }));
     const fixed = document.querySelector<HTMLInputElement>('#deposit-fixed')!;

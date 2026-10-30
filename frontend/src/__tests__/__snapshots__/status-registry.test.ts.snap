@@ -105,13 +105,14 @@ payment.PROCESSING -> intent=info | label=Processing | chip=bg-info-surface text
 payment.SUCCEEDED -> intent=success | label=Succeeded | chip=bg-success-surface text-success-text border-success-border | fill=bg-success-strong | text=text-success-text
 payment.FAILED -> intent=danger | label=Failed | chip=bg-danger-surface text-danger-text border-danger-border | fill=bg-danger-strong | text=text-danger-text
 paymentDisplay.Succeeded -> intent=success | label=Succeeded | chip=bg-success-surface text-success-text border-success-border | fill=bg-success-strong | text=text-success-text
-paymentDisplay.Pending -> intent=warning | label=Pending | chip=bg-warning-surface text-warning-text border-warning-border | fill=bg-warning-strong | text=text-warning-text
+paymentDisplay.Pending -> intent=info | label=Pending | chip=bg-info-surface text-info-text border-info-border | fill=bg-info-strong | text=text-info-text
 paymentDisplay.Failed -> intent=danger | label=Failed | chip=bg-danger-surface text-danger-text border-danger-border | fill=bg-danger-strong | text=text-danger-text
-paymentDisplay.Refunded -> intent=neutral | label=Refunded | chip=bg-neutral-surface text-neutral-text border-neutral-border | fill=bg-neutral-strong | text=text-neutral-text
+paymentDisplay.Refunded -> intent=danger | label=Refunded | chip=bg-danger-surface text-danger-text border-danger-border | fill=bg-danger-strong | text=text-danger-text
 paymentDisplay.Partially refunded -> intent=warning | label=Partially refunded | chip=bg-warning-surface text-warning-text border-warning-border | fill=bg-warning-strong | text=text-warning-text
 paymentDisplay.Disputed -> intent=danger | label=Disputed | chip=bg-danger-surface text-danger-text border-danger-border | fill=bg-danger-strong | text=text-danger-text
 paymentDisplay.Charged back -> intent=danger | label=Charged back | chip=bg-danger-surface text-danger-text border-danger-border | fill=bg-danger-strong | text=text-danger-text
 paymentDisplay.Voided -> intent=neutral | label=Voided | chip=bg-neutral-surface text-neutral-text border-neutral-border | fill=bg-neutral-strong | text=text-neutral-text
+paymentDisplay.Refund failed -> intent=danger | label=Refund failed | chip=bg-danger-surface text-danger-text border-danger-border | fill=bg-danger-strong | text=text-danger-text
 payout.PAID -> intent=success | label=Paid | chip=bg-success-surface text-success-text border-success-border | fill=bg-success-strong | text=text-success-text
 payout.IN_TRANSIT -> intent=info | label=In transit | chip=bg-info-surface text-info-text border-info-border | fill=bg-info-strong | text=text-info-text
 payout.PENDING -> intent=neutral | label=Scheduled | chip=bg-neutral-surface text-neutral-text border-neutral-border | fill=bg-neutral-strong | text=text-neutral-text
@@ -123,7 +124,7 @@ refund.FAILED -> intent=danger | label=Failed | chip=bg-danger-surface text-dang
 dispute.NEEDS_RESPONSE -> intent=danger | label=Needs response | chip=bg-danger-surface text-danger-text border-danger-border | fill=bg-danger-strong | text=text-danger-text
 dispute.UNDER_REVIEW -> intent=warning | label=Under review | chip=bg-warning-surface text-warning-text border-warning-border | fill=bg-warning-strong | text=text-warning-text
 dispute.WON -> intent=success | label=Won | chip=bg-success-surface text-success-text border-success-border | fill=bg-success-strong | text=text-success-text
-dispute.LOST -> intent=danger | label=Lost | chip=bg-danger-surface text-danger-text border-danger-border | fill=bg-danger-strong | text=text-danger-text
+dispute.LOST -> intent=neutral | label=Lost | chip=bg-neutral-surface text-neutral-text border-neutral-border | fill=bg-neutral-strong | text=text-neutral-text
 dispute.CLOSED -> intent=neutral | label=Closed | chip=bg-neutral-surface text-neutral-text border-neutral-border | fill=bg-neutral-strong | text=text-neutral-text
 unappliedCapture.OPEN -> intent=warning | label=Needs attention | chip=bg-warning-surface text-warning-text border-warning-border | fill=bg-warning-strong | text=text-warning-text
 unappliedCapture.REFUNDED -> intent=success | label=Refunded | chip=bg-success-surface text-success-text border-success-border | fill=bg-success-strong | text=text-success-text

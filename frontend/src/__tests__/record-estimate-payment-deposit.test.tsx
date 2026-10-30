@@ -271,3 +271,52 @@ describe('edge cases', () => {
     expect(body).not.toHaveProperty('deposit_percentage');
   });
 });
+
+describe('server cap on the deposit (V7-12, AMOUNT_ABOVE_BALANCE)', () => {
+  const sentence = 'That is more than the $30.00 deposit still due. Enter $30.00 or less.';
+
+  it('shows the server sentence under "Deposit amount", not in the bottom line; submit stays enabled; dialog stays open', async () => {
+    (api.post as ReturnType<typeof vi.fn>).mockRejectedValue({
+      response: { status: 400, data: { code: 'AMOUNT_ABOVE_BALANCE', error: sentence } },
+    });
+    const onOpenChange = vi.fn();
+    renderDialog({ onOpenChange });
+    const submit = screen.getByRole('button', { name: /record payment/i });
+    await waitFor(() => expect(submit).toBeEnabled());
+    await userEvent.click(submit);
+
+    const message = await screen.findByText(sentence);
+    expect(screen.getAllByText(sentence)).toHaveLength(1);
+    expect(message.closest('[role="alert"]')).not.toBeNull();
+    expect(amtInput()).toHaveAttribute('aria-invalid', 'true');
+    const describedBy = amtInput().getAttribute('aria-describedby') ?? '';
+    expect(describedBy.split(' ').some((id) => document.getElementById(id)?.contains(message))).toBe(true);
+    expect(screen.getByRole('button', { name: /record payment/i })).toBeEnabled();
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
+  });
+
+  it('a different failure still uses the bottom line', async () => {
+    (api.post as ReturnType<typeof vi.fn>).mockRejectedValue({
+      response: { status: 500, data: { error: 'Something broke' } },
+    });
+    renderDialog();
+    const submit = screen.getByRole('button', { name: /record payment/i });
+    await waitFor(() => expect(submit).toBeEnabled());
+    await userEvent.click(submit);
+    expect(await screen.findByText('Something broke')).toBeInTheDocument();
+    expect(amtInput()).not.toHaveAttribute('aria-invalid', 'true');
+  });
+
+  it('typing a new amount clears the refusal', async () => {
+    (api.post as ReturnType<typeof vi.fn>).mockRejectedValue({
+      response: { status: 400, data: { code: 'AMOUNT_ABOVE_BALANCE', error: sentence } },
+    });
+    renderDialog();
+    const submit = screen.getByRole('button', { name: /record payment/i });
+    await waitFor(() => expect(submit).toBeEnabled());
+    await userEvent.click(submit);
+    await screen.findByText(sentence);
+    fireEvent.change(amtInput(), { target: { value: '30' } });
+    expect(screen.queryByText(sentence)).not.toBeInTheDocument();
+  });
+});

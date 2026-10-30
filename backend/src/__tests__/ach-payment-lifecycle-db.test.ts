@@ -30,10 +30,12 @@ const { realClient } = vi.hoisted(() => {
 vi.mock('../lib/prisma', () => ({ prisma: realClient }));
 
 import { getStripeForOrg, expireOpenCheckoutSessionsForInvoice } from '../lib/stripe';
-import { sendDepositPaymentConfirmation, sendDepositPaidAlert, sendPaymentReceivedEmail } from '../lib/email';
+import { sendDepositPaymentConfirmation, sendDepositPaidAlert, sendPaymentReceivedEmail, sendBankPaymentFailedEmail } from '../lib/email';
 import { dispatchAutomationEvent } from '../services/automations/dispatch';
+import { paymentDisplayStatus } from '../services/payments-page';
 
 const suite = realClient ? describe : describe.skip;
+const failedSender = sendBankPaymentFailedEmail as unknown as ReturnType<typeof vi.fn>;
 
 /** The charge the processor returns for a payment intent (latest_charge expanded). */
 const retrievePaymentIntent = vi.fn();
@@ -54,6 +56,7 @@ suite('a bank payment: processing, cleared, failed (real database)', () => {
 
   beforeEach(() => {
     retrievePaymentIntent.mockReset();
+    failedSender.mockReset().mockResolvedValue({ status: 'sent', providerMessageId: null, fromAddress: 'noreply@example.test', fromName: null });
     listDisputes.mockReset();
     listDisputes.mockResolvedValue({ data: [], has_more: false });
     listSessions.mockReset();
@@ -317,6 +320,26 @@ suite('a bank payment: processing, cleared, failed (real database)', () => {
     const invoice = await f.readInvoice();
     expect(invoice.status).toBe('PAID');
     expect(Number(invoice.amount_due)).toBe(0);
+  });
+
+  // V7-12a pin (no overpaid invoices, BE-14 row 5): a debit that clears for more than the balance (the
+  // balance dropped while it was clearing) is split. The invoice is paid for the balance and never
+  // goes over; the excess is an Unapplied OVERPAYMENT item for the office to refund or attach.
+  it('a debit that clears for more than the balance: the invoice is PAID for the balance, the excess is an Unapplied OVERPAYMENT', async () => {
+    const f = await orgWithInvoice({ total: 500 });
+    await f.completed();
+    // While the $500.00 debit clears, $200.00 of credit lowers the balance to $300.00.
+    await db.invoice.update({ where: { id: f.invoice }, data: { amount_due: 300 } });
+
+    await f.cleared();
+
+    const invoice = await f.readInvoice();
+    expect(invoice.status).toBe('PAID');
+    expect(Number(invoice.amount_due)).toBe(0);
+    const items = await db.unappliedCapture.findMany({ where: { invoice_id: f.invoice } });
+    expect(items).toHaveLength(1);
+    expect(items[0].reason).toBe('OVERPAYMENT');
+    expect(Number(items[0].amount)).toBe(200);
   });
 
   it('PROCESSING -> FAILED: the payment is FAILED, the balance is untouched and open for payment again', async () => {
@@ -776,5 +799,76 @@ suite('a bank payment: processing, cleared, failed (real database)', () => {
     expect(Number(invoice.amount_due)).toBe(50);
     expect(Number(invoice.net_collected)).toBe(50);
     expect((await f.ach())).toMatchObject({ state: 'SUCCEEDED', voided_at: null });
+  });
+  // ---- V7-13 part 2 (N-13): the processor may send BOTH a bank return and async_payment_failed for one return. -----------
+  // Either order: exactly one customer email, one history row and one failed payment (so one Needs-attention item).
+  describe('one bank return, announced twice (a return and a failed debit), in either order', () => {
+    async function withEmail() {
+      const f = await orgWithInvoice({ total: 500 });
+      await db.customer.update({ where: { id: f.customer }, data: { email: `pat-${f.tag}@example.test` } });
+      await db.invoice.update({ where: { id: f.invoice }, data: { public_token: `tok-${f.tag}` } });
+      return f;
+    }
+    const asked = (f: { org: string }) => db.timelineEvent.findMany({ where: { organization_id: f.org, event_type: 'PAYMENT_CUSTOMER_ASKED_TO_PAY_AGAIN' } });
+    const alerts = (f: { org: string }, verb: string) => db.notification.findMany({ where: { organization_id: f.org, verb } });
+
+    it('the return first, then the failed event: one email, one history row, one failed payment', async () => {
+      const f = await withEmail();
+      await f.completed();
+      await f.deliver('charge.dispute.created', bankReturn(f));
+      await f.failed();
+
+      expect(failedSender).toHaveBeenCalledTimes(1);
+      expect(failedSender.mock.calls[0][0]).toMatchObject({ amount: 500, payUrl: expect.stringContaining(`/p/invoices/${f.invoice}`) });
+      const payments = await f.payments();
+      expect(payments.map((p) => p.state)).toEqual(['FAILED']);
+      const rows = await asked(f);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].metadata).toMatchObject({ item_key: `failed_payment:${payments[0].id}` });
+      expect(await alerts(f, 'billing.bank_payment_failed')).toHaveLength(0);
+      const [alert, ...more] = await alerts(f, 'billing.chargeback');
+      expect(more).toHaveLength(0);
+      // Early return (the debit never cleared): never "taken back".
+      expect(alert.body).toBe('Amount: $500.00. The bank returned this payment before it cleared, so no money reached your ServWave Payments balance. The invoice is still open and we emailed the customer a link to pay again.');
+      expect((await f.readInvoice()).status).toBe('SENT');
+    });
+
+    it('the failed event first, then the return: one email, one history row, one failed payment', async () => {
+      const f = await withEmail();
+      await f.completed();
+      await f.failed();
+      await f.deliver('charge.dispute.created', bankReturn(f));
+
+      expect(failedSender).toHaveBeenCalledTimes(1);
+      const payments = await f.payments();
+      expect(payments.map((p) => p.state)).toEqual(['FAILED']);
+      expect(await asked(f)).toHaveLength(1);
+      expect(await alerts(f, 'billing.bank_payment_failed')).toHaveLength(1);
+      // The return finds the payment already failed: it voids nothing, and its alert claims no balance and no customer step.
+      expect((await alerts(f, 'billing.chargeback'))[0].body).toBe('Amount: $500.00.');
+      expect(await disputes(f)).toEqual([expect.objectContaining({ status: 'LOST', is_bank_return: true })]);
+      expect((await f.readInvoice()).status).toBe('SENT');
+    });
+  });
+
+  // N-18: how the Payments table reads the payment after each kind of return.
+  it('a late return reads "Charged back" in the Payments table and an early one reads "Failed"', async () => {
+    const readStatus = async (f: Awaited<ReturnType<typeof orgWithInvoice>>) => {
+      const [p] = await f.payments();
+      return paymentDisplayStatus({
+        state: p.state, amount: Number(p.amount), succeededRefundTotal: 0, voidedAt: p.voided_at, voidCategory: p.void_category,
+        openDispute: false, refundFailedOpen: false,
+      });
+    };
+    const late = await orgWithInvoice({ total: 500 });
+    await late.completed();
+    await late.cleared();
+    await late.deliver('charge.dispute.created', bankReturn(late));
+    expect(await readStatus(late)).toBe('Charged back');
+
+    const early = await orgWithInvoice({ total: 500 });
+    await early.completed();
+    await early.deliver('charge.dispute.created', bankReturn(early));
+    expect(await readStatus(early)).toBe('Failed');
   });
 });

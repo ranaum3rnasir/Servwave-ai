@@ -171,6 +171,9 @@ const ROUTE_GUARDS: Record<string, string[]> = {
   // Spider, the lead watcher (#2619): Admins only, and only behind the Spider gate (the `spider`
   // feature AND, while the launch is demo-only, a demo company).
   '/spider': ['ProtectedRoute(roles=ADMIN, fallback=false)', 'RequireSpider'],
+  // Its starting summary (#2794): every role, behind the same gate; the server gives each person
+  // only their own leads.
+  '/spider/summary': ['ProtectedRoute(roles=ANY, fallback=false)', 'RequireSpider'],
   '/inventory/staging': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)', 'RequirePageAccess(all=view_stock+show_stock_page)'],
   '/inventory/assets': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)', 'RequirePageAccess(all=view_stock+show_stock_page)'],
   '/inventory/low-stock': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)', 'RequirePageAccess(all=view_stock+show_stock_page)'],
@@ -243,12 +246,14 @@ const ROUTE_GUARDS: Record<string, string[]> = {
   // A person's own switches (S02.9): Manage roles and permissions, like the Roles page.
   '/settings/users/:userId/permissions': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireManageRoles'],
   '/settings/security': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
+  // The two retired addresses (Payments & Lists, Payout account & verification) are redirects outside the Settings shell.
   '/settings/payments': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
-  // Payments go-live slice 34. Same open stack as its siblings: the page itself sends anyone without Manage payout
-  // account back to /settings, and the server refuses their session request.
   '/settings/payout-account': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
-  // Payments go-live slice 35. Same open stack: the page sends anyone without View payments and payouts back to /settings.
+  // ServWave Payments (V7-01): now a page inside the shell, same open stack as its siblings. The page itself shows the
+  // no-access page to anyone with neither Edit company settings nor Manage payout account.
   '/settings/servwave-payments': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
+  // Lists (V7-01): the same open stack; the page gates itself on Edit company settings.
+  '/settings/lists': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
   '/settings/job-sub-statuses': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
   // Decline-reasons slice B. Same open stack as every sibling - but NOT for the reason
   // the settings tabs were once open. "A 403-driven empty list" is not what a non-admin got here: this

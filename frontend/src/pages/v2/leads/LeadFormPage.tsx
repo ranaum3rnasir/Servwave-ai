@@ -6,7 +6,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Lock } from 'lucide-react';
 
 import api from '@/lib/axios';
-import { useOrganization, useUpdateOrganization } from '@/lib/api/organization';
+import { useOrganization } from '@/lib/api/organization';
+import { useAddJobType } from '@/lib/api/jobTypes';
 import { useAssignableUsers } from '@/lib/api/users';
 import { useLeadCreatorPrefill } from '@/lib/api/leads';
 import { MultiAssigneeSelect } from '@/components/crm/MultiAssigneeSelect';
@@ -178,8 +179,9 @@ function CreateLeadForm({
   // The creator rule's pre-fill (Owner or Dispatcher, never both): the form shows it, the create route applies it.
   const { data: prefill, isPending: prefillPending, isError: prefillFailed } = useLeadCreatorPrefill();
   const me = useAuthStore((s) => s.user);
-  const updateOrg = useUpdateOrganization();
+  const addJobType = useAddJobType();
   const [addingJobType, setAddingJobType] = useState<string | null>(null);
+  const jobTypeField = useRef<HTMLDivElement>(null);
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
   const [selectedCustomer, setSelectedCustomer] = useState<SearchCustomer | null>(null);
   const [showSchedule, setShowSchedule] = useState(false);
@@ -248,7 +250,7 @@ function CreateLeadForm({
     form.setValue('job_type', trimmed, { shouldDirty: true });
     const existing = org?.job_type_options ?? [];
     if (!existing.includes(trimmed)) {
-      updateOrg.mutate({ job_type_options: [...existing, trimmed] });
+      addJobType.mutate(trimmed);
     }
     setAddingJobType(null);
   };
@@ -650,7 +652,7 @@ function CreateLeadForm({
                 </div>
 
                 <div className="grid grid-cols-1 gap-x-6 gap-y-5 sm:grid-cols-2">
-                  <div className="flex flex-col gap-1.5">
+                  <div ref={jobTypeField} className="flex flex-col gap-1.5">
                     <Label>Job Type</Label>
                     <SelectField
                       aria-label="Job Type"
@@ -680,7 +682,16 @@ function CreateLeadForm({
                           value={addingJobType}
                           maxLength={50}
                           onChange={(e) => setAddingJobType(e.target.value)}
-                          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commitJobType(); } }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') { e.preventDefault(); commitJobType(); }
+                            // Escape closes just this row and puts the person back on the select that opened it.
+                            if (e.key === 'Escape') {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setAddingJobType(null);
+                              jobTypeField.current?.querySelector<HTMLElement>('[role="combobox"]')?.focus();
+                            }
+                          }}
                           placeholder="New job type (press Enter or Add)"
                         />
                         <Button type="button" size="sm" onClick={commitJobType} disabled={!addingJobType.trim()}>Add</Button>
@@ -879,8 +890,9 @@ function EditLeadForm({
 }) {
   const { data: org } = useOrganization();
   const ability = useAppAbility();
-  const updateOrg = useUpdateOrganization();
+  const addJobType = useAddJobType();
   const [addingJobType, setAddingJobType] = useState<string | null>(null);
+  const jobTypeField = useRef<HTMLDivElement>(null);
   const [showSchedule, setShowSchedule] = useState(Boolean(lead.scheduled_start || lead.scheduled_end));
   const [taxWarnOpen, setTaxWarnOpen] = useState(false);
 
@@ -964,7 +976,7 @@ function EditLeadForm({
     form.setValue('job_type', trimmed);
     const existing = org?.job_type_options ?? [];
     if (!existing.includes(trimmed)) {
-      updateOrg.mutate({ job_type_options: [...existing, trimmed] });
+      addJobType.mutate(trimmed);
     }
     setAddingJobType(null);
   };
@@ -1073,7 +1085,7 @@ function EditLeadForm({
                 </div>
 
                 <div className="grid grid-cols-1 gap-x-6 gap-y-5 sm:grid-cols-2">
-                  <div className="flex flex-col gap-1.5">
+                  <div ref={jobTypeField} className="flex flex-col gap-1.5">
                     <Label>Job Type</Label>
                     <SelectField
                       aria-label="Job Type"
@@ -1103,7 +1115,16 @@ function EditLeadForm({
                           value={addingJobType}
                           maxLength={50}
                           onChange={(e) => setAddingJobType(e.target.value)}
-                          onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); commitJobType(); } }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') { e.preventDefault(); commitJobType(); }
+                            // Escape closes just this row and puts the person back on the select that opened it.
+                            if (e.key === 'Escape') {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setAddingJobType(null);
+                              jobTypeField.current?.querySelector<HTMLElement>('[role="combobox"]')?.focus();
+                            }
+                          }}
                           placeholder="New job type (press Enter or Add)"
                         />
                         <Button type="button" size="sm" onClick={commitJobType} disabled={!addingJobType.trim()}>Add</Button>

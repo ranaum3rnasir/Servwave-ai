@@ -14,7 +14,7 @@ import { useQuery } from '@tanstack/react-query';
 
 const STATUS = '/api/ai-farm/spider/status';
 
-function signIn(user: { org_is_demo: boolean; org_features?: string[]; role?: string }) {
+function signIn(user: { org_is_demo: boolean; org_is_spider_pilot?: boolean; org_features?: string[]; role?: string }) {
   vi.mocked(useAuthStore).mockImplementation((selector: (s: any) => unknown) =>
     selector({ user: { id: 'u1', role: 'ADMIN', ...user }, isAuthenticated: true }),
   );
@@ -226,6 +226,36 @@ function fakeEntry(overrides: Partial<LiveAgent> = {}): LiveAgent {
     ...overrides,
   };
 }
+
+// SPEC-5: a real (non-demo) company on the server's Spider pilot list gets what a demo company gets.
+describe('a company on the Spider pilot list', () => {
+  const signInPilot = (role = 'ADMIN') =>
+    signIn({ org_is_demo: false, org_is_spider_pilot: true, org_features: ['leads', 'spider'], role });
+
+  it('an Admin sees Spider Off on the card and the switch in its pop-up, never "Coming soon" or the booking call', async () => {
+    signInPilot();
+    useAiCenterStore.setState({ focusAgentId: 'spider' });
+    renderWithProviders(<AiCenterModal />);
+    expect(await within(strip('spider')).findByText('Off')).toBeInTheDocument();
+    const dialog = await screen.findByRole('dialog', { name: 'Spider' });
+    expect(await within(dialog).findByRole('switch', { name: 'Switch Spider on or off' })).not.toBeChecked();
+    expect(within(dialog).queryByText('Coming soon')).toBeNull();
+    expect(within(dialog).queryByText('Book a call about Spider')).toBeNull();
+    expect(within(card('spider')).queryByText('Coming soon')).toBeNull();
+  });
+
+  it('a Sales user sees the status and the staff note, and no switch', async () => {
+    signInPilot('SALES');
+    spiderStatus(ON);
+    useAiCenterStore.setState({ focusAgentId: 'spider' });
+    renderWithProviders(<AiCenterModal />);
+    expect(await within(strip('spider')).findByText('On, watching your leads')).toBeInTheDocument();
+    const dialog = await screen.findByRole('dialog', { name: 'Spider' });
+    expect(await within(dialog).findByText('Spider is on')).toBeInTheDocument();
+    expect(within(dialog).getByText('Watching your open leads')).toBeInTheDocument();
+    expect(within(dialog).queryByRole('switch')).toBeNull();
+  });
+});
 
 // The registry asks for an agent's switch only for a company that can use the agent: it passes
 // `enabled: accessible` to the switch hook. This fake hook does NOT check any gate of its own, so

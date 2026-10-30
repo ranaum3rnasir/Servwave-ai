@@ -52,7 +52,7 @@ function navSlugs(): string[] {
  * `servwave-payments`, whose area moved there in payments go-live P8), so it is routed (and claimed) without a nav
  * row, on purpose.
  */
-const RETIRED_SLUGS = ['lead-statuses', 'servwave-payments'];
+const RETIRED_SLUGS = ['lead-statuses', 'payments', 'payout-account'];
 
 /**
  * Child pages: a settings route that is not a tab of its own but is opened from a tab's page.

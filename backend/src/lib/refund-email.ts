@@ -3,7 +3,7 @@
  *
  * The in-app refund door sends the email itself when its refund is SUCCEEDED on creation (a card
  * refund). A refund that was PENDING (a bank refund) is announced here, by the reconciler, when the
- * processor confirms it. Money sent back from "Payments needing attention" was never the invoice's
+ * processor confirms it. Money sent back from the Needs attention card was never the invoice's
  * and a refund made outside ServWave was not ServWave's to announce, so neither is emailed.
  * Never throws: an email problem must not fail the event that settled the refund.
  */

@@ -5,16 +5,10 @@ import api from '@/lib/axios';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { renderWithProviders } from './helpers';
 /**
- * This file deliberately imports `@/pages/v2/settings/PaymentsListsPage`, NOT
- * `@/pages/settings/PaymentsListsPage`.
- *
- * `/settings/payments` is mounted from `pages/v2/routes/settings.routes.tsx` via
- * `import('../settings/PaymentsListsPage')` - and because that import sits in
- * `pages/v2/routes/`, it resolves to the v2 fork. The v1 file is dead code whose only
- * importer was this test, which is exactly how #1730's Tags card shipped to a page no
- * user can reach while these gate assertions stayed green.
+ * Settings > ServWave Payments: the cases that used to run on the combined Payments & Lists page (card availability,
+ * the fee disclosure, the status card's hand-off, the return from secure setup), now on the new page.
  */
-import PaymentsListsPage from '@/pages/v2/settings/PaymentsListsPage';
+import ServwavePaymentsPage from '@/pages/v2/settings/ServwavePaymentsPage';
 import { buildAbility } from '@/lib/ability';
 
 const mockApi = vi.mocked(api);
@@ -26,7 +20,14 @@ vi.mock('@stripe/connect-js/pure', () => ({
 vi.mock('@stripe/react-connect-js', () => ({
   ConnectComponentsProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   ConnectAccountOnboarding: () => <div data-testid="connect-account-onboarding" />,
+  ConnectAccountManagement: () => <div data-testid="connect-account-management" />,
+  ConnectNotificationBanner: () => <div data-testid="connect-notification-banner" />,
 }));
+
+const FULL = buildAbility([
+  { action: 'update', subject: 'Organization' },
+  { action: 'manage_payout_account', subject: 'Organization' },
+]);
 
 const ORG = {
   id: 'o1',
@@ -47,32 +48,7 @@ beforeEach(() => {
   });
 });
 
-describe('PaymentsListsPage — Payments & Lists (in-shell)', () => {
-  it('renders payments + lists sections, but NOT the moved estimate document copy', async () => {
-    renderWithProviders(<PaymentsListsPage />);
-    expect(await screen.findByText('Accepted Payment Methods')).toBeInTheDocument();
-    expect(screen.getByText('Default Deposit')).toBeInTheDocument();
-    expect(screen.getByText('Lead/Customer Sources')).toBeInTheDocument();
-    expect(screen.getByText('Job Types')).toBeInTheDocument();
-    // estimate copy was moved to Branding & Templates
-    expect(screen.queryByText('Estimate Document Copy')).not.toBeInTheDocument();
-  });
-
-  it('loads the saved deposit percentage from the org object', async () => {
-    renderWithProviders(<PaymentsListsPage />);
-    await screen.findByText('Default Deposit');
-    expect(await screen.findByDisplayValue('40')).toBeInTheDocument();
-  });
-
-  it('adds a source chip to the list', async () => {
-    const user = userEvent.setup();
-    renderWithProviders(<PaymentsListsPage />);
-    await screen.findByText('Lead/Customer Sources');
-
-    const input = screen.getByPlaceholderText(/New source/);
-    await user.type(input, 'Referral{Enter}');
-    expect(await screen.findByText('Referral')).toBeInTheDocument();
-  });
+describe('ServwavePaymentsPage - cards moved from Payments & Lists', () => {
 
   // Card acceptance is NOT a member of the manual list - dispatchers can't check/uncheck CARD
   // there, because CARD in accepted_payment_methods is a server-owned capability fact. Payments
@@ -92,10 +68,10 @@ describe('PaymentsListsPage — Payments & Lists (in-shell)', () => {
       }
       return Promise.resolve({ data: {} });
     });
-    renderWithProviders(<PaymentsListsPage />);
+    renderWithProviders(<ServwavePaymentsPage />, { ability: FULL });
     await screen.findByDisplayValue('40'); // org has loaded, form has reset()
 
-    expect(screen.getByRole('switch', { name: 'Credit card' })).toBeDisabled();
+    expect(screen.getByRole('switch', { name: 'Credit card' })).toHaveAttribute('aria-disabled', 'true');
     expect(screen.queryByText(/locked — Stripe is integrated/i)).not.toBeInTheDocument();
   });
 
@@ -113,11 +89,11 @@ describe('PaymentsListsPage — Payments & Lists (in-shell)', () => {
       }
       return Promise.resolve({ data: {} });
     });
-    renderWithProviders(<PaymentsListsPage />);
+    renderWithProviders(<ServwavePaymentsPage />, { ability: FULL });
     await screen.findByDisplayValue('40'); // org has loaded, form has reset()
 
-    const methodsCard = screen.getByText('Accepted Payment Methods').closest('[data-slot="card"]') as HTMLElement;
-    expect(within(methodsCard).getByRole('switch', { name: 'Credit card' })).toBeEnabled();
+    const methodsCard = screen.getByText('Accepted payment methods').closest('[data-slot="card"]') as HTMLElement;
+    expect(within(methodsCard).getByRole('switch', { name: 'Credit card' })).not.toHaveAttribute('aria-disabled', 'true');
     // CARD is not part of the manual (accepted_payment_methods) checkbox list.
     expect(within(methodsCard).queryByRole('checkbox', { name: /credit card$/i })).not.toBeInTheDocument();
     // The manual/offline methods it DOES manage are still rendered and toggleable.
@@ -145,7 +121,7 @@ describe('PaymentsListsPage — Payments & Lists (in-shell)', () => {
       }
       return Promise.resolve({ data: {} });
     });
-    const { container } = renderWithProviders(<PaymentsListsPage />);
+    const { container } = renderWithProviders(<ServwavePaymentsPage />, { ability: FULL });
 
     expect(
       await screen.findByText(
@@ -179,65 +155,33 @@ describe('PaymentsListsPage — Payments & Lists (in-shell)', () => {
       return Promise.resolve({ data: {} });
     });
 
-  it('the status card button takes the owner to the payout account page', async () => {
+  it('the status card button scrolls to the payout account card and focuses its heading, without leaving the page', async () => {
     serveStatus(connectedNotSubmitted);
     const user = userEvent.setup();
-    const Where = () => <div data-testid="where">{useLocation().pathname}</div>;
-    renderWithProviders(<><PaymentsListsPage /><Where /></>, {
+    const Where = () => {
+      const { pathname, hash } = useLocation();
+      return <div data-testid="where">{pathname}{hash}</div>;
+    };
+    renderWithProviders(<><ServwavePaymentsPage /><Where /></>, {
       ability: buildAbility([{ action: 'manage_payout_account', subject: 'Organization' }]),
+      initialEntries: ['/settings/servwave-payments'],
     });
 
     await user.click(await screen.findByRole('button', { name: 'Resume setup' }));
 
-    expect(screen.getByTestId('where')).toHaveTextContent('/settings/payout-account');
+    const heading = screen.getByRole('heading', { name: 'Payout account & verification' });
+    expect(heading).toHaveFocus();
+    expect(screen.getByTestId('where')).toHaveTextContent(/^\/settings\/servwave-payments$/);
   });
 
   it('shows the status but no setup button to someone without Manage payout account', async () => {
     serveStatus(connectedNotSubmitted);
-    renderWithProviders(<PaymentsListsPage />, {
+    renderWithProviders(<ServwavePaymentsPage />, {
       ability: buildAbility([{ action: 'update', subject: 'Organization' }]),
     });
 
     expect(await screen.findByText('In progress')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /resume setup|set up payments|fix now/i })).not.toBeInTheDocument();
-  });
-});
-
-describe('PaymentsListsPage — tag management gate', () => {
-  // `update`/`delete Tag` carry no defaultGrants row, so only ADMIN (`manage all`)
-  // holds both. A dispatcher or salesperson can still read and create tags from a
-  // record, but must not see the org-wide rename/delete surface.
-  const ADMIN = buildAbility([
-    { action: 'update', subject: 'Tag' },
-    { action: 'delete', subject: 'Tag' },
-  ]);
-  const NON_ADMIN = buildAbility([
-    { action: 'read', subject: 'Tag' },
-    { action: 'create', subject: 'Tag' },
-  ]);
-
-  beforeEach(() => {
-    mockApi.get.mockImplementation((url: string) => {
-      if (url === '/api/organization') return Promise.resolve({ data: ORG });
-      if (url === '/api/tags') {
-        return Promise.resolve({ data: { tags: [{ id: 't1', name: 'Urgent', color: '#EF4444' }] } });
-      }
-      return Promise.resolve({ data: {} });
-    });
-  });
-
-  it('shows the Tags card to an admin', async () => {
-    renderWithProviders(<PaymentsListsPage />, { ability: ADMIN });
-    expect(await screen.findByText('Urgent')).toBeInTheDocument();
-    expect(screen.getByLabelText('Delete tag Urgent')).toBeInTheDocument();
-  });
-
-  it('hides the Tags card from a non-admin who can still create tags', async () => {
-    renderWithProviders(<PaymentsListsPage />, { ability: NON_ADMIN });
-    // The rest of the page still renders — only the tag card is withheld.
-    expect(await screen.findByText('Lead/Customer Sources')).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Tags' })).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Delete tag Urgent')).not.toBeInTheDocument();
   });
 
   // Payments go-live slice 06 (#1987): the hosted onboarding sends the owner back with
@@ -269,9 +213,9 @@ describe('PaymentsListsPage — tag management gate', () => {
       return Promise.resolve({ data: {} });
     });
 
-    renderWithProviders(<PaymentsListsPage />, { initialEntries: ['/settings/payments?onboarding=return'] });
+    renderWithProviders(<ServwavePaymentsPage />, { ability: FULL, initialEntries: ['/settings/payments?onboarding=return'] });
 
-    expect(await screen.findByText('Under review')).toBeInTheDocument();
+    expect((await screen.findAllByText('Under review')).length).toBeGreaterThan(0);
     expect(screen.queryByText('Active')).not.toBeInTheDocument();
     const refreshCalls = mockApi.post.mock.calls.filter(([url]) => url === '/api/organization/stripe/refresh-status');
     expect(refreshCalls).toHaveLength(1);
@@ -320,13 +264,13 @@ describe('PaymentsListsPage — tag management gate', () => {
       return { data: {} };
     });
 
-    renderWithProviders(<PaymentsListsPage />, { initialEntries: ['/settings/payments?onboarding=return'] });
+    renderWithProviders(<ServwavePaymentsPage />, { ability: FULL, initialEntries: ['/settings/payments?onboarding=return'] });
 
-    await waitFor(() => expect(screen.getByRole('switch', { name: 'Credit card' })).toBeEnabled());
+    await waitFor(() => expect(screen.getByRole('switch', { name: 'Credit card' })).not.toHaveAttribute('aria-disabled', 'true'));
     releaseRefresh();
 
-    expect(await screen.findByText('Under review')).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByRole('switch', { name: 'Credit card' })).toBeDisabled());
+    expect((await screen.findAllByText('Under review')).length).toBeGreaterThan(0);
+    await waitFor(() => expect(screen.getByRole('switch', { name: 'Credit card' })).toHaveAttribute('aria-disabled', 'true'));
   });
 
   // Fix round 1: the plain-visit guard on its own passed on the code before this slice (there
@@ -339,7 +283,7 @@ describe('PaymentsListsPage — tag management gate', () => {
       const location = useLocation();
       return (
         <>
-          <PaymentsListsPage />
+          <ServwavePaymentsPage />
           <button type="button" onClick={() => navigate('/settings/payments?onboarding=return')}>
             back from onboarding
           </button>
@@ -350,7 +294,7 @@ describe('PaymentsListsPage — tag management gate', () => {
     const refreshCalls = () =>
       mockApi.post.mock.calls.filter(([url]) => url === '/api/organization/stripe/refresh-status');
 
-    renderWithProviders(<Harness />, { initialEntries: ['/settings/payments'] });
+    renderWithProviders(<Harness />, { ability: FULL, initialEntries: ['/settings/payments'] });
     await screen.findByDisplayValue('40'); // org has loaded: the page has settled on the plain visit
     expect(refreshCalls()).toHaveLength(0);
 

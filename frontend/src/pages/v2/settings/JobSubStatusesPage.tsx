@@ -25,7 +25,7 @@ import { Section } from './components/section';
  * SRVW-112 - Settings > Job Sub-Statuses. One section per FIXED JobStatus parent; the parents
  * themselves are not editable (that enum is a contract - the copilot advertises it and every
  * report buckets on it). Each row saves immediately through its own endpoint, so this page does
- * NOT register with the settings save bar the way PaymentsListsPage does.
+ * NOT register with the settings save bar the way ServwavePaymentsPage does.
  *
  * `StatusBadge` is the app's, not the kit's: it resolves a domain+status pair
  * against the shared status registry, and the kit's Badge only takes a colour

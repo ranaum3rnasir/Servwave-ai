@@ -44,7 +44,7 @@ function taskCountLabel(counts: TaskCategoryRow['task_counts']): string | null {
  * rename/recolor from the Tags palette. Each row also shows how many tasks use the category and
  * offers Delete, which opens the keep / move / delete-the-tasks dialog (slice 11). ONE panel, opened from two places - the admin-only
  * "Categories" button on the Tasks page (TaskCategoriesDialog) and the Task categories card in
- * Settings > Payments & Lists - modelled on the Tags settings card.
+ * Settings > Lists - modelled on the Tags settings card.
  *
  * Its hosts render it only for admins; the API refuses everyone else regardless. Writes save
  * immediately, and a rename or recolor reaches every task using the category at once

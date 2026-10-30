@@ -34,7 +34,10 @@ export type Classified = Open | Resolved;
 
 const OPEN: Open = { open: true };
 const resolved = (text: string, at: Date | null, by: string | null = null, note: string | null = null): Resolved => ({ open: false, text, by, note, at });
-const byPerson = (r: PersonResolution): Resolved => resolved(r.kind === 'SETTLED' ? 'Marked settled' : 'Marked resolved', r.at, r.by, r.note);
+// A person's resolution reads as the plain reason they chose (the frontend adds "Resolved: " once, C-21); a row
+// closed with no reason (an older client, or a row from before the reason existed) reads "Marked resolved".
+// SETTLED (a failed refund, kept for today's mapping, C-43) is worded the same: the word "settled" is gone.
+const byPerson = (r: PersonResolution): Resolved => resolved(r.note?.trim() || 'Marked resolved', r.at, r.by, r.note);
 
 /** A failed bank payment: closed by a person, a voided invoice, a later payment or a paid invoice. */
 export function classifyFailedPayment(f: {
@@ -77,8 +80,11 @@ export function classifyFailedPayout(f: { resolution: PersonResolution | null; l
 }
 
 /** Money that is not on an invoice: its own status column, written by the existing endpoints. */
-export function classifyUnapplied(f: { status: string; refundedAt: Date | null; updatedAt: Date }): Classified {
+export function classifyUnapplied(f: {
+  status: string; refundedAt: Date | null; updatedAt: Date; note?: string | null; by?: string | null; at?: Date | null;
+}): Classified {
   if (f.status === 'OPEN') return OPEN;
   if (f.status === 'REFUNDED') return resolved('Refunded', f.refundedAt ?? f.updatedAt);
-  return resolved('Marked resolved', f.updatedAt);
+  // RESOLVED: the person, reason and moment when the row has them (rows from before the columns fall back to updated_at).
+  return byPerson({ kind: 'RESOLVED', note: f.note ?? null, by: f.by ?? null, at: f.at ?? f.updatedAt });
 }

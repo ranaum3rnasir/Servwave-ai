@@ -11,6 +11,7 @@ import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import { renderWithProviders } from './helpers';
+import { buildAbility } from '@/lib/ability';
 
 let registeredSave: (() => Promise<void> | void) | null = null;
 vi.mock('@/pages/v2/settings/settingsBar', async (orig) => ({
@@ -26,12 +27,20 @@ vi.mock('@stripe/connect-js/pure', () => ({ loadConnectAndInitialize: vi.fn(() =
 vi.mock('@stripe/react-connect-js', () => ({
   ConnectComponentsProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   ConnectAccountOnboarding: () => <div />,
+  ConnectAccountManagement: () => <div />,
+  ConnectNotificationBanner: () => <div />,
 }));
 
 // Imported after the mocks above so the page picks up the captured saver.
-const { default: PaymentsListsPage } = await import('@/pages/v2/settings/PaymentsListsPage');
+const { default: ServwavePaymentsPage } = await import('@/pages/v2/settings/ServwavePaymentsPage');
 
 const mockApi = vi.mocked(api);
+
+const PAGE_ABILITY = buildAbility([
+  { action: 'update', subject: 'Organization' },
+  { action: 'manage_payout_account', subject: 'Organization' },
+]);
+
 
 /** An org whose payout account can take both cards and bank payments. */
 const ACTIVE_ORG = {
@@ -62,7 +71,7 @@ function serveOrg(org: Record<string, unknown>) {
 async function renderPage(org: Record<string, unknown> = ACTIVE_ORG) {
   serveOrg(org);
   const user = userEvent.setup();
-  const view = renderWithProviders(<PaymentsListsPage />);
+  const view = renderWithProviders(<ServwavePaymentsPage />, { ability: PAGE_ABILITY });
   await screen.findByDisplayValue('40');
   return { user, ...view };
 }
@@ -112,7 +121,7 @@ describe('Settings > Payments: offered online methods', () => {
 
     for (const name of ['Credit card', 'Bank (ACH)']) {
       const toggle = screen.getByRole('switch', { name });
-      expect(toggle).toBeDisabled();
+      expect(toggle).toHaveAttribute('aria-disabled', 'true');
       expect(toggle).toHaveAccessibleDescription(expect.stringContaining(REASON));
     }
     expect(screen.getAllByText(REASON)).toHaveLength(2);
@@ -138,10 +147,10 @@ describe('Settings > Payments: offered online methods', () => {
     await renderPage({ ...ACTIVE_ORG, accepted_payment_methods: ['CARD', 'CASH'] });
 
     const card = screen.getByRole('switch', { name: 'Credit card' });
-    expect(card).toBeEnabled();
+    expect(card).not.toHaveAttribute('aria-disabled', 'true');
     expect(card).not.toHaveAccessibleDescription(expect.stringContaining(REASON));
     const bank = screen.getByRole('switch', { name: 'Bank (ACH)' });
-    expect(bank).toBeDisabled();
+    expect(bank).toHaveAttribute('aria-disabled', 'true');
     expect(bank).toHaveAccessibleDescription(expect.stringContaining(REASON));
     expect(screen.getAllByText(REASON)).toHaveLength(1);
   });
@@ -149,8 +158,8 @@ describe('Settings > Payments: offered online methods', () => {
   it('a listed CARD with charges switched off is still unavailable (charges are the card capability)', async () => {
     await renderPage({ ...ACTIVE_ORG, stripe_charges_enabled: false });
 
-    expect(screen.getByRole('switch', { name: 'Credit card' })).toBeDisabled();
-    expect(screen.getByRole('switch', { name: 'Bank (ACH)' })).toBeDisabled();
+    expect(screen.getByRole('switch', { name: 'Credit card' })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('switch', { name: 'Bank (ACH)' })).toHaveAttribute('aria-disabled', 'true');
   });
 });
 
@@ -214,6 +223,7 @@ describe('Settings > Payments: tips', () => {
     const row = screen.getByRole('textbox', { name: 'Choice 1' }).closest('[data-testid="tip-presets-row"]');
     expect(row).not.toBeNull();
     expect(row!.className).toMatch(/sm:grid-cols-3/);
+    expect(row!.className).toMatch(/grid-cols-1/);
     expect(row!.querySelectorAll('input')).toHaveLength(3);
   });
 
@@ -256,7 +266,7 @@ describe('Settings > Payments: bank-transfer instructions', () => {
   it('shows the saved instructions and saves the edited text', async () => {
     const { user } = await renderPage({ ...ACTIVE_ORG, bank_transfer_instructions: 'Routing 000' });
 
-    const field = screen.getByRole('textbox', { name: 'Bank-transfer instructions' });
+    const field = screen.getByRole('textbox', { name: 'Instructions customers see' });
     expect(field).toHaveValue('Routing 000');
     await user.clear(field);
     await user.type(field, 'Wire to account 123, reference your invoice number');
@@ -268,11 +278,11 @@ describe('Settings > Payments: bank-transfer instructions', () => {
   it('says that recording a transfer stays manual, in a ? popover and not a grey line under the field', async () => {
     const { user } = await renderPage();
 
-    const field = screen.getByRole('textbox', { name: 'Bank-transfer instructions' });
+    const field = screen.getByRole('textbox', { name: 'Instructions customers see' });
     expect(field).not.toHaveAccessibleDescription();
-    expect(screen.queryByText(/When a transfer arrives/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/when one arrives, record the payment/)).not.toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'More about Bank-transfer instructions' }));
-    expect(await screen.findByText(/When a transfer arrives, record the payment on the invoice yourself/)).toBeInTheDocument();
+    expect(await screen.findByText(/when one arrives, record the payment on the invoice yourself/)).toBeInTheDocument();
   });
 });
 

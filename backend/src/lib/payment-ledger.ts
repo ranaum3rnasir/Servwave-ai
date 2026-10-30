@@ -72,6 +72,14 @@ export function paidCents(payments: ReadonlyArray<{ amount: Amount }>): number {
   return sumCents(payments);
 }
 
+/**
+ * What an invoice can take now, in cents: its balance less any bank debit still clearing (the PROCESSING rows the caller
+ * read with PROCESSING_PAYMENT_WHERE). The one rule the attach booking enforces and the Attach dialog's can_attach shows.
+ */
+export function payableNowCents(invoice: { amount_due: Amount; payments: ReadonlyArray<{ amount: Amount }> }): number {
+  return Math.max(toCents(invoice.amount_due) - sumCents(invoice.payments), 0);
+}
+
 type RefundRow = { amount: Amount; state: RefundState };
 
 /** Money given back, in cents: SUCCEEDED refunds only. This is what total_refunded reports. */
@@ -117,7 +125,7 @@ export function netCollectedCents(
 
 /**
  * Payments go-live slice 11: the reason a person reads on a refund row for money sent back from
- * "Payments needing attention" that sat on a payment row (the excess of an overpayment, or a
+ * the Needs attention card that sat on a payment row (the excess of an overpayment, or a
  * payment that cleared on an invoice that could no longer take it). Such a row is marked
  * from_unapplied_capture, and the maths reads only that marker (a staff refund may carry any
  * reason). It is money given back off that payment, so it counts in total_refunded, net collected
@@ -199,7 +207,7 @@ export async function rederiveRefundTotals(
   const refunded = refundedCents(invoice.refunds);
   const standing = invoice.refunds.filter((r) => !r.payment?.voided_at);
   const refundedOnStanding = refundedCents(standing);
-  // Money sent back from "Payments needing attention" was never applied to the invoice: it comes
+  // Money sent back from the Needs attention card was never applied to the invoice: it comes
   // off both sides of the status maths, so an overpaid invoice whose excess went back reads PAID.
   const unappliedBack = refundedCents(standing.filter((r) => r.from_unapplied_capture));
   const status = !REFUND_DERIVED_STATUSES.includes(invoice.status)
@@ -321,8 +329,8 @@ export async function recordProcessingPayment(input: {
   });
 }
 
-/** The statuses a payment landing may move: a settled or voided invoice keeps its status. */
-const PAYABLE_STATUSES: readonly InvoiceStatus[] = ['DRAFT', 'SENT', 'PARTIAL'];
+/** The statuses a payment landing may move: a settled or voided invoice keeps its status. Also what "open" means for attaching unapplied money. */
+export const PAYABLE_STATUSES: readonly InvoiceStatus[] = ['DRAFT', 'SENT', 'PARTIAL'];
 
 export type PaymentOutcome = 'SUCCEEDED' | 'FAILED';
 

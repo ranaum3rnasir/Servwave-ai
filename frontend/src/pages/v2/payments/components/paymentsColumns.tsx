@@ -9,6 +9,7 @@ import { Button } from '@/ui-kit/components/ui/button';
 
 import { StatusChip } from '../../_shared/statusChip';
 import { v2Path } from '../../uiV2';
+import { CustomerCell } from './CustomerIdLink';
 
 const SHORT_DATE: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric', year: 'numeric' };
 
@@ -85,7 +86,7 @@ export function buildPaymentColumns({
       header: 'Customer',
       meta: { label: 'Customer' },
       size: 200,
-      cell: ({ row }) => (row.original.restricted || !row.original.customer ? <Restricted /> : row.original.customer.name),
+      cell: ({ row }) => (row.original.restricted || !row.original.customer ? <Restricted /> : <CustomerCell customer={row.original.customer} />),
     },
     {
       id: 'invoice',

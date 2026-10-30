@@ -1388,7 +1388,7 @@ const RAW_TAG_CEILINGS: Record<string, number> = {
   // covering an adjacent Confirm/Remove pair), a custom radio option
   // (CustomerFormPage.tsx's RadioRow), an icon-only toggle inside a chip with
   // no hover treatment at all (PhoneNumbersSettingsPage.tsx), a close-X inside
-  // a draggable chip (PaymentsListsPage.tsx), danger-toned text links with no
+  // a draggable chip (PaymentsListsPage.tsx (since removed)), danger-toned text links with no
   // matching link/danger cell (UsersTeamsPage.tsx), icon-only removes with no
   // hover background at all (CustomerFormPage.tsx x2), idle-brand text CTAs
   // with no hover state at all - every link/brand cell adds a hover:underline
@@ -1616,7 +1616,7 @@ const RAW_TAG_CEILINGS: Record<string, number> = {
   // remaining 10 raw <input>s across this same 12-file batch stay raw and are
   // each commented in place: WaiveDepositDialog.tsx (2) and
   // RecurrenceBuilder.tsx (3) are type="radio" rows - Input's box styling is
-  // built for a text field, not a small inline radio; PaymentsListsPage.tsx
+  // built for a text field, not a small inline radio; PaymentsListsPage.tsx (since removed)
   // (1 checkbox + 2 radio) is the same shape; GeofenceSettingsDialog.tsx's
   // clock-in-radius field is type="range" (a native slider, not a text box);
   // BrandingPage.tsx's brand-colour field is type="color" (a native swatch
@@ -1671,7 +1671,7 @@ const RAW_TAG_CEILINGS: Record<string, number> = {
   // renders through FormField (cloneElement onto StoreAddressSearch). The
   // other 19 raw <label>s across this same 12-file batch stay raw and are
   // each commented in place: checkbox/radio/toggle rows that WRAP their
-  // control (WaiveDepositDialog.tsx x2, PaymentsListsPage.tsx x3,
+  // control (WaiveDepositDialog.tsx x2, PaymentsListsPage.tsx (since removed) x3,
   // PhoneNumbersSettingsPage.tsx x1, UsersTeamsPage.tsx x2,
   // RecurrenceBuilder.tsx x3, StoreLocationPicker.tsx's own other 2 sites,
   // GeofenceSettingsDialog.tsx x1 wrapping a type="range" slider); a label
@@ -1842,7 +1842,7 @@ const RAW_TAG_CEILINGS: Record<string, number> = {
   // 124 unchanged, "formfield-textarea-remainder" batch (2026-07-31): reviewed every raw
   // <label> across a disjoint 26-file remainder set (service-plans/RecurrenceBuilder.tsx,
   // tasks/CreateTaskModal.tsx, service-plans/ServicePlansPage.tsx, settings/
-  // PaymentsListsPage.tsx, settings/UsersTeamsPage.tsx, reports/JobStatisticsReport.tsx,
+  // PaymentsListsPage.tsx (since removed), settings/UsersTeamsPage.tsx, reports/JobStatisticsReport.tsx,
   // tasks/TaskFilterBar.tsx, estimates/WaiveDepositDialog.tsx, crm/AssignTeamPopover.tsx,
   // workflows/RecipientMultiSelect.tsx, timeclock/StoreLocationPicker.tsx, filters/controls/
   // CheckboxFacet.tsx, payments/StripeOnboardingDrawer.tsx, tasks/JobLeadTasksTab.tsx,
@@ -1909,7 +1909,7 @@ const RAW_TAG_CEILINGS: Record<string, number> = {
   // 215 -> 185, "settings panel card-section titles" batch (first heading batch):
   // all 30 raw headings across pages/settings/ now render through Heading -
   // MyProfilePage.tsx (2), EmailSettingsPage.tsx (2, one h2 scale="lg"),
-  // SecurityPage.tsx (3), PaymentsListsPage.tsx (3), LocationsPage.tsx (2),
+  // SecurityPage.tsx (3), PaymentsListsPage.tsx (since removed) (3), LocationsPage.tsx (2),
   // SettingsLayout.tsx (1 h1, scale="lg"), InventorySettingsPage.tsx (1),
   // PhoneSmsPage.tsx (2), RolesPage.tsx (2, one h3 scale="base", one h4),
   // BrandingPage.tsx (5, one keeps a residual mb-3 layout class),

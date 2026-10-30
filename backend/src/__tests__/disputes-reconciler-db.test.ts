@@ -30,12 +30,16 @@ vi.mock('../lib/prisma', () => ({ prisma: realClient }));
 
 import { getStripeForOrg } from '../lib/stripe';
 import { supabaseAdmin } from '../lib/supabase';
+import { sendBankPaymentFailedEmail } from '../lib/email';
 import { applyActions } from '../services/payment-reconciler/apply';
 import { systemVoidPaymentForChargeback } from '../controllers/invoice.controller';
 import { rederiveRefundTotals, settlePayment } from '../lib/payment-ledger';
 import type { LedgerAction } from '../services/payment-reconciler/decide';
 
 const suite = realClient ? describe : describe.skip;
+
+const failedSender = sendBankPaymentFailedEmail as unknown as ReturnType<typeof vi.fn>;
+const SENT = { status: 'sent', providerMessageId: null, fromAddress: 'noreply@example.test', fromName: null };
 
 /** The processor's checkout sessions, as the unmatched-dispute check lists them by payment intent. */
 const sessionsList = vi.fn();
@@ -48,6 +52,7 @@ suite('disputes through the reconciler (real database)', () => {
     app = (await import('../app.js')).default as unknown as Parameters<typeof request>[0];
   });
   beforeEach(() => {
+    failedSender.mockReset().mockResolvedValue(SENT);
     // By default the processor knows no ServWave checkout for the disputed charge.
     sessionsList.mockReset().mockResolvedValue({ data: [], has_more: false });
     vi.mocked(getStripeForOrg).mockReturnValue({
@@ -610,6 +615,163 @@ suite('disputes through the reconciler (real database)', () => {
     const invoice = await f.readInvoice();
     expect(invoice.status).toBe('SENT');
     expect(Number(invoice.amount_due)).toBe(500);
+  });
+
+  // ---- V7-13 part 2: a bank return tells the customer, and the owner's alert says what really happened -------------------
+  const PAY_AGAIN_DESCRIPTION = 'Customer emailed a link to pay again';
+  const BANK_RETURN = { status: 'lost', reason: 'insufficient_funds', payment_method_details: { type: 'us_bank_account' } };
+
+  /** A paid bank invoice whose customer has an email, and a pay link. */
+  async function bankInvoice(opts: { email?: string | null; total?: number } = {}) {
+    const f = await paidInvoice({ total: opts.total ?? 500, method: 'ACH', accepts: ['ACH'] });
+    const email = opts.email === undefined ? `pat-${f.tag}@example.test` : opts.email;
+    await db.customer.update({ where: { id: f.customer }, data: { email } });
+    await db.invoice.update({ where: { id: f.invoice }, data: { public_token: `tok-${f.tag}` } });
+    return { ...f, email };
+  }
+  const alertBody = async (f: { notifications: (verb: string) => Promise<{ body: string | null }[]> }) => (await f.notifications('billing.chargeback'))[0]?.body;
+  const askedAgain = (f: { timeline: (eventType: string) => Promise<{ description: string }[]> }) => f.timeline('PAYMENT_CUSTOMER_ASKED_TO_PAY_AGAIN');
+
+  it('a late bank return emails the customer once with Pay Again, files one history row, and the alert says so; a replay sends and alerts nothing more', async () => {
+    const f = await bankInvoice();
+    await f.deliver('charge.dispute.created', f.dispute(BANK_RETURN), { id: `evt_pay09_${f.tag}_ret` });
+
+    expect(failedSender).toHaveBeenCalledTimes(1);
+    expect(failedSender.mock.calls[0][0]).toMatchObject({
+      organizationId: f.org, to: f.email, customerName: 'Pat Payer', invoiceNumber: `INV-${f.tag}`, amount: 500,
+      payUrl: expect.stringContaining(`/p/invoices/${f.invoice}?token=tok-${f.tag}`),
+    });
+    expect((await f.readInvoice()).status).toBe('SENT');
+    expect(await alertBody(f)).toBe('Amount: $500.00 was taken back from your ServWave Payments balance. The invoice is open again and we emailed the customer a link to pay again.');
+    const rows = await askedAgain(f);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ description: PAY_AGAIN_DESCRIPTION, created_by: null, metadata: { item_key: `failed_payment:${f.payment}` } });
+
+    // The same event again, and the same dispute under another event id: nothing more.
+    await f.deliver('charge.dispute.created', f.dispute(BANK_RETURN), { id: `evt_pay09_${f.tag}_ret` });
+    await f.deliver('charge.dispute.closed', f.dispute(BANK_RETURN), { id: `evt_pay09_${f.tag}_ret2` });
+    expect(failedSender).toHaveBeenCalledTimes(1);
+    expect(await f.notifications('billing.chargeback')).toHaveLength(1);
+    expect(await askedAgain(f)).toHaveLength(1);
+  });
+
+  it('a late bank return for a customer with no email address: no email, and the alert says why', async () => {
+    const f = await bankInvoice({ email: null });
+    await f.deliver('charge.dispute.created', f.dispute(BANK_RETURN));
+    expect(failedSender).not.toHaveBeenCalled();
+    expect(await alertBody(f)).toBe('Amount: $500.00 was taken back from your ServWave Payments balance. The invoice is open again. No email was sent because this customer has no email address on file. Contact them to pay again.');
+    expect(await askedAgain(f)).toHaveLength(0);
+  });
+
+  it('a suppressed address reads bounced and a forced send failure reads could not be sent; neither leaves a history row', async () => {
+    const bounced = await bankInvoice();
+    failedSender.mockResolvedValueOnce({ status: 'skipped', reason: 'suppressed' });
+    await bounced.deliver('charge.dispute.created', bounced.dispute(BANK_RETURN));
+    expect(await alertBody(bounced)).toContain('The invoice is open again. No email was sent because earlier emails to this customer\u2019s address bounced. Contact them to pay again.');
+    expect(await askedAgain(bounced)).toHaveLength(0);
+
+    const failed = await bankInvoice();
+    failedSender.mockResolvedValueOnce({ status: 'failed', error: 'boom' });
+    await failed.deliver('charge.dispute.created', failed.dispute(BANK_RETURN));
+    expect(await alertBody(failed)).toContain('The invoice is open again. The email to the customer could not be sent. Contact them to pay again.');
+    expect(await askedAgain(failed)).toHaveLength(0);
+
+    const thrown = await bankInvoice();
+    failedSender.mockRejectedValueOnce(new Error('network'));
+    await thrown.deliver('charge.dispute.created', thrown.dispute(BANK_RETURN));
+    expect(await alertBody(thrown)).toContain('could not be sent');
+    expect(await askedAgain(thrown)).toHaveLength(0);
+  });
+
+  it('a late bank return on a VOIDED invoice: no email, the invoice stays voided, and the alert says the customer was not asked', async () => {
+    const f = await voidedInvoiceWithCardPayment({ method: 'ACH', accepts: ['ACH'] });
+    await db.customer.update({ where: { id: f.customer }, data: { email: `pat-${f.tag}@example.test` } });
+    await f.deliver('charge.dispute.created', f.dispute(BANK_RETURN));
+    expect(failedSender).not.toHaveBeenCalled();
+    expect((await f.readInvoice()).status).toBe('VOIDED');
+    expect(await alertBody(f)).toBe('Amount: $400.00 was taken back from your ServWave Payments balance. The invoice stays voided, so the customer was not asked to pay.');
+  });
+
+  it('an invoice already PAID by another payment: no Pay Again email, and the alert says it cannot be paid online (C-38, C-49)', async () => {
+    const f = await bankInvoice();
+    await db.payment.create({
+      data: { invoice_id: f.invoice, amount: 500, method: 'CARD', state: 'SUCCEEDED', paid_at: new Date(), created_by_source: 'CLIENT' },
+    });
+    await f.deliver('charge.dispute.created', f.dispute(BANK_RETURN));
+    expect(failedSender).not.toHaveBeenCalled();
+    expect(await alertBody(f)).toBe('Amount: $500.00 was taken back from your ServWave Payments balance. No email was sent because this invoice cannot be paid online right now.');
+    expect(await askedAgain(f)).toHaveLength(0);
+  });
+
+  it('a DISPUTED invoice (another dispute still open) gets no Pay Again email either', async () => {
+    const f = await bankInvoice({ total: 500 });
+    const other = randomUUID();
+    await db.payment.update({ where: { id: f.payment }, data: { amount: 300 } });
+    await db.payment.create({
+      data: { id: other, invoice_id: f.invoice, amount: 200, method: 'CARD', state: 'SUCCEEDED', paid_at: new Date(), created_by_source: 'CLIENT', stripe_payment_intent_id: `pi_other_${f.tag}` },
+    });
+    await db.dispute.create({
+      data: { organization_id: f.org, invoice_id: f.invoice, payment_id: other, stripe_dispute_id: `dp_other_${f.tag}`, status: 'NEEDS_RESPONSE', amount: 200 },
+    });
+    await db.invoice.update({ where: { id: f.invoice }, data: { status: 'DISPUTED' } });
+    await f.deliver('charge.dispute.created', f.dispute({ ...BANK_RETURN, amount: 30000 }));
+    expect(failedSender).not.toHaveBeenCalled();
+    expect((await f.readInvoice()).status).toBe('DISPUTED');
+    expect(await alertBody(f)).toBe('Amount: $300.00 was taken back from your ServWave Payments balance. No email was sent because this invoice cannot be paid online right now.');
+  });
+
+  it('a lost CARD dispute sends the customer nothing and its alert has no customer ending', async () => {
+    const f = await paidInvoice({ total: 500 });
+    await db.customer.update({ where: { id: f.customer }, data: { email: `pat-${f.tag}@example.test` } });
+    await f.deliver('charge.dispute.created', f.dispute());
+    await f.deliver('charge.dispute.closed', f.dispute({ status: 'lost' }));
+    expect(failedSender).not.toHaveBeenCalled();
+    expect(await alertBody(f)).toBe('Amount: $500.00 was taken back from your ServWave Payments balance.');
+    expect(await askedAgain(f)).toHaveLength(0);
+  });
+
+  it('an early bank return (payment still clearing): the customer is emailed, the alert says nothing reached the balance and never "taken back"', async () => {
+    const f = await bankInvoice();
+    await db.invoice.update({ where: { id: f.invoice }, data: { status: 'SENT', amount_due: 500, net_collected: 0, paid_at: null } });
+    await db.payment.update({ where: { id: f.payment }, data: { state: 'PROCESSING' } });
+    await f.deliver('charge.dispute.created', f.dispute(BANK_RETURN), { id: `evt_pay09_${f.tag}_early` });
+
+    expect(failedSender).toHaveBeenCalledTimes(1);
+    expect(failedSender.mock.calls[0][0]).toMatchObject({ to: f.email, amount: 500, payUrl: expect.stringContaining('/p/invoices/') });
+    const body = await alertBody(f);
+    expect(body).toBe('Amount: $500.00. The bank returned this payment before it cleared, so no money reached your ServWave Payments balance. The invoice is still open and we emailed the customer a link to pay again.');
+    expect(body).not.toMatch(/taken back/);
+    expect(await askedAgain(f)).toHaveLength(1);
+
+    await f.deliver('charge.dispute.created', f.dispute(BANK_RETURN), { id: `evt_pay09_${f.tag}_early` });
+    expect(failedSender).toHaveBeenCalledTimes(1);
+  });
+
+  it('an early bank return on a DISPUTED or PAID-by-another invoice sends nothing and says it cannot be paid online', async () => {
+    const f = await bankInvoice();
+    await db.invoice.update({ where: { id: f.invoice }, data: { status: 'SENT', amount_due: 500, net_collected: 0, paid_at: null } });
+    await db.payment.update({ where: { id: f.payment }, data: { state: 'PROCESSING' } });
+    await db.payment.create({
+      data: { invoice_id: f.invoice, amount: 500, method: 'CARD', state: 'SUCCEEDED', paid_at: new Date(), created_by_source: 'CLIENT' },
+    });
+    await f.deliver('charge.dispute.created', f.dispute(BANK_RETURN));
+    expect(failedSender).not.toHaveBeenCalled();
+    expect(await alertBody(f)).toBe('Amount: $500.00. The bank returned this payment before it cleared, so no money reached your ServWave Payments balance. No email was sent because this invoice cannot be paid online right now.');
+  });
+
+  it('a second automatic email for the same item inside the throttle window is not sent, and the alert still reads sent', async () => {
+    const f = await bankInvoice();
+    // The office just emailed this customer about this payment (the Contact customer endpoint's history row).
+    await db.timelineEvent.create({
+      data: {
+        organization_id: f.org, entity_type: 'INVOICE', entity_id: f.invoice, event_type: 'PAYMENT_CUSTOMER_ASKED_TO_PAY_AGAIN',
+        description: PAY_AGAIN_DESCRIPTION, metadata: { item_key: `failed_payment:${f.payment}` },
+      },
+    });
+    await f.deliver('charge.dispute.created', f.dispute(BANK_RETURN));
+    expect(failedSender).not.toHaveBeenCalled();
+    expect(await alertBody(f)).toContain('we emailed the customer a link to pay again.');
+    expect(await askedAgain(f)).toHaveLength(1);
   });
 
   it('the same dispute delivered again, under the same or another event id, is recorded once and announced once', async () => {

@@ -6,6 +6,7 @@
  * processor and no processor id or name leaves it. Every query is scoped to the caller's company.
  */
 import type { Request, Response } from 'express';
+import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { tenantWhere } from '../lib/tenant';
 import { logger } from '../lib/logger';
@@ -20,12 +21,17 @@ import {
   countOpenAttention, findAttention, listAttention, MAX_LIMIT, MAX_OFFSET, present, TOO_DEEP,
 } from '../services/payment-attention';
 import { ATTENTION_TYPES, parseItemKey, type AttentionType } from '../services/payment-attention/rules';
+import { UNAPPLIED_TYPES, unappliedDetail } from '../services/payment-attention/unapplied-detail';
 import { LONG_TEXT_MAX } from '../lib/text-limits';
+import { CHOOSE_A_REASON, RESOLVE_REASONS_FAILED_REFUND, RESOLVE_REASONS_OTHER, resolveReasonSchema } from '../lib/resolve-reasons';
+import { plainBody } from '../lib/request-body';
+import { claimContact, releaseContactClaim } from '../lib/payment-attention-contact';
 
 const MAX_NOTE = LONG_TEXT_MAX;
-/** A second "ask the customer to pay again" for the same payment inside this window is refused. */
-const CONTACT_THROTTLE_MS = 10 * 60 * 1000;
-const TIMELINE_ASKED_AGAIN = 'PAYMENT_CUSTOMER_ASKED_TO_PAY_AGAIN';
+
+/** The resolve body: an optional note (text up to the long-text limit) and an optional reason from the kind's own set. */
+const resolveBodySchema = (reasons: readonly [string, ...string[]]) =>
+  z.object({ note: z.string().max(MAX_NOTE).nullish(), reason: resolveReasonSchema(reasons) });
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const NOT_FOUND = 'Item not found';
@@ -80,7 +86,43 @@ async function itemOf(req: Request, type: AttentionType, id: string) {
   return row ? (await present(req, [row]))[0] : undefined;
 }
 
-// POST /api/payments-page/attention/:key/resolve   { note?: string }
+/** The kinds the read-by-key endpoint opens. The unapplied kinds answer with their own drawer detail (V7-09a); the rest in the list-row shape. */
+const READABLE_BY_KEY: readonly AttentionType[] = ['failed_payment', 'failed_refund', 'failed_payout', 'unmatched_payment', 'unmatched_refund'];
+
+// GET /api/payments-page/attention/:key
+// One item in the list-row shape (same present() path), open or resolved. An unknown key, another company's, or a kind
+// this endpoint does not open answers 404; an item on an invoice the caller cannot open comes back restricted.
+export async function getAttentionItem(req: Request, res: Response) {
+  try {
+    const key = parseItemKey(String(req.params.key));
+    if (!key || !READABLE_BY_KEY.includes(key.type)) {
+      res.status(404).json({ error: NOT_FOUND });
+      return;
+    }
+    if (UNAPPLIED_TYPES.includes(key.type)) {
+      const row = await findAttention(req, key.type, key.id);
+      if (!row) {
+        res.status(404).json({ error: NOT_FOUND });
+        return;
+      }
+      res.json(await unappliedDetail(req, row));
+      return;
+    }
+    const item = await itemOf(req, key.type, key.id);
+    if (!item) {
+      res.status(404).json({ error: NOT_FOUND });
+      return;
+    }
+    res.json(item);
+  } catch (error) {
+    logger.error('payments-page attention item failed', error);
+    res.status(500).json({ error: 'Could not load this item' });
+  }
+}
+
+// POST /api/payments-page/attention/:key/resolve   { reason?: string, note?: string }
+// `reason` is one of the allowed words for the kind (400 "Choose a reason." otherwise); a missing one is accepted for older
+// clients, and the old free-text `note` still works. If both arrive, `reason` wins.
 export async function resolveAttention(req: Request, res: Response) {
   try {
     const key = parseItemKey(String(req.params.key));
@@ -99,12 +141,19 @@ export async function resolveAttention(req: Request, res: Response) {
       res.status(403).json({ error: NOT_ALLOWED });
       return;
     }
-    const rawNote = (req.body ?? {}).note;
-    if (rawNote != null && (typeof rawNote !== 'string' || rawNote.length > MAX_NOTE)) {
-      res.status(400).json({ error: `Note must be ${MAX_NOTE.toLocaleString('en-US')} characters or fewer`, field: 'note' });
+    const parsed = resolveBodySchema(key.type === 'failed_refund' ? RESOLVE_REASONS_FAILED_REFUND : RESOLVE_REASONS_OTHER).safeParse(plainBody(req));
+    if (!parsed.success) {
+      // The note is checked first, as it always was.
+      if (parsed.error.issues.some((issue) => issue.path[0] === 'note')) {
+        res.status(400).json({ error: `Note must be ${MAX_NOTE.toLocaleString('en-US')} characters or fewer`, field: 'note' });
+      } else {
+        res.status(400).json({ error: CHOOSE_A_REASON, field: 'reason' });
+      }
       return;
     }
-    const note = typeof rawNote === 'string' && rawNote.trim() ? rawNote.trim() : null;
+    const { note: rawNote } = parsed.data;
+    const reason = parsed.data.reason ?? null;
+    const note = reason ?? (typeof rawNote === 'string' && rawNote.trim() ? rawNote.trim() : null);
 
     const row = await findAttention(req, key.type, key.id);
     if (!row) {
@@ -200,35 +249,13 @@ export async function contactCustomer(req: Request, res: Response) {
       organizationId: orgId, customerId: invoice.customer.id, jobId: invoice.job?.id, jobLabel: invoice.job?.job_number,
       entityType: 'invoice' as const, entityId: invoice.id,
     };
-    // The throttle check and the history row are one short step under a lock on the item: two quick clicks claim the item
-    // once, and only the winner sends. The email goes out AFTER the transaction has ended (the mail layer uses the app's
-    // own client, which must never be awaited while a transaction holds the only pooled connection). A send that did not
-    // go out gives the claim back, so only a real send stays throttled. If the claim cannot be given back, the customer
-    // is not emailed for the throttle window, which is the safe direction.
-    const throttleRow = { organization_id: orgId, entity_type: 'INVOICE' as const, entity_id: invoice.id, event_type: TIMELINE_ASKED_AGAIN,
-      description: 'Customer asked to pay again', metadata: { item_key: row.key }, created_by: req.user!.id };
-    const claimId = await prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`attention-contact:${row.key}`}, 0))`;
-      const recent = await tx.timelineEvent.findFirst({
-        where: {
-          organization_id: orgId, entity_type: 'INVOICE', entity_id: invoice.id, event_type: TIMELINE_ASKED_AGAIN,
-          metadata: { path: ['item_key'], equals: row.key }, created_at: { gte: new Date(Date.now() - CONTACT_THROTTLE_MS) },
-        },
-        select: { id: true },
-      });
-      if (recent) return null;
-      const created = await tx.timelineEvent.create({ data: throttleRow, select: { id: true } });
-      return created.id;
-    });
+    // The throttle check and the history row are one short step under a lock on the item (lib/payment-attention-contact, shared
+    // with the automatic emails): two quick clicks claim the item once, and only the winner sends. The email goes out AFTER the
+    // claim's transaction has ended. A send that did not go out gives the claim back, so only a real send stays throttled.
+    const claimId = await claimContact({ organizationId: orgId, invoiceId: invoice.id, itemKey: row.key, createdBy: req.user!.id });
     let sent: boolean | { status: string; reason?: string } = false;
     if (claimId !== null) {
-      const giveClaimBack = async () => {
-        try {
-          await prisma.timelineEvent.deleteMany({ where: { id: claimId, organization_id: orgId } });
-        } catch (releaseError) {
-          logger.error(`payments-page attention contact: could not release the throttle row after an unsent email (invoice ${invoice.id})`, releaseError);
-        }
-      };
+      const giveClaimBack = () => releaseContactClaim(orgId, claimId, invoice.id);
       let outcome: Awaited<ReturnType<typeof sendBankPaymentFailedEmail>>;
       try {
         // The same email the customer gets when their own bank payment fails; suppression and the sending switch behave as there.

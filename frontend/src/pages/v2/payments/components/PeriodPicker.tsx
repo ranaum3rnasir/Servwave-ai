@@ -1,6 +1,6 @@
 import { useRef, useState } from 'react';
 
-import { useScheduleTimezone } from '@/lib/schedule-tz';
+import { orgToday, useScheduleTimezone } from '@/lib/schedule-tz';
 
 import { DateField } from '@/ui-kit/components/form/dateField';
 import { SelectField } from '@/ui-kit/components/form/selectField';
@@ -40,7 +40,7 @@ export function PeriodPicker({ period, onChange }: { period: Period; onChange: (
 
   const options = [
     ...PRESETS.map((p) => ({ value: p.key as string, label: p.label })),
-    ...(period.key === 'custom' ? [{ value: 'custom', label: periodLabel(period) }] : []),
+    ...(period.key === 'custom' ? [{ value: 'custom', label: periodLabel(period, orgToday(tz).slice(0, 4)) }] : []),
     { value: PICK, label: 'Custom range' },
   ];
 

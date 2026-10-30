@@ -46,6 +46,8 @@ function MarkLostDialog({ open, onOpenChange, leadId }: ReasonDialogProps) {
       onOpenChange(false);
       setReason('');
     },
+    // A refusal usually means the page's copy of the lead is stale (it closed elsewhere): re-read it (#2756).
+    onError: () => queryClient.invalidateQueries({ queryKey: ['lead', leadId] }),
   });
 
   return (
@@ -114,6 +116,8 @@ function ReopenLeadDialog({ open, onOpenChange, leadId }: ReasonDialogProps) {
       onOpenChange(false);
       setReason('');
     },
+    // A refusal usually means the page's copy of the lead is stale (it was reopened elsewhere): re-read it (#2756).
+    onError: () => queryClient.invalidateQueries({ queryKey: ['lead', leadId] }),
   });
 
   return (

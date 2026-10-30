@@ -13,8 +13,11 @@ import { tenantWhere } from '../../lib/tenant';
 import { scopeWhereForReq } from '../../lib/permissions/enforce';
 import { invoiceOpenerFor } from '../../lib/permissions/invoiceAccess';
 import { buildPaginationMeta } from '../../lib/pagination';
+import { resolveSwitches } from '../../lib/permissions/switches/store';
 import { countRows, findRow, pageRows, type Counts, type Filters, type RawRow, type View } from './queries';
 import { toItem, type AttentionItem, type Caps } from './items';
+import { payAgainUrl } from '../payment-reconciler/checkout-effects';
+import { checkoutOpenStatus } from '../../lib/public-pay-state';
 import { ATTENTION_TYPES, type AttentionType } from './rules';
 
 /** Deepest offset a page may start at: beyond it the caller narrows with a search or a type filter. */
@@ -25,11 +28,15 @@ export const TOO_DEEP = 'Narrow with search or a type filter';
 /** Most invoices a free-text search may match (a search that wide is narrowed by a filter). */
 const SEARCH_INVOICE_CAP = 20_000;
 
-export function capsOf(req: Request): Caps {
+export async function capsOf(req: Request): Promise<Caps> {
+  const canCreate = !!req.ability?.can('create', 'Invoice') && !!req.ability?.can('create_standalone', 'Invoice');
   return {
     refund: !!req.ability?.can('refund', 'Invoice'),
     sendLink: !!req.ability?.can('send_payment_link', 'Invoice'),
     payoutAccount: !!req.ability?.can('manage_payout_account', 'Organization'),
+    // Show Invoices page is a display switch with no ability behind it, so it is read from the person's resolved switches.
+    // The new invoice page is behind it; without it the button would end on a no-access page (C-35).
+    createInvoice: canCreate && (await resolveSwitches(req.user!)).show_invoices_page === true,
   };
 }
 
@@ -45,6 +52,16 @@ export async function baseFilters(req: Request): Promise<Filters> {
  */
 export async function searchInvoiceIds(req: Request, text: string): Promise<string[]> {
   const scope = await scopeWhereForReq(req, 'Invoice');
+  const rows = await prisma.invoice.findMany({
+    where: { AND: [scope as Prisma.InvoiceWhereInput, tenantWhere(req), invoiceTextMatch(text)] } as Prisma.InvoiceWhereInput,
+    select: { id: true },
+    take: SEARCH_INVOICE_CAP,
+  });
+  return rows.map((r) => r.id);
+}
+
+/** Invoices whose number contains the text, or whose customer's first, last or company name contains every word of it. */
+export function invoiceTextMatch(text: string): Prisma.InvoiceWhereInput {
   const tokens = text.split(/\s+/).filter(Boolean);
   const nameMatch = {
     AND: tokens.map((t) => ({
@@ -55,18 +72,7 @@ export async function searchInvoiceIds(req: Request, text: string): Promise<stri
       ],
     })),
   };
-  const rows = await prisma.invoice.findMany({
-    where: {
-      AND: [
-        scope as Prisma.InvoiceWhereInput,
-        tenantWhere(req),
-        { OR: [{ invoice_number: { contains: text, mode: 'insensitive' } }, { customer: { is: nameMatch } }] },
-      ],
-    } as Prisma.InvoiceWhereInput,
-    select: { id: true },
-    take: SEARCH_INVOICE_CAP,
-  });
-  return rows.map((r) => r.id);
+  return { OR: [{ invoice_number: { contains: text, mode: 'insensitive' } }, { customer: { is: nameMatch } }] } as Prisma.InvoiceWhereInput;
 }
 
 const sum = (c: Counts, view: View, types: readonly AttentionType[]): number => types.reduce((n, t) => n + c[t][view], 0);
@@ -113,9 +119,26 @@ export async function listAttention(req: Request, query: ListQuery) {
 export async function present(req: Request, rows: RawRow[]): Promise<AttentionItem[]> {
   const ids = [...new Set(rows.map((r) => r.invoice_id).filter((id): id is string => !!id))];
   const openable = await (await invoiceOpenerFor(req))(ids);
-  const caps = capsOf(req);
+  const caps = await capsOf(req);
   const now = new Date();
-  return rows.map((r) => toItem(r, { openable, caps, now }));
+  const payUrls = caps.sendLink ? await payUrlsFor(req, rows, openable) : undefined;
+  return rows.map((r) => toItem(r, { openable, caps, now, payUrls }));
+}
+
+/**
+ * The page a customer pays a failed bank payment's invoice from, as a finished URL, for the failed-payment rows the
+ * caller can open (one batched, company-scoped read). Null when the invoice cannot be paid online right now (paid,
+ * disputed, voided, refunded: the same rule as the automatic email) or has no link. Only for a holder of Send
+ * payment links; the token is never returned on its own.
+ */
+async function payUrlsFor(req: Request, rows: RawRow[], openable: ReadonlySet<string>): Promise<Map<string, string | null>> {
+  const ids = [...new Set(rows.filter((r) => r.type === 'failed_payment' && r.invoice_id && openable.has(r.invoice_id)).map((r) => r.invoice_id as string))];
+  if (ids.length === 0) return new Map();
+  const invoices = await prisma.invoice.findMany({
+    where: { AND: [{ id: { in: ids } }, tenantWhere(req)] } as Prisma.InvoiceWhereInput,
+    select: { id: true, kind: true, status: true, public_token: true, estimate: { select: { id: true, public_token: true } } },
+  });
+  return new Map(invoices.map((inv) => [inv.id, checkoutOpenStatus(inv.status, inv.kind === 'DEPOSIT') ? payAgainUrl(inv) : null]));
 }
 
 /** One item by type and id for the caller's company (open or resolved), or null. */

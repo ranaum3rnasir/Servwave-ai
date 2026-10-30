@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { applyDepositCredit, remainingDepositCredit } from '../lib/deposit-credit';
+import { applyDepositCredit, computeDepositCredit, remainingDepositCredit } from '../lib/deposit-credit';
 
 // Unit tests for the deposit-credit drawdown ledger (entity-redesign §6/§8, Phase 1, seam 4).
 // The lib is invoice-id-agnostic; it operates against a Prisma TransactionClient passed in.
@@ -114,5 +114,36 @@ describe('applyDepositCredit', () => {
 
     expect(applied).toBe(0);
     expect(applicationCreate).not.toHaveBeenCalled();
+  });
+});
+
+// V7-12a pin (no overpaid invoices, BE-14 row 9): the cumulative credit is capped by a shrinking
+// `room` that starts at the invoice total, so two deposits can never over-credit an invoice.
+describe('computeDepositCredit - two deposits cannot over-credit', () => {
+  function twoDeposits(paid: number[]) {
+    let call = 0;
+    const tx = {
+      payment: { aggregate: vi.fn().mockImplementation(() => Promise.resolve({ _sum: { amount: paid[call++] } })) },
+      depositCreditApplication: { aggregate: vi.fn().mockResolvedValue({ _sum: { amount: 0 } }) },
+      refund: { aggregate: vi.fn().mockResolvedValue({ _sum: { amount: 0 } }) },
+    };
+    return tx;
+  }
+
+  it('two $800 deposits on a $1,000 invoice credit $1,000 in total, not $1,600', async () => {
+    const credit = await computeDepositCredit(twoDeposits([800, 800]) as any, [{ id: 'dep-a' }, { id: 'dep-b' }], 1000);
+    expect(credit).toBe(1000);
+  });
+
+  it('once the invoice is covered, later deposits are not even read', async () => {
+    const tx = twoDeposits([1000, 500]);
+    const credit = await computeDepositCredit(tx as any, [{ id: 'dep-a' }, { id: 'dep-b' }], 1000);
+    expect(credit).toBe(1000);
+    expect(tx.payment.aggregate).toHaveBeenCalledTimes(1);
+  });
+
+  it('deposits smaller than the invoice add up exactly', async () => {
+    const credit = await computeDepositCredit(twoDeposits([300, 200]) as any, [{ id: 'dep-a' }, { id: 'dep-b' }], 1000);
+    expect(credit).toBe(500);
   });
 });

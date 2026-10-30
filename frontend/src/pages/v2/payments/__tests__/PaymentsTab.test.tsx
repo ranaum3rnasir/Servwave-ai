@@ -270,7 +270,7 @@ describe('table', () => {
     const link = await screen.findByRole('link', { name: 'INV-1001' });
     expect(link).toHaveAttribute('href', '/invoices/inv-1');
     await u.click(link);
-    expect(urlSearch()).not.toContain('payment=');
+    expect(urlSearch()).not.toContain('d=');
   });
 
   it('a Restricted row shows a lock and the word, has no link and does not open', async () => {
@@ -284,7 +284,7 @@ describe('table', () => {
     expect(within(row).queryByRole('link')).toBeNull();
     expect(row).not.toHaveAttribute('tabindex');
     await u.click(row);
-    expect(urlSearch()).not.toContain('payment=');
+    expect(urlSearch()).not.toContain('d=');
   });
 
   it('rows are tab stops and Enter opens the drawer', async () => {
@@ -294,7 +294,7 @@ describe('table', () => {
     expect(row).toHaveAttribute('tabindex', '0');
     row.focus();
     fireEvent.keyDown(row, { key: 'Enter' });
-    await waitFor(() => expect(urlSearch()).toContain('payment=00000000-0000-4000-8000-000000000001'));
+    await waitFor(() => expect(new URLSearchParams(urlSearch()).get('d')).toBe('payment:00000000-0000-4000-8000-000000000001'));
   });
 
   it('shows skeleton rows while loading', async () => {

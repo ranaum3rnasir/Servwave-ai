@@ -28,7 +28,7 @@ export function UpdateBankAccountDialog({ open, onOpenChange }: { open: boolean;
             className="max-sm:min-h-11"
             onClick={() => {
               onOpenChange(false);
-              navigate('/settings/payout-account');
+              navigate('/settings/servwave-payments#payout-account');
             }}
           >
             Open payout account

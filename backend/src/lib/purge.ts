@@ -497,6 +497,10 @@ export async function purgeOrganization(tx: Tx, orgId: string, nameGuard: string
   await tx.lostReasonOption.deleteMany({ where: { organization_id: orgId } });
   // The per-org job cancel-reasons list (Roles & Permissions, S06.14): same ON DELETE RESTRICT org FK, same hazard.
   await tx.jobCancelReasonOption.deleteMany({ where: { organization_id: orgId } });
+  // The Lists-page job types and lead/customer sources (V7-03): same ON DELETE RESTRICT org FK, same hazard. Records hold
+  // the name as text, so nothing points at these rows.
+  await tx.jobType.deleteMany({ where: { organization_id: orgId } });
+  await tx.leadSource.deleteMany({ where: { organization_id: orgId } });
   // The checks on an office review's items (Roles & Permissions, S06.10). The org FK cascades, so the final Organization
   // delete would take them anyway; deleted explicitly so the purge's own record of what it removes stays complete. The
   // rows hang off job_reviews, which the job delete cascades - order-free.

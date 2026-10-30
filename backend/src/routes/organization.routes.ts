@@ -71,6 +71,7 @@ router.get('/stripe/statement-descriptor', authenticate, attachAbility, canDo('m
 // does Company settings. The company read every signed-in person holds is deliberately not an arm: the payments status
 // is not company-name-level data.
 router.get('/stripe/status', authenticate, attachAbility, canDoAny([['view_payments', 'Organization'], ['manage_payout_account', 'Organization'], ['update', 'Organization']]), orgStripeController.getStripeStatus);
-router.post('/stripe/refresh-status', authenticate, attachAbility, canDo('update', 'Organization'), orgStripeController.refreshStripeStatus);
+// Same two doors as the status read it answers with: finishing the embedded form (Manage payout account) calls this.
+router.post('/stripe/refresh-status', authenticate, attachAbility, canDoAny([['update', 'Organization'], ['manage_payout_account', 'Organization']]), orgStripeController.refreshStripeStatus);
 
 export default router;

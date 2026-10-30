@@ -123,7 +123,7 @@ describe('decide: charge.dispute.closed', () => {
     expect(decide(disputeEvent('charge.dispute.closed', { status: 'won' }), snapshot({ dispute: open, invoice: disputed() }))).toEqual([
       { type: 'close_dispute', processorDisputeId: 'dp_1', status: 'WON', reason: 'fraudulent', amountCents: 50000, evidenceDueBy: new Date(DUE_BY * 1000) },
       { type: 'restore_invoice_status', invoiceId: INVOICE, to: 'PAID', processorDisputeId: 'dp_1', outcome: 'WON' },
-      { type: 'notify_dispute', kind: 'closed', outcome: 'WON', processorDisputeId: 'dp_1', invoiceId: INVOICE, bankReturn: false, amountCents: 50000, reason: 'fraudulent', evidenceDueBy: new Date(DUE_BY * 1000) },
+      { type: 'notify_dispute', kind: 'closed', cleared: true, outcome: 'WON', processorDisputeId: 'dp_1', invoiceId: INVOICE, bankReturn: false, amountCents: 50000, reason: 'fraudulent', evidenceDueBy: new Date(DUE_BY * 1000) },
     ]);
   });
 
@@ -156,7 +156,7 @@ describe('decide: charge.dispute.closed', () => {
     expect(decide(disputeEvent('charge.dispute.closed', { status: 'lost' }), snapshot({ dispute: open, invoice: disputed() }))).toEqual([
       { type: 'close_dispute', processorDisputeId: 'dp_1', status: 'LOST', reason: 'fraudulent', amountCents: 50000, evidenceDueBy: new Date(DUE_BY * 1000) },
       { type: 'void_disputed_payment', paymentId: PAYMENT, invoiceId: INVOICE, processorDisputeId: 'dp_1', bankReturn: false, stayDisputed: false },
-      { type: 'notify_dispute', kind: 'closed', outcome: 'LOST', processorDisputeId: 'dp_1', invoiceId: INVOICE, bankReturn: false, amountCents: 50000, reason: 'fraudulent', evidenceDueBy: new Date(DUE_BY * 1000) },
+      { type: 'notify_dispute', kind: 'closed', cleared: true, outcome: 'LOST', processorDisputeId: 'dp_1', invoiceId: INVOICE, bankReturn: false, amountCents: 50000, reason: 'fraudulent', evidenceDueBy: new Date(DUE_BY * 1000) },
     ]);
   });
 
@@ -175,7 +175,7 @@ describe('decide: charge.dispute.closed', () => {
         type: 'flag_partial_chargeback', invoiceId: INVOICE, paymentId: PAYMENT, processorDisputeId: 'dp_1',
         disputedCents: 4000, unrefundedCents: 10000, bankReturn: false,
       },
-      { type: 'notify_dispute', kind: 'closed', outcome: 'LOST', processorDisputeId: 'dp_1', invoiceId: INVOICE, bankReturn: false, amountCents: 4000, reason: 'fraudulent', evidenceDueBy: new Date(DUE_BY * 1000), partial: true },
+      { type: 'notify_dispute', kind: 'closed', cleared: true, outcome: 'LOST', processorDisputeId: 'dp_1', invoiceId: INVOICE, bankReturn: false, amountCents: 4000, reason: 'fraudulent', evidenceDueBy: new Date(DUE_BY * 1000), partial: true },
     ]);
   });
 
@@ -293,6 +293,15 @@ describe('decide: late bank returns', () => {
     expect(actions.find((a) => a.type === 'fail_disputed_payment')).toEqual({
       type: 'fail_disputed_payment', paymentId: PAYMENT, invoiceId: INVOICE, processorDisputeId: 'dp_1', amountCents: 50000, bankReturn: true,
     });
+  });
+
+  // V7-13 part 2 (BE-13e): the closed notice says whether the debit had cleared, from the payment's state at the time.
+  it('the closed notice carries cleared: true for a SUCCEEDED payment and false for one still clearing', () => {
+    const lost = disputeEvent('charge.dispute.created', { status: 'lost', reason: 'insufficient_funds' });
+    const sent = { ...snapshot().invoice!, status: 'SENT' as const, amountDueCents: 50000, paidCents: 0, anyMoneyLanded: false };
+    const closedNotice = (actions: ReturnType<typeof decide>) => actions.filter((a) => a.type === 'notify_dispute').at(-1);
+    expect(closedNotice(decide(lost, snapshot({ payment: { ...bankPayment, state: 'PROCESSING' as const }, invoice: sent })))).toMatchObject({ kind: 'closed', cleared: false });
+    expect(closedNotice(decide(lost, snapshot({ payment: bankPayment })))).toMatchObject({ kind: 'closed', cleared: true });
   });
 
   it('a dispute on a payment still clearing never marks the invoice DISPUTED: no money of it was counted', () => {

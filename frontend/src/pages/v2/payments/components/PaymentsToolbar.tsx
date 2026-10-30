@@ -5,11 +5,11 @@ import type { FacetOption, FilterState } from '@/lib/filters/types';
 import { Badge } from '@/ui-kit/components/ui/badge';
 import { Button } from '@/ui-kit/components/ui/button';
 import { SearchInput } from '@/ui-kit/components/form/searchInput';
-import { SelectField } from '@/ui-kit/components/form/selectField';
 
 import type { AttentionView } from '@/lib/api/paymentsPage';
 
 import { FilterPopover } from '../../_shared/filterPopover';
+import { Segment, SegmentedGroup } from '../../_shared/segmented';
 import { PHONE_TAP_AREA } from '../phoneTap';
 
 /** The quick chips, in order. The value is the API's `chip` param; All sends none. */
@@ -28,30 +28,22 @@ const NO_OPTIONS = (): FacetOption[] => [];
 /** The Amount facet's slider ceiling: well above a realistic single payment. */
 const resolveMax = () => 100000;
 
-/** What the Needs attention view adds to the toolbar: the Open/Resolved switch, the type, and the counts. */
+/** What the Needs attention view adds to the toolbar: the Open/Resolved switch and its counts. */
 export interface AttentionToolbar {
   view: AttentionView;
   onView: (view: AttentionView) => void;
   openCount: number;
   resolvedCount: number;
-  /** One of ATTENTION_TYPE_OPTIONS' values; 'all' for none. */
-  type: string;
-  onType: (type: string) => void;
 }
 
-/** The type select's choices. "Unmatched money" is two item types to the server. */
-export const ATTENTION_TYPE_OPTIONS = [
-  { value: 'all', label: 'All types' },
-  { value: 'failed_payment', label: 'Failed payments' },
-  { value: 'failed_refund', label: 'Failed refunds' },
-  { value: 'dispute', label: 'Disputes' },
-  { value: 'failed_payout', label: 'Failed payouts' },
-  { value: 'unmatched', label: 'Unmatched money' },
-];
+/** The chip row scrolls sideways on purpose (V7 C-24); the gate's exemption list names it. */
+const CHIP_ROW = {
+  'data-mobile-scroll-x': 'payments-quick-filters',
+} as const;
 
 /**
- * The Payments tab's controls, one block: the quick chips, then the search box filling the row, the app's own Filter
- * popover and Export.
+ * The Payments tab's controls, one block: the quick chips (one row that scrolls sideways), then the search box filling
+ * the row, the app's own Filter popover and Export; on the Needs attention chip, the Open/Resolved switch instead.
  */
 export function PaymentsToolbar({
   chip, onChip, disputedCount, attentionCount, attention, searchValue, onSearchValue, onSearchSettled, filters, onFilters, onExport, exporting,
@@ -73,12 +65,18 @@ export function PaymentsToolbar({
 }) {
   return (
     <div className="flex flex-col gap-3">
-      <div role="group" aria-label="Quick filters" className="flex flex-wrap gap-2">
+      <div
+        role="group"
+        aria-label="Quick filters"
+        {...CHIP_ROW}
+        className="-m-0.5 flex min-w-0 flex-nowrap gap-2 overflow-x-auto overscroll-x-contain p-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      >
         {PAYMENT_CHIPS.map((c) => (
           <Button
             key={c.value}
             type="button"
             size="sm"
+            className="h-9 shrink-0 rounded-full px-3.5 max-sm:h-11"
             variant={chip === c.value ? 'default' : 'outline'}
             aria-pressed={chip === c.value}
             onClick={() => onChip(c.value)}
@@ -100,7 +98,7 @@ export function PaymentsToolbar({
         ))}
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <div data-slot="payments-search" className="min-w-[min(16rem,100%)] flex-1">
+        <div data-slot="payments-search" className="min-w-0 flex-1 basis-64 max-sm:basis-0">
           <SearchInput
             value={searchValue}
             onValueChange={onSearchValue}
@@ -110,31 +108,18 @@ export function PaymentsToolbar({
           />
         </div>
         {attention ? (
-          <>
-            <div className="w-44 max-sm:w-full">
-              <SelectField
-                aria-label="Type"
-                value={attention.type}
-                onValueChange={attention.onType}
-                options={ATTENTION_TYPE_OPTIONS}
-                className="max-sm:min-h-11"
-              />
-            </div>
-            <div role="group" aria-label="Item status" className="flex gap-2">
-              <Button
-                type="button" size="sm" className="max-sm:min-h-11" aria-pressed={attention.view === 'open'}
-                variant={attention.view === 'open' ? 'default' : 'outline'} onClick={() => attention.onView('open')}
-              >
-                Open ({attention.openCount})
-              </Button>
-              <Button
-                type="button" size="sm" className="max-sm:min-h-11" aria-pressed={attention.view === 'resolved'}
-                variant={attention.view === 'resolved' ? 'default' : 'outline'} onClick={() => attention.onView('resolved')}
-              >
-                Resolved ({attention.resolvedCount})
-              </Button>
-            </div>
-          </>
+          <SegmentedGroup aria-label="Item status" className="max-sm:basis-full">
+            <Segment
+              active={attention.view === 'open'} className="h-8 max-sm:h-11 max-sm:flex-1" onClick={() => attention.onView('open')}
+            >
+              Open ({attention.openCount})
+            </Segment>
+            <Segment
+              active={attention.view === 'resolved'} className="h-8 max-sm:h-11 max-sm:flex-1" onClick={() => attention.onView('resolved')}
+            >
+              Resolved ({attention.resolvedCount})
+            </Segment>
+          </SegmentedGroup>
         ) : (
           <>
             <FilterPopover
@@ -144,8 +129,11 @@ export function PaymentsToolbar({
               resolveOptions={NO_OPTIONS}
               resolveMax={resolveMax}
               sheetClassName={PHONE_TAP_AREA}
+              triggerClassName="h-10 max-sm:h-11"
             />
-            <Button type="button" variant="outline" size="sm" onClick={onExport} disabled={exporting}>
+            <Button
+              type="button" variant="outline" size="sm" className="h-10 max-sm:h-11 max-sm:basis-full" onClick={onExport} disabled={exporting}
+            >
               <Download />
               Export
             </Button>

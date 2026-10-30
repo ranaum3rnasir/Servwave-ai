@@ -109,9 +109,10 @@ test.describe('Day 8 — End of Day Edge Cases', () => {
     const lead = await api.getLead(ctx.leadId);
     expect(lead.status).toBe('WON');
 
-    // Attempt to mark a WON lead as LOST — expect 400
-    const { res: lostRes } = await api.markLeadLost(ctx.leadId, 'test reason');
-    expect(lostRes.status()).toBe(400);
+    // Attempt to mark a WON lead as LOST — expect 409: a closed lead moves only through Reopen lead (S05.19)
+    const { res: lostRes, body: lostBody } = await api.markLeadLost(ctx.leadId, 'test reason');
+    expect(lostRes.status()).toBe(409);
+    expect(lostBody.error).toBe('To change the status, reopen the lead first.');
   });
 
   test('end-of-day stats reflect operations', async () => {

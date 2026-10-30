@@ -263,6 +263,26 @@ describe('LeadCommunicationsTab', () => {
     );
   });
 
+  // SPEC-6 §6.4 - a text that goes out releases the lead on the server, which then leaves its Spider
+  // alert out of the unread list; the list is refetched so the card goes at once, with or without
+  // a card having opened the page. Nothing marks the alert read.
+  it('a sent text marks the Spider unread list stale', async () => {
+    const user = userEvent.setup();
+    mockApi.post.mockResolvedValue({ data: { message: { id: 'm1', direction: 'out', status: 'sent' }, delivery: 'sent' } });
+    const { queryClient } = renderTab();
+    await screen.findByText('Outbound call · 1m 01s');
+    const spiderKey = ['spider', 'unread-alerts'];
+    queryClient.setQueryDefaults(spiderKey, { gcTime: Infinity });
+    queryClient.setQueryData(spiderKey, { alerts: [], in_app: true, red_frame: false });
+    expect(queryClient.getQueryState(spiderKey)?.isInvalidated).toBe(false);
+
+    await user.type(screen.getByPlaceholderText(/text doe hvac/i), 'Thanks — booking you in.');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    await waitFor(() => expect(queryClient.getQueryState(spiderKey)?.isInvalidated).toBe(true));
+    expect(mockApi.patch).not.toHaveBeenCalled();
+  });
+
   it('"Call customer" routes into the /phone tab with full lead attribution', async () => {
     const user = userEvent.setup();
     renderTab();
@@ -1535,5 +1555,46 @@ describe('LeadCommunicationsTab — who is offered the correction', () => {
     await user.click(screen.getByText(anonymous.title));
 
     expect(screen.queryByRole('heading', { name: /edit logged communication/i })).not.toBeInTheDocument();
+  });
+});
+
+// SPEC-4 §6.6 (Option A): the composer gained an Email mode. These guard the Text path against it:
+// the tab still opens on Text, the Spider card's draft still lands in the text box, and a text is
+// still sent with the same body. Only a text that went out calls `onSent` (SPEC-6).
+describe('LeadCommunicationsTab — Text stays the default beside the Email mode', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    commAccess.value = true;
+    mockApi.get.mockResolvedValue({ data: { items: ITEMS } });
+  });
+
+  it('opens on Text even when the customer has an email address', async () => {
+    renderTab({ customerEmail: 'john@doe.com' });
+    await screen.findByText('Outbound call · 1m 01s');
+
+    expect(screen.getByRole('button', { name: 'Text' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Email' })).toHaveAttribute('aria-pressed', 'false');
+    expect(screen.getByPlaceholderText(/text doe hvac/i)).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('Subject')).not.toBeInTheDocument();
+  });
+
+  it('puts the Spider draft in the text box and sends it as a lead-stamped text, unchanged', async () => {
+    const user = userEvent.setup();
+    const onSent = vi.fn();
+    mockApi.post.mockResolvedValue({ data: { message: { id: 'm1', direction: 'out', status: 'sent' }, delivery: 'sent' } });
+    renderTab({ customerEmail: 'john@doe.com', initialMessage: 'Hi, following up on your request.', onSent });
+    await screen.findByText('Outbound call · 1m 01s');
+
+    expect(screen.getByPlaceholderText(/text doe hvac/i)).toHaveValue('Hi, following up on your request.');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+
+    await waitFor(() =>
+      expect(mockApi.post).toHaveBeenCalledWith('/api/communication/sms', {
+        customerId: CUSTOMER_ID,
+        body: 'Hi, following up on your request.',
+        leadId: LEAD_ID,
+      })
+    );
+    await waitFor(() => expect(onSent).toHaveBeenCalledTimes(1));
   });
 });

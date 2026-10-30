@@ -1,6 +1,7 @@
 import { Role } from '@prisma/client';
 import { prisma } from './prisma';
 import { orgFeatures, effectivePlan } from './entitlements/resolve';
+import { isSpiderPilotOrg } from '../services/spider/gate';
 
 export interface AppUser {
   id: string;
@@ -20,6 +21,8 @@ export interface AppUser {
   // True when the user's org is flagged is_demo — drives mock-first surfaces
   // (Reports) on the frontend. Flattened from the organization relation.
   org_is_demo: boolean;
+  // Is on the Spider pilot list (SPIDER_PILOT_ORG_IDS, SPEC-5); the Spider gate also needs the feature.
+  org_is_spider_pilot: boolean;
   // Effective plan (trial-aware) + resolved feature keys. Same query, no extra
   // round trip — the precedent org_is_demo set.
   org_plan: string;
@@ -51,7 +54,7 @@ const SELECT = {
   },
 } as const;
 
-type UserRow = Omit<AppUser, 'org_is_demo' | 'org_plan' | 'org_features'> & {
+type UserRow = Omit<AppUser, 'org_is_demo' | 'org_is_spider_pilot' | 'org_plan' | 'org_features'> & {
   organization: {
     is_demo: boolean;
     plan: string;
@@ -73,6 +76,7 @@ function toAppUser(row: UserRow): AppUser {
   return {
     ...rest,
     org_is_demo: organization?.is_demo ?? false,
+    org_is_spider_pilot: organization ? isSpiderPilotOrg(rest.organization_id) : false,
     org_plan: effectivePlan(source),
     org_features: orgFeatures(source),
   };

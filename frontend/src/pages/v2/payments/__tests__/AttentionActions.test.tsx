@@ -4,39 +4,48 @@ import userEvent from '@testing-library/user-event';
 import { useLocation } from 'react-router-dom';
 
 import { renderWithProviders } from '@/__tests__/helpers';
+import { buildAbility } from '@/lib/ability';
 import { toast } from '@/ui-kit/components/ui/sonner';
 
-import { AttentionCard } from '../components/AttentionCard';
-import { attentionCalls, makeItem, serveAttention } from './attentionFixtures';
+import { makeItem, serveAttention, findCard, CardWithDrawer } from './attentionFixtures';
 import { makeDetail, makeRow, manyRows, mockApi } from './paymentsFixtures';
 
 vi.mock('@/ui-kit/components/ui/sonner', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/ui-kit/components/ui/sonner')>()),
   toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }),
 }));
+vi.mock('@/lib/api/mySwitches', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/api/mySwitches')>()),
+  useMySwitches: () => ({ admin_box: false, values: { view_customers: true, contact_customers: true, show_text: true, show_email: true } }),
+}));
+vi.mock('@/lib/entitlements', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/entitlements')>()),
+  useFeature: () => true,
+}));
+const INBOX = buildAbility([{ action: 'access_inbox', subject: 'Communication' }]);
 const mockToast = vi.mocked(toast);
 const mockPost = vi.mocked(mockApi.post);
 
 function Where() {
-  const { pathname, search } = useLocation();
-  return <div data-testid="where">{pathname}{search}</div>;
+  const { pathname, search, hash } = useLocation();
+  return <div data-testid="where">{pathname}{search}{hash}</div>;
 }
 const where = () => screen.getByTestId('where').textContent ?? '';
 const user = () => userEvent.setup();
 const ROW1 = makeRow(1);
 
-async function openWith(item: ReturnType<typeof makeItem>, buttonName: string, entry = '/payments?payment=' + ROW1.id) {
+async function openWith(item: ReturnType<typeof makeItem>, buttonName: string, entry = '/payments') {
   serveAttention({ open: [item], rows: manyRows(3) });
   const u = user();
-  renderWithProviders(<><AttentionCard /><Where /></>, { initialEntries: [entry] });
-  const row = within(await screen.findByRole('region', { name: /Needs attention/ })).getByRole('listitem');
+  renderWithProviders(<><CardWithDrawer /><Where /></>, { initialEntries: [entry] });
+  const row = within(await findCard()).getByRole('listitem');
   await u.click(within(row).getByRole('button', { name: buttonName }));
   const dialog = await screen.findByRole('dialog');
   return { u, dialog };
 }
 
 const failedPayment = () => makeItem(1, 'failed_payment', { actions: ['contact_customer', 'mark_resolved'] });
-const failedRefund = () => makeItem(1, 'failed_refund', { actions: ['refund_again', 'mark_settled'] });
+const failedRefund = () => makeItem(1, 'failed_refund', { actions: ['refund_again', 'mark_resolved'] });
 const unmatched = () => makeItem(5, 'unmatched_payment', { actions: ['refund', 'mark_resolved'], amount: 75 });
 const keyOf = (item: { key: string }) => item.key;
 
@@ -47,124 +56,151 @@ beforeEach(() => {
   mockToast.error.mockReset();
 });
 
-describe('Contact customer', () => {
-  it('asks in the spec\'s words and posts to the contact route', async () => {
-    const item = failedPayment();
-    mockPost.mockResolvedValue({ data: { sent: true } });
-    const { u, dialog } = await openWith(item, 'Contact customer');
-    expect(within(dialog).getByText('Email Customer 1 about the failed $101.00 payment on invoice INV-1001, with a link to pay again?')).toBeInTheDocument();
-    const before = attentionCalls().length;
-    await u.click(within(dialog).getByRole('button', { name: 'Send email' }));
-    await waitFor(() => expect(mockPost).toHaveBeenCalledTimes(1));
-    expect(mockPost.mock.calls[0]![0]).toBe(`/api/payments-page/attention/${keyOf(item)}/contact-customer`);
-    await waitFor(() => expect(mockToast.success).toHaveBeenCalled());
-    // The attention list is asked for again, the drawer closes, the dialog closes.
-    await waitFor(() => expect(attentionCalls().length).toBeGreaterThan(before));
-    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
-    expect(where()).not.toContain('payment=');
-  });
+describe('Contact customer (V7-07a: a dialog that sends nothing)', () => {
+  const BLOCK = {
+    restricted: false as const, id: 'cust-1', customer_number: 'C-1001', name: 'Dana Reyes', company: null, address: null,
+    phone: '5551234567', email: 'dana@example.com', job: null, lead: null, invoice: { id: 'inv-1', number: 'INV-1001' },
+  };
+  const COMPOSE = { subject: 'Bank payment failed - Invoice INV-1001', body: 'Hi Dana, your bank payment failed.' };
+  const serveBlock = (block: unknown) => {
+    const base = mockApi.get.getMockImplementation()!;
+    mockApi.get.mockImplementation(((url: string, config?: unknown) => {
+      if (url === `/api/payments-page/payments/${ROW1.id}`) return Promise.resolve({ data: makeDetail(ROW1, { customer_block: block as never }) });
+      return (base as (...a: unknown[]) => unknown)(url, config);
+    }) as never);
+  };
+  const openContact = async (over: Partial<ReturnType<typeof failedPayment>> = {}, block: unknown = BLOCK) => {
+    const item = { ...failedPayment(), payment_id: ROW1.id, compose: COMPOSE, ...over };
+    serveAttention({ open: [item], rows: manyRows(3) });
+    serveBlock(block);
+    const u = user();
+    renderWithProviders(<><CardWithDrawer /><Where /></>, { initialEntries: ['/payments'], ability: INBOX });
+    const row = within(await findCard()).getByRole('listitem');
+    await u.click(within(row).getByRole('button', { name: 'Contact customer' }));
+    return { u, dialog: await screen.findByRole('dialog', { name: 'Contact customer' }) };
+  };
 
-  it('shows a 409 inline and keeps the dialog open', async () => {
-    mockPost.mockRejectedValue({ response: { status: 409, data: { error: 'Already sent a moment ago.' } } });
-    const { u, dialog } = await openWith(failedPayment(), 'Contact customer');
-    await u.click(within(dialog).getByRole('button', { name: 'Send email' }));
-    expect(await within(dialog).findByText('Already sent a moment ago.')).toBeInTheDocument();
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  it('shows the customer with Call and Text by the phone, Email by the address, and Close; no confirm, nothing posted, no toast', async () => {
+    const { dialog } = await openContact();
+    expect(await within(dialog).findByText('Dana Reyes')).toBeInTheDocument();
+    expect(within(dialog).getByText('(555) 123-4567')).toBeInTheDocument();
+    expect(within(dialog).getByText('dana@example.com')).toBeInTheDocument();
+    expect(within(dialog).getByRole('link', { name: /^Email/ })).toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: /Send email/ })).not.toBeInTheDocument();
+    expect(within(dialog).getAllByRole('button', { name: 'Close' }).length).toBeGreaterThan(0);
+    expect(mockPost).not.toHaveBeenCalled();
     expect(mockToast.success).not.toHaveBeenCalled();
   });
 
-  it('a double click sends once', async () => {
-    mockPost.mockImplementation(() => new Promise(() => {}));
-    const { u, dialog } = await openWith(failedPayment(), 'Contact customer');
-    const send = within(dialog).getByRole('button', { name: 'Send email' });
-    await u.dblClick(send);
-    expect(mockPost).toHaveBeenCalledTimes(1);
-    expect(send).toBeDisabled();
-  });
-});
-
-describe('Mark resolved and Mark settled', () => {
-  it('sends the note to the resolve route', async () => {
-    const item = failedPayment();
-    mockPost.mockResolvedValue({ data: {} });
-    const { u, dialog } = await openWith(item, 'Mark resolved');
-    await u.type(within(dialog).getByLabelText('Note (optional)'), 'Paid by check');
-    await u.click(within(dialog).getByRole('button', { name: 'Mark resolved' }));
-    await waitFor(() => expect(mockPost).toHaveBeenCalledTimes(1));
-    expect(mockPost.mock.calls[0]![0]).toBe(`/api/payments-page/attention/${keyOf(item)}/resolve`);
-    expect(mockPost.mock.calls[0]![1]).toEqual({ note: 'Paid by check' });
-    await waitFor(() => expect(mockToast.success).toHaveBeenCalled());
+  it('Email opens the compose window with the server\'s subject and body', async () => {
+    const { dialog } = await openContact();
+    const href = new URL((await within(dialog).findByRole('link', { name: /^Email/ })).getAttribute('href')!, 'http://h');
+    expect(href.searchParams.get('subject')).toBe(COMPOSE.subject);
+    expect(href.searchParams.get('body')).toBe(COMPOSE.body);
+    expect(href.searchParams.get('to')).toBe('dana@example.com');
+    expect(href.searchParams.get('invoiceId')).toBe('inv-1');
   });
 
-  it('sends no note when none was written', async () => {
-    mockPost.mockResolvedValue({ data: {} });
-    const { u, dialog } = await openWith(failedPayment(), 'Mark resolved');
-    await u.click(within(dialog).getByRole('button', { name: 'Mark resolved' }));
-    await waitFor(() => expect(mockPost).toHaveBeenCalled());
-    expect(mockPost.mock.calls[0]![1]).toEqual({});
+  it('a customer with no phone or email reads the two "No ... on file" lines with dimmed buttons', async () => {
+    const { dialog } = await openContact({}, { ...BLOCK, phone: null, email: null });
+    expect(await within(dialog).findByText('No phone on file')).toBeInTheDocument();
+    expect(within(dialog).getByText('No email on file')).toBeInTheDocument();
+    for (const name of ['Call', 'Text', 'Email']) expect(within(dialog).getByRole('button', { name })).toHaveAttribute('aria-disabled', 'true');
   });
 
-  it('focuses the note first and counts from 400 characters', async () => {
-    const { u, dialog } = await openWith(failedPayment(), 'Mark resolved');
-    const note = within(dialog).getByLabelText('Note (optional)');
-    expect(note).toHaveFocus();
-    expect(within(dialog).queryByText(/\/500/)).not.toBeInTheDocument();
-    await u.click(note);
-    await u.paste('x'.repeat(401));
-    expect(within(dialog).getByText('401/500')).toBeInTheDocument();
-  });
-
-  it('turns the counter danger-toned once the note is over 500', async () => {
-    const { u, dialog } = await openWith(failedPayment(), 'Mark resolved');
-    const note = within(dialog).getByLabelText('Note (optional)');
-    await u.click(note);
-    await u.paste('x'.repeat(450));
-    expect(within(dialog).getByText('450/500').className).not.toMatch(/text-danger/);
-    await u.paste('x'.repeat(51));
-    expect(within(dialog).getByText('501/500').className).toMatch(/text-danger/);
-  });
-
-  it('turns the field itself invalid as soon as the note is over 500, and back when it is not', async () => {
-    const { u, dialog } = await openWith(failedPayment(), 'Mark resolved');
-    const note = within(dialog).getByLabelText('Note (optional)');
-    await u.click(note);
-    await u.paste('x'.repeat(500));
-    expect(note).not.toHaveAttribute('aria-invalid');
-    await u.paste('x');
-    expect(note).toHaveAttribute('aria-invalid', 'true');
-    await u.type(note, '{Backspace}');
-    expect(note).not.toHaveAttribute('aria-invalid');
-  });
-
-  it('refuses a note over 500 characters next to the field and sends nothing', async () => {
-    const { u, dialog } = await openWith(failedPayment(), 'Mark resolved');
-    const note = within(dialog).getByLabelText('Note (optional)');
-    await u.click(note);
-    await u.paste('x'.repeat(501));
-    await u.click(within(dialog).getByRole('button', { name: 'Mark resolved' }));
-    expect(await within(dialog).findByText('Keep the note to 500 characters or fewer.')).toBeInTheDocument();
-    expect(note).toHaveFocus();
-    expect(note).toHaveAttribute('aria-invalid', 'true');
+  it('Close closes it without sending, and it can be opened again', async () => {
+    const { u, dialog } = await openContact();
+    await within(dialog).findByText('Dana Reyes');
+    await u.click(within(dialog).getAllByRole('button', { name: 'Close' }).at(-1)!);
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await u.click(within(within(await findCard()).getByRole('listitem')).getByRole('button', { name: 'Contact customer' }));
+    expect(await screen.findByRole('dialog', { name: 'Contact customer' })).toBeInTheDocument();
     expect(mockPost).not.toHaveBeenCalled();
   });
 
-  it('Mark settled words the refund and posts to the same resolve route', async () => {
-    const item = failedRefund();
-    mockPost.mockResolvedValue({ data: {} });
-    const { u, dialog } = await openWith(item, 'Mark settled');
-    expect(within(dialog).getByText('Mark the $101.00 refund to Customer 1 on invoice INV-1001 as settled? Use this when you returned the money another way.')).toBeInTheDocument();
-    await u.click(within(dialog).getByRole('button', { name: 'Mark settled' }));
-    await waitFor(() => expect(mockPost).toHaveBeenCalledTimes(1));
-    expect(mockPost.mock.calls[0]![0]).toBe(`/api/payments-page/attention/${keyOf(item)}/resolve`);
+  it('a payment that cannot be loaded shows an error with Retry', async () => {
+    const item = { ...failedPayment(), payment_id: ROW1.id };
+    serveAttention({ open: [item], rows: manyRows(3) });
+    const base = mockApi.get.getMockImplementation()!;
+    mockApi.get.mockImplementation(((url: string, config?: unknown) =>
+      url === `/api/payments-page/payments/${ROW1.id}` ? Promise.reject(new Error('boom')) : (base as (...a: unknown[]) => unknown)(url, config)) as never);
+    const u = user();
+    renderWithProviders(<><CardWithDrawer /><Where /></>, { initialEntries: ['/payments'] });
+    await u.click(within(within(await findCard()).getByRole('listitem')).getByRole('button', { name: 'Contact customer' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Contact customer' });
+    expect(await within(dialog).findByText('Couldn’t load the customer.')).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Retry' })).toBeInTheDocument();
+  });
+});
+
+describe('Mark resolved', () => {
+  const reasonOptions = async (u: ReturnType<typeof user>, dialog: HTMLElement) => {
+    await u.click(within(dialog).getByRole('combobox', { name: 'Reason' }));
+    const texts = (await screen.findAllByRole('option')).map((o) => o.textContent);
+    await u.keyboard('{Escape}');
+    return texts;
+  };
+
+  it('is titled "Mark as resolved", says no money moves, and has one Reason field and no note', async () => {
+    const { dialog } = await openWith(failedPayment(), 'Mark resolved');
+    expect(within(dialog).getByRole('heading', { name: 'Mark as resolved' })).toBeInTheDocument();
+    expect(within(dialog).getByText('Close this item without moving any money. It moves to Resolved items.')).toBeInTheDocument();
+    expect(within(dialog).getByRole('combobox', { name: 'Reason' })).toHaveTextContent('Handled outside ServWave');
+    expect(within(dialog).queryByRole('textbox')).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+    expect(dialog.textContent ?? '').not.toMatch(/settle/i);
   });
 
-  it('unmatched money is resolved through the existing route', async () => {
+  it('offers the three reasons for a failed payment and sends the first one chosen on open', async () => {
+    const item = failedPayment();
+    mockPost.mockResolvedValue({ data: {} });
+    const { u, dialog } = await openWith(item, 'Mark resolved');
+    expect(await reasonOptions(u, dialog)).toEqual(['Handled outside ServWave', 'Duplicate entry', 'Not our payment']);
+    await u.click(within(dialog).getByRole('button', { name: 'Mark resolved' }));
+    await waitFor(() => expect(mockPost).toHaveBeenCalledTimes(1));
+    expect(mockPost.mock.calls[0]![0]).toBe(`/api/payments-page/attention/${keyOf(item)}/resolve`);
+    expect(mockPost.mock.calls[0]![1]).toEqual({ reason: 'Handled outside ServWave' });
+    await waitFor(() => expect(mockToast.success).toHaveBeenCalledWith('Marked as resolved'));
+  });
+
+  it('sends the reason the person picked', async () => {
+    mockPost.mockResolvedValue({ data: {} });
+    const { u, dialog } = await openWith(failedPayment(), 'Mark resolved');
+    await u.click(within(dialog).getByRole('combobox', { name: 'Reason' }));
+    await u.click(await screen.findByRole('option', { name: 'Duplicate entry' }));
+    await u.click(within(dialog).getByRole('button', { name: 'Mark resolved' }));
+    await waitFor(() => expect(mockPost).toHaveBeenCalled());
+    expect(mockPost.mock.calls[0]![1]).toEqual({ reason: 'Duplicate entry' });
+  });
+
+  it('a failed refund offers its own two reasons, first "Returned the money another way"', async () => {
+    const item = failedRefund();
+    mockPost.mockResolvedValue({ data: {} });
+    const { u, dialog } = await openWith(item, 'Mark resolved');
+    expect(await reasonOptions(u, dialog)).toEqual(['Returned the money another way', 'Handled outside ServWave']);
+    await u.click(within(dialog).getByRole('button', { name: 'Mark resolved' }));
+    await waitFor(() => expect(mockPost).toHaveBeenCalledTimes(1));
+    expect(mockPost.mock.calls[0]![0]).toBe(`/api/payments-page/attention/${keyOf(item)}/resolve`);
+    expect(mockPost.mock.calls[0]![1]).toEqual({ reason: 'Returned the money another way' });
+  });
+
+  it('unmatched money sends the reason to its own door', async () => {
     const item = unmatched();
     mockPost.mockResolvedValue({ data: { item: {} } });
     const { u, dialog } = await openWith(item, 'Mark resolved');
+    expect(await reasonOptions(u, dialog)).toEqual(['Handled outside ServWave', 'Duplicate entry', 'Not our payment']);
     await u.click(within(dialog).getByRole('button', { name: 'Mark resolved' }));
     await waitFor(() => expect(mockPost).toHaveBeenCalledTimes(1));
     expect(mockPost.mock.calls[0]![0]).toBe(`/api/payments-needing-attention/${item.key.split(':')[1]}/resolve`);
+    expect(mockPost.mock.calls[0]![1]).toEqual({ reason: 'Handled outside ServWave' });
+  });
+
+  it('moves focus to the "Needs attention" heading once the item is resolved', async () => {
+    mockPost.mockResolvedValue({ data: {} });
+    const { u, dialog } = await openWith(failedPayment(), 'Mark resolved');
+    await u.click(within(dialog).getByRole('button', { name: 'Mark resolved' }));
+    await waitFor(() => expect(screen.getByRole('heading', { name: /Needs attention/ })).toHaveFocus());
+    expect(screen.getByRole('heading', { name: /Needs attention/ })).toHaveAttribute('tabindex', '-1');
   });
 
   it('shows a server refusal inline', async () => {
@@ -175,13 +211,15 @@ describe('Mark resolved and Mark settled', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument();
   });
 
-  it('starts empty again when reopened', async () => {
+  it('starts clean again when reopened', async () => {
     const { u, dialog } = await openWith(failedPayment(), 'Mark resolved');
-    await u.type(within(dialog).getByLabelText('Note (optional)'), 'Left over');
+    await u.click(within(dialog).getByRole('combobox', { name: 'Reason' }));
+    await u.click(await screen.findByRole('option', { name: 'Not our payment' }));
+    expect(within(dialog).getByRole('combobox', { name: 'Reason' })).toHaveTextContent('Not our payment');
     await u.click(within(dialog).getByRole('button', { name: 'Cancel' }));
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     await u.click(screen.getByRole('button', { name: 'Mark resolved' }));
-    expect(await screen.findByLabelText('Note (optional)')).toHaveValue('');
+    expect(await screen.findByRole('combobox', { name: 'Reason' })).toHaveTextContent('Handled outside ServWave');
   });
 });
 
@@ -205,8 +243,8 @@ describe('Refund again', () => {
 describe('Refund again while the payment loads', () => {
   const openRefundAgain = async () => {
     const u = user();
-    renderWithProviders(<><AttentionCard /><Where /></>, { initialEntries: ['/payments'] });
-    const row = within(await screen.findByRole('region', { name: /Needs attention/ })).getByRole('listitem');
+    renderWithProviders(<><CardWithDrawer /><Where /></>, { initialEntries: ['/payments'] });
+    const row = within(await findCard()).getByRole('listitem');
     await u.click(within(row).getByRole('button', { name: 'Refund again' }));
     return u;
   };
@@ -238,15 +276,16 @@ describe('Refund again while the payment loads', () => {
 });
 
 describe('Refund on unmatched money', () => {
-  it('confirms with the amount, then refunds through the existing route', async () => {
+  it('opens the amount dialog, then refunds that amount through the existing route', async () => {
     const item = unmatched();
     mockPost.mockResolvedValue({ data: { item: {} } });
     const { u, dialog } = await openWith(item, 'Refund');
-    expect(within(dialog).getByText('$75.00 goes back to the customer.')).toBeInTheDocument();
-    await u.click(within(dialog).getByRole('button', { name: 'Refund $75.00' }));
+    expect(within(dialog).getByLabelText('Amount')).toHaveValue('75.00');
+    await u.click(within(dialog).getByRole('button', { name: 'Refund' }));
     await waitFor(() => expect(mockPost).toHaveBeenCalledTimes(1));
     expect(mockPost.mock.calls[0]![0]).toBe(`/api/payments-needing-attention/${item.key.split(':')[1]}/refund`);
-    await waitFor(() => expect(mockToast.success).toHaveBeenCalledWith('Refund sent. The customer gets the money back through ServWave Payments.'));
+    expect(mockPost.mock.calls[0]![1]).toEqual({ amount: 75 });
+    await waitFor(() => expect(mockToast.success).toHaveBeenCalledWith('Refunded $75.00'));
   });
 });
 
@@ -256,7 +295,7 @@ describe('Update bank account', () => {
     expect(within(dialog).getByText('Bank details are changed on the Payout account page, where they are entered securely.')).toBeInTheDocument();
     expect(within(dialog).queryByRole('textbox')).not.toBeInTheDocument();
     await u.click(within(dialog).getByRole('button', { name: 'Open payout account' }));
-    expect(where()).toBe('/settings/payout-account');
+    expect(where()).toBe('/settings/servwave-payments#payout-account');
     expect(mockPost).not.toHaveBeenCalled();
   });
 });

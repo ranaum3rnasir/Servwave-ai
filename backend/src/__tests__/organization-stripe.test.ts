@@ -403,6 +403,37 @@ describe('GET /api/organization/stripe/status', () => {
     expect(JSON.stringify(res.body)).not.toContain('acct_');
   });
 
+  // V7-02a: the four verification rows. Stored in organizations.stripe_verification, sent as `verification`.
+  const storedVerification = { business_details: 'verified', owner_identity: 'action_needed', bank_account: 'pending', tax_id: 'verified' };
+
+  it('returns verification with exactly the four rows, for a user holding only Manage payout account', async () => {
+    asSalesWith({ manage_payout_account: true });
+    mockPrisma.organization.findUnique.mockResolvedValue({ ...connectedRow, stripe_verification: { ...storedVerification, stray_key: 'individual.verification.document' } });
+    const res = await getStatusAsSales();
+    expect(res.status).toBe(200);
+    expect(res.body.verification).toEqual(storedVerification);
+    expect(Object.keys(res.body.verification).sort()).toEqual(['bank_account', 'business_details', 'owner_identity', 'tax_id']);
+    // The column name stays in the database: the browser reads `verification`.
+    expect(res.body).not.toHaveProperty('stripe_verification');
+    expect(JSON.stringify(res.body)).not.toContain('acct_');
+  });
+
+  it('returns verification: null until the first sync', async () => {
+    asSalesWith({ manage_payout_account: true });
+    mockPrisma.organization.findUnique.mockResolvedValue({ ...connectedRow, stripe_verification: null });
+    const res = await getStatusAsSales();
+    expect(res.status).toBe(200);
+    expect(res.body.verification).toBeNull();
+  });
+
+  it('selects the verification column on the status read', async () => {
+    asSalesWith({ view_payments: true });
+    await getStatusAsSales();
+    expect(mockPrisma.organization.findUnique).toHaveBeenCalledWith(expect.objectContaining({
+      select: expect.objectContaining({ stripe_verification: true }),
+    }));
+  });
+
   it('refuses a user with every payments switch off, who holds only the reads everyone has', async () => {
     asSalesWith({ view_payments: false, manage_payout_account: false, company_settings: false });
     const res = await getStatusAsSales();
@@ -509,7 +540,7 @@ describe('POST /api/organization/stripe/account-link', () => {
 
   // Payments go-live slice 06: the return lands with ?onboarding=return so the settings page
   // re-reads the account status (fail closed) instead of trusting the stored flags.
-  it('returns the hosted onboarding url; refresh goes back to settings/payments, return marks the onboarding return', async () => {
+  it('returns the hosted onboarding url; refresh goes back to settings/servwave-payments, return marks the onboarding return', async () => {
     mockPrisma.termsAcceptance.findFirst.mockResolvedValue({ id: 't1' });
     mockPrisma.organization.findUnique.mockResolvedValue({ stripe_account_id: 'acct_1' });
     mockCreateAccountLink.mockResolvedValue('https://connect.stripe.com/setup/e/acct_1/xyz');
@@ -520,8 +551,8 @@ describe('POST /api/organization/stripe/account-link', () => {
     expect(res.body).toEqual({ url: 'https://connect.stripe.com/setup/e/acct_1/xyz' });
     expect(mockCreateAccountLink).toHaveBeenCalledWith(
       'acct_1',
-      'http://localhost:5173/settings/payments',
-      'http://localhost:5173/settings/payments?onboarding=return',
+      'http://localhost:5173/settings/servwave-payments',
+      'http://localhost:5173/settings/servwave-payments?onboarding=return',
     );
   });
 });

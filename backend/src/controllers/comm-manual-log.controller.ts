@@ -33,6 +33,10 @@ import { validationFailure } from '../middleware/validate';
 import { getRequestOrgTimezone } from '../lib/timezone';
 import { orgWallClockToInstant, orgWallClockOf } from '../lib/orgDayRange';
 import {
+  leadLeftBehind,
+  reconsiderLeadContact,
+  reconsiderLeadLeftBehind,
+  recordLeadContactOnLink,
   recordLeadOutboundContact,
   type LeadContactChannel,
 } from '../services/lead-contact.service';
@@ -841,14 +845,29 @@ export async function getManualCommunicationLog(req: Request, res: Response) {
  *   update payload at all, so an entry cannot be moved between tenants even by a caller who
  *   discovered a foreign id.
  *
- *   `contacted_at` ON THE LEAD. Slice 7 stamps it when an outbound entry is CREATED on a lead,
- *   first-write-wins, because the stamp records the FIRST time somebody reached that customer.
- *   An edit is a correction to the record of a conversation, not a new conversation, so it does
- *   not re-run the stamp — correcting a typo three weeks later must not move a lead's response
- *   time to today. The consequence is stated rather than hidden: an entry corrected from inbound
- *   to outbound will not stamp a lead that has never been contacted, and one corrected the other
- *   way leaves an existing stamp in place. Both are the conservative direction — the clock is
- *   never moved by a keystroke that was not itself a conversation.
+ *   `contacted_at` ON THE LEAD THE ENTRY STAYS ON. Slice 7 stamps it when an outbound entry is
+ *   CREATED on a lead, first-write-wins, because the stamp records the FIRST time somebody
+ *   reached that customer. A correction to the record of a conversation is not a new
+ *   conversation: editing the time, notes, channel or performer of an outbound entry that stays
+ *   on its lead never stamps and never unwinds, so correcting a typo three weeks later cannot move
+ *   a lead's response time to today. That includes a correction from inbound to outbound (SPEC-4
+ *   D6): it does not stamp a lead that has never been contacted.
+ *
+ * WHAT AN EDIT CAN CHANGE ON A LEAD (SPEC-4 D6, Ran 20 Oct). Re-pointing an OUTBOUND entry onto a
+ * different lead (from the customer, a job or another lead) is how it reaches that lead's page,
+ * and that counts as reaching out to that lead: the shared link rule (`recordLeadContactOnLink`)
+ * stamps it and moves a New lead to Contacted, dated at the entry's saved time and credited to its
+ * performer. It counts only when the entry was outbound BEFORE the edit as well as after, so a
+ * flip from inbound cannot ride in on a move (accepted by Ran, 24 Oct).
+ *
+ * WHAT AN EDIT CAN UNDO ON THE LEAD IT LEFT (SPEC-4 D7, Ran 24 Oct), the one exception to "the
+ * first contact time is never unwound". An edit that takes an outbound entry off its lead (moved to
+ * the customer, a job or another lead) or flips it to inbound reconsiders that lead
+ * (`reconsiderLeadContact`): if it is still Contacted because an outbound contact made it so, and no
+ * outbound contact is left on it, it goes back to New, its first contact time is cleared, and its
+ * History says "Lead moved back to New: no outbound contact left", credited to the person who saved
+ * the edit. A lead past Contacted, a Contacted a person set, and a lead with another outbound entry
+ * left are kept as they are.
  *
  * AN ENTRY ALREADY DATED IN THE FUTURE IS STILL CORRECTABLE HERE. The future bound is on the
  * VALUE THE REQUEST CARRIES, never on the stored row, so `loadModifiableEntry` and the read and
@@ -856,13 +875,15 @@ export async function getManualCommunicationLog(req: Request, res: Response) {
  * to a real time, and saved. What it cannot do is be saved back UNCHANGED, and that is the point
  * — the only edit refused is the one that re-asserts the wrong value.
  *
- * ONE WRITE, SO NOTHING TO WRAP. The create path performs three — the row, the contacted-at
- * stamp, the activity event — and they are wrapped in a single interactive transaction (C15, see
- * its own block above), because an entry that committed without its audit event would put a
- * silent hole in a trail the delete path deliberately makes immutable. That hazard does not arise
- * here or on the delete: each is a single statement, so it either happens or it does not, and the
- * status code says which. Adding a second write to either of them means opening a transaction
- * around it too — the create's block is the model, including why the batch form is not an option.
+ * ONE TRANSACTION. The entry, the release of the lead it reached and the reconsider of the lead it
+ * left are committed by one interactive transaction, following the create's C15 block above
+ * (interactive form, never the batch form; every write through `tx`, including the ones inside the
+ * two lead writers). Each lead writer runs in a SAVEPOINT of it, so a failed one rolls back alone,
+ * is logged, and the edit still saves; a failed edit rolls back both, so no lead is ever moved by
+ * an edit that did not happen. When one save touches two leads (moved from A to B), the two are
+ * written in ascending lead-id order, so two crossing moves cannot deadlock on the two lead rows.
+ * Still no activity event, no automation and no notification on this path: the status moves'
+ * STATUS_CHANGE History rows are the leads' status history, not events of the entry.
  */
 export async function updateManualCommunicationLog(req: Request, res: Response) {
   try {
@@ -885,28 +906,77 @@ export async function updateManualCommunicationLog(req: Request, res: Response) 
     if (!(await resolveAnchorOr404(req, res, body))) return;
     if (!(await resolvePerformerOr404(req, res, body.performed_by))) return;
 
-    const row = (await prisma.manualCommunicationLog.update({
-      where: { id: entry.id },
-      data: {
-        channel: CHANNEL[body.channel],
-        direction: DIRECTION[body.direction],
-        occurred_at: occurredAt,
-        performed_by: body.performed_by,
-        notes: body.notes,
-        // Explicit NULLs, not omissions. This is a replacement, so a field the user cleared is
-        // cleared in the row — an omitted key would silently retain yesterday's answer, which is
-        // how a duration typed against a call survives onto an email.
-        duration_minutes: body.duration_minutes ?? null,
-        subject: body.subject ?? null,
-        // BOTH anchors are written on every edit, exactly one of them non-null. Writing only the
-        // one the body names would leave the old one set and produce a row naming both — the
-        // state the DB's `manual_communication_logs_exactly_one_anchor` CHECK refuses, and the
-        // one that would be double-counted on two timelines.
-        lead_id: body.lead_id ?? null,
-        job_id: body.job_id ?? null,
-        customer_id: body.customer_id ?? null,
-      },
-    })) as ManualLogRow;
+    const row = await prisma.$transaction(async (tx) => {
+      const updated = (await tx.manualCommunicationLog.update({
+        where: { id: entry.id },
+        data: {
+          channel: CHANNEL[body.channel],
+          direction: DIRECTION[body.direction],
+          occurred_at: occurredAt,
+          performed_by: body.performed_by,
+          notes: body.notes,
+          // Explicit NULLs, not omissions. This is a replacement, so a field the user cleared is
+          // cleared in the row — an omitted key would silently retain yesterday's answer, which is
+          // how a duration typed against a call survives onto an email.
+          duration_minutes: body.duration_minutes ?? null,
+          subject: body.subject ?? null,
+          // BOTH anchors are written on every edit, exactly one of them non-null. Writing only the
+          // one the body names would leave the old one set and produce a row naming both — the
+          // state the DB's `manual_communication_logs_exactly_one_anchor` CHECK refuses, and the
+          // one that would be double-counted on two timelines.
+          lead_id: body.lead_id ?? null,
+          job_id: body.job_id ?? null,
+          customer_id: body.customer_id ?? null,
+        },
+      })) as ManualLogRow;
+
+      // SPEC-4 D6: a move of an outbound entry onto a lead is a contact with that lead. The rule
+      // reads the stored row before (`entry`) and after (`updated`), which is what tells a move
+      // from a correction: the form sends the same body for both. Never throws.
+      const release = () =>
+        recordLeadContactOnLink({ tx }, {
+          source: 'log',
+          channel: CONTACT_CHANNEL[body.channel],
+          orgId: updated.organization_id,
+          leadIdBefore: entry.lead_id,
+          leadIdAfter: updated.lead_id,
+          directionBefore: entry.direction,
+          directionAfter: updated.direction,
+          // A hand-logged entry is a human asserting a conversation took place.
+          automated: false,
+          // The entry's time as saved by this edit, and the colleague who had the conversation.
+          at: updated.occurred_at,
+          actorId: updated.performed_by,
+        });
+      // SPEC-4 D7: the lead the entry left, if it held it, read off the same before and after rows.
+      // Credited to the person who saved the edit. Never throws.
+      const left = leadLeftBehind({
+        source: 'log',
+        before: { leadId: entry.lead_id, direction: entry.direction, automated: false },
+        after: { leadId: updated.lead_id, direction: updated.direction, automated: false },
+      });
+      const reconsider = () =>
+        left
+          ? reconsiderLeadContact({ tx }, {
+            leadId: left,
+            orgId: updated.organization_id,
+            actorId: req.user!.id,
+            entry: { source: 'log', id: entry.id },
+            now: new Date(),
+          })
+          : Promise.resolve(false);
+      // Ascending lead-id order when one save touches two leads, so two crossing moves (A to B and
+      // B to A at once) take the two lead rows in the same order and cannot deadlock.
+      if (left && updated.lead_id && left < updated.lead_id) {
+        await reconsider();
+        await release();
+      } else {
+        await release();
+        await reconsider();
+      }
+
+      return updated;
+    });
 
     res.json({ entry: toResponse(row, timeZone) });
   } catch (err) {
@@ -939,10 +1009,17 @@ export async function updateManualCommunicationLog(req: Request, res: Response) 
  * conversation was logged, and then the log was removed — and no DELETED event is written to say
  * so, because the spec's rule for this slice is that deleting writes none.
  *
- * `contacted_at` is likewise NOT unwound. The stamp records when a customer was first reached;
- * removing the record of that conversation does not unhappen it, and a delete that could move a
- * lead's clock would let one keystroke rewrite a response-time metric. Slice 7's stamp is
- * first-write-wins and stays where it landed.
+ * `contacted_at` is not unwound, with ONE exception (SPEC-4 D7, Ran 24 Oct): a lead stays Contacted
+ * only while an outbound contact is on it. Deleting the entry that held its lead reconsiders that
+ * lead (`reconsiderLeadContact`): if it is still Contacted because an outbound contact made it so
+ * and no outbound contact is left on it, it goes back to New, its first contact time is cleared,
+ * and its History says "Lead moved back to New: no outbound contact left", credited to the person
+ * who deleted it. In every other case the stamp stays where it landed. The activity event above
+ * still stands either way.
+ *
+ * TWO WRITES, SO ONE TRANSACTION, for the reason the update gives: the interactive form (never the
+ * batch form), every write through `tx`, the reconsider in a SAVEPOINT of it, so a failed move back
+ * is logged and the delete still stands, and a failed delete moves no lead.
  */
 export async function deleteManualCommunicationLog(req: Request, res: Response) {
   try {
@@ -951,7 +1028,15 @@ export async function deleteManualCommunicationLog(req: Request, res: Response) 
 
     // Addressed by id alone, and safely so: `loadModifiableEntry` resolved that id INSIDE the
     // requester's organisation, so there is no row a foreign id could reach by the time this runs.
-    await prisma.manualCommunicationLog.delete({ where: { id: entry.id } });
+    await prisma.$transaction(async (tx) => {
+      await tx.manualCommunicationLog.delete({ where: { id: entry.id } });
+      // SPEC-4 D7: the lead the entry was on, if it held it. Never throws.
+      await reconsiderLeadLeftBehind({ tx }, {
+        source: 'log',
+        before: { leadId: entry.lead_id, direction: entry.direction, automated: false },
+        after: null,
+      }, { orgId: entry.organization_id, actorId: req.user!.id, entryId: entry.id });
+    });
 
     res.status(204).send();
   } catch (err) {

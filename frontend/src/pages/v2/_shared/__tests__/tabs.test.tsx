@@ -12,7 +12,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 
-import { TabStrip } from '../tabs';
+import { TabPanel, TabStrip } from '../tabs';
 
 describe('TabStrip selection state', () => {
   it('keeps the selected-state marker off a tab that is not selected', () => {
@@ -45,5 +45,17 @@ describe('TabStrip selection state', () => {
     // selected branch uses statically - it must not survive on an
     // unselected trigger, or hover keeps impersonating selection.
     expect(unselectedClasses).not.toContain('hover:text-foreground');
+  });
+});
+
+describe('TabPanel entrance glide', () => {
+  it('glides in by default, so every other page keeps its motion', () => {
+    render(<TabPanel value="a" activeValue="a">Body</TabPanel>);
+    expect(screen.getByRole('tabpanel').classList.contains('motion-safe:animate-tab-panel-in')).toBe(true);
+  });
+
+  it('does not glide when asked not to (a page whose panels must not move what is above them)', () => {
+    render(<TabPanel value="a" activeValue="a" animate={false}>Body</TabPanel>);
+    expect(screen.getByRole('tabpanel').classList.contains('motion-safe:animate-tab-panel-in')).toBe(false);
   });
 });

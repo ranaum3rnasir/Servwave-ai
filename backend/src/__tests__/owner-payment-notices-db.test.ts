@@ -50,6 +50,7 @@ suite('owner payment notifications (real database)', () => {
   }, 90_000);
   beforeEach(() => {
     for (const fn of [ownerEmail, processingSender, failedSender, receiptSender]) fn.mockClear();
+    failedSender.mockReset().mockResolvedValue({ status: 'sent', providerMessageId: null, fromAddress: 'noreply@example.test', fromName: null });
     retrievePaymentIntent.mockReset();
     sessionsList.mockReset().mockResolvedValue({ data: [], has_more: false });
     refundsCreate.mockReset();
@@ -215,9 +216,29 @@ suite('owner payment notifications (real database)', () => {
       await vi.waitFor(async () => expect(await f.notices('billing.bank_payment_failed')).toHaveLength(1));
       const [notice] = await f.notices('billing.bank_payment_failed');
       expect(notice).toMatchObject({ priority: 'INTERRUPT', needs_action: true, title: `Bank payment failed for INV-${f.tag} — Pat Payer` });
-      expect(notice.body).toMatch(/pay again/i);
+      expect(notice.body).toBe('Amount: $500.00. No money moved. We emailed the customer a link to pay again.');
       const mails = f.ownerEmails().filter((m) => m.subject === notice.title);
       expect(mails.map((m) => m.to).sort()).toEqual([...f.adminEmails].sort());
+    });
+
+    // V7-13 (BE-13d): the customer is emailed first, so the alert can say what happened to them.
+    it('the failure alert is created AFTER the email to the customer is attempted, and carries what became of it', async () => {
+      const f = await fixture({ total: 500 });
+      await f.completed();
+      let alertsWhenEmailing = -1;
+      failedSender.mockImplementationOnce(async () => {
+        alertsWhenEmailing = (await f.notices('billing.bank_payment_failed')).length;
+        return { status: 'skipped', reason: 'suppressed' };
+      });
+
+      await f.failed();
+
+      await vi.waitFor(async () => expect(await f.notices('billing.bank_payment_failed')).toHaveLength(1));
+      expect(alertsWhenEmailing).toBe(0);
+      const [notice] = await f.notices('billing.bank_payment_failed');
+      expect(notice.data).toMatchObject({ customer_notice: 'bounced' });
+      expect(notice.data).not.toHaveProperty('pay_again');
+      expect(notice.body).toContain('earlier emails to this customer\u2019s address bounced');
     });
 
     it('the same event delivered twice notifies the owner once', async () => {
@@ -309,6 +330,23 @@ suite('owner payment notifications (real database)', () => {
       const [notice] = await f.notices('billing.chargeback');
       expect(notice.body).toBe('Amount: $300.00 was taken back from your ServWave Payments balance.');
       await vi.waitFor(() => expect(f.ownerEmails().filter((m) => m.subject === notice.title)).toHaveLength(2));
+    });
+
+    it('a late bank return alert carries cleared and the customer outcome, and is created after the customer email is attempted', async () => {
+      const { f, dispute } = await paid('ACH');
+      let alertsWhenEmailing = -1;
+      failedSender.mockImplementationOnce(async () => {
+        alertsWhenEmailing = (await f.notices('billing.chargeback')).length;
+        return { status: 'sent', providerMessageId: null, fromAddress: 'noreply@example.test', fromName: null };
+      });
+
+      await f.deliver('charge.dispute.created', dispute('lost'));
+
+      await vi.waitFor(async () => expect(await f.notices('billing.chargeback')).toHaveLength(1));
+      expect(alertsWhenEmailing).toBe(0);
+      const [notice] = await f.notices('billing.chargeback');
+      expect(notice.data).toMatchObject({ variant: 'bank_return', cleared: 'yes', customer_notice: 'sent' });
+      expect(notice.body).toBe('Amount: $300.00 was taken back from your ServWave Payments balance. The invoice is open again and we emailed the customer a link to pay again.');
     });
 
     it('a lost and a closed dispute also open the disputes tab', async () => {

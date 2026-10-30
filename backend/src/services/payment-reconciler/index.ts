@@ -30,7 +30,7 @@ import {
 } from './decide';
 import { applyActions, OUTSIDE_REFUND_REASON, type AppliedEffects, type DisputeNotice, type FailedRefund } from './apply';
 import { alertUnappliedCapture, ledgerPaymentIdOf } from '../../lib/unapplied-capture';
-import { CHECKOUT_INVOICE_SELECT, runCheckoutEffects, type CheckoutInvoice } from './checkout-effects';
+import { CHECKOUT_INVOICE_SELECT, emailBankReturnToCustomer, runCheckoutEffects, type CheckoutInvoice, type CustomerNoticeOutcome } from './checkout-effects';
 import { closeOpenCheckoutLinks } from '../../lib/invoice-checkout-expiry';
 import { syncAccountStatus } from '../../lib/account-status';
 import { emailRefundToCustomer } from '../../lib/refund-email';
@@ -683,7 +683,7 @@ export async function reconcileDispute(event: DisputeEvent, organizationId: stri
         }),
       ]);
       invoiceNumber = invoice.invoice_number;
-      // As rederiveRefundTotals counts it: money sent back from "Payments needing attention" was
+      // As rederiveRefundTotals counts it: money sent back from the Needs attention card was
       // never the invoice's, so it comes off both sides of the status maths (slice 11).
       const standingRefunds = invoice.refunds.filter((r) => !r.payment?.voided_at);
       const unappliedBackCents = refundedCents(standingRefunds.filter((r) => r.from_unapplied_capture));
@@ -722,7 +722,16 @@ export async function reconcileDispute(event: DisputeEvent, organizationId: stri
   }, { isolationLevel: Prisma.TransactionIsolationLevel.ReadCommitted });
 
   if (result.effects && invoiceNumber) {
-    for (const notice of result.effects.disputeNotices) await announceDispute(notice, organizationId, invoiceNumber);
+    // V7-13 (BE-13a, BE-13d): the customer whose bank payment was taken back is emailed BEFORE the owner's alert, so the
+    // alert says what really happened to them. Matched to the dispute by the processor's dispute id.
+    const returns = new Map<string, { outcome: CustomerNoticeOutcome; voided: boolean }>();
+    for (const returned of result.effects.bankReturnNotices) {
+      returns.set(returned.disputeId, { outcome: await emailBankReturnToCustomer(returned, organizationId), voided: returned.voided });
+    }
+    for (const notice of result.effects.disputeNotices) {
+      const returned = notice.kind === 'closed' ? returns.get(notice.processorDisputeId) : undefined;
+      await announceDispute(notice, organizationId, invoiceNumber, returned ? { customerNotice: returned.outcome, invoiceVoided: returned.voided } : undefined);
+    }
   }
   if (result.effects) await storeFailureCodes(result.effects.failedPayments, organizationId);
   // Slice 29: a won dispute that paid the invoice in full fires INVOICE_PAID, post-commit.
@@ -914,7 +923,12 @@ function finalWords(status: DisputeStatus): string {
  * The owner hears about a dispute, after its ledger changes have committed: in-app and by email,
  * once per dispute and stage (slice 32). Copy names no processor.
  */
-async function announceDispute(notice: DisputeNotice, organizationId: string, invoiceNumber: string): Promise<void> {
+async function announceDispute(
+  notice: DisputeNotice,
+  organizationId: string,
+  invoiceNumber: string,
+  bankReturn?: { customerNotice: CustomerNoticeOutcome; invoiceVoided: boolean },
+): Promise<void> {
   const variant = notice.bankReturn ? 'bank_return' : 'card';
   const object = { type: 'INVOICE' as const, id: notice.invoiceId, label: invoiceNumber };
   const customerName = await invoiceCustomerName(notice.invoiceId, organizationId);
@@ -936,7 +950,15 @@ async function announceDispute(notice: DisputeNotice, organizationId: string, in
   } else if (notice.outcome === 'LOST') {
     await notifyOwners({
       verb: 'billing.chargeback', organizationId, object,
-      data: { ...facts, variant: notice.partial ? 'partial_chargeback' : variant },
+      data: {
+        ...facts, variant: notice.partial ? 'partial_chargeback' : variant,
+        // V7-13 (BE-13e): whether the debit had cleared, so the alert names the balance only when money was taken back.
+        ...(notice.bankReturn && notice.cleared !== undefined ? { cleared: notice.cleared ? 'yes' : 'no' } : {}),
+        // V7-13 (BE-13d): what became of the email to the customer. A not-open invoice that is not voided (PAID by another
+        // payment, DISPUTED) cannot be paid online (C-38, C-49).
+        ...(bankReturn ? { customer_notice: bankReturn.customerNotice } : {}),
+        ...(bankReturn?.customerNotice === 'not_open' && !bankReturn.invoiceVoided ? { cannot_pay: 'yes' } : {}),
+      },
       dedupKey: `billing.chargeback:${notice.processorDisputeId}`,
       actionLabel: 'Open the invoice',
     });

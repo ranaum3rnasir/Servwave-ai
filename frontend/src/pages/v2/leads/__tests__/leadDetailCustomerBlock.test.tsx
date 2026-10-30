@@ -139,15 +139,32 @@ describe('the lead page customer details', () => {
     expect(document.querySelector('a[href^="tel:"]')).toBeNull();
   });
 
-  it('opens the in-app composer from Text on a tapped phone', async () => {
+  // SPEC-4 §6.8: the lead rides along, so the first reply on that customer's conversation is filed on this lead.
+  it('opens the in-app composer from Text on a tapped phone, carrying the lead', async () => {
     const user = userEvent.setup();
     renderLeadPage(EVERYTHING_ON);
 
     await user.click(await screen.findByRole('button', { name: '(555) 123-4567' }));
     await user.click(await screen.findByRole('menuitem', { name: 'Text' }));
 
-    expect(mockNavigate).toHaveBeenCalledWith(`/communication/text?customerId=${LEAD.customer.id}`);
+    expect(mockNavigate).toHaveBeenCalledWith(
+      `/communication/text?customerId=${LEAD.customer.id}&leadId=e0000000-0000-0000-0000-000000000001`,
+    );
     expect(document.querySelector('a[href^="sms:"]')).toBeNull();
+  });
+
+  it('carries the lead on Text for a person with View customers off too, going by the tapped number', async () => {
+    const user = userEvent.setup();
+    renderLeadPage({ ...EVERYTHING_ON, view: false });
+
+    await user.click(await screen.findByRole('button', { name: '(555) 123-4567' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Text' }));
+
+    expect(mockNavigate).toHaveBeenCalledTimes(1);
+    const url = new URL(String(mockNavigate.mock.lastCall?.[0]), 'https://app.test');
+    expect(url.pathname).toBe('/communication/text');
+    expect(url.searchParams.get('owner')).toBe('customer');
+    expect(url.searchParams.get('leadId')).toBe(LEAD.id);
   });
 
   it('shows the digits with no copy control, no selection and no native link with Copy customer phone off', async () => {

@@ -336,6 +336,11 @@ export function SmsInboxView({
   // Composer prefill from deep links: ?to= seeds a raw number, ?customerId=
   // (with no existing thread) preselects that customer in the dialog.
   const [composeSeed, setComposeSeed] = useState<ComposeSeed | null>(null);
+  // SPEC-4 §6.8: Text on a lead page's customer phone arrives as ?customerId=…&leadId=…. The FIRST reply on that
+  // customer's conversation during this arrival is filed on the lead; the lead is dropped once that reply is sent or
+  // the person moves to any other conversation, so a later, unrelated reply is never filed on it. `threadId` is the
+  // conversation it was opened on; unset while there is none yet and the composer starts one with that customer.
+  const [replyLead, setReplyLead] = useState<{ customerId: string; leadId: string; threadId?: string } | null>(null);
   // Compose-to-number send failure — rendered INSIDE the dialog (there is no
   // conversation to fall back to until the server resolves the thread).
   const [composeError, setComposeError] = useState<string | null>(null);
@@ -460,8 +465,12 @@ export function SmsInboxView({
       (threadId ? t.id === threadId : false) ||
       (customerId ? t.customerId === customerId : false);
     const target = threads.find(byParam) ?? threadDir.find(byParam);
+    const leadId = searchParams.get("leadId");
     if (target) {
       deepLinked.current = true;
+      if (customerId && leadId && target.customerId === customerId) {
+        setReplyLead({ customerId, leadId, threadId: target.id });
+      }
       setOpenId(target.id);
       // On a phone the deep link lands on the conversation: put it in the URL (replacing the
       // link's own entry, so Back leaves for where the link came from rather than the list).
@@ -472,6 +481,7 @@ export function SmsInboxView({
     // one: open the composer with the customer preselected.
     if (customerId && threadsQuery.isFetched) {
       deepLinked.current = true;
+      if (leadId) setReplyLead({ customerId, leadId });
       setComposeSeed({ customerId });
       setComposeOpen(true);
     }
@@ -559,6 +569,27 @@ export function SmsInboxView({
   const listRows = pane.isPhone ? rows.slice(0, rowsShown) : rows;
   const hiddenRows = rows.length - listRows.length;
 
+  // Opening any other conversation drops the lead the arrival carried (SPEC-4 §6.8), so coming back to the customer's
+  // conversation later does not file a reply on the lead either. Every way of changing conversation calls this. A lead
+  // not yet tied to a conversation (the customer had none) is dropped once the next conversation is not that
+  // customer's, so a later new message to them is not filed on it either.
+  function leaveLeadArrival(nextThreadId: string | undefined, nextCustomerId?: string) {
+    if (!replyLead) return;
+    if (replyLead.threadId) {
+      if (nextThreadId !== replyLead.threadId) setReplyLead(null);
+      return;
+    }
+    const customer = nextCustomerId ?? (nextThreadId ? findThread(nextThreadId)?.customerId : undefined);
+    if (customer !== replyLead.customerId) setReplyLead(null);
+  }
+
+  // The arrival's customer's conversation is now open (an existing one, or the one the composer just started): tie the
+  // lead to it, so the first reply there is filed on the lead (SPEC-4 §6.8). Functional, so a lead already used by
+  // the send that opened it, or dropped just before, stays dropped.
+  function tieLeadArrival(threadId: string, customerId: string) {
+    setReplyLead((prev) => (prev && !prev.threadId && prev.customerId === customerId ? { ...prev, threadId } : prev));
+  }
+
   // Switch directory buckets — and reselect the first thread in the bucket so
   // the conversation pane never shows a thread that's filtered out of view.
   function pickFilter(f: ThreadFilter) {
@@ -566,6 +597,7 @@ export function SmsInboxView({
     setRowsShown(ROW_WINDOW);
     setSendError(null);
     const first = threads.find((t) => matchesFilter(t, f));
+    leaveLeadArrival(first?.id, first?.customerId);
     setOpenId(first?.id ?? "");
   }
 
@@ -589,6 +621,8 @@ export function SmsInboxView({
               : t,
           ),
         );
+        leaveLeadArrival(existing.id, customerId);
+        tieLeadArrival(existing.id, customerId);
         setOpenId(existing.id);
         pane.open(existing.id);
         // #2049 - a real server thread id (this branch only fires for a
@@ -608,6 +642,8 @@ export function SmsInboxView({
           },
           ...prev,
         ]);
+        leaveLeadArrival(id, customerId);
+        tieLeadArrival(id, customerId);
         setOpenId(id);
         setPlaceholderOwners((prev) => ({ ...prev, [id]: customerId }));
         pane.open(id);
@@ -621,10 +657,14 @@ export function SmsInboxView({
       return;
     }
 
+    // A first text to the customer a lead page sent the person here for, with no conversation yet, is filed on that
+    // lead (SPEC-4 §6.8).
+    const leadId = replyLead && !replyLead.threadId && replyLead.customerId === customerId ? replyLead.leadId : undefined;
     sendSms.mutate(
-      { customerId, body: text },
+      { customerId, body: text, ...(leadId && { leadId }) },
       {
         onSuccess: (data) => {
+          if (leadId) setReplyLead(null);
           selectThread(buildOutMessage(data, text));
           closeCompose();
           if (data?.delivery !== "failed") {
@@ -695,6 +735,7 @@ export function SmsInboxView({
               ...prev,
             ];
           });
+          leaveLeadArrival(id);
           setOpenId(id);
           pane.open(id);
           // #2049 - the server always resolves/creates a real thread for this
@@ -722,6 +763,9 @@ export function SmsInboxView({
     if (smsBlocked || openHasNoRecipient || !draft.trim() || !open || sendSms.isPending) return;
     const body = draft.trim();
     setSendError(null);
+    // The first reply on the conversation a lead page sent the person to is filed on that lead (SPEC-4 §6.8).
+    const leadId =
+      replyLead?.threadId === open.id && open.customerId === replyLead.customerId ? replyLead.leadId : undefined;
     sendSms.mutate(
       // Unknown-number AND staff threads carry no customerId - reply by
       // threadId (their id is always the server's; they only enter local state
@@ -729,9 +773,10 @@ export function SmsInboxView({
       // which would fail the send schema outright.
       openUnknownNumber || openStaffUserId
         ? { threadId: open.id, body }
-        : { customerId: open.customerId, body },
+        : { customerId: open.customerId, body, ...(leadId && { leadId }) },
       {
         onSuccess: (data) => {
+          if (leadId) setReplyLead(null);
           // Commit the bubble on confirmation only; a delivery:'failed' 201
           // renders the failed bubble (danger) and NO success toast.
           const msg = buildOutMessage(data, body);
@@ -753,6 +798,7 @@ export function SmsInboxView({
   }
 
   function openThread(id: string) {
+    leaveLeadArrival(id);
     setOpenId(id);
     pane.open(id);
     setSendError(null);

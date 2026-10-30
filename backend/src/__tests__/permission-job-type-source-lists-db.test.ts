@@ -59,10 +59,9 @@ suite('Job type and job source lists answer a person with the Technician preset 
   for (const withoutCompanyRead of [false, true]) {
     it(`lists both company lists${withoutCompanyRead ? ' when the role holds no stored company read' : ''}`, async () => {
       const { org } = await fx.newOrg();
-      await db.organization.update({
-        where: { id: org },
-        data: { job_type_options: ['Install', 'Repair'], source_options: ['Referral', 'Website'] },
-      });
+      // The lists are rows now; the org record is built from them (the JSON columns are only a fallback).
+      await db.jobType.createMany({ data: ['Install', 'Repair'].map((name, i) => ({ organization_id: org, name, sort_order: i })) });
+      await db.leadSource.createMany({ data: ['Referral', 'Website'].map((name, i) => ({ organization_id: org, name, sort_order: i })) });
       const api = await technicianPreset(org, { withoutCompanyRead });
 
       const res = await api.get('/api/organization');
@@ -77,9 +76,18 @@ suite('Job type and job source lists answer a person with the Technician preset 
     const { org } = await fx.newOrg();
     const api = await technicianPreset(org, { withoutCompanyRead: false });
 
-    const res = await api.patch('/api/organization', { job_type_options: ['Sneaky'] });
+    // The old company-record path no longer takes the lists at all; the person is refused before that is looked at.
+    const viaOrg = await api.patch('/api/organization', { job_type_options: ['Sneaky'] });
+    expect(viaOrg.status).toBe(403);
 
-    expect(res.status).toBe(403);
+    // The list routes carry the same rule: no add, rename or archive.
+    const added = await api.post('/api/job-types', { name: 'Sneaky' });
+    expect(added.status).toBe(403);
+    const addedSource = await api.post('/api/lead-sources', { name: 'Sneaky' });
+    expect(addedSource.status).toBe(403);
+
+    expect(await db.jobType.count({ where: { organization_id: org, name: 'Sneaky' } })).toBe(0);
+    expect(await db.leadSource.count({ where: { organization_id: org, name: 'Sneaky' } })).toBe(0);
     const row = await db.organization.findUnique({ where: { id: org }, select: { job_type_options: true } });
     expect(row?.job_type_options).not.toContain('Sneaky');
   });

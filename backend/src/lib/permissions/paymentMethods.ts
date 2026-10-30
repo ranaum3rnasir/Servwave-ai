@@ -31,13 +31,13 @@ export interface AcceptedMethodsOrg {
 
 /**
  * The company's effective accepted list (one definition, shared with the screens and dialogs): the methods ticked in
- * Payments & Lists, plus Credit Card while the card processor is live. Credit Card is never a tick box; it is accepted
+ * ServWave Payments, plus Credit Card while the card processor is live. Credit Card is never a tick box; it is accepted
  * only through the processor connection, which the stored list mirrors (Credit Card is in it while charges are enabled
  * and the card capability is active). The list is read by this definition, not as whatever is stored.
  *
  * When the company ticked no method (the stored list is empty, or holds only the processor-owned methods) every method
  * counts as accepted, which is what the product did before the list was checked: without it a company that never filled
- * in Payments & Lists, or one with a live processor and nothing ticked, would lose payment recording for everyone.
+ * in ServWave Payments, or one with a live processor and nothing ticked, would lose payment recording for everyone.
  */
 export function effectiveAcceptedMethods(org: AcceptedMethodsOrg): EffectiveAcceptedMethods {
   const stored = Array.isArray(org.accepted_payment_methods) ? (org.accepted_payment_methods as unknown[]) : [];

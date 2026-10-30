@@ -725,3 +725,78 @@ describe('the manual-log router mounts only what has been proved silent', () => 
     expectNothingWokenUp();
   });
 });
+
+// ─── SPEC-4 statement 21 (slice 4.3): a move onto a New lead wakes nothing either ───────────
+//
+// Moving an outbound entry onto a New lead now moves that lead to Contacted. That move writes the
+// lead's own STATUS_CHANGE History row, the same row the create path writes, and nothing else:
+// no activity event of the entry, no automation, no notification.
+describe('moving an entry onto a New lead wakes nothing', () => {
+  it('writes only the lead\'s status History row, and dispatches no automation and raises no notification', async () => {
+    mockAuthAs('admin');
+    orgTimezone('America/New_York');
+    mockPrisma.customer.findFirst.mockResolvedValue({ id: CUSTOMER_ID });
+    mockPrisma.lead.findFirst.mockResolvedValue({ id: LEAD_ID });
+    mockPrisma.lead.updateMany.mockResolvedValue({ count: 1 });
+    const rows = stubStoredEntry();
+    // A read hands back a copy of the stored row, as Prisma does: the fixture's update edits the
+    // stored row in place, and the edit must still see the row as it was before it.
+    mockPrisma.manualCommunicationLog.findFirst.mockImplementation(({ where }: any) => {
+      const row = rows.find((r) => r.id === where.id);
+      return Promise.resolve(row ? { ...row } : null);
+    });
+    const feed = stubActivityFeed();
+
+    const created = await request(app).post(ENDPOINT).set(authHeader('admin')).send(CUSTOMER_BODY);
+    expect(created.status).toBe(201);
+    expect(feed).toHaveLength(1);
+
+    const { customer_id: _left, ...rest } = CUSTOMER_BODY;
+    const moved = await request(app)
+      .put(`${ENDPOINT}/${created.body.entry.id}`)
+      .set(authHeader('admin'))
+      .send({ ...rest, lead_id: LEAD_ID, performed_by: TEST_USERS.admin.id });
+
+    expect(moved.status).toBe(200);
+    expect(feed.slice(1)).toEqual([
+      expect.objectContaining({ entity_type: 'LEAD', entity_id: LEAD_ID, event_type: 'STATUS_CHANGE' }),
+    ]);
+    expectNothingWokenUp();
+  });
+});
+
+// ─── SPEC-4 statement 21, the D7 half: a delete that moves a lead back to New wakes nothing ──
+//
+// Deleting a Contacted lead's only outbound entry moves the lead back to New (D7). That writes the
+// lead's own STATUS_CHANGE History row "Lead moved back to New: no outbound contact left" and
+// nothing else: no activity event of the entry, no automation, no notification.
+describe('a delete that moves a lead back to New wakes nothing', () => {
+  it('writes only the lead\'s status History row, and dispatches no automation and raises no notification', async () => {
+    mockAuthAs('admin');
+    orgTimezone('America/New_York');
+    stubStoredEntry();
+    const feed = stubActivityFeed();
+    mockPrisma.lead.updateMany.mockResolvedValue({ count: 1 });
+
+    const created = await request(app).post(ENDPOINT).set(authHeader('admin')).send(LEAD_BODY);
+    expect(created.status).toBe(201);
+    const afterCreate = feed.length;
+
+    // The lead as the reconsider reads it under its lock: Contacted by an outbound call.
+    mockPrisma.lead.findFirst.mockResolvedValue({ status: 'CONTACTED', contacted_set_by: null });
+    mockPrisma.timelineEvent.findFirst.mockResolvedValue({ metadata: { from: 'NEW', to: 'CONTACTED', via: 'first_outbound_call' } });
+
+    const removed = await request(app)
+      .delete(`${ENDPOINT}/${created.body.entry.id}`)
+      .set(authHeader('admin'));
+
+    expect(removed.status).toBe(204);
+    expect(feed.slice(afterCreate)).toEqual([
+      expect.objectContaining({
+        entity_type: 'LEAD', entity_id: LEAD_ID, event_type: 'STATUS_CHANGE',
+        description: 'Lead moved back to New: no outbound contact left',
+      }),
+    ]);
+    expectNothingWokenUp();
+  });
+});

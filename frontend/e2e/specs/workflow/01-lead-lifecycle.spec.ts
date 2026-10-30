@@ -537,15 +537,17 @@ test.describe('1.9 Lead Termination — Mark Lost', () => {
     expect(body.lead.status).toBe('LOST');
   });
 
-  test('L-32: Mark WON lead as lost → 400 (terminal)', async () => {
+  test('L-32: Mark WON lead as lost → 409 (closed, reopen first)', async () => {
     const ctx = await leadToSentEstimate(api);
     await api.approveEstimatePublic(ctx.estimateId, ctx.publicToken, {
       signature_data: api.testSignature,
     });
     const lead = await api.getLead(ctx.leadId);
     expect(lead.status).toBe('WON');
-    const { res } = await api.markLeadLost(ctx.leadId, 'Should fail');
-    expect(res.status()).toBe(400);
+    // A closed lead moves only through Reopen lead (S05.19).
+    const { res, body } = await api.markLeadLost(ctx.leadId, 'Should fail');
+    expect(res.status()).toBe(409);
+    expect(body.error).toBe('To change the status, reopen the lead first.');
   });
 
   test('L-33: Mark LOST lead as lost → 400 (already terminal)', async () => {

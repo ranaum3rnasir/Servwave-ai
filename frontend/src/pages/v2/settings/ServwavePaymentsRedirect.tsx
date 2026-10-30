@@ -1,26 +1,16 @@
 import { Navigate, useSearchParams } from 'react-router-dom';
 
-/**
- * Where each old tab of Settings > ServWave Payments lives now (payments go-live P8). The area moved to the Payments
- * page; the address stays, as a redirect, so every email link and bell notification from before the move still lands.
- * Disputes are a filter of the Payments tab, not a tab of their own.
- */
-const TARGETS: Record<string, string> = {
-  payments: '/payments?tab=payments',
-  payouts: '/payments?tab=payouts',
-  documents: '/payments?tab=documents',
-  disputes: '/payments?tab=payments&chip=disputed',
-};
-
-function servwavePaymentsTarget(tab: string | null): string {
-  return (tab && Object.prototype.hasOwnProperty.call(TARGETS, tab) ? TARGETS[tab] : null) ?? '/payments';
-}
+import { LEGACY_PAYMENTS_TAB_TARGETS, isLegacyPaymentsTab } from './legacyPaymentsTabs';
 
 /**
- * Renders no Settings shell on the way: the route sits outside it. Who may stay is the Payments page's own guard (View
+ * The legacy-tab branch of the ServWave Payments route (payments go-live P8): an old bell or email link that carries
+ * one of the four old `?tab=` values still lands on the Payments page. It renders inside the route, so the Settings
+ * shell is drawn for the instant before the redirect lands. Who may stay is the Payments page's own guard (View
  * payments and payouts plus Show Payments page); anyone else ends on their dashboard.
  */
 export default function ServwavePaymentsRedirect() {
   const [params] = useSearchParams();
-  return <Navigate to={servwavePaymentsTarget(params.get('tab'))} replace />;
+  const tab = params.get('tab');
+  const target = isLegacyPaymentsTab(tab) ? LEGACY_PAYMENTS_TAB_TARGETS[tab] : undefined;
+  return target ? <Navigate to={target} replace /> : null;
 }

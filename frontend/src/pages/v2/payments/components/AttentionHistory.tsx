@@ -8,33 +8,34 @@ import { EmptyState } from '@/ui-kit/components/data/emptyState';
 import { Button } from '@/ui-kit/components/ui/button';
 
 import { LoadError } from '../../_shared/loadError';
-import { itemTarget } from './attentionRow';
+import { stackForItem } from '../drawerStack';
 import { buildAttentionColumns } from './attentionColumns';
+import { useScrollTableIntoView } from '../useScrollTableIntoView';
 
 export const HISTORY_PAGE_SIZE = 25;
 
 /**
  * The Needs attention table (payments go-live P7): every open or resolved item, server-paged 25 at a time. The search
- * and the type come from the toolbar. A row opens the same drawer its card title does.
+ * comes from the toolbar. A row opens the same drawer its card title does.
  */
 export function AttentionHistory({
-  view, q, types, timeZone, onOpen, onClear,
+  view, q, timeZone, onOpen, onClear,
 }: {
   view: AttentionView;
   q: string;
-  types: AttentionParams['type'];
   timeZone: string;
-  onOpen: (target: Record<string, string>) => void;
+  onOpen: (item: AttentionItem) => void;
   onClear: () => void;
 }) {
   // A page number only means something under the filters it was picked for; changing any of them reads as page 1.
-  const scope = JSON.stringify([view, q, types]);
+  const scope = JSON.stringify([view, q]);
   const [pageState, setPageState] = useState({ scope, page: 1 });
   const page = pageState.scope === scope ? pageState.page : 1;
+  const { ref: tableTopRef, request: scrollTableTop } = useScrollTableIntoView();
 
   const params = useMemo<AttentionParams>(
-    () => ({ page, limit: HISTORY_PAGE_SIZE, ...(q ? { q } : {}), ...(types?.length ? { type: types } : {}) }),
-    [page, q, types],
+    () => ({ page, limit: HISTORY_PAGE_SIZE, ...(q ? { q } : {}) }),
+    [page, q],
   );
   const list = useAttention(view, params);
   const columns = useMemo(() => buildAttentionColumns({ timeZone }), [timeZone]);
@@ -48,45 +49,49 @@ export function AttentionHistory({
         <EmptyState
           icon={<SearchX />}
           title={extractApiError(list.error, 'That is further than the list goes.')}
-          description="Search or choose a type to narrow"
+          description="Search to narrow"
         />
       );
     }
     return <LoadError title="Couldn’t load these items." onRetry={() => void list.refetch()} retrying={list.isFetching} />;
   }
 
-  const narrowed = Boolean(q) || Boolean(types?.length);
-  const empty = narrowed ? (
+  const empty = q ? (
     <EmptyState
       icon={<SearchX />}
-      title="No items match"
+      title="No payments match"
+      description="Try a different search, filter or period."
       action={<Button variant="outline" size="sm" className="max-sm:min-h-11" onClick={onClear}>Clear filters</Button>}
     />
   ) : (
     <EmptyState icon={<CheckCircle2 />} title={view === 'open' ? 'Nothing needs attention' : 'No resolved items yet'} />
   );
 
+  // No rows: the empty state alone, not under a "Showing 0-0 of 0" pager.
+  if (!list.isPending && list.data && items.length === 0) {
+    return <div ref={tableTopRef} className="bg-kit-card overflow-hidden rounded-lg border shadow-sm">{empty}</div>;
+  }
+
   return (
-    <DataTable<AttentionItem, unknown>
-      columns={columns}
-      data={items}
-      getRowId={(item) => item.key}
-      isLoading={list.isPending}
-      isFetching={list.isFetching}
-      page={page}
-      pageCount={pagination?.totalPages ?? 1}
-      onPageChange={(next) => setPageState({ scope, page: next })}
-      pageSize={HISTORY_PAGE_SIZE}
-      hidePageSize
-      rowCount={pagination?.total ?? 0}
-      mobileCards
-      rowsFocusable
-      isRowClickable={(item) => itemTarget(item) != null}
-      onRowClick={(item) => {
-        const target = itemTarget(item);
-        if (target) onOpen(target);
-      }}
-      empty={empty}
-    />
+    <div ref={tableTopRef}>
+      <DataTable<AttentionItem, unknown>
+        columns={columns}
+        data={items}
+        getRowId={(item) => item.key}
+        isLoading={list.isPending}
+        isFetching={list.isFetching}
+        page={page}
+        pageCount={pagination?.totalPages ?? 1}
+        onPageChange={(next) => { setPageState({ scope, page: next }); scrollTableTop(); }}
+        pageSize={HISTORY_PAGE_SIZE}
+        hidePageSize
+        rowCount={pagination?.total ?? 0}
+        mobileCards
+        rowsFocusable
+        isRowClickable={(item) => stackForItem(item) != null}
+        onRowClick={onOpen}
+        empty={empty}
+      />
+    </div>
   );
 }

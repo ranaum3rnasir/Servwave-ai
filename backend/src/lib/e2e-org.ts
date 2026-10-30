@@ -6,6 +6,7 @@ import { env } from '../config/env';
 import { purgeCustomerSubtree, purgeOrganization } from './purge';
 import { DEFAULT_GRANTS } from './permissions/defaultGrants';
 import { seedStarterTaskCategories } from './tasks/categories';
+import { seedListRows } from './org-list-rows';
 import { createCompanyWithMainMailbox, issueUserMailbox } from './mailbox/register';
 
 export const E2E_ORG_NAME_PREFIX = 'e2e-qa-';
@@ -96,6 +97,8 @@ export async function provisionTestOrg(): Promise<ProvisionedOrg> {
 
   // Every new organization starts with the three starter task categories.
   await seedStarterTaskCategories(prisma, orgId);
+  // The job type and source lists as rows, copied from the organization's own column defaults.
+  await seedListRows(prisma, orgId);
 
   const { data: authData, error: authError } = await supabaseAdmin.auth.admin.createUser({
     email: adminEmail, password: adminPassword, email_confirm: true,

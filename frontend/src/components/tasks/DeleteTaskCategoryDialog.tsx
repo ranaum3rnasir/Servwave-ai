@@ -2,9 +2,10 @@ import { useEffect, useId, useState, type KeyboardEvent, type ReactNode } from '
 
 import { cn, extractApiError } from '@/lib/utils';
 import { normaliseTaskCategoryName } from '@/lib/tasks/taskCategoryDefaults';
-import { useTaskCategories, type DeleteTaskCategoryInput, type TaskCategoryRow } from '@/lib/api/taskCategories';
+import { useTaskCategories, type DeleteTaskCategoryInput, type DeleteTaskCategoryResult, type TaskCategoryRow } from '@/lib/api/taskCategories';
 import { useDeleteTaskCategory } from '@/lib/tasks/useTaskCategoryWrites';
 
+import { notifySaved } from '@/lib/listSavedToast';
 import { ConfirmDialog } from '@/ui-kit/components/ui/confirmDialog';
 import { Input } from '@/ui-kit/components/ui/input';
 import { Label } from '@/ui-kit/components/ui/label';
@@ -14,11 +15,23 @@ type Mode = DeleteTaskCategoryInput['mode'];
 
 const tasks = (n: number) => `${n} ${n === 1 ? 'task' : 'tasks'}`;
 
-/** "14 tasks use this category: 11 open, 3 done." - the design review's wording. */
-function usageLine(open: number, done: number): string {
+/** "**14 tasks** use this category: 11 open, 3 done." - the count in bold, "1 task uses" for one. */
+function usageLine(open: number, done: number): ReactNode {
   const total = open + done;
   if (total === 0) return 'No tasks use this category.';
-  return `${tasks(total)} ${total === 1 ? 'uses' : 'use'} this category: ${open} open, ${done} done.`;
+  return (
+    <>
+      <strong>{tasks(total)}</strong> {total === 1 ? 'uses' : 'use'} this category: {open} open, {done} done.
+    </>
+  );
+}
+
+/** The Saved toast for a finished delete (no Undo): what became of the tasks. */
+function deletedDetail(name: string, result: DeleteTaskCategoryResult): string {
+  if (result.task_count === 0) return `Deleted category “${name}”`;
+  if (result.mode === 'move') return `Deleted “${name}”, tasks moved to “${result.target?.name ?? ''}”`;
+  if (result.mode === 'delete_tasks') return `Deleted “${name}” and ${tasks(result.task_count)}`;
+  return `Deleted “${name}”, tasks kept`;
 }
 
 /**
@@ -35,6 +48,8 @@ interface ChoiceProps {
   onSelect: () => void;
   title: string;
   hint: string;
+  /** A choice that cannot be taken right now (no other category to move the tasks to). */
+  disabled?: boolean;
   children?: ReactNode;
 }
 
@@ -42,12 +57,12 @@ interface ChoiceProps {
  * One of the dialog's choices, with radio semantics. A row rather than a native radio: the kit has
  * no radio control and the title/hint pair needs two lines. Space or Enter picks it.
  */
-function Choice({ checked, onSelect, title, hint, children }: ChoiceProps) {
+function Choice({ checked, onSelect, title, hint, disabled = false, children }: ChoiceProps) {
   const id = useId();
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     if (e.key === ' ' || e.key === 'Enter') {
       e.preventDefault();
-      onSelect();
+      if (!disabled) onSelect();
     }
   };
   return (
@@ -55,12 +70,16 @@ function Choice({ checked, onSelect, title, hint, children }: ChoiceProps) {
       <div
         role="radio"
         aria-checked={checked}
+        aria-disabled={disabled || undefined}
         aria-labelledby={`${id}-title`}
         aria-describedby={`${id}-hint`}
         tabIndex={0}
-        onClick={onSelect}
+        onClick={disabled ? undefined : onSelect}
         onKeyDown={onKeyDown}
-        className="flex cursor-pointer items-start gap-2.5 rounded-md p-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        className={cn(
+          'flex items-start gap-2.5 rounded-md p-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
+          disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
+        )}
       >
         <span
           aria-hidden
@@ -131,7 +150,10 @@ function DeleteTaskCategoryDialog({ category, onClose }: DeleteTaskCategoryDialo
     deleteCategory.mutate(
       { id: category.id, input: total === 0 ? { mode: 'keep' } : input },
       {
-        onSuccess: onClose,
+        onSuccess: (result) => {
+          notifySaved(deletedDetail(category.name, result));
+          onClose();
+        },
         onError: (err) => {
           // The count moved since the dialog read it (the server compares it with what we showed):
           // re-read it so the dialog, and the button, name the number the next click will delete.
@@ -147,7 +169,7 @@ function DeleteTaskCategoryDialog({ category, onClose }: DeleteTaskCategoryDialo
       open
       onOpenChange={(next) => !next && onClose()}
       destructive
-      title={`Delete "${category.name}"?`}
+      title={`Delete “${category.name}”?`}
       description={usageLine(open, done)}
       confirmLabel={mode === 'delete_tasks' && total > 0 ? `Delete category and ${tasks(total)}` : 'Delete category'}
       isPending={deleteCategory.isPending}
@@ -164,31 +186,30 @@ function DeleteTaskCategoryDialog({ category, onClose }: DeleteTaskCategoryDialo
                 title="Keep the tasks"
                 hint="They stay as they are, with no category."
               />
-              {others.length > 0 && (
-                <Choice
-                  checked={mode === 'move'}
-                  onSelect={() => pick('move')}
-                  title="Move them to another category"
-                  hint={total === 1 ? 'Pick a category for it.' : `Pick a category for all ${total}.`}
-                >
-                  <SelectField
-                    aria-label="Move the tasks to"
-                    placeholder="Choose a category"
-                    value={targetId}
-                    onValueChange={setTargetId}
-                    options={others.map((c) => ({ value: c.id, label: c.name }))}
-                  />
-                </Choice>
-              )}
+              <Choice
+                checked={mode === 'move'}
+                onSelect={() => pick('move')}
+                disabled={others.length === 0}
+                title="Move them to another category"
+                hint={total === 1 ? 'Pick a category for it.' : `Pick a category for all ${total}.`}
+              >
+                <SelectField
+                  aria-label="Move tasks to"
+                  placeholder="Choose a category"
+                  value={targetId}
+                  onValueChange={setTargetId}
+                  options={others.map((c) => ({ value: c.id, label: c.name }))}
+                />
+              </Choice>
               <Choice
                 checked={mode === 'delete_tasks'}
                 onSelect={() => pick('delete_tasks')}
-                title={total === 1 ? 'Also delete the task' : `Also delete the ${total} tasks`}
+                title={`Also delete the ${tasks(total)}`}
                 hint="Their comments, subtasks and files are deleted too. This can't be undone."
               >
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor={confirmId}>
-                    Type <kbd className="rounded border border-border px-1 font-mono text-xs">{category.name}</kbd> to confirm
+                    Type “{category.name}” to confirm
                   </Label>
                   <Input
                     id={confirmId}

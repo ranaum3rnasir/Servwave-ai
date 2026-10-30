@@ -667,10 +667,10 @@ test('E2E-39: Estimate expires → Duplicate → Send → Approve → Job → SC
 });
 
 // ──────────────────────────────────────────────────────────
-// E2E-40: Lead WON (approved) → Try mark lost → 400 → Job proceeds → SCHEDULED
+// E2E-40: Lead WON (approved) → Try mark lost → 409 → Job proceeds → SCHEDULED
 // ──────────────────────────────────────────────────────────
 
-test('E2E-40: Lead WON → Try mark lost → 400 (terminal) → Job proceeds → SCHEDULED', async () => {
+test('E2E-40: Lead WON → Try mark lost → 409 (closed, reopen first) → Job proceeds → SCHEDULED', async () => {
   const ctx = await leadToSentEstimate(api);
 
   // Approve estimate → lead WON
@@ -680,10 +680,10 @@ test('E2E-40: Lead WON → Try mark lost → 400 (terminal) → Job proceeds →
   const leadWon = await api.getLead(ctx.leadId);
   expect(leadWon.status).toBe('WON');
 
-  // Try to mark WON lead as lost → 400 (terminal state)
+  // Try to mark WON lead as lost → 409: a closed lead moves only through Reopen lead (S05.19)
   const { res: lostRes, body: lostBody } = await api.markLeadLost(ctx.leadId, 'E2E-40 should fail');
-  expect(lostRes.status()).toBe(400);
-  expect(lostBody.error).toBeTruthy();
+  expect(lostRes.status()).toBe(409);
+  expect(lostBody.error).toBe('To change the status, reopen the lead first.');
 
   // Lead stays WON
   const leadStillWon = await api.getLead(ctx.leadId);

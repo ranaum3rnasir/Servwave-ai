@@ -1,5 +1,5 @@
 import { useScheduleTimezone, pickerValueToIso, isoToPickerValue } from '@/lib/schedule-tz';
-import { useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/axios';
 import { createJobInvoice } from '@/lib/api/jobs';
@@ -8,7 +8,6 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
-import { Checkbox } from '@/components/ui/checkbox';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { DateField } from '@/ui-kit/components/form/dateField';
 import { FormField } from '@/components/patterns/FormField';
@@ -16,7 +15,10 @@ import { extractApiError, formatCurrency } from '@/lib/utils';
 import { RecordPaymentMethodField } from '@/components/payments/RecordPaymentMethodField';
 import { selectedPaymentMethod, useRecordablePaymentMethods } from '@/lib/api/recordablePaymentMethods';
 import { TIP_PRESET_PCT } from '@/lib/tips';
-import { AlertTriangle, Loader2 } from 'lucide-react';
+import { Loader2 } from 'lucide-react';
+
+const apiErrorCode = (err: unknown): string | undefined =>
+  (err as { response?: { data?: { code?: string } } })?.response?.data?.code;
 
 const METHOD_REASON_ID = 'record-payment-method-reason';
 
@@ -101,12 +103,24 @@ export function RecordPaymentDialog({
       setTipOtherValue('');
     }
   }
-  // Overpayment is a real, backend-supported state (recordPayment clamps amount_due at 0 and flags
-  // OVERPAYMENT_FLAGGED on the timeline). Capping the input would refuse a true statement about
-  // money that changed hands - but it must not be a silent slip either, so the surplus has to be
-  // acknowledged explicitly before submit unlocks.
-  const [overpayAcknowledged, setOverpayAcknowledged] = useState(false);
-
+  // Closing (Cancel, X, Escape, a finished payment) hands focus back to the control that opened the dialog. The opener is
+  // read in a layout effect, which runs before the dialog moves focus into itself; the dialog stays mounted while closed,
+  // so the browser's own "back to where you were" is not enough here.
+  const opener = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    if (open) opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  }, [open]);
+  useEffect(() => {
+    if (open) return;
+    const target = opener.current;
+    opener.current = null;
+    if (!target) return;
+    const timer = window.setTimeout(() => {
+      const active = document.activeElement;
+      if (target.isConnected && (!active || active === document.body)) target.focus();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [open]);
   const resetForm = () => {
     setAmount(payableNow);
     setPickedMethod('');
@@ -115,7 +129,6 @@ export function RecordPaymentDialog({
     setSeededPaidAt(defaultPaidAt);
     setReferenceNumber('');
     setNotes('');
-    setOverpayAcknowledged(false);
     setTipSelection('');
     setTipOtherValue('');
   };
@@ -130,13 +143,14 @@ export function RecordPaymentDialog({
       ? Math.round(amount * (Number(tipSelection) / 100) * 100) / 100
       : 0;
 
-  const overpayment = Math.round((amount - amountDue) * 100) / 100;
-  // The gate applies ONLY when an invoice with a real balance exists. On the composite
-  // (invoiceId === null) path the invoice is CREATED for exactly the typed amount, so `amountDue`
-  // is always 0 and an overpayment is impossible by construction - gating there would make every
-  // on-site urgent-workflow collection demand an acknowledgement of a nonsensical "more than the
-  // $0.00 balance due".
-  const isOverpay = !isNoInvoice && Number.isFinite(amount) && overpayment > 0;
+  // A hand payment can never be larger than the balance due: the server refuses it, and the dialog
+  // says so before the click. The composite (no invoice) path is exempt: the invoice is CREATED for
+  // exactly the typed amount, so `amountDue` is always 0 there and there is no balance to exceed.
+  // While a bank payment is clearing, the processing texts below own the message (payable-now cap).
+  const dueCents = Math.round(amountDue * 100);
+  const nothingLeft = !isNoInvoice && processing === 0 && dueCents <= 0;
+  const aboveBalance =
+    !isNoInvoice && processing === 0 && dueCents > 0 && Number.isFinite(amount) && Math.round(amount * 100) > dueCents;
   // Slice 28b: above payable-now while a debit is clearing is refused (the server answers 409).
   const overPayableNow = processing > 0 && Number.isFinite(amount) && amount > payableNow + 0.0001;
 
@@ -156,6 +170,16 @@ export function RecordPaymentDialog({
       onSuccess();
       onOpenChange(false);
       resetForm();
+    },
+    onError: (err) => {
+      // The balance moved while the dialog was open: the server's sentence shows under the Amount
+      // field, and the invoice is reloaded so the new balance is what the person sees next.
+      if (apiErrorCode(err) === 'AMOUNT_ABOVE_BALANCE') {
+        queryClient.invalidateQueries({ queryKey: ['invoice', invoiceId] });
+        queryClient.invalidateQueries({ queryKey: ['invoices'] });
+        // The job page reads the balance it passes in from its financials query.
+        if (jobId) queryClient.invalidateQueries({ queryKey: ['job-financials', jobId] });
+      }
     },
   });
 
@@ -203,6 +227,15 @@ export function RecordPaymentDialog({
 
   const isPending = mutation.isPending || composite.isPending;
   const error = isNoInvoice ? composite.error : mutation.error;
+  const serverCapError =
+    !isNoInvoice && mutation.error && apiErrorCode(mutation.error) === 'AMOUNT_ABOVE_BALANCE'
+      ? extractApiError(mutation.error, '')
+      : null;
+  const amountError = nothingLeft
+    ? 'There is nothing left to pay on this invoice.'
+    : aboveBalance
+      ? `That is more than the ${formatCurrency(amountDue)} balance due. Enter ${formatCurrency(amountDue)} or less.`
+      : serverCapError;
 
   const handleSubmit = () => {
     if (isNoInvoice) {
@@ -230,19 +263,20 @@ export function RecordPaymentDialog({
       width="xs"
       footer={
         depositBlocked ? (
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" className="max-sm:h-11" onClick={() => onOpenChange(false)}>
             Close
           </Button>
         ) : (
           <>
-            <Button variant="outline" onClick={() => onOpenChange(false)}>
+            <Button variant="outline" className="max-sm:h-11" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
             <Button
+              className="max-sm:h-11"
               onClick={handleSubmit}
-              aria-describedby={noMethod ? METHOD_REASON_ID : isOverpay && !overpayAcknowledged ? 'record-payment-overpay-warning' : undefined}
+              aria-describedby={noMethod ? METHOD_REASON_ID : undefined}
               disabled={
-                !method || !amount || amount <= 0 || !paidAt || overPayableNow || (isOverpay && !overpayAcknowledged) || isPending
+                !method || !amount || amount <= 0 || !paidAt || overPayableNow || Boolean(amountError) || isPending
               }
             >
               {isPending ? (
@@ -280,31 +314,28 @@ export function RecordPaymentDialog({
           )}
 
           <div>
-            <FormField label="Amount *" htmlFor="record-payment-amount">
-            <Input
-              kind="money"
-              value={amount}
-              onChange={(e) => {
-                // An empty field yields NaN from parseFloat; coerce to 0 so the controlled input
-                // never receives NaN (which renders as a blank the user cannot tell from unset).
-                const v = parseFloat(e.target.value);
-                setAmount(Number.isNaN(v) ? 0 : v);
-                // Re-arm the acknowledgement whenever the amount changes.
-                setOverpayAcknowledged(false);
-              }}
-              min={0.01}
-              // No max: the API accepts an overpayment and flags it (OVERPAYMENT_FLAGGED).
-              // Capping here refuses a true statement about money that changed hands - the
-              // acknowledgement gate below makes it deliberate instead of silent.
-              step={0.01}
-            />
+            <FormField
+              label="Amount *"
+              htmlFor="record-payment-amount"
+              hint={isNoInvoice ? undefined : `Balance due: ${formatCurrency(amountDue)}`}
+              error={amountError ? <span role="alert">{amountError}</span> : undefined}
+            >
+              <Input
+                kind="money"
+                value={amount}
+                onChange={(e) => {
+                  // An empty field yields NaN from parseFloat; coerce to 0 so the controlled input
+                  // never receives NaN (which renders as a blank the user cannot tell from unset).
+                  const v = parseFloat(e.target.value);
+                  setAmount(Number.isNaN(v) ? 0 : v);
+                  // A server refusal belongs to the amount that was sent; a new amount clears it.
+                  if (mutation.isError) mutation.reset();
+                }}
+                min={0.01}
+                max={isNoInvoice ? undefined : payableNow}
+                step={0.01}
+              />
             </FormField>
-            {/* No balance to state on the composite path - the invoice does not exist yet. */}
-            {!isNoInvoice && (
-              <p className="mt-1 text-xs text-text-secondary">
-                Balance due: {formatCurrency(amountDue)}
-              </p>
-            )}
             {processing > 0 && (
               <p className="mt-1 text-xs text-text-secondary" data-testid="record-payment-processing">
                 A bank payment of {formatCurrency(processing)} is still processing. You can record up to{' '}
@@ -315,30 +346,6 @@ export function RecordPaymentDialog({
               <p className="mt-1 text-xs text-danger" role="alert" data-testid="record-payment-processing-over">
                 That is more than can be recorded while the bank payment clears: up to {formatCurrency(payableNow)}.
               </p>
-            )}
-
-            {isOverpay && (
-              <div
-                id="record-payment-overpay-warning"
-                role="alert"
-                className="mt-2 rounded-card border border-warning-border bg-warning-surface p-2.5"
-              >
-                <div className="flex items-start gap-2 text-xs text-warning-text">
-                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
-                  <span>
-                    This is more than the {formatCurrency(amountDue)} balance due. The extra{' '}
-                    {formatCurrency(overpayment)} will be recorded as an overpayment you may need
-                    to refund.
-                  </span>
-                </div>
-                <label className="mt-2 flex cursor-pointer items-center gap-2 text-xs font-medium text-warning-text">
-                  <Checkbox
-                    checked={overpayAcknowledged}
-                    onCheckedChange={(v) => setOverpayAcknowledged(v === true)}
-                  />
-                  Record anyway - overpayment of {formatCurrency(overpayment)}
-                </label>
-              </div>
             )}
           </div>
 
@@ -426,7 +433,7 @@ export function RecordPaymentDialog({
             />
           </FormField>
 
-          {error && (
+          {error && !serverCapError && (
             <p className="text-sm text-danger">
               {extractApiError(error, 'Failed to record payment')}
             </p>

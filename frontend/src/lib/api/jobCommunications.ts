@@ -9,6 +9,8 @@
 import { type QueryClient, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/axios';
 import type { CommChannel } from '@/components/communication/shared/atoms';
+import type { SendSmsResult } from '@/lib/api/communication';
+import { SPIDER_UNREAD_KEY } from '@/lib/api/spider';
 
 export interface CommItem {
   id: string;
@@ -174,7 +176,7 @@ export function useSendLeadSms(leadId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ customerId, body }: { customerId: string; body: string }) =>
-      api.post('/api/communication/sms', { customerId, body, leadId }).then((r) => r.data),
+      api.post('/api/communication/sms', { customerId, body, leadId }).then((r) => r.data as SendSmsResult),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['lead-communications', leadId] });
       // Prefix match — refresh the per-customer roll-up too (the row is
@@ -182,6 +184,10 @@ export function useSendLeadSms(leadId: string) {
       qc.invalidateQueries({ queryKey: ['customer-communications'] });
       qc.invalidateQueries({ queryKey: ['communication'] });
       invalidateLeadViews(qc, leadId);
+      // A text that went out moves a New lead on, and the server's unread list then leaves its
+      // Spider alert out: refetch it so the card goes at once (SPEC-6 §6.4). A text that did not
+      // go out changes nothing there, so the refetch is harmless. Without Spider it is unmounted.
+      qc.invalidateQueries({ queryKey: SPIDER_UNREAD_KEY });
     },
   });
 }
@@ -190,12 +196,25 @@ export function useSendLeadSms(leadId: string) {
  * The lead views an outbound contact can change (#2618): the server moves a New lead to
  * Contacted on a qualifying contact, so the lead's detail, the leads list (prefix match, every
  * page and filter) and the lead's History panel go stale. Refetching after a contact that moved
- * nothing is harmless.
+ * nothing is harmless. Exported for the attach doors (SPEC-4 §6.10): attaching an existing
+ * communication to a lead can move it too.
  */
-function invalidateLeadViews(qc: QueryClient, leadId: string) {
+export function invalidateLeadViews(qc: QueryClient, leadId: string) {
   qc.invalidateQueries({ queryKey: ['lead', leadId] });
   qc.invalidateQueries({ queryKey: ['leads'] });
   qc.invalidateQueries({ queryKey: ['timeline', 'LEAD', leadId] });
+}
+
+/**
+ * Every lead view, by prefix (SPEC-4 D7, §6.12.6): a detach, a move away, an edit or a delete can
+ * move the lead a communication LEFT back to New, and the hook does not know which lead that was.
+ * Only the queries on screen refetch; the rest are marked stale. It also covers the lead the entry
+ * reached.
+ */
+export function invalidateAllLeadViews(qc: QueryClient) {
+  qc.invalidateQueries({ queryKey: ['lead'] });
+  qc.invalidateQueries({ queryKey: ['leads'] });
+  qc.invalidateQueries({ queryKey: ['timeline', 'LEAD'] });
 }
 
 /**
@@ -462,6 +481,9 @@ export function useUpdateCommunicationLog(entryId: string) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['manual-communication-log', entryId] });
       invalidateTimelines(qc);
+      // Saving an outbound entry onto a lead can move that lead to Contacted (SPEC-4 D6), and taking
+      // one off a lead can move the lead it left back to New (D7): every lead view refreshes.
+      invalidateAllLeadViews(qc);
     },
   });
 }
@@ -471,7 +493,11 @@ export function useDeleteCommunicationLog(entryId: string) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () => api.delete(`/api/communication/manual-log/${entryId}`).then((r) => r.data),
-    onSuccess: () => invalidateTimelines(qc),
+    onSuccess: () => {
+      invalidateTimelines(qc);
+      // Deleting the entry that held its lead can move that lead back to New (SPEC-4 D7).
+      invalidateAllLeadViews(qc);
+    },
   });
 }
 
@@ -513,6 +539,28 @@ export function useSendJobEmail(jobId: string) {
       qc.invalidateQueries({ queryKey: ['customer-communications'] });
       qc.invalidateQueries({ queryKey: ['lead-communications'] });
       qc.invalidateQueries({ queryKey: ['communication'] });
+    },
+  });
+}
+
+/**
+ * POST /api/communication/emails — send an email stamped with this LEAD at origin (SPEC-4 §6.6,
+ * Option A). Mirrors useSendJobEmail; the backend org- and scope-validates `lead_id`, stamps it on
+ * the row, and records the lead's first outbound contact once the email is sent, so the lead's
+ * own views refresh too.
+ */
+export function useSendLeadEmail(leadId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ to, subject, body }: { to: string; subject: string; body: string }) =>
+      api
+        .post('/api/communication/emails', { to, subject, body: [body], lead_id: leadId })
+        .then((r) => r.data),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['lead-communications', leadId] });
+      qc.invalidateQueries({ queryKey: ['customer-communications'] });
+      qc.invalidateQueries({ queryKey: ['communication'] });
+      invalidateLeadViews(qc, leadId);
     },
   });
 }

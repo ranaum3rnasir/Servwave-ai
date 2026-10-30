@@ -163,6 +163,20 @@ suite('deposit checkout charges the amount due, only while the deposit is open (
     expect(sessionsCreate.mock.calls[0][0].metadata).toMatchObject({ invoiceId: f.deposit, kind: 'deposit', payableNowCents: '30000' });
   });
 
+  // V7-12a pin (no overpaid invoices, BE-14 row 2): the deposit door never lets the caller pick the
+  // amount. It prices at payable-now, so a body that asks for more cannot make it charge more
+  // (the door passes no requestedCents to the pricing module).
+  it('ignores an amount or tip in the body: the deposit is charged at exactly what is left', async () => {
+    const f = await sentEstimateWithDeposit({ recordedByHand: 200 });
+
+    const res = await request(app)
+      .post(`/api/estimates/${f.estimate}/approve?token=est-${f.org.slice(0, 8)}`)
+      .send({ payment_method: 'CARD', signature_data: SIGNATURE, amount: 900, requested_amount: 900, tip: 50 });
+
+    expect(res.status).toBe(200);
+    expect(chargedCents()).toEqual([30000]);
+  });
+
   // The retry door: the customer signed, abandoned the checkout, staff then recorded part of the
   // deposit (which closes the open link), and the customer comes back to pay the rest.
   it('a signed estimate coming back to pay after $200 was recorded by hand is asked for $300', async () => {

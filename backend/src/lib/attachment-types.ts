@@ -27,3 +27,9 @@ export const ALLOWED_MIME_TYPES = [
  *  list itself so the email compose path cannot advertise a different set than it takes. */
 export const ALLOWED_TYPES_LABEL = 'JPG, PNG, HEIC, MP4, PDF, Word, Excel, PowerPoint, CSV, TXT';
 
+
+/**
+ * The marker a file carries when it was uploaded from the Payments page's Documents tab (V7-10a), stored in
+ * `attachments.source`. The only value a caller may set; every other attachment keeps `source` null.
+ */
+export const PAYMENTS_DOCUMENTS_SOURCE = 'PAYMENTS_DOCUMENTS';

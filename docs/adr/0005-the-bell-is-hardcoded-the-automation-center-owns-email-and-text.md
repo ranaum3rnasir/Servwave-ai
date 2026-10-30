@@ -154,7 +154,8 @@ rest of this work combined, in exchange for a type the authorable narrowing alre
 Spider, the AI Center's lead watcher, is a **named exception** to "email and text are automated
 through the Automation Center". When the Spider sweep claims a new alert (a lead stayed in an open
 status longer than the company's limit), it sends its own email and text to the alerted staff,
-alongside its `spider.alert` bell row. It does not go through a workflow.
+alongside its in-app alert (the Spider button, panel and red frame; never the bell, Ran 2026-10-20).
+It does not go through a workflow.
 
 What keeps the exception narrow:
 
@@ -169,6 +170,11 @@ What keeps the exception narrow:
 - **Admin-configured, per company.** The channels are switched on and off on Spider's settings,
   not in the Automation Center, so an admin who wants Spider quiet on email or text turns that
   channel off there.
+
+The same exception covers Spider's starting summary (#2794, 17 Oct 2026): when Spider starts
+watching something new, the sweep reports the backlog already past its limit once per person,
+through the same delivery module, senders, brakes and texting-usage count, alongside a
+`spider.starting_summary` bell row (duty, time-driven, classified beside `spider.alert`).
 
 The code is `backend/src/services/spider/`. Nothing else in the product gains a second path to
 email or text through this addendum.

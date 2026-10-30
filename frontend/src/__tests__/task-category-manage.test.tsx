@@ -3,7 +3,7 @@
  *
  * An admin adds, renames and recolors categories from one shared manage panel, opened by the
  * admin-only "Categories" button on the Tasks page and by the Task categories card in
- * Settings > Payments & Lists; and creates one from a task's category picker through its fixed
+ * Settings > Lists; and creates one from a task's category picker through its fixed
  * "Create category" row (anything typed pre-fills the name). Non-admins see none of it. A rename or recolor shows on every task
  * already carrying the category, and the chip's text stays readable on every palette color.
  */
@@ -28,7 +28,7 @@ import { CreateTaskDialog } from '@/pages/v2/tasks/components/createTaskDialog';
 import { TaskDetailDrawer as LegacyTaskDetailDrawer } from '@/components/tasks/TaskDetailDrawer';
 import { CreateTaskModal } from '@/components/tasks/CreateTaskModal';
 import TasksHubPage from '@/pages/v2/tasks/TasksHubPage';
-import PaymentsListsPage from '@/pages/v2/settings/PaymentsListsPage';
+import ListsPage from '@/pages/v2/settings/ListsPage';
 import { buildAbility } from '@/lib/ability';
 
 const ADMIN = buildAbility([{ action: 'manage', subject: 'all' }]);
@@ -351,20 +351,21 @@ describe('the Tasks page "Categories" button', () => {
   });
 });
 
-describe('Settings > Payments & Lists - Task categories card', () => {
-  it('an admin sees it beside the Tags card, holding the manage panel', async () => {
-    renderWithProviders(<PaymentsListsPage />, { ability: ADMIN });
+describe('Settings > Lists - Task categories card', () => {
+  it('an admin sees it after the Tags card, listing the categories with the Create row pinned above them', async () => {
+    renderWithProviders(<ListsPage />, { ability: ADMIN });
     const heading = await screen.findByRole('heading', { name: 'Task categories' });
     const tags = screen.getByRole('heading', { name: 'Tags' });
     expect(tags.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(await screen.findByRole('list', { name: 'Task categories' })).toBeInTheDocument();
-    // "Add category" sits in the card's header row, beside its title.
-    expect(heading.closest('.justify-between') as HTMLElement).toContainElement(screen.getByRole('button', { name: 'Add category' }));
+    // "Create task category" is the card's pinned row, in the body under the title.
+    expect(heading.closest('[data-slot="card"]') as HTMLElement).toContainElement(screen.getByRole('button', { name: 'Create task category' }));
   });
 
   it('a non-admin does not see it', async () => {
-    renderWithProviders(<PaymentsListsPage />, { ability: NON_ADMIN });
-    await screen.findByText('Job Types');
+    // May change company settings, but not manage task categories: the rest of the page shows, this card does not.
+    renderWithProviders(<ListsPage />, { ability: buildAbility([{ action: 'update', subject: 'Organization' }]) });
+    await screen.findByText('Job types');
     expect(screen.queryByRole('heading', { name: 'Task categories' })).not.toBeInTheDocument();
   });
 });

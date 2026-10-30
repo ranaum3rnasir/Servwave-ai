@@ -53,12 +53,12 @@ export function needsResend(latestEditedAt: Date | null, latestSentAt: Date | nu
  * payments can be voided, and migrated/legacy invoices carry real balances with no Payment row at
  * all.
  *
- * KNOWN LOSS, deliberate and locked by test (backend/src/__tests__/invoice-lines.test.ts, the
- * two-edit characterization): this reconstructs cash from (total, deposit, amount_due, credits)
- * only. `amount_due` is clamped at 0, so once an edit drives it to that clamp - reachable only when
- * credits > 0, since otherwise the invoice settles and locks - the cash figure is permanently
- * understated by the clamped amount, and a later total-raising edit over-bills the customer by that
- * difference. Closing it needs a persisted collected-cash column; it is out of scope here.
+ * Clamp: `amount_due` is floored at 0, so this figure would be understated if an edit could drive the
+ * due below zero. It no longer can: recomputeAndPersist (invoice-lines.controller.ts) refuses, with
+ * a 409 TOTAL_BELOW_PAID, any edit that takes the total below deposit credit + cash + credits
+ * (BE-14d, D-16). The old two-edit loss (clamp, then a later raise over-bills) is therefore not
+ * reachable through an edit. The clamp here stays as a guard for legacy rows that are already
+ * overpaid in the data.
  */
 export function amountPaidOf(
   totalAmount: number,

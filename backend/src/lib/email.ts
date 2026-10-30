@@ -13,6 +13,7 @@ import { prepareReplyToken, persistReplyToken, replyAddressFor } from './reply-t
 import { recordConversationData } from './mailbox/conversations';
 import { isTransactionalSendSuppressed } from './email-suppression';
 import { buildSalesRequestEmail, type SalesTopic } from './sales-request-email';
+import { bankPaymentFailedSentence } from './bank-payment-failed-text';
 
 export interface OrganizationBrandingSubset {
   id: string;
@@ -783,7 +784,9 @@ function safeLogoUrl(url: string | null | undefined): string | null {
 
 // ─── HTML Templates ──────────────────────────────────────
 
-function wrapHtml(body: string, org?: { name: string; logo_url: string | null; brand_color: string }): string {
+// Exported for Spider's alert email (services/spider/delivery.ts), which is wrapped in the same
+// branded layout as every other business email.
+export function wrapHtml(body: string, org?: { name: string; logo_url: string | null; brand_color: string }): string {
   const brandColor = org?.brand_color ?? '#242424';
   const logo = safeLogoUrl(org?.logo_url);
   const headerContent = logo
@@ -1832,7 +1835,7 @@ export async function sendBankPaymentFailedEmail(params: {
     ${raw(button)}
   `);
   return sendCustomerBankNotice(params, `Bank Payment Failed - Invoice ${params.invoiceNumber}`,
-    `Hi ${params.customerName}, your bank payment of ${formatCurrency(params.amount)} for invoice ${params.invoiceNumber} didn't go through.${params.payUrl ? ` Pay again here: ${params.payUrl}` : ''}`,
+    bankPaymentFailedSentence(params),
     html);
 }
 
@@ -1984,7 +1987,7 @@ function paymentsActionNeededHtml(params: {
  * Manage roles and permissions) from lib/payments-notifications.ts (sendAccountNotices) when Stripe's
  * requirements_due gains items or the account becomes disabled/restricted —
  * the "Interrupt + email" half of billing.payments_action_needed /
- * billing.payments_paused (§6.7). Deep-links to Settings → Payments.
+ * billing.payments_paused (§6.7). Deep-links to Settings > ServWave Payments.
  */
 export async function sendPaymentsActionNeededEmail(params: {
   organizationId: string;

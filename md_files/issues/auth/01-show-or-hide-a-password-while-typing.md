@@ -1,7 +1,7 @@
 # Show or hide a password while typing
 
 **Type:** AFK
-**Status:** Built and reviewed locally (commit ac496aa6 on feat/password-reset). Not yet on staging.
+**Status:** Released. On staging via #2873 (c8c94961), on production via #2883 (main f7a0ab2a, 2026-10-26). Live-checked on staging (spec §2.2 C).
 **Spec sections:** §6
 
 ## Parent

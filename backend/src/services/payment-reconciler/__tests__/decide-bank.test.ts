@@ -122,7 +122,7 @@ describe('decide: the bank debit clears or fails', () => {
   it('failed: the PROCESSING payment settles to FAILED, and the customer is sent a link to pay again', () => {
     expect(decide(bankEvent('checkout.session.async_payment_failed'), snapshot({ bookedPayment: processing }))).toEqual([
       { type: 'settle_payment', paymentId: 'pay_1', invoiceId: INVOICE, to: 'FAILED' },
-      { type: 'notify_bank_payment', kind: 'failed', invoiceId: INVOICE, amountCents: 50000, deposit: false, payAgain: true },
+      { type: 'notify_bank_payment', kind: 'failed', invoiceId: INVOICE, amountCents: 50000, deposit: false, payAgain: true, paymentId: 'pay_1' },
     ]);
   });
 
@@ -219,7 +219,7 @@ describe('decide: a deposit paid by bank under "deposit required" (call 3)', () 
     const won = { id: 'pay_1', state: 'PROCESSING' as const, voided: false, amountCents: 50000, chargeId: 'py_1' };
     expect(decide(deposit('checkout.session.async_payment_failed'), snapshot({ invoice: depositInvoice, bookedPayment: won }))).toEqual([
       { type: 'settle_payment', paymentId: 'pay_1', invoiceId: INVOICE, to: 'FAILED' },
-      { type: 'notify_bank_payment', kind: 'failed', invoiceId: INVOICE, amountCents: 50000, deposit: true, payAgain: true },
+      { type: 'notify_bank_payment', kind: 'failed', invoiceId: INVOICE, amountCents: 50000, deposit: true, payAgain: true, paymentId: 'pay_1' },
     ]);
   });
 });

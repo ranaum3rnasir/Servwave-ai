@@ -144,6 +144,13 @@ const envSchema = z.object({
   // secret rejects all webhook traffic rather than silently accepting
   // unverified payloads.
   RESEND_WEBHOOK_SECRET: z.string().trim().optional(),
+  // Spider pilot: comma-separated ids of the non-demo companies that get Spider next to the demo companies
+  // (they still need the `spider` feature). Unset or empty = demo companies only. Ids only - never a name,
+  // and no default here. Read by services/spider/gate.ts for the endpoints, the sweep and the auth payload.
+  // Read per process, but the sweep runs on whichever backend wins the database-wide lock: set the same
+  // value on every backend service that shares this database, or a pilot's alerts get cleared by a server
+  // without the list. Each server logs the count at boot ("Spider pilot list: N companies").
+  SPIDER_PILOT_ORG_IDS: z.string().trim().optional(),
   // Where "book a call" requests from the AI Agentic Farm catalog land — always
   // ServWave's own sales inbox, regardless of which org's user is booking.
   AI_FARM_SALES_EMAIL: z.string().trim().default('info@servwave.com'),

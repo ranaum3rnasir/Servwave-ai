@@ -202,9 +202,8 @@ describe('CreditInvoiceDialog', () => {
   });
 });
 
-// #843: the API accepts an overpayment and only flags it on the timeline, so the UI must make it a
-// deliberate, acknowledged choice rather than a silent slip.
-describe('RecordPaymentDialog (overpayment gate)', () => {
+// V7-12: no overpaid invoices. The dialog refuses an amount above the balance (the server does too).
+describe('RecordPaymentDialog (balance cap)', () => {
   const props = {
     open: true as const,
     onOpenChange: vi.fn(),
@@ -214,18 +213,17 @@ describe('RecordPaymentDialog (overpayment gate)', () => {
     onSuccess: vi.fn(),
   };
 
-  it('shows the balance due, no override toggle, and an enabled submit when amount <= balance', async () => {
+  it('shows the balance due, no tick-box, and an enabled submit when amount <= balance', async () => {
     renderWithProviders(<RecordPaymentDialog {...props} />);
 
     expect(screen.getByText('Balance due: $200.00')).toBeInTheDocument();
-    // Default amount === amountDue: no overpayment, so no toggle and no warning.
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     // The submit waits for the lists of payment methods to be read, then opens.
     await waitFor(() => expect(screen.getByRole('button', { name: 'Record Payment' })).toBeEnabled());
   });
 
-  it('requires an explicit acknowledgement before submit when amount > balance', async () => {
+  it('refuses an amount above the balance with the sentence, no tick-box, and a disabled submit', async () => {
     const user = userEvent.setup();
     renderWithProviders(<RecordPaymentDialog {...props} />);
 
@@ -233,31 +231,24 @@ describe('RecordPaymentDialog (overpayment gate)', () => {
     await user.clear(amountInput);
     await user.type(amountInput, '250');
 
-    // Surplus named, warning is an alert, submit blocked.
-    expect(screen.getByRole('alert')).toBeInTheDocument();
-    expect(screen.getByText(/overpayment of \$50\.00/i)).toBeInTheDocument();
-    const submit = screen.getByRole('button', { name: 'Record Payment' });
-    expect(submit).toBeDisabled();
-
-    // Acknowledge → unlocked.
-    await user.click(screen.getByRole('checkbox'));
-    expect(screen.getByRole('button', { name: 'Record Payment' })).toBeEnabled();
+    expect(screen.getByRole('alert')).toHaveTextContent('That is more than the $200.00 balance due. Enter $200.00 or less.');
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Record Payment' })).toBeDisabled();
   });
 
-  it('re-arms the acknowledgement when the amount changes again', async () => {
+  it('clears the refusal as soon as the amount is back within the balance', async () => {
     const user = userEvent.setup();
     renderWithProviders(<RecordPaymentDialog {...props} />);
 
     const amountInput = moneyField();
     await user.clear(amountInput);
     await user.type(amountInput, '250');
-    await user.click(screen.getByRole('checkbox'));
-    expect(screen.getByRole('button', { name: 'Record Payment' })).toBeEnabled();
-
-    // Typing another digit ($2,500) must NOT carry the old acknowledgement forward.
-    await user.type(amountInput, '0');
-    expect(screen.getByText(/overpayment of \$2,300\.00/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Record Payment' })).toBeDisabled();
+
+    await user.clear(amountInput);
+    await user.type(amountInput, '200');
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Record Payment' })).toBeEnabled());
   });
 
   it('coerces a cleared amount field to 0 instead of NaN, and keeps submit disabled', async () => {
@@ -271,21 +262,18 @@ describe('RecordPaymentDialog (overpayment gate)', () => {
     expect(screen.getByRole('button', { name: 'Record Payment' })).toBeDisabled();
   });
 
-  it('POSTs the full over-amount once acknowledged', async () => {
+  it('POSTs the amount when it equals the balance', async () => {
     const user = userEvent.setup();
-    mockApi.post.mockResolvedValue({ data: { invoice: {}, payment: {}, overpaid: 50 } });
+    mockApi.post.mockResolvedValue({ data: { invoice: {}, payment: {} } });
     renderWithProviders(<RecordPaymentDialog {...props} />);
 
-    const amountInput = moneyField();
-    await user.clear(amountInput);
-    await user.type(amountInput, '250');
-    await user.click(screen.getByRole('checkbox'));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Record Payment' })).toBeEnabled());
     await user.click(screen.getByRole('button', { name: 'Record Payment' }));
 
     await waitFor(() => {
       expect(mockApi.post).toHaveBeenCalledWith(
         '/api/invoices/inv-1/payments',
-        expect.objectContaining({ amount: 250 }),
+        expect.objectContaining({ amount: 200 }),
       );
     });
   });

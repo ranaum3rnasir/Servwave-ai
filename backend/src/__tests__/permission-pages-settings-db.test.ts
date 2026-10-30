@@ -99,8 +99,11 @@ suite('Pages and settings follow switches; the dashboard and reference data answ
       const { org } = await fx.newOrg();
       await db.organization.update({
         where: { id: org },
-        data: { job_type_options: ['Install', 'Repair'], source_options: ['Referral', 'Website'], accepted_payment_methods: ['CARD'] },
+        data: { accepted_payment_methods: ['CARD'] },
       });
+      // The lists are rows now; the org record is built from them.
+      await db.jobType.createMany({ data: ['Install', 'Repair'].map((name, i) => ({ organization_id: org, name, sort_order: i })) });
+      await db.leadSource.createMany({ data: ['Referral', 'Website'].map((name, i) => ({ organization_id: org, name, sort_order: i })) });
       const nobody = await personWith(org, {});
       const res = await (await nobody.api()).get('/api/organization');
       expect(res.status).toBe(200);

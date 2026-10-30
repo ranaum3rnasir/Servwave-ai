@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useLayoutEffect, useRef } from 'react';
 import { NavLink, Outlet, useNavigate, useLocation } from 'react-router-dom';
 import { X } from 'lucide-react';
 
@@ -20,6 +20,7 @@ import { canSubmitSaver } from '@/lib/settings/types';
 
 import { SettingsBarProvider, type SettingsSaver } from './settingsBar';
 import { useRecordVisit } from '../pageBreadcrumbs';
+import { isLegacyPaymentsTab } from './legacyPaymentsTabs';
 
 interface NavItem {
   to: string;
@@ -34,8 +35,8 @@ interface NavItem {
   // is display only and so has no rule to read.
   switchKey?: string;
   // A second CASL pair that ALSO shows the entry, for a page that serves a narrower audience
-  // part of what it holds - e.g. Payments & Lists, whose "Payments needing attention" list
-  // belongs to everyone allowed to refund (payments go-live slice 22).
+  // part of what it holds - e.g. ServWave Payments, whose payout card belongs to whoever holds
+  // Manage payout account even without Edit company settings.
   orAction?: AppAction;
   orSubject?: AppSubject;
   // Additionally require communication-module access (the `phone` entitlement,
@@ -49,6 +50,9 @@ interface NavItem {
   // The page itself sends a visitor without the switch back to Settings, so it never becomes a step in the trail.
   redirectsWhenRefused?: boolean;
 }
+
+/** What the shell uses while the current page has registered no saver. */
+const NO_SAVER: SettingsSaver = { save: () => {}, discard: () => {}, isDirty: false };
 
 /**
  * Copied from the legacy `SettingsLayout.NAV` row for row - the labels are the
@@ -64,9 +68,6 @@ interface NavItem {
  * is three settings pages a user can only reach by typing the URL, which is the
  * same as losing them.
  */
-/** Pages with nothing to save: the shell hides Discard / Save Changes for them. */
-const READ_ONLY_PAGES = ['payout-account'];
-
 const NAV: NavItem[] = [
   { to: 'profile', label: 'My Profile', group: 'ACCOUNT', always: true },
   { to: 'company', label: 'Company Profile', group: 'ORGANIZATION', action: 'read', subject: 'Organization' },
@@ -77,15 +78,16 @@ const NAV: NavItem[] = [
   // Follows Manage roles and permissions; nobody else sees the tab, not even read-only (PRD 2, S02.5).
   { to: 'roles', label: 'Roles & Permissions', group: 'PEOPLE & ACCESS', action: 'manage_roles', subject: 'Role' },
   { to: 'security', label: 'Login & Security', group: 'PEOPLE & ACCESS', action: 'read', subject: 'Organization' },
-  // Configuration only (payments go-live P8): the attention list and the payments area moved to the Payments page.
-  { to: 'payments', label: 'Payments & Lists', group: 'ADVANCED', action: 'update', subject: 'Organization' },
-  // Payments go-live slice 34: the owner's own page. Shown only to whoever holds Manage payout account.
-  { to: 'payout-account', label: 'Payout account & verification', group: 'ADVANCED', action: 'manage_payout_account', subject: 'Organization', redirectsWhenRefused: true },
+  // Configuration only (payments go-live P8): the attention list and the payments area live on the Payments page.
+  // Whoever holds only Manage payout account still reaches the payout card, so that switch shows the row too.
+  { to: 'servwave-payments', label: 'ServWave Payments', group: 'ADVANCED', action: 'update', subject: 'Organization', orAction: 'manage_payout_account', orSubject: 'Organization' },
+  // The org-owned lists (job types, sources, tags, task categories). Every change on it saves on its own.
+  { to: 'lists', label: 'Lists', group: 'ADVANCED', action: 'update', subject: 'Organization' },
   // SRVW-112 - the CASL pair matches the backend write gate on /api/job-sub-statuses.
   { to: 'job-sub-statuses', label: 'Job Sub-Statuses', group: 'ADVANCED', action: 'update', subject: 'Organization' },
   // Decline-reasons slice B - the CASL pair matches the WRITE gate on /api/lost-reason-options.
   // Placed beside the other per-org vocabulary list (Job Sub-Statuses) rather than folded into
-  // Payments & Lists: it is the same kind of settings surface that one is, and that page's lists
+  // Lists: it is the same kind of settings surface that one is, and that page's lists
   // are a different shape entirely (string arrays on the organisation row, saved through the save bar).
   { to: 'decline-reasons', label: 'Estimate Decline Reasons', group: 'ADVANCED', action: 'update', subject: 'Organization' },
   // Roles & Permissions S06.14 - the job twin of the row above; the CASL pair matches the WRITE gate on /api/job-cancel-reasons.
@@ -128,12 +130,24 @@ export default function SettingsLayout() {
   const mine = useMySwitches();
   const navigate = useNavigate();
   const location = useLocation();
-  const [saver, setSaver] = useState<SettingsSaver>({ save: () => {}, discard: () => {}, isDirty: false });
+  // The page's saver is remembered WITH the address it registered on. A page that registers nothing (Lists, or a
+  // payout-only visitor's page) therefore never inherits the previous page's saver or its Save bar.
+  const [registered, setRegistered] = useState<{ path: string; saver: SettingsSaver } | null>(null);
   const [saving, setSaving] = useState(false);
+  const pathRef = useRef(location.pathname);
+  // A layout effect, so the address is current before any page effect (a child's registerSaver) runs.
+  useLayoutEffect(() => {
+    pathRef.current = location.pathname;
+  }, [location.pathname]);
+  const hasSaver = registered?.path === location.pathname;
+  const saver: SettingsSaver = hasSaver ? registered.saver : NO_SAVER;
   const { isDirty: guardDirty, pendingLeave, setDirty, requestLeave, resolvePending, cancelPending } =
     useSettingsGuard();
 
-  const registerSaver = useCallback((fns: SettingsSaver) => setSaver(fns), []);
+  const registerSaver = useCallback(
+    (fns: SettingsSaver) => setRegistered({ path: pathRef.current, saver: fns }),
+    [],
+  );
 
   // #113 - publish the active page's dirty state so exit paths outside the shell
   // (the v2 topbar user menu, the sidebar, GlobalSearch) route through the same
@@ -217,9 +231,9 @@ export default function SettingsLayout() {
   // to a tab the user lacks CASL for leaves `current` undefined and the title
   // blank. Substituting a fallback title would change behaviour.
   const current = visible.find((n) => location.pathname.includes(`/settings/${n.to}`));
-  const hideSaveBar = READ_ONLY_PAGES.includes(current?.to ?? '')
-    // Payments & Lists opened by URL without the nav item shows the no-access state: nothing there to save.
-    || (!current && location.pathname.includes('/settings/payments'));
+  // The bar belongs to a page that registered a saver. It stays hidden until the page's first effect has run (one
+  // short beat on an editable page, no flicker after) and for good on a page that never registers.
+  const hideSaveBar = !hasSaver;
 
   // Every settings page is a distinct URL, so each is its own step in the
   // trail; naming them all "Settings" would make walking between two of them
@@ -231,7 +245,15 @@ export default function SettingsLayout() {
   // bounces through on the way to the first page they can open. After either, the trail names only where they are.
   const refusedRedirect = Boolean(named?.redirectsWhenRefused) && !current;
   const bareSettings = location.pathname.replace(/\/+$/, '') === '/settings';
-  useRecordVisit('settings', named ? `Settings · ${named.label}` : 'Settings', !refusedRedirect && !bareSettings);
+  // An old ServWave Payments link that carries a known ?tab= passes through this shell on its way to the Payments page.
+  const legacyTabHop =
+    location.pathname === '/settings/servwave-payments' &&
+    isLegacyPaymentsTab(new URLSearchParams(location.search).get('tab'));
+  useRecordVisit(
+    'settings',
+    named ? `Settings · ${named.label}` : 'Settings',
+    !refusedRedirect && !bareSettings && !legacyTabHop,
+  );
 
   const guardedNav = (to: string) => requestLeave(() => navigate(to));
 

@@ -44,6 +44,7 @@ export type AgentUser =
       role?: string;
       org_features?: readonly string[];
       org_is_demo?: boolean;
+      org_is_spider_pilot?: boolean;
     }
   | null
   | undefined;
@@ -126,9 +127,9 @@ export interface LiveAgent {
 /** Every built agent, by catalog id. */
 export const LIVE_AGENTS: Record<string, LiveAgent> = {
   spider: {
-    // Not released: its launch is demo-only (spiderAvailableFor), so it has not gone to customers
-    // and every company outside the gate keeps seeing "Coming soon". Releasing it is two steps:
-    // drop the demo-only half of the gate (here in lib/spider/gate.ts and in the server's
+    // Not released: its launch is limited to demo companies and the pilot list (spiderAvailableFor),
+    // so it has not gone to customers and every company outside the gate keeps seeing "Coming soon".
+    // Releasing it is two steps: drop the demo/pilot half of the gate (in lib/spider/gate.ts and the server's
     // services/spider/gate.ts), and set this to true. A company without the feature then sees
     // "Not on your account yet".
     released: false,
@@ -151,8 +152,8 @@ export const LIVE_AGENTS: Record<string, LiveAgent> = {
       memberOnNotSetUpNote: 'Spider is on for your company. You will get its alerts once an Admin sets it up.',
       memberOffNote: 'An Admin turns Spider on or off. You will get its alerts once it is on.',
       turnOffWarning: [
-        'Spider stops watching your leads and sends no new alerts. Your statuses, time limits and who gets alerted are all kept.',
-        'When you turn it back on, time in a status counts from that moment.',
+        'Spider stops watching your leads and sends no new alerts. Any open Spider alerts are cleared for everyone, and Spider History keeps a record of them.',
+        'Your statuses, time limits and who gets alerted are all kept. When you turn it back on, Spider sends one summary of the leads still past their time limit.',
       ],
     },
   },

@@ -18,7 +18,7 @@ import { CtmApiError, getCall as ctmGetCall, getCallTranscription as ctmGetCallT
 import { summaryOf, transcriptOf, transcriptTurnsOf, unwrapActivity, TranscriptTurn } from '../lib/ctm/ingest';
 import { resolveOutboundNumber } from '../lib/communication/resolveOutboundNumber';
 import { buildBridgeLegs, maskLongDigitRuns, type BridgeLegs, type BridgeLegsRefusal } from '../lib/communication/bridgeLegs';
-import { recordLeadOutboundContact } from '../services/lead-contact.service';
+import { reconsiderLeadLeftBehind, recordLeadContactOnLink, recordLeadOutboundContact } from '../services/lead-contact.service';
 
 // Short-lived playback URLs on the private recordings bucket (plan §4/§10:
 // 300s TTL, minted per play + audited; list payloads never carry URLs).
@@ -1104,13 +1104,20 @@ export async function reassignCallJob(req: Request, res: Response) {
       job_label: string | null;
       lead_id: string | null;
     };
-    if (req.body.job_id != null) {
-      // Pre-read the call for the same-customer constraint (findMany take 1 —
-      // the house pattern for models without a findFirst mock surface).
-      const [call] = await prisma.callSession.findMany({
+    // The stored row before this write (findMany take 1 — the house pattern for models without a
+    // findFirst mock surface), under the same filter as the update. Read on an attach and a detach
+    // alike: D7 needs the lead the call was on.
+    const readBefore = async () => {
+      const [row] = await prisma.callSession.findMany({
         where: { id: req.params.id as string, ...tenantWhere(req), ...visibility },
         take: 1,
       });
+      return row;
+    };
+    let before: Awaited<ReturnType<typeof readBefore>>;
+    if (req.body.job_id != null) {
+      const call = await readBefore();
+      before = call;
       if (!call) {
         res.status(404).json({ error: 'Call not found' });
         return;
@@ -1146,7 +1153,9 @@ export async function reassignCallJob(req: Request, res: Response) {
         lead_id: job.estimate?.lead_id ?? null,
       };
     } else {
-      // Detach drops both ends; the lead was only ever the job's companion.
+      // Detach drops both ends; the lead was only ever the job's companion. A row the person cannot
+      // reach reads nothing here; the update below answers the 404, as before.
+      before = await readBefore();
       data = { job_id: null, job_label: null, lead_id: null };
     }
 
@@ -1158,6 +1167,18 @@ export async function reassignCallJob(req: Request, res: Response) {
     if (result.count === 0) {
       res.status(404).json({ error: 'Call not found' });
       return;
+    }
+
+    // Filing a call on a job releases nothing (SPEC-4 §5), but re-pointing its lead to the job's lead
+    // (or to none) takes it off the lead it was on: D7 reconsiders that lead. After the write, plain
+    // client, never throws. `automated: false`: there is no autodialer.
+    if (before) {
+      const row = { direction: before.direction, automated: false };
+      await reconsiderLeadLeftBehind({ client: prisma }, {
+        source: 'call',
+        before: { leadId: before.lead_id, ...row },
+        after: { leadId: data.lead_id, ...row },
+      }, { orgId: before.organization_id, actorId: req.user!.id, entryId: req.params.id as string });
     }
 
     // Same filter as the update. An attach or a move cannot empty it: the target job above is resolved under the
@@ -1183,6 +1204,13 @@ export async function reassignCallJob(req: Request, res: Response) {
 // lead_id is otherwise only ever stamped at ingest (stash / phone match), so
 // without this a call that missed its lead attribution could never be
 // corrected (live QA 2026-07-21). lead_id: null clears.
+//
+// Attaching an outbound call to a lead is reaching out to that lead (SPEC-4 D1): it is recorded
+// through the shared link rule (recordLeadContactOnLink), dated at the call's start and credited
+// to its agent. reassignCallJob releases nothing: filing a call on a job is not an attach to the
+// lead (SPEC-4 §5). Both doors reconsider the lead an outbound call LEFT (a detach, a move to
+// another lead, or a job of another lead or of none): a Contacted lead with no outbound contact
+// left goes back to New, credited to the person who moved the call (SPEC-4 D7).
 export const reassignCallLeadSchema = z.object({
   lead_id: z.string().uuid('lead_id must be a valid id').nullable(),
 });
@@ -1197,11 +1225,18 @@ export async function reassignCallLead(req: Request, res: Response) {
       job_id: string | null;
       job_label: string | null;
     };
-    if (req.body.lead_id != null) {
-      const [call] = await prisma.callSession.findMany({
+    // The stored row before this write, read on an attach and a detach alike, under the same filter
+    // as the update: the link rule (and D7) need its lead, direction, start time and agent.
+    let before: { lead_id: string | null; direction: string; started_at: Date; agent_id: string | null; organization_id: string } | undefined;
+    const readBefore = async () => {
+      const [row] = await prisma.callSession.findMany({
         where: { id: req.params.id as string, ...tenantWhere(req), ...visibility },
         take: 1,
       });
+      return row;
+    };
+    if (req.body.lead_id != null) {
+      const call = await readBefore();
       if (!call) {
         res.status(404).json({ error: 'Call not found' });
         return;
@@ -1236,6 +1271,7 @@ export async function reassignCallLead(req: Request, res: Response) {
         orderBy: { created_at: 'desc' },
         select: { id: true, job_number: true },
       });
+      before = call;
       // lead/job ONLY, unconstrained by call.customer_id - see reassignCallJob.
       data = {
         lead_id: lead.id,
@@ -1243,7 +1279,9 @@ export async function reassignCallLead(req: Request, res: Response) {
         job_label: job?.job_number ?? null,
       };
     } else {
-      // Symmetric with the job endpoint: one link, so detaching clears both ends.
+      // Symmetric with the job endpoint: one link, so detaching clears both ends. A row the person
+      // cannot reach reads nothing here; the update below answers the 404, as before.
+      before = await readBefore();
       data = { lead_id: null, job_id: null, job_label: null };
     }
 
@@ -1254,6 +1292,33 @@ export async function reassignCallLead(req: Request, res: Response) {
     if (result.count === 0) {
       res.status(404).json({ error: 'Call not found' });
       return;
+    }
+
+    // After the write, with the plain client, as the call create door does: the link is done, and
+    // a bookkeeping failure is logged by the service and never fails it. Awaited, never throws.
+    // `automated: false` outright, as at the create door and ingest: there is no autodialer.
+    if (before && data.lead_id) {
+      await recordLeadContactOnLink({ client: prisma }, {
+        source: 'call',
+        channel: 'call',
+        orgId: before.organization_id,
+        leadIdBefore: before.lead_id,
+        leadIdAfter: data.lead_id,
+        directionBefore: before.direction,
+        directionAfter: before.direction,
+        automated: false,
+        at: before.started_at,
+        actorId: before.agent_id,
+      });
+    }
+    // D7: the lead the call left, if it held it (after the write, plain client, never throws).
+    if (before) {
+      const row = { direction: before.direction, automated: false };
+      await reconsiderLeadLeftBehind({ client: prisma }, {
+        source: 'call',
+        before: { leadId: before.lead_id, ...row },
+        after: { leadId: data.lead_id, ...row },
+      }, { orgId: before.organization_id, actorId: req.user!.id, entryId: req.params.id as string });
     }
 
     // Same filter as the update; see reassignCallJob for when it can come back empty.

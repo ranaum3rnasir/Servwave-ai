@@ -16,6 +16,8 @@ import { isSpiderAdminUser } from '@/lib/spider/gate';
 // the detail modal and the header count all read it.
 
 const SPIDER_COMPANY = { org_features: ['leads', 'spider'], org_is_demo: true };
+// SPEC-5: a real (non-demo) company on the server's Spider pilot list.
+const PILOT_COMPANY = { org_features: ['leads', 'spider'], org_is_demo: false, org_is_spider_pilot: true };
 
 describe('which agents a company can use', () => {
   it('is Spider alone for a company that passes the Spider gate', () => {
@@ -31,6 +33,15 @@ describe('which agents a company can use', () => {
   ])('is nothing for a company %s', (_label, user) => {
     expect(accessibleAgentIdsFor(user)).toEqual([]);
     expect(agentAccessibleFor('spider', user)).toBe(false);
+  });
+
+  it('is Spider for a pilot company, On or Off from its switch, while Spider stays unreleased', () => {
+    const read = (isActive: boolean) => ({ data: { isActive, isSetUp: true }, isError: false });
+    expect(accessibleAgentIdsFor(PILOT_COMPANY)).toEqual(['spider']);
+    const accessible = agentAccessibleFor('spider', PILOT_COMPANY);
+    expect(displayStatusFor(accessible, read(true), agentReleased('spider'))).toBe('on');
+    expect(displayStatusFor(accessible, read(false), agentReleased('spider'))).toBe('off');
+    expect(agentReleased('spider')).toBe(false);
   });
 
   it('keeps every other agent closed, even at a Spider company', () => {

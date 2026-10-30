@@ -234,6 +234,131 @@ suite('dispute evidence API (real database)', () => {
   });
 
   // ---------------------------------------------------------------------------------------------------------------
+  describe('V7-05a: the dispute code and the customer block', () => {
+    it('carries dispute.reference and a customer_block, and never the processor\'s dispute id', async () => {
+      const { api, d, customer } = await setup();
+      const res = await get(api, d.id);
+      expect(res.status).toBe(200);
+      expect(res.body.dispute.reference).toBe(`DSP-${d.id.replace(/-/g, '').slice(0, 8).toUpperCase()}`);
+      expect(res.body.customer_block).toMatchObject({ restricted: false, id: customer, name: 'Pat Payer', email: 'pat.payer@example.test', invoice: { id: d.invoiceId } });
+      expect(JSON.stringify(res.body)).not.toContain(d.processorId);
+    });
+  });
+
+  describe('V7-08a: opening an evidence file, and the extra dispute fields', () => {
+    const fileUrl = (api: Api, id: string, attachmentId: string) => api.get(`/api/payments-page/disputes/${id}/evidence/files/${attachmentId}`);
+    const storage = () => (supabaseAdmin.storage.from as unknown as (b: string) => { createSignedUrl: ReturnType<typeof vi.fn> })('attachments');
+
+    /** An evidence row written straight to the table (the staging route needs real bytes; these cases are about reading). */
+    async function evidence(org: string, disputeId: string, attachmentId: string, field = 'receipt', o: { name?: string; size?: number; pages?: number } = {}) {
+      await db.disputeEvidenceItem.create({
+        data: {
+          organization_id: org, dispute_id: disputeId, evidence_field: field, attachment_id: attachmentId, file_name: o.name ?? 'invoice.pdf',
+          mime: 'application/pdf', size_bytes: o.size ?? 1234, page_count: o.pages ?? 2, sha256: 'a'.repeat(64), processor_file_id: 'file_secret_1',
+        },
+      });
+    }
+
+    it('returns a signed url and the stored facts for a file in this dispute, and never the hash, path or processor id', async () => {
+      const { org, d, api, file } = await setup();
+      const id = await file(await pdf(2), { name: 'invoice.pdf' });
+      await evidence(org, d.id, id);
+      storage().createSignedUrl.mockClear();
+      const res = await fileUrl(api, d.id, id);
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ url: expect.stringContaining('https://'), file_name: 'invoice.pdf', mime: 'application/pdf', size_bytes: 1234, page_count: 2 });
+      const att = await db.attachment.findUniqueOrThrow({ where: { id } });
+      expect(storage().createSignedUrl).toHaveBeenCalledWith(att.storage_path, 3600);
+      const text = JSON.stringify(res.body);
+      expect(text).not.toContain('file_secret_1');
+      expect(text).not.toContain('a'.repeat(64));
+      expect(text).not.toContain(att.storage_path as string);
+    });
+
+    it('returns the stored url for a legacy row that has no storage path', async () => {
+      const { org, d, api, file } = await setup();
+      const id = await file(await pdf(1), { path: null });
+      await db.attachment.update({ where: { id }, data: { file_url: 'https://files.example.test/legacy.pdf' } });
+      await evidence(org, d.id, id);
+      storage().createSignedUrl.mockClear();
+      const res = await fileUrl(api, d.id, id);
+      expect(res.status).toBe(200);
+      expect(res.body.url).toBe('https://files.example.test/legacy.pdf');
+      expect(storage().createSignedUrl).not.toHaveBeenCalled();
+    });
+
+    it('answers 404 for another company\'s file, for this company\'s file that is not evidence on this dispute, and for a malformed id', async () => {
+      const { org, customer, admin, d, api, file } = await setup();
+      const mine = await file(await pdf(1));
+      await evidence(org, d.id, mine);
+      const other = await newOrg();
+      const theirDispute = await addDispute(other.org, other.customer);
+      const theirFile = await addFile(other.org, other.admin.id, theirDispute.invoiceId, await pdf(1));
+      await evidence(other.org, theirDispute.id, theirFile);
+      const notEvidence = await addFile(org, admin.id, d.invoiceId, await pdf(1));
+      const sibling = await addDispute(org, customer);
+      const siblingFile = await addFile(org, admin.id, sibling.invoiceId, await pdf(1));
+      await evidence(org, sibling.id, siblingFile);
+      storage().createSignedUrl.mockClear();
+      for (const id of [theirFile, notEvidence, siblingFile, randomUUID(), 'not-a-uuid']) {
+        const res = await fileUrl(api, d.id, id);
+        expect(res.status, id).toBe(404);
+        expect(res.body.error).toBe('File not found');
+      }
+      expect((await fileUrl(api, theirDispute.id, theirFile)).status).toBe(404);
+      expect(storage().createSignedUrl).not.toHaveBeenCalled();
+    });
+
+    it('answers 404 when the person cannot open the invoice and 403 without View payments', async () => {
+      const { org, d, file } = await setup();
+      const id = await file(await pdf(1));
+      await evidence(org, d.id, id);
+      const narrow = await personWith(org, { view_payments: true, view_invoices: true, invoices_scope: 'attached', refund_payments: true });
+      const res = await fileUrl(await narrow.api(), d.id, id);
+      expect(res.status).toBe(404);
+      expect(JSON.stringify(res.body)).not.toContain('https://');
+      const nobody = await personWith(org, { view_payments: false, view_invoices: true, invoices_scope: 'all', refund_payments: false });
+      expect((await fileUrl(await nobody.api(), d.id, id)).status).toBe(403);
+    });
+
+    it('lets a View-only person open a file (reading evidence needs View payments only)', async () => {
+      const { org, d, file } = await setup();
+      const id = await file(await pdf(1));
+      await evidence(org, d.id, id);
+      const seer = await viewer(org);
+      expect((await fileUrl(await seer.api(), d.id, id)).status).toBe(200);
+    });
+
+    it('puts the attachment id on every submitted file', async () => {
+      const { api, d, file } = await setup();
+      const a = await file(await pdf(2), { name: 'invoice.pdf' });
+      const staging = await put(api, d.id, { version: 0, files: { receipt: a }, text: { uncategorized_text: 'We did the work.' } });
+      const res = await send(api, d.id, { version: staging.body.form.version });
+      expect(res.status).toBe(200);
+      expect(res.body.submitted.files).toEqual([{ field: 'receipt', file_name: 'invoice.pdf', attachment_id: a }]);
+      expect((await get(api, d.id)).body.submitted.files).toEqual([{ field: 'receipt', file_name: 'invoice.pdf', attachment_id: a }]);
+    });
+
+    it('carries when the dispute opened and the payment it is on, with its PMT code and no processor id', async () => {
+      const { api, d } = await setup();
+      const row = await db.dispute.findUniqueOrThrow({ where: { id: d.id } });
+      const res = await get(api, d.id);
+      expect(res.body.dispute.opened_at).toBe(row.created_at.toISOString());
+      expect(res.body.dispute.payment).toEqual({ id: d.paymentId, reference: `PMT-${d.paymentId.replace(/-/g, '').slice(0, 8).toUpperCase()}` });
+      expect(res.body.dispute.reference).toMatch(/^DSP-[0-9A-F]{8}$/);
+      expect(JSON.stringify(res.body)).not.toMatch(PROCESSOR_LOOK);
+    });
+
+    it('gives a person who cannot open the invoice nothing about the customer', async () => {
+      const { org, d } = await setup();
+      const narrow = await personWith(org, { view_payments: true, view_invoices: true, invoices_scope: 'attached', refund_payments: true });
+      const res = await get(await narrow.api(), d.id);
+      expect(res.status).toBe(404);
+      expect(JSON.stringify(res.body)).not.toContain('Pat');
+      expect(res.body.customer_block).toBeUndefined();
+    });
+  });
+
   describe('whose dispute and whose file', () => {
     it('answers 404 for another company\'s dispute on every route and never reaches the processor', async () => {
       const mine = await newOrg();

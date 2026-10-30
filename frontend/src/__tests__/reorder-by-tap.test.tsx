@@ -14,11 +14,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import api from '@/lib/axios';
 import { renderWithProviders, serveDashboard } from './helpers';
+import { installListsServer, row } from './listsFake';
 import { buildAbility } from '@/lib/ability';
 import { moveInList } from '@/lib/moveInList';
 import DeclineReasonsPage from '@/pages/v2/settings/DeclineReasonsPage';
 import JobSubStatusesPage from '@/pages/v2/settings/JobSubStatusesPage';
-import PaymentsListsPage from '@/pages/v2/settings/PaymentsListsPage';
+import ListsPage from '@/pages/v2/settings/ListsPage';
 import DashboardPage from '@/pages/v2/dashboard/DashboardPage';
 import CatalogDrawer from '@/components/dashboard/CatalogDrawer';
 import { dashboardSeed } from '@/lib/api/_mock/dashboard';
@@ -155,33 +156,26 @@ describe('Job sub-statuses: Move up / Move down', () => {
   });
 });
 
-describe('Payments & Lists (Job Types): Move up / Move down', () => {
-  const ORG = {
-    id: 'o1',
-    stripe_connected: false,
-    accepted_payment_methods: ['CASH'],
-    source_options: ['Google'],
-    job_type_options: ['Install', 'Repair', 'Service'],
-    deposit_default_type: 'PERCENTAGE',
-    deposit_default_percentage: 40,
-    deposit_default_fixed_amount: 0,
-  };
+describe('Lists (Job types): Move up / Move down', () => {
   beforeEach(() => {
-    mockApi.get.mockImplementation((url: string) =>
-      Promise.resolve({ data: url === '/api/organization' ? ORG : {} }),
+    installListsServer(
+      mockApi,
+      {
+        '/api/job-types': { rows: [row('j1', 'Install', { sort_order: 0 }), row('j2', 'Repair', { sort_order: 1 }), row('j3', 'Service', { sort_order: 2 })] },
+        '/api/lead-sources': { rows: [row('s1', 'Google')] },
+      },
+      (_m, url) => (url === '/api/organization' ? { id: 'o1' } : {}),
     );
   });
 
-  const jobTypeOrder = () => {
-    const card = screen.getByText('Job Types').closest('[data-slot="card"]') as HTMLElement;
-    return within(card)
-      .getAllByRole('button', { name: /^Remove / })
-      .map((b) => b.getAttribute('aria-label')!.replace(/^Remove /, ''));
-  };
+  const jobTypeOrder = () =>
+    within(screen.getByRole('list', { name: 'Job types' }))
+      .getAllByRole('listitem')
+      .map((li) => within(li).getByRole('button', { name: /^Rename / }).getAttribute('aria-label')!.replace(/^Rename /, ''));
 
-  it('Move down reorders the chips, and the lists that cannot be reordered get no buttons', async () => {
-    renderWithProviders(<PaymentsListsPage />, { ability: ADMIN });
-    await screen.findByDisplayValue('40');
+  it('Move down reorders the rows, and the lists that cannot be reordered get no buttons', async () => {
+    renderWithProviders(<ListsPage />, { ability: ADMIN });
+    await screen.findByText('Install');
     expect(jobTypeOrder()).toEqual(['Install', 'Repair', 'Service']);
     tap('Move Install down');
     await waitFor(() => expect(jobTypeOrder()).toEqual(['Repair', 'Install', 'Service']));
@@ -192,11 +186,11 @@ describe('Payments & Lists (Job Types): Move up / Move down', () => {
     expect(screen.queryByRole('button', { name: 'Move Google down' })).not.toBeInTheDocument();
   });
 
-  it('the ends are disabled', async () => {
-    renderWithProviders(<PaymentsListsPage />, { ability: ADMIN });
-    await screen.findByDisplayValue('40');
-    expect(screen.getByRole('button', { name: 'Move Install up' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Move Service down' })).toBeDisabled();
+  it('the ends are off (aria-disabled, still focusable)', async () => {
+    renderWithProviders(<ListsPage />, { ability: ADMIN });
+    await screen.findByText('Install');
+    expect(screen.getByRole('button', { name: 'Move Install up' })).toHaveAttribute('aria-disabled', 'true');
+    expect(screen.getByRole('button', { name: 'Move Service down' })).toHaveAttribute('aria-disabled', 'true');
   });
 });
 

@@ -1,0 +1,377 @@
+/*
+ * Settings > Lists: the stacked cards (V7-04a). Built from the v7 mockup's LISTS section (settings.css).
+ *
+ * Colours are the app's tokens (channel RGB, hence rgb(var(--x))). Plain CSS rather than utilities because the card
+ * switches its column set on the CARD's width (a native container query; Tailwind 3.4 here has no container-queries
+ * plugin) and the phone row is a two-line grid with named areas.
+ *
+ * No scroll-chaining property is set anywhere in this file, and no wheel handlers in the components (spec 6.8): a card with eight
+ * rows or fewer has nothing to scroll, so the wheel scrolls the page; a longer card scrolls its rows first and the
+ * wheel carries on to the page at the last row. That is default scroll chaining, left alone on purpose.
+ */
+
+.lc-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 480px), 1fr));
+  gap: 20px;
+  align-items: stretch;
+}
+
+/* Exactly eight rows tall, so every card on the page is the same height. */
+.lc-card {
+  --row-h: 52px;
+  --act-w: 152px;
+  --act-w-s: 136px;
+  container: lc / inline-size;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+.lc-body {
+  border-top: 1px solid rgb(var(--border-color));
+  flex: 1;
+  min-width: 0;
+}
+.lc-scroll {
+  height: calc(var(--row-h) * 8);
+  overflow-y: auto;
+}
+
+/* --cols / --cols-s are set inline on the card (listColumns in ListCard.tsx). */
+.lc-head,
+.lc-row {
+  display: grid;
+  grid-template-columns: var(--cols);
+  align-items: center;
+  gap: 4px 12px;
+  padding: 0 12px;
+  min-width: 0;
+}
+.lc-head {
+  min-height: 36px;
+  border-bottom: 1px solid rgb(var(--border-color));
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgb(var(--muted-foreground));
+}
+.lc-head-actions {
+  text-align: right;
+}
+.lc-row {
+  height: var(--row-h);
+  box-sizing: border-box;
+  border-bottom: 1px solid rgb(var(--border-soft));
+}
+.lc-row:last-child {
+  border-bottom: 0;
+}
+.lc-row.is-edit {
+  height: auto;
+  min-height: var(--row-h);
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+.lc-row.is-drag {
+  opacity: 0.4;
+}
+.lc-row.is-over {
+  box-shadow: inset 0 2px 0 rgb(var(--brand));
+}
+.lc-row.is-over-after {
+  box-shadow: inset 0 -2px 0 rgb(var(--brand));
+}
+.lc-row.is-flash {
+  animation: lc-flash 1.4s ease-out;
+}
+@keyframes lc-flash {
+  from {
+    background: rgb(var(--selected));
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lc-row.is-flash {
+    animation: none;
+  }
+}
+@media (hover: hover) and (pointer: fine) {
+  .lc-row:hover {
+    background: rgb(var(--muted));
+  }
+}
+
+.lc-name {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 500;
+  font-size: 14px;
+}
+.lc-nm {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lc-row.is-arch .lc-name {
+  color: rgb(var(--muted-foreground));
+}
+.lc-row.is-arch .lc-nm {
+  text-decoration: line-through;
+}
+.lc-meta {
+  color: rgb(var(--muted-foreground));
+  font-size: 13.5px;
+  font-variant-numeric: tabular-nums;
+}
+.lc-act {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+}
+.lc-grip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgb(var(--subtle-foreground));
+  cursor: grab;
+}
+.lc-grip[aria-disabled='true'] {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.lc-create {
+  display: flex;
+  justify-content: flex-start;
+  width: 100%;
+  min-height: 48px;
+  padding: 0 14px;
+  border-radius: 0;
+  border-bottom: 1px solid rgb(var(--border-color));
+  background: rgb(var(--muted));
+  color: rgb(var(--brand-emphasis));
+  font-weight: 600;
+  text-align: left;
+}
+.lc-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgb(var(--border-color));
+  background: rgb(var(--selected));
+}
+.lc-form-field {
+  flex: 1 1 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.lc-form-acts {
+  display: flex;
+  gap: 8px;
+  align-self: flex-end;
+}
+.lc-note {
+  padding: 8px 14px;
+  font-size: 12.5px;
+  color: rgb(var(--muted-foreground));
+  background: rgb(var(--muted));
+  border-bottom: 1px solid rgb(var(--border-soft));
+}
+.lc-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  padding: 12px 14px;
+  border-bottom: 1px solid rgb(var(--border-color));
+}
+.lc-tools-search {
+  flex: 1 1 220px;
+  min-width: 0;
+}
+.lc-tools-sort {
+  flex: 0 1 190px;
+  min-width: 150px;
+}
+.lc-empty {
+  padding: 32px 16px;
+  text-align: center;
+  color: rgb(var(--muted-foreground));
+  font-size: 14px;
+}
+.lc-count {
+  font-size: 13px;
+  color: rgb(var(--muted-foreground));
+  font-variant-numeric: tabular-nums;
+}
+
+/* Tags and Task categories: the name is a chip in the row's stored colour (16% fill, 42% text, 40% border). */
+.lc-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  min-width: 0;
+  height: 26px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  background: color-mix(in srgb, var(--c) 16%, rgb(var(--surface-light)));
+  color: color-mix(in srgb, var(--c) 42%, rgb(var(--text-primary)));
+  border: 1px solid color-mix(in srgb, var(--c) 40%, rgb(var(--surface-light)));
+}
+.lc-dot {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--c);
+  border: 2px solid color-mix(in srgb, var(--c) 70%, rgb(var(--text-primary)));
+}
+/* The Colour column button: dot plus the colour's name; the hit area reaches 6px beyond the visible box. */
+.lc-swb {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  min-width: 0;
+  padding: 0 8px 0 4px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  background: transparent;
+  color: rgb(var(--text-primary));
+  font-size: 13.5px;
+  cursor: pointer;
+}
+.lc-swb::before {
+  content: '';
+  position: absolute;
+  inset: -6px 0;
+}
+.lc-swb.is-static {
+  cursor: default;
+}
+/* The button is the kit Button (centred, semibold); in the grid it sits at the start of its column like the mockup's. */
+.lc-row .lc-swb {
+  justify-self: start;
+  justify-content: flex-start;
+  height: auto;
+  font-weight: 500;
+}
+.lc-swn {
+  white-space: nowrap;
+}
+.lc-swsel {
+  margin-top: 4px;
+  font-size: 13px;
+  color: rgb(var(--muted-foreground));
+}
+.lc-form-colour {
+  flex: 1 1 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.lc-swn-new {
+  font-weight: 500;
+  color: rgb(var(--muted-foreground));
+}
+@media (hover: hover) and (pointer: fine) {
+  .lc-swb:not(.is-static):hover {
+    background: rgb(var(--border-soft));
+    border-color: rgb(var(--border-color));
+  }
+}
+
+/* A tablet (touch, wider than a phone) has 44px buttons: give the Actions column room for four of them. */
+@media (pointer: coarse) and (min-width: 641px) {
+  .lc-card {
+    --act-w: 188px;
+    --act-w-s: 188px;
+  }
+}
+
+/* A narrow card (under 620px wide) uses the tighter column set. */
+@container lc (max-width: 619px) {
+  .lc-head,
+  .lc-row {
+    grid-template-columns: var(--cols-s);
+  }
+  /* The colour column shows the dot only. */
+  .lc-swn,
+  .lc-head-colour {
+    display: none;
+  }
+}
+
+/* Phone: two lines per row (name + used-by, then the actions) at a constant height. */
+@media (max-width: 640px) {
+  .lc-card {
+    --row-h: 104px;
+  }
+  .lc-head {
+    display: none;
+  }
+  /* The search box and the sort select are 44px targets here; the kit's own 40px stays for every other screen. */
+  .lc-tools-search input,
+  .lc-tools-sort [role='combobox'] {
+    min-height: 44px;
+  }
+  .lc-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-rows: minmax(0, 1fr) 44px;
+    grid-template-areas: 'name meta' 'act act';
+    padding: 6px 14px;
+    gap: 0 12px;
+  }
+  .lc-row .lc-grip {
+    display: none;
+  }
+  .lc-row .lc-name {
+    grid-area: name;
+    min-height: 40px;
+  }
+  .lc-row .lc-meta {
+    grid-area: meta;
+  }
+  .lc-row .lc-act {
+    grid-area: act;
+    justify-content: flex-start;
+    margin-left: -8px;
+  }
+  .lc-row.is-edit {
+    grid-template-rows: auto 44px;
+  }
+  /* Rows with a colour: line 2 is the colour button on the left and the actions on the right. */
+  .lc-row.has-col {
+    grid-template-areas: 'name meta' 'sw act';
+  }
+  .lc-row.has-col .lc-swb {
+    grid-area: sw;
+    justify-self: start;
+    min-height: 44px;
+  }
+  .lc-row.has-col .lc-act {
+    justify-content: flex-end;
+    margin-left: 0;
+  }
+  .lc-row .lc-swn {
+    display: inline;
+  }
+}
+
+/* The Active / Archived control is a 44px target on a phone and on any touch screen (house rule 19). */
+@media (max-width: 640px), (pointer: coarse) {
+  .lc-seg {
+    min-height: 44px;
+  }
+}

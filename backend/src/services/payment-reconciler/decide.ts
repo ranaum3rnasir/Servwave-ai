@@ -26,6 +26,13 @@ import type { AccountStatusDecision, AccountStatusFlags } from '../../lib/accoun
 export const REFUND_EVENT_TYPES = ['refund.created', 'refund.updated', 'refund.failed'] as const;
 export type RefundEventType = (typeof REFUND_EVENT_TYPES)[number];
 
+/**
+ * V7-09b (C-32): metadata on a refund ServWave sends for a payment needing attention. Set when the refund gives back
+ * everything still on the record, so the record closes even when the arithmetic falls short (part of the money had
+ * already come off its payment from the invoice).
+ */
+export const UNAPPLIED_CLOSES_METADATA_KEY = 'unapplied_capture_closes';
+
 /** The processor's refund object, as sent at the pinned API version. Amounts are in cents. */
 export interface ProcessorRefund {
   id: string;
@@ -73,7 +80,7 @@ export interface RefundSnapshot {
   /** A refund matching no payment that an earlier event for the same refund id already wrote down. */
   unmatchedRefundRecorded?: boolean;
   /**
-   * Slice 11: the "Payments needing attention" record this refund sends back (ServWave sent it from
+   * Slice 11: the Needs attention card record this refund sends back (ServWave sent it from
    * the list: it carries the record's refund id, or names the record and its payment intent).
    */
   attentionRecord?: {
@@ -183,12 +190,12 @@ export interface DisputeSnapshot {
     amountDueCents: number;
     /**
      * SUCCEEDED, not voided payments, applied deposit credit aside, less money sent back from
-     * "Payments needing attention" (never the invoice's money).
+     * the Needs attention card (never the invoice's money).
      */
     paidCents: number;
     /**
      * SUCCEEDED refunds on payments that still stand (one on a voided payment left with it), less
-     * money sent back from "Payments needing attention".
+     * money sent back from the Needs attention card.
      */
     refundedCents: number;
     /** Any SUCCEEDED payment on the invoice, applied deposit credit included. */
@@ -330,7 +337,7 @@ export type LedgerAction =
       amountCents: number;
       state: RefundState;
       /**
-       * Slice 11: money sent back from "Payments needing attention" that sat on this payment (never
+       * Slice 11: money sent back from the Needs attention card that sat on this payment (never
        * the invoice's money): booked with its own reason, never as a refund made outside ServWave.
        */
       unapplied?: true;
@@ -371,7 +378,8 @@ export type LedgerAction =
       estimateClosed: boolean;
       processorPaymentIntentId: string | null;
       processorChargeId: string | null;
-      checkoutSessionId: string;
+      /** Null for money booked from a record that never had a session (attached by a person, V7-09b). */
+      checkoutSessionId: string | null;
       connectedAccountId: string | null;
       wallet: PaymentWallet | null;
       cardBrand: string | null;
@@ -413,17 +421,22 @@ export type LedgerAction =
       /** The payment is a deposit (its estimate went WON when the debit started). */
       deposit: boolean;
       payAgain: boolean;
+      /**
+       * The payment this notice is about, when it is known. The office's history row for "the customer was emailed a
+       * link to pay again" is filed against the item for this payment (failed_payment:{paymentId}).
+       */
+      paymentId?: string;
     }
   /** Slice 11: the refund sent for a payment needing attention went out; its record reads REFUNDED. */
-  | { type: 'mark_unapplied_capture_refunded'; recordId: string; processorRefundId: string }
+  | { type: 'mark_unapplied_capture_refunded'; recordId: string; processorRefundId: string; refundCents: number; closes: boolean }
   /** Slice 11: that refund failed, so the money is still here: the record is open again. */
-  | { type: 'reopen_unapplied_capture'; recordId: string; processorRefundId: string }
+  | { type: 'reopen_unapplied_capture'; recordId: string; processorRefundId: string; refundCents: number }
   /**
    * Slice 11 fix round 2: a refund for the record failed before the record stored it (still OPEN).
    * The failure is kept on the record, so neither the list's own commit nor a late event for that
    * refund ever marks it REFUNDED.
    */
-  | { type: 'note_unapplied_capture_refund_failed'; recordId: string; processorRefundId: string }
+  | { type: 'note_unapplied_capture_refund_failed'; recordId: string; processorRefundId: string; refundCents: number }
   /**
    * Money the processor captured that ServWave will not apply: written down where a person finds
    * it (timeline entry, owner notification, audit), never only logged. `invoice` is null when the
@@ -564,6 +577,12 @@ export type LedgerAction =
       outcome?: 'WON' | 'LOST' | 'CLOSED';
       /** A lost dispute that took back only part of the payment. */
       partial?: true;
+      /**
+       * V7-13 (BE-13e): whether the debit had cleared when the dispute closed, from the payment's state in the snapshot
+       * (SUCCEEDED = true, PROCESSING = false; any other state leaves it out). The bank-return alert names the
+       * ServWave Payments balance only when it is true.
+       */
+      cleared?: boolean;
     };
 
 /** The payments-account notifications. */
@@ -613,12 +632,15 @@ function decideRefund(event: RefundEvent, snapshot: RefundSnapshot): LedgerActio
   const attention = snapshot.attentionRecord;
   if (attention) {
     const knownFailed = attention.failedRefundIds?.includes(refund.id) ?? false;
+    // V7-09b: a partial refund leaves the record OPEN; the apply step counts each refund once and decides, under the
+    // record's lock, whether the whole amount is back. Only that step can see the running total.
+    const closes = refund.metadata?.[UNAPPLIED_CLOSES_METADATA_KEY] === '1';
     const recordActions: LedgerAction[] = target === 'FAILED'
       ? (attention.status === 'REFUNDED' && attention.refundId === refund.id
-        ? [{ type: 'reopen_unapplied_capture', recordId: attention.id, processorRefundId: refund.id }]
-        : knownFailed ? [] : [{ type: 'note_unapplied_capture_refund_failed', recordId: attention.id, processorRefundId: refund.id }])
+        ? [{ type: 'reopen_unapplied_capture', recordId: attention.id, processorRefundId: refund.id, refundCents: refund.amount }]
+        : knownFailed ? [] : [{ type: 'note_unapplied_capture_refund_failed', recordId: attention.id, processorRefundId: refund.id, refundCents: refund.amount }])
       : ((attention.status === 'OPEN' || attention.status === 'RESOLVED') && !knownFailed
-        ? [{ type: 'mark_unapplied_capture_refunded', recordId: attention.id, processorRefundId: refund.id }]
+        ? [{ type: 'mark_unapplied_capture_refunded', recordId: attention.id, processorRefundId: refund.id, refundCents: refund.amount, closes }]
         : []);
     const payment = attention.paymentId && snapshot.payment?.id === attention.paymentId ? snapshot.payment : null;
     if (!payment) return recordActions;
@@ -767,7 +789,7 @@ function decideCheckout(event: CheckoutEvent, snapshot: CheckoutSnapshot): Ledge
       : {};
     return [
       { type: 'settle_payment', paymentId: booked.id, invoiceId: snapshot.invoice.id, to, ...fill },
-      bankNotice(to === 'SUCCEEDED' ? 'cleared' : 'failed', snapshot.invoice, booked.amountCents),
+      bankNotice(to === 'SUCCEEDED' ? 'cleared' : 'failed', snapshot.invoice, booked.amountCents, to === 'FAILED' ? booked.id : undefined),
     ];
   }
   // Nothing booked yet: the outcome arrived before the completion (or the completion could not be
@@ -915,6 +937,7 @@ function bankNotice(
   kind: 'started' | 'cleared' | 'failed',
   invoice: Pick<NonNullable<CheckoutSnapshot['invoice']>, 'id' | 'kind' | 'status'>,
   amountCents: number,
+  paymentId?: string,
 ): LedgerAction {
   return {
     type: 'notify_bank_payment',
@@ -924,6 +947,7 @@ function bankNotice(
     deposit: invoice.kind === 'DEPOSIT',
     // The debit failed and the invoice is still open: the customer gets a link to pay again.
     payAgain: kind === 'failed' && checkoutOpenStatus(invoice.status, invoice.kind === 'DEPOSIT'),
+    ...(paymentId ? { paymentId } : {}),
   };
 }
 
@@ -1044,6 +1068,8 @@ function closeActions(fields: DisputeFields, snapshot: DisputeSnapshot, bankRetu
     type: 'notify_dispute', kind: 'closed', outcome: status, processorDisputeId: fields.processorDisputeId, invoiceId: payment.invoiceId, bankReturn,
     amountCents: fields.amountCents, reason: fields.reason, evidenceDueBy: fields.evidenceDueBy,
     ...(partialLoss ? { partial: true as const } : {}),
+    // Decided from the payment's state now: a SUCCEEDED payment cleared, a PROCESSING one never reached the balance.
+    ...(payment.state === 'SUCCEEDED' ? { cleared: true } : payment.state === 'PROCESSING' ? { cleared: false } : {}),
   });
   return actions;
 }

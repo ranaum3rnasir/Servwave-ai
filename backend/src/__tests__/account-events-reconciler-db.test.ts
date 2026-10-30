@@ -161,7 +161,7 @@ suite('account events through the reconciler (real database)', () => {
     expect(await f.recorded(`evt_pay10_${f.tag}_onboarded`)).toBe(1);
   });
 
-  // The onboarding return (/settings/payments?onboarding=return) runs the status refresh before any
+  // The onboarding return (/settings/servwave-payments?onboarding=return) runs the status refresh before any
   // event arrives; it follows the same capability rule.
   it('the onboarding-return refresh adds CARD and ACH only once their capabilities are active; the owner defaults stay on', async () => {
     const f = await connectedOrg({ accepts: ['EXTERNAL_CARD', 'BANK_TRANSFER', 'CHECK', 'CASH'] });
@@ -191,6 +191,10 @@ suite('account events through the reconciler (real database)', () => {
     });
     // A pure teardown: the account is no longer ServWave's to read.
     expect(retrieveAccount).not.toHaveBeenCalled();
+    // The verification rows (V7-02a) read restricted, written with the status.
+    expect(org.stripe_verification).toEqual({
+      business_details: 'restricted', owner_identity: 'restricted', bank_account: 'restricted', tax_id: 'restricted',
+    });
     const [notice, ...more] = await f.notifications('billing.payments_disconnected');
     expect(more).toHaveLength(0);
     expect(notice).toMatchObject({ actor_id: null, object_type: 'ORGANIZATION', needs_action: true });
@@ -199,6 +203,25 @@ suite('account events through the reconciler (real database)', () => {
     // Delivered again under another event id: still one notice.
     await f.deliver('account.application.deauthorized', { id: 'ca_platform', object: 'application' });
     expect(await f.notifications('billing.payments_disconnected')).toHaveLength(1);
+  });
+
+  // V7-02a: the four verification rows are stored beside the status, from the account read back.
+  it('account.updated stores the verification rows with the status; a kept read leaves them alone', async () => {
+    const f = await connectedOrg({ accepts: ['CHECK'] });
+    expect((await f.readOrg()).stripe_verification).toBeNull();
+
+    f.processorSays({ due: ['individual.verification.document'] });
+    await f.updated();
+    const stored = (await f.readOrg()).stripe_verification;
+    expect(stored).toEqual({ business_details: 'verified', owner_identity: 'action_needed', bank_account: 'pending', tax_id: 'verified' });
+
+    // A platform-side failure keeps everything stored, rows included (the event is asked again).
+    const { default: Stripe } = await import('stripe');
+    vi.mocked(retrieveAccount).mockRejectedValue(new Stripe.errors.StripeRateLimitError({
+      type: 'invalid_request_error', code: 'rate_limit', message: 'Too many requests', statusCode: 429,
+    } as never));
+    await f.updated({ status: 500 });
+    expect((await f.readOrg()).stripe_verification).toEqual(stored);
   });
 
   // Conductor note from slice 06: the status refresh reads the account, then writes. An
@@ -379,8 +402,8 @@ suite('account events through the reconciler (real database)', () => {
 
     const [notice, ...more] = await f.notifications('billing.payments_action_needed');
     expect(more).toHaveLength(0);
-    expect(notice.data).toMatchObject({ link_path: '/settings/payout-account' });
-    expect(notice.body).toMatch(/Settings > Payments/);
+    expect(notice.data).toMatchObject({ link_path: '/settings/servwave-payments#payout-account' });
+    expect(notice.body).toMatch(/Settings > ServWave Payments/);
     expect(notice.body).toMatch(/identity/i);
     expect(notice.body).not.toMatch(/individual\.|verification\.document|stripe/i);
     expect(sendPaymentsActionNeededEmail).toHaveBeenCalledTimes(1);

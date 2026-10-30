@@ -758,6 +758,56 @@ suite('nightly payment reconcile (real database)', () => {
 
       expect(result.findings.map((f) => [f.kind, f.ref])).toEqual([['CAPTURE_REFUNDED_OUTSIDE', rec.id]]);
     });
+
+    it('V7-09b: a payment attached after a partial refund (70 on a 100 charge) is not an amount mismatch', async () => {
+      const o = await seedOrg();
+      await addPayment(o, { n: 'att', dollars: 70 });
+      await db.unappliedCapture.create({
+        data: {
+          organization_id: o.org, reason: 'INVOICE_NOT_FOUND', amount: 100, refunded_amount: 30, status: 'RESOLVED', counted_refund_ids: [`re_att_${o.tag}`],
+          stripe_payment_intent_id: `pi_att_${o.tag}`, stripe_account_id: o.account, source_key: `session:cs_att_${o.tag}`,
+        },
+      });
+      onProcessor(o, { charges: [chargeFor(o, 'att', 10000)], refunds: [processorRefund({ id: `re_att_${o.tag}`, chargeId: `ch_att_${o.tag}`, pi: `pi_att_${o.tag}`, cents: 3000 })] });
+
+      const result = await reconcileOrg(o.org, { now: NOW });
+
+      expect(result.findings).toEqual([]);
+    });
+
+    it('V7-09b: a charge that really differs from the payment plus what the item holds is still flagged', async () => {
+      const o = await seedOrg();
+      const p = await addPayment(o, { n: 'att2', dollars: 70 });
+      await db.unappliedCapture.create({
+        data: {
+          organization_id: o.org, reason: 'INVOICE_NOT_FOUND', amount: 100, refunded_amount: 30, status: 'RESOLVED',
+          stripe_payment_intent_id: `pi_att2_${o.tag}`, stripe_account_id: o.account, source_key: `session:cs_att2_${o.tag}`,
+        },
+      });
+      onProcessor(o, { charges: [chargeFor(o, 'att2', 10500)] });
+
+      const result = await reconcileOrg(o.org, { now: NOW });
+
+      expect(result.findings.map((f) => [f.kind, f.ref])).toEqual([['AMOUNT_MISMATCH', p.id]]);
+    });
+
+    it('V7-09b: a partial refund ServWave sent from the list (counted on the open record) is neither outside nor unrecorded', async () => {
+      const o = await seedOrg();
+      await db.unappliedCapture.create({
+        data: {
+          organization_id: o.org, reason: 'INVOICE_NOT_PAYABLE', amount: 60, refunded_amount: 20, counted_refund_ids: [`re_part_${o.tag}`],
+          stripe_payment_intent_id: `pi_part_${o.tag}`, stripe_account_id: o.account, source_key: `session:cs_part_${o.tag}`,
+        },
+      });
+      onProcessor(o, {
+        charges: [chargeFor(o, 'part', 6000)],
+        refunds: [processorRefund({ id: `re_part_${o.tag}`, chargeId: `ch_part_${o.tag}`, pi: `pi_part_${o.tag}`, cents: 2000 })],
+      });
+
+      const result = await reconcileOrg(o.org, { now: NOW });
+
+      expect(result.findings).toEqual([]);
+    });
   });
 
   describe('disputes', () => {

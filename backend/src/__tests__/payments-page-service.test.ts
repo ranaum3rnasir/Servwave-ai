@@ -9,6 +9,9 @@ import {
   chargedAmount,
   feeOf,
   payoutReference,
+  shortCode,
+  toPageRow,
+  type PaymentRowInput,
   payoutStatusOf,
   nextPayoutDate,
   payoutScheduleText,
@@ -24,6 +27,7 @@ const base: StatusInput = {
   voidedAt: null,
   voidCategory: null,
   openDispute: false,
+  refundFailedOpen: false,
 };
 
 describe('paymentDisplayStatus', () => {
@@ -43,6 +47,14 @@ describe('paymentDisplayStatus', () => {
     ['refund wins over a plain void', { succeededRefundTotal: 100, voidedAt: new Date('2026-10-01'), voidCategory: 'ERROR' }, 'Refunded'],
     ['a failed payment with a stale open dispute flag', { state: 'FAILED', openDispute: true }, 'Failed'],
     ['a pending payment with a refund total', { state: 'PROCESSING', succeededRefundTotal: 10 }, 'Pending'],
+    ['a refund that failed and nobody dealt with', { refundFailedOpen: true }, 'Refund failed'],
+    ['an open failed refund beats Refunded', { refundFailedOpen: true, succeededRefundTotal: 100 }, 'Refund failed'],
+    ['an open failed refund beats Partially refunded', { refundFailedOpen: true, succeededRefundTotal: 40 }, 'Refund failed'],
+    ['an open failed refund beats Charged back', { refundFailedOpen: true, voidedAt: new Date('2026-10-01'), voidCategory: 'CHARGEBACK' }, 'Refund failed'],
+    ['an open failed refund beats Voided', { refundFailedOpen: true, voidedAt: new Date('2026-10-01'), voidCategory: 'ERROR' }, 'Refund failed'],
+    ['an open dispute beats an open failed refund', { refundFailedOpen: true, openDispute: true }, 'Disputed'],
+    ['a failed payment beats an open failed refund', { refundFailedOpen: true, state: 'FAILED' }, 'Failed'],
+    ['a pending payment beats an open failed refund', { refundFailedOpen: true, state: 'PROCESSING' }, 'Pending'],
   ];
   it.each(table)('%s', (_name, change, expected) => {
     expect(paymentDisplayStatus({ ...base, ...change })).toBe(expected);
@@ -76,6 +88,13 @@ describe('payout references and status', () => {
     expect(payoutReference(id)).toBe('PO-3F2A9C1E');
     expect(payoutReference(id)).toBe(payoutReference(id));
     expect(payoutReference('aaaaaaaa-0000-0000-0000-000000000000')).not.toBe(payoutReference(id));
+  });
+  it('builds the four short codes from the first 8 hex of the uuid, uppercased', () => {
+    const id = '3f2a9c1e-7b64-4d0a-9e55-0a1b2c3d4e5f';
+    expect(shortCode('PMT-', id)).toBe('PMT-3F2A9C1E');
+    expect(shortCode('DSP-', id)).toBe('DSP-3F2A9C1E');
+    expect(shortCode('RCV-', id)).toBe('RCV-3F2A9C1E');
+    expect(shortCode('REF-', id)).toBe('REF-3F2A9C1E');
   });
   it.each([
     ['no payout yet on a collected payment', 'SUCCEEDED', null, 'awaiting'],
@@ -143,5 +162,27 @@ describe('describeDisputeReason', () => {
     expect(describeDisputeReason('product_not_received')).toBe('The customer says they did not receive the service');
     expect(describeDisputeReason('something_new_from_the_processor')).toBe('The customer disputed this payment');
     expect(describeDisputeReason(null)).toBe('The customer disputed this payment');
+  });
+});
+
+describe('toPageRow', () => {
+  const input: PaymentRowInput = {
+    id: '3f2a9c1e-7b64-4d0a-9e55-0a1b2c3d4e5f', amount: 100, tip: null, serviceFee: null, stripeFee: 3, platformFee: 0, net: 97,
+    method: 'CARD', state: 'SUCCEEDED', paidAt: new Date('2026-10-01T12:00:00Z'), voidedAt: null, voidCategory: null,
+    wallet: null, cardBrand: 'visa', cardLast4: '4242', bankName: null, bankLast4: null, refunds: [], openDispute: false, refundFailedOpen: false,
+    payout: null, invoice: { id: 'inv-1', number: 'INV-1' }, customer: { id: 'cus-1', name: 'Pat Lee', customer_number: 'C-0042' },
+  };
+  it('returns the PMT- reference and the customer number', () => {
+    const row = toPageRow(input, false);
+    expect(row.reference).toBe('PMT-3F2A9C1E');
+    expect(row.customer).toEqual({ id: 'cus-1', name: 'Pat Lee', customer_number: 'C-0042' });
+  });
+  it('keeps the reference on a restricted row but drops the customer', () => {
+    const row = toPageRow(input, true);
+    expect(row.reference).toBe('PMT-3F2A9C1E');
+    expect(row.customer).toBeNull();
+  });
+  it('reads Refund failed when the flag is set, never Succeeded', () => {
+    expect(toPageRow({ ...input, refundFailedOpen: true }, false).status).toBe('Refund failed');
   });
 });

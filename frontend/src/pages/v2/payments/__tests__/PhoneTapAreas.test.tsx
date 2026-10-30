@@ -58,7 +58,7 @@ describe('the surfaces', () => {
     serveAttention({ open: [], rows: manyRows(3), detail: () => makeDetail(ROW1) });
     withStatus();
     renderWithProviders(<PaymentsPage />, { initialEntries: [`/payments?payment=${ROW1.id}`], ability: OWNER });
-    const drawer = await screen.findByRole('dialog', { name: 'Customer 1' });
+    const drawer = await screen.findByRole('dialog', { name: 'Payment PMT-000001' });
     carries(drawer);
     await user().click(await within(drawer).findByRole('button', { name: 'Refund' }));
     carries(await screen.findByRole('dialog', { name: 'Refund payment' }));
@@ -80,6 +80,6 @@ describe('the surfaces', () => {
     withStatus();
     renderWithProviders(<PaymentsPage />, { initialEntries: ['/payments'], ability: OWNER });
     await user().click(await screen.findByRole('button', { name: 'Mark resolved' }));
-    carries(await screen.findByRole('dialog', { name: 'Mark resolved' }));
+    carries(await screen.findByRole('dialog', { name: 'Mark as resolved' }));
   });
 });

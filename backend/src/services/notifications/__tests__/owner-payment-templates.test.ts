@@ -22,14 +22,68 @@ describe('bank payment notifications', () => {
     expect(cleared.body).toContain('$250.00');
   });
 
-  it('failed interrupts, and says whether the customer can pay again', () => {
-    const open = renderTemplate('billing.bank_payment_failed', { object_label: 'I0001', amount: '250.00', pay_again: 'yes' });
-    expect(open).toMatchObject({ priority: 'INTERRUPT', action_type: 'VIEW', needs_action: true, object_type: 'INVOICE' });
-    expect(open.title).toBe('Bank payment failed for I0001');
-    expect(open.body).toContain('$250.00');
-    expect(open.body).toMatch(/pay again/i);
-    const closed = renderTemplate('billing.bank_payment_failed', { object_label: 'I0001', amount: '250.00' });
-    expect(closed.body).not.toMatch(/pay again/i);
+  it('failed interrupts and keeps its title', () => {
+    const t = renderTemplate('billing.bank_payment_failed', { object_label: 'I0001', amount: '250.00', customer_notice: 'sent' });
+    expect(t).toMatchObject({ priority: 'INTERRUPT', action_type: 'VIEW', needs_action: true, object_type: 'INVOICE' });
+    expect(t.title).toBe('Bank payment failed for I0001');
+  });
+
+  // V7-13 part 2 (BE-13d, C-38): the alert says what really happened to the customer. Exact strings.
+  it.each([
+    ['sent', 'Amount: $250.00. No money moved. We emailed the customer a link to pay again.'],
+    ['no_email', 'Amount: $250.00. No money moved. No email was sent because this customer has no email address on file. Contact them to pay again.'],
+    ['bounced', 'Amount: $250.00. No money moved. No email was sent because earlier emails to this customer\u2019s address bounced. Contact them to pay again.'],
+    ['not_sent', 'Amount: $250.00. No money moved. The email to the customer could not be sent. Contact them to pay again.'],
+    // BE-13d: not_open on this path is the unchanged sentence; the C-38 sentence needs the cannot_pay marker (below).
+    ['not_open', 'Amount: $250.00. No money moved. The invoice is no longer open for payment.'],
+  ])('failed, customer_notice %s', (customer_notice, body) => {
+    expect(renderTemplate('billing.bank_payment_failed', { object_label: 'I0001', amount: '250.00', customer_notice }).body).toBe(body);
+  });
+
+  it('failed, not_open with the cannot_pay marker (invoice PAID by another payment or DISPUTED) uses the C-38 sentence', () => {
+    expect(renderTemplate('billing.bank_payment_failed', { object_label: 'I0001', amount: '250.00', customer_notice: 'not_open', cannot_pay: 'yes' }).body)
+      .toBe('Amount: $250.00. No money moved. No email was sent because this invoice cannot be paid online right now.');
+  });
+
+  it('failed with no customer_notice key (a notice stored before this change) claims nothing about the customer', () => {
+    expect(renderTemplate('billing.bank_payment_failed', { object_label: 'I0001', amount: '250.00' }).body).toBe('Amount: $250.00. No money moved.');
+    // The old claim key alone no longer says anything about the customer.
+    expect(renderTemplate('billing.bank_payment_failed', { object_label: 'I0001', amount: '250.00', pay_again: 'yes' }).body).toBe('Amount: $250.00. No money moved.');
+  });
+});
+
+describe('bank return alert (billing.chargeback, variant bank_return)', () => {
+  const render = (data: Record<string, string>) => renderTemplate('billing.chargeback', { object_label: 'I0001', variant: 'bank_return', amount: '300.00', ...data }).body;
+  const TAKEN = 'Amount: $300.00 was taken back from your ServWave Payments balance.';
+  const BEFORE = 'Amount: $300.00. The bank returned this payment before it cleared, so no money reached your ServWave Payments balance.';
+
+  it('names the balance only when the marker says the debit had cleared', () => {
+    expect(render({ cleared: 'yes' })).toBe(TAKEN);
+    expect(render({ cleared: 'no' })).toBe(BEFORE);
+    expect(render({})).toBe('Amount: $300.00.');
+  });
+
+  it.each([
+    ['sent', 'The invoice is open again and we emailed the customer a link to pay again.', 'The invoice is still open and we emailed the customer a link to pay again.'],
+    ['no_email', 'The invoice is open again. No email was sent because this customer has no email address on file. Contact them to pay again.', 'The invoice is still open. No email was sent because this customer has no email address on file. Contact them to pay again.'],
+    ['bounced', 'The invoice is open again. No email was sent because earlier emails to this customer\u2019s address bounced. Contact them to pay again.', 'The invoice is still open. No email was sent because earlier emails to this customer\u2019s address bounced. Contact them to pay again.'],
+    ['not_sent', 'The invoice is open again. The email to the customer could not be sent. Contact them to pay again.', 'The invoice is still open. The email to the customer could not be sent. Contact them to pay again.'],
+  ])('ending for %s, cleared and not cleared', (customer_notice, yes, no) => {
+    expect(render({ cleared: 'yes', customer_notice })).toBe(`${TAKEN} ${yes}`);
+    expect(render({ cleared: 'no', customer_notice })).toBe(`${BEFORE} ${no}`);
+  });
+
+  it('not_open: the voided invoice stays voided; a PAID or DISPUTED one cannot be paid online (C-38, C-49)', () => {
+    expect(render({ cleared: 'yes', customer_notice: 'not_open' })).toBe(`${TAKEN} The invoice stays voided, so the customer was not asked to pay.`);
+    expect(render({ cleared: 'no', customer_notice: 'not_open' })).toBe(`${BEFORE} The invoice stays voided, so the customer was not asked to pay.`);
+    expect(render({ cleared: 'yes', customer_notice: 'not_open', cannot_pay: 'yes' }))
+      .toBe(`${TAKEN} No email was sent because this invoice cannot be paid online right now.`);
+    expect(render({ cleared: 'no', customer_notice: 'not_open', cannot_pay: 'yes' }))
+      .toBe(`${BEFORE} No email was sent because this invoice cannot be paid online right now.`);
+  });
+
+  it('no customer_notice key adds no ending', () => {
+    expect(render({ cleared: 'yes' })).toBe(TAKEN);
   });
 });
 
@@ -82,10 +136,10 @@ describe('refund failed', () => {
 });
 
 describe('payment could not be applied', () => {
-  it('points at the Payments needing attention list, not at support, when the list can refund it', () => {
+  it('points at the Needs attention card on the Payments page, not at support, when the list can refund it', () => {
     for (const reason of ['INVOICE_NOT_FOUND', 'WRONG_ORG']) {
       const t = renderTemplate('billing.payment_unrecorded', { reason, object_kind: 'ORGANIZATION', payment_label: 'Card payment' });
-      expect(t.body).toContain('Payments needing attention');
+      expect(t.body).toContain('Open Needs attention on the Payments page');
       expect(t.body).not.toMatch(/contact servwave support/i);
     }
   });
@@ -93,8 +147,8 @@ describe('payment could not be applied', () => {
 
 describe('account action needed', () => {
   it('the body is what to do, in ServWave words, when the notice supplies it', () => {
-    const t = renderTemplate('billing.payments_action_needed', { what_to_do: 'Open Settings > Payments and upload the identity document ServWave Payments asks for.' });
-    expect(t.body).toBe('Open Settings > Payments and upload the identity document ServWave Payments asks for.');
+    const t = renderTemplate('billing.payments_action_needed', { what_to_do: 'Open Settings > ServWave Payments and upload the identity document ServWave Payments asks for.' });
+    expect(t.body).toBe('Open Settings > ServWave Payments and upload the identity document ServWave Payments asks for.');
     expect(renderTemplate('billing.payments_action_needed', { object_label: 'Acme' }).body).toBeUndefined();
   });
 });
@@ -137,7 +191,7 @@ describe('registry and routing', () => {
   it('no payment notification names a vendor', () => {
     const data = {
       object_label: 'I0001', customer_name: 'Pat Payer', amount: '10.00', reason_words: 'Fraudulent', evidence_due: 'October 20, 2026',
-      pay_again: 'yes', refund_kind: 'bank', what_to_do: 'Open Settings > Payments.', outcome: 'WON',
+      pay_again: 'yes', customer_notice: 'sent', cleared: 'no', cannot_pay: 'yes', refund_kind: 'bank', what_to_do: 'Open Settings > ServWave Payments.', outcome: 'WON',
     };
     const verbs = [
       ...NEW_VERBS, 'billing.disputed', 'billing.chargeback', 'billing.payment_unrecorded',

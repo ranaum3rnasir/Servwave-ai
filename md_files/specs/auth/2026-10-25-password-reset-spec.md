@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-25
 **Issue:** #2866
-**Status:** Decisions approved by Ran on 2026-10-25 (§9). Live tests done 2026-10-25 (§2.2) and the spec corrected to match. Ready for implementation; nothing is built yet.
+**Status:** Built and released. Slices 01-07 went to staging in #2873, #2875, #2876, #2877, #2879, #2881 and #2882. #2885 then fixed the sign-out after a change or reset, found by the live check. Everything was promoted to production in #2883 (main f7a0ab2a, 2026-10-26). The staging live check passed (§2.2 C). Slice 08 (auth provider settings) is still Ran's.
 **Scope:** a user managing their **own** password, plus an admin "Send password reset" action (§7).
 
 ---
@@ -83,6 +83,27 @@ The test used the staging test user from the test org: an Admin (Owner), with no
 - None of the signed-in screens offers a reset by email.
 
 **Open item:** the staging test account has to be put back on a known, strong password, and `STAGING_TEST_PASSWORD` updated to match. Production is unaffected: staging and production use **separate** auth projects (confirmed from each site's loaded scripts), and nothing was submitted on production.
+
+**C. Live check of the built feature (staging, 2026-10-25 and 2026-10-26).** Generated test users in the test org, emails read from the test inbox by plus-address only. The test admin was used to sign in and to invite; its password was never reset or changed by a test.
+
+| Check | Result |
+|---|---|
+| Sign-in page: "Forgot password?" link carries the typed email; eye toggle by mouse and keyboard, no submit | Pass |
+| Forgot password: generic message; email from "{org name}" <no-reply@servwave.com>, subject "Reset your ServWave password", copy per §5.1, arrives in about 1 s | Pass |
+| Reset link: token stripped from the address bar; breached password shows the ServWave message and the same page accepts another password with no new email; new password works, old one fails | Pass |
+| Link is single-use ("This reset link is invalid or has expired." + "Send a new link") | Pass |
+| Unknown email gets the same message | Pass (on screen) |
+| 4th request within 15 minutes: same message, no 4th email | Pass |
+| Change password on Login & Security: wrong current password, breached password, success copy inline and as a toast after 5 s; other device signed out; this device stays signed in | Failed on 2026-10-25 (other devices were signed out but the page said they were not, and this device was signed out too). Fixed in #2885; passed on 2026-10-26 |
+| Reset signs out every device; /login shows the updated-password notice | Same defect and fix; passed on 2026-10-26 |
+| Admin "Send password reset": dialog, toast "Reset link sent to {email}.", email arrives | Pass |
+| My Profile shows the Password row, no password fields | Pass |
+| No token in any request URL except the first page load; the password change goes only through the ServWave API | Pass |
+| Not verified live | Google-only user setting a password and then using both sign-in methods (no Google-only test account). The E2E specs are written but not run in CI (no keys). |
+
+**Production (2026-10-26), read-only:** backend (deploy dep-dbfqn9fb9u1s739juccg) and frontend (dpl_B16MGReijCPFmgMqLYJstz78o55W) live for main f7a0ab2a; `/login` shows "Forgot password?"; the eye toggle switches the field to text and back by click and by keyboard, with the label changing, and the form is not submitted; `/forgot-password` ("Reset your password") and `/reset-password` (no-link state with "Send a new link") load with no vendor names; `api.servwave.com/health` 200. Nothing was submitted on production.
+
+**Open:** the organization logo in emails loads from the database provider's storage address (visible only in the email HTML; the invite email has the same). Serving images from a ServWave address is separate work.
 
 ### 2.3 Auth provider settings
 
@@ -240,6 +261,8 @@ The test used the staging test user from the test org: an Admin (Owner), with no
 | Frontend unit (vitest + RTL) | `PasswordInput`: toggles type, aria-label and aria-pressed; doesn't submit; resets after submit; reduced motion. Login page keeps `#email`, `#password` and both "Sign In" names, and shows "Forgot password?". Forgot page always shows the same confirmation. Reset page handles the invalid-token state, strips the token from the URL, and on `weak_password` swaps in the returned token and lets the user retry. Login & Security shows the success confirmation and the breached-password message. |
 | E2E (Playwright, generated test org from `backend/src/lib/e2e-org.ts`, random passwords only) | Full round trip on staging: request link, read it from the test mailbox or a test-mode email capture, set a new password, sign in, and confirm the old password fails. Change password on Login & Security, and confirm other sessions are signed out. Admin "Send password reset" from Users & Teams. Eye toggle on login. |
 | Guards | `.gitleaks.toml` must stay green: no password literals. A copy test asserts no vendor name appears in the new pages or email. |
+
+**Status of these tests (2026-10-26).** Backend and frontend unit tests are in place for every row above and run in CI. The full backend suite passes. The guard rows are covered by gitleaks in CI and by copy tests on the new pages and email. The Playwright specs are written and type-checked but not run in CI, because the build machine has no backend or email keys: `frontend/e2e/specs/auth/password-reset.spec.ts` and `admin-password-reset.spec.ts` (both opt-in with `E2E_ASSERT_EMAILS=1`, and both need `E2E_BACKEND_URL` pointing at a backend with the test endpoints on). There is no end-to-end spec for change password or for the eye toggle: unit tests and the live check cover those. The staging live check in §2.2 C covered the same flows by hand. The test fake for the auth provider now behaves like the real one: an admin password update ends every session. That gap is why CI missed the sign-out defect fixed in #2885.
 
 **Testing rule (from the 2026-10-25 live test).** Automated tests must **never** change the password of a shared, long-lived test account such as the one behind `STAGING_TEST_EMAIL`. Use users from a generated test org. A manual round trip may fail to restore the original, and on 2026-10-25 it did, because the breach check rejected the original password. Any shared test account must use a long, randomly generated password.
 

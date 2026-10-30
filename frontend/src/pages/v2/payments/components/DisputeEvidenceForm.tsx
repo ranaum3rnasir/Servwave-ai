@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 
 import {
-  EVIDENCE_FILE_FIELDS, EVIDENCE_TEXT_FIELDS, disputeEvidenceKeys, paymentsPageKeys, saveDisputeEvidence, submitDisputeEvidence,
+  EVIDENCE_FILE_FIELDS, EVIDENCE_TEXT_FIELDS, disputeEvidenceKeys, paymentsPageKeys, saveDisputeEvidence, setDisputeEvidenceState,
+  submitDisputeEvidence,
   type DisputeEvidenceState, type EvidenceFile, type EvidenceFileField,
 } from '@/lib/api/paymentsPage';
 import { useAuthStore } from '@/stores/auth.store';
@@ -85,15 +86,16 @@ const snapshot = (files: Files, text: Text) =>
   JSON.stringify([EVIDENCE_FILE_FIELDS.map((f) => files[f]?.attachment_id ?? null), EVIDENCE_TEXT_FIELDS.map((f) => text[f] ?? '')]);
 
 /**
- * Step 2 of the dispute drawer: the files and the words that answer a dispute (payments go-live P11). It keeps its own
- * edits and stays mounted while the person looks back at step 1, so Back never loses work.
+ * The files and the words that answer a dispute (payments go-live P11), hosted by the Respond view. Going back is the
+ * drawer's own Back (it asks first when this form holds unsaved work), so the form has no Back of its own.
  */
 export function DisputeEvidenceForm({
-  data, onBack, onDirtyChange, onReload,
+  data, onDirtyChange, onReload, onSubmitted,
 }: {
   data: DisputeEvidenceState;
-  onBack: () => void;
   onDirtyChange: (dirty: boolean) => void;
+  /** The evidence was sent; the host leaves this view. */
+  onSubmitted: () => void;
   /** Reads the dispute again and starts the form over from it. */
   onReload: () => void;
 }) {
@@ -199,7 +201,7 @@ export function DisputeEvidenceForm({
   const failStoredDraft = (body: Rejection, sentSnapshot: string) => {
     const { error, field, ...rest } = body;
     const { staged: _staged, warnings: _warnings, sent: _sent, draft_saved: _draft, errors: _errors, ...state } = rest as Record<string, unknown>;
-    queryClient.setQueryData(disputeEvidenceKeys.one(orgId, data.dispute.id), state);
+    setDisputeEvidenceState(queryClient, orgId, data.dispute.id, state as unknown as DisputeEvidenceState);
     setBase(sentSnapshot);
     const words = error || 'The evidence could not be saved. Try again.';
     const named = field && KNOWN_FIELDS.has(field) ? field : null;
@@ -258,7 +260,7 @@ export function DisputeEvidenceForm({
         text: Object.fromEntries(EVIDENCE_TEXT_FIELDS.map((f) => [f, text[f] ?? ''])),
       });
       const { staged: _staged, warnings, ...state } = result;
-      queryClient.setQueryData(disputeEvidenceKeys.one(orgId, data.dispute.id), state);
+      setDisputeEvidenceState(queryClient, orgId, data.dispute.id, state);
       setBase(sentSnapshot);
       // The server has now counted the pages of what was sent.
       setFiles((prev) => Object.fromEntries(EVIDENCE_FILE_FIELDS.map((f) => {
@@ -283,9 +285,10 @@ export function DisputeEvidenceForm({
     try {
       const result = await submitDisputeEvidence(data.dispute.id, data.form.version);
       toast.success('Evidence submitted. The dispute is under review');
-      queryClient.setQueryData(disputeEvidenceKeys.one(orgId, data.dispute.id), result);
+      setDisputeEvidenceState(queryClient, orgId, data.dispute.id, result);
       void queryClient.invalidateQueries({ queryKey: paymentsPageKeys.all });
       setConfirmOpen(false);
+      onSubmitted();
     } catch (err) {
       const status = (err as { response?: { status?: number } })?.response?.status;
       const words = extractApiError(err, 'The evidence could not be sent. Try again.');
@@ -445,7 +448,6 @@ export function DisputeEvidenceForm({
       </SheetBody>
 
       <SheetFooter className="max-sm:flex-col max-sm:[&>button]:w-full">
-        <Button type="button" variant="outline" className={PHONE_BUTTON} onClick={onBack}>Back</Button>
         <Button type="button" variant="outline" className={PHONE_BUTTON} isLoading={saving} onClick={() => void save()}>Save draft</Button>
         <Button
           ref={submitButton}

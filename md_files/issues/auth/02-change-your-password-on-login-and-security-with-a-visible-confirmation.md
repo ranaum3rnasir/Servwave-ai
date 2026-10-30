@@ -1,7 +1,7 @@
 # Change your password on Login & Security, with a confirmation you can see
 
 **Type:** AFK
-**Status:** Built and reviewed locally (commits 98e6704a, 1a29aae7 on feat/password-reset). Not yet on staging.
+**Status:** Released. On staging via #2875 (3504575a), on production via #2883 (main f7a0ab2a, 2026-10-26). Live-checked on staging (spec §2.2 C). Sign-out fix in #2885 (bb942069), found by the live check.
 **Spec sections:** §4.1, §4.2, §4.3 (except the Google-only case, slice 06, and My Profile, slice 03)
 
 ## Parent
@@ -24,11 +24,11 @@ Today the Change Password card on Login & Security sets the password straight fr
 
 ## Acceptance criteria
 
-- [ ] A correct current password plus a valid new one shows the confirmation inline and as a toast, both still visible 5 s later. The new password signs in and the old one fails. *(Unit-tested; the real sign-in with the new password is checked on staging.)*
+- [x] A correct current password plus a valid new one shows the confirmation inline and as a toast, both still visible 5 s later. The new password signs in and the old one fails. *(Checked live on staging 2026-10-26.)*
 - [x] The network log shows the server endpoint and no direct browser call to the auth provider.
 - [x] A breached new password shows the ServWave message, and the password is unchanged.
 - [x] A wrong current password shows "Current password is incorrect.", and the password is unchanged.
-- [ ] Signed in on two browsers: changing the password in one signs the other out on its next request. *(Unit-tested with a mocked provider; checked live on staging.)*
+- [x] Signed in on two browsers: changing the password in one signs the other out on its next request. *(Checked live on staging 2026-10-26 after the #2885 fix; this device stays signed in.)*
 - [x] Backend tests: wrong current gives 400; same-as-current gives 400; success revokes the other sessions; the auth id comes from the token, not an email lookup; `weak_password` maps to the ServWave copy; no provider message ever appears in a response.
 - [x] Automated tests use a generated test org with random passwords, never the shared staging test account.
 

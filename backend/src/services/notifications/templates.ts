@@ -54,6 +54,59 @@ function namedPeople(data: Record<string, any>): string[] {
   return Array.isArray(v) ? v.filter((n): n is string => typeof n === 'string' && n.length > 0) : [];
 }
 
+
+/**
+ * V7-13 part 2 (BE-13d, BE-13e): what happened to the customer after a bank payment failed or was returned, in the
+ * office's words. `customer_notice` is the outcome of the email attempt; a key missing (a notice stored before this
+ * existed) says nothing about the customer, so it never claims a send.
+ */
+const CANNOT_PAY_ONLINE = 'No email was sent because this invoice cannot be paid online right now.';
+const NO_EMAIL_ON_FILE = 'No email was sent because this customer has no email address on file. Contact them to pay again.';
+const EMAIL_BOUNCED = 'No email was sent because earlier emails to this customer\u2019s address bounced. Contact them to pay again.';
+const EMAIL_NOT_SENT = 'The email to the customer could not be sent. Contact them to pay again.';
+
+/** The ending of billing.bank_payment_failed, by outcome. */
+const BANK_FAILED_ENDING: Record<string, string> = {
+  sent: 'We emailed the customer a link to pay again.',
+  no_email: NO_EMAIL_ON_FILE,
+  bounced: EMAIL_BOUNCED,
+  not_sent: EMAIL_NOT_SENT,
+  // BE-13d: unchanged on its own; the C-38 sentence needs the `cannot_pay` marker (PAID by another payment or DISPUTED).
+  not_open: 'The invoice is no longer open for payment.',
+};
+
+/** The ending for this notice: the C-38 sentence replaces `not_open` only when the marker says PAID by another payment or DISPUTED. */
+function bankFailedEnding(data: Record<string, any>): string | undefined {
+  const notice = s(data, 'customer_notice');
+  return notice === 'not_open' && s(data, 'cannot_pay') ? CANNOT_PAY_ONLINE : BANK_FAILED_ENDING[notice];
+}
+
+/**
+ * The body of billing.chargeback for a bank return. The balance is named only when the marker says the debit had
+ * cleared (`cleared` yes); one returned before it cleared never reached the balance, and a missing marker says
+ * nothing about it. The ending follows the customer outcome; `cannot_pay` marks a not_open invoice that is PAID or
+ * DISPUTED rather than voided.
+ */
+function bankReturnBody(data: Record<string, any>): string | undefined {
+  const amount = s(data, 'amount');
+  if (!amount) return undefined;
+  const cleared = s(data, 'cleared');
+  const base = cleared === 'yes'
+    ? 'Amount: $' + amount + ' was taken back from your ServWave Payments balance.'
+    : cleared === 'no'
+      ? 'Amount: $' + amount + '. The bank returned this payment before it cleared, so no money reached your ServWave Payments balance.'
+      : 'Amount: $' + amount + '.';
+  const open = cleared === 'no' ? 'The invoice is still open' : 'The invoice is open again';
+  const notice = s(data, 'customer_notice');
+  const ending: string | undefined = notice === 'sent' ? open + ' and we emailed the customer a link to pay again.'
+    : notice === 'no_email' ? open + '. ' + NO_EMAIL_ON_FILE
+    : notice === 'bounced' ? open + '. ' + EMAIL_BOUNCED
+    : notice === 'not_sent' ? open + '. ' + EMAIL_NOT_SENT
+    : notice === 'not_open' ? (s(data, 'cannot_pay') ? CANNOT_PAY_ONLINE : 'The invoice stays voided, so the customer was not asked to pay.')
+    : undefined;
+  return ending ? base + ' ' + ending : base;
+}
+
 /**
  * Payments go-live slice 09: a dispute or bank return on money that has no payment row (written
  * down as unapplied, or a bank payment recorded by hand) changes nothing on the invoice, so the
@@ -198,18 +251,32 @@ const registry = {
     body: s(data, 'fallback_reason') || undefined,
   }),
 
-  // Spider lead watcher (#2619): a lead stayed in an open status longer than the company's
-  // limit. FEED, not INTERRUPT: Spider's own popup card and red frame are its interrupting
-  // surfaces, so the bell lists it without also raising a toast.
+  // Spider lead watcher (#2619): a lead stayed in a stage longer than the company's limit.
+  // FEED: Spider's own button, panel and red frame are its interrupting surfaces, and the bell never
+  // shows it (bellHiddenVerbs.ts, D3). His in-app title and body, which the sweep writes as `title`
+  // and `body` (services/spider/messages.ts).
   'spider.alert': (data) => ({
     category: 'LEAD',
     object_type: 'LEAD',
     priority: 'FEED',
     action_type: null,
     needs_action: false,
-    title: 'Spider: ' + s(data, 'object_label', 'Lead') + ' has been in '
-      + s(data, 'status_label', 'one status') + ' for ' + s(data, 'time_in_status', 'too long')
-      + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
+    title: s(data, 'title') || 'Spider Alert - ' + s(data, 'customer_name', 'Customer') + ' (' + s(data, 'object_label', 'Lead') + ')',
+    body: s(data, 'body') || undefined,
+  }),
+
+  // Spider's starting summary (#2794): one per person, the leads already past their limit when Spider
+  // started watching something new. FEED: it lists in the bell and never toasts or raises the red
+  // frame. The sweep writes the title and body (services/spider/summaryMessages.ts); its link_path
+  // opens the person's summary.
+  'spider.starting_summary': (data) => ({
+    category: 'LEAD',
+    object_type: 'SPIDER_SUMMARY',
+    priority: 'FEED',
+    action_type: null,
+    needs_action: false,
+    title: s(data, 'title') || 'Spider is on. Some of your leads were already past their limit.',
+    body: s(data, 'body') || undefined,
   }),
 
   // ── ESTIMATE ───────────────────────────────────────────────────────────────
@@ -651,6 +718,7 @@ const registry = {
     body: withWhy(data, unrecordedDisputeBody(data, 'lost') ?? (s(data, 'variant') === 'partial_chargeback'
       ? (s(data, 'amount') ? '$' + s(data, 'amount') + ' was taken back. ' : '')
         + 'The payment was left as recorded and the balance was not changed. Review the balance by hand.'
+      : s(data, 'variant') === 'bank_return' ? bankReturnBody(data)
       : s(data, 'amount') ? 'Amount: $' + s(data, 'amount') + ' was taken back from your ServWave Payments balance.' : undefined)),
   }),
 
@@ -703,9 +771,7 @@ const registry = {
     title: 'Bank payment failed for ' + s(data, 'object_label', 'invoice')
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
     body: withWhy(data, (s(data, 'amount') ? 'Amount: $' + s(data, 'amount') + '. ' : '')
-      + (s(data, 'pay_again')
-        ? 'No money moved. The customer has been sent a link to pay again.'
-        : 'No money moved. The invoice is no longer open for payment.')),
+      + 'No money moved.' + (bankFailedEnding(data) ? ' ' + bankFailedEnding(data) : '')),
   }),
 
   // Payments go-live slice 32: a refund the processor could not complete.
@@ -744,7 +810,7 @@ const registry = {
           + 'Check the payment against the invoice before replying to the customer.'
         : s(data, 'reason') === 'INVOICE_NOT_FOUND' || s(data, 'reason') === 'WRONG_ORG'
             ? 'The customer was charged, but the payment does not belong to any invoice in this account, '
-              + 'so no payment was recorded. Open Payments needing attention in Settings to send the money back.'
+              + 'so no payment was recorded. Open Needs attention on the Payments page to send the money back.'
             : s(data, 'reason') === 'REFUND_UNMATCHED'
               ? 'Money was refunded from this account for a payment ServWave has no record of. '
                 + 'Contact ServWave support if you did not expect this refund.'
@@ -1301,6 +1367,15 @@ export const VERB_RULES: Record<KnownVerb, VerbRule> = {
       + 'recipient rule (services/spider/recipients.ts): the roles, users and lead owner an Admin '
       + 'configured, else the Admins. Duty because acting on a stalled lead is the job of whoever '
       + 'the company put on watch, even when the lead owner is among them. ADR 0005 addendum.',
+  },
+  // Spider's starting summary (services/spider/summary.ts), emitted by the same sweep.
+  'spider.starting_summary': {
+    family: 'duty',
+    timing: 'time',
+    exception: 'One per person, emitted as a personal alert: the recipient arrives pre-resolved in '
+      + 'entity.recipient_ids, one of the people Spider\'s one recipient rule (services/spider/recipients.ts) '
+      + 'returned for the summarized leads - the roles, users and lead owner an Admin configured, else the '
+      + 'Admins - already limited to people who can open each lead. Duty, as spider.alert. ADR 0005 addendum.',
   },
   'billing.invoice_overdue': { family: 'duty', timing: 'time' },
   'billing.invoice_due_soon': { family: 'duty', timing: 'time' },

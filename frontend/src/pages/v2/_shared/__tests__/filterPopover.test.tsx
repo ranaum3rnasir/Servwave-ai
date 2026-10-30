@@ -10,7 +10,7 @@
  * and that the draft only reaches the page on Apply.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import type { FacetConfig, FilterState } from '@/lib/filters/types';
@@ -93,6 +93,19 @@ describe('FilterPopover presentation', () => {
 
 describe('FilterPopover bottom sheet', () => {
   beforeEach(() => setViewport(375, 667));
+
+  it('gives focus back to the Filter button when the sheet closes (Escape, and Apply)', async () => {
+    renderFilter();
+    const trigger = screen.getByRole('button', { name: /Filter/ });
+    await userEvent.click(trigger);
+    await screen.findByRole('dialog');
+    await userEvent.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    await waitFor(() => expect(trigger).toHaveFocus());
+    await userEvent.click(trigger);
+    await userEvent.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Apply' }));
+    await waitFor(() => expect(trigger).toHaveFocus());
+  });
 
   it('drills into one value list and back, and only Apply reaches the page', async () => {
     const onChange = renderFilter();

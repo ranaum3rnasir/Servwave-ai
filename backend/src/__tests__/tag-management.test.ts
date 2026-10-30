@@ -21,40 +21,50 @@ const mockPrisma = prisma as unknown as {
     update: ReturnType<typeof vi.fn>;
     delete: ReturnType<typeof vi.fn>;
   };
+  tagAssignment: { groupBy: ReturnType<typeof vi.fn> };
+  $transaction: ReturnType<typeof vi.fn>;
+  $queryRaw: ReturnType<typeof vi.fn>;
 };
 
 const OTHER_TAG_ID = '11111111-1111-1111-1111-111111111111';
 
+// What the case-insensitive name lookup finds in the caller's org (another tag, or nothing).
+let nameClash: { id: string } | null = null;
+
 beforeEach(() => {
   vi.clearAllMocks();
-  mockPrisma.tag.findFirst.mockResolvedValue({ id: TAG_FIXTURE.id });
+  nameClash = null;
+  mockPrisma.$transaction.mockImplementation(async (work: (tx: unknown) => unknown) => work(prisma));
+  // The ownership lookup is by id; the case-insensitive name lookup is by organisation and name.
+  mockPrisma.tag.findFirst.mockImplementation((args: { where: { id?: unknown } }) =>
+    Promise.resolve(typeof args.where.id === 'string' ? { id: TAG_FIXTURE.id } : nameClash));
   mockPrisma.tag.findUnique.mockResolvedValue(null);
+  mockPrisma.tagAssignment.groupBy.mockResolvedValue([]);
+  mockPrisma.$queryRaw.mockResolvedValue([]);
   mockPrisma.tag.update.mockResolvedValue({ id: TAG_FIXTURE.id, name: 'Renamed', color: '#22C55E' });
   mockPrisma.tag.delete.mockResolvedValue({ id: TAG_FIXTURE.id });
 });
 
 describe('GET /api/tags', () => {
-  it('returns the bare vocabulary and never asks for relation counts', async () => {
+  it('returns each tag with its usage count: assignments plus legacy lead links with no twin', async () => {
     mockAuthAs('sales');
-    mockPrisma.tag.findMany.mockResolvedValue([{ id: TAG_FIXTURE.id, name: 'Urgent', color: '#EF4444' }]);
+    mockPrisma.tag.findMany.mockResolvedValue([
+      { id: TAG_FIXTURE.id, name: 'Urgent', color: '#EF4444' },
+      { id: OTHER_TAG_ID, name: 'Idle', color: '#EF4444' },
+    ]);
+    mockPrisma.tagAssignment.groupBy.mockResolvedValue([{ tag_id: TAG_FIXTURE.id, _count: { _all: 3 } }]);
+    mockPrisma.$queryRaw.mockResolvedValue([{ tag_id: TAG_FIXTURE.id, n: 2 }]);
 
     const res = await request(app).get('/api/tags').set(authHeader('sales'));
 
     expect(res.status).toBe(200);
-    expect(res.body.tags[0]).toEqual({ id: TAG_FIXTURE.id, name: 'Urgent', color: '#EF4444' });
-    // The per-tag usage count is gone: nobody acted on the figure and it cost two
-    // relation counts per row on a list the picker fetches on every open.
+    expect(res.body.tags).toEqual([
+      { id: TAG_FIXTURE.id, name: 'Urgent', color: '#EF4444', usage_count: 5 },
+      { id: OTHER_TAG_ID, name: 'Idle', color: '#EF4444', usage_count: 0 },
+    ]);
+    // One grouped read, scoped to the caller's org, never a per-tag count.
+    expect(mockPrisma.tagAssignment.groupBy.mock.calls[0][0].where.organization_id).toBeDefined();
     expect(mockPrisma.tag.findMany.mock.calls[0][0].select._count).toBeUndefined();
-  });
-
-  it('ignores a leftover with_usage query param instead of changing shape', async () => {
-    mockAuthAs('admin');
-    mockPrisma.tag.findMany.mockResolvedValue([{ id: TAG_FIXTURE.id, name: 'Urgent', color: '#EF4444' }]);
-
-    const res = await request(app).get('/api/tags?with_usage=1').set(authHeader('admin'));
-
-    expect(res.status).toBe(200);
-    expect(res.body.tags[0].usage_count).toBeUndefined();
   });
 });
 
@@ -96,7 +106,7 @@ describe('PATCH /api/tags/:id', () => {
 
   it('returns 409 when the new name is taken by a different tag', async () => {
     mockAuthAs('admin');
-    mockPrisma.tag.findUnique.mockResolvedValue({ id: OTHER_TAG_ID });
+    nameClash = { id: OTHER_TAG_ID };
 
     const res = await request(app)
       .patch(`/api/tags/${TAG_FIXTURE.id}`)
@@ -109,8 +119,7 @@ describe('PATCH /api/tags/:id', () => {
 
   it('allows a recolour that keeps the tag its own name', async () => {
     mockAuthAs('admin');
-    // The unique lookup finds *this* tag — not a clash.
-    mockPrisma.tag.findUnique.mockResolvedValue({ id: TAG_FIXTURE.id });
+    // The name lookup excludes this tag itself, so it finds nothing.
 
     const res = await request(app)
       .patch(`/api/tags/${TAG_FIXTURE.id}`)

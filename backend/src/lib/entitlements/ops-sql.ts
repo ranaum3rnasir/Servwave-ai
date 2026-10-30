@@ -11,6 +11,7 @@ import type { PlanTier } from './catalog';
 import { isKnownFeature, isGrantableFeature, catalogEntry } from './catalog';
 import { DEFAULT_GRANTS } from '../permissions/defaultGrants';
 import { starterTaskCategoriesSql } from '../tasks/categories';
+import { listRowsFromOrgJsonSql } from '../org-list-sql';
 import { issueMainMailboxSql } from '../mailbox/provision-sql';
 
 /** SQL string literal: null → NULL, otherwise single-quoted with `'` doubled. */
@@ -171,6 +172,10 @@ export function buildCreateOrgSql(input: {
   // category of the same name, in any letter case, is left alone.
   const taskCategoriesInsert = starterTaskCategoriesSql(lit(orgId));
 
+  // The job type and source lists as rows, copied from the organization's own column defaults (V7-03). Idempotent: an
+  // org that already has rows in a list is left alone.
+  const listRowsInsert = listRowsFromOrgJsonSql(lit(orgId));
+
   // Re-affirm accepted_payment_methods for the idempotent case where the org row
   // already existed with the '[]' default (the ON CONFLICT above skipped it).
   const paymentsUpdate =
@@ -181,7 +186,7 @@ export function buildCreateOrgSql(input: {
   // Idempotent: a company that already has a main mailbox is left alone.
   const mainMailbox = issueMainMailboxSql(lit(orgId));
 
-  return [orgInsert, grantInsert, settingsInsert, taxRatesInsert, taskCategoriesInsert, paymentsUpdate, mainMailbox].join('\n\n');
+  return [orgInsert, grantInsert, settingsInsert, taxRatesInsert, taskCategoriesInsert, listRowsInsert, paymentsUpdate, mainMailbox].join('\n\n');
 }
 
 // --- Audit report (read-only) --------------------------------------------------

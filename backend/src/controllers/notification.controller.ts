@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import { BELL_VISIBLE } from '../services/notifications/bellHiddenVerbs';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { tenantWhere } from '../lib/tenant';
@@ -100,6 +101,7 @@ export async function list(req: Request, res: Response) {
     where: {
       recipient_id: me,
       ...tenant,
+      ...BELL_VISIBLE,
       dismissed_at: null,
       ...(needsAction ? { needs_action: true, acted_at: null } : {}),
       ...(cursorOr ? { OR: cursorOr } : {}),
@@ -129,11 +131,11 @@ export async function unreadCount(req: Request, res: Response) {
   const tenant = tenantWhere(req);
 
   const unseen = await prisma.notificationRecipient.count({
-    where: { recipient_id: me, ...tenant, dismissed_at: null, seen_at: null },
+    where: { recipient_id: me, ...tenant, ...BELL_VISIBLE, dismissed_at: null, seen_at: null },
   });
 
   const needs_action = await prisma.notificationRecipient.count({
-    where: { recipient_id: me, ...tenant, dismissed_at: null, needs_action: true, acted_at: null },
+    where: { recipient_id: me, ...tenant, ...BELL_VISIBLE, dismissed_at: null, needs_action: true, acted_at: null },
   });
 
   res.json({ unseen, needs_action });
@@ -152,6 +154,7 @@ export async function markSeen(req: Request, res: Response) {
     where: {
       recipient_id: me,
       ...tenant,
+      ...BELL_VISIBLE,
       dismissed_at: null,
       seen_at: null,
       ...(ids && ids.length > 0 ? { id: { in: ids } } : {}),
@@ -171,7 +174,7 @@ export async function readAll(req: Request, res: Response) {
   const tenant = tenantWhere(req);
 
   const result = await prisma.notificationRecipient.updateMany({
-    where: { recipient_id: me, ...tenant, dismissed_at: null, read_at: null },
+    where: { recipient_id: me, ...tenant, ...BELL_VISIBLE, dismissed_at: null, read_at: null },
     data: { read_at: new Date() },
   });
 
@@ -181,6 +184,7 @@ export async function readAll(req: Request, res: Response) {
 /**
  * PATCH /api/notifications/:id/read
  * Stamps read_at on a single recipient row the caller owns.
+ * No bell filter on purpose: Spider marks its own alerts read through this endpoint.
  */
 export async function markRead(req: Request, res: Response) {
   const me = req.user!.id;

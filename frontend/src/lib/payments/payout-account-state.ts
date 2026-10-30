@@ -24,6 +24,7 @@ export function payoutAccountState(s: StripeStatus): PayoutAccountState {
     case 3:
       return { label: 'Under review', tone: 'warning', message: 'Your details are being verified. Payments turn on once that is done.' };
     case 4:
+      return { label: 'Active', tone: 'success', message: 'Your payout account is set up.' };
     case 5:
       return { label: 'Active', tone: 'success', message: 'Your payout account is active.' };
     case 6:

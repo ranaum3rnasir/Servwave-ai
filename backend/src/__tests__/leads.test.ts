@@ -100,6 +100,7 @@ const mockPrisma = prisma as unknown as {
     create: ReturnType<typeof vi.fn>;
   };
   tagAssignment: {
+    groupBy: ReturnType<typeof vi.fn>;
     findMany: ReturnType<typeof vi.fn>;
     findUnique: ReturnType<typeof vi.fn>;
     create: ReturnType<typeof vi.fn>;
@@ -128,6 +129,9 @@ beforeEach(() => {
   // resetAllMocks (not clearAllMocks) — clears the .mockResolvedValueOnce queue too,
   // so previously-queued values can't bleed into the next test.
   vi.resetAllMocks();
+  // Tag writes check the name case-insensitively inside a transaction; the list also reads legacy lead links raw.
+  (prisma.$transaction as unknown as ReturnType<typeof vi.fn>).mockImplementation(async (work: (tx: unknown) => unknown) => work(prisma));
+  (prisma.$queryRaw as unknown as ReturnType<typeof vi.fn>).mockResolvedValue([]);
   // Clear the permissionCache so cached grants from one test don't leak into the next.
   // attachAbility and loadGrantsFor both use this cache; without clearing it, a test
   // that caches grants for role X would affect the next test's ability checks.
@@ -219,6 +223,24 @@ describe('GET /api/leads', () => {
 
     const findManyArgs = mockPrisma.lead.findMany.mock.calls[0][0];
     expect(findManyArgs.select.walkthrough_needed).toBeUndefined();
+  });
+
+  /**
+   * SPEC-4 D7: Spider's "Select Contacts for Alert" list decides each lead's stage from this list,
+   * with the sweep's rule. A lead moved back to New is in New from `returned_to_new_at`, so the list
+   * must carry it, or the screen would count that lead's time in New from its creation.
+   */
+  it('selects returned_to_new_at, the start of a lead\'s New stay after a move back', async () => {
+    mockAuthAs('admin');
+    mockPrisma.lead.findMany.mockResolvedValue([]);
+    mockPrisma.lead.count.mockResolvedValue(0);
+
+    await request(app)
+      .get('/api/leads')
+      .set(authHeader('admin'));
+
+    const findManyArgs = mockPrisma.lead.findMany.mock.calls[0][0];
+    expect(findManyArgs.select).toMatchObject({ contacted_at: true, returned_to_new_at: true });
   });
 
   /**
@@ -3369,6 +3391,7 @@ describe('GET /api/tags', () => {
     mockPrisma.tag.findMany.mockResolvedValue([
       { id: TAG_FIXTURE.id, name: 'Urgent', color: '#EF4444' },
     ]);
+    mockPrisma.tagAssignment.groupBy.mockResolvedValue([]);
 
     const res = await request(app)
       .get('/api/tags')
@@ -3383,6 +3406,7 @@ describe('GET /api/tags', () => {
   it('lists the tags for a TECHNICIAN too', async () => {
     mockAuthAs('technician');
     mockPrisma.tag.findMany.mockResolvedValue([{ id: TAG_FIXTURE.id, name: 'Urgent', color: '#EF4444' }]);
+    mockPrisma.tagAssignment.groupBy.mockResolvedValue([]);
 
     const res = await request(app)
       .get('/api/tags')
@@ -3414,7 +3438,7 @@ describe('POST /api/tags', () => {
 
   it('returns 409 for duplicate tag name', async () => {
     mockAuthAs('admin');
-    mockPrisma.tag.findUnique.mockResolvedValue(TAG_FIXTURE);
+    mockPrisma.tag.findFirst.mockResolvedValue(TAG_FIXTURE);
 
     const res = await request(app)
       .post('/api/tags')
@@ -3474,7 +3498,7 @@ describe('POST /api/tags', () => {
       .send({ name: '  VIP  ' });
 
     expect(res.status).toBe(201);
-    expect(mockPrisma.tag.findUnique.mock.calls[0][0].where.organization_id_name.name).toBe('VIP');
+    expect(mockPrisma.tag.findFirst.mock.calls[0][0].where.name).toBe('VIP');
     expect(mockPrisma.tag.create.mock.calls[0][0].data.name).toBe('VIP');
   });
 
@@ -3872,10 +3896,9 @@ describe('POST /api/leads/:id/tags (edge cases)', () => {
   it('finds existing tag by name and attaches it (idempotent create)', async () => {
     mockAuthAs('admin');
     mockPrisma.lead.findFirst.mockResolvedValue(LEAD_FIXTURE);
-    // tag.findUnique returns existing tag on name lookup
-    mockPrisma.tag.findUnique
-      .mockResolvedValueOnce({ id: TAG_FIXTURE.id, name: 'Urgent', color: '#EF4444' }) // found by name
-      .mockResolvedValueOnce({ id: TAG_FIXTURE.id, name: 'Urgent', color: '#EF4444' }); // final fetch
+    // tag.findFirst finds the existing tag on the (case-insensitive) name lookup; findUnique is the final fetch
+    mockPrisma.tag.findFirst.mockResolvedValue({ id: TAG_FIXTURE.id, name: 'Urgent', color: '#EF4444' });
+    mockPrisma.tag.findUnique.mockResolvedValue({ id: TAG_FIXTURE.id, name: 'Urgent', color: '#EF4444' });
     mockPrisma.tagAssignment.findUnique.mockResolvedValue(null); // not attached yet
     mockPrisma.tagAssignment.create.mockResolvedValue({ tag_id: TAG_FIXTURE.id, entity_type: 'LEAD', entity_id: LEAD_FIXTURE.id });
 

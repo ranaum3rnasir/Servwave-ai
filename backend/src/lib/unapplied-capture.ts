@@ -17,8 +17,8 @@
  * (the session names no invoice ServWave has, or another org's), the record sits on the org
  * itself (`invoice: null`), so another org's invoice is never touched.
  *
- * Payments go-live slice 11: the durable half also writes the "Payments needing attention" record
- * (unapplied_captures), which Settings > Payments lists with a one-click refund. One record per
+ * Payments go-live slice 11: the durable half also writes the unapplied-payment record
+ * (unapplied_captures), which the Payments page lists on its Needs attention card with a one-click refund. One record per
  * captured money (its source key), however many times its event is delivered.
  */
 import type { Prisma } from '@prisma/client';
@@ -51,7 +51,7 @@ export interface UnappliedCapture {
   dedupKey: string;
   /** Extra template data for the alert (the invoice label is always added). */
   notificationData?: Record<string, string>;
-  /** What the "Payments needing attention" record keeps, so a person can send the money back. */
+  /** What the unapplied-payment record keeps, so a person can send the money back. */
   record: UnappliedCaptureRecord;
 }
 
@@ -157,8 +157,8 @@ export async function writeUnappliedCaptureEntry(
 
 /**
  * The alert half: the owner's notification and email, and the audit row. Call after the money write
- * commits. Slice 32: the alert opens Settings > Payments, where the "Payments needing attention"
- * list holds the row, and carries the row's source key so refunding or resolving the row can clear it.
+ * commits. Slice 32: the alert opens the Payments page, where the Needs attention
+ * card holds the row, and carries the row's source key so refunding or resolving the row can clear it.
  */
 export async function alertUnappliedCapture(capture: UnappliedCapture): Promise<void> {
   const { organizationId, invoice, metadata, dedupKey, notificationData } = capture;
@@ -176,7 +176,7 @@ export async function alertUnappliedCapture(capture: UnappliedCapture): Promise<
       ...(invoice ? {} : { object_kind: 'ORGANIZATION' }),
     },
     dedupKey,
-    actionLabel: 'Open Payments needing attention',
+    actionLabel: 'Open Needs attention',
   });
 
   void logAudit({
@@ -244,5 +244,127 @@ export async function clearUnappliedCaptureAlerts(
   await db.notificationRecipient.updateMany({
     where: { organization_id: organizationId, read_at: null, notification_id: { in: olderIds } },
     data: { read_at: now },
+  });
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// V7-09b (C-32): a partial refund of unapplied money. The record keeps the dollars already sent back (refunded_amount)
+// and the refunds counted into it (counted_refund_ids), so one refund reported twice - the staff door and its event, a
+// replayed event - counts once, and the record closes (REFUNDED) only when the whole amount is back.
+// ---------------------------------------------------------------------------------------------------------------------
+
+const centsOf = (d: { toString(): string }): number => Math.round(Number(d.toString()) * 100);
+
+type CaptureTx = Pick<Prisma.TransactionClient, 'unappliedCapture' | '$executeRaw'>;
+
+/**
+ * Count one refund of a record, once. Takes the record's row lock (the caller may hold it already), so two writers of the
+ * same refund - or two refunds - never interleave. A refund already counted, or known to have failed, changes nothing.
+ * The record closes (status REFUNDED, the refund's id kept) when this refund closes it or the total back reaches the amount;
+ * a RESOLVED record is closed too (the money went back, and that is what it must say). Returns whether it is closed now.
+ */
+export async function countRefundOnCapture(
+  tx: CaptureTx,
+  input: { organizationId: string; recordId: string; refundId: string; refundCents: number; closes: boolean; closedBy?: { id: string; name: string } },
+): Promise<{ counted: boolean; closed: boolean }> {
+  const { organizationId, recordId, refundId, refundCents } = input;
+  await tx.$executeRaw`SELECT id FROM unapplied_captures WHERE id = ${recordId}::uuid AND organization_id = ${organizationId}::uuid FOR UPDATE`;
+  const row = await tx.unappliedCapture.findFirst({
+    where: { id: recordId, organization_id: organizationId },
+    select: { status: true, amount: true, refunded_amount: true, counted_refund_ids: true, failed_refund_ids: true },
+  });
+  if (!row) return { counted: false, closed: false };
+  if (row.failed_refund_ids.includes(refundId)) return { counted: false, closed: row.status === 'REFUNDED' };
+  if (row.counted_refund_ids.includes(refundId)) return { counted: false, closed: row.status === 'REFUNDED' };
+  const refundedCents = centsOf(row.refunded_amount) + Math.max(refundCents, 0);
+  const closing = (row.status === 'OPEN' || row.status === 'RESOLVED')
+    && (input.closes || (row.amount != null && refundedCents >= centsOf(row.amount)));
+  const now = new Date();
+  await tx.unappliedCapture.updateMany({
+    where: { id: recordId, organization_id: organizationId },
+    data: {
+      refunded_amount: refundedCents / 100,
+      counted_refund_ids: { push: refundId },
+      ...(closing
+        ? {
+            status: 'REFUNDED', stripe_refund_id: refundId, refunded_at: now,
+            // Who sent it back and when (V7-05b); the reconciler knows no user.
+            ...(input.closedBy ? { resolved_at: now, resolved_by: input.closedBy.id, resolved_by_name: input.closedBy.name } : {}),
+          }
+        : {}),
+    },
+  });
+  return { counted: true, closed: closing || row.status === 'REFUNDED' };
+}
+
+/** The reason on a record made for money a failed refund handed back to a record already dealt with. */
+const RETURNED_REASON: UnappliedCaptureReason = 'INVOICE_NOT_FOUND';
+
+/**
+ * A refund of a record failed: the money is still here, and it must always be held by an OPEN item the office can act
+ * on, in exactly the cents that came back.
+ *  - The record is OPEN (or this refund was the one that closed it, and the caller already reopened it): the cents
+ *    simply come back to it.
+ *  - The record was dealt with since (attached to an invoice, marked resolved, or closed by a LATER refund): reopening it
+ *    would hand out money already booked or sent, so the returned cents move to a NEW open record of their own
+ *    (source key `returned:<record>:<refund>`, so a replayed failure makes one) and leave this one holding what it
+ *    really did: its amount and its refunded total both drop by those cents.
+ * A refund that was never counted (its failure landed first, or the record predates the counting) changes nothing here.
+ */
+export async function uncountRefundOnCapture(
+  tx: CaptureTx & Pick<Prisma.TransactionClient, 'auditLog'>,
+  input: { organizationId: string; recordId: string; refundId: string; refundCents: number },
+): Promise<void> {
+  const { organizationId, recordId, refundId } = input;
+  await tx.$executeRaw`SELECT id FROM unapplied_captures WHERE id = ${recordId}::uuid AND organization_id = ${organizationId}::uuid FOR UPDATE`;
+  const row = await tx.unappliedCapture.findFirst({
+    where: { id: recordId, organization_id: organizationId },
+    select: {
+      status: true, amount: true, refunded_amount: true, counted_refund_ids: true,
+      stripe_payment_intent_id: true, stripe_account_id: true,
+    },
+  });
+  if (!row || !row.counted_refund_ids.includes(refundId)) return;
+  const cents = Math.max(input.refundCents, 0);
+  const refundedCents = Math.max(centsOf(row.refunded_amount) - cents, 0);
+  const remaining = row.counted_refund_ids.filter((id) => id !== refundId);
+  if (row.status === 'OPEN') {
+    await tx.unappliedCapture.updateMany({
+      where: { id: recordId, organization_id: organizationId },
+      data: { refunded_amount: refundedCents / 100, counted_refund_ids: remaining },
+    });
+    return;
+  }
+  // Dealt with already: the returned cents get an open record of their own.
+  const keptCents = Math.max((row.amount != null ? centsOf(row.amount) : 0) - cents, 0);
+  await tx.unappliedCapture.updateMany({
+    where: { id: recordId, organization_id: organizationId },
+    data: { amount: keptCents / 100, refunded_amount: refundedCents / 100, counted_refund_ids: remaining },
+  });
+  if (cents <= 0) return;
+  const sourceKey = `returned:${recordId}:${refundId}`;
+  await tx.unappliedCapture.createMany({
+    data: [{
+      organization_id: organizationId,
+      invoice_id: null,
+      reason: RETURNED_REASON,
+      amount: cents / 100,
+      stripe_payment_intent_id: row.stripe_payment_intent_id,
+      // No checkout session: the payment row an attach books for this money must not claim the session twice.
+      stripe_checkout_session_id: null,
+      stripe_account_id: row.stripe_account_id,
+      source_key: sourceKey,
+    }],
+    skipDuplicates: true,
+  });
+  await tx.auditLog.create({
+    data: {
+      org_id: organizationId,
+      actor_id: null,
+      action: 'payment_attention.returned',
+      resource_type: 'UnappliedCapture',
+      resource_id: recordId,
+      metadata: { note: 'A refund of this payment failed after it was dealt with; the money is open again as its own item.', source_key: sourceKey, amount: cents / 100 },
+    },
   });
 }

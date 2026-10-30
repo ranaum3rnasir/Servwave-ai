@@ -107,7 +107,7 @@ export function useSwitchCatalog() {
 
 /** The company's effective accepted payment methods, as `GET /api/permission-switches/accepted-payment-methods` answers. */
 export interface AcceptedPaymentMethods {
-  /** The company ticked no method in Payments & Lists, so every method is accepted. */
+  /** The company ticked no method in ServWave Payments, so every method is accepted. */
   every_method: boolean;
   /** The methods the company accepts: the ticked ones plus Credit Card while the card processor is live, or every method. */
   methods: string[];

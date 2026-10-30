@@ -329,7 +329,7 @@ function refundedPaymentDisplay(invoice: InvoiceDetail, r: Refund): string | nul
  * So: a payment carrying a Stripe payment intent really was processed by us, and is labelled with
  * the CARD method regardless of what the row stores; everything else falls back to its own
  * method's label. Both come from `PAYMENT_METHOD_LABELS` - the same vocabulary Settings >
- * Payments & Lists shows - so this column can only ever name a method the org configured.
+ * ServWave Payments shows - so this column can only ever name a method the org configured.
  *
  * The Stripe naming survives in the parameter, the intent check and this comment on purpose: the
  * wiring stays traceable in code even though the word never reaches the screen.

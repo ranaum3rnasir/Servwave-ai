@@ -1,5 +1,5 @@
 /**
- * Payments go-live slice 11 (PRD Module 4, call 4) - "Payments needing attention".
+ * Payments go-live slice 11 (PRD Module 4, call 4) - the Needs attention card.
  *
  * Money the processor captured that ServWave could not apply to an invoice is written down as an
  * unapplied-capture record (lib/unapplied-capture.ts). This lists those records for the people
@@ -11,6 +11,7 @@
  */
 import type { Request, Response } from 'express';
 import type { Prisma } from '@prisma/client';
+import { z } from 'zod';
 import { prisma } from '../lib/prisma';
 import { tenantWhere } from '../lib/tenant';
 import { scopeWhereForReq } from '../lib/permissions/enforce';
@@ -18,10 +19,18 @@ import { createRefund, getStripeForOrg, listPaymentIntentRefunds } from '../lib/
 import { logAudit } from '../lib/audit';
 import { logger } from '../lib/logger';
 import { committedRefundCents, rederiveRefundTotals, toCents, UNAPPLIED_REFUND_REASON } from '../lib/payment-ledger';
-import { clearUnappliedCaptureAlerts, ledgerPaymentIdOf } from '../lib/unapplied-capture';
+import { clearUnappliedCaptureAlerts, countRefundOnCapture, ledgerPaymentIdOf } from '../lib/unapplied-capture';
+import { UNAPPLIED_CLOSES_METADATA_KEY } from '../services/payment-reconciler/decide';
 import { inAppRefundState } from './invoice.controller';
 import { REFUND_ROW_METADATA_KEY, completeReservedRefund, releaseIfRefused, releaseRefundReservation, reserveRefund } from '../lib/in-app-refund';
 import { BANK_REFUND_WINDOW_MESSAGE, isPastBankRefundWindow, REFUND_UNCONFIRMED_MESSAGE, refusedRefundAnswer } from '../lib/refund-rules';
+import { CHOOSE_A_REASON, RESOLVE_REASONS_OTHER, resolveReasonSchema } from '../lib/resolve-reasons';
+import { plainBody } from '../lib/request-body';
+import { present } from '../services/payment-attention';
+import {
+  AttachRefusal, afterCaptureBooked, assertAttachable, assertNoUncountedRefund, bookCaptureOnInvoice, bookRefundOnInvoice, loadCapture, openableInvoiceWhere, readCapturePayer,
+} from '../services/payment-attention/attach';
+import { findUnapplied, searchInvoicesForCapture, unappliedDetail } from '../services/payment-attention/unapplied-detail';
 
 /** Staff copy when the money could not be sent back. Names ServWave Payments, never the processor. */
 export const ATTENTION_REFUND_NOT_SENT =
@@ -47,6 +56,8 @@ const LIST_SELECT = {
   created_at: true,
   stripe_payment_intent_id: true,
   stripe_account_id: true,
+  // V7-09b: what already went back (a partial refund leaves the record OPEN with the rest).
+  refunded_amount: true,
   // The status says WHY an invoice that could not take a payment could not (already paid, voided, or neither).
   invoice: { select: { id: true, invoice_number: true, status: true } },
 } as const;
@@ -60,6 +71,7 @@ type Row = {
   created_at: Date;
   stripe_payment_intent_id: string | null;
   stripe_account_id: string | null;
+  refunded_amount: { toString(): string };
   invoice: { id: string; invoice_number: string; status: string } | null;
 };
 
@@ -70,14 +82,17 @@ function toItem(row: Row) {
     id: row.id,
     kind,
     reason: row.reason,
-    amount: row.amount != null ? Number(row.amount.toString()) : null,
+    // What is on the record now: the amount less what already went back (attached or resolved after a partial refund, it
+    // shows what it held then). A record closed by a refund keeps its whole amount.
+    amount: row.amount != null ? (row.status === 'REFUNDED' ? Number(row.amount.toString()) : Math.max(toCents(row.amount.toString()) - toCents(row.refunded_amount.toString()), 0) / 100) : null,
     status: row.status,
     created_at: row.created_at.toISOString(),
     refunded_at: row.refunded_at?.toISOString() ?? null,
     invoice: row.invoice,
     // Only money whose connected account is on record: without it a refund would come out of
     // ServWave's own balance.
-    can_refund: row.status === 'OPEN' && kind === 'PAYMENT' && !!row.stripe_payment_intent_id && !!row.stripe_account_id,
+    can_refund: row.status === 'OPEN' && kind === 'PAYMENT' && !!row.stripe_payment_intent_id && !!row.stripe_account_id
+      && (row.amount == null || toCents(row.amount.toString()) > toCents(row.refunded_amount.toString())),
     // Any open row can be closed by a person who dealt with it (a stray refund has nothing to send).
     can_resolve: row.status === 'OPEN',
   };
@@ -103,6 +118,126 @@ async function canActOnRecord(req: Request, id: string): Promise<boolean> {
 }
 
 const NOT_ALLOWED = 'Insufficient permissions';
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * GET /api/payments-needing-attention/:id - one unapplied item for its drawer (V7-09a, BE-10): the reasons in words, the
+ * invoice it was meant for, who paid, the invoices that could take it and the actions this caller holds. Reading needs
+ * View payments (the router); the actions keep their own switches. The same body answers through
+ * GET /api/payments-page/attention/:key.
+ */
+export async function getPaymentNeedingAttention(req: Request, res: Response): Promise<void> {
+  try {
+    const id = String(req.params.id);
+    const row = UUID.test(id) ? await findUnapplied(req, id.toLowerCase()) : null;
+    if (!row) {
+      res.status(404).json({ error: 'Item not found' });
+      return;
+    }
+    res.json(await unappliedDetail(req, row));
+  } catch (error) {
+    logger.error('payments-needing-attention detail failed', error);
+    res.status(500).json({ error: 'Could not load this item' });
+  }
+}
+
+/**
+ * GET /api/payments-needing-attention/:id/invoices?q= - the Attach dialog's invoice search: up to 25 invoices with
+ * can_attach and balance on every row, so the dialog can grey out the ones that cannot take the money. Gated like the detail.
+ */
+export async function searchInvoicesForPaymentNeedingAttention(req: Request, res: Response): Promise<void> {
+  try {
+    const id = String(req.params.id);
+    const row = UUID.test(id) ? await findUnapplied(req, id.toLowerCase()) : null;
+    if (!row) {
+      res.status(404).json({ error: 'Item not found' });
+      return;
+    }
+    // An item on an invoice the caller cannot open is shown restricted; the search would reveal other people's invoices.
+    const [item] = await present(req, [row]);
+    if (item.restricted) {
+      res.status(403).json({ error: NOT_ALLOWED });
+      return;
+    }
+    const q = typeof req.query.q === 'string' ? req.query.q.trim().slice(0, 100) : '';
+    res.json({ items: await searchInvoicesForCapture(req, row, q) });
+  } catch (error) {
+    logger.error('payments-needing-attention invoice search failed', error);
+    res.status(500).json({ error: 'Could not search invoices' });
+  }
+}
+
+/**
+ * POST /api/payments-needing-attention/:id/attach { invoice_id } (V7-09b, BE-10) - put the whole amount still on an
+ * unapplied payment on an open invoice of this company, or tie a stray refund to the invoice it belongs to. A payment
+ * larger than the invoice's balance is refused (no overpaid invoices): 409 INVOICE_BALANCE_BELOW_PAYMENT, nothing written.
+ * How the money was paid is read from the processor before the transaction; a failed read refuses the attach.
+ */
+export async function attachPaymentNeedingAttention(req: Request, res: Response): Promise<void> {
+  const id = String(req.params.id);
+  const body = attachBodySchema.safeParse(plainBody(req));
+  if (!UUID.test(id) || !body.success) {
+    res.status(400).json({ error: 'Choose an invoice.', field: 'invoice_id' });
+    return;
+  }
+  try {
+    const capture = await loadCapture(req, id.toLowerCase());
+    if (!capture) {
+      res.status(404).json({ error: 'Payment not found' });
+      return;
+    }
+    if (!(await canActOnRecord(req, capture.id))) {
+      res.status(403).json({ error: NOT_ALLOWED });
+      return;
+    }
+    const kind = capture.reason === REFUND_REASON ? 'REFUND' : 'PAYMENT';
+    assertAttachable(capture, kind);
+    // The invoice must be this company's and one the caller can open (the same reach the Attach search uses).
+    const invoiceId = body.data.invoice_id;
+    const target = await prisma.invoice.findFirst({ where: await openableInvoiceWhere(req, invoiceId.toLowerCase()), select: { id: true } });
+    if (!target) {
+      res.status(404).json({ error: 'Invoice not found.' });
+      return;
+    }
+    const orgId = req.user!.organization_id;
+    const actor = { id: req.user!.id, name: `${req.user!.first_name} ${req.user!.last_name}`.trim() };
+    if (kind === 'REFUND') {
+      const refund = await prisma.$transaction((tx) => bookRefundOnInvoice(tx, { organizationId: orgId, captureId: capture.id, invoiceId: target.id, actor }));
+      await clearUnappliedCaptureAlerts(prisma, orgId, capture.source_key);
+      void logAudit({
+        action: 'billing.unapplied_capture_attached', resourceType: 'Invoice', resourceId: target.id, orgId, actorId: actor.id,
+        metadata: { unapplied_capture_id: capture.id, invoice_number: refund.invoiceNumber, amount: refund.amountCents / 100, kind: 'REFUND' },
+      });
+      res.json({ item: await itemOf(req, capture.id), invoice: { id: target.id, number: refund.invoiceNumber } });
+      return;
+    }
+    // Before the transaction: the pool allows one connection, and a read must not hold a lock.
+    const payer = await readCapturePayer(capture);
+    await assertNoUncountedRefund(capture);
+    const booked = await prisma.$transaction((tx) => bookCaptureOnInvoice(tx, {
+      organizationId: orgId, capture, invoiceId: target.id, payer, actor,
+      note: (number) => `Attached to ${number}`,
+      history: (number, amount, who) => `Payment of ${amount} from payments needing attention attached to ${number} by ${who}`,
+    }), { timeout: 20_000 });
+    await afterCaptureBooked({ organizationId: orgId, capture, booked, actor, via: 'attach' });
+    res.json({
+      item: await itemOf(req, capture.id),
+      invoice: { id: target.id, number: booked.invoiceNumber, status: booked.newStatus },
+    });
+  } catch (error) {
+    if (error instanceof AttachRefusal) {
+      res.status(error.status).json({ code: error.code, error: error.message, ...error.extra });
+      return;
+    }
+    logger.error('payments-needing-attention attach failed', error);
+    res.status(500).json({ error: 'Could not attach this payment' });
+  }
+}
+
+async function itemOf(req: Request, id: string) {
+  const row = await prisma.unappliedCapture.findFirstOrThrow({ where: { id, ...tenantWhere(req) }, select: LIST_SELECT });
+  return toItem(row);
+}
 
 /** GET /api/payments-needing-attention - open records first, newest first. */
 export async function listPaymentsNeedingAttention(req: Request, res: Response): Promise<void> {
@@ -116,9 +251,10 @@ export async function listPaymentsNeedingAttention(req: Request, res: Response):
 }
 
 /**
- * POST /api/payments-needing-attention/:id/refund - send the whole capture back (for an
- * overpayment, the part that was not applied), out of the account it landed in, and mark the record
- * REFUNDED with the refund's id. The refund names the record, so its own events find it and never
+ * POST /api/payments-needing-attention/:id/refund { amount? } - send the capture back (for an
+ * overpayment, the part that was not applied), out of the account it landed in: all that is left, or the
+ * amount typed (V7-09b: a partial refund leaves the record OPEN with the rest), and mark the record
+ * REFUNDED with the refund's id once the whole amount is back. The refund names the record, so its own events find it and never
  * write the money down a second time. Money-first, like the invoice refund door: the record moves
  * only once the processor has taken the refund. A retry (a double click, a lost response) reuses the
  * same idempotency key, so the processor sends one refund; a refund that later fails reopens the
@@ -128,7 +264,7 @@ export async function refundPaymentNeedingAttention(req: Request, res: Response)
   const where = { id: String(req.params.id), ...tenantWhere(req) };
   const record = await prisma.unappliedCapture.findFirst({
     where,
-    select: { ...LIST_SELECT, updated_at: true, source_key: true, organization_id: true },
+    select: { ...LIST_SELECT, updated_at: true, source_key: true, organization_id: true, counted_refund_ids: true },
   });
   if (!record) {
     res.status(404).json({ error: 'Payment not found' });
@@ -162,8 +298,32 @@ export async function refundPaymentNeedingAttention(req: Request, res: Response)
   const orgId = where.organization_id;
   const paymentId = ledgerPaymentIdOf(record.source_key);
   const recordCents = record.amount != null ? toCents(record.amount.toString()) : undefined;
-  // What the processor is asked to send back, in cents (the whole record unless it sits on a payment).
-  let amountCents = recordCents;
+  // V7-09b (C-32): what is still on the record, and what this click asks for (the rest unless an amount was typed).
+  const leftCents = recordCents != null ? recordCents - toCents(record.refunded_amount.toString()) : undefined;
+  if (leftCents != null && leftCents <= 0) {
+    res.status(409).json({ error: ALREADY_SENT_BACK });
+    return;
+  }
+  // A body whose amount is not a number or text (a boolean, an object) is the same "not an amount" answer as text that is not a number.
+  const body = refundBodySchema.safeParse(plainBody(req));
+  const asked = body.success ? parseRefundAmount(body.data.amount, leftCents) : { error: NOT_AN_AMOUNT };
+  if (asked.error) {
+    res.status(400).json({ error: asked.error, field: 'amount' });
+    return;
+  }
+  // True when this refund gives back everything still on the record: the record then closes.
+  const closes = asked.cents == null || asked.cents === leftCents;
+  // What the processor is asked to send back, in cents (what is left unless an amount was typed).
+  let amountCents = asked.cents ?? leftCents;
+  // V7-09b: say a refund is on its way, under the record's row lock and only while it is OPEN, so attaching the same
+  // money to an invoice (which waits for this to be fresh) can never run alongside it. Raw SQL: the record's
+  // updated_at is part of the refund's key and must not move here.
+  const claimed = await prisma.$executeRaw`UPDATE unapplied_captures SET refund_started_at = now()
+    WHERE id = ${record.id}::uuid AND organization_id = ${orgId}::uuid AND status = 'OPEN'`;
+  if (claimed === 0) {
+    res.status(409).json({ error: 'This payment was already attached, refunded or resolved.' });
+    return;
+  }
   const onPayment = paymentId && recordCents != null
     ? await prisma.payment.findFirst({
         where: { id: paymentId, invoice: { organization_id: orgId } },
@@ -189,12 +349,22 @@ export async function refundPaymentNeedingAttention(req: Request, res: Response)
     const wholeDebit = record.reason === 'INVOICE_NOT_PAYABLE';
     const recordFaceCents = wholeDebit ? paidFaceCents : recordCents;
     const appliedCents = paidFaceCents - recordFaceCents;
+    // Earlier partial refunds are already held on the payment (committedRefundCents below), so "the rest" needs no
+    // subtraction here; a typed amount is asked for as it is.
+    // A typed amount is what the operator confirmed and what the processor is sent, to the cent. For a debit that goes back
+    // whole with its tip, the typed figure is of the charged total, so the booked face share is worked out from it.
+    const chargedCents = wholeDebit ? paidFaceCents + tipCents : paidFaceCents;
+    const askedFaceCents = asked.cents == null
+      ? recordFaceCents
+      : wholeDebit && chargedCents > 0 ? Math.round((asked.cents * paidFaceCents) / chargedCents) : asked.cents;
     reservation = await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT id FROM invoices WHERE id = ${onPayment.invoice_id}::uuid AND organization_id = ${orgId}::uuid FOR UPDATE`;
       const refunds = await tx.refund.findMany({ where: { payment_id: onPayment.id, organization_id: orgId }, select: { amount: true, state: true } });
-      const faceLeftCents = Math.min(recordFaceCents, paidFaceCents - committedRefundCents(refunds) - appliedCents);
+      const faceLeftCents = Math.min(askedFaceCents, paidFaceCents - committedRefundCents(refunds) - appliedCents);
       if (faceLeftCents <= 0) return null;
-      amountCents = faceLeftCents + (wholeDebit && paidFaceCents > 0 ? Math.round((tipCents * faceLeftCents) / paidFaceCents) : 0);
+      amountCents = asked.cents != null && faceLeftCents === askedFaceCents
+        ? asked.cents
+        : faceLeftCents + (wholeDebit && paidFaceCents > 0 ? Math.round((tipCents * faceLeftCents) / paidFaceCents) : 0);
       return reserveRefund(tx, {
         invoice_id: onPayment.invoice_id,
         payment_id: onPayment.id,
@@ -210,12 +380,16 @@ export async function refundPaymentNeedingAttention(req: Request, res: Response)
       });
     });
     if (!reservation) {
+      await prisma.$executeRaw`UPDATE unapplied_captures SET refund_started_at = NULL WHERE id = ${record.id}::uuid AND organization_id = ${orgId}::uuid`;
       res.status(409).json({ error: ALREADY_SENT_BACK });
       return;
     }
   }
+  // Nothing went out: the money may be attached again at once.
+  const clearClaim = () => prisma.$executeRaw`UPDATE unapplied_captures SET refund_started_at = NULL WHERE id = ${record.id}::uuid AND organization_id = ${orgId}::uuid`;
   const release = async () => {
     if (reservation) await releaseRefundReservation(orgId, reservation.id);
+    await clearClaim();
   };
   const processor = getStripeForOrg({ stripe_account_id: accountId });
   // An earlier attempt may have sent this refund even though its answer was an error (a 5xx) or
@@ -223,8 +397,11 @@ export async function refundPaymentNeedingAttention(req: Request, res: Response)
   // When the refunds already on the payment cannot be read, nothing is sent.
   let alreadySent: { id: string; status?: string | null; amount: number } | undefined;
   try {
+    // A refund already counted on the record (an earlier partial one) is not this click's: it was dealt with. Without a
+    // payment row the amount must be the one asked for now, so a lost answer for another amount does not stand in.
     alreadySent = (await listPaymentIntentRefunds(paymentIntentId, processor)).find(
-      (r) => r.metadata?.unapplied_capture_id === record.id && r.status !== 'failed' && r.status !== 'canceled',
+      (r) => r.metadata?.unapplied_capture_id === record.id && r.status !== 'failed' && r.status !== 'canceled'
+        && !record.counted_refund_ids.includes(r.id) && (reservation || amountCents == null || r.amount === amountCents),
     );
   } catch (err) {
     logger.error(`Refund list for unapplied capture ${record.id} (org ${where.organization_id}) failed:`, err);
@@ -242,17 +419,23 @@ export async function refundPaymentNeedingAttention(req: Request, res: Response)
         metadata: {
           source: 'in_app',
           unapplied_capture_id: record.id,
+          // V7-09b: this refund gives back the whole rest, so the record closes when it lands.
+          ...(closes ? { [UNAPPLIED_CLOSES_METADATA_KEY]: '1' } : {}),
           // Slice 29: the row held for it, so its own event completes that row.
           ...(reservation ? { [REFUND_ROW_METADATA_KEY]: reservation.id } : {}),
         },
         // Keyed on the record as it stands: a retry of this click sends one refund, and a record
         // reopened by a failed refund, or whose last attempt the processor answered with a stored
         // error (updated_at moved), sends a new one.
-        idempotencyKey: `unapplied-capture-refund:${record.id}:${record.updated_at.getTime()}`,
+        // V7-09b: the cents are part of it, so a different amount is a different refund.
+        idempotencyKey: `unapplied-capture-refund:${record.id}:${record.updated_at.getTime()}:${amountCents ?? 'all'}`,
       });
     } catch (err) {
       logger.error(`Refund of unapplied capture ${record.id} (org ${where.organization_id}) failed:`, err);
       if (answerIsStoredAgainstKey(err)) await nextAttempt(record);
+      // A definite refusal (4xx) sent nothing: the claim is lifted. An answer that never arrived keeps it (it may have gone out).
+      const refusedStatus = (err as { statusCode?: unknown } | null)?.statusCode;
+      if (typeof refusedStatus === 'number' && refusedStatus >= 400 && refusedStatus < 500 && refusedStatus !== 409 && refusedStatus !== 429) await clearClaim();
       // Only a definite refusal frees the money. An answer that never arrived (timeout, dropped
       // connection, 5xx, 409) may mean the refund exists, so its hold stays and its event completes it.
       if (reservation && !(await releaseIfRefused(orgId, reservation.id, err))) {
@@ -323,12 +506,13 @@ export async function refundPaymentNeedingAttention(req: Request, res: Response)
         });
       }
     }
-    if (current.status === 'OPEN' || current.status === 'RESOLVED') {
-      await tx.unappliedCapture.updateMany({
-        where: { ...where, status: { in: ['OPEN', 'RESOLVED'] } },
-        data: { status: 'REFUNDED', stripe_refund_id: refund.id, refunded_at: new Date() },
-      });
-    }
+    // V7-09b: counted once (the refund's own event may have counted it already) and the record closes only when the
+    // whole amount is back. Who sent it back and when (V7-05b); resolution_note stays null here.
+    await countRefundOnCapture(tx, {
+      organizationId: orgId, recordId: record.id, refundId: refund.id, refundCents: amountCents ?? recordCents ?? 0, closes,
+      closedBy: { id: req.user!.id, name: `${req.user!.first_name} ${req.user!.last_name}`.trim() },
+    });
+    await tx.$executeRaw`UPDATE unapplied_captures SET refund_started_at = NULL WHERE id = ${record.id}::uuid AND organization_id = ${orgId}::uuid`;
     return true;
   });
   if (!marked) {
@@ -337,7 +521,8 @@ export async function refundPaymentNeedingAttention(req: Request, res: Response)
     return;
   }
   const updated = await prisma.unappliedCapture.findFirstOrThrow({ where, select: LIST_SELECT });
-  await clearUnappliedCaptureAlerts(prisma, where.organization_id, record.source_key);
+  // The alert is read once the whole amount is back; a partial refund leaves it as it was.
+  if (updated.status !== 'OPEN') await clearUnappliedCaptureAlerts(prisma, where.organization_id, record.source_key);
 
   void logAudit({
     action: 'billing.unapplied_capture_refunded',
@@ -354,6 +539,27 @@ export async function refundPaymentNeedingAttention(req: Request, res: Response)
     },
   });
   res.json({ item: toItem(updated) });
+}
+
+const NOT_AN_AMOUNT = 'Enter an amount above $0.00.';
+/** The bodies of the V7 doors, read once at the boundary. */
+const attachBodySchema = z.object({ invoice_id: z.string().regex(UUID) });
+const refundBodySchema = z.object({ amount: z.union([z.number(), z.string(), z.null()]).optional() });
+const resolveBodySchema = z.object({ reason: resolveReasonSchema(RESOLVE_REASONS_OTHER) });
+
+const dollars = (cents: number): string => `$${(cents / 100).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+
+/**
+ * The amount typed for a partial refund, in cents. None typed = the rest of the record. Anything that is not a number
+ * above zero, or is above what is left, is refused with the two sentences the dialog shows.
+ */
+function parseRefundAmount(raw: number | string | null | undefined, leftCents: number | undefined): { cents?: number; error?: string } {
+  if (raw === undefined || raw === null || raw === '') return {};
+  const n = typeof raw === 'number' ? raw : raw.trim() !== '' ? Number(raw) : NaN;
+  const cents = Math.round(n * 100);
+  if (!Number.isFinite(n) || cents <= 0) return { error: NOT_AN_AMOUNT };
+  if (leftCents != null && cents > leftCents) return { error: `Enter ${dollars(leftCents)} or less.` };
+  return { cents };
 }
 
 /**
@@ -390,6 +596,12 @@ async function nextAttempt(record: { id: string; updated_at: Date; organization_
  * click, changes nothing.
  */
 export async function resolvePaymentNeedingAttention(req: Request, res: Response): Promise<void> {
+  const parsed = resolveBodySchema.safeParse(plainBody(req));
+  if (!parsed.success) {
+    res.status(400).json({ error: CHOOSE_A_REASON, field: 'reason' });
+    return;
+  }
+  const reason = parsed.data.reason ?? null;
   const where = { id: String(req.params.id), ...tenantWhere(req) };
   const record = await prisma.unappliedCapture.findFirst({ where, select: { id: true, reason: true, status: true, amount: true, source_key: true, invoice: { select: { id: true } } } });
   if (!record) {
@@ -403,7 +615,11 @@ export async function resolvePaymentNeedingAttention(req: Request, res: Response
   // Under the same row lock the refund's commit takes, so the two never interleave.
   const moved = await prisma.$transaction(async (tx) => {
     await tx.$executeRaw`SELECT id FROM unapplied_captures WHERE id = ${record.id}::uuid AND organization_id = ${where.organization_id}::uuid FOR UPDATE`;
-    return tx.unappliedCapture.updateMany({ where: { ...where, status: 'OPEN' }, data: { status: 'RESOLVED' } });
+    return tx.unappliedCapture.updateMany({ where: { ...where, status: 'OPEN' }, data: {
+        status: 'RESOLVED', resolved_at: new Date(), resolved_by: req.user!.id,
+        resolved_by_name: `${req.user!.first_name} ${req.user!.last_name}`.trim(), resolution_note: reason,
+      },
+    });
   });
   if (moved.count === 0) {
     res.status(409).json({ error: 'This payment was already refunded or resolved.' });

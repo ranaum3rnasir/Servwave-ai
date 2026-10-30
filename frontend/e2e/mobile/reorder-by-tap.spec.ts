@@ -4,11 +4,11 @@
  *
  * On every device project, in the throwaway org and through the real UI and API:
  *
- *  - each of decline reasons, job sub-statuses and the Job Types list on Payments &
- *    Lists has Move up / Move down beside the drag handle; the first row cannot go up and the last
+ *  - each of decline reasons, job sub-statuses and the Job types card on Settings > Lists has
+ *    Move up / Move down beside the drag handle; the first row cannot go up and the last
  *    cannot go down; the buttons are 44 px targets on a touch screen; tapping Move down swaps the
- *    row with the next one and the order is still there after a reload (for Job Types, after Save,
- *    as that page always saved); and the page does not scroll sideways;
+ *    row with the next one and the order is still there after a reload (the Lists page saves each
+ *    move on its own, with no Save button); and the page does not scroll sideways;
  *  - the home page in edit mode has the same pair on every widget and the order persists. Below md
  *    the catalog opens as a sheet from the toolbar (it does not open with edit mode and cover the
  *    widgets), a widget hidden with its X comes back through the sheet's Add; from md up the
@@ -16,7 +16,7 @@
  *  - on the desktop control (a mouse) drag still reorders all three lists and the widgets.
  *
  * MOBILE_GATE_ROUTES selects it with `settings-decline-reasons`,
- * `settings-job-sub-statuses`, `settings-payments` and `home`. How to run: ./README.md.
+ * `settings-job-sub-statuses`, `settings-lists` and `home`. How to run: ./README.md.
  */
 import { expect, type Locator, type Page } from '@playwright/test';
 import fs from 'fs';
@@ -112,7 +112,7 @@ interface ListCase {
 const LISTS: ListCase[] = [
   { id: 'settings-decline-reasons', path: '/settings/decline-reasons', saves: /\/lost-reason-options\/reorder/, draggable: 'div[draggable="true"]', dragFrom: { x: 10, y: 12 } },
   { id: 'settings-job-sub-statuses', path: '/settings/job-sub-statuses', only: /^Gate sub /, saves: /\/job-sub-statuses\/reorder/, draggable: 'div[draggable="true"]', dragFrom: { x: 10, y: 12 } },
-  { id: 'settings-payments', path: '/settings/payments', only: /^Gate type /, saves: /\/api\/organization/, saveButton: true, draggable: 'span[draggable="true"]', dragFrom: { x: 6, y: 10 } },
+  { id: 'settings-lists', path: '/settings/lists', only: /^Gate type /, saves: /\/api\/job-types\/reorder/, draggable: 'div[role="listitem"][draggable="true"]', dragFrom: { x: 20, y: 20 } },
 ];
 
 const reorderSaved = (page: Page, re: RegExp) =>
@@ -141,8 +141,19 @@ async function runList(list: ListCase, page: Page, session: Parameters<typeof si
           if (!have.has(label)) await api.raw('post', '/api/job-sub-statuses', { parent: 'IN_PROGRESS', label });
         }
       }
-      if (list.id === 'settings-payments') {
-        await api.raw('patch', '/api/organization', { job_type_options: ['Gate type A', 'Gate type B', 'Gate type C'] });
+      if (list.id === 'settings-lists') {
+        // Job types are rows now. Make sure the three gate types exist, then put them last in A, B, C order, so the
+        // last of them is the last row of the list and has nowhere to go down to.
+        const { body } = await api.raw('get', '/api/job-types');
+        const rows = (body.items ?? []) as Array<{ id: string; name: string; archived: boolean }>;
+        const gate = ['Gate type A', 'Gate type B', 'Gate type C'];
+        for (const name of gate) {
+          if (!rows.some((r) => r.name === name)) await api.raw('post', '/api/job-types', { name });
+        }
+        const after = await api.raw('get', '/api/job-types');
+        const active = ((after.body.items ?? []) as Array<{ id: string; name: string; archived: boolean }>).filter((r) => !r.archived);
+        const ordered = [...active.filter((r) => !gate.includes(r.name)), ...gate.map((n) => active.find((r) => r.name === n)).filter((r): r is NonNullable<typeof r> => !!r)];
+        await api.raw('post', '/api/job-types/reorder', { ordered_ids: ordered.map((r) => r.id) });
       }
     } finally {
       await api.dispose();

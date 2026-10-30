@@ -16,6 +16,7 @@ vi.mock('resend', () => ({ Resend: class { emails = { send: resendSend }; } }));
 vi.mock('../lib/comm-persist', () => ({ persistTransactionalEmail: vi.fn().mockResolvedValue(undefined) }));
 
 import { prisma } from '../lib/prisma';
+import { bankPaymentFailedComposeSubject, bankPaymentFailedSentence } from '../lib/bank-payment-failed-text';
 
 let email: typeof import('../lib/email');
 beforeAll(async () => {
@@ -97,6 +98,25 @@ describe('bank payment failed email', () => {
     (prisma.emailSuppression.findFirst as Mock).mockResolvedValue({ id: 's1' });
     await failed(PAY_URL);
     expect(resendSend).not.toHaveBeenCalled();
+  });
+});
+
+describe('bank payment failed sentence: one wording for the email and the prefilled Contact customer body', () => {
+  it('is exactly what the automatic email sends as its text, with and without a pay link', async () => {
+    const args = { customerName: 'Cust', amount: 250, invoiceNumber: 'I00042' };
+    await failed(PAY_URL);
+    expect(sent().text).toBe(bankPaymentFailedSentence({ ...args, payUrl: PAY_URL }));
+    expect(sent().text).toBe(`Hi Cust, your bank payment of $250.00 for invoice I00042 didn't go through. Pay again here: ${PAY_URL}`);
+    resendSend.mockClear();
+    await failed();
+    expect(sent().text).toBe(bankPaymentFailedSentence(args));
+    expect(sent().text).toBe("Hi Cust, your bank payment of $250.00 for invoice I00042 didn't go through.");
+  });
+
+  it('keeps the automatic email subject as it is, and the prefill subject is the mockup one', async () => {
+    await failed(PAY_URL);
+    expect(sent().subject).toBe('Bank Payment Failed - Invoice I00042');
+    expect(bankPaymentFailedComposeSubject('I00042')).toBe('Bank payment failed - Invoice I00042');
   });
 });
 

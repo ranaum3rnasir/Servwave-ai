@@ -53,45 +53,132 @@ describe('RecordPaymentDialog', () => {
     expect(screen.queryByText(/stripe/i)).not.toBeInTheDocument();
   });
 
-  // #843: the API still allows an overpayment and the UI still must not refuse it - the amount
-  // input has no `max`. What changed is that the surplus is no longer SILENT: it has to be
-  // acknowledged first, and then the full over-amount POSTs unchanged.
-  it('accepts an amount above the balance once the overpayment is acknowledged', async () => {
-    renderDialog();
-    const input = await screen.findByLabelText(/amount/i);
-    await userEvent.clear(input);
-    await userEvent.type(input, '1200');
-    await userEvent.click(screen.getByRole('checkbox'));
-    await userEvent.click(screen.getByRole('button', { name: /record payment/i }));
-    expect(post).toHaveBeenCalledWith('/api/invoices/inv-1/payments', expect.objectContaining({ amount: 1200 }));
-  });
+  // V7-12: a hand-recorded payment can never be larger than the balance due. No tick-box, no
+  // warning box: the Amount field says what is wrong and how to fix it, and the button stays off.
+  describe('no overpaid invoices (V7-12)', () => {
+    const recordButton = () => screen.getByRole('button', { name: /record payment/i });
 
-  it('blocks the submit until the overpayment is acknowledged, and never caps the input', async () => {
-    renderDialog();
-    const input = await screen.findByLabelText(/amount/i);
-    await userEvent.clear(input);
-    await userEvent.type(input, '1200');
-    // The typed over-amount is kept verbatim - capping it would refuse a true statement about
-    // money that changed hands.
-    // A cleared amount shows 0 (see invoice-money-dialogs), so the box reads "01200": the
-    // same number the old number input reported for the same keystrokes.
-    expect(Number((input as HTMLInputElement).value)).toBe(1200);
-    expect(input).not.toHaveAttribute('max');
-    expect(screen.getByRole('button', { name: /record payment/i })).toBeDisabled();
-    expect(post).not.toHaveBeenCalled();
+    it('has no tick-box and no warning for any amount', async () => {
+      renderDialog();
+      const input = await screen.findByLabelText(/amount/i);
+      await userEvent.clear(input);
+      await userEvent.type(input, '1200');
+      expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+      expect(screen.queryByText(/record anyway/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/overpayment/i)).not.toBeInTheDocument();
+    });
+
+    it('above the balance: the sentence sits on the Amount field, the field is invalid, the button is off', async () => {
+      renderDialog();
+      const input = await screen.findByLabelText(/amount/i);
+      await userEvent.clear(input);
+      await userEvent.type(input, '1200');
+
+      const message = screen.getByText('That is more than the $900.00 balance due. Enter $900.00 or less.');
+      expect(message.closest('[role="alert"]')).not.toBeNull();
+      expect(input).toHaveAttribute('aria-invalid', 'true');
+      const describedBy = input.getAttribute('aria-describedby') ?? '';
+      expect(describedBy.split(' ').some((id) => document.getElementById(id)?.contains(message))).toBe(true);
+      expect(recordButton()).toBeDisabled();
+      expect(post).not.toHaveBeenCalled();
+    });
+
+    it('the message replaces the Balance due hint, and the hint returns when the amount is fixed', async () => {
+      renderDialog();
+      const input = await screen.findByLabelText(/amount/i);
+      expect(screen.getByText('Balance due: $900.00')).toBeInTheDocument();
+      await userEvent.clear(input);
+      await userEvent.type(input, '1200');
+      expect(screen.queryByText('Balance due: $900.00')).not.toBeInTheDocument();
+      await userEvent.clear(input);
+      await userEvent.type(input, '900');
+      expect(screen.getByText('Balance due: $900.00')).toBeInTheDocument();
+      expect(input).not.toHaveAttribute('aria-invalid', 'true');
+    });
+
+    it('exactly the balance enables the button and posts it', async () => {
+      renderDialog();
+      const input = await screen.findByLabelText(/amount/i);
+      await userEvent.clear(input);
+      await userEvent.type(input, '900');
+      await waitFor(() => expect(recordButton()).toBeEnabled());
+      await userEvent.click(recordButton());
+      expect(post).toHaveBeenCalledWith('/api/invoices/inv-1/payments', expect.objectContaining({ amount: 900 }));
+    });
+
+    it('one cent over is refused', async () => {
+      renderDialog({ amountDue: 100 });
+      const input = await screen.findByLabelText(/amount/i);
+      await userEvent.clear(input);
+      await userEvent.type(input, '100.01');
+      expect(screen.getByText('That is more than the $100.00 balance due. Enter $100.00 or less.')).toBeInTheDocument();
+      expect(recordButton()).toBeDisabled();
+    });
+
+    it('amount due $0.00: says there is nothing left to pay and keeps the button off', async () => {
+      renderDialog({ amountDue: 0 });
+      await screen.findByLabelText(/amount/i);
+      expect(screen.getByText('There is nothing left to pay on this invoice.')).toBeInTheDocument();
+      expect(recordButton()).toBeDisabled();
+    });
+
+    it('a server AMOUNT_ABOVE_BALANCE (balance moved) shows its sentence under the field, not in the bottom line, and reloads the invoice', async () => {
+      const sentence = 'That is more than the $50.00 balance due. Enter $50.00 or less.';
+      post.mockRejectedValue({ response: { status: 400, data: { code: 'AMOUNT_ABOVE_BALANCE', error: sentence } } });
+      const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      const invalidate = vi.spyOn(qc, 'invalidateQueries');
+      render(
+        <QueryClientProvider client={qc}>
+          <RecordPaymentDialog open onOpenChange={vi.fn()} invoiceId="inv-1" invoiceNumber="I00001" amountDue={900} jobId="job-1" onSuccess={vi.fn()} />
+        </QueryClientProvider>,
+      );
+      await waitFor(() => expect(recordButton()).toBeEnabled());
+      await userEvent.click(recordButton());
+
+      const message = await screen.findByText(sentence);
+      expect(message.closest('[role="alert"]')).not.toBeNull();
+      expect(screen.getAllByText(sentence)).toHaveLength(1);
+      expect(screen.getByLabelText(/amount/i)).toHaveAttribute('aria-invalid', 'true');
+      expect(recordButton()).toBeDisabled();
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['invoice', 'inv-1'] });
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['invoices'] });
+      // The job page takes the balance from its financials query, so that reloads too.
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['job-financials', 'job-1'] });
+
+      // Correcting the amount clears the refusal.
+      const input = screen.getByLabelText(/amount/i);
+      await userEvent.clear(input);
+      await userEvent.type(input, '50');
+      expect(screen.queryByText(sentence)).not.toBeInTheDocument();
+    });
+
+    it('a bank payment still clearing keeps its own two texts and shows no balance sentence', async () => {
+      renderDialog({ amountDue: 900, processingAmount: 300 });
+      const input = await screen.findByLabelText(/amount/i);
+      expect(screen.getByTestId('record-payment-processing')).toHaveTextContent(
+        'A bank payment of $300.00 is still processing. You can record up to $600.00 now.',
+      );
+      await userEvent.clear(input);
+      await userEvent.type(input, '700');
+      expect(screen.getByTestId('record-payment-processing-over')).toHaveTextContent(
+        'That is more than can be recorded while the bank payment clears: up to $600.00.',
+      );
+      expect(screen.queryByText(/balance due\. Enter/)).not.toBeInTheDocument();
+      expect(recordButton()).toBeDisabled();
+    });
   });
 
   // The composite path creates the invoice FOR the typed amount, so amountDue is always 0 and an
   // overpayment is impossible. Gating it there would demand an acknowledgement of a nonsensical
   // "more than the $0.00 balance due" on every on-site urgent-workflow collection.
-  it('never gates the no-invoice composite path behind an overpayment acknowledgement', async () => {
+  it('never caps the no-invoice composite path at a balance', async () => {
     renderDialog({ invoiceId: null, jobId: 'job-1', amountDue: 0 });
     const input = await screen.findByLabelText(/amount/i);
     await userEvent.clear(input);
     await userEvent.type(input, '600');
 
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
-    expect(screen.queryByText(/overpayment of/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/more than the/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Balance due:/)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /record payment/i })).toBeEnabled();
   });
@@ -189,7 +276,7 @@ describe('RecordPaymentDialog', () => {
 
     it('recomputes the tip when the amount changes after a chip is selected', async () => {
       // A high balance keeps the amount change below amountDue, so this test exercises only the
-      // tip recompute - not the unrelated overpayment acknowledgement gate.
+      // tip recompute - not the balance cap.
       renderDialog({ amountDue: 1000 });
       const input = await screen.findByLabelText(/amount/i);
       await userEvent.click(screen.getByRole('radio', { name: /15%/ }));
@@ -201,7 +288,7 @@ describe('RecordPaymentDialog', () => {
       expect(post).toHaveBeenCalledWith('/api/invoices/inv-1/payments', expect.objectContaining({ tip_amount: 60 }));
     });
 
-    it('a tip does not arm the overpayment gate', async () => {
+    it('a tip never triggers the balance message', async () => {
       renderDialog({ amountDue: 200 });
       const input = await screen.findByLabelText(/amount/i);
       await userEvent.clear(input);
@@ -209,7 +296,7 @@ describe('RecordPaymentDialog', () => {
       await userEvent.click(screen.getByRole('radio', { name: /20%/ }));
 
       expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
-      expect(screen.queryByText(/overpayment of/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/more than the/i)).not.toBeInTheDocument();
       expect(screen.getByRole('button', { name: /record payment/i })).toBeEnabled();
 
       await userEvent.click(screen.getByRole('button', { name: /record payment/i }));

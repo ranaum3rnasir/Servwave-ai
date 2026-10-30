@@ -3,7 +3,7 @@
 // decision a wrong implementation would get wrong, not a restatement of the code.
 import { describe, expect, it } from 'vitest';
 
-import { callRoute, mapsHref, smsHref, telHref, textPath } from '../contactHrefs';
+import { callRoute, composePath, mapsHref, smsHref, telHref, textPath } from '../contactHrefs';
 
 describe('callRoute: which Call a number gets', () => {
   it('an org without the phone service, or a user who may not place calls, gets the device call', () => {
@@ -40,10 +40,32 @@ describe('textPath for a customer phone: it depends on whether the person may vi
     expect(textPath('5551234567', CONTEXT, { viewCustomers: true })).toBe('/communication/text?customerId=c-1');
   });
 
-  it('goes by the tapped number for a person who may not, carrying the name and the record it was tapped from', () => {
+  // SPEC-4 §6.8: only a Text started on the lead's OWN page carries the lead, so the first reply sent on that
+  // customer's conversation is filed on the lead (and releases its Spider alert once it goes out). A record that
+  // merely has a lead (an estimate, a payment's customer) does not.
+  it('carries the lead only when tapped on the lead page itself', () => {
+    const url = new URL(textPath('5551234567', { ...CONTEXT, textCarriesLead: true }, { viewCustomers: true }), 'https://app.test');
+    expect(url.pathname).toBe('/communication/text');
+    expect(Object.fromEntries(url.searchParams)).toEqual({ customerId: 'c-1', leadId: 'l-1' });
+  });
+
+  it('goes by the tapped number for a person who may not, carrying the name and the job it was tapped from', () => {
     const path = textPath('5551234567', CONTEXT, { viewCustomers: false });
     const url = new URL(path, 'https://app.test');
     expect(url.pathname).toBe('/communication/text');
+    // The record merely has a lead (an estimate, a payment's customer): the lead stays off the Text (SPEC-4 §6.8).
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      to: '5551234567',
+      owner: 'customer',
+      name: 'Dana Reyes',
+      jobId: 'j-1',
+    });
+    // The customer id is not what the composer finds the customer by.
+    expect(path).not.toContain('customerId');
+  });
+
+  it('carries the lead for a person who may not view customers only when tapped on the lead page itself', () => {
+    const url = new URL(textPath('5551234567', { ...CONTEXT, textCarriesLead: true }, { viewCustomers: false }), 'https://app.test');
     expect(Object.fromEntries(url.searchParams)).toEqual({
       to: '5551234567',
       owner: 'customer',
@@ -51,8 +73,6 @@ describe('textPath for a customer phone: it depends on whether the person may vi
       jobId: 'j-1',
       leadId: 'l-1',
     });
-    // The customer id is not what the composer finds the customer by.
-    expect(path).not.toContain('customerId');
   });
 
   it('keeps the plus of an international number', () => {
@@ -81,5 +101,21 @@ describe('mapsHref: an address opens the native maps app', () => {
     expect(mapsHref(ADDRESS, { ios: false })).toBe(
       'https://www.google.com/maps/search/?api=1&query=12%20Main%20St%2C%20Springfield%2C%20IL%2062701',
     );
+  });
+});
+
+describe('composePath: Email opens the compose window filled in', () => {
+  it('encodes every value and leaves optional ones out', () => {
+    expect(composePath({ to: 'a+b@example.com', subject: 'Invoice INV-1 & more', customerId: 'c 1' })).toBe(
+      '/communication/inbox?compose=1&to=a%2Bb%40example.com&subject=Invoice+INV-1+%26+more&customerId=c+1',
+    );
+  });
+
+  it('carries the body, job and invoice when given', () => {
+    const url = new URL(composePath({ to: 'x@example.com', subject: 's', body: 'Pay: https://x.test/p?a=1&b=2\nThanks', customerId: 'c', jobId: 'j', invoiceId: 'i' }), 'http://h');
+    expect(url.searchParams.get('body')).toBe('Pay: https://x.test/p?a=1&b=2\nThanks');
+    expect(url.searchParams.get('jobId')).toBe('j');
+    expect(url.searchParams.get('invoiceId')).toBe('i');
+    expect(url.searchParams.get('compose')).toBe('1');
   });
 });

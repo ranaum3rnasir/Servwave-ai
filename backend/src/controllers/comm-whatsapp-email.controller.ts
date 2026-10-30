@@ -52,7 +52,7 @@ import {
 // visibility into a job/estimate/invoice/customer can never drift between the
 // generic Attachment surface and this one.
 import { ALLOWED_MIME_TYPES, ALLOWED_TYPES_LABEL, checkEntityAccess } from './attachment.controller';
-import { recordLeadOutboundContact } from '../services/lead-contact.service';
+import { reconsiderLeadLeftBehind, recordLeadContactOnLink, recordLeadOutboundContact } from '../services/lead-contact.service';
 import { VERY_LONG_TEXT_MAX } from '../lib/text-limits';
 
 // Guards a caller-supplied id before it reaches a `@db.Uuid` column. Prisma
@@ -1842,6 +1842,11 @@ export async function reassignEmailJob(req: Request, res: Response) {
 
 // The lead mirror of reassignEmailJob (lead_id: null clears), the email counterpart of reassignMessageLead. A job and
 // a lead stay independent on an email, as they do on a text.
+//
+// Attaching an outbound email that was sent or delivered to a lead is reaching out to that lead (SPEC-4 D1): it is
+// recorded through the shared link rule (recordLeadContactOnLink), dated at the time it was sent and credited to its
+// sender. Taking an email that held a lead off it (a detach, or a move to another lead) reconsiders the lead it left
+// (SPEC-4 D7): a Contacted lead with no outbound contact left goes back to New, credited to the person who moved it.
 export const reassignEmailLeadSchema = z.object({
   lead_id: z.string().uuid('lead_id must be a valid id').nullable(),
 });
@@ -1851,11 +1856,22 @@ export async function reassignEmailLead(req: Request, res: Response) {
     // One filter for the pre-read, the update and the refetch, as reassignEmailJob does.
     const visibility = await emailReadWhereForReq(req, { emailId: req.params.id as string });
     let data: { lead_id: string | null };
-    if (req.body.lead_id != null) {
-      const email = await prisma.email.findFirst({
+    // The stored row before this write, read on an attach and a detach alike, under the same filter as the update: the
+    // link rule (and D7) need its lead, direction, provenance, delivery status, send time and sender.
+    let before: {
+      lead_id: string | null; direction: string | null; automated: boolean | null; delivery_status: string | null;
+      ts: bigint; sent_by_user_id: string | null; organization_id: string;
+    } | undefined;
+    const readBefore = () =>
+      prisma.email.findFirst({
         where: { id: req.params.id as string, ...tenantWhere(req), ...visibility },
-        select: { id: true, customer_id: true },
+        select: {
+          id: true, customer_id: true, lead_id: true, direction: true, automated: true, delivery_status: true, ts: true,
+          sent_by_user_id: true, organization_id: true,
+        },
       });
+    if (req.body.lead_id != null) {
+      const email = await readBefore();
       if (!email) {
         res.status(404).json({ error: 'Email not found' });
         return;
@@ -1876,8 +1892,11 @@ export async function reassignEmailLead(req: Request, res: Response) {
         res.status(404).json({ error: 'Lead not found' });
         return;
       }
+      before = email;
       data = { lead_id: lead.id };
     } else {
+      // A row the person cannot reach reads nothing here; the update below answers the 404, as before.
+      before = (await readBefore()) ?? undefined;
       data = { lead_id: null };
     }
 
@@ -1888,6 +1907,34 @@ export async function reassignEmailLead(req: Request, res: Response) {
     if (result.count === 0) {
       res.status(404).json({ error: 'Email not found' });
       return;
+    }
+
+    // After the write, with the plain client, as the send door does: the link is done, and a bookkeeping failure is
+    // logged by the service and never fails it. Awaited, never throws. `emails.ts` is epoch milliseconds: the instant
+    // the email was sent, the same `now` the send door records.
+    if (before && data.lead_id) {
+      await recordLeadContactOnLink({ client: prisma }, {
+        source: 'email',
+        channel: 'email',
+        orgId: before.organization_id,
+        leadIdBefore: before.lead_id,
+        leadIdAfter: data.lead_id,
+        directionBefore: before.direction,
+        directionAfter: before.direction,
+        automated: before.automated,
+        deliveryStatus: before.delivery_status,
+        at: new Date(Number(before.ts)),
+        actorId: before.sent_by_user_id,
+      });
+    }
+    // D7: the lead the email left, if it held it (after the write, plain client, never throws).
+    if (before) {
+      const row = { direction: before.direction, automated: before.automated, deliveryStatus: before.delivery_status };
+      await reconsiderLeadLeftBehind({ client: prisma }, {
+        source: 'email',
+        before: { leadId: before.lead_id, ...row },
+        after: { leadId: data.lead_id, ...row },
+      }, { orgId: before.organization_id, actorId: req.user!.id, entryId: req.params.id as string });
     }
 
     const updated = await prisma.email.findFirst({

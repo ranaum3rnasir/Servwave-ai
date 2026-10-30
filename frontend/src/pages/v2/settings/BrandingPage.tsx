@@ -91,7 +91,7 @@ export default function BrandingPage() {
   const [activeTab, setActiveTab] = useState('branding');
   const [brandColor, setBrandColor] = useState(DEFAULT_BRAND_COLOR);
   const [template, setTemplate] = useState('alpha-classic');
-  // Estimate document copy moved here from the Payments & Lists screen - it's the
+  // Estimate document copy moved here from the old Payments & Lists screen - it's the
   // text printed on the document, so it belongs with templates/branding.
   const [terms, setTerms] = useState('');
   const [notes, setNotes] = useState('');

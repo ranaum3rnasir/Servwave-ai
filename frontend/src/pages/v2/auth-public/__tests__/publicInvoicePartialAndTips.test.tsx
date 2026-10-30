@@ -152,6 +152,19 @@ describe('public invoice - the amount to pay', () => {
     expect(screen.getByRole('button', { name: 'Pay by card' })).toBeDisabled();
   });
 
+  it('a tip on top of the whole payable amount never trips the balance message', async () => {
+    // V7-12 pin: the balance cap is on the amount; a tip is a separate line and is not counted against it.
+    const user = userEvent.setup();
+    await open({ total: 100, due: 100, payable_now: 100 });
+
+    await typeAmount(user, '100');
+    await user.click(screen.getByRole('button', { name: 'Custom' }));
+    await user.type(screen.getByLabelText('Tip amount'), '10');
+
+    expect(screen.queryByText(/more than the/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Pay by card' })).toBeEnabled();
+  });
+
   it('refuses an empty or non-numeric amount, and accepts $1.00 and the whole payable amount', async () => {
     const user = userEvent.setup();
     await open();
