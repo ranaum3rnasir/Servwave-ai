@@ -18,7 +18,7 @@ import app from '../app';
 import { mockAuthAs, authHeader, ALPHA_ORG_ID } from './helpers';
 import { prisma } from '../lib/prisma';
 import { LIVE_VISIT_STATUSES } from '../lib/visit-status';
-import { JOB_FIXTURE, TEST_USERS } from './helpers';
+import { JOB_FIXTURE, TEST_USERS, attachedLeadWhere } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 const mockPrisma = prisma as unknown as Record<string, any>;
@@ -849,6 +849,9 @@ describe('GET /api/leads - a cancelled walkthrough is not on the board either (S
     if (some && !r.visits.some((v) => visitMatches(v, some))) return false;
     const own = where.lead_assignees?.some?.user_id;
     if (own !== undefined && !(r.lead_assignees ?? []).some((a) => a.user_id === own)) return false;
+    // The lead's Owner and Dispatcher are two more ways to be attached to it; none of these leads has either.
+    if (where.commission_owner_id !== undefined) return false;
+    if (where.dispatcher_id !== undefined) return false;
     for (const clause of (where.AND as any[] | undefined) ?? []) if (!leadMatches(r, clause)) return false;
     if (Array.isArray(where.OR) && !where.OR.some((c: any) => leadMatches(r, c))) return false;
     return true;
@@ -938,18 +941,17 @@ describe('GET /api/leads - a cancelled walkthrough is not on the board either (S
     expect(numbers(res)).toEqual(['L00010', 'L00137', 'L00138']);
   });
 
-  // Visits slice 03, parity with jobs (job.controller composes its window under AND too): the
-  // window asks "is ANY live trip of this lead in view?", the row scope asks "is this tech on ANY
-  // trip of it?", and the two are separate questions. Merged into one `some`, a tech whose own
-  // trip fell outside the week lost the lead - and with it the sibling trip's card - until they
-  // switched to Month view.
-  it('a technician on ONE trip of a lead sees its other trip when only that one is in the window', async () => {
+  // Visits slice 03 composed the window under AND with the row scope, so a tech whose own trip fell outside the
+  // week still got the lead and the sibling trip's card. S04.10 narrows the Attached feed to the walkthroughs the
+  // person is crewed on (or, with Book walkthroughs, on leads they own or are assigned to), and the trip that
+  // puts a lead on the board is the person's own, inside the window.
+  it('a technician gets a lead on the board through a trip of their own inside the window, not through a sibling trip', async () => {
     mockAuthAs('technician');
 
     const res = await leadBoardRequest('technician');
 
     expect(res.status).toBe(200);
-    expect(numbers(res)).toEqual(['L00010', 'L00137']);
+    expect(numbers(res)).toEqual(['L00010']);
   });
 
   it('keeps the technician\'s own-walkthrough row scope untouched, beside the window', async () => {
@@ -958,10 +960,18 @@ describe('GET /api/leads - a cancelled walkthrough is not on the board either (S
     await leadBoardRequest('technician');
 
     const where = mockPrisma.lead.findMany.mock.calls[0][0].where;
-    // The stored OWN_WALKTHROUGH scope lives on this exact key. Losing it is an RBAC bypass.
-    expect(where.visits).toEqual({ some: { assignees: { some: { user_id: TECH } } } });
+    // The walkthrough-crew arm of the Attached scope lives in the scope's OR, beside the window's own
+    // `visits` clause. Losing it is an RBAC bypass.
+    expect(where.OR).toContainEqual({ visits: { some: { assignees: { some: { user_id: TECH } } } } });
+    expect(where.visits).toBeUndefined();
     expect(where.AND).toContainEqual({
-      visits: { some: { scheduled_at: { gte: WINDOW_START, lte: WINDOW_END }, status: { not: 'CANCELLED' } } },
+      visits: {
+        some: {
+          assignees: { some: { user_id: TECH } },
+          scheduled_at: { gte: WINDOW_START, lte: WINDOW_END },
+          status: { not: 'CANCELLED' },
+        },
+      },
     });
   });
 
@@ -987,7 +997,7 @@ describe('GET /api/leads - a cancelled walkthrough is not on the board either (S
     expect(res.status).toBe(200);
     expect(numbers(res)).toEqual(['L00138']);
     const where = mockPrisma.lead.findMany.mock.calls[0][0].where;
-    expect(where.lead_assignees).toEqual({ some: { user_id: TEST_USERS.sales.id } });
+    expect(where.OR).toEqual(attachedLeadWhere(TEST_USERS.sales.id));
     expect(where.visits).toBeUndefined();
   });
 });

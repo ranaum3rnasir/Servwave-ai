@@ -16,6 +16,7 @@ import { TEST_USERS, mockAuthAs, authHeader, JOB_FIXTURE, INVOICE_FIXTURE } from
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 const mockPrisma = prisma as unknown as {
+  job: { findMany: ReturnType<typeof vi.fn> };
   invoice: {
     findUnique: ReturnType<typeof vi.fn>;
     findFirst: ReturnType<typeof vi.fn>;
@@ -106,6 +107,8 @@ function setupTransaction() {
       update: mockPrisma.invoice.update,
     },
     timelineEvent: { create: mockPrisma.timelineEvent.create },
+    // S06.20: a job-history write asks which jobs it touches are in Ready to close.
+    job: { findMany: mockPrisma.job.findMany },
     organization: { findUnique: mockPrisma.organization.findUnique },
   } as any));
 }
@@ -115,6 +118,7 @@ beforeEach(() => {
   clearPermissionCache();
   setupTransaction();
   mockAuthAs('admin');
+  mockPrisma.invoiceLineItem.create.mockResolvedValue({ id: 'new-line' });
   mockPrisma.invoice.update.mockImplementation((args: any) => Promise.resolve({ id: INVOICE_ID, ...args.data }));
 });
 
@@ -167,7 +171,11 @@ describe('INVOICE_EDITED — line-item mutations on an already-sent invoice', ()
       .send({ description: 'New part', quantity: 1, unit_price: 50 });
 
     expect(res.status).toBe(200);
-    expect(mockPrisma.timelineEvent.create).not.toHaveBeenCalled();
+    // The line edit still lands on the job's timeline (S06.6); the invoice-level entry is the one
+    // a draft never writes.
+    expect(mockPrisma.timelineEvent.create).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ event_type: 'INVOICE_EDITED' }) }),
+    );
   });
 
   it('deleteLine on a SENT invoice writes INVOICE_EDITED', async () => {

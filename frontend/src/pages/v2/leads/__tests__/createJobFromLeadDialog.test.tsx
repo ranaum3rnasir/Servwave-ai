@@ -351,3 +351,14 @@ test('every estimate the dialog offers as selectable is one the API accepts, and
   fireEvent.click(screen.getByRole('button', { name: /create job/i }));
   expect(base.onConvert).toHaveBeenCalledWith(MATRIX.filter(apiWouldAccept).map((e) => e.id));
 });
+
+// A converter who only crewed the walkthrough: the lead answer leaves the estimate money out, so the rows carry no
+// total_amount at all. The dialog draws no amount (not $NaN, not $0) and the estimate can still be converted.
+test('draws no amount for an estimate whose total the server left out, and still converts it', () => {
+  const { total_amount: _omitted, ...withoutTotal } = approved;
+  const { container } = render(<CreateJobFromLeadDialog {...base} estimates={[withoutTotal]} />);
+  expect(screen.getByText('E00001')).toBeInTheDocument();
+  expect(container.ownerDocument.body.textContent).not.toMatch(/NaN|\$/);
+  fireEvent.click(screen.getByRole('button', { name: /create job/i }));
+  expect(base.onConvert).toHaveBeenCalledWith(['e1']);
+});

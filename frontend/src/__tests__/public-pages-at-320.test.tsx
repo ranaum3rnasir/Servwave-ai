@@ -230,8 +230,8 @@ describe('public invoice at 320 (mobile slice 28)', () => {
     stubFetch(invoiceResponse());
     renderWithProviders(<PublicInvoicePage />);
 
-    await userEvent.click(await screen.findByRole('button', { name: /pay \$300\.00 by card/i }));
-    const pay = await screen.findByRole('button', { name: /^pay \$300\.00$/i });
+    // Payments go-live slice 25: Pay by card opens the checkout itself; no fee panel in between.
+    const pay = await screen.findByRole('button', { name: 'Pay by card' });
     await userEvent.click(pay);
 
     const alert = await screen.findByRole('alert');

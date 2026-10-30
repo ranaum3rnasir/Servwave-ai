@@ -1,15 +1,18 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
-import { Prisma, JobStatus } from '@prisma/client';
+import { Prisma, JobStatus, type PaymentState } from '@prisma/client';
 import { prisma } from '../lib/prisma';
+import { withoutProcessorIdKeys } from '../lib/processor-ids';
 import { logger } from '../lib/logger';
+import { publicBankName } from '../lib/payment-display';
 import { parsePagination, buildPaginationMeta, parseSortParams, respondInvalidSort } from '../lib/pagination';
 import { JOB_SORT_FIELDS } from '../lib/sortFields';
 import { parseArrayParam } from '../lib/query/parseArrayParam';
 import { applyFilters } from '../lib/query/filterEngine';
 import { jobFacets } from '../lib/query/registries/job.filters';
 import { tenantWhere } from '../lib/tenant';
-import { isBareOrgDay, orgDayRange, orgDayStart, addOrgDays } from '../lib/orgDayRange';
+import { findOpenVisits, openVisitsPayload, JOB_COMPLETE_HAS_OPEN_VISITS, OPEN_VISIT_CANCEL_REASON, type OpenVisit } from '../lib/job-open-visits';
+import { isBareOrgDay, orgDayRange, orgMonthWindow } from '../lib/orgDayRange';
 import { allocateNumber } from '../lib/numbering';
 import { withNumberCollisionRetry } from '../lib/number-collision-retry';
 import { computeJobBilling } from '../lib/jobBilling';
@@ -50,10 +53,28 @@ import {
 import { amountPaidOf, creditsTotalOf } from '../lib/invoice-editable';
 import { jobLineToInvoiceLineCreate } from '../lib/invoice-lines-from-job';
 import type { Action, Subject } from '../lib/permissions/catalog';
-import { isAssignable, isDispatcherEligible } from '../lib/permissions/assignableRoles';
-import { canAccessRow, canActOnRow, scopeWhereForReq, canSeePricing } from '../lib/permissions/enforce';
+import { whyNotSlot } from '../lib/permissions/slotEligibility';
+import { creatorCanBeOnCrew, jobCreatorPrefill, recordJobCreationPeople, type JobCreationPick } from '../lib/permissions/creatorPrefill';
+import { recordConversionPeople, resolveConversionPeople, type ConversionPeople } from '../lib/permissions/conversionPeople';
+import { canAccessRow, canActOnRow, scopeWhereForReq, canSeeCosts } from '../lib/permissions/enforce';
+import { isAttachedToJob } from '../lib/permissions/jobAttachment';
+import { scheduleFeedCrewUserId, ownCrewVisits } from '../lib/permissions/scheduleFeed';
+import { missingCrewBookedVisit, missingCrewJobWhere } from '../lib/missingCrew';
+import { visitStepsFor, mayStepWithoutCrew, type VisitStep } from '../lib/permissions/visitSteps';
+import { jobActionAnswerFor } from '../lib/permissions/jobActions';
+import { openableInvoiceIds } from '../lib/permissions/invoiceAccess';
+import { paymentReceivedStepFor } from '../lib/permissions/jobPaymentStep';
+import { jobMoneyTotals } from '../lib/job-money-totals';
+import { planVisitExclusionFor } from '../lib/job-plan-visits';
+import { jobLockedFor, jobDonePriceRefusal, respondJobDonePrices, respondNewVisitClosed, windowWouldMintVisitOnClosedJob, JOB_LOCKED_CODE, JOB_LOCKED_MESSAGE } from '../lib/permissions/jobLock';
+import { respondStatusDoorClosed, statusDoorVerdict } from '../lib/permissions/jobStatusDoor';
+import { JOB_COMPLETED_EVENT, OFFICE_REVIEW_STARTED_EVENT, invoiceIdsNamedBy, mayShowInvoiceEntry } from '../lib/job-review-changeset';
+import { lockForBackwardMove, recordBackwardMove, BackwardMoveRaced, JOB_MOVED_BACK_EVENT, invoiceIdsOfMovedBack, withoutInvoiceItems, UNKNOWN_INVOICE } from '../lib/job-back-out';
+import { changesDiscount, refusedForDiscount, type DiscountFields } from '../lib/permissions/discountWrite';
 import { isCustomerReadableRow, CUSTOMER_PROOF_SELECT } from '../lib/permissions/customerScope';
 import { redactCustomerRowUnless, redactServiceLocationRowUnless } from '../lib/permissions/customerContact';
+import { CUSTOMER_CONTACT_SET_SELECT, withCustomerContactSet } from '../lib/customer-contact-set';
+import { carryLeadEntriesToJob, liveJobEntries } from '../lib/record-contact-entries';
 // Scoped assignee pool (md_files/plans/permissions/2026-08-31-assignee-pool/): WHOSE names this
 // requester may put on a job's crew. Shared with the walkthrough performer validator - the module
 // deliberately exports no error string, so the twins keep their own wording.
@@ -66,7 +87,12 @@ import { projectJobScheduleFields, resolveJobScheduleWindow, jobWindowMoved, sam
 import { validationFailure, zodValidationFailure } from '../middleware/validate';
 import { sendJobScheduledEmail, sendJobRescheduledEmail, sendJobVisitCancelledEmail, type EmailDispatchResult, type OrganizationBrandingSubset } from '../lib/email';
 import { getOrgTimezone, DEFAULT_TIMEZONE, getRequestOrgTimezone, formatShortDateInZone } from '../lib/timezone';
-import { emit } from '../services/notifications/notificationService';
+import { alertVisitFinished } from '../services/notifications/visitFinishAlert';
+import { alertJobCompleted } from '../services/notifications/jobCompletedAlert';
+import { queueJobLifecycleAlert } from '../services/notifications/jobLifecycleAlerts';
+import { queueJobSchedulingAlert, queueJobUnassignedAlert } from '../services/notifications/jobSchedulingAlerts';
+import { queueVisitDoorAlerts } from '../services/notifications/visitDoorAlerts';
+import { queueReviewAttention } from '../services/notifications/reviewAttentionQueue';
 import { dispatchAutomationEvent } from '../services/automations/dispatch';
 import { decideScheduleDispatch, type ScheduleDispatchDecision } from '../lib/schedule-dispatch';
 import { rearmAnchoredWaits } from '../services/automations/enrollment';
@@ -87,8 +113,21 @@ import { computeRenumber, applyRenumber, type RenumberComputation } from '../lib
 import { milestoneClears, clearsCompletion } from '../lib/job-milestones';
 import { subStatusClears } from '../lib/job-sub-status';
 import { deriveJobStatusFromVisits } from '../lib/job-status';
-import { walkthroughSnapshotSelect, projectLeadWalkthroughFields, projectLeadVisitCrew, createJobVisit, syncJobFromVisits, stampVisitMilestone, stampCurrentJobVisitMilestone, cancelWalkthroughRow, LIVE_VISIT_STATUSES, type VisitMilestone, nextVisitSeqForJob, withVisitSeqRetry, rescheduleVisitRow, listJobVisits, syncJobWindowOntoVisits, applyJobCrewStatementToVisit, resolveCurrentJobVisit } from '../services/walkthrough.service';
+import { readJobMoneyOwed, readJobOwnTotal } from '../lib/job-money-owed';
+import { COMPLETED_OR_LATER_JOB_STATUSES, isCompletedOrLater } from '../lib/job-status-order';
+import { heldReviewQueues, officeReviewClause, readyToCloseClause, reviewQueueWheres, countReviewQueue } from '../lib/job-review-queue';
+import { decideCloseOutMove, cancelStartsFrom, jobLevelArriveRefusal, COMPLETABLE_JOB_STATUSES, JOB_CLOSE_OUT_REFUSED, JOB_CANCEL_REASON_INVALID, CANCEL_REASON_UNAVAILABLE_MESSAGE } from '../lib/job-close-out';
+import { resolveOfferedJobCancelReasons, jobCancelReasonFor, withCurrentCancelReasonLabels } from '../lib/jobCancelReasons';
+import { reopenJob as reopenJobMove, ReopenRefusal } from '../lib/job-reopen';
+import { markJobDone, MarkDoneRefusal, JOB_MONEY_OWED, MARK_DONE_AMOUNT } from '../lib/job-mark-done';
+import { fromCents as centsToDollars } from '../lib/payment-ledger';
+import { openReviewRound } from '../lib/job-review';
+import { closeOpenCheckoutLinks } from '../lib/invoice-checkout-expiry';
+import { NOTE_NOT_DELETABLE_HERE, noteDeleteAnswer, noteDeleteReach } from '../lib/permissions/noteChange';
+import { recordJobDiscountChange, jobDiscountSnapshot, redactJobChangePrices, recordJobNoteAdded, recordJobDepositsApplied, hideMirroredInvoiceEvents } from '../lib/job-change-history';
+import { walkthroughSnapshotSelect, projectLeadWalkthroughFields, projectLeadVisitCrew, createJobVisit, syncJobFromVisits, stampVisitMilestone, stampCurrentJobVisitMilestone, cancelWalkthroughRow, LIVE_VISIT_STATUSES, type VisitMilestone, nextVisitSeqForJob, withVisitSeqRetry, rescheduleVisitRow, listJobVisits, syncJobWindowOntoVisits, applyJobCrewStatementToVisit, resolveCurrentJobVisit, isOnCurrentJobVisitCrew } from '../services/walkthrough.service';
 import { replaceVisitCrew } from '../services/visitCrew';
+import { PROCESSING_PAYMENT_WHERE, paidCents, fromCents } from '../lib/payment-ledger';
 import { LONG_TEXT_MAX, VERY_LONG_TEXT_MAX } from '../lib/text-limits';
 
 // ─── Select Objects ────────────────────────────────────
@@ -190,8 +229,8 @@ const jobDetailSelect = {
   amount_invoiced: true,
   scope_notes: true,
   job_type: true,
-  // R3b (2026-07-21) — cost model (D2/D8/D18). Staff-only — stripJobPricingForRequester deletes
-  // these three for a requester who can't see pricing (canSeePricing gates read Invoice).
+  // R3b (2026-07-21) — cost model (D2/D8/D18). Staff-only — stripJobCostForRequester deletes
+  // these three for a requester without See financial data (canSeeCosts).
   labor_hours: true,
   overhead_mode: true,
   overhead_value: true,
@@ -203,8 +242,12 @@ const jobDetailSelect = {
   // no replacement: every reader of those two names is on the VISIT, never the job.
   started_at: true,
   completed_at: true,
+  // S06.21: when the job was marked Done - the progress bar dates its last step with it.
+  closed_at: true,
   cancelled_at: true,
   cancelled_reason: true,
+  // S06.15: the code of the reason picked from the org's list; the page reads its label through presentJobDetail.
+  cancel_reason_code: true,
   signature_data: true,
   signature_ip: true,
   signature_at: true,
@@ -221,11 +264,20 @@ const jobDetailSelect = {
       first_name: true,
       last_name: true,
       company_name: true,
-      email: true,
-      phone: true,
+      // S05.1: the customer's contact set (primary and secondary phone, phone list, primary and extra emails).
+      // The presenter folds it into `phones` / `emails`; the raw secondary columns and lists never travel.
+      ...CUSTOMER_CONTACT_SET_SELECT,
     },
   },
   dispatcher: {
+    select: {
+      id: true, first_name: true, last_name: true, email: true, phone: true, role: true, avatar_path: true,
+      department: { select: { id: true, name: true } },
+    },
+  },
+  // The job's Sold By, as stored on the job (S03.8). Not the Owner of the lead its estimate came from: a
+  // multi-estimate job and a service plan visit job have a seller but no single estimate to walk.
+  salesperson: {
     select: {
       id: true, first_name: true, last_name: true, email: true, phone: true, role: true, avatar_path: true,
       department: { select: { id: true, name: true } },
@@ -308,7 +360,11 @@ const jobDetailSelect = {
     },
   },
   invoices: {
-    select: { id: true, invoice_number: true, status: true, total_amount: true, amount_due: true, created_at: true, sent_at: true, paid_at: true, kind: true },
+    select: {
+      id: true, invoice_number: true, status: true, total_amount: true, amount_due: true, created_at: true, sent_at: true, paid_at: true, kind: true,
+      // Slice 28 D1: bank money still clearing, folded into processing_amount by withInvoiceProcessing().
+      payments: { where: PROCESSING_PAYMENT_WHERE, select: { amount: true } },
+    },
     orderBy: { created_at: 'asc' as const },
   },
   // SRVW-96 - estimates attached to this job via the R6 EstimateJobLink (Estimate.job_id) that
@@ -385,6 +441,14 @@ export const createJobSchema = z.object({
   scheduled_start: z.string().datetime({ offset: true }).optional(),
   scheduled_end: z.string().datetime({ offset: true }).optional(),
   estimated_duration: z.number().int().positive().optional(),
+  // Sold By and Dispatcher chosen on the new-job form. Only a person with Assign people to jobs may name them; for
+  // anyone else the server ignores both and applies the creator rule. An absent key keeps the rule's result, null clears.
+  sold_by_id: z.string().uuid().optional().nullable(),
+  dispatcher_id: z.string().uuid().optional().nullable(),
+  // Visit 1 booked at creation (the time above) can carry the creator on its crew, and nobody else (S03.17).
+  // `visit_force` is the double-book override, as `walkthrough_force` is on the new-lead form.
+  visit_assignee_ids: z.array(z.string().uuid()).max(50).optional(),
+  visit_force: z.boolean().optional(),
 }).superRefine((data, ctx) => {
   // A job is created EITHER from approved estimate(s), OR standalone from a customer + location.
   // The estimate flow is "has estimate_id OR estimate_ids" - the customer/location refine below
@@ -534,6 +598,11 @@ export const setDispatcherSchema = z.object({
   dispatcher_id: z.string().uuid().nullable(),
 });
 
+// S03.11 - set, change or clear the job's Sold By from the JCC Team card.
+export const setSoldBySchema = z.object({
+  sold_by_id: z.string().uuid().nullable(),
+});
+
 // SRVW-112 - set or clear the job's org-defined sub-status. A DEDICATED door rather than a key on
 // updateJobSchema: it keeps this out of update() (which SRVW-87 also rewrites) and removes the
 // ordering trap of validating a sub-status parent against a status the same PATCH is changing.
@@ -548,10 +617,26 @@ export const completeJobSchema = z.object({
   signature_data: z.string().max(500000).optional(),
   signature_ip: z.string().optional(),
   signature_at: z.string().datetime().optional(),
+  // S04.17: the caller's choice when the job still has open visits - cancel them and complete. Deliberately no
+  // .default(): an absent key means "no choice made", which is refused (409) while any visit is open.
+  cancel_open_visits: z.boolean().optional(),
 });
 
+// #891 / slice 04: the payment states that mean money moved or is moving. FAILED never did.
+const MONEY_PAYMENT_STATES: readonly PaymentState[] = ['SUCCEEDED', 'PROCESSING'];
+
+/** The code of the reason picked from the org's job cancel-reasons list: required, and checked against the org's active reasons by the cancel move (M7). */
+const cancelReasonCodeSchema = z.string().trim().min(1, 'Choose a reason for cancelling this job.').max(64);
+
 export const cancelJobSchema = z.object({
-  cancelled_reason: z.string().min(1, 'Cancellation reason is required').max(LONG_TEXT_MAX),
+  // S06.15: the reason is picked from the org's list; the written reason this field always was stays as the optional note.
+  cancel_reason_code: cancelReasonCodeSchema,
+  cancelled_reason: z.string().max(LONG_TEXT_MAX).optional(),
+  // #891: the caller's explicit choice for the job's open invoices. false = keep them as they
+  // are; true = void the unpaid ones to $0. An invoice carrying money is kept under either
+  // choice. Deliberately no .default(): an absent key means "no choice made", which is refused
+  // (409) whenever any non-voided invoice on the job carries payments, PAID included.
+  void_invoices: z.boolean().optional(),
 });
 
 export const noteSchema = z.object({
@@ -569,12 +654,19 @@ export const bulkStatusJobsSchema = z
   .object({
     ids: z.array(z.string().uuid()).min(1).max(100),
     action: z.enum(['arrive', 'start', 'complete', 'cancel']),
-    cancelled_reason: z.string().min(1).max(LONG_TEXT_MAX).optional(),
+    // S06.15: one reason from the org's list and one optional note for the whole batch.
+    cancel_reason_code: z.string().max(64).optional(),
+    cancelled_reason: z.string().max(LONG_TEXT_MAX).optional(),
+    // #891: one invoice choice for every job in the batch (see cancelJobSchema). Without one, a
+    // job whose invoices carry payments lands in failed[] with the payments conflict.
+    void_invoices: z.boolean().optional(),
+    // S04.17: one choice for every job in a bulk Completed (see completeJobSchema).
+    cancel_open_visits: z.boolean().optional(),
   })
   .refine((d) => new Set(d.ids).size === d.ids.length, { message: 'Duplicate job ids', path: ['ids'] })
-  .refine((d) => d.action !== 'cancel' || Boolean(d.cancelled_reason?.trim()), {
-    message: 'Cancellation reason is required',
-    path: ['cancelled_reason'],
+  .refine((d) => d.action !== 'cancel' || Boolean(d.cancel_reason_code?.trim()), {
+    message: 'Choose a reason for cancelling these jobs.',
+    path: ['cancel_reason_code'],
   });
 
 export const bulkAssignJobsSchema = z
@@ -622,29 +714,36 @@ function withRemainingUnbilled<
   return { ...job, remaining_unbilled: Math.round((Number(estimateTotal) - billed) * 100) / 100 };
 }
 
-// Phase B (§E) — strip the estimate's as-sold dollar figures from a job-detail payload for a
-// requester who cannot `read Invoice`. A field technician reaches their OWN job (read Job OWN_JOB)
-// and the estimate total + per-line unit_price/line_total leak through the job payload independent
-// of invoice read. We keep line DESCRIPTIONS + QUANTITIES (needed to do the work) but remove
-// total_amount, unit_price, line_total, and the job's amount_invoiced; the derived
-// remaining_unbilled then resolves to null in withRemainingUnbilled (it reads estimate.total_amount).
-// QA-B2 leak 2: jobDetailSelect also embeds invoices[] with each invoice's total_amount/amount_due,
-// which leaked the same dollar figures a second way; we project those out too (keeping
-// invoice_number/status so the tech still knows an invoice exists).
-// Mirrors lead.controller's stripEstimateMonetaryFields. ADMIN/DISPATCHER/invoice-readers keep it.
-// canSeePricing() itself now lives in ../lib/permissions/enforce.ts (job-lines pricing-leak
-// follow-up — job-lines.controller.ts's unit_cost/markup_percent strip needed the same check).
+// S01.15 - what a job-detail payload withholds from a requester.
+//
+// COSTS (the labor_hours/overhead cost model) follow "See financial data" (canSeeCosts).
+//
+// PRICES follow the record. The job's own prices (amount_invoiced, its lines) are never withheld from a
+// person who can open the job. The payload also embeds money that belongs to OTHER records - the attached
+// estimate's total and line prices, each invoice's total_amount/amount_due, the linked estimates' totals -
+// and that money follows the ability to read that record: a person who cannot read estimates does not get
+// an estimate's figures through the job (a field technician reaching their own job is the case that mattered,
+// QA-B2 leak 2). Descriptions, quantities and number/status stay either way: the person still sees WHAT is on the job.
+// The derived remaining_unbilled resolves to null once the estimate total is gone (withRemainingUnbilled).
+// Mirrors lead.controller's stripEstimateMonetaryFields.
+//
+// INVOICES are not stripped here. The payload lists only the invoices the person can open (withOpenableInvoices), and
+// an invoice they can open is theirs to see the prices of; the job's own totals and balance ride GET /financials.
+const canReadEstimates = (req: Request): boolean => !!req.ability?.can('read', 'Estimate');
+const canReadInvoices = (req: Request): boolean => !!req.ability?.can('read', 'Invoice');
 
 // GAP-5 — money keys that cancel() writes into a JOB timeline event's metadata. getTimeline returns
-// metadata raw, so for a requester who cannot see pricing these are redacted (the row/event stays,
-// only the monetary fields are removed). Mirrors the job-detail pricing strip.
+// metadata raw, so for a requester who cannot read invoices these are redacted (the row/event stays,
+// only the monetary fields are removed): they are what was collected on the job's invoices.
 const TIMELINE_MONEY_METADATA_KEYS = ['collected_total', 'refund_suggested'] as const;
 
 function redactTimelineMoneyForRequester<
-  T extends { metadata?: unknown },
+  T extends { event_type: string; metadata?: unknown },
 >(events: T[], req: Request): T[] {
-  if (canSeePricing(req)) return events;
-  return events.map((ev) => {
+  if (canReadInvoices(req)) return events;
+  // S06.5: the line/scope/discount change entries keep their prices in old/new, not in the two
+  // top-level keys below; the money movements on the job's invoices are dropped whole.
+  return redactJobChangePrices(events).map((ev) => {
     const meta = ev.metadata;
     if (!meta || typeof meta !== 'object' || Array.isArray(meta)) return ev;
     const metaObj = meta as Record<string, unknown>;
@@ -655,35 +754,67 @@ function redactTimelineMoneyForRequester<
   });
 }
 
-function stripJobPricingForRequester<T extends Record<string, unknown>>(job: T, req: Request): T {
-  if (canSeePricing(req)) return job;
+function stripJobCostForRequester<T extends Record<string, unknown>>(job: T, req: Request): T {
+  const withCosts = canSeeCosts(req);
+  const withEstimates = canReadEstimates(req);
+  if (withCosts && withEstimates) return job;
   // Clone the branches we redact (rather than mutating in place) so the strip never leaks into a
-  // shared object reference. Returns a new job with the monetary fields omitted.
+  // shared object reference. Returns a new job with the withheld fields omitted.
   const out: Record<string, unknown> = { ...job };
-  delete out.amount_invoiced;
-  // R3b (2026-07-21) — cost model (D2/D8/D18). Same staff-only fields as Estimate's.
-  delete out.labor_hours;
-  delete out.overhead_mode;
-  delete out.overhead_value;
-  const estimate = job.estimate as { total_amount?: unknown; line_items?: Array<Record<string, unknown>> } | null | undefined;
-  if (estimate) {
-    const { total_amount: _omitTotal, line_items, ...estRest } = estimate;
-    out.estimate = {
-      ...estRest,
-      line_items: (line_items ?? []).map(({ unit_price: _u, line_total: _l, ...liRest }) => liRest),
-    };
+  if (!withCosts) {
+    // R3b (2026-07-21) — cost model (D2/D8/D18). Same staff-only fields as Estimate's.
+    delete out.labor_hours;
+    delete out.overhead_mode;
+    delete out.overhead_value;
   }
-  const invoices = job.invoices as Array<Record<string, unknown>> | null | undefined;
-  if (Array.isArray(invoices)) {
-    out.invoices = invoices.map(({ total_amount: _t, amount_due: _d, ...invRest }) => invRest);
-  }
-  // SRVW-96 - same strip on the job's attached (linked) estimates. Array.isArray, not a bare map,
-  // because many existing tests mock a jobDetailSelect-shaped job without the new key.
-  const linked = job.linked_estimates as Array<Record<string, unknown>> | null | undefined;
-  if (Array.isArray(linked)) {
-    out.linked_estimates = linked.map(({ total_amount: _t, ...rest }) => rest);
+  if (!withEstimates) {
+    const estimate = job.estimate as { total_amount?: unknown; line_items?: Array<Record<string, unknown>> } | null | undefined;
+    if (estimate) {
+      const { total_amount: _omitTotal, line_items, ...estRest } = estimate;
+      out.estimate = {
+        ...estRest,
+        line_items: (line_items ?? []).map(({ unit_price: _u, line_total: _l, ...liRest }) => liRest),
+      };
+    }
+    // SRVW-96 - same strip on the job's attached (linked) estimates. Array.isArray, not a bare map,
+    // because many existing tests mock a jobDetailSelect-shaped job without the new key.
+    const linked = job.linked_estimates as Array<Record<string, unknown>> | null | undefined;
+    if (Array.isArray(linked)) {
+      out.linked_estimates = linked.map(({ total_amount: _t, ...rest }) => rest);
+    }
   }
   return out as T;
+}
+
+/**
+ * The job's invoices as the person looking may see them: only the ones they can open (their View invoices scope's rows
+ * plus the ones they made while attached to the job). `invoice_count` keeps the whole number for a decision that is
+ * about the job rather than the list, such as whether it can still be deleted.
+ */
+async function withOpenableInvoices<T extends object>(req: Request, job: T): Promise<T> {
+  const invoices = (job as { invoices?: unknown }).invoices;
+  if (!Array.isArray(invoices)) return job;
+  const openable = await openableInvoiceIds(req, invoices.map((i: { id: string }) => i.id));
+  return { ...job, invoices: invoices.filter((i: { id: string }) => openable.has(i.id)), invoice_count: invoices.length };
+}
+
+/**
+ * The job's attached estimates as the person looking may see them: only the ones their View estimates scope reaches
+ * (plus the ones they made while attached), asked with the fragment the estimate list and detail use. An estimate
+ * they cannot open is not named at all: no id, number or status. One query, and none for a person whose scope
+ * reaches every row.
+ */
+async function withOpenableEstimates<T extends object>(req: Request, job: T): Promise<T> {
+  const linked = (job as { linked_estimates?: unknown }).linked_estimates;
+  if (!Array.isArray(linked) || linked.length === 0) return job;
+  const scope = await scopeWhereForReq(req, 'Estimate');
+  if (Object.keys(scope).length === 0) return job;
+  const rows = await prisma.estimate.findMany({
+    where: { id: { in: linked.map((e: { id: string }) => e.id) }, ...tenantWhere(req), ...scope },
+    select: { id: true },
+  });
+  const openable = new Set(rows.map((r) => r.id));
+  return { ...job, linked_estimates: linked.filter((e: { id: string }) => openable.has(e.id)) };
 }
 
 /**
@@ -709,18 +840,20 @@ function projectJobEstimateLeadWalkthrough<T extends { estimate?: { lead?: unkno
 
 type PersonWithAvatarPath = { avatar_path?: string | null } & Record<string, unknown>;
 
-/** Swap `avatar_path` for a response-safe signed `avatar_url` on the three person shapes
- *  jobDetailSelect embeds: the dispatcher, each crew assignee's user, and the estimate's lead
- *  commission_owner. One batched signAvatarPaths call for all three, same as
+/** Swap `avatar_path` for a response-safe signed `avatar_url` on the person shapes
+ *  jobDetailSelect embeds: the dispatcher, the stored Sold By, each crew assignee's user, and the
+ *  estimate's lead commission_owner. One batched signAvatarPaths call for all of them, same as
  *  user.controller.ts's withAvatarUrls but shaped for this nesting instead of a flat row list. */
 async function withPersonAvatars<T extends Record<string, unknown>>(job: T): Promise<T> {
   const dispatcher = job.dispatcher as PersonWithAvatarPath | null | undefined;
+  const salesperson = job.salesperson as PersonWithAvatarPath | null | undefined;
   const assignees = job.assignees as Array<{ user: PersonWithAvatarPath }> | null | undefined;
   const estimate = job.estimate as { lead?: { commission_owner?: PersonWithAvatarPath | null } | null } | null | undefined;
   const commissionOwner = estimate?.lead?.commission_owner;
 
   const signed = await signAvatarPaths([
     dispatcher?.avatar_path,
+    salesperson?.avatar_path,
     ...(assignees ?? []).map((a) => a.user?.avatar_path),
     commissionOwner?.avatar_path,
   ]);
@@ -734,11 +867,37 @@ async function withPersonAvatars<T extends Record<string, unknown>>(job: T): Pro
   return {
     ...job,
     dispatcher: swap(dispatcher),
+    salesperson: swap(salesperson),
     assignees: assignees ? assignees.map((a) => ({ ...a, user: swap(a.user) })) : assignees,
     estimate: estimate
       ? { ...estimate, lead: estimate.lead ? { ...estimate.lead, commission_owner: swap(commissionOwner) } : estimate.lead }
       : estimate,
   };
+}
+
+/** Slice 28 D1: fold each invoice's clearing PROCESSING payments into one processing_amount; the rows never travel. */
+function withInvoiceProcessing<T extends object>(job: T): T {
+  const invoices = (job as { invoices?: unknown }).invoices;
+  if (!Array.isArray(invoices)) return job;
+  return {
+    ...job,
+    invoices: invoices.map((inv: { payments?: Array<{ amount: Parameters<typeof paidCents>[0][number]['amount'] }> }) => {
+      const { payments, ...rest } = inv;
+      return Array.isArray(payments) ? { ...rest, processing_amount: fromCents(paidCents(payments)) } : rest;
+    }),
+  };
+}
+
+/**
+ * What the progress bar needs to tell a skipped money step from one that never applied (S06.21): whether money is still
+ * owed and whether the job's total is zero, both from the one money rule (lib/job-money-owed). Worked out for a Done job
+ * only, so no other job page pays for it: two reads, run one after the other like every read here. The two flags carry no
+ * amount and no invoice, so they go to anyone who can open the job, as the job's own balance already does.
+ */
+async function closeOutMoneyFor(orgId: string, jobId: string, status: JobStatus | undefined): Promise<{ money_owed: boolean; zero_total: boolean } | null> {
+  if (status !== 'DONE') return null;
+  const { owedCents, contractCents } = await readJobMoneyOwed({ orgId, jobId });
+  return { money_owed: owedCents > 0, zero_total: contractCents === 0 };
 }
 
 async function presentJobDetail<
@@ -751,11 +910,62 @@ async function presentJobDetail<
   // projection in the SAME order presentJobDetail always ran them in - crew first (it needs the
   // raw `visits[].assignees` shape), schedule second (a pure read of `visits[]`, order-agnostic
   // with crew but kept after it for one clear pipeline).
-  const withCrewAndSchedule = projectJobScheduleFields(projectJobCrewUnion(tagged as Record<string, unknown>)) as typeof tagged;
+  // The steps this person may take on each visit, from the same per-record answer the visit routes ask.
+  const visitRows = (tagged as { visits?: { id: string; assignees?: { user_id: string }[] | null }[] }).visits;
+  const stepsByVisit = visitRows ? await visitStepsFor(req, tagged.id, visitRows) : null;
+  const withSteps = stepsByVisit
+    ? { ...tagged, visits: visitRows!.map((v) => ({ ...v, status_steps: stepsByVisit[v.id] })) } as unknown as typeof tagged
+    : tagged;
+  const withCrewAndSchedule = projectJobScheduleFields(projectJobCrewUnion(withSteps as Record<string, unknown>)) as typeof tagged;
   const withAvatars = await withPersonAvatars(withCrewAndSchedule);
-  return withRemainingUnbilled(stripJobPricingForRequester(projectJobEstimateLeadWalkthrough(withAvatars), req));
+  // Whether the person looking is one of the job's people: the job page shows its staging to an attached person
+  // whatever their stock switches say.
+  const viewerAttached = req.user ? await isAttachedToJob(req.user, tagged.id) : false;
+  // What this person may do on this job, asked of the record as it stands: the job page draws a control only for a
+  // listed action, and the routes behind those controls ask the same switches.
+  const { actions, locked, locked_actions, contact_locked, new_visit_closed, new_visit_closed_reason, status_door_closed_reason, backward_move_open, ready_to_close, price_edit_closed_reason } = await jobActionAnswerFor(req, {
+    id: tagged.id, status: (tagged as { status?: JobStatus }).status, visits: visitRows,
+  });
+  const presented = withRemainingUnbilled(
+    await withOpenableEstimates(
+      req,
+      await withOpenableInvoices(req, stripJobCostForRequester(withInvoiceProcessing(projectJobEstimateLeadWalkthrough(withAvatars)), req)),
+    ),
+  );
+  return {
+    ...presented,
+    customer: withCustomerContactSet((presented as { customer?: unknown }).customer),
+    // S05.7: the job's own phones and emails, live ones only, for anyone who can open the job.
+    contact_entries: await liveJobEntries(prisma, req.user!.organization_id, tagged.id),
+    viewer_attached: viewerAttached,
+    actions,
+    // S04.22: the completed-job lock for this person, and the actions it is withholding, for the page to disable with the reason.
+    locked,
+    locked_actions,
+    // S06.9: the customer block's pencils follow this, not `locked`: an Office review holder keeps them in Office review.
+    contact_locked,
+    // S04.23: a locked job takes no new visit from anyone until it is reopened or moved back out of review; S06.4: the
+    // words beside the disabled Add visit control come from here, so the page never judges the status itself.
+    new_visit_closed,
+    new_visit_closed_reason,
+    // S06.17: a Done or Cancelled job leaves only through Reopen; the words beside every control that would set its status
+    // (Start, Schedule, Reschedule) come from here, so the page never judges the status itself. Null on any other status.
+    status_door_closed_reason,
+    // S06.18: true when the job is in Office review or Ready to close and this person may move it back (the door's own switch is
+    // asked by the control): Start, Schedule and Reschedule are drawn open for them although the lock withholds the rest.
+    backward_move_open,
+    // S06.19: a Done job's lines, scopes and discount are closed to everyone; the words beside those controls come from here, so the
+    // page never judges the status itself. Null on any other status.
+    price_edit_closed_reason,
+    // S06.13: the Ready to close banner's facts (the amount owed, and Mark Done offered or disabled), null in any other status.
+    ready_to_close,
+    // S06.21: the two money facts the progress bar needs on a Done job to call a money step skipped, null in any other status.
+    close_out_money: await closeOutMoneyFor(req.user!.organization_id, tagged.id, (tagged as { status?: JobStatus }).status),
+    // S06.15: the reason a cancelled job was given, by its label today (renamed or turned off included); null for a job
+    // cancelled before the list existed, which shows its written reason alone.
+    cancel_reason: await jobCancelReasonFor(req.user!.organization_id, (tagged as { cancel_reason_code?: string | null }).cancel_reason_code),
+  };
 }
-
 
 // GAP-1 — the role-literal `canAccessJob` (ADMIN||DISPATCHER → true, ignoring the CASL
 // ability/override engine) was REMOVED. getById/getNotes/addNote/getTimeline now use the
@@ -828,15 +1038,14 @@ async function setJobCrewOnCurrentVisit(
 const ASSIGN_CREW_SELF_ONLY = 'You can only assign yourself as job crew.';
 
 /**
- * Per-member eligibility: every assignee_id must resolve to an ACTIVE in-org user whose role
- * `isAssignable`. Returns the resolved crew on success, or a {status, error} to send on failure.
+ * Per-member eligibility: every assignee_id must resolve to an in-org user, and every person NEWLY
+ * named must be one slot eligibility lets onto a crew (active, Can be on a crew on - never a role
+ * name). Returns the resolved crew on success, or a {status, error} to send on failure.
  *
- * EXPORTED rather than module-private because it is the tenant check standing between a bare
- * `uuid` off the wire and `visit_assignees`, and the job routes are not the only door onto that
- * table: service-plan.controller's scheduleVisit writes crew onto a plan visit too. Sharing the
- * one function is what keeps the error strings identical across those doors - the thing the
- * callers' comments below say must not drift - and, more importantly, keeps a second door from
- * being written without the tenant clause at all.
+ * "Newly named" is what `currentCrewIds` says: a member already on the crew being replaced is
+ * restated, not placed, so a list that still holds someone whose switch was turned off, or who has
+ * since been deactivated, is accepted for that member. Omitting `currentCrewIds` names everyone as
+ * new.
  *
  * SINCE SLICE 2, ALSO THE ASSIGNEE-POOL GATE, and it runs FIRST. A requester who does not hold
  * `assign User` may name only themselves. Three things about that placement are load-bearing:
@@ -866,6 +1075,12 @@ const ASSIGN_CREW_SELF_ONLY = 'You can only assign yourself as job crew.';
  * caller that only ever creates crew from nothing (there is no set to restate) can simply not
  * pass it. Same contract as `validatePerformers`' third parameter - the twins must not disagree
  * about what "unchanged" means.
+ *
+ * EXPORTED rather than module-private because it is the tenant check standing between a bare
+ * `uuid` off the wire and `visit_assignees`, and the job routes are not the only door onto that
+ * table. Sharing the one function is what keeps the error strings identical across those doors -
+ * the thing the callers' comments below say must not drift - and, more importantly, keeps a
+ * second door from being written without the tenant clause at all.
  */
 export async function validateCrew(
   req: Request,
@@ -884,13 +1099,16 @@ export async function validateCrew(
     const tech = await prisma.user.findUnique({
       where: { id: userId, ...tenantWhere(req) },
       select: {
-        id: true, role: true, is_active: true, email: true, first_name: true, last_name: true,
+        id: true, organization_id: true, role: true, custom_role_id: true, custom_role: { select: { key: true } },
+        is_active: true, email: true, first_name: true, last_name: true,
         ...performerPhoneSelect,
       },
     });
     if (!tech) return { ok: false, status: 404, error: 'User not found' };
-    if (!isAssignable(tech.role)) return { ok: false, status: 400, error: 'This user is not eligible to be assigned as job crew' };
-    if (!tech.is_active) return { ok: false, status: 400, error: 'Cannot assign job to an inactive technician' };
+    if (!currentCrewIds?.includes(userId)) {
+      const refusal = await whyNotSlot(tech, 'crew');
+      if (refusal) return { ok: false, status: 400, error: refusal };
+    }
     users.push({
       id: tech.id, email: tech.email, first_name: tech.first_name, last_name: tech.last_name,
       phone: tech.phone, phone_ext: tech.phone_ext,
@@ -1095,26 +1313,39 @@ async function timezoneForBounds(
   return getRequestOrgTimezone(req as { user?: { organization_id?: string } });
 }
 
+/** The statuses a list request asks for. A value that is not a job status is dropped, the way the status facet drops it. */
+function requestedJobStatuses(req: Request): string[] {
+  return parseArrayParam(req.query.status).filter((v) => Object.values(JobStatus).includes(v as JobStatus));
+}
+
 /**
- * The current calendar MONTH on the org's clock, as a half-open instant window
- * `[first day 00:00 org, first day of next month 00:00 org)`.
- *
- * Was `new Date(now.getFullYear(), now.getMonth(), 1)` - the server's own month, which is
- * UTC in production. That put the tile counts on a different clock from both the Scheduled
- * column and (now) the "Completed"/"Cancelled" tiles' own click-through filter, which sends
- * org-zone month-day strings. The tile and the list it opened disagreed by the UTC offset
- * plus the month's last day. Half-open for the same DST reason as `orgDayRange`.
+ * The Need Invoices tile's job set: finished work with no live invoice. The tile's count and the list's
+ * `needs_invoice` filter both take their `where` from here, so a tile's number is the rows it opens.
  */
-function orgMonthWindow(timeZone: string, at: Date = new Date()): { gte: Date; lt: Date } {
-  const today = at.toLocaleDateString('en-CA', { timeZone }); // en-CA renders ISO 'YYYY-MM-DD'
-  const firstOfMonth = `${today.slice(0, 7)}-01`;
-  // Step a full 31 days off the 1st and snap back to that month's 1st: lands on the next
-  // month for every month length without any month-arithmetic special cases.
-  const firstOfNextMonth = `${addOrgDays(firstOfMonth, 31).slice(0, 7)}-01`;
+function needInvoiceClause(): Prisma.JobWhereInput {
   return {
-    gte: orgDayStart(firstOfMonth, timeZone),
-    lt: orgDayStart(firstOfNextMonth, timeZone),
+    status: { in: [...COMPLETED_OR_LATER_JOB_STATUSES] },
+    NOT: { invoices: { some: { status: { not: 'VOIDED' } } } },
   };
+}
+
+/** "This job has a trip inside the month": measured on the visit's own date, a cancelled job counting by any trip it kept. */
+function visitInMonthCondition(monthWindow: { gte: Date; lt: Date }) {
+  return {
+    OR: [
+      { visits: { some: { scheduled_at: monthWindow, status: { not: 'CANCELLED' } } } },
+      { status: 'CANCELLED' as const, visits: { some: { scheduled_at: monthWindow } } },
+    ],
+  };
+}
+
+/**
+ * The Completed tile's job set: finished work (Completed, Office review, Ready to close, Done) with a trip this
+ * month. Conditions to compose under `AND`, shared by the tile's count and the list's `completed_this_month`
+ * filter, so the tile's number is the rows it opens.
+ */
+function completedThisMonthConditions(monthWindow: { gte: Date; lt: Date }): unknown[] {
+  return [{ status: { in: [...COMPLETED_OR_LATER_JOB_STATUSES] } }, visitInMonthCondition(monthWindow)];
 }
 
 /**
@@ -1123,7 +1354,7 @@ function orgMonthWindow(timeZone: string, at: Date = new Date()): { gte: Date; l
  * tenant scope + CASL row-scope + filters. Returns `rowScope` too because `list()` reuses it
  * to build the separate stats `scopeWhere`.
  */
-export async function buildJobListWhere(req: Request): Promise<{ where: Record<string, unknown>; rowScope: Record<string, unknown> }> {
+export async function buildJobListWhere(req: Request): Promise<{ where: Record<string, unknown>; rowScope: Record<string, unknown>; feedCrewUserId: string | null; missingCrewVisits: Prisma.VisitWhereInput | null }> {
   const search = (req.query.search as string) || '';
 
   // #106 — grant-driven row scope (replaces the hand-rolled SALES/TECHNICIAN if-block,
@@ -1138,9 +1369,7 @@ export async function buildJobListWhere(req: Request): Promise<{ where: Record<s
   // Service-plan visit-jobs are managed inside the Service Plans module, so the office Jobs
   // list (and its KPI tiles) exclude them when asked. The calendar and tech app call the same
   // endpoint WITHOUT this flag, so they still see visit-jobs — they must, to execute them.
-  if (req.query.exclude_plan_visits === 'true') {
-    where.source_plan_id = null;
-  }
+  Object.assign(where, planVisitExclusionFor(req.query.exclude_plan_visits));
 
   // Generalized filter engine (Task 10): status (enum-validated), customer_id,
   // scheduled_after/before (-> scheduled_start), created_after/before (-> created_at). See
@@ -1165,6 +1394,13 @@ export async function buildJobListWhere(req: Request): Promise<{ where: Record<s
   // renders on the org clock, so the column and the filter disagreed about the day.
   const scheduledAfter = req.query.scheduled_after as string | undefined;
   const scheduledBefore = req.query.scheduled_before as string | undefined;
+  // S09.12: the Schedule's "No crew" filter. The shared Missing crew test narrows the jobs (and, below, the visits each
+  // row carries); the person's own-crew rule for Jobs scope Attached does not apply, because a visit nobody is on
+  // is nobody's own. Who may see the job is still the row scope's call.
+  const missingCrew = req.query.missing_crew === 'true';
+  const missingCrewNow = new Date();
+  const missingCrewZone = missingCrew ? await getRequestOrgTimezone(req) : DEFAULT_TIMEZONE;
+  const feedCrewUserId = missingCrew ? null : await scheduleFeedCrewUserId(req);
   const scheduledWindow = (scheduledAfter || scheduledBefore)
     ? orgDayRange(scheduledAfter, scheduledBefore, await timezoneForBounds(req, scheduledAfter, scheduledBefore))
     : null;
@@ -1181,12 +1417,21 @@ export async function buildJobListWhere(req: Request): Promise<{ where: Record<s
     // cancelled in March" answered "none". The arm is keyed on the JOB's own status, so it can
     // never widen the board: the board's request pins status to SCHEDULED/IN_PROGRESS/COMPLETED
     // at the top level, and that ANDs with this clause.
+    // S04.9: on the Schedule's feed under Jobs scope Attached the visit that is inside the window must be the
+    // person's own, on the SAME visit (a visit of theirs outside the window and a colleague's inside it do not
+    // add up to a card on their board).
+    const ownCrew = feedCrewUserId ? { assignees: { some: { user_id: feedCrewUserId } } } : {};
     (where.AND as unknown[]).push({
       OR: [
-        { visits: { some: { scheduled_at: scheduledWindow, status: { not: 'CANCELLED' } } } },
-        { status: 'CANCELLED' as const, visits: { some: { scheduled_at: scheduledWindow } } },
+        { visits: { some: { scheduled_at: scheduledWindow, status: { not: 'CANCELLED' }, ...ownCrew } } },
+        { status: 'CANCELLED' as const, visits: { some: { scheduled_at: scheduledWindow, ...ownCrew } } },
       ],
     });
+  }
+
+  if (missingCrew) {
+    (where.AND ??= [] as unknown[]);
+    (where.AND as unknown[]).push(missingCrewJobWhere(missingCrewNow, missingCrewZone));
   }
 
   // Crew (M2M) filters: assignee user and/or assignee department. SECURITY: kept hand-rolled
@@ -1220,10 +1465,43 @@ export async function buildJobListWhere(req: Request): Promise<{ where: Record<s
     (where.AND as unknown[]).push({ visits: { some: { assignees: { some: assigneeSome } } } });
   }
 
+  // S04.2: the "needs invoice" filter, like the Need Invoices count, is View invoices' to answer.
+  // Without it the parameter is ignored (a stale deep link still lists the person's own jobs).
   const needsInvoice = req.query.needs_invoice as string | undefined;
-  if (needsInvoice === 'true') {
-    where.status = 'COMPLETED';
-    where.NOT = { invoices: { some: { status: { not: 'VOIDED' } } } };
+  if (needsInvoice === 'true' && req.ability?.can('read', 'Invoice')) {
+    // PRD 6: a finished job waits for its invoice in Office review, Ready to close and Done too.
+    Object.assign(where, needInvoiceClause());
+  }
+
+  // S06.30: the Completed tile's click-through, the same job set the tile counts (see `completedThisMonthConditions`).
+  const completedThisMonth = req.query.completed_this_month === 'true';
+  if (completedThisMonth) {
+    (where.AND ??= [] as unknown[]);
+    (where.AND as unknown[]).push(
+      ...completedThisMonthConditions(orgMonthWindow(await getRequestOrgTimezone(req as { user?: { organization_id?: string } }))),
+    );
+  }
+
+  // S06.31: the Office review and Ready to close tiles' click-throughs, the same job sets the tiles count (see
+  // `reviewQueueWheres`). Like the tiles, each is the holder's of the matching switch; for anyone else the parameter
+  // is ignored and the list is their ordinary view.
+  const heldQueues = heldReviewQueues(req.ability);
+  if (req.query.in_office_review === 'true' && heldQueues.office_review) {
+    (where.AND ??= [] as unknown[]);
+    (where.AND as unknown[]).push(officeReviewClause());
+  }
+  if (req.query.ready_to_close === 'true' && heldQueues.ready_to_close) {
+    (where.AND ??= [] as unknown[]);
+    (where.AND as unknown[]).push(readyToCloseClause());
+  }
+
+  // S06.30: the default view leaves Done out - live work only. It stays when the request names a status (the Done
+  // filter among them), opens one of the tiles above (they count Done and show it) or says `include_done` (a picker
+  // that has to reach every job). Composed under AND so it can never clobber a status the row scope or a facet set.
+  const namesFinishedSet = (needsInvoice === 'true' && req.ability?.can('read', 'Invoice')) || completedThisMonth;
+  if (!requestedJobStatuses(req).length && !namesFinishedSet && req.query.include_done !== 'true') {
+    (where.AND ??= [] as unknown[]);
+    (where.AND as unknown[]).push({ status: { not: 'DONE' as const } });
   }
 
   if (search) {
@@ -1241,7 +1519,19 @@ export async function buildJobListWhere(req: Request): Promise<{ where: Record<s
     ]);
   }
 
-  return { where, rowScope };
+  // The visits a row of the "No crew" filter carries: the crewless booked ones inside the board's window, so the
+  // card of a visit with crew on the same job never reaches the browser.
+  const missingCrewVisits: Prisma.VisitWhereInput | null = missingCrew
+    ? { AND: [missingCrewBookedVisit(missingCrewNow, missingCrewZone), ...(scheduledWindow ? [{ scheduled_at: scheduledWindow }] : [])] }
+    : null;
+
+  return { where, rowScope, feedCrewUserId, missingCrewVisits };
+}
+
+/** The Schedule feed's narrowing (S04.9): each job row keeps only the visits this person is crewed on; any other request is untouched. */
+function forFeed<J extends { visits: { assignees: { user_id: string }[] }[] }>(jobs: J[], crewUserId: string | null): J[] {
+  if (!crewUserId) return jobs;
+  return jobs.map((j) => ({ ...j, visits: ownCrewVisits(j.visits, crewUserId) }));
 }
 
 export async function list(req: Request, res: Response) {
@@ -1254,23 +1544,20 @@ export async function list(req: Request, res: Response) {
     }
     const orderBy = sort.orderBy;
 
-    const { where, rowScope } = await buildJobListWhere(req);
+    const { where, rowScope, feedCrewUserId, missingCrewVisits } = await buildJobListWhere(req);
     const scopeWhere: Record<string, unknown> = { ...tenantWhere(req), ...rowScope };
     // exclude_plan_visits also scopes the stats tiles (mirrors the list `where`).
-    if (req.query.exclude_plan_visits === 'true') {
-      scopeWhere.source_plan_id = null;
-    }
+    Object.assign(scopeWhere, planVisitExclusionFor(req.query.exclude_plan_visits));
 
     // Monthly window for completed/cancelled status tiles (a visit scheduled ∈ current month),
     // measured on the ORG's calendar month - see `orgMonthWindow`.
     const monthWindow = orgMonthWindow(
       await getRequestOrgTimezone(req as { user?: { organization_id?: string } }),
     );
-    const needInvoiceWhere: Prisma.JobWhereInput = {
-      ...scopeWhere,
-      status: 'COMPLETED',
-      NOT: { invoices: { some: { status: { not: 'VOIDED' } } } },
-    };
+    // S04.2: the Need Invoices count is only worked out, and only reported, for a person with View
+    // invoices - whatever their role. The other five tiles are everyone's.
+    const canViewInvoices = Boolean(req.ability?.can('read', 'Invoice'));
+    const needInvoiceWhere: Prisma.JobWhereInput = { ...scopeWhere, ...needInvoiceClause() };
 
     // S8 (RATIFIED): these two tiles filtered `Job.scheduled_start` directly, which is DROPPED.
     // Repointed to the VISIT SET using the identical pattern `buildJobListWhere` already proves
@@ -1284,31 +1571,30 @@ export async function list(req: Request, res: Response) {
     // `where.visits` directly - `scopeWhere` may already carry a technician's row-scope OR (or,
     // for a future grant shape, a `visits.some` clause of its own), and overwriting either is an
     // RBAC bypass. Mirrors buildJobListWhere's own `where.AND ??= []` idiom exactly.
-    const completedThisMonthWhere: Record<string, unknown> = { ...scopeWhere, status: 'COMPLETED' };
+    //
+    // S06.30: the Completed set is `completedThisMonthConditions`, the same conditions the list's
+    // `completed_this_month` filter composes, so the tile's count is the rows its click opens.
+    const completedThisMonthWhere: Record<string, unknown> = { ...scopeWhere };
     (completedThisMonthWhere.AND ??= [] as unknown[]);
-    (completedThisMonthWhere.AND as unknown[]).push({
-      OR: [
-        { visits: { some: { scheduled_at: monthWindow, status: { not: 'CANCELLED' } } } },
-        { status: 'CANCELLED' as const, visits: { some: { scheduled_at: monthWindow } } },
-      ],
-    });
+    (completedThisMonthWhere.AND as unknown[]).push(...completedThisMonthConditions(monthWindow));
     const cancelledThisMonthWhere: Record<string, unknown> = { ...scopeWhere, status: 'CANCELLED' };
     (cancelledThisMonthWhere.AND ??= [] as unknown[]);
-    (cancelledThisMonthWhere.AND as unknown[]).push({
-      OR: [
-        { visits: { some: { scheduled_at: monthWindow, status: { not: 'CANCELLED' } } } },
-        { status: 'CANCELLED' as const, visits: { some: { scheduled_at: monthWindow } } },
-      ],
-    });
+    (cancelledThisMonthWhere.AND as unknown[]).push(visitInMonthCondition(monthWindow));
+
+    // S06.31: the queue tiles. Each is counted only for the holder of its switch, from the clauses the list's
+    // `in_office_review` / `ready_to_close` filters use, within the same scope as every other tile.
+    const queueWheres = reviewQueueWheres(req.ability, scopeWhere as Prisma.JobWhereInput);
 
     const [
       jobs, total,
       statusGroups,
       completedThisMonth, cancelledThisMonth, needInvoicesCount,
+      officeReviewCount, readyToCloseCount,
     ] = await Promise.all([
       prisma.job.findMany({
         where,
-        select: jobListSelect,
+        // S09.12: with the "No crew" filter on, each row carries only its crewless visits (undefined = all of them).
+        select: { ...jobListSelect, visits: { ...jobListSelect.visits, where: missingCrewVisits ?? undefined } },
         orderBy,
         skip,
         take: limit,
@@ -1321,7 +1607,9 @@ export async function list(req: Request, res: Response) {
       }),
       prisma.job.count({ where: completedThisMonthWhere }),
       prisma.job.count({ where: cancelledThisMonthWhere }),
-      prisma.job.count({ where: needInvoiceWhere }),
+      canViewInvoices ? prisma.job.count({ where: needInvoiceWhere }) : Promise.resolve(undefined),
+      queueWheres.office_review ? prisma.job.count({ where: queueWheres.office_review }) : Promise.resolve(undefined),
+      queueWheres.ready_to_close ? prisma.job.count({ where: queueWheres.ready_to_close }) : Promise.resolve(undefined),
     ]);
 
     const byStatus = Object.fromEntries(statusGroups.map((g) => [g.status, g._count]));
@@ -1329,7 +1617,8 @@ export async function list(req: Request, res: Response) {
     res.json({
       // S8: same projectors as the detail pipeline, so the list's `assignees`/`scheduled_start`
       // and the detail's cannot disagree about who is on a job or when it is next due.
-      jobs: (await withTagsMany(req, jobs)).map((j) =>
+      // S04.9: the Schedule's feed under Jobs scope Attached carries only the person's own crew visits.
+      jobs: (await withTagsMany(req, forFeed(jobs, feedCrewUserId))).map((j) =>
         projectJobVisitLocations(projectJobScheduleFields(projectJobCrewUnion(j as Record<string, unknown>)))),
       pagination: buildPaginationMeta(total, { page, limit, skip }),
       stats: {
@@ -1340,12 +1629,31 @@ export async function list(req: Request, res: Response) {
         in_progress:   byStatus['IN_PROGRESS'] ?? 0,
         completed:     completedThisMonth,
         cancelled:     cancelledThisMonth,
-        need_invoices: needInvoicesCount,
+        ...(canViewInvoices ? { need_invoices: needInvoicesCount } : {}),
+        // S06.31: a queue tile's count is sent only to the holder of its switch.
+        ...(officeReviewCount !== undefined ? { office_review: officeReviewCount } : {}),
+        ...(readyToCloseCount !== undefined ? { ready_to_close: readyToCloseCount } : {}),
       },
     });
   } catch (err) {
     logger.error('List jobs error:', err);
     res.status(500).json({ error: 'Failed to list jobs' });
+  }
+}
+
+/**
+ * GET /api/jobs/review-queue - the count behind the Jobs menu entry (S06.31): the jobs in Office review (for a holder of
+ * Office review) and the jobs Ready to close (for a holder of Close jobs) that the signed-in person can open. No switch
+ * guards the route itself: a person who holds neither is answered `{ total: 0 }`, and an answer only names the queues the
+ * person holds.
+ */
+export async function reviewQueue(req: Request, res: Response) {
+  try {
+    const scopeWhere = { ...tenantWhere(req), ...(await scopeWhereForReq(req, 'Job')) } as Prisma.JobWhereInput;
+    res.json(await countReviewQueue(prisma, req.ability, scopeWhere));
+  } catch (err) {
+    logger.error('Job review queue error:', err);
+    res.status(500).json({ error: 'Failed to load the review queue' });
   }
 }
 
@@ -1358,13 +1666,13 @@ const EXPORT_ROW_CAP = 50_000;
  */
 export async function exportAll(req: Request, res: Response) {
   try {
-    const { where } = await buildJobListWhere(req);
-    const jobs = await prisma.job.findMany({
+    const { where, feedCrewUserId } = await buildJobListWhere(req);
+    const jobs = forFeed(await prisma.job.findMany({
       where,
       select: jobListSelect,
       orderBy: { created_at: 'desc' },
       take: EXPORT_ROW_CAP,
-    });
+    }), feedCrewUserId);
     if (jobs.length === EXPORT_ROW_CAP) {
       logger.warn(`Job export hit row cap (${EXPORT_ROW_CAP}) for org ${req.user?.organization_id}`);
     }
@@ -1420,7 +1728,11 @@ type BookedInitialVisit = { visitId: string; scheduledAt: Date; decision: Schedu
 
 async function bookInitialVisitIfScheduled(
   tx: Prisma.TransactionClient,
-  opts: { jobId: string; orgId: string; scheduledStart?: string | null; scheduledEnd?: string | null; isAllDay?: boolean },
+  opts: {
+    jobId: string; orgId: string; scheduledStart?: string | null; scheduledEnd?: string | null; isAllDay?: boolean;
+    /** The crew on visit 1: only ever the creator (S03.17), already checked by prepareCreationVisitCrew. */
+    crewUserIds?: string[];
+  },
 ): Promise<BookedInitialVisit | null> {
   if (!opts.scheduledStart) return null;
   const scheduledAt = new Date(opts.scheduledStart);
@@ -1441,12 +1753,14 @@ async function bookInitialVisitIfScheduled(
     scheduledEnd,
     isAllDay: opts.isAllDay ?? false,
   });
+  const crewUserIds = opts.crewUserIds ?? [];
+  if (crewUserIds.length > 0) await replaceVisitCrew(tx, { visitId: booked.id, orgId: opts.orgId, userIds: crewUserIds });
   const decision = decideScheduleDispatch({
     startBefore: null,
     startAfter: scheduledAt,
     additionalTrip: false,
     scheduledDispatchedAt: null,
-    crewCount: 0,
+    crewCount: crewUserIds.length,
   });
   // The once-per-job guard, written in the SAME transaction as the trip (a rolled-back create
   // leaves it unset) and as its own write, exactly as /visits stamps it. This is what lets the
@@ -1470,8 +1784,9 @@ async function bookInitialVisitIfScheduled(
  * automation layer - and, like everything else after the create's commit (#375), a failure here
  * is logged rather than turned into a 500 for a job that exists.
  *
- * No crew: this door names nobody (the visit it booked has no assignees), so {{technician.*}}
- * renders through the template's fallbacks, exactly as /assign's crewless first booking does.
+ * The crew is whoever the create put on the visit: nobody, or the creator (S03.17). With nobody,
+ * {{technician.*}} renders through the template's fallbacks, exactly as /assign's crewless first
+ * booking does; with the creator it names them, as /visits does for a trip it books with a crew.
  * No notify override either: POST /api/jobs never carried the notify fields, so there is nothing
  * to suppress on.
  */
@@ -1479,6 +1794,7 @@ async function dispatchScheduledOnCreate(
   req: Request,
   job: { id: string; job_number: string; service_location: ServiceLocationParts },
   booked: BookedInitialVisit | null,
+  crew: CrewMember[],
 ): Promise<void> {
   if (!booked || booked.decision.event !== 'JOB_SCHEDULED') return;
   const orgId = req.user!.organization_id;
@@ -1496,25 +1812,227 @@ async function dispatchScheduledOnCreate(
       eventPayload: {
         mergeFields: visitMergeFields(
           { scheduled_at: booked.scheduledAt },
-          [],
+          crew,
           await getOrgTimezone(orgId),
           await visitLocationForOccurrence(req, booked.visitId, job.service_location),
-          // This door dispatches with NO crew (the initial booking names nobody), so
-          // {{technician.phones}} has no mobile to offer and falls through to the organisation's
-          // main line - the same number the email renders under {{org.phone}}, never '' (D7).
-          // Stated rather than defaulted: the parameter is required so each site answers aloud.
           mainLine,
-          // Slice 7: this door dispatches with NO crew (the initial booking names nobody), so
-          // there is no user whose ServWave number could be resolved and this falls through to
-          // the same main line {{technician.phones}} uses. Stated rather than defaulted, because
-          // the parameter is required precisely so each site answers out loud.
-          await resolveServWavePhones(orgId, [], mainLine),
+          // Slice 7: the organisation's own number for the crew on this trip. With nobody on it
+          // (the usual initial booking) there is no user whose ServWave number could be resolved and
+          // this falls through to the same main line {{technician.phones}} uses. Stated rather than
+          // defaulted, because the parameter is required precisely so each site answers out loud.
+          await resolveServWavePhones(orgId, crew.map((u) => u.id), mainLine),
         ),
       },
     });
   } catch (e) {
     logger.error('Post-commit JOB_SCHEDULED dispatch failed (job WAS created):', e);
   }
+}
+
+/**
+ * S03.13 - who a converted job starts with. A lead's Owner and Dispatcher are copied onto it (see
+ * resolveConversionPeople for the rules); a null lead (a customer-only estimate) copies nobody.
+ */
+async function peopleForConversion(
+  req: Request,
+  lead: { commission_owner_id: string | null; dispatcher_id: string | null } | null,
+): Promise<ConversionPeople | null> {
+  if (!lead) return null;
+  return resolveConversionPeople({
+    organizationId: req.user!.organization_id,
+    converterId: req.user!.id,
+    leadOwnerId: lead.commission_owner_id,
+    leadDispatcherId: lead.dispatcher_id,
+  });
+}
+
+/** The two columns a conversion fills; none for a job with no lead. */
+function conversionPeopleData(people: ConversionPeople | null) {
+  if (!people) return {};
+  return {
+    salesperson_id: people.soldBy.person?.id ?? null,
+    dispatcher_id: people.dispatcher.person?.id ?? null,
+  };
+}
+
+/**
+ * S04.21 - converting a lead needs a lead the converter can open (Leads scope), whatever their Jobs scope is.
+ * A lead-less estimate has no lead to open, so a person limited to their own jobs is still refused it, as before.
+ */
+async function mayConvertFromLead(req: Request, leadIds: (string | null)[], limitedToOwnJobs: boolean): Promise<boolean> {
+  for (const leadId of new Set(leadIds)) {
+    if (leadId === null) {
+      if (limitedToOwnJobs) return false;
+      continue;
+    }
+    if (!(await canAccessRow(req, 'Lead', prisma.lead, leadId))) return false;
+  }
+  return true;
+}
+
+/**
+ * S04.21 - the body of a conversion's answer. The new job's people (Sold By, Dispatcher) may not include the
+ * converter - a walkthrough crew member is not carried to the job - so the answer says whether the job opens for
+ * them, asked the way the job page itself asks. The page then stays on the lead instead of walking into a refusal.
+ * A job the converter cannot open comes back as its id and number only.
+ */
+async function convertedJobBody(
+  req: Request,
+  job: { id: string; job_number: string },
+  present: () => Promise<unknown>,
+): Promise<{ job: unknown; job_openable: boolean }> {
+  if (await canAccessRow(req, 'Job', prisma.job, job.id)) return { job: await present(), job_openable: true };
+  return { job: { id: job.id, job_number: job.job_number }, job_openable: false };
+}
+
+/**
+ * S03.16 - who a job made without a lead starts with: the standalone create, a job from a customer-only estimate
+ * and a job made from a call. The creator rule (jobCreatorPrefill) says where the creator lands; only a person with
+ * Assign people to jobs may change it, naming anyone eligible (each newly named person through slot eligibility)
+ * or clearing a field, and a key the request leaves out keeps the rule's result. Anyone else has any people in the
+ * request ignored, so what the form showed is what is saved.
+ */
+interface JobCreationPeople {
+  sold_by_id: string | null;
+  dispatcher_id: string | null;
+  /** Who each slot holds and where they came from, for the job's history. */
+  soldBy: JobCreationPick | null;
+  dispatcher: JobCreationPick | null;
+}
+
+/** The picks for a job's two slots, named for its history. A person the company no longer has reads as "A person". */
+async function creationPicks(
+  req: Request,
+  slots: { soldBy: string | null; dispatcher: string | null },
+  kept: { soldBy: string | null; dispatcher: string | null },
+): Promise<{ soldBy: JobCreationPick | null; dispatcher: JobCreationPick | null }> {
+  const ids = [slots.soldBy, slots.dispatcher].filter((id): id is string => id !== null);
+  const users = ids.length === 0
+    ? []
+    : await prisma.user.findMany({ where: { id: { in: ids }, ...tenantWhere(req) }, select: { id: true, first_name: true, last_name: true } });
+  const pick = (id: string | null, keptId: string | null): JobCreationPick | null => {
+    if (!id) return null;
+    const u = users.find((x) => x.id === id);
+    return { id, name: u ? `${u.first_name} ${u.last_name}` : 'A person', source: id === keptId ? 'creator' : 'picked' };
+  };
+  return { soldBy: pick(slots.soldBy, kept.soldBy), dispatcher: pick(slots.dispatcher, kept.dispatcher) };
+}
+
+async function jobSlotRefusal(req: Request, userId: string, slot: 'owner' | 'dispatcher'): Promise<string | null> {
+  const target = await prisma.user.findUnique({
+    where: { id: userId, ...tenantWhere(req) },
+    select: { id: true, organization_id: true, role: true, based_on_role_key: true, custom_role_id: true, custom_role: { select: { key: true } }, is_active: true },
+  });
+  if (!target) return 'Target user not found';
+  return whyNotSlot(target, slot);
+}
+
+/** The people a job without a lead is saved with, or null after answering 400 for an ineligible pick. */
+async function jobCreationPeople(req: Request, res: Response): Promise<JobCreationPeople | null> {
+  const prefill = await jobCreatorPrefill(req.user!);
+  const mayNamePeople = req.ability?.can('assign', 'Job') === true;
+  const body = req.body as { sold_by_id?: string | null; dispatcher_id?: string | null };
+  const sold_by_id = mayNamePeople && body.sold_by_id !== undefined ? body.sold_by_id : prefill.sold_by_id;
+  const dispatcher_id = mayNamePeople && body.dispatcher_id !== undefined ? body.dispatcher_id : prefill.dispatcher_id;
+
+  if (mayNamePeople) {
+    // The rule's own result is kept as shown, for each slot separately: the form offers the creator as the
+    // pre-filled person even when their switch for that slot is off.
+    const checks = [
+      { id: sold_by_id, kept: prefill.sold_by_id, slot: 'owner' as const },
+      { id: dispatcher_id, kept: prefill.dispatcher_id, slot: 'dispatcher' as const },
+    ];
+    for (const { id, kept, slot } of checks) {
+      if (!id || id === kept) continue;
+      const refusal = await jobSlotRefusal(req, id, slot);
+      if (refusal) {
+        res.status(400).json({ error: refusal });
+        return null;
+      }
+    }
+  }
+  return {
+    sold_by_id: sold_by_id ?? null,
+    dispatcher_id: dispatcher_id ?? null,
+    ...(await creationPicks(
+      req,
+      { soldBy: sold_by_id ?? null, dispatcher: dispatcher_id ?? null },
+      { soldBy: prefill.sold_by_id, dispatcher: prefill.dispatcher_id },
+    )),
+  };
+}
+
+/** The two columns a job without a lead is created with. */
+function creationPeopleData(people: JobCreationPeople) {
+  return { salesperson_id: people.sold_by_id, dispatcher_id: people.dispatcher_id };
+}
+
+// The new-job form's pre-filled Sold By and Dispatcher: the creator rule's answer for the person asking, and
+// whether they can be on visit 1's crew (their own switch, never a role name).
+export async function getCreatorPrefill(req: Request, res: Response) {
+  try {
+    res.json({ prefill: await jobCreatorPrefill(req.user!), can_be_on_crew: await creatorCanBeOnCrew(req.user!) });
+  } catch (err) {
+    logger.error('Get job creator pre-fill error:', err);
+    res.status(500).json({ error: 'Failed to load the pre-filled people' });
+  }
+}
+
+/**
+ * Whether the person who just made a job can open it. A creator on Attached scope who handed every slot to
+ * someone else cannot, and the page must not walk them into the not-authorised screen.
+ */
+async function createdJobOpenable(req: Request, jobId: string): Promise<boolean> {
+  return canAccessRow(req, 'Job', prisma.job, jobId);
+}
+
+const CREATION_VISIT_SELF_ONLY = 'At creation you can only put yourself on the first visit.';
+const CREATION_VISIT_NEEDS_TIME = 'Pick a time for the first visit before putting anyone on it.';
+/** A job id no job has: the new job is not made yet, so it has no booking of its own to leave out of the clash check. */
+const NO_JOB_YET = '00000000-0000-0000-0000-000000000000';
+
+/**
+ * S03.17 - who is put on visit 1 when the create books it. Booking at creation needs only Create jobs (the route
+ * already asked), and putting oneself on the crew needs only Can be on a crew, not Assign people to jobs. Anyone
+ * else is not offered and is refused here, whatever the creator holds: the crew is changed afterwards with the
+ * normal flow. The same crew checks as every other crew door run BEFORE the job exists (slot eligibility through
+ * validateCrew, then the double-book check with the same 409 and `visit_force` override), so a refusal leaves
+ * nothing behind. Returns the crew, or null after answering.
+ */
+async function prepareCreationVisitCrew(req: Request, res: Response): Promise<CrewMember[] | null> {
+  const body = req.body as { visit_assignee_ids?: string[]; scheduled_start?: string; scheduled_end?: string; visit_force?: boolean };
+  const ids = [...new Set(body.visit_assignee_ids ?? [])];
+  if (ids.length === 0) return [];
+  if (ids.some((id) => id !== req.user!.id)) {
+    res.status(403).json({ error: CREATION_VISIT_SELF_ONLY });
+    return null;
+  }
+  // Visit 1 is only booked when the request carries its time; an untimed trip is never invented to hold a crew.
+  if (!body.scheduled_start) {
+    res.status(400).json({ error: CREATION_VISIT_NEEDS_TIME });
+    return null;
+  }
+  const crew = await validateCrew(req, ids);
+  if (!crew.ok) {
+    res.status(crew.status).json({ error: crew.error });
+    return null;
+  }
+  if (!body.visit_force) {
+    const schedStart = new Date(body.scheduled_start);
+    // The end the booking itself falls back to when only a start was given (bookInitialVisitIfScheduled).
+    const org = body.scheduled_end
+      ? null
+      : await prisma.organization.findUnique({ where: { id: req.user!.organization_id }, select: { default_job_duration_min: true } });
+    const schedEnd = body.scheduled_end
+      ? new Date(body.scheduled_end)
+      : new Date(schedStart.getTime() + (org?.default_job_duration_min ?? 120) * 60_000);
+    const conflicts = await detectCrewConflicts(req, { jobId: NO_JOB_YET, userIds: ids, schedStart, schedEnd });
+    if (conflicts.length > 0) {
+      res.status(409).json({ error: 'Schedule conflict detected', conflicts });
+      return null;
+    }
+  }
+  return crew.users;
 }
 
 export async function create(req: Request, res: Response) {
@@ -1556,8 +2074,15 @@ export async function create(req: Request, res: Response) {
     // Scheduling-notifications PRD (user story 1): the trip this create booked, if any, and the
     // shared decision's answer for it - set by whichever branch runs, read post-commit below.
     let bookedVisit: BookedInitialVisit | null = null;
+    // Who visit 1 starts with: nobody, or the creator when the request puts them on it (S03.17).
+    const creationCrew = await prepareCreationVisitCrew(req, res);
+    if (!creationCrew) return;
+    const creationCrewIds = creationCrew.map((u) => u.id);
 
     if (estimateIds.length === 0) {
+      // The standalone create, and a job made from a call: no lead, so the creator rule decides the people (S03.16).
+      const creationPeople = await jobCreationPeople(req, res);
+      if (!creationPeople) return;
       // Fields written onto every standalone job (the estimate branch builds its own).
       // S8 (RATIFIED, A5): scheduled_start/scheduled_end are DROPPED as job columns - the real
       // write is bookInitialVisitIfScheduled below, which books the matching VISIT in the same
@@ -1567,6 +2092,7 @@ export async function create(req: Request, res: Response) {
         job_type: job_type || null,
         estimated_duration: estimated_duration || null,
         ...(scheduled_start ? { status: 'SCHEDULED' as const } : {}),
+        ...creationPeopleData(creationPeople),
         // Audit: both standalone branches (new customer / existing customer) spread this.
         ...createdByUser(req),
       };
@@ -1664,6 +2190,7 @@ export async function create(req: Request, res: Response) {
               created_by: req.user!.id,
             },
           });
+          await recordJobCreationPeople(tx, { organizationId: orgId, job: j, createdBy: req.user!.id, people: creationPeople });
 
           // The trip this create just said it booked - see bookInitialVisitIfScheduled.
           bookedVisit = await bookInitialVisitIfScheduled(tx, {
@@ -1671,14 +2198,15 @@ export async function create(req: Request, res: Response) {
             orgId,
             scheduledStart: scheduled_start,
             scheduledEnd: scheduled_end,
+            crewUserIds: creationCrewIds,
           });
 
           return j;
         }), { label: 'job.create.new_customer' });
 
         void logAudit({ req, action: 'job.created', resourceType: 'Job', resourceId: job.id, metadata: { job_number: job.job_number } });
-        await dispatchScheduledOnCreate(req, job, bookedVisit);
-        res.status(201).json({ job: await safePresentJob(job) });
+        await dispatchScheduledOnCreate(req, job, bookedVisit, creationCrew);
+        res.status(201).json({ job: await safePresentJob(job), job_openable: await createdJobOpenable(req, job.id) });
         return;
       }
 
@@ -1817,6 +2345,7 @@ export async function create(req: Request, res: Response) {
               created_by: req.user!.id,
             },
           });
+          await recordJobCreationPeople(tx, { organizationId: orgId, job: j, createdBy: req.user!.id, people: creationPeople });
 
           // The trip this create just said it booked - see bookInitialVisitIfScheduled.
           bookedVisit = await bookInitialVisitIfScheduled(tx, {
@@ -1824,6 +2353,7 @@ export async function create(req: Request, res: Response) {
             orgId,
             scheduledStart: scheduled_start,
             scheduledEnd: scheduled_end,
+            crewUserIds: creationCrewIds,
           });
 
           return j;
@@ -1837,20 +2367,18 @@ export async function create(req: Request, res: Response) {
       }
 
       // ─── In-app notification hook ───────────────────────────────────────────
-      // Job created directly (no estimate): notify dispatchers.
-      await emit({
+      // Job created directly (no estimate): the job's people, whoever must act and the copies, after the response (S06.27).
+      queueJobSchedulingAlert({
         verb: 'dispatch.job_created',
         organizationId: req.user!.organization_id,
         actorId: req.user?.id ?? null,
-        object: { type: 'JOB', id: job.id, label: job.job_number },
-        entity: { assignee_ids: [] },
-        data: { object_label: job.job_number },
+        jobId: job.id,
       });
 
       // Phase B (§E) — a row-scoped creator (e.g. a technician creating an urgent standalone job,
       // #232) who lacks read Invoice shouldn't get pricing echoed back; no-op for invoice readers.
       void logAudit({ req, action: 'job.created', resourceType: 'Job', resourceId: job.id, metadata: { job_number: job.job_number } });
-      await dispatchScheduledOnCreate(req, job, bookedVisit);
+      await dispatchScheduledOnCreate(req, job, bookedVisit, creationCrew);
       // #2041 decision 8 — redact the response through the same contact strip evaluated AFTER
       // the write, for a requester who is still not associated with the linked customer. Findings
       // 1/6: the job's OWN `service_location` (jobDetailSelect) is the SAME customer's street
@@ -1866,6 +2394,7 @@ export async function create(req: Request, res: Response) {
             customer: redactCustomerRowUnless(presentedJob.customer, customerReadable),
             service_location: redactServiceLocationRowUnless(presentedJob.service_location, customerReadable),
           },
+          job_openable: await createdJobOpenable(req, job.id),
         });
       }
     } else if (estimateIds.length === 1) {
@@ -1874,10 +2403,8 @@ export async function create(req: Request, res: Response) {
       // is the one selected id, whether the request used `estimate_id:X` or `estimate_ids:[X]`.
       const estimate_id = estimateIds[0];
       // Standard flow: validate estimate exists in requesting org. The route guard
-      // `canDo('create','Job')` already gated entry; ownership is narrowed below (Phase B —
-      // replaces the old blanket `role === 'TECHNICIAN'` 403, which a per-user grant couldn't
-      // override). lead_assignees is loaded so a row-scoped creator can be checked against the
-      // parent lead's ownership.
+      // `canDo('create','Job')` already gated entry; the converter's access to the lead is checked below
+      // (S04.21), by the Leads scope, never by a role name.
       const estimate = await prisma.estimate.findUnique({
         where: { id: estimate_id, ...tenantWhere(req) },
         select: {
@@ -1915,7 +2442,9 @@ export async function create(req: Request, res: Response) {
               service_address_line1: true,
               job_type: true,
               customer: { select: { id: true } },
-              lead_assignees: { select: { user_id: true } },
+              // The people conversion copies onto the job (see resolveConversionPeople).
+              commission_owner_id: true,
+              dispatcher_id: true,
             },
           },
           // SERV10X-38 Task 6b — loaded so the estimate's line items can be copied onto the
@@ -1951,9 +2480,9 @@ export async function create(req: Request, res: Response) {
         return;
       }
 
-      // Phase B — a row-scoped creator may only create a job from an estimate on a lead they OWN
-      // (parent-ownership; the SALES create-estimate precedent). Unconditional creators skip this.
-      if (isRowScopedCreator && !(estimate.lead?.lead_assignees?.some((a) => a.user_id === req.user!.id) ?? false)) {
+      // S04.21 - the converter must be able to open the lead (Leads scope); a lead-less estimate is refused to a
+      // person limited to their own jobs.
+      if (!(await mayConvertFromLead(req, [estimate.lead_id], isRowScopedCreator))) {
         res.status(403).json({ error: 'Insufficient permissions' });
         return;
       }
@@ -2040,9 +2569,15 @@ export async function create(req: Request, res: Response) {
         select: jobDetailSelect,
       });
       if (existingJob) {
-        res.status(200).json({ job: await safePresentJob(existingJob) });
+        res.status(200).json(await convertedJobBody(req, existingJob, () => safePresentJob(existingJob)));
         return;
       }
+
+      // Sold By and Dispatcher are copies of the lead's Owner and Dispatcher, taken now (S03.13). A job from a
+      // customer-only estimate has no lead to copy from, so it is a job without a lead: the creator rule decides (S03.16).
+      const conversionPeople = await peopleForConversion(req, estimate.lead_id ? estimate.lead : null);
+      const creationPeople = estimate.lead_id ? null : await jobCreationPeople(req, res);
+      if (!estimate.lead_id && !creationPeople) return;
 
       try {
         const job = await withNumberCollisionRetry(() => prisma.$transaction(async (tx) => {
@@ -2056,6 +2591,8 @@ export async function create(req: Request, res: Response) {
               // Direct lead provenance (see Job.lead_id). Mirrors estimate.lead_id at
               // conversion so job->lead never has to be re-derived through the estimate.
               lead_id: estimate.lead_id ?? null,
+              ...conversionPeopleData(conversionPeople),
+              ...(creationPeople ? creationPeopleData(creationPeople) : {}),
               customer_id: customerId,
               service_location_id: locationId,
               scope_notes: scope_notes || null,
@@ -2143,6 +2680,19 @@ export async function create(req: Request, res: Response) {
               created_by: req.user!.id,
             },
           });
+          if (estimate.lead_id && conversionPeople) {
+            await recordConversionPeople(tx, {
+              organizationId: req.user!.organization_id, jobId: j.id, jobNumber: j.job_number, leadId: estimate.lead_id,
+              convertedBy: req.user!.id, people: conversionPeople,
+            });
+          }
+          // The lead's own phones, emails, name and company go with it (S05.15): a copy, not the converter's edit.
+          if (estimate.lead_id) {
+            await carryLeadEntriesToJob(tx, { orgId: req.user!.organization_id, leadId: estimate.lead_id, jobId: j.id });
+          }
+          if (creationPeople) {
+            await recordJobCreationPeople(tx, { organizationId: req.user!.organization_id, job: j, createdBy: req.user!.id, people: creationPeople });
+          }
 
           // The trip this create just said it booked - see bookInitialVisitIfScheduled.
           bookedVisit = await bookInitialVisitIfScheduled(tx, {
@@ -2150,6 +2700,7 @@ export async function create(req: Request, res: Response) {
             orgId: req.user!.organization_id,
             scheduledStart: scheduled_start,
             scheduledEnd: scheduled_end,
+            crewUserIds: creationCrewIds,
           });
 
           return j;
@@ -2193,8 +2744,8 @@ export async function create(req: Request, res: Response) {
         // Phase B (§E) — a row-scoped creator who lacks read Invoice shouldn't see estimate/invoice
         // pricing on the job they just made; no-op for invoice-capable creators.
         void logAudit({ req, action: 'job.created', resourceType: 'Job', resourceId: job.id, metadata: { job_number: job.job_number } });
-        await dispatchScheduledOnCreate(req, job, bookedVisit);
-        res.status(201).json({ job: await safePresentJob(job) });
+        await dispatchScheduledOnCreate(req, job, bookedVisit, creationCrew);
+        res.status(201).json(await convertedJobBody(req, job, () => safePresentJob(job)));
       } catch (err: unknown) {
         if ((err as { code?: string }).code === 'P2002') {
           // Race fallback (Bug #23): a concurrent create won the @unique estimate_id. Re-query
@@ -2204,7 +2755,7 @@ export async function create(req: Request, res: Response) {
             select: jobDetailSelect,
           });
           if (racedJob) {
-            res.status(200).json({ job: await safePresentJob(racedJob) });
+            res.status(200).json(await convertedJobBody(req, racedJob, () => safePresentJob(racedJob)));
             return;
           }
         }
@@ -2249,7 +2800,9 @@ export async function create(req: Request, res: Response) {
               service_address_line1: true,
               job_type: true,
               customer: { select: { id: true } },
-              lead_assignees: { select: { user_id: true } },
+              // The people conversion copies onto the job (see resolveConversionPeople).
+              commission_owner_id: true,
+              dispatcher_id: true,
             },
           },
           line_items: {
@@ -2284,9 +2837,9 @@ export async function create(req: Request, res: Response) {
         return;
       }
 
-      // 2. Row-scope (Phase B) - a row-scoped creator may only convert estimates on leads they OWN,
-      //    and here that must hold for EVERY selected estimate (generalizes the single branch's gate).
-      if (isRowScopedCreator && !estimates.every((e) => e.lead?.lead_assignees?.some((a) => a.user_id === req.user!.id) ?? false)) {
+      // 2. Lead access (S04.21) - the converter must be able to open the lead, and here that must hold for
+      //    EVERY selected estimate (generalizes the single branch's gate).
+      if (!(await mayConvertFromLead(req, estimates.map((e) => e.lead_id), isRowScopedCreator))) {
         res.status(403).json({ error: 'Insufficient permissions' });
         return;
       }
@@ -2372,6 +2925,12 @@ export async function create(req: Request, res: Response) {
         return;
       }
 
+      // Sold By and Dispatcher are copies of the shared lead's Owner and Dispatcher, taken now (S03.13).
+      const conversionPeople = await peopleForConversion(req, estimates[0].lead_id ? estimates[0].lead : null);
+      // Customer-only estimates have no lead: the job is one without a lead and the creator rule decides (S03.16).
+      const creationPeople = estimates[0].lead_id ? null : await jobCreationPeople(req, res);
+      if (!estimates[0].lead_id && !creationPeople) return;
+
       const job = await withNumberCollisionRetry(() => prisma.$transaction(async (tx) => {
         const jobNumber = await allocateNumber(tx, 'job', req.user!.organization_id);
 
@@ -2386,6 +2945,8 @@ export async function create(req: Request, res: Response) {
             // estimates[0].lead_id IS the whole set's lead. This is the case estimate_id
             // cannot express — a multi-estimate job has no provenance FK at all.
             lead_id: estimates[0].lead_id ?? null,
+            ...conversionPeopleData(conversionPeople),
+            ...(creationPeople ? creationPeopleData(creationPeople) : {}),
             customer_id: customerId,
             service_location_id: locationId,
             scope_notes: scope_notes || null,
@@ -2476,6 +3037,19 @@ export async function create(req: Request, res: Response) {
             created_by: req.user!.id,
           },
         });
+        if (estimates[0].lead_id && conversionPeople) {
+          await recordConversionPeople(tx, {
+            organizationId: req.user!.organization_id, jobId: j.id, jobNumber: j.job_number, leadId: estimates[0].lead_id,
+            convertedBy: req.user!.id, people: conversionPeople,
+          });
+        }
+        // The lead's own phones, emails, name and company go with it (S05.15): a copy, not the converter's edit.
+        if (estimates[0].lead_id) {
+          await carryLeadEntriesToJob(tx, { orgId: req.user!.organization_id, leadId: estimates[0].lead_id, jobId: j.id });
+        }
+        if (creationPeople) {
+          await recordJobCreationPeople(tx, { organizationId: req.user!.organization_id, job: j, createdBy: req.user!.id, people: creationPeople });
+        }
 
         // The trip this create just said it booked - see bookInitialVisitIfScheduled.
         bookedVisit = await bookInitialVisitIfScheduled(tx, {
@@ -2483,6 +3057,7 @@ export async function create(req: Request, res: Response) {
           orgId: req.user!.organization_id,
           scheduledStart: scheduled_start,
           scheduledEnd: scheduled_end,
+          crewUserIds: creationCrewIds,
         });
 
         return j;
@@ -2511,8 +3086,8 @@ export async function create(req: Request, res: Response) {
       }
 
       void logAudit({ req, action: 'job.created', resourceType: 'Job', resourceId: job.id, metadata: { job_number: job.job_number } });
-      await dispatchScheduledOnCreate(req, job, bookedVisit);
-      res.status(201).json({ job: await safePresentJob(job) });
+      await dispatchScheduledOnCreate(req, job, bookedVisit, creationCrew);
+      res.status(201).json(await convertedJobBody(req, job, () => safePresentJob(job)));
     }
   } catch (err) {
     if (err instanceof EstimateAttachRaceError) {
@@ -2563,50 +3138,25 @@ export async function getById(req: Request, res: Response) {
 }
 
 /**
- * D13 (Spec A) — pricing strip for GET /api/jobs/:id/financials.
+ * Money on the job for GET /api/jobs/:id/financials (Roles & Permissions, PRD 4, S04.26).
  *
- * The route is gated `read Job` only, and JobDetailPage fetches it on mount, so admitting a
- * technician to the main app without this hands them the job's full money picture. Strips the
- * KEYS rather than nulling them, matching stripJobPricingForRequester's convention.
- *
- * DELIBERATELY NOT a 403: the lifecycle bar reads final_invoice.sent_at / paid_at from this
- * payload (Spec B2's Invoice Sent and Payment Received nodes), so a price-blind requester must
- * still get a well-formed answer — one without money in it. Line description and quantity also
- * survive: a technician needs to know WHAT is on the job, just not what it costs.
+ * The job's own figures - the final invoice's total and balance, total_invoiced, total_paid and `totals` - show to
+ * anyone who can open the job: they are the job's prices and balance, and prices follow the record (S01.15). What
+ * follows invoice access is the LIST: `invoices` and the `payments` on them hold only the invoices the person can
+ * open (their View invoices scope's rows plus the ones they made while attached to the job), so a person with View
+ * invoices off sees the invoices they made on their job and none of the office's. Nothing is nulled and the answer is
+ * never a 403: the lifecycle bar (Invoice Sent, Payment Received) reads final_invoice.sent_at / paid_at and needs a
+ * well-formed answer whoever asks.
  *
  * Exported for unit test only.
  */
-export function stripFinancialsForRequester<T extends Record<string, unknown>>(payload: T, req: Request): T {
-  if (canSeePricing(req)) return payload;
-
-  const finalInvoice = payload.final_invoice as Record<string, unknown> | null | undefined;
-  const invoices = payload.invoices as Array<Record<string, unknown>> | undefined;
-
+export function limitFinancialsToInvoices<T extends Record<string, unknown>>(payload: T, openable: ReadonlySet<string>): T {
+  const invoices = payload.invoices as Array<{ id: string }> | undefined;
+  const payments = payload.payments as Array<{ invoice_id: string }> | undefined;
   return {
     ...payload,
-    final_invoice: finalInvoice
-      ? (({ total_amount: _t, amount_due: _d, ...rest }) => rest)(finalInvoice)
-      : finalInvoice,
-    invoices: (invoices ?? []).map(
-      ({
-        total_amount: _t, amount_due: _d, tip: _tip, tax_rate: _tr, tax_amount: _ta,
-        discount_amount: _da, subtotal: _s, line_items, ...invRest
-      }) => ({
-        ...invRest,
-        line_items: ((line_items as Array<Record<string, unknown>>) ?? []).map(
-          ({
-            unit_price: _u, line_total: _l, discount_type: _dt,
-            discount_value: _dv, discount_amount: _lda, ...liRest
-          }) => liRest,
-        ),
-      }),
-    ),
-    // Every field on a payment is about money. Return an empty array rather than omitting the
-    // key so existing consumers keep mapping over an array.
-    payments: [],
-    // Money. `first_sent_at` is a date, not an amount, and the lifecycle bar needs it — it stays.
-    total_invoiced: undefined,
-    total_paid: undefined,
+    invoices: (invoices ?? []).filter((i) => openable.has(i.id)),
+    payments: (payments ?? []).filter((p) => openable.has(p.invoice_id)),
   } as unknown as T;
 }
 
@@ -2622,7 +3172,14 @@ export async function getFinancials(req: Request, res: Response) {
       // createInvoiceFromJob is already capable of drawing a deposit credit from
       // (job.controller.ts depositEstimateIds); surface those DEPOSIT invoices here too so the
       // credit is visible on the job before it is spent.
-      select: { estimate_id: true, linked_estimates: { select: { id: true } } },
+      select: {
+        estimate_id: true,
+        // A service plan's visit is not invoiced from the Payment Received step (the plan was paid upfront).
+        source_plan_id: true,
+        // The contract the job's balance is measured against when it has no invoice yet (see jobMoneyTotals).
+        estimate: { select: { total_amount: true } },
+        linked_estimates: { select: { id: true, status: true, total_amount: true } },
+      },
     });
     if (!job) { res.status(404).json({ error: 'Job not found' }); return; }
     // GAP-1 — per-instance gate via the grant/override-aware canAccessRow (replaces the old
@@ -2670,6 +3227,8 @@ export async function getFinancials(req: Request, res: Response) {
           where: { voided_at: null },
           select: {
             id: true, amount: true, method: true, paid_at: true, voided_at: true, reference_number: true,
+            // Payments go-live slice 05: the Payments tab counts SUCCEEDED payments only.
+            state: true,
             // Task 3.4 (spec §7.3) — per-payment fee breakdown for the job PaymentsTab; null
             // until Stripe reconciliation lands (Task 3.3) or for non-CARD payments.
             stripe_fee_amount: true, platform_fee_amount: true, net_amount: true,
@@ -2677,6 +3236,8 @@ export async function getFinancials(req: Request, res: Response) {
             // reads Stripe's charge.amount) while `amount` is face only, so the breakdown needs
             // both additive terms or it renders a Net larger than its own Gross.
             service_fee_amount: true, tip_amount: true,
+            // Payments go-live slice 28: how the customer paid, for the Method column.
+            wallet: true, card_brand: true, card_last4: true, bank_name: true, bank_last4: true,
           },
           orderBy: { paid_at: 'asc' as const },
         },
@@ -2727,28 +3288,49 @@ export async function getFinancials(req: Request, res: Response) {
       inv.payments.map((p) => ({
         id: p.id, invoice_id: inv.id, invoice_number: inv.invoice_number, invoice_kind: inv.kind,
         amount: p.amount, method: p.method, paid_at: p.paid_at, voided_at: p.voided_at, reference_number: p.reference_number,
+        state: p.state,
         // Task 3.4 — carry the reconciled fee breakdown through (null for cash/check/legacy or
         // not-yet-reconciled CARD payments; PaymentsTab renders nothing in that case).
         stripe_fee_amount: p.stripe_fee_amount, platform_fee_amount: p.platform_fee_amount, net_amount: p.net_amount,
         service_fee_amount: p.service_fee_amount, tip_amount: p.tip_amount,
+        wallet: p.wallet, card_brand: p.card_brand, card_last4: p.card_last4, bank_name: publicBankName(p.bank_name), bank_last4: p.bank_last4,
       })),
     );
 
-    res.json(stripFinancialsForRequester({
+    // The balance block's figures, worked out over every invoice so the person's list does not move them. The one rule for
+    // what the job owes (lib/job-money-totals), the same figure Mark Done, the banner and the review panel read.
+    const totals = await jobMoneyTotals({
+      invoices,
+      estimateTotal: job.estimate?.total_amount ?? null,
+      attachedEstimates: (job.linked_estimates ?? []).filter((e) => e.id !== job.estimate_id),
+      ownTotal: () => readJobOwnTotal({ orgId: req.user!.organization_id, jobId: id }),
+      billedUpfront: !!job.source_plan_id,
+    });
+    const openable = await openableInvoiceIds(req, invoices.map((i) => i.id));
+    // What the Payment Received step offers this person (S06.22): the server's answer, so the browser tests no switch.
+    const payment_received = await paymentReceivedStepFor(req, {
+      finalInvoiceId: finalInvoice?.id ?? null, openable, servicePlanJob: !!job.source_plan_id,
+    });
+    res.json(limitFinancialsToInvoices({
+      payment_received,
+      // The job's own figures (this and the aggregates below) cover every invoice on the job; the lists limit themselves.
       final_invoice: finalInvoice && {
         id: finalInvoice.id, invoice_number: finalInvoice.invoice_number, status: finalInvoice.status,
         total_amount: finalInvoice.total_amount, amount_due: finalInvoice.amount_due,
         sent_at: finalInvoice.sent_at, paid_at: finalInvoice.paid_at,
       },
-      // `credits` is dropped alongside payments/voided_at: it is an input to total_paid above,
-      // not a payload field. stripFinancialsForRequester removes money from invoices[] by NAME,
-      // so leaving it in would leak credit amounts to a price-blind requester (SRVW-84).
-      invoices: invoices.map(({ payments, voided_at, credits, ...rest }) => rest),
+      // `credits` is dropped alongside payments/voided_at: it is an input to total_paid above, not a payload field.
+      invoices: invoices.map(({ payments, voided_at, credits, ...rest }) => ({
+        ...rest,
+        // Slice 28 D1: bank money still clearing (not part of total_paid, which only counts received money).
+        processing_amount: fromCents(paidCents(payments.filter((p) => p.state === 'PROCESSING'))),
+      })),
       payments,
       first_sent_at: firstSentAt,
       total_invoiced: totalInvoiced,
       total_paid: totalPaid,
-    }, req));
+      totals,
+    }, openable));
   } catch (err) {
     logger.error('Get job financials error:', err);
     res.status(500).json({ error: 'Failed to get job financials' });
@@ -2845,8 +3427,10 @@ export async function update(req: Request, res: Response) {
         customer: { select: { tax_exempt: true } },
         job_line_items: { select: { quantity: true, unit_price: true, is_taxable: true } },
         scopes: true,
+        tax_rate: true,
         discount_type: true,
         discount_value: true,
+        discount_amount: true,
         // SRVW-114 slice 1 - the pre-edit bag a custom_fields patch merges onto.
         custom_fields: true,
       },
@@ -2900,7 +3484,7 @@ export async function update(req: Request, res: Response) {
     // The list is DERIVED from updateJobSchema by exclusion (see MANAGE_LINES_FIELDS above) rather
     // than hand-written. A hand-written list is what failed review: `labor_hours`, `overhead_mode`
     // and `overhead_value` - the job COST MODEL, the margin side of the very surface the spec says
-    // follows creation - were omitted, and their only other guard was canSeePricing, which had been
+    // follows creation - were omitted, and their only other guard was canSeeCosts, which had been
     // fail-closed for technicians purely because the role held no `read Pricing`. This PR grants it,
     // so an assigned non-creator could have set the job's labour and overhead.
     const body = req.body as Record<string, unknown>;
@@ -2911,6 +3495,23 @@ export async function update(req: Request, res: Response) {
       res.status(403).json({ error: 'You do not have permission to edit this job\'s pricing' });
       return;
     }
+
+    // A Done job takes no discount or tax change from anyone, Change locked jobs included (S06.19). Judged against what is
+    // stored, like the discount check below, so a form that sends the unchanged figures back along with a detail edit is not
+    // refused; the route's guard has already answered a body that is nothing but a discount.
+    if (
+      existing.status === 'DONE' &&
+      (changesDiscount(req.body as DiscountFields, existing) ||
+        (body.tax_rate !== undefined && Number(body.tax_rate) !== Number(existing.tax_rate))) &&
+      (await jobDonePriceRefusal(req, existing.id, existing.status))
+    ) {
+      respondJobDonePrices(res);
+      return;
+    }
+
+    // A discount on the job is a pricing write that also needs Apply discounts (S04.14). Judged against what is
+    // stored, so a form that sends the job's unchanged discount back along with another edit is not refused.
+    if (refusedForDiscount(req, res, 'Job', changesDiscount(req.body as DiscountFields, existing))) return;
 
     // customer_id is intentionally NOT in updateJobSchema — re-pointing the customer is a
     // cancel + create, not an edit. address/service_location_id drive the §10 location re-point.
@@ -2938,14 +3539,13 @@ export async function update(req: Request, res: Response) {
     // (ability-based) authorization checks, not the job's current status.
 
     // R3b (2026-07-21) — labor_hours/overhead_mode/overhead_value are staff-only cost-model
-    // inputs (D2/D8). A requester who can't see pricing (canSeePricing gates read Invoice) must
-    // not be able to blindly set them either — mirrors the read-side strip in
-    // stripJobPricingForRequester and Estimate's identical guard in estimate.controller.ts.
-    // E1/E2 (job-owns-tax-discount) - tax_rate/discount_* are money edits too, same gate.
+    // inputs (D2/D8). A requester without See financial data (canSeeCosts) must not be able to
+    // blindly set them either — mirrors the read-side strip in stripJobCostForRequester and
+    // Estimate's identical guard in estimate.controller.ts. tax_rate and the discount are PRICES
+    // (S01.15): they follow Edit jobs, not this switch.
     if (
-      (labor_hours !== undefined || overhead_mode !== undefined || overhead_value !== undefined
-        || tax_rate !== undefined || discount_type !== undefined || discount_value !== undefined)
-      && !canSeePricing(req)
+      (labor_hours !== undefined || overhead_mode !== undefined || overhead_value !== undefined)
+      && !canSeeCosts(req)
     ) {
       res.status(403).json({ error: 'Insufficient permissions to edit cost fields' });
       return;
@@ -3022,6 +3622,15 @@ export async function update(req: Request, res: Response) {
       }
     }
 
+    // S04.23: the PATCH below lands a stated start on the next live trip and mints one when there is none. A
+    // locked job (Completed or later, or Cancelled) takes no new trip from anyone (a Change locked jobs holder
+    // included), so it is refused here, before anything is written, rather than leaving the closed status with a
+    // stray visit.
+    if (startTouched && nextStart && (await windowWouldMintVisitOnClosedJob(req, existing))) {
+      respondNewVisitClosed(res, existing.status);
+      return;
+    }
+
     const wantsLocationChange = Boolean(service_location_id) || Boolean(address);
     let taxWarning: ReturnType<typeof buildLocationTaxWarning> = null;
 
@@ -3093,6 +3702,18 @@ export async function update(req: Request, res: Response) {
           select: jobDetailSelect,
         });
 
+        // S06.5: a discount that actually moved goes on the job's history with the old and the new
+        // values, in the same transaction as the edit.
+        if (discountUpdate) {
+          await recordJobDiscountChange(
+            tx,
+            { orgId: req.user!.organization_id, userId: req.user!.id },
+            existing.id,
+            jobDiscountSnapshot(existing),
+            jobDiscountSnapshot(discountUpdate),
+          );
+        }
+
         if (resolvedLocationId) {
           await tx.timelineEvent.create({
             data: {
@@ -3128,6 +3749,20 @@ export async function update(req: Request, res: Response) {
       // per-user without read Invoice); no-op for invoice readers.
       const presented = await presentJobDetail(req, job);
       void logAudit({ req, action: 'job.updated', resourceType: 'Job', resourceId: existing.id, metadata: { fields: Object.keys(req.body) } });
+      // A start that actually moved the job's date raises Job rescheduled, as the assign door does (left for after the response).
+      if (startTouched && nextStart && !sameScheduleMinute(currentWindow.scheduled_start, nextStart)) {
+        queueJobSchedulingAlert({
+          verb: 'dispatch.job_rescheduled',
+          organizationId: req.user!.organization_id,
+          actorId: req.user?.id ?? null,
+          jobId: existing.id,
+          scheduledStart: nextStart.toISOString(),
+        });
+      }
+      // S06.24: a detail change on a Done job (only a Change locked jobs holder gets through) raises the Office review attention alert.
+      if (existing.status === 'DONE') {
+        queueReviewAttention({ orgId: req.user!.organization_id, actorId: req.user!.id, jobId: existing.id, onlyIfDone: true, items: [{ reason: 'The job details were changed', title: 'Job details' }] });
+      }
       res.json({ job: presented, ...(taxWarning ? { tax_warning: taxWarning } : {}) });
     } catch (err) {
       if (err instanceof LocationResolutionError) {
@@ -3532,6 +4167,27 @@ export async function assign(req: Request, res: Response) {
       return;
     }
 
+    // S06.17/S06.18 (M7): a window that moves a job sets it Scheduled and clears its stamps - the calendar drag, the reschedule
+    // from the job and the status door to Scheduled all land here. A Done or Cancelled job leaves only through Reopen; a job in
+    // Office review or Ready to close is moved back by someone who holds Complete jobs as well (the backward move, which the
+    // lock does not bind). Refused before any write. A crew-only assign (no window that moves) never touches the status and
+    // stays under the lock alone.
+    const statusDoorStated = (res.locals as { statusDoorTarget?: JobStatus } | undefined)?.statusDoorTarget === 'SCHEDULED';
+    const doorVerdict = windowMoved || statusDoorStated ? await statusDoorVerdict(req, id, 'schedule', existing.status) : null;
+    if (doorVerdict?.reason) {
+      respondStatusDoorClosed(res, doorVerdict.reason);
+      return;
+    }
+    const backwardMove = doorVerdict?.backward === true;
+
+    // S04.23: booking a window on a locked job with no live trip would mint one (and flip the job to SCHEDULED), so the
+    // closed job refuses it before anything is written; Reopen it (or move it back out of review) first. A backward move out
+    // of review is that move back: the job leaves the locked statuses in the same write, so the window may book its trip.
+    if (windowMoved && newStart && !backwardMove && (await windowWouldMintVisitOnClosedJob(req, existing))) {
+      respondNewVisitClosed(res, existing.status);
+      return;
+    }
+
     // Eligibility, and since slice 2 the assignee pool. The third argument is the crew this
     // request would be replacing - the job-level union across its trips, the same set the
     // `currentIds` diff below reads - so restating the crew the Assign dialog was already showing
@@ -3592,7 +4248,7 @@ export async function assign(req: Request, res: Response) {
     // SRVW-112 - hoisted to ONE const so the status write and subStatusClears below cannot drift
     // apart: an assign that moves nothing keeps existing.status and must therefore leave a
     // still-valid sub-status alone.
-    const nextStatus: JobStatus = windowMoved ? 'SCHEDULED' : existing.status;
+    const nextStatus: JobStatus = windowMoved || backwardMove ? 'SCHEDULED' : existing.status;
     // A job already sitting on the calendar is MOVING; anything else is being booked.
     // Deliberately NOT coupled to status. Job status is UNORDERED (Spec B1), so a job
     // can hold a scheduled time while sitting at EN_ROUTE / ON_SITE / IN_PROGRESS /
@@ -3636,6 +4292,8 @@ export async function assign(req: Request, res: Response) {
     let touchedVisitId: string | null = null;
 
     const job = await prisma.$transaction(async (tx) => {
+      // S06.18: a backward move takes the job's row first and checks the job is still where this door read it.
+      const moved = backwardMove ? await lockForBackwardMove(tx, { orgId: req.user!.organization_id, jobId: id, from: existing.status }) : null;
       // S8 (RATIFIED, A5): this handler used to ALSO write the job's three schedule columns
       // directly as a CACHE of the visit it books/moves below - that mirror is DROPPED. The
       // visit write below is now the only write; the response's `scheduled_start`/`scheduled_end`/
@@ -3713,7 +4371,7 @@ export async function assign(req: Request, res: Response) {
           // was therefore only as strong as the client's willingness to omit the field. It is now
           // ENFORCED, against the stored window, by `windowMoved` - the body may restate the
           // schedule as often as it likes.
-          ...(windowMoved ? milestoneClears('scheduled') : {}),
+          ...(windowMoved || backwardMove ? milestoneClears('scheduled') : {}),
         },
         select: jobDetailSelect,
       });
@@ -3755,7 +4413,8 @@ export async function assign(req: Request, res: Response) {
         });
       }
 
-      if (newStart && timeChanged) {
+      // A backward move writes its ONE history entry below instead of the reschedule's own.
+      if (newStart && timeChanged && !backwardMove) {
         await tx.timelineEvent.create({
           data: {
             organization_id: req.user!.organization_id,
@@ -3771,55 +4430,60 @@ export async function assign(req: Request, res: Response) {
         });
       }
 
+      if (moved) {
+        await recordBackwardMove(tx, {
+          orgId: req.user!.organization_id,
+          jobId: id,
+          jobNumber: moved.job_number,
+          actorId: req.user!.id,
+          from: existing.status,
+          to: 'SCHEDULED',
+          door: 'schedule',
+          detail: newStart ? { from_start: currentWindow.scheduled_start?.toISOString() ?? null, to_start: newStart.toISOString() } : undefined,
+        });
+      }
+
       return updated;
     });
 
     // #1626: gated on `windowMoved`, in step with the milestoneClears spread above - this exists
     // to undo a completion the write just erased, so it must fire on exactly the same condition.
-    if (windowMoved && clearsCompletion('scheduled')) {
+    if ((windowMoved || backwardMove) && clearsCompletion('scheduled')) {
       await revertPlanVisitOnUncomplete(req, id, existing.source_plan_id);
     }
 
     // ─── In-app notification hooks — POST-COMMIT (must NOT run inside the txn; #271) ──
-    // Best-effort: emit() never throws.
+    // Best-effort, and left for after the response (S06.27): the request gains no statement. Job assigned and Job rescheduled
+    // walk M6's two-lane chain; Unassigned from you is personal.
+    const noticeStart = (newStart ?? currentWindow.scheduled_start)?.toISOString() ?? null;
     if (crewDelta.added.length > 0) {
-      await emit({
+      queueJobSchedulingAlert({
         verb: 'dispatch.job_assigned',
         organizationId: req.user!.organization_id,
         actorId: req.user?.id ?? null,
-        object: { type: 'JOB', id, label: existing.job_number },
-        entity: { assignee_ids: crewDelta.added },
-        data: {
-          object_label: existing.job_number,
-          scheduled_start: (newStart ?? currentWindow.scheduled_start)?.toISOString() ?? null,
-        },
+        jobId: id,
+        namedIds: crewDelta.added,
+        scheduledStart: noticeStart,
       });
     }
     if (crewDelta.removed.length > 0) {
-      await emit({
-        verb: 'dispatch.job_unassigned',
+      queueJobUnassignedAlert({
         organizationId: req.user!.organization_id,
         actorId: req.user?.id ?? null,
-        object: { type: 'JOB', id, label: existing.job_number },
-        entity: { assignee_ids: crewDelta.removed },
-        data: {
-          object_label: existing.job_number,
-          scheduled_start: (newStart ?? currentWindow.scheduled_start)?.toISOString() ?? null,
-        },
+        jobId: id,
+        jobNumber: existing.job_number,
+        removedIds: crewDelta.removed,
+        scheduledStart: noticeStart,
       });
     }
     if (timeChanged && crewDelta.added.length === 0) {
-      // Reschedule with no crew change: notify all kept/current assignees.
-      await emit({
+      // Reschedule with no crew change: tell the job's people (its crew is interrupted).
+      queueJobSchedulingAlert({
         verb: 'dispatch.job_rescheduled',
         organizationId: req.user!.organization_id,
         actorId: req.user?.id ?? null,
-        object: { type: 'JOB', id, label: existing.job_number },
-        entity: { assignee_ids: keptIds },
-        data: {
-          object_label: existing.job_number,
-          scheduled_start: (newStart ?? currentWindow.scheduled_start)?.toISOString() ?? null,
-        },
+        jobId: id,
+        scheduledStart: noticeStart,
       });
     }
 
@@ -3956,6 +4620,10 @@ export async function assign(req: Request, res: Response) {
     // client can say it, rather than a silent no-op or an opaque 500.
     if (err instanceof NoVisitForCrewError) {
       res.status(400).json({ error: err.message });
+      return;
+    }
+    if (err instanceof BackwardMoveRaced) {
+      respondStatusDoorClosed(res, err.message);
       return;
     }
     logger.error('Assign job error:', err);
@@ -4136,49 +4804,41 @@ export async function setAssignees(req: Request, res: Response) {
         : null;
 
     // ─── In-app notification hooks — POST-COMMIT (must NOT run inside the txn; #271) ──
-    // #361: notify.in_app:false suppresses ONLY the added-crew emit; removal stays unconditional.
+    // #361: notify.in_app:false suppresses ONLY the added-crew alert; removal stays unconditional. Left for after the response
+    // (S06.27): the request gains no statement. Job assigned walks M6's two-lane chain; Unassigned from you is personal.
     if (crewDelta.added.length > 0 && notify?.in_app !== false) {
-      await emit({
+      queueJobSchedulingAlert({
         verb: 'dispatch.job_assigned',
         organizationId: req.user!.organization_id,
         actorId: req.user?.id ?? null,
-        object: { type: 'JOB', id, label: existing.job_number },
-        entity: { assignee_ids: crewDelta.added },
-        data: {
-          object_label: existing.job_number,
-          scheduled_start: noticeStart?.toISOString() ?? null,
-        },
+        jobId: id,
+        namedIds: crewDelta.added,
+        scheduledStart: noticeStart?.toISOString() ?? null,
       });
     }
     if (removedFromJob.length > 0) {
-      await emit({
-        verb: 'dispatch.job_unassigned',
+      queueJobUnassignedAlert({
         organizationId: req.user!.organization_id,
         actorId: req.user?.id ?? null,
-        object: { type: 'JOB', id, label: existing.job_number },
-        entity: { assignee_ids: removedFromJob },
-        data: {
-          object_label: existing.job_number,
-          scheduled_start: noticeStart?.toISOString() ?? null,
-        },
+        jobId: id,
+        jobNumber: existing.job_number,
+        removedIds: removedFromJob,
+        scheduledStart: noticeStart?.toISOString() ?? null,
       });
     }
     if (targetVisit && removedFromTripOnly.length > 0) {
       const day = targetVisit.scheduled_at
         ? ` on ${formatShortDateInZone(targetVisit.scheduled_at, await getOrgTimezone(req.user!.organization_id))}`
         : '';
-      await emit({
-        verb: 'dispatch.job_unassigned',
+      queueJobUnassignedAlert({
         organizationId: req.user!.organization_id,
         actorId: req.user?.id ?? null,
-        object: { type: 'JOB', id, label: existing.job_number },
-        entity: { assignee_ids: removedFromTripOnly },
-        data: {
-          object_label: existing.job_number,
-          scheduled_start: noticeStart?.toISOString() ?? null,
-          // Renders "J00178 Visit 2 on Wed, Sep 30 - you were removed from this visit".
-          visit_label: `Visit ${targetVisit.visit_seq}${day}`,
-        },
+        jobId: id,
+        jobNumber: existing.job_number,
+        removedIds: removedFromTripOnly,
+        scheduledStart: noticeStart?.toISOString() ?? null,
+        // Renders "J00178 Visit 2 on Wed, Sep 30 - you were removed from this visit".
+        visitLabel: `Visit ${targetVisit.visit_seq}${day}`,
       });
     }
 
@@ -4221,8 +4881,8 @@ export async function setAssignees(req: Request, res: Response) {
   }
 }
 
-// #291 — set or clear Job.dispatcher_id (JCC Team card). Only ADMIN/DISPATCHER-role,
-// active, same-org users are eligible. Never touches status/schedule/crew.
+// #291 — set or clear Job.dispatcher_id (JCC Team card). A newly named person must pass slot
+// eligibility for Dispatcher (active, Can be a dispatcher on). Never touches status/schedule/crew.
 export async function setDispatcher(req: Request, res: Response) {
   try {
     const id = param(req, 'id');
@@ -4230,7 +4890,7 @@ export async function setDispatcher(req: Request, res: Response) {
 
     const existing = await prisma.job.findUnique({
       where: { id, ...tenantWhere(req) },
-      select: { id: true, job_number: true, dispatcher_id: true, estimate: { select: { lead_id: true } } },
+      select: { id: true, job_number: true, dispatcher_id: true, lead_id: true, estimate: { select: { lead_id: true } } },
     });
 
     if (!existing) {
@@ -4252,18 +4912,17 @@ export async function setDispatcher(req: Request, res: Response) {
     if (dispatcher_id !== null) {
       const target = await prisma.user.findUnique({
         where: { id: dispatcher_id, ...tenantWhere(req) },
-        select: { id: true, role: true, is_active: true, first_name: true, last_name: true },
+        select: { id: true, organization_id: true, role: true, custom_role_id: true, custom_role: { select: { key: true } }, is_active: true, first_name: true, last_name: true },
       });
       if (!target) {
         res.status(404).json({ error: 'User not found' });
         return;
       }
-      if (!isDispatcherEligible(target.role)) {
-        res.status(400).json({ error: 'This user is not eligible to be assigned as dispatcher' });
-        return;
-      }
-      if (!target.is_active) {
-        res.status(400).json({ error: 'Cannot assign an inactive user as dispatcher' });
+      // Only a newly named person is asked about: naming the Dispatcher the job already has changes
+      // nothing, so it passes even when that person has since been switched off or deactivated.
+      const refusal = target.id === existing.dispatcher_id ? null : await whyNotSlot(target, 'dispatcher');
+      if (refusal) {
+        res.status(400).json({ error: refusal });
         return;
       }
       targetName = `${target.first_name} ${target.last_name}`;
@@ -4282,22 +4941,25 @@ export async function setDispatcher(req: Request, res: Response) {
             entity_id: id,
             event_type: 'DISPATCHER_CHANGED',
             description: dispatcher_id
-              ? `${targetName} set as dispatcher on job ${existing.job_number}`
+              ? `${targetName} set as Dispatcher on job ${existing.job_number}`
               : `Dispatcher cleared on job ${existing.job_number}`,
             created_by: req.user!.id,
           },
         });
 
-        // #585 — mirror the change onto the originating lead's timeline (traceability).
-        if (existing.estimate?.lead_id) {
+        // #585 — mirror the change onto the originating lead's timeline (traceability). Through the
+        // job's own lead reference, so a job built from several estimates (no single estimate) mirrors
+        // too; the anchor estimate's lead covers a job that predates the reference.
+        const originatingLeadId = existing.lead_id ?? existing.estimate?.lead_id ?? null;
+        if (originatingLeadId) {
           await tx.timelineEvent.create({
             data: {
               organization_id: req.user!.organization_id,
               entity_type: 'LEAD',
-              entity_id: existing.estimate.lead_id,
+              entity_id: originatingLeadId,
               event_type: 'DISPATCHER_CHANGED',
               description: dispatcher_id
-                ? `${targetName} set as dispatcher on job ${existing.job_number}`
+                ? `${targetName} set as Dispatcher on job ${existing.job_number}`
                 : `Dispatcher cleared on job ${existing.job_number}`,
               created_by: req.user!.id,
             },
@@ -4321,6 +4983,100 @@ export async function setDispatcher(req: Request, res: Response) {
   } catch (err) {
     logger.error('Set job dispatcher error:', err);
     res.status(500).json({ error: 'Failed to set job dispatcher' });
+  }
+}
+
+// S03.11 - set, change or clear Job.salesperson_id (the stored Sold By; JCC Team card). Same door
+// as the Dispatcher: Assign people to jobs on a job the caller can open. A newly named person must
+// pass slot eligibility for the owner slot (active, Can own leads / be Sold By on); clearing needs no
+// check and nothing ever refills the field. Every change is written to the job's timeline (who, when,
+// from, to) and the audit trail.
+export async function setSoldBy(req: Request, res: Response) {
+  try {
+    const id = param(req, 'id');
+    const { sold_by_id } = req.body as { sold_by_id: string | null };
+
+    const existing = await prisma.job.findUnique({
+      where: { id, ...tenantWhere(req) },
+      select: {
+        id: true, job_number: true, salesperson_id: true,
+        salesperson: { select: { first_name: true, last_name: true } },
+      },
+    });
+
+    if (!existing) {
+      res.status(404).json({ error: 'Job not found' });
+      return;
+    }
+
+    if (!(await canActOnRow(req, 'Job', prisma.job, existing.id, 'assign'))) {
+      res.status(403).json({ error: 'Insufficient permissions' });
+      return;
+    }
+
+    let targetName: string | null = null;
+    if (sold_by_id !== null) {
+      const target = await prisma.user.findUnique({
+        where: { id: sold_by_id, ...tenantWhere(req) },
+        select: { id: true, organization_id: true, role: true, custom_role_id: true, custom_role: { select: { key: true } }, is_active: true, first_name: true, last_name: true },
+      });
+      if (!target) {
+        res.status(404).json({ error: 'User not found' });
+        return;
+      }
+      // Only a newly named person is asked about: naming the Sold By the job already has changes
+      // nothing, so it passes even when that person has since been switched off or deactivated.
+      const refusal = target.id === existing.salesperson_id ? null : await whyNotSlot(target, 'owner');
+      if (refusal) {
+        res.status(400).json({ error: refusal });
+        return;
+      }
+      targetName = `${target.first_name} ${target.last_name}`;
+    }
+
+    const previousName = existing.salesperson
+      ? `${existing.salesperson.first_name} ${existing.salesperson.last_name}`
+      : null;
+    const changed = existing.salesperson_id !== sold_by_id;
+
+    const job = await prisma.$transaction(async (tx) => {
+      await tx.job.update({ where: { id }, data: { salesperson_id: sold_by_id } });
+
+      if (changed) {
+        let description: string;
+        if (!targetName) description = `Sold By cleared on job ${existing.job_number} (was ${previousName})`;
+        else if (previousName) description = `Sold By changed from ${previousName} to ${targetName} on job ${existing.job_number}`;
+        else description = `${targetName} set as Sold By on job ${existing.job_number}`;
+        await tx.timelineEvent.create({
+          data: {
+            organization_id: req.user!.organization_id,
+            entity_type: 'JOB',
+            entity_id: id,
+            event_type: 'SOLD_BY_CHANGED',
+            description,
+            metadata: { from: existing.salesperson_id, to: sold_by_id },
+            created_by: req.user!.id,
+          },
+        });
+      }
+
+      return tx.job.findUnique({ where: { id }, select: jobDetailSelect });
+    });
+
+    if (changed) {
+      void logAudit({
+        req,
+        action: 'job.sold_by_set',
+        resourceType: 'Job',
+        resourceId: id,
+        metadata: { from: existing.salesperson_id, to: sold_by_id },
+      });
+    }
+
+    res.json({ job: await presentJobDetail(req, job) });
+  } catch (err) {
+    logger.error('Set job Sold By error:', err);
+    res.status(500).json({ error: 'Failed to set job Sold By' });
   }
 }
 
@@ -4479,6 +5235,16 @@ export async function unassign(req: Request, res: Response) {
       return;
     }
 
+    // S06.17/S06.18 (M7): unscheduling a Done or Cancelled job would set it Unscheduled; Reopen is the only way out. A job in
+    // Office review or Ready to close is moved back by someone who holds Complete jobs as well (the backward move, which the
+    // lock does not bind).
+    const doorVerdict = await statusDoorVerdict(req, id, 'unschedule', existing.status);
+    if (doorVerdict.reason) {
+      respondStatusDoorClosed(res, doorVerdict.reason);
+      return;
+    }
+    const backwardMove = doorVerdict.backward;
+
     // Multi-visit S6 (D16, D19): "unscheduled" means the job has no LIVE visit left. Before this
     // slice the handler cleared the Job.scheduled_start mirror and touched no visit row at all,
     // which was invisible only because the board read the mirror - now that the board reads the
@@ -4498,57 +5264,91 @@ export async function unassign(req: Request, res: Response) {
       orderBy: { scheduled_at: 'asc' },
     });
 
-    await prisma.visit.updateMany({
-      where: { job_id: id, ...tenantWhere(req), status: { in: [...LIVE_VISIT_STATUSES] } },
-      data: {
-        status: 'CANCELLED',
-        cancelled_at: new Date(),
-        cancelled_by: req.user!.id,
-        cancelled_reason: 'Removed from schedule',
-      },
-    });
+    // The writes, on whichever client runs them: the global one for an ordinary unschedule, the transaction's own for a backward
+    // move (S06.18), whose records must land with the status or not at all.
+    const unscheduleWrites = async (db: Prisma.TransactionClient) => {
+      await db.visit.updateMany({
+        where: { job_id: id, ...tenantWhere(req), status: { in: [...LIVE_VISIT_STATUSES] } },
+        data: {
+          status: 'CANCELLED',
+          cancelled_at: new Date(),
+          cancelled_by: req.user!.id,
+          cancelled_reason: 'Removed from schedule',
+        },
+      });
 
-    // UNSCHEDULE (crew ⟂ schedule): clear the TIME only and drop to UNSCHEDULED. The crew is KEPT
-    // (state 3: crewed-unscheduled). No customer email.
-    // S8 (RATIFIED, A5): scheduled_start/scheduled_end DROPPED as job columns - nothing to null
-    // here any more. The live visits were already cancelled above (BEFORE this statement), so
-    // this select's `visits[]` already shows no qualifying live visit and the response's computed
-    // projection reads null on its own.
-    const job = await prisma.job.update({
-      where: { id, ...tenantWhere(req) },
-      data: {
-        status: 'UNSCHEDULED',
-        ...subStatusClears(existing.status, 'UNSCHEDULED'),
-      },
-      select: jobDetailSelect,
-    });
+      // UNSCHEDULE (crew ⟂ schedule): clear the TIME only and drop to UNSCHEDULED. The crew is KEPT
+      // (state 3: crewed-unscheduled). No customer email.
+      // S8 (RATIFIED, A5): scheduled_start/scheduled_end DROPPED as job columns - nothing to null
+      // here any more. The live visits were already cancelled above (BEFORE this statement), so
+      // this select's `visits[]` already shows no qualifying live visit and the response's computed
+      // projection reads null on its own. A backward move out of review also takes the completion with it, as every
+      // backward move does (milestoneClears).
+      const updated = await db.job.update({
+        where: { id, ...tenantWhere(req) },
+        data: {
+          status: 'UNSCHEDULED',
+          ...subStatusClears(existing.status, 'UNSCHEDULED'),
+          ...(backwardMove ? milestoneClears('scheduled') : {}),
+        },
+        select: jobDetailSelect,
+      });
 
-    await prisma.timelineEvent.create({
-      data: {
-        organization_id: req.user!.organization_id,
-        entity_type: 'JOB',
-        entity_id: id,
-        event_type: 'UNSCHEDULED',
-        description: `Job ${existing.job_number} moved to Unassigned (crew kept)`,
-        created_by: req.user!.id,
-      },
-    });
+      // A backward move writes its ONE history entry instead (below).
+      if (!backwardMove) {
+        await db.timelineEvent.create({
+          data: {
+            organization_id: req.user!.organization_id,
+            entity_type: 'JOB',
+            entity_id: id,
+            event_type: 'UNSCHEDULED',
+            description: `Job ${existing.job_number} moved to Unassigned (crew kept)`,
+            created_by: req.user!.id,
+          },
+        });
+      }
+      return updated;
+    };
+
+    const job = backwardMove
+      ? await prisma.$transaction(async (tx) => {
+          const moved = await lockForBackwardMove(tx, { orgId: req.user!.organization_id, jobId: id, from: existing.status });
+          const updated = await unscheduleWrites(tx);
+          await recordBackwardMove(tx, {
+            orgId: req.user!.organization_id,
+            jobId: id,
+            jobNumber: moved.job_number,
+            actorId: req.user!.id,
+            from: existing.status,
+            to: 'UNSCHEDULED',
+            door: 'unschedule',
+          });
+          return updated;
+        })
+      : await unscheduleWrites(prisma);
 
     // Service-plan visit hook: unscheduling the visit-job frees its PlanVisit slot back to the
     // plan (CANCELLED visits are excluded from the term-scoped remaining count), so the plan
     // reappears in the scheduler bucket. Mirrors complete()'s PlanVisit hook — plain prisma (no surrounding transaction).
     //
-    // B-3 (Spec B1): gated on the job NOT being COMPLETED. Free status transitions make
-    // `unassign` reachable from COMPLETED — without this gate, unassigning a finished visit-job
+    // B-3 (Spec B1): gated on the job NOT being finished (Completed, or past it in Office review,
+    // Ready to close and Done - PRD 6's completed-or-later set). Free status transitions make
+    // `unassign` reachable from those - without this gate, unassigning a finished visit-job
     // as housekeeping would free its slot back to the plan (derive.ts's ACTIONED excludes
     // CANCELLED from the consumed count), handing the customer an extra visit on a fixed-visit
     // contract. The crew/schedule are still cleared either way; only the plan-visit cascade
     // is skipped for a completed visit.
-    if (existing.source_plan_id && existing.status !== 'COMPLETED') {
+    if (existing.source_plan_id && !isCompletedOrLater(existing.status)) {
       await prisma.planVisit.updateMany({
         where: { job_id: id, ...tenantWhere(req) },
         data: { status: 'CANCELLED' },
       });
+    }
+
+    // S06.18: a backward move out of review takes the completion with it, so the plan visit it completed goes back to Scheduled
+    // (booked again, as every uncompleting move does) instead of staying consumed; the slot is not freed.
+    if (backwardMove && clearsCompletion('scheduled')) {
+      await revertPlanVisitOnUncomplete(req, id, existing.source_plan_id);
     }
 
     // AWAITED and post-commit, never fatal - the same contract every other notify site has.
@@ -4583,9 +5383,27 @@ export async function unassign(req: Request, res: Response) {
 
     res.json({ job: await presentJobDetail(req, job), ...(notifyResult ? { notify: notifyResult } : {}) });
   } catch (err) {
+    if (err instanceof BackwardMoveRaced) {
+      respondStatusDoorClosed(res, err.message);
+      return;
+    }
     logger.error('Unassign job error:', err);
     res.status(500).json({ error: 'Failed to unassign job' });
   }
+}
+
+/** What the job-level steps read off each visit to find the current one (resolveCurrentJobVisit's inputs). */
+const currentVisitFields = { status: true, scheduled_at: true, scheduled_end: true, created_at: true } as const;
+
+/**
+ * May this person step a job's or visit's status (on my way, arrived, start, finish)? The crew of what is being
+ * stepped always may (the route guard already asked for the step's own switch); anyone else needs Update any
+ * visit's status, and only on the jobs in their Jobs scope. No role name decides (S01.8). For the job-level steps
+ * "what is being stepped" is the job's CURRENT visit, so a place on some other visit does not count (S04.5).
+ */
+async function mayStepStatus(req: Request, jobId: string, isCrew: boolean): Promise<boolean> {
+  if (isCrew) return true;
+  return mayStepWithoutCrew(req, jobId);
 }
 
 export async function start(req: Request, res: Response) {
@@ -4594,7 +5412,7 @@ export async function start(req: Request, res: Response) {
 
     const existing = await prisma.job.findUnique({
       where: { id, ...tenantWhere(req) },
-      select: { id: true, status: true, visits: { select: { assignees: { select: { user_id: true } } } }, job_number: true, source_plan_id: true },
+      select: { id: true, status: true, visits: { select: { ...currentVisitFields, assignees: { select: { user_id: true } } } }, job_number: true, source_plan_id: true },
     });
 
     if (!existing) {
@@ -4602,13 +5420,23 @@ export async function start(req: Request, res: Response) {
       return;
     }
 
-    // Admins/dispatchers may start any job in their org; a technician may only start a job
-    // they are assigned to (the route guard already verified the `start Job` capability).
-    const isOrgManager = req.ability!.can('manage', 'all' as Subject) || req.user!.role === 'DISPATCHER';
-    if (!isOrgManager && !isOnJobCrew(existing, req.user!.id)) {
+    // The crew may step their own job; anyone else needs Update any visit's status (the route guard already
+    // verified the step's own switch).
+    if (!(await mayStepStatus(req, existing.id, isOnCurrentJobVisitCrew(existing.visits, req.user!.id)))) {
       res.status(403).json({ error: 'Insufficient permissions' });
       return;
     }
+
+    // S06.17/S06.18 (M7): Start sets In Progress from any status and used to revive a Cancelled job. A Done or Cancelled job
+    // leaves only through Reopen; a job in Office review or Ready to close is moved back to In Progress by someone who holds
+    // Complete jobs as well (the backward move, which the lock does not bind). Refused before the visit is stamped or anything
+    // is cleared.
+    const doorVerdict = await statusDoorVerdict(req, id, 'start', existing.status);
+    if (doorVerdict.reason) {
+      respondStatusDoorClosed(res, doorVerdict.reason);
+      return;
+    }
+    const backwardMove = doorVerdict.backward;
 
     // S4 (B9): the milestone is a fact about the TRIP, so the job's current visit is stamped
     // through the same writer the per-visit route uses. The job row keeps its own copy below,
@@ -4616,77 +5444,143 @@ export async function start(req: Request, res: Response) {
     // opens with `if (jobStartedAt != null) return 'IN_PROGRESS'` for the urgent workflow - a job
     // started on the spot with no visit at all.
     const startedAt = new Date();
-    await stampCurrentJobVisitMilestone(prisma, {
-      jobId: id,
-      orgId: req.user!.organization_id,
-      milestone: 'started',
-      at: startedAt,
-      actorId: req.user!.id,
-    });
-
-    // B-9 (Spec B1): timeline event written BEFORE the update -- see arrive() for why.
     const clears = milestoneClears('started');
-    await prisma.timelineEvent.create({
-      data: {
-        organization_id: req.user!.organization_id,
-        entity_type: 'JOB',
-        entity_id: id,
-        event_type: 'STARTED',
-        description: `Job ${existing.job_number} started`,
-        metadata: Object.keys(clears).length ? { cleared: Object.keys(clears) } : undefined,
-        created_by: req.user!.id,
-      },
-    });
+    // The writes, on whichever client runs them: the global one for an ordinary Start, the transaction's own for a backward
+    // move (S06.18), whose records must land with the status or not at all.
+    const startWrites = async (db: Prisma.TransactionClient) => {
+      await stampCurrentJobVisitMilestone(db, {
+        jobId: id,
+        orgId: req.user!.organization_id,
+        milestone: 'started',
+        at: startedAt,
+        actorId: req.user!.id,
+      });
 
-    const job = await prisma.job.update({
-      where: { id, ...tenantWhere(req) },
-      data: {
-        status: 'IN_PROGRESS',
-        ...subStatusClears(existing.status, 'IN_PROGRESS'),
-        started_at: startedAt,
-        ...clears,
-      },
-      select: jobDetailSelect,
-    });
+      // B-9 (Spec B1): timeline event written BEFORE the update -- see arrive() for why. A backward move writes its ONE
+      // history entry instead (below).
+      if (!backwardMove) {
+        await db.timelineEvent.create({
+          data: {
+            organization_id: req.user!.organization_id,
+            entity_type: 'JOB',
+            entity_id: id,
+            event_type: 'STARTED',
+            description: `Job ${existing.job_number} started`,
+            metadata: Object.keys(clears).length ? { cleared: Object.keys(clears) } : undefined,
+            created_by: req.user!.id,
+          },
+        });
+      }
+
+      return db.job.update({
+        where: { id, ...tenantWhere(req) },
+        data: {
+          status: 'IN_PROGRESS',
+          ...subStatusClears(existing.status, 'IN_PROGRESS'),
+          started_at: startedAt,
+          ...clears,
+        },
+        select: jobDetailSelect,
+      });
+    };
+
+    const job = backwardMove
+      ? await prisma.$transaction(async (tx) => {
+          const moved = await lockForBackwardMove(tx, { orgId: req.user!.organization_id, jobId: id, from: existing.status });
+          const updated = await startWrites(tx);
+          await recordBackwardMove(tx, {
+            orgId: req.user!.organization_id,
+            jobId: id,
+            jobNumber: moved.job_number,
+            actorId: req.user!.id,
+            from: existing.status,
+            to: 'IN_PROGRESS',
+            door: 'start',
+            detail: { cleared: Object.keys(clears) },
+          });
+          return updated;
+        })
+      : await startWrites(prisma);
 
     if (clearsCompletion('started')) {
       await revertPlanVisitOnUncomplete(req, id, existing.source_plan_id);
     }
 
     // ─── In-app notification hook ───────────────────────────────────────────
-    await emit({
-      verb: 'job.started',
-      organizationId: req.user!.organization_id,
-      actorId: req.user?.id ?? null,
-      object: { type: 'JOB', id, label: existing.job_number },
-      entity: {
-        assignee_ids: jobCrewIds(existing),
-        sold_by_id: (job as any).estimate?.lead?.commission_owner?.id as string | undefined,
-      },
-      data: { object_label: existing.job_number },
-    });
+    // A backward move out of review is the office sending the job back, not the crew starting it: no alert. Otherwise the alert
+    // goes through M6's two lanes (S06.25), queued and sent after the response.
+    if (!backwardMove) {
+      queueJobLifecycleAlert({ verb: 'job.started', orgId: req.user!.organization_id, actorId: req.user?.id ?? null, jobId: id, jobNumber: existing.job_number, job });
+    }
 
     res.json({ job: await presentJobDetail(req, job) });
   } catch (err) {
+    if (err instanceof BackwardMoveRaced) {
+      respondStatusDoorClosed(res, err.message);
+      return;
+    }
     logger.error('Start job error:', err);
     res.status(500).json({ error: 'Failed to start job' });
   }
 }
 
+/**
+ * S04.17: the cancel half of "cancel these visits and complete the job". Each open visit becomes CANCELLED, never
+ * COMPLETED, through the same guarded writer the visit cancel door uses, so it keeps its visit number and every stamp
+ * it already carries as history. A visit another request finished or called off since it was read keeps that outcome.
+ * The job's visit-derived columns are re-derived afterwards without its status (`deriveStatus: false`): the caller is
+ * the human deciding the job is Completed.
+ */
+async function cancelOpenVisitsForComplete(
+  tx: Prisma.TransactionClient,
+  args: { orgId: string; jobId: string; actorId: string; visits: OpenVisit[] },
+) {
+  const cancelledAt = new Date();
+  for (const visit of args.visits) {
+    const { cancelled } = await cancelWalkthroughRow(tx, {
+      walkthroughId: visit.id,
+      orgId: args.orgId,
+      cancelledAt,
+      reason: OPEN_VISIT_CANCEL_REASON,
+      cancelledBy: args.actorId,
+      acceptStatuses: LIVE_VISIT_STATUSES,
+    });
+    if (!cancelled) continue;
+    await tx.timelineEvent.create({
+      data: {
+        organization_id: args.orgId,
+        entity_type: 'JOB',
+        entity_id: args.jobId,
+        event_type: 'VISIT_CANCELLED',
+        description: `Visit ${cancelled.visit_seq} cancelled: ${OPEN_VISIT_CANCEL_REASON}`,
+        metadata: { visit_id: cancelled.id, visit_seq: cancelled.visit_seq, reason: OPEN_VISIT_CANCEL_REASON },
+        created_by: args.actorId,
+      },
+    });
+  }
+  await syncJobFromVisits(tx, { jobId: args.jobId, orgId: args.orgId, deriveStatus: false });
+}
+
+/** The machine-readable code on a complete (or any close-out move) refused because of where the job stands. */
+export { JOB_CLOSE_OUT_REFUSED };
+
 export async function complete(req: Request, res: Response) {
   try {
     const id = param(req, 'id');
-    const { completion_notes, signature_data, signature_ip, signature_at } = req.body;
+    const { completion_notes, signature_data, signature_ip, signature_at, cancel_open_visits } = req.body;
 
     const existing = await prisma.job.findUnique({
       where: { id, ...tenantWhere(req) },
       select: {
         id: true,
         status: true,
+        created_at: true,
         started_at: true,
         visits: { select: { assignees: { select: { user_id: true } } } },
         job_number: true,
         source_plan_id: true,
+        salesperson_id: true,
+        dispatcher_id: true,
       },
     });
 
@@ -4695,51 +5589,95 @@ export async function complete(req: Request, res: Response) {
       return;
     }
 
-    // Admins/dispatchers may complete any job in their org; a technician may only complete a
-    // job they are assigned to (the route guard already verified the `complete Job` capability).
-    const isAssignedToJob = isOnJobCrew(existing, req.user!.id);
-    const isOrgManager = req.ability!.can('manage', 'all' as Subject) || req.user!.role === 'DISPATCHER';
-    if (!isOrgManager && !isAssignedToJob) {
-      res.status(403).json({ error: 'Insufficient permissions' });
+    // Complete jobs is the whole check: any job in the person's Jobs scope, crew or not (S01.8). The route
+    // guard asked whether the person may ever complete a job; this asks about THIS job. M7 then decides from the job's
+    // status: the move starts only from Unscheduled, Scheduled or In Progress, and lands in Office review.
+    const decision = decideCloseOutMove({
+      move: 'complete',
+      status: existing.status,
+      switches: { complete_jobs: await canActOnRow(req, 'Job', prisma.job, existing.id, 'complete') },
+    });
+    if (!decision.allowed) {
+      if (decision.kind === 'forbidden') {
+        res.status(403).json({ error: decision.reason });
+      } else {
+        res.status(409).json({ error: decision.reason, code: JOB_CLOSE_OUT_REFUSED });
+      }
       return;
     }
 
-    // B-9 (Spec B1): timeline event written BEFORE the update -- see arrive() for why. complete()
-    // moves FORWARD -- milestoneClears('completed') only un-cancels, nothing to report as cleared.
-    await prisma.timelineEvent.create({
-      data: {
-        organization_id: req.user!.organization_id,
-        entity_type: 'JOB',
-        entity_id: id,
-        event_type: 'COMPLETED',
-        description: `Job ${existing.job_number} completed`,
-        created_by: req.user!.id,
-      },
-    });
+    // S04.17: the job-level complete never finishes a visit on its own. While a visit is still open (booked, on the
+    // way, on site or started) the request has to say to cancel it; the job page, the board and the bulk action each
+    // show their confirmation first, and this refusal is what stops any of them going round it. Checked after the
+    // permission and status checks, so a person who may not complete is never shown the list.
+    const orgId = req.user!.organization_id;
+    const openVisits = await findOpenVisits(prisma, orgId, [id]);
+    if (openVisits.length > 0 && cancel_open_visits !== true) {
+      res.status(409).json({
+        error: 'This job still has booked visits. Cancel them to complete the job.',
+        code: JOB_COMPLETE_HAS_OPEN_VISITS,
+        open_visits: openVisitsPayload(openVisits),
+      });
+      return;
+    }
 
-    const job = await prisma.job.update({
-      where: { id, ...tenantWhere(req) },
-      data: {
-        status: 'COMPLETED',
-        ...subStatusClears(existing.status, 'COMPLETED'),
-        completed_at: new Date(),
-        // A job closed out directly from a pre-IN_PROGRESS status was never `start()`ed, so
-        // started_at would otherwise stay null forever — backfill it to the completion time
-        // (zero duration) so duration reporting never has to handle a null start.
-        started_at: existing.started_at ?? new Date(),
-        // Preserve-on-omission. These are WORK PRODUCT: a signature captured on the first
-        // completion is still valid on a re-completion, and the client sends no body at all
-        // (JobDetailPage.tsx posts /complete with an empty body). Null-on-omission was safe
-        // only while re-completing was impossible (isJobCompletable excluded COMPLETED); Spec
-        // B1 removed that guard, making an empty-body re-completion a one-click way to erase a
-        // signed record if this stayed null-on-omission.
-        completion_notes: completion_notes !== undefined ? (completion_notes || null) : undefined,
-        signature_data: signature_data !== undefined ? (signature_data || null) : undefined,
-        signature_ip: signature_ip !== undefined ? (signature_ip || null) : undefined,
-        signature_at: signature_at !== undefined ? (signature_at ? new Date(signature_at) : null) : undefined,
-        ...milestoneClears('completed'),
-      },
-      select: jobDetailSelect,
+    const completedAt = new Date();
+    // The open visits are cancelled, the job is stamped Completed, moved to Office review and given its review round in
+    // ONE transaction, so a failure leaves none of the halves behind and the job never rests at Completed.
+    let reviewWindowStart = completedAt;
+    const job = await prisma.$transaction(async (tx) => {
+      if (openVisits.length > 0) {
+        await cancelOpenVisitsForComplete(tx, { orgId, jobId: id, actorId: req.user!.id, visits: openVisits });
+      }
+      // B-9 (Spec B1): the history entries are written BEFORE the update, so a crash between never leaves a status
+      // change with no audit trail. complete() moves FORWARD, so milestoneClears('completed') has nothing to report.
+      // The two entries share the transaction's timestamp by default, so each carries its own: the history reads
+      // Completed, then Office review.
+      await tx.timelineEvent.create({
+        data: {
+          organization_id: orgId,
+          entity_type: 'JOB',
+          entity_id: id,
+          event_type: JOB_COMPLETED_EVENT,
+          description: `Job ${existing.job_number} completed`,
+          created_by: req.user!.id,
+          created_at: completedAt,
+        },
+      });
+      const round = await openReviewRound(tx, { orgId, jobId: id, jobCreatedAt: existing.created_at });
+      reviewWindowStart = round.windowStart;
+      await tx.timelineEvent.create({
+        data: {
+          organization_id: orgId,
+          entity_type: 'JOB',
+          entity_id: id,
+          event_type: OFFICE_REVIEW_STARTED_EVENT,
+          description: `Job ${existing.job_number} moved to Office review`,
+          metadata: { from: 'COMPLETED', to: decision.next, review_id: round.id },
+          created_by: req.user!.id,
+          created_at: new Date(completedAt.getTime() + 1),
+        },
+      });
+      return tx.job.update({
+        where: { id, ...tenantWhere(req) },
+        data: {
+          status: decision.next,
+          ...subStatusClears(existing.status, decision.next),
+          completed_at: completedAt,
+          // A job closed out directly from a pre-IN_PROGRESS status was never `start()`ed, so
+          // started_at would otherwise stay null forever — backfill it to the completion time
+          // (zero duration) so duration reporting never has to handle a null start.
+          started_at: existing.started_at ?? completedAt,
+          // Preserve-on-omission. These are WORK PRODUCT, and the client sends no body at all
+          // (JobDetailPage.tsx posts /complete with an empty body).
+          completion_notes: completion_notes !== undefined ? (completion_notes || null) : undefined,
+          signature_data: signature_data !== undefined ? (signature_data || null) : undefined,
+          signature_ip: signature_ip !== undefined ? (signature_ip || null) : undefined,
+          signature_at: signature_at !== undefined ? (signature_at ? new Date(signature_at) : null) : undefined,
+          ...milestoneClears('completed'),
+        },
+        select: jobDetailSelect,
+      });
     });
 
     // Service-plan visit hook: completing the visit-job moves its PlanVisit into History.
@@ -4747,21 +5685,30 @@ export async function complete(req: Request, res: Response) {
     if (existing.source_plan_id) {
       await prisma.planVisit.updateMany({
         where: { job_id: id, ...tenantWhere(req) },
-        data: { status: 'COMPLETED', completed_at: new Date() },
+        data: { status: 'COMPLETED', completed_at: completedAt },
       });
     }
 
     // ─── In-app notification hook ───────────────────────────────────────────
-    await emit({
-      verb: 'job.completed',
+    // S06.23: the job's stored Sold By, crew and Dispatcher, whoever must act on the review, and the copies, through M6's
+    // two lanes. The crew is read before the open visits were cancelled, so their people hear of it too.
+    await alertJobCompleted({
       organizationId: req.user!.organization_id,
-      actorId: req.user?.id ?? null,
-      object: { type: 'JOB', id, label: existing.job_number },
-      entity: {
-        assignee_ids: jobCrewIds(existing),
-        sold_by_id: (job as any).estimate?.lead?.commission_owner?.id as string | undefined,
+      actorId: req.user!.id,
+      job: {
+        id,
+        job_number: existing.job_number,
+        salesperson_id: existing.salesperson_id,
+        dispatcher_id: existing.dispatcher_id,
+        crewIds: jobCrewIds(existing),
       },
-      data: { object_label: existing.job_number },
+    });
+
+    // S06.24: the job entered Office review, so the items already unusual in its window are listed in one attention alert. Queued
+    // and sent after the response: reading the window and walking the chain cost the person's request nothing.
+    queueReviewAttention({
+      orgId, actorId: req.user!.id, jobId: id, onlyIfDone: false, items: [],
+      entering: { windowStart: reviewWindowStart, jobNumber: existing.job_number, recordPeople: [...(existing.salesperson_id ? [existing.salesperson_id] : []), ...jobCrewIds(existing)], dispatcherId: existing.dispatcher_id },
     });
 
     // ─── Automation Center event — post-commit, fire-and-forget (#271) ───────
@@ -4779,31 +5726,235 @@ export async function complete(req: Request, res: Response) {
   }
 }
 
+/** The amount (dollars) the person confirmed before marking a job Done with money owed; absent or null when they were not asked. */
+export const markDoneSchema = z.object({ confirmed_amount: z.number().min(0).max(1_000_000_000).nullable().optional() });
+
+/**
+ * POST /api/jobs/:id/mark-done - Mark Done (Roles & Permissions, PRD 6, S06.13): Ready to close to Done, stamping when and
+ * by whom. Close jobs is the route's switch; a job with money owed also needs Close jobs with money owed and the amount the
+ * person confirmed, which is checked against what is owed inside the transaction (lib/job-mark-done). Nothing is fired
+ * here: the job-completed automation and alert went out once, at Complete.
+ */
+export async function markDone(req: Request, res: Response) {
+  try {
+    const id = param(req, 'id');
+    const existing = await prisma.job.findUnique({ where: { id, ...tenantWhere(req) }, select: { id: true } });
+    if (!existing) {
+      res.status(404).json({ error: 'Job not found' });
+      return;
+    }
+    // The route guard asked whether the person may ever close a job; these ask about THIS job under their row scope.
+    const mayClose = await canActOnRow(req, 'Job', prisma.job, id, 'close');
+    const mayCloseOwed = req.ability!.can('close_with_money_owed', 'Job' as Subject) && (await canActOnRow(req, 'Job', prisma.job, id, 'close_with_money_owed'));
+    const user = req.user!;
+    const result = await markJobDone({
+      orgId: user.organization_id,
+      jobId: id,
+      actor: { id: user.id, name: `${user.first_name} ${user.last_name}`.trim() || user.email },
+      switches: { close_jobs: mayClose, close_jobs_with_money_owed: mayCloseOwed },
+      confirmedAmount: (req.body as z.infer<typeof markDoneSchema>).confirmed_amount ?? null,
+    });
+    void logAudit({
+      req,
+      action: 'job.marked_done',
+      resourceType: 'Job',
+      resourceId: id,
+      metadata: { job_number: result.job_number, owed_amount: result.owed_amount },
+    });
+    const job = await prisma.job.findUnique({ where: { id, ...tenantWhere(req) }, select: jobDetailSelect });
+    res.json({ job: await presentJobDetail(req, job) });
+  } catch (err) {
+    if (err instanceof MarkDoneRefusal) {
+      const { kind, reason } = err.refusal;
+      if (kind === 'forbidden') res.status(403).json({ error: reason });
+      else if (kind === 'money_owed') res.status(403).json({ error: reason, code: JOB_MONEY_OWED, amount_owed: centsToDollars(err.owedCents ?? 0) });
+      else if (kind === 'amount') res.status(409).json({ error: reason, code: MARK_DONE_AMOUNT, amount_owed: centsToDollars(err.owedCents ?? 0) });
+      else res.status(409).json({ error: reason, code: JOB_CLOSE_OUT_REFUSED });
+      return;
+    }
+    logger.error('Mark job done error:', err);
+    res.status(500).json({ error: 'Failed to mark the job Done' });
+  }
+}
+
+// ─── Job cancel: the #891 payments guard ─────────────────────────────────────
+
+// The cancel route's read of the job and its invoices: the cascade inputs (open invoices to void)
+// plus the money on them. Shared by the guard read and the re-read after a lost race.
+const CANCEL_JOB_SELECT = {
+  id: true,
+  status: true,
+  job_number: true,
+  source_plan_id: true,
+  invoices: {
+    select: {
+      id: true,
+      // #891: the payments conflict names the affected invoices to the caller.
+      invoice_number: true,
+      status: true,
+      kind: true,
+      amount_due: true,
+      total_amount: true,
+      payments: { where: { voided_at: null }, select: { amount: true, reference_number: true, state: true } },
+      refunds: { select: { amount: true, state: true } },
+    },
+  },
+} satisfies Prisma.JobSelect;
+
+type CancelInvoice = Prisma.JobGetPayload<{ select: typeof CANCEL_JOB_SELECT }>['invoices'][number];
+
+// OPEN/billable, non-terminal invoices are what the cascade voids to $0 (DRAFT is delete-able,
+// not voidable; VOIDED/REFUNDED are terminal and intentionally left for the admin's §8 refund).
+// PAID is listed for an invoice paid only by drawn deposit credit (no money taken on it): it voids
+// and releases the credit exactly as the invoice's own Void does (slice 29 conductor ruling). A PAID
+// invoice that took money is still kept, by the money rule the cascade applies to every status.
+const CANCEL_VOIDABLE_STATUSES = ['SENT', 'PARTIAL', 'PAID'] as const;
+const cancelOpenInvoices = (invoices: CancelInvoice[]) =>
+  invoices.filter((inv) => (CANCEL_VOIDABLE_STATUSES as readonly string[]).includes(inv.status));
+
+// Real money on an invoice: a live (non-voided) SUCCEEDED/PROCESSING payment that is not the
+// synthetic DEPOSIT-CREDIT transfer (the non-cash credit invoice.create writes onto a STANDARD
+// invoice when a deposit is drawn down - its cash sits on the DEPOSIT invoice). The JS predicate
+// below and MONEY_PAYMENT_WHERE are the SAME rule, once for rows already read and once for the
+// in-transaction re-check; change them together.
+const moneyPayments = (inv: CancelInvoice) =>
+  (inv.payments ?? []).filter(
+    (p) => p.reference_number !== DEPOSIT_CREDIT_REFERENCE && MONEY_PAYMENT_STATES.includes(p.state),
+  );
+const MONEY_PAYMENT_WHERE = {
+  voided_at: null,
+  state: { in: [...MONEY_PAYMENT_STATES] },
+  // `not` alone would drop NULL references in SQL, so a plain payment with no reference is
+  // named explicitly.
+  OR: [{ reference_number: null }, { reference_number: { not: DEPOSIT_CREDIT_REFERENCE } }],
+} satisfies Prisma.PaymentWhereInput;
+
+// #891 "carries payments": ANY real-money payment, whatever has been refunded. Refunds never make
+// an invoice voidable - only voiding its payments does (the same rule the invoice void door
+// applies, slice 18), so the two doors can never disagree on one invoice.
+const invoiceHasPayments = (inv: CancelInvoice) => moneyPayments(inv).length > 0;
+
+const sumOfState = (inv: CancelInvoice, state: PaymentState) =>
+  moneyPayments(inv).filter((p) => p.state === state).reduce((s, p) => s + Number(p.amount), 0);
+
+// Collected money = Σ SUCCEEDED real-money payments − Σ SUCCEEDED refunds. A PROCESSING payment
+// (an unsettled bank debit) blocks the void above but is NOT collected - it may still fail - and a
+// PENDING/FAILED refund has not returned anything (slice 05's rule). Surfaced for the admin's
+// separate §8 refund action (default refund-all) - NEVER auto-refunded here.
+const invoiceCollected = (inv: CancelInvoice) => {
+  const refunded = (inv.refunds ?? [])
+    .filter((r) => r.state === 'SUCCEEDED')
+    .reduce((s, r) => s + Number(r.amount), 0);
+  return Math.round((sumOfState(inv, 'SUCCEEDED') - refunded) * 100) / 100;
+};
+// Money still on its way (PROCESSING), shown apart from what was collected.
+const invoiceProcessing = (inv: CancelInvoice) => Math.round(sumOfState(inv, 'PROCESSING') * 100) / 100;
+
+// Conductor decision 2026-10-06: the guard covers EVERY non-VOIDED invoice on the job that carries
+// money - PAID included, not only the SENT/PARTIAL ones the cascade would void.
+const cancelMoneyInvoices = (invoices: CancelInvoice[]) =>
+  invoices.filter((inv) => inv.status !== 'VOIDED' && invoiceHasPayments(inv));
+
+// The rows the 409 lists, in the job's invoice order: the open invoices the choice decides, plus
+// every invoice carrying money (always kept, whatever the choice).
+const cancelConflictRows = (invoices: CancelInvoice[]) => {
+  const open = new Set(cancelOpenInvoices(invoices));
+  const money = new Set(cancelMoneyInvoices(invoices));
+  return invoices.filter((inv) => open.has(inv) || money.has(inv));
+};
+
+// The 409 body for a cancel refused because the job's invoices carry payments and no choice was
+// made. The `error` string names invoice numbers only; dollar figures ride in `invoices[]` behind
+// the ability to read invoices, because extractApiError surfaces the string verbatim to roles narrowed
+// off `read Invoice`.
+function cancelPaymentsConflict(req: Request, invoices: CancelInvoice[]) {
+  const rows = cancelConflictRows(invoices);
+  const names = rows.filter(invoiceHasPayments).map((inv) => inv.invoice_number).join(', ');
+  const plural = rows.filter(invoiceHasPayments).length !== 1;
+  const showMoney = canReadInvoices(req);
+  return {
+    error: `${plural ? 'Invoices' : 'Invoice'} ${names} on this job ${plural ? 'have' : 'has'} payments. Choose what happens to the job's invoices before cancelling - an invoice with payments is always kept.`,
+    code: 'JOB_CANCEL_HAS_PAYMENTS',
+    invoices: rows.map((inv) => {
+      const processing = invoiceProcessing(inv);
+      return {
+        id: inv.id,
+        invoice_number: inv.invoice_number,
+        status: inv.status,
+        has_payments: invoiceHasPayments(inv),
+        ...(showMoney
+          ? {
+            amount_paid: invoiceCollected(inv),
+            ...(processing > 0 ? { amount_processing: processing } : {}),
+            amount_due: Number(inv.amount_due),
+          }
+          : {}),
+      };
+    }),
+  };
+}
+
+// #891: what a bulk cancel will keep. The bulk dialog has no per-job invoice list, so before the
+// user confirms it asks for every invoice carrying money on the selected jobs (PAID included) -
+// each is kept whatever the choice. Row-scoped like the bulk runner's canAccessRow (the read
+// scope folded into one query); amounts ride behind reading invoices, as in the 409.
+export const cancelPreviewQuerySchema = z.object({
+  ids: z
+    .string()
+    .transform((v) => v.split(',').map((id) => id.trim()).filter(Boolean))
+    .pipe(z.array(z.string().uuid()).min(1).max(100)),
+});
+
+export async function cancelPreview(req: Request, res: Response) {
+  try {
+    const parsed = cancelPreviewQuerySchema.safeParse(req.query);
+    if (!parsed.success) {
+      res.status(400).json(zodValidationFailure(parsed.error));
+      return;
+    }
+    const jobs = await prisma.job.findMany({
+      where: { id: { in: parsed.data.ids }, ...tenantWhere(req), ...(await scopeWhereForReq(req, 'Job')) },
+      select: CANCEL_JOB_SELECT,
+    });
+    const showMoney = canReadInvoices(req);
+    // A job the cancel refuses (a Done one) keeps nothing the cancel would keep: its invoices are not listed as kept.
+    const invoices = jobs.filter((job) => cancelStartsFrom(job.status)).flatMap((job) =>
+      cancelMoneyInvoices(job.invoices ?? []).map((inv) => {
+        const processing = invoiceProcessing(inv);
+        return {
+          job_id: job.id,
+          job_number: job.job_number,
+          id: inv.id,
+          invoice_number: inv.invoice_number,
+          status: inv.status,
+          ...(showMoney
+            ? { amount_paid: invoiceCollected(inv), ...(processing > 0 ? { amount_processing: processing } : {}) }
+            : {}),
+        };
+      }),
+    );
+    res.json({ invoices });
+  } catch (err) {
+    logger.error('Job cancel preview error:', err);
+    res.status(500).json({ error: 'Failed to load the invoices for these jobs' });
+  }
+}
+
+// Thrown inside the cancel transaction when an invoice's conditional void matched nothing: it
+// was paid, or changed status, after the guard read it. Rolls the whole cancel back.
+class InvoiceChangedDuringCancel extends Error {}
+
 export async function cancel(req: Request, res: Response) {
   try {
     const id = param(req, 'id');
-    const { cancelled_reason } = req.body;
+    const { cancel_reason_code, cancelled_reason: noteInput, void_invoices } = req.body as z.infer<typeof cancelJobSchema>;
+    // The written reason this field always was is now the optional note beside the picked reason.
+    const note = noteInput?.trim() || null;
 
+    // §8 cascade inputs: the job's open invoices to void + collected money to surface.
     const existing = await prisma.job.findUnique({
       where: { id, ...tenantWhere(req) },
-      select: {
-        id: true,
-        status: true,
-        job_number: true,
-        source_plan_id: true,
-        // §8 cascade inputs: the job's open invoices to void + collected money to surface.
-        invoices: {
-          select: {
-            id: true,
-            status: true,
-            kind: true,
-            amount_due: true,
-            total_amount: true,
-            payments: { where: { voided_at: null }, select: { amount: true, reference_number: true } },
-            refunds: { select: { amount: true } },
-          },
-        },
-      },
+      select: { ...CANCEL_JOB_SELECT, cancel_reason_code: true },
     });
 
     if (!existing) {
@@ -4811,31 +5962,90 @@ export async function cancel(req: Request, res: Response) {
       return;
     }
 
+    // S06.15: M7 decides the move. Cancel jobs is the whole permission check (on THIS job, under the person's row scope);
+    // the reason must be one the job's org offers now; any status but Done may be cancelled, a Done job only after Reopen.
+    // The org's list is read here, before any transaction opens (pool discipline).
+    const offered = await resolveOfferedJobCancelReasons(req.user!.organization_id);
+    const decision = decideCloseOutMove({
+      move: 'cancel',
+      status: existing.status,
+      switches: { cancel_jobs: await canActOnRow(req, 'Job', prisma.job, id, 'cancel') },
+      cancel: { reasonCode: cancel_reason_code, offeredCodes: offered.map((o) => o.code) },
+    });
+    if (!decision.allowed) {
+      if (decision.kind === 'forbidden') res.status(403).json({ error: decision.reason });
+      else if (decision.kind === 'reason') res.status(400).json({ error: decision.reason, code: JOB_CANCEL_REASON_INVALID });
+      else res.status(409).json({ error: decision.reason, code: JOB_CLOSE_OUT_REFUSED });
+      return;
+    }
+    const reasonLabel = offered.find((o) => o.code === cancel_reason_code)!.label;
+    // What the cancel clean-up, the alert and the automation say the reason was: the written note when there is one (the
+    // field this always was, and the words a "job cancelled" message may carry to the customer), else the reason's label.
+    const cancelled_reason = note ?? reasonLabel;
+
+    // Re-cancelling a cancelled job only changes its reason: no second clean-up, no second alert, one history entry.
+    if (existing.status === 'CANCELLED') {
+      const changed = await prisma.$transaction(async (tx) => {
+        await tx.timelineEvent.create({
+          data: {
+            organization_id: req.user!.organization_id,
+            entity_type: 'JOB',
+            entity_id: id,
+            event_type: 'CANCEL_REASON_CHANGED',
+            description: `Job ${existing.job_number} cancel reason changed: ${reasonLabel}`,
+            metadata: { reason: note, reason_code: cancel_reason_code, reason_label: reasonLabel, previous_reason_code: existing.cancel_reason_code },
+            created_by: req.user!.id,
+          },
+        });
+        return tx.job.update({
+          where: { id, ...tenantWhere(req) },
+          data: { cancelled_reason: note, cancel_reason_code },
+          select: jobDetailSelect,
+        });
+      });
+      const collected = Math.round(existing.invoices.reduce((sum, inv) => sum + invoiceCollected(inv), 0) * 100) / 100;
+      res.json({
+        job: await presentJobDetail(req, changed),
+        ...(canReadInvoices(req) ? { collected_total: collected, refund_suggested: collected > 0 } : {}),
+        voided_invoice_ids: [],
+      });
+      return;
+    }
+
     // Spec B1: cancellation is not terminal and every status is reachable from every state, so
-    // a COMPLETED job may now be cancelled (and a CANCELLED job re-cancelled). This still
-    // unconditionally voids every open invoice below with no confirmation of amounts/counts —
-    // that is a KNOWN, PRE-EXISTING defect, tracked separately as #891, deliberately NOT fixed
-    // in this PR. This PR only widens who can reach the existing cascade; it does not touch it.
+    // a COMPLETED job may now be cancelled.
+    //
+    // #891 contract for the invoice cascade below: a VOIDED invoice is never restored, so the
+    // cascade may never void an invoice that carries money, under any choice. When any
+    // non-voided invoice on the job carries payments (PAID included), the caller must choose:
+    // no choice answers 409 listing them and changes nothing; `void_invoices: false` keeps every
+    // invoice as it is; `void_invoices: true` voids only the unpaid open ones. Either choice
+    // cancels the job. Jobs whose invoices carry no payments cancel exactly as before.
+    //
+    // The guard below reads before the transaction; the cascade's void re-checks the same rule
+    // INSIDE the transaction (a conditional updateMany), so a payment that lands in between -
+    // a completed checkout, a staff-recorded payment - aborts the cancel instead of being voided.
     const invoices = existing.invoices ?? [];
-    // OPEN/billable, non-terminal invoices get voided to $0 (DRAFT is delete-able, not voidable;
-    // PAID/VOIDED/REFUNDED are terminal and intentionally left for the admin's §8 refund).
-    const openToVoid = invoices.filter((inv) => inv.status === 'SENT' || inv.status === 'PARTIAL');
-    // Collected money across ALL the job's invoices = Σ REAL non-voided payments − Σ refunds.
-    // Synthetic DEPOSIT-CREDIT rows (the non-cash credit transfer invoice.create writes onto a
-    // STANDARD invoice when a deposit is drawn down) are NOT new money — mirror refundInvoice's
-    // NON_CREDIT_PAYMENT_FILTER and drop them, else collected_total / refund_suggested inflate by
-    // the applied deposit amount. Surfaced for the admin's separate §8 refund action (default
-    // refund-all) — NEVER auto-refunded here.
+    const openToVoid = cancelOpenInvoices(invoices);
     const collectedTotal = Math.round(
-      invoices.reduce((sum, inv) => {
-        const paid = (inv.payments ?? [])
-          .filter((p) => p.reference_number !== DEPOSIT_CREDIT_REFERENCE)
-          .reduce((s, p) => s + Number(p.amount), 0);
-        const refunded = (inv.refunds ?? []).reduce((s, r) => s + Number(r.amount), 0);
-        return sum + paid - refunded;
-      }, 0) * 100,
+      invoices.reduce((sum, inv) => sum + invoiceCollected(inv), 0) * 100,
     ) / 100;
-    const voidedInvoiceIds = openToVoid.map((inv) => inv.id);
+
+    // #891 payments guard: any non-voided invoice carrying money, PAID included, needs a choice.
+    if (void_invoices === undefined && cancelMoneyInvoices(invoices).length > 0) {
+      res.status(409).json(cancelPaymentsConflict(req, invoices));
+      return;
+    }
+
+    // "Keep the invoices" (void_invoices: false) skips the cascade entirely; otherwise only the
+    // open invoices carrying no money are voided. Everything downstream reads invoicesToVoid, so
+    // a kept invoice's row, INVOICE_VOIDED timeline event and amount_invoiced stay untouched.
+    const invoicesToVoid = void_invoices === false ? [] : openToVoid.filter((inv) => !invoiceHasPayments(inv));
+    const voidedInvoiceIds = invoicesToVoid.map((inv) => inv.id);
+    // W4: a DRAFT with a public link is payable, and the cascade leaves a DRAFT alone (it is
+    // deleted, not voided). Unless the caller keeps the invoices, a cancelled job's DRAFT payment
+    // links are retired (token cleared) and their checkouts expired, so nobody pays a cancelled job.
+    const draftsToRetire = void_invoices === false ? [] : invoices.filter((inv) => inv.status === 'DRAFT');
     const actor = `${req.user!.first_name ?? ''} ${req.user!.last_name ?? ''}`.trim() || 'Unknown';
 
     // Logistic Orders (spec §14 C1/H1): resolve — PRE-TX, on the global client (pool discipline) —
@@ -4853,9 +6063,25 @@ export async function cancel(req: Request, res: Response) {
     });
 
     const job = await prisma.$transaction(async (tx) => {
-      for (const inv of openToVoid) {
-        await tx.invoice.update({
-          where: { id: inv.id },
+      // #891: lock the invoices to void FIRST. The conditional void below cannot see a payment
+      // another transaction has inserted but not committed, and a payment insert only takes a
+      // KEY SHARE lock on its invoice, which an UPDATE does not wait for. FOR UPDATE does: it
+      // waits for any in-flight payment to commit (the void below then sees it and aborts), and
+      // a payment that starts after it waits for this cancel (its writer then finds the invoice
+      // VOIDED and refuses). Sorted ids, so two cancels sharing an invoice cannot deadlock.
+      if (voidedInvoiceIds.length > 0) {
+        await tx.$executeRaw`SELECT id FROM invoices WHERE id = ANY(${[...voidedInvoiceIds].sort()}::uuid[]) AND organization_id = ${req.user!.organization_id}::uuid ORDER BY id FOR UPDATE`;
+      }
+      for (const inv of invoicesToVoid) {
+        // #891: void ONLY while the invoice is still open and still carries no money. A miss
+        // means it changed after the guard read it; abort and roll the whole cancel back.
+        const voided = await tx.invoice.updateMany({
+          where: {
+            id: inv.id,
+            ...tenantWhere(req),
+            status: { in: [...CANCEL_VOIDABLE_STATUSES] },
+            payments: { none: MONEY_PAYMENT_WHERE },
+          },
           data: {
             status: 'VOIDED',
             voided_at: new Date(),
@@ -4863,6 +6089,7 @@ export async function cancel(req: Request, res: Response) {
             amount_due: 0,
           },
         });
+        if (voided.count !== 1) throw new InvoiceChangedDuringCancel();
         // Inventory P1 (§4.2): a cascade-voided invoice returns its invoice-BORN synced lines
         // in this same tx — otherwise cancelling a job with an ad-hoc-deducted invoice line
         // strands that deduction (D2). Job-copied lines on these invoices are NOT_TRACKED by
@@ -4895,6 +6122,31 @@ export async function cancel(req: Request, res: Response) {
             created_by: req.user!.id,
           },
         });
+        // #891 / §8: un-apply the deposit credit drawn ONTO this invoice, exactly as the invoice
+        // void door does (invoice.controller voidInvoice). Without it the deposit stays consumed
+        // by a VOIDED invoice (remainingDepositCredit counts un-reversed applications) and the
+        // live synthetic DEPOSIT-CREDIT payment shows as a phantom credit on the statement.
+        const voidedAt = new Date();
+        const reversed = await tx.depositCreditApplication.updateMany({
+          where: { target_invoice_id: inv.id, reversed_at: null, ...tenantWhere(req) },
+          data: { reversed_at: voidedAt },
+        });
+        if (reversed.count > 0) {
+          await tx.payment.updateMany({
+            where: { invoice_id: inv.id, reference_number: DEPOSIT_CREDIT_REFERENCE, voided_at: null },
+            data: { voided_at: voidedAt, voided_reason: 'Invoice voided', voided_by: req.user!.id },
+          });
+          await tx.timelineEvent.create({
+            data: {
+              organization_id: req.user!.organization_id,
+              entity_type: 'INVOICE',
+              entity_id: inv.id,
+              event_type: 'DEPOSIT_CREDIT_REVERSED',
+              description: `Deposit credit released on invoice ${inv.invoice_number} (job ${existing.job_number} cancelled)`,
+              created_by: req.user!.id,
+            },
+          });
+        }
         // Mirror the amount_invoiced decrement for each STANDARD invoice voided (cached billing
         // tracker — only a STANDARD bill counts as billed).
         if (inv.kind === 'STANDARD') {
@@ -4903,6 +6155,13 @@ export async function cancel(req: Request, res: Response) {
             data: { amount_invoiced: { decrement: Number(inv.total_amount) } },
           });
         }
+      }
+
+      if (draftsToRetire.length > 0) {
+        await tx.invoice.updateMany({
+          where: { id: { in: draftsToRetire.map((inv) => inv.id) }, ...tenantWhere(req), status: 'DRAFT' },
+          data: { public_token: null },
+        });
       }
 
       // Inventory P1 (D2 / QA-413): auto-return every SYNCED job line inside the same tx.
@@ -4939,8 +6198,9 @@ export async function cancel(req: Request, res: Response) {
           entity_type: 'JOB',
           entity_id: id,
           event_type: 'CANCELLED',
-          description: `Job ${existing.job_number} cancelled`,
-          metadata: { reason: cancelled_reason, collected_total: collectedTotal, voided_invoice_ids: voidedInvoiceIds },
+          description: `Job ${existing.job_number} cancelled: ${reasonLabel}`,
+          // `reason` is the optional note; the code and the label it had then let the history show the label as it is today.
+          metadata: { reason: note, reason_code: cancel_reason_code, reason_label: reasonLabel, collected_total: collectedTotal, voided_invoice_ids: voidedInvoiceIds },
           created_by: req.user!.id,
         },
       });
@@ -4991,27 +6251,45 @@ export async function cancel(req: Request, res: Response) {
           status: 'CANCELLED',
           ...subStatusClears(existing.status, 'CANCELLED'),
           cancelled_at: new Date(),
-          cancelled_reason,
+          cancelled_reason: note,
+          cancel_reason_code,
         },
         select: jobDetailSelect,
       });
 
       return updated;
+    }).catch((err: unknown) => {
+      if (err instanceof InvoiceChangedDuringCancel) return null;
+      throw err;
     });
 
+    if (job === null) {
+      // The cancel rolled back because an invoice changed under it. Re-read and say why.
+      // Without a choice, money that landed is the payments conflict; with one, a retry keeps it.
+      const fresh = await prisma.job.findUnique({ where: { id, ...tenantWhere(req) }, select: CANCEL_JOB_SELECT });
+      const freshInvoices = fresh?.invoices ?? [];
+      if (void_invoices === undefined && cancelMoneyInvoices(freshInvoices).length > 0) {
+        res.status(409).json(cancelPaymentsConflict(req, freshInvoices));
+        return;
+      }
+      res.status(409).json({
+        error: "This job's invoices changed while it was being cancelled, so nothing was changed. Try again.",
+        code: 'JOB_CANCEL_INVOICES_CHANGED',
+      });
+      return;
+    }
+
+    // Slice 18: close the checkout links still open for the invoices the cascade voided, so an
+    // old link cannot take money for a voided bill. Post-commit, fire-and-forget: never fails the cancel.
+    void closeOpenCheckoutLinks(req.user!.organization_id, invoicesToVoid, 'invoice_voided');
+    void closeOpenCheckoutLinks(req.user!.organization_id, draftsToRetire, 'invoice_voided');
+
     // ─── In-app notification hook ───────────────────────────────────────────
-    await emit({
-      verb: 'job.cancelled',
-      organizationId: req.user!.organization_id,
-      actorId: req.user?.id ?? null,
-      object: { type: 'JOB', id, label: existing.job_number },
-      entity: {
-        // S8 (D6): `job` is the RAW jobDetailSelect row, not the presented payload - the derived
-        // `assignees` wire key is added later, by presentJobDetail. Crew comes off the trips.
-        assignee_ids: jobCrewIds(job),
-        sold_by_id: (job as any)?.estimate?.lead?.commission_owner?.id as string | undefined,
-      },
-      data: { object_label: existing.job_number, cancelled_reason },
+    // S06.25: through M6's two lanes, queued and sent after the response. Crew comes off the trips of the row just written (S8, D6:
+    // `job` is the RAW jobDetailSelect row, not the presented payload).
+    queueJobLifecycleAlert({
+      verb: 'job.cancelled', orgId: req.user!.organization_id, actorId: req.user?.id ?? null, jobId: id, jobNumber: existing.job_number, job,
+      data: { cancelled_reason },
     });
 
     // ─── Automation Center event — post-commit, fire-and-forget (#271) ───────
@@ -5024,12 +6302,12 @@ export async function cancel(req: Request, res: Response) {
     });
 
     // GAP-5 — collected_total/refund_suggested are money figures and live OUTSIDE the
-    // presentJobDetail pricing strip; gate them behind the same read-Invoice check so a
-    // pricing-restricted role (a tech granted cancel, or a DISPATCHER narrowed off Invoice) does
+    // presentJobDetail strip; gate them behind the same read-Invoice check so a role that
+    // cannot read invoices (a tech granted cancel, or a DISPATCHER narrowed off Invoice) does
     // not receive them. voided_invoice_ids (operational, non-money) is always returned.
     res.json({
       job: await presentJobDetail(req, job),
-      ...(canSeePricing(req) ? { collected_total: collectedTotal, refund_suggested: collectedTotal > 0 } : {}),
+      ...(canReadInvoices(req) ? { collected_total: collectedTotal, refund_suggested: collectedTotal > 0 } : {}),
       voided_invoice_ids: voidedInvoiceIds,
     });
   } catch (err) {
@@ -5038,85 +6316,47 @@ export async function cancel(req: Request, res: Response) {
   }
 }
 
+/**
+ * POST /api/jobs/:id/reopen - Reopen (Roles & Permissions, PRD 6, S06.16): a Done or Cancelled job goes back to In Progress,
+ * clearing the stamps that went with the closed state. Reopen Done jobs is the route's switch and, on THIS job, the person's
+ * row scope; M7 decides from the job's status, so a job that is not closed is refused. The write is lib/job-reopen.
+ */
 export async function reopen(req: Request, res: Response) {
   try {
     const id = param(req, 'id');
 
-    const existing = await prisma.job.findUnique({
-      where: { id, ...tenantWhere(req) },
-      // S4: source_plan_id joins the select so the PlanVisit revert below can run.
-      select: { id: true, status: true, job_number: true, source_plan_id: true, invoices: { select: { status: true } } },
-    });
-
+    const existing = await prisma.job.findUnique({ where: { id, ...tenantWhere(req) }, select: { id: true } });
     if (!existing) {
       res.status(404).json({ error: 'Job not found' });
       return;
     }
 
-    // Spec B1: job state and invoice state are independent under the backward-clearing rule —
-    // a sent invoice stays sent when the job reopens (invoice/payment state is never touched by
-    // a job-status click; it only reverses through void/refund). Every status is reachable from
-    // every other, so reopen no longer requires COMPLETED nor an absent issued invoice.
-    const job = await prisma.job.update({
-      where: { id, ...tenantWhere(req) },
-      data: {
-        status: 'IN_PROGRESS',
-        ...subStatusClears(existing.status, 'IN_PROGRESS'),
-        completed_at: null,
-        // The evidence of the terminal state goes with it. Leaving these set produced a job
-        // reading In Progress while still carrying a full cancellation record, which every
-        // report keyed on cancelled_at still counted as cancelled (section 4.2).
-        cancelled_at: null,
-        cancelled_reason: null,
-      },
-      select: jobDetailSelect,
-    });
-
-    // The window has to be re-derived off the visit set, or the mirror keeps pointing at a
-    // trip that is still CANCELLED - J00260 read IN_PROGRESS with scheduled_start still on
-    // 2026-09-21T13:00Z and its only visit called off. `deriveStatus: false` because THIS
-    // handler is the human deciding the status: re-deriving would answer UNSCHEDULED off an
-    // all-cancelled visit set and immediately undo the reopen.
-    await syncJobFromVisits(prisma, {
-      jobId: id,
+    // The route guard asked whether the person may ever reopen a job; this asks about THIS job under their row scope.
+    const mayReopen = await canActOnRow(req, 'Job', prisma.job, id, 'reopen');
+    const { job_number } = await reopenJobMove({
       orgId: req.user!.organization_id,
-      deriveStatus: false,
+      jobId: id,
+      actorId: req.user!.id,
+      switches: { reopen_done_jobs: mayReopen },
     });
-
-    // Reopening CLEARS completion, so the linked service-plan visit has to come back with it -
-    // exactly what start() and arrive() already do through clearsCompletion. reopen() never did,
-    // so a reopened plan job left its PlanVisit COMPLETED and the plan's visits_remaining
-    // permanently decremented. lib/job-milestones.ts documented this as a live bug; it is fixed
-    // here because per-visit completion runs the path far more often.
-    await revertPlanVisitOnUncomplete(req, id, existing.source_plan_id);
-
-    await prisma.timelineEvent.create({
-      data: {
-        organization_id: req.user!.organization_id,
-        entity_type: 'JOB',
-        entity_id: id,
-        event_type: 'JOB_REOPENED',
-        description: `Job ${existing.job_number} reopened`,
-        created_by: req.user!.id,
-      },
-    });
+    const job = await prisma.job.findUnique({ where: { id, ...tenantWhere(req) }, select: jobDetailSelect });
+    if (!job) {
+      res.status(404).json({ error: 'Job not found' });
+      return;
+    }
 
     // ─── In-app notification hook ───────────────────────────────────────────
-    await emit({
-      verb: 'job.reopened',
-      organizationId: req.user!.organization_id,
-      actorId: req.user?.id ?? null,
-      object: { type: 'JOB', id, label: existing.job_number },
-      entity: {
-        // S8 (D6): `job` is the RAW jobDetailSelect row, not the presented payload - the derived
-        // `assignees` wire key is added later, by presentJobDetail. Crew comes off the trips.
-        assignee_ids: jobCrewIds(job),
-      },
-      data: { object_label: existing.job_number },
-    });
+    // S06.25: through M6's two lanes, queued and sent after the response.
+    queueJobLifecycleAlert({ verb: 'job.reopened', orgId: req.user!.organization_id, actorId: req.user?.id ?? null, jobId: id, jobNumber: job_number, job });
 
     res.json({ job: await presentJobDetail(req, job) });
   } catch (err) {
+    if (err instanceof ReopenRefusal) {
+      const { kind, reason } = err.refusal;
+      if (kind === 'forbidden') res.status(403).json({ error: reason });
+      else res.status(409).json({ error: reason, code: JOB_CLOSE_OUT_REFUSED });
+      return;
+    }
     logger.error('Reopen job error:', err);
     res.status(500).json({ error: 'Failed to reopen job' });
   }
@@ -5139,7 +6379,12 @@ export const setStatusSchema = z.object({
   is_all_day: z.boolean().optional(),
   force: z.boolean().optional(),
   completion_notes: z.string().max(LONG_TEXT_MAX).optional(),
+  cancel_reason_code: z.string().max(64).optional(),
   cancelled_reason: z.string().max(LONG_TEXT_MAX).optional(),
+  // #891: passed through to cancel() (see cancelJobSchema).
+  void_invoices: z.boolean().optional(),
+  // S04.17: passed through to complete() (see completeJobSchema).
+  cancel_open_visits: z.boolean().optional(),
 });
 
 type StatusVerb = {
@@ -5156,12 +6401,19 @@ type StatusVerb = {
  * linked PlanVisit, which reopen() does not - strictly the more correct of the two doors. A
  * caller who needs reopen()'s exact semantics keeps using POST /:id/reopen.
  */
-const STATUS_VERBS: Record<JobStatus, StatusVerb> = {
+const STATUS_VERBS: Partial<Record<JobStatus, StatusVerb>> = {
   SCHEDULED: { action: 'assign', handler: assign, schema: assignJobSchema },
   UNSCHEDULED: { action: 'unassign', handler: unassign },
   IN_PROGRESS: { action: 'start', handler: start },
   COMPLETED: { action: 'complete', handler: complete, schema: completeJobSchema },
   CANCELLED: { action: 'cancel', handler: cancel, schema: cancelJobSchema },
+};
+
+/** What the status door answers for a close-out status it will not set, naming the action that does. */
+const CLOSE_OUT_STATUS_POINTER: Partial<Record<JobStatus, string>> = {
+  OFFICE_REVIEW: 'A job enters office review when it is completed. Use Complete job.',
+  READY_TO_CLOSE: 'A job becomes ready to close when its office review is finished. Use Finish review.',
+  DONE: 'A job becomes Done from Ready to close. Use Mark Done.',
 };
 
 /**
@@ -5199,14 +6451,42 @@ export async function setStatus(req: Request, res: Response) {
   try {
     const {
       status, assignee_ids, scheduled_start, scheduled_end, is_all_day, force,
-      completion_notes, cancelled_reason,
+      completion_notes, cancel_reason_code, cancelled_reason, void_invoices, cancel_open_visits,
     } = req.body as z.infer<typeof setStatusSchema>;
 
-    const spec = STATUS_VERBS[status];
+    // Office review, Ready to close and Done are never a target of the status door: each is reached only by its own
+    // close-out move (M7), so the door points at the matching action and writes nothing.
+    const closeOutPointer = CLOSE_OUT_STATUS_POINTER[status];
+    if (closeOutPointer) {
+      res.status(400).json({ error: closeOutPointer, code: JOB_CLOSE_OUT_REFUSED });
+      return;
+    }
+    const spec = STATUS_VERBS[status]!;
 
     // The real authorization: the target VERB's own action, not this endpoint's.
     if (!req.ability?.can(spec.action, 'Job')) {
       res.status(403).json({ error: 'Insufficient permissions' });
+      return;
+    }
+
+    // S06.17/S06.18 (M7): a Done or Cancelled job leaves only through Reopen, and a job in Office review or Ready to close
+    // goes back to Scheduled, Unscheduled or In Progress only for someone who also holds Complete jobs. Asked before the
+    // lock, so a person without Change locked jobs is told what to do rather than that the job is locked, and a holder is
+    // refused like anyone else. A backward move M7 allows is a close-out move, which the lock does not bind.
+    let backwardMove = false;
+    if (status === 'SCHEDULED' || status === 'UNSCHEDULED' || status === 'IN_PROGRESS') {
+      const verdict = await statusDoorVerdict(req, param(req, 'id'), status === 'SCHEDULED' ? 'schedule' : status === 'UNSCHEDULED' ? 'unschedule' : 'start');
+      if (verdict.reason) {
+        respondStatusDoorClosed(res, verdict.reason);
+        return;
+      }
+      backwardMove = verdict.backward;
+    }
+
+    // S04.22: a move to Scheduled, Unscheduled or In Progress changes the finished job (it rewinds its history), so the
+    // lock applies; Completed and Cancelled are the close-out moves and stay open.
+    if (!backwardMove && status !== 'COMPLETED' && status !== 'CANCELLED' && (await jobLockedFor(req, param(req, 'id')))) {
+      res.status(403).json({ error: JOB_LOCKED_MESSAGE, code: JOB_LOCKED_CODE });
       return;
     }
 
@@ -5242,10 +6522,14 @@ export async function setStatus(req: Request, res: Response) {
         ...(force !== undefined ? { force } : {}),
       };
     } else if (status === 'COMPLETED') {
-      verbBody = completion_notes !== undefined ? { completion_notes } : {};
+      verbBody = {
+        ...(completion_notes !== undefined ? { completion_notes } : {}),
+        ...(cancel_open_visits !== undefined ? { cancel_open_visits } : {}),
+      };
     } else if (status === 'CANCELLED') {
       // Left undefined when omitted so cancelJobSchema produces its own "reason is required" 400.
-      verbBody = { cancelled_reason };
+      // void_invoices stays absent when omitted: "no choice made" (#891).
+      verbBody = { cancel_reason_code, cancelled_reason, ...(void_invoices !== undefined ? { void_invoices } : {}) };
     }
 
     if (spec.schema) {
@@ -5258,6 +6542,8 @@ export async function setStatus(req: Request, res: Response) {
     }
 
     req.body = verbBody;
+    // The target the door was pressed for, so the Scheduled handler treats a job sent back with its own window as the move it is.
+    if (res.locals) res.locals.statusDoorTarget = status;
     await spec.handler(req, res);
   } catch (err) {
     logger.error('Set job status error:', err);
@@ -5278,7 +6564,7 @@ export async function enRoute(req: Request, res: Response) {
         status: true,
         // Crew (M2M): user_id for the access check + first member's name for the email.
         // S8 (D6): crew through the trips.
-        visits: { select: { assignees: { select: { user_id: true, user: { select: { first_name: true } } } } } },
+        visits: { select: { ...currentVisitFields, assignees: { select: { user_id: true, user: { select: { first_name: true } } } } } },
         job_number: true,
         customer: { select: { id: true, email: true, first_name: true, company_name: true } },
         service_location: { select: { address_line1: true, city: true, state: true } },
@@ -5290,10 +6576,9 @@ export async function enRoute(req: Request, res: Response) {
       return;
     }
 
-    // Admins/dispatchers may advance any job in their org; a technician may only advance a job
-    // they are assigned to (the route guard already verified the `en_route Job` capability).
-    const isOrgManager = req.ability!.can('manage', 'all' as Subject) || req.user!.role === 'DISPATCHER';
-    if (!isOrgManager && !isOnJobCrew(existing, req.user!.id)) {
+    // The crew may step their own job; anyone else needs Update any visit's status (the route guard already
+    // verified the step's own switch).
+    if (!(await mayStepStatus(req, existing.id, isOnCurrentJobVisitCrew(existing.visits, req.user!.id)))) {
       res.status(403).json({ error: 'Insufficient permissions' });
       return;
     }
@@ -5404,7 +6689,7 @@ export async function arrive(req: Request, res: Response) {
 
     const existing = await prisma.job.findUnique({
       where: { id, ...tenantWhere(req) },
-      select: { id: true, status: true, visits: { select: { assignees: { select: { user_id: true } } } }, job_number: true, source_plan_id: true },
+      select: { id: true, status: true, visits: { select: { ...currentVisitFields, assignees: { select: { user_id: true } } } }, job_number: true, source_plan_id: true },
     });
 
     if (!existing) {
@@ -5412,11 +6697,18 @@ export async function arrive(req: Request, res: Response) {
       return;
     }
 
-    // Admins/dispatchers may advance any job in their org; a technician may only advance a job
-    // they are assigned to (the route guard already verified the `arrive Job` capability).
-    const isOrgManager = req.ability!.can('manage', 'all' as Subject) || req.user!.role === 'DISPATCHER';
-    if (!isOrgManager && !isOnJobCrew(existing, req.user!.id)) {
+    // The crew may step their own job; anyone else needs Update any visit's status (the route guard already
+    // verified the step's own switch).
+    if (!(await mayStepStatus(req, existing.id, isOnCurrentJobVisitCrew(existing.visits, req.user!.id)))) {
       res.status(403).json({ error: 'Insufficient permissions' });
+      return;
+    }
+
+    // M7: Arrived never pulls a job out of Office review, Ready to close or Done, and no longer revives a Cancelled one.
+    // Refused before any write, so no stamp is cleared by the press.
+    const closeOutRefusal = jobLevelArriveRefusal(existing.status);
+    if (closeOutRefusal) {
+      respondStatusDoorClosed(res, closeOutRefusal);
       return;
     }
 
@@ -5461,10 +6753,12 @@ export async function arrive(req: Request, res: Response) {
       where: { organization_id: req.user!.organization_id, job_id: id },
       select: { status: true, started_at: true },
     });
-    const leavingTerminal = existing.status === 'COMPLETED' || existing.status === 'CANCELLED';
+    // `existing.status` is named so the derivation itself refuses a job the office has taken over (M7 stops those above;
+    // this is the second line, so no later caller can reopen the gap).
+    const leavingTerminal = isCompletedOrLater(existing.status);
     const derivedStatus =
       visitsAfterStamp.length > 0 || leavingTerminal
-        ? deriveJobStatusFromVisits(visitsAfterStamp, null)
+        ? deriveJobStatusFromVisits(visitsAfterStamp, null, existing.status)
         : undefined;
 
     const job = await prisma.job.update({
@@ -5516,14 +6810,30 @@ async function runJobVerbBatch(
   body: Record<string, unknown>,
   handler: (req: Request, res: Response) => Promise<void>,
   fallbackError: string,
-): Promise<{ updated: { id: string; payload: any }[]; failed: { id: string; error: string }[] }> {
+  // S04.22: true for an action that changes the job itself (a status step, a crew change). Such a job that is locked for
+  // the person lands in the failed list with the lock message; the close-out moves (complete, cancel) pass false.
+  respectsJobLock = false,
+  // S06.17/S06.18: the door of a bulk status step (start, arrive). A Done or Cancelled job lands in the failed list with the
+  // Reopen rule, a job in Office review or Ready to close with M7's words (Arrived is refused there; Start is a backward move
+  // that needs Complete jobs as well, and the lock does not bind it), asked before the lock so every person is told the same thing.
+  statusDoor?: 'start' | 'arrive',
+): Promise<{ updated: { id: string; payload: any }[]; failed: { id: string; error: string; code?: string }[] }> {
   const updated: { id: string; payload: any }[] = [];
-  const failed: { id: string; error: string }[] = [];
+  const failed: { id: string; error: string; code?: string }[] = [];
 
   for (const id of ids) {
     try {
       if (!(await canAccessRow(req, 'Job', prisma.job, id))) {
         failed.push({ id, error: 'Insufficient permissions' });
+        continue;
+      }
+      const verdict = statusDoor ? await statusDoorVerdict(req, id, statusDoor) : null;
+      if (verdict?.reason) {
+        failed.push({ id, error: verdict.reason, code: JOB_CLOSE_OUT_REFUSED });
+        continue;
+      }
+      if (respectsJobLock && !verdict?.backward && (await jobLockedFor(req, id))) {
+        failed.push({ id, error: JOB_LOCKED_MESSAGE, code: JOB_LOCKED_CODE });
         continue;
       }
 
@@ -5546,7 +6856,12 @@ async function runJobVerbBatch(
       if (code >= 200 && code < 300) {
         updated.push({ id, payload });
       } else {
-        failed.push({ id, error: payload?.error ?? fallbackError });
+        // #891: the handler's machine-readable code travels too (e.g. JOB_CANCEL_HAS_PAYMENTS).
+        failed.push({
+          id,
+          error: payload?.error ?? fallbackError,
+          ...(typeof payload?.code === 'string' ? { code: payload.code } : {}),
+        });
       }
     } catch (err) {
       logger.error(`Bulk job action error for ${id}:`, err);
@@ -5566,9 +6881,34 @@ const BULK_STATUS_VERBS: Record<string, { action: Action; handler: (req: Request
   cancel: { action: 'cancel', handler: cancel },
 };
 
+/**
+ * The jobs of a bulk Completed that still have open visits, with those visits, for the confirmation to list. Only jobs
+ * the person may complete are listed: the open visits of a job they cannot reach are not theirs to see, and that job
+ * fails on its own later with the same "Insufficient permissions" every other bulk action gives.
+ */
+async function openVisitsBlockingBulkComplete(req: Request, ids: string[]) {
+  const orgId = req.user!.organization_id;
+  const open = await findOpenVisits(prisma, orgId, ids);
+  const byJob = new Map<string, OpenVisit[]>();
+  for (const visit of open) byJob.set(visit.job_id, [...(byJob.get(visit.job_id) ?? []), visit]);
+
+  const listed: { id: string; job_number: string; open_visits: ReturnType<typeof openVisitsPayload> }[] = [];
+  for (const id of ids) {
+    const visits = byJob.get(id);
+    if (!visits || !(await canActOnRow(req, 'Job', prisma.job, id, 'complete'))) continue;
+    const job = await prisma.job.findUnique({ where: { id, ...tenantWhere(req) }, select: { job_number: true, status: true } });
+    // A job that cannot be completed from where it stands (cancelled, or already past Complete) fails on its own with
+    // that reason; asking the person to confirm cancelling its visits would be asking about a move that cannot happen.
+    if (job && COMPLETABLE_JOB_STATUSES.includes(job.status)) {
+      listed.push({ id, job_number: job.job_number, open_visits: openVisitsPayload(visits) });
+    }
+  }
+  return listed;
+}
+
 export async function bulkStatus(req: Request, res: Response) {
   try {
-    const { ids, action, cancelled_reason } = req.body as z.infer<typeof bulkStatusJobsSchema>;
+    const { ids, action, cancel_reason_code, cancelled_reason, void_invoices, cancel_open_visits } = req.body as z.infer<typeof bulkStatusJobsSchema>;
     const verb = BULK_STATUS_VERBS[action];
 
     // The authoritative verb gate lives HERE, not on the route: the route is gated `read Job`
@@ -5580,8 +6920,33 @@ export async function bulkStatus(req: Request, res: Response) {
       return;
     }
 
-    const body = action === 'cancel' ? { cancelled_reason } : {};
-    const { updated, failed } = await runJobVerbBatch(req, ids, body, verb.handler, `Failed to ${action} job`);
+    // S06.15: one reason for the batch. A reason the org does not offer is refused as a whole, not once per job; each job
+    // is then judged on its own by the cancel move (a Done job, or one out of reach, lands in the failed list).
+    if (action === 'cancel' && !(await resolveOfferedJobCancelReasons(req.user!.organization_id)).some((o) => o.code === cancel_reason_code?.trim())) {
+      res.status(400).json({ error: CANCEL_REASON_UNAVAILABLE_MESSAGE, code: JOB_CANCEL_REASON_INVALID });
+      return;
+    }
+
+    // S04.17: a bulk Completed over jobs that still have open visits is refused as a whole, before any job is
+    // completed, so the confirmation lists every affected job and nothing happens behind it.
+    if (action === 'complete' && cancel_open_visits !== true) {
+      const jobsWithOpenVisits = await openVisitsBlockingBulkComplete(req, ids);
+      if (jobsWithOpenVisits.length > 0) {
+        res.status(409).json({
+          error: 'Some of these jobs still have open visits. Cancel them to complete the jobs.',
+          code: JOB_COMPLETE_HAS_OPEN_VISITS,
+          jobs: jobsWithOpenVisits,
+        });
+        return;
+      }
+    }
+
+    const body = action === 'cancel'
+      ? { cancel_reason_code: cancel_reason_code!.trim(), ...(cancelled_reason !== undefined ? { cancelled_reason } : {}), ...(void_invoices !== undefined ? { void_invoices } : {}) }
+      : action === 'complete' && cancel_open_visits === true
+        ? { cancel_open_visits }
+        : {};
+    const { updated, failed } = await runJobVerbBatch(req, ids, body, verb.handler, `Failed to ${action} job`, action === 'arrive' || action === 'start', action === 'arrive' || action === 'start' ? action : undefined);
 
     const responseBody: Record<string, unknown> = {
       updated: updated.map((u) => u.id),
@@ -5589,12 +6954,12 @@ export async function bulkStatus(req: Request, res: Response) {
     };
 
     // Reviewer objection 3 fix: cancel() already returns voided_invoice_ids unconditionally and
-    // collected_total/refund_suggested behind canSeePricing(req) - the shim already holds that
+    // collected_total/refund_suggested behind reading invoices - the shim already holds that
     // payload, so aggregate it across the batch rather than discarding it on success. The money
     // gate is preserved because every call in the batch shares one `req`.
     if (action === 'cancel') {
       responseBody.voided_invoice_ids = updated.flatMap((u) => u.payload?.voided_invoice_ids ?? []);
-      if (canSeePricing(req)) {
+      if (canReadInvoices(req)) {
         responseBody.collected_total = updated.reduce((sum, u) => sum + Number(u.payload?.collected_total ?? 0), 0);
       }
     }
@@ -5615,6 +6980,7 @@ export async function bulkAssign(req: Request, res: Response) {
       { assignee_ids, notify },
       setAssignees,
       'Failed to assign job',
+      true,
     );
     res.json({ updated: updated.map((u) => u.id), failed });
   } catch (err) {
@@ -5645,7 +7011,7 @@ export async function getNotes(req: Request, res: Response) {
       return;
     }
 
-    const notes = await prisma.note.findMany({
+    const rows = await prisma.note.findMany({
       where: { entity_type: 'JOB', entity_id: id, ...tenantWhere(req) },
       select: {
         id: true,
@@ -5655,6 +7021,12 @@ export async function getNotes(req: Request, res: Response) {
       },
       orderBy: { created_at: 'desc' },
     });
+
+    // The per-note answer (S04.25): what this person may do with each note, so the page draws a delete control only
+    // where the route would let the request in, and draws it disabled with the lock as the reason when the lock alone
+    // stops them.
+    const reach = await noteDeleteReach(req, 'JOB', id);
+    const notes = rows.map((n) => ({ ...n, ...noteDeleteAnswer(req, reach, n.creator.id) }));
 
     // `include_lead` is the current name; `include_walkthrough` stays as a working alias.
     const includeLead = req.query.include_lead === 'true' || req.query.include_walkthrough === 'true';
@@ -5692,7 +7064,9 @@ export async function getNotes(req: Request, res: Response) {
       orderBy: { created_at: 'desc' },
     });
 
-    res.json({ notes: [...jobNotes, ...wtNotes.map((n) => ({ ...n, source: 'LEAD' as const }))] });
+    // The lead's notes are the lead's: the job's route cannot delete them, so the job page offers no delete on them
+    // (locked or not). They follow the lead's ordinary rules on the lead page.
+    res.json({ notes: [...jobNotes, ...wtNotes.map((n) => ({ ...n, source: 'LEAD' as const, ...NOTE_NOT_DELETABLE_HERE }))] });
   } catch (err) {
     logger.error('Get job notes error:', err);
     res.status(500).json({ error: 'Failed to get notes' });
@@ -5714,27 +7088,32 @@ export async function addNote(req: Request, res: Response) {
     }
 
     // GAP-1 — grant/override-aware per-instance gate (see getById). NOTE: the route guard for
-    // addNote is canDo('update','Job'); the per-instance scope is still derived from the read-Job
-    // grant (canAccessRow), matching how update()/the lifecycle verbs bind ownership.
+    // addNote is canDo('add_note','Job') (the Add notes switch); the per-instance scope is still derived
+    // from the read-Job grant (canAccessRow), so a note goes only on a job the person can open.
     if (!(await canAccessRow(req, 'Job', prisma.job, id))) {
       res.status(403).json({ error: 'Insufficient permissions' });
       return;
     }
 
-    const note = await prisma.note.create({
-      data: {
-        entity_type: 'JOB',
-        entity_id: id,
-        content: req.body.content,
-        created_by: req.user!.id,
-        organization_id: req.user!.organization_id,
-      },
-      select: {
-        id: true,
-        content: true,
-        created_at: true,
-        creator: { select: { id: true, first_name: true, last_name: true } },
-      },
+    // S06.7: the note and its entry on the job's history commit together.
+    const note = await prisma.$transaction(async (tx) => {
+      const created = await tx.note.create({
+        data: {
+          entity_type: 'JOB',
+          entity_id: id,
+          content: req.body.content,
+          created_by: req.user!.id,
+          organization_id: req.user!.organization_id,
+        },
+        select: {
+          id: true,
+          content: true,
+          created_at: true,
+          creator: { select: { id: true, first_name: true, last_name: true } },
+        },
+      });
+      await recordJobNoteAdded(tx, { orgId: req.user!.organization_id, userId: req.user!.id }, id, created.id);
+      return created;
     });
 
     res.status(201).json({ note });
@@ -5771,15 +7150,22 @@ export async function getTimeline(req: Request, res: Response) {
     // so a JOB-only filter left every money event invisible on the job. Widening the read beats
     // writing duplicate JOB-entity events, which would double-count on the invoice's timeline.
     //
-    // Gated on canSeePricing: these descriptions embed dollar figures — "Payment of $900.00
+    // Gated on reading invoices: these descriptions embed dollar figures — "Payment of $900.00
     // received via CASH" — and redactTimelineMoneyForRequester only strips METADATA keys, never
-    // prose. For a price-blind requester the events are not fetched at all (Spec A D13).
-    const invoiceIds = canSeePricing(req)
+    // prose. For a requester who cannot read invoices the events are not fetched at all (Spec A D13).
+    //
+    // S06.24: the same rule as the review panel and the dashboard's Recent Activity: an entry about an invoice stays only for a
+    // reader who can open that invoice (View invoices with its scope, and the creator rule), so a reader whose Invoices scope is
+    // Attached does not get the entries of an invoice they are not on. That covers the invoice's own entries, the job's entries
+    // that name an invoice (lines, discounts, payments, files) and the sentence of a job sent back by an invoice item.
+    const jobInvoiceIds = canReadInvoices(req)
       ? (await prisma.invoice.findMany({
           where: { job_id: id, ...tenantWhere(req) },
           select: { id: true },
         })).map((i) => i.id)
       : [];
+    const openable = new Set(await openableInvoiceIds(req, jobInvoiceIds));
+    const invoiceIds = jobInvoiceIds.filter((invoiceId) => openable.has(invoiceId));
 
     const events = await prisma.timelineEvent.findMany({
       where: {
@@ -5791,6 +7177,9 @@ export async function getTimeline(req: Request, res: Response) {
       },
       select: {
         id: true,
+        // S06.7: only to match an invoice-level entry with its job mirror; not sent on.
+        entity_type: true,
+        entity_id: true,
         event_type: true,
         description: true,
         metadata: true,
@@ -5800,8 +7189,21 @@ export async function getTimeline(req: Request, res: Response) {
       orderBy: { created_at: 'desc' },
     });
 
+    // An invoice the job's entries name that was not asked about above (the reader cannot read invoices but made this one, or the job
+    // holds it through its estimate) is asked about now: one read, and none when no entry names an invoice.
+    const named = events.filter((ev) => ev.entity_type === 'JOB').flatMap((ev) => [...invoiceIdsNamedBy(ev), ...invoiceIdsOfMovedBack(ev.metadata)]);
+    const unasked = [...new Set(named)].filter((invoiceId) => invoiceId !== UNKNOWN_INVOICE && !jobInvoiceIds.includes(invoiceId));
+    if (unasked.length) (await openableInvoiceIds(req, unasked)).forEach((invoiceId) => openable.add(invoiceId));
+
+    // S06.7: a money movement is on the invoice AND on the job; the job's Activity lists it once.
+    const visible = events.filter((ev) => ev.entity_type !== 'JOB' || mayShowInvoiceEntry(ev, openable));
+    const shown = await withCurrentCancelReasonLabels(
+      req.user!.organization_id,
+      withoutInvoiceItems(hideMirroredInvoiceEvents(visible), openable).map(({ entity_type: _t, entity_id: _i, ...ev }) => ev),
+    );
+
     // GAP-5 — strip monetary metadata (e.g. cancel()'s collected_total) for a non-pricing reader.
-    res.json({ events: redactTimelineMoneyForRequester(events, req) });
+    res.json({ events: redactTimelineMoneyForRequester(shown, req).map((e) => ({ ...e, metadata: withoutProcessorIdKeys(e.metadata, { scrubValues: true }) })) });
   } catch (err) {
     logger.error('Get job timeline error:', err);
     res.status(500).json({ error: 'Failed to get timeline' });
@@ -5822,7 +7224,7 @@ export async function getStats(req: Request, res: Response) {
       prisma.job.count({ where: { ...orgWhere, status: 'UNSCHEDULED' } }),
       prisma.job.count({ where: { ...orgWhere, status: 'SCHEDULED' } }),
       prisma.job.count({ where: { ...orgWhere, status: 'IN_PROGRESS' } }),
-      prisma.job.count({ where: { ...orgWhere, status: 'COMPLETED' } }),
+      prisma.job.count({ where: { ...orgWhere, status: { in: [...COMPLETED_OR_LATER_JOB_STATUSES] } } }),
       prisma.job.count({ where: { ...orgWhere, status: 'CANCELLED' } }),
     ]);
 
@@ -5871,6 +7273,14 @@ export async function duplicate(req: Request, res: Response) {
     // role-literal canAccessJob, which hardcoded ADMIN||DISPATCHER → true and ignored grants).
     if (!(await canAccessRow(req, 'Job', prisma.job, id))) { res.status(403).json({ error: 'Insufficient permissions' }); return; }
 
+    // A duplicate has no form and no lead: it gets what a person without Assign people to jobs would get from the
+    // creator rule, and nothing is copied from the source's people (S03.16).
+    const prefill = await jobCreatorPrefill(req.user!);
+    const creatorPicks = await creationPicks(
+      req,
+      { soldBy: prefill.sold_by_id, dispatcher: prefill.dispatcher_id },
+      { soldBy: prefill.sold_by_id, dispatcher: prefill.dispatcher_id },
+    );
     const job = await withNumberCollisionRetry(() => prisma.$transaction(async (tx) => {
       const jobNumber = await allocateNumber(tx, 'job', req.user!.organization_id);
       const taxRate = await resolveTaxRateForState(tx, req.user!.organization_id, source.service_location?.state ?? null);
@@ -5885,7 +7295,9 @@ export async function duplicate(req: Request, res: Response) {
           estimated_duration: source.estimated_duration,
           status: 'UNSCHEDULED',
           tax_rate: taxRate,
-          // NOT copied: estimate_id (standalone), discount, schedule, assignees, invoices.
+          salesperson_id: prefill.sold_by_id,
+          dispatcher_id: prefill.dispatcher_id,
+          // NOT copied: estimate_id (standalone), discount, schedule, people, invoices.
           // Audit: whoever pressed Duplicate owns the new row's provenance, not the source's creator.
           ...createdByUser(req),
         },
@@ -5900,6 +7312,12 @@ export async function duplicate(req: Request, res: Response) {
           description: `Job ${jobNumber} created (duplicated from ${source.job_number})`,
           created_by: req.user!.id,
         },
+      });
+      await recordJobCreationPeople(tx, {
+        organizationId: req.user!.organization_id,
+        job: j,
+        createdBy: req.user!.id,
+        people: creatorPicks,
       });
       return j;
     }), { label: 'job.duplicate' });
@@ -6184,7 +7602,11 @@ export async function createInvoiceFromJob(req: Request, res: Response) {
       // PASS 2 (post-create) - ONE DepositCreditApplication ledger row + ONE post-tax
       // DEPOSIT-CREDIT Payment per deposit that draws > 0, under the same decreasing-room clamp
       // Pass 1 used, so the invoice's deposit_credit and Σ(ledger rows) stay consistent.
-      await applyDepositCreditsWithPayments(tx, paidDeposits, created.id, invoiceTotal, req.user!.organization_id);
+      const appliedDeposits = await applyDepositCreditsWithPayments(tx, paidDeposits, created.id, invoiceTotal, req.user!.organization_id);
+      // S06.7: each deposit drawn onto this invoice is on the job's history.
+      await recordJobDepositsApplied(
+        tx, { orgId: req.user!.organization_id, userId: req.user!.id }, job.id, created, appliedDeposits,
+      );
 
       // Task 10b: track the TAX-INCLUSIVE total, mirroring invoice.controller (increments by
       // total_amount, void/delete decrement by total_amount) so the cached billed total nets out.
@@ -6438,7 +7860,10 @@ export async function listVisits(req: Request, res: Response) {
       res.status(403).json({ error: 'Forbidden' });
       return;
     }
-    res.json({ visits: await listJobVisits(req, id) });
+    const visits = await listJobVisits(req, id);
+    // The per-record answer for the Visits card and the lifecycle bar: the steps this person may take on each visit.
+    const steps = await visitStepsFor(req, id, visits);
+    res.json({ visits: visits.map((v) => ({ ...v, status_steps: steps[v.id] })) });
   } catch (err) {
     logger.error('List job visits error:', err);
     res.status(500).json({ error: 'Failed to list visits' });
@@ -6527,7 +7952,7 @@ export async function createVisit(req: Request, res: Response) {
       return;
     }
 
-    // Eligibility: every crew member must be an active, assignable in-org user. Byte-identical to
+    // Eligibility: every newly named crew member must be an in-org user slot eligibility lets onto a crew. Byte-identical to
     // the check assign() runs, so the two crew doors cannot drift on their error strings. It sits
     // OUTSIDE the transaction deliberately: an ineligible member must leave nothing written, and
     // validateCrew issues its own top-level tenant-scoped user reads rather than tx ones.
@@ -6578,6 +8003,8 @@ export async function createVisit(req: Request, res: Response) {
     // concurrent create can take the number this transaction is about to write. The unique
     // index turns that into a failed write rather than two trips sharing one number in two
     // customer emails; this re-reads the MAX in a fresh transaction (section 4.4).
+    // Who the request really put on the trip (a new trip has nobody yet), for the alerts after the commit.
+    let crewDelta: { added: string[]; removed: string[] } = { added: [], removed: [] };
     const visit = await withVisitSeqRetry(() => prisma.$transaction(async (tx) => {
       const created = await createJobVisit(tx, {
         jobId: id,
@@ -6601,7 +8028,7 @@ export async function createVisit(req: Request, res: Response) {
       });
       // Multi-visit S3: the SAME writer the lead side uses, passed a null lead - not a job-side
       // fork. A job visit has no lead, so the row carries no lead_id at all.
-      await replaceVisitCrew(tx, { visitId: created.id, orgId, userIds: assignee_ids });
+      crewDelta = await replaceVisitCrew(tx, { visitId: created.id, orgId, userIds: assignee_ids });
       // D14: the mirror is a cache, written in the SAME transaction as the visit itself.
       await syncJobFromVisits(tx, { jobId: id, orgId });
       // The once-per-job guard: "the scheduling announcement for this job has happened". Its own
@@ -6634,6 +8061,25 @@ export async function createVisit(req: Request, res: Response) {
       });
       return created;
     }));
+
+    // ─── In-app notification hooks - POST-COMMIT, left for after the response ─────────────────────────────────
+    // The same alerts the older doors raise (assign, assignees): Job assigned to the people put on the trip, else Job rescheduled
+    // when the booking changes the job's next date (its first one, or an earlier one). The job's window is read off the visit set
+    // before and after, the way assign() reads it.
+    queueVisitDoorAlerts({
+      organizationId: orgId,
+      actorId: req.user?.id ?? null,
+      jobId: id,
+      jobNumber: existing.job_number,
+      added: crewDelta.added,
+      removed: [],
+      onOtherTrips: new Set(),
+      moved: !sameScheduleMinute(
+        resolveJobScheduleWindow(existing.visits).scheduled_start,
+        resolveJobScheduleWindow([...(existing.visits ?? []), visit]).scheduled_start,
+      ),
+      trip: { seq: visit.visit_seq, scheduledAt: visit.scheduled_at },
+    });
 
     // ─── Automation Center - post-commit, fire-and-forget (#271) ─────────────
     // Gated on scheduleDecision (see above): the job's FIRST scheduled start, once. visitId comes
@@ -6834,7 +8280,8 @@ export async function rescheduleVisit(req: Request, res: Response) {
         id: true,
         status: true,
         job_number: true,
-        visits: { select: { assignees: { select: { user_id: true } } } },
+        // `id` and `status` tell the alerts which OTHER trips of the job still hold a person taken off this one.
+        visits: { select: { id: true, status: true, assignees: { select: { user_id: true } } } },
         // S7: the customer email's own fields, same widening as the collection POST.
         customer: { select: { id: true, first_name: true, last_name: true, company_name: true, email: true } },
         service_location: { select: { address_line1: true, city: true, state: true } },
@@ -7033,6 +8480,8 @@ export async function rescheduleVisit(req: Request, res: Response) {
 
     const orgId = req.user!.organization_id;
 
+    // Who the request really put on the trip and took off it (restating the crew changes nobody), for the alerts after the commit.
+    let crewDelta: { added: string[]; removed: string[] } = { added: [], removed: [] };
     const visit = await prisma.$transaction(async (tx) => {
       // EFFECTIVE window: a no-op time-wise when both fields were omitted (rescheduleVisitRow
       // still writes the SAME scheduled_at/scheduled_end it already held), which is what makes a
@@ -7057,7 +8506,7 @@ export async function rescheduleVisit(req: Request, res: Response) {
       // Only when the request actually named crew. The SAME writers the POST and the lead side
       // use - a visit is a visit (D3), so there is no job-side fork here.
       if (assignee_ids !== undefined) {
-        await replaceVisitCrew(tx, { visitId: visitRow.id, orgId, userIds: assignee_ids });
+        crewDelta = await replaceVisitCrew(tx, { visitId: visitRow.id, orgId, userIds: assignee_ids });
       }
       // AFTER the write, so the mirror re-resolves over the POST-update state: pushing the current
       // visit later must hand the mirror to the next one, not follow the row that moved.
@@ -7086,6 +8535,23 @@ export async function rescheduleVisit(req: Request, res: Response) {
         },
       });
       return moved;
+    });
+
+    // ─── In-app notification hooks - POST-COMMIT, left for after the response ─────────────────────────────────
+    // The same alerts the older doors raise (assign, assignees): Job assigned to the people put on the trip, else Job rescheduled
+    // when its start moved; Unassigned from you to the people taken off, naming the trip when they are still on another one.
+    queueVisitDoorAlerts({
+      organizationId: orgId,
+      actorId: req.user?.id ?? null,
+      jobId: id,
+      jobNumber: existing.job_number,
+      added: crewDelta.added,
+      removed: crewDelta.removed,
+      onOtherTrips: new Set(
+        (existing.visits ?? []).filter((v) => v.id !== visitRow.id && v.status !== 'CANCELLED').flatMap((v) => (v.assignees ?? []).map((a) => a.user_id)),
+      ),
+      moved: !sameScheduleMinute(visitRow.scheduled_at, effectiveStart),
+      trip: { seq: visitRow.visit_seq, scheduledAt: effectiveStart },
     });
 
     // Same alternative-not-both rule as the collection POST above. The occurrence key stays the
@@ -7195,6 +8661,14 @@ export async function rescheduleVisit(req: Request, res: Response) {
 // the job's own status is DERIVED from the resulting visit set (lib/job-status.ts) rather than
 // written here. The job-level /:id/start, /:id/arrive and /:id/en-route routes survive unchanged
 // as the old door and now act on the job's current visit through the same writers.
+
+/** The status step each milestone is, as the per-record answer names it. */
+const VISIT_MILESTONE_STEP: Record<VisitMilestone, VisitStep> = {
+  en_route: 'en-route',
+  on_site: 'arrive',
+  started: 'start',
+  completed: 'complete',
+};
 
 /**
  * One handler shape for every per-visit milestone, built once rather than copied per verb.
@@ -7317,16 +8791,16 @@ function visitMilestoneHandler(
         return;
       }
 
-      // D7a: any crew member ON THIS VISIT may drive it, with admins and dispatchers as the
-      // fallback for when the tech on site cannot press the button - the org-manager clause is
-      // preserved verbatim from the four job verbs.
+      // D7a: any crew member ON THIS VISIT may drive it, with holders of Update any visit's status as the
+      // fallback for when the tech on site cannot press the button (S01.8; the four job verbs ask the same).
       //
       // Deliberately NOT routed through canActOnRow, and S8's repoint does not change that:
       // OWN_JOB is now `{visits:{some:{assignees:{some:{user_id}}}}}`, which asks the JOB-level
       // question ("are you on ANY of this job's trips"). These four doors need the per-visit one,
       // so a technician crewed on visit 3 cannot drive visit 1.
-      const isOrgManager = req.ability!.can('manage', 'all' as Subject) || req.user!.role === 'DISPATCHER';
-      if (!isOrgManager && !visitRow.assignees.some((a) => a.user_id === req.user!.id)) {
+      //
+      // The same per-record answer the job page reads, so a button it shows is a step this door lets in.
+      if (!(await visitStepsFor(req, id, [visitRow]))[visitRow.id]!.includes(VISIT_MILESTONE_STEP[milestone])) {
         res.status(403).json({ error: 'Insufficient permissions' });
         return;
       }
@@ -7381,6 +8855,18 @@ function visitMilestoneHandler(
           timeZone,
           mainLine,
           servwavePhones,
+        });
+      }
+
+      // S04.16: finishing a visit tells the job's people (M6's two lanes). A visit that was already finished is a
+      // repeated tap, not a new finish, so it tells nobody again.
+      if (milestone === 'completed' && visitRow.status !== 'COMPLETED') {
+        await alertVisitFinished({
+          organizationId: orgId,
+          actor: { id: req.user!.id, first_name: req.user!.first_name },
+          jobId: id,
+          visitId: visitRow.id,
+          at,
         });
       }
 

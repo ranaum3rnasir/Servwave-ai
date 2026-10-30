@@ -6,14 +6,14 @@ import { printer } from '../../fonts';
 
 const FIXTURE_ORG = {
   id: '00000000-0000-0000-0000-000000000001',
-  name: 'Alpha Doors & Security INC.',
+  name: 'Example Doors & Security INC.',
   legal_name: null,
   address_line1: '1001 Willow Avenue',
   address_line2: null,
   city: 'Hoboken', state: 'NJ', postal_code: '07030', country: 'US',
-  email: 'info@alphasecurityus.com',
+  email: 'info@example-company.test',
   phone: null,
-  website: 'https://alphadoorsnewjersey.com/',
+  website: 'https://example-company.test/',
   logo_url: null,
   brand_color: '#E11D2E',
   estimate_template: 'crm-default',

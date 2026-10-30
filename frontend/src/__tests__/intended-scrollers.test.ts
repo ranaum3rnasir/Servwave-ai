@@ -61,7 +61,6 @@ const ADOPTED: Record<string, string | string[]> = {
   'marketing-profitability': 'pages/v2/reports/MarketingAnalyticsPage.tsx',
   'marketing-organic': 'pages/v2/reports/MarketingAnalyticsPage.tsx',
   'settings-users': 'pages/v2/settings/UsersTeamsPage.tsx',
-  'settings-roles-permissions': 'pages/v2/settings/RolesPage.tsx',
   'settings-locations': 'pages/v2/settings/LocationsPage.tsx',
   'settings-tax-rates': 'pages/settings/TaxRatesPage.tsx',
   'settings-phone-numbers': 'pages/v2/settings/components/callerIdTable.tsx',

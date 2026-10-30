@@ -1,18 +1,17 @@
 /**
  * FormField adoption - phase 11b/11d, the "auth and staff" batch.
  *
- * Pins the RENDERED CONTRACT of the three converted forms (LoginPage,
- * AcceptInvitePage, StaffFormDialog), at the rigour of
+ * Pins the RENDERED CONTRACT of the two converted forms (LoginPage,
+ * AcceptInvitePage), at the rigour of
  * components/patterns/__tests__/FormField.test.tsx. Four things are asserted,
  * and each one exists because it could silently regress:
  *
  * 1. THE DEFECT THE CONVERSION CLOSES: the label's `htmlFor` and the
  *    control's `id` are ONE generated fact, not two literals. Before this
  *    batch LoginPage typed `htmlFor="email"` and `id="email"` by hand in two
- *    places; StaffFormDialog typed neither, so five `<Label>`s pointed at
- *    nothing at all. Asserting `label.for === control.id` (rather than
- *    asserting a literal id) is what makes the test survive the useId path
- *    and still catch a drift.
+ *    places. Asserting `label.for === control.id` (rather than asserting a
+ *    literal id) is what makes the test survive the useId path and still
+ *    catch a drift.
  *
  * 2. BYTE-EXACT CLASS STRINGS, both halves. FormField's own three elements
  *    (Stack root, Label, error Text) are pinned exactly, so a change to any
@@ -41,7 +40,6 @@ import { MemoryRouter } from 'react-router-dom';
 import { renderWithProviders } from './helpers';
 import LoginPage from '@/pages/LoginPage';
 import AcceptInvitePage from '@/pages/AcceptInvitePage';
-import { StaffFormDialog } from '@/components/settings/StaffFormDialog';
 
 // ─── module mocks ────────────────────────────────────────────────────────
 
@@ -60,15 +58,6 @@ vi.mock('@/lib/api/invite', () => ({
   getInviteInfo: (...a: unknown[]) => getInviteInfo(...a),
   acceptInvite: vi.fn(),
   recordInviteConsent: vi.fn(),
-}));
-
-vi.mock('@/lib/api/departments', () => ({
-  useDepartments: () => ({ data: [{ id: 'd1', name: 'Service' }] }),
-}));
-
-vi.mock('@/lib/api/users', () => ({
-  useInviteUser: () => ({ mutateAsync: vi.fn(), isPending: false }),
-  useUpdateUser: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 
 // ─── the exact strings this batch is pinning ─────────────────────────────
@@ -229,80 +218,5 @@ describe('AcceptInvitePage - FormField conversion', () => {
     // an API to swallow it (the thing phase 12f forbids).
     expect(wrapper).not.toBeNull();
     expect(wrapper).toHaveClass('flex', 'items-start', 'gap-2');
-  });
-});
-
-// ─── StaffFormDialog ─────────────────────────────────────────────────────
-
-describe('StaffFormDialog - FormField conversion', () => {
-  const renderDialog = () =>
-    renderWithProviders(
-      <StaffFormDialog open mode="create" onOpenChange={vi.fn()} />,
-    );
-
-  it('wires a generated id to the label and the Input, where five Labels pointed at nothing before', () => {
-    renderDialog();
-
-    for (const name of ['First name', 'Last name', 'Email']) {
-      const control = screen.getByLabelText(name);
-      expect(control.tagName).toBe('INPUT');
-      expect(control.id).toBeTruthy();
-      expect(screen.getByText(name).getAttribute('for')).toBe(control.id);
-    }
-  });
-
-  it('wires the Select fields through the render-prop child, id landing on the trigger', () => {
-    renderDialog();
-
-    const triggers = screen.getAllByRole('combobox');
-    expect(triggers).toHaveLength(2);
-    const [role, department] = triggers;
-    expect(role!.id).toBeTruthy();
-    expect(screen.getByText('Role').getAttribute('for')).toBe(role!.id);
-    expect(screen.getByText('Department').getAttribute('for')).toBe(department!.id);
-    // Two fields, two distinct generated ids - not one shared useId.
-    expect(role!.id).not.toBe(department!.id);
-  });
-
-  it('renders the FormField root and label with byte-exact classes', () => {
-    renderDialog();
-    const label = screen.getByText('First name');
-    expect(label.getAttribute('class')).toBe(FIELD_LABEL_CLASS);
-    expect(label.parentElement?.getAttribute('class')).toBe(FIELD_ROOT_CLASS);
-  });
-
-  it('keeps the Email field disabled in edit mode, prop pass-through unchanged', () => {
-    renderWithProviders(
-      <StaffFormDialog
-        open
-        mode="edit"
-        onOpenChange={vi.fn()}
-        initial={
-          {
-            id: 'u1',
-            first_name: 'Jane',
-            last_name: 'Doe',
-            email: 'jane@test.com',
-            role: 'TECHNICIAN',
-            department_id: null,
-          } as never
-        }
-      />,
-    );
-    expect(screen.getByLabelText('Email')).toBeDisabled();
-  });
-
-  it('renders a field error through FormField, with aria-invalid on the control', async () => {
-    const user = userEvent.setup();
-    renderDialog();
-
-    await user.click(screen.getByRole('button', { name: /send invite/i }));
-
-    const error = await screen.findByText('Invalid email');
-    expect(error.tagName).toBe('P');
-    expect(error.getAttribute('class')).toBe(FIELD_ERROR_CLASS);
-    const email = screen.getByLabelText('Email');
-    expect(email).toHaveAttribute('aria-invalid', 'true');
-    expect(email.getAttribute('aria-describedby')).toBe(error.id);
   });
 });

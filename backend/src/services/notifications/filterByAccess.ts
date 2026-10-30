@@ -5,17 +5,19 @@
  * the notification's primary object row before including them. This prevents
  * leaking cross-org or out-of-scope row references through notification delivery.
  *
- * Fail-closed: missing user → DROP; canAccessRow throws → DROP + warn.
+ * Fail-closed: missing user → DROP; the access check throws → DROP + warn.
+ *
+ * A constant number of reads however many recipients there are (see filterRecipientsByAccess).
  */
 
-import type { Request } from 'express';
 import { prisma } from '../../lib/prisma';
 import { logger } from '../../lib/logger';
-import { canAccessRow } from '../../lib/permissions/enforce';
-import { getCachedGrants, setCachedGrants } from '../../lib/permissions/permissionCache';
-import { loadUserOverrides } from '../../lib/permissions/loadUserOverrides';
-import { defineAbilityFor } from '../../lib/permissions/defineAbility';
+import { isSuperUser } from '../../lib/permissions/effectiveRole';
+import { scopeWhereForUser } from '../../lib/permissions/enforce';
 import type { ScopeResource } from '../../lib/permissions/scopeWhereFor';
+import { resolveSwitchesForPeople } from '../../lib/permissions/switches/store';
+import { readersWithEntityAccess } from '../../lib/tasks/entityAccessCohort';
+import { readersOfConversation, type ConversationKind } from '../../lib/communication/conversationReaders';
 
 // Maps notification objectType (uppercase string) → CASL ScopeResource.
 //
@@ -40,32 +42,41 @@ const SCOPE_TYPE_MAP: Record<string, ScopeResource> = {
   LEAD: 'Lead',
 };
 
-// Prisma delegate type matching RowDelegate in enforce.ts (which canAccessRow's `delegate`
-// parameter is typed against - #2042 widened it with a `count` member).
-type RowDelegate = {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  findFirst(args: any): Promise<{ id: string } | null>;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  count(args: any): Promise<number>;
+// The communication alerts name a conversation, not a record row, and who may read it is not a row scope: it is the
+// Communication scope's single-read rule (lib/communication/communicationScope.ts), the one the routes that open a call, a
+// text conversation or an email conversation ask. Asked here for every recipient in one batched read, so the recipient
+// list and the routes cannot disagree.
+const COMMUNICATION_TYPES: Record<string, ConversationKind> = {
+  CALL: 'call',
+  MESSAGE_THREAD: 'text',
+  EMAIL_THREAD: 'email',
 };
 
 /**
  * Filters a list of recipientIds down to those who have read access to the
- * given objectType/objectId row, using the same CASL ability + scopeWhereFor
- * path as attachAbility + canAccessRow.
+ * given objectType/objectId row, using the same grant-derived row scope as
+ * attachAbility + canAccessRow, asked for all of them together.
  *
  * - Non-scoped object types (anything not in SCOPE_TYPE_MAP) pass through
  *   unchanged — no DB call.
  * - Unknown user (missing from DB within org) → DROPPED (fail-closed).
- * - canAccessRow throws for any recipient → DROPPED + logger.warn (fail-closed).
+ * - The scope check throwing for any recipient → DROPPED + logger.warn (fail-closed).
  * - Input order is preserved for kept ids.
+ * - `opts.messageId` is for an alert about one text of a conversation: it narrows a text conversation's question to that
+ *   message, so a person is kept only if they read the text the alert quotes (see readersOfConversation). Other types ignore it.
  */
 export async function filterRecipientsByAccess(
   objectType: string,
   objectId: string,
   recipientIds: string[],
   organizationId: string,
+  opts: { messageId?: string | null } = {},
 ): Promise<string[]> {
+  const conversationKind = COMMUNICATION_TYPES[objectType.toUpperCase()];
+  if (conversationKind) {
+    return filterByConversationAccess(conversationKind, objectType, objectId, recipientIds, organizationId, opts.messageId ?? null);
+  }
+
   const scopeResource = SCOPE_TYPE_MAP[objectType.toUpperCase()];
 
   // Non-scoped type → passthrough, no access check needed.
@@ -73,38 +84,29 @@ export async function filterRecipientsByAccess(
     return recipientIds;
   }
 
-  // Delegate map: matches the scope resource to its Prisma delegate.
-  const delegateMap: Record<ScopeResource, RowDelegate> = {
-    Lead: prisma.lead,
-    Job: prisma.job,
-    Estimate: prisma.estimate,
-    Invoice: prisma.invoice,
-    // LO-1: present so this map stays EXHAUSTIVE over ScopeResource (that exhaustiveness is the
-    // compile-time guarantee that a new scoped subject can't silently reach an undefined
-    // delegate). Currently unreachable — SCOPE_TYPE_MAP has no LOGISTIC_ORDER objectType, so no
-    // notification resolves to this resource yet; wiring one up is all that's needed.
-    LogisticOrder: prisma.logisticOrder,
-    // #2042: present so this map stays EXHAUSTIVE over ScopeResource, same reasoning as
-    // LogisticOrder above. Currently unreachable — SCOPE_TYPE_MAP has no PURCHASE_ORDER
-    // objectType, so no notification resolves to this resource yet.
-    PurchaseOrder: prisma.purchaseOrder,
-    // #2041: present so this map stays EXHAUSTIVE over ScopeResource, same reasoning as
-    // LogisticOrder/PurchaseOrder above. Currently unreachable — SCOPE_TYPE_MAP has no CUSTOMER
-    // objectType, so no notification resolves to this resource yet.
-    Customer: prisma.customer,
-  };
-  const delegate = delegateMap[scopeResource];
-
   // Load all recipient users in one query — only within the org.
   const users = await prisma.user.findMany({
     where: { id: { in: recipientIds }, organization_id: organizationId },
-    select: { id: true, role: true, organization_id: true, department_id: true, location_id: true },
+    // custom_role_id with its key: a recipient on a custom role is judged by that role's grants and
+    // switches, not by the base role's (grantRoleKey throws if the key is missing).
+    select: {
+      id: true, role: true, organization_id: true, department_id: true, location_id: true,
+      custom_role_id: true, custom_role: { select: { key: true } },
+    },
   });
 
   const userMap = new Map(users.map((u) => [u.id, u]));
 
-  const kept: string[] = [];
+  // Everyone's switches in a constant number of reads, and cached, so deriving each person's scope below reads
+  // nothing more. Asked one person at a time this cost three reads per recipient once their switches had expired,
+  // which on the hosted database (one connection) is the better part of a second for every ten people told.
+  // A failure here is not an answer: each person is then judged on their own below and fails closed on their own.
+  await resolveSwitchesForPeople(users.filter((u) => !isSuperUser(u))).catch(() => undefined);
 
+  // Who can open the row without being asked of the database (the Admin box, or a scope that restricts nothing) and
+  // who needs the row looked at. The first group is the same answer `canAccessRow` gives without a query.
+  const open = new Set<string>();
+  const needsRow: typeof users = [];
   for (const recipientId of recipientIds) {
     const user = userMap.get(recipientId);
 
@@ -120,35 +122,9 @@ export async function filterRecipientsByAccess(
     }
 
     try {
-      // Build ability using the exact same pattern as attachAbility.ts.
-      let ability;
-      if (user.role === 'ADMIN') {
-        ability = defineAbilityFor(user, []);
-      } else {
-        let grants = getCachedGrants(organizationId, user.role);
-        if (!grants) {
-          const rows = await prisma.rolePermission.findMany({
-            where: { organization_id: organizationId, role: user.role },
-            select: { action: true, subject: true, conditions: true },
-          });
-          grants = rows.map((r) => ({
-            action: r.action,
-            subject: r.subject,
-            conditions: r.conditions as Record<string, unknown> | null,
-          }));
-          setCachedGrants(organizationId, user.role, grants);
-        }
-
-        const overrides = await loadUserOverrides(user.id);
-        ability = defineAbilityFor(user, grants, overrides);
-      }
-
-      // Construct minimal req that canAccessRow needs: { user, ability }.
-      const req = { user, ability } as unknown as Request;
-
-      if (await canAccessRow(req, scopeResource, delegate, objectId)) {
-        kept.push(recipientId);
-      }
+      const scope = await scopeWhereForUser(user, scopeResource);
+      if (Object.keys(scope).length === 0) open.add(recipientId);
+      else needsRow.push(user);
     } catch (err) {
       // Fail-closed: any error during the check → DROP + warn.
       logger.warn('[filterByAccess] access check threw — dropping recipient', {
@@ -161,5 +137,65 @@ export async function filterRecipientsByAccess(
     }
   }
 
-  return kept;
+  // The rest are asked together: people whose scope comes to the same condition share one look at the row, and the
+  // ones whose condition names themselves (their own crew place, their own jobs) are told apart by a single read.
+  // readersWithEntityAccess fails closed per person: a probe that throws leaves that person out.
+  let withAccess = new Set<string>();
+  if (needsRow.length) {
+    try {
+      ({ withAccess } = await readersWithEntityAccess(needsRow, { type: objectType.toUpperCase(), id: objectId }));
+    } catch (err) {
+      // Fail-closed: nobody who needed the row looked at is kept.
+      logger.warn('[filterByAccess] access check threw — dropping recipients', {
+        organizationId,
+        objectType,
+        objectId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  return recipientIds.filter((id) => open.has(id) || withAccess.has(id));
+}
+
+/**
+ * The communication half of the filter: keeps the recipients who may read the call, text conversation or email
+ * conversation (readersOfConversation: the routes' own rule, for everyone in one batch).
+ *
+ * - Only active people of this company are asked; anyone else is DROPPED (fail-closed), a deactivated person included.
+ * - The question failing for any reason DROPS everyone and warns: a communication alert names a customer, so a failure
+ *   never lets it through.
+ * - Show Phone / Show Text / Show Email decide nothing here: they hide a menu entry, not access.
+ * - Input order is preserved for kept ids.
+ */
+async function filterByConversationAccess(
+  kind: ConversationKind,
+  objectType: string,
+  objectId: string,
+  recipientIds: string[],
+  organizationId: string,
+  messageId: string | null,
+): Promise<string[]> {
+  if (recipientIds.length === 0) return [];
+  try {
+    const users = await prisma.user.findMany({
+      where: { id: { in: recipientIds }, organization_id: organizationId, is_active: true },
+      select: {
+        id: true, role: true, organization_id: true, department_id: true, location_id: true,
+        custom_role_id: true, custom_role: { select: { key: true } },
+      },
+    });
+    const readers = await readersOfConversation(users, kind, objectId, organizationId, { messageId });
+    // Only the people asked can be kept: anyone not found among the company's active people is dropped.
+    const asked = new Set(users.map((u) => u.id));
+    return recipientIds.filter((id) => asked.has(id) && readers.has(id));
+  } catch (err) {
+    logger.warn('[filterByAccess] communication access check threw - dropping recipients', {
+      organizationId,
+      objectType,
+      objectId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return [];
+  }
 }

@@ -7,7 +7,7 @@ import { buildAbility } from '@/lib/ability';
 
 // Regression for the "Create Lead does nothing" bug (sibling of the JobFormPage
 // fix): selecting an EXISTING customer copies that customer's stored service
-// location into hidden address fields. Imported Alpha Doors data stores full
+// location into hidden address fields. Imported pilot org data stores full
 // state names ("New Jersey"), so the old schema — service_state: z.string().max(2)
 // — failed validation on a hidden field, silently aborting form.handleSubmit and
 // never firing the POST. See lead-form-schemas.ts.

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { applyFilters } from '../../filterEngine';
 import { leadFacets } from '../lead.filters';
+import { MISSING_LEAD_OWNER_WHERE } from '../../../missingLeadOwner';
 
 function reqWith(query: Record<string, unknown>) {
   return { query } as any;
@@ -29,6 +30,24 @@ describe('leadFacets: status (enum-validated)', () => {
     const where: any = {};
     await applyFilters(where, reqWith({ status: ['NEW', 'NOT_A_REAL_STATUS'] }), leadFacets({}));
     expect(where.status).toBe('NEW');
+  });
+
+  // Cancelled is retired for leads (S05.18): every lead that was Cancelled is Lost now, so a saved link or bookmark that
+  // still filters on Cancelled shows the Lost leads instead of dropping the filter and showing every lead.
+  it('reads a saved Cancelled filter as Lost', async () => {
+    const where: any = {};
+    await applyFilters(where, reqWith({ status: 'CANCELLED' }), leadFacets({}));
+    expect(where.status).toBe('LOST');
+  });
+
+  it('reads Cancelled beside Lost as Lost once, and beside another status as both', async () => {
+    const both: any = {};
+    await applyFilters(both, reqWith({ status: ['LOST', 'CANCELLED'] }), leadFacets({}));
+    expect(both.status).toBe('LOST');
+
+    const mixed: any = {};
+    await applyFilters(mixed, reqWith({ status: ['NEW', 'CANCELLED'] }), leadFacets({}));
+    expect(mixed.status).toEqual({ in: ['NEW', 'LOST'] });
   });
 });
 
@@ -78,10 +97,10 @@ describe('leadFacets: ad_source (Customer relation)', () => {
 // REQUESTED — no lead status default/involved at all.
 describe('leadFacets: walkthrough_status (synthetic/derived)', () => {
   // Multi-visit D22a: the bucket is the ABSENCE of a live visit, not a REQUESTED placeholder.
-  it("'needs_scheduling' expands to a visits relation filter on having NO live visit", async () => {
+  it("'needs_scheduling' expands to a visits relation filter on having NO live visit with a time", async () => {
     const where: any = {};
     await applyFilters(where, reqWith({ walkthrough_status: 'needs_scheduling' }), leadFacets({}));
-    expect(where.visits).toEqual({ none: { status: { in: ['SCHEDULED', 'EN_ROUTE', 'ON_SITE', 'IN_PROGRESS'] } } });
+    expect(where.visits).toEqual({ none: { status: { in: ['SCHEDULED', 'EN_ROUTE', 'ON_SITE', 'IN_PROGRESS'] }, scheduled_at: { not: null } } });
     expect(where.status).toBeUndefined();
   });
 
@@ -93,7 +112,7 @@ describe('leadFacets: walkthrough_status (synthetic/derived)', () => {
       leadFacets({}),
     );
     expect(where.status).toBe('CONTACTED');
-    expect(where.visits).toEqual({ none: { status: { in: ['SCHEDULED', 'EN_ROUTE', 'ON_SITE', 'IN_PROGRESS'] } } });
+    expect(where.visits).toEqual({ none: { status: { in: ['SCHEDULED', 'EN_ROUTE', 'ON_SITE', 'IN_PROGRESS'] }, scheduled_at: { not: null } } });
   });
 
   it('any value other than needs_scheduling is a no-op (only value in the system today)', async () => {
@@ -112,7 +131,7 @@ describe('leadFacets: walkthrough_status (synthetic/derived)', () => {
     await applyFilters(where, reqWith({ walkthrough_status: 'needs_scheduling' }), leadFacets(scopeWhere));
     expect(where.visits).toEqual({
       some: { assignees: { some: { user_id: 'the-tech' } } },
-      none: { status: { in: ['SCHEDULED', 'EN_ROUTE', 'ON_SITE', 'IN_PROGRESS'] } },
+      none: { status: { in: ['SCHEDULED', 'EN_ROUTE', 'ON_SITE', 'IN_PROGRESS'] }, scheduled_at: { not: null } },
     });
   });
 });
@@ -124,10 +143,13 @@ describe('leadFacets: assigned_to (SECURITY: scope-guard)', () => {
     expect(where.lead_assignees).toEqual({ some: { user_id: { in: ['u1', 'u2'] } } });
   });
 
-  it('UNASSIGNED sentinel sets none:{}', async () => {
+  it.each(['NO_OWNER', 'UNASSIGNED'])('%s means the Missing lead owner predicate, composed under AND', async (sentinel) => {
     const where: any = {};
-    await applyFilters(where, reqWith({ assigned_to: 'UNASSIGNED' }), leadFacets({}));
-    expect(where.lead_assignees).toEqual({ none: {} });
+    await applyFilters(where, reqWith({ assigned_to: sentinel }), leadFacets({}));
+    expect(where.AND).toEqual([MISSING_LEAD_OWNER_WHERE]);
+    // Nothing is written onto a key the row-scope may own.
+    expect(where.lead_assignees).toBeUndefined();
+    expect(where.status).toBeUndefined();
   });
 
   it('is a NO-OP when scopeWhere already set lead_assignees (row-scoped role) — the RBAC-critical case', async () => {
@@ -138,11 +160,12 @@ describe('leadFacets: assigned_to (SECURITY: scope-guard)', () => {
     expect(where.lead_assignees).toEqual({ some: { user_id: 'the-sales-rep' } });
   });
 
-  it('is a NO-OP even for the UNASSIGNED sentinel when scope already constrains lead_assignees', async () => {
+  it('keeps the scope intact for the No owner sentinel, which only narrows it (AND), and ignores named owners', async () => {
     const scopeWhere = { lead_assignees: { some: { user_id: 'the-sales-rep' } } };
     const where: any = { ...scopeWhere };
-    await applyFilters(where, reqWith({ assigned_to: 'UNASSIGNED' }), leadFacets(scopeWhere));
+    await applyFilters(where, reqWith({ assigned_to: ['NO_OWNER', 'someone-else'] }), leadFacets(scopeWhere));
     expect(where.lead_assignees).toEqual({ some: { user_id: 'the-sales-rep' } });
+    expect(where.AND).toEqual([MISSING_LEAD_OWNER_WHERE]);
   });
 });
 
@@ -163,5 +186,36 @@ describe('leadFacets: created dateRange', () => {
     await applyFilters(where, reqWith({ created_before: '2026-02-01' }), leadFacets({}));
     // Default org zone America/New_York, UTC-5 in February.
     expect(where.created_at.lt).toEqual(new Date('2026-02-02T05:00:00.000Z'));
+  });
+});
+
+describe('leadFacets: dispatcher', () => {
+  it('a person narrows to that Dispatcher, under AND', async () => {
+    const where: any = {};
+    const id = '6b0ff11b-5581-4fc0-9acf-0cb6eb4de37f';
+    await applyFilters(where, reqWith({ dispatcher: id }), leadFacets({}));
+    expect(where.AND).toEqual([{ dispatcher_id: { in: [id] } }]);
+  });
+
+  it('NO_DISPATCHER means no Dispatcher, and either choice may be combined', async () => {
+    const id = '6b0ff11b-5581-4fc0-9acf-0cb6eb4de37f';
+    const none: any = {};
+    await applyFilters(none, reqWith({ dispatcher: 'NO_DISPATCHER' }), leadFacets({}));
+    expect(none.AND).toEqual([{ dispatcher_id: null }]);
+    const both: any = {};
+    await applyFilters(both, reqWith({ dispatcher: [id, 'NO_DISPATCHER'] }), leadFacets({}));
+    expect(both.AND).toEqual([{ OR: [{ dispatcher_id: { in: [id] } }, { dispatcher_id: null }] }]);
+  });
+
+  it('drops a value that is not a person and adds nothing', async () => {
+    const where: any = {};
+    await applyFilters(where, reqWith({ dispatcher: 'not-a-person' }), leadFacets({}));
+    expect(where.AND).toBeUndefined();
+  });
+
+  it('keeps an existing row-scope AND beside its own clause', async () => {
+    const where: any = { AND: [{ id: { in: ['x'] } }] };
+    await applyFilters(where, reqWith({ dispatcher: 'NO_DISPATCHER' }), leadFacets({}));
+    expect(where.AND).toEqual([{ id: { in: ['x'] } }, { dispatcher_id: null }]);
   });
 });

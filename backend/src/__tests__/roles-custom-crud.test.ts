@@ -4,7 +4,6 @@ import app from '../app';
 import { prisma } from '../lib/prisma';
 import { mockAuthAs, authHeader, ALPHA_ORG_ID } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -14,7 +13,13 @@ beforeEach(() => {
 describe('GET /api/roles - custom roles', () => {
   it('appends the org custom roles after the 4 system roles, type: custom', async () => {
     mockAuthAs('admin');
-    (prisma.user.groupBy as any).mockResolvedValue([{ role: 'ADMIN', _count: { _all: 1 } }]);
+    // One person in the Admin box and two on the custom role (whose base role is also Admin): three people, each counted once.
+    const onRole = { id: 'u-copy', role: 'ADMIN', custom_role_id: 'cr-1', based_on_role_key: 'office-manager', custom_role: { key: 'office-manager' } };
+    (prisma.user.findMany as any).mockResolvedValue([
+      { id: 'u-box', role: 'ADMIN', custom_role_id: null, based_on_role_key: null, custom_role: null },
+      onRole,
+      { ...onRole, id: 'u-copy-2' },
+    ]);
     (prisma.customRole.findMany as any).mockResolvedValue([
       {
         id: 'cr-1',
@@ -22,12 +27,12 @@ describe('GET /api/roles - custom roles', () => {
         label: 'Office Manager',
         description: 'Runs the office',
         base_role: 'ADMIN',
-        _count: { users: 2 },
       },
     ]);
     const res = await request(app).get('/api/roles').set(authHeader('admin'));
     expect(res.status).toBe(200);
     expect(res.body.map((r: any) => r.role)).toEqual(['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN', 'office-manager']);
+    expect(res.body.find((r: any) => r.role === 'ADMIN').userCount).toBe(1);
     const custom = res.body.find((r: any) => r.role === 'office-manager');
     expect(custom).toMatchObject({
       // The user-assignment payload (users.custom_role_id) is a UUID FK to custom_roles.id, NOT
@@ -49,7 +54,7 @@ describe('GET /api/roles - custom roles', () => {
 
   it('excludes archived custom roles', async () => {
     mockAuthAs('admin');
-    (prisma.user.groupBy as any).mockResolvedValue([]);
+    (prisma.user.findMany as any).mockResolvedValue([]);
     (prisma.customRole.findMany as any).mockResolvedValue([]);
     const res = await request(app).get('/api/roles').set(authHeader('admin'));
     expect(res.status).toBe(200);
@@ -57,118 +62,25 @@ describe('GET /api/roles - custom roles', () => {
   });
 });
 
-describe('GET /api/roles/:role/permissions - custom roles', () => {
-  it('assembles the view-model for a custom role keyed by its own key', async () => {
-    mockAuthAs('admin');
-    (prisma.customRole.findFirst as any).mockResolvedValue({
-      id: 'cr-1', organization_id: ALPHA_ORG_ID, key: 'office-manager', label: 'Office Manager',
-      description: '', base_role: 'ADMIN', archived_at: null,
-    });
-    (prisma.rolePermission.findMany as any).mockResolvedValue([
-      { action: 'read', subject: 'Customer', conditions: null },
-    ]);
-    const res = await request(app).get('/api/roles/office-manager/permissions').set(authHeader('admin'));
-    expect(res.status).toBe(200);
-    expect(res.body.matrix.Customer.read).toBe(true);
-    expect(res.body.editable).toBe(true);
-    expect((prisma.rolePermission.findMany as any).mock.calls[0][0].where).toMatchObject({
-      organization_id: ALPHA_ORG_ID,
-      role: 'office-manager',
-    });
-  });
-
-  it('404s for an unknown custom key', async () => {
-    mockAuthAs('admin');
-    (prisma.customRole.findFirst as any).mockResolvedValue(null);
-    const res = await request(app).get('/api/roles/nonexistent/permissions').set(authHeader('admin'));
-    expect(res.status).toBe(404);
-  });
-});
-
-describe('PUT /api/roles/:role/permissions - custom roles', () => {
-  it('an ADMIN-derived custom role IS editable - only the literal ADMIN key is frozen', async () => {
-    mockAuthAs('admin');
-    (prisma.customRole.findFirst as any).mockResolvedValue({
-      id: 'cr-1', organization_id: ALPHA_ORG_ID, key: 'office-manager', base_role: 'ADMIN', archived_at: null,
-    });
-    (prisma.rolePermission.findMany as any).mockResolvedValue([]);
-    const deleteMany = vi.fn().mockResolvedValue({ count: 0 });
-    const upsert = vi.fn().mockResolvedValue({});
-    (prisma.$transaction as any).mockImplementation((fn: any) => fn({ rolePermission: { deleteMany, upsert } }));
-    const res = await request(app)
-      .put('/api/roles/office-manager/permissions')
-      .set(authHeader('admin'))
-      .send({
-        matrix: { Customer: { read: true, create: false, update: false, delete: false } },
-        sensitive: { seeFinancials: false, managePayments: false, viewReports: false },
-        scope: {},
-        general: { description: '' },
-      });
-    expect(res.status).toBe(200);
-    expect(upsert).toHaveBeenCalled();
-  });
-
-  it('404s a PUT for an unknown custom key', async () => {
-    mockAuthAs('admin');
-    (prisma.customRole.findFirst as any).mockResolvedValue(null);
-    const res = await request(app)
-      .put('/api/roles/nonexistent/permissions')
-      .set(authHeader('admin'))
-      .send({ matrix: {}, sensitive: { seeFinancials: false, managePayments: false, viewReports: false }, scope: {}, general: { description: '' } });
-    expect(res.status).toBe(404);
-  });
-});
-
-describe('POST /api/roles/:role/reset - custom roles', () => {
-  it('resets an ADMIN-derived custom role to the full grant set (not empty)', async () => {
-    mockAuthAs('admin');
-    (prisma.customRole.findFirst as any).mockResolvedValue({
-      id: 'cr-1', organization_id: ALPHA_ORG_ID, key: 'office-manager', base_role: 'ADMIN', archived_at: null,
-    });
-    const deleteMany = vi.fn().mockResolvedValue({ count: 3 });
-    const createMany = vi.fn().mockResolvedValue({ count: 40 });
-    (prisma.$transaction as any).mockImplementation((fn: any) => fn({ rolePermission: { deleteMany, createMany } }));
-    const res = await request(app).post('/api/roles/office-manager/reset').set(authHeader('admin'));
-    expect(res.status).toBe(200);
-    const created = createMany.mock.calls[0][0].data;
-    expect(created.length).toBeGreaterThan(20);
-    expect(created.every((g: any) => g.role === 'office-manager' && g.organization_id === ALPHA_ORG_ID)).toBe(true);
-  });
-
-  it("resets a DISPATCHER-derived custom role to DISPATCHER's DEFAULT_GRANTS", async () => {
-    mockAuthAs('admin');
-    (prisma.customRole.findFirst as any).mockResolvedValue({
-      id: 'cr-2', organization_id: ALPHA_ORG_ID, key: 'senior-dispatch', base_role: 'DISPATCHER', archived_at: null,
-    });
-    const deleteMany = vi.fn().mockResolvedValue({ count: 0 });
-    const createMany = vi.fn().mockResolvedValue({ count: 0 });
-    (prisma.$transaction as any).mockImplementation((fn: any) => fn({ rolePermission: { deleteMany, createMany } }));
-    const res = await request(app).post('/api/roles/senior-dispatch/reset').set(authHeader('admin'));
-    expect(res.status).toBe(200);
-    const created = createMany.mock.calls[0][0].data;
-    const dispatcherDefaults = DEFAULT_GRANTS.filter((g) => g.role === 'DISPATCHER');
-    expect(created.length).toBe(dispatcherDefaults.length);
-    expect(created.every((g: any) => g.role === 'senior-dispatch')).toBe(true);
-  });
-
-  it('404s reset for an unknown custom key', async () => {
-    mockAuthAs('admin');
-    (prisma.customRole.findFirst as any).mockResolvedValue(null);
-    const res = await request(app).post('/api/roles/nonexistent/reset').set(authHeader('admin'));
-    expect(res.status).toBe(404);
-  });
-});
-
 describe('POST /api/roles - create', () => {
-  it('creates a role derived from DISPATCHER, seeded with DISPATCHER defaults', async () => {
+  const createdRow = (over: Record<string, unknown> = {}) => ({
+    id: 'cr-new', organization_id: ALPHA_ORG_ID, key: 'senior-dispatch', label: 'Senior Dispatch',
+    description: '', base_role: 'DISPATCHER', archived_at: null, ...over,
+  });
+  /** Run the transaction the switch store opens with a stub that records what it writes. */
+  const stubTransaction = () => {
+    const upsert = vi.fn().mockResolvedValue({});
+    const logRows = vi.fn().mockResolvedValue({ count: 0 });
+    (prisma.$transaction as any).mockImplementation((fn: any) =>
+      fn({ permissionRoleSwitch: { upsert }, permissionChangeLog: { createMany: logRows } }),
+    );
+    return { upsert, logRows };
+  };
+
+  it('creates a role derived from DISPATCHER; it starts from the Dispatcher preset, so nothing is stored for it', async () => {
     mockAuthAs('admin');
-    const createdRow = {
-      id: 'cr-new', organization_id: ALPHA_ORG_ID, key: 'senior-dispatch', label: 'Senior Dispatch',
-      description: '', base_role: 'DISPATCHER', archived_at: null,
-    };
-    const customRoleCreate = vi.fn().mockResolvedValue(createdRow);
-    const createMany = vi.fn().mockResolvedValue({ count: 1 });
-    (prisma.$transaction as any).mockImplementation((fn: any) => fn({ customRole: { create: customRoleCreate }, rolePermission: { createMany } }));
+    (prisma.customRole.create as any).mockResolvedValue(createdRow());
+    const { upsert } = stubTransaction();
 
     const res = await request(app).post('/api/roles').set(authHeader('admin')).send({ label: 'Senior Dispatch', base_role: 'DISPATCHER' });
 
@@ -176,44 +88,34 @@ describe('POST /api/roles - create', () => {
     expect(res.body).toMatchObject({
       id: 'cr-new', role: 'senior-dispatch', label: 'Senior Dispatch', type: 'custom', base_role: 'DISPATCHER', editable: true, userCount: 0, fullAccess: false,
     });
-    expect(customRoleCreate.mock.calls[0][0].data).toMatchObject({
+    expect((prisma.customRole.create as any).mock.calls[0][0].data).toMatchObject({
       organization_id: ALPHA_ORG_ID, key: 'senior-dispatch', label: 'Senior Dispatch', base_role: 'DISPATCHER',
     });
-    const seeded = createMany.mock.calls[0][0].data;
-    const dispatcherDefaults = DEFAULT_GRANTS.filter((g) => g.role === 'DISPATCHER');
-    expect(seeded.length).toBe(dispatcherDefaults.length);
-    expect(seeded.every((g: any) => g.role === 'senior-dispatch')).toBe(true);
+    // The role-permission table is no longer a source, so nothing is written to it.
+    expect(prisma.rolePermission.createMany).not.toHaveBeenCalled();
+    expect(upsert).not.toHaveBeenCalled();
   });
 
-  it('creates an ADMIN-derived role seeded with the full grant set (so an admin subtracts, not adds)', async () => {
+  it('creates an ADMIN-derived role as an ordinary role (its base is the Admin preset, not the Admin box)', async () => {
     mockAuthAs('admin');
-    const createdRow = {
-      id: 'cr-new', organization_id: ALPHA_ORG_ID, key: 'office-manager', label: 'Office Manager',
-      description: '', base_role: 'ADMIN', archived_at: null,
-    };
-    const customRoleCreate = vi.fn().mockResolvedValue(createdRow);
-    const createMany = vi.fn().mockResolvedValue({ count: 1 });
-    (prisma.$transaction as any).mockImplementation((fn: any) => fn({ customRole: { create: customRoleCreate }, rolePermission: { createMany } }));
+    (prisma.customRole.create as any).mockResolvedValue(createdRow({ key: 'office-manager', label: 'Office Manager', base_role: 'ADMIN' }));
 
     const res = await request(app).post('/api/roles').set(authHeader('admin')).send({ label: 'Office Manager', base_role: 'ADMIN' });
 
     expect(res.status).toBe(201);
-    const seeded = createMany.mock.calls[0][0].data;
-    expect(seeded.length).toBeGreaterThan(20);
-    expect(seeded.every((g: any) => g.role === 'office-manager')).toBe(true);
+    expect(res.body).toMatchObject({ role: 'office-manager', base_role: 'ADMIN', type: 'custom', fullAccess: false });
+    expect(prisma.rolePermission.createMany).not.toHaveBeenCalled();
   });
 
-  it('clones the grant set from an existing role when clone_grants_from is given', async () => {
+  it('copies another role\'s current switch values onto the new role when clone_grants_from is given', async () => {
     mockAuthAs('admin');
     (prisma.customRole.findFirst as any).mockResolvedValue({
-      id: 'cr-src', organization_id: ALPHA_ORG_ID, key: 'senior-dispatch', base_role: 'DISPATCHER', archived_at: null,
+      id: 'cr-src', organization_id: ALPHA_ORG_ID, key: 'senior-dispatch', base_role: 'DISPATCHER', archived_at: null, made_from_blank: false,
     });
-    (prisma.rolePermission.findMany as any).mockResolvedValue([{ action: 'read', subject: 'Customer', conditions: null }]);
-    const customRoleCreate = vi.fn().mockResolvedValue({
-      id: 'cr-new', organization_id: ALPHA_ORG_ID, key: 'junior-dispatch', label: 'Junior Dispatch', description: '', base_role: 'DISPATCHER', archived_at: null,
-    });
-    const createMany = vi.fn().mockResolvedValue({ count: 1 });
-    (prisma.$transaction as any).mockImplementation((fn: any) => fn({ customRole: { create: customRoleCreate }, rolePermission: { createMany } }));
+    (prisma.customRole.create as any).mockResolvedValue(createdRow({ id: 'cr-new', key: 'junior-dispatch', label: 'Junior Dispatch' }));
+    // The source role has Delete customers stored on, which the Dispatcher preset leaves off.
+    (prisma.permissionRoleSwitch.findMany as any).mockResolvedValue([{ switch_key: 'delete_customers', value: true }]);
+    const { upsert } = stubTransaction();
 
     const res = await request(app)
       .post('/api/roles')
@@ -221,21 +123,18 @@ describe('POST /api/roles - create', () => {
       .send({ label: 'Junior Dispatch', base_role: 'DISPATCHER', clone_grants_from: 'senior-dispatch' });
 
     expect(res.status).toBe(201);
-    const seeded = createMany.mock.calls[0][0].data;
-    // The source's rows verbatim, plus the baseline no editor can grant (read TaskCategory - see
-    // 'custom roles always read task categories' below).
-    expect(seeded).toHaveLength(2);
-    expect(seeded[0]).toMatchObject({ role: 'junior-dispatch', action: 'read', subject: 'Customer' });
-    expect(seeded[1]).toMatchObject({ role: 'junior-dispatch', action: 'read', subject: 'TaskCategory' });
+    const stored = new Map(upsert.mock.calls.map(([arg]) => [arg.create.switch_key, arg.create]));
+    expect(stored.get('delete_customers')).toMatchObject({ role_key: 'junior-dispatch', organization_id: ALPHA_ORG_ID, value: true });
+    expect(prisma.rolePermission.findMany).not.toHaveBeenCalled();
   });
 
-  it('cloning from literal ADMIN seeds the full grant set (ADMIN itself has no persisted rows)', async () => {
+  it('cloning from literal ADMIN stores the Admin preset on the new role (ADMIN itself has no stored set)', async () => {
     mockAuthAs('admin');
-    const customRoleCreate = vi.fn().mockResolvedValue({
-      id: 'cr-new', organization_id: ALPHA_ORG_ID, key: 'shadow-admin', label: 'Shadow Admin', description: '', base_role: 'SALES', archived_at: null,
+    (prisma.customRole.findFirst as any).mockResolvedValue({
+      id: 'cr-new', organization_id: ALPHA_ORG_ID, key: 'shadow-admin', base_role: 'SALES', archived_at: null, made_from_blank: false,
     });
-    const createMany = vi.fn().mockResolvedValue({ count: 1 });
-    (prisma.$transaction as any).mockImplementation((fn: any) => fn({ customRole: { create: customRoleCreate }, rolePermission: { createMany } }));
+    (prisma.customRole.create as any).mockResolvedValue(createdRow({ id: 'cr-new', key: 'shadow-admin', label: 'Shadow Admin', base_role: 'SALES' }));
+    const { upsert } = stubTransaction();
 
     const res = await request(app)
       .post('/api/roles')
@@ -243,8 +142,9 @@ describe('POST /api/roles - create', () => {
       .send({ label: 'Shadow Admin', base_role: 'SALES', clone_grants_from: 'ADMIN' });
 
     expect(res.status).toBe(201);
-    const seeded = createMany.mock.calls[0][0].data;
-    expect(seeded.length).toBeGreaterThan(20);
+    const stored = new Map(upsert.mock.calls.map(([arg]) => [arg.create.switch_key, arg.create.value]));
+    expect(stored.get('delete_customers')).toBe(true);
+    expect(stored.get('jobs_scope')).toBe('all');
     expect(prisma.rolePermission.findMany).not.toHaveBeenCalled();
   });
 
@@ -252,7 +152,28 @@ describe('POST /api/roles - create', () => {
     mockAuthAs('admin');
     const res = await request(app).post('/api/roles').set(authHeader('admin')).send({ label: 'Dispatcher', base_role: 'SALES' });
     expect(res.status).toBe(400);
-    expect(prisma.$transaction).not.toHaveBeenCalled();
+    expect(prisma.customRole.create).not.toHaveBeenCalled();
+  });
+
+  it.each(['Administrator', 'administrator', 'Owner', ' OWNER ', 'Admin', 'Administrator (Owner)'])(
+    'refuses %j, a word the Administrator (Owner) role is known by, in the built-in role words',
+    async (label) => {
+      mockAuthAs('admin');
+      const res = await request(app).post('/api/roles').set(authHeader('admin')).send({ label, blank: true });
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe(`"${label.trim()}" is the name of a built-in role. Choose another name.`);
+      expect(prisma.customRole.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it('409s a name another role carries, and names the built-in role it collides with in plain words', async () => {
+    mockAuthAs('admin');
+    (prisma.customRole.findMany as any).mockResolvedValue([{ id: 'cr-9', key: 'old-key', label: 'Night Desk' }]);
+    const taken = await request(app).post('/api/roles').set(authHeader('admin')).send({ label: 'night  desk', base_role: 'SALES' });
+    expect(taken.status).toBe(409);
+    const builtIn = await request(app).post('/api/roles').set(authHeader('admin')).send({ label: 'Technician', base_role: 'SALES' });
+    expect(builtIn.body.error).toMatch(/built-in role/);
+    expect(prisma.customRole.create).not.toHaveBeenCalled();
   });
 
   it('400s an unknown clone_grants_from', async () => {
@@ -263,11 +184,12 @@ describe('POST /api/roles - create', () => {
       .set(authHeader('admin'))
       .send({ label: 'X', base_role: 'SALES', clone_grants_from: 'nonexistent' });
     expect(res.status).toBe(400);
+    expect(prisma.customRole.create).not.toHaveBeenCalled();
   });
 
   it('409s a duplicate key within the same org', async () => {
     mockAuthAs('admin');
-    (prisma.$transaction as any).mockImplementation(async () => {
+    (prisma.customRole.create as any).mockImplementation(async () => {
       const err = new Error('unique violation') as Error & { code: string };
       err.code = 'P2002';
       throw err;
@@ -276,7 +198,7 @@ describe('POST /api/roles - create', () => {
     expect(res.status).toBe(409);
   });
 
-  it('403s a non-admin caller', async () => {
+  it('403s a caller without Manage roles and permissions', async () => {
     mockAuthAs('sales');
     const res = await request(app).post('/api/roles').set(authHeader('sales')).send({ label: 'X', base_role: 'SALES' });
     expect(res.status).toBe(403);
@@ -303,11 +225,95 @@ describe('PATCH /api/roles/:role - rename/describe', () => {
     });
   });
 
-  it('404s renaming a system role', async () => {
+  describe('the new name runs the same checks as creating a role', () => {
+    const office = { id: 'cr-1', organization_id: ALPHA_ORG_ID, key: 'office-manager', label: 'Office Manager', description: '', base_role: 'ADMIN', archived_at: null };
+    const ops = { id: 'cr-2', key: 'ops-lead', label: 'Ops Lead' };
+    const serveRoles = () => {
+      (prisma.customRole.findFirst as any).mockResolvedValue(office);
+      (prisma.customRole.findMany as any).mockResolvedValue([{ id: office.id, key: office.key, label: office.label }, ops]);
+      (prisma.customRole.update as any).mockImplementation(async ({ data }: any) => ({ ...office, ...data }));
+    };
+    const rename = (label: string) => request(app).patch('/api/roles/office-manager').set(authHeader('admin')).send({ label });
+
+    it.each(['Technician', 'technician', '  TECHNICIAN  ', 'Dispatcher', 'sales', 'Admin', 'Administrator (Owner)'])(
+      'refuses %j, the name of a built-in role, and leaves the label alone',
+      async (label) => {
+        mockAuthAs('admin');
+        serveRoles();
+        const res = await rename(label);
+        expect(res.status).toBe(400);
+        expect(res.body.error).toMatch(/built-in role/);
+        expect(prisma.customRole.update).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(['Administrator', 'owner', 'Owner'])('refuses %j, a word the Administrator (Owner) role is known by', async (label) => {
+      mockAuthAs('admin');
+      serveRoles();
+      const res = await rename(label);
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe(`"${label}" is the name of a built-in role. Choose another name.`);
+      expect(prisma.customRole.update).not.toHaveBeenCalled();
+    });
+
+    it('lets a role that already carries such a name keep it on a save, and still refuses it to any other role', async () => {
+      mockAuthAs('admin');
+      serveRoles();
+      // An older role named Owner: no migration renames it, and a save that leaves its name alone goes through.
+      (prisma.customRole.findFirst as any).mockResolvedValue({ ...office, label: 'Owner' });
+      (prisma.customRole.findMany as any).mockResolvedValue([{ id: office.id, key: office.key, label: 'Owner' }, ops]);
+      expect((await rename('owner')).status).toBe(200);
+      expect((await rename('Administrator')).status).toBe(400);
+    });
+
+    it.each(['Ops Lead', 'ops lead', 'OPS   LEAD', 'ops-lead'])('refuses %j, which is another role\'s name, with the same answer as create', async (label) => {
+      mockAuthAs('admin');
+      serveRoles();
+      const res = await rename(label);
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/already exists/);
+      expect(prisma.customRole.update).not.toHaveBeenCalled();
+    });
+
+    it('refuses a name another role carries after its own rename, though its key is different', async () => {
+      mockAuthAs('admin');
+      serveRoles();
+      (prisma.customRole.findMany as any).mockResolvedValue([{ id: office.id, key: office.key, label: office.label }, { id: 'cr-3', key: 'old-key', label: 'Night Desk' }]);
+      expect((await rename('night desk')).status).toBe(409);
+    });
+
+    it('refuses a name with no letter or number in it', async () => {
+      mockAuthAs('admin');
+      serveRoles();
+      const res = await rename('???');
+      expect(res.status).toBe(400);
+      expect(prisma.customRole.update).not.toHaveBeenCalled();
+    });
+
+    it('lets a role keep its own name in another case or spacing, and take a free name', async () => {
+      mockAuthAs('admin');
+      serveRoles();
+      expect((await rename('OFFICE   manager')).status).toBe(200);
+      expect((await rename('Front Desk')).status).toBe(200);
+      expect((prisma.customRole.update as any).mock.calls.map((c: any) => c[0].data.label)).toEqual(['OFFICE   manager', 'Front Desk']);
+    });
+
+    it('does not check names when only the description changes', async () => {
+      mockAuthAs('admin');
+      serveRoles();
+      const res = await request(app).patch('/api/roles/office-manager').set(authHeader('admin')).send({ description: 'Runs the office' });
+      expect(res.status).toBe(200);
+      expect(prisma.customRole.findMany).not.toHaveBeenCalled();
+    });
+  });
+
+  it('refuses renaming a system role', async () => {
     mockAuthAs('admin');
     (prisma.customRole.findFirst as any).mockResolvedValue(null);
     const res = await request(app).patch('/api/roles/SALES').set(authHeader('admin')).send({ label: 'X' });
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/built-in/i);
+    expect(prisma.customRole.update).not.toHaveBeenCalled();
   });
 
   it('404s renaming an unknown key', async () => {
@@ -324,14 +330,44 @@ describe('POST /api/roles/:role/archive', () => {
     (prisma.customRole.findFirst as any).mockResolvedValue({
       id: 'cr-1', organization_id: ALPHA_ORG_ID, key: 'office-manager', base_role: 'ADMIN', archived_at: null,
     });
-    (prisma.user.count as any).mockResolvedValue(0);
+    (prisma.user.findMany as any).mockResolvedValue([]);
     (prisma.customRole.update as any).mockResolvedValue({ id: 'cr-1', key: 'office-manager', archived_at: new Date() });
 
     const res = await request(app).post('/api/roles/office-manager/archive').set(authHeader('admin'));
 
     expect(res.status).toBe(200);
     expect((prisma.customRole.update as any).mock.calls[0][0]).toMatchObject({ where: { id: 'cr-1' } });
-    expect((prisma.user.count as any).mock.calls[0][0].where).toMatchObject({ custom_role_id: 'cr-1' });
+  });
+
+  it('counts the people once, in one read, the way the Roles list does: by the role they are based on, active or not', async () => {
+    mockAuthAs('admin');
+    (prisma.customRole.findFirst as any).mockResolvedValue({
+      id: 'cr-1', organization_id: ALPHA_ORG_ID, key: 'office-manager', base_role: 'ADMIN', archived_at: null,
+    });
+    // One person holds the role; another was filled from it though their own role column names another one.
+    (prisma.user.findMany as any).mockResolvedValue([
+      { id: 'u-1', role: 'SALES', custom_role_id: 'cr-1', based_on_role_key: 'office-manager', custom_role: { key: 'office-manager' } },
+      { id: 'u-2', role: 'SALES', custom_role_id: null, based_on_role_key: 'office-manager', custom_role: null },
+      { id: 'u-3', role: 'SALES', custom_role_id: null, based_on_role_key: null, custom_role: null },
+    ]);
+    const res = await request(app).post('/api/roles/office-manager/archive').set(authHeader('admin'));
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('Cannot archive: 2 people are still on this role. Move them to another role first.');
+    expect(prisma.user.findMany).toHaveBeenCalledTimes(1);
+    expect(prisma.user.count).not.toHaveBeenCalled();
+    expect(prisma.customRole.update).not.toHaveBeenCalled();
+  });
+
+  it('says "1 person" for one', async () => {
+    mockAuthAs('admin');
+    (prisma.customRole.findFirst as any).mockResolvedValue({
+      id: 'cr-1', organization_id: ALPHA_ORG_ID, key: 'office-manager', base_role: 'ADMIN', archived_at: null,
+    });
+    (prisma.user.findMany as any).mockResolvedValue([
+      { id: 'u-1', role: 'SALES', custom_role_id: 'cr-1', based_on_role_key: null, custom_role: { key: 'office-manager' } },
+    ]);
+    const res = await request(app).post('/api/roles/office-manager/archive').set(authHeader('admin'));
+    expect(res.body.error).toBe('Cannot archive: 1 person is still on this role. Move them to another role first.');
   });
 
   it('409s archiving a role that still has assigned users, and reports the count', async () => {
@@ -339,20 +375,23 @@ describe('POST /api/roles/:role/archive', () => {
     (prisma.customRole.findFirst as any).mockResolvedValue({
       id: 'cr-1', organization_id: ALPHA_ORG_ID, key: 'office-manager', base_role: 'ADMIN', archived_at: null,
     });
-    (prisma.user.count as any).mockResolvedValue(3);
+    const onRole = { role: 'SALES', custom_role_id: 'cr-1', based_on_role_key: 'office-manager', custom_role: { key: 'office-manager' } };
+    (prisma.user.findMany as any).mockResolvedValue([{ id: 'u-1', ...onRole }, { id: 'u-2', ...onRole }, { id: 'u-3', ...onRole }]);
 
     const res = await request(app).post('/api/roles/office-manager/archive').set(authHeader('admin'));
 
     expect(res.status).toBe(409);
-    expect(res.body.error).toMatch(/3/);
+    expect(res.body.error).toMatch(/3 people/);
     expect(prisma.customRole.update).not.toHaveBeenCalled();
   });
 
-  it('404s archiving a system role', async () => {
+  it('refuses archiving a system role', async () => {
     mockAuthAs('admin');
     (prisma.customRole.findFirst as any).mockResolvedValue(null);
     const res = await request(app).post('/api/roles/ADMIN/archive').set(authHeader('admin'));
-    expect(res.status).toBe(404);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/built-in/i);
+    expect(prisma.customRole.update).not.toHaveBeenCalled();
   });
 
   it('404s archiving an unknown key', async () => {
@@ -360,98 +399,5 @@ describe('POST /api/roles/:role/archive', () => {
     (prisma.customRole.findFirst as any).mockResolvedValue(null);
     const res = await request(app).post('/api/roles/nonexistent/archive').set(authHeader('admin'));
     expect(res.status).toBe(404);
-  });
-});
-
-// Every role reads the task category list (visits-and-task-categories PRD; SHARED_BASELINE in
-// defaultGrants.ts). The Roles editor cannot show or toggle that grant, so a role created or reset
-// here must be seeded with it whatever its template - otherwise its users cannot load the list a
-// task's category comes from. Create/update/delete stay out of the ADMIN template, the way the
-// other admin-managed lists (Tag, AppSetting) are.
-describe('custom roles always read task categories', () => {
-  const pairs = (rows: any[]) => rows.map((g) => `${g.action}:${g.subject}`);
-  const wireCreate = (key: string, base_role: string) => {
-    const customRoleCreate = vi.fn().mockResolvedValue({
-      id: 'cr-new', organization_id: ALPHA_ORG_ID, key, label: key, description: '', base_role, archived_at: null,
-    });
-    const createMany = vi.fn().mockResolvedValue({ count: 1 });
-    (prisma.$transaction as any).mockImplementation((fn: any) => fn({ customRole: { create: customRoleCreate }, rolePermission: { createMany } }));
-    return createMany;
-  };
-
-  it('a role created from the ADMIN template reads task categories, and does not manage them', async () => {
-    mockAuthAs('admin');
-    const createMany = wireCreate('office-manager', 'ADMIN');
-
-    const res = await request(app).post('/api/roles').set(authHeader('admin')).send({ label: 'Office Manager', base_role: 'ADMIN' });
-
-    expect(res.status).toBe(201);
-    const seeded = pairs(createMany.mock.calls[0][0].data);
-    expect(seeded).toContain('read:TaskCategory');
-    expect(seeded.filter((p) => p.endsWith(':TaskCategory'))).toEqual(['read:TaskCategory']);
-  });
-
-  it('a role cloned from literal ADMIN reads task categories', async () => {
-    mockAuthAs('admin');
-    const createMany = wireCreate('shadow-admin', 'SALES');
-
-    await request(app).post('/api/roles').set(authHeader('admin')).send({ label: 'Shadow Admin', base_role: 'SALES', clone_grants_from: 'ADMIN' });
-
-    expect(pairs(createMany.mock.calls[0][0].data)).toContain('read:TaskCategory');
-  });
-
-  it('a role cloned from a role that predates task categories reads them too, once', async () => {
-    mockAuthAs('admin');
-    (prisma.customRole.findFirst as any).mockResolvedValue({
-      id: 'cr-src', organization_id: ALPHA_ORG_ID, key: 'old-role', base_role: 'DISPATCHER', archived_at: null,
-    });
-    (prisma.rolePermission.findMany as any).mockResolvedValue([{ action: 'read', subject: 'Customer', conditions: null }]);
-    const createMany = wireCreate('new-role', 'DISPATCHER');
-
-    await request(app).post('/api/roles').set(authHeader('admin')).send({ label: 'New Role', base_role: 'DISPATCHER', clone_grants_from: 'old-role' });
-
-    expect(pairs(createMany.mock.calls[0][0].data).sort()).toEqual(['read:Customer', 'read:TaskCategory']);
-  });
-
-  it('resetting an ADMIN-template role keeps it reading task categories', async () => {
-    mockAuthAs('admin');
-    (prisma.customRole.findFirst as any).mockResolvedValue({
-      id: 'cr-1', organization_id: ALPHA_ORG_ID, key: 'office-manager', base_role: 'ADMIN', archived_at: null,
-    });
-    (prisma.rolePermission.findMany as any).mockResolvedValue([]);
-    const deleteMany = vi.fn().mockResolvedValue({ count: 3 });
-    const createMany = vi.fn().mockResolvedValue({ count: 40 });
-    (prisma.$transaction as any).mockImplementation((fn: any) => fn({ rolePermission: { deleteMany, createMany } }));
-
-    const res = await request(app).post('/api/roles/office-manager/reset').set(authHeader('admin'));
-
-    expect(res.status).toBe(200);
-    const seeded = pairs(createMany.mock.calls[0][0].data);
-    expect(seeded.filter((p) => p === 'read:TaskCategory')).toHaveLength(1);
-  });
-
-  it('a Roles editor save does not strip it (the editor never manages it)', async () => {
-    mockAuthAs('admin');
-    (prisma.customRole.findFirst as any).mockResolvedValue({
-      id: 'cr-1', organization_id: ALPHA_ORG_ID, key: 'office-manager', base_role: 'ADMIN', archived_at: null,
-    });
-    (prisma.rolePermission.findMany as any).mockResolvedValue([{ action: 'read', subject: 'TaskCategory', conditions: null }]);
-    const deleteMany = vi.fn().mockResolvedValue({ count: 0 });
-    const upsert = vi.fn().mockResolvedValue({});
-    (prisma.$transaction as any).mockImplementation((fn: any) => fn({ rolePermission: { deleteMany, upsert } }));
-
-    const res = await request(app)
-      .put('/api/roles/office-manager/permissions')
-      .set(authHeader('admin'))
-      .send({
-        matrix: { Customer: { read: true, create: false, update: false, delete: false } },
-        sensitive: { seeFinancials: false, managePayments: false, viewReports: false },
-        scope: {},
-        general: { description: '' },
-      });
-
-    expect(res.status).toBe(200);
-    const removed = deleteMany.mock.calls.flatMap((c: any[]) => JSON.stringify(c[0].where));
-    expect(removed.join(' ')).not.toContain('TaskCategory');
   });
 });

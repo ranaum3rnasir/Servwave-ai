@@ -1,6 +1,7 @@
 import { Calendar } from 'lucide-react';
 import type { TechSchedule } from '@/lib/api/dashboard';
 import { IN_FLIGHT_STATUSES } from '@/components/schedule/scheduleModel';
+import { isCompletedOrLaterJobStatus } from '@/lib/jobs/closeOut';
 import { getInitials } from '@/lib/utils';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { EmptyState } from '@/components/ui/empty-state';
@@ -27,25 +28,28 @@ function formatTime(iso: string | null, tz: string): string {
 //
 // THE LABEL HALF IS HELD, NOT MIGRATED. STATUS_REGISTRY.job already carries the
 // app-wide copy for every value this widget can render, and the three job branches
-// below are the lone outliers ('Done', one collapsed 'In Progress', a 'Scheduled'
-// that is wrong for an unassigned job). Adopting it is a user-facing copy change on
+// below are the lone outliers ('Completed'/'Done', one collapsed 'In Progress', a 'Scheduled'
+// that is wrong for a job with no crew). Adopting it is a user-facing copy change on
 // a pill that renders uppercase, so it is escalated as SR-E7 and stays literal here
 // until that is ruled on. See
 // md_files/plans/frontend/workflows/2026-07-27-wp-status-registry.md.
 function pillStyle(status: string, entity?: string) {
-  // Walkthroughs: sage done-state mirrors the COMPLETED-job 'Done' pill; pending = ocean.
+  // Walkthroughs: sage done-state mirrors the finished-job pill; pending = ocean.
   if (entity === 'walkthrough' && status === 'WALKTHROUGH_COMPLETED') return { bg: 'bg-sage-50', border: 'border-sage-200 border-l-sage-500', tag: 'bg-sage-200 text-text-primary', label: 'Walkthrough' };
   if (entity === 'walkthrough') return { bg: 'bg-primary-subtle', border: 'border-ocean-700/30 border-l-ocean-700', tag: 'bg-ocean-800/10 text-ocean-800', label: 'Walkthrough' };
   if (IN_FLIGHT_STATUSES.has(status)) return { bg: 'bg-info/10', border: 'border-info/30 border-l-info', tag: 'bg-info/15 text-info', label: 'In Progress' };
-  if (status === 'COMPLETED') return { bg: 'bg-sage-50', border: 'border-sage-200 border-l-sage-500', tag: 'bg-sage-200 text-text-primary', label: 'Done' };
+  // Completed, Office review and Ready to close all read "Completed" (PRD 6, Completion words); only the Done status says "Done".
+  if (isCompletedOrLaterJobStatus(status)) return { bg: 'bg-sage-50', border: 'border-sage-200 border-l-sage-500', tag: 'bg-sage-200 text-text-primary', label: status === 'DONE' ? 'Done' : 'Completed' };
   return { bg: 'bg-background-light', border: 'border-border border-l-text-soft', tag: 'bg-border-soft text-text-secondary', label: 'Scheduled' };
 }
 
 export default function TodaySchedule({
   data,
+  calendarLink,
   navigate,
 }: {
   data: TechSchedule[];
+  calendarLink?: string | null;
   navigate: (to: string) => void;
 }) {
   // Not fed through the scheduler's eventAdapters pipeline (own dashboard-summary endpoint),
@@ -56,7 +60,7 @@ export default function TodaySchedule({
     <WidgetCard
       title="Today's Schedule"
       icon={<Calendar className="h-4 w-4 text-text-secondary" />}
-      right={<Button type="button" onClick={() => navigate('/schedule')} variant="link" tone="brand" size={null} className="text-xs font-medium">Full calendar</Button>}
+      right={calendarLink ? <Button type="button" onClick={() => navigate(calendarLink)} variant="link" tone="brand" size={null} className="text-xs font-medium">Full calendar</Button> : undefined}
     >
       <div className="max-h-72 overflow-y-auto overscroll-contain">
         {data.length === 0 ? (
@@ -65,7 +69,7 @@ export default function TodaySchedule({
           data.map((tech, idx) => {
             const ini = tech.user_id ? getInitials(`${tech.first_name} ${tech.last_name}`) : '-';
             return (
-              <div key={tech.user_id ?? 'unassigned'}>
+              <div key={tech.user_id ?? 'no-crew'}>
                 {idx > 0 && <div className="border-t border-border" />}
                 <div className="flex items-center gap-2 px-5 py-2.5">
                   <Avatar className="h-[26px] w-[26px]">
@@ -89,7 +93,7 @@ export default function TodaySchedule({
                       <button
                         key={job.id}
                         type="button"
-                        onClick={() => navigate(job.entity === 'walkthrough' ? `/leads/${job.id}` : `/jobs/${job.id}`)}
+                        onClick={() => navigate(job.link)}
                         className={`flex items-center gap-2 px-3 py-2 rounded-lg border-l-[3px] border text-left hover:brightness-95 transition-all ${st.bg} ${st.border}`}
                       >
                         <div className="flex-1 min-w-0">

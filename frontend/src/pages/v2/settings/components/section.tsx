@@ -18,6 +18,7 @@ export function Section({
   title,
   description,
   action,
+  info,
   children,
   className,
   level = 3,
@@ -25,6 +26,8 @@ export function Section({
   title?: ReactNode;
   description?: ReactNode;
   action?: ReactNode;
+  /** A "?" popover (InfoPopover) shown beside the title. */
+  info?: ReactNode;
   children?: ReactNode;
   className?: string;
   level?: number;
@@ -36,9 +39,18 @@ export function Section({
           <div className="flex items-start justify-between gap-4">
             <div className="min-w-0">
               {title && (
-                <p role="heading" aria-level={level} className="text-sm font-semibold">
-                  {title}
-                </p>
+                info ? (
+                  <div className="flex items-center gap-1">
+                    <p role="heading" aria-level={level} className="text-sm font-semibold">
+                      {title}
+                    </p>
+                    {info}
+                  </div>
+                ) : (
+                  <p role="heading" aria-level={level} className="text-sm font-semibold">
+                    {title}
+                  </p>
+                )
               )}
               {description && <p className="text-muted-foreground mt-1 text-xs">{description}</p>}
             </div>

@@ -17,6 +17,7 @@ import {
   useInventoryItems,
   useInventoryJobs,
   useTechs,
+  inFieldRoster,
   useCreateApproval,
   type Location,
   type StockApproval,
@@ -39,7 +40,7 @@ type Props = {
   locations: Location[];
   // Optional parent sync hook. The dialog persists via the seam
   // (`useCreateApproval`) itself; when provided, the parent receives the same
-  // payload so its local view can stay in sync. Preserves the Emanuel contract
+  // payload so its local view can stay in sync. Preserves the original contract
   // without depending on the parent to mint the created entity.
   onSubmit?: (request: Omit<StockApproval, "id" | "status">) => void;
   onEmailSent?: (payload: {
@@ -121,7 +122,7 @@ export function NewApprovalRequestDialog({
   const [showScan, setShowScan] = useState(false);
   const [pendingEmail, setPendingEmail] = useState<StockApproval | null>(null);
 
-  // Seed the item default once the seam delivers items (Emanuel read
+  // Seed the item default once the seam delivers items (the original code read
   // `allItems[0].sku` at module load; the async seam needs this deferred).
   useEffect(() => {
     if (!itemSku && allItems.length > 0) {
@@ -130,9 +131,7 @@ export function NewApprovalRequestDialog({
   }, [allItems, itemSku]);
 
   const opt = typeOptions.find((o) => o.value === type) ?? typeOptions[0]!;
-  const driverTechs = allTechs.filter(
-    (t) => t.role === "field_tech" || t.role === "subcontractor",
-  );
+  const driverTechs = allTechs.filter(inFieldRoster);
   const item = allItems.find((i) => i.sku === itemSku);
   const fromLoc = locations.find((l) => l.id === fromLocationId);
   const toLoc = locations.find((l) => l.id === toLocationId);
@@ -268,7 +267,7 @@ export function NewApprovalRequestDialog({
           <button
             onClick={submitAndEmail}
             className="inline-flex items-center gap-1.5 rounded-md border border-primary/40 bg-surface-light px-3 py-1.5 text-sm font-semibold text-primary hover:bg-primary-subtle"
-            title="Submit the request AND email the approval team (logistics manager · admin · owner) with full context"
+            title="Submit the request and email the approval team with full context"
           >
             <Mail className="h-3.5 w-3.5" />
             Submit + Email Team
@@ -347,7 +346,7 @@ export function NewApprovalRequestDialog({
               className={selectCls}
               options={driverTechs.map((t) => ({
                 value: t.id,
-                label: `${t.name} · ${t.primaryTrade}${t.role === "subcontractor" ? " · 1099" : ""}`,
+                label: `${t.name} · ${t.primaryTrade}`,
               }))}
             />
             {tech && (

@@ -249,8 +249,8 @@ describe.skipIf(!enabled)('allocateNumber — real-DB concurrent atomicity', () 
     await prisma.customer.deleteMany({ where: { organization_id: ORG_A } });
   });
 
-  it('steps over a hand-typed number WIDER than number_padding (the Workiz/Alpha Doors shape)', async () => {
-    // The regression that broke every job create in Alpha Doors & Security in prod.
+  it('steps over a hand-typed number WIDER than number_padding (the Workiz/pilot org shape)', async () => {
+    // The regression that broke every job create in the pilot org in prod.
     //
     // Their series outgrew number_padding: prefix '', padding 5, six-digit imported ids. The
     // skip check used to render its candidates a SECOND time in SQL with
@@ -400,7 +400,7 @@ describe.skipIf(!enabled)('allocateContainerEstimateNumber — real-DB skip / se
   // container already held `699063-3` returned `699063-3`, the insert died with P2002, and because
   // the seq bump rolls back with the failed transaction, every retry minted the identical number.
   //
-  // The fixtures below use SIX-digit container numbers (the Workiz/Alpha Doors shape, wider than
+  // The fixtures below use SIX-digit container numbers (the Workiz/pilot org shape, wider than
   // number_padding 5) on purpose: a fixture that fits the padding is exactly what stayed green
   // through the #1873 production outage.
   let prisma: any;

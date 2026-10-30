@@ -4,7 +4,6 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { usePlanMode, type GhostEvent } from '@/hooks/usePlanMode';
 import { useResizableWidth } from '@/hooks/useResizableWidth';
 import { useIsMobile, useIsBelow, useMediaQuery, MEDIA } from '@/hooks/useIsMobile';
-import { useAuthStore } from '@/stores/auth.store';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import { useSchedulerBucket, useScheduleVisit, servicePlanKeys } from '@/lib/api/service-plans';
 import { useFeature, useModuleAccess } from '@/lib/entitlements';
@@ -30,6 +29,8 @@ import {
   differenceInCalendarDays,
 } from 'date-fns';
 import { enUS } from 'date-fns/locale';
+import { useScheduleNoCrewFilter } from '@/lib/scheduleFilter';
+import { FilterBar } from '@/ui-kit/components/crm/filterBar';
 import 'react-big-calendar/lib/css/react-big-calendar.css';
 import 'react-big-calendar/lib/addons/dragAndDrop/styles.css';
 // ONE stylesheet, shared with the legacy schedule page - imported, never forked.
@@ -54,6 +55,7 @@ import 'react-big-calendar/lib/addons/dragAndDrop/styles.css';
 // to `styles/` unchanged so the legacy page can be deleted at cutover.
 import '@/styles/schedule-dark.css';
 import api from '@/lib/axios';
+import { isCompletableJobStatus } from '@/lib/jobs/closeOut';
 import { refreshAfterVisitWrite } from '@/lib/refreshAfterVisitWrite';
 import { extractApiError } from '@/lib/utils';
 import { customerDisplayName } from '@/lib/customer-name';
@@ -177,6 +179,8 @@ import {
 } from './defaultView';
 import { isScheduleOverlayInteraction } from './overlayDismiss';
 import { ScheduleConfirmDialog } from './components/confirmDialog';
+import { CompleteWithOpenVisitsDialog } from '@/components/jobs/CompleteWithOpenVisitsDialog';
+import { openVisitsConflict, type OpenVisitsJob } from '@/components/jobs/openVisitsConflict';
 import { Popover, PopoverContent, PopoverTrigger } from '@/ui-kit/components/ui/popover';
 import { Label } from '@/ui-kit/components/ui/label';
 import { TimeField } from '@/ui-kit/components/form/timeField';
@@ -216,13 +220,20 @@ import { canAutoFocus } from '@/ui-kit/lib/autoFocus';
 
 const DnDCalendar = withDnD(Calendar);
 
-const localizer = dateFnsLocalizer({
-  format,
-  parse,
-  startOfWeek: () => startOfWeek(new Date(), { weekStartsOn: 0 }),
-  getDay,
-  locales: { 'en-US': enUS },
-});
+/**
+ * The board's date localizer for a week that starts on this weekday (0 = Sunday). The ordinary board's week is
+ * Sunday to Saturday; the "No crew" filter (S09.12) shows the next 7 days, a week that starts on today's weekday.
+ */
+const localizerStartingOn = (weekStartsOn: number) =>
+  dateFnsLocalizer({
+    format,
+    parse,
+    startOfWeek: () => startOfWeek(new Date(), { weekStartsOn: weekStartsOn as 0 | 1 | 2 | 3 | 4 | 5 | 6 }),
+    getDay,
+    locales: { 'en-US': enUS },
+  });
+
+const localizer = localizerStartingOn(0);
 
 // ─── Types ───────────────────────────────────────────────
 // The board event is the pure SchedulableEvent (crew: string[] ⟂ start/end) plus optional
@@ -838,8 +849,7 @@ export default function SchedulePage() {
 
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const authUser = useAuthStore((s) => s.user);
-  const canPlanMode = authUser?.role === 'ADMIN' || authUser?.role === 'DISPATCHER';
+  const ability = useAppAbility();
 
   // Declared early (not just before use) because `tz` has to exist before
   // `currentDate`'s initial state below - the scheduler renders and writes in
@@ -866,11 +876,21 @@ export default function SchedulePage() {
   // not outlive the page.
   useScheduleEventColorVars(org?.schedule_event_colors, { writeToRoot: true });
 
-  // D9 (TG13) - role-gated UI CONTROLS (data scoping is server-side, PR A scopeWhereFor).
+  // S04.11 - UI CONTROLS follow switches, never the role's name (data scoping is server-side).
   // Destructured to primitives so they're stable useCallback/useEffect deps.
-  const { memberView: canMemberView, readOnly: boardReadOnly } = boardCapabilitiesFor(
-    authUser?.role,
-  );
+  const {
+    memberView: canMemberView,
+    readOnly: boardReadOnly,
+    moveJobs: canMoveJobs,
+    assignJobCrew: canAssignJobCrew,
+    reassignJobs: canReassignJobs,
+    moveWalkthroughs: canMoveWalkthroughs,
+    reassignWalkthroughs: canReassignWalkthroughs,
+    planMode: canPlanMode,
+    unscheduledJobsBucket: canUseJobsBucket,
+    unscheduledWalkthroughsBucket: canUseWalkthroughsBucket,
+    completeJob: canCompleteJob,
+  } = boardCapabilitiesFor(ability);
 
   // View / navigation state
   // "Today" is the org's today, not the browser's - a Manila viewer and a New
@@ -883,11 +903,15 @@ export default function SchedulePage() {
   const isPhoneWidth = useIsMobile();
   const [searchParams, setSearchParams] = useSearchParams();
   const urlView = parseScheduleView(searchParams.get('view'));
+  // S09.12 - the "No crew" filter, named in the address (`?filter=no_crew`): the next 7 days, only the visits and
+  // walkthroughs nobody is on. The server does the filtering; the board only asks and says so.
+  const { active: noCrew, clear: clearNoCrew } = useScheduleNoCrewFilter();
   const [sessionView, setSessionView] = useState(readSessionView);
   const calendarView: string = resolveScheduleView({
     widthClass: isPhoneWidth ? 'phone' : 'wide',
     urlView,
     sessionView,
+    noCrew,
   });
   // Read through a ref so the setter keeps ONE identity across renders: the keyboard
   // shortcuts, the week-header drill-down and the month drill-down all close over it.
@@ -895,6 +919,10 @@ export default function SchedulePage() {
   useEffect(() => {
     urlViewRef.current = urlView;
   }, [urlView]);
+  const noCrewRef = useRef(noCrew);
+  useEffect(() => {
+    noCrewRef.current = noCrew;
+  }, [noCrew]);
   const setCalendarView = useCallback(
     (view: string) => {
       const next = parseScheduleView(view);
@@ -902,7 +930,9 @@ export default function SchedulePage() {
       setSessionView(next);
       writeSessionView(next);
       const inUrl = urlViewRef.current;
-      if (inUrl !== null && inUrl !== next) {
+      // With the "No crew" filter on, the filter (not the session) decides the opening view, so a view picked
+      // there is written into the address too, where it wins on every reload.
+      if ((inUrl !== null || noCrewRef.current) && inUrl !== next) {
         setSearchParams(
           (prev) => {
             const params = new URLSearchParams(prev);
@@ -944,6 +974,7 @@ export default function SchedulePage() {
     view: parseScheduleView(calendarView) ?? 'week',
     panelVisible: isPanelWidth && sidebarOpen,
     canDrag: !boardReadOnly,
+    noCrew,
   });
   // Drag-to-resize sidebar width (#193) - persisted per device, clamped 180-420.
   const { width: sidebarWidth, startResize: startSidebarResize } = useResizableWidth({
@@ -981,6 +1012,10 @@ export default function SchedulePage() {
     },
     staleTime: 5 * 60_000,
   });
+  // The board's week is Sunday to Saturday; under the "No crew" filter it is the next 7 days, a week that starts on
+  // today's weekday in the company's time zone (S09.12).
+  const weekStartsOn = (noCrew ? nowWallClock(tz).getDay() : 0) as 0 | 1 | 2 | 3 | 4 | 5 | 6;
+  const boardLocalizer = useMemo(() => (weekStartsOn === 0 ? localizer : localizerStartingOn(weekStartsOn)), [weekStartsOn]);
   const dateRange = useMemo<{ start: WallClock; end: WallClock }>(() => {
     if (calendarView === Views.DAY) {
       return { start: asWallClock(startOfDay(currentDate)), end: asWallClock(endOfDay(currentDate)) };
@@ -988,15 +1023,15 @@ export default function SchedulePage() {
       const ms = startOfMonth(currentDate);
       const me = endOfMonth(currentDate);
       return {
-        start: asWallClock(startOfWeek(ms, { weekStartsOn: 0 })),
-        end: asWallClock(endOfWeek(me, { weekStartsOn: 0 })),
+        start: asWallClock(startOfWeek(ms, { weekStartsOn })),
+        end: asWallClock(endOfWeek(me, { weekStartsOn })),
       };
     }
     return {
-      start: asWallClock(startOfWeek(currentDate, { weekStartsOn: 0 })),
-      end: asWallClock(endOfWeek(currentDate, { weekStartsOn: 0 })),
+      start: asWallClock(startOfWeek(currentDate, { weekStartsOn })),
+      end: asWallClock(endOfWeek(currentDate, { weekStartsOn })),
     };
-  }, [currentDate, calendarView]);
+  }, [currentDate, calendarView, weekStartsOn]);
 
   // Search highlight: what the last search result pointed at, for three seconds (searchHighlight.ts).
   const [highlightTarget, setHighlightTarget] = useState<SearchHighlightTarget | null>(null);
@@ -1206,7 +1241,6 @@ export default function SchedulePage() {
   const [draggingSidebarId, setDraggingSidebarId] = useState<string | null>(null);
 
   // Service Plans bucket - every ACTIVE plan with remaining visits (admin/dispatcher only).
-  const ability = useAppAbility();
   // useModuleAccess, not ability.can: /api/service-plans sits behind
   // requireFeature('service_plans') (Pro) while Scheduling is Starter core, and an
   // admin passes every CASL check regardless of what the org pays for. This drives
@@ -1218,6 +1252,9 @@ export default function SchedulePage() {
   const canCreateDepartment = ability.can('create', 'Department');
   // Slice 04 - "New Event" affordance, gated on the CalendarEntry grant (spec §4).
   const canCreateCalendarEntry = ability.can('create', 'CalendarEntry');
+  // S04.11 - the Create popover's three doors follow Schedule visits (Job), Book walkthroughs (Walkthrough,
+  // with the leads entitlement) and Create events (Event). With none of them there is nothing to open.
+  const canOpenCreate = canMoveJobs || (leadsEnabled && canMoveWalkthroughs) || canCreateCalendarEntry;
   const { data: planBucket } = useSchedulerBucket(canSeePlans);
   const scheduleVisitMutation = useScheduleVisit();
 
@@ -1397,6 +1434,13 @@ export default function SchedulePage() {
           scheduled_start: ghost.start,
           scheduled_end: ghost.end,
         });
+      } else if (ghost.sourceType === 'job' && !canAssignJobCrew) {
+        // Schedule visits without Assign people to jobs: the draft books the visit and names nobody.
+        await api.post(`/api/jobs/${ghost.sourceId}/visits`, {
+          scheduled_start: ghost.start,
+          scheduled_end: ghost.end,
+          assignee_ids: [],
+        });
       } else if (ghost.sourceType === 'job') {
         await api.post(`/api/jobs/${ghost.sourceId}/assign`, {
           assignee_ids: ghost.crew,
@@ -1434,7 +1478,7 @@ export default function SchedulePage() {
         return next;
       });
     }
-  }, [planMode, queryClient]);
+  }, [planMode, queryClient, canAssignJobCrew]);
 
   // Confirm all visible ghosts
   const handleConfirmAllGhosts = useCallback(async () => {
@@ -1513,7 +1557,7 @@ export default function SchedulePage() {
       if (e.key === '2') setCalendarView(Views.WEEK);
       if (e.key === '3') setCalendarView(Views.MONTH);
       if (e.key === 's' || e.key === 'S') setIsGroupedView(false);
-      // D9 - member view is an admin/dispatcher capability; the shortcut respects it too.
+      // D9 - member view follows Assign work to other people; the shortcut respects it too.
       if ((e.key === 'g' || e.key === 'G') && canMemberView) setIsGroupedView(true);
       if (e.key === 'Escape') {
         setConflictToast(null);
@@ -1662,8 +1706,8 @@ export default function SchedulePage() {
     } else if (calendarView === Views.MONTH) {
       return format(currentDate, 'MMM yyyy');
     } else {
-      const wStart = startOfWeek(currentDate, { weekStartsOn: 0 });
-      const wEnd = endOfWeek(currentDate, { weekStartsOn: 0 });
+      const wStart = startOfWeek(currentDate, { weekStartsOn });
+      const wEnd = endOfWeek(currentDate, { weekStartsOn });
       if (wStart.getFullYear() !== wEnd.getFullYear()) {
         return `${format(wStart, 'MMM d, yyyy')} ${EN} ${format(wEnd, 'MMM d, yyyy')}`;
       }
@@ -1673,7 +1717,7 @@ export default function SchedulePage() {
       }
       return `${format(wStart, 'MMM d')} ${EN} ${format(wEnd, 'd')}${year}`;
     }
-  }, [calendarView, currentDate]);
+  }, [calendarView, currentDate, weekStartsOn]);
 
   // ─── Day focus (week view: double-click a day to expand its column) ──
   const toggleDayFocus = useCallback((idx: number) => {
@@ -1813,8 +1857,8 @@ export default function SchedulePage() {
           setCalendarView(Views.DAY);
           return;
         }
-        // D9 - the all-day popover only offers scheduling actions; skip for read-only.
-        if (boardReadOnly) return;
+        // D9 - the all-day popover only offers creation; skip when nothing can be created.
+        if (!canOpenCreate) return;
         if (createPopoverOpenRef.current) return;
         {
           const dayStart = asWallClock(startOfDay(date));
@@ -1866,7 +1910,7 @@ export default function SchedulePage() {
         {face}
       </div>
     );
-  }, [calendarView, boardReadOnly, tz, setCalendarView, toggleDayFocus]);
+  }, [calendarView, canOpenCreate, tz, setCalendarView, toggleDayFocus]);
 
   const calendarComponents = useMemo(() => ({
     toolbar: () => null,
@@ -1892,7 +1936,7 @@ export default function SchedulePage() {
     jobsLoading,
     walkthroughsLoading,
     unassignedError,
-  } = useScheduleData({ dateRange, departmentFilter, tz });
+  } = useScheduleData({ dateRange, departmentFilter, tz, noCrew, canReadEvents: ability.can('read', 'CalendarEntry') });
 
   // Bucket types this viewer cannot reach at all. Hide, don't hint (useModuleAccess.ts:18-21) -
   // and killing the section is what stops the empty state from making a positively FALSE claim
@@ -1908,8 +1952,13 @@ export default function SchedulePage() {
   // of viewers who see the misleading "soon / Step 9E" stub today is the set that now sees
   // nothing. Keying on useFeature('service_plans') alone would leave planSlot undefined for them
   // and the stub lie fully intact - the opposite of the fix.
+  //
+  // S04.11 - the jobs bucket is for people who may schedule a visit and the walkthroughs bucket for
+  // people who may book a walkthrough: the server refuses the drop to anyone else, so the card is not
+  // offered. Same hide-don't-hint rule as above.
   const hiddenBucketTypes: EventType[] = [];
-  if (!leadsEnabled) hiddenBucketTypes.push('walkthrough');
+  if (!leadsEnabled || !canUseWalkthroughsBucket) hiddenBucketTypes.push('walkthrough');
+  if (!canUseJobsBucket) hiddenBucketTypes.push('job');
   if (!canSeePlans) hiddenBucketTypes.push('service-plan');
 
   // Roster - the assignable pool, department-scoped SERVER-side (D3). One query replaces
@@ -1953,6 +2002,8 @@ export default function SchedulePage() {
     hiddenSidebarIds: planMode.hiddenSidebarIds,
     tz,
   });
+  // What the two unscheduled buckets actually offer this viewer (the hidden types never render).
+  const shownBucketEvents = visibleBucketEvents.filter((e) => !hiddenBucketTypes.includes(e.type));
 
   // Apply the pendingMove override so the event visually stays at the new position
   // during the confirmation dialog. The override carries the (unchanged) crew.
@@ -2090,6 +2141,17 @@ export default function SchedulePage() {
     { previous?: [readonly unknown[], unknown][] }
   >({
     mutationFn: async (payload) => {
+      // A person with Schedule visits but not Assign people to jobs books the job's visit, with no crew:
+      // /assign is the crew door (it asks for Assign people to jobs), the visits door asks only for the booking.
+      if (!canAssignJobCrew) {
+        const { data } = await api.post(`/api/jobs/${payload.jobId}/visits`, {
+          scheduled_start: payload.start,
+          scheduled_end: payload.end,
+          assignee_ids: [],
+          ...(payload.allDay === undefined ? {} : { is_all_day: payload.allDay }),
+        });
+        return data;
+      }
       // REPLACE semantics: always the full crew array. [] is valid - crew ⟂ schedule,
       // a crew-less job can still be (re)scheduled (state 4).
       // No notify keys: the route runs the "Job is scheduled" / "Job is rescheduled" automation
@@ -2135,7 +2197,9 @@ export default function SchedulePage() {
       for (const [key, data] of context?.previous ?? []) queryClient.setQueryData(key, data);
       // Clear any lingering hover tooltip so it doesn't show under the conflict modal
         const axiosErr = err as { response?: { status?: number; data?: { error?: string; conflicts?: ScheduleConflictItem[] } } };
-      if (axiosErr.response?.status === 409) {
+      // A 409 is a scheduling conflict only when it lists the conflicts. A job that must be reopened first (S06.17) also
+      // answers 409, and that one is shown as the plain refusal it is: there is nothing to "schedule anyway".
+      if (axiosErr.response?.status === 409 && axiosErr.response.data?.conflicts) {
         setConflictToast({
           message: extractApiError(err, 'Scheduling conflict detected.'),
           conflicts: axiosErr.response.data?.conflicts,
@@ -2209,7 +2273,7 @@ export default function SchedulePage() {
       // route that carries every board drag since S6 answered a double-booking with a generic
       // error toast and no way through, which is neither the warning D21 asks for nor a block.
       const axiosErr = err as { response?: { status?: number; data?: { error?: string; conflicts?: ScheduleConflictItem[] } } };
-      if (axiosErr.response?.status === 409) {
+      if (axiosErr.response?.status === 409 && axiosErr.response.data?.conflicts) {
         setConflictToast({
           message: extractApiError(err, 'Scheduling conflict detected.'),
           conflicts: axiosErr.response.data?.conflicts,
@@ -2545,14 +2609,32 @@ export default function SchedulePage() {
     onError: (err) => setErrorToast(extractApiError(err, 'Failed to unschedule. Please try again.')),
   });
 
-  // Board "Mark Complete" - one-click close-out, no completion-note modal.
-  const completeMutation = useMutation<unknown, unknown, { jobId: string; number: string }>({
-    mutationFn: async ({ jobId }) => api.post(`/api/jobs/${jobId}/complete`),
+  // Board "Complete job" - one-click close-out, no completion-note modal.
+  // S04.17: a job that still has open visits is refused until the request says to cancel them; the refusal names
+  // them and `openVisitsPrompt` shows the confirmation, which sends the same complete again with that choice.
+  const [openVisitsPrompt, setOpenVisitsPrompt] = useState<
+    { jobId: string; number: string; jobs: OpenVisitsJob[] } | null
+  >(null);
+  const completeMutation = useMutation<unknown, unknown, { jobId: string; number: string; cancelOpenVisits?: boolean }>({
+    mutationFn: async ({ jobId, cancelOpenVisits }) => (
+      cancelOpenVisits
+        ? api.post(`/api/jobs/${jobId}/complete`, { cancel_open_visits: true })
+        : api.post(`/api/jobs/${jobId}/complete`)
+    ),
     onSuccess: (_, { jobId, number }) => {
+      setOpenVisitsPrompt(null);
       refreshAfterVisitWrite(queryClient, { jobId });
-      toast('Job completed', { description: `${number} marked complete.` });
+      toast('Job completed', { description: `${number} is now in office review.` });
     },
-    onError: (err) => setErrorToast(extractApiError(err, 'Failed to complete. Please try again.')),
+    onError: (err, { jobId, number }) => {
+      const openVisits = openVisitsConflict(err);
+      if (openVisits) {
+        setOpenVisitsPrompt({ jobId, number, jobs: openVisits });
+        return;
+      }
+      setOpenVisitsPrompt(null);
+      setErrorToast(extractApiError(err, 'Failed to complete. Please try again.'));
+    },
   });
 
   // ─── TG11 - Unassigned bucket stack seams ──────────────────────────────────
@@ -2658,6 +2740,8 @@ export default function SchedulePage() {
       if (boardReadOnly) return; // D9 defense in depth - board cards aren't draggable for read-only
       const ev = scheduledEvents.find((s) => s.boardId === boardEventId);
       if (!ev) return; // ghost/stale drag - nothing live to unschedule
+      if (ev.type === 'job' && !canMoveJobs) return; // S04.11 - clearing a visit's time is Schedule visits
+      if (ev.type === 'walkthrough' && !canMoveWalkthroughs) return; // ...and a walkthrough's is Book walkthroughs
       const gate = unscheduleGate(ev);
       if (!gate.ok) {
         toast("Can't unschedule", { description: `${ev.number} ${EM} ${gate.reason}` });
@@ -2665,7 +2749,7 @@ export default function SchedulePage() {
       }
       setUnscheduleConfirm(ev);
     },
-    [planMode.isActive, scheduledEvents, unscheduleGate, boardReadOnly],
+    [planMode.isActive, scheduledEvents, unscheduleGate, boardReadOnly, canMoveJobs, canMoveWalkthroughs],
   );
 
   // ─── TG12 - event editor (the ONLY per-person crew path) ──────────────────
@@ -2776,18 +2860,33 @@ export default function SchedulePage() {
   /** Status gate for the editor's "Move to Unscheduled" (timed events only). */
   const editorUnscheduleGate = editorEvent?.start ? unscheduleGate(editorEvent) : null;
 
-  /** "Mark Complete" gate - a manager (not read-only) closing out a job from the board.
-   *  Self-exclusion only (not ordering): re-completing an already-complete job is a no-op. */
+  /** The editor is view-only on a card its viewer holds no switch to change: a visit needs Schedule visits
+   *  or Assign people to jobs, a walkthrough needs Book walkthroughs (S04.11). */
+  const editorReadOnly =
+    boardReadOnly ||
+    (editorEvent?.type === 'job' && !(canMoveJobs || canAssignJobCrew)) ||
+    (editorEvent?.type === 'walkthrough' && !canMoveWalkthroughs);
+
+  /** Within an editable job editor, the crew follows Assign people to jobs and the time (with Move to Unscheduled)
+   *  follows Schedule visits: the server answers 403 to a visit's crew replace without the first and to its
+   *  reschedule / cancel without the second. A walkthrough's one switch already decided `editorReadOnly`. */
+  const editorCanEditCrew = editorEvent?.type !== 'job' || canAssignJobCrew;
+  const editorCanEditTime = editorEvent?.type !== 'job' || canMoveJobs;
+
+  /** "Complete job" gate - a holder of Complete jobs closing out a job from the board. The board's rows carry no
+   *  per-record answer, so the job's status says whether it can still be completed (the same statuses the server's
+   *  answer lists the control for): a job already completed, in review, Done or Cancelled is not offered it. */
   const editorCanComplete =
-    !boardReadOnly &&
+    canCompleteJob &&
     editorEvent?.type === 'job' &&
-    (editorEvent?.raw?.status as string | undefined) !== 'COMPLETED';
+    isCompletableJobStatus(editorEvent?.raw?.status as string | undefined);
 
   /** Crew save → TG10's crew-only REPLACE mutations, by type. */
   const handleEditorSaveCrew = useCallback(
     (crew: string[]) => {
-      if (boardReadOnly) return; // D9 defense in depth - the editor is view-only for read-only roles
+      if (editorReadOnly) return; // D9 defense in depth - the editor is view-only without the switches
       if (!editorEvent) return;
+      if (!editorCanEditCrew) return; // a visit's crew is Assign people to jobs, not Schedule visits
       const onUpdated = () => {
         toast('Crew updated', { description: `${editorEvent.number} ${EM} crew replaced.` });
       };
@@ -2803,7 +2902,7 @@ export default function SchedulePage() {
         );
       }
     },
-    [editorEvent, jobCrewSwapMutation, walkthroughCrewSwapMutation, boardReadOnly],
+    [editorEvent, jobCrewSwapMutation, walkthroughCrewSwapMutation, editorReadOnly, editorCanEditCrew],
   );
 
   /**
@@ -2846,8 +2945,9 @@ export default function SchedulePage() {
    *  a 409 flows into the page-level conflict modal's force path. */
   const handleEditorSaveTime = useCallback(
     (start: WallClock, durationMin: number, allDay: boolean) => {
-      if (boardReadOnly) return; // D9 defense in depth - the editor is view-only for read-only roles
+      if (editorReadOnly) return; // D9 defense in depth - the editor is view-only without the switches
       if (!editorEvent) return;
+      if (!editorCanEditTime) return; // a new time is Schedule visits, not crew
       if (editorEvent.type === 'walkthrough') {
         moveWalkthroughEvent(editorEvent, { newStart: wallClockToIso(start, tz), durationMinutes: durationMin });
       } else {
@@ -2859,7 +2959,7 @@ export default function SchedulePage() {
         });
       }
     },
-    [editorEvent, moveJobEvent, moveWalkthroughEvent, boardReadOnly],
+    [editorEvent, moveJobEvent, moveWalkthroughEvent, editorReadOnly, editorCanEditTime],
   );
 
   // ─── D5 unified drop modal - open / change / confirm ──
@@ -2888,11 +2988,15 @@ export default function SchedulePage() {
       const draft = origin === 'tap' ? { ...drafted, autoDate: false, autoTime: false, autoMember: false } : drafted;
       setDropModal({
         event: ev,
-        draft: { ...draft, crew: seedCrewForActor(draft.crew, canAssignOthers, actorId) },
+        // A job booked by a person who may not assign people to jobs carries no crew at all, not even their own.
+        draft: {
+          ...draft,
+          crew: ev.type === 'job' && !canAssignJobCrew ? [] : seedCrewForActor(draft.crew, canAssignOthers, actorId),
+        },
         origin,
       });
     },
-    [org, canAssignOthers, actorId],
+    [org, canAssignOthers, canAssignJobCrew, actorId],
   );
 
   // Advisory conflict note - re-scanned as the draft changes; never blocks Confirm.
@@ -2943,7 +3047,8 @@ export default function SchedulePage() {
         isMovedConfirmed: false,
         start: wallClockToIso(startDate, tz),
         end: wallClockToIso(endDate, tz),
-        crew: [...crew],
+        // Booking without Assign people to jobs names nobody (see assignMutation).
+        crew: canAssignJobCrew ? [...crew] : [],
         title: `${ev.number} ${EM} ${ev.customer}`,
         customerName: ev.customer,
         // Slice 6: a card in the UNSCHEDULED bucket addresses the JOB, never a trip
@@ -2958,7 +3063,7 @@ export default function SchedulePage() {
         raw: ev.raw,
       });
     },
-    [planMode, tz],
+    [planMode, tz, canAssignJobCrew],
   );
 
   /** POST the draft through the existing mutations (the modal itself never posts). */
@@ -3020,13 +3125,15 @@ export default function SchedulePage() {
     if (!dropModal) return;
     // A plan-mode draft saves nothing, so a crew-less one needs no warning.
     const savesNothing = dropModal.origin === 'tap' && planMode.isActive;
-    if (dropModal.draft.crew.length === 0 && !savesNothing) {
+    // A job booked without Assign people to jobs has no crew by rule, so the crew-less warning would say nothing true.
+    const crewIsNotTheirs = dropModal.event.type === 'job' && !canAssignJobCrew;
+    if (dropModal.draft.crew.length === 0 && !savesNothing && !crewIsNotTheirs) {
       // §3.8 state 4 is valid but deliberate - warn before saving a crew-less schedule.
       setNeedsCrewConfirm(true);
       return;
     }
     submitDropDraft(dropModal.event, dropModal.draft, dropModal.origin);
-  }, [dropModal, submitDropDraft, planMode.isActive]);
+  }, [dropModal, submitDropDraft, planMode.isActive, canAssignJobCrew]);
 
   // ─── DnD Handlers ────────────────────────────────────
 
@@ -3067,6 +3174,10 @@ export default function SchedulePage() {
         return;
       }
 
+      // S04.11 - a visit's new time is Schedule visits, a walkthrough's is Book walkthroughs.
+      if (event.type === 'job' && !canMoveJobs) return;
+      if (event.type === 'walkthrough' && !canMoveWalkthroughs) return;
+
       // Money, not status, freezes a job for rescheduling (Spec B1, B-2).
       if (!event.isGhost) {
         const gate = rescheduleGate(event);
@@ -3097,7 +3208,7 @@ export default function SchedulePage() {
       setPendingMove({ eventId: event.boardId, newStart: startDate, newEnd: endDate, crew: event.crew });
       setRescheduleConfirm({ event, oldStart, oldEnd, newStart: startDate, newEnd: endDate });
     },
-    [planMode, boardReadOnly, ability, saveCalendarEntryMove],
+    [planMode, boardReadOnly, ability, saveCalendarEntryMove, canMoveJobs, canMoveWalkthroughs],
   );
 
   const handleEventResize = useCallback(
@@ -3123,6 +3234,10 @@ export default function SchedulePage() {
         saveCalendarEntryMove(event, startDate, endDate);
         return;
       }
+
+      // S04.11 - a visit's new time is Schedule visits, a walkthrough's is Book walkthroughs.
+      if (event.type === 'job' && !canMoveJobs) return;
+      if (event.type === 'walkthrough' && !canMoveWalkthroughs) return;
 
       // Money, not status, freezes a job for rescheduling (Spec B1, B-2).
       if (!event.isGhost) {
@@ -3154,7 +3269,7 @@ export default function SchedulePage() {
         });
       }
     },
-    [moveJobEvent, moveWalkthroughEvent, planMode, boardReadOnly, ability, saveCalendarEntryMove],
+    [moveJobEvent, moveWalkthroughEvent, planMode, boardReadOnly, ability, saveCalendarEntryMove, canMoveJobs, canMoveWalkthroughs],
   );
 
   // Drops from the sidebar onto the STANDARD calendar (the grouped views handle their own
@@ -3178,6 +3293,7 @@ export default function SchedulePage() {
       // status SCHEDULED with the drop times but no crew (state 4 - needs crew).
       // The hook refreshes the board (and every other visit surface) so the card appears immediately.
       if (parsed.kind === 'plan-visit') {
+        if (!canMoveJobs) return; // S04.11 - same switch as the card's drag
         scheduleVisitMutation.mutate(
           { id: parsed.entityId, scheduled_start: wallClockToIso(startDate, tz), scheduled_end: wallClockToIso(endDate, tz), assigned_to: null },
           {
@@ -3193,6 +3309,9 @@ export default function SchedulePage() {
         setErrorToast('That card is no longer in the Unscheduled bucket.');
         return;
       }
+      // S04.11 - the buckets are only offered to the people who may use them; a drop is refused the same way.
+      if (ev.type === 'job' && !canMoveJobs) return;
+      if (ev.type === 'walkthrough' && !canMoveWalkthroughs) return;
 
       // ── Plan mode: bucket drops become ghosts (flow unchanged) ──
       if (planMode.isActive) {
@@ -3220,7 +3339,7 @@ export default function SchedulePage() {
           : { kind: 'standard-time', start: startDate },
       );
     },
-    [planMode, bucketEvents, scheduleVisitMutation, calendarView, openDropModal, boardReadOnly, addBucketGhost],
+    [planMode, bucketEvents, scheduleVisitMutation, calendarView, openDropModal, boardReadOnly, addBucketGhost, canMoveJobs, canMoveWalkthroughs],
   );
 
   // ─── Slot select (click on empty slot) ───────────────
@@ -3237,8 +3356,8 @@ export default function SchedulePage() {
         setCalendarView(Views.DAY);
         return;
       }
-      // D9 - the slot popover only offers scheduling actions; read-only roles don't get it.
-      if (boardReadOnly) return;
+      // D9 - the slot popover only offers creation; a person who can create nothing doesn't get it.
+      if (!canOpenCreate) return;
       // Already open? This click was a dismissal (Radix handled it on pointerdown) and
       // must not also re-anchor. See createPopoverOpenRef.
       if (createPopoverOpenRef.current) return;
@@ -3250,7 +3369,7 @@ export default function SchedulePage() {
         seed: { start: startDate, end: endDate, isAllDay: false },
       });
     },
-    [calendarView, boardReadOnly, setCalendarView],
+    [calendarView, canOpenCreate, setCalendarView],
   );
 
   // ─── Event select (click on event) ───────────────────
@@ -3311,6 +3430,9 @@ export default function SchedulePage() {
 
     const bucketEv = bucketEvents.find((e) => e.boardId === droppedId);
     if (bucketEv) {
+      // S04.11 - same gate as a bucket drop on the standard calendar.
+      if (bucketEv.type === 'job' && !canMoveJobs) return;
+      if (bucketEv.type === 'walkthrough' && !canMoveWalkthroughs) return;
       openDropModal(
         bucketEv,
         drop.kind === 'time'
@@ -3365,6 +3487,15 @@ export default function SchedulePage() {
       hasTime: drop.kind === 'time',
     });
     if (decision === 'noop') return;
+
+    // S04.11 - a cross-lane drag changes the crew (a visit: Assign people to jobs and Assign work to other
+    // people; a walkthrough: Book walkthroughs and Assign work to other people), a same-lane one the time
+    // (Schedule visits / Book walkthroughs).
+    if (decision === 'swap') {
+      if (boardEv.type === 'walkthrough' ? !canReassignWalkthroughs : !canReassignJobs) return;
+    } else if (boardEv.type === 'walkthrough' ? !canMoveWalkthroughs : !canMoveJobs) {
+      return;
+    }
 
     if (decision === 'swap') {
       // D2 - the drop-target member replaces the source-lane member, 1:1. Crew-only
@@ -3437,7 +3568,7 @@ export default function SchedulePage() {
           (planBucket ?? []).map((plan) => (
             <div
               key={plan.id}
-              draggable={!boardReadOnly}
+              draggable={canMoveJobs} // S04.11 - putting a plan visit on the board is Schedule visits
               onDragStart={(e) => {
                 document.body.classList.add('is-dragging');
                 draggingJobIdRef.current = `pv-${plan.id}`;
@@ -3506,7 +3637,7 @@ export default function SchedulePage() {
   // ─── Unscheduled-jobs sheet (mobile slice 70) ─────────────────────────────
 
   /** What is waiting to be scheduled, for the toolbar button. Same filter the stack renders. */
-  const unscheduledCount = visibleBucketEvents.length + (canSeePlans ? (planBucket?.length ?? 0) : 0);
+  const unscheduledCount = shownBucketEvents.length + (canSeePlans ? (planBucket?.length ?? 0) : 0);
 
   /**
    * A card tapped in the sheet. Where a drag would have opened the scheduling form pre-filled by
@@ -3609,7 +3740,7 @@ export default function SchedulePage() {
           </div>
 
           <UnassignedBuckets
-            events={visibleBucketEvents}
+            events={shownBucketEvents}
             members={orgRoster}
             onDragStartCard={handleBucketCardDragStart}
             onDragEndCard={handleBucketCardDragEnd}
@@ -3669,7 +3800,7 @@ export default function SchedulePage() {
               view={calendarView}
               viewOptions={effectiveGroupedView ? [Views.DAY, Views.WEEK] : [Views.DAY, Views.WEEK, Views.MONTH]}
               onViewChange={setCalendarView}
-              onCreate={boardReadOnly ? undefined : ({ x, y }) => setCreatePopover({ x, y, seed: null })}
+              onCreate={canOpenCreate ? ({ x, y }) => setCreatePopover({ x, y, seed: null }) : undefined}
               boardMode={
                 canMemberView
                   ? {
@@ -3753,7 +3884,7 @@ export default function SchedulePage() {
               {/* The ONE creation trigger. Icon-only, so it carries both a tooltip and an
                   aria-label - there is no visible text to name it. Opens the unified popover
                   immediately: no dropdown, no intermediate step, no type chosen up front. */}
-              {!boardReadOnly && (
+              {canOpenCreate && (
                 <Tooltip>
                   <TooltipTrigger asChild>
                     <Button
@@ -4154,12 +4285,22 @@ export default function SchedulePage() {
             </div>
           )}
 
+          {/* S09.12 - the "No crew" filter is on: say so, and offer the way out (it takes the filter out of the address). */}
+          {noCrew && (
+            <FilterBar
+              className="shrink-0 border-b px-3 py-2"
+              filters={[{ id: 'no_crew', label: 'Crew', value: 'None, next 7 days' }]}
+              onRemove={clearNoCrew}
+            />
+          )}
+
           {/* Calendar or TechnicianGridView or MemberWeekBoard */}
           {effectiveGroupedView ? (
             <div className={`flex-1 min-h-0 overflow-hidden ${planMode.isActive ? 'plan-mode-active' : ''}`}>
               {calendarView === Views.WEEK ? (
                 <MemberWeekBoard
-                  weekStart={asWallClock(startOfWeek(currentDate, { weekStartsOn: 0 }))}
+                  weekStart={asWallClock(startOfWeek(currentDate, { weekStartsOn }))}
+                  weekStartsOn={weekStartsOn}
                   staff={boardMembers}
                   events={allEvents}
                   conflictIds={conflictIds}
@@ -4229,7 +4370,7 @@ export default function SchedulePage() {
               <DnDCalendar
                 ref={calendarDndRef as unknown as React.Ref<never>}
                 longPressThreshold={TOUCH_DRAG_HOLD_MS}
-                localizer={localizer}
+                localizer={boardLocalizer}
                 events={allEvents as unknown as object[]}
                 view={calendarView as 'day' | 'week' | 'month' | 'agenda' | 'work_week'}
                 onView={(v) => setCalendarView(v as string)}
@@ -4286,6 +4427,9 @@ export default function SchedulePage() {
                   // isDragInert existed to prevent (PATCH /api/jobs/<entry-uuid>/assign) can no
                   // longer happen even with the drag turned on here.
                   if (e.type === 'calendar-entry') return ability.can('update', 'CalendarEntry');
+                  // S04.11 - a visit moves on Schedule visits, a walkthrough on Book walkthroughs.
+                  if (e.type === 'job' && !canMoveJobs) return false;
+                  if (e.type === 'walkthrough' && !canMoveWalkthroughs) return false;
                   // Money, not status, freezes a job for rescheduling (Spec B1, B-2).
                   if (!e.isGhost && !rescheduleGate(e).ok) return false;
                   return true;
@@ -4297,6 +4441,8 @@ export default function SchedulePage() {
                   // Money, not status, freezes a job for rescheduling (Spec B1, B-2).
                   if (isAllDayEvent(e)) return false;
                   if (e.type === 'calendar-entry') return ability.can('update', 'CalendarEntry'); // slice 08, spec §4 - see draggableAccessor above
+                  if (e.type === 'job' && !canMoveJobs) return false; // S04.11 - see draggableAccessor above
+                  if (e.type === 'walkthrough' && !canMoveWalkthroughs) return false;
                   if (!e.isGhost && !rescheduleGate(e).ok) return false;
                   return true;
                 }}
@@ -4419,6 +4565,8 @@ export default function SchedulePage() {
           unassignedJobs={unassignedJobs ?? []}
           unscheduledWalkthroughs={unscheduledWalkthroughs ?? []}
           showWalkthroughs={leadsEnabled}
+          canScheduleJobs={canMoveJobs}
+          canBookWalkthroughs={canMoveWalkthroughs}
           canCreateEvent={canCreateCalendarEntry}
           defaultWalkthroughDurationMin={org?.default_walkthrough_duration_min ?? 60}
         />
@@ -4801,7 +4949,9 @@ export default function SchedulePage() {
           open={Boolean(editorEvent) && !conflictToast && !unscheduleConfirm}
           event={editorEvent}
           members={orgRoster}
-          readOnly={boardReadOnly}
+          readOnly={editorReadOnly}
+          canEditCrew={editorCanEditCrew}
+          canEditTime={editorCanEditTime}
           // The SAME verdict `orgRoster` is scoped by and `openDropModal` seeds with, never a
           // second read - one source, so the editor's Crew field cannot be locked on a different
           // answer from the one the rest of this page acted on.
@@ -4828,6 +4978,19 @@ export default function SchedulePage() {
           }}
           onClose={() => setEditorEventId(null)}
         />
+
+        {/* S04.17 - Complete job on a job with open visits: rendered only while the server's refusal is held. */}
+        {openVisitsPrompt && (
+          <CompleteWithOpenVisitsDialog
+            open
+            onOpenChange={(next) => { if (!next) setOpenVisitsPrompt(null); }}
+            jobs={openVisitsPrompt.jobs}
+            isPending={completeMutation.isPending}
+            onConfirm={() => completeMutation.mutate({
+              jobId: openVisitsPrompt.jobId, number: openVisitsPrompt.number, cancelOpenVisits: true,
+            })}
+          />
+        )}
 
         {/* ── Slice 04 - the Event dialog (create + edit, calendar-entries spec §4/§7) ── */}
         {/* Two instances, not one dual-purpose `open`: "New Event" and clicking a live
@@ -4860,7 +5023,7 @@ export default function SchedulePage() {
             }
           >
             <UnassignedBuckets
-              events={visibleBucketEvents}
+              events={shownBucketEvents}
               members={orgRoster}
               onDragStartCard={handleBucketCardDragStart}
               onUnscheduleDrop={handleUnscheduleDrop}
@@ -4884,6 +5047,7 @@ export default function SchedulePage() {
           conflictNote={dropConflictNote}
           members={orgRoster}
           canAssignOthers={canAssignOthers}
+          canNameCrew={dropModal?.event.type !== 'job' || canAssignJobCrew}
           actorKnownPeople={actorKnownPeople}
           origin={dropModal?.origin}
           onChange={(patch) =>
@@ -4919,6 +5083,9 @@ export default function SchedulePage() {
             onCancel={() => setUnscheduleConfirm(null)}
             onConfirm={() => {
               if (boardReadOnly) return; // D9 defense in depth - confirm can't write for read-only roles
+              // Clearing a visit's time is Schedule visits (a job) or Book walkthroughs (a walkthrough), as on
+              // the drag-to-bucket path.
+              if (unscheduleConfirm.type === 'job' ? !canMoveJobs : !canMoveWalkthroughs) return;
               unscheduleMutation.mutate(unscheduleConfirm);
               setUnscheduleConfirm(null);
               setEditorEventId(null); // editor-initiated unschedule is done - don't reopen

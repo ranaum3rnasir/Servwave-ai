@@ -11,7 +11,7 @@
  * exactly as before.
  *
  * Mirrors `repro-1997.test.ts` / `estimate-customer-contact-redaction.test.ts`'s
- * `mockDeniedCustomerRead` — a conditioned `read Customer` grant built from real `DEFAULT_GRANTS`.
+ * `mockDeniedCustomerRead` — View customers turned off through the switch catalog.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { Mock } from 'vitest';
@@ -20,8 +20,7 @@ import app from '../app';
 import { prisma } from '../lib/prisma';
 import { sendEstimateEmail } from '../lib/email';
 import { sendInvoiceEmail } from '../lib/email';
-import { TEST_USERS, mockAuthAs, authHeader, ALPHA_ORG_ID } from './helpers';
-import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
+import { TEST_USERS, mockAuthAs, mockRoleSwitches, authHeader, ALPHA_ORG_ID } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -32,13 +31,9 @@ const mockSendInvoiceEmail = sendInvoiceEmail as Mock;
 const NEUTRAL_ERROR = "You can send this to the customer's saved address only.";
 
 /** See repro-1997.test.ts for the full rationale — own local copy, not a shared import. */
-function mockDeniedCustomerRead(role: string, deniedCustomerId: string) {
-  const rows = [
-    ...DEFAULT_GRANTS.filter((g) => !(g.role === role && g.action === 'read' && g.subject === 'Customer')),
-    { role, action: 'read', subject: 'Customer', conditions: { id: 'zz-not-' + deniedCustomerId } },
-  ];
-  mockPrisma.rolePermission.findMany.mockResolvedValue(rows.filter((g) => g.role === role));
-  clearPermissionCache();
+function mockDeniedCustomerRead(_role: string, _deniedCustomerId: string) {
+  // View customers off: the person reaches no customer, so THIS one is denied.
+  mockRoleSwitches({ view_customers: false });
 }
 
 beforeEach(() => {
@@ -95,6 +90,7 @@ describe('POST /api/estimates/:id/send — client-supplied recipient requires Cu
     mockAuthAs('sales'); // unconditional `send Estimate` (defaultGrants.ts:120), owns via lead_assignees
     mockDeniedCustomerRead('SALES', CUSTOMER_ID);
     mockPrisma.estimate.findUnique.mockResolvedValue(draftEstimate());
+    mockPrisma.estimate.findFirst.mockResolvedValue({ id: ESTIMATE_ID }); // inside the sender's Estimates scope
     mockPrisma.organization.findUnique.mockResolvedValue({
       id: ALPHA_ORG_ID, name: 'Org', logo_url: null, brand_color: '#000',
       estimate_terms: 'T', estimate_notes: 'N', estimate_payment_terms: 'P',
@@ -170,6 +166,7 @@ describe('POST /api/invoices/:id/send — client-supplied recipient requires Cus
       due_date: null,
       total_amount: 1000,
       amount_due: 1000,
+      deposit_credit: 0, // a real row always carries it (Decimal @default(0)); the send path reads it (slice 32b)
       customer_id: CUSTOMER_ID,
       customer: { id: CUSTOMER_ID, first_name: 'QA1997', last_name: 'Customer', company_name: null, email: 'qa-1997-customer@example.com', phone: '5555501997', payment_type: null, tax_exempt: false },
       job: null,
@@ -183,7 +180,11 @@ describe('POST /api/invoices/:id/send — client-supplied recipient requires Cus
 
   function setupCommit(resultInvoice: Record<string, unknown>) {
     mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => unknown) => fn({
-      invoice: { update: vi.fn().mockResolvedValue(resultInvoice) },
+      $executeRaw: vi.fn().mockResolvedValue(1),
+      invoice: {
+        findUniqueOrThrow: vi.fn().mockResolvedValue({ status: 'DRAFT', amount_due: 100, deposit_credit: 0 }),
+        update: vi.fn().mockResolvedValue(resultInvoice),
+      },
       timelineEvent: { create: vi.fn().mockResolvedValue({}) },
     }));
   }

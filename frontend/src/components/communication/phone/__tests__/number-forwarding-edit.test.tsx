@@ -153,7 +153,7 @@ describe('Numbers table - releasing a number', () => {
 
   it('will not release until the number itself is typed back', async () => {
     // A confirm dialog alone is one muscle-memory click from permanently
-    // losing a working business line. Alpha Doors has 20 live numbers here.
+    // losing a working business line. The pilot org has 20 live numbers here.
     renderNumbers();
 
     fireEvent.click(screen.getByRole('button', { name: /^release$/i }));

@@ -63,7 +63,7 @@ vi.mock('@/lib/api/inventory', async (importOriginal) => {
   const mutation = () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false });
   return {
     ...actual,
-    useInventoryItems: stable(hoisted.items as unknown as import('@/lib/api/inventory').Item[]),
+    usePriceBookItems: stable(hoisted.items as unknown as import('@/lib/api/inventory').Item[]),
     useBrands: stable(EMPTY),
     useItemGroups: stable(EMPTY),
     useCategories: stable(EMPTY),

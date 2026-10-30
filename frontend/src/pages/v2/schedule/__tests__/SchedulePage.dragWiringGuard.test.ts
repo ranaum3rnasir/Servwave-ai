@@ -214,3 +214,52 @@ describe('SchedulePage drag wiring — calendar entries (slice 08, source-scan g
     expect(planModeIndex).toBeLessThan(entryBranchIndex);
   });
 });
+
+// ─── Visits and walkthroughs follow their own switches (S04.11) ──
+//
+// The same source-scan precedent, for the standard calendar's drag path that a DOM test cannot drive: a visit's
+// new time needs Schedule visits and a walkthrough's needs Book walkthroughs, checked on the accessor (so the card
+// is not draggable) AND again in the handler (belt and braces), ahead of anything that saves or drafts the move.
+// The member grid's drops are driven for real in boardSwitches.test.tsx.
+describe('SchedulePage drag wiring - visits and walkthroughs (S04.11, source-scan guard)', () => {
+  const JOB_ACCESSOR_CONDITION = "e.type === 'job' && !canMoveJobs";
+  const WALKTHROUGH_ACCESSOR_CONDITION = "e.type === 'walkthrough' && !canMoveWalkthroughs";
+
+  it.each(['draggableAccessor={(event: object)', 'resizableAccessor={(event: object)'])(
+    '%s refuses a visit without Schedule visits and a walkthrough without Book walkthroughs',
+    (marker) => {
+      const body = extractArrowBody(SOURCE, marker);
+      const job = extractIfClause(body, JOB_ACCESSOR_CONDITION);
+      expect(job.condition).toBe(JOB_ACCESSOR_CONDITION);
+      expect(job.thenClause).toBe('return false');
+      const walkthrough = extractIfClause(body, WALKTHROUGH_ACCESSOR_CONDITION);
+      expect(walkthrough.condition).toBe(WALKTHROUGH_ACCESSOR_CONDITION);
+      expect(walkthrough.thenClause).toBe('return false');
+    },
+  );
+
+  it.each(['const handleEventDrop = useCallback(', 'const handleEventResize = useCallback('])(
+    '%s returns for a visit without Schedule visits and a walkthrough without Book walkthroughs, before anything is saved or drafted',
+    (marker) => {
+      const body = extractArrowBody(SOURCE, marker);
+      const job = extractIfClause(body, "event.type === 'job'");
+      expect(job.condition).toBe("event.type === 'job' && !canMoveJobs");
+      expect(job.thenClause).toBe(BARE_RETURN);
+      const walkthrough = extractIfClause(body, "event.type === 'walkthrough'");
+      expect(walkthrough.condition).toBe("event.type === 'walkthrough' && !canMoveWalkthroughs");
+      expect(walkthrough.thenClause).toBe(BARE_RETURN);
+      const gateIndex = body.indexOf("event.type === 'walkthrough' && !canMoveWalkthroughs");
+      expect(gateIndex).toBeLessThan(body.indexOf('planMode.isActive'));
+      expect(gateIndex).toBeLessThan(body.indexOf('moveJobEvent(') === -1 ? Infinity : body.indexOf('moveJobEvent('));
+    },
+  );
+
+  it('a bucket card dropped on the standard calendar needs the same switch as the bucket that offered it', () => {
+    const body = extractArrowBody(SOURCE, 'const handleDropFromOutside = useCallback(');
+    expect(extractIfClause(body, "ev.type === 'job'").condition).toBe("ev.type === 'job' && !canMoveJobs");
+    expect(extractIfClause(body, "ev.type === 'walkthrough'").condition).toBe(
+      "ev.type === 'walkthrough' && !canMoveWalkthroughs",
+    );
+    expect(body.indexOf("ev.type === 'job' && !canMoveJobs")).toBeLessThan(body.indexOf('planMode.isActive'));
+  });
+});

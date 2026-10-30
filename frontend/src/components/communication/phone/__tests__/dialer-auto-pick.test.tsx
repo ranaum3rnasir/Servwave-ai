@@ -13,6 +13,15 @@ import { MemoryRouter } from "react-router-dom";
 import type { DialerEntityContext } from "@/stores/dialer.store";
 
 const mockNavigate = vi.fn();
+// Customer numbers on the Communication screens follow the person's switches (S05.6). This suite renders the
+// screen without a query client, so the person's switches are stubbed: every one on, the screen as it always was.
+vi.mock("@/components/contact/useContactPolicyInput", () => ({
+  useContactPolicyInput: () => ({
+    switches: { copyCustomerPhone: true, copyCustomerEmail: true, contactCustomers: true, viewCustomers: true },
+    phoneService: true,
+  }),
+}));
+
 // These specs render deep phone components without a QueryClientProvider - every
 // data hook is stubbed individually. Times now resolve against the ORG's zone, so
 // the org query joins that list; pinned here so the rendered clock is fixed rather

@@ -10,8 +10,8 @@ function row(over: Partial<ActivityEventRow>): ActivityEventRow {
     eventType: 'lead.created',
     createdAt: new Date('2026-06-19T15:00:00.000Z'),
     actorId: 'u-1',
-    actorFirstName: 'Oved',
-    actorLastName: 'Adani',
+    actorFirstName: 'Morgan',
+    actorLastName: 'Diaz',
     actorRole: 'Sales',
     ...over,
   };
@@ -53,9 +53,9 @@ describe('buildActivityReport', () => {
 
   it('carries actor name and role through', () => {
     const users = buildActivityReport([
-      row({ actorFirstName: 'Emanuel', actorLastName: 'Dahan', actorRole: 'Dispatcher' }),
+      row({ actorFirstName: 'Sam', actorLastName: 'Rivera', actorRole: 'Dispatcher' }),
     ]);
-    expect(users[0]?.name).toBe('Emanuel Dahan');
+    expect(users[0]?.name).toBe('Sam Rivera');
     expect(users[0]?.role).toBe('Dispatcher');
   });
 

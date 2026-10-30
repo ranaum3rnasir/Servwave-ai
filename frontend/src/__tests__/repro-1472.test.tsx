@@ -21,6 +21,7 @@ import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import { renderWithProviders } from './helpers';
+import { everyNewEstimateEntry } from './support/newEstimateEntries';
 import { NewEstimateDialog as V2NewEstimateDialog } from '@/pages/v2/estimates/components/newEstimateDialog';
 import { NewEstimateDialog as LegacyNewEstimateDialog } from '@/components/estimates/NewEstimateDialog';
 
@@ -49,17 +50,23 @@ vi.mock('react-router-dom', async () => {
  * #2041 slice 1 - both dialogs' expand call now hits the org-wide picker endpoint
  * (`/api/customers/picker/:id`), not `/api/customers/:id`.
  */
-function setupMocks() {
+function setupMocks(meAnswer: unknown) {
   vi.mocked(api.get).mockImplementation(async (url: string) => {
+    if (url === '/api/permission-switches/me') return { data: meAnswer };
     if (url === `/api/customers/picker/${CUSTOMER_ID}`) return { data: { customer: CUSTOMER } };
     if (url === '/api/leads') return { data: { leads: [] } };
     return { data: {} };
   });
 }
 
+// The person can take every way out of the dialog (S02.26 gates each on a switch; its own test file covers the gates).
+let person: ReturnType<typeof everyNewEstimateEntry>;
+
 beforeEach(() => {
   vi.clearAllMocks();
-  setupMocks();
+  localStorage.clear();
+  person = everyNewEstimateEntry();
+  setupMocks(person.meAnswer);
 });
 
 describe.each([
@@ -74,6 +81,7 @@ describe.each([
         preSelectedCustomerId={CUSTOMER_ID}
         onPreSelectConsumed={vi.fn()}
       />,
+      { ability: person.ability },
     );
   }
 

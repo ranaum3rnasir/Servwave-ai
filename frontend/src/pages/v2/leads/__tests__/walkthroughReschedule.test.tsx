@@ -302,8 +302,9 @@ describe('v2 LeadDetailPage - a completed walkthrough (#1633)', () => {
 
 /**
  * Scheduling-notifications slice 09: the live row's Cancel opens the page's own cancel dialog
- * (the one with the reason box), and is offered only to a viewer holding `cancel Lead` - the
- * gate POST /api/leads/:id/walkthrough/cancel rides.
+ * (the one with the reason box), and is offered only to a viewer holding Book walkthroughs - the
+ * gate POST /api/leads/:id/walkthrough/cancel rides (S04.19 moved it off the retired lead-cancel
+ * grant).
  */
 describe('v2 LeadDetailPage - the walkthrough row\'s Cancel is the page\'s dialog (slice 09)', () => {
   it('opens the Cancel Walkthrough dialog from the row\'s office group', async () => {
@@ -316,7 +317,7 @@ describe('v2 LeadDetailPage - the walkthrough row\'s Cancel is the page\'s dialo
     expect(await screen.findByRole('dialog', { name: /Cancel Walkthrough/i })).toBeInTheDocument();
   });
 
-  it('offers no Cancel on the row to a viewer who may book but not cancel', async () => {
+  it('offers Cancel on the row to a viewer who may book, with no lead-cancel grant', async () => {
     const user = userEvent.setup();
     await openWalkthroughTab(user, buildAbility([
       { action: 'read', subject: 'all' },
@@ -325,6 +326,18 @@ describe('v2 LeadDetailPage - the walkthrough row\'s Cancel is the page\'s dialo
 
     const office = await screen.findByRole('group', { name: 'Office actions' });
     expect(within(office).getByRole('button', { name: /Reschedule/ })).toBeInTheDocument();
-    expect(within(office).queryByRole('button', { name: 'Cancel' })).toBeNull();
+    expect(within(office).getByRole('button', { name: 'Cancel' })).toBeInTheDocument();
+  });
+
+  it('offers no Cancel on the row to a viewer who holds the lead-cancel grant but may not book', async () => {
+    const user = userEvent.setup();
+    await openWalkthroughTab(user, buildAbility([
+      { action: 'read', subject: 'all' },
+      { action: 'cancel', subject: 'Lead' },
+    ]));
+
+    await screen.findByText(/^Starts:/);
+    expect(screen.queryByRole('group', { name: 'Office actions' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
   });
 });

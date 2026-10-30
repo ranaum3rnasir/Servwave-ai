@@ -44,7 +44,8 @@ import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { supabaseAdmin } from '../lib/supabase';
 import { tenantWhere } from '../lib/tenant';
-import { canAccessRow, canSeePricing } from '../lib/permissions/enforce';
+import { canAccessRow, canSeeCosts } from '../lib/permissions/enforce';
+import { changesDiscount, refusedForDiscount } from '../lib/permissions/discountWrite';
 import { presentEstimateDetail } from '../lib/permissions/customerContact';
 import { asScopeArray, withOptionalDefaults, stripScopeCost, type ScopeOfWork } from '../lib/scopes';
 import { addScopeSchema, updateScopeSchema, reorderScopeSchema } from './invoice-lines.controller';
@@ -460,6 +461,8 @@ export async function addLine(req: Request, res: Response) {
   try {
     const estimate = await loadGuardedEstimate(req, res);
     if (!estimate) return;
+    // Apply discounts: a new line carrying a discount sets one.
+    if (refusedForDiscount(req, res, 'Estimate', changesDiscount(req.body, null))) return;
     // #2090 - a line that does not exist yet has no stored flags, so it is diffed against the
     // flag-blind default: adding an ORDINARY line to a locked estimate is not a selection change
     // (the edit lock below still refuses it), adding an OPTION is.
@@ -467,11 +470,11 @@ export async function addLine(req: Request, res: Response) {
     if (isMutationBlocked(estimate, res)) return;
 
     const body = req.body as z.infer<typeof addLineSchema>;
-    // Drop cost/margin fields BEFORE the write when the requester can't `read Invoice` — mirrors
+    // Drop cost/margin fields BEFORE the write when the requester can't see costs (See financial data) — mirrors
     // job-lines.controller.ts's / invoice-lines.controller.ts's identical addLine guard (job-lines
     // pricing-leak follow-up, estimate half). Both the write AND the response must strip these
     // (see stripEstimateCost, applied via recomputeAndPersist's estimateDetailSelect response).
-    if (!canSeePricing(req)) {
+    if (!canSeeCosts(req)) {
       body.unit_cost = undefined;
       body.markup_percent = undefined;
     }
@@ -588,6 +591,10 @@ export async function updateLine(req: Request, res: Response) {
   try {
     const estimate = await loadGuardedEstimate(req, res);
     if (!estimate) return;
+    // Apply discounts: judged against the line as stored, so an edit that leaves its discount alone passes.
+    // A line this estimate does not have is left to the 404 below.
+    const storedLine = estimate.line_items.find((l) => l.id === param(req, 'lineId'));
+    if (storedLine && refusedForDiscount(req, res, 'Estimate', changesDiscount(req.body, storedLine))) return;
     // #2090 - diffed against the guard snapshot's own copy of the row. A lineId this estimate
     // does not have is left to the 404 below rather than answered with a lock.
     const lockTarget = estimate.line_items.find((l) => l.id === param(req, 'lineId'));
@@ -604,9 +611,9 @@ export async function updateLine(req: Request, res: Response) {
     }
 
     const body = req.body as z.infer<typeof updateLineSchema>;
-    // Drop cost/margin fields BEFORE the write when the requester can't `read Invoice` — see
+    // Drop cost/margin fields BEFORE the write when the requester can't see costs (See financial data) — see
     // addLine's identical guard for why both the write AND the response must strip these.
-    if (!canSeePricing(req)) {
+    if (!canSeeCosts(req)) {
       body.unit_cost = undefined;
       body.markup_percent = undefined;
     }
@@ -738,7 +745,7 @@ export async function listScopes(req: Request, res: Response) {
     // #2053 — estimate-only read-time defaults (Solution §1), applied before every scope merge/
     // read in this file.
     const scopes = withOptionalDefaults(asScopeArray(estimate.scopes));
-    res.json({ scopes: canSeePricing(req) ? scopes : stripScopeCost(scopes) });
+    res.json({ scopes: canSeeCosts(req) ? scopes : stripScopeCost(scopes) });
   } catch (err) {
     logger.error('Error listing estimate scopes:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -755,11 +762,11 @@ export async function addScope(req: Request, res: Response) {
     if (isMutationBlocked(estimate, res)) return;
 
     const body = req.body as z.infer<typeof addEstimateScopeSchema>;
-    // Drop cost data BEFORE the write when the requester can't `read Invoice` — mirrors addLine's
+    // Drop cost data BEFORE the write when the requester can't see costs (See financial data) — mirrors addLine's
     // identical unit_cost/markup_percent guard above. `delete`, not `= undefined` — see
     // updateScope's identical guard for why the distinction matters there; harmless either way
     // here since this is a brand-new scope with no pre-existing value to preserve.
-    if (!canSeePricing(req)) {
+    if (!canSeeCosts(req)) {
       delete body.internal_cost;
     }
     const newScope: ScopeOfWork = {
@@ -833,13 +840,13 @@ export async function updateScope(req: Request, res: Response) {
 
     const idx = parseInt(param(req, 'idx'), 10);
     const body = req.body as z.infer<typeof updateEstimateScopeSchema>;
-    // Drop cost data BEFORE the merge when the requester can't `read Invoice` — mirrors
+    // Drop cost data BEFORE the merge when the requester can't see costs (See financial data) — mirrors
     // updateLine's identical unit_cost/markup_percent guard. MUST be `delete`, not
     // `body.internal_cost = undefined`: the merge below is a full-object spread over the
     // EXISTING scope, and an explicitly-undefined-valued key is still an own enumerable property
     // that spread applies — it would clobber a pre-existing internal_cost to undefined even when
     // the low-priv caller's edit never mentioned that field.
-    if (!canSeePricing(req)) {
+    if (!canSeeCosts(req)) {
       delete body.internal_cost;
     }
 

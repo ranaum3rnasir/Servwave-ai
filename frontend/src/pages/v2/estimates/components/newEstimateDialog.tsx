@@ -5,6 +5,7 @@ import { ChevronDown, ChevronRight, FileText, Plus, UserPlus } from 'lucide-reac
 
 import api from '@/lib/axios';
 import { useFeature } from '@/lib/entitlements';
+import { useNewEstimateEntries } from '@/lib/estimates/newEstimateEntries';
 import { formatPhone } from '@/lib/utils';
 import { STATUS_REGISTRY } from '@/design-system/status-registry';
 import { Badge } from '@/ui-kit/components/ui/badge';
@@ -55,7 +56,7 @@ interface Lead {
 
 /**
  * Non-terminal lead statuses - the exact set the server's estimate-create gate
- * accepts (it rejects only WON/LOST/CANCELLED). LOAD-BEARING: GET /api/leads
+ * accepts (it rejects only WON/LOST). LOAD-BEARING: GET /api/leads
  * here passes no status param, so the API returns terminal leads too and this
  * filter is the only thing keeping them out of the picker. A lead with a
  * walkthrough booked or done is still open, so both walkthrough statuses are in.
@@ -109,6 +110,7 @@ function LeadStatusPill({ status }: { status: string }) {
  */
 function LeadsPanel({
   customerId, leadsLoading, actionableLeads, onLeadSelect, onCreateLead, onCreateEstimateNoLead,
+  canCreateLead, canEstimateWithoutLead,
 }: {
   customerId: string;
   leadsLoading: boolean;
@@ -116,6 +118,8 @@ function LeadsPanel({
   onLeadSelect: (leadId: string) => void;
   onCreateLead: (customerId: string) => void;
   onCreateEstimateNoLead: (customerId: string) => void;
+  canCreateLead: boolean;
+  canEstimateWithoutLead: boolean;
 }) {
   if (leadsLoading) {
     return (
@@ -152,19 +156,28 @@ function LeadsPanel({
       )}
       {/* Separates the footer from the lead list, so the two unconditional rows below never read
           as one more lead. */}
-      <Separator />
-      <div className="flex flex-col items-start gap-1 px-3 py-2">
-        {/* Offered even without the `leads` entitlement, exactly as the legacy dialog does. The
-            lead form owns that gate; hiding the link here would be a new restriction. */}
-        <Button variant="link" size="sm" className="px-0" onClick={() => onCreateLead(customerId)}>
-          <Plus />
-          Create new lead
-        </Button>
-        <Button variant="link" size="sm" className="px-0" onClick={() => onCreateEstimateNoLead(customerId)}>
-          <FileText />
-          Create estimate without a lead
-        </Button>
-      </div>
+      {(canCreateLead || canEstimateWithoutLead) && (
+        <>
+          <Separator />
+          <div className="flex flex-col items-start gap-1 px-3 py-2">
+            {/* Offered even without the `leads` entitlement, exactly as the legacy dialog does. The
+                lead form owns that gate; hiding the link here would be a new restriction. Each link follows
+                its own switch (S02.26): Create leads, and Standalone estimates, which the server also checks. */}
+            {canCreateLead && (
+              <Button variant="link" size="sm" className="px-0" onClick={() => onCreateLead(customerId)}>
+                <Plus />
+                Create new lead
+              </Button>
+            )}
+            {canEstimateWithoutLead && (
+              <Button variant="link" size="sm" className="px-0" onClick={() => onCreateEstimateNoLead(customerId)}>
+                <FileText />
+                Create estimate without a lead
+              </Button>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -173,6 +186,7 @@ function NewEstimateDialog({
   open, onOpenChange, preSelectedCustomerId, onPreSelectConsumed,
 }: NewEstimateDialogProps) {
   const navigate = useNavigate();
+  const entries = useNewEstimateEntries();
   const [search, setSearch] = useState('');
   const [expandedCustomerId, setExpandedCustomerId] = useState<string | null>(null);
   const debouncedSearch = useDebounce(search, 300);
@@ -266,6 +280,8 @@ function NewEstimateDialog({
     onLeadSelect: handleLeadSelect,
     onCreateLead: handleCreateLead,
     onCreateEstimateNoLead: handleCreateEstimateNoLead,
+    canCreateLead: entries.createLead,
+    canEstimateWithoutLead: entries.estimateWithoutLead,
   };
 
   return (
@@ -351,17 +367,22 @@ function NewEstimateDialog({
             )}
           </DialogList>
 
-          <div className="flex items-center gap-3 pt-2 pb-5">
-            <Separator className="flex-1" />
-            <span className="text-muted-foreground text-xs">OR</span>
-            <Separator className="flex-1" />
-          </div>
-          <div className="flex justify-center pb-5">
-            <Button variant="link" onClick={handleAddNewClient}>
-              <UserPlus />
-              Add new client
-            </Button>
-          </div>
+          {/* The standalone New Customer: only with Create customers + Show Customers page (S02.26). */}
+          {entries.addNewClient && (
+            <>
+              <div className="flex items-center gap-3 pt-2 pb-5">
+                <Separator className="flex-1" />
+                <span className="text-muted-foreground text-xs">OR</span>
+                <Separator className="flex-1" />
+              </div>
+              <div className="flex justify-center pb-5">
+                <Button variant="link" onClick={handleAddNewClient}>
+                  <UserPlus />
+                  Add new client
+                </Button>
+              </div>
+            </>
+          )}
         </DialogBody>
       </DialogContent>
     </Dialog>

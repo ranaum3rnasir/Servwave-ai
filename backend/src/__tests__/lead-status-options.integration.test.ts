@@ -117,11 +117,11 @@ describe.skipIf(!enabled)('lead status options: real database', () => {
   };
   const history = (id: string) => prisma.timelineEvent.findMany({ where: { entity_id: id, event_type: 'STATUS_CHANGE' } });
 
-  it('GET returns all eight statuses in PRD section 5 order', async () => {
+  it('GET returns the seven statuses in PRD section 5 order, with no Cancelled', async () => {
     const lead = await makeLead('NEW');
     const res = await get(lead.id);
     expect(res.body.lead.status_options.map((o: any) => o.status)).toEqual([
-      'NEW', 'CONTACTED', 'WALKTHROUGH_SCHEDULED', 'WALKTHROUGH_COMPLETED', 'ESTIMATED', 'WON', 'LOST', 'CANCELLED',
+      'NEW', 'CONTACTED', 'WALKTHROUGH_SCHEDULED', 'WALKTHROUGH_COMPLETED', 'ESTIMATED', 'WON', 'LOST',
     ]);
   });
 
@@ -153,11 +153,12 @@ describe.skipIf(!enabled)('lead status options: real database', () => {
       expect(o.NEW.available).toBe(true);
     });
 
-    it('closing a lead archives its estimates, so a closed lead with only archived ones can go back', async () => {
+    it('closing a lead archives its estimates, and a closed lead is locked whatever it holds: only Reopen moves it (S05.19)', async () => {
       const lead = await makeLead('LOST');
       await addEstimate(lead.id, 'ARCHIVED');
       const o = await options(lead.id);
-      expect(o.CONTACTED).toEqual({ status: 'CONTACTED', available: true, reason: null });
+      expect(o.CONTACTED).toEqual({ status: 'CONTACTED', available: false, reason: 'To change the status, reopen the lead first.' });
+      expect(o.LOST).toEqual({ status: 'LOST', available: true, reason: null });
     });
   });
 
@@ -235,21 +236,17 @@ describe.skipIf(!enabled)('lead status options: real database', () => {
       expect(rows[0].metadata).toMatchObject({ from: 'CONTACTED', to: 'WALKTHROUGH_SCHEDULED' });
     });
 
-    it('moves a Won lead with an approved estimate to Estimate Sent (200), and refuses Contacted with the estimate text', async () => {
+    it('refuses moving a Won lead with an approved estimate to any status, with the reopen sentence (S05.19)', async () => {
       const lead = await makeLead('WON');
       await addEstimate(lead.id, 'WON');
 
-      const ok = await patch(lead.id, { status: 'ESTIMATED' });
-      expect(ok.status).toBe(200);
-      expect((await prisma.lead.findUnique({ where: { id: lead.id } })).status).toBe('ESTIMATED');
-
-      const won = await makeLead('WON');
-      await addEstimate(won.id, 'WON');
-      const refused = await patch(won.id, { status: 'CONTACTED' });
-      expect(refused.status).toBe(409);
-      expect(refused.body).toEqual({ error: ESTIMATE_SENT });
-      expect((await prisma.lead.findUnique({ where: { id: won.id } })).status).toBe('WON');
-      expect(await history(won.id)).toHaveLength(0);
+      for (const status of ['ESTIMATED', 'CONTACTED']) {
+        const refused = await patch(lead.id, { status });
+        expect(refused.status).toBe(409);
+        expect(refused.body).toEqual({ error: 'To change the status, reopen the lead first.' });
+      }
+      expect((await prisma.lead.findUnique({ where: { id: lead.id } })).status).toBe('WON');
+      expect(await history(lead.id)).toHaveLength(0);
     });
 
     it('lets a New lead with no estimate go to Won, and stamps won_at', async () => {

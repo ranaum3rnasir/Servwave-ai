@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
+import { FINISHED_JOB_STATUSES } from './finished-job-statuses';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import { recomputeInvoiceTotals } from '../lib/invoice-totals';
@@ -30,11 +31,16 @@ import {
   STANDALONE_INVOICE_FIXTURE,
   PAYMENT_FIXTURE,
   STATE_TAX_FIXTURE,
+  mockRoleSwitches,
+  attachedJobWhere,
+  creatorInvoiceWhere,
+  ownLeadsInvoiceWhere,
+  withLedgerReads,
 } from './helpers';
-import { setCachedGrants, clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
+import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 import { ALPHA_ORG_ID } from './helpers';
+
 
 // ─── Typed mocks ──────────────────────────────────────
 
@@ -224,6 +230,7 @@ describe('POST /api/invoices', () => {
     const createdInvoice = { ...INVOICE_FIXTURE };
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn({
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: the deposit-credit draw locks the deposit invoices
         job: { update: vi.fn().mockResolvedValue({}) },
         invoice: {
           // SRVW-85: the in-tx deposit lookup is invoice.findMany now, not findFirst.
@@ -278,6 +285,7 @@ describe('POST /api/invoices', () => {
     mockPrisma.job.findUnique.mockResolvedValue(job);
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn({
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: the deposit-credit draw locks the deposit invoices
         job: { update: vi.fn().mockResolvedValue({}) },
         invoice: {
           // SRVW-85: the in-tx deposit lookup is invoice.findMany now, not findFirst.
@@ -400,6 +408,7 @@ describe('POST /api/invoices', () => {
     // Plain functions for load-bearing tx reads ⇒ immune to a cross-file resetAllMocks.
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn({
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: the deposit-credit draw locks the deposit invoices
         job: { update: vi.fn().mockResolvedValue({}) },
         invoice: {
           // SRVW-85: the in-tx deposit lookup is invoice.findMany now (the multi-deposit union),
@@ -490,6 +499,7 @@ describe('POST /api/invoices', () => {
     // "shared-mock race pin" test for the deterministic regression that proves this.
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn({
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: the deposit-credit draw locks the deposit invoices
         job: { update: vi.fn().mockResolvedValue({}) },
         invoice: {
           // SRVW-85: the deposit lookup is invoice.findMany now. It returns the PAID kind=DEPOSIT
@@ -573,6 +583,7 @@ describe('POST /api/invoices', () => {
     // Plain functions for load-bearing tx reads ⇒ immune to a cross-file resetAllMocks.
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn({
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: the deposit-credit draw locks the deposit invoices
         job: { update: vi.fn().mockResolvedValue({}) },
         invoice: {
           // SRVW-85: the in-tx deposit lookup is invoice.findMany now.
@@ -680,6 +691,7 @@ describe('POST /api/invoices', () => {
     let capturedData: any;
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn({
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: the deposit-credit draw locks the deposit invoices
         job: { update: vi.fn().mockResolvedValue({}) },
         invoice: {
           // SRVW-85: the in-tx deposit lookup is invoice.findMany now, not findFirst.
@@ -765,6 +777,7 @@ describe('POST /api/invoices', () => {
     let capturedData: any;
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn({
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: the deposit-credit draw locks the deposit invoices
         job: { update: vi.fn().mockResolvedValue({}) },
         invoice: {
           // SRVW-85: the in-tx deposit lookup is invoice.findMany now, not findFirst.
@@ -832,6 +845,7 @@ describe('POST /api/invoices', () => {
     let capturedData: any;
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn({
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: the deposit-credit draw locks the deposit invoices
         job: { update: vi.fn().mockResolvedValue({}) },
         invoice: {
           // SRVW-85: the in-tx deposit lookup is invoice.findMany now, not findFirst.
@@ -869,6 +883,7 @@ describe('POST /api/invoices', () => {
     let capturedData: any;
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn({
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: the deposit-credit draw locks the deposit invoices
         job: { update: vi.fn().mockResolvedValue({}) },
         invoice: {
           // SRVW-85: the in-tx deposit lookup is invoice.findMany now, not findFirst.
@@ -907,6 +922,7 @@ describe('POST /api/invoices', () => {
     const createdInvoice = { ...INVOICE_FIXTURE, invoice_number: 'I00002' };
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn({
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: the deposit-credit draw locks the deposit invoices
         job: { update: vi.fn().mockResolvedValue({}) },
         invoice: {
           // SRVW-85: the in-tx deposit lookup is invoice.findMany now, not findFirst.
@@ -940,6 +956,7 @@ describe('POST /api/invoices', () => {
     let capturedJobUpdate: any;
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn({
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: the deposit-credit draw locks the deposit invoices
         job: { update: vi.fn().mockImplementation((args: any) => { capturedJobUpdate = args; return {}; }) },
         invoice: {
           // SRVW-85: the in-tx deposit lookup is invoice.findMany now, not findFirst.
@@ -973,6 +990,7 @@ describe('POST /api/invoices', () => {
     let capturedInvoiceData: any;
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn({
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: the deposit-credit draw locks the deposit invoices
         job: { update: vi.fn().mockResolvedValue({}) },
         invoice: {
           // SRVW-85: the in-tx deposit lookup is invoice.findMany now, not findFirst.
@@ -1053,6 +1071,7 @@ describe('POST /api/invoices', () => {
     let capturedData: any;
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn({
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: the deposit-credit draw locks the deposit invoices
         job: { update: vi.fn().mockResolvedValue({}) },
         invoice: {
           // SRVW-85: the in-tx deposit lookup is invoice.findMany now, not findFirst.
@@ -1120,6 +1139,7 @@ describe('POST /api/invoices', () => {
     let capturedData: any;
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn({
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: the deposit-credit draw locks the deposit invoices
         job: { update: vi.fn().mockResolvedValue({}) },
         invoice: {
           findMany: async () => [],
@@ -1191,6 +1211,8 @@ function buildInvoiceListItem(overrides: Record<string, any> = {}) {
         company_name: 'Doe HVAC',
       },
     },
+    // Slice 28: the list select carries the bank payments still clearing (PROCESSING_PAYMENT_WHERE).
+    payments: [],
     ...overrides,
   };
 }
@@ -1318,11 +1340,9 @@ describe('GET /api/invoices', () => {
     );
   });
 
-  // Phase B (technician redesign): a strict technician has NO `read Invoice` grant by default, so
-  // the invoice list route guard (canDo('read','Invoice')) blocks the request entirely — a tech
-  // cannot browse invoices at all unless granted a per-user Invoice capability. (The own-scoped
-  // LIST behavior for a GRANTED tech is a per-user-grant concern owned by the override test files.)
-  it('strict TECHNICIAN cannot list invoices by default (route guard 403)', async () => {
+  // A strict technician holds View invoices off in the preset, so the list answers with no rows (not a
+  // 403): the scope reaches nothing without View. The detail reads are refused.
+  it('strict TECHNICIAN lists no invoices by default (View invoices off)', async () => {
     mockAuthAs('technician');
     mockPrisma.invoice.findMany.mockResolvedValue([]);
     mockPrisma.invoice.count.mockResolvedValue(0);
@@ -1334,9 +1354,10 @@ describe('GET /api/invoices', () => {
       .get('/api/invoices')
       .set(authHeader('technician'));
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe('Insufficient permissions');
-    expect(mockPrisma.invoice.findMany).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    // View invoices is off: nothing the scope reaches, so only the invoices the person made (the creator rule).
+    expect(mockPrisma.invoice.findMany.mock.calls[0][0].where.OR).toEqual([creatorInvoiceWhere(TEST_USERS.technician.id)]);
+    expect(mockPrisma.invoice.findMany.mock.calls[0][0].where.id).toBeUndefined();
   });
 
   it('SALES sees only own leads invoices', async () => {
@@ -1355,7 +1376,7 @@ describe('GET /api/invoices', () => {
     expect(mockPrisma.invoice.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: expect.objectContaining({
-          job: { estimate: { lead: { lead_assignees: { some: { user_id: TEST_USERS.sales.id } } } } },
+          OR: [ownLeadsInvoiceWhere(TEST_USERS.sales.id), creatorInvoiceWhere(TEST_USERS.sales.id)],
         }),
       }),
     );
@@ -1480,7 +1501,7 @@ describe('GET /api/invoices', () => {
 
   // Phase B (technician redesign): with no default `read Invoice` grant, even a filtered invoice
   // list is blocked at the route guard for a strict technician.
-  it('strict TECHNICIAN is blocked from the invoice list even with a customer_id filter (route guard 403)', async () => {
+  it('strict TECHNICIAN lists no invoices even with a customer_id filter (View invoices off)', async () => {
     mockAuthAs('technician');
     mockPrisma.invoice.findMany.mockResolvedValue([]);
     mockPrisma.invoice.count.mockResolvedValue(0);
@@ -1490,9 +1511,8 @@ describe('GET /api/invoices', () => {
 
     const res = await request(app).get('/api/invoices?customer_id=cust-9').set(authHeader('technician'));
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe('Insufficient permissions');
-    expect(mockPrisma.invoice.findMany).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(mockPrisma.invoice.findMany.mock.calls[0][0].where.OR).toEqual([creatorInvoiceWhere(TEST_USERS.technician.id)]);
   });
 
   it('search matches the invoice\'s direct customer name (includes job-less invoices)', async () => {
@@ -1531,6 +1551,35 @@ describe('GET /api/invoices/:id', () => {
     expect(res.status).toBe(200);
     expect(res.body.invoice).toBeDefined();
     expect(res.body.invoice.invoice_number).toBe('I00001');
+  });
+
+  // Payments go-live slice 33: no processor id reaches the browser (its network tab is user-visible).
+  // The page decides "paid through the processor" and "disputed" from neutral booleans instead.
+  it('sends no processor ids; payments carry a paid_through_processor boolean', async () => {
+    mockAuthAs('admin');
+    const row = (id: string, over: Record<string, unknown>) => ({
+      id, amount: 100, method: 'CARD',
+      state: 'SUCCEEDED', voided_at: null, ...over,
+    });
+    const invoice = buildInvoiceDetail({
+      status: 'DISPUTED',
+      stripe_dispute_id: 'dp_secret_1',
+      payments: [row('pay-1', { stripe_payment_intent_id: 'pi_secret_1' }), row('pay-2', { method: 'CHECK', stripe_payment_intent_id: null })],
+      refunds: [],
+    });
+    mockPrisma.invoice.findUnique.mockResolvedValue(invoice);
+
+    const res = await request(app)
+      .get(`/api/invoices/${INVOICE_FIXTURE.id}`)
+      .set(authHeader('admin'));
+
+    expect(res.status).toBe(200);
+    const body = JSON.stringify(res.body);
+    expect(body).not.toContain('pi_secret_1');
+    expect(body).not.toContain('dp_secret_1');
+    expect(body).not.toContain('stripe_payment_intent_id');
+    expect(body).not.toContain('stripe_dispute_id');
+    expect(res.body.invoice.payments.map((p: { paid_through_processor: boolean }) => p.paid_through_processor)).toEqual([true, false]);
   });
 
   // ── B3: detail select exposes the whole-invoice tip (post-tax, untaxed) ──
@@ -1865,6 +1914,7 @@ describe('GET /api/invoices/:id', () => {
   // controller's per-row ownership check runs — hence the route-guard message, not 'Not authorized'.
   it('returns 403 for a strict TECHNICIAN (no read Invoice grant → route guard)', async () => {
     mockAuthAs('technician');
+    mockPrisma.invoice.findFirst.mockResolvedValue(null); // not an invoice this technician made
 
     const res = await request(app)
       .get(`/api/invoices/${INVOICE_FIXTURE.id}`)
@@ -2135,7 +2185,6 @@ describe('#106 base update/delete enforcement (per-instance owner check)', () =>
     mockAuthAs('sales');
     // Override the default SALES grants with the owner-scoped update/delete grant in the cache,
     // so attachAbility builds an ability whose update/delete-Invoice rule is owner-conditioned.
-    setCachedGrants(ALPHA_ORG_ID, 'SALES', SALES_OWN_INVOICE_GRANTS as any);
   });
 
   it('PATCH 403s + never calls prisma.invoice.update when the invoice is owned by ANOTHER user', async () => {
@@ -2247,7 +2296,9 @@ describe('#106 P0: DISPATCHER fail-open closed — grant-driven per-instance + l
   beforeEach(() => {
     clearPermissionCache();
     mockAuthAs('dispatcher');
-    setCachedGrants(ALPHA_ORG_ID, 'DISPATCHER', DISPATCHER_OWN_INVOICE_GRANTS as any);
+    // Reading invoices and voiding them come from the switch catalog: the narrowed reach is the Invoices
+    // scope, and the preset holds Void invoices off for Dispatcher.
+    mockRoleSwitches({ invoices_scope: 'attached', void_invoices: true });
   });
 
   // ── UPDATE ──
@@ -2327,8 +2378,9 @@ describe('#106 P0: DISPATCHER fail-open closed — grant-driven per-instance + l
     mockPrisma.invoice.findUnique.mockResolvedValue(invoice);
     mockPrisma.invoice.findFirst.mockResolvedValue({ id: INVOICE_FIXTURE.id });
     mockPrisma.$transaction.mockImplementation(async (fn: any) => fn({
+        $executeRaw: vi.fn().mockResolvedValue(1),
       job: { update: vi.fn().mockResolvedValue({}) },
-      invoice: { update: vi.fn().mockResolvedValue({ ...invoice, status: 'SENT', sent_at: new Date(), public_token: 'tok' }) },
+      invoice: { findUniqueOrThrow: vi.fn().mockResolvedValue({ status: 'DRAFT', amount_due: 100, deposit_credit: 0 }), update: vi.fn().mockResolvedValue({ ...invoice, status: 'SENT', sent_at: new Date(), public_token: 'tok' }) },
       timelineEvent: { create: vi.fn().mockResolvedValue({}) },
     }));
 
@@ -2361,11 +2413,13 @@ describe('#106 P0: DISPATCHER fail-open closed — grant-driven per-instance + l
     const voided = buildInvoiceDetail({ id: INVOICE_SENT_FIXTURE.id, status: 'VOIDED', voided_at: new Date(), voided_reason: 'Duplicate' });
     mockPrisma.$transaction.mockImplementation(async (fn: any) => fn({
       job: { update: vi.fn().mockResolvedValue({}) },
-      invoice: { update: vi.fn().mockResolvedValue(voided) },
+      $executeRaw: vi.fn().mockResolvedValue(1), // slice 05: the void locks the invoice and re-checks it
+      invoice: { update: vi.fn().mockResolvedValue(voided), findUniqueOrThrow: vi.fn().mockResolvedValue({ status: 'SENT' }) },
       // Inventory P1 (§4.4): void's auto-return pass — no SYNCED lines here.
       invoiceLineItem: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn() },
       timelineEvent: { create: vi.fn().mockResolvedValue({}) },
       depositCreditApplication: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      payment: { count: vi.fn().mockResolvedValue(0) }, // slice 18: the void re-checks for money under the lock
     }));
 
     const res = await request(app)
@@ -2413,36 +2467,29 @@ describe('#106 list scope is grant-driven', () => {
 
   it('a SALES user with an owner-scoped read grant only lists owned rows (scope spread into where)', async () => {
     mockAuthAs('sales');
-    setCachedGrants(ALPHA_ORG_ID, 'SALES', [
-      { action: 'read', subject: 'Invoice', conditions: OWN_INVOICE_VIA_LEAD },
-    ] as any);
 
     const res = await request(app).get('/api/invoices').set(authHeader('sales'));
 
     expect(res.status).toBe(200);
     const where = mockPrisma.invoice.findMany.mock.calls[0][0].where;
-    // The grant-driven owner condition is present — un-owned rows are excluded.
-    expect(where.job).toEqual({
-      estimate: { lead: { lead_assignees: { some: { user_id: TEST_USERS.sales.id } } } },
-    });
+    // The grant-driven owner condition is present — un-owned rows are excluded (the creator rule's arm aside).
+    expect(where.OR).toEqual([ownLeadsInvoiceWhere(TEST_USERS.sales.id), creatorInvoiceWhere(TEST_USERS.sales.id)]);
   });
 
-  it('FAIL-CLOSED: a team-scoped read grant whose {{teamId}} resolves to null lists NOTHING (MATCH_NOTHING)', async () => {
-    // The SALES user has department_id: null. A team-conditioned read-Invoice grant passes the
+  it('FAIL-CLOSED: Invoices scope Team for a person with no team lists NOTHING (MATCH_NOTHING)', async () => {
+    // The SALES user has department_id: null. Invoices scope Team passes the
     // SUBJECT-level route guard (the ability has a read-Invoice rule) but resolves to MATCH_NOTHING
     // in scopeWhereForReq — never the fail-open `team: null` match. This is the gap a flat
     // hand-rolled `if (role===SALES)` block left open for any other/custom role.
     mockAuthAs('sales');
-    setCachedGrants(ALPHA_ORG_ID, 'SALES', [
-      { action: 'read', subject: 'Invoice', conditions: { job: { department_id: '{{teamId}}' } } },
-    ] as any);
+    mockRoleSwitches({ invoices_scope: 'team' });
 
     const res = await request(app).get('/api/invoices').set(authHeader('sales'));
 
     expect(res.status).toBe(200);
     const where = mockPrisma.invoice.findMany.mock.calls[0][0].where;
-    // MATCH_NOTHING — sees nothing (outermost spread, so id:{in:[]} is intact).
-    expect(where.id).toEqual({ in: [] });
+    // Nothing the scope reaches: only the invoices the person made remain (the creator rule).
+    expect(where.OR).toEqual([creatorInvoiceWhere(TEST_USERS.sales.id)]);
   });
 });
 
@@ -2458,7 +2505,6 @@ describe('GAP-3 list stats role-scope (no org-wide leak)', () => {
   const OWN_INVOICE_VIA_LEAD = {
     job: { estimate: { lead: { lead_assignees: { some: { user_id: '{{userId}}' } } } } },
   };
-  const OWN_JOB = { assignees: { some: { user_id: '{{userId}}' } } };
 
   beforeEach(() => {
     clearPermissionCache();
@@ -2471,9 +2517,6 @@ describe('GAP-3 list stats role-scope (no org-wide leak)', () => {
 
   it('collected-this-month payment filter is role-scoped (own invoices), NOT org-wide tenantWhere', async () => {
     mockAuthAs('sales');
-    setCachedGrants(ALPHA_ORG_ID, 'SALES', [
-      { action: 'read', subject: 'Invoice', conditions: OWN_INVOICE_VIA_LEAD },
-    ] as any);
 
     const res = await request(app).get('/api/invoices').set(authHeader('sales'));
 
@@ -2481,9 +2524,7 @@ describe('GAP-3 list stats role-scope (no org-wide leak)', () => {
     const paymentWhere = mockPrisma.payment.aggregate.mock.calls[0][0].where;
     // The parent-invoice filter must carry the SALES owner condition (the scopeWhere), so the
     // collected total reflects ONLY this rep's invoices — not every payment in the org.
-    expect(paymentWhere.invoice.job).toEqual({
-      estimate: { lead: { lead_assignees: { some: { user_id: TEST_USERS.sales.id } } } },
-    });
+    expect(paymentWhere.invoice.OR).toEqual([ownLeadsInvoiceWhere(TEST_USERS.sales.id), creatorInvoiceWhere(TEST_USERS.sales.id)]);
     // tenant scope is still present (org isolation intact).
     expect(paymentWhere.invoice.organization_id).toBe(ALPHA_ORG_ID);
   });
@@ -2501,19 +2542,17 @@ describe('GAP-3 list stats role-scope (no org-wide leak)', () => {
 
   it('need-invoices job.count is role-scoped to the requester Job scope, NOT org-wide', async () => {
     mockAuthAs('sales');
-    setCachedGrants(ALPHA_ORG_ID, 'SALES', [
-      { action: 'read', subject: 'Invoice', conditions: OWN_INVOICE_VIA_LEAD },
-      { action: 'read', subject: 'Job', conditions: OWN_JOB },
-    ] as any);
+    // Jobs come from the Jobs scope switch: Attached here.
+    mockRoleSwitches({ jobs_scope: 'attached' });
 
     const res = await request(app).get('/api/invoices').set(authHeader('sales'));
 
     expect(res.status).toBe(200);
     const jobWhere = mockPrisma.job.count.mock.calls[0][0].where;
-    // The Job read-scope owner condition must be present — only jobs this rep can see are counted.
-    expect(jobWhere.assignees).toEqual({ some: { user_id: TEST_USERS.sales.id } });
+    // The Job read-scope condition must be present — only jobs this rep can see are counted.
+    expect(jobWhere.OR).toEqual(attachedJobWhere(TEST_USERS.sales.id));
     expect(jobWhere.organization_id).toBe(ALPHA_ORG_ID);
-    expect(jobWhere.status).toBe('COMPLETED');
+    expect(jobWhere.status).toEqual({ in: FINISHED_JOB_STATUSES });
   });
 
   it('ADMIN need-invoices stays org-wide (Job scope {} → tenant-only)', async () => {
@@ -2523,7 +2562,7 @@ describe('GAP-3 list stats role-scope (no org-wide leak)', () => {
 
     expect(res.status).toBe(200);
     const jobWhere = mockPrisma.job.count.mock.calls[0][0].where;
-    expect(jobWhere.assignees).toBeUndefined();
+    expect(jobWhere.OR).toBeUndefined();
     expect(jobWhere.organization_id).toBe(ALPHA_ORG_ID);
   });
 });
@@ -2544,8 +2583,9 @@ describe('POST /api/invoices/:id/send', () => {
     };
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn({
+        $executeRaw: vi.fn().mockResolvedValue(1),
         job: { update: vi.fn().mockResolvedValue({}) },
-        invoice: { update: vi.fn().mockResolvedValue(sentInvoice) },
+        invoice: { findUniqueOrThrow: vi.fn().mockResolvedValue({ status: 'DRAFT', amount_due: 100, deposit_credit: 0 }), update: vi.fn().mockResolvedValue(sentInvoice) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
       });
     });
@@ -2566,8 +2606,10 @@ describe('POST /api/invoices/:id/send', () => {
     let capturedData: any;
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn({
+        $executeRaw: vi.fn().mockResolvedValue(1),
         job: { update: vi.fn().mockResolvedValue({}) },
         invoice: {
+          findUniqueOrThrow: vi.fn().mockResolvedValue({ status: 'DRAFT', amount_due: 100, deposit_credit: 0 }),
           update: vi.fn().mockImplementation((args: any) => {
             capturedData = args.data;
             return { ...invoice, ...args.data, status: 'SENT' };
@@ -2636,8 +2678,10 @@ describe('POST /api/invoices/:id/send', () => {
     let capturedData: any;
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn({
+        $executeRaw: vi.fn().mockResolvedValue(1),
         job: { update: vi.fn().mockResolvedValue({}) },
         invoice: {
+          findUniqueOrThrow: vi.fn().mockResolvedValue({ status: 'DRAFT', amount_due: 100, deposit_credit: 0 }),
           update: vi.fn().mockImplementation((args: any) => {
             capturedData = args.data;
             return { ...invoice, ...args.data };
@@ -2666,8 +2710,9 @@ describe('POST /api/invoices/:id/send', () => {
     mockPrisma.invoice.findUnique.mockResolvedValue(invoice);
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn({
+        $executeRaw: vi.fn().mockResolvedValue(1),
         job: { update: vi.fn().mockResolvedValue({}) },
-        invoice: { update: vi.fn().mockImplementation((args: any) => ({ ...invoice, ...args.data, status: 'SENT' })) },
+        invoice: { findUniqueOrThrow: vi.fn().mockResolvedValue({ status: 'DRAFT', amount_due: 100, deposit_credit: 0 }), update: vi.fn().mockImplementation((args: any) => ({ ...invoice, ...args.data, status: 'SENT' })) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
       });
     });
@@ -2686,6 +2731,29 @@ describe('POST /api/invoices/:id/send', () => {
     });
   });
 
+  // PRD 10 / S10.4 - the person who pressed Send is recorded with the send (on the stored email and
+  // on the reply token), whether it is the first send or a resend.
+  it('sends the invoice as the user who pressed Send, from their own mailbox', async () => {
+    mockAuthAs('admin');
+    const invoice = buildInvoiceDetail({ status: 'DRAFT', due_date: new Date('2026-04-01') });
+    mockPrisma.invoice.findUnique.mockResolvedValue(invoice);
+    mockPrisma.$transaction.mockImplementation(async (fn: any) => {
+      return fn({
+        $executeRaw: vi.fn().mockResolvedValue(1),
+        job: { update: vi.fn().mockResolvedValue({}) },
+        invoice: { findUniqueOrThrow: vi.fn().mockResolvedValue({ status: 'DRAFT', amount_due: 100, deposit_credit: 0 }), update: vi.fn().mockImplementation((args: any) => ({ ...invoice, ...args.data, status: 'SENT' })) },
+        timelineEvent: { create: vi.fn().mockResolvedValue({}) },
+      });
+    });
+
+    const res = await request(app).post(`/api/invoices/${INVOICE_FIXTURE.id}/send`).set(authHeader('admin'));
+
+    expect(res.status).toBe(200);
+    expect(mockSendInvoiceEmail.mock.calls[0][0].record).toMatchObject({ entityType: 'invoice' });
+    // Sent by hand: from the sender's own mailbox (PRD 10, S10.12), and the sender is the person who pressed the button.
+    expect(mockSendInvoiceEmail.mock.calls[0][0].handSender).toEqual({ mailboxId: 'main-mailbox-id', userId: TEST_USERS.admin.id });
+  });
+
   it('returns 400 when no recipient email exists anywhere', async () => {
     mockAuthAs('admin');
     const invoice = buildInvoiceDetail({
@@ -2700,8 +2768,9 @@ describe('POST /api/invoices/:id/send', () => {
     mockPrisma.invoice.findUnique.mockResolvedValue(invoice);
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn({
+        $executeRaw: vi.fn().mockResolvedValue(1),
         job: { update: vi.fn().mockResolvedValue({}) },
-        invoice: { update: vi.fn().mockImplementation((args: any) => ({ ...invoice, ...args.data, status: 'SENT' })) },
+        invoice: { findUniqueOrThrow: vi.fn().mockResolvedValue({ status: 'DRAFT', amount_due: 100, deposit_credit: 0 }), update: vi.fn().mockImplementation((args: any) => ({ ...invoice, ...args.data, status: 'SENT' })) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
       });
     });
@@ -2870,6 +2939,7 @@ describe('POST /api/invoices/:id/resend', () => {
 
   it('returns 403 for TECHNICIAN role', async () => {
     mockAuthAs('technician');
+    mockPrisma.invoice.findFirst.mockResolvedValue(null); // not an invoice this technician made
 
     const res = await request(app)
       .post(`/api/invoices/${INVOICE_FIXTURE.id}/resend`)
@@ -2902,6 +2972,26 @@ describe('POST /api/invoices/:id/resend', () => {
       cc: ['cc1@example.com'],
       message: 'Friendly reminder — invoice attached.',
     });
+  });
+
+  it('sends the invoice as the user who pressed Resend, from their own mailbox', async () => {
+    mockAuthAs('admin');
+    const invoice = buildInvoiceDetail({ status: 'SENT', public_token: 'existing-token-abc' });
+    mockPrisma.invoice.findUnique.mockResolvedValue(invoice);
+    mockPrisma.$transaction.mockImplementation(async (fn: any) => {
+      return fn({
+        job: { update: vi.fn().mockResolvedValue({}) },
+        invoice: { update: vi.fn().mockResolvedValue({ ...invoice, sent_at: new Date() }) },
+        timelineEvent: { create: vi.fn().mockResolvedValue({}) },
+      });
+    });
+
+    const res = await request(app).post(`/api/invoices/${INVOICE_FIXTURE.id}/resend`).set(authHeader('admin'));
+
+    expect(res.status).toBe(200);
+    expect(mockSendInvoiceEmail.mock.calls[0][0].record).toMatchObject({ entityType: 'invoice' });
+    // Sent by hand: from the sender's own mailbox (PRD 10, S10.12), and the sender is the person who pressed the button.
+    expect(mockSendInvoiceEmail.mock.calls[0][0].handSender).toEqual({ mailboxId: 'main-mailbox-id', userId: TEST_USERS.admin.id });
   });
 
   it('returns 400 when no recipient email exists anywhere', async () => {
@@ -2965,8 +3055,10 @@ describe('POST /api/invoices/bulk-send', () => {
       return Promise.resolve(buildInvoiceDetail({ id, status: 'DRAFT', public_token: null, due_date: new Date('2026-04-01') }));
     });
     mockPrisma.$transaction.mockImplementation(async (fn: any) => fn({
+        $executeRaw: vi.fn().mockResolvedValue(1),
       job: { update: vi.fn().mockResolvedValue({}) },
       invoice: {
+        findUniqueOrThrow: vi.fn().mockResolvedValue({ status: 'DRAFT', amount_due: 100, deposit_credit: 0 }),
         update: vi.fn().mockImplementation((args: any) => ({ id: args.where.id, ...args.data, status: 'SENT' })),
       },
       timelineEvent: { create: vi.fn().mockResolvedValue({}) },
@@ -3061,7 +3153,7 @@ describe('POST /api/invoices/bulk-resend', () => {
 // ─── POST /api/invoices/:id/payment-link ──────────────
 
 describe('POST /api/invoices/:id/payment-link', () => {
-  it('mints a token and issues a DRAFT invoice without dispatching an email (bypasses the org email toggle)', async () => {
+  it('mints a token on a DRAFT invoice without issuing it or dispatching an email (bypasses the org email toggle)', async () => {
     mockAuthAs('admin');
     const invoice = buildInvoiceDetail({ status: 'DRAFT', public_token: null, due_date: new Date('2026-04-01') });
     mockPrisma.invoice.findUnique.mockResolvedValue(invoice);
@@ -3070,7 +3162,10 @@ describe('POST /api/invoices/:id/payment-link', () => {
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn({
         job: { update: vi.fn().mockResolvedValue({}) },
+        // The handler locks the row and re-reads it before deciding (race fix, slice 32c).
+        $executeRaw: vi.fn().mockResolvedValue(1),
         invoice: {
+          findUniqueOrThrow: vi.fn().mockResolvedValue(invoice),
           update: vi.fn().mockImplementation((args: any) => {
             capturedData = args.data;
             return { ...invoice, ...args.data };
@@ -3085,9 +3180,10 @@ describe('POST /api/invoices/:id/payment-link', () => {
       .set(authHeader('admin'));
 
     expect(res.status).toBe(200);
-    expect(res.body.invoice.status).toBe('SENT');
+    expect(res.body.invoice.status).toBe('DRAFT');
     expect(res.body.url).toContain(capturedData.public_token);
-    expect(capturedData.status).toBe('SENT');
+    expect(capturedData.status).toBeUndefined();
+    expect(capturedData.sent_at).toBeUndefined();
     expect(capturedData.public_token).toBeDefined();
     expect(mockSendInvoiceEmail).not.toHaveBeenCalled();
   });
@@ -3142,15 +3238,11 @@ describe('POST /api/invoices/:id/payment-link', () => {
       clearPermissionCache();
     });
 
-    /** Same idiom as public-token-redaction.test.ts's local copy — a conditioned `read Customer`
-     * grant built from real DEFAULT_GRANTS, never a bare CASL literal. */
-    function mockDeniedCustomerRead(role: string, deniedCustomerId: string) {
-      const rows = [
-        ...DEFAULT_GRANTS.filter((g) => !(g.role === role && g.action === 'read' && g.subject === 'Customer')),
-        { role, action: 'read', subject: 'Customer', conditions: { id: 'zz-not-' + deniedCustomerId } },
-      ];
-      (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue(rows.filter((g) => g.role === role));
-      clearPermissionCache();
+    /** Same idiom as public-token-redaction.test.ts's local copy — View customers turned off through
+     * the switch catalog, never a bare CASL literal. */
+    function mockDeniedCustomerRead(_role: string, _deniedCustomerId: string) {
+      // View customers off: the person reaches no customer, so THIS one is denied.
+      mockRoleSwitches({ view_customers: false });
     }
 
     it('already-issued branch: 403, no url, no public_token, no write', async () => {
@@ -3184,6 +3276,20 @@ describe('POST /api/invoices/:id/payment-link', () => {
       expect(res.body.error).toBe('Payment links are not available for this customer.');
       expect(res.body.url).toBeUndefined();
       expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+    });
+
+    it('the customer has a job the requester can open: the link is issued with Customers View off (S01.5)', async () => {
+      mockAuthAs('dispatcher');
+      mockDeniedCustomerRead('DISPATCHER', CUSTOMER_FIXTURE.id);
+      const job = { ...INVOICE_FIXTURE.job, customer: { ...INVOICE_FIXTURE.job.customer, jobs: [{ visits: [] }] } };
+      mockPrisma.invoice.findUnique.mockResolvedValue(buildInvoiceDetail({ status: 'SENT', public_token: 'existing-token-abc', job }));
+
+      const res = await request(app)
+        .post(`/api/invoices/${INVOICE_FIXTURE.id}/payment-link`)
+        .set(authHeader('dispatcher'));
+
+      expect(res.status).toBe(200);
+      expect(res.body.url).toContain('existing-token-abc');
     });
 
     it('control: ADMIN (unconditional read Customer) still gets 200 with url — must not regress', async () => {
@@ -3236,11 +3342,12 @@ describe('POST /api/invoices/:id/void', () => {
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn({
         job: { update: vi.fn().mockResolvedValue({}) },
-        invoice: { update: vi.fn().mockResolvedValue(voidedInvoice) },
+        $executeRaw: vi.fn().mockResolvedValue(1), // slice 05: the void locks the invoice and re-checks it
+        invoice: { update: vi.fn().mockResolvedValue(voidedInvoice), findUniqueOrThrow: vi.fn().mockResolvedValue({ status: 'SENT' }) },
         // Inventory P1 (§4.4): void's auto-return pass — no SYNCED lines here.
         invoiceLineItem: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn() },
         depositCreditApplication: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
-        payment: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        payment: { count: vi.fn().mockResolvedValue(0), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
       });
     });
@@ -3273,11 +3380,12 @@ describe('POST /api/invoices/:id/void', () => {
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn({
         job: { update: vi.fn().mockResolvedValue({}) },
-        invoice: { update: vi.fn().mockResolvedValue(voidedInvoice) },
+        $executeRaw: vi.fn().mockResolvedValue(1), // slice 05: the void locks the invoice and re-checks it
+        invoice: { update: vi.fn().mockResolvedValue(voidedInvoice), findUniqueOrThrow: vi.fn().mockResolvedValue({ status: 'PARTIAL' }) },
         // Inventory P1 (§4.4): void's auto-return pass — no SYNCED lines here.
         invoiceLineItem: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn() },
         depositCreditApplication: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
-        payment: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        payment: { count: vi.fn().mockResolvedValue(0), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
       });
     });
@@ -3326,14 +3434,15 @@ describe('POST /api/invoices/:id/void', () => {
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn({
         job: { update: vi.fn().mockResolvedValue({}) },
-        invoice: { update: vi.fn().mockResolvedValue(buildInvoiceDetail({ id: INVOICE_SENT_FIXTURE.id, status: 'VOIDED' })) },
+        $executeRaw: vi.fn().mockResolvedValue(1), // slice 05: the void locks the invoice and re-checks it
+        invoice: { update: vi.fn().mockResolvedValue(buildInvoiceDetail({ id: INVOICE_SENT_FIXTURE.id, status: 'VOIDED' })), findUniqueOrThrow: vi.fn().mockResolvedValue({ status: 'SENT' }) },
         invoiceLineItem: { findMany: txInvLineFindMany, updateMany: txInvLineUpdateMany },
         priceBookItem: { findMany: vi.fn().mockResolvedValue([{ id: 'aaaaaaa2-0000-0000-0000-000000000002', sku: 'WIRE-12', name: '12ga Wire (ft)', unit_cost: 20 }]) },
         stockMovement: { create: mockPrisma.stockMovement.create },
         stockBalance: { upsert: mockPrisma.stockBalance.upsert },
         organization: { findUnique: vi.fn().mockResolvedValue({ default_inventory_location_id: null }) },
         depositCreditApplication: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
-        payment: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        payment: { count: vi.fn().mockResolvedValue(0), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
       });
     });
@@ -3382,10 +3491,11 @@ describe('POST /api/invoices/:id/void', () => {
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn({
         job: { update: vi.fn().mockResolvedValue({}) },
-        invoice: { update: vi.fn().mockResolvedValue(buildInvoiceDetail({ status: 'VOIDED' })) },
+        $executeRaw: vi.fn().mockResolvedValue(1), // slice 05: the void locks the invoice and re-checks it
+        invoice: { update: vi.fn().mockResolvedValue(buildInvoiceDetail({ status: 'VOIDED' })), findUniqueOrThrow: vi.fn().mockResolvedValue({ status: 'SENT' }) },
         invoiceLineItem: { findMany: txInvLineFindMany, updateMany: txInvLineUpdateMany },
         depositCreditApplication: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
-        payment: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        payment: { count: vi.fn().mockResolvedValue(0), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
       });
     });
@@ -3401,7 +3511,9 @@ describe('POST /api/invoices/:id/void', () => {
     expect(txInvLineUpdateMany).not.toHaveBeenCalled();
   });
 
-  it('returns 400 on PAID invoice', async () => {
+  // Slice 29: a PAID invoice is refused for the money on it (slice 18), not for its status: one paid
+  // only by drawn deposit credit voids (refund-rules-card-and-ach-db.test.ts).
+  it('returns 409 on a PAID invoice that holds money', async () => {
     mockAuthAs('admin');
     const invoice = {
       id: INVOICE_FIXTURE.id,
@@ -3410,14 +3522,16 @@ describe('POST /api/invoices/:id/void', () => {
       job: { assignees: [{ user_id: TEST_USERS.technician.id }], estimate: { lead: { lead_assignees: [{ user_id: TEST_USERS.sales.id }] } } },
     };
     mockPrisma.invoice.findUnique.mockResolvedValue(invoice);
+    (mockPrisma as any).payment.count.mockResolvedValueOnce(1);
+    (mockPrisma as any).payment.findMany.mockResolvedValueOnce([{ amount: 100, state: 'SUCCEEDED', refunds: [] }]);
 
     const res = await request(app)
       .post(`/api/invoices/${INVOICE_FIXTURE.id}/void`)
       .set(authHeader('admin'))
       .send({ voided_reason: 'Some reason' });
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toBe('Cannot void a PAID or already VOIDED invoice');
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('This invoice has payments. Void or refund them first.');
   });
 
   it('returns 400 on DRAFT invoice (use DELETE)', async () => {
@@ -3480,10 +3594,11 @@ describe('POST /api/invoices/:id/void', () => {
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn({
         job: { update: vi.fn().mockImplementation((args: any) => { capturedJobUpdate = args; return {}; }) },
-        invoice: { update: vi.fn().mockResolvedValue(buildInvoiceDetail({ status: 'VOIDED' })) },
+        $executeRaw: vi.fn().mockResolvedValue(1), // slice 05: the void locks the invoice and re-checks it
+        invoice: { update: vi.fn().mockResolvedValue(buildInvoiceDetail({ status: 'VOIDED' })), findUniqueOrThrow: vi.fn().mockResolvedValue({ status: 'SENT' }) },
         invoiceLineItem: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn() },
         depositCreditApplication: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
-        payment: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        payment: { count: vi.fn().mockResolvedValue(0), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
       });
     });
@@ -3514,10 +3629,11 @@ describe('POST /api/invoices/:id/void', () => {
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn({
         job: { update: txJobUpdate },
-        invoice: { update: vi.fn().mockResolvedValue(buildInvoiceDetail({ status: 'VOIDED' })) },
+        $executeRaw: vi.fn().mockResolvedValue(1), // slice 05: the void locks the invoice and re-checks it
+        invoice: { update: vi.fn().mockResolvedValue(buildInvoiceDetail({ status: 'VOIDED' })), findUniqueOrThrow: vi.fn().mockResolvedValue({ status: 'SENT' }) },
         invoiceLineItem: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn() },
         depositCreditApplication: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
-        payment: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        payment: { count: vi.fn().mockResolvedValue(0), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
       });
     });
@@ -3547,12 +3663,14 @@ describe('POST /api/invoices/:id/void', () => {
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn({
         job: { update: vi.fn().mockResolvedValue({}) },
-        invoice: { update: vi.fn().mockResolvedValue(buildInvoiceDetail({ id: INVOICE_SENT_FIXTURE.id, status: 'VOIDED' })) },
+        $executeRaw: vi.fn().mockResolvedValue(1), // slice 05: the void locks the invoice and re-checks it
+        invoice: { update: vi.fn().mockResolvedValue(buildInvoiceDetail({ id: INVOICE_SENT_FIXTURE.id, status: 'VOIDED' })), findUniqueOrThrow: vi.fn().mockResolvedValue({ status: 'SENT' }) },
         invoiceLineItem: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn() },
         depositCreditApplication: {
           updateMany: vi.fn().mockImplementation((args: any) => { captured.appReverse = args; return { count: 1 }; }),
         },
         payment: {
+          count: vi.fn().mockResolvedValue(0), // slice 18: the void re-checks for money under the lock
           updateMany: vi.fn().mockImplementation((args: any) => { captured.synthVoid = args; return { count: 1 }; }),
         },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
@@ -3586,10 +3704,11 @@ describe('POST /api/invoices/:id/void', () => {
     const synthVoid = vi.fn();
     mockPrisma.$transaction.mockImplementation(async (fn: any) => fn({
       job: { update: vi.fn().mockResolvedValue({}) },
-      invoice: { update: vi.fn().mockResolvedValue(buildInvoiceDetail({ status: 'VOIDED' })) },
+      $executeRaw: vi.fn().mockResolvedValue(1), // slice 05: the void locks the invoice and re-checks it
+      invoice: { update: vi.fn().mockResolvedValue(buildInvoiceDetail({ status: 'VOIDED' })), findUniqueOrThrow: vi.fn().mockResolvedValue({ status: 'SENT' }) },
       invoiceLineItem: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn() },
       depositCreditApplication: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
-      payment: { updateMany: synthVoid },
+      payment: { count: vi.fn().mockResolvedValue(0), updateMany: synthVoid },
       timelineEvent: { create: vi.fn().mockResolvedValue({}) },
     }));
 
@@ -3694,6 +3813,7 @@ describe('POST /api/invoices/:id/notes', () => {
 
   it('SALES gets 403', async () => {
     mockAuthAs('sales');
+    mockPrisma.invoice.findFirst.mockResolvedValue(null); // not an invoice this rep made
 
     // Route-level: SALES not in authorize list
     const res = await request(app)
@@ -3706,6 +3826,7 @@ describe('POST /api/invoices/:id/notes', () => {
 
   it('technician gets 403 for invoice notes (CASL: TECHNICIAN lacks update Invoice grant)', async () => {
     mockAuthAs('technician');
+    mockPrisma.invoice.findFirst.mockResolvedValue(null); // not an invoice this technician made
 
     const res = await request(app)
       .post(`/api/invoices/${INVOICE_FIXTURE.id}/notes`)
@@ -3719,6 +3840,7 @@ describe('POST /api/invoices/:id/notes', () => {
 
   it('technician gets 403 for other technician job invoice (route-level, CASL)', async () => {
     mockAuthAs('technician');
+    mockPrisma.invoice.findFirst.mockResolvedValue(null); // not an invoice this technician made
 
     const res = await request(app)
       .post(`/api/invoices/${INVOICE_FIXTURE.id}/notes`)
@@ -3779,24 +3901,28 @@ function setupPaymentTransaction(opts: { amount_due: number; status: string } = 
   const timelineEventCreate = vi.fn().mockResolvedValue({});
 
   mockPrisma.$transaction.mockImplementation(async (fn: any) => {
-    return fn({
+    return fn(withLedgerReads({
       payment: {
         create: vi.fn().mockResolvedValue({
           ...PAYMENT_FIXTURE,
           collector: { id: TEST_USERS.admin.id, first_name: 'Test', last_name: 'Admin' },
         }),
       },
+      $executeRaw: vi.fn().mockResolvedValue(1), // recordPayment locks the invoice row
       invoice: {
         findUniqueOrThrow: vi.fn().mockResolvedValue({
           amount_due: opts.amount_due,
           status: opts.status,
         }),
+        // Slice 29: the stored net collected is re-derived from the ledger rows under the lock.
+        findFirstOrThrow: vi.fn().mockResolvedValue({ status: opts.status, amount_due: opts.amount_due, payments: [], refunds: [] }),
         update: vi.fn().mockImplementation((args: any) => {
           return { ...updatedInvoice, ...args.data };
         }),
       },
+      refund: { findMany: vi.fn().mockResolvedValue([]) },
       timelineEvent: { create: timelineEventCreate },
-    });
+    }));
   });
 
   return { updatedInvoice, timelineEventCreate };
@@ -3817,6 +3943,34 @@ describe('POST /api/invoices/:id/payments', () => {
     expect(res.status).toBe(201);
     expect(res.body.invoice).toBeDefined();
     expect(res.body.payment).toBeDefined();
+  });
+
+  // #891 — the pre-check read SENT, but by the time the transaction holds the invoice row a job
+  // cancel has voided it. Booking the payment would turn VOIDED back into PAID.
+  it('refuses with 400 and books nothing when the invoice was voided after the pre-check', async () => {
+    mockAuthAs('admin');
+    mockPrisma.invoice.findUnique.mockResolvedValue(buildPaymentInvoice());
+    const paymentCreate = vi.fn();
+    const invoiceUpdate = vi.fn();
+    mockPrisma.$transaction.mockImplementation(async (fn: any) => fn(withLedgerReads({
+      $executeRaw: vi.fn().mockResolvedValue(1),
+      payment: { create: paymentCreate },
+      invoice: {
+        findUniqueOrThrow: vi.fn().mockResolvedValue({ amount_due: 0, status: 'VOIDED' }),
+        update: invoiceUpdate,
+      },
+      timelineEvent: { create: vi.fn() },
+    })));
+
+    const res = await request(app)
+      .post(`/api/invoices/${INVOICE_SENT_FIXTURE.id}/payments`)
+      .set(authHeader('admin'))
+      .send({ amount: 500, method: 'CHECK' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('Payments can only be recorded on DRAFT, SENT, or PARTIAL invoices');
+    expect(paymentCreate).not.toHaveBeenCalled();
+    expect(invoiceUpdate).not.toHaveBeenCalled();
   });
 
   // SERV10X-59 — a payment is not an edit (it emits its own PAYMENT_RECEIVED event and
@@ -3854,6 +4008,27 @@ describe('POST /api/invoices/:id/payments', () => {
     expect(res.body.invoice).toBeDefined();
   });
 
+  // Payments go-live slice 04: ACH means an ONLINE bank debit taken through ServWave Payments,
+  // so only the processor flow may create one. A hand-recorded bank payment is BANK_TRANSFER.
+  it('refuses ACH as a hand-recorded method and stores nothing', async () => {
+    mockAuthAs('admin');
+    const invoice = buildPaymentInvoice();
+    mockPrisma.invoice.findUnique.mockResolvedValue(invoice);
+    setupPaymentTransaction({ amount_due: 1268, status: 'SENT' });
+
+    const res = await request(app)
+      .post(`/api/invoices/${INVOICE_SENT_FIXTURE.id}/payments`)
+      .set(authHeader('admin'))
+      .send({ amount: 500, method: 'ACH' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.details).toEqual([
+      expect.objectContaining({ field: 'method', message: expect.stringContaining('Bank Transfer') }),
+    ]);
+    expect(JSON.stringify(res.body)).not.toMatch(/stripe/i);
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+  });
+
   it('full payment transitions SENT → PAID', async () => {
     mockAuthAs('admin');
     const invoice = buildPaymentInvoice({ amount_due: 500 });
@@ -3867,7 +4042,7 @@ describe('POST /api/invoices/:id/payments', () => {
     });
 
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
-      return fn({
+      return fn(withLedgerReads({
         job: { update: vi.fn().mockResolvedValue({}) },
         payment: {
           create: vi.fn().mockResolvedValue({
@@ -3876,6 +4051,7 @@ describe('POST /api/invoices/:id/payments', () => {
             collector: { id: TEST_USERS.admin.id, first_name: 'Test', last_name: 'Admin' },
           }),
         },
+        $executeRaw: vi.fn().mockResolvedValue(1), // recordPayment locks the invoice row
         invoice: {
           findUniqueOrThrow: vi.fn().mockResolvedValue({
             amount_due: 500,
@@ -3884,7 +4060,7 @@ describe('POST /api/invoices/:id/payments', () => {
           update: vi.fn().mockResolvedValue(updatedInvoice),
         },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
-      });
+      }));
     });
 
     const res = await request(app)
@@ -3909,7 +4085,7 @@ describe('POST /api/invoices/:id/payments', () => {
     });
 
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
-      return fn({
+      return fn(withLedgerReads({
         job: { update: vi.fn().mockResolvedValue({}) },
         payment: {
           create: vi.fn().mockResolvedValue({
@@ -3918,6 +4094,7 @@ describe('POST /api/invoices/:id/payments', () => {
             collector: { id: TEST_USERS.admin.id, first_name: 'Test', last_name: 'Admin' },
           }),
         },
+        $executeRaw: vi.fn().mockResolvedValue(1), // recordPayment locks the invoice row
         invoice: {
           findUniqueOrThrow: vi.fn().mockResolvedValue({
             amount_due: 768,
@@ -3926,7 +4103,7 @@ describe('POST /api/invoices/:id/payments', () => {
           update: vi.fn().mockResolvedValue(updatedInvoice),
         },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
-      });
+      }));
     });
 
     const res = await request(app)
@@ -3945,7 +4122,7 @@ describe('POST /api/invoices/:id/payments', () => {
 
     let capturedUpdateData: any;
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
-      return fn({
+      return fn(withLedgerReads({
         job: { update: vi.fn().mockResolvedValue({}) },
         payment: {
           create: vi.fn().mockResolvedValue({
@@ -3954,6 +4131,7 @@ describe('POST /api/invoices/:id/payments', () => {
             collector: { id: TEST_USERS.admin.id, first_name: 'Test', last_name: 'Admin' },
           }),
         },
+        $executeRaw: vi.fn().mockResolvedValue(1), // recordPayment locks the invoice row
         invoice: {
           findUniqueOrThrow: vi.fn().mockResolvedValue({
             amount_due: 100,
@@ -3965,7 +4143,7 @@ describe('POST /api/invoices/:id/payments', () => {
           }),
         },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
-      });
+      }));
     });
 
     const res = await request(app)
@@ -3986,7 +4164,7 @@ describe('POST /api/invoices/:id/payments', () => {
     let capturedPaymentData: any;
     const timelineCalls: any[] = [];
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
-      return fn({
+      return fn(withLedgerReads({
         job: { update: vi.fn().mockResolvedValue({}) },
         payment: {
           create: vi.fn().mockImplementation((args: any) => {
@@ -3994,6 +4172,7 @@ describe('POST /api/invoices/:id/payments', () => {
             return { ...PAYMENT_FIXTURE, ...args.data, collector: { id: TEST_USERS.admin.id, first_name: 'Test', last_name: 'Admin' } };
           }),
         },
+        $executeRaw: vi.fn().mockResolvedValue(1), // recordPayment locks the invoice row
         invoice: {
           findUniqueOrThrow: vi.fn().mockResolvedValue({ amount_due: 500, status: 'SENT' }),
           update: vi.fn().mockImplementation((args: any) => buildInvoiceDetail({ status: 'PAID', amount_due: 0, ...args.data })),
@@ -4001,7 +4180,7 @@ describe('POST /api/invoices/:id/payments', () => {
         timelineEvent: {
           create: vi.fn().mockImplementation((args: any) => { timelineCalls.push(args); return {}; }),
         },
-      });
+      }));
     });
 
     const res = await request(app)
@@ -4061,13 +4240,11 @@ describe('POST /api/invoices/:id/payments', () => {
     expect(res.status).toBe(403);
   });
 
-  // Phase B (technician redesign): on-site `record_payment` is no longer a TECHNICIAN role
-  // default — it is an opt-in per-user toggle (own-scoped via the job). A strict (un-granted) tech
-  // is blocked at the route guard (canDo('record_payment','Invoice')) even on their own job. The
-  // granted-path positive/negative (own-job 201 / other-job 403) belong to the per-user-grant
-  // controller test files.
-  it('strict technician cannot record a payment by default — even on their own job (route guard 403)', async () => {
+  // Roles & Permissions S01.17: Record payments is a switch (on in the Technician preset). A technician who has it
+  // turned off is blocked at the route guard (canDo('record_payment','Invoice')) even on their own job.
+  it('a technician without Record payments cannot record a payment — even on their own job (route guard 403)', async () => {
     mockAuthAs('technician');
+    mockRoleSwitches({ record_payments: false });
 
     const res = await request(app)
       .post(`/api/invoices/${INVOICE_SENT_FIXTURE.id}/payments`)
@@ -4078,16 +4255,16 @@ describe('POST /api/invoices/:id/payments', () => {
     expect(res.body.error).toBe('Insufficient permissions');
   });
 
-  it('strict technician is blocked from recording a payment on another technician\'s job (route guard 403)', async () => {
+  it('a technician without Record payments is blocked from recording a payment on another technician\'s job (route guard 403)', async () => {
     mockAuthAs('technician');
+    mockRoleSwitches({ record_payments: false });
 
     const res = await request(app)
       .post(`/api/invoices/${INVOICE_SENT_FIXTURE.id}/payments`)
       .set(authHeader('technician'))
       .send({ amount: 500, method: 'CASH' });
 
-    // No default record_payment grant → blocked at the route guard, not the controller's
-    // ownership check (that path is covered for a GRANTED tech elsewhere).
+    // No record_payment grant → blocked at the route guard, not the controller's ownership check.
     expect(res.status).toBe(403);
     expect(res.body.error).toBe('Insufficient permissions');
   });
@@ -4107,6 +4284,7 @@ describe('POST /api/invoices/:id/payments', () => {
             collector: { id: TEST_USERS.admin.id, first_name: 'Test', last_name: 'Admin' },
           }),
         },
+        $executeRaw: vi.fn().mockResolvedValue(1), // recordPayment locks the invoice row
         invoice: {
           findUniqueOrThrow: vi.fn().mockResolvedValue({
             amount_due: 1268,
@@ -4121,7 +4299,7 @@ describe('POST /api/invoices/:id/payments', () => {
           }),
         },
       };
-      return fn(txMock);
+      return fn(withLedgerReads(txMock));
     });
 
     const res = await request(app)
@@ -4130,10 +4308,12 @@ describe('POST /api/invoices/:id/payments', () => {
       .send({ amount: 500, method: 'CHECK' });
 
     expect(res.status).toBe(201);
-    expect(timelineCreateCalls).toHaveLength(1);
-    expect(timelineCreateCalls[0].data.event_type).toBe('PAYMENT_RECEIVED');
-    expect(timelineCreateCalls[0].data.description).toContain('$500.00');
-    expect(timelineCreateCalls[0].data.description).toContain('CHECK');
+    // The invoice's own entry. (The job's mirror of it is covered in job-money-history.test.ts.)
+    const invoiceEntries = timelineCreateCalls.filter((c) => c.data.entity_type === 'INVOICE');
+    expect(invoiceEntries).toHaveLength(1);
+    expect(invoiceEntries[0].data.event_type).toBe('PAYMENT_RECEIVED');
+    expect(invoiceEntries[0].data.description).toContain('$500.00');
+    expect(invoiceEntries[0].data.description).toContain('Check');
   });
 
   it('sends emails after recording payment', async () => {
@@ -4186,7 +4366,7 @@ describe('POST /api/invoices/:id/payments', () => {
 
     const updatedInvoice = buildInvoiceDetail({ id: INVOICE_SENT_FIXTURE.id, status: 'PAID', amount_due: 0 });
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
-      return fn({
+      return fn(withLedgerReads({
         payment: {
           create: vi.fn().mockResolvedValue({
             ...PAYMENT_FIXTURE,
@@ -4194,6 +4374,7 @@ describe('POST /api/invoices/:id/payments', () => {
             collector: { id: TEST_USERS.admin.id, first_name: 'Test', last_name: 'Admin' },
           }),
         },
+        $executeRaw: vi.fn().mockResolvedValue(1), // recordPayment locks the invoice row
         invoice: {
           findUniqueOrThrow: vi.fn().mockResolvedValue({ amount_due: 500, status: 'SENT' }),
           update: vi.fn().mockResolvedValue(updatedInvoice),
@@ -4201,7 +4382,7 @@ describe('POST /api/invoices/:id/payments', () => {
         timelineEvent: { create: txTimelineCreate },
         estimate: { update: estimateUpdate },
         lead: { updateMany: leadUpdateMany },
-      });
+      }));
     });
 
     const res = await request(app)
@@ -4220,7 +4401,7 @@ describe('POST /api/invoices/:id/payments', () => {
       expect.objectContaining({
         where: expect.objectContaining({
           id: 'ld000000-0000-0000-0000-000000000001',
-          status: { notIn: ['WON', 'LOST', 'CANCELLED'] },
+          status: { notIn: ['WON', 'LOST'] },
           organization_id: TEST_USERS.admin.organization_id,
         }),
         data: { status: 'WON' },
@@ -4258,7 +4439,7 @@ describe('POST /api/invoices/:id/payments', () => {
 
     const updatedInvoice = buildInvoiceDetail({ id: INVOICE_SENT_FIXTURE.id, status: 'PAID', amount_due: 0 });
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
-      return fn({
+      return fn(withLedgerReads({
         payment: {
           create: vi.fn().mockResolvedValue({
             ...PAYMENT_FIXTURE,
@@ -4266,6 +4447,7 @@ describe('POST /api/invoices/:id/payments', () => {
             collector: { id: TEST_USERS.admin.id, first_name: 'Test', last_name: 'Admin' },
           }),
         },
+        $executeRaw: vi.fn().mockResolvedValue(1), // recordPayment locks the invoice row
         invoice: {
           findUniqueOrThrow: vi.fn().mockResolvedValue({ amount_due: 500, status: 'SENT' }),
           update: vi.fn().mockResolvedValue(updatedInvoice),
@@ -4273,7 +4455,7 @@ describe('POST /api/invoices/:id/payments', () => {
         timelineEvent: { create: txTimelineCreate },
         estimate: { update: estimateUpdate },
         lead: { updateMany: leadUpdateMany },
-      });
+      }));
     });
 
     const res = await request(app)
@@ -4313,7 +4495,7 @@ describe('POST /api/invoices/:id/payments', () => {
 
     const updatedInvoice = buildInvoiceDetail({ id: INVOICE_SENT_FIXTURE.id, status: 'PARTIAL', amount_due: 768 });
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
-      return fn({
+      return fn(withLedgerReads({
         payment: {
           create: vi.fn().mockResolvedValue({
             ...PAYMENT_FIXTURE,
@@ -4321,6 +4503,7 @@ describe('POST /api/invoices/:id/payments', () => {
             collector: { id: TEST_USERS.admin.id, first_name: 'Test', last_name: 'Admin' },
           }),
         },
+        $executeRaw: vi.fn().mockResolvedValue(1), // recordPayment locks the invoice row
         invoice: {
           findUniqueOrThrow: vi.fn().mockResolvedValue({ amount_due: 1268, status: 'SENT' }),
           update: vi.fn().mockResolvedValue(updatedInvoice),
@@ -4328,7 +4511,7 @@ describe('POST /api/invoices/:id/payments', () => {
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimate: { update: estimateUpdate },
         lead: { updateMany: leadUpdateMany },
-      });
+      }));
     });
 
     const res = await request(app)
@@ -4351,7 +4534,7 @@ describe('POST /api/invoices/:id/payments', () => {
 
     const updatedInvoice = buildInvoiceDetail({ id: INVOICE_SENT_FIXTURE.id, status: 'PAID', amount_due: 0 });
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
-      return fn({
+      return fn(withLedgerReads({
         payment: {
           create: vi.fn().mockResolvedValue({
             ...PAYMENT_FIXTURE,
@@ -4359,6 +4542,7 @@ describe('POST /api/invoices/:id/payments', () => {
             collector: { id: TEST_USERS.admin.id, first_name: 'Test', last_name: 'Admin' },
           }),
         },
+        $executeRaw: vi.fn().mockResolvedValue(1), // recordPayment locks the invoice row
         invoice: {
           findUniqueOrThrow: vi.fn().mockResolvedValue({ amount_due: 500, status: 'SENT' }),
           update: vi.fn().mockResolvedValue(updatedInvoice),
@@ -4366,7 +4550,7 @@ describe('POST /api/invoices/:id/payments', () => {
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimate: { update: estimateUpdate },
         lead: { updateMany: leadUpdateMany },
-      });
+      }));
     });
 
     const res = await request(app)
@@ -4388,7 +4572,7 @@ describe('POST /api/invoices/:id/payments', () => {
       mockPrisma.invoice.findUnique.mockResolvedValue(invoice);
       let capturedPaymentData: any;
       mockPrisma.$transaction.mockImplementation(async (fn: any) => {
-        return fn({
+        return fn(withLedgerReads({
           job: { update: vi.fn().mockResolvedValue({}) },
           payment: {
             create: vi.fn().mockImplementation((args: any) => {
@@ -4396,12 +4580,13 @@ describe('POST /api/invoices/:id/payments', () => {
               return { ...PAYMENT_FIXTURE, ...args.data, collector: { id: TEST_USERS.admin.id, first_name: 'Test', last_name: 'Admin' } };
             }),
           },
+          $executeRaw: vi.fn().mockResolvedValue(1), // recordPayment locks the invoice row
           invoice: {
             findUniqueOrThrow: vi.fn().mockResolvedValue({ amount_due: 1268, status: 'SENT' }),
             update: vi.fn().mockImplementation((args: any) => buildInvoiceDetail({ status: 'PARTIAL', ...args.data })),
           },
           timelineEvent: { create: vi.fn().mockResolvedValue({}) },
-        });
+        }));
       });
 
       const res = await request(app)
@@ -4419,11 +4604,12 @@ describe('POST /api/invoices/:id/payments', () => {
       mockPrisma.invoice.findUnique.mockResolvedValue(invoice);
       let capturedInvoiceUpdateData: any;
       mockPrisma.$transaction.mockImplementation(async (fn: any) => {
-        return fn({
+        return fn(withLedgerReads({
           job: { update: vi.fn().mockResolvedValue({}) },
           payment: {
             create: vi.fn().mockResolvedValue({ ...PAYMENT_FIXTURE, amount: 500, tip_amount: 50, collector: { id: TEST_USERS.admin.id, first_name: 'Test', last_name: 'Admin' } }),
           },
+          $executeRaw: vi.fn().mockResolvedValue(1), // recordPayment locks the invoice row
           invoice: {
             findUniqueOrThrow: vi.fn().mockResolvedValue({ amount_due: 500, status: 'SENT' }),
             update: vi.fn().mockImplementation((args: any) => {
@@ -4432,7 +4618,7 @@ describe('POST /api/invoices/:id/payments', () => {
             }),
           },
           timelineEvent: { create: vi.fn().mockResolvedValue({}) },
-        });
+        }));
       });
 
       const res = await request(app)
@@ -4455,7 +4641,7 @@ describe('POST /api/invoices/:id/payments', () => {
       mockPrisma.invoice.findUnique.mockResolvedValue(invoice);
       let capturedPaymentData: any;
       mockPrisma.$transaction.mockImplementation(async (fn: any) => {
-        return fn({
+        return fn(withLedgerReads({
           job: { update: vi.fn().mockResolvedValue({}) },
           payment: {
             create: vi.fn().mockImplementation((args: any) => {
@@ -4463,12 +4649,13 @@ describe('POST /api/invoices/:id/payments', () => {
               return { ...PAYMENT_FIXTURE, ...args.data, collector: { id: TEST_USERS.admin.id, first_name: 'Test', last_name: 'Admin' } };
             }),
           },
+          $executeRaw: vi.fn().mockResolvedValue(1), // recordPayment locks the invoice row
           invoice: {
             findUniqueOrThrow: vi.fn().mockResolvedValue({ amount_due: 1268, status: 'SENT' }),
             update: vi.fn().mockImplementation((args: any) => buildInvoiceDetail({ status: 'PARTIAL', ...args.data })),
           },
           timelineEvent: { create: vi.fn().mockResolvedValue({}) },
-        });
+        }));
       });
 
       const body: any = { amount: 500, method: 'CASH' };
@@ -4490,11 +4677,12 @@ describe('POST /api/invoices/:id/payments', () => {
       const timelineCalls: any[] = [];
       let capturedInvoiceUpdateData: any;
       mockPrisma.$transaction.mockImplementation(async (fn: any) => {
-        return fn({
+        return fn(withLedgerReads({
           job: { update: vi.fn().mockResolvedValue({}) },
           payment: {
             create: vi.fn().mockResolvedValue({ ...PAYMENT_FIXTURE, amount: 400, tip_amount: 200, collector: { id: TEST_USERS.admin.id, first_name: 'Test', last_name: 'Admin' } }),
           },
+          $executeRaw: vi.fn().mockResolvedValue(1), // recordPayment locks the invoice row
           invoice: {
             findUniqueOrThrow: vi.fn().mockResolvedValue({ amount_due: 500, status: 'SENT' }),
             update: vi.fn().mockImplementation((args: any) => {
@@ -4505,7 +4693,7 @@ describe('POST /api/invoices/:id/payments', () => {
           timelineEvent: {
             create: vi.fn().mockImplementation((args: any) => { timelineCalls.push(args); return {}; }),
           },
-        });
+        }));
       });
 
       // $400 amount (< $500 due) + $200 tip: amount+tip ($600) exceeds the balance, but amount
@@ -4543,7 +4731,7 @@ describe('POST /api/invoices/:id/payments', () => {
       mockPrisma.invoice.findUnique.mockResolvedValue(invoice);
       let capturedPaymentData: any;
       mockPrisma.$transaction.mockImplementation(async (fn: any) => {
-        return fn({
+        return fn(withLedgerReads({
           job: { update: vi.fn().mockResolvedValue({}) },
           payment: {
             create: vi.fn().mockImplementation((args: any) => {
@@ -4551,12 +4739,13 @@ describe('POST /api/invoices/:id/payments', () => {
               return { ...PAYMENT_FIXTURE, ...args.data, collector: { id: TEST_USERS.admin.id, first_name: 'Test', last_name: 'Admin' } };
             }),
           },
+          $executeRaw: vi.fn().mockResolvedValue(1), // recordPayment locks the invoice row
           invoice: {
             findUniqueOrThrow: vi.fn().mockResolvedValue({ amount_due: 1268, status: 'SENT' }),
             update: vi.fn().mockImplementation((args: any) => buildInvoiceDetail({ status: 'PARTIAL', ...args.data })),
           },
           timelineEvent: { create: vi.fn().mockResolvedValue({}) },
-        });
+        }));
       });
 
       const res = await request(app)
@@ -4593,14 +4782,20 @@ describe('POST /api/invoices/:id/payments', () => {
 
       let capturedRefund: any;
       mockPrisma.$transaction.mockImplementation(async (fn: any) => {
+        const reRead = refundTxReRead(() => capturedRefund);
         const tx = {
-          refund: { create: vi.fn().mockImplementation((args: any) => { capturedRefund = args.data; return { id: 're_row_1', ...args.data }; }) },
-          invoice: { update: vi.fn().mockResolvedValue({}) },
+          $executeRaw: reRead.$executeRaw,
+          refund: {
+            findMany: reRead.refundFindMany,
+            findFirst: vi.fn().mockResolvedValue(null),
+            create: vi.fn().mockImplementation((args: any) => { capturedRefund = args.data; return { id: 're_row_1', ...args.data }; }),
+            findUniqueOrThrow: vi.fn().mockImplementation(async () => ({ id: 're_row_1', ...capturedRefund })),
+          },
+          invoice: { update: vi.fn().mockResolvedValue({}), findUniqueOrThrow: reRead.findUniqueOrThrow, findFirstOrThrow: reRead.invoiceFindFirstOrThrow },
           payment: { update: vi.fn().mockResolvedValue({}) },
           timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         };
-        await fn(tx);
-        return { id: 're_row_1' };
+        return fn(tx);
       });
 
       const res = await request(app)
@@ -4611,6 +4806,55 @@ describe('POST /api/invoices/:id/payments', () => {
       expect(res.status).toBe(200);
       expect(mockCreateRefund).not.toHaveBeenCalled();
       expect(Number(capturedRefund.amount)).toBe(200);
+    });
+
+    it('the refund response never carries a processor refund id', async () => {
+      mockAuthAs('admin');
+      mockPrisma.invoice.findUnique.mockResolvedValue({
+        id: 'inv_1',
+        invoice_number: 'I00001',
+        status: 'PAID',
+        amount_due: 0,
+        total_amount: 500,
+        tax_amount: 0,
+        net_collected: 0,
+        organization: { id: 'org_1', stripe_account_id: null },
+        payments: [{
+          id: 'pay_1', method: 'CASH', amount: 500, stripe_payment_intent_id: null,
+          refunded_at: null, reference_number: null, voided_at: null, tip_amount: 50,
+        }],
+        refunds: [],
+        customer: null,
+        job: { customer: { email: 'c@x.com', first_name: 'C', last_name: 'X' } },
+      });
+
+      let capturedRefund: any;
+      mockPrisma.$transaction.mockImplementation(async (fn: any) => {
+        const reRead = refundTxReRead(() => capturedRefund);
+        const tx = {
+          $executeRaw: reRead.$executeRaw,
+          refund: {
+            findMany: reRead.refundFindMany,
+            findFirst: vi.fn().mockResolvedValue(null),
+            create: vi.fn().mockImplementation((args: any) => { capturedRefund = args.data; return { id: 're_row_1', ...args.data }; }),
+            findUniqueOrThrow: vi.fn().mockImplementation(async () => ({ id: 're_row_1', ...capturedRefund, stripe_refund_id: 're_secret_9' })),
+          },
+          invoice: { update: vi.fn().mockResolvedValue({}), findUniqueOrThrow: reRead.findUniqueOrThrow, findFirstOrThrow: reRead.invoiceFindFirstOrThrow },
+          payment: { update: vi.fn().mockResolvedValue({}) },
+          timelineEvent: { create: vi.fn().mockResolvedValue({}) },
+        };
+        return fn(tx);
+      });
+
+      const res = await request(app)
+        .post('/api/invoices/inv_1/refund')
+        .set(authHeader('admin'))
+        .send({ amount: 200, reason_category: 'CUSTOMER_REQUEST', reason: 'partial cash refund' });
+
+      expect(res.status).toBe(200);
+      expect(res.body.refund.id).toBe('re_row_1');
+      expect(JSON.stringify(res.body)).not.toContain('re_secret_9');
+      expect(res.body.refund).not.toHaveProperty('stripe_refund_id');
     });
   });
 });
@@ -4650,7 +4894,7 @@ function buildPublicInvoice(overrides: Record<string, any> = {}) {
       // F-55: the public select no longer requests email/phone/street lines, so the mock
       // mirrors the minimized shape Prisma would actually return (name + city/state/zip only).
       customer: { first_name: 'John', last_name: 'Doe' },
-      service_location: { city: 'Dallas', state: 'TX', zip: '75001' },
+      service_location: { address_line1: '123 Main St', address_line2: null, city: 'Dallas', state: 'TX', zip: '75001' },
     },
     payments: [],
     ...overrides,
@@ -4741,8 +4985,9 @@ describe('GET /api/invoices/:id/public', () => {
     expect(res.body.available_payment_methods).toBeDefined();
   });
 
-  // ── F-55: public invoice GET minimizes PII (no customer email/phone, no street lines) ──
-  it('F-55: public invoice GET omits customer email/phone and street address from the payload + select', async () => {
+  // ── F-55: public invoice GET minimizes PII (no customer email/phone). Ran 2026-10-08 (payments
+  // go-live slice 26): the street IS shown on this route, like the PDF and the public estimate. ──
+  it('F-55: public invoice GET omits customer email/phone but shows the full service address, payload + select', async () => {
     // Mock returns ONLY the minimized fields — mirrors what the minimized Prisma select yields.
     const invoice = buildPublicInvoice();
     mockPrisma.invoice.findFirst.mockResolvedValue(invoice);
@@ -4754,22 +4999,21 @@ describe('GET /api/invoices/:id/public', () => {
     // Body assertion: no contact PII / street lines anywhere in the serialized public payload.
     expect(res.body.invoice.job.customer.email).toBeUndefined();
     expect(res.body.invoice.job.customer.phone).toBeUndefined();
-    expect(res.body.invoice.job.service_location.address_line1).toBeUndefined();
-    expect(res.body.invoice.job.service_location.address_line2).toBeUndefined();
-    // city/state/zip are retained so the public page can still show the service area.
+    // The street lines ride along with city/state/zip: the customer's invoice shows the whole address.
+    expect(res.body.invoice.job.service_location.address_line1).toBe('123 Main St');
     expect(res.body.invoice.job.service_location.city).toBe('Dallas');
     expect(res.body.invoice.job.service_location.state).toBe('TX');
     expect(res.body.invoice.job.service_location.zip).toBe('75001');
 
     // Select assertion: the query passed to Prisma must NOT request email/phone (top-level
-    // customer + job.customer) or street lines — defense even if a future mock over-returns.
+    // customer + job.customer) — defense even if a future mock over-returns.
     const sel = mockPrisma.invoice.findFirst.mock.calls[0][0].select;
     expect(sel.customer.select.email).toBeUndefined();
     expect(sel.customer.select.phone).toBeUndefined();
     expect(sel.job.select.customer.select.email).toBeUndefined();
     expect(sel.job.select.customer.select.phone).toBeUndefined();
-    expect(sel.job.select.service_location.select.address_line1).toBeUndefined();
-    expect(sel.job.select.service_location.select.address_line2).toBeUndefined();
+    expect(sel.job.select.service_location.select.address_line1).toBe(true);
+    expect(sel.job.select.service_location.select.address_line2).toBe(true);
     // Confirm the retained fields ARE still selected.
     expect(sel.customer.select.first_name).toBe(true);
     expect(sel.job.select.service_location.select.city).toBe(true);
@@ -4789,7 +5033,7 @@ describe('GET /api/invoices/:id/public', () => {
     mockPrisma.invoice.findFirst.mockResolvedValue(invoice);
     mockAppSettings();
     (prisma.organization.findUnique as any).mockResolvedValue({
-      name: 'Alpha Doors', logo_url: null, brand_color: '#000000', phone: null,
+      name: 'Example Doors', logo_url: null, brand_color: '#000000', phone: null,
       stripe_account_id: 'acct_mid_onboarding',
       stripe_charges_enabled: false,
       accepted_payment_methods: ['CARD', 'EXTERNAL_CARD', 'CHECK'],
@@ -4802,14 +5046,15 @@ describe('GET /api/invoices/:id/public', () => {
     expect(res.body.available_payment_methods).not.toContain('CARD');
   });
 
-  // An override holding valid JSON that is not an array used to pass the parse guard and then
-  // throw on .filter, 500ing the public page. It must degrade to the org default instead.
-  it('falls back to the org default when the available_payment_methods override is valid JSON but not an array', async () => {
+  // Payments go-live slice 19: the legacy per-org `available_payment_methods` settings row is not
+  // a source any more (it shadowed the owner's saved defaults), so even a malformed one cannot
+  // touch the page. The org's accepted methods are the list.
+  it('ignores the legacy available_payment_methods row; the org accepted methods are the default list', async () => {
     const invoice = buildPublicInvoice();
     mockPrisma.invoice.findFirst.mockResolvedValue(invoice);
     mockAppSettings({ available_payment_methods: '30' });
     (prisma.organization.findUnique as any).mockResolvedValue({
-      name: 'Alpha Doors', logo_url: null, brand_color: '#000000', phone: null,
+      name: 'Example Doors', logo_url: null, brand_color: '#000000', phone: null,
       stripe_account_id: 'acct_live',
       stripe_charges_enabled: true,
       accepted_payment_methods: ['CARD', 'CHECK'],
@@ -4827,7 +5072,7 @@ describe('GET /api/invoices/:id/public', () => {
     mockPrisma.invoice.findFirst.mockResolvedValue(invoice);
     mockAppSettings();
     (prisma.organization.findUnique as any).mockResolvedValue({
-      name: 'Alpha Doors', logo_url: null, brand_color: '#000000', phone: null,
+      name: 'Example Doors', logo_url: null, brand_color: '#000000', phone: null,
       stripe_account_id: 'acct_live',
       stripe_charges_enabled: true,
       accepted_payment_methods: ['CARD', 'CHECK'],
@@ -4840,17 +5085,17 @@ describe('GET /api/invoices/:id/public', () => {
     expect(res.body.available_payment_methods).toContain('CARD');
   });
 
-  it('drops CARD from a stale legacy available_payment_methods AppSetting override when Stripe charges are not enabled', async () => {
+  it('drops a stale CARD from the org accepted methods when Stripe charges are not enabled', async () => {
     const invoice = buildPublicInvoice();
     mockPrisma.invoice.findFirst.mockResolvedValue(invoice);
-    // The AppSetting override says CARD is available (e.g. a stale admin-set list) — but the
+    mockAppSettings();
+    // The org list still says CARD (e.g. added before the account was restricted) - but the
     // org's Stripe capability has since gone away/never arrived, so it must not leak through.
-    mockAppSettings({ available_payment_methods: JSON.stringify(['CARD', 'CHECK', 'CASH']) });
     (prisma.organization.findUnique as any).mockResolvedValue({
-      name: 'Alpha Doors', logo_url: null, brand_color: '#000000', phone: null,
+      name: 'Example Doors', logo_url: null, brand_color: '#000000', phone: null,
       stripe_account_id: 'acct_mid_onboarding',
       stripe_charges_enabled: false,
-      accepted_payment_methods: ['CARD', 'CHECK'],
+      accepted_payment_methods: ['CARD', 'CHECK', 'CASH'],
     });
 
     const res = await request(app)
@@ -4861,13 +5106,14 @@ describe('GET /api/invoices/:id/public', () => {
     expect(res.body.available_payment_methods).toEqual(expect.arrayContaining(['CHECK', 'CASH']));
   });
 
-  // ─── Slice 4 (card service fee) — public preview, display-only per D8 ────
-  it('returns service_fee_bps and a computed service_fee_preview', async () => {
+  // Payments go-live slice 02 (D9) — card payments carry no service fee, so the public payload
+  // quotes none. The page reads an absent preview as zero.
+  it('quotes no card service fee on the public invoice', async () => {
     const invoice = buildPublicInvoice(); // amount_due = 1268
     mockPrisma.invoice.findFirst.mockResolvedValue(invoice);
     mockAppSettings();
     (prisma.organization.findUnique as any).mockResolvedValue({
-      name: 'Alpha Doors', logo_url: null, brand_color: '#000000', phone: null,
+      name: 'Test Org', logo_url: null, brand_color: '#000000', phone: null,
       stripe_account_id: 'acct_live',
       stripe_charges_enabled: true,
       accepted_payment_methods: ['CARD', 'CHECK'],
@@ -4877,50 +5123,33 @@ describe('GET /api/invoices/:id/public', () => {
       .get(`/api/invoices/${INVOICE_SENT_FIXTURE.id}/public?token=test-invoice-token-123`);
 
     expect(res.status).toBe(200);
-    expect(res.body.service_fee_bps).toBe(350);
-    // 1268 * 100 = 126800 cents × 350bps / 10000 = 4438 cents = $44.38.
-    expect(res.body.service_fee_preview).toBe(44.38);
+    expect(res.body).not.toHaveProperty('service_fee_bps');
+    expect(res.body).not.toHaveProperty('service_fee_preview');
   });
 
-  // The fee is unconditional: no org column, plan or setting suppresses it. This org row carries
-  // the retired opt-out flag set to false - the preview must ignore it and quote the full fee.
-  it('previews the full service fee with no org opt-out available', async () => {
+  // ─── Slice 8 (customer-facing tipping) — the chips render from ───
+  // Payments go-live slice 19: the presets are the org's own, and only while the org has tips on.
+  it.each([
+    [true, [1000, 1500, 2000]],
+    [false, []],
+  ])('returns tip_preset_bps from the org presets (tips on: %s)', async (tipsEnabled, expected) => {
     const invoice = buildPublicInvoice();
     mockPrisma.invoice.findFirst.mockResolvedValue(invoice);
     mockAppSettings();
     (prisma.organization.findUnique as any).mockResolvedValue({
-      name: 'Alpha Doors', logo_url: null, brand_color: '#000000', phone: null,
+      name: 'Harbor Locksmiths', logo_url: null, brand_color: '#000000', phone: null,
       stripe_account_id: 'acct_live',
       stripe_charges_enabled: true,
       accepted_payment_methods: ['CARD', 'CHECK'],
-      card_service_fee_enabled: false, // stale/ignored - must not suppress anything
+      tips_enabled: tipsEnabled,
+      tip_presets: [10, 15, 20],
     });
 
     const res = await request(app)
       .get(`/api/invoices/${INVOICE_SENT_FIXTURE.id}/public?token=test-invoice-token-123`);
 
     expect(res.status).toBe(200);
-    expect(res.body.service_fee_bps).toBe(350);
-    expect(res.body.service_fee_preview).toBe(44.38);
-  });
-
-  // ─── Slice 8 (customer-facing tipping) — the constant chips render from ───
-  it('returns tip_preset_bps so the tip chips can render without hardcoding the presets client-side', async () => {
-    const invoice = buildPublicInvoice();
-    mockPrisma.invoice.findFirst.mockResolvedValue(invoice);
-    mockAppSettings();
-    (prisma.organization.findUnique as any).mockResolvedValue({
-      name: 'Alpha Doors', logo_url: null, brand_color: '#000000', phone: null,
-      stripe_account_id: 'acct_live',
-      stripe_charges_enabled: true,
-      accepted_payment_methods: ['CARD', 'CHECK'],
-    });
-
-    const res = await request(app)
-      .get(`/api/invoices/${INVOICE_SENT_FIXTURE.id}/public?token=test-invoice-token-123`);
-
-    expect(res.status).toBe(200);
-    expect(res.body.tip_preset_bps).toEqual([1000, 1500, 2000]);
+    expect(res.body.tip_preset_bps).toEqual(expected);
   });
 
   // ─── #1821 — the public payload must carry the BUSINESS's clock ──────
@@ -4982,7 +5211,7 @@ describe('GET /api/invoices/:id/public', () => {
     mockPrisma.invoice.findFirst.mockResolvedValue(invoice);
     mockAppSettings();
     (prisma.organization.findUnique as any).mockResolvedValue({
-      name: 'Alpha Doors', logo_url: null, brand_color: '#000000', phone: null,
+      name: 'Example Doors', logo_url: null, brand_color: '#000000', phone: null,
       timezone: null,
       stripe_account_id: 'acct_live',
       stripe_charges_enabled: true,
@@ -5007,7 +5236,7 @@ describe('GET /api/invoices/:id/public', () => {
     mockPrisma.invoice.findFirst.mockResolvedValue(invoice);
     mockAppSettings();
     (prisma.organization.findUnique as any).mockResolvedValue({
-      name: 'Alpha Doors', logo_url: null, brand_color: '#000000', phone: null,
+      name: 'Example Doors', logo_url: null, brand_color: '#000000', phone: null,
       timezone: 'America/Denver',
       stripe_account_id: 'acct_live',
       stripe_charges_enabled: true,
@@ -5045,6 +5274,7 @@ describe('POST /api/invoices/:id/public/checkout', () => {
         customer: { first_name: 'John', last_name: 'Doe' },
       },
       organization: { id: 'org-test-1', stripe_account_id: 'acct_test', accepted_payment_methods: ['CARD', 'CHECK', 'BANK_TRANSFER', 'CASH'], stripe_charges_enabled: true },
+      payments: [],
     };
     mockPrisma.invoice.findFirst.mockResolvedValue(invoice);
     mockIsStripeConfigured.mockReturnValue(true);
@@ -5060,23 +5290,24 @@ describe('POST /api/invoices/:id/public/checkout', () => {
     expect(res.body.checkout_url).toBe('https://checkout.stripe.com/test');
     expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
       expect.objectContaining({
-        depositAmount: 1268,
-        metadata: { invoiceId: INVOICE_SENT_FIXTURE.id },
+        pricing: expect.objectContaining({ amountCents: 126800, totalCents: 126800, platformFeeCents: 0 }),
+        document: { organizationId: 'org-test-1', invoiceId: INVOICE_SENT_FIXTURE.id, kind: 'invoice' },
       }),
       expect.objectContaining({ stripe: expect.anything() }),
     );
   });
 
-  it('returns 400 on non-payable status (DRAFT)', async () => {
+  it('returns 400 on non-payable status (REFUNDED; a DRAFT with a link is payable since W4)', async () => {
     const invoice = {
       id: INVOICE_FIXTURE.id,
       invoice_number: INVOICE_FIXTURE.invoice_number,
-      status: 'DRAFT',
+      status: 'REFUNDED',
       amount_due: 1268,
       job: {
         customer: { first_name: 'John', last_name: 'Doe' },
       },
       organization: { id: 'org-test-1', stripe_account_id: null },
+      payments: [],
     };
     mockPrisma.invoice.findFirst.mockResolvedValue(invoice);
     mockIsStripeConfigured.mockReturnValue(true);
@@ -5098,6 +5329,7 @@ describe('POST /api/invoices/:id/public/checkout', () => {
         customer: { first_name: 'John', last_name: 'Doe' },
       },
       organization: { id: 'org-test-1', stripe_account_id: null },
+      payments: [],
     };
     mockPrisma.invoice.findFirst.mockResolvedValue(invoice);
     mockIsStripeConfigured.mockReturnValue(true);
@@ -5172,6 +5404,7 @@ describe('POST /api/invoices/:id/public/checkout', () => {
         customer: { first_name: 'John', last_name: 'Doe' },
       },
       organization: { id: 'org-test-1', stripe_account_id: null, accepted_payment_methods: ['EXTERNAL_CARD', 'CHECK'], stripe_charges_enabled: false },
+      payments: [],
     };
     mockPrisma.invoice.findFirst.mockResolvedValue(invoice);
     mockIsStripeConfigured.mockReturnValue(true);
@@ -5198,6 +5431,7 @@ describe('POST /api/invoices/:id/public/checkout', () => {
         customer: { first_name: 'John', last_name: 'Doe' },
       },
       organization: { id: 'org-test-1', stripe_account_id: 'acct_mid_onboarding', accepted_payment_methods: ['CARD', 'CHECK'], stripe_charges_enabled: false },
+      payments: [],
     };
     mockPrisma.invoice.findFirst.mockResolvedValue(invoice);
     mockIsStripeConfigured.mockReturnValue(true);
@@ -5211,25 +5445,22 @@ describe('POST /api/invoices/:id/public/checkout', () => {
   });
 
   // Code-review finding: stripe_charges_enabled alone doesn't guarantee CARD is actually in the
-  // org's resolved accepted-methods list — an AppSetting override can exclude it even while
-  // charges are enabled (a state that shouldn't normally occur, but the endpoint must defend
-  // against it rather than trust either signal alone). Reuses getPublic's exact
-  // method-resolution chain (AppSetting override → org.accepted_payment_methods → default).
-  it('returns 400 when charges are enabled but an AppSetting override excludes CARD from the resolved accepted-methods list', async () => {
+  // org's accepted-methods list (a state that shouldn't normally occur, but the endpoint must
+  // defend against it rather than trust either signal alone). Reuses getPublic's exact
+  // method-resolution chain (slice 19: org.accepted_payment_methods -> default; the legacy
+  // settings row is no longer read).
+  it('returns 400 when charges are enabled but the org accepted methods exclude CARD', async () => {
     const invoice = {
       id: INVOICE_SENT_FIXTURE.id,
       invoice_number: INVOICE_SENT_FIXTURE.invoice_number,
       status: 'SENT',
       amount_due: 1268,
       job: { customer: { first_name: 'John', last_name: 'Doe' } },
-      organization: { id: 'org-test-1', stripe_account_id: 'acct_test', accepted_payment_methods: ['CARD', 'CHECK'], stripe_charges_enabled: true },
+      organization: { id: 'org-test-1', stripe_account_id: 'acct_test', accepted_payment_methods: ['CHECK', 'CASH'], stripe_charges_enabled: true },
+      payments: [],
     };
     mockPrisma.invoice.findFirst.mockResolvedValue(invoice);
     mockIsStripeConfigured.mockReturnValue(true);
-    (prisma.appSetting.findUnique as any).mockResolvedValue({
-      key: 'available_payment_methods',
-      value: JSON.stringify(['CHECK', 'CASH']),
-    });
 
     const res = await request(app)
       .post(`/api/invoices/${INVOICE_SENT_FIXTURE.id}/public/checkout?token=test-invoice-token-123`);
@@ -5249,6 +5480,7 @@ describe('POST /api/invoices/:id/public/checkout', () => {
         customer: { first_name: 'John', last_name: 'Doe' },
       },
       organization: { id: 'org-test-1', stripe_account_id: 'acct_test', accepted_payment_methods: ['CARD', 'CHECK', 'BANK_TRANSFER', 'CASH'], stripe_charges_enabled: true },
+      payments: [],
     };
     mockPrisma.invoice.findFirst.mockResolvedValue(invoice);
     mockIsStripeConfigured.mockReturnValue(true);
@@ -5263,7 +5495,7 @@ describe('POST /api/invoices/:id/public/checkout', () => {
     expect(res.status).toBe(200);
     expect(res.body.checkout_url).toBe('https://checkout.stripe.com/test2');
     expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
-      expect.objectContaining({ depositAmount: 768 }),
+      expect.objectContaining({ pricing: expect.objectContaining({ amountCents: 76800 }) }),
       expect.objectContaining({ stripe: expect.anything() }),
     );
   });
@@ -5280,6 +5512,7 @@ describe('POST /api/invoices/:id/public/checkout', () => {
       customer: { first_name: 'Dep', last_name: 'Payer', company_name: null },
       job: null,
       organization: { id: 'org-test-1', stripe_account_id: 'acct_test', accepted_payment_methods: ['CARD', 'CHECK'], stripe_charges_enabled: true },
+      payments: [],
     };
     mockPrisma.invoice.findFirst.mockResolvedValue(depositInvoice);
     mockIsStripeConfigured.mockReturnValue(true);
@@ -5293,144 +5526,15 @@ describe('POST /api/invoices/:id/public/checkout', () => {
     // Face value; customer resolved via invoice.customer (no NPE).
     expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
       expect.objectContaining({
-        depositAmount: 500,
-        metadata: { invoiceId: 'dep-inv-1' },
+        pricing: expect.objectContaining({ amountCents: 50000 }),
+        document: expect.objectContaining({ invoiceId: 'dep-inv-1', kind: 'deposit' }),
       }),
       expect.objectContaining({ stripe: expect.anything() }),
     );
   });
 
-  // ── Task 3.1: application fee plumbing — double guard exercised at the call site ──
-  it('passes a positive application_fee_amount when the org has a connected Stripe account', async () => {
-    const invoice = {
-      id: INVOICE_SENT_FIXTURE.id,
-      invoice_number: INVOICE_SENT_FIXTURE.invoice_number,
-      status: 'SENT',
-      amount_due: 1000,
-      job: { customer: { first_name: 'John', last_name: 'Doe' } },
-      organization: {
-        id: 'org-test-1',
-        stripe_account_id: 'acct_connected_1',
-        accepted_payment_methods: ['CARD'],
-        stripe_charges_enabled: true,
-        platform_fee_bps: 50,
-      },
-    };
-    mockPrisma.invoice.findFirst.mockResolvedValue(invoice);
-    mockIsStripeConfigured.mockReturnValue(true);
-    // getStripeForOrg is globally mocked to a fixed { stripe: {}, stripeAccount: undefined } —
-    // override it here to simulate a genuinely connected account (§ getStripeForOrg contract).
-    mockGetStripeForOrg.mockReturnValueOnce({ stripe: {}, stripeAccount: 'acct_connected_1' });
-    mockCreateCheckoutSession.mockResolvedValue({ id: 'cs_fee_1', url: 'https://checkout.stripe.com/fee1' });
-
-    const res = await request(app)
-      .post(`/api/invoices/${INVOICE_SENT_FIXTURE.id}/public/checkout?token=test-invoice-token-123`);
-
-    expect(res.status).toBe(200);
-    // The application fee is the D2 remainder of the service fee, not platform_fee_bps: $1,000
-    // face → 3500c service fee less the estimated Stripe cut = 468c. depositAmount stays 1000 —
-    // the org still receives face value; the fee rides on top, funded by the customer.
-    expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
-      expect.objectContaining({ depositAmount: 1000, applicationFeeAmount: 468 }),
-      expect.objectContaining({ stripeAccount: 'acct_connected_1' }),
-    );
-  });
-
-  it('omits application_fee_amount when the org has no connected Stripe account, even with platform_fee_bps set (legacy platform-account guard)', async () => {
-    const invoice = {
-      id: INVOICE_SENT_FIXTURE.id,
-      invoice_number: INVOICE_SENT_FIXTURE.invoice_number,
-      status: 'SENT',
-      amount_due: 1000,
-      job: { customer: { first_name: 'John', last_name: 'Doe' } },
-      organization: {
-        id: 'org-test-1',
-        stripe_account_id: null,
-        accepted_payment_methods: ['CARD'],
-        stripe_charges_enabled: true,
-        platform_fee_bps: 50,
-      },
-    };
-    mockPrisma.invoice.findFirst.mockResolvedValue(invoice);
-    mockIsStripeConfigured.mockReturnValue(true);
-    // Default mock: getStripeForOrg → { stripe: {}, stripeAccount: undefined } (no override) —
-    // models a legacy/platform-account org, which must never get an application_fee_amount.
-    mockCreateCheckoutSession.mockResolvedValue({ id: 'cs_fee_2', url: 'https://checkout.stripe.com/fee2' });
-
-    const res = await request(app)
-      .post(`/api/invoices/${INVOICE_SENT_FIXTURE.id}/public/checkout?token=test-invoice-token-123`);
-
-    expect(res.status).toBe(200);
-    const [options, ctxArg] = mockCreateCheckoutSession.mock.calls[0];
-    expect(options.depositAmount).toBe(1000); // face value, unaffected
-    expect(options.applicationFeeAmount).toBeUndefined();
-    expect(ctxArg.stripeAccount).toBeUndefined();
-  });
-
-  // ─── Slice 2 (card service fee) — checkout wiring ─────────────────────────
-  it('passes a service fee (D2 replacing the platform fee) on any card checkout with a connected account', async () => {
-    const invoice = {
-      id: INVOICE_SENT_FIXTURE.id,
-      invoice_number: INVOICE_SENT_FIXTURE.invoice_number,
-      status: 'SENT',
-      amount_due: 1000,
-      job: { customer: { first_name: 'John', last_name: 'Doe' } },
-      organization: {
-        id: 'org-test-1',
-        stripe_account_id: 'acct_connected_fee',
-        accepted_payment_methods: ['CARD'],
-        stripe_charges_enabled: true,
-      },
-    };
-    mockPrisma.invoice.findFirst.mockResolvedValue(invoice);
-    mockIsStripeConfigured.mockReturnValue(true);
-    mockGetStripeForOrg.mockReturnValueOnce({ stripe: {}, stripeAccount: 'acct_connected_fee' });
-    mockCreateCheckoutSession.mockResolvedValue({ id: 'cs_fee_3', url: 'https://checkout.stripe.com/fee3' });
-
-    const res = await request(app)
-      .post(`/api/invoices/${INVOICE_SENT_FIXTURE.id}/public/checkout?token=test-invoice-token-123`);
-
-    expect(res.status).toBe(200);
-    // $1,000 face value → 3.5% = $35.00 (3500c) service fee; the application fee is the D2-derived
-    // remainder (3500 - estimated Stripe cut), never a flat platform-fee percentage.
-    expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
-      expect.objectContaining({ depositAmount: 1000, serviceFeeAmount: 3500, applicationFeeAmount: 468 }),
-      expect.objectContaining({ stripeAccount: 'acct_connected_fee' }),
-    );
-  });
-
-  // The switch is gone: an org row carrying leftover opt-out-shaped fields changes nothing,
-  // because the fee math never reads the org at all.
-  it('charges the service fee regardless of what the org row says', async () => {
-    const invoice = {
-      id: INVOICE_SENT_FIXTURE.id,
-      invoice_number: INVOICE_SENT_FIXTURE.invoice_number,
-      status: 'SENT',
-      amount_due: 1000,
-      job: { customer: { first_name: 'John', last_name: 'Doe' } },
-      organization: {
-        id: 'org-test-1',
-        stripe_account_id: 'acct_connected_no_fee',
-        accepted_payment_methods: ['CARD'],
-        stripe_charges_enabled: true,
-        platform_fee_bps: 50,
-        card_service_fee_enabled: false, // stale/ignored - must not suppress anything
-      },
-    };
-    mockPrisma.invoice.findFirst.mockResolvedValue(invoice);
-    mockIsStripeConfigured.mockReturnValue(true);
-    mockGetStripeForOrg.mockReturnValueOnce({ stripe: {}, stripeAccount: 'acct_connected_no_fee' });
-    mockCreateCheckoutSession.mockResolvedValue({ id: 'cs_fee_4', url: 'https://checkout.stripe.com/fee4' });
-
-    const res = await request(app)
-      .post(`/api/invoices/${INVOICE_SENT_FIXTURE.id}/public/checkout?token=test-invoice-token-123`);
-
-    expect(res.status).toBe(200);
-    expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
-      expect.objectContaining({ depositAmount: 1000, serviceFeeAmount: 3500, applicationFeeAmount: 468 }),
-      expect.objectContaining({ stripeAccount: 'acct_connected_no_fee' }),
-    );
-  });
+  // Payments go-live slice 02 (D9): the "no fee line, no application fee" contract is asserted on
+  // the params that reach the processor client in checkout-pricing-routes.test.ts.
 
   // ─── Slice 7 (customer-facing tipping) — invoices only, validated server-side (D10/D11) ───
   describe('tip (Slice 7)', () => {
@@ -5446,7 +5550,9 @@ describe('POST /api/invoices/:id/public/checkout', () => {
           stripe_account_id: null,
           accepted_payment_methods: ['CARD'],
           stripe_charges_enabled: true,
+          tips_enabled: true,
         },
+        payments: [],
       };
     }
 
@@ -5461,7 +5567,7 @@ describe('POST /api/invoices/:id/public/checkout', () => {
 
       expect(res.status).toBe(200);
       expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
-        expect.objectContaining({ depositAmount: 1000, tipAmount: 15000 }),
+        expect.objectContaining({ pricing: expect.objectContaining({ amountCents: 100000, tipCents: 15000, totalCents: 115000 }) }),
         expect.anything(),
       );
     });
@@ -5476,7 +5582,8 @@ describe('POST /api/invoices/:id/public/checkout', () => {
 
       expect(res.status).toBe(200);
       const [options] = mockCreateCheckoutSession.mock.calls[0];
-      expect(options.tipAmount).toBeUndefined();
+      expect(options.pricing.tipCents).toBe(0);
+      expect(options.pricing.lineItems).toHaveLength(1);
     });
 
     it('rejects a negative tip with 400, never reaching Stripe', async () => {
@@ -5517,6 +5624,45 @@ describe('POST /api/invoices/:id/public/checkout', () => {
   });
 });
 
+// The refund door re-reads the invoice's money under the invoice lock (slice 05). In these mocked
+// tests that re-read is the fixture the door first loaded, plus the refund row it just wrote.
+function refundTxReRead(createdRefund: () => any) {
+  return {
+    $executeRaw: vi.fn().mockResolvedValue(1),
+    findUniqueOrThrow: vi.fn().mockImplementation(async () => {
+      const inv: any = await mockPrisma.invoice.findUnique.mock.results.at(-1)?.value;
+      const created = createdRefund();
+      return {
+        // Slice 18: a hand refund re-checks the invoice's status under the lock too.
+        status: inv?.status,
+        payments: inv?.payments ?? [],
+        refunds: [...(inv?.refunds ?? []), ...(created ? [{ amount: created.amount, state: created.state ?? 'SUCCEEDED', payment_id: created.payment_id ?? null }] : [])],
+      };
+    }),
+    // Slice 29: the refund door re-derives the invoice's totals and status from the ledger rows
+    // (rederiveRefundTotals): the fixture's payments and refunds, plus the row it just wrote.
+    invoiceFindFirstOrThrow: vi.fn().mockImplementation(async () => {
+      const inv: any = await mockPrisma.invoice.findUnique.mock.results.at(-1)?.value;
+      const created = createdRefund();
+      return {
+        status: inv?.status,
+        amount_due: inv?.amount_due ?? 0,
+        payments: (inv?.payments ?? []).filter((p: any) => !p.voided_at).map((p: any) => ({ amount: p.amount, reference_number: p.reference_number ?? null })),
+        refunds: [...(inv?.refunds ?? []), ...(created ? [created] : [])]
+          .map((r: any) => ({ amount: r.amount, state: r.state ?? 'SUCCEEDED', from_unapplied_capture: false, payment: null })),
+      };
+    }),
+    // Slice 08: each payment's refund stamp is re-derived from the refund rows under the lock.
+    refundFindMany: vi.fn().mockImplementation(async () => {
+      const inv: any = await mockPrisma.invoice.findUnique.mock.results.at(-1)?.value;
+      const created = createdRefund();
+      return [...(inv?.refunds ?? []), ...(created ? [created] : [])]
+        .filter((r: any) => r.payment_id)
+        .map((r: any) => ({ payment_id: r.payment_id, amount: r.amount, state: r.state ?? 'SUCCEEDED', created_at: r.created_at ?? new Date() }));
+    }),
+  };
+}
+
 describe('POST /api/invoices/:id/refund', () => {
   // A PAID invoice with one CARD (PI-backed) payment, total $1000.
   function buildPaidInvoice(overrides: Record<string, any> = {}) {
@@ -5549,14 +5695,35 @@ describe('POST /api/invoices/:id/refund', () => {
   function captureRefundTx() {
     const captured: any = {};
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
+      const reRead = refundTxReRead(() => captured.refund);
       const tx = {
-        refund: { create: vi.fn().mockImplementation((args: any) => { captured.refund = args.data; return { id: 're_row_1', ...args.data }; }) },
-        invoice: { update: vi.fn().mockImplementation((args: any) => { captured.invoiceUpdate = args.data; return {}; }) },
-        payment: { update: vi.fn().mockImplementation((args: any) => { captured.paymentUpdate = args.data; return {}; }) },
+        $executeRaw: reRead.$executeRaw,
+        // Slice 29: the refund row is reserved (PENDING) before the processor is asked, then
+        // completed with its answer - one row, written in two transactions.
+        refund: {
+          findMany: reRead.refundFindMany,
+          findFirst: vi.fn().mockResolvedValue(null),
+          create: vi.fn().mockImplementation((args: any) => { captured.refund = { ...args.data }; return { id: 're_row_1', ...args.data }; }),
+          findFirstOrThrow: vi.fn().mockImplementation(async () => ({ id: 're_row_1', ...captured.refund })),
+          findUniqueOrThrow: vi.fn().mockImplementation(async () => ({ id: 're_row_1', ...captured.refund })),
+          update: vi.fn().mockImplementation((args: any) => { Object.assign(captured.refund, args.data); return { id: 're_row_1', ...captured.refund }; }),
+          // A deposit's cap (remainingDepositCredit) is re-read under the lock too.
+          aggregate: (...args: any[]) => (mockPrisma.refund.aggregate as any)(...args),
+        },
+        depositCreditApplication: { aggregate: (...args: any[]) => (mockPrisma.depositCreditApplication.aggregate as any)(...args) },
+        invoice: {
+          // The totals (rederive) and the refund's own fields are written in two updates.
+          update: vi.fn().mockImplementation((args: any) => { captured.invoiceUpdate = { ...captured.invoiceUpdate, ...args.data }; return {}; }),
+          findUniqueOrThrow: reRead.findUniqueOrThrow,
+          findFirstOrThrow: reRead.invoiceFindFirstOrThrow,
+        },
+        payment: {
+          update: vi.fn().mockImplementation((args: any) => { captured.paymentUpdate = args.data; return {}; }),
+          aggregate: (...args: any[]) => (mockPrisma.payment.aggregate as any)(...args),
+        },
         timelineEvent: { create: vi.fn().mockImplementation((args: any) => { captured.timeline = args.data; return {}; }) },
       };
-      await fn(tx);
-      return { id: 're_row_1' };
+      return fn(tx);
     });
     return captured;
   }
@@ -5579,7 +5746,8 @@ describe('POST /api/invoices/:id/refund', () => {
       'pi_test_invoice_1',
       expect.objectContaining({ stripe: expect.anything() }),
       100000, // full $1000 in cents
-      { metadata: { source: 'in_app', invoiceId: 'inv_1' } },
+      // Slice 29: the refund names the row it was reserved as, and is sent once per reservation.
+      { metadata: { source: 'in_app', invoiceId: 'inv_1', refund_row_id: 're_row_1' }, idempotencyKey: 'invoice-refund:re_row_1' },
     );
     expect(captured.refund).toBeDefined();
     expect(typeof stripeOrder).toBe('number');
@@ -5622,7 +5790,7 @@ describe('POST /api/invoices/:id/refund', () => {
     // Already PARTIALLY_REFUNDED with a prior $400 refund; refunding the remaining $600.
     mockPrisma.invoice.findUnique.mockResolvedValue(buildPaidInvoice({
       status: 'PARTIALLY_REFUNDED',
-      refunds: [{ id: 're_row_0', payment_id: null, amount: 400 }],
+      refunds: [{ id: 're_row_0', payment_id: null, amount: 400, state: 'SUCCEEDED' }],
     }));
     const captured = captureRefundTx();
     mockCreateRefund.mockResolvedValue({ id: 're_partial_2' });
@@ -5637,7 +5805,7 @@ describe('POST /api/invoices/:id/refund', () => {
     expect(captured.invoiceUpdate.status).toBe('REFUNDED');
   });
 
-  it('MULTI-PAYMENT invoice now refunds (old R5 hard-fail removed)', async () => {
+  it('MULTI-PAYMENT invoice: a refund no one payment can return, partly by card, is refused (slice 29)', async () => {
     mockAuthAs('admin');
     mockPrisma.invoice.findUnique.mockResolvedValue(buildPaidInvoice({
       payments: [
@@ -5656,7 +5824,9 @@ describe('POST /api/invoices/:id/refund', () => {
     // payment_id not matching → 400 (unknown). Re-run without payment_id for the broad case.
     expect([200, 400]).toContain(res.status);
 
-    // Broad multi-payment refund (no payment_id, full net-paid) records a Refund and succeeds.
+    // Payments go-live slice 29: a broad refund (no payment_id) that no one payment can return,
+    // and that would have to go back partly to a card, is refused: a processor refund goes back
+    // to one charge, so the user refunds each payment separately.
     mockPrisma.invoice.findUnique.mockResolvedValue(buildPaidInvoice({
       payments: [
         { id: 'pay_1', method: 'CARD', amount: 600, stripe_payment_intent_id: 'pi_1', refunded_at: null, reference_number: null, voided_at: null },
@@ -5669,9 +5839,10 @@ describe('POST /api/invoices/:id/refund', () => {
       .set(authHeader('admin'))
       .send({ amount: 1000, reason_category: 'CUSTOMER_REQUEST', reason: 'multi pay broad' });
 
-    expect(res2.status).toBe(200);
-    expect(res2.body.error).toBeUndefined();
-    expect(captured2.refund).toBeDefined();
+    expect(res2.status).toBe(400);
+    expect(res2.body.error).toBe('This refund is more than any one payment on the invoice. Refund each payment separately.');
+    expect(captured2.refund).toBeUndefined();
+    expect(mockCreateRefund).not.toHaveBeenCalled();
   });
 
   it('no-PI manual payment is record-only (old reject removed)', async () => {
@@ -5829,7 +6000,7 @@ describe('POST /api/invoices/:id/refund', () => {
         // Second payment keeps invoice net-paid high (so Cap A can't fire first).
         { id: '33333333-3333-3333-3333-333333333333', method: 'CARD', amount: 1000, stripe_payment_intent_id: 'pi_2', refunded_at: null, reference_number: null, voided_at: null },
       ],
-      refunds: [{ id: 're_0', payment_id: CAP_B_PAY, amount: 800 }],
+      refunds: [{ id: 're_0', payment_id: CAP_B_PAY, amount: 800, state: 'SUCCEEDED' }],
       ...overrides,
     });
   }
@@ -5880,6 +6051,8 @@ describe('POST /api/invoices/:id/refund', () => {
       .send({ amount: 500, reason_category: 'OTHER', reason: 'tax test' });
     expect(res.status).toBe(200);
     expect(Number(captured.refund.tax_portion)).toBe(40);
+    // Payments slice W3: the dialog no longer sends the field; absent means the concession is off.
+    expect(captured.refund.non_taxable_concession).toBe(false);
 
     // non_taxable_concession → $0.
     mockPrisma.invoice.findUnique.mockResolvedValue(buildPaidInvoice());
@@ -5893,11 +6066,11 @@ describe('POST /api/invoices/:id/refund', () => {
     expect(Number(captured2.refund.tax_portion)).toBe(0);
   });
 
-  it('Stripe failure writes NO Refund row and returns 500', async () => {
+  it('Stripe failure releases the held Refund row and returns 500', async () => {
     mockAuthAs('admin');
     mockPrisma.invoice.findUnique.mockResolvedValue(buildPaidInvoice());
-    const captured = captureRefundTx();
-    mockCreateRefund.mockRejectedValue(new Error('Stripe down'));
+    captureRefundTx();
+    mockCreateRefund.mockRejectedValue(Object.assign(new Error('Stripe refused'), { statusCode: 400 }));
 
     const res = await request(app)
       .post('/api/invoices/inv_1/refund')
@@ -5905,7 +6078,10 @@ describe('POST /api/invoices/:id/refund', () => {
       .send({ reason_category: 'OTHER', reason: 'stripe fails' });
 
     expect(res.status).toBe(500);
-    expect(captured.refund).toBeUndefined();
+    // Slice 29: the row held before the processor was asked is removed again (nothing went out).
+    expect((mockPrisma.refund as any).deleteMany).toHaveBeenCalledWith({
+      where: { id: 're_row_1', organization_id: expect.any(String), stripe_refund_id: null },
+    });
   });
 
   it('rejects non-PAID/non-PARTIALLY_REFUNDED invoice', async () => {
@@ -5942,6 +6118,7 @@ describe('POST /api/invoices/:id/refund', () => {
       payments: [{
         id: 'pay_1', method: 'CARD', amount: 1000, stripe_payment_intent_id: 'pi_test_invoice_1',
         refunded_at: null, reference_number: null, voided_at: null, stripe_account_id: 'acct_direct_1',
+        platform_fee_amount: 0.5, // a legacy charge that carried an application fee
       }],
     }));
     captureRefundTx();
@@ -5959,6 +6136,32 @@ describe('POST /api/invoices/:id/refund', () => {
       'pi_test_invoice_1', expect.anything(), expect.anything(),
       expect.objectContaining({ reverseApplicationFee: true }),
     );
+  });
+
+  // Payments go-live D1: a connected-account charge taken since D9 carries NO application fee,
+  // and the processor refuses a refund that asks to reverse one that does not exist.
+  it.each([
+    ['null (never recorded)', null],
+    ['zero (recorded as none)', 0],
+  ])('refunds a connected-account payment with a platform fee of %s plainly, without reversing a fee', async (_label, fee) => {
+    mockAuthAs('admin');
+    mockPrisma.invoice.findUnique.mockResolvedValue(buildPaidInvoice({
+      payments: [{
+        id: 'pay_1', method: 'CARD', amount: 1000, stripe_payment_intent_id: 'pi_test_invoice_1',
+        refunded_at: null, reference_number: null, voided_at: null, stripe_account_id: 'acct_direct_1',
+        platform_fee_amount: fee,
+      }],
+    }));
+    captureRefundTx();
+    mockCreateRefund.mockResolvedValue({ id: 're_nofee_1' });
+
+    const res = await request(app)
+      .post('/api/invoices/inv_1/refund')
+      .set(authHeader('admin'))
+      .send({ reason_category: 'CUSTOMER_REQUEST', reason: 'no fee on this charge' });
+
+    expect(res.status).toBe(200);
+    expect(mockCreateRefund.mock.calls[0][3]).not.toHaveProperty('reverseApplicationFee');
   });
 
   it('keys off NULL (legacy platform-account payment) even when the org now has a connected account', async () => {
@@ -5989,8 +6192,10 @@ describe('POST /api/invoices/:id/refund', () => {
   });
 
   // ─── Slice 6 (card service fee) — a refund must return the fee too ──────
-  describe('service fee refund (Slice 6)', () => {
-    it('a full refund also returns the service fee, proportional to the whole payment', async () => {
+  // Payments go-live slice 29 (D9): there is no service fee any more, so a refund gives none back,
+  // even on a legacy charge that carried one.
+  describe('service fee refund (Slice 6, retired by payments go-live slice 29)', () => {
+    it('a full refund of a legacy charge returns the face amount only, not its service fee', async () => {
       mockAuthAs('admin');
       mockPrisma.invoice.findUnique.mockResolvedValue(buildPaidInvoice({
         payments: [{
@@ -6007,15 +6212,15 @@ describe('POST /api/invoices/:id/refund', () => {
         .send({ reason_category: 'CUSTOMER_REQUEST', reason: 'full refund with fee' });
 
       expect(res.status).toBe(200);
-      // (1000 + 35) * 100 = 103500 - Stripe returns the whole fee alongside the whole face amount.
+      // 1000 * 100 = 100000 - the $35 fee stays with the business.
       expect(mockCreateRefund).toHaveBeenCalledWith(
-        'pi_test_invoice_1', expect.anything(), 103500, expect.anything(),
+        'pi_test_invoice_1', expect.anything(), 100000, expect.anything(),
       );
       // D1 — the invoice ledger stays truthful: Refund.amount is still the FACE value only.
       expect(Number(captured.refund.amount)).toBe(1000);
     });
 
-    it('a partial refund returns the proportional share of the service fee', async () => {
+    it('a partial refund of a legacy charge returns no share of its service fee', async () => {
       mockAuthAs('admin');
       mockPrisma.invoice.findUnique.mockResolvedValue(buildPaidInvoice({
         payments: [{
@@ -6032,9 +6237,9 @@ describe('POST /api/invoices/:id/refund', () => {
         .send({ amount: 400, reason_category: 'GOODWILL', reason: 'partial with fee' });
 
       expect(res.status).toBe(200);
-      // 400/1000 = 40% of the $35 fee = $14. (400 + 14) * 100 = 41400.
+      // 400 * 100 = 40000 - no share of the $35 fee.
       expect(mockCreateRefund).toHaveBeenCalledWith(
-        'pi_test_invoice_1', expect.anything(), 41400, expect.anything(),
+        'pi_test_invoice_1', expect.anything(), 40000, expect.anything(),
       );
       // D1 — still the face value only.
       expect(Number(captured.refund.amount)).toBe(400);
@@ -6061,7 +6266,7 @@ describe('POST /api/invoices/:id/refund', () => {
 
   // ─── Slice 7 (customer-facing tipping) — extends Slice 6's fee refund handling ───
   describe('tip refund (Slice 7)', () => {
-    it('a full refund also returns the tip, alongside the service fee', async () => {
+    it('a full refund also returns the tip (a legacy service fee stays)', async () => {
       mockAuthAs('admin');
       mockPrisma.invoice.findUnique.mockResolvedValue(buildPaidInvoice({
         payments: [{
@@ -6079,9 +6284,9 @@ describe('POST /api/invoices/:id/refund', () => {
         .send({ reason_category: 'CUSTOMER_REQUEST', reason: 'full refund with fee and tip' });
 
       expect(res.status).toBe(200);
-      // (1000 + 35 + 150) * 100 = 118500.
+      // (1000 + 150) * 100 = 115000.
       expect(mockCreateRefund).toHaveBeenCalledWith(
-        'pi_test_invoice_1', expect.anything(), 118500, expect.anything(),
+        'pi_test_invoice_1', expect.anything(), 115000, expect.anything(),
       );
       // D1/D10 — the invoice ledger stays truthful: Refund.amount is still the FACE value only.
       expect(Number(captured.refund.amount)).toBe(1000);
@@ -6154,11 +6359,29 @@ describe('POST /api/invoices/:id/credit', () => {
     const captured: any = {};
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       const tx = {
+        $executeRaw: vi.fn().mockResolvedValue(1), // slice 07: the give-back locks the invoice
         credit: { create: vi.fn().mockImplementation((args: any) => { captured.credit = args.data; return { id: 'cr_1', ...args.data }; }) },
-        refund: { create: vi.fn().mockImplementation((args: any) => { captured.refund = args.data; return { id: 're_1', ...args.data }; }) },
+        // Slice 29: a give-back through the processor is reserved (PENDING) first, then completed.
+        refund: {
+          findMany: vi.fn().mockResolvedValue([]),
+          findFirst: vi.fn().mockResolvedValue(null),
+          create: vi.fn().mockImplementation((args: any) => { captured.refund = { ...args.data }; return { id: 're_1', ...args.data }; }),
+          findFirstOrThrow: vi.fn().mockImplementation(async () => ({ id: 're_1', ...captured.refund })),
+          update: vi.fn().mockImplementation((args: any) => { Object.assign(captured.refund, args.data); return { id: 're_1', ...captured.refund }; }),
+        },
         invoice: {
           update: vi.fn().mockImplementation((args: any) => { (captured.invoiceUpdates ??= []).push(args.data); return {}; }),
           findUnique: vi.fn().mockResolvedValue(buildInvoiceDetail()),
+          // slice 07: the give-back re-reads its totals from the rows under the lock. Slice 18: it
+          // first re-reads the invoice itself under the lock (status + amount_due) - unchanged here,
+          // so it answers what the pre-lock read answered.
+          findUniqueOrThrow: vi.fn().mockImplementation(async (args: any) => {
+            if (args?.select?.status) {
+              const pre = await mockPrisma.invoice.findUnique.mock.results.at(-1)?.value;
+              return { status: pre.status, amount_due: pre.amount_due, payments: pre.payments ?? [], refunds: pre.refunds ?? [] };
+            }
+            return { payments: [], refunds: captured.refund ? [captured.refund] : [] };
+          }),
         },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
       };
@@ -6230,8 +6453,8 @@ describe('POST /api/invoices/:id/credit', () => {
     expect(Number(captured.refund.amount)).toBe(20000);
   });
 
-  // ─── Slice 6 (card service fee) — the credit door's cash give-back returns the fee too ───
-  it('a cash give-back returns the proportional share of the service fee (Slice 6)', async () => {
+  // ─── Slice 6 (card service fee), retired by payments go-live slice 29: no fee is given back ───
+  it('a cash give-back returns no share of a legacy service fee (payments go-live slice 29)', async () => {
     mockAuthAs('admin');
     mockPrisma.invoice.findUnique.mockResolvedValue(buildCreditInvoice({
       status: 'PAID',
@@ -6250,8 +6473,8 @@ describe('POST /api/invoices/:id/credit', () => {
       .send({ amount: 20000, reason: 'refund after paid, with fee' });
 
     expect(res.status).toBe(200);
-    // 20000/70000 of the $2,450 fee = $700. (20000 + 700) * 100 = 2070000.
-    expect(mockCreateRefund).toHaveBeenCalledWith('pi_1', expect.anything(), 2070000, expect.anything());
+    // 20000 * 100 = 2000000 - the $2,450 fee stays with the business.
+    expect(mockCreateRefund).toHaveBeenCalledWith('pi_1', expect.anything(), 2000000, expect.anything());
     // D1 — the invoice ledger stays truthful: Refund.amount is still the FACE value only.
     expect(Number(captured.refund.amount)).toBe(20000);
   });
@@ -6276,9 +6499,9 @@ describe('POST /api/invoices/:id/credit', () => {
       .send({ amount: 20000, reason: 'refund after paid, with fee and tip' });
 
     expect(res.status).toBe(200);
-    // 20000/70000 of the $2,450 fee ($700) + of the $7,000 tip ($2,000) = $2,700 extra.
-    // (20000 + 2700) * 100 = 2270000.
-    expect(mockCreateRefund).toHaveBeenCalledWith('pi_1', expect.anything(), 2270000, expect.anything());
+    // 20000/70000 of the $7,000 tip = $2,000 extra (no share of the fee).
+    // (20000 + 2000) * 100 = 2200000.
+    expect(mockCreateRefund).toHaveBeenCalledWith('pi_1', expect.anything(), 2200000, expect.anything());
     expect(Number(captured.refund.amount)).toBe(20000);
   });
 
@@ -6567,6 +6790,7 @@ describe('POST /api/invoices/:id/credit', () => {
       payments: [{
         id: 'pay_1', method: 'CARD', amount: 70000, stripe_payment_intent_id: 'pi_1',
         refunded_at: null, reference_number: null, voided_at: null, stripe_account_id: 'acct_direct_2',
+        platform_fee_amount: 1.5, // a legacy charge that carried an application fee
       }],
     }));
     captureCreditTx();
@@ -6584,6 +6808,27 @@ describe('POST /api/invoices/:id/credit', () => {
       'pi_1', expect.anything(), expect.anything(),
       expect.objectContaining({ reverseApplicationFee: true }),
     );
+  });
+
+  it('give-back: refunds a connected-account payment that carried no fee plainly', async () => {
+    mockAuthAs('admin');
+    mockPrisma.invoice.findUnique.mockResolvedValue(buildCreditInvoice({
+      payments: [{
+        id: 'pay_1', method: 'CARD', amount: 70000, stripe_payment_intent_id: 'pi_1',
+        refunded_at: null, reference_number: null, voided_at: null, stripe_account_id: 'acct_direct_2',
+        platform_fee_amount: null,
+      }],
+    }));
+    captureCreditTx();
+    mockCreateRefund.mockResolvedValue({ id: 're_excess_nofee' });
+
+    const res = await request(app)
+      .post('/api/invoices/inv_1/credit')
+      .set(authHeader('admin'))
+      .send({ amount: 90000, reason: 'big give-back' });
+
+    expect(res.status).toBe(200);
+    expect(mockCreateRefund.mock.calls[0][3]).not.toHaveProperty('reverseApplicationFee');
   });
 
   it('does not reverse the platform fee on a legacy platform-account payment (no stripe_account_id)', async () => {
@@ -6634,6 +6879,7 @@ describe('POST /api/invoices/:id/void-payment', () => {
       method: 'CASH',
       stripe_payment_intent_id: null,
       voided_at: null,
+      state: 'SUCCEEDED',
       ...overrides,
     };
   }
@@ -6646,9 +6892,12 @@ describe('POST /api/invoices/:id/void-payment', () => {
     const captured: any = {};
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       const tx = {
-        payment: { update: vi.fn().mockImplementation((args: any) => { captured.paymentUpdate = args.data; return {}; }), updateMany: vi.fn() },
+        // Slice 05: the void locks the invoice and re-reads the balance and the payment under it.
+        $executeRaw: vi.fn().mockResolvedValue(1),
+        payment: { update: vi.fn().mockImplementation((args: any) => { captured.paymentUpdate = args.data; return {}; }), updateMany: vi.fn(), findUniqueOrThrow: vi.fn().mockResolvedValue(buildManualPayment()) },
         invoice: {
           update: vi.fn().mockImplementation((args: any) => { captured.invoiceUpdate = args.data; return {}; }),
+          findUniqueOrThrow: vi.fn().mockResolvedValue(buildVoidInvoice()),
           findUnique: vi.fn().mockResolvedValue(buildInvoiceDetail()),
           findFirst: vi.fn(),
         },
@@ -6700,18 +6949,35 @@ describe('POST /api/invoices/:id/void-payment', () => {
     const captured: any = { targetUpdates: [] };
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       const tx = {
-        payment: { update: vi.fn(), updateMany: vi.fn().mockImplementation((args: any) => { captured.creditVoid = args; return {}; }) },
+        $executeRaw: vi.fn().mockResolvedValue(1),
+        payment: {
+          aggregate: vi.fn().mockResolvedValue({ _sum: { amount: null } }),
+          // Slice 15: the reversal voids this deposit's own credit row on the target, found by its amount.
+          findFirst: vi.fn().mockResolvedValue({ id: 'credit-row-1' }),
+          update: vi.fn().mockImplementation((args: any) => { if (args.where.id === 'credit-row-1') captured.creditVoid = args; return {}; }),
+          findUniqueOrThrow: vi.fn().mockResolvedValue(buildManualPayment({ method: 'CHECK' })),
+        },
         invoice: {
           update: vi.fn().mockImplementation((args: any) => { captured.targetUpdates.push(args.data); return {}; }),
+          // The deposit's own locked read, then the target's money (its status is derived from it).
+          findUniqueOrThrow: vi.fn().mockImplementation((args: any) => (args.select?.payments
+            ? { payments: [], refunds: [] }
+            : buildVoidInvoice({ kind: 'DEPOSIT' }))),
           findUnique: vi.fn().mockResolvedValue(buildInvoiceDetail()),
           findFirst: vi.fn().mockResolvedValue({ id: 'target-inv', amount_due: 0, total_amount: 5000, status: 'PAID', invoice_number: 'I00009' }),
+          // Fix round 1: what the deposit still holds once this payment is voided - nothing here.
+          findFirstOrThrow: vi.fn().mockResolvedValue({ payments: [], refunds: [] }),
         },
+        // Slice 29: that sum is depositHeldCents (payments less standing refunds), read by aggregate.
+        refund: { aggregate: vi.fn().mockResolvedValue({ _sum: { amount: null } }) },
         depositCreditApplication: {
-          findMany: vi.fn().mockResolvedValue([{ id: 'dca_1', target_invoice_id: 'target-inv', amount: 1000 }]),
-          updateMany: vi.fn().mockImplementation((args: any) => { captured.appReverse = args.data; return {}; }),
+          findMany: vi.fn().mockResolvedValue([{ id: 'dca_1', target_invoice_id: 'target-inv', amount: 1000, created_at: new Date(), target_invoice: { status: 'PAID' } }]),
+          update: vi.fn().mockImplementation((args: any) => { captured.appReverse = args.data; return {}; }),
+          create: vi.fn(),
         },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
       };
+      captured.tx = tx;
       return fn(tx);
     });
 
@@ -6726,7 +6992,9 @@ describe('POST /api/invoices/:id/void-payment', () => {
     // The target STANDARD invoice's amount_due rose by the un-applied amount.
     expect(captured.targetUpdates.some((u: any) => Number(u.amount_due) === 1000)).toBe(true);
     // The synthetic DEPOSIT-CREDIT payment on the target is voided.
-    expect(captured.creditVoid.where.reference_number).toBe('DEPOSIT-CREDIT');
+    const creditLookup = captured.tx.payment.findFirst.mock.calls[0][0];
+    expect(creditLookup.where).toMatchObject({ invoice_id: 'target-inv', reference_number: 'DEPOSIT-CREDIT', voided_at: null, amount: 1000 });
+    expect(captured.creditVoid.data.voided_at).toBeInstanceOf(Date);
   });
 
   // ── Status guard: cannot void a payment on a terminal invoice (would resurrect it) ──
@@ -6805,6 +7073,31 @@ describe('POST /api/invoices/:id/void-payment', () => {
     expect(captured.invoiceUpdate.status).toBe('SENT');
     expect(captured.invoiceUpdate.paid_at).toBeNull();
   });
+
+  // Payments go-live slice 35 (from the slice 09 acceptance): a LOST dispute is over. The reopened invoice must not
+  // keep pointing at it, or a payable-again invoice reads as having an open dispute. The disputes table is the record.
+  it.each([
+    ['a reopened invoice', 'PAID', { amount_due: 0 }],
+    ['a voided invoice', 'VOIDED', { amount_due: 150 }],
+  ])('systemVoidPaymentForChargeback leaves %s with no dispute pointer', async (_name, status, extra) => {
+    const captured: any = {};
+    const tx: any = {
+      payment: { update: vi.fn().mockResolvedValue({}), updateMany: vi.fn() },
+      invoice: {
+        update: vi.fn().mockImplementation((args: any) => { captured.invoiceUpdate = args.data; return {}; }),
+        findFirst: vi.fn(),
+      },
+      depositCreditApplication: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn() },
+      timelineEvent: { create: vi.fn().mockResolvedValue({}) },
+    };
+    await systemVoidPaymentForChargeback(tx, {
+      payment: { id: 'pay_card_2', amount: 150, method: 'CARD', stripe_payment_intent_id: 'pi_card_y' } as any,
+      invoice: { id: 'inv_2', total_amount: 150, status, kind: 'STANDARD', invoice_number: 'I00002', ...extra } as any,
+      disputeId: 'dp_2',
+      orgId: 'org_1',
+    });
+    expect(captured.invoiceUpdate).toHaveProperty('stripe_dispute_id', null);
+  });
 });
 
 // ─── Lifecycle TimelineEvent emission regression (entity-redesign §10 / Phase 5 audit) ──────
@@ -6823,14 +7116,23 @@ describe('Invoice lifecycle TimelineEvent emission', () => {
     });
     const captured: any = {};
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
+      const reRead = refundTxReRead(() => null);
       const tx = {
-        refund: { create: vi.fn().mockResolvedValue({ id: 're_row_1' }) },
-        invoice: { update: vi.fn().mockResolvedValue({}) },
+        $executeRaw: reRead.$executeRaw,
+        refund: {
+          findMany: reRead.refundFindMany,
+          findFirst: vi.fn().mockResolvedValue(null),
+          create: vi.fn().mockResolvedValue({ id: 're_row_1' }),
+          // Slice 29: the reserved row, completed once the processor has answered.
+          findFirstOrThrow: vi.fn().mockResolvedValue({ id: 're_row_1', stripe_refund_id: null }),
+          findUniqueOrThrow: vi.fn().mockResolvedValue({ id: 're_row_1' }),
+          update: vi.fn().mockResolvedValue({ id: 're_row_1' }),
+        },
+        invoice: { update: vi.fn().mockResolvedValue({}), findUniqueOrThrow: reRead.findUniqueOrThrow, findFirstOrThrow: reRead.invoiceFindFirstOrThrow },
         payment: { update: vi.fn().mockResolvedValue({}) },
         timelineEvent: { create: vi.fn().mockImplementation((args: any) => { captured.timeline = args.data; return {}; }) },
       };
-      await fn(tx);
-      return { id: 're_row_1' };
+      return fn(tx);
     });
     mockCreateRefund.mockResolvedValue({ id: 're_test_1' });
 
@@ -6855,9 +7157,15 @@ describe('Invoice lifecycle TimelineEvent emission', () => {
     const captured: any = {};
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       const tx = {
+        $executeRaw: vi.fn().mockResolvedValue(1), // slice 07: the give-back locks the invoice
         credit: { create: vi.fn().mockResolvedValue({ id: 'cr_1' }) },
-        refund: { create: vi.fn().mockResolvedValue({ id: 're_1' }) },
-        invoice: { update: vi.fn().mockResolvedValue({}), findUnique: vi.fn().mockResolvedValue(buildInvoiceDetail()) },
+        refund: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({ id: 're_1' }) },
+        invoice: {
+          update: vi.fn().mockResolvedValue({}),
+          findUnique: vi.fn().mockResolvedValue(buildInvoiceDetail()),
+          // Slice 18: the credit re-reads the invoice under its lock - unchanged since the pre-read.
+          findUniqueOrThrow: vi.fn().mockResolvedValue({ status: 'SENT', amount_due: 70000, payments: [], refunds: [] }),
+        },
         timelineEvent: { create: vi.fn().mockImplementation((args: any) => { captured.timeline = args.data; return {}; }) },
       };
       return fn(tx);
@@ -6879,13 +7187,17 @@ describe('Invoice lifecycle TimelineEvent emission', () => {
       id: 'inv_1', invoice_number: 'I00001', status: 'PAID', amount_due: 0, total_amount: 1000, kind: 'STANDARD',
     });
     mockPrisma.payment.findFirst.mockResolvedValue({
-      id: VALID_UUID, invoice_id: 'inv_1', amount: 1000, method: 'CASH', stripe_payment_intent_id: null, voided_at: null,
+      id: VALID_UUID, invoice_id: 'inv_1', amount: 1000, method: 'CASH', stripe_payment_intent_id: null, voided_at: null, state: 'SUCCEEDED',
     });
     const captured: any = {};
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       const tx = {
-        payment: { update: vi.fn().mockResolvedValue({}), updateMany: vi.fn() },
-        invoice: { update: vi.fn().mockResolvedValue({}), findUnique: vi.fn().mockResolvedValue(buildInvoiceDetail()), findFirst: vi.fn() },
+        $executeRaw: vi.fn().mockResolvedValue(1),
+        payment: { update: vi.fn().mockResolvedValue({}), updateMany: vi.fn(), findUniqueOrThrow: vi.fn().mockResolvedValue({ voided_at: null, state: 'SUCCEEDED' }) },
+        invoice: {
+          update: vi.fn().mockResolvedValue({}), findUnique: vi.fn().mockResolvedValue(buildInvoiceDetail()), findFirst: vi.fn(),
+          findUniqueOrThrow: vi.fn().mockResolvedValue({ status: 'PAID', amount_due: 0, total_amount: 1000 }),
+        },
         depositCreditApplication: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn() },
         timelineEvent: { create: vi.fn().mockImplementation((args: any) => { captured.timeline = args.data; return {}; }) },
       };
@@ -6942,6 +7254,7 @@ describe('POST /api/invoices — shared-mock race pin (defined last)', () => {
     let resetFired = false;
     mockPrisma.$transaction.mockImplementation(async (fn: any) => {
       return fn({
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: the deposit-credit draw locks the deposit invoices
         job: { update: vi.fn().mockResolvedValue({}) },
         invoice: {
           // SRVW-85: the load-bearing in-tx read is invoice.findMany now (the multi-deposit
@@ -7013,7 +7326,8 @@ function standaloneTx(captured: { data?: any }) {
       findFirst: async () => null,
       create: (args: any) => {
         captured.data = args.data;
-        return { ...STANDALONE_INVOICE_FIXTURE, ...args.data, id: STANDALONE_INVOICE_FIXTURE.id };
+        // Like Prisma, answer the created lines as rows (the write carries them as `{ create: [...] }`).
+        return { ...STANDALONE_INVOICE_FIXTURE, ...args.data, line_items: args.data.line_items?.create ?? [], id: STANDALONE_INVOICE_FIXTURE.id };
       },
     },
     serviceLocation: {
@@ -7404,6 +7718,7 @@ describe('POST /api/invoices — estimate-less job (from-scratch job invoice)', 
     let capturedData: any;
     mockPrisma.$transaction.mockImplementation(async (fn: any) =>
       fn({
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: the deposit-credit draw locks the deposit invoices
         job: { update: vi.fn().mockResolvedValue({}) },
         invoice: {
           // SRVW-85: this job IS estimate-anchored, so depositEstimateIds is non-empty and the

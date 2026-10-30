@@ -34,7 +34,7 @@ const PAGINATION = { page: 1, limit: 25, total: 0, totalPages: 1 };
 const LEADS_FIXTURE = {
   leads: [],
   pagination: PAGINATION,
-  stats: { total: 46, new_this_week: 7, unassigned: 0, won: 18, lost: 5 },
+  stats: { total: 46, new_this_week: 7, no_owner: 0, won: 18, lost: 5 },
 };
 
 const JOBS_FIXTURE = {
@@ -71,17 +71,17 @@ describe('a v2 KPI tile carries the title and the number only', () => {
     expect(await screen.findByText('Total Leads')).toBeInTheDocument();
     expect(tileTexts()).toEqual([
       'Total Leads46',
-      'New This Week7',
-      'Unassigned0',
       'Won18',
       'Lost5',
+      'New This Week7',
+      'No owner0',
     ]);
   });
 
   it('jobs', async () => {
     mockGets('/api/jobs', JOBS_FIXTURE);
     renderWithProviders(<JobsPage />, {
-      ability: buildAbility([{ action: 'assign', subject: 'Job' }]),
+      ability: buildAbility([{ action: 'assign', subject: 'Job' }, { action: 'read', subject: 'Invoice' }]),
       initialEntries: ['/jobs'],
     });
 

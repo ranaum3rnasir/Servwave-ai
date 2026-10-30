@@ -57,21 +57,28 @@ export function unsupportedTypeRefusalMessage(file: { name: string; type: string
  * Mirror exactly. A client cap BELOW the server's silently refuses files the API would take;
  * a client cap ABOVE it is the bug this pair was added to fix.
  *
- * THE VIDEO CAP IS NOW 512MB (Ran, 2026-09-20), matching the server's MAX_VIDEO_FILE_SIZE
- * and the storage bucket's own file_size_limit. `upload-limits-match-backend.test.ts` reads
- * the controller source and pins the pair, so this is not a number to nudge locally.
+ * Raised to 512MB (Ran, 2026-09-20), which is the storage bucket's own `file_size_limit`. The
+ * cap is pinned to the infrastructure ceiling now, so moving it means moving the bucket first.
+ * That is a decision at Ran's level, not a local one.
  *
- * THE RESUME WINDOW IS NOW THE BINDING CORNER, not a theoretical one. Video takes the
- * resumable path, and a resume is only honoured for 90 minutes after the ticket was minted
- * (`RESUME_RECORD_MAX_AGE_MS` in `attachments/resumableTransport.ts`), against a signed
- * credential that dies at two hours. That bounds when a resume may START, not when it
- * finishes — so a transfer accepted late in the window can outlive the credential, land every
- * byte, and then be told the upload expired. It self-heals on the next attempt and costs
- * bandwidth rather than data, but the size of the band scales with the file: at the old 50MB
- * cap it was a corner, and at 512MB it is a case a technician on a slow uplink will meet.
- * Closing it needs either a server that can re-mint a ticket for an object already in flight,
- * or a client that refuses to start a resume it cannot finish — remaining bytes against
- * observed throughput. Neither is built.
+ * MAX_VIDEO_UPLOAD_BYTES MIRRORS THE DIRECT PATH, which is where every video this client sends
+ * goes (`attachments/uploadAttachment.ts`). The server also keeps a SMALLER video cap for the
+ * multipart proxy path — `MAX_PROXY_VIDEO_FILE_SIZE`, still 50MB, because that path buffers the
+ * whole file in the app process. Nothing here should ever mirror that one: no surface in this
+ * app sends video through the proxy, and a client cap of 50MB would refuse the very clips this
+ * PRD exists to carry.
+ *
+ * THE OPEN EDGE THAT 512MB MAKES REACHABLE. Video takes the resumable path, and a resume is
+ * only honoured for 90 minutes after the ticket was minted (`RESUME_RECORD_MAX_AGE_MS` in
+ * `attachments/resumableTransport.ts`), against a signed credential that dies at two hours.
+ * That bounds when a resume may START, not when it finishes — so a transfer accepted late in
+ * the window can outlive the credential, land every byte, and then be told the upload expired.
+ * It self-heals on the next attempt and costs bandwidth rather than data, but the size of the
+ * band scales with the file: at the old 50MB cap it was a corner, at 512MB it is a case a
+ * technician on a slow uplink will meet, and S4 does not close it. Closing it needs either a
+ * server that can re-mint a ticket for an object already in flight, or a client that refuses to
+ * start a resume it cannot finish — remaining bytes against observed throughput. Neither is in
+ * S2 or S4.
  */
 export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 export const MAX_VIDEO_UPLOAD_BYTES = 512 * 1024 * 1024;
@@ -100,17 +107,33 @@ function wholeMb(bytes: number): number {
  *
  * Three jobs, because a refusal that only does the first two is a dead end:
  *
- *  1. WHICH file, and HOW BIG it actually is. "over the limit" reads identically for a file
- *     just past it and one several times past it, and only one of those is worth re-filming.
+ *  1. WHICH file, and HOW BIG it actually is. "over the limit" reads identically one megabyte
+ *     past it and ten times past it, and only one of those is worth re-filming.
  *  2. What the limit is, so the gap is legible.
- *  3. What to do now. Since the cap went to 512MB the file that trips this is a long 4K
- *     walkthrough rather than an ordinary clip, so it is rarer — and correspondingly worse
- *     to leave that person with nothing, because re-filming it costs them real time.
- *     Re-filming is the in-product move; support is the way the file still gets there.
- *     CLAUDE.md forbids pointing at a vendor's dashboard and expressly allows pointing at
- *     ServWave support.
+ *  3. What to do now. Re-filming is the in-product move; support is the way the file still gets
+ *     there. CLAUDE.md forbids pointing at a vendor's dashboard and expressly allows pointing
+ *     at ServWave support.
+ *
+ * The `cap` ARGUMENT IS NOT OPTIONAL DECORATION. The default is the generic attachment cap,
+ * which now sits at 512MB. A surface with a tighter route of its own — `StageDetailDialog`, at
+ * 8MB images / 100MB video / 25MB PDF — must pass its own, or it inherits a limit five times
+ * what its endpoint accepts and tells the user a number the server will contradict.
  *
  * "Record a shorter clip" is offered only for video - it is meaningless advice about a PDF.
+ *
+ * UNIT STYLE. `25MB`, not `25 MB`. Unspaced is what the SERVER already says - `sizeLimitLabel`
+ * in `backend/src/middleware/multerErrors.ts` renders every cap it quotes as `25MB` / `512MB` /
+ * `1GB` - so the refusal shown before the request and the one the API returns after it read
+ * alike. It has the side benefit that a number can no longer be severed from its unit by a
+ * wrap, without needing an NBSP to say so.
+ *
+ * This used to be reconciled against a pre-pick hint that named the same caps on the same
+ * card. That hint is gone (Ran, 2026-09-20: no subtitles under the drop zone), so this
+ * sentence is now the ONLY place a user meets a number before the API states one.
+ *
+ * Still inconsistent, and worth its own pass: the per-FILE sizes in the attachment grid come
+ * from `formatSize` in `AttachmentsPanel.tsx` and read "1.2 MB" - a measured size rather than
+ * a cap, from a shared helper with callers on other surfaces.
  */
 export function oversizeRefusalMessage(
   file: { name: string; type: string; size: number },
@@ -121,7 +144,7 @@ export function oversizeRefusalMessage(
     ? 'Record a shorter clip, or contact support to send it another way.'
     : 'Contact support to send it another way.';
   return (
-    `"${file.name}" is ${wholeMb(file.size)} MB — over the ${wholeMb(cap)} MB limit, ` +
+    `"${file.name}" is ${wholeMb(file.size)}MB — over the ${wholeMb(cap)}MB limit, ` +
     `so it wasn't uploaded. ${nextStep}`
   );
 }

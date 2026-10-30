@@ -1,10 +1,12 @@
 /**
  * job-assign-notifications.test.ts
  *
- * TDD for Task 3.1: emit() hook wired into the job assign / setAssignees endpoints.
+ * TDD for Task 3.1: the alert hook wired into the job assign / setAssignees endpoints. Since S06.27 the hook queues the alert for
+ * after the response (jobSchedulingAlerts.ts): who is told is the chain's business and is tested through the routes in
+ * permission-job-scheduling-alerts-db.test.ts. This file pins WHEN each door raises which alert, and with whom it names.
  *
  * Strategy:
- *   - vi.mock('../services/notifications/notificationService') captures emit calls.
+ *   - vi.mock('../services/notifications/jobSchedulingAlerts') captures the queued alerts.
  *   - Three scenarios on assign():
  *       1. addedIds.length > 0          → dispatch.job_assigned  (entity.assignee_ids = addedIds)
  *       2. removedIds.length > 0, !add  → dispatch.job_unassigned (entity.assignee_ids = removedIds)
@@ -33,13 +35,21 @@ import { clearTokenCache } from '../middleware/authenticate';
 
 // ─── Spy on the notification emit function ───────────────────────────────────
 
-vi.mock('../services/notifications/notificationService', () => ({
-  emit: vi.fn().mockResolvedValue(undefined),
+vi.mock('../services/notifications/jobSchedulingAlerts', () => ({
+  queueJobSchedulingAlert: vi.fn(),
+  queueJobUnassignedAlert: vi.fn(),
+  queueStagingReadyAlert: vi.fn(),
 }));
 
-// Import AFTER mock is registered so we get the spy reference.
-import { emit } from '../services/notifications/notificationService';
-const mockEmit = emit as ReturnType<typeof vi.fn>;
+// Import AFTER mock is registered so we get the spy references.
+import { queueJobSchedulingAlert, queueJobUnassignedAlert } from '../services/notifications/jobSchedulingAlerts';
+const mockScheduling = queueJobSchedulingAlert as ReturnType<typeof vi.fn>;
+const mockUnassigned = queueJobUnassignedAlert as ReturnType<typeof vi.fn>;
+/** The queued alerts of a verb (the personal one is a verb of its own). */
+const queued = (verb: string) =>
+  verb === 'dispatch.job_unassigned'
+    ? mockUnassigned.mock.calls.map((c: any[]) => c[0])
+    : mockScheduling.mock.calls.map((c: any[]) => c[0]).filter((a: any) => a.verb === verb);
 
 // ─── Prisma typed surface ────────────────────────────────────────────────────
 
@@ -246,24 +256,10 @@ beforeEach(() => {
   // mockAuthAs already sets up findUnique + userPermissionOverride defaults.
 });
 
-// ── Regression guard for #271 ────────────────────────────────────────────────
-// Notification emits MUST fire post-commit, never inside a $transaction. Passing a
-// tx client to emit() silently drops the notification in prod (filterByAccess reads
-// on the global prisma connection while the caller's txn holds the row). Fail loudly
-// if any emit in any test carries a tx.
-afterEach(() => {
-  for (const call of mockEmit.mock.calls) {
-    expect(
-      (call[0] as { tx?: unknown }).tx,
-      `emit('${(call[0] as { verb?: string }).verb}') must be called post-commit, without a tx client (#271)`,
-    ).toBeUndefined();
-  }
-});
-
 // ─── POST /api/jobs/:id/assign → dispatch.job_assigned ──────────────────────
 
 describe('POST /api/jobs/:id/assign — notification hooks', () => {
-  it('emits dispatch.job_assigned with the added tech id when crew member is added', async () => {
+  it('queues dispatch.job_assigned with the added tech id when crew member is added', async () => {
     mockAuthAs('admin');
     mockPrisma.job.findUnique.mockResolvedValue(JOB_FIXTURE); // UNSCHEDULED, no current assignees
 
@@ -282,21 +278,16 @@ describe('POST /api/jobs/:id/assign — notification hooks', () => {
 
     expect(res.status).toBe(200);
 
-    // emit should have been called at least once with job_assigned.
-    const assignedCall = mockEmit.mock.calls.find(
-      (c: any[]) => c[0].verb === 'dispatch.job_assigned',
-    );
-    expect(assignedCall).toBeDefined();
-    const assignedArgs = assignedCall![0];
-    expect(assignedArgs.entity.assignee_ids).toContain(TECH_USER.id);
-    expect(assignedArgs.object.type).toBe('JOB');
-    expect(assignedArgs.object.id).toBe(JOB_FIXTURE.id);
-    expect(assignedArgs.object.label).toBe(JOB_FIXTURE.job_number);
+    // The alert should have been queued once for job_assigned, naming the added tech.
+    const [assignedArgs, ...more] = queued('dispatch.job_assigned');
+    expect(more).toHaveLength(0);
+    expect(assignedArgs.namedIds).toEqual([TECH_USER.id]);
+    expect(assignedArgs.jobId).toBe(JOB_FIXTURE.id);
     expect(assignedArgs.organizationId).toBe(ALPHA_ORG_ID);
     expect(assignedArgs.actorId).toBe(TEST_USERS.admin.id);
   });
 
-  it('emits dispatch.job_unassigned with the removed tech id when a crew member is removed', async () => {
+  it('queues dispatch.job_unassigned with the removed tech id when a crew member is removed', async () => {
     // Existing crew = [TECH_USER, TECH2_USER]; new crew = [TECH_USER] → TECH2 is removed.
     mockAuthAs('admin');
     const fixture = {
@@ -343,16 +334,13 @@ describe('POST /api/jobs/:id/assign — notification hooks', () => {
 
     expect(res.status).toBe(200);
 
-    const unassignedCall = mockEmit.mock.calls.find(
-      (c: any[]) => c[0].verb === 'dispatch.job_unassigned',
-    );
-    expect(unassignedCall).toBeDefined();
-    const unassignedArgs = unassignedCall![0];
-    expect(unassignedArgs.entity.assignee_ids).toContain(TECH2_ID);
-    expect(unassignedArgs.object.id).toBe(JOB_FIXTURE.id);
+    const [unassignedArgs] = queued('dispatch.job_unassigned');
+    expect(unassignedArgs.removedIds).toEqual([TECH2_ID]);
+    expect(unassignedArgs.jobId).toBe(JOB_FIXTURE.id);
+    expect(unassignedArgs.jobNumber).toBe(JOB_FIXTURE.job_number);
   });
 
-  it('emits dispatch.job_rescheduled to current (kept) assignees when only the time changes', async () => {
+  it('queues dispatch.job_rescheduled to current (kept) assignees when only the time changes', async () => {
     // Existing crew = [TECH_USER]; new crew = [TECH_USER] (no add/remove); time changes.
     mockAuthAs('admin');
     mockPrisma.job.findUnique.mockResolvedValue(SCHEDULED_JOB_FIXTURE);
@@ -388,19 +376,16 @@ describe('POST /api/jobs/:id/assign — notification hooks', () => {
 
     expect(res.status).toBe(200);
 
-    const rescheduledCall = mockEmit.mock.calls.find(
-      (c: any[]) => c[0].verb === 'dispatch.job_rescheduled',
-    );
-    expect(rescheduledCall).toBeDefined();
-    const rescheduledArgs = rescheduledCall![0];
-    // addedIds is empty → recipients are the kept (current) crew.
-    expect(rescheduledArgs.entity.assignee_ids).toContain(TECH_USER.id);
-    expect(rescheduledArgs.object.id).toBe(JOB_FIXTURE.id);
-    expect(rescheduledArgs.data).toHaveProperty('scheduled_start');
+    const [rescheduledArgs, ...more] = queued('dispatch.job_rescheduled');
+    expect(more).toHaveLength(0);
+    // Nobody was added, so it is a reschedule: the job's people are told, and nobody is named.
+    expect(rescheduledArgs.namedIds).toBeUndefined();
+    expect(rescheduledArgs.jobId).toBe(JOB_FIXTURE.id);
+    expect(rescheduledArgs.scheduledStart).toBe('2026-09-01T09:00:00.000Z');
     expect(rescheduledArgs.actorId).toBe(TEST_USERS.admin.id);
   });
 
-  it('does NOT emit dispatch.job_rescheduled when techs are added (assign, not reschedule)', async () => {
+  it('does NOT queue dispatch.job_rescheduled when techs are added (assign, not reschedule)', async () => {
     // Adding a tech to a SCHEDULED job → job_assigned, but NOT job_rescheduled.
     mockAuthAs('admin');
     mockPrisma.job.findUnique.mockResolvedValue(SCHEDULED_JOB_FIXTURE); // already has TECH_USER
@@ -421,17 +406,15 @@ describe('POST /api/jobs/:id/assign — notification hooks', () => {
       });
 
     expect(res.status).toBe(200);
-    const rescheduledCall = mockEmit.mock.calls.find(
-      (c: any[]) => c[0].verb === 'dispatch.job_rescheduled',
-    );
-    expect(rescheduledCall).toBeUndefined();
+    expect(queued('dispatch.job_rescheduled')).toHaveLength(0);
+    expect(queued('dispatch.job_assigned')).toHaveLength(1);
   });
 });
 
 // ─── POST /api/jobs/:id/assignees → dispatch.job_assigned ───────────────────
 
 describe('POST /api/jobs/:id/assignees (setAssignees) — notification hook', () => {
-  it('emits dispatch.job_assigned when a crew member is added via the crew-only endpoint', async () => {
+  it('queues dispatch.job_assigned when a crew member is added via the crew-only endpoint', async () => {
     mockAuthAs('admin');
     mockPrisma.job.findUnique.mockResolvedValue(JOB_FIXTURE); // no current assignees
     wireSetAssigneesTx({ ...JOB_FIXTURE, assignees: [{ user_id: TECH_USER.id }], visits: [{ assignees: [{ user_id: TECH_USER.id }] }] });
@@ -443,17 +426,12 @@ describe('POST /api/jobs/:id/assignees (setAssignees) — notification hook', ()
 
     expect(res.status).toBe(200);
 
-    const assignedCall = mockEmit.mock.calls.find(
-      (c: any[]) => c[0].verb === 'dispatch.job_assigned',
-    );
-    expect(assignedCall).toBeDefined();
-    const assignedArgs = assignedCall![0];
-    expect(assignedArgs.entity.assignee_ids).toContain(TECH_USER.id);
-    expect(assignedArgs.object.id).toBe(JOB_FIXTURE.id);
-    expect(assignedArgs.object.label).toBe(JOB_FIXTURE.job_number);
+    const [assignedArgs] = queued('dispatch.job_assigned');
+    expect(assignedArgs.namedIds).toEqual([TECH_USER.id]);
+    expect(assignedArgs.jobId).toBe(JOB_FIXTURE.id);
   });
 
-  it('emits dispatch.job_unassigned when a crew member is removed via the crew-only endpoint', async () => {
+  it('queues dispatch.job_unassigned when a crew member is removed via the crew-only endpoint', async () => {
     mockAuthAs('admin');
     const fixture = {
       ...JOB_FIXTURE,
@@ -474,12 +452,8 @@ describe('POST /api/jobs/:id/assignees (setAssignees) — notification hook', ()
 
     expect(res.status).toBe(200);
 
-    const unassignedCall = mockEmit.mock.calls.find(
-      (c: any[]) => c[0].verb === 'dispatch.job_unassigned',
-    );
-    expect(unassignedCall).toBeDefined();
-    const unassignedArgs = unassignedCall![0];
-    expect(unassignedArgs.entity.assignee_ids).toContain(TECH_USER.id);
+    const [unassignedArgs] = queued('dispatch.job_unassigned');
+    expect(unassignedArgs.removedIds).toEqual([TECH_USER.id]);
   });
 });
 
@@ -525,8 +499,7 @@ describe('POST /api/jobs/:id/assign — a restated window announces nothing (#16
     };
   }
 
-  const rescheduledEmits = () =>
-    mockEmit.mock.calls.filter((c: any[]) => c[0].verb === 'dispatch.job_rescheduled');
+  const rescheduledEmits = () => queued('dispatch.job_rescheduled');
 
   it('restating the job own window fires no crew notification and no RESCHEDULED timeline row', async () => {
     mockAuthAs('admin');
@@ -605,6 +578,6 @@ describe('POST /api/jobs/:id/assign — a restated window announces nothing (#16
     expect(res.status).toBe(200);
     expect(rescheduledEmits()).toHaveLength(0);
     // ...but the person actually dropped is still told.
-    expect(mockEmit.mock.calls.some((c: any[]) => c[0].verb === 'dispatch.job_unassigned')).toBe(true);
+    expect(queued('dispatch.job_unassigned')).toHaveLength(1);
   });
 });

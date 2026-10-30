@@ -6,7 +6,9 @@ import { refreshAfterVisitWrite } from '@/lib/refreshAfterVisitWrite';
 import { summariseBulkResult } from '@/lib/bulk-result';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import { useConfirm } from '@/hooks/useConfirm';
-import { BulkCancelJobsDialog } from '@/components/jobs/BulkCancelJobsDialog';
+import { BulkCancelJobsDialog, type BulkCancelResult } from '@/components/jobs/BulkCancelJobsDialog';
+import { CompleteWithOpenVisitsDialog } from '@/components/jobs/CompleteWithOpenVisitsDialog';
+import { openVisitsConflict, type OpenVisitsJob } from '@/components/jobs/openVisitsConflict';
 import { BulkActionBar } from '@/ui-kit/components/crm/bulkActionBar';
 import { Button } from '@/ui-kit/components/ui/button';
 import { ChoiceMenu } from '@/ui-kit/components/ui/choiceMenu';
@@ -18,13 +20,15 @@ import {
 import { Popover, PopoverContent, PopoverTrigger } from '@/ui-kit/components/ui/popover';
 import { toast } from '@/ui-kit/components/ui/sonner';
 
+import {
+  BULK_STATUS_MENU, allowedBulkStatusActions, canBulkAssign, type BulkStatusAction,
+} from '../bulkActions';
+
 interface Assignee {
   id: string;
   first_name: string;
   last_name: string;
 }
-
-type BulkAction = 'arrive' | 'start' | 'complete' | 'cancel';
 
 type BulkResult = {
   updated: string[];
@@ -32,17 +36,9 @@ type BulkResult = {
   voided_invoice_ids?: string[];
 };
 
-const STATUS_MENU: { label: string; action: BulkAction }[] = [
-  { label: 'On site', action: 'arrive' },
-  { label: 'In progress', action: 'start' },
-  { label: 'Completed', action: 'complete' },
-  { label: 'Cancelled', action: 'cancel' },
-];
-
-const ACTION_LABEL: Record<Exclude<BulkAction, 'cancel'>, string> = {
+const ACTION_LABEL: Record<Exclude<BulkStatusAction, 'cancel' | 'complete'>, string> = {
   arrive: 'On site',
   start: 'In progress',
-  complete: 'Completed',
 };
 
 /**
@@ -62,17 +58,25 @@ const ACTION_LABEL: Record<Exclude<BulkAction, 'cancel'>, string> = {
  * app, so `src/__tests__/no-browser-dialogs.guard.test.ts` bans it outright.
  */
 export function BulkBar({
-  selectedJobIds, onClear, assignees,
+  selectedJobIds, onClear, assignees, jobNumbers,
 }: {
   selectedJobIds: string[];
   onClear: () => void;
   assignees: Assignee[];
+  /** Job numbers by id, to name the jobs a bulk cancel refused. */
+  jobNumbers?: Record<string, string>;
 }) {
   const ability = useAppAbility();
   const queryClient = useQueryClient();
   const { confirm, confirmDialog } = useConfirm();
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
   const [assignOpen, setAssignOpen] = useState(false);
+  // S04.17: the jobs the server named when it refused a bulk Completed over open visits (it completed none of them);
+  // the confirmation is open while set.
+  const [openVisitsJobs, setOpenVisitsJobs] = useState<OpenVisitsJob[] | null>(null);
+  // S06.15: what a bulk cancel did when it refused some jobs. The cancel dialog stays open and lists each refused job with
+  // its reason (the selection is kept until it is closed, because the bar goes with an empty selection).
+  const [cancelResult, setCancelResult] = useState<BulkCancelResult | null>(null);
 
   // Every bulk door (the status verbs, cancel, crew assign) writes the selected jobs' visits.
   function reportBulkResult(result: BulkResult) {
@@ -95,12 +99,31 @@ export function BulkBar({
   }
 
   const bulkStatusMutation = useMutation({
-    mutationFn: async (body: { ids: string[]; action: string; cancelled_reason?: string }) => {
+    mutationFn: async (body: {
+      ids: string[]; action: string; cancel_reason_code?: string; cancelled_reason?: string; void_invoices?: boolean; cancel_open_visits?: boolean;
+    }) => {
       const { data } = await api.post('/api/jobs/bulk-status', body);
       return data as BulkResult;
     },
-    onSuccess: reportBulkResult,
-    onError: () => {
+    onSuccess: (result, body) => {
+      setOpenVisitsJobs(null);
+      if (body.action === 'cancel' && result.failed.length > 0) {
+        refreshAfterVisitWrite(queryClient, { jobIds: result.updated });
+        queryClient.invalidateQueries({ queryKey: ['logistic-orders'] });
+        queryClient.invalidateQueries({ queryKey: ['inventory'] });
+        setCancelResult({ cancelledCount: result.updated.length, refused: result.failed });
+        return;
+      }
+      if (body.action === 'cancel') setCancelDialogOpen(false);
+      reportBulkResult(result);
+    },
+    onError: (err) => {
+      const openVisits = openVisitsConflict(err);
+      if (openVisits) {
+        setOpenVisitsJobs(openVisits);
+        return;
+      }
+      setOpenVisitsJobs(null);
       toast.error('Update failed', { description: 'Failed to update jobs. Please try again.' });
     },
   });
@@ -116,28 +139,43 @@ export function BulkBar({
     },
   });
 
-  const handleStatusChoice = async (action: BulkAction) => {
+  const handleStatusChoice = async (action: BulkStatusAction) => {
     if (selectedJobIds.length === 0) return;
     if (action === 'cancel') {
       setCancelDialogOpen(true);
       return;
     }
     const count = selectedJobIds.length;
-    const consequence = action === 'complete'
-      ? ` Completing ${count} job${count === 1 ? '' : 's'} will fire any customer follow-ups configured in Automations for job completion, one per job.`
-      : '';
-    const confirmed = await confirm({
-      title: `Update ${count} job${count === 1 ? '' : 's'} to ${ACTION_LABEL[action]}?`,
-      description: consequence.trim() || undefined,
-      confirmLabel: 'Update',
-    });
+    const plural = count === 1 ? '' : 's';
+    const confirmed = await confirm(
+      action === 'complete'
+        ? {
+            title: `Complete ${count} job${plural}?`,
+            description: `Each job goes to office review. This will fire any customer follow-ups configured in Automations for job completion, one per job.`,
+            confirmLabel: `Complete job${plural}`,
+          }
+        : {
+            title: `Update ${count} job${plural} to ${ACTION_LABEL[action]}?`,
+            confirmLabel: 'Update',
+          },
+    );
     if (!confirmed) return;
     bulkStatusMutation.mutate({ ids: selectedJobIds, action });
   };
 
-  const handleCancelConfirm = (reason: string) => {
-    bulkStatusMutation.mutate({ ids: selectedJobIds, action: 'cancel', cancelled_reason: reason });
-    setCancelDialogOpen(false);
+  const handleCancelConfirm = (reasonCode: string, note: string, voidInvoices: boolean) => {
+    bulkStatusMutation.mutate({
+      ids: selectedJobIds, action: 'cancel', cancel_reason_code: reasonCode, ...(note ? { cancelled_reason: note } : {}), void_invoices: voidInvoices,
+    });
+    // The dialog stays open until the batch has answered: it lists the jobs the cancel refused.
+  };
+
+  const handleCancelDialogOpenChange = (next: boolean) => {
+    setCancelDialogOpen(next);
+    if (!next && cancelResult) {
+      setCancelResult(null);
+      onClear();
+    }
   };
 
   const handleAssign = async (userId: string | null) => {
@@ -161,8 +199,9 @@ export function BulkBar({
     bulkAssignMutation.mutate({ ids: selectedJobIds, assignee_ids: userId ? [userId] : [] });
   };
 
-  const statusChoices = STATUS_MENU.filter((item) => ability.can(item.action, 'Job'));
-  const canAssign = ability.can('assign', 'Job');
+  const allowedActions = allowedBulkStatusActions(ability);
+  const statusChoices = BULK_STATUS_MENU.filter((item) => allowedActions.includes(item.action));
+  const canAssign = canBulkAssign(ability);
 
   // Below md the crew list is a full-screen sheet (mobile slice 44).
   const fullscreen = usePickerFullscreen();
@@ -259,12 +298,23 @@ export function BulkBar({
 
       {/* No kit equivalent: a required free-text reason plus the voided-invoice
           warning. The app component is reused as-is (ledger row). */}
+      <CompleteWithOpenVisitsDialog
+        open={openVisitsJobs !== null}
+        onOpenChange={(next) => { if (!next) setOpenVisitsJobs(null); }}
+        jobs={openVisitsJobs ?? []}
+        completeCount={selectedJobIds.length}
+        isPending={bulkStatusMutation.isPending}
+        onConfirm={() => bulkStatusMutation.mutate({ ids: selectedJobIds, action: 'complete', cancel_open_visits: true })}
+      />
       <BulkCancelJobsDialog
         open={cancelDialogOpen}
-        onOpenChange={setCancelDialogOpen}
+        onOpenChange={handleCancelDialogOpenChange}
         count={selectedJobIds.length}
+        jobIds={selectedJobIds}
         isPending={bulkStatusMutation.isPending}
         onConfirm={handleCancelConfirm}
+        result={cancelResult}
+        jobNumbers={jobNumbers}
       />
       {confirmDialog}
     </>

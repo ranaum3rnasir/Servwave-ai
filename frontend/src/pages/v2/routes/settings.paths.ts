@@ -11,17 +11,23 @@
  * that does not exist.
  */
 export const SETTINGS_V2_PATHS = [
+  // Not a page any more: a redirect to Users & Teams (the admin-only stub is gone).
   '/users',
   '/settings',
   '/settings/company',
   '/settings/branding',
   '/settings/locations',
   '/settings/users',
+  // A person's own Permissions page, opened from the Permissions action on a Users & Teams row.
+  '/settings/users/:userId/permissions',
   '/settings/roles',
   '/settings/security',
   '/settings/payments',
+  '/settings/payout-account',
+  '/settings/servwave-payments',
   '/settings/job-sub-statuses',
   '/settings/decline-reasons',
+  '/settings/job-cancel-reasons',
   '/settings/phone-sms',
   '/settings/phone-numbers',
   // No '/settings/email': the Gmail connect surface it pointed at was deleted

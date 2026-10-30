@@ -170,7 +170,7 @@ export const reportCatalog: ReportDef[] = [
   // ── Marketing ─────────────────────────────────────────────────────────────
   // Strategic suite (M1–M8)
   { code: 'M1', slug: 'campaign-roi', label: 'Campaign ROI Scorecard', icon: Megaphone, group: 'Marketing', subject: 'Report' },
-  { code: 'M2', slug: 'call-tracking', label: 'Call Tracking by Source', icon: Phone, group: 'Marketing', subject: 'Communication' },
+  { code: 'M2', slug: 'call-tracking', label: 'Call Tracking by Source', icon: Phone, group: 'Marketing', subject: 'Report' },
   { code: 'M3', slug: 'paid-ads-revenue', label: 'Paid Ads → Revenue (closed-loop)', icon: MousePointerClick, group: 'Marketing', subject: 'Report' },
   { code: 'M4', slug: 'email-sms-revenue', label: 'Email / SMS Campaign Revenue', icon: Mail, group: 'Marketing', subject: 'Communication' },
   { code: 'M5', slug: 'reviews', label: 'Reviews & Reputation', icon: Star, group: 'Marketing', subject: 'Report' },
@@ -178,7 +178,7 @@ export const reportCatalog: ReportDef[] = [
   { code: 'M7', slug: 'referrals', label: 'Referral Performance', icon: Share2, group: 'Marketing', subject: 'Report' },
   { code: 'M8', slug: 'geo-heatmap', label: 'Geographic Revenue Heatmap', icon: MapPin, group: 'Marketing', subject: 'Report', deferred: true },
   // Entity reports
-  { slug: 'call-tracking-summary', label: 'Call Tracking', icon: Phone, group: 'Marketing', subject: 'Communication', mainOnly: true },
+  { slug: 'call-tracking-summary', label: 'Call Tracking', icon: Phone, group: 'Marketing', subject: 'Report', mainOnly: true },
   { slug: 'marketing', label: 'Marketing', icon: Megaphone, group: 'Marketing', subject: 'Report' },
   { slug: 'website-requests', label: 'Website Requests', icon: Globe, group: 'Marketing', subject: 'Report' },
 ];

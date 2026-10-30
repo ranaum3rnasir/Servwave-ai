@@ -1,5 +1,5 @@
 import type { AppAction, AppSubject } from '@/lib/ability';
-import type { NavDestination } from '@/components/layout/nav-registry';
+import { navEntryShows, type NavDestination } from '@/components/layout/nav-registry';
 
 /**
  * The v2 sidebar's row list: resolve the user's pinned keys to destinations,
@@ -51,6 +51,11 @@ export interface BuildNavSectionsInput {
   /** The CASL check, as `ability.can`. */
   can: (action: AppAction, subject: AppSubject) => boolean;
   /**
+   * The person's resolved switches (`useMySwitches`), or undefined until they have arrived. A destination with a
+   * `gate` shows from these (View + Show, or Access; the Dashboard always); one without keeps asking `can`.
+   */
+  values: Record<string, unknown> | undefined;
+  /**
    * Whether a destination is locked - an entitlement the org lacks, or a
    * demo-only surface in a real org. A boolean here rather than the plan badge
    * the layout renders, because the lift rule only asks the yes/no question.
@@ -77,12 +82,13 @@ export function buildNavSections({
   sections,
   getDestination,
   can,
+  values,
   isLocked,
   isFeatureLocked = isLocked,
 }: BuildNavSectionsInput): NavSectionRows[] {
   const visible = keys
     .map((key) => ({ key, dest: getDestination(key) }))
-    .filter((x): x is NavItem => !!x.dest && can(x.dest.action, x.dest.subject));
+    .filter((x): x is NavItem => !!x.dest && navEntryShows(x.dest, can, values));
 
   const claimed = new Set(sections.flatMap((s) => [...s.keys]));
 
@@ -111,7 +117,7 @@ export function buildNavSections({
         // it has one now (`SidebarItem expanded`), so the group survives the
         // port instead of being flattened into it.
         //
-        // Each child is gated on its own ability, exactly as the parent is;
+        // Each child is gated on its own switches, exactly as the parent is;
         // nesting a row must not nest its permission with it.
         //
         // A LOCKED parent yields no children. `NavChild` carries no `feature`
@@ -130,14 +136,15 @@ export function buildNavSections({
         items: rows.map(({ key, dest }) => {
           if (isLocked(dest)) return { key, dest };
 
-          const children = (dest.children ?? [])
-            .filter((child) => can(child.action, child.subject))
-            // A child that repeats a row already pinned in this section
-            // renders once, as that row - Price Book is both its own registry
-            // entry and an Inventory child. Its own parent's href is the
-            // exception: the parent is a toggle rather than a link, so the
-            // child carrying that href (Stock, Phone) is the only way in.
-            .filter((child) => child.href === dest.href || !pinnedHrefs.has(child.href))
+          // Each child follows its own gate (View + Show, or a sub-page's Show, or the section's Access); a child
+          // with no gate keeps asking `can`.
+          const shown = (dest.children ?? []).filter((child) => navEntryShows(child, can, values));
+          // A child that repeats a row already pinned in this section is dropped, unless that would leave the group
+          // with nothing: Price Book alone still opens the group, with Price Book in it.
+          const unpinned = shown.filter(
+            (child) => child.href === dest.href || !pinnedHrefs.has(child.href),
+          );
+          const children = (unpinned.length > 0 ? unpinned : shown)
             .map((child) => ({
               key: child.key,
               dest: {

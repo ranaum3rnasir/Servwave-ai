@@ -1,14 +1,18 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
 import { prisma } from '../lib/prisma';
+import { COUNTED_PAYMENT_WHERE } from '../lib/payment-ledger';
 import { logger } from '../lib/logger';
 import { logAudit } from '../lib/audit';
 import { env } from '../config/env';
 import {
-  CURRENT_PAYMENTS_TERMS_VERSION, PAYMENTS_TERMS_URL, PAYMENTS_FEE_SCHEDULE_URL,
+  CURRENT_PAYMENTS_TERMS_VERSION, PAYMENTS_TERMS_URL, PAYMENTS_FEE_SCHEDULE_URL, DISCLOSED_PAYMENTS_FEE_BPS,
 } from '../lib/legal';
-import { createConnectedAccount, createAccountSession, createAccountLink, updateAccountStatementDescriptor } from '../lib/stripe';
+import { createConnectedAccount, createAccountSession, createAccountLink, retrieveAccount } from '../lib/stripe';
 import { mccForIndustry } from '../lib/stripe-mcc';
+import { refreshAccountStatus } from '../lib/account-status';
+import { SESSION_SURFACES, type SessionSurface } from '../lib/account-session-surfaces';
+import { requestHasOnlinePayments, ONLINE_PAYMENTS_NOT_IN_PLAN_REFUSAL } from '../lib/online-payments-plan';
 
 export class PaymentsTermsError extends Error {
   constructor(public status: number, public code: string, message: string) {
@@ -35,7 +39,7 @@ export const acceptPaymentsTermsSchema = z.object({
 export async function acceptPaymentsTerms(req: Request, res: Response) {
   try {
     const orgId = req.user!.organization_id;
-    const org = await prisma.organization.findUnique({ where: { id: orgId }, select: { platform_fee_bps: true } });
+    const org = await prisma.organization.findUnique({ where: { id: orgId }, select: { id: true } });
     if (!org) { res.status(404).json({ error: 'Organization not configured' }); return; }
     try {
       await prisma.termsAcceptance.create({
@@ -49,7 +53,7 @@ export async function acceptPaymentsTerms(req: Request, res: Response) {
           context: 'payments_onboarding',
           ip_address: req.ip ?? null,
           user_agent: req.headers['user-agent'] ?? null,
-          disclosed_fee_bps: org.platform_fee_bps,
+          disclosed_fee_bps: DISCLOSED_PAYMENTS_FEE_BPS,
           authority_attested: true,
         },
       });
@@ -58,7 +62,7 @@ export async function acceptPaymentsTerms(req: Request, res: Response) {
       if ((err as { code?: string }).code !== 'P2002') throw err;
     }
     void logAudit({ req, action: 'payments.terms_accepted', resourceType: 'Organization', resourceId: orgId,
-      metadata: { terms_version: CURRENT_PAYMENTS_TERMS_VERSION, disclosed_fee_bps: org.platform_fee_bps } });
+      metadata: { terms_version: CURRENT_PAYMENTS_TERMS_VERSION, disclosed_fee_bps: DISCLOSED_PAYMENTS_FEE_BPS } });
     res.json({ accepted: true, terms_version: CURRENT_PAYMENTS_TERMS_VERSION });
   } catch (err) {
     logger.error('acceptPaymentsTerms error:', err);
@@ -66,9 +70,9 @@ export async function acceptPaymentsTerms(req: Request, res: Response) {
   }
 }
 
-/** Truncate/normalize an org name to Stripe's connected-account descriptor rules (5–22, ≥1 letter, no <>/'"*). */
+/** Truncate/normalize an org name to Stripe's connected-account descriptor rules (5–22, Latin characters, ≥1 letter, none of <>\/'"*). */
 export function toStatementDescriptor(name: string): string | null {
-  const cleaned = name.replace(/[<>/'"*]/g, '').replace(/\s+/g, ' ').trim().slice(0, 22);
+  const cleaned = name.replace(/[<>\\/'"*]/g, '').replace(/[^\x20-\x7E]/g, '').replace(/\s+/g, ' ').trim().slice(0, 22);
   if (cleaned.length < 5 || !/[A-Za-z]/.test(cleaned)) return null; // let Stripe collect it on their surface
   return cleaned;
 }
@@ -85,7 +89,10 @@ export async function connectStripe(req: Request, res: Response) {
       },
     });
     if (!org) { res.status(404).json({ error: 'Organization not configured' }); return; }
-    if (org.stripe_account_id) { res.json({ stripe_account_id: org.stripe_account_id }); return; }
+    if (org.stripe_account_id) { res.json({ connected: true }); return; }
+    // Payments go-live slice 16: the plan gate sits on opening a NEW account only. An existing
+    // account stays reachable (above, and the session/link routes) so it can still be fixed.
+    if (!requestHasOnlinePayments(req)) { res.status(403).json(ONLINE_PAYMENTS_NOT_IN_PLAN_REFUSAL); return; }
 
     const account = await createConnectedAccount({
       orgId,
@@ -109,24 +116,34 @@ export async function connectStripe(req: Request, res: Response) {
     });
     if (claim.count === 0) {
       const winner = await prisma.organization.findUnique({ where: { id: orgId }, select: { stripe_account_id: true } });
-      res.json({ stripe_account_id: winner?.stripe_account_id ?? account.id });
+      res.json({ connected: true });
       return;
     }
     void logAudit({ req, action: 'payments.account_created', resourceType: 'Organization', resourceId: orgId, metadata: { stripe_account_id: account.id } });
-    res.json({ stripe_account_id: account.id });
+    res.json({ connected: true });
   } catch (err) {
     logger.error('connectStripe error:', err);
     res.status(500).json({ error: 'Could not start ServWave Payments setup.' });
   }
 }
 
+export const accountSessionSchema = z.object({
+  surface: z.enum(SESSION_SURFACES as [SessionSurface, ...SessionSurface[]]).default('owner'),
+});
+
 export async function createStripeAccountSession(req: Request, res: Response) {
   try {
+    const parsed = accountSessionSchema.safeParse(req.body ?? {});
+    if (!parsed.success) { res.status(400).json({ error: 'Unknown session type.' }); return; }
+    // Each surface is its own permission: the owner surface changes the payout account, the viewer surface only reads
+    // payments and answers disputes. Holding one never opens the other.
+    const needed = parsed.data.surface === 'owner' ? 'manage_payout_account' : 'view_payments';
+    if (!req.ability?.can(needed, 'Organization')) { res.status(403).json({ error: 'Insufficient permissions' }); return; }
     const orgId = req.user!.organization_id;
-    await assertPaymentsTermsAccepted(orgId); // 403 PAYMENTS_TERMS_ACCEPTANCE_REQUIRED until accepted
     const org = await prisma.organization.findUnique({ where: { id: orgId }, select: { stripe_account_id: true } });
     if (!org?.stripe_account_id) { res.status(409).json({ error: 'Start setup first.' }); return; }
-    const clientSecret = await createAccountSession(org.stripe_account_id); // always mint fresh (Connect.js re-invokes on expiry)
+    await assertPaymentsTermsAccepted(orgId); // 403 PAYMENTS_TERMS_ACCEPTANCE_REQUIRED until accepted
+    const clientSecret = await createAccountSession(org.stripe_account_id, parsed.data.surface); // always mint fresh (Connect.js re-invokes on expiry)
     res.json({ client_secret: clientSecret });
   } catch (err) {
     if (err instanceof PaymentsTermsError) { res.status(err.status).json({ code: err.code, error: err.message }); return; }
@@ -142,7 +159,6 @@ export async function getStripeStatus(req: Request, res: Response) {
       select: {
         stripe_account_id: true, stripe_charges_enabled: true, stripe_payouts_enabled: true,
         stripe_details_submitted: true, stripe_requirements_due: true, stripe_disabled_reason: true,
-        platform_fee_bps: true,
       },
     });
     if (!org) { res.status(404).json({ error: 'Organization not configured' }); return; }
@@ -150,16 +166,43 @@ export async function getStripeStatus(req: Request, res: Response) {
     let collected_awaiting_payout = 0;
     if (org.stripe_charges_enabled && !org.stripe_payouts_enabled) {
       const agg = await prisma.payment.aggregate({
-        where: { invoice: { organization_id: req.user!.organization_id }, method: 'CARD', voided_at: null },
+        where: {
+          invoice: { organization_id: req.user!.organization_id },
+          // Cleared online bank debits are collected money awaiting payout too; a hand-recorded bank transfer is not.
+          OR: [{ method: 'CARD' }, { method: 'ACH', stripe_payment_intent_id: { not: null } }],
+          ...COUNTED_PAYMENT_WHERE,
+        },
         _sum: { amount: true },
       });
       collected_awaiting_payout = Number(agg._sum.amount ?? 0);
     }
-    res.json({ ...org, collected_awaiting_payout });
+    // The processor's account id stays on the server: the browser gets whether the org is connected, nothing more.
+    const { stripe_account_id, ...rest } = org;
+    const connected = Boolean(stripe_account_id);
+    // Whether the current payments terms are on file: the payout account page asks for an embedded session only
+    // once they are, so it needs to know before it asks.
+    const termsRow = await prisma.termsAcceptance.findFirst({
+      where: { organization_id: req.user!.organization_id, context: 'payments_onboarding', terms_version: CURRENT_PAYMENTS_TERMS_VERSION },
+      select: { id: true },
+    });
+    res.json({ ...rest, connected, terms_accepted: Boolean(termsRow), collected_awaiting_payout });
   } catch (err) {
     logger.error('getStripeStatus error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
+}
+
+// Return from onboarding (payments go-live slice 06): re-read the account from the processor,
+// store its status (fail closed on any error), then answer with the same body as GET /status.
+export async function refreshStripeStatus(req: Request, res: Response) {
+  try {
+    await refreshAccountStatus(req.user!.organization_id);
+  } catch (err) {
+    logger.error('refreshStripeStatus error:', err);
+    res.status(500).json({ error: 'Could not refresh the payments status.' });
+    return;
+  }
+  await getStripeStatus(req, res);
 }
 
 // Hosted Account Link fallback (§3.1/§6.2) — the drawer calls this after the embedded component
@@ -167,11 +210,13 @@ export async function getStripeStatus(req: Request, res: Response) {
 export async function createStripeAccountLink(req: Request, res: Response) {
   try {
     const orgId = req.user!.organization_id;
-    await assertPaymentsTermsAccepted(orgId);
     const org = await prisma.organization.findUnique({ where: { id: orgId }, select: { stripe_account_id: true } });
     if (!org?.stripe_account_id) { res.status(409).json({ error: 'Start setup first.' }); return; }
-    const returnUrl = `${env.FRONTEND_URL}/settings/payments`;
-    const url = await createAccountLink(org.stripe_account_id, returnUrl, returnUrl);
+    await assertPaymentsTermsAccepted(orgId);
+    const refreshUrl = `${env.FRONTEND_URL}/settings/payments`;
+    // ?onboarding=return makes the settings page re-read the account status on arrival.
+    const returnUrl = `${refreshUrl}?onboarding=return`;
+    const url = await createAccountLink(org.stripe_account_id, refreshUrl, returnUrl);
     res.json({ url });
   } catch (err) {
     if (err instanceof PaymentsTermsError) { res.status(err.status).json({ code: err.code, error: err.message }); return; }
@@ -180,19 +225,17 @@ export async function createStripeAccountLink(req: Request, res: Response) {
   }
 }
 
-// Post-onboarding statement-descriptor edit (§3.3 "post-onboarding edit path in Settings" / §15B#4).
-export const updateDescriptorSchema = z.object({
-  statement_descriptor: z.string().trim().min(5).max(22).regex(/^[^<>/'"*]*$/).refine((v) => /[A-Za-z]/.test(v), 'Descriptor needs at least one letter'),
-});
-export async function updateStatementDescriptor(req: Request, res: Response) {
+// Read-only: the platform may not write the descriptor on a processor-controlled account, so ServWave shows it.
+export async function getStatementDescriptor(req: Request, res: Response) {
   try {
-    const orgId = req.user!.organization_id;
-    const org = await prisma.organization.findUnique({ where: { id: orgId }, select: { stripe_account_id: true } });
+    const org = await prisma.organization.findUnique({ where: { id: req.user!.organization_id }, select: { stripe_account_id: true, name: true } });
     if (!org?.stripe_account_id) { res.status(409).json({ error: 'ServWave Payments is not connected.' }); return; }
-    await updateAccountStatementDescriptor(org.stripe_account_id, req.body.statement_descriptor); // connected account, no platform prefix
-    res.json({ statement_descriptor: req.body.statement_descriptor });
+    const account = await retrieveAccount(org.stripe_account_id);
+    // What the account carries now; before one is set, what the org name would give.
+    const current = account.settings?.payments?.statement_descriptor || toStatementDescriptor(org.name);
+    res.json({ statement_descriptor: current ?? null });
   } catch (err) {
-    logger.error('updateStatementDescriptor error:', err);
-    res.status(500).json({ error: 'Could not update the descriptor.' });
+    logger.error('getStatementDescriptor error:', err);
+    res.status(500).json({ error: 'Could not load the descriptor.' });
   }
 }

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { JobStatus } from '@prisma/client';
 import {
   buildJobsReport,
   jobStatusLabel,
@@ -40,8 +41,24 @@ describe('jobStatusLabel', () => {
     // first two from JobStatus - they describe a TRIP - so the report has one in-flight job label
     // again, and the finer states are reported per visit.
     expect(jobStatusLabel('IN_PROGRESS')).toBe('In progress');
-    expect(jobStatusLabel('COMPLETED')).toBe('Done');
+    expect(jobStatusLabel('COMPLETED')).toBe('Completed');
     expect(jobStatusLabel('CANCELLED')).toBe('Canceled');
+  });
+
+  // PRD 6 (S06.2): finished work reads "Completed" whichever step of the close-out it is on. "Done" names only the Done
+  // status, and the report folds that status into Completed so a finished review never moves a job out of the
+  // report's completed figures.
+  const ORDER = Object.values(JobStatus);
+  const COMPLETED_OR_LATER = ORDER.slice(ORDER.indexOf('COMPLETED')).filter((s) => s !== 'CANCELLED');
+
+  it.each(COMPLETED_OR_LATER)('labels a job in %s "Completed"', (status) => {
+    expect(jobStatusLabel(status)).toBe('Completed');
+    const [row] = buildJobsReport([job({ status })]);
+    expect(row!.status).toBe('Completed');
+  });
+
+  it('never labels a job "Done" or "Closed"', () => {
+    for (const status of ORDER) expect(['Done', 'Closed']).not.toContain(jobStatusLabel(status));
   });
 
   it('falls back to Pending for an unknown status', () => {
@@ -116,13 +133,13 @@ describe('buildJobsReport', () => {
     const [row] = buildJobsReport([
       job({
         assignees: [
-          { firstName: 'Emanuel', lastName: 'Dahan' },
-          { firstName: 'Ohad', lastName: null },
+          { firstName: 'Sam', lastName: 'Rivera' },
+          { firstName: 'Jordan', lastName: null },
         ],
         dispatcher: { firstName: 'Dispatch', lastName: 'Desk' },
       }),
     ]);
-    expect(row!.tech).toEqual(['Emanuel Dahan', 'Ohad']);
+    expect(row!.tech).toEqual(['Sam Rivera', 'Jordan']);
     expect(row!.createdBy).toBe('Dispatch Desk');
   });
 

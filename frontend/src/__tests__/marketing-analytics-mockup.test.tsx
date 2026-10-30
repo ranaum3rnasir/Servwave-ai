@@ -22,7 +22,7 @@ vi.mock('@/lib/api/organization', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/api/organization')>();
   return {
     ...actual,
-    useOrganization: () => ({ data: { id: 'org-1', name: 'Alpha Doors & Security' }, isLoading: false, isError: false }),
+    useOrganization: () => ({ data: { id: 'org-1', name: 'Example Doors & Security' }, isLoading: false, isError: false }),
   };
 });
 
@@ -88,7 +88,7 @@ function columnTotal(header: string): number {
 describe('Marketing Analytics mockup', () => {
   it('names the signed-in org rather than a sample company', () => {
     render(<MarketingAnalyticsPage />);
-    expect(screen.getByText(/Alpha Doors & Security · Owner view/)).toBeInTheDocument();
+    expect(screen.getByText(/Example Doors & Security · Owner view/)).toBeInTheDocument();
     expect(screen.queryByText(/Northside Heating/)).toBeNull();
   });
 

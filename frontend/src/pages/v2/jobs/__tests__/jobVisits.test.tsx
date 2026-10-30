@@ -15,7 +15,7 @@ import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import { toast } from '@/components/ui/use-toast';
 import { buildAbility } from '@/lib/ability';
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderWithProviders, ALL_JOB_ACTIONS } from '@/__tests__/helpers';
 
 import JobDetailPage from '../JobDetailPage';
 
@@ -105,6 +105,7 @@ const BASE_JOB = {
   invoices: [],
   tags: [],
   source_plan_id: null,
+  actions: ALL_JOB_ACTIONS,
   source_plan: null,
 };
 
@@ -119,6 +120,8 @@ const VISIT_1 = {
   cancelled_at: null,
   cancelled_reason: null,
   created_at: '2026-08-20T10:00:00.000Z',
+  // The server's per-record answer: the status steps this person may take on this visit (S04.12).
+  status_steps: ['en-route', 'arrive', 'start', 'complete'],
 };
 
 const VISIT_2 = {
@@ -518,13 +521,14 @@ describe('v2 job page - the Visits controls follow the ROW, not the subject', ()
   it('offers no scheduling control on a job the technician created but is no longer crewed on', async () => {
     // `ability.can('reschedule','Job')` answers "could you ever", and is true for this principal
     // on EVERY job in the org. The API asks the row: canActOnRow intersects the read scope with
-    // reschedule's OWN_JOB, this job fails the assignment half, and the POST 403s. A rendered
-    // button here is the "button the API refuses" both pages' own comments exist to prevent.
+    // reschedule's OWN_JOB, this job fails the assignment half, and the POST 403s. The job's own
+    // action list leaves `schedule` out, and a rendered button here would be the "button the API
+    // refuses" both pages' own comments exist to prevent.
     mockApi.get.mockImplementation(async (url: string) => {
       if (url.includes('/visits')) return { data: { visits: [VISIT_1] } };
       if (url.includes('/financials')) return { data: { final_invoice: null, invoices: [], payments: [] } };
       if (url.includes(`/api/jobs/${JOB_ID}`)) {
-        return { data: { job: { ...BASE_JOB, created_by_id: TECH_ID, assignees: [] } } };
+        return { data: { job: { ...BASE_JOB, created_by_id: TECH_ID, assignees: [], actions: [] } } };
       }
       return { data: {} };
     });
@@ -724,6 +728,8 @@ describe('v2 job page - a reschedule-only principal gets the visit dialog withou
             job: {
               ...BASE_JOB,
               assignees: [{ user: { id: TECH_ID, first_name: 'Test', last_name: 'Tech' } }],
+              // The server lists Schedule visits for this person on this job, and no Assign people to jobs.
+              actions: ['schedule'],
             },
           },
         };
@@ -833,7 +839,7 @@ describe('v2 job page - a visit shows its real status (S4 B15)', () => {
       { action: 'arrive', subject: 'Job', conditions: OWN_JOB_COND },
     ] as never);
     mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/visits')) return { data: { visits: [VISIT_1] } };
+      if (url.includes('/visits')) return { data: { visits: [{ ...VISIT_1, status_steps: ['arrive', 'start', 'complete'] }] } };
       if (url.includes('/financials')) return { data: { final_invoice: null, invoices: [], payments: [] } };
       if (url.includes(`/api/jobs/${JOB_ID}`)) {
         return {
@@ -861,6 +867,51 @@ describe('v2 job page - a visit shows its real status (S4 B15)', () => {
     await userEvent.click(within(row).getByRole('button', { name: 'Skip to' }));
     const items = await screen.findAllByRole('menuitem');
     expect(items.map((el) => el.textContent)).toEqual(['Start work']);
+  });
+
+  it("shows status buttons only on the visits the server's answer lists, whatever the browser's own ability says", async () => {
+    // An admin's ability would offer every button on every visit; the card reads the per-visit answer instead.
+    mockJobWithVisits([
+      VISIT_1,
+      { ...VISIT_2, status_steps: [] },
+      { ...VISIT_3_CANCELLED },
+    ]);
+
+    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    await screen.findByRole('heading', { name: /J00001/ });
+    await openVisitsTab();
+
+    expect(within(await visitRow(1)).getByRole('button', { name: 'Mark on the way' })).toBeInTheDocument();
+    const other = await visitRow(2);
+    expect(within(other).queryByRole('button', { name: 'Mark on the way' })).toBeNull();
+    expect(within(other).queryByRole('button', { name: 'Mark on site' })).toBeNull();
+    expect(within(other).queryByRole('button', { name: 'Skip to' })).toBeNull();
+    expect(within(other).queryByRole('button', { name: 'Start work' })).toBeNull();
+  });
+
+  it("offers only the steps the answer lists, and none at all when it lists none (Start and finish visits off)", async () => {
+    mockJobWithVisits([
+      { ...VISIT_1, status: 'ON_SITE', on_site_at: '2026-09-05T01:02:00.000Z', status_steps: ['en-route', 'arrive'] },
+    ]);
+
+    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    await screen.findByRole('heading', { name: /J00001/ });
+    await openVisitsTab();
+
+    const row = await visitRow(1);
+    expect(within(row).queryByRole('button', { name: 'Start work' })).toBeNull();
+    expect(within(row).queryByRole('button', { name: 'Skip to' })).toBeNull();
+  });
+
+  it('offers no status button on a visit whose payload carries no answer', async () => {
+    const { status_steps: _omitted, ...bare } = VISIT_1;
+    mockJobWithVisits([bare]);
+
+    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    await screen.findByRole('heading', { name: /J00001/ });
+    await openVisitsTab();
+
+    expect(within(await visitRow(1)).queryByRole('button', { name: 'Mark on the way' })).toBeNull();
   });
 
   it('tells the user when a lifecycle click is refused, instead of appearing to do nothing', async () => {
@@ -1030,12 +1081,12 @@ describe('v2 job page - cancelling one visit (S4 D19)', () => {
       { action: 'arrive', subject: 'Job', conditions: OWN_JOB_COND },
     ] as never);
     mockApi.get.mockImplementation(async (url: string) => {
-      if (url.includes('/visits')) return { data: { visits: [VISIT_1] } };
+      if (url.includes('/visits')) return { data: { visits: [{ ...VISIT_1, status_steps: ['arrive', 'start', 'complete'] }] } };
       if (url.includes('/financials')) return { data: { final_invoice: null, invoices: [], payments: [] } };
       if (url.includes(`/api/jobs/${JOB_ID}`)) {
         return {
           data: {
-            job: { ...BASE_JOB, assignees: [{ user: { id: TECH_ID, first_name: 'Test', last_name: 'Tech' } }] },
+            job: { ...BASE_JOB, assignees: [{ user: { id: TECH_ID, first_name: 'Test', last_name: 'Tech' } }], actions: [] },
           },
         };
       }
@@ -1376,7 +1427,7 @@ describe('v2 job page - the visit row offers one next step and a Skip to menu (s
     expect(items.map((el) => el.textContent)).toEqual(['Mark on site', 'Start work']);
   });
 
-  it('offers an on-site trip Start work as the primary step and Complete under Skip to', async () => {
+  it('offers an on-site trip Start work as the primary step and Finish visit under Skip to', async () => {
     mockJobWithVisits([VISIT_1_ON_SITE]);
 
     renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
@@ -1385,11 +1436,11 @@ describe('v2 job page - the visit row offers one next step and a Skip to menu (s
 
     const row = await visitRow(1);
     expect(within(row).getByRole('button', { name: 'Start work' })).toBeInTheDocument();
-    expect(within(row).queryByRole('button', { name: 'Complete' })).toBeNull();
+    expect(within(row).queryByRole('button', { name: 'Finish visit' })).toBeNull();
 
     await userEvent.click(within(row).getByRole('button', { name: 'Skip to' }));
     const items = await screen.findAllByRole('menuitem');
-    expect(items.map((el) => el.textContent)).toEqual(['Complete']);
+    expect(items.map((el) => el.textContent)).toEqual(['Finish visit']);
   });
 
   it('posts a Skip to pick to the route of THAT visit', async () => {
@@ -1415,9 +1466,9 @@ describe('v2 job page - the visit row offers one next step and a Skip to menu (s
     await openVisitsTab();
 
     const row = await visitRow(1);
-    // Complete is still the ONE primary step, in the step group...
+    // Finish visit is still the ONE primary step, in the step group...
     const step = within(row).getByRole('group', { name: 'Next step' });
-    expect(within(step).getByRole('button', { name: 'Complete' })).toBeInTheDocument();
+    expect(within(step).getByRole('button', { name: 'Finish visit' })).toBeInTheDocument();
     // ...with nothing left to skip to, so no menu is offered rather than an empty one.
     expect(within(row).queryByRole('button', { name: 'Skip to' })).toBeNull();
   });
@@ -1491,5 +1542,63 @@ describe('v2 job page - the visit row stays intact on a narrow viewport (slice 0
     expect(actions).toHaveClass('justify-between');
     // ...and the office group hugs the end of that line even when no milestone step precedes it.
     expect(office).toHaveClass('ms-auto');
+  });
+});
+
+/**
+ * Roles & Permissions, S04.15: a visit is FINISHED, a job is COMPLETED. The visit's last step reads "Finish visit", a
+ * finished visit's chip and stamp read "Finished", and no visit control or chip says "Complete" or "Completed".
+ */
+describe('v2 job page - a visit is finished, never completed (S04.15)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const FINISHED_VISIT = {
+    ...VISIT_1,
+    status: 'COMPLETED',
+    started_at: '2026-09-05T01:30:00.000Z',
+    completed_at: '2026-09-05T03:45:00.000Z',
+  };
+
+  it('reads Finished on a finished visit, in its status and in its stamps, and never Completed', async () => {
+    mockJobWithVisits([FINISHED_VISIT]);
+
+    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    await screen.findByRole('heading', { name: /J00001/ });
+    await openVisitsTab();
+
+    const row = await visitRow(1);
+    // 03:45Z is 11:45 AM in Manila.
+    expect(within(row).getByText(/^Finished Sep 5, 2026, 9:00 AM/)).toBeInTheDocument();
+    expect(within(row).getByText(/Finished Sep 5, 11:45 AM/)).toBeInTheDocument();
+    expect(within(row).queryByText(/complete/i)).toBeNull();
+    // A finished visit is history: no step is offered.
+    expect(within(row).queryByRole('group', { name: 'Next step' })).toBeNull();
+  });
+
+  it('labels the last step of a live visit Finish visit, and no visit button says Complete', async () => {
+    mockJobWithVisits([{ ...VISIT_1, status: 'IN_PROGRESS', started_at: '2026-09-05T01:30:00.000Z' }]);
+
+    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    await screen.findByRole('heading', { name: /J00001/ });
+    await openVisitsTab();
+
+    const row = await visitRow(1);
+    expect(within(row).getByRole('button', { name: 'Finish visit' })).toBeInTheDocument();
+    expect(within(row).queryByRole('button', { name: /complete/i })).toBeNull();
+  });
+
+  it('posts Finish visit to the visit\'s finish route', async () => {
+    mockJobWithVisits([{ ...VISIT_1, status: 'IN_PROGRESS', started_at: '2026-09-05T01:30:00.000Z' }]);
+    mockApi.post.mockResolvedValue({ data: { visit: { ...VISIT_1, status: 'COMPLETED' } } });
+
+    renderWithProviders(<JobDetailPage />, { ability: adminAbility, initialEntries: [`/jobs/${JOB_ID}`] });
+    await screen.findByRole('heading', { name: /J00001/ });
+    await openVisitsTab();
+
+    await userEvent.click(within(await visitRow(1)).getByRole('button', { name: 'Finish visit' }));
+
+    expect(mockApi.post).toHaveBeenCalledWith(`/api/jobs/${JOB_ID}/visits/v-1/complete`);
   });
 });

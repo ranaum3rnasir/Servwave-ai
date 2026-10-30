@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { tenantWhere } from '../lib/tenant';
 import { logAudit } from '../lib/audit';
+import { mayReadTranscript } from './comm-calls.controller';
 
 // ─── Zod Schemas ───────────────────────────────────────
 //
@@ -17,6 +18,8 @@ import { logAudit } from '../lib/audit';
 // ── Call flows ──
 // FlowNode / ForwardTarget / MenuOption are nested editor structures the canvas
 // owns; we validate them as passthrough objects and persist them verbatim.
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 const forwardTargetSchema = z.any();
 const flowNodeSchema = z.any();
 
@@ -102,7 +105,9 @@ function toTrainingScenario(row: any) {
   };
 }
 
-function toTrainingSession(row: any) {
+// What was said in a session is a transcript like a call's: the turns ride the response only for a holder of View
+// transcript (S08.12's predicate, shared), so the Training tab alone shows the score and the coaching note, not the words.
+function toTrainingSession(row: any, withTranscript: boolean) {
   return {
     id: row.id,
     traineeName: row.trainee_name,
@@ -118,7 +123,7 @@ function toTrainingSession(row: any) {
     completedAt: row.completed_at instanceof Date ? row.completed_at.toISOString() : row.completed_at,
     hasRecording: row.has_recording,
     coachingNote: row.coaching_note,
-    transcript: row.transcript ?? undefined,
+    ...(withTranscript && row.transcript != null && { transcript: row.transcript }),
   };
 }
 
@@ -352,11 +357,13 @@ export async function listTrainingScenarios(req: Request, res: Response) {
 
 export async function getTrainingScenario(req: Request, res: Response) {
   try {
-    // The mock id is a slug; accept either the slug or the UUID.
+    // The mock id is a slug; accept either the slug or the UUID. `id` is a uuid column, so a slug is never
+    // compared with it (the database rejects the cast and the request answers 500).
+    const idOrSlug = req.params.id as string;
     const scenario = await prisma.trainingScenario.findFirst({
       where: {
         ...tenantWhere(req),
-        OR: [{ slug: req.params.id as string }, { id: req.params.id as string }],
+        OR: UUID_PATTERN.test(idOrSlug) ? [{ slug: idOrSlug }, { id: idOrSlug }] : [{ slug: idOrSlug }],
       },
     });
 
@@ -381,7 +388,7 @@ export async function listTrainingSessions(req: Request, res: Response) {
       orderBy: [{ completed_at: 'desc' }],
     });
 
-    res.json({ sessions: sessions.map(toTrainingSession) });
+    res.json({ sessions: sessions.map((row) => toTrainingSession(row, mayReadTranscript(req))) });
   } catch (err) {
     logger.error('Failed to list training sessions:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -399,7 +406,7 @@ export async function getTrainingSession(req: Request, res: Response) {
       return;
     }
 
-    res.json({ session: toTrainingSession(session) });
+    res.json({ session: toTrainingSession(session, mayReadTranscript(req)) });
   } catch (err) {
     logger.error('Failed to get training session:', err);
     res.status(500).json({ error: 'Internal server error' });

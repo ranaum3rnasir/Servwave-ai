@@ -16,6 +16,8 @@ vi.mock('../config/env', () => ({
     EMAIL_FROM: 'noreply@test.servwave.com',
     EMAIL_FROM_BUSINESS: 'noreply@mail.test.servwave.com',
     RESEND_API_KEY: 're_test_key',
+    // PRD 10 (S10.12): the domain a sender's own address is built on; a document goes out from it.
+    MAILBOX_DOMAIN: 'mail.test.com',
     FRONTEND_URL: 'http://localhost:5173',
   },
 }));
@@ -37,6 +39,9 @@ import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { persistTransactionalEmail } from '../lib/comm-persist';
 
+
+// PRD 10 (S10.12): a document is sent by hand, from the sender's own mailbox (the id the suite-wide mailbox stub answers to).
+const HAND_SENDER = { mailboxId: 'main-mailbox-id', userId: 'user-1' };
 // setup.ts mocks '../lib/email' globally; pull the REAL module here.
 let sendInvoiceEmail: typeof import('../lib/email')['sendInvoiceEmail'];
 
@@ -209,14 +214,14 @@ describe('persistTransactionalEmail', () => {
       to: 'cust@example.com',
       subject: 'Deposit Receipt — E00001',
       text: 'Deposit received.',
-      fromName: 'Alpha Doors & Security',
+      fromName: 'Example Doors & Security',
       fromAddress: 'noreply@mail.test.servwave.com',
     });
 
     expect(prisma.email.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
-          from: { name: 'Alpha Doors & Security', email: 'noreply@mail.test.servwave.com' },
+          from: { name: 'Example Doors & Security', email: 'noreply@mail.test.servwave.com' },
         }),
       }),
     );
@@ -276,6 +281,7 @@ describe('transactional send-path persistence (sendInvoiceEmail)', () => {
     });
 
     await sendInvoiceEmail({
+      handSender: HAND_SENDER,
       organizationId: ORG_ID,
       ...baseParams,
       record: {
@@ -310,15 +316,16 @@ describe('transactional send-path persistence (sendInvoiceEmail)', () => {
   // from. The address now travels out of the dispatch result itself.
   it('records the address dispatchEmail actually transmitted from, not the auth-critical root domain', async () => {
     await sendInvoiceEmail({
+      handSender: HAND_SENDER,
       organizationId: ORG_ID,
       ...baseParams,
       record: { organizationId: ORG_ID, customerId: CUSTOMER_ID },
     });
 
     const data = (prisma.email.create as Mock).mock.calls[0]![0].data;
-    // The local part now carries the org name; the DOMAIN half is what this
-    // test is really about - the business subdomain, never the auth root.
-    expect(data.from.email).toBe('acmeplumbing@mail.test.servwave.com');
+    // A hand-sent document leaves from the sender's own address on the mailbox domain (PRD 10, S10.12); what this
+    // test is really about is that the row carries the address the dispatch used, never the auth root.
+    expect(data.from.email).toBe('jane.smith.acme@mail.test.com');
     expect(data.from.email).not.toContain('@test.servwave.com');
   });
 
@@ -326,6 +333,7 @@ describe('transactional send-path persistence (sendInvoiceEmail)', () => {
     resendSend.mockResolvedValue({ data: { id: 're_live_42' }, error: null });
 
     await sendInvoiceEmail({
+      handSender: HAND_SENDER,
       organizationId: ORG_ID,
       ...baseParams,
       record: { organizationId: ORG_ID, customerId: CUSTOMER_ID },
@@ -342,7 +350,7 @@ describe('transactional send-path persistence (sendInvoiceEmail)', () => {
   });
 
   it('persists nothing when no record is passed', async () => {
-    await sendInvoiceEmail({ organizationId: ORG_ID, ...baseParams });
+    await sendInvoiceEmail({ handSender: HAND_SENDER, organizationId: ORG_ID, ...baseParams });
 
     expect(resendSend).toHaveBeenCalledTimes(1);
     expect(prisma.email.create).not.toHaveBeenCalled();
@@ -357,6 +365,7 @@ describe('transactional send-path persistence (sendInvoiceEmail)', () => {
 
     await expect(
       sendInvoiceEmail({
+        handSender: HAND_SENDER,
         organizationId: ORG_ID,
         ...baseParams,
         record: { organizationId: ORG_ID, jobId: JOB_ID, jobLabel: 'J00042' },
@@ -371,6 +380,7 @@ describe('transactional send-path persistence (sendInvoiceEmail)', () => {
 
     await expect(
       sendInvoiceEmail({
+        handSender: HAND_SENDER,
         organizationId: ORG_ID,
         ...baseParams,
         record: { organizationId: ORG_ID, jobId: JOB_ID, jobLabel: 'J00042' },

@@ -7,8 +7,8 @@ import { supabaseAdmin } from '../lib/supabase';
 import { isStripeConfigured, createCheckoutSession, createRefund, getStripeForOrg } from '../lib/stripe';
 import { sendEstimateApprovedNotification } from '../lib/email';
 import * as emailLib from '../lib/email';
+import { dispatchAutomationEvent } from '../services/automations/dispatch';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 import { stripEstimateCost, calculateTotals } from '../controllers/estimate.controller';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 import {
@@ -26,6 +26,10 @@ import {
   LOCATION_FIXTURE,
   JOB_FIXTURE,
   LEAD_FIXTURE,
+  attachedEstimateWhere,
+  creatorEstimateWhere,
+  ownLeadsEstimateWhere,
+  mockRoleSwitches,
 } from './helpers';
 
 // ─── Typed mocks ──────────────────────────────────────
@@ -425,14 +429,12 @@ describe('GET /api/estimates', () => {
       .set(authHeader('sales'));
 
     const findManyArgs = mockPrisma.estimate.findMany.mock.calls[0][0];
-    // SERV10X-61 §8 - the SALES estimate read-scope is now the substituted OR of the own-via-lead
-    // arm AND the own lead-less-created arm (lead_id:null + created_by-self), so the scope lives
-    // under `where.OR`, not a top-level `where.lead`. Asserting the full OR (not weakened): the
-    // own-via-lead arm is byte-for-byte the old scope, and the second arm is pinned to the SALES
-    // user's own id so it can never widen to another rep's lead-less estimates.
+    // Sales holds the kept "Through own leads" value on Estimates scope: estimates whose lead has the
+    // person as an assignee. The estimates they made are theirs on top of that (the creator rule), but only
+    // while attached or for a customer alone: there is no plain created-by arm.
     expect(findManyArgs.where.OR).toEqual([
-      { lead: { lead_assignees: { some: { user_id: TEST_USERS.sales.id } } } },
-      { AND: [{ lead_id: null }, { created_by: TEST_USERS.sales.id }] },
+      ownLeadsEstimateWhere(TEST_USERS.sales.id),
+      creatorEstimateWhere(TEST_USERS.sales.id),
     ]);
   });
 
@@ -449,13 +451,9 @@ describe('GET /api/estimates', () => {
     // pending_deposits now aggregates the kind=DEPOSIT Invoice, scoped to the SALES user's leads via estimate→lead.
     const depositCall = mockPrisma.invoice.aggregate.mock.calls[0][0];
     expect(depositCall.where.kind).toBe('DEPOSIT');
-    // SERV10X-61 §8 - the deposit KPI is scoped through `estimate: readScope`, which is now the
-    // own-via-lead OR own-lead-less-created OR (see the list-scope test above).
+    // The deposit KPI is scoped through `estimate: readScope`, the same reach as the list.
     expect(depositCall.where.estimate).toEqual({
-      OR: [
-        { lead: { lead_assignees: { some: { user_id: TEST_USERS.sales.id } } } },
-        { AND: [{ lead_id: null }, { created_by: TEST_USERS.sales.id }] },
-      ],
+      OR: [ownLeadsEstimateWhere(TEST_USERS.sales.id), creatorEstimateWhere(TEST_USERS.sales.id)],
     });
   });
 
@@ -489,9 +487,9 @@ describe('GET /api/estimates', () => {
     expect(findManyArgs.where.created_by).toEqual({ in: [TEST_USERS.sales.id, TEST_USERS.admin.id] });
   });
 
-  // Live QA, 2026-08-05 - TECHNICIAN now holds a CONDITIONAL read Estimate grant
-  // (OWN_ESTIMATE_VIA_LEAD_OR_CREATOR), so the list is scoped rather than blocked outright.
-  it('auto-filters for TECHNICIAN role (own-lead-via-walkthrough OR own-created lead-less)', async () => {
+  // Technician's Estimates scope is Attached: the list is scoped to the estimates on a lead or job they
+  // are attached to, rather than blocked outright.
+  it('auto-filters for TECHNICIAN role (Attached: the estimate\'s lead or job)', async () => {
     mockAuthAs('technician');
     mockPrisma.estimate.findMany.mockResolvedValue([]);
     mockPrisma.estimate.count.mockResolvedValue(0);
@@ -505,8 +503,8 @@ describe('GET /api/estimates', () => {
     expect(res.status).toBe(200);
     const findManyArgs = mockPrisma.estimate.findMany.mock.calls[0][0];
     expect(findManyArgs.where.OR).toEqual([
-      { lead: { lead_assignees: { some: { user_id: TEST_USERS.technician.id } } } },
-      { AND: [{ lead_id: null }, { created_by: TEST_USERS.technician.id }] },
+      { OR: attachedEstimateWhere(TEST_USERS.technician.id) },
+      creatorEstimateWhere(TEST_USERS.technician.id),
     ]);
   });
 
@@ -521,18 +519,12 @@ describe('GET /api/estimates', () => {
       .get('/api/estimates')
       .set(authHeader('sales'));
 
-    // SERV10X-61 §8 - the SALES stats scope mirrors the list scope: own-via-lead OR own
-    // lead-less-created, under `where.OR`.
-    const salesFilter = {
-      OR: [
-        { lead: { lead_assignees: { some: { user_id: TEST_USERS.sales.id } } } },
-        { AND: [{ lead_id: null }, { created_by: TEST_USERS.sales.id }] },
-      ],
-    };
+    // The SALES stats scope mirrors the list scope: the estimates of the leads they are an assignee of.
+    const salesFilter = ownLeadsEstimateWhere(TEST_USERS.sales.id);
 
     // The groupBy call for stats must include the SALES lead filter
     const groupByCall = mockPrisma.estimate.groupBy.mock.calls[0][0];
-    expect(groupByCall.where).toMatchObject(salesFilter);
+    expect(groupByCall.where.OR).toEqual([salesFilter, creatorEstimateWhere(TEST_USERS.sales.id)]);
   });
 
   it('includes customer_number in nested lead.customer select', async () => {
@@ -849,8 +841,9 @@ describe('POST /api/estimates', () => {
     expect(res.status).toBe(400);
   });
 
-  it('DISPATCHER cannot create estimates', async () => {
+  it('a person with Create estimates off cannot create estimates', async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches({ create_estimates: false });
 
     const res = await request(app)
       .post('/api/estimates')
@@ -1212,6 +1205,8 @@ describe('POST /api/estimates - job-anchored create (SERV10X-61)', () => {
   it('SALES cannot create a job-anchored estimate for a job they are NOT assigned to (403)', async () => {
     mockAuthAs('sales');
     mockPrisma.job.findUnique.mockResolvedValue(jobRow([{ user_id: TEST_USERS.admin.id }]));
+    // The job-scope probe finds nothing: the job is not one this person can open.
+    mockPrisma.job.findFirst.mockResolvedValue(null);
     const res = await request(app).post('/api/estimates').set(authHeader('sales'))
       .send({ job_id: JOB_ANCHOR_ID, line_items: [{ description: 'AC', quantity: 1, unit_price: 1000, is_taxable: true }] });
     expect(res.status).toBe(403);
@@ -1220,6 +1215,8 @@ describe('POST /api/estimates - job-anchored create (SERV10X-61)', () => {
   it('SALES can create a job-anchored estimate for a job they ARE assigned to (201)', async () => {
     mockAuthAs('sales');
     mockPrisma.job.findUnique.mockResolvedValue(jobRow([{ user_id: TEST_USERS.sales.id }]));
+    // The job-scope probe (Create estimates reaches a job the person can open) finds the job.
+    mockPrisma.job.findFirst.mockResolvedValue({ id: JOB_ANCHOR_ID });
     mockPrisma.stateTaxRate.findFirst.mockResolvedValue({ tax_rate: 0.0625 });
     captureCreateTransaction(store);
     const res = await request(app).post('/api/estimates').set(authHeader('sales'))
@@ -2111,6 +2108,8 @@ describe('GET /api/estimates/:id', () => {
   it('SALES can view own lead estimate', async () => {
     mockAuthAs('sales');
     mockPrisma.estimate.findUnique.mockResolvedValue(ESTIMATE_FIXTURE);
+    // Whether the person may open it is the scope's answer: the estimate is inside their reach.
+    mockPrisma.estimate.findFirst.mockResolvedValue({ id: ESTIMATE_FIXTURE.id });
 
     const res = await request(app)
       .get(`/api/estimates/${ESTIMATE_FIXTURE.id}`)
@@ -2126,6 +2125,7 @@ describe('GET /api/estimates/:id', () => {
       lead: { ...ESTIMATE_FIXTURE.lead, lead_assignees: [{ user_id: TEST_USERS.admin.id }] },
     };
     mockPrisma.estimate.findUnique.mockResolvedValue(otherEstimate);
+    mockPrisma.estimate.findFirst.mockResolvedValue(null); // outside their reach
 
     const res = await request(app)
       .get(`/api/estimates/${ESTIMATE_FIXTURE.id}`)
@@ -2610,6 +2610,7 @@ describe('PATCH /api/estimates/:id', () => {
       tax_rate: 0.0625,
       lead: { lead_assignees: [{ user_id: TEST_USERS.admin.id }] },
     });
+    mockPrisma.estimate.findFirst.mockResolvedValue(null); // outside their reach
 
     const res = await request(app)
       .patch(`/api/estimates/${ESTIMATE_FIXTURE.id}`)
@@ -2824,6 +2825,7 @@ describe('DELETE /api/estimates/:id', () => {
       status: 'DRAFT',
       lead: { lead_assignees: [{ user_id: TEST_USERS.admin.id }] },
     });
+    mockPrisma.estimate.findFirst.mockResolvedValue(null); // outside their reach
 
     const res = await request(app)
       .delete(`/api/estimates/${ESTIMATE_FIXTURE.id}`)
@@ -2940,12 +2942,11 @@ describe('#106 estimate enforcement', () => {
 
   // ─── list() — grant-driven row scope closes the non-SALES fail-open ───
 
-  it('list scopes a conditioned NON-SALES role to owned rows (closes the hardcoded-SALES fail-open)', async () => {
+  it('list scopes a non-Sales role to its Estimates scope (closes the hardcoded-SALES fail-open)', async () => {
     // The pre-#106 list() hardcoded the SALES branch and let EVERY other non-ADMIN role see the
-    // whole org. A DISPATCHER (or any role) carrying a conditioned Owned read grant must now be
-    // scoped by the grant — this fails until scopeWhereForReq is spread into the list where-clause.
+    // whole org. Any role whose Estimates scope is narrower than All is scoped by it, not by its name.
     mockAuthAs('dispatcher');
-    mockPrisma.rolePermission.findMany.mockResolvedValue([ownedReadGrant('DISPATCHER')]);
+    mockRoleSwitches({ estimates_scope: 'attached' });
     mockPrisma.estimate.findMany.mockResolvedValue([]);
     mockPrisma.estimate.count.mockResolvedValue(0);
     mockPrisma.estimate.groupBy.mockResolvedValue([]);
@@ -2955,33 +2956,29 @@ describe('#106 estimate enforcement', () => {
     await request(app).get('/api/estimates').set(authHeader('dispatcher'));
 
     const findManyArgs = mockPrisma.estimate.findMany.mock.calls[0][0];
-    expect(findManyArgs.where.lead).toEqual({ lead_assignees: { some: { user_id: TEST_USERS.dispatcher.id } } });
-    // The total count is scoped identically — no fail-open broadening.
+    const attachedOrMine = [{ OR: attachedEstimateWhere(TEST_USERS.dispatcher.id) }, creatorEstimateWhere(TEST_USERS.dispatcher.id)];
+    expect(findManyArgs.where.OR).toEqual(attachedOrMine);
+    // The total count is scoped identically - no fail-open broadening.
     const countArgs = mockPrisma.estimate.count.mock.calls[0][0];
-    expect(countArgs.where.lead).toEqual({ lead_assignees: { some: { user_id: TEST_USERS.dispatcher.id } } });
+    expect(countArgs.where.OR).toEqual(attachedOrMine);
   });
 
-  it('list FAILS CLOSED (id:{in:[]}) for a non-ADMIN role with NO estimate read grant', async () => {
-    // Route guard canDo('read','Estimate') must pass to reach list(), so give a bare unconditional
-    // read for the GUARD only, then strip it for the SCOPE: we model "no read grant" by returning a
-    // grant set whose only Estimate entry is for a different action. scopeWhereForReq finds no
-    // `read Estimate` grant → MATCH_NOTHING → the list can match nothing.
+  it('list reaches only the estimates the person made for a role with View estimates off (the creator rule), and never answers 403', async () => {
     mockAuthAs('dispatcher');
-    mockPrisma.rolePermission.findMany.mockResolvedValue([
-      // Guard satisfier: unconditional read so the request is not 403'd at the route.
-      { role: 'DISPATCHER', action: 'read', subject: 'Estimate' },
-    ]);
+    mockRoleSwitches({ view_estimates: false });
     mockPrisma.estimate.findMany.mockResolvedValue([]);
     mockPrisma.estimate.count.mockResolvedValue(0);
     mockPrisma.estimate.groupBy.mockResolvedValue([]);
     mockPrisma.estimate.aggregate.mockResolvedValue({ _count: 0, _sum: { total_amount: 0 } });
     mockPrisma.invoice.aggregate.mockResolvedValue({ _count: 0, _sum: { amount_due: null } });
 
-    await request(app).get('/api/estimates?status=DRAFT').set(authHeader('dispatcher'));
+    const res = await request(app).get('/api/estimates?status=DRAFT').set(authHeader('dispatcher'));
 
+    expect(res.status).toBe(200);
     const findManyArgs = mockPrisma.estimate.findMany.mock.calls[0][0];
-    // Unconditional read ⇒ scope {} (no restriction); the per-request filter survives untouched,
-    // proving the scope spread is the OUTERMOST key and never clobbers request filters.
+    expect(findManyArgs.where.OR).toEqual([creatorEstimateWhere(TEST_USERS.dispatcher.id)]);
+    expect(findManyArgs.where.id).toBeUndefined();
+    // The per-request filter survives untouched: the scope spread never clobbers request filters.
     expect(findManyArgs.where.status).toBe('DRAFT');
   });
 
@@ -3211,9 +3208,8 @@ describe('#106 estimate enforcement — nested Owned condition (canAccessRow, ne
 
   it('NON-OWNER is blocked from recording payment on another user\'s estimate → 403, no transaction', async () => {
     mockAuthAs('sales');
-    mockPrisma.rolePermission.findMany.mockResolvedValue(
-      ownedConditionedGrants('SALES', 'record_payment'),
-    );
+    // Record payments is a switch now (off in the Sales preset): hold it, reaching only estimates the person is attached to.
+    mockRoleSwitches({ record_payments: true, estimates_scope: 'attached' });
     mockPrisma.estimate.findUnique.mockResolvedValue({
       id: ESTIMATE_FIXTURE.id,
       status: 'SENT',
@@ -3241,9 +3237,7 @@ describe('#106 estimate enforcement — nested Owned condition (canAccessRow, ne
 
   it('OWNER with a conditioned Owned grant can record payment on own estimate → 200 (NOT 500)', async () => {
     mockAuthAs('sales');
-    mockPrisma.rolePermission.findMany.mockResolvedValue(
-      ownedConditionedGrants('SALES', 'record_payment'),
-    );
+    mockRoleSwitches({ record_payments: true, estimates_scope: 'attached' });
     mockPrisma.estimate.findUnique.mockResolvedValue({
       id: ESTIMATE_FIXTURE.id,
       status: 'SENT',
@@ -3267,6 +3261,7 @@ describe('#106 estimate enforcement — nested Owned condition (canAccessRow, ne
         lead: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: record-payment locks the deposit invoice
       };
       return fn(tx);
     });
@@ -3282,15 +3277,12 @@ describe('#106 estimate enforcement — nested Owned condition (canAccessRow, ne
 
   // ─── waiveDeposit() — lifecycle verb, previously had NO per-instance owner check ───
 
-  it('NON-OWNER (conditioned grant) is blocked from waiving a deposit on another user\'s estimate → 403, no transaction', async () => {
-    // DISPATCHER carries waive_deposit by default; here it is a CONDITIONED Owned grant so the
-    // grant-driven scope actually evaluates. The estimate is owned by someone else → scoped
+  it('a person outside their Estimates scope is blocked from waiving a deposit on another user\'s estimate → 403, no transaction', async () => {
+    // DISPATCHER carries Waive deposits by default; with Estimates scope narrowed to Attached the
+    // scope actually evaluates. The estimate is on nobody they are attached to → scoped
     // findFirst sees nothing → 403 before the void transaction.
     mockAuthAs('dispatcher');
-    mockPrisma.rolePermission.findMany.mockResolvedValue([
-      { role: 'DISPATCHER', action: 'waive_deposit', subject: 'Estimate', conditions: { lead: { lead_assignees: { some: { user_id: '{{userId}}' } } } } },
-      { role: 'DISPATCHER', action: 'read', subject: 'Estimate', conditions: { lead: { lead_assignees: { some: { user_id: '{{userId}}' } } } } },
-    ]);
+    mockRoleSwitches({ estimates_scope: 'attached' });
     mockPrisma.estimate.findUnique.mockResolvedValue({
       id: ESTIMATE_SENT_FIXTURE.id,
       status: 'SENT',
@@ -4681,6 +4673,127 @@ describe('POST /api/estimates/:id/send', () => {
     );
   });
 
+  // PRD 10 / S10.4, S10.12 - the person who pressed Send is the sender (their own mailbox, and recorded on the stored
+  // email and on the reply token), for both the plain and the with-deposit estimate email.
+  it('sends the estimate as the user who pressed Send, from their own mailbox', async () => {
+    mockAuthAs('admin');
+    mockPrisma.estimate.findUnique.mockResolvedValue(mockDraftEstimate);
+    mockPrisma.appSetting.findUnique.mockResolvedValue(null);
+    mockPrisma.organization.findUnique.mockResolvedValue({ id: 'org-1', name: 'Test Org', logo_url: null, brand_color: null });
+    mockTransactionForSend(sentEstimate);
+
+    const { sendEstimateEmail } = await import('../lib/email.js');
+    (sendEstimateEmail as any).mockClear?.();
+
+    const res = await request(app)
+      .post(`/api/estimates/${ESTIMATE_FIXTURE.id}/send`)
+      .set(authHeader('admin'))
+      .send({ deposit_required: false });
+
+    expect(res.status).toBe(200);
+    expect(sendEstimateEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        record: expect.objectContaining({ entityType: 'estimate' }),
+        // Sent by hand: from the sender's own mailbox (PRD 10, S10.12), and the sender is the person who pressed Send.
+        handSender: { mailboxId: 'main-mailbox-id', userId: TEST_USERS.admin.id },
+      }),
+    );
+  });
+
+  // PRD 10 / S10.5 - the estimate email is saved on the estimate's job when it has one, on its lead otherwise.
+  // The two never ride together: the tie is a job when there is one, else a lead.
+  it.each([
+    ['plain', false],
+    ['with-deposit', true],
+  ])('saves the %s estimate email on the estimate\'s job when it has one, and on no lead', async (_name, withDeposit) => {
+    mockAuthAs('admin');
+    mockPrisma.estimate.findUnique.mockResolvedValue({
+      ...mockDraftEstimate, lead_id: 'lead-9', job_id: 'job-9', job: { id: 'job-9' }, job_link: { job_number: 'J-0009' },
+    });
+    mockPrisma.appSetting.findUnique.mockResolvedValue(null);
+    mockPrisma.organization.findUnique.mockResolvedValue({ id: 'org-1', name: 'Test Org', logo_url: null, brand_color: null });
+    mockTransactionForSend({
+      ...sentEstimate,
+      invoices: [{ id: 'dep-inv-1', status: 'SENT', kind: 'DEPOSIT', total_amount: 531.25, amount_due: 531.25 }],
+      send_config: { id: 'sc-1', deposit_required: true, deposit_percentage: 50, deposit_amount: 531.25, payment_methods: ['CARD'], message_body: null },
+    });
+    const email = await import('../lib/email.js');
+    const sender = withDeposit ? email.sendEstimateWithDepositEmail : email.sendEstimateEmail;
+    (sender as any).mockClear?.();
+
+    const res = await request(app)
+      .post(`/api/estimates/${ESTIMATE_FIXTURE.id}/send`)
+      .set(authHeader('admin'))
+      .send({ deposit_required: withDeposit, ...(withDeposit ? { payment_methods: ['CARD'] } : {}) });
+
+    expect(res.status).toBe(200);
+    const record = (sender as any).mock.calls[0][0].record;
+    expect(record).toMatchObject({ jobId: 'job-9', jobLabel: 'J-0009', entityType: 'estimate' });
+    expect(record.leadId ?? null).toBeNull();
+  });
+
+  it('saves the estimate email on the estimate\'s lead when it has no job', async () => {
+    mockAuthAs('admin');
+    mockPrisma.estimate.findUnique.mockResolvedValue({ ...mockDraftEstimate, lead_id: 'lead-9', job_id: null, job_link: null });
+    mockPrisma.appSetting.findUnique.mockResolvedValue(null);
+    mockPrisma.organization.findUnique.mockResolvedValue({ id: 'org-1', name: 'Test Org', logo_url: null, brand_color: null });
+    mockTransactionForSend(sentEstimate);
+    const { sendEstimateEmail } = await import('../lib/email.js');
+    (sendEstimateEmail as any).mockClear?.();
+
+    const res = await request(app)
+      .post(`/api/estimates/${ESTIMATE_FIXTURE.id}/send`)
+      .set(authHeader('admin'))
+      .send({ deposit_required: false });
+
+    expect(res.status).toBe(200);
+    const record = (sendEstimateEmail as any).mock.calls[0][0].record;
+    expect(record).toMatchObject({ leadId: 'lead-9', entityType: 'estimate' });
+    expect(record.jobId ?? null).toBeNull();
+  });
+
+  it('sends the with-deposit estimate as the user who pressed Send, from their own mailbox', async () => {
+    mockAuthAs('admin');
+    mockPrisma.estimate.findUnique.mockResolvedValue(mockDraftEstimate);
+    mockPrisma.appSetting.findUnique
+      .mockResolvedValueOnce({ key: 'deposit_percentage', value: '50' })
+      .mockResolvedValueOnce({ key: 'estimate_validity_days', value: '30' });
+    mockPrisma.organization.findUnique.mockResolvedValue({ id: 'org-1', name: 'Test Org', logo_url: null, brand_color: null });
+
+    const sentWithDeposit = {
+      ...sentEstimate,
+      invoices: [{ id: 'dep-inv-1', status: 'SENT', kind: 'DEPOSIT', total_amount: 531.25, amount_due: 531.25 }],
+      send_config: { id: 'sc-1', deposit_required: true, deposit_percentage: 50, deposit_amount: 531.25, payment_methods: ['CARD'], message_body: null },
+    };
+    mockPrisma.$transaction.mockImplementation((fn: (tx: unknown) => Promise<unknown>) => {
+      const tx = {
+        estimate: { update: vi.fn().mockResolvedValue(sentWithDeposit), findUnique: vi.fn().mockResolvedValue(sentWithDeposit) },
+        estimateSendConfig: { create: vi.fn().mockResolvedValue({}), update: vi.fn().mockResolvedValue({}), upsert: vi.fn().mockResolvedValue({}) },
+        invoice: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({ id: 'dep-inv-1' }) },
+        invoiceLineItem: { create: vi.fn().mockResolvedValue({}) },
+        timelineEvent: { create: vi.fn().mockResolvedValue({}) },
+      };
+      return fn(tx);
+    });
+
+    const { sendEstimateWithDepositEmail } = await import('../lib/email.js');
+    (sendEstimateWithDepositEmail as any).mockClear?.();
+
+    const res = await request(app)
+      .post(`/api/estimates/${ESTIMATE_FIXTURE.id}/send`)
+      .set(authHeader('admin'))
+      .send({ deposit_required: true, payment_methods: ['CARD'] });
+
+    expect(res.status).toBe(200);
+    expect(sendEstimateWithDepositEmail).toHaveBeenCalledWith(
+      expect.objectContaining({
+        record: expect.objectContaining({ entityType: 'estimate' }),
+        // Sent by hand: from the sender's own mailbox (PRD 10, S10.12), and the sender is the person who pressed Send.
+        handSender: { mailboxId: 'main-mailbox-id', userId: TEST_USERS.admin.id },
+      }),
+    );
+  });
+
   it('rejects an invalid recipient_override with 400 (schema validation)', async () => {
     mockAuthAs('admin');
     mockPrisma.estimate.findUnique.mockResolvedValue(mockDraftEstimate);
@@ -5020,6 +5133,7 @@ describe('POST /api/estimates/:id/record-payment', () => {
         lead: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: record-payment locks the deposit invoice
       };
       return fn(tx);
     });
@@ -5041,6 +5155,7 @@ describe('POST /api/estimates/:id/record-payment', () => {
         lead: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: record-payment locks the deposit invoice
       };
       txProxy = tx;
       return fn(tx);
@@ -5103,6 +5218,7 @@ describe('POST /api/estimates/:id/record-payment', () => {
         lead: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: record-payment locks the deposit invoice
       };
       txProxy = tx;
       return fn(tx);
@@ -5117,6 +5233,26 @@ describe('POST /api/estimates/:id/record-payment', () => {
     expect((txProxy.payment as any).create).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ method }) }),
     );
+  });
+
+  // Payments go-live slice 04: ACH means an ONLINE bank debit taken through ServWave Payments,
+  // so only the processor flow may create one. A hand-recorded bank payment is BANK_TRANSFER.
+  it('refuses ACH as a hand-recorded payment_method and stores nothing', async () => {
+    mockAuthAs('admin');
+    mockPrisma.estimate.findUnique.mockResolvedValue(draftNoDeposit);
+    mockPrisma.appSetting.findUnique.mockResolvedValue({ value: '50' });
+
+    const res = await request(app)
+      .post(`/api/estimates/${ESTIMATE_FIXTURE.id}/record-payment`)
+      .set(authHeader('admin'))
+      .send({ amount: 500, deposit_percentage: 50, payment_method: 'ACH' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.details).toEqual([
+      expect.objectContaining({ field: 'payment_method', message: expect.stringContaining('Bank Transfer') }),
+    ]);
+    expect(JSON.stringify(res.body)).not.toMatch(/stripe/i);
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
   });
 
   it('creates the deposit invoice + Payment row when none exists yet (DRAFT path)', async () => {
@@ -5140,6 +5276,7 @@ describe('POST /api/estimates/:id/record-payment', () => {
         lead: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: record-payment locks the deposit invoice
       };
       txProxy = tx;
       return fn(tx);
@@ -5200,6 +5337,7 @@ describe('POST /api/estimates/:id/record-payment', () => {
       const tx = {
         estimate: { update: vi.fn().mockResolvedValue(approvedFixture), findUnique: vi.fn().mockResolvedValue(approvedFixture) },
         estimateSendConfig: { create: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: record-payment locks the deposit invoice
         invoice: { findFirst: vi.fn().mockResolvedValue({ id: 'dep-inv-1', amount_due: 500, total_amount: 500 }), update: vi.fn().mockResolvedValue({}) },
         payment: { create: vi.fn().mockResolvedValue({}) },
         lead: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
@@ -5233,6 +5371,7 @@ describe('POST /api/estimates/:id/record-payment', () => {
       const tx = {
         estimate: { update: vi.fn().mockResolvedValue(approvedFixture), findUnique: vi.fn().mockResolvedValue(approvedFixture) },
         estimateSendConfig: { create: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: record-payment locks the deposit invoice
         deposit: { create: vi.fn().mockResolvedValue({}), update: vi.fn().mockResolvedValue({}) },
         invoice: { findFirst: vi.fn().mockResolvedValue({ id: 'dep-inv-1', amount_due: 500, total_amount: 500 }), update: vi.fn().mockResolvedValue({}) },
         payment: { create: vi.fn().mockResolvedValue({}) },
@@ -5297,8 +5436,10 @@ describe('POST /api/estimates/:id/record-payment', () => {
     expect(res.status).toBe(403);
   });
 
-  it('technician is rejected (403)', async () => {
+  it('a technician without Record payments is rejected (403)', async () => {
     mockAuthAs('technician');
+    // The Technician preset holds Record payments; this person has it turned off.
+    mockRoleSwitches({ record_payments: false });
 
     const res = await request(app)
       .post(`/api/estimates/${ESTIMATE_FIXTURE.id}/record-payment`)
@@ -5311,6 +5452,10 @@ describe('POST /api/estimates/:id/record-payment', () => {
   it('rejects when estimate already WON', async () => {
     mockAuthAs('admin');
     mockPrisma.estimate.findUnique.mockResolvedValue({ ...draftNoDeposit, status: 'WON' });
+    // Slice 27: a WON estimate is judged under the deposit's lock; with no deposit invoice to pay it refuses.
+    mockPrisma.$transaction.mockImplementation((fn: (tx: unknown) => Promise<unknown>) =>
+      fn({ $executeRaw: vi.fn().mockResolvedValue(0), invoice: { findFirst: vi.fn().mockResolvedValue(null) } }),
+    );
 
     const res = await request(app)
       .post(`/api/estimates/${ESTIMATE_FIXTURE.id}/record-payment`)
@@ -5400,6 +5545,7 @@ describe('POST /api/estimates/:id/record-payment', () => {
         lead: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: record-payment locks the deposit invoice
       };
       txProxy = tx;
       return fn(tx);
@@ -5473,6 +5619,7 @@ describe('POST /api/estimates/:id/record-payment', () => {
         lead: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: record-payment locks the deposit invoice
       };
       return fn(tx);
     });
@@ -5519,6 +5666,7 @@ describe('POST /api/estimates/:id/record-payment', () => {
         lead: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: record-payment locks the deposit invoice
       };
       return fn(tx);
     });
@@ -5548,7 +5696,9 @@ describe('POST /api/estimates/:id/cancel', () => {
       fn({
         estimate: { update: vi.fn().mockResolvedValue(result) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
-        invoice: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        // Slice 15: the deposit void locks the deposits, then reads the unpaid ones (none here).
+        $executeRaw: vi.fn().mockResolvedValue(0),
+        invoice: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
       }),
     );
   }
@@ -5816,6 +5966,8 @@ describe('POST /api/estimates/:id/mark-sent', () => {
 
   it('DISPATCHER cannot mark-sent (no send grant)', async () => {
     mockAuthAs('dispatcher');
+    // Not the creator of this estimate either, so the creator rule opens nothing.
+    mockPrisma.estimate.findFirst.mockResolvedValue(null);
 
     const res = await request(app)
       .post(`/api/estimates/${ESTIMATE_FIXTURE.id}/mark-sent`)
@@ -5975,6 +6127,8 @@ describe('PATCH /api/estimates/:id/status', () => {
 
   it('DISPATCHER cannot set estimate status (no update grant)', async () => {
     mockAuthAs('dispatcher');
+    // Not the creator of this estimate either, so the creator rule opens nothing.
+    mockPrisma.estimate.findFirst.mockResolvedValue(null);
 
     const res = await request(app)
       .patch(`/api/estimates/${ESTIMATE_FIXTURE.id}/status`)
@@ -6125,8 +6279,10 @@ describe('PATCH /api/estimates/:id/status — unordered (Spec B1)', () => {
         lead: { updateMany: captured.leadUpdateMany },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateSendConfig: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
-        invoice: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        // Slice 15: the deposit void reads the unpaid deposits under their lock (none here).
+        invoice: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: record-payment locks the deposit invoice (slice 15: and the deposit void)
       }),
     );
     return captured;
@@ -6783,8 +6939,9 @@ describe('POST /api/estimates/:id/approve-internal', () => {
     expect(res.status).toBe(400);
   });
 
-  it('DISPATCHER cannot approve-internal (no approve grant)', async () => {
+  it('a person with Approve estimates off cannot approve-internal', async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches({ approve_estimates: false });
 
     const res = await request(app)
       .post(`/api/estimates/${ESTIMATE_SENT_FIXTURE.id}/approve-internal`)
@@ -6802,7 +6959,9 @@ describe('POST /api/estimates/:id/decline-internal', () => {
         estimate: { update: vi.fn().mockResolvedValue(result) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateSendConfig: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
-        invoice: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        // Slice 15: the deposit void locks the deposits, then reads the unpaid ones (none here).
+        $executeRaw: vi.fn().mockResolvedValue(0),
+        invoice: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
       }),
     );
   }
@@ -6827,7 +6986,9 @@ describe('POST /api/estimates/:id/decline-internal', () => {
         },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateSendConfig: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
-        invoice: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        // Slice 15: the deposit void locks the deposits, then reads the unpaid ones (none here).
+        $executeRaw: vi.fn().mockResolvedValue(0),
+        invoice: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
       }),
     );
 
@@ -6862,8 +7023,9 @@ describe('POST /api/estimates/:id/decline-internal', () => {
     expect(res.status).toBe(400);
   });
 
-  it('DISPATCHER cannot decline-internal (no decline grant)', async () => {
+  it('a person with Decline estimates off cannot decline-internal', async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches({ decline_estimates: false });
 
     const res = await request(app)
       .post(`/api/estimates/${ESTIMATE_SENT_FIXTURE.id}/decline-internal`)
@@ -7689,6 +7851,7 @@ describe('POST /api/estimates/:id/revise', () => {
       estimate_number: 'E00002',
       lead: { lead_assignees: [{ user_id: TEST_USERS.admin.id }] },
     });
+    mockPrisma.estimate.findFirst.mockResolvedValue(null); // outside their reach
 
     const res = await request(app)
       .post(`/api/estimates/${ESTIMATE_SENT_FIXTURE.id}/revise`)
@@ -7810,6 +7973,7 @@ describe('one WON estimate per lead', () => {
         lead: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: record-payment locks the deposit invoice
       }),
     );
 
@@ -7851,6 +8015,7 @@ describe('one WON estimate per lead', () => {
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateSendConfig: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
         estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: record-payment locks the deposit invoice
       };
       return fn(tx);
     });
@@ -7876,8 +8041,16 @@ describe('one WON estimate per lead', () => {
     // Another WON estimate already exists on the lead. SERV10X-61 allows multiple
     // simultaneously-WON estimates per lead, so waiving the deposit (→ WON) still succeeds.
     mockPrisma.estimate.count.mockResolvedValue(1);
-    mockPrisma.$transaction.mockImplementation(async (fn: (tx: typeof mockPrisma) => Promise<unknown>) => fn(mockPrisma));
-    mockPrisma.invoice.update.mockResolvedValue({});
+    // Slice 15: the deposit void locks the deposit, then reads the unpaid one under the lock.
+    mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => fn({
+      ...mockPrisma,
+      $executeRaw: vi.fn().mockResolvedValue(1),
+      invoice: {
+        ...mockPrisma.invoice,
+        findMany: vi.fn().mockResolvedValue([{ id: 'dep-inv-1', invoice_number: 'D-1', status: 'SENT' }]),
+        updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+      },
+    }));
     mockPrisma.estimate.update.mockResolvedValue({});
     mockPrisma.lead.updateMany.mockResolvedValue({ count: 1 });
     mockPrisma.timelineEvent.create.mockResolvedValue({});
@@ -7918,6 +8091,7 @@ describe('one WON estimate per lead', () => {
         lead: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: record-payment locks the deposit invoice
       }),
     );
 
@@ -7955,6 +8129,7 @@ describe('one WON estimate per lead', () => {
         lead: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: record-payment locks the deposit invoice
       }),
     );
 
@@ -8018,7 +8193,7 @@ describe('GET /api/estimates/:id/public', () => {
       mockPrisma.estimate.findFirst.mockResolvedValue(withMethods(['CARD', 'CHECK', 'CASH']));
       mockPrisma.appSetting.findUnique.mockResolvedValue(null);
       mockPrisma.organization.findUnique.mockResolvedValue({
-        id: 'org-test-1', name: 'Alpha Doors',
+        id: 'org-test-1', name: 'Example Doors',
         accepted_payment_methods: ['CARD', 'CHECK', 'CASH'],
         stripe_charges_enabled: false,
       });
@@ -8030,15 +8205,17 @@ describe('GET /api/estimates/:id/public', () => {
       expect(res.body.estimate.send_config.payment_methods).toEqual(['CHECK', 'CASH']);
     });
 
-    it('strips CARD when an AppSetting override excludes it even though charges are enabled', async () => {
+    // Payments go-live slice 19: the legacy `available_payment_methods` settings row is no longer
+    // read (it shadowed the owner's saved defaults). The org's accepted methods are the one list.
+    it('strips CARD when the org accepted methods leave it out even though charges are enabled', async () => {
       mockPrisma.estimate.findFirst.mockResolvedValue(withMethods(['CARD', 'CHECK']));
       mockPrisma.appSetting.findUnique.mockResolvedValue({
         key: 'available_payment_methods',
-        value: JSON.stringify(['CHECK', 'CASH']),
+        value: JSON.stringify(['CARD', 'CHECK', 'CASH']),
       });
       mockPrisma.organization.findUnique.mockResolvedValue({
-        id: 'org-test-1', name: 'Alpha Doors',
-        accepted_payment_methods: ['CARD', 'CHECK'],
+        id: 'org-test-1', name: 'Example Doors',
+        accepted_payment_methods: ['CHECK', 'CASH'],
         stripe_charges_enabled: true,
       });
 
@@ -8053,7 +8230,7 @@ describe('GET /api/estimates/:id/public', () => {
       mockPrisma.estimate.findFirst.mockResolvedValue(withMethods(['CARD', 'EXTERNAL_CARD', 'CHECK']));
       mockPrisma.appSetting.findUnique.mockResolvedValue(null);
       mockPrisma.organization.findUnique.mockResolvedValue({
-        id: 'org-test-1', name: 'Alpha Doors',
+        id: 'org-test-1', name: 'Example Doors',
         accepted_payment_methods: ['CARD', 'CHECK'],
         stripe_charges_enabled: true,
       });
@@ -8112,15 +8289,23 @@ describe('GET /api/estimates/:id/public', () => {
     expect(res.body.expired).toBe(true);
   });
 
+  // Payments go-live slice 19: bank-transfer instructions are the org's own field (moved off the
+  // legacy setting row by the migration) and ride with the method, through the options resolver.
   it('returns payment_instructions', async () => {
     mockPrisma.estimate.findFirst.mockResolvedValue({
       ...ESTIMATE_SENT_FIXTURE,
       valid_until: null,
+      send_config: { deposit_required: false, payment_methods: ['BANK_TRANSFER', 'CHECK', 'CASH'] },
       lead: { customer: { first_name: 'John', last_name: 'Doe', company_name: null } },
+    });
+    mockPrisma.organization.findUnique.mockResolvedValue({
+      id: 'org-test-1', name: 'Harbor Locksmiths',
+      accepted_payment_methods: ['BANK_TRANSFER', 'CHECK', 'CASH'],
+      stripe_charges_enabled: false,
+      bank_transfer_instructions: 'Wire to account X',
     });
     mockPrisma.appSetting.findUnique
       .mockResolvedValueOnce({ key: 'estimate_terms', value: 'Terms here' })
-      .mockResolvedValueOnce({ key: 'bank_transfer_instructions', value: 'Wire to account X' })
       .mockResolvedValueOnce({ key: 'check_instructions', value: 'Mail check to...' })
       .mockResolvedValueOnce({ key: 'cash_instructions', value: 'Pay in office' });
 
@@ -8140,7 +8325,7 @@ describe('GET /api/estimates/:id/public', () => {
       lead: { customer: { first_name: 'John', last_name: 'Doe', company_name: null } },
     });
     mockPrisma.organization.findUnique.mockResolvedValueOnce({
-      name: 'Alpha Doors', logo_url: null, brand_color: '#242424',
+      name: 'Example Doors', logo_url: null, brand_color: '#242424',
       email: 'info@alpha.com', website: null, estimate_terms: 'Sample terms.',
       estimate_notes: 'Notes', estimate_payment_terms: 'Payment terms', country: 'US',
     });
@@ -8151,7 +8336,7 @@ describe('GET /api/estimates/:id/public', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.organization).toMatchObject({
-      name: 'Alpha Doors',
+      name: 'Example Doors',
       brand_color: '#242424',
       email: 'info@alpha.com',
       estimate_terms: 'Sample terms.',
@@ -8160,8 +8345,9 @@ describe('GET /api/estimates/:id/public', () => {
     expect(res.body.organization).not.toHaveProperty('country');
   });
 
-  // ─── Slice 4 (card service fee) — deposit preview, display-only per D8 ───
-  it('returns service_fee_bps and a computed service_fee_preview off the deposit total when a deposit is required', async () => {
+  // Payments go-live slice 02 (D9) — a card deposit carries no service fee, so the public payload
+  // quotes none. The page reads an absent preview as zero.
+  it('quotes no card service fee on a public estimate with a deposit', async () => {
     mockPrisma.estimate.findFirst.mockResolvedValue({
       ...ESTIMATE_SENT_FIXTURE,
       send_config: { deposit_required: true, payment_methods: ['CARD', 'CHECK'] },
@@ -8170,7 +8356,7 @@ describe('GET /api/estimates/:id/public', () => {
     });
     mockPrisma.appSetting.findUnique.mockResolvedValue(null);
     mockPrisma.organization.findUnique.mockResolvedValue({
-      id: 'org-test-1', name: 'Alpha Doors',
+      id: 'org-test-1', name: 'Test Org',
       accepted_payment_methods: ['CARD', 'CHECK'],
       stripe_charges_enabled: true,
     });
@@ -8179,56 +8365,8 @@ describe('GET /api/estimates/:id/public', () => {
       .get(`/api/estimates/${ESTIMATE_SENT_FIXTURE.id}/public?token=${ESTIMATE_SENT_FIXTURE.public_token}`);
 
     expect(res.status).toBe(200);
-    expect(res.body.service_fee_bps).toBe(350);
-    // $500 deposit → 50000 cents × 350bps / 10000 = 1750 cents = $17.50.
-    expect(res.body.service_fee_preview).toBe(17.50);
-  });
-
-  it('returns a zero service_fee_bps/preview when no deposit is required', async () => {
-    mockPrisma.estimate.findFirst.mockResolvedValue({
-      ...ESTIMATE_SENT_FIXTURE,
-      send_config: { deposit_required: false, payment_methods: ['CARD', 'CHECK'] },
-      invoices: [],
-      lead: { customer: { first_name: 'John', last_name: 'Doe', company_name: null } },
-    });
-    mockPrisma.appSetting.findUnique.mockResolvedValue(null);
-    mockPrisma.organization.findUnique.mockResolvedValue({
-      id: 'org-test-1', name: 'Alpha Doors',
-      accepted_payment_methods: ['CARD', 'CHECK'],
-      stripe_charges_enabled: true,
-    });
-
-    const res = await request(app)
-      .get(`/api/estimates/${ESTIMATE_SENT_FIXTURE.id}/public?token=${ESTIMATE_SENT_FIXTURE.public_token}`);
-
-    expect(res.status).toBe(200);
-    expect(res.body.service_fee_bps).toBe(0);
-    expect(res.body.service_fee_preview).toBe(0);
-  });
-
-  // "Is there a deposit to charge" is the ONLY thing that can zero the preview here - never who
-  // the org is. This org row carries the retired opt-out flag set to false; it must be ignored.
-  it('previews the full service fee on a deposit with no org opt-out available', async () => {
-    mockPrisma.estimate.findFirst.mockResolvedValue({
-      ...ESTIMATE_SENT_FIXTURE,
-      send_config: { deposit_required: true, payment_methods: ['CARD', 'CHECK'] },
-      invoices: [{ id: 'dep-inv-1', status: 'SENT', total_amount: 500, amount_due: 500 }],
-      lead: { customer: { first_name: 'John', last_name: 'Doe', company_name: null } },
-    });
-    mockPrisma.appSetting.findUnique.mockResolvedValue(null);
-    mockPrisma.organization.findUnique.mockResolvedValue({
-      id: 'org-test-1', name: 'Alpha Doors',
-      accepted_payment_methods: ['CARD', 'CHECK'],
-      stripe_charges_enabled: true,
-      card_service_fee_enabled: false, // stale/ignored - must not suppress anything
-    });
-
-    const res = await request(app)
-      .get(`/api/estimates/${ESTIMATE_SENT_FIXTURE.id}/public?token=${ESTIMATE_SENT_FIXTURE.public_token}`);
-
-    expect(res.status).toBe(200);
-    expect(res.body.service_fee_bps).toBe(350);
-    expect(res.body.service_fee_preview).toBe(17.50);
+    expect(res.body).not.toHaveProperty('service_fee_bps');
+    expect(res.body).not.toHaveProperty('service_fee_preview');
   });
 });
 
@@ -8326,6 +8464,7 @@ describe('POST /api/estimates/:id/approve', () => {
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateSendConfig: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
         estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: record-payment locks the deposit invoice
       }),
     );
     mockPrisma.estimate.findUnique.mockResolvedValue(null);
@@ -8349,6 +8488,7 @@ describe('POST /api/estimates/:id/approve', () => {
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateSendConfig: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
         estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: record-payment locks the deposit invoice
       };
       return fn(tx);
     });
@@ -8384,6 +8524,7 @@ describe('POST /api/estimates/:id/approve', () => {
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateSendConfig: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
         estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: record-payment locks the deposit invoice
       };
       return fn(tx);
     };
@@ -8477,124 +8618,9 @@ describe('POST /api/estimates/:id/approve', () => {
     expect(mockCreateCheckoutSession).toHaveBeenCalled();
   });
 
-  // ── Task 3.1: application fee plumbing — double guard exercised at the call site ──
-  it('passes a positive application_fee_amount when the org has a connected Stripe account', async () => {
-    const fixture = {
-      ...sentFixtureWithDeposit,
-      invoices: [{ id: 'dep-inv-1', status: 'SENT', total_amount: 1000, amount_due: 1000 }],
-      organization: { ...sentFixtureWithDeposit.organization, platform_fee_bps: 50 },
-    };
-    mockPrisma.estimate.findFirst
-      .mockResolvedValueOnce(fixture)  // initial fetch
-      .mockResolvedValueOnce({ ...ESTIMATE_SENT_FIXTURE, status: 'SENT' });  // re-fetch after session
-    mockPrisma.estimate.update.mockResolvedValue({ ...ESTIMATE_SENT_FIXTURE, status: 'SENT' });
-    mockIsStripeConfigured.mockReturnValue(true);
-    // getStripeForOrg is globally mocked to a fixed { stripe: {}, stripeAccount: undefined } —
-    // override it here to simulate a genuinely connected account (§ getStripeForOrg contract).
-    mockGetStripeForOrg.mockReturnValueOnce({ stripe: {}, stripeAccount: 'acct_test' });
-    mockCreateCheckoutSession.mockResolvedValue({ id: 'cs_fee_1', url: 'https://checkout.stripe.com/fee1' });
-
-    const res = await request(app)
-      .post(`/api/estimates/${ESTIMATE_SENT_FIXTURE.id}/approve?token=${ESTIMATE_SENT_FIXTURE.public_token}`)
-      .send({ signature_data: 'data:image/png;base64,abc123', payment_method: 'CARD' });
-
-    expect(res.status).toBe(200);
-    // The application fee is the D2 remainder of the service fee, not platform_fee_bps: $1,000
-    // deposit face → 3500c service fee less the estimated Stripe cut = 468c. depositAmount stays
-    // 1000 — the org still receives face value; the fee rides on top, funded by the customer.
-    expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
-      expect.objectContaining({ depositAmount: 1000, applicationFeeAmount: 468 }),
-      expect.objectContaining({ stripeAccount: 'acct_test' }),
-    );
-  });
-
-  it('omits application_fee_amount when the org has no connected Stripe account, even with platform_fee_bps set (legacy platform-account guard)', async () => {
-    const fixture = {
-      ...sentFixtureWithDeposit,
-      invoices: [{ id: 'dep-inv-1', status: 'SENT', total_amount: 1000, amount_due: 1000 }],
-      organization: {
-        id: 'org-test-1',
-        stripe_account_id: null,
-        stripe_charges_enabled: true,
-        accepted_payment_methods: ['CARD', 'CHECK', 'BANK_TRANSFER'],
-        platform_fee_bps: 50,
-      },
-    };
-    mockPrisma.estimate.findFirst
-      .mockResolvedValueOnce(fixture)
-      .mockResolvedValueOnce({ ...ESTIMATE_SENT_FIXTURE, status: 'SENT' });
-    mockPrisma.estimate.update.mockResolvedValue({ ...ESTIMATE_SENT_FIXTURE, status: 'SENT' });
-    mockIsStripeConfigured.mockReturnValue(true);
-    // Default mock: getStripeForOrg → { stripe: {}, stripeAccount: undefined } (no override) —
-    // models a legacy/platform-account org, which must never get an application_fee_amount.
-    mockCreateCheckoutSession.mockResolvedValue({ id: 'cs_fee_2', url: 'https://checkout.stripe.com/fee2' });
-
-    const res = await request(app)
-      .post(`/api/estimates/${ESTIMATE_SENT_FIXTURE.id}/approve?token=${ESTIMATE_SENT_FIXTURE.public_token}`)
-      .send({ signature_data: 'data:image/png;base64,abc123', payment_method: 'CARD' });
-
-    expect(res.status).toBe(200);
-    const [options, ctxArg] = mockCreateCheckoutSession.mock.calls[0];
-    expect(options.depositAmount).toBe(1000); // face value, unaffected
-    expect(options.applicationFeeAmount).toBeUndefined();
-    expect(ctxArg.stripeAccount).toBeUndefined();
-  });
-
-  // ─── Slice 2 (card service fee) — checkout wiring ─────────────────────────
-  it('passes a service fee (D2 replacing the platform fee) on any deposit checkout with a connected account', async () => {
-    const fixture = {
-      ...sentFixtureWithDeposit,
-      invoices: [{ id: 'dep-inv-1', status: 'SENT', total_amount: 1000, amount_due: 1000 }],
-      organization: { ...sentFixtureWithDeposit.organization },
-    };
-    mockPrisma.estimate.findFirst
-      .mockResolvedValueOnce(fixture)
-      .mockResolvedValueOnce({ ...ESTIMATE_SENT_FIXTURE, status: 'SENT' });
-    mockPrisma.estimate.update.mockResolvedValue({ ...ESTIMATE_SENT_FIXTURE, status: 'SENT' });
-    mockIsStripeConfigured.mockReturnValue(true);
-    mockGetStripeForOrg.mockReturnValueOnce({ stripe: {}, stripeAccount: 'acct_fee_test' });
-    mockCreateCheckoutSession.mockResolvedValue({ id: 'cs_fee_3', url: 'https://checkout.stripe.com/fee3' });
-
-    const res = await request(app)
-      .post(`/api/estimates/${ESTIMATE_SENT_FIXTURE.id}/approve?token=${ESTIMATE_SENT_FIXTURE.public_token}`)
-      .send({ signature_data: 'data:image/png;base64,abc123', payment_method: 'CARD' });
-
-    expect(res.status).toBe(200);
-    // $1,000 deposit face value → 3.5% = $35.00 (3500c) service fee; the application fee is the
-    // D2-derived remainder, never a flat platform-fee percentage.
-    expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
-      expect.objectContaining({ depositAmount: 1000, serviceFeeAmount: 3500, applicationFeeAmount: 468 }),
-      expect.objectContaining({ stripeAccount: 'acct_fee_test' }),
-    );
-  });
-
-  // The switch is gone: an org row carrying leftover opt-out-shaped fields changes nothing,
-  // because the fee math never reads the org at all.
-  it('charges the service fee regardless of what the org row says', async () => {
-    const fixture = {
-      ...sentFixtureWithDeposit,
-      invoices: [{ id: 'dep-inv-1', status: 'SENT', total_amount: 1000, amount_due: 1000 }],
-      // stale/ignored fields - must not suppress anything
-      organization: { ...sentFixtureWithDeposit.organization, platform_fee_bps: 50, card_service_fee_enabled: false },
-    };
-    mockPrisma.estimate.findFirst
-      .mockResolvedValueOnce(fixture)
-      .mockResolvedValueOnce({ ...ESTIMATE_SENT_FIXTURE, status: 'SENT' });
-    mockPrisma.estimate.update.mockResolvedValue({ ...ESTIMATE_SENT_FIXTURE, status: 'SENT' });
-    mockIsStripeConfigured.mockReturnValue(true);
-    mockGetStripeForOrg.mockReturnValueOnce({ stripe: {}, stripeAccount: 'acct_fee_test_2' });
-    mockCreateCheckoutSession.mockResolvedValue({ id: 'cs_fee_4', url: 'https://checkout.stripe.com/fee4' });
-
-    const res = await request(app)
-      .post(`/api/estimates/${ESTIMATE_SENT_FIXTURE.id}/approve?token=${ESTIMATE_SENT_FIXTURE.public_token}`)
-      .send({ signature_data: 'data:image/png;base64,abc123', payment_method: 'CARD' });
-
-    expect(res.status).toBe(200);
-    expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
-      expect.objectContaining({ depositAmount: 1000, serviceFeeAmount: 3500, applicationFeeAmount: 468 }),
-      expect.objectContaining({ stripeAccount: 'acct_fee_test_2' }),
-    );
-  });
+  // Payments go-live slice 02 (D9): the deposit checkout's "no fee line, no application fee"
+  // contract is asserted on the params that reach the processor client in
+  // checkout-pricing-routes.test.ts.
 
   // ── D6 (2026-07-21): PENDING = "customer approved + signed, deposit not yet processed" ──
   // The card lane used to leave the row at SENT while writing the signature, so a customer who
@@ -8699,15 +8725,15 @@ describe('POST /api/estimates/:id/approve', () => {
   });
 
   // #927 - the estimate-side twin of the invoice fix in c16f1083. Charges are genuinely enabled
-  // (no race, no TOCTOU) but an AppSetting override has narrowed the org's accepted methods to
-  // exclude CARD. stripe_charges_enabled alone would wrongly wave this through to checkout.
-  it('rejects CARD when charges are enabled but an AppSetting override excludes CARD', async () => {
-    mockPrisma.estimate.findFirst.mockResolvedValue(sentFixtureWithDeposit);
-    mockIsStripeConfigured.mockReturnValue(true);
-    (prisma.appSetting.findUnique as any).mockResolvedValue({
-      key: 'available_payment_methods',
-      value: JSON.stringify(['CHECK', 'CASH']),
+  // (no race, no TOCTOU) but the org's accepted methods exclude CARD. stripe_charges_enabled
+  // alone would wrongly wave this through to checkout. (Slice 19: the legacy settings row is no
+  // longer a source, so the org list is what narrows it.)
+  it('rejects CARD when charges are enabled but the org accepted methods exclude CARD', async () => {
+    mockPrisma.estimate.findFirst.mockResolvedValue({
+      ...sentFixtureWithDeposit,
+      organization: { ...sentFixtureWithDeposit.organization, stripe_charges_enabled: true, accepted_payment_methods: ['CHECK', 'CASH'] },
     });
+    mockIsStripeConfigured.mockReturnValue(true);
 
     const res = await request(app)
       .post(`/api/estimates/${ESTIMATE_SENT_FIXTURE.id}/approve?token=${ESTIMATE_SENT_FIXTURE.public_token}`)
@@ -8947,6 +8973,7 @@ describe('POST /api/estimates/:id/approve', () => {
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateSendConfig: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
         estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: record-payment locks the deposit invoice
       };
       return fn(tx);
     });
@@ -9096,6 +9123,7 @@ describe('POST /api/estimates/:id/approve', () => {
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateSendConfig: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
         estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: record-payment locks the deposit invoice
       };
       return fn(tx);
     });
@@ -9129,6 +9157,7 @@ describe('POST /api/estimates/:id/approve', () => {
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateSendConfig: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
         estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: record-payment locks the deposit invoice
       };
       return fn(tx);
     });
@@ -9158,6 +9187,7 @@ describe('POST /api/estimates/:id/approve', () => {
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateSendConfig: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
         estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: record-payment locks the deposit invoice
       };
       return fn(tx);
     });
@@ -9185,7 +9215,9 @@ describe('POST /api/estimates/:id/decline', () => {
         estimate: {
           update: vi.fn().mockResolvedValue({ ...ESTIMATE_SENT_FIXTURE, status: 'DECLINED' }),
         },
-        invoice: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        // Slice 15: the deposit void locks the deposits, then reads the unpaid ones (none here).
+        $executeRaw: vi.fn().mockResolvedValue(0),
+        invoice: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateSendConfig: { deleteMany: vi.fn().mockResolvedValue({ count: 0 }) },
       };
@@ -9237,7 +9269,10 @@ describe('POST /api/estimates/:id/decline', () => {
         estimate: {
           update: vi.fn().mockResolvedValue({ ...ESTIMATE_SENT_FIXTURE, status: 'DECLINED' }),
         },
+        // Slice 15: the deposit void locks the deposits, reads the unpaid one, then voids it.
+        $executeRaw: vi.fn().mockResolvedValue(0),
         invoice: {
+          findMany: vi.fn().mockResolvedValue([{ id: 'dep-inv-1', invoice_number: 'D-1', status: 'SENT' }]),
           updateMany: vi.fn().mockImplementation(() => {
             depositInvoiceVoided = true;
             return Promise.resolve({ count: 1 });
@@ -9372,22 +9407,17 @@ describe('GET /api/estimates/stats', () => {
       .set(authHeader('sales'));
 
     expect(res.status).toBe(200);
-    // SERV10X-61 §8 - the stats scope mirrors the list scope: own-via-lead OR own
-    // lead-less-created (under `where.OR`).
-    const salesFilter = {
-      OR: [
-        { lead: { lead_assignees: { some: { user_id: TEST_USERS.sales.id } } } },
-        { AND: [{ lead_id: null }, { created_by: TEST_USERS.sales.id }] },
-      ],
-    };
+    // The stats scope mirrors the list scope: the estimates of the leads they are an assignee of.
+    const salesFilter = ownLeadsEstimateWhere(TEST_USERS.sales.id);
     // Every estimate count + aggregate must carry the SALES lead-owner scope, so a
     // SALES user's summary cards never sum estimates they cannot see in the list.
     expect(mockPrisma.estimate.count.mock.calls.length).toBeGreaterThan(0);
+    const mineOrCreated = [salesFilter, creatorEstimateWhere(TEST_USERS.sales.id)];
     for (const call of mockPrisma.estimate.count.mock.calls) {
-      expect(call[0].where).toMatchObject(salesFilter);
+      expect(call[0].where.OR).toEqual(mineOrCreated);
     }
     for (const call of mockPrisma.estimate.aggregate.mock.calls) {
-      expect(call[0].where).toMatchObject(salesFilter);
+      expect(call[0].where.OR).toEqual(mineOrCreated);
     }
   });
 });
@@ -9417,14 +9447,17 @@ describe('GET /api/state-tax-rates', () => {
     expect(res.status).toBe(401);
   });
 
-  it('blocks TECHNICIAN access', async () => {
+  // Roles & Permissions S01.14 - the tax picker on every form fills from this list: reference data, so no role is refused.
+  it('answers TECHNICIAN too', async () => {
     mockAuthAs('technician');
+    mockPrisma.stateTaxRate.findMany.mockResolvedValue([STATE_TAX_FIXTURE]);
+    mockPrisma.orgTaxRate.findMany.mockResolvedValue([]);
 
     const res = await request(app)
       .get('/api/state-tax-rates')
       .set(authHeader('technician'));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(200);
   });
 });
 
@@ -9899,19 +9932,28 @@ describe('POST /api/estimates/:id/waive-deposit', () => {
     invoices: [{ id: 'dep-inv-1', status: 'SENT' }],
   };
 
+  // Slice 15: the deposit is voided under its lock (voidUnpaidDeposits): lock, read the unpaid
+  // deposit, void it. Returns the void write so a test can check what was voided.
   function mockTransaction() {
-    mockPrisma.$transaction.mockImplementation(async (fn: (tx: typeof mockPrisma) => Promise<unknown>) => {
-      return fn(mockPrisma);
-    });
+    const voidDeposits = vi.fn().mockResolvedValue({ count: 1 });
+    mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => fn({
+      ...mockPrisma,
+      $executeRaw: vi.fn().mockResolvedValue(1),
+      invoice: {
+        ...mockPrisma.invoice,
+        findMany: vi.fn().mockResolvedValue([{ id: 'dep-inv-1', invoice_number: 'D-1', status: 'SENT' }]),
+        updateMany: voidDeposits,
+      },
+    }));
+    return voidDeposits;
   }
 
   it('admin can waive deposit on SENT estimate', async () => {
     mockAuthAs('admin');
-    mockTransaction();
+    const voidDeposits = mockTransaction();
     mockPrisma.estimate.findUnique
       .mockResolvedValueOnce(SENT_WITH_DEPOSIT)
       .mockResolvedValueOnce(ESTIMATE_APPROVED_FIXTURE);
-    mockPrisma.invoice.update.mockResolvedValue({});
     mockPrisma.estimate.update.mockResolvedValue({});
     mockPrisma.lead.updateMany.mockResolvedValue({ count: 1 });
     mockPrisma.timelineEvent.create.mockResolvedValue({});
@@ -9924,18 +9966,17 @@ describe('POST /api/estimates/:id/waive-deposit', () => {
     expect(res.status).toBe(200);
     expect(res.body.estimate).toBeDefined();
     // The kind=DEPOSIT invoice is voided (the SOLE deposit document).
-    expect(mockPrisma.invoice.update).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: 'dep-inv-1' }, data: expect.objectContaining({ status: 'VOIDED' }) }),
+    expect(voidDeposits).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ id: { in: ['dep-inv-1'] } }), data: expect.objectContaining({ status: 'VOIDED' }) }),
     );
   });
 
   it('voids the kind=DEPOSIT invoice (the sole deposit document)', async () => {
     mockAuthAs('admin');
-    mockTransaction();
+    const voidDeposits = mockTransaction();
     mockPrisma.estimate.findUnique
       .mockResolvedValueOnce(PENDING_WITH_DEPOSIT)
       .mockResolvedValueOnce(ESTIMATE_APPROVED_FIXTURE);
-    mockPrisma.invoice.update.mockResolvedValue({});
     mockPrisma.estimate.update.mockResolvedValue({});
     mockPrisma.lead.updateMany.mockResolvedValue({ count: 1 });
     mockPrisma.timelineEvent.create.mockResolvedValue({});
@@ -9946,8 +9987,8 @@ describe('POST /api/estimates/:id/waive-deposit', () => {
       .send({ action: 'waive' });
 
     expect(res.status).toBe(200);
-    expect(mockPrisma.invoice.update).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { id: 'dep-inv-1' }, data: expect.objectContaining({ status: 'VOIDED', voided_reason: 'Deposit waived' }) }),
+    expect(voidDeposits).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ id: { in: ['dep-inv-1'] } }), data: expect.objectContaining({ status: 'VOIDED', voided_reason: 'Deposit waived' }) }),
     );
   });
 
@@ -10007,6 +10048,105 @@ describe('POST /api/estimates/:id/waive-deposit', () => {
     expect(res.body.error).toMatch(/No active deposit/);
   });
 
+  // Slice 27 (slice 15 acceptance): a part-paid deposit says so, instead of "No active deposit".
+  it('a part-paid deposit answers 409 and says to refund the payment instead', async () => {
+    mockAuthAs('admin');
+    mockPrisma.estimate.findUnique.mockResolvedValue({
+      ...ESTIMATE_SENT_FIXTURE,
+      invoices: [{ id: 'dep-inv-1', status: 'PARTIAL' }],
+    });
+
+    const res = await request(app)
+      .post(`/api/estimates/${ESTIMATE_SENT_FIXTURE.id}/waive-deposit`)
+      .set(authHeader('admin'))
+      .send({ action: 'waive' });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('This deposit has a payment on it or one still clearing, so it cannot be waived. Refund the payment instead.');
+  });
+
+  // Slice 27: under pay later the estimate is already WON with its deposit open, and staff may
+  // still waive that deposit. The estimate stays WON and keeps its approval date.
+  it('waives the open deposit of an already-approved (pay later) estimate, keeping its approval date', async () => {
+    mockAuthAs('admin');
+    const voidDeposits = mockTransaction();
+    mockPrisma.estimate.findUnique
+      .mockResolvedValueOnce({ ...SENT_WITH_DEPOSIT, status: 'WON' })
+      .mockResolvedValueOnce(ESTIMATE_APPROVED_FIXTURE);
+    mockPrisma.estimate.update.mockResolvedValue({});
+    mockPrisma.lead.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.timelineEvent.create.mockResolvedValue({});
+
+    const res = await request(app)
+      .post(`/api/estimates/${ESTIMATE_SENT_FIXTURE.id}/waive-deposit`)
+      .set(authHeader('admin'))
+      .send({ action: 'waive' });
+
+    expect(res.status).toBe(200);
+    expect(voidDeposits).toHaveBeenCalled();
+    const writes = mockPrisma.estimate.update.mock.calls.map((c: any[]) => c[0].data);
+    expect(writes.some((d: any) => d.approved_at !== undefined)).toBe(false);
+  });
+
+  // Slice 27: the approval was announced at signing. Waiving the deposit afterwards must not
+  // announce it a second time or walk the lead to WON again.
+  it('does not announce the approval again when the deposit of an already-approved estimate is waived', async () => {
+    mockAuthAs('admin');
+    const voidDeposits = mockTransaction();
+    mockPrisma.estimate.findUnique
+      .mockResolvedValueOnce({ ...SENT_WITH_DEPOSIT, status: 'WON' })
+      .mockResolvedValueOnce(ESTIMATE_APPROVED_FIXTURE);
+    mockPrisma.estimate.update.mockResolvedValue({});
+    mockPrisma.lead.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.timelineEvent.create.mockResolvedValue({});
+
+    const res = await request(app)
+      .post(`/api/estimates/${ESTIMATE_SENT_FIXTURE.id}/waive-deposit`)
+      .set(authHeader('admin'))
+      .send({ action: 'waive' });
+
+    expect(res.status).toBe(200);
+    expect(voidDeposits).toHaveBeenCalled();
+    expect(dispatchAutomationEvent).not.toHaveBeenCalled();
+    expect(leadStatusWrites(mockPrisma.lead.updateMany)).toHaveLength(0);
+    expect(statusChangeEvents(mockPrisma.timelineEvent.create)).toHaveLength(0);
+  });
+
+  it('a waive that approves a not-yet-won estimate still announces the approval once and moves the lead', async () => {
+    mockAuthAs('admin');
+    mockTransaction();
+    mockPrisma.estimate.findUnique
+      .mockResolvedValueOnce(SENT_WITH_DEPOSIT)
+      .mockResolvedValueOnce(ESTIMATE_APPROVED_FIXTURE);
+    mockPrisma.estimate.update.mockResolvedValue({});
+    mockPrisma.lead.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.timelineEvent.create.mockResolvedValue({});
+
+    const res = await request(app)
+      .post(`/api/estimates/${ESTIMATE_SENT_FIXTURE.id}/waive-deposit`)
+      .set(authHeader('admin'))
+      .send({ action: 'waive' });
+
+    expect(res.status).toBe(200);
+    const approvals = (dispatchAutomationEvent as ReturnType<typeof vi.fn>).mock.calls
+      .filter((c: any[]) => c[0]?.type === 'ESTIMATE_APPROVED');
+    expect(approvals).toHaveLength(1);
+    expect(leadStatusWrites(mockPrisma.lead.updateMany).length).toBeGreaterThan(0);
+  });
+
+  it('never cancels an already-approved estimate through the deposit door', async () => {
+    mockAuthAs('admin');
+    mockPrisma.estimate.findUnique.mockResolvedValue({ ...SENT_WITH_DEPOSIT, status: 'WON' });
+
+    const res = await request(app)
+      .post(`/api/estimates/${ESTIMATE_SENT_FIXTURE.id}/waive-deposit`)
+      .set(authHeader('admin'))
+      .send({ action: 'cancel' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/cannot cancel/i);
+  });
+
   it('sales cannot waive (403)', async () => {
     mockAuthAs('sales');
 
@@ -10038,7 +10178,7 @@ describe('POST /api/estimates/:id/waive-deposit', () => {
       .set(authHeader('admin'))
       .send({ action: 'waive' });
 
-    expect(capturedLeadWhere.status).toEqual({ notIn: ['WON', 'LOST', 'CANCELLED'] });
+    expect(capturedLeadWhere.status).toEqual({ notIn: ['WON', 'LOST'] });
   });
 });
 
@@ -10172,7 +10312,7 @@ describe('Stripe Checkout Integration Flow', () => {
     expect(mockCreateCheckoutSession).toHaveBeenCalled();
     // The checkout carries metadata.invoiceId (the kind=DEPOSIT invoice) — the webhook resolves it.
     expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
-      expect.objectContaining({ metadata: expect.objectContaining({ invoiceId: DEPOSIT_INVOICE_ID }) }),
+      expect.objectContaining({ document: expect.objectContaining({ invoiceId: DEPOSIT_INVOICE_ID }) }),
       expect.anything(),
     );
   });
@@ -10198,6 +10338,8 @@ describe('Stripe Checkout Integration Flow', () => {
     );
     const callArgs = mockCreateCheckoutSession.mock.calls[0][0];
     expect(callArgs.successUrl).toContain('payment=success');
+    // Conductor ruling 2: the return carries the method so a bank return can say "started".
+    expect(callArgs.successUrl).toContain('method=card');
     expect(callArgs.cancelUrl).toContain('payment=cancelled');
     expect(callArgs.successUrl).toContain(`token=${PUBLIC_TOKEN}`);
     expect(callArgs.cancelUrl).toContain(`token=${PUBLIC_TOKEN}`);
@@ -10217,9 +10359,10 @@ describe('Stripe Checkout Integration Flow', () => {
 
     expect(mockCreateCheckoutSession).toHaveBeenCalledWith(
       expect.objectContaining({
-        metadata: expect.objectContaining({
+        document: expect.objectContaining({
           invoiceId: DEPOSIT_INVOICE_ID,
           estimateId: ESTIMATE_ID,
+          kind: 'deposit',
         }),
       }),
       expect.objectContaining({ stripe: expect.anything() }),
@@ -10249,6 +10392,8 @@ describe('cancel PENDING estimate with deposit', () => {
     mockPrisma.estimate.findUnique.mockResolvedValueOnce(PENDING_WITH_DEPOSIT);
     mockPrisma.estimate.update.mockResolvedValue({ ...ESTIMATE_FIXTURE, status: 'ARCHIVED' });
     mockPrisma.timelineEvent.create.mockResolvedValue({});
+    // Slice 15: the unpaid deposits are read under their lock, then voided by id.
+    mockPrisma.invoice.findMany.mockResolvedValueOnce([{ id: 'dep-inv-1', invoice_number: 'D-1', status: 'SENT' }]);
     mockPrisma.invoice.updateMany.mockResolvedValue({ count: 1 });
 
     const res = await request(app)
@@ -10257,9 +10402,12 @@ describe('cancel PENDING estimate with deposit', () => {
       .send({ cancelled_reason: 'No longer needed' });
 
     expect(res.status).toBe(200);
+    expect(mockPrisma.invoice.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ kind: 'DEPOSIT', status: { in: ['DRAFT', 'SENT'] } }) }),
+    );
     expect(mockPrisma.invoice.updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ kind: 'DEPOSIT', status: { in: ['DRAFT', 'SENT'] } }),
+        where: expect.objectContaining({ id: { in: ['dep-inv-1'] } }),
         data: expect.objectContaining({ status: 'VOIDED' }),
       }),
     );
@@ -10304,11 +10452,10 @@ describe('GET /api/estimates/export', () => {
       .get('/api/estimates/export')
       .set(authHeader('sales'));
 
-    // SERV10X-61 §8 - export reuses buildEstimateListWhere, so the scope is the same own-via-lead
-    // OR own-lead-less-created OR the list uses (under `where.OR`).
+    // Export reuses buildEstimateListWhere, so the scope is the same one the list uses.
     expect(mockPrisma.estimate.findMany.mock.calls[0][0].where.OR).toEqual([
-      { lead: { lead_assignees: { some: { user_id: TEST_USERS.sales.id } } } },
-      { AND: [{ lead_id: null }, { created_by: TEST_USERS.sales.id }] },
+      ownLeadsEstimateWhere(TEST_USERS.sales.id),
+      creatorEstimateWhere(TEST_USERS.sales.id),
     ]);
   });
 
@@ -10495,17 +10642,15 @@ describe('PATCH /api/estimates/:id — cost model fields (R3)', () => {
   // D2/D8 write-guard - a requester who can't see pricing must not be able to set the cost-model
   // fields either. Every default role that can update an Estimate (SALES/ADMIN) also holds the
   // pricing grant, so this simulates the guard's real target: a SALES grant set with the "See
-  // financial data" grant withheld, i.e. an admin who turned that switch off for Sales.
-  // SRVW-140 - the withheld subject is `Pricing`, not `Invoice`: canSeePricing was repointed.
+  // financial data" switch withheld, i.e. an admin who turned that switch off for Sales.
   it('returns 403 and does not write when the requester can update the Estimate but cannot see pricing', async () => {
     // attachAbility/scopeWhereForReq resolve grants through the shared 60s org:role cache — clear
     // it so this test's Pricing-withheld grant set is honored instead of a prior test's cached
     // default SALES grants (which include Pricing).
     clearPermissionCache();
     mockAuthAs('sales');
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue(
-      DEFAULT_GRANTS.filter((g) => g.role === 'SALES' && g.subject !== 'Pricing'),
-    );
+    // Roles & Permissions S01.15 - See financial data is a catalog switch, so turn it off for Sales.
+    mockRoleSwitches({ see_financial_data: false });
     mockPrisma.estimate.findUnique.mockResolvedValue({
       id: ESTIMATE_FIXTURE.id,
       status: 'DRAFT',
@@ -10620,6 +10765,8 @@ function copyToInvoiceTx(
   } = {},
 ) {
   return {
+    // Slice 18: the deposit-credit draw locks the estimate's deposit invoices first.
+    $executeRaw: async () => 0,
     // #2030 — see the note in mockTransactionForSend: minting now runs inside a transaction.
     estimateVersionSnapshot: mockPrisma.estimateVersionSnapshot,
     estimate: {
@@ -10965,18 +11112,19 @@ describe('POST /api/estimates/:id/copy-to-invoice', () => {
     expect(mockPrisma.estimate.findUnique).not.toHaveBeenCalled();
   });
 
-  // Two-layer gate (decision #4): a per-user grant that passes the route's canDo('create',
-  // 'Invoice') check must STILL be rejected by the controller's hardcoded ADMIN/DISPATCHER-only
-  // check — mirrors createStandaloneInvoice's exact gate rather than the job-anchored create()'s
-  // grant-driven per-instance ownership check (there is no per-instance escape hatch here).
-  it('403s a granted-but-non-admin/dispatcher role at the CONTROLLER layer, matching createStandaloneInvoice\'s exact message', async () => {
+  // Two-layer gate: a per-user grant that passes the route's canDo('create', 'Invoice') check (the Create
+  // invoices switch) must STILL be rejected by the controller when the estimate is not one the requester can
+  // open. No role name is read: the person's Estimates scope decides.
+  it('403s a granted person on an estimate they cannot open at the CONTROLLER layer, whatever their role', async () => {
     clearPermissionCache();
-    clearUserOverrideCache();
     mockAuthAs('technician');
     (prisma.userPermissionOverride.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
       { action: 'create', subject: 'Invoice', effect: 'allow' },
     ]);
     const estimate = copyToInvoiceEstimate();
+    mockPrisma.estimate.findUnique.mockResolvedValue(estimate);
+    // The estimate-scope probe finds nothing: the estimate is not one this person can open.
+    mockPrisma.estimate.findFirst.mockResolvedValue(null);
 
     const res = await request(app)
       .post(`/api/estimates/${estimate.id}/copy-to-invoice`)
@@ -10984,9 +11132,8 @@ describe('POST /api/estimates/:id/copy-to-invoice', () => {
       .send({});
 
     expect(res.status).toBe(403);
-    expect(res.body.error).toBe('Not authorized to create a standalone invoice');
-    // The controller's role check runs BEFORE any estimate lookup.
-    expect(mockPrisma.estimate.findUnique).not.toHaveBeenCalled();
+    expect(res.body.error).toBe('Insufficient permissions');
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
   });
 
   it('deposit credit: a PAID kind=DEPOSIT invoice draws down onto the new copied invoice', async () => {

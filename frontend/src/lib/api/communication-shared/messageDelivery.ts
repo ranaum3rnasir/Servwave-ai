@@ -12,7 +12,7 @@ import type { Message, MessageStatus } from "./phone-messages";
 /** Reasons the delivery path records on a skipped/failed row, in plain English. */
 const REASON_COPY: Record<string, string> = {
   NOT_CONNECTED: "the phone system is not connected yet",
-  SMS_NOT_READY: "the A2P campaign is not approved yet",
+  SMS_NOT_READY: "carrier approval has not come through yet",
   ORG_SMS_DISABLED: "texting is switched off for this account",
   NOT_ENTITLED: "this plan does not include texting",
   NO_SMS_NUMBER: "there is no number to text from or to",

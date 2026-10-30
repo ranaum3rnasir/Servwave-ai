@@ -11,6 +11,15 @@ import { MemoryRouter } from "react-router-dom";
 
 const requestCall = vi.hoisted(() => vi.fn());
 
+// Customer numbers on the Communication screens follow the person's switches (S05.6). This suite renders the
+// screen without a query client, so the person's switches are stubbed: every one on, the screen as it always was.
+vi.mock("@/components/contact/useContactPolicyInput", () => ({
+  useContactPolicyInput: () => ({
+    switches: { copyCustomerPhone: true, copyCustomerEmail: true, contactCustomers: true, viewCustomers: true },
+    phoneService: true,
+  }),
+}));
+
 vi.mock("@/lib/api/organization", () => ({
   useOrganization: () => ({ data: { timezone: "America/New_York" } }),
 }));
@@ -54,7 +63,10 @@ vi.mock("@/lib/api/callJob", () => ({
   useReassignCallLead: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 vi.mock("@/lib/useIsDemoOrg", () => ({ useIsDemoOrg: () => false }));
-vi.mock("@/contexts/AbilityContext", () => ({ useAppAbility: () => ({ can: () => false }) }));
+// Call Back is Contact customers (S08.14), which compiles to create on Communication: this person holds that and nothing else.
+vi.mock("@/contexts/AbilityContext", () => ({
+  useAppAbility: () => ({ can: (action: string, subject: string) => action === "create" && subject === "Communication" }),
+}));
 vi.mock("@/lib/communicationAccess", () => ({ useCanAccessCommunication: () => false }));
 
 import { CallsView } from "../CallsView";

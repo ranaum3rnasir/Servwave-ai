@@ -31,6 +31,8 @@ vi.mock('../config/env', () => ({
     EMAIL_FROM: 'noreply@test.servwave.com',
     EMAIL_FROM_BUSINESS: 'noreply@mail.test.servwave.com',
     RESEND_API_KEY: 're_test_key',
+    // PRD 10 (S10.12): the domain a sender's own address is built on; a document goes out from it.
+    MAILBOX_DOMAIN: 'mail.test.com',
     FRONTEND_URL: 'http://localhost:5173',
   },
 }));
@@ -50,6 +52,9 @@ vi.mock('../lib/pdf', () => ({
 
 import { prisma } from '../lib/prisma';
 
+
+// PRD 10 (S10.12): a document is sent by hand, from the sender's own mailbox (the id the suite-wide mailbox stub answers to).
+const HAND_SENDER = { mailboxId: 'main-mailbox-id', userId: 'user-1' };
 type Email = typeof import('../lib/email');
 let email: Email;
 
@@ -79,6 +84,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   resendSend.mockResolvedValue({ data: { id: 're_ok' }, error: null });
   (prisma.email.create as Mock).mockResolvedValue({ id: 'email_1' });
+  (prisma.emailSuppression.findFirst as Mock).mockResolvedValue(null);
   (prisma.organization.findUnique as Mock).mockResolvedValue({ email_sending_enabled: true, name: ORG.name });
   (prisma.estimate.findUnique as Mock).mockResolvedValue(ESTIMATE_ROW);
 });
@@ -87,6 +93,10 @@ beforeEach(() => {
 //
 // Each entry invokes one sender with a `record`, so a persisted row is the
 // sender's own decision and nothing else's.
+
+// Slice 30: the customer's receipt and invoice refund notice go out past the org's kill switch
+// (they confirm the customer's own money); the hard-bounce list is what suppresses them.
+const IGNORES_KILL_SWITCH = new Set(['sendInvoiceRefundNotification', 'sendPaymentReceivedEmail']);
 
 const BUG_A_SENDERS: { name: string; run: (e: Email) => Promise<unknown> }[] = [
   {
@@ -100,7 +110,7 @@ const BUG_A_SENDERS: { name: string; run: (e: Email) => Promise<unknown> }[] = [
     name: 'sendDepositPaymentConfirmation',
     run: (e) => e.sendDepositPaymentConfirmation({
       organizationId: ORG_ID, to: 'jane@example.com', customerName: 'Jane Doe',
-      estimateNumber: 'E00001', depositAmount: 50, totalCharged: 50, paymentMethod: 'Card',
+      estimateNumber: 'E00001', estimateId: 'est-1', depositAmount: 50, totalCharged: 50, paymentMethod: 'Card',
       companyName: ORG.name, record: RECORD,
     }),
   },
@@ -108,7 +118,7 @@ const BUG_A_SENDERS: { name: string; run: (e: Email) => Promise<unknown> }[] = [
     name: 'sendDepositReceivedConfirmation',
     run: (e) => e.sendDepositReceivedConfirmation({
       organizationId: ORG_ID, to: 'jane@example.com', customerName: 'Jane Doe',
-      estimateNumber: 'E00001', depositAmount: 50, paymentMethod: 'CHECK',
+      estimateNumber: 'E00001', estimateId: 'est-1', depositAmount: 50, paymentMethod: 'CHECK',
       receivedDate: '2026-08-04', companyName: ORG.name, record: RECORD,
     }),
   },
@@ -116,13 +126,13 @@ const BUG_A_SENDERS: { name: string; run: (e: Email) => Promise<unknown> }[] = [
     name: 'sendRefundNotification',
     run: (e) => e.sendRefundNotification({
       organizationId: ORG_ID, to: 'jane@example.com', customerName: 'Jane Doe',
-      estimateNumber: 'E00001', refundAmount: 50, reason: 'Cancelled', companyName: ORG.name,
+      estimateNumber: 'E00001', estimateId: 'est-1', refundAmount: 50, reason: 'Cancelled', companyName: ORG.name,
       record: RECORD,
     }),
   },
   {
     name: 'sendInvoiceRefundNotification',
-    run: (e) => e.sendInvoiceRefundNotification({
+    run: (e) => e.sendInvoiceRefundNotification({ invoiceId: 'inv-1',
       organizationId: ORG_ID, to: 'jane@example.com', customerName: 'Jane Doe',
       invoiceNumber: 'I00001', refundAmount: 50, record: RECORD,
     }),
@@ -146,8 +156,12 @@ describe('BUG A - senders must not mirror a send that did not happen', () => {
         expect(prisma.email.create).toHaveBeenCalledTimes(1);
       });
 
-      it('persists NOTHING when the org kill switch suppressed the send', async () => {
-        (prisma.organization.findUnique as Mock).mockResolvedValue({ email_sending_enabled: false });
+      it('persists NOTHING when the send was suppressed', async () => {
+        if (IGNORES_KILL_SWITCH.has(name)) {
+          (prisma.emailSuppression.findFirst as Mock).mockResolvedValue({ id: 'sup-1' });
+        } else {
+          (prisma.organization.findUnique as Mock).mockResolvedValue({ email_sending_enabled: false });
+        }
 
         await run(email);
 
@@ -181,7 +195,7 @@ describe('BUG C - outside-party sends leave a record', () => {
   };
 
   it('sendStagePickupEmail persists a job-attributed row', async () => {
-    await email.sendStagePickupEmail(STAGE_PARAMS);
+    await email.sendStagePickupEmail({ ...STAGE_PARAMS, handSender: HAND_SENDER });
 
     expect(prisma.email.create).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -200,19 +214,17 @@ describe('BUG C - outside-party sends leave a record', () => {
   it('sendStagePickupEmail persists NOTHING when Resend rejects the message', async () => {
     resendSend.mockResolvedValue({ data: null, error: { message: 'rate limited' } });
 
-    await email.sendStagePickupEmail(STAGE_PARAMS);
+    await email.sendStagePickupEmail({ ...STAGE_PARAMS, handSender: HAND_SENDER });
 
     expect(prisma.email.create).not.toHaveBeenCalled();
   });
 });
 
-// ─── Deliberately NOT persisted: the six internal staff alerts ──
+// ─── Deliberately NOT persisted: the internal staff alerts ──
 //
-// sendDepositPaidAlert, sendPaymentMethodSelectedAlert, sendPaymentsActionNeededEmail,
-// sendPaymentsRateChangeNotice, sendClockOverrideRequestedEmail and
-// sendClockOverrideDecisionEmail are ServWave or the app talking TO the
+// sendDepositPaidAlert, sendPaymentMethodSelectedAlert and sendPaymentsActionNeededEmail are ServWave or the app talking TO the
 // contractor, not correspondence with a customer, so they do not belong on a
-// customer timeline. Two are asserted here as representatives, rather than
+// customer timeline. One is asserted here as a representative, rather than
 // merely omitted, so a future "persist every sender" sweep has to argue with a
 // test instead of silently polluting the tab.
 describe('internal staff alerts stay off the customer timeline', () => {
@@ -220,16 +232,6 @@ describe('internal staff alerts stay off the customer timeline', () => {
     await email.sendDepositPaidAlert({
       organizationId: ORG_ID, to: 'owner@acme.com', estimateNumber: 'E00001',
       customerName: 'Jane Doe', depositAmount: 50, paymentMethod: 'CARD',
-    });
-
-    expect(resendSend).toHaveBeenCalledTimes(1);
-    expect(prisma.email.create).not.toHaveBeenCalled();
-  });
-
-  it('sendClockOverrideDecisionEmail sends but persists nothing', async () => {
-    await email.sendClockOverrideDecisionEmail({
-      org: ORG, to: 'tech@acme.com', technicianName: 'Tech',
-      decision: 'approved', decidedByName: 'Boss',
     });
 
     expect(resendSend).toHaveBeenCalledTimes(1);

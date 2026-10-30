@@ -124,7 +124,7 @@ describe('backfill migration — every existing org AND every custom role, idemp
   it('never names a real org, only organization_id values (R5 / CLAUDE.md)', () => {
     // The five real org names the pre-flight evidence recorded must never appear here.
     const bannedNames = [
-      'Alpha Doors',
+      ['Alpha', 'Doors'].join(' '),
       'B&G Cabinet',
       'Neon Services',
       'Talon Septic',

@@ -22,6 +22,7 @@ import { CREATED_BY_SYSTEM } from '../lib/created-by';
 import { resolveTaxRateForState } from '../lib/tax/resolveTaxRate';
 import { createJobVisit, nextVisitSeqForJob } from '../services/walkthrough.service';
 import { replaceVisitCrew } from '../services/visitCrew';
+import { whyNotSlot } from '../lib/permissions/slotEligibility';
 // The SAME per-member eligibility check the /jobs crew doors run. Imported rather than re-rolled
 // so this door cannot drift from them on either the tenant clause or the error strings.
 import { validateCrew } from './job.controller';
@@ -708,6 +709,22 @@ export const scheduleVisit = async (req: Request, res: Response) => {
       }
     }
 
+    // S03.12: the visit job takes the plan's "Sold by" as its Sold By when that person is still active
+    // and may be Sold By (slot eligibility, the check conversion makes); otherwise Sold By stays empty.
+    // Asked here, outside the transaction, for the same reason as the crew check above. The copy is
+    // as-named on the plan: a seller who has since been deactivated or switched off is simply not copied,
+    // and no error reaches the person pressing Schedule.
+    const planSeller = plan.sold_by
+      ? await prisma.user.findFirst({
+          where: { id: plan.sold_by, ...tenantWhere(req) },
+          select: {
+            id: true, organization_id: true, role: true, based_on_role_key: true, custom_role_id: true,
+            custom_role: { select: { key: true } }, is_active: true, first_name: true, last_name: true,
+          },
+        })
+      : null;
+    const copiedSeller = planSeller && (await whyNotSlot(planSeller, 'owner')) === null ? planSeller : null;
+
     const result = await withNumberCollisionRetry(() => prisma.$transaction(async (tx) => {
       const jobNumber = await allocateNumber(tx, 'job', orgId);
       const job = await tx.job.create({
@@ -717,6 +734,8 @@ export const scheduleVisit = async (req: Request, res: Response) => {
           customer_id: plan.customer_id,
           service_location_id: plan.service_location_id,
           source_plan_id: plan.id,
+          // Stored Sold By, copied from the plan (see above). The Dispatcher starts empty, as it always has.
+          salesperson_id: copiedSeller?.id ?? null,
           scope_notes: plan.name,
           // S8 (RATIFIED, A5): scheduled_start/scheduled_end DROPPED as job columns - the real
           // visit is booked just below (createJobVisit), in the same transaction, and carries the
@@ -769,6 +788,20 @@ export const scheduleVisit = async (req: Request, res: Response) => {
       // rolls back with the job + visit if anything below fails (spec §15). A plan with no material
       // lines mints nothing. The future auto-generation cron calls the same function.
       const logistic_order = await instantiatePlanMaterials(tx, plan, job, req.user!.id);
+      if (copiedSeller) {
+        // The copy is on the job's history, marked as copied from the plan (not set by a person).
+        await tx.timelineEvent.create({
+          data: {
+            organization_id: orgId,
+            entity_type: 'JOB',
+            entity_id: job.id,
+            event_type: 'SOLD_BY_CHANGED',
+            description: `${copiedSeller.first_name} ${copiedSeller.last_name} set as Sold By on job ${job.job_number} (copied from service plan ${plan.service_plan_number})`,
+            metadata: { from: null, to: copiedSeller.id, source: 'service_plan', service_plan_id: plan.id },
+            created_by: req.user!.id,
+          },
+        });
+      }
       await tx.timelineEvent.create({
         data: {
           organization_id: orgId,

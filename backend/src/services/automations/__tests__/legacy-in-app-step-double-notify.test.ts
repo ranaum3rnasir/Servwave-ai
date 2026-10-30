@@ -105,14 +105,14 @@ const ENROLLMENT_ROW = {
   version: { definition: LEGACY_DEFINITION },
 };
 
-/** Exactly what job.controller's assign() hook emits when a technician is added. */
+/** What the assignment alert emits (jobSchedulingAlerts.ts) for the technician who was added: the chain found them, and they are the one named. */
 function hardcodedAssignmentEmit() {
   return emit({
     verb: 'dispatch.job_assigned',
     organizationId: ORG,
     actorId: DISPATCHER_ID,
     object: { type: 'JOB', id: JOB_ID, label: 'J00042' },
-    entity: { assignee_ids: [TECH_ID] },
+    entity: { lane_one_ids: [TECH_ID], lane_two_ids: [], copy_ids: [], named_ids: [TECH_ID] },
     data: { customer_name: 'Sarah Mitchell' },
   });
 }

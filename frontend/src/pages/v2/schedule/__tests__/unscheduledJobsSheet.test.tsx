@@ -257,9 +257,9 @@ describe('scheduling a job from the sheet by tap', () => {
     expect(mockApi.post).not.toHaveBeenCalled();
   });
 
-  it('a viewer who cannot change the board still gets the read-only editor, not a scheduling form', async () => {
+  it('a viewer without Schedule visits is not offered the unscheduled jobs at all', async () => {
     setViewport(PHONE);
-    // `boardCapabilitiesFor` reads the signed-in ROLE: a technician's board is read-only.
+    // The jobs bucket follows the Schedule visits switch (S04.11): a read-only board offers no card to tap.
     const READ_ONLY = buildAbility([{ action: 'read', subject: 'all' }]);
     vi.mocked(useAuthStore).mockImplementation((selector: (s: never) => unknown) =>
       selector({
@@ -277,12 +277,9 @@ describe('scheduling a job from the sheet by tap', () => {
     );
     await waitFor(() => expect(utils.container.querySelector('.schedule-cal .animate-spin')).toBeNull());
     const sheet = await openSheet(true);
-    fireEvent.click((await within(sheet).findByText('J00043')).closest('div[class*="rounded-lg"]') as HTMLElement);
 
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Unscheduled jobs' })).toBeNull());
-    // The editor opens (view-only): it has no Schedule button, so nothing here can write.
-    const editor = await screen.findByRole('dialog');
-    expect(within(editor).queryByRole('button', { name: 'Schedule' })).toBeNull();
+    expect(within(sheet).queryByText('J00043')).toBeNull();
+    expect(within(sheet).queryByText('Jobs')).toBeNull();
     expect(mockApi.post).not.toHaveBeenCalled();
   });
 });

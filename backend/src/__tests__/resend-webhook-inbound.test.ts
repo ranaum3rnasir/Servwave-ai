@@ -49,6 +49,12 @@ import { prisma } from '../lib/prisma';
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const p = prisma as any;
 
+// The router looks the event's reply tokens up in one read, before the message body is fetched.
+// The register (mailbox addresses) is not part of the suite-wide client stub: mail to a mailbox address asks it, once.
+p.mailboxAddress ??= { findMany: vi.fn() };
+
+const tokenResolvesTo = (row: unknown) => p.replyToken.findMany.mockResolvedValue(row ? [row] : []);
+
 const app = express();
 app.use('/api/webhooks', webhookRoutes);
 
@@ -137,9 +143,10 @@ beforeEach(() => {
     return typeof payload === 'string' ? JSON.parse(payload) : payload;
   });
   receivingGet.mockResolvedValue(receivedEmail());
+  p.mailboxAddress.findMany.mockResolvedValue([]);
   p.resendEvent.findUnique.mockResolvedValue(null);
   p.resendEvent.create.mockResolvedValue({});
-  p.replyToken.findUnique.mockResolvedValue(tokenRow());
+  tokenResolvesTo(tokenRow());
   p.email.create.mockResolvedValue({ id: 'inbound-row-1' });
   p.email.findUnique.mockResolvedValue(null);
   p.emailThread.create.mockResolvedValue({ id: 'new-thread-1' });
@@ -244,7 +251,7 @@ describe('email.received - mail we cannot attribute', () => {
     // No org to file it under, and guessing one would be a cross-tenant write.
     // A 200 rather than a 500: retrying will not make the token resolve, and a
     // retry loop on junk mail is its own problem.
-    p.replyToken.findUnique.mockResolvedValue(null);
+    tokenResolvesTo(null);
 
     const res = await post(receivedEvent());
 
@@ -253,9 +260,46 @@ describe('email.received - mail we cannot attribute', () => {
   });
 
   it('still records the event so a redelivery is deduped', async () => {
-    p.replyToken.findUnique.mockResolvedValue(null);
+    tokenResolvesTo(null);
     await post(receivedEvent());
     expect(p.resendEvent.create).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('email.received - mail addressed to nobody here is dropped before its body is fetched (PRD 10, S10.14)', () => {
+  it.each([
+    ['a reserved address', 'no-reply@mail.test.com'],
+    ['an address never issued', 'ghost.person.acme@mail.test.com'],
+    ['another environment\'s mailbox domain', 'jane.doe.acme@mail.servwave.com'],
+    ['an address on no domain of ours', 'someone@elsewhere.com'],
+  ])('%s: no fetch, no stored message, and a ledger row with no content', async (_what, address) => {
+    const res = await post(receivedEvent({ to: [address], received_for: [address], subject: 'Secret subject', from: 'Spy <spy@example.org>' }));
+
+    expect(res.status).toBe(200);
+    expect(receivingGet).not.toHaveBeenCalled();
+    expect(p.email.create).not.toHaveBeenCalled();
+    expect(p.emailThread.create).not.toHaveBeenCalled();
+    expect(p.resendEvent.create).toHaveBeenCalledTimes(1);
+    const row = p.resendEvent.create.mock.calls[0][0].data;
+    expect(row).toEqual({ resend_event_id: 'evt_inbound_1', event_type: 'email.received' });
+    expect(JSON.stringify(row)).not.toMatch(/Secret subject|spy@|no-reply|ghost|jane/);
+  });
+
+  it('judges an event that names no recipients on the fetched message instead of dropping it', async () => {
+    const event = receivedEvent();
+    delete (event.data as Record<string, unknown>).to;
+    tokenResolvesTo(tokenRow());
+
+    const res = await post(event);
+
+    expect(res.status).toBe(200);
+    expect(receivingGet).toHaveBeenCalledTimes(1);
+    expect(p.email.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the whole event in the ledger for mail it stores', async () => {
+    await post(receivedEvent());
+    expect(p.resendEvent.create.mock.calls[0][0].data.payload).toMatchObject({ type: 'email.received', data: { subject: 'Re: Quote' } });
   });
 });
 
@@ -287,13 +331,40 @@ describe('email.received - a token whose thread was deleted', () => {
     // reply_tokens.thread_id is ON DELETE SET NULL, so a deleted thread leaves a
     // live token pointing at nothing. The message is still this org's, and a
     // row with no thread would be invisible in a thread-keyed inbox.
-    p.replyToken.findUnique.mockResolvedValue(tokenRow({ thread_id: null }));
+    tokenResolvesTo(tokenRow({ thread_id: null }));
 
     await post(receivedEvent());
 
     expect(p.emailThread.create).toHaveBeenCalledTimes(1);
     expect(p.emailThread.create.mock.calls[0][0].data).toMatchObject({ organization_id: ORG });
     expect(p.email.create.mock.calls[0][0].data.thread_id).toBe('new-thread-1');
+  });
+
+  // PRD 10 / S10.4 - a minted conversation is placed too: every conversation belongs to a mailbox.
+  it('places the minted thread in the main mailbox, as a record conversation when the token names a record', async () => {
+    const ESTIMATE = 'e0000000-0000-0000-0000-0000000000e1';
+    tokenResolvesTo(tokenRow({ thread_id: null, entity_type: 'estimate', entity_id: ESTIMATE }));
+    p.mailbox.findFirst.mockResolvedValue({ id: 'main-mailbox-9' });
+
+    await post(receivedEvent());
+
+    expect(p.mailbox.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { organization_id: ORG, kind: 'main' } }),
+    );
+    expect(p.emailThread.create.mock.calls[0][0].data).toEqual({
+      organization_id: ORG, mailbox_id: 'main-mailbox-9', origin: 'record', record_type: 'estimate', record_id: ESTIMATE,
+    });
+  });
+
+  it('places the minted thread in the main mailbox as one started here when the token names no record', async () => {
+    tokenResolvesTo(tokenRow({ thread_id: null }));
+    p.mailbox.findFirst.mockResolvedValue({ id: 'main-mailbox-9' });
+
+    await post(receivedEvent());
+
+    expect(p.emailThread.create.mock.calls[0][0].data).toEqual({
+      organization_id: ORG, assigned_to_user_id: null, mailbox_id: 'main-mailbox-9', origin: 'started',
+    });
   });
 
   it('does not mint a thread for an unmatched sender', async () => {

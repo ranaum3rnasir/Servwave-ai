@@ -1,38 +1,14 @@
-import type { Grant } from './defineAbility';
+import { clearAllSwitchCaches, clearSwitchCacheForOrg } from './switches/cache';
 
-interface CachedGrants {
-  grants: Grant[];
-  expiresAt: number;
-}
-
-const GRANT_TTL_MS = 60 * 1000;
-const EVICTION_INTERVAL_MS = 5 * 60 * 1000;
-const grantCache = new Map<string, CachedGrants>();
-
-setInterval(() => {
-  const now = Date.now();
-  for (const [k, v] of grantCache) {
-    if (v.expiresAt <= now) grantCache.delete(k);
-  }
-}, EVICTION_INTERVAL_MS).unref();
-
-function cacheKey(orgId: string, role: string): string {
-  return `${orgId}:${role}`;
-}
-
-export function getCachedGrants(orgId: string, role: string): Grant[] | null {
-  const entry = grantCache.get(cacheKey(orgId, role));
-  if (!entry || entry.expiresAt <= Date.now()) return null;
-  return entry.grants;
-}
-
-export function setCachedGrants(orgId: string, role: string, grants: Grant[]): void {
-  grantCache.set(cacheKey(orgId, role), { grants, expiresAt: Date.now() + GRANT_TTL_MS });
-}
-
+/**
+ * The permission cache is the per-person cache of resolved switch values (`switches/cache.ts`). Role-permission rows
+ * are no longer read, so there is no cache of a role's stored grants any more; this entry point stays for the callers
+ * that drop "everything cached about permissions" when an organisation's roles or people change.
+ */
 export function clearPermissionCache(orgId?: string): void {
-  if (!orgId) { grantCache.clear(); return; }
-  for (const k of grantCache.keys()) {
-    if (k.startsWith(`${orgId}:`)) grantCache.delete(k);
+  if (!orgId) {
+    clearAllSwitchCaches();
+    return;
   }
+  clearSwitchCacheForOrg(orgId);
 }

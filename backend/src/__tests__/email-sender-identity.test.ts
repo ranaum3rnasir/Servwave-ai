@@ -42,7 +42,6 @@ let sendAutomationEmail: typeof import('../lib/email')['sendAutomationEmail'];
 let sendMfaCodeEmail: typeof import('../lib/email')['sendMfaCodeEmail'];
 let sendUserInviteEmail: typeof import('../lib/email')['sendUserInviteEmail'];
 let sendPaymentsActionNeededEmail: typeof import('../lib/email')['sendPaymentsActionNeededEmail'];
-let sendPaymentsRateChangeNotice: typeof import('../lib/email')['sendPaymentsRateChangeNotice'];
 
 beforeAll(async () => {
   const real = await vi.importActual<typeof import('../lib/email')>('../lib/email');
@@ -51,7 +50,6 @@ beforeAll(async () => {
   sendMfaCodeEmail = real.sendMfaCodeEmail;
   sendUserInviteEmail = real.sendUserInviteEmail;
   sendPaymentsActionNeededEmail = real.sendPaymentsActionNeededEmail;
-  sendPaymentsRateChangeNotice = real.sendPaymentsRateChangeNotice;
 });
 
 beforeEach(() => {
@@ -71,10 +69,26 @@ function mockOrg(name: string | null, enabled = true) {
   });
 }
 
+// PRD 10 (S10.12): a document is sent by hand, from the sender's own mailbox (the id the suite-wide mailbox stub answers to).
+const HAND_SENDER = { mailboxId: 'main-mailbox-id', userId: 'user-1' };
+
 const sentFrom = () => resendSend.mock.calls[0][0].from as string;
 
+// An automated send to a customer: it speaks as the company. (A document a person sends by hand speaks as that person
+// instead: permission-email-hand-sent-documents-db.test.ts.)
 async function sendCustomerFacingEmail() {
+  await sendAutomationEmail({
+    organizationId: ORG_ID,
+    to: 'cust@example.com',
+    subject: 'Your appointment is tomorrow',
+    text: 'See you then.',
+    html: '<p>See you then.</p>',
+  });
+}
+
+async function sendInvoice() {
   await sendInvoiceEmail({
+    handSender: HAND_SENDER,
     invoiceId: 'inv-1',
     organizationId: ORG_ID,
     to: 'cust@example.com',
@@ -204,21 +218,6 @@ describe('Outbound sender identity', () => {
 
       expect(sentFrom()).toBe('no-reply@mail.servwave.test');
     });
-
-    it('sends the Payments rate-change notice unbranded', async () => {
-      mockOrg('Acme Plumbing');
-
-      await sendPaymentsRateChangeNotice({
-        organizationId: ORG_ID,
-        to: 'admin@acme.test',
-        orgName: 'Acme Plumbing',
-        oldRate: '2.9% + 30c',
-        newRate: '2.7% + 30c',
-        effectiveDate: 'September 1, 2026',
-      });
-
-      expect(sentFrom()).toBe('no-reply@mail.servwave.test');
-    });
   });
 
   // These bypass dispatchEmail by design so a kill switch or a branding change can
@@ -254,7 +253,7 @@ describe('Outbound sender identity', () => {
     it('names the organization, not ServWave', async () => {
       mockOrg('Acme Plumbing');
 
-      await sendCustomerFacingEmail();
+      await sendInvoice();
 
       expect(resendSend.mock.calls[0][0].subject).toBe('Invoice I00001 from Acme Plumbing');
     });
@@ -267,7 +266,7 @@ describe('Outbound sender identity', () => {
         .mockResolvedValueOnce({ estimate_template: 'alpha-classic' })
         .mockResolvedValue(undefined);
 
-      await sendCustomerFacingEmail();
+      await sendInvoice();
 
       expect(resendSend.mock.calls[0][0].subject).toBe('Invoice I00001');
     });

@@ -16,7 +16,6 @@ import app from '../app';
 import { prisma } from '../lib/prisma';
 import { TEST_USERS, mockAuthAs, authHeader, CUSTOMER_FIXTURE, ORG_B_ID } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 import { clearTokenCache } from '../middleware/authenticate';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -46,7 +45,6 @@ function jobRow(n: number, over: Record<string, unknown> = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache();
   clearTokenCache();
   mockPrisma.customer.findUnique.mockResolvedValue({ ...CUSTOMER_FIXTURE, created_by_id: null });
   mockPrisma.job.findMany.mockResolvedValue([]);

@@ -11,10 +11,13 @@ import api from '@/lib/axios';
 import { canAutoFocus } from '@/ui-kit/lib/autoFocus';
 import { DraftRestoredNote } from '@/ui-kit/components/ui/draftRestoredNote';
 import { useFieldDraft } from '@/lib/drafts/useFieldDraft';
+import { NoteDeleteButton } from '@/components/notes/NoteDeleteButton';
+import { useDeleteNote } from '@/lib/notes/useDeleteNote';
+import type { NoteDeleteAnswer } from '@/lib/notes/noteChange';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
-export interface JobNote {
+export interface JobNote extends NoteDeleteAnswer {
   id: string;
   content: string;
   created_at: string;
@@ -92,6 +95,9 @@ export function JobNotesPreview({
       queryClient.invalidateQueries({ queryKey: ['notes', 'JOB', jobId] });
     },
   });
+
+  // The delete control on each note follows the server's per-note answer (S04.25).
+  const deleteNote = useDeleteNote('JOB', jobId);
 
   const latestNotes = notes?.slice(0, 3) ?? [];
 
@@ -211,6 +217,12 @@ export function JobNotesPreview({
                 <span className="ml-auto text-[10px] text-text-secondary whitespace-nowrap">
                   {formatDistanceToNow(new Date(note.created_at), { addSuffix: true })}
                 </span>
+                <NoteDeleteButton
+                  note={note}
+                  authorName={`${note.creator.first_name} ${note.creator.last_name}`}
+                  pending={deleteNote.isDeleting}
+                  onDelete={() => deleteNote.requestDelete(note.id)}
+                />
               </div>
               <p className="text-xs text-text-secondary whitespace-pre-wrap break-words">
                 {note.content}
@@ -237,6 +249,7 @@ export function JobNotesPreview({
           Add note
         </Button>
       )}
+      {deleteNote.confirmDialog}
     </SectionCard>
   );
 }

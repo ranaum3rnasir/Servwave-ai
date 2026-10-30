@@ -58,12 +58,12 @@ describe('useScheduleData', () => {
   it('queries scheduled jobs with the exact status + date params and adds department_id only when filtered', async () => {
     mockOrgFeatures(['leads']);
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    renderHook(() => useScheduleData({ dateRange, departmentFilter: 'dept-9', tz: TZ }), { wrapper: wrapper(qc) });
+    renderHook(() => useScheduleData({ dateRange, departmentFilter: 'dept-9', tz: TZ, canReadEvents: true }), { wrapper: wrapper(qc) });
 
     await waitFor(() =>
       expect(api.get).toHaveBeenCalledWith('/api/jobs', {
         params: {
-          status: ['SCHEDULED', 'IN_PROGRESS', 'COMPLETED'],
+          status: ['SCHEDULED', 'IN_PROGRESS', 'COMPLETED', 'OFFICE_REVIEW', 'READY_TO_CLOSE', 'DONE'],
           scheduled_after: expectedAfter,
           scheduled_before: expectedBefore,
           department_id: 'dept-9',
@@ -76,12 +76,12 @@ describe('useScheduleData', () => {
   it('omits department_id when departmentFilter is "all"', async () => {
     mockOrgFeatures(['leads']);
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    renderHook(() => useScheduleData({ dateRange, departmentFilter: 'all', tz: TZ }), { wrapper: wrapper(qc) });
+    renderHook(() => useScheduleData({ dateRange, departmentFilter: 'all', tz: TZ, canReadEvents: true }), { wrapper: wrapper(qc) });
 
     await waitFor(() =>
       expect(api.get).toHaveBeenCalledWith('/api/jobs', {
         params: {
-          status: ['SCHEDULED', 'IN_PROGRESS', 'COMPLETED'],
+          status: ['SCHEDULED', 'IN_PROGRESS', 'COMPLETED', 'OFFICE_REVIEW', 'READY_TO_CLOSE', 'DONE'],
           scheduled_after: expectedAfter,
           scheduled_before: expectedBefore,
           limit: 500,
@@ -93,7 +93,7 @@ describe('useScheduleData', () => {
   it('queries walkthroughs for the calendar window with the exact date params', async () => {
     mockOrgFeatures(['leads']);
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    renderHook(() => useScheduleData({ dateRange, departmentFilter: 'all', tz: TZ }), { wrapper: wrapper(qc) });
+    renderHook(() => useScheduleData({ dateRange, departmentFilter: 'all', tz: TZ, canReadEvents: true }), { wrapper: wrapper(qc) });
 
     await waitFor(() =>
       expect(api.get).toHaveBeenCalledWith('/api/leads', {
@@ -109,7 +109,7 @@ describe('useScheduleData', () => {
   it('queries the unassigned bucket and unscheduled walkthroughs with their fixed params', async () => {
     mockOrgFeatures(['leads']);
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    renderHook(() => useScheduleData({ dateRange, departmentFilter: 'all', tz: TZ }), { wrapper: wrapper(qc) });
+    renderHook(() => useScheduleData({ dateRange, departmentFilter: 'all', tz: TZ, canReadEvents: true }), { wrapper: wrapper(qc) });
 
     await waitFor(() => {
       expect(api.get).toHaveBeenCalledWith('/api/jobs', { params: { status: 'UNSCHEDULED', limit: 100 } });
@@ -124,7 +124,7 @@ describe('useScheduleData', () => {
   it("org_features without 'leads' - neither /api/leads query fires", async () => {
     mockOrgFeatures(['jobs', 'scheduling']);
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    renderHook(() => useScheduleData({ dateRange, departmentFilter: 'all', tz: TZ }), {
+    renderHook(() => useScheduleData({ dateRange, departmentFilter: 'all', tz: TZ, canReadEvents: true }), {
       wrapper: wrapper(qc),
     });
 
@@ -137,7 +137,7 @@ describe('useScheduleData', () => {
   it("org_features WITH 'leads' - both lead queries fire with their exact current params", async () => {
     mockOrgFeatures(['leads']);
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    renderHook(() => useScheduleData({ dateRange, departmentFilter: 'all', tz: TZ }), {
+    renderHook(() => useScheduleData({ dateRange, departmentFilter: 'all', tz: TZ, canReadEvents: true }), {
       wrapper: wrapper(qc),
     });
 
@@ -158,7 +158,7 @@ describe('useScheduleData', () => {
   it('fail-open - org_features UNDEFINED (unhydrated auth cache) keeps both lead queries firing', async () => {
     mockOrgFeatures(undefined);
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    renderHook(() => useScheduleData({ dateRange, departmentFilter: 'all', tz: TZ }), {
+    renderHook(() => useScheduleData({ dateRange, departmentFilter: 'all', tz: TZ, canReadEvents: true }), {
       wrapper: wrapper(qc),
     });
 
@@ -182,7 +182,7 @@ describe('useScheduleData — calendar entries (slice 03)', () => {
   it('queries /api/calendar-entries with start_after/start_before matching the window', async () => {
     mockOrgFeatures(['leads']);
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    renderHook(() => useScheduleData({ dateRange, departmentFilter: 'all', tz: TZ }), { wrapper: wrapper(qc) });
+    renderHook(() => useScheduleData({ dateRange, departmentFilter: 'all', tz: TZ, canReadEvents: true }), { wrapper: wrapper(qc) });
 
     await waitFor(() =>
       expect(api.get).toHaveBeenCalledWith('/api/calendar-entries', {
@@ -194,7 +194,7 @@ describe('useScheduleData — calendar entries (slice 03)', () => {
   it('fires with NO leads feature — unlike the two lead queries, it is not useFeature-gated (spec §4)', async () => {
     mockOrgFeatures(['jobs', 'scheduling']);
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    renderHook(() => useScheduleData({ dateRange, departmentFilter: 'all', tz: TZ }), { wrapper: wrapper(qc) });
+    renderHook(() => useScheduleData({ dateRange, departmentFilter: 'all', tz: TZ, canReadEvents: true }), { wrapper: wrapper(qc) });
 
     await waitFor(() =>
       expect(api.get).toHaveBeenCalledWith('/api/calendar-entries', {
@@ -204,11 +204,24 @@ describe('useScheduleData — calendar entries (slice 03)', () => {
   });
 });
 
+describe('useScheduleData — calendar entries need View events', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('makes no calendar-entries request without it, and still reads jobs', async () => {
+    mockOrgFeatures(['leads']);
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    renderHook(() => useScheduleData({ dateRange, departmentFilter: 'all', tz: TZ, canReadEvents: false }), { wrapper: wrapper(qc) });
+
+    await waitFor(() => expect(api.get).toHaveBeenCalledWith('/api/jobs', expect.anything()));
+    expect(vi.mocked(api.get).mock.calls.map((c) => c[0])).not.toContain('/api/calendar-entries');
+  });
+});
+
 describe('the board stops asking for statuses the API no longer has (multi-visit S4, D17)', () => {
   it('never sends EN_ROUTE or ON_SITE in the jobs query', async () => {
     mockOrgFeatures(['leads']);
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    renderHook(() => useScheduleData({ dateRange, departmentFilter: 'all', tz: TZ }), { wrapper: wrapper(qc) });
+    renderHook(() => useScheduleData({ dateRange, departmentFilter: 'all', tz: TZ, canReadEvents: true }), { wrapper: wrapper(qc) });
 
     await waitFor(() => expect(api.get).toHaveBeenCalled());
     // The jobs facet drops an unknown enum literal rather than 400ing, so sending these would not

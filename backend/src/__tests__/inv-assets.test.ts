@@ -13,6 +13,7 @@ import { prisma } from '../lib/prisma';
 import { supabaseAdmin } from '../lib/supabase';
 import {
   mockAuthAs,
+  mockRoleSwitches,
   authHeader,
   ALPHA_ORG_ID,
   ASSET_FIXTURE,
@@ -269,15 +270,28 @@ describe('role gates (subject matrix: Admin+Dispatcher full, Sales read-only, Te
     expect(mockPrisma.asset.deleteMany).not.toHaveBeenCalled();
   });
 
-  it('technician → GET 403 (no read Inventory)', async () => {
+  it('technician with View stock off → GET 403 (no read Inventory)', async () => {
     mockAuthAs('technician');
+    // The Technician preset holds View stock (Roles & Permissions S01.9); the case turns it off.
+    mockRoleSwitches({ view_stock: false });
 
     const res = await request(app).get('/api/inventory/assets').set(authHeader('technician'));
     expect(res.status).toBe(403);
   });
 
-  it('dispatcher → full: GET 200 + POST 201', async () => {
+  it('technician → read-only by preset: GET 200, POST 403', async () => {
+    mockAuthAs('technician');
+
+    const list = await request(app).get('/api/inventory/assets').set(authHeader('technician'));
+    expect(list.status).toBe(200);
+    const create = await request(app).post('/api/inventory/assets').set(authHeader('technician')).send({ name: 'Drill' });
+    expect(create.status).toBe(403);
+  });
+
+  it('dispatcher holding Create stock → GET 200 + POST 201', async () => {
     mockAuthAs('dispatcher');
+    // The Dispatcher preset does not hold Create stock (Roles & Permissions S01.9); the case gives it the switch.
+    mockRoleSwitches({ create_stock: true });
     mockPrisma.asset.create.mockResolvedValue(ASSET_FIXTURE);
 
     const list = await request(app).get('/api/inventory/assets').set(authHeader('dispatcher'));

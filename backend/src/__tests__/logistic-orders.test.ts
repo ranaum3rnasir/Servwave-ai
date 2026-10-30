@@ -14,6 +14,7 @@ import app from '../app';
 import { prisma } from '../lib/prisma';
 import {
   mockAuthAs,
+  mockRoleSwitches,
   authHeader,
   ALPHA_ORG_ID,
   TEST_USERS,
@@ -22,7 +23,6 @@ import {
   matchesScopeWhere,
 } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 import { clearTokenCache } from '../middleware/authenticate';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 
@@ -201,7 +201,6 @@ const loEmits = () =>
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache();
   setupTransaction();
   mockAuthAs('admin');
 
@@ -507,6 +506,10 @@ describe('GET /api/logistic-orders/:id', () => {
 describe('Lifecycle — submit', () => {
   it('DRAFT → PENDING_APPROVAL, and notifies approvers', async () => {
     mockPrisma.logisticOrder.findFirst.mockResolvedValue(loRow({ status: 'DRAFT' }));
+    // The people to alert are the active holders of Approve logistic orders who can reach the order (read from their
+    // switches) other than the submitter: here another Admin box.
+    const approver = { ...TEST_USERS.admin, id: 'other-approver', custom_role: null };
+    mockPrisma.user.findMany.mockResolvedValue([approver]);
 
     const res = await request(app)
       .post(`/api/logistic-orders/${LO_ID}/submit`)
@@ -517,7 +520,8 @@ describe('Lifecycle — submit', () => {
     expect(claim.where).toMatchObject({ id: LO_ID, status: 'DRAFT', organization_id: ALPHA_ORG_ID });
     expect(claim.data.status).toBe('PENDING_APPROVAL');
     expect(claim.data.submitted_by).toBe(TEST_USERS.admin.id);
-    expect(loEmits().map((c) => c[0].verb)).toContain('lo.submitted');
+    await vi.waitFor(() => expect(loEmits().map((c) => c[0].verb)).toContain('lo.submitted'));
+    expect(loEmits().find((c) => c[0].verb === 'lo.submitted')![0].entity.lane_two_ids).toEqual(['other-approver']);
   });
 
   it('409 STALE_STATUS when the LO is not DRAFT', async () => {
@@ -727,11 +731,11 @@ describe('E19 — SALES permission split + capability flip', () => {
     expect(mockPrisma.logisticOrder.updateMany).not.toHaveBeenCalled();
   });
 
-  it('an approve capability override flips SALES approve to 200', async () => {
+  it('turning on Approve logistic orders flips SALES approve to 200', async () => {
     mockAuthAs('sales');
-    mockPrisma.userPermissionOverride.findMany.mockResolvedValue([
-      { action: 'approve', subject: 'LogisticOrder', effect: 'allow' },
-    ]);
+    // Approval is its own switch, off in the Sales preset (Roles & Permissions S01.9); a stored approve
+    // override row is not what grants it any more.
+    mockRoleSwitches({ approve_logistic_orders: true });
     mockPrisma.logisticOrder.findFirst.mockResolvedValue(loRow({ status: 'PENDING_APPROVAL' }));
 
     const res = await request(app)

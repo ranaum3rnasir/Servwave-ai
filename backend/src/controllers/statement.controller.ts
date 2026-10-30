@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
+import { COUNTED_PAYMENT_WHERE, COUNTED_REFUND_WHERE } from '../lib/payment-ledger';
 import { tenantWhere } from '../lib/tenant';
 import { logger } from '../lib/logger';
 import type { StatementForPdf, StatementPdfLine } from '../lib/pdf/templates/statement';
@@ -47,9 +48,11 @@ const invoiceStatementSelect = {
     select: { id: true, first_name: true, last_name: true, company_name: true },
   },
   // Voided payments stop counting (§8). The synthetic DEPOSIT-CREDIT row IS kept —
-  // it is exactly the §9 "applied deposit credit" line.
+  // it is exactly the §9 "applied deposit credit" line. Payments go-live slice 05: only money
+  // that landed is on the statement - a PROCESSING or FAILED payment, or a PENDING or FAILED
+  // refund, is not.
   payments: {
-    where: { voided_at: null },
+    where: COUNTED_PAYMENT_WHERE,
     select: {
       id: true,
       amount: true,
@@ -62,6 +65,7 @@ const invoiceStatementSelect = {
     orderBy: { paid_at: 'asc' as const },
   },
   refunds: {
+    where: COUNTED_REFUND_WHERE,
     select: {
       id: true,
       amount: true,

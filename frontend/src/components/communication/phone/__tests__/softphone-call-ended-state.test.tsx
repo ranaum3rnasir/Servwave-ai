@@ -23,6 +23,15 @@ const outcome = vi.hoisted(() => ({ current: null as null | Record<string, unkno
 // poll is pinned to THIS call rather than "any call to this number, ever".
 const outcomeArgs = vi.hoisted(() => ({ current: [] as unknown[] }));
 
+// Customer numbers on the Communication screens follow the person's switches (S05.6). This suite renders the
+// screen without a query client, so the person's switches are stubbed: every one on, the screen as it always was.
+vi.mock("@/components/contact/useContactPolicyInput", () => ({
+  useContactPolicyInput: () => ({
+    switches: { copyCustomerPhone: true, copyCustomerEmail: true, contactCustomers: true, viewCustomers: true },
+    phoneService: true,
+  }),
+}));
+
 vi.mock('@/lib/api/communication', () => ({
   BUSINESS_NUMBER: '(551) 282-7064',
   fmtPhone: (n: string) => n,

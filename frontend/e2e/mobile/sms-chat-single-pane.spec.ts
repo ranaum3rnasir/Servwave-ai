@@ -80,7 +80,7 @@ const messages = (id: string, count: number) =>
 
 const THREADS = [
   { id: 'gate-thr-1', customerId: CUSTOMERS[0].id, channel: 'sms', campaignType: 'customer_care', unread: 0, messages: messages('gate-thr-1', 80) },
-  // An unknown number: its header carries the widest set of actions (Create customer, Create lead).
+  // An unknown number: its header carries the widest set of actions (Create lead, Create job).
   { id: 'gate-thr-2', customerId: '', channel: 'sms', campaignType: 'customer_care', unread: 0, title: '+12125550177', messages: messages('gate-thr-2', 3) },
 ];
 

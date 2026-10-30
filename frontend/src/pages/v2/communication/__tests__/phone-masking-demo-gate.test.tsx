@@ -25,7 +25,7 @@ import { screen } from '@testing-library/react';
 import { Route, Routes } from 'react-router-dom';
 import api from '@/lib/axios';
 import { renderWithProviders } from '@/__tests__/helpers';
-import { buildAbility } from '@/lib/ability';
+import { abilityWithSwitches, presetSwitchLabels } from '@/__tests__/support/backendSwitchCatalog';
 
 vi.mock('@/components/communication/phone/CallsView', () => ({
   CallsView: () => <div>Calls view stub</div>,
@@ -65,7 +65,8 @@ import { useAuthStore } from '@/stores/auth.store';
 import PhonePage from '@/pages/v2/communication/PhonePage';
 
 const mockApi = vi.mocked(api);
-const COMM_READ = buildAbility([{ action: 'read', subject: 'Communication' }]);
+// Someone who holds the phone tabs (S08.15): these tests are about the org gates, which sit on top of the tab switches.
+const COMM_READ = abilityWithSwitches(...presetSwitchLabels('DISPATCHER'));
 
 function mockUser(user: unknown) {
   vi.mocked(useAuthStore).mockImplementation((sel: unknown) =>

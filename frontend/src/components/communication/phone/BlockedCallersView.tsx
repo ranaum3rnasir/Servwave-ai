@@ -1,6 +1,6 @@
 // Phone module — Blocked callers view.
 //
-// Faithful cut from Emanuel's PhonePage monolith (BlockedCallersView L8158-8279
+// Faithful cut from the original PhonePage monolith (BlockedCallersView L8158-8279
 // + its BlockNumberModal L8280-8412). Behavior is verbatim; the changes made:
 //   1. Tailwind tokens swapped indigo/slate -> ALPHA design tokens
 //      (primary / text-primary / text-secondary / border / background-light).

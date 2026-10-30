@@ -3,7 +3,7 @@ import { emailSchema } from '../lib/email-schema';
 
 describe('emailSchema (canonical email input gate)', () => {
   it('lowercases mixed-case input', () => {
-    expect(emailSchema.parse('Sagiv@AlphaSecurityUS.com')).toBe('sagiv@alphasecurityus.com');
+    expect(emailSchema.parse('Riley@Example.test')).toBe('riley@example.test');
   });
 
   it('trims surrounding whitespace then lowercases', () => {
@@ -11,7 +11,7 @@ describe('emailSchema (canonical email input gate)', () => {
   });
 
   it('leaves an already-normalized email unchanged', () => {
-    expect(emailSchema.parse('emanuel@alphasecurityus.com')).toBe('emanuel@alphasecurityus.com');
+    expect(emailSchema.parse('agent@example.test')).toBe('agent@example.test');
   });
 
   it('rejects a non-email', () => {

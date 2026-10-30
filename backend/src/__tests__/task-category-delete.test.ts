@@ -19,7 +19,7 @@ import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import { supabaseAdmin } from '../lib/supabase';
-import { mockAuthAs, authHeader, ALPHA_ORG_ID, ORG_B_ID, TEST_USERS } from './helpers';
+import { mockAuthAs, mockRoleSwitches, authHeader, ALPHA_ORG_ID, ORG_B_ID, TEST_USERS } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 
@@ -477,12 +477,14 @@ describe('DELETE /api/task-categories/:id - the count the dialog showed (stale-c
 
 describe('DELETE /api/task-categories/:id - delete_tasks needs the right to delete those tasks', () => {
   const DISPATCHER = TEST_USERS.dispatcher.id;
-  /** A dispatcher-based custom role that also holds `delete TaskCategory`, with or without `delete Task`. */
+  /**
+   * A dispatcher-based role that also holds `delete TaskCategory`, with or without the Delete tasks switch and
+   * without See all tasks, so a task is theirs to open only when they are on it.
+   */
   function grantCategoryDelete({ withTaskDelete }: { withTaskDelete: boolean }) {
-    const grants = DEFAULT_GRANTS
-      .filter((g) => g.role === 'DISPATCHER' && (withTaskDelete || !(g.action === 'delete' && g.subject === 'Task')))
-      .concat([{ role: 'DISPATCHER', action: 'delete', subject: 'TaskCategory' }]);
-    mockPrisma.rolePermission.findMany.mockResolvedValue(grants);
+    mockPrisma.rolePermission.findMany.mockResolvedValue(DEFAULT_GRANTS.filter((g) => g.role === 'DISPATCHER'));
+    // Deleting a category is the Manage task categories switch (Roles & Permissions S01.14), no longer a stored grant.
+    mockRoleSwitches({ delete_tasks: withTaskDelete, see_all_tasks: false, manage_task_categories: true });
     clearPermissionCache();
   }
   const deleteAllAs = () =>

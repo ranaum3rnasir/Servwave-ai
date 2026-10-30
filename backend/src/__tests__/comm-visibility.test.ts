@@ -5,7 +5,10 @@ import app from '../app';
 import { prisma } from '../lib/prisma';
 import { clearTokenCache } from '../middleware/authenticate';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { mockAuthAs, authHeader, ALPHA_ORG_ID, TEST_USERS } from './helpers';
+import { mockAuthAs, mockRoleSwitches, authHeader, ALPHA_ORG_ID, TEST_USERS } from './helpers';
+// Roles & Permissions S01.10: Access Communication is on in every preset, Sales included, so the cases below that
+// need a caller without the section gate turn the switch off (a custom role with it off) instead of leaning on SALES.
+
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 import { matchesWhere, type Row } from './whereMatcher';
 
@@ -78,7 +81,12 @@ const ON_MY_JOB = row('aa000000-0000-4000-8000-000000000001', { job_id: MY_JOB.i
 const ON_OTHER_JOB = row('aa000000-0000-4000-8000-000000000002', { job_id: OTHER_JOB.id, job: OTHER_JOB });
 const ON_MY_LEAD = row('aa000000-0000-4000-8000-000000000003', { lead_id: MY_LEAD.id, lead: MY_LEAD });
 const ON_OTHER_LEAD = row('aa000000-0000-4000-8000-000000000004', { lead_id: OTHER_LEAD.id, lead: OTHER_LEAD });
-const CUSTOMER_ONLY = row('aa000000-0000-4000-8000-000000000005', { customer_id: 'c0000000-0000-0000-0000-000000000001' });
+// The record tabs ask the customer branch of the Communication scope rule (S08.8), which judges the customer the row names:
+// the sales fixture below made this customer, so it can open it.
+const CUSTOMER_ONLY = row('aa000000-0000-4000-8000-000000000005', {
+  customer_id: 'c0000000-0000-0000-0000-000000000001',
+  customer: { id: 'c0000000-0000-0000-0000-000000000001', created_by_id: SALES_ID },
+});
 const VENDOR_ONLY = row('aa000000-0000-4000-8000-000000000006', { vendor_id: 'v0000000-0000-0000-0000-000000000001' });
 const UNANCHORED = row('aa000000-0000-4000-8000-000000000007');
 // THE PRECEDENCE ROW. persistTransactionalEmail stamps customer_id, lead_id AND
@@ -149,42 +157,11 @@ beforeEach(() => {
 // copy-paste of the Email fragment onto WhatsApp silently matches NOTHING rather
 // than failing loudly.
 
+// Calls are no longer in this suite: the call log follows Communication scope (M11, Roles & Permissions S08.2) and its
+// cases live in comm-call-log-scope.test.ts and lib/communication/__tests__/communicationScope.test.ts. The same goes for
+// the email list (S08.7): it follows Communication scope through the mailbox input, see comm-email-scope.test.ts. The text
+// inbox too (S08.5): it follows Communication scope through the linked company numbers, see comm-text-scope.test.ts.
 describe('a TECHNICIAN sees their own job comms and NOT another job comms', () => {
-  it('GET /communication/calls', async () => {
-    mockAuthAs('technician');
-    const res = await request(app).get('/api/communication/calls').set(authHeader('technician'));
-    expect(res.status).toBe(200);
-    const where = capturedWhere(mockPrisma.callSession.findMany as Mock);
-    expect(where.organization_id).toBe(ALPHA_ORG_ID);
-    expect(visible(where)).toContain(ON_MY_JOB.id);
-    expect(visible(where)).not.toContain(ON_OTHER_JOB.id);
-  });
-
-  it('GET /communication/emails', async () => {
-    mockAuthAs('technician');
-    const res = await request(app).get('/api/communication/emails').set(authHeader('technician'));
-    expect(res.status).toBe(200);
-    const where = capturedWhere(mockPrisma.email.findMany as Mock);
-    expect(where.organization_id).toBe(ALPHA_ORG_ID);
-    expect(visible(where)).toContain(ON_MY_JOB.id);
-    expect(visible(where)).not.toContain(ON_OTHER_JOB.id);
-  });
-
-  it('GET /communication/threads (SMS: filters the nested messages AND the thread)', async () => {
-    mockAuthAs('technician');
-    const res = await request(app).get('/api/communication/threads').set(authHeader('technician'));
-    expect(res.status).toBe(200);
-    const nested = capturedMessagesInclude(mockPrisma.messageThread.findMany as Mock);
-    expect(nested, 'the nested messages include must be filtered in SQL').toBeDefined();
-    expect(visible(nested!)).toContain(ON_MY_JOB.id);
-    expect(visible(nested!)).not.toContain(ON_OTHER_JOB.id);
-    // ...and a thread with nothing visible in it must not surface at all (its
-    // existence + customer linkage is itself information).
-    const threadWhere = capturedWhere(mockPrisma.messageThread.findMany as Mock);
-    expect(matchesWhere(parent('t1', [ON_MY_JOB, ON_OTHER_JOB]), threadWhere)).toBe(true);
-    expect(matchesWhere(parent('t2', [ON_OTHER_JOB]), threadWhere)).toBe(false);
-  });
-
   it('GET /communication/whatsapp (WhatsApp: same, on its own lead_id column)', async () => {
     // WhatsApp routes 404 via requireDemoOrg for a real org.
     mockAuthAs('technician', { is_demo: true });
@@ -195,19 +172,20 @@ describe('a TECHNICIAN sees their own job comms and NOT another job comms', () =
     expect(visible(nested!)).toContain(ON_MY_JOB.id);
     expect(visible(nested!)).not.toContain(ON_OTHER_JOB.id);
     const chatWhere = capturedWhere(mockPrisma.whatsAppChat.findMany as Mock);
-    expect(matchesWhere(parent('c1', [ON_MY_JOB]), chatWhere)).toBe(true);
+    expect(matchesWhere(parent('c1000000-0000-4000-8000-000000000001', [ON_MY_JOB]), chatWhere)).toBe(true);
     expect(matchesWhere(parent('c2', [ON_OTHER_JOB]), chatWhere)).toBe(false);
   });
 });
 
-// #2046: the org-wide list endpoints now require `access_inbox`, which SALES does not hold - so
-// neither route below reaches anchorInheritedWhere for SALES any more (403 before the handler
+// #2046: the org-wide list endpoints now require `access_inbox` (the Access Communication switch; off here, a Sales
+// rep with it turned off) - so neither route below reaches anchorInheritedWhere any more (403 before the handler
 // runs). The lead-owned/not-owned OWN_LEAD scoping this block used to prove through these routes
 // is unchanged code, still covered for TECHNICIAN above and for SALES through the record-tab
 // endpoint (GET /leads/:id/communications, job-communications.test.ts).
 describe('a SALES rep — org-wide list endpoints now 403 (#2046)', () => {
   it('GET /communication/calls', async () => {
     mockAuthAs('sales');
+    mockRoleSwitches({ access_communication: false });
     const res = await request(app).get('/api/communication/calls').set(authHeader('sales'));
     expect(res.status).toBe(403);
     expect(mockPrisma.callSession.findMany).not.toHaveBeenCalled();
@@ -215,6 +193,7 @@ describe('a SALES rep — org-wide list endpoints now 403 (#2046)', () => {
 
   it('GET /communication/emails', async () => {
     mockAuthAs('sales');
+    mockRoleSwitches({ access_communication: false });
     const res = await request(app).get('/api/communication/emails').set(authHeader('sales'));
     expect(res.status).toBe(403);
     expect(mockPrisma.email.findMany).not.toHaveBeenCalled();
@@ -224,15 +203,6 @@ describe('a SALES rep — org-wide list endpoints now 403 (#2046)', () => {
 describe('ADMIN and DISPATCHER bypass the inheritance and see everything', () => {
   // Not special-cased anywhere: both hold an unconditional read on Job AND Lead,
   // so both anchor scopes resolve to {} and the filter collapses to {}.
-  it('DISPATCHER GET /communication/calls applies no row restriction', async () => {
-    mockAuthAs('dispatcher');
-    const res = await request(app).get('/api/communication/calls').set(authHeader('dispatcher'));
-    expect(res.status).toBe(200);
-    const where = capturedWhere(mockPrisma.callSession.findMany as Mock);
-    expect(where.OR).toBeUndefined();
-    expect(visible(where)).toEqual(ALL.map((r) => r.id));
-  });
-
   it('ADMIN GET /communication/emails applies no row restriction', async () => {
     mockAuthAs('admin');
     const res = await request(app).get('/api/communication/emails').set(authHeader('admin'));
@@ -242,8 +212,10 @@ describe('ADMIN and DISPATCHER bypass the inheritance and see everything', () =>
     expect(visible(where)).toEqual(ALL.map((r) => r.id));
   });
 
-  it('DISPATCHER GET /communication/threads leaves the nested include unfiltered', async () => {
+  it('a person on All: GET /communication/threads leaves the nested include unfiltered', async () => {
     mockAuthAs('dispatcher');
+    // Only the Admin preset is on All; the text inbox follows Communication scope, not the job and lead grants.
+    mockRoleSwitches({ communication_scope: 'all' });
     await request(app).get('/api/communication/threads').set(authHeader('dispatcher'));
     const nested = capturedMessagesInclude(mockPrisma.messageThread.findMany as Mock);
     expect(nested === undefined || Object.keys(nested).length === 0).toBe(true);
@@ -251,64 +223,55 @@ describe('ADMIN and DISPATCHER bypass the inheritance and see everything', () =>
 });
 
 describe('unanchored / customer-only / vendor-only rows stay visible ORG-WIDE', () => {
-  it('technician GET /communication/calls', async () => {
-    mockAuthAs('technician');
-    await request(app).get('/api/communication/calls').set(authHeader('technician'));
-    const where = capturedWhere(mockPrisma.callSession.findMany as Mock);
-    expect(visible(where)).toEqual(expect.arrayContaining([CUSTOMER_ONLY.id, VENDOR_ONLY.id, UNANCHORED.id]));
-  });
-
   // #2046: SALES no longer reaches this list route at all (403 before the handler runs). The
   // "a scoped, non-bypass role still sees unanchored/customer/vendor rows" property this case
   // proved stays covered by the technician case immediately above (same anchorInheritedWhere
   // branch, unchanged code).
   it('sales GET /communication/emails — 403, no query reaches prisma (#2046)', async () => {
     mockAuthAs('sales');
+    mockRoleSwitches({ access_communication: false });
     const res = await request(app).get('/api/communication/emails').set(authHeader('sales'));
     expect(res.status).toBe(403);
     expect(mockPrisma.email.findMany).not.toHaveBeenCalled();
   });
 });
 
-// Spec C slice 7. A staff text thread carries NO job id and NO lead id, by
-// design (smsRecord.ts: internal lanes never carry job attribution), so it
-// lands in anchorInheritedWhere's unconditional third branch and is org-wide
-// visible. That is the access decision this feature takes, and it is asserted
-// here rather than reasoned about: an automation-created staff thread that a
-// restricted requester cannot see is a lane nobody can read.
-const STAFF_TEXT = row('aa000000-0000-4000-8000-000000000009');
+// Spec C slice 7. A staff text thread carries NO job id and NO lead id, by design (smsRecord.ts: internal lanes never
+// carry job attribution). Since S08.5 a text tied to nothing is no longer company-wide: the person the thread is keyed
+// to reads it as their own, everyone else only through the scope (their numbers, or All).
+const staffText = (id: string, personId: string) =>
+  row(id, { phone_number_id: null, sent_by_user_id: null, thread: { user_id: personId, customer_id: null, vendor_id: null } });
+const MY_STAFF_TEXT = staffText('aa000000-0000-4000-8000-000000000009', TECH_ID);
+const SOMEONE_ELSES_STAFF_TEXT = staffText('aa000000-0000-4000-8000-00000000000a', 'someone-else');
 
-describe('a staff text thread is visible to a requester with a RESTRICTED comm scope', () => {
-  it('technician GET /communication/threads keeps the thread AND its message', async () => {
+describe('a staff text thread belongs to the person it is keyed to', () => {
+  it('technician GET /communication/threads keeps their own staff thread AND its message, and not another person\'s', async () => {
     mockAuthAs('technician');
     const res = await request(app).get('/api/communication/threads').set(authHeader('technician'));
     expect(res.status).toBe(200);
 
-    // The technician's scope really is restricted here - otherwise this whole
-    // assertion would be vacuous.
     const threadWhere = capturedWhere(mockPrisma.messageThread.findMany as Mock);
-    expect(matchesWhere(parent('customer-thread', [ON_OTHER_JOB]), threadWhere)).toBe(false);
-
-    // ...and the staff thread survives it, message included.
-    expect(matchesWhere(parent('staff-thread', [STAFF_TEXT]), threadWhere)).toBe(true);
+    expect(matchesWhere(parent('my-staff-thread', [MY_STAFF_TEXT]), threadWhere)).toBe(true);
+    expect(matchesWhere(parent('their-staff-thread', [SOMEONE_ELSES_STAFF_TEXT]), threadWhere)).toBe(false);
     const nested = capturedMessagesInclude(mockPrisma.messageThread.findMany as Mock);
-    expect(visible(nested!, [STAFF_TEXT])).toContain(STAFF_TEXT.id);
+    expect(visible(nested!, [MY_STAFF_TEXT, SOMEONE_ELSES_STAFF_TEXT])).toEqual([MY_STAFF_TEXT.id]);
   });
 
   it('technician GET /communication/threads/:id keeps it on the detail read too', async () => {
     mockAuthAs('technician');
-    await request(app).get('/api/communication/threads/t1').set(authHeader('technician'));
-    // The detail `where` pins the row id too, so the fixture has to BE t1.
+    await request(app).get('/api/communication/threads/a1000000-0000-4000-8000-000000000001').set(authHeader('technician'));
+    // The detail `where` pins the row id too, so the fixture has to BE that thread.
     const where = capturedWhere(mockPrisma.messageThread.findFirst as Mock);
-    expect(matchesWhere(parent('t1', [STAFF_TEXT]), where)).toBe(true);
+    expect(matchesWhere(parent('a1000000-0000-4000-8000-000000000001', [MY_STAFF_TEXT]), where)).toBe(true);
+    expect(matchesWhere(parent('a1000000-0000-4000-8000-000000000001', [SOMEONE_ELSES_STAFF_TEXT]), where)).toBe(false);
   });
 });
 
 describe('anchor precedence: a row carrying BOTH job_id and customer_id is governed by the JOB', () => {
-  it('technician GET /communication/emails hides it when the job is not theirs', async () => {
+  it('technician GET /communication/emails/:id hides it when the job is not theirs', async () => {
     mockAuthAs('technician');
-    await request(app).get('/api/communication/emails').set(authHeader('technician'));
-    const where = capturedWhere(mockPrisma.email.findMany as Mock);
+    await request(app).get(`/api/communication/emails/${ON_OTHER_JOB_AND_CUSTOMER.id}`).set(authHeader('technician'));
+    const where = capturedWhere(mockPrisma.email.findFirst as Mock);
     expect(visible(where)).not.toContain(ON_OTHER_JOB_AND_CUSTOMER.id);
     // Repointed at a job that IS theirs, the same row becomes visible - proving
     // the job is what decides, not the presence of the customer/lead stamps.
@@ -320,6 +283,7 @@ describe('anchor precedence: a row carrying BOTH job_id and customer_id is gover
   // immediately above (same anchorInheritedWhere precedence, unchanged code).
   it('sales GET /communication/calls — 403, no query reaches prisma (#2046)', async () => {
     mockAuthAs('sales');
+    mockRoleSwitches({ access_communication: false });
     const res = await request(app).get('/api/communication/calls').set(authHeader('sales'));
     expect(res.status).toBe(403);
     expect(mockPrisma.callSession.findMany).not.toHaveBeenCalled();
@@ -344,6 +308,9 @@ describe('detail routes are scoped, not just the lists', () => {
 
   it('GET /communication/calls/:id/recording (signed URL into the private bucket)', async () => {
     mockAuthAs('technician');
+    // The Technician preset holds no Play recording (S08.11); this case is about the row filter, so the person
+    // holds the switch here.
+    mockRoleSwitches({ play_recording: true });
     const res = await request(app)
       .get(`/api/communication/calls/${ON_OTHER_JOB.id}/recording`)
       .set(authHeader('technician'));
@@ -354,6 +321,9 @@ describe('detail routes are scoped, not just the lists', () => {
 
   it('GET /communication/calls/:id/transcript', async () => {
     mockAuthAs('technician');
+    // The Technician preset holds no View transcript (S08.12); this case is about the row filter, so the person holds
+    // the switch here.
+    mockRoleSwitches({ view_transcript: true });
     await request(app)
       .get(`/api/communication/calls/${ON_OTHER_JOB.id}/transcript`)
       .set(authHeader('technician'));
@@ -389,19 +359,19 @@ describe('detail routes are scoped, not just the lists', () => {
 
   it('GET /communication/threads/:id', async () => {
     mockAuthAs('technician');
-    await request(app).get('/api/communication/threads/t1').set(authHeader('technician'));
+    await request(app).get('/api/communication/threads/a1000000-0000-4000-8000-000000000001').set(authHeader('technician'));
     const where = capturedWhere(mockPrisma.messageThread.findFirst as Mock);
-    expect(matchesWhere(parent('t1', [ON_OTHER_JOB]), where)).toBe(false);
-    expect(matchesWhere(parent('t1', [ON_MY_JOB]), where)).toBe(true);
+    expect(matchesWhere(parent('a1000000-0000-4000-8000-000000000001', [ON_OTHER_JOB]), where)).toBe(false);
+    expect(matchesWhere(parent('a1000000-0000-4000-8000-000000000001', [ON_MY_JOB]), where)).toBe(true);
   });
 
   it('GET /communication/whatsapp/:id', async () => {
     // WhatsApp routes 404 via requireDemoOrg for a real org.
     mockAuthAs('technician', { is_demo: true });
-    await request(app).get('/api/communication/whatsapp/c1').set(authHeader('technician'));
+    await request(app).get('/api/communication/whatsapp/c1000000-0000-4000-8000-000000000001').set(authHeader('technician'));
     const where = capturedWhere(mockPrisma.whatsAppChat.findFirst as Mock);
-    expect(matchesWhere(parent('c1', [ON_OTHER_JOB]), where)).toBe(false);
-    expect(matchesWhere(parent('c1', [UNANCHORED]), where)).toBe(true);
+    expect(matchesWhere(parent('c1000000-0000-4000-8000-000000000001', [ON_OTHER_JOB]), where)).toBe(false);
+    expect(matchesWhere(parent('c1000000-0000-4000-8000-000000000001', [UNANCHORED]), where)).toBe(true);
   });
 });
 
@@ -473,9 +443,9 @@ describe('reassign mutations are scoped on the update AND the refetch', () => {
   it('PATCH /communication/sms/:id/lead', async () => {
     mockRowScopedEditor();
     mockPrisma.message.updateMany.mockResolvedValue({ count: 1 });
-    mockPrisma.message.findMany.mockResolvedValue([{ id: 'm1', direction: 'out', body: 'x', ts: new Date() }]);
+    mockPrisma.message.findMany.mockResolvedValue([{ id: '00000000-0000-4000-8000-0000000000a1', direction: 'out', body: 'x', ts: new Date() }]);
     const res = await request(app)
-      .patch('/api/communication/sms/m1/lead')
+      .patch('/api/communication/sms/00000000-0000-4000-8000-0000000000a1/lead')
       .set(authHeader('technician'))
       .send({ lead_id: null });
     expect(res.status).toBe(200);
@@ -486,7 +456,8 @@ describe('reassign mutations are scoped on the update AND the refetch', () => {
     const rows = [ON_MY_JOB, ON_OTHER_JOB, UNANCHORED].map(onCustomerThread);
     const updateWhere = capturedWhere(mockPrisma.message.updateMany as Mock);
     expect(visible(updateWhere, rows)).not.toContain(ON_OTHER_JOB.id);
-    expect(visible(updateWhere, rows.map((r) => ({ ...r, id: 'm1' })))).toHaveLength(2);
+    // A text tied to nothing is no longer company-wide (S08.5): only the one on a job they can open stays in reach.
+    expect(visible(updateWhere, rows.map((r) => ({ ...r, id: '00000000-0000-4000-8000-0000000000a1' })))).toHaveLength(1);
     const refetchWhere = capturedWhere(mockPrisma.message.findMany as Mock);
     expect(visible(refetchWhere, rows)).not.toContain(ON_OTHER_JOB.id);
   });

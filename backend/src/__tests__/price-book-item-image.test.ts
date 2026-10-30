@@ -129,8 +129,9 @@ function guardRow(over: Record<string, unknown> = {}) {
   };
 }
 
+// An estimate on a lead the sales rep is an assignee of: inside their Estimates scope (Through own leads).
 function ownEstimateRow(id = ESTIMATE_ID) {
-  return { id, organization_id: ALPHA_ORG_ID, lead_id: null, created_by: TEST_USERS.sales.id };
+  return { id, organization_id: ALPHA_ORG_ID, lead_id: 'lead-own', lead: { lead_assignees: [{ user_id: TEST_USERS.sales.id }] } };
 }
 
 function imagelessItem(id = ITEM_ID) {
@@ -261,13 +262,12 @@ describe('POST /api/price-book/items/:id/image — estimate_id row scope (R6)', 
 
   it('403s when the supplied estimate is outside the requester\'s own row scope', async () => {
     mockPrisma.estimate.findUnique.mockResolvedValue(guardRow());
-    // matchesScopeWhere throws on relations the fixture doesn't declare, e.g. `lead` — supply a
-    // row that fails BOTH OR branches of OWN_ESTIMATE_VIA_LEAD_OR_CREATOR (created by someone else).
+    // An estimate on a lead the sales rep is not an assignee of: outside their Estimates scope.
     mockScopedFindFirst(mockPrisma.estimate.findFirst, {
       id: ESTIMATE_ID,
       organization_id: ALPHA_ORG_ID,
-      lead_id: null,
-      created_by: 'not-this-sales-user',
+      lead_id: 'lead-other',
+      lead: { lead_assignees: [{ user_id: 'not-this-sales-user' }] },
     });
 
     const res = await request(app)

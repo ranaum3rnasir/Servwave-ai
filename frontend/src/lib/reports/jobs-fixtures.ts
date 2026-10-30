@@ -10,7 +10,7 @@
  */
 import { hashStr, mulberry32 } from './random';
 
-// ── Domain vocab (Alpha Security US) ─────────────────────────────────────────
+// ── Domain vocab (an example doors-and-security company) ─────────────────────────────────────────
 export const STATUSES = [
   'Submitted',
   'In progress',
@@ -18,7 +18,7 @@ export const STATUSES = [
   'On the way',
   'On site',
   'Pending',
-  'Done',
+  'Completed',
   'done pending',
   'Canceled',
 ] as const;
@@ -54,18 +54,18 @@ export const SOURCES = [
 export const ORIGINS = ['Lead', 'New'];
 
 export const TECHS = [
-  'Emanuel Dahan',
-  'Ohad',
-  'Rami',
-  'Priya',
-  'Shaked',
-  'Liran-Dor',
-  'Ofir Sub',
-  'Adam Elkar',
-  'Robert Bresnick',
+  'Sam Rivera',
+  'Jordan',
+  'Reese',
+  'Drew',
+  'Hayden',
+  'Lee-Dana',
+  'Oak Sub',
+  'Pat Hollis',
+  'Jamie Park',
 ];
 
-export const CREATORS = ['Emanuel Dahan', 'Dispatch', 'Ohad', 'Rami', 'Logistics', 'Priya', 'Robert Bresnick'];
+export const CREATORS = ['Sam Rivera', 'Dispatch', 'Jordan', 'Reese', 'Logistics', 'Drew', 'Jamie Park'];
 
 export const TAGS = [
   'Followup',
@@ -80,7 +80,7 @@ export const TAGS = [
 
 export const CLIENTS: [string, string][] = [
   ['Aiden Evans', 'ajevans@hud.gov'],
-  ['LVD', 'umut@servwave.com'],
+  ['Sample Customer A', 'umut@servwave.com'],
   ['Patrick Patel', 'prateshp@gmail.com'],
   ['Congregation', 'mjzwig@msn.com'],
   ['Arnesa Cengic', 'acekic@centric.com'],
@@ -167,7 +167,7 @@ export function buildMockJobs(): Job[] {
     }
 
     const billed = Math.round((150 + rng() * 4200) / 5) * 5;
-    const done = status === 'Done';
+    const done = status === 'Completed';
     const paid = done ? billed : status === 'done pending' ? Math.round(billed * 0.5) : status === 'Canceled' ? 0 : Math.round(billed * rng() * 0.4);
 
     // Cost / expense / profit breakdown (statistics).

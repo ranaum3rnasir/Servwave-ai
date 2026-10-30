@@ -3,7 +3,7 @@ import multer from 'multer';
 import { authenticate } from '../middleware/authenticate';
 import { attachAbility } from '../middleware/attachAbility';
 import { attachCustomerScope } from '../lib/permissions/customerScope';
-import { canDo } from '../middleware/canGuard';
+import { canDo, canDoOrCreator } from '../middleware/canGuard';
 import { validate } from '../middleware/validate';
 import { requireUuidParam } from '../middleware/requireUuidParam';
 import { publicReadLimiter, publicActionLimiter, publicSelectionLimiter, expensiveLimiter } from '../middleware/rate-limit';
@@ -51,24 +51,26 @@ router.use(authenticate, attachAbility, attachCustomerScope);
 // Stats & lookups (before :id to avoid route conflict)
 router.get('/stats', canDo('read', 'Estimate'), estimateController.getStats);
 router.get('/creators', canDo('read', 'Estimate'), estimateController.listCreators);
-// Filter-aware "export all" — gated `read` (no `export` action for Estimate); reuses list row-scope.
-router.get('/export', expensiveLimiter, canDo('read', 'Estimate'), estimateController.exportAll);
+// Filter-aware "export all" — gated by the module's Export switch (`export Estimate`), not View; reuses list row-scope.
+router.get('/export', expensiveLimiter, canDo('export', 'Estimate'), estimateController.exportAll);
 // List-level bulk delete (Estimates list page) — POST not DELETE (mirrors POST
 // /api/inventory/bulk-restock's ids/lines-array-in-body precedent for HTTP-client/proxy
 // compatibility). Static path, so before :id to avoid route conflict.
-router.post('/bulk-delete', canDo('delete', 'Estimate'), validate(estimateController.bulkDeleteEstimatesSchema), estimateController.bulkRemove);
+router.post('/bulk-delete', canDoOrCreator('delete', 'Estimate', (req) => req.body?.ids), validate(estimateController.bulkDeleteEstimatesSchema), estimateController.bulkRemove);
 // List-level bulk status change - same `update Estimate` grant as PATCH /:id/status below.
-router.post('/bulk-status', canDo('update', 'Estimate'), validate(estimateController.bulkSetEstimateStatusSchema), estimateController.bulkSetStatus);
+router.post('/bulk-status', canDoOrCreator('update', 'Estimate', (req) => req.body?.ids), validate(estimateController.bulkSetEstimateStatusSchema), estimateController.bulkSetStatus);
 // List-level bulk send reminder - same `send Estimate` grant as POST /:id/send below, rate-
 // limited like it renders a PDF per row (estimate sends do; see the schema's cap comment).
-router.post('/bulk-send-reminder', expensiveLimiter, canDo('send', 'Estimate'), validate(estimateController.bulkSendEstimateRemindersSchema), estimateController.bulkSendReminders);
+router.post('/bulk-send-reminder', expensiveLimiter, canDoOrCreator('send', 'Estimate', (req) => req.body?.ids), validate(estimateController.bulkSendEstimateRemindersSchema), estimateController.bulkSendReminders);
 
 // CRUD
-router.get('/', canDo('read', 'Estimate'), estimateController.list);
+// No `read` guard on the list: a person with View estimates off gets an empty list, not a 403. The list's
+// row scope (scopeWhereForReq) reaches nothing without the read grant, so it is the one thing that decides.
+router.get('/', estimateController.list);
 router.post('/', canDo('create', 'Estimate'), validate(estimateController.createEstimateSchema), estimateController.create);
-router.get('/:id', canDo('read', 'Estimate'), estimateController.getById);
-router.patch('/:id', canDo('update', 'Estimate'), validate(estimateController.updateEstimateSchema), estimateController.update);
-router.delete('/:id', canDo('delete', 'Estimate'), estimateController.remove);
+router.get('/:id', canDoOrCreator('read', 'Estimate'), estimateController.getById);
+router.patch('/:id', canDoOrCreator('update', 'Estimate'), validate(estimateController.updateEstimateSchema), estimateController.update);
+router.delete('/:id', canDoOrCreator('delete', 'Estimate'), estimateController.remove);
 
 // Editable record ids (Workiz dual-run, SERV10X record-renumber). Preview is read-only/advisory
 // (no lock); PATCH is the real rename, transactional. Both gated by the dedicated `renumber`
@@ -78,23 +80,23 @@ router.post('/:id/number/preview', canDo('renumber', 'Estimate'), validate(estim
 router.patch('/:id/number', canDo('renumber', 'Estimate'), validate(estimateController.estimateNumberSchema), estimateController.renameNumber);
 
 // Actions
-router.post('/:id/send', canDo('send', 'Estimate'), validate(estimateController.sendEstimateSchema), estimateController.send);
+router.post('/:id/send', canDoOrCreator('send', 'Estimate'), validate(estimateController.sendEstimateSchema), estimateController.send);
 // R4 (2026-07-21) — lifecycle verbs (port-plan §3.2/§10.3, D13). mark-sent reuses the `send`
 // grant (same population, same "deliver the document" intent, just no email). status/approve/
 // decline/void-approval each get their own action — see catalog.ts + defaultGrants.ts.
-router.post('/:id/mark-sent', canDo('send', 'Estimate'), validate(estimateController.markSentEstimateSchema), estimateController.markSent);
-router.patch('/:id/status', canDo('update', 'Estimate'), validate(estimateController.setEstimateStatusSchema), estimateController.setStatus);
+router.post('/:id/mark-sent', canDoOrCreator('send', 'Estimate'), validate(estimateController.markSentEstimateSchema), estimateController.markSent);
+router.patch('/:id/status', canDoOrCreator('update', 'Estimate'), validate(estimateController.setEstimateStatusSchema), estimateController.setStatus);
 router.post('/:id/approve-internal', canDo('approve', 'Estimate'), validate(estimateController.approveInternalSchema), estimateController.approveInternal);
 router.post('/:id/decline-internal', canDo('decline', 'Estimate'), validate(estimateController.declineInternalSchema), estimateController.declineInternal);
 router.post('/:id/void-approval', canDo('void_approval', 'Estimate'), estimateController.voidApproval);
-router.post('/:id/cancel', canDo('cancel', 'Estimate'), validate(estimateController.cancelEstimateSchema), estimateController.cancel);
+router.post('/:id/cancel', canDoOrCreator('cancel', 'Estimate'), validate(estimateController.cancelEstimateSchema), estimateController.cancel);
 router.post('/:id/duplicate', canDo('duplicate', 'Estimate'), validate(estimateController.duplicateEstimateSchema), estimateController.duplicate);
-router.post('/:id/revise', canDo('revise', 'Estimate'), estimateController.revise);
+router.post('/:id/revise', canDoOrCreator('revise', 'Estimate'), estimateController.revise);
 // Transition 16 (continuity map §4.6) / job-items-estimate-parity Part C - attach an EXISTING
 // estimate to an EXISTING job from the job's Estimate tab. `update` (not `create`): this mutates
 // an already-existing Estimate row, same gate the generic PATCH /:id uses.
-router.post('/:id/attach-to-job', canDo('update', 'Estimate'), validate(estimateController.attachToJobSchema), estimateController.attachToJob);
-router.post('/:id/ai/draft-scope', expensiveLimiter, canDo('update', 'Estimate'), estimateController.draftScope);
+router.post('/:id/attach-to-job', canDoOrCreator('update', 'Estimate'), validate(estimateController.attachToJobSchema), estimateController.attachToJob);
+router.post('/:id/ai/draft-scope', expensiveLimiter, canDoOrCreator('update', 'Estimate'), estimateController.draftScope);
 router.post('/:id/record-payment', canDo('record_payment', 'Estimate'), validate(estimateController.recordEstimatePaymentSchema), estimateController.recordEstimatePayment);
 router.post('/:id/waive-deposit', canDo('waive_deposit', 'Estimate'), validate(estimateController.waiveDepositSchema), estimateController.waiveDeposit);
 // refund-deposit + reactivate-deposit removed (Phase 5 fold): the deposit refund is now the
@@ -109,28 +111,28 @@ router.post('/:id/copy-to-invoice', canDo('create', 'Invoice'), estimateControll
 // — Estimate has no manage_lines/update split (same precedent as Job's job-lines.controller.ts);
 // canAccessRow(Estimate) per-instance inside the controller. No GET here — estimateDetailSelect
 // (GET /:id above) already embeds line_items.
-router.post('/:id/line-items', canDo('update', 'Estimate'), validate(estimateLinesController.addLineSchema), estimateLinesController.addLine);
+router.post('/:id/line-items', canDoOrCreator('update', 'Estimate'), validate(estimateLinesController.addLineSchema), estimateLinesController.addLine);
 // MUST come BEFORE the ":lineId" PATCH route below — Express matches routes in registration
 // order, and ":lineId" is just a param placeholder that would otherwise capture the literal path
 // segment "reorder" (routing to updateLine with lineId="reorder" instead of reorderLines).
-router.patch('/:id/line-items/reorder', canDo('update', 'Estimate'), validate(estimateLinesController.reorderSchema), estimateLinesController.reorderLines);
-router.patch('/:id/line-items/:lineId', canDo('update', 'Estimate'), validate(estimateLinesController.updateLineSchema), estimateLinesController.updateLine);
-router.delete('/:id/line-items/:lineId', canDo('update', 'Estimate'), estimateLinesController.deleteLine);
+router.patch('/:id/line-items/reorder', canDoOrCreator('update', 'Estimate'), validate(estimateLinesController.reorderSchema), estimateLinesController.reorderLines);
+router.patch('/:id/line-items/:lineId', canDoOrCreator('update', 'Estimate'), validate(estimateLinesController.updateLineSchema), estimateLinesController.updateLine);
+router.delete('/:id/line-items/:lineId', canDoOrCreator('update', 'Estimate'), estimateLinesController.deleteLine);
 
 // Scopes of work (v12 unified line-items, plan §2a) — flat-priced, non-line-item blocks stored on
 // Estimate.scopes (scopes.ts). estimateDetailSelect DOES embed scopes (unlike Job), but a
 // dedicated GET is kept for parity with Job/Invoice's lighter per-scopes read. Same gating as
 // line-items: list `read` Estimate; add/update/delete `update` Estimate.
-router.get('/:id/scopes', canDo('read', 'Estimate'), estimateLinesController.listScopes);
+router.get('/:id/scopes', canDoOrCreator('read', 'Estimate'), estimateLinesController.listScopes);
 // #2053 slice 1 — estimate-anchored schemas (addEstimateScopeSchema/updateEstimateScopeSchema),
 // not the shared addScopeSchema/updateScopeSchema Job/Invoice's own scope routes still parse —
 // see estimate-lines.controller.ts's module doc.
-router.post('/:id/scopes', canDo('update', 'Estimate'), validate(estimateLinesController.addEstimateScopeSchema), estimateLinesController.addScope);
+router.post('/:id/scopes', canDoOrCreator('update', 'Estimate'), validate(estimateLinesController.addEstimateScopeSchema), estimateLinesController.addScope);
 // MUST come BEFORE the ":idx" PATCH route below — same Express route-order gotcha as
 // line-items/reorder above (":idx" would otherwise capture the literal path segment "reorder").
-router.patch('/:id/scopes/reorder', canDo('update', 'Estimate'), validate(estimateLinesController.reorderScopeSchema), estimateLinesController.reorderScopes);
-router.patch('/:id/scopes/:idx', canDo('update', 'Estimate'), validate(estimateLinesController.updateEstimateScopeSchema), estimateLinesController.updateScope);
-router.delete('/:id/scopes/:idx', canDo('update', 'Estimate'), estimateLinesController.deleteScope);
+router.patch('/:id/scopes/reorder', canDoOrCreator('update', 'Estimate'), validate(estimateLinesController.reorderScopeSchema), estimateLinesController.reorderScopes);
+router.patch('/:id/scopes/:idx', canDoOrCreator('update', 'Estimate'), validate(estimateLinesController.updateEstimateScopeSchema), estimateLinesController.updateScope);
+router.delete('/:id/scopes/:idx', canDoOrCreator('update', 'Estimate'), estimateLinesController.deleteScope);
 
 // Scope-of-work photos (R5f, plan §2a follow-on). Gated the SAME `update` Estimate as
 // every line/scope mutation above; the controller applies the SAME loadGuardedEstimate +
@@ -138,23 +140,23 @@ router.delete('/:id/scopes/:idx', canDo('update', 'Estimate'), estimateLinesCont
 // drops the AsyncLocalStorage tenant scope (same ordering as inv-stages.routes.ts /
 // attachment.routes.ts). Scope photo routes key on the scope's stable `id` (:scopeId), never the
 // array index the existing PATCH/DELETE .../scopes/:idx routes use — index isn't stable identity.
-router.post('/:id/scopes/:scopeId/photos', canDo('update', 'Estimate'), photoUpload.single('file'), photoMulterErrors, withOrgContext, estimatePhotosController.uploadScopePhoto);
-router.delete('/:id/scopes/:scopeId/photos/:photoId', canDo('update', 'Estimate'), estimatePhotosController.deleteScopePhoto);
+router.post('/:id/scopes/:scopeId/photos', canDoOrCreator('update', 'Estimate'), photoUpload.single('file'), photoMulterErrors, withOrgContext, estimatePhotosController.uploadScopePhoto);
+router.delete('/:id/scopes/:scopeId/photos/:photoId', canDoOrCreator('update', 'Estimate'), estimatePhotosController.deleteScopePhoto);
 
 // PDF
-router.get('/:id/pdf', expensiveLimiter, canDo('read', 'Estimate'), estimateController.getPdf);
+router.get('/:id/pdf', expensiveLimiter, canDoOrCreator('read', 'Estimate'), estimateController.getPdf);
 
 // Notes
-router.get('/:id/notes', canDo('read', 'Estimate'), estimateController.getNotes);
-router.get('/:id/history', canDo('read', 'Estimate'), estimateController.getHistory);
+router.get('/:id/notes', canDoOrCreator('read', 'Estimate'), estimateController.getNotes);
+router.get('/:id/history', canDoOrCreator('read', 'Estimate'), estimateController.getHistory);
 
 // #2030 — past versions. READ-ONLY by construction: there is no write verb on these paths at
 // all, so a version cannot be edited by anyone who guesses a URL. Gated on `read Estimate` plus
 // the same per-row ownership check getPdf uses, so the route is shareable with a colleague in
 // the same organization and resolves for nobody else.
-router.get('/:id/versions', canDo('read', 'Estimate'), estimateController.listVersions);
-router.get('/:id/versions/:version', canDo('read', 'Estimate'), estimateController.getVersion);
-router.post('/:id/notes', canDo('update', 'Estimate'), validate(estimateController.createEstimateNoteSchema), estimateController.addNote);
+router.get('/:id/versions', canDoOrCreator('read', 'Estimate'), estimateController.listVersions);
+router.get('/:id/versions/:version', canDoOrCreator('read', 'Estimate'), estimateController.getVersion);
+router.post('/:id/notes', canDoOrCreator('update', 'Estimate'), validate(estimateController.createEstimateNoteSchema), estimateController.addNote);
 
 // Tags (polymorphic)
 // Tag routes take BOTH ids straight from the path into `where` clauses over Postgres
@@ -163,7 +165,7 @@ router.post('/:id/notes', canDo('update', 'Estimate'), validate(estimateControll
 // canDo so a caller without the grant still gets 403 rather than learning whether the
 // id was well-formed, and they return the SAME 404 text the handler gives for a row
 // that genuinely is not there.
-router.post('/:id/tags', canDo('update', 'Estimate'), requireUuidParam('id', 'estimate not found'), validate(tagController.addTagToEntitySchema), tagController.addTagToEstimate);
-router.delete('/:id/tags/:tagId', canDo('update', 'Estimate'), requireUuidParam('id', 'estimate not found'), requireUuidParam('tagId', 'Tag not attached to this estimate'), tagController.removeTagFromEstimate);
+router.post('/:id/tags', canDoOrCreator('update', 'Estimate'), requireUuidParam('id', 'estimate not found'), validate(tagController.addTagToEntitySchema), tagController.addTagToEstimate);
+router.delete('/:id/tags/:tagId', canDoOrCreator('update', 'Estimate'), requireUuidParam('id', 'estimate not found'), requireUuidParam('tagId', 'Tag not attached to this estimate'), tagController.removeTagFromEstimate);
 
 export default router;

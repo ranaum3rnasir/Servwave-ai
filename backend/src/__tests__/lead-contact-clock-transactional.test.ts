@@ -29,6 +29,8 @@ vi.mock('../config/env', () => ({
     EMAIL_FROM: 'noreply@test.servwave.com',
     EMAIL_FROM_BUSINESS: 'noreply@mail.test.servwave.com',
     RESEND_API_KEY: 're_test_key',
+    // PRD 10 (S10.12): the domain a sender's own address is built on; a document goes out from it.
+    MAILBOX_DOMAIN: 'mail.test.com',
     FRONTEND_URL: 'http://localhost:5173',
   },
 }));
@@ -46,6 +48,9 @@ vi.mock('../lib/pdf', () => ({
 
 import { prisma } from '../lib/prisma';
 
+
+// PRD 10 (S10.12): a document is sent by hand, from the sender's own mailbox (the id the suite-wide mailbox stub answers to).
+const HAND_SENDER = { mailboxId: 'main-mailbox-id', userId: 'user-1' };
 // setup.ts mocks '../lib/email' globally; pull the REAL module here.
 let sendInvoiceEmail: typeof import('../lib/email')['sendInvoiceEmail'];
 
@@ -84,6 +89,7 @@ beforeEach(() => {
 describe('transactional email provenance (spec #1751 D5)', () => {
   it('files a real invoice notice as AUTOMATED', async () => {
     await sendInvoiceEmail({
+      handSender: HAND_SENDER,
       organizationId: ORG_ID,
       ...INVOICE_PARAMS,
       record: { organizationId: ORG_ID, customerId: CUSTOMER_ID, leadId: LEAD_ID },
@@ -112,6 +118,7 @@ describe('transactional email provenance (spec #1751 D5)', () => {
   // show a company that answers instantly. Nothing would go red.
   it('does NOT stamp the lead contact clock for an automated notice', async () => {
     await sendInvoiceEmail({
+      handSender: HAND_SENDER,
       organizationId: ORG_ID,
       ...INVOICE_PARAMS,
       record: { organizationId: ORG_ID, customerId: CUSTOMER_ID, leadId: LEAD_ID },

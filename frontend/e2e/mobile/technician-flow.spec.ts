@@ -4,7 +4,7 @@
  *
  * A fresh scheduled job (made through the API, so each device gets its own and the shared
  * key-route job is never changed) is opened and worked the way a technician works it: the visit's
- * Mark on the way, Mark on site, Start work and Finish visit, then the job's Mark Complete (a visit is
+ * Mark on the way, Mark on site, Start work and Finish visit, then the job's Complete job (a visit is
  * finished and a job is completed; the visit's last step was "Complete" before Roles & Permissions S04.15).
  * At every step the control must be reachable by the way the device is driven (a tap on a touch
  * screen, a click on the desktop control): inside the viewport, and the
@@ -44,7 +44,7 @@ async function expectReachable(page: Page, loc: Locator, label: string) {
   expect(covered, `something covers the centre of ${label}`).toBe(false);
 }
 
-test('technician flow: work the visit, then Mark Complete, each in reach', async ({ page, session }, testInfo) => {
+test('technician flow: work the visit, then Complete job, each in reach', async ({ page, session }, testInfo) => {
   const device = gateDevice(testInfo.project.name);
   const api = await new ApiClient().init();
   let jobId: string;
@@ -62,7 +62,7 @@ test('technician flow: work the visit, then Mark Complete, each in reach', async
 
     // 1. Work the visit through its lifecycle: the visit card offers ONE next step at a time
     //    (Mark on the way, Mark on site, Start work, Finish visit), and each tap must reveal the next.
-    //    The last step is the visit's "Finish visit"; the JOB's "Mark Complete" is step 2 below.
+    //    The last step is the visit's "Finish visit"; the JOB's "Complete job" is step 2 below.
     const steps = ['Mark on the way', 'Mark on site', 'Start work'];
     for (const [i, label] of steps.entries()) {
       const step = page.getByRole('button', { name: label, exact: true }).first();
@@ -73,14 +73,14 @@ test('technician flow: work the visit, then Mark Complete, each in reach', async
       await expect(page.getByRole('button', { name: next, exact: true }).first(), `after "${label}" the visit offers "${next}"`).toBeVisible({ timeout: 20_000 });
     }
 
-    // 2. Mark Complete: the header action from sm up, the bottom dock on a phone. Exactly one.
-    const complete = page.getByRole('button', { name: /Mark Complete/ });
-    await expect(complete, 'exactly one Mark Complete').toHaveCount(1, { timeout: 20_000 });
-    await expectReachable(page, complete, 'Mark Complete');
+    // 2. Complete job: the header action from sm up, the bottom dock on a phone. Exactly one.
+    const complete = page.getByRole('button', { name: /Complete job/ });
+    await expect(complete, 'exactly one Complete job').toHaveCount(1, { timeout: 20_000 });
+    await expectReachable(page, complete, 'Complete job');
     await press(device.touch, complete);
 
     // 3. Done: nothing left to complete, and the job says so.
-    await expect(complete, 'Mark Complete is gone once the job is complete').toHaveCount(0, { timeout: 20_000 });
+    await expect(complete, 'Complete job is gone once the job is complete').toHaveCount(0, { timeout: 20_000 });
     await expect(page.getByText(/Completed/).first()).toBeVisible();
     await testInfo.attach('technician-flow.json', { body: JSON.stringify({ device: device.id, job: 'completed' }), contentType: 'application/json' });
   } finally {

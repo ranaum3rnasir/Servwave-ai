@@ -50,31 +50,7 @@ test('E2E-16: Lead → Contact → Schedule walkthrough → Mark LOST → walkth
   expect(leadLost.walkthrough_cancelled_at).toBeTruthy();
 });
 
-// ──────────────────────────────────────────────────────────
-// E2E-17: Lead → Walkthrough scheduled → Cancel lead → walkthrough cancelled
-// ──────────────────────────────────────────────────────────
-
-test('E2E-17: Lead → Contact → Schedule walkthrough → Cancel lead → walkthrough auto-cancelled', async () => {
-  const { leadId } = await createContactedLead(api);
-
-  // Schedule walkthrough
-  const salesId = await createSalesUser(api);
-  await api.scheduleWalkthrough(leadId, {
-    walkthrough_scheduled_at: api.futureDate(24),
-    walkthrough_assigned_to: salesId,
-  });
-  const leadScheduled = await api.getLead(leadId);
-  expect(leadScheduled.status).toBe('WALKTHROUGH_SCHEDULED');
-
-  // Cancel lead → walkthrough should be auto-cancelled
-  const { res: cancelRes } = await api.cancelLead(leadId, 'E2E-17 project on hold');
-  expect(cancelRes.status()).toBe(200);
-
-  const leadCancelled = await api.getLead(leadId);
-  expect(leadCancelled.status).toBe('CANCELLED');
-  expect(leadCancelled.walkthrough_scheduled_at).toBeNull();
-  expect(leadCancelled.walkthrough_cancelled_at).toBeTruthy();
-});
+// E2E-17 (Cancel lead) is gone: a lead closes one way, as Lost, and E2E-16 above covers it.
 
 // ──────────────────────────────────────────────────────────
 // E2E-18: Estimate sent (with deposit) → Cancel estimate → deposit VOIDED

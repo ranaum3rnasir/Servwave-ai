@@ -1,8 +1,14 @@
 import type { PrismaClient, InboundMatchState, InboundAuthVerdict } from '@prisma/client';
-import { parseReplyAddress, resolveReplyToken } from './reply-token';
+import { parseReplyAddress, resolveReplyToken, type ReplyTokenRow } from './reply-token';
+import type { InboundRoute, RoutedToken } from './mailbox/inbound-router';
 import { Resend } from 'resend';
 import { parseDmarcVerdict } from './inbound-auth';
+import { mainMailboxIdOf, recordConversationData, startedConversationData } from './mailbox/conversations';
+import { isAutomaticMail } from './mailbox/automatic-mail';
+import { reviewReasonOf, type ReviewReason } from './mailbox/review-reason';
 import { env } from '../config/env';
+import { sanitizeEmailHtml } from './email-html';
+import { customerOfSender } from './communication/customerByAddress';
 
 /**
  * Own client instance rather than lib/email.ts's `resend`, following
@@ -30,6 +36,11 @@ const resendInbound = env.RESEND_API_KEY ? new Resend(env.RESEND_API_KEY) : null
  *    live - picking an org would be a cross-tenant write. Those are dropped
  *    with a log by the caller rather than filed somewhere plausible.
  *
+ * WHERE A MESSAGE GOES is decided first, from the event's recipients alone, by the inbound router
+ * (mailbox/inbound-router.ts, PRD 10 M11b): a live reply token, else an issued mailbox address on this environment's
+ * mailbox domain, else dropped before the body is fetched. This file fetches the body and stores the message where the
+ * router planned it.
+ *
  * NOT IMPLEMENTED HERE: the In-Reply-To/References fallback the plan lists as
  * the second resolution step. It cannot work yet, and not for want of effort -
  * an inbound reply's In-Reply-To carries the RFC 5322 Message-ID of our sent
@@ -42,6 +53,21 @@ const resendInbound = env.RESEND_API_KEY ? new Resend(env.RESEND_API_KEY) : null
  */
 
 type Db = Pick<PrismaClient, 'replyToken'>;
+
+/** One attachment the provider reports on a received message (metadata only: the bytes are fetched later). */
+export interface ReceivedAttachmentMeta {
+  /** The provider's id for this attachment; the idempotency key of its stored copy. */
+  id: string;
+  filename: string | null;
+  content_type: string;
+  /** What the provider says it weighs, in bytes. */
+  size: number;
+}
+
+/** One attachment with the short-lived address its bytes can be read from. */
+export interface ReceivedAttachmentRef extends ReceivedAttachmentMeta {
+  downloadUrl: string;
+}
 
 /** A received message, flattened out of Resend's Received Emails API. */
 export interface InboundMessage {
@@ -62,6 +88,8 @@ export interface InboundMessage {
   text: string | null;
   html: string | null;
   headers: Record<string, string> | null;
+  /** The attachments the message carries, as reported with it. Absent or empty: none. */
+  attachments?: ReceivedAttachmentMeta[];
 }
 
 export interface InboundResolution {
@@ -119,6 +147,14 @@ export async function resolveInboundMessage(
   const row = await resolveReplyToken(db, token);
   if (!row) return null;
 
+  return resolveReplyOnToken(row, message);
+}
+
+/**
+ * The attribution decision for a reply on a token that already resolved: pure, so the router (which looked the token up from
+ * the event's recipients, before the body was fetched) never reads it a second time.
+ */
+export function resolveReplyOnToken(row: ReplyTokenRow, message: InboundMessage): InboundResolution {
   const auth = parseDmarcVerdict(message.headers);
   const sender = senderAddressOf(message.from);
 
@@ -136,7 +172,7 @@ export async function resolveInboundMessage(
     thread_id: senderTrusted ? row.thread_id : null,
     // Kept in BOTH cases - on an unmatched row it is what makes an operator's
     // manual link one click instead of a search.
-    reply_token: token,
+    reply_token: row.token,
     customer_id: senderTrusted ? row.customer_id : null,
     inbound_match: senderTrusted ? 'MATCHED' : 'UNMATCHED_SENDER',
     inbound_auth: auth,
@@ -178,7 +214,37 @@ export async function fetchReceivedEmail(id: string): Promise<InboundMessage> {
     text: data.text,
     html: data.html,
     headers: data.headers,
+    attachments: (data.attachments ?? []).map((a) => ({ id: a.id, filename: a.filename, content_type: a.content_type, size: a.size })),
   };
+}
+
+/**
+ * The received message's attachments with the addresses their bytes can be read from (one call to the provider, whatever the
+ * count). The addresses expire, so this is asked for at the moment the bytes are wanted and never stored. THROWS on any failure:
+ * the caller records the attempt and tries again later.
+ */
+export async function listReceivedAttachments(receivedId: string): Promise<ReceivedAttachmentRef[]> {
+  if (!resendInbound) throw new Error('RESEND_API_KEY is not configured - cannot list received attachments');
+
+  const { data, error } = await resendInbound.emails.receiving.attachments.list({ emailId: receivedId });
+  if (error || !data) {
+    throw new Error(`Received attachments API failed for ${receivedId}: ${error?.message ?? 'no data returned'}`);
+  }
+  return data.data.map((a) => ({ id: a.id, filename: a.filename ?? null, content_type: a.content_type, size: a.size, downloadUrl: a.download_url }));
+}
+
+/** How long one attachment's bytes may take to arrive. */
+const ATTACHMENT_DOWNLOAD_TIMEOUT_MS = 60_000;
+
+/** The bytes of one received attachment. THROWS on any failure, and on a body that outgrows the size the provider reported. */
+export async function downloadReceivedAttachment(ref: ReceivedAttachmentRef, maxBytes: number): Promise<Buffer> {
+  const response = await fetch(ref.downloadUrl, { signal: AbortSignal.timeout(ATTACHMENT_DOWNLOAD_TIMEOUT_MS) });
+  if (!response.ok) throw new Error(`Received attachment ${ref.id} could not be downloaded (status ${response.status})`);
+  const declared = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > maxBytes) throw new Error(`Received attachment ${ref.id} is larger than the allowed size`);
+  const bytes = Buffer.from(await response.arrayBuffer());
+  if (bytes.length > maxBytes) throw new Error(`Received attachment ${ref.id} is larger than the allowed size`);
+  return bytes;
 }
 
 /** `Name <addr>` -> `{ name: 'Name', email: 'addr' }`, for the `from` Json column. */
@@ -199,57 +265,150 @@ function paragraphsOf(text: string | null): string[] {
   return text.split(/\r?\n\s*\r?\n/).map((para) => para.trim()).filter(Boolean);
 }
 
-type PersistDb = Pick<PrismaClient, 'replyToken' | 'email' | 'emailThread'>;
+type PersistDb = Pick<PrismaClient, 'replyToken' | 'email' | 'emailThread' | 'mailbox' | '$queryRaw'>;
 
 /**
- * Resolves and stores a received message, returning the row id, or null when
- * the message could not be attributed to any org.
- *
- * Null is a DROP, and the caller acknowledges the webhook rather than retrying:
- * a token that does not resolve will not start resolving on redelivery, and a
- * retry loop over junk addressed to the catch-all domain is its own problem.
- *
- * `thread_id` is the thread the message ACTUALLY landed on, which is not always
- * `resolution.thread_id`: a MATCHED message whose token lost its thread gets a
- * fresh one minted below, and the caller (which notifies whoever owns that
- * thread) needs the real id rather than the null the resolution still carries.
+ * The conversation minted for a message whose token lost its thread, placed in the company's main
+ * mailbox like every conversation (PRD 10, S10.4): a record conversation again when the token names a
+ * record, else one started here. Unassigned either way: there is no sender to inherit ownership from.
  */
-export async function persistInboundEmail(
-  db: PersistDb,
-  message: InboundMessage,
-): Promise<{ id: string; thread_id: string | null; resolution: InboundResolution } | null> {
-  const resolution = await resolveInboundMessage(db, message);
-  if (!resolution) return null;
+async function replacementConversationData(db: PersistDb, row: ReplyTokenRow) {
+  return row.entity_type && row.entity_id
+    ? recordConversationData(db, row.organization_id, { type: row.entity_type, id: row.entity_id })
+    : startedConversationData(db, row.organization_id, null);
+}
+
+/** Where one stored copy of a received message went, and how it was taken. */
+export interface InboundPlacement {
+  /** The stored email row. */
+  id: string;
+  /** The provider-side id the row was stored under (the alert's dedup key); a copy beyond the first carries its mailbox id. */
+  providerMessageId: string;
+  organizationId: string;
+  /** The mailbox it landed in; for a held message, the mailbox whose Needs review list it is filed under. */
+  mailboxId: string | null;
+  /** The conversation it landed on; null when held (a held message has no conversation of its own). */
+  threadId: string | null;
+  /** delivered: in its conversation; needs_review: held in a mailbox's Needs review list for a person (PRD 10, S10.18). */
+  state: 'delivered' | 'needs_review';
+  auth: InboundAuthVerdict;
+  /** Set on a held message: why it is held, and the conversation its reply address belongs to (what a reply from an address we did not send to rings the people of). */
+  review?: { reason: ReviewReason; threadId: string | null };
+}
+
+/** The fields every received row shares, whichever way it arrived. */
+function receivedRowBase(message: InboundMessage) {
+  const paragraphs = paragraphsOf(message.text);
+  return {
+    // Not 'system': that marker means "the app sent this by itself" and is
+    // read by the transactional chip. A customer's reply is human-written.
+    account: 'user',
+    from: senderIdentityOf(message.from),
+    subject: message.subject,
+    snippet: paragraphs[0] ?? '',
+    body: paragraphs,
+    // Cleaned by the compose path's own cleaner BEFORE it is stored, whichever way the message arrived: the inbox renders this
+    // column, and a customer's mail is whatever its sender made it (PRD 10, S10.17).
+    body_html: message.html ? sanitizeEmailHtml(message.html) : null,
+    at: message.receivedAt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
+    ts: message.receivedAt.getTime(),
+    unread: true,
+    starred: false,
+    folder: 'inbox',
+    direction: 'in',
+    // The message names files: it says so now, and they are brought over once it is stored (lib/inbound-attachments.ts).
+    has_attachment: (message.attachments?.length ?? 0) > 0,
+    attachments_pending: (message.attachments?.length ?? 0) > 0,
+  };
+}
+
+/** The columns of a message held in a Needs review list: no conversation, no customer, its own folder. */
+function heldRowData(reason: ReviewReason, mailboxId: string | null, reviewThreadId: string | null) {
+  return {
+    folder: 'needs_review',
+    thread_id: null,
+    customer_id: null,
+    review_reason: reason,
+    review_mailbox_id: mailboxId,
+    review_thread_id: reviewThreadId,
+  };
+}
+
+/**
+ * The conversation a reply address belongs to, for a reply that is held: its own when it has one, else (an address a send
+ * anchored to a record before any conversation was opened) the record's conversation in the main mailbox, opened now. What a
+ * held reply to an invoice or an estimate shows to follows this conversation's record, so it must exist.
+ */
+async function replyConversationOf(db: PersistDb, row: RoutedToken): Promise<{ id: string; mailboxId: string | null } | null> {
+  if (row.thread_id) return { id: row.thread_id, mailboxId: row.thread?.mailbox_id ?? null };
+  if (!row.entity_type || !row.entity_id) return null;
+  const mainId = await mainMailboxIdOf(db, row.organization_id);
+  const found = await db.emailThread.findFirst({
+    where: { organization_id: row.organization_id, origin: 'record', record_type: row.entity_type, record_id: row.entity_id, mailbox_id: mainId },
+    select: { id: true, mailbox_id: true },
+  });
+  const thread = found ?? await db.emailThread.create({ data: await replacementConversationData(db, row), select: { id: true, mailbox_id: true } });
+  return { id: thread.id, mailboxId: thread.mailbox_id };
+}
+
+/**
+ * A reply on a reply address that is held for review (PRD 10, S10.18): the sender is not the one we wrote to, the sender failed
+ * authentication, the message is automatic, or the address no longer resolves. It joins no conversation and rings nobody. It is
+ * filed under the mailbox its address's conversation sits in; an address that no longer resolves is filed under the company's
+ * main mailbox, which is where its customer's mail has nowhere better to go.
+ */
+async function holdTokenReply(
+  db: PersistDb, message: InboundMessage, row: RoutedToken, live: boolean, reason: ReviewReason,
+): Promise<InboundPlacement> {
+  const auth = parseDmarcVerdict(message.headers);
+  const conversation = await replyConversationOf(db, row);
+  const mailboxId = (live ? conversation?.mailboxId : null) ?? await mainMailboxIdOf(db, row.organization_id);
+  const stored = await db.email.create({
+    data: {
+      ...receivedRowBase(message),
+      ...heldRowData(reason, mailboxId, conversation?.id ?? null),
+      to: message.receivedFor[0] ?? message.to[0] ?? '',
+      provider_message_id: message.providerId,
+      // Kept in every case: it is what makes linking by hand one click instead of a search.
+      reply_token: row.token,
+      inbound_match: 'UNMATCHED_SENDER',
+      inbound_auth: auth,
+      organization_id: row.organization_id,
+    },
+    select: { id: true },
+  });
+  return {
+    id: stored.id, providerMessageId: message.providerId, organizationId: row.organization_id, mailboxId, threadId: null,
+    state: 'needs_review', auth, review: { reason, threadId: conversation?.id ?? null },
+  };
+}
+
+/** A reply on a reply address: today's path, including the sender check; or held for review (see `holdTokenReply`). */
+async function persistTokenReply(db: PersistDb, message: InboundMessage, row: RoutedToken, live: boolean): Promise<InboundPlacement> {
+  const resolution = resolveReplyOnToken(row, message);
+  const reason = reviewReasonOf({
+    auth: resolution.inbound_auth,
+    automatic: isAutomaticMail(message),
+    replyAddress: !live ? 'no_longer_resolves' : resolution.inbound_match === 'MATCHED' ? 'accepted' : 'sender_refused',
+  });
+  if (reason) return holdTokenReply(db, message, row, live, reason);
 
   // A MATCHED message whose token lost its thread (ON DELETE SET NULL) needs a
   // new one: the inbox is keyed on threads, so a null thread_id here would
   // store the message somewhere nobody can see it. Unassigned deliberately -
-  // there is no sender to inherit ownership from. An UNMATCHED_SENDER row gets
-  // no thread at all; withholding it is the point, and the unmatched queue
-  // finds it by inbound_match instead.
-  const threadId = resolution.inbound_match === 'MATCHED' && !resolution.thread_id
-    ? (await db.emailThread.create({ data: { organization_id: resolution.organization_id } })).id
-    : resolution.thread_id;
+  // there is no sender to inherit ownership from.
+  const minted = !resolution.thread_id
+    ? await db.emailThread.create({ data: await replacementConversationData(db, row), select: { id: true, mailbox_id: true } })
+    : null;
+  const threadId = minted ? minted.id : resolution.thread_id;
+  // A matched reply lands in the mailbox of the conversation it joined.
+  const mailboxId = minted ? minted.mailbox_id : row.thread?.mailbox_id ?? null;
 
-  const paragraphs = paragraphsOf(message.text);
-  const row = await db.email.create({
+  const stored = await db.email.create({
     data: {
-      // Not 'system': that marker means "the app sent this by itself" and is
-      // read by the transactional chip. A customer's reply is human-written.
-      account: 'user',
-      from: senderIdentityOf(message.from),
+      ...receivedRowBase(message),
       // The address the message actually arrived on - our own reply address.
       to: message.receivedFor[0] ?? message.to[0] ?? '',
-      subject: message.subject,
-      snippet: paragraphs[0] ?? '',
-      body: paragraphs,
-      body_html: message.html,
-      at: message.receivedAt.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' }),
-      ts: message.receivedAt.getTime(),
-      unread: true,
-      starred: false,
-      folder: 'inbox',
-      direction: 'in',
       // Resend's id for the RECEIVED message. Shares the column with sent mail's
       // id, which also buys idempotency: a redelivery that slipped past the
       // event ledger hits the unique index rather than duplicating the message.
@@ -259,10 +418,107 @@ export async function persistInboundEmail(
       reply_token: resolution.reply_token,
       inbound_match: resolution.inbound_match,
       inbound_auth: resolution.inbound_auth,
-      has_attachment: false,
       organization_id: resolution.organization_id,
     },
+    select: { id: true },
   });
 
-  return { id: row.id, thread_id: threadId, resolution };
+  return {
+    id: stored.id,
+    providerMessageId: message.providerId,
+    organizationId: resolution.organization_id,
+    mailboxId,
+    threadId,
+    state: 'delivered',
+    auth: resolution.inbound_auth,
+  };
+}
+
+/**
+ * Fresh mail to an issued mailbox address (PRD 10, M11b step 2): a NEW conversation in that mailbox, origin "started", owned
+ * by nobody. It never joins an existing conversation and is never linked to a job or a lead: that is a person's act (PRD 8's
+ * attach rule), never the sender's word. It is linked to a CUSTOMER by the sender's address when exactly one customer of the
+ * company has it (S10.20): the link is made on PASS, NO_POLICY and UNAVAILABLE alike (the screens mark the last two as an
+ * unverified sender), and never for mail held for review. An address shared by several customers links to none; a person picks.
+ * One copy per mailbox reached; the first keeps the provider's message id and each further copy carries its mailbox id too, so
+ * every copy is unique and a redelivery cannot store any of them twice.
+ */
+async function persistMailboxCopies(
+  db: PersistDb,
+  message: InboundMessage,
+  plan: Extract<InboundRoute, { state: 'mailboxes' }>,
+): Promise<InboundPlacement[]> {
+  const auth = parseDmarcVerdict(message.headers);
+  // A failed authentication or automatic mail is held in the mailbox's Needs review list instead of starting a conversation.
+  const reason = reviewReasonOf({ auth, automatic: isAutomaticMail(message) });
+  // One indexed read for the message, whatever the number of mailboxes it reached; none for mail that is held.
+  const customerId = reason ? null : await customerOfSender(db, plan.organizationId, senderAddressOf(message.from));
+  const placements: InboundPlacement[] = [];
+  for (const [index, delivery] of plan.deliveries.entries()) {
+    const providerMessageId = index === 0 ? message.providerId : `${message.providerId}#${delivery.mailboxId}`;
+    if (reason) {
+      const held = await db.email.create({
+        data: {
+          ...receivedRowBase(message),
+          ...heldRowData(reason, delivery.mailboxId, null),
+          to: delivery.address,
+          provider_message_id: providerMessageId,
+          reply_token: null,
+          // No reply address carried it, and nothing attached it to anything.
+          inbound_match: 'UNMATCHED_NO_TOKEN',
+          inbound_auth: auth,
+          organization_id: plan.organizationId,
+        },
+        select: { id: true },
+      });
+      placements.push({
+        id: held.id, providerMessageId, organizationId: plan.organizationId, mailboxId: delivery.mailboxId, threadId: null,
+        state: 'needs_review', auth, review: { reason, threadId: null },
+      });
+      continue;
+    }
+    const thread = await db.emailThread.create({
+      data: await startedConversationData(db, plan.organizationId, null, delivery.mailboxId),
+      select: { id: true },
+    });
+    const stored = await db.email.create({
+      data: {
+        ...receivedRowBase(message),
+        to: delivery.address,
+        provider_message_id: providerMessageId,
+        thread_id: thread.id,
+        customer_id: customerId,
+        reply_token: null,
+        inbound_match: 'MATCHED',
+        inbound_auth: auth,
+        organization_id: plan.organizationId,
+      },
+      select: { id: true },
+    });
+    placements.push({
+      id: stored.id,
+      providerMessageId,
+      organizationId: plan.organizationId,
+      mailboxId: delivery.mailboxId,
+      threadId: thread.id,
+      state: 'delivered',
+      auth,
+    });
+  }
+  return placements;
+}
+
+/**
+ * Stores a received message where the router planned it (planInboundMail) and returns one placement per stored copy: the
+ * company, the mailbox, the conversation and the state. A token reply is one copy; fresh mail to mailbox addresses is one
+ * copy per mailbox reached. A dropped plan stores nothing and never reaches here with a body.
+ */
+export async function persistInboundEmail(
+  db: PersistDb,
+  message: InboundMessage,
+  plan: Exclude<InboundRoute, { state: 'dropped' }>,
+): Promise<InboundPlacement[]> {
+  if (plan.state === 'token') return [await persistTokenReply(db, message, plan.token, true)];
+  if (plan.state === 'unresolved_token') return [await persistTokenReply(db, message, plan.token, false)];
+  return persistMailboxCopies(db, message, plan);
 }

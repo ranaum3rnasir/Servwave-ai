@@ -13,6 +13,7 @@ import { prisma } from '../../lib/prisma';
 import { clearTokenCache } from '../../middleware/authenticate';
 import { clearPermissionCache } from '../../lib/permissions/permissionCache';
 import { mockAuthAs, authHeader, TEST_USERS, ALPHA_ORG_ID, ORG_B_ID } from '../../__tests__/helpers';
+import { DEFAULT_GRANTS } from '../../lib/permissions/defaultGrants';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const p = prisma as any;
@@ -31,6 +32,27 @@ beforeEach(() => {
   clearTokenCache();
   clearPermissionCache();
 });
+
+/**
+ * A person on a CUSTOM role whose switches are exactly today's Technician set (S05.22). Their
+ * grants live under the custom role's own key, so nothing here may depend on `users.role` being
+ * TECHNICIAN: the number a person calls from follows the person, never the role name.
+ */
+function mockAuthAsCustomRoleWithTechnicianSwitches() {
+  const CUSTOM_ROLE_KEY = 'field-crew-s0522';
+  mockAuthAs('technician');
+  p.user.findUnique.mockResolvedValue({
+    ...TEST_USERS.technician,
+    custom_role_id: 'cc000000-0000-0000-0000-0000000005d2',
+    custom_role: { key: CUSTOM_ROLE_KEY },
+    organization: { is_demo: false, plan: 'SCALE', trial_ends_at: null, feature_overrides: {} },
+  });
+  p.rolePermission.findMany.mockResolvedValue(
+    DEFAULT_GRANTS.filter((g) => g.role === 'TECHNICIAN').map((g) => ({ ...g, role: CUSTOM_ROLE_KEY })),
+  );
+  clearTokenCache();
+  clearPermissionCache();
+}
 
 describe('GET /api/communication/my-outbound-number', () => {
   it("402s an org whose plan lacks `phone` before any resolution (org-level gate)", async () => {
@@ -71,6 +93,7 @@ describe('GET /api/communication/my-outbound-number', () => {
       ctm_number_id: 'TPN111',
       phone_number_id: PN1,
       formatted: '(201) 555-1234',
+      label: null,
     });
     // Resolved on the user-default tier — never fell through to the org default.
     expect(p.phoneNumber.findFirst).not.toHaveBeenCalled();
@@ -93,8 +116,78 @@ describe('GET /api/communication/my-outbound-number', () => {
       ctm_number_id: 'TPN222',
       phone_number_id: PN2,
       formatted: '+12015559999',
+      label: null,
     });
     expectOrgScoped(p.phoneNumber.findFirst as Mock, ALPHA_ORG_ID);
+  });
+
+  it("returns the number's label so the dialer can name it", async () => {
+    mockAuthAs('sales');
+    p.userPhoneNumber.findFirst.mockResolvedValueOnce({
+      phone_number: { id: PN1, ctm_number_id: 'TPN111' },
+    });
+    p.phoneNumber.findUnique.mockResolvedValue({
+      formatted: '(201) 555-1234',
+      e164: '+12015551234',
+      label: 'Service line',
+    });
+
+    const res = await request(app)
+      .get('/api/communication/my-outbound-number')
+      .set(authHeader('sales'));
+
+    expect(res.status).toBe(200);
+    expect(res.body.label).toBe('Service line');
+    expect(res.body.formatted).toBe('(201) 555-1234');
+  });
+
+  it("a custom role with the Technician switches resolves to the person's own default number", async () => {
+    mockAuthAsCustomRoleWithTechnicianSwitches();
+    p.userPhoneNumber.findFirst.mockResolvedValueOnce({
+      phone_number: { id: PN1, ctm_number_id: 'TPN111' },
+    });
+    p.phoneNumber.findUnique.mockResolvedValue({
+      formatted: '(201) 555-1234',
+      e164: '+12015551234',
+      label: null,
+    });
+
+    const res = await request(app)
+      .get('/api/communication/my-outbound-number')
+      .set(authHeader('technician'));
+
+    expect(res.status).toBe(200);
+    expect(res.body.phone_number_id).toBe(PN1);
+    expect(p.userPhoneNumber.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ user_id: TEST_USERS.technician.id, is_default: true }),
+      }),
+    );
+    // The person's own default won, so the company default was never consulted.
+    expect(p.phoneNumber.findFirst).not.toHaveBeenCalled();
+  });
+
+  it('a custom role with the Technician switches and no number of their own resolves to the company default', async () => {
+    mockAuthAsCustomRoleWithTechnicianSwitches();
+    p.userPhoneNumber.findFirst.mockResolvedValue(null);
+    p.phoneNumber.findFirst.mockResolvedValueOnce({ id: PN2, ctm_number_id: 'TPN222' }); // company default
+    p.phoneNumber.findUnique.mockResolvedValue({
+      formatted: '(201) 555-9999',
+      e164: '+12015559999',
+      label: 'Main line',
+    });
+
+    const res = await request(app)
+      .get('/api/communication/my-outbound-number')
+      .set(authHeader('technician'));
+
+    expect(res.status).toBe(200);
+    expect(res.body.phone_number_id).toBe(PN2);
+    expect(p.phoneNumber.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ organization_id: ALPHA_ORG_ID, is_org_default: true }),
+      }),
+    );
   });
 
   it('returns { none: true } when the org owns no usable number', async () => {

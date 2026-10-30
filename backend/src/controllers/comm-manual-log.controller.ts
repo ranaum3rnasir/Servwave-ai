@@ -737,7 +737,7 @@ export async function createManualCommunicationLog(req: Request, res: Response) 
 // A hand-typed record can be wrong: a mistyped date, the wrong colleague credited, the wrong lead
 // entirely. Both endpoints below are guarded by the same `log_past Communication` ability on the
 // route, plus ONE MORE RULE that the route cannot express because it is about the ROW: the
-// requester must be the entry's LOGGER, or an organisation ADMIN.
+// requester must be the entry's LOGGER, or hold Edit other people's logged communications.
 //
 // NEITHER PATH WRITES AN ACTIVITY EVENT, DISPATCHES AN AUTOMATION, OR RAISES A NOTIFICATION.
 // Create writes exactly one activity event (see the block in the create handler above); an edit
@@ -747,21 +747,18 @@ export async function createManualCommunicationLog(req: Request, res: Response) 
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * MAY THIS REQUESTER MODIFY THIS ENTRY — the row-level rule slice 8 adds.
+ * MAY THIS REQUESTER MODIFY THIS ENTRY - the row-level rule slice 8 adds.
  *
- * The logger, or an organisation admin. One person cannot quietly rewrite another's account of a
- * conversation (user story 40); an admin can clean up after a departed colleague (user story 39).
- * The PERFORMER is deliberately not in this test: being credited with a conversation somebody
- * else typed up does not make their record of it yours to rewrite.
+ * The logger, or a person who holds the "Edit other people's logged communications" switch. One person cannot
+ * quietly rewrite another's account of a conversation (user story 40); someone trusted with the switch can clean
+ * up after a departed colleague (user story 39). The PERFORMER is deliberately not in this test: being credited
+ * with a conversation somebody else typed up does not make their record of it yours to rewrite.
  *
- * `role`, and not `isSuperUser`. The question here is "what kind of user is this", which
- * lib/permissions/effectiveRole.ts's own header reserves for the BASE role — an ADMIN-derived
- * custom role ("full access minus payroll") is still the organisation's admin, and is still the
- * person expected to clean up after a leaver. `isSuperUser` answers a different question: whether
- * the CASL manage-all short-circuit applies.
+ * Roles & Permissions S01.10: the switch decides, never the role. This used to be `role === 'ADMIN'`; the Admin
+ * box still passes (it holds every switch) and so does any custom role, of any base, that is given the switch.
  */
 function mayModifyEntry(req: Request, entry: { logged_by: string }): boolean {
-  return entry.logged_by === req.user!.id || req.user!.role === 'ADMIN';
+  return entry.logged_by === req.user!.id || Boolean(req.ability?.can('edit_others_log', 'Communication'));
 }
 
 /**

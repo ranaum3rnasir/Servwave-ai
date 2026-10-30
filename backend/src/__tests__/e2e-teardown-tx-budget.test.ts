@@ -114,7 +114,7 @@ describe('teardownTestOrg — transaction budget', () => {
   // mis-aimed org id would have its customers purged before anything checked the name.
   it('refuses a non-e2e org BEFORE deleting a single customer subtree', async () => {
     const teardownTestOrg = await loadTeardown();
-    withCustomers(5, 'Alpha Doors & Security');
+    withCustomers(5, 'Example Doors & Security');
 
     await expect(teardownTestOrg(ORG_ID)).rejects.toThrow(/refus/i);
 

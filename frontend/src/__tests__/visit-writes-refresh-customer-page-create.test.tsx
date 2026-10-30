@@ -13,7 +13,7 @@ import userEvent from '@testing-library/user-event';
 
 import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
-import { renderWithProviders, LEAD_FIXTURE } from '@/__tests__/helpers';
+import { renderWithProviders, LEAD_FIXTURE, ALL_JOB_ACTIONS } from '@/__tests__/helpers';
 import { expectCustomerPageStale, seedCustomerPage } from '@/__tests__/support/customerPageCache';
 import { ESTIMATE_STATUS } from '@/constants/estimateStatus';
 import JobFormPage from '@/pages/v2/jobs/JobFormPage';
@@ -81,9 +81,11 @@ describe('the job form', () => {
   };
 
   it('"Create Job" with "Schedule this job now" marks the customer page stale', async () => {
-    get.mockImplementation(async (url: string) =>
-      url === `/api/customers/picker/${CUSTOMER.id}` ? { data: { customer: CUSTOMER } } : { data: {} },
-    );
+    get.mockImplementation(async (url: string) => {
+      // The new-job form shows the creator rule's pre-fill and will not save blind without it.
+      if (url === '/api/jobs/creator-prefill') return { data: { prefill: { sold_by_id: null, dispatcher_id: null } } };
+      return url === `/api/customers/picker/${CUSTOMER.id}` ? { data: { customer: CUSTOMER } } : { data: {} };
+    });
     const user = userEvent.setup();
     const { queryClient } = renderWithProviders(<JobFormPage />, {
       ability: ADMIN,
@@ -120,7 +122,7 @@ describe('the job page', () => {
               job: {
                 id: jobId, job_number: 'J00001', status: 'SCHEDULED',
                 customer: { id: 'cust-1', first_name: 'Pat', last_name: 'Sample', company_name: null },
-                assignees: [], invoices: [], linked_estimates: [], tags: [],
+                assignees: [], invoices: [], linked_estimates: [], tags: [], actions: ALL_JOB_ACTIONS,
                 created_at: '2026-09-01T00:00:00.000Z', updated_at: '2026-09-01T00:00:00.000Z',
               },
             },
@@ -186,14 +188,11 @@ describe('the lead page', () => {
   });
 });
 
-// Not a create, but the same page harness: the lead status menu takes a lead to LOST or CANCELLED
-// through the Mark Lost and Cancel Lead dialogs (lead-statuses slice 05: closing a lead always asks
-// why), and the server cancels its booked walkthrough trips on that path, so it is a visit write.
+// Not a create, but the same page harness: the lead status menu takes a lead to LOST through the
+// Mark Lost dialog (lead-statuses slice 05: closing a lead always asks why), and the server cancels
+// its booked walkthrough trips on that path, so it is a visit write.
 describe('the lead page status menu', () => {
-  it.each([
-    ['Lost', 'Why was this lead lost?', 'Mark Lost', 'mark-lost'],
-    ['Cancelled', 'Why is this lead being cancelled?', 'Cancel Lead', 'cancel'],
-  ])('setting %s through its reason dialog marks the customer page stale', async (label, placeholder, confirm, door) => {
+  it('setting Lost through its reason dialog marks the customer page stale', async () => {
     route.id = LEAD_FIXTURE.id;
     get.mockImplementation(async (url: string) => {
       if (url.includes('/notes')) return { data: { notes: [] } };
@@ -206,15 +205,15 @@ describe('the lead page status menu', () => {
     seedCustomerPage(queryClient);
 
     await user.click(await screen.findByRole('button', { name: 'Lead status: Contacted' }));
-    await user.click(await screen.findByRole('menuitem', { name: new RegExp(label) }));
+    await user.click(await screen.findByRole('menuitem', { name: /Lost/ }));
     // The menu opens the dialog; nothing is written until a reason is given.
     expect(api.patch).not.toHaveBeenCalled();
-    await user.type(await screen.findByPlaceholderText(placeholder), 'Went with another company');
+    await user.type(await screen.findByPlaceholderText('Why was this lead lost?'), 'Went with another company');
     const dialog = screen.getByRole('dialog');
-    await user.click(within(dialog).getByRole('button', { name: confirm }));
+    await user.click(within(dialog).getByRole('button', { name: 'Mark Lost' }));
 
     await waitFor(() =>
-      expect(post).toHaveBeenCalledWith(`/api/leads/${LEAD_FIXTURE.id}/${door}`, expect.anything()),
+      expect(post).toHaveBeenCalledWith(`/api/leads/${LEAD_FIXTURE.id}/mark-lost`, expect.anything()),
     );
     await expectCustomerPageStale(queryClient);
   });

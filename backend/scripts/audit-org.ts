@@ -4,7 +4,7 @@
  * The "why can't they see X" diagnostic.
  *
  * Usage:
- *   --org-id <uuid> | --org-name "Alpha Doors"        (live, queries the local-.env DB = staging)
+ *   --org-id <uuid> | --org-name "Example Org"        (live, queries the local-.env DB = staging)
  *   --from-json <path|->                              (compute from pre-fetched rows; no DB)
  *
  * The skill uses --from-json: it runs the SELECTs via Supabase MCP against the

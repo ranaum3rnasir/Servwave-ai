@@ -32,16 +32,17 @@ const GB = 1024 * MB;
  * worth warning someone standing in a driveway. Below it the upload lands
  * inside their attention span even on a poor signal.
  *
- * THE CAP WENT TO 512MB AND THIS STAYED AT 25MB — deliberately, but not
+ * THE CAP IS NOW 512MB AND THIS STAYS AT 25MB — deliberately, but not
  * confidently. It was originally picked as half of a 50MB cap; it is now a
  * twentieth of the cap, so the nudge fires far earlier relative to what is
  * allowed. The threshold that matters is the one where the WAIT becomes worth
- * mentioning, and that is a property of the uplink rather than of the cap:
- * 25MB is still a couple of minutes on a weak one, so the number is defensible
- * on its own terms even though its original derivation is gone. Retuning it
- * against the size distribution the raise exists to produce is the honest
- * move. The reachability test passes either way, so no gate will raise it:
- * this comment is the reminder.
+ * mentioning, and that is a property of the uplink rather than of the cap: 25MB
+ * is still a couple of minutes on a weak one, so the number is defensible on
+ * its own terms even though its original derivation is gone. Retuning it
+ * against the size distribution S4 exists to produce is the honest move, and it
+ * is the same measurement the PRD already schedules for the trimmer decision.
+ * The reachability test passes either way, so no gate will raise it: this
+ * comment is the reminder.
  */
 export const LARGE_UPLOAD_BYTES = 25 * MB;
 

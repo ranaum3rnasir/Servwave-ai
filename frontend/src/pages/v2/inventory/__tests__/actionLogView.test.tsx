@@ -104,7 +104,7 @@ function installGetRouter() {
       });
     }
     if (url === '/api/inventory/techs') {
-      return Promise.resolve({ data: { techs: [{ id: 'usr-1', name: 'Mike Alvarez', role: 'field_tech', branch: 'HQ' }] } });
+      return Promise.resolve({ data: { techs: [{ id: 'usr-1', name: 'Mike Alvarez', inventoryView: 'field', branch: 'HQ' }] } });
     }
     return Promise.resolve({ data: {} });
   }) as typeof mockApi.get);
@@ -229,7 +229,7 @@ describe('v2 ActionLogView', () => {
   });
 
   it('CSV export snapshots the current filters (limit 100) through toCSV/downloadCSV', async () => {
-    renderWithProviders(<ActionLogView />);
+    renderWithProviders(<ActionLogView canExport />);
     await screen.findByText('Dome Camera');
 
     await userEvent.click(screen.getByRole('combobox', { name: 'Filter by type' }));
@@ -323,7 +323,7 @@ describe('v2 ActionLogView', () => {
   });
 
   it('CSV export honours the LO filter it claims to snapshot', async () => {
-    renderWithProviders(<ActionLogView />, { initialEntries: ['/inventory/activity?lo=lo-uuid-1'] });
+    renderWithProviders(<ActionLogView canExport />, { initialEntries: ['/inventory/activity?lo=lo-uuid-1'] });
     await waitFor(() => expect(mockApi.get).toHaveBeenCalled());
 
     await userEvent.click(screen.getByRole('button', { name: /export/i }));

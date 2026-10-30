@@ -282,7 +282,7 @@ describe('inbound SMS from a member of staff keys onto their team thread', () =>
     p.user.findMany.mockResolvedValue([
       {
         id: STAFF_USER_ID, first_name: '', last_name: '',
-        email: 'mike@alphadoors.com', phone: STAFF_NUMBER,
+        email: 'mike@example-company.test', phone: STAFF_NUMBER,
       },
     ]);
     p.messageThread.findFirst.mockResolvedValue(null);
@@ -290,7 +290,7 @@ describe('inbound SMS from a member of staff keys onto their team thread', () =>
 
     await findOrCreateSmsThreadByNumber(prisma, ORG_ID, STAFF_NUMBER, { matchStaff: true });
 
-    expect(p.messageThread.create.mock.calls[0][0].data.title).toBe('mike@alphadoors.com');
+    expect(p.messageThread.create.mock.calls[0][0].data.title).toBe('mike@example-company.test');
   });
 
   // Whitespace is the same defect wearing a disguise: ' ' survives
@@ -300,7 +300,7 @@ describe('inbound SMS from a member of staff keys onto their team thread', () =>
     p.user.findMany.mockResolvedValue([
       {
         id: STAFF_USER_ID, first_name: '  ', last_name: null,
-        email: 'mike@alphadoors.com', phone: STAFF_NUMBER,
+        email: 'mike@example-company.test', phone: STAFF_NUMBER,
       },
     ]);
     p.messageThread.findFirst.mockResolvedValue(null);
@@ -308,14 +308,14 @@ describe('inbound SMS from a member of staff keys onto their team thread', () =>
 
     await findOrCreateSmsThreadByNumber(prisma, ORG_ID, STAFF_NUMBER, { matchStaff: true });
 
-    expect(p.messageThread.create.mock.calls[0][0].data.title).toBe('mike@alphadoors.com');
+    expect(p.messageThread.create.mock.calls[0][0].data.title).toBe('mike@example-company.test');
   });
 
   it('still prefers a HALF name over the email', async () => {
     p.user.findMany.mockResolvedValue([
       {
         id: STAFF_USER_ID, first_name: null, last_name: 'Reyes',
-        email: 'mike@alphadoors.com', phone: STAFF_NUMBER,
+        email: 'mike@example-company.test', phone: STAFF_NUMBER,
       },
     ]);
     p.messageThread.findFirst.mockResolvedValue(null);

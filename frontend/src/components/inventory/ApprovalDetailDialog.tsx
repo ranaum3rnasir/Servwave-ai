@@ -28,6 +28,7 @@ import {
   tradeColor,
   useInventoryItems,
   useTechs,
+  INVENTORY_VIEW_LABEL,
   useInventoryJobs,
   useDecideApproval,
   type ApprovalModification,
@@ -138,9 +139,8 @@ export function ApprovalDetailDialog({
   const currentUserName = authUser
     ? `${authUser.first_name} ${authUser.last_name}`.trim()
     : "";
-  const currentUserRole = authUser?.role ?? "";
 
-  // Seam data (replaces Emanuel's module-scope arrays).
+  // Seam data (replaces the original module-scope arrays).
   const { data: allItems = [] } = useInventoryItems();
   const { data: allTechs = [] } = useTechs();
   const { data: allJobs = [] } = useInventoryJobs();
@@ -523,12 +523,14 @@ export function ApprovalDetailDialog({
                     ${(item.unitCost ?? 0).toFixed(2)}
                   </span>
                 </div>
-                <div>
-                  <span className="block text-[9px] uppercase text-text-secondary">
-                    Vendor
-                  </span>
-                  <span className="text-text-secondary">{item.vendor}</span>
-                </div>
+                {item.vendor && (
+                  <div>
+                    <span className="block text-[9px] uppercase text-text-secondary">
+                      Vendor
+                    </span>
+                    <span className="text-text-secondary">{item.vendor}</span>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -644,8 +646,8 @@ export function ApprovalDetailDialog({
                 </p>
                 {tech && (
                   <>
-                    <p className="text-[11px] capitalize text-text-secondary">
-                      {tech.role.replace("_", " ")}
+                    <p className="text-[11px] text-text-secondary">
+                      {INVENTORY_VIEW_LABEL[tech.inventoryView]}
                       {tech.primaryTrade ? ` · ${tech.primaryTrade}` : ""}
                     </p>
                     <p className="text-[10px] text-text-secondary">{tech.branch}</p>
@@ -898,7 +900,7 @@ export function ApprovalDetailDialog({
                 role="Approver Signature"
                 signerId={currentUserId}
                 defaultName={currentUserName}
-                signerLabel={`${currentUserName} (${currentUserRole.toLowerCase().replace("_", " ")})`}
+                signerLabel={currentUserName}
                 currentUser={{ id: currentUserId, name: currentUserName }}
                 value={approverSig}
                 onSign={setApproverSig}
@@ -932,8 +934,7 @@ export function ApprovalDetailDialog({
         {approval.status === "pending" && !canApprove && (
           <div className="approval-print-hide rounded-md border border-warning/20 bg-warning/10 p-3 text-xs text-warning">
             <ShieldCheck className="mr-1 inline h-3 w-3" />
-            Your role can view this request but cannot approve it. Ask a
-            warehouse manager, inventory admin, or owner.
+            You can view this request but not approve it.
           </div>
         )}
       </div>

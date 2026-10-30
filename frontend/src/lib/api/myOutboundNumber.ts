@@ -19,6 +19,8 @@ export type MyOutboundNumber =
       ctm_number_id?: string;
       phone_number_id: string;
       formatted: string | null;
+      /** What the company calls this number, when it set one. */
+      label?: string | null;
     }
   | { none: true };
 

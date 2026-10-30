@@ -20,7 +20,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
+import { renderWithProviders, seedMySwitches } from './helpers';
 import { LODetailSheet } from '@/components/inventory/lo/LODetailSheet';
 import { buildAbility } from '@/lib/ability';
 import type { LogisticOrderDetail } from '@/lib/api/logisticOrders';
@@ -118,6 +118,9 @@ function makeDetail(over: Partial<LogisticOrderDetail> = {}): LogisticOrderDetai
     submittedBy: null,
     approvedBy: null,
     processedBy: null,
+    takenBy: null,
+    recordedBy: null,
+    takenAt: null,
     submittedAt: null,
     approvedAt: null,
     processedAt: null,
@@ -125,6 +128,8 @@ function makeDetail(over: Partial<LogisticOrderDetail> = {}): LogisticOrderDetai
     cancelledReason: null,
     createdAt: ISO,
     updatedAt: ISO,
+    // The server's list for this person; each case says what it was sent.
+    actions: [],
     ...over,
   };
 }
@@ -225,28 +230,28 @@ const staleError = () => ({
 
 describe('LODetailSheet — one primary action per state and permission', () => {
   it('DRAFT + grant holder → a single Process button (no Submit / Approve)', async () => {
-    renderSheet(makeDetail({ status: 'DRAFT' }), grantHolder());
+    renderSheet(makeDetail({ status: 'DRAFT', actions: ['process', 'edit'] }), grantHolder());
     expect(await screen.findByRole('button', { name: 'Process' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Submit for approval' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
   });
 
   it('DRAFT + submitter → Submit for approval (no Process / Approve)', async () => {
-    renderSheet(makeDetail({ status: 'DRAFT' }), submitter());
+    renderSheet(makeDetail({ status: 'DRAFT', actions: ['submit', 'edit'] }), submitter());
     expect(await screen.findByRole('button', { name: 'Submit for approval' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Process' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
   });
 
   it('PENDING_APPROVAL + approver → Approve (no Process / Submit)', async () => {
-    renderSheet(makeDetail({ status: 'PENDING_APPROVAL', submittedAt: ISO }), approver());
+    renderSheet(makeDetail({ status: 'PENDING_APPROVAL', submittedAt: ISO, actions: ['approve', 'edit'] }), approver());
     expect(await screen.findByRole('button', { name: 'Approve' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Process' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Submit for approval' })).toBeNull();
   });
 
   it('APPROVED + processor → Process (no Submit / Approve)', async () => {
-    renderSheet(makeDetail({ status: 'APPROVED', approvedAt: ISO }), processor());
+    renderSheet(makeDetail({ status: 'APPROVED', approvedAt: ISO, actions: ['process', 'edit'] }), processor());
     expect(await screen.findByRole('button', { name: 'Process' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Submit for approval' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull();
@@ -276,7 +281,7 @@ describe('LODetailSheet — line editing is gated on `update`, the lifecycle CTA
   // actor (create+submit, no update) could dirty an EXISTING non-terminal DRAFT and then Submit —
   // which persist()'d via PATCH → 403, killing the submit. Lines must be locked, but Submit must stay.
   it('SALES (no update) on an existing DRAFT: picker + notes locked, no Save, but Submit still shows', async () => {
-    renderSheet(makeDetail({ status: 'DRAFT' }), salesActor());
+    renderSheet(makeDetail({ status: 'DRAFT', actions: ['submit'] }), salesActor());
     // The lifecycle footer is NOT gated on update — Submit for approval must still render.
     expect(await screen.findByRole('button', { name: 'Submit for approval' })).toBeEnabled();
     // …but there is no way to dirty the form: no search box, qty + notes disabled, no Save.
@@ -288,7 +293,7 @@ describe('LODetailSheet — line editing is gated on `update`, the lifecycle CTA
   });
 
   it('an actor WITH update on an existing DRAFT can edit lines (search box present, qty enabled)', async () => {
-    renderSheet(makeDetail({ status: 'DRAFT' }), submitter());
+    renderSheet(makeDetail({ status: 'DRAFT', actions: ['submit', 'edit'] }), submitter());
     expect(await screen.findByLabelText('Search tracked items')).toBeInTheDocument();
     expect(screen.getByLabelText('Quantity for Filter 20x20')).toBeEnabled();
     expect(screen.getByLabelText('Notes')).toBeEnabled();
@@ -307,7 +312,7 @@ describe('LODetailSheet — line editing is gated on `update`, the lifecycle CTA
 
 describe('LODetailSheet — PROCESSED edit delta hint', () => {
   it('previews the stock return before commit and reveals Save changes', async () => {
-    renderSheet(makeDetail({ status: 'PROCESSED', processedAt: ISO }), updater());
+    renderSheet(makeDetail({ status: 'PROCESSED', processedAt: ISO, actions: ['edit'] }), updater());
     const qty = await screen.findByLabelText('Quantity for Filter 20x20');
     await userEvent.clear(qty);
     await userEvent.type(qty, '3');
@@ -343,7 +348,7 @@ describe('LODetailSheet — three-action happy path (standalone create)', () => 
 
 describe('LODetailSheet — Process on a clean DRAFT persists nothing extra', () => {
   it('processes the existing id directly (no update) and closes on success', async () => {
-    const { onOpenChange } = renderSheet(makeDetail({ status: 'DRAFT' }), grantHolder());
+    const { onOpenChange } = renderSheet(makeDetail({ status: 'DRAFT', actions: ['process', 'edit'] }), grantHolder());
     await userEvent.click(screen.getByRole('button', { name: 'Process' }));
     await waitFor(() => expect(h.processImpl).toHaveBeenCalledWith('lo1'));
     expect(h.updateImpl).not.toHaveBeenCalled();
@@ -354,7 +359,7 @@ describe('LODetailSheet — Process on a clean DRAFT persists nothing extra', ()
 describe('LODetailSheet — error banners', () => {
   it('renders the per-line 409 SHORTAGE detail', async () => {
     h.processImpl = vi.fn().mockRejectedValue(shortageError());
-    renderSheet(makeDetail({ status: 'DRAFT' }), grantHolder());
+    renderSheet(makeDetail({ status: 'DRAFT', actions: ['process', 'edit'] }), grantHolder());
     await userEvent.click(screen.getByRole('button', { name: 'Process' }));
     expect(
       await screen.findByText(/Filter 20x20.*needs 5, 2 available at Main Warehouse/),
@@ -363,7 +368,7 @@ describe('LODetailSheet — error banners', () => {
 
   it('renders the 409 STALE_STATUS message', async () => {
     h.processImpl = vi.fn().mockRejectedValue(staleError());
-    renderSheet(makeDetail({ status: 'DRAFT' }), grantHolder());
+    renderSheet(makeDetail({ status: 'DRAFT', actions: ['process', 'edit'] }), grantHolder());
     await userEvent.click(screen.getByRole('button', { name: 'Process' }));
     expect(await screen.findByText(/This order changed since you opened it/)).toBeInTheDocument();
     expect(screen.getByText(/Close and reopen/)).toBeInTheDocument();
@@ -371,14 +376,49 @@ describe('LODetailSheet — error banners', () => {
 });
 
 describe('LODetailSheet — stock activity link', () => {
-  it('a PROCESSED order links to its stock activity; a DRAFT does not', async () => {
-    renderSheet(makeDetail({ status: 'PROCESSED', processedAt: ISO }), updater());
+  // The link opens the logistic-order filter of the action log, so it follows the same switch as that log
+  // (Roles & Permissions S07.12: see_inventory_activity on Inventory), never the order's own abilities.
+  const activityReader = () =>
+    buildAbility([
+      { action: 'update', subject: 'LogisticOrder' },
+      { action: 'see_inventory_activity', subject: 'Inventory' },
+    ]);
+
+  // The activity route sits behind the Stock page's pair (View stock and Show Stock page), so the link needs both.
+  beforeEach(() => {
+    seedMySwitches({ view_stock: true, show_stock_page: true });
+  });
+
+  it('a PROCESSED order links to its stock activity when the person sees inventory activity', async () => {
+    renderSheet(makeDetail({ status: 'PROCESSED', processedAt: ISO }), activityReader());
     const link = await screen.findByRole('link', { name: /view stock activity/i });
     expect(link).toHaveAttribute('href', expect.stringContaining('/inventory/activity?lo='));
   });
 
+  it('a RETURNED order links to its stock activity when the person sees inventory activity', async () => {
+    renderSheet(makeDetail({ status: 'RETURNED' }), activityReader());
+    expect(await screen.findByRole('link', { name: /view stock activity/i })).toBeInTheDocument();
+  });
+
+  it('shows no stock-activity link on a PROCESSED or RETURNED order without the switch', async () => {
+    const { unmount } = renderSheet(makeDetail({ status: 'PROCESSED', processedAt: ISO }), updater());
+    await screen.findByText('LO00001');
+    expect(screen.queryByRole('link', { name: /view stock activity/i })).toBeNull();
+    unmount();
+    renderSheet(makeDetail({ status: 'RETURNED' }), updater());
+    await screen.findByText('LO00001');
+    expect(screen.queryByRole('link', { name: /view stock activity/i })).toBeNull();
+  });
+
+  it('shows no stock-activity link when Show Stock page is off, as the route would bounce the person to their dashboard', async () => {
+    seedMySwitches({ view_stock: true, show_stock_page: false });
+    renderSheet(makeDetail({ status: 'PROCESSED', processedAt: ISO }), activityReader());
+    await screen.findByText('LO00001');
+    expect(screen.queryByRole('link', { name: /view stock activity/i })).toBeNull();
+  });
+
   it('a DRAFT order has posted no movements, so no stock-activity link renders', async () => {
-    renderSheet(makeDetail({ status: 'DRAFT' }), updater());
+    renderSheet(makeDetail({ status: 'DRAFT' }), activityReader());
     await screen.findByText('LO00001');
     expect(screen.queryByRole('link', { name: /view stock activity/i })).toBeNull();
   });
@@ -390,7 +430,7 @@ describe('LODetailSheet — cancel takes an optional reason', () => {
       { action: 'cancel', subject: 'LogisticOrder' },
       { action: 'update', subject: 'LogisticOrder' },
     ]);
-    const { onOpenChange } = renderSheet(makeDetail({ status: 'DRAFT' }), ability);
+    const { onOpenChange } = renderSheet(makeDetail({ status: 'DRAFT', actions: ['cancel', 'edit'] }), ability);
 
     await userEvent.click(screen.getByRole('button', { name: 'Cancel order' }));
     expect(screen.getByText(/Reason \(optional\)/)).toBeInTheDocument();
@@ -431,7 +471,7 @@ const LABEL_CLASS_UNCHANGED =
 
 describe('LODetailSheet - FormField adoption (phase 11b)', () => {
   it('wires the Notes label to the textarea and renders the pattern wrapper byte-exactly', async () => {
-    renderSheet(makeDetail({ status: 'DRAFT' }), updater());
+    renderSheet(makeDetail({ status: 'DRAFT', actions: ['edit'] }), updater());
 
     const textarea = await screen.findByLabelText('Notes');
     const label = screen.getByText('Notes', { selector: 'label' });
@@ -456,7 +496,7 @@ describe('LODetailSheet - FormField adoption (phase 11b)', () => {
       { action: 'cancel', subject: 'LogisticOrder' },
       { action: 'update', subject: 'LogisticOrder' },
     ]);
-    renderSheet(makeDetail({ status: 'DRAFT' }), ability);
+    renderSheet(makeDetail({ status: 'DRAFT', actions: ['cancel', 'edit'] }), ability);
 
     await userEvent.click(screen.getByRole('button', { name: 'Cancel order' }));
 

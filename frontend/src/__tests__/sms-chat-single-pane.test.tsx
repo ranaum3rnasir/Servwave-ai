@@ -15,6 +15,7 @@ import { SmsInboxView } from '@/components/communication/phone/SmsInboxView';
 import WhatsAppPage from '@/pages/v2/communication/WhatsAppPage';
 import { MEDIA } from '@/ui-kit/lib/breakpoints';
 import type { MessageThread, PhoneCustomer, WAChat } from '@/lib/api/communication';
+import { MY_SWITCHES_URL, VIEWS_CUSTOMERS_ANSWER } from './support/viewsCustomers';
 
 const mockApi = vi.mocked(api);
 
@@ -115,6 +116,7 @@ beforeEach(() => {
   chatSeed = [];
   contacts = [customer(ANA_ID, 'Ana Rivera'), customer(BOB_ID, 'Bob Stone')];
   mockApi.get.mockImplementation(async (url: string) => {
+    if (url === MY_SWITCHES_URL) return VIEWS_CUSTOMERS_ANSWER;
     if (url === '/api/communication/contacts') return { data: { contacts } };
     if (url === '/api/communication/agents') return { data: { agents: [] } };
     if (url === '/api/communication/threads') return { data: { threads: directory } };

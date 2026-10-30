@@ -16,7 +16,8 @@
  *   - vi.mock captures emit calls.
  *   - Tests hit the real Express route via supertest.
  *   - Prisma is fully mocked (vi.mock in setup.ts).
- *   - emit() is asserted on verb, object, entity.customer_owner_id, actorId.
+ *   - The billing alerts go out through M6's two-lane chain (S06.28): a route queues the alert and the webhook sends it, so the
+ *     tests assert what is ASKED FOR (verb, object, actorId, key). Who it reaches is permission-billing-alerts-db.test.ts.
  *   - Webhook paths assert actorId:null + Stripe-retry dedupKeys.
  */
 
@@ -34,6 +35,9 @@ import {
   INVOICE_PARTIAL_FIXTURE,
   CUSTOMER_FIXTURE,
   JOB_FIXTURE,
+  withCheckoutLedger,
+  servedBy,
+  withLedgerReads,
 } from './helpers';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
@@ -45,9 +49,32 @@ vi.mock('../services/notifications/notificationService', () => ({
   emit: vi.fn().mockResolvedValue(undefined),
 }));
 
+// The deposit paid estimate alert goes through M6's two-lane chain (S06.26): the route queues it for after its response, so a route
+// test sees what was asked for; who is told is permission-lead-estimate-alerts-db.test.ts.
+vi.mock('../services/notifications/leadEstimateAlerts', () => ({
+  queueEstimateAlert: vi.fn(),
+  alertEstimate: vi.fn().mockResolvedValue(undefined),
+}));
+
+// The billing alerts go through M6's two-lane chain (S06.28): the routes queue them for after the response and the payment webhook
+// sends them itself, so a test here sees what was asked for; who is told is permission-billing-alerts-db.test.ts.
+vi.mock('../services/notifications/invoiceBillingAlerts', async (original) => ({
+  ...(await original<typeof import('../services/notifications/invoiceBillingAlerts')>()),
+  queueInvoiceAlert: vi.fn(),
+  alertInvoice: vi.fn().mockResolvedValue([]),
+}));
+
 // Import AFTER mock is registered so we get the spy reference.
 import { emit } from '../services/notifications/notificationService';
+import { queueEstimateAlert } from '../services/notifications/leadEstimateAlerts';
+import { queueInvoiceAlert, alertInvoice } from '../services/notifications/invoiceBillingAlerts';
+
 const mockEmit = emit as ReturnType<typeof vi.fn>;
+const mockQueuedInvoiceAlert = queueInvoiceAlert as ReturnType<typeof vi.fn>;
+const mockSentInvoiceAlert = alertInvoice as ReturnType<typeof vi.fn>;
+/** Every billing alert asked for, whether a route queued it or the webhook sent it. */
+const billingAlerts = () => [...mockQueuedInvoiceAlert.mock.calls, ...mockSentInvoiceAlert.mock.calls];
+const mockQueuedEstimateAlert = queueEstimateAlert as ReturnType<typeof vi.fn>;
 
 // ─── Prisma typed surface ─────────────────────────────────────────────────────
 
@@ -64,8 +91,29 @@ const INVOICE_NUM = INVOICE_SENT_FIXTURE.invoice_number; // 'I00002'
 const COMMISSION_OWNER_ID = TEST_USERS.sales.id;
 
 /**
+ * The Owner of the lead the job came from, a DIFFERENT user from the job's Sold By (S03.9): the
+ * notification addressed to the seller reads the job's stored Sold By, so a test that still saw the
+ * lead's Owner there would name the wrong person.
+ */
+const LEAD_OWNER_ID = TEST_USERS.dispatcher.id;
+
+/**
+ * The job's stored Sold By set, then cleared. The route no longer names a "seller" (S06.28): the alert's sender works out the job's
+ * people itself, so what the route asks for is the same whoever sold the job.
+ */
+const SOLD_BY_CASES: Array<[string, string | null, string | null]> = [
+  ['the job has a Sold By', COMMISSION_OWNER_ID, COMMISSION_OWNER_ID],
+  ['the job has no Sold By', null, null],
+];
+
+/** The invoice as the door reads it, with the job's stored Sold By set to `soldById`. */
+function withSoldBy<T extends { job?: any }>(invoice: T, soldById: string | null): T {
+  return { ...invoice, job: { ...invoice.job, salesperson_id: soldById } };
+}
+
+/**
  * Invoice select returned by recordPayment / voidInvoice / refundInvoice / credit:
- * includes the job → estimate → lead chain so customer_owner_id can be derived.
+ * includes the job → estimate → lead chain (the alert sender works out the people from it).
  */
 function buildInvoiceForRecord(overrides: Record<string, any> = {}) {
   return {
@@ -94,10 +142,11 @@ function buildInvoiceForRecord(overrides: Record<string, any> = {}) {
         company_name: 'Doe HVAC',
         email: 'john@doe.com',
       },
+      salesperson_id: COMMISSION_OWNER_ID,
       estimate: {
         lead: {
-          lead_assignees: [{ user_id: COMMISSION_OWNER_ID }],
-          commission_owner_id: COMMISSION_OWNER_ID,
+          lead_assignees: [{ user_id: LEAD_OWNER_ID }],
+          commission_owner_id: LEAD_OWNER_ID,
         },
       },
     },
@@ -141,9 +190,10 @@ function buildPaidInvoice(overrides: Record<string, any> = {}) {
       id: JOB_FIXTURE.id,
       job_number: JOB_FIXTURE.job_number,
       customer: null,
+      salesperson_id: COMMISSION_OWNER_ID,
       estimate: {
         lead: {
-          commission_owner_id: COMMISSION_OWNER_ID,
+          commission_owner_id: LEAD_OWNER_ID,
         },
       },
     },
@@ -176,9 +226,10 @@ function buildCreditInvoice(overrides: Record<string, any> = {}) {
       id: JOB_FIXTURE.id,
       job_number: JOB_FIXTURE.job_number,
       customer: null,
+      salesperson_id: COMMISSION_OWNER_ID,
       estimate: {
         lead: {
-          commission_owner_id: COMMISSION_OWNER_ID,
+          commission_owner_id: LEAD_OWNER_ID,
         },
       },
     },
@@ -207,22 +258,23 @@ beforeEach(() => {
 
   mockPrisma.timelineEvent.create.mockResolvedValue({});
 
-  // Safe default $transaction passthrough.
+  // Safe default $transaction passthrough (with the card-checkout reconciler's reads, slice 08).
   mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
-    fn({
-      invoice: { update: vi.fn().mockResolvedValue({}), findFirst: vi.fn().mockResolvedValue(null) },
+    fn(withCheckoutLedger({
+      $executeRaw: vi.fn().mockResolvedValue(1), // #891: the checkout locks the invoice row
+      invoice: { findUnique: vi.fn().mockResolvedValue({ status: 'SENT' }), update: vi.fn().mockResolvedValue({}), findFirst: vi.fn().mockResolvedValue(null) },
       // Inventory P1 (§4.4): voidInvoice's auto-return pass — no SYNCED lines in these flows.
       invoiceLineItem: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn() },
       payment: { create: vi.fn().mockResolvedValue({ id: 'pay_new' }), update: vi.fn().mockResolvedValue({}) },
       timelineEvent: { create: vi.fn().mockResolvedValue({}) },
       stripeEvent: { create: vi.fn().mockResolvedValue({}) },
-      refund: { create: vi.fn().mockResolvedValue({ id: 're_1' }) },
+      refund: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({ id: 're_1' }) },
       credit: { create: vi.fn().mockResolvedValue({ id: 'cr_1' }) },
       depositCreditApplication: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
       lead: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
       estimate: { update: vi.fn().mockResolvedValue({}) },
       job: { update: vi.fn().mockResolvedValue({}) },
-    }),
+    }, await servedBy(mockPrisma.invoice.findUnique))),
   );
 });
 
@@ -241,17 +293,18 @@ function postWebhook(body: object, sig = 'test_sig') {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('recordPayment (full) — billing.payment_received', () => {
-  it('emits billing.payment_received with staff actorId and customer_owner_id', async () => {
+  it.each(SOLD_BY_CASES)('asks for billing.payment_received with the staff actorId, and names no seller, when %s', async (_label, soldById) => {
     mockAuthAs('admin');
 
-    const invoice = buildInvoiceForRecord({
+    const invoice = withSoldBy(buildInvoiceForRecord({
       // Full payment: amount_due = 1268
       amount_due: 1268,
-    });
+    }), soldById);
     mockPrisma.invoice.findUnique.mockResolvedValue(invoice);
 
     mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
-      fn({
+      fn(withLedgerReads({
+        $executeRaw: vi.fn().mockResolvedValue(1), // recordPayment locks the invoice row
         invoice: {
           findUniqueOrThrow: vi.fn().mockResolvedValue({ amount_due: 1268, status: 'SENT' }),
           update: vi.fn().mockResolvedValue({ id: INVOICE_ID, invoice_number: INVOICE_NUM }),
@@ -266,7 +319,7 @@ describe('recordPayment (full) — billing.payment_received', () => {
           }),
         },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
-      }),
+      })),
     );
 
     const res = await request(app)
@@ -276,7 +329,7 @@ describe('recordPayment (full) — billing.payment_received', () => {
 
     expect(res.status).toBe(201);
 
-    const call = mockEmit.mock.calls.find((c: any[]) => c[0].verb === 'billing.payment_received');
+    const call = billingAlerts().find((c: any[]) => c[0].verb === 'billing.payment_received');
     expect(call).toBeDefined();
     const args = call![0];
     expect(args.organizationId).toBe(ALPHA_ORG_ID);
@@ -284,7 +337,7 @@ describe('recordPayment (full) — billing.payment_received', () => {
     expect(args.object.type).toBe('INVOICE');
     expect(args.object.id).toBe(INVOICE_ID);
     expect(args.object.label).toBe(INVOICE_NUM);
-    expect(args.entity.customer_owner_id).toBe(COMMISSION_OWNER_ID);
+    expect(args).not.toHaveProperty('entity'); // no seller named: the sender reads the job's people
   });
 });
 
@@ -293,15 +346,16 @@ describe('recordPayment (full) — billing.payment_received', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('recordPayment (partial) — billing.partial_payment', () => {
-  it('emits billing.partial_payment (not billing.payment_received) when balance remains', async () => {
+  it.each(SOLD_BY_CASES)('asks for billing.partial_payment (not billing.payment_received) when balance remains and %s', async (_label, soldById) => {
     mockAuthAs('admin');
 
-    const invoice = buildInvoiceForRecord({ amount_due: 1268 });
+    const invoice = withSoldBy(buildInvoiceForRecord({ amount_due: 1268 }), soldById);
     mockPrisma.invoice.findUnique.mockResolvedValue(invoice);
 
     // Partial payment: only pay 500 of 1268, leaving a balance
     mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
-      fn({
+      fn(withLedgerReads({
+        $executeRaw: vi.fn().mockResolvedValue(1), // recordPayment locks the invoice row
         invoice: {
           findUniqueOrThrow: vi.fn().mockResolvedValue({ amount_due: 1268, status: 'SENT' }),
           update: vi.fn().mockResolvedValue({ id: INVOICE_ID, invoice_number: INVOICE_NUM }),
@@ -316,7 +370,7 @@ describe('recordPayment (partial) — billing.partial_payment', () => {
           }),
         },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
-      }),
+      })),
     );
 
     const res = await request(app)
@@ -327,15 +381,15 @@ describe('recordPayment (partial) — billing.partial_payment', () => {
     expect(res.status).toBe(201);
 
     // billing.partial_payment must be emitted (isFullyPaid = false)
-    const partialCall = mockEmit.mock.calls.find((c: any[]) => c[0].verb === 'billing.partial_payment');
+    const partialCall = billingAlerts().find((c: any[]) => c[0].verb === 'billing.partial_payment');
     expect(partialCall).toBeDefined();
     const args = partialCall![0];
     expect(args.actorId).toBe(TEST_USERS.admin.id);
     expect(args.object.id).toBe(INVOICE_ID);
-    expect(args.entity.customer_owner_id).toBe(COMMISSION_OWNER_ID);
+    expect(args).not.toHaveProperty('entity'); // no seller named: the sender reads the job's people
 
     // billing.payment_received must NOT be emitted (partial, not full)
-    const fullCall = mockEmit.mock.calls.find((c: any[]) => c[0].verb === 'billing.payment_received');
+    const fullCall = billingAlerts().find((c: any[]) => c[0].verb === 'billing.payment_received');
     expect(fullCall).toBeUndefined();
   });
 });
@@ -345,16 +399,32 @@ describe('recordPayment (partial) — billing.partial_payment', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('refundInvoice — billing.refunded', () => {
-  it('emits billing.refunded with staff actorId and customer_owner_id', async () => {
+  it.each(SOLD_BY_CASES)('asks for billing.refunded with the staff actorId, and names no seller, when %s', async (_label, soldById) => {
     mockAuthAs('admin');
 
-    mockPrisma.invoice.findUnique.mockResolvedValue(buildPaidInvoice());
+    mockPrisma.invoice.findUnique.mockResolvedValue(withSoldBy(buildPaidInvoice(), soldById));
     mockCreateRefund.mockResolvedValue({ id: 're_stripe_1' });
 
     mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
       fn({
-        refund: { create: vi.fn().mockResolvedValue({ id: 're_1' }) },
-        invoice: { update: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(1), // slice 05: the refund door locks the invoice
+        // Slice 08: the payment's refund stamp is re-derived from its refund rows.
+        // Slice 29: the refund row is held (PENDING) under the lock, then completed.
+        refund: {
+          findMany: vi.fn().mockResolvedValue([]),
+          findFirst: vi.fn().mockResolvedValue(null),
+          create: vi.fn().mockResolvedValue({ id: 're_1' }),
+          findFirstOrThrow: vi.fn().mockResolvedValue({ id: 're_1', stripe_refund_id: null }),
+          findUniqueOrThrow: vi.fn().mockResolvedValue({ id: 're_1' }),
+          update: vi.fn().mockResolvedValue({ id: 're_1' }),
+        },
+        // The caps are re-read under the lock: the invoice as it stands.
+        invoice: {
+          update: vi.fn().mockResolvedValue({}),
+          findUniqueOrThrow: vi.fn().mockImplementation(async () => ({ status: 'PAID', payments: buildPaidInvoice().payments, refunds: [] })),
+          // The totals and status re-derived from the ledger rows (rederiveRefundTotals).
+          findFirstOrThrow: vi.fn().mockImplementation(async () => ({ status: 'PAID', amount_due: 0, payments: [], refunds: [] })),
+        },
         payment: { update: vi.fn().mockResolvedValue({}) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
       }),
@@ -367,7 +437,7 @@ describe('refundInvoice — billing.refunded', () => {
 
     expect(res.status).toBe(200);
 
-    const call = mockEmit.mock.calls.find((c: any[]) => c[0].verb === 'billing.refunded');
+    const call = billingAlerts().find((c: any[]) => c[0].verb === 'billing.refunded');
     expect(call).toBeDefined();
     const args = call![0];
     expect(args.organizationId).toBe(ALPHA_ORG_ID);
@@ -375,7 +445,7 @@ describe('refundInvoice — billing.refunded', () => {
     expect(args.object.type).toBe('INVOICE');
     expect(args.object.id).toBe(INVOICE_ID);
     expect(args.object.label).toBe(INVOICE_NUM);
-    expect(args.entity.customer_owner_id).toBe(COMMISSION_OWNER_ID);
+    expect(args).not.toHaveProperty('entity'); // no seller named: the sender reads the job's people
   });
 });
 
@@ -384,7 +454,7 @@ describe('refundInvoice — billing.refunded', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('voidInvoice — billing.voided', () => {
-  it('emits billing.voided with staff actorId and customer_owner_id', async () => {
+  it.each(SOLD_BY_CASES)('asks for billing.voided with the staff actorId, and names no seller, when %s', async (_label, soldById) => {
     mockAuthAs('admin');
 
     const invoice = {
@@ -397,10 +467,11 @@ describe('voidInvoice — billing.voided', () => {
       organization_id: ALPHA_ORG_ID,
       job: {
         assignees: [{ user_id: TEST_USERS.technician.id }],
+        salesperson_id: soldById,
         estimate: {
           lead: {
-            lead_assignees: [{ user_id: COMMISSION_OWNER_ID }],
-            commission_owner_id: COMMISSION_OWNER_ID,
+            lead_assignees: [{ user_id: LEAD_OWNER_ID }],
+            commission_owner_id: LEAD_OWNER_ID,
           },
         },
       },
@@ -409,8 +480,10 @@ describe('voidInvoice — billing.voided', () => {
 
     mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
       fn({
+        $executeRaw: vi.fn().mockResolvedValue(1), // slice 05: the void locks the invoice and re-checks it
         invoice: {
           update: vi.fn().mockResolvedValue({ id: INVOICE_ID, invoice_number: INVOICE_NUM }),
+          findUniqueOrThrow: vi.fn().mockResolvedValue({ status: 'SENT' }),
         },
         // Inventory P1 (§4.4): void's auto-return pass — no SYNCED lines here.
         invoiceLineItem: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn() },
@@ -418,7 +491,7 @@ describe('voidInvoice — billing.voided', () => {
         depositCreditApplication: {
           updateMany: vi.fn().mockResolvedValue({ count: 0 }),
         },
-        payment: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        payment: { count: vi.fn().mockResolvedValue(0), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
       }),
     );
@@ -430,7 +503,7 @@ describe('voidInvoice — billing.voided', () => {
 
     expect(res.status).toBe(200);
 
-    const call = mockEmit.mock.calls.find((c: any[]) => c[0].verb === 'billing.voided');
+    const call = billingAlerts().find((c: any[]) => c[0].verb === 'billing.voided');
     expect(call).toBeDefined();
     const args = call![0];
     expect(args.organizationId).toBe(ALPHA_ORG_ID);
@@ -438,7 +511,7 @@ describe('voidInvoice — billing.voided', () => {
     expect(args.object.type).toBe('INVOICE');
     expect(args.object.id).toBe(INVOICE_ID);
     expect(args.object.label).toBe(INVOICE_NUM);
-    expect(args.entity.customer_owner_id).toBe(COMMISSION_OWNER_ID);
+    expect(args).not.toHaveProperty('entity'); // no seller named: the sender reads the job's people
     // voided: no dedupKey
     expect(args.dedupKey).toBeUndefined();
   });
@@ -449,18 +522,21 @@ describe('voidInvoice — billing.voided', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('credit — billing.credit_applied', () => {
-  it('emits billing.credit_applied with staff actorId and customer_owner_id', async () => {
+  it.each(SOLD_BY_CASES)('asks for billing.credit_applied with the staff actorId, and names no seller, when %s', async (_label, soldById) => {
     mockAuthAs('admin');
 
-    mockPrisma.invoice.findUnique.mockResolvedValue(buildCreditInvoice());
+    mockPrisma.invoice.findUnique.mockResolvedValue(withSoldBy(buildCreditInvoice(), soldById));
 
     mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
       fn({
+        $executeRaw: vi.fn().mockResolvedValue(1), // slice 07: the give-back locks the invoice
         credit: { create: vi.fn().mockResolvedValue({ id: 'cr_1' }) },
-        refund: { create: vi.fn().mockResolvedValue({ id: 're_1' }) },
+        refund: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({ id: 're_1' }) },
         invoice: {
           update: vi.fn().mockResolvedValue({}),
           findUnique: vi.fn().mockResolvedValue({ id: INVOICE_ID }),
+          // Slice 18: the credit re-reads the invoice under its lock - unchanged since the pre-read.
+          findUniqueOrThrow: vi.fn().mockResolvedValue({ status: 'SENT', amount_due: 1268, payments: [], refunds: [] }),
         },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
       }),
@@ -473,7 +549,7 @@ describe('credit — billing.credit_applied', () => {
 
     expect(res.status).toBe(200);
 
-    const call = mockEmit.mock.calls.find((c: any[]) => c[0].verb === 'billing.credit_applied');
+    const call = billingAlerts().find((c: any[]) => c[0].verb === 'billing.credit_applied');
     expect(call).toBeDefined();
     const args = call![0];
     expect(args.organizationId).toBe(ALPHA_ORG_ID);
@@ -481,178 +557,17 @@ describe('credit — billing.credit_applied', () => {
     expect(args.object.type).toBe('INVOICE');
     expect(args.object.id).toBe(INVOICE_ID);
     expect(args.object.label).toBe(INVOICE_NUM);
-    expect(args.entity.customer_owner_id).toBe(COMMISSION_OWNER_ID);
+    expect(args).not.toHaveProperty('entity'); // no seller named: the sender reads the job's people
     // no dedupKey for credit
     expect(args.dedupKey).toBeUndefined();
   });
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 6. Stripe webhook charge.dispute.created — billing.disputed (actorId:null, dedupKey)
-// ─────────────────────────────────────────────────────────────────────────────
+// Sections 6-7 (charge.dispute.created -> billing.disputed, charge.dispute.closed(lost) ->
+// billing.chargeback) moved with the dispute path into the payment event reconciler (payments
+// go-live slice 09). disputes-reconciler-db.test.ts proves both against a real database: null
+// actor, one alert per dispute id however often the event is delivered.
 
-describe('charge.dispute.created webhook — billing.disputed', () => {
-  const DISPUTE_ID = 'dp_test_001';
-  const PI_ID = 'pi_test_001';
-
-  const invoiceForDispute = {
-    id: INVOICE_ID,
-    status: 'PAID',
-    organization_id: ALPHA_ORG_ID,
-    invoice_number: INVOICE_NUM,
-    stripe_dispute_id: null,
-  };
-
-  const paymentForDispute = {
-    id: 'pay_disputed',
-    stripe_payment_intent_id: PI_ID,
-    invoice: invoiceForDispute,
-  };
-
-  const webhookEvent = {
-    id: 'evt_disp_001',
-    type: 'charge.dispute.created',
-    data: {
-      object: {
-        id: DISPUTE_ID,
-        payment_intent: PI_ID,
-      },
-    },
-  };
-
-  beforeEach(() => {
-    // resolveOrgFromEvent: looks up org via payment.invoice.organization
-    // The dispute handler also looks up payment via findFirst for the main dispute logic
-    // Use mockImplementation to handle both calls (they have different selects)
-    mockPrisma.payment.findFirst.mockImplementation((args: any) => {
-      // resolveOrgFromEvent call: select { invoice: { select: { organization: ... } } }
-      if (args?.select?.invoice) {
-        return Promise.resolve({
-          invoice: {
-            organization: { id: ALPHA_ORG_ID, stripe_account_id: 'acct_test', accepted_payment_methods: ['CARD'] },
-          },
-        });
-      }
-      // dispute handler call: include { invoice: { select: { ... } } }
-      return Promise.resolve(paymentForDispute);
-    });
-
-    mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
-      fn({
-        stripeEvent: { create: vi.fn().mockResolvedValue({}) },
-        invoice: { update: vi.fn().mockResolvedValue({}) },
-        timelineEvent: { create: vi.fn().mockResolvedValue({}) },
-      }),
-    );
-  });
-
-  it('emits billing.disputed with actorId:null and Stripe-retry dedupKey', async () => {
-    const res = await postWebhook(webhookEvent);
-
-    expect(res.status).toBe(200);
-
-    const call = mockEmit.mock.calls.find((c: any[]) => c[0].verb === 'billing.disputed');
-    expect(call).toBeDefined();
-    const args = call![0];
-    expect(args.organizationId).toBe(ALPHA_ORG_ID);
-    // Webhook path: no authenticated user → actorId must be null
-    expect(args.actorId).toBeNull();
-    expect(args.object.type).toBe('INVOICE');
-    expect(args.object.id).toBe(INVOICE_ID);
-    expect(args.object.label).toBe(INVOICE_NUM);
-    // Stripe-retry safety: REQUIRED dedupKey
-    expect(args.dedupKey).toBe(`billing.disputed:${DISPUTE_ID}`);
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 7. charge.dispute.closed(lost) webhook — billing.chargeback (actorId:null, dedupKey)
-//    The systemVoidPaymentForChargeback path is triggered internally by the webhook.
-// ─────────────────────────────────────────────────────────────────────────────
-
-describe('charge.dispute.closed(lost) webhook — billing.chargeback', () => {
-  const DISPUTE_ID = 'dp_test_lost_001';
-  const PI_ID = 'pi_test_lost_001';
-
-  const invoiceForLost = {
-    id: INVOICE_ID,
-    status: 'DISPUTED',
-    organization_id: ALPHA_ORG_ID,
-    invoice_number: INVOICE_NUM,
-    total_amount: 1268,
-    amount_due: 0,
-    kind: 'STANDARD',
-    stripe_dispute_id: DISPUTE_ID,
-  };
-
-  const paymentForLost = {
-    id: 'pay_card_lost',
-    stripe_payment_intent_id: PI_ID,
-    amount: 1268,
-    method: 'CARD',
-    voided_at: null,
-    void_category: null,
-  };
-
-  const webhookEvent = {
-    id: 'evt_disp_lost_001',
-    type: 'charge.dispute.closed',
-    data: {
-      object: {
-        id: DISPUTE_ID,
-        payment_intent: PI_ID,
-        status: 'lost',
-      },
-    },
-  };
-
-  beforeEach(() => {
-    // charge.dispute.closed first looks up invoice by stripe_dispute_id (invoice.findFirst)
-    // Then resolveOrgFromEvent: payment.findFirst with select.invoice.select.organization
-    // Then disputes handler: payment.findFirst with where.stripe_payment_intent_id
-    mockPrisma.invoice.findFirst.mockResolvedValue(invoiceForLost);
-    mockPrisma.payment.findFirst.mockImplementation((args: any) => {
-      // resolveOrgFromEvent: select path
-      if (args?.select?.invoice) {
-        return Promise.resolve({
-          invoice: {
-            organization: { id: ALPHA_ORG_ID, stripe_account_id: 'acct_test', accepted_payment_methods: ['CARD'] },
-          },
-        });
-      }
-      // dispute handler: returns the full payment for the actual void
-      return Promise.resolve(paymentForLost);
-    });
-
-    mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
-      fn({
-        stripeEvent: { create: vi.fn().mockResolvedValue({}) },
-        invoice: { update: vi.fn().mockResolvedValue({}), findFirst: vi.fn().mockResolvedValue(null) },
-        payment: { update: vi.fn().mockResolvedValue({}), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
-        depositCreditApplication: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
-        timelineEvent: { create: vi.fn().mockResolvedValue({}) },
-      }),
-    );
-  });
-
-  it('emits billing.chargeback with actorId:null and Stripe-retry dedupKey', async () => {
-    const res = await postWebhook(webhookEvent);
-
-    expect(res.status).toBe(200);
-
-    const call = mockEmit.mock.calls.find((c: any[]) => c[0].verb === 'billing.chargeback');
-    expect(call).toBeDefined();
-    const args = call![0];
-    expect(args.organizationId).toBe(ALPHA_ORG_ID);
-    // Webhook path: no authenticated user → actorId must be null
-    expect(args.actorId).toBeNull();
-    expect(args.object.type).toBe('INVOICE');
-    expect(args.object.id).toBe(INVOICE_ID);
-    expect(args.object.label).toBe(INVOICE_NUM);
-    // Stripe-retry safety: REQUIRED dedupKey
-    expect(args.dedupKey).toBe(`billing.chargeback:${DISPUTE_ID}`);
-  });
-});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 8. recordPayment (full, DEPOSIT) — estimate.deposit_paid
@@ -679,7 +594,8 @@ describe('recordPayment (full, DEPOSIT) — estimate.deposit_paid', () => {
     mockPrisma.invoice.findUnique.mockResolvedValue(invoice);
 
     mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
-      fn({
+      fn(withLedgerReads({
+        $executeRaw: vi.fn().mockResolvedValue(1), // recordPayment locks the invoice row
         invoice: {
           findUniqueOrThrow: vi.fn().mockResolvedValue({ amount_due: 1268, status: 'SENT' }),
           update: vi.fn().mockResolvedValue({ id: INVOICE_ID, invoice_number: INVOICE_NUM }),
@@ -696,7 +612,7 @@ describe('recordPayment (full, DEPOSIT) — estimate.deposit_paid', () => {
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimate: { update: vi.fn().mockResolvedValue({}) },
         lead: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
-      }),
+      })),
     );
 
     const res = await request(app)
@@ -707,19 +623,72 @@ describe('recordPayment (full, DEPOSIT) — estimate.deposit_paid', () => {
     expect(res.status).toBe(201);
 
     // estimate.deposit_paid MUST fire
-    const depositCall = mockEmit.mock.calls.find((c: any[]) => c[0].verb === 'estimate.deposit_paid');
+    const depositCall = mockQueuedEstimateAlert.mock.calls.find((c: any[]) => c[0].verb === 'estimate.deposit_paid');
     expect(depositCall).toBeDefined();
     const dArgs = depositCall![0];
-    expect(dArgs.object.type).toBe('ESTIMATE');
-    expect(dArgs.object.id).toBe(ESTIMATE_ID);
-    expect(dArgs.object.label).toBe(ESTIMATE_NUM);
-    expect(dArgs.entity.commission_owner_id).toBe(COMMISSION_OWNER_ID);
+    expect(dArgs.estimateId).toBe(ESTIMATE_ID);
+    expect(dArgs.organizationId).toBe(ALPHA_ORG_ID);
+    expect(dArgs.actorId).toBe(TEST_USERS.admin.id);
     expect(dArgs.data.lead_id).toBe('lead_001');
     expect(dArgs.dedupKey).toBe(`estimate.deposit_paid:${ESTIMATE_ID}`);
+    // ...and it is the chain's job to send it: the route itself writes no estimate alert.
+    expect(mockEmit.mock.calls.find((c: any[]) => c[0].verb === 'estimate.deposit_paid')).toBeUndefined();
 
     // billing.payment_received MUST still fire (not regressed)
-    const billingCall = mockEmit.mock.calls.find((c: any[]) => c[0].verb === 'billing.payment_received');
+    const billingCall = billingAlerts().find((c: any[]) => c[0].verb === 'billing.payment_received');
     expect(billingCall).toBeDefined();
+  });
+});
+
+describe('recordPayment (full, DEPOSIT with no job yet) - billing.payment_received', () => {
+  it('asks for the alert on the deposit invoice itself: the sender works out its estimate\'s lead and that lead\'s Owner', async () => {
+    mockAuthAs('admin');
+
+    const invoice = buildInvoiceForRecord({
+      kind: 'DEPOSIT',
+      amount_due: 1268,
+      job: null,
+      estimate: {
+        id: 'est_dep_002',
+        lead_id: 'lead_002',
+        status: 'SENT',
+        estimate_number: 'E00002',
+        lead: { commission_owner_id: LEAD_OWNER_ID },
+      },
+    });
+    mockPrisma.invoice.findUnique.mockResolvedValue(invoice);
+
+    mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
+      fn(withLedgerReads({
+        $executeRaw: vi.fn().mockResolvedValue(1),
+        invoice: {
+          findUniqueOrThrow: vi.fn().mockResolvedValue({ amount_due: 1268, status: 'SENT' }),
+          update: vi.fn().mockResolvedValue({ id: INVOICE_ID, invoice_number: INVOICE_NUM }),
+        },
+        payment: {
+          create: vi.fn().mockResolvedValue({
+            id: 'pay_dep2',
+            amount: 1268,
+            method: 'CHECK',
+            paid_at: new Date(),
+            collector: { id: TEST_USERS.admin.id, first_name: 'Test', last_name: 'Admin' },
+          }),
+        },
+        timelineEvent: { create: vi.fn().mockResolvedValue({}) },
+        estimate: { update: vi.fn().mockResolvedValue({}) },
+        lead: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+      })),
+    );
+
+    const res = await request(app)
+      .post(`/api/invoices/${INVOICE_ID}/payments`)
+      .set(authHeader('admin'))
+      .send({ amount: 1268, method: 'CHECK' });
+
+    expect(res.status).toBe(201);
+    const call = billingAlerts().find((c: any[]) => c[0].verb === 'billing.payment_received');
+    expect(call![0].object).toMatchObject({ type: 'INVOICE', id: INVOICE_ID });
+    expect(call![0]).not.toHaveProperty('entity');
   });
 });
 
@@ -755,12 +724,14 @@ describe('checkout.session.completed webhook - billing.payment_received', () => 
       id: JOB_FIXTURE.id,
       job_number: JOB_FIXTURE.job_number,
       customer: null,
-      // The commission owner reaches the notification through the same
-      // job -> estimate -> lead chain the recordPayment door uses.
-      estimate: { lead: { commission_owner_id: COMMISSION_OWNER_ID } },
+      // The seller reaches the notification through the job's stored Sold By, the same field the
+      // recordPayment door reads; the lead's Owner is somebody else.
+      salesperson_id: COMMISSION_OWNER_ID,
+      estimate: { lead: { commission_owner_id: LEAD_OWNER_ID } },
     },
     estimate: null,
   };
+  let servedInvoice: typeof invoiceForCheckout = invoiceForCheckout;
 
   const webhookEvent = {
     id: 'evt_checkout_001',
@@ -776,6 +747,7 @@ describe('checkout.session.completed webhook - billing.payment_received', () => 
   };
 
   beforeEach(() => {
+    servedInvoice = invoiceForCheckout;
     // invoice.findUnique serves two callers: resolveOrgFromEvent (organization only)
     // and the checkout branch (the full payment select).
     mockPrisma.invoice.findUnique.mockImplementation((args: any) => {
@@ -794,7 +766,7 @@ describe('checkout.session.completed webhook - billing.payment_received', () => 
           },
         });
       }
-      return Promise.resolve(invoiceForCheckout);
+      return Promise.resolve(servedInvoice);
     });
   });
 
@@ -803,7 +775,7 @@ describe('checkout.session.completed webhook - billing.payment_received', () => 
 
     expect(res.status).toBe(200);
 
-    const call = mockEmit.mock.calls.find((c: any[]) => c[0].verb === 'billing.payment_received');
+    const call = billingAlerts().find((c: any[]) => c[0].verb === 'billing.payment_received');
     expect(call).toBeDefined();
     const args = call![0];
     expect(args.organizationId).toBe(ALPHA_ORG_ID);
@@ -813,8 +785,9 @@ describe('checkout.session.completed webhook - billing.payment_received', () => 
     expect(args.object.type).toBe('INVOICE');
     expect(args.object.id).toBe(INVOICE_ID);
     expect(args.object.label).toBe(INVOICE_NUM);
-    expect(args.entity.customer_owner_id).toBe(COMMISSION_OWNER_ID);
-    expect(args.data.amount).toBe(AMOUNT_DUE);
+    expect(args).not.toHaveProperty('entity'); // no seller named: the sender reads the invoice's job or lead
+    // Slice 33b: a string, the form the template reads (a number printed no amount).
+    expect(args.data.amount).toBe(AMOUNT_DUE.toFixed(2));
     // Keyed on the payment intent, not the invoice: two genuine checkouts against
     // the same invoice are two payments and must notify twice.
     expect(args.dedupKey).toBe(`billing.payment_received:${PI_ID}`);
@@ -823,7 +796,7 @@ describe('checkout.session.completed webhook - billing.payment_received', () => 
   it('does not emit billing.partial_payment (this door always pays in full)', async () => {
     await postWebhook(webhookEvent);
 
-    const partial = mockEmit.mock.calls.find((c: any[]) => c[0].verb === 'billing.partial_payment');
+    const partial = billingAlerts().find((c: any[]) => c[0].verb === 'billing.partial_payment');
     expect(partial).toBeUndefined();
   });
 });

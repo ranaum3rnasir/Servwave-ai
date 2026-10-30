@@ -1,7 +1,7 @@
 /**
  * Job endpoints introduced by the entity redesign.
  *
- * - reopen: NEW — reopen a completed job (admin-only).
+ * - reopen: NEW — reopen a Done or Cancelled job (Reopen Done jobs).
  *
  * NOTE (Phase-8 cleanup, not this phase): the JobCharge surface is retired. The backend
  * now returns 410 Gone on every mutation of /api/jobs/:id/charges and an empty list on
@@ -16,16 +16,84 @@
  *
  * Routes verified against backend/src/routes/job.routes.ts.
  */
+import { useQuery } from '@tanstack/react-query';
 import api from '@/lib/axios';
+import { switchOn, useMySwitches } from '@/lib/api/mySwitches';
+import type { PaymentState } from '@/types/entities';
 
-/** POST /api/jobs/:id/reopen — reopen a completed job. */
+/** POST /api/jobs/:id/reopen — reopen a Done or Cancelled job (Reopen Done jobs); it goes back to In Progress. */
 export function reopenJob(id: string) {
   return api.post(`/api/jobs/${id}/reopen`).then((r) => r.data);
+}
+
+/**
+ * The office review queue (S06.31): `GET /api/jobs/review-queue`. A count for each queue the person holds (Office review
+ * for a holder of Office review, Ready to close for a holder of Close jobs) and the sum the Jobs menu entry shows; the
+ * server leaves out a queue the person does not hold.
+ */
+export interface JobReviewQueue {
+  office_review?: number;
+  ready_to_close?: number;
+  total: number;
+}
+
+/** Under `jobs`, so every job action that refreshes the job queries refreshes this count with them. */
+export const jobReviewQueueKey = ['jobs', 'review-queue'] as const;
+
+/** Which office review queues the signed-in person holds: Office review and Close jobs, from their own switches. */
+export function useJobReviewQueueAccess(): { officeReview: boolean; readyToClose: boolean } {
+  const values = useMySwitches()?.values;
+  return { officeReview: switchOn(values, 'office_review'), readyToClose: switchOn(values, 'close_jobs') };
+}
+
+/**
+ * The signed-in person's queue count. Asked for only when their switches say they hold a queue (the server would answer
+ * a zero total otherwise); `undefined` until it lands, and for a person who holds neither.
+ */
+export function useJobReviewQueue(): JobReviewQueue | undefined {
+  const { officeReview, readyToClose } = useJobReviewQueueAccess();
+  const holdsAQueue = officeReview || readyToClose;
+  const { data } = useQuery<JobReviewQueue>({
+    queryKey: jobReviewQueueKey,
+    enabled: holdsAQueue,
+    staleTime: 30 * 1000,
+    refetchOnWindowFocus: true,
+    queryFn: async () => (await api.get('/api/jobs/review-queue')).data as JobReviewQueue,
+  });
+  return holdsAQueue ? data : undefined;
+}
+
+/** Where the creator lands on the job they are about to make: the creator rule's answer, one slot filled. */
+export interface JobCreatorPrefill {
+  sold_by_id: string | null;
+  dispatcher_id: string | null;
+  /** Whether the signed-in person's own "Can be on a crew" switch is on: the form offers "I'll do this visit" only then. */
+  can_be_on_crew: boolean;
+}
+
+/**
+ * GET /api/jobs/creator-prefill - the new-job form's pre-filled Sold By and Dispatcher. The server works it out
+ * from the signed-in person's own switches (never a role name), and the create route applies the same rule.
+ */
+export function useJobCreatorPrefill() {
+  return useQuery<JobCreatorPrefill>({
+    queryKey: ['jobs', 'creator-prefill'],
+    queryFn: () => api.get('/api/jobs/creator-prefill').then((r) => (
+      { ...r.data.prefill, can_be_on_crew: r.data.can_be_on_crew === true } as JobCreatorPrefill
+    )),
+    // The rule reads switches that can change between two forms; never reuse an earlier answer.
+    staleTime: 0,
+  });
 }
 
 /** POST /api/jobs/:id/dispatcher — set or clear the job's dispatcher (#291). */
 export function setJobDispatcher(id: string, dispatcherId: string | null) {
   return api.post(`/api/jobs/${id}/dispatcher`, { dispatcher_id: dispatcherId }).then((r) => r.data);
+}
+
+/** POST /api/jobs/:id/sold-by — set, change or clear the job's Sold By (S03.11). */
+export function setJobSoldBy(id: string, soldById: string | null) {
+  return api.post(`/api/jobs/${id}/sold-by`, { sold_by_id: soldById }).then((r) => r.data);
 }
 
 /**
@@ -106,10 +174,29 @@ export interface JobFinancials {
     paid_at: string | null;
     // NOTE: `kind` is NOT returned by the A4 endpoint on final_invoice — omitted (C1-M1 cleanup).
   } | null;
-  /** Multi-draw aggregates (Spec B2). Absent when the requester cannot see pricing. */
+  /**
+   * What the Payment Received step offers this person (PRD 6, S06.22), as the server decides it: Record payment offered, or
+   * not with the one reason that applies (null when the step offers nothing and says nothing). Absent from an older server.
+   */
+  payment_received?: { offered: boolean; reason: string | null };
+  /** Multi-draw aggregates (Spec B2): the job's own figures, over every invoice on the job. */
   first_sent_at?: string | null;
   total_invoiced?: number;
   total_paid?: number;
+  /**
+   * The balance block's figures, worked out by the server over EVERY invoice on the job, so a person who can open only
+   * some of the invoices still sees the job's whole contract and balance. Optional: an older backend omits it, and the
+   * page then works the figures out from the lists below as it always did.
+   */
+  totals?: {
+    contract_total: number | null;
+    paid: number;
+    deposit_paid: number;
+    processing: number;
+    /** What the job still owes, from the one rule Mark Done and the review panel use: the page shows it and works nothing out. */
+    balance_due: number;
+  };
+  /** Only the invoices the person can open (their View invoices rows plus the ones they made on the job). */
   invoices: Array<{
     id: string;
     invoice_number: string;
@@ -119,6 +206,8 @@ export interface JobFinancials {
     sent_at: string | null;
     paid_at: string | null;
     kind: string;
+    /** Bank money still clearing on this invoice (slice 28 D1). Optional: an older backend omits it. */
+    processing_amount?: string | number;
     tip: string | number | null;
     tax_rate: string | number | null;
     tax_amount: string | number | null;
@@ -126,6 +215,7 @@ export interface JobFinancials {
     subtotal: string | number | null;
     line_items: InvoiceLineItem[];
   }>;
+  /** The payments on the invoices listed above. */
   payments: Array<{
     id: string;
     amount: string | number;
@@ -135,6 +225,8 @@ export interface JobFinancials {
     invoice_kind?: string;
     /** The invoice number for this payment. */
     invoice_number?: string;
+    /** Payments go-live slice 05 — only a SUCCEEDED payment is money paid (lib/payment-ledger). */
+    state?: PaymentState;
     /**
      * Task 3.4 (spec §7.3) — per-payment fee breakdown, populated post-commit once Stripe
      * reconciles the charge (Task 3.3's captureStripeFees / nightly sweep). Null/undefined for
@@ -153,6 +245,12 @@ export interface JobFinancials {
     tip_amount?: string | number | null;
     /** 'DEPOSIT-CREDIT' marks a synthetic mirror of a deposit's drawdown — not new cash. */
     reference_number?: string | null;
+    /** Payments go-live slice 28 — how the customer paid (lib/payment-display). */
+    wallet?: 'APPLE_PAY' | 'GOOGLE_PAY' | 'LINK' | null;
+    card_brand?: string | null;
+    card_last4?: string | null;
+    bank_name?: string | null;
+    bank_last4?: string | null;
   }>;
 }
 

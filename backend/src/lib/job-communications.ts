@@ -23,6 +23,13 @@
  * The db client is injected (the narrow surface below) so unit tests can stub it.
  */
 
+import { BUILT_IN_LOST_REASONS } from './lostReasonOptions';
+import { COUNTED_PAYMENT_WHERE } from './payment-ledger';
+import { DEPOSIT_CREDIT_REFERENCE } from './deposit-credit';
+import { statusLabel } from '../services/payments-report';
+import type { TiedConversations } from './communication/recordConversations';
+import { isUnverifiedSenderLink } from './communication/customerByAddress';
+
 // The narrow Prisma surface the aggregator needs (lets unit tests inject a stub).
 interface CommDb {
   callSession: { findMany(args: any): Promise<any[]> };
@@ -30,6 +37,12 @@ interface CommDb {
   email: { findMany(args: any): Promise<any[]> };
   whatsAppMessage: { findMany(args: any): Promise<any[]> };
   manualCommunicationLog: { findMany(args: any): Promise<any[]> };
+  // The customer's estimate decisions (S08.9): only asked when the caller hands in the per-source row filters.
+  estimate: { findMany(args: any): Promise<any[]> };
+  timelineEvent: { findMany(args: any): Promise<any[]> };
+  // The payments received on the record's invoices and deposits (S08.10): same rule as the estimate decisions above.
+  payment: { findMany(args: any): Promise<any[]> };
+  lostReasonOption: { findMany(args: any): Promise<any[]> };
 }
 
 /**
@@ -45,11 +58,58 @@ interface CommDb {
  */
 export type CommVisibility = Record<string, unknown>;
 
+/*
+ * Each aggregation below also takes `withCallSummary`: whether the person may read what was said on a call (View
+ * transcript, which covers the call summary - Roles & Permissions S08.12). A call row's preview line IS its summary, so
+ * without it that line is empty. The record-tab controllers always pass it from the request's ability; the default
+ * (true) is for callers with no request, such as tests and scripts.
+ */
+
+/**
+ * One row filter per source, for the caller whose sources do not share a shape: a text or a WhatsApp message keeps its
+ * customer on its conversation, and a logged entry has no vendor tie, so the shared `CommVisibility` above cannot say
+ * the same thing about all five. `perChannel` is what tells the two forms apart. The Communication scope module builds
+ * it (`recordTabWhere`); the shared form stays for the callers and tests that hand every source the same filter.
+ */
+export interface ChannelVisibility {
+  perChannel: true;
+  calls: CommVisibility;
+  messages: CommVisibility;
+  emails: CommVisibility;
+  whatsapps: CommVisibility;
+  manuals: CommVisibility;
+  /** The estimates whose portal decisions the person may see as entries: the ones they can open, on a record they can open. */
+  estimates: CommVisibility;
+  /** The payments whose entries the person may see: the ones on invoices they can open, on a record they can open. */
+  payments: CommVisibility;
+  /**
+   * The company's Email plan feature is off (PRD 10, S10.6): the tab shows no email at all, sent or received. The email
+   * source is not read; `emails` above is then a filter that matches nothing, for any reader that forgets to look here.
+   */
+  emailHidden?: true;
+}
+
+type ChannelKey = Exclude<keyof ChannelVisibility, 'perChannel' | 'emailHidden'>;
+
+/** The filter for one source, whichever form the caller handed in. */
+function visibilityFor(visibility: CommVisibility | ChannelVisibility, channel: ChannelKey): CommVisibility {
+  return 'perChannel' in visibility ? (visibility as ChannelVisibility)[channel] : visibility;
+}
+
+/** Whether a record's tab must show no email, because the company's Email plan feature is off. */
+export function emailHiddenFrom(visibility: CommVisibility | ChannelVisibility): boolean {
+  return 'perChannel' in visibility && visibility.emailHidden === true;
+}
+
 export type CommChannel = 'call' | 'email' | 'sms' | 'whatsapp';
+
+/** What the customer did, or paid, as the entry on a record's tab says it (S08.9 estimate decisions, S08.10 payments). */
+export type CustomerEntryKind = 'estimate_approved' | 'estimate_declined' | 'payment_received';
 
 export interface CommItem {
   id: string;
-  channel: CommChannel;
+  /** `portal` is an entry for something the customer did on their own link, not a conversation. */
+  channel: CommChannel | 'portal';
   direction: 'in' | 'out';
   who: string;            // counterparty display name (customer name; phone/email fallback)
   title: string;          // call: "Inbound call · 4m 07s" / sms: "Text message" / whatsapp: "WhatsApp message" / email: subject or "(no subject)"
@@ -64,6 +124,9 @@ export interface CommItem {
   leadLabel?: string;     // joined lead's lead_number; omitted when unlinked
   answeredBy?: string;    // calls only: answered_by csr name → agent user name → 'Forwarded phone' (external)
   transactional?: boolean; // email rows with account === 'system'
+  // A received message linked to its customer by the sender's address although the sender's domain could not prove who sent it
+  // (PRD 10, S10.20); the row says "Unverified sender". Omitted otherwise, never `false`.
+  unverifiedSender?: boolean;
   state?: string;          // reserved for business-state chip; NOT populated in v1
   meta?: string;           // call disposition etc.
   // Email delivery lifecycle (slice 5) - email channel only, omitted on every
@@ -95,6 +158,15 @@ export interface CommItem {
   // being credited with a conversation somebody else typed up does not make their record of it
   // yours to rewrite, so nothing needs it to answer that question. Manual rows only.
   loggedById?: string;
+  // The customer's portal decisions on an estimate (S08.9) - `portal` rows only. An entry carries what the customer said
+  // and nothing about the money: no total, no deposit.
+  entry?: CustomerEntryKind;
+  reason?: string;       // the decline reason the customer picked, as the organization words it
+  reasonNote?: string;   // the customer's own words with it
+  // A payment received (S08.10) - `payment_received` entries only. The amount follows the invoice it was paid on: anyone who
+  // gets the entry can open that invoice, so its price is theirs to see.
+  amount?: number;
+  paidVia?: 'online' | 'office';
 }
 
 const PREVIEW_MAX = 160;
@@ -199,7 +271,7 @@ function leadFields(leadId: unknown, lead: any): Partial<CommItem> {
 
 // ─── Per-channel row → CommItem mappers (omit-if-null, mapCallSession style) ─
 
-function mapCall(row: any): CommItem {
+function mapCall(row: any, withCallSummary: boolean): CommItem {
   const direction = row.direction === 'out' ? 'out' : 'in';
   const fallback = direction === 'in' ? row.from_number : row.to_number;
   // CallSession rows created before job_label stamping have job_id but NULL
@@ -212,7 +284,9 @@ function mapCall(row: any): CommItem {
     direction,
     who: customerName(row.customer) ?? fallback ?? '',
     title: `${direction === 'in' ? 'Inbound' : 'Outbound'} call${row.duration_sec != null ? ` · ${formatDuration(row.duration_sec)}` : ''}`,
-    preview: truncate(row.summary ?? ''),
+    // The call summary is what was said on the call, so it follows View transcript (S08.12): without it the row keeps
+    // its title, who, when and chips, and the preview line is empty.
+    preview: withCallSummary ? truncate(row.summary ?? '') : '',
     at: toIso(row.started_at),
     ...(row.job_id != null && { jobId: row.job_id }),
     ...(jobLabel != null && { jobLabel }),
@@ -260,6 +334,8 @@ function mapEmail(row: any): CommItem {
     ...(row.job_label != null && { jobLabel: row.job_label }),
     ...leadFields(row.lead_id, row.lead),
     ...(row.account === 'system' && { transactional: true }),
+    // PRD 10, S10.20: linked to this customer by an address the sender's domain could not vouch for.
+    ...(isUnverifiedSenderLink(row) && { unverifiedSender: true }),
     ...(row.delivery_status != null && { deliveryStatus: row.delivery_status }),
     ...(row.delivery_status_reason != null && { deliveryStatusReason: row.delivery_status_reason }),
     ...(row.bounce_kind != null && { bounceKind: row.bounce_kind }),
@@ -364,6 +440,212 @@ function mapManual(row: any): CommItem {
   };
 }
 
+// ─── The customer's estimate decisions (S08.9) ──────────────────────────────
+
+/*
+ * An estimate the customer approved or declined on their own link shows on the record's tab as an entry. Nothing new is
+ * stored for it: the product already writes an APPROVED or DECLINED event on the estimate's history when the customer
+ * decides, and none for the office's own decision from the app, which always has the signed-in person behind it. So an
+ * event with nobody behind it is the customer's, and decisions from before this existed read the same way.
+ *
+ * The entry sits where the estimate sits - on its job when it has one, else on its lead; a lead-stage estimate that
+ * converted sits on both - and only for a person who can open the estimate (the `estimates` row filter). It reads the
+ * estimate for its number and ties and never its total: an entry says what the customer did, not what it was worth.
+ */
+
+const CUSTOMER_DECISION_EVENTS: Record<string, CustomerEntryKind> = {
+  APPROVED: 'estimate_approved',
+  DECLINED: 'estimate_declined',
+};
+
+// The built-in words, for an organization that never customised its list; the code itself reads as a last resort.
+function humanizeReasonCode(code: string): string {
+  const text = code.toLowerCase().replace(/_/g, ' ');
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+/** The reason code a decline recorded and the customer's words with it, from the event or, for the oldest ones, the estimate. */
+function declineAnswer(event: any, estimate: any): { code: string | null; note: string | null } {
+  const meta = event.metadata && typeof event.metadata === 'object' ? event.metadata : null;
+  if (meta && 'lost_reason' in meta) {
+    return { code: meta.lost_reason ?? null, note: meta.lost_reason_note ?? null };
+  }
+  // A decline from before the event carried its answer: the estimate holds it for as long as it stays declined.
+  return estimate.status === 'DECLINED'
+    ? { code: estimate.lost_reason ?? null, note: estimate.lost_reason_note ?? null }
+    : { code: null, note: null };
+}
+
+function mapCustomerDecision(event: any, estimate: any, reasonLabel: string | null, note: string | null): CommItem {
+  const entry = CUSTOMER_DECISION_EVENTS[event.event_type];
+  const spoken = [reasonLabel, note].filter(Boolean).join(' - ');
+  return {
+    id: event.id,
+    channel: 'portal',
+    direction: 'in',
+    who: customerName(estimate.customer) ?? '',
+    title: `Estimate ${estimate.estimate_number} ${entry === 'estimate_approved' ? 'approved' : 'declined'} by the customer`,
+    preview: truncate(spoken),
+    at: toIso(event.created_at),
+    ...(estimate.job_id != null && { jobId: estimate.job_id }),
+    ...(estimate.job_link?.job_number != null && { jobLabel: estimate.job_link.job_number }),
+    ...leadFields(estimate.lead_id, estimate.lead),
+    entry,
+    ...(reasonLabel && { reason: reasonLabel }),
+    ...(note && { reasonNote: note }),
+  };
+}
+
+/**
+ * The customer-decision entries for the estimates `tie` names (the record's own estimates), narrowed by the person's
+ * `estimates` row filter. Only the per-source form of visibility carries that filter; a caller that hands in one shared
+ * filter, which cannot say it, gets no entries.
+ */
+async function customerDecisionEntries(
+  db: CommDb,
+  args: { organizationId: string; tie: CommVisibility; visibility: CommVisibility | ChannelVisibility },
+): Promise<CommItem[]> {
+  const { organizationId, tie, visibility } = args;
+  if (!('perChannel' in visibility)) return [];
+  const reach = visibility.estimates;
+  const estimates = await db.estimate.findMany({
+    where: { organization_id: organizationId, AND: [tie, reach] },
+    select: {
+      id: true, estimate_number: true, job_id: true, lead_id: true, status: true, lost_reason: true, lost_reason_note: true,
+      job_link: { select: { job_number: true } }, lead: LEAD_SELECT, customer: CUSTOMER_SELECT,
+    },
+  });
+  if (estimates.length === 0) return [];
+  const byId = new Map<string, any>(estimates.map((e) => [e.id, e]));
+  const events = await db.timelineEvent.findMany({
+    where: {
+      organization_id: organizationId,
+      entity_type: 'ESTIMATE',
+      entity_id: { in: [...byId.keys()] },
+      event_type: { in: Object.keys(CUSTOMER_DECISION_EVENTS) },
+      created_by: null,
+    },
+    select: { id: true, entity_id: true, event_type: true, metadata: true, created_at: true },
+  });
+  const answers = new Map<string, { code: string | null; note: string | null }>();
+  for (const event of events) {
+    if (event.event_type === 'DECLINED') answers.set(event.id, declineAnswer(event, byId.get(event.entity_id)));
+  }
+  const codes = [...new Set([...answers.values()].map((a) => a.code).filter((c): c is string => !!c))];
+  const labels = new Map<string, string>(BUILT_IN_LOST_REASONS.map((r) => [r.code, r.label]));
+  if (codes.length > 0) {
+    // The organization's own words win, including for a reason it has since switched off: the customer picked it then.
+    const own = await db.lostReasonOption.findMany({ where: { organization_id: organizationId, code: { in: codes } }, select: { code: true, label: true } });
+    for (const o of own) labels.set(o.code, o.label);
+  }
+  return events.map((event) => {
+    const answer = answers.get(event.id);
+    const reasonLabel = answer?.code ? labels.get(answer.code) ?? humanizeReasonCode(answer.code) : null;
+    return mapCustomerDecision(event, byId.get(event.entity_id), reasonLabel, answer?.note ?? null);
+  });
+}
+
+// ─── Payments received (S08.10) ─────────────────────────────────────────────
+
+/*
+ * A payment received on one of the record's invoices or deposits shows on the tab as an entry, read from the payment row
+ * itself (past payments show; nothing is stored for it). Which rows are money received is the ledger's own rule
+ * (COUNTED_PAYMENT_WHERE: it landed, and was not voided - a bank debit still clearing, a failed one, a chargeback or a
+ * returned payment is not), less two more: the synthetic row that carries a deposit's credit onto the final invoice (the
+ * same cash as the deposit's own payment, so counting it would show the money twice) and a payment given back whole (the
+ * report's "Refunded"). One only partly refunded was still received in full and shows at its full amount.
+ *
+ * It sits where its invoice sits: on the invoice's job, or the job its estimate went on to have; a deposit that started on
+ * a lead sits on the lead too, and an invoice with neither sits on the customer. Only a person who can open the invoice
+ * gets it (the `payments` row filter, creator rule included), and its amount is that invoice's price, so it follows the
+ * invoice's money rules: no cost or company-wide figure is in it. It says "paid online" when the customer paid on their own
+ * link and "recorded by the office" otherwise, and never names the payment processor.
+ */
+
+const NOT_DEPOSIT_CREDIT = { OR: [{ reference_number: null }, { reference_number: { not: DEPOSIT_CREDIT_REFERENCE } }] };
+
+/** The payments of a job, of a lead (its deposits, and any invoice with no job), or of a customer. */
+const PAYMENT_TIES = {
+  job: (jobId: string): CommVisibility => ({ invoice: { OR: [{ job_id: jobId }, { job_id: null, estimate: { job_id: jobId } }] } }),
+  lead: (leadId: string): CommVisibility => ({
+    invoice: {
+      AND: [{ estimate: { lead_id: leadId } }, { OR: [{ kind: 'DEPOSIT' }, { job_id: null, estimate: { job_id: null } }] }],
+    },
+  }),
+  customer: (customerId: string): CommVisibility => ({ invoice: { customer_id: customerId } }),
+};
+
+/**
+ * The customer paid it themselves on their own link. Payments from before creators were tracked carry 'UNKNOWN' as their
+ * creator, so a card or bank payment the processor took is told apart by the processor's id on the row.
+ */
+function paidOnline(row: any): boolean {
+  return row.created_by_source === 'CLIENT'
+    || row.stripe_payment_intent_id != null || row.stripe_charge_id != null || row.stripe_checkout_session_id != null;
+}
+
+function mapPayment(row: any): CommItem {
+  const invoice = row.invoice;
+  const estimate = invoice.estimate;
+  const jobId = invoice.job_id ?? estimate?.job_id ?? null;
+  const jobLabel = invoice.job?.job_number ?? estimate?.job_link?.job_number ?? null;
+  const paidVia = paidOnline(row) ? 'online' : 'office';
+  return {
+    id: row.id,
+    channel: 'portal',
+    direction: 'in',
+    who: customerName(invoice.customer) ?? '',
+    title: `Payment received on ${invoice.kind === 'DEPOSIT' ? 'deposit' : 'invoice'} ${invoice.invoice_number}`,
+    preview: paidVia === 'online' ? 'Paid online' : 'Recorded by the office',
+    at: toIso(row.paid_at),
+    ...(jobId != null && { jobId }),
+    ...(jobLabel != null && { jobLabel }),
+    ...leadFields(estimate?.lead_id, estimate?.lead),
+    entry: 'payment_received',
+    amount: Number(row.amount),
+    paidVia,
+  };
+}
+
+/** A payment given back whole is no longer money received. */
+function givenBackWhole(row: any): boolean {
+  return statusLabel({
+    amount: Number(row.amount),
+    refundedAt: row.refunded_at,
+    refundedAmount: row.refunded_amount == null ? null : Number(row.refunded_amount),
+    voidedAt: row.voided_at,
+  }) === 'Refunded';
+}
+
+/**
+ * The payment entries for the payments `tie` names, narrowed by the person's `payments` row filter. Only the per-source
+ * form of visibility carries that filter; a caller that hands in one shared filter, which cannot say it, gets no entries.
+ */
+async function paymentEntries(
+  db: CommDb,
+  args: { organizationId: string; tie: CommVisibility; visibility: CommVisibility | ChannelVisibility },
+): Promise<CommItem[]> {
+  const { organizationId, tie, visibility } = args;
+  if (!('perChannel' in visibility)) return [];
+  const rows = await db.payment.findMany({
+    where: {
+      ...COUNTED_PAYMENT_WHERE,
+      AND: [{ invoice: { organization_id: organizationId } }, tie, NOT_DEPOSIT_CREDIT, visibility.payments],
+    },
+    select: {
+      id: true, amount: true, paid_at: true, created_by_source: true, refunded_at: true, refunded_amount: true, voided_at: true,
+      stripe_payment_intent_id: true, stripe_charge_id: true, stripe_checkout_session_id: true,
+      invoice: {
+        select: {
+          invoice_number: true, kind: true, job_id: true, job: { select: { job_number: true } }, customer: CUSTOMER_SELECT,
+          estimate: { select: { job_id: true, lead_id: true, job_link: { select: { job_number: true } }, lead: LEAD_SELECT } },
+        },
+      },
+    },
+  });
+  return rows.filter((row) => !givenBackWhole(row)).map(mapPayment);
+}
+
 // ─── Union + sort ───────────────────────────────────────────────────────────
 
 // All five sources are required as of slice 5 - every aggregation below queries every one of
@@ -375,38 +657,97 @@ function unionAscending(
   emails: any[],
   whatsapps: any[],
   manuals: any[],
+  withCallSummary: boolean,
+  customerEntries: CommItem[],
+  tied?: TiedConversations,
 ): CommItem[] {
   return [
-    ...calls.map(mapCall),
+    ...calls.map((row) => mapCall(row, withCallSummary)),
     ...messages.map(mapMessage),
-    ...emails.map(mapEmail),
+    ...emails.map((row) => mapEmail(tied ? tied.withTie(row) : row)),
     ...whatsapps.map(mapWhatsApp),
     ...manuals.map(mapManual),
+    ...customerEntries,
   ].sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+}
+
+// A tab that lists record conversations also reads which record each message's conversation is about (S10.5).
+const TAB_EMAIL_INCLUDE = { ...EMAIL_INCLUDE, thread: { select: { origin: true, record_type: true, record_id: true } } };
+
+/**
+ * The email read of a job's or lead's tab. The messages stored on the record by their own job or lead column, as ever,
+ * and (when the caller worked them out, S10.5) the record conversations tied to it with their customer replies. A
+ * conversation about an estimate or an invoice comes only through the tied half, which holds it for the people who can
+ * open that estimate or invoice, so those messages are dropped from the stored half. Without `tied` this is the plain
+ * read. Two reads either way, whatever the number of conversations.
+ */
+async function tabEmails(
+  db: CommDb,
+  stored: CommVisibility,
+  args: { organizationId: string; visibility: CommVisibility | ChannelVisibility; tied?: TiedConversations },
+): Promise<any[]> {
+  const { organizationId, visibility, tied } = args;
+  if (emailHiddenFrom(visibility)) return [];
+  const own = { ...stored, organization_id: organizationId, ...visibilityFor(visibility, 'emails') };
+  if (!tied) return db.email.findMany({ where: own, include: EMAIL_INCLUDE });
+  const [ownRows, tiedRows] = await Promise.all([
+    db.email.findMany({ where: own, include: TAB_EMAIL_INCLUDE }),
+    tied.tiedEmailWhere
+      ? db.email.findMany({ where: { organization_id: organizationId, ...tied.tiedEmailWhere }, include: TAB_EMAIL_INCLUDE })
+      : Promise.resolve([]),
+  ]);
+  const seen = new Set<string>();
+  return [...ownRows.filter((row) => !tied.isAboutAnEstimateOrInvoice(row)), ...tiedRows].filter((row) => {
+    if (seen.has(row.id)) return false;
+    seen.add(row.id);
+    return true;
+  });
+}
+
+/**
+ * A message that reached several of the company's addresses is stored once per mailbox, each copy carrying the customer
+ * (S10.20), and the copies share the provider's message id up to the `#<mailboxId>` suffix of every copy but the first. The
+ * customer's tab lists that message once: the copy in a mailbox the person reads when there is one, else the first stored.
+ * A row with no provider id (typed in by hand, or old) is its own message.
+ */
+function collapseMailboxCopies(rows: any[], readMailboxIds: readonly string[]): any[] {
+  const reads = new Set(readMailboxIds);
+  const kept = new Map<string, any>();
+  const out: any[] = [];
+  for (const row of rows) {
+    const providerId: string | null = row.provider_message_id ?? null;
+    if (providerId == null) { out.push(row); continue; }
+    const key = providerId.split('#')[0]!;
+    const held = kept.get(key);
+    if (!held) { kept.set(key, row); out.push(row); continue; }
+    const rowReadable = reads.has(row.thread?.mailbox_id);
+    if (rowReadable && !reads.has(held.thread?.mailbox_id)) {
+      out[out.indexOf(held)] = row;
+      kept.set(key, row);
+    }
+  }
+  return out;
 }
 
 // ─── Public API ─────────────────────────────────────────────────────────────
 
 export async function getJobCommunications(
   db: CommDb,
-  args: { jobId: string; organizationId: string; visibility?: CommVisibility }
+  args: { jobId: string; organizationId: string; visibility?: CommVisibility | ChannelVisibility; withCallSummary?: boolean; tied?: TiedConversations }
 ): Promise<CommItem[]> {
-  const { jobId, organizationId, visibility = {} } = args;
-  const [calls, messages, emails, whatsapps, manuals] = await Promise.all([
+  const { jobId, organizationId, visibility = {}, withCallSummary = true, tied } = args;
+  const [calls, messages, emails, whatsapps, manuals, ...entryLists] = await Promise.all([
     db.callSession.findMany({
-      where: { job_id: jobId, organization_id: organizationId, ...visibility },
+      where: { job_id: jobId, organization_id: organizationId, ...visibilityFor(visibility, 'calls') },
       include: CALL_INCLUDE,
     }),
     db.message.findMany({
-      where: { job_id: jobId, organization_id: organizationId, ...visibility },
+      where: { job_id: jobId, organization_id: organizationId, ...visibilityFor(visibility, 'messages') },
       include: MESSAGE_INCLUDE,
     }),
-    db.email.findMany({
-      where: { job_id: jobId, organization_id: organizationId, ...visibility },
-      include: EMAIL_INCLUDE,
-    }),
+    tabEmails(db, { job_id: jobId }, { organizationId, visibility, tied }),
     db.whatsAppMessage.findMany({
-      where: { job_id: jobId, organization_id: organizationId, ...visibility },
+      where: { job_id: jobId, organization_id: organizationId, ...visibilityFor(visibility, 'whatsapps') },
       include: WHATSAPP_INCLUDE,
     }),
     // The manual log rides the same job_id scoping and the same anchor-inherited visibility
@@ -417,34 +758,44 @@ export async function getJobCommunications(
     // which is what makes the conversion history read truthfully. There is deliberately no
     // union through `job.lead_id`.
     db.manualCommunicationLog.findMany({
-      where: { job_id: jobId, organization_id: organizationId, ...visibility },
+      where: { job_id: jobId, organization_id: organizationId, ...visibilityFor(visibility, 'manuals') },
       include: MANUAL_INCLUDE,
     }),
+    customerDecisionEntries(db, { organizationId, tie: { job_id: jobId }, visibility }),
+    paymentEntries(db, { organizationId, tie: PAYMENT_TIES.job(jobId), visibility }),
   ]);
 
-  return unionAscending(calls, messages, emails, whatsapps, manuals);
+  return unionAscending(calls, messages, emails, whatsapps, manuals, withCallSummary, entryLists.flat(), tied);
 }
 
 export async function getCustomerCommunications(
   db: CommDb,
-  args: { customerId: string; organizationId: string; visibility?: CommVisibility }
+  args: {
+    customerId: string; organizationId: string; visibility?: CommVisibility | ChannelVisibility; withCallSummary?: boolean;
+    /** The mailboxes the person reads: of one message that reached several, the tab lists the copy in one of these. */
+    readMailboxIds?: readonly string[];
+  }
 ): Promise<CommItem[]> {
-  const { customerId, organizationId, visibility = {} } = args;
-  const [calls, messages, emails, whatsapps, manuals] = await Promise.all([
+  const { customerId, organizationId, visibility = {}, withCallSummary = true, readMailboxIds = [] } = args;
+  const [calls, messages, emails, whatsapps, manuals, ...entryLists] = await Promise.all([
     db.callSession.findMany({
-      where: { customer_id: customerId, organization_id: organizationId, ...visibility },
+      where: { customer_id: customerId, organization_id: organizationId, ...visibilityFor(visibility, 'calls') },
       include: CALL_INCLUDE,
     }),
     db.message.findMany({
-      where: { organization_id: organizationId, thread: { customer_id: customerId }, ...visibility },
+      where: { organization_id: organizationId, thread: { customer_id: customerId }, ...visibilityFor(visibility, 'messages') },
       include: MESSAGE_INCLUDE,
     }),
-    db.email.findMany({
-      where: { customer_id: customerId, organization_id: organizationId, ...visibility },
-      include: EMAIL_INCLUDE,
-    }),
+    emailHiddenFrom(visibility)
+      ? Promise.resolve([])
+      : db.email.findMany({
+          where: { customer_id: customerId, organization_id: organizationId, ...visibilityFor(visibility, 'emails') },
+          include: { ...EMAIL_INCLUDE, thread: { select: { mailbox_id: true } } },
+          // Stored order, so the copy kept when the person reads none of them is the same one every time.
+          orderBy: [{ created_at: 'asc' }, { id: 'asc' }],
+        }),
     db.whatsAppMessage.findMany({
-      where: { organization_id: organizationId, chat: { customer_id: customerId }, ...visibility },
+      where: { organization_id: organizationId, chat: { customer_id: customerId }, ...visibilityFor(visibility, 'whatsapps') },
       include: WHATSAPP_INCLUDE,
     }),
     // THREE ROUTES TO ONE CUSTOMER. An entry anchored on a LEAD or a JOB stores no customer of
@@ -475,13 +826,15 @@ export async function getCustomerCommunications(
             ],
           },
         ],
-        ...visibility,
+        ...visibilityFor(visibility, 'manuals'),
       },
       include: MANUAL_INCLUDE,
     }),
+    customerDecisionEntries(db, { organizationId, tie: { customer_id: customerId }, visibility }),
+    paymentEntries(db, { organizationId, tie: PAYMENT_TIES.customer(customerId), visibility }),
   ]);
 
-  return unionAscending(calls, messages, emails, whatsapps, manuals);
+  return unionAscending(calls, messages, collapseMailboxCopies(emails, readMailboxIds), whatsapps, manuals, withCallSummary, entryLists.flat());
 }
 
 // Lead-scoped roll-up (full job-parity ruling, 2026-07-22 — "leads should
@@ -495,37 +848,36 @@ export async function getCustomerCommunications(
 // stays lead-scoped, same shape as its job_id counterpart).
 export async function getLeadCommunications(
   db: CommDb,
-  args: { leadId: string; organizationId: string; visibility?: CommVisibility }
+  args: { leadId: string; organizationId: string; visibility?: CommVisibility | ChannelVisibility; withCallSummary?: boolean; tied?: TiedConversations }
 ): Promise<CommItem[]> {
-  const { leadId, organizationId, visibility = {} } = args;
-  const [calls, messages, emails, whatsapps, manuals] = await Promise.all([
+  const { leadId, organizationId, visibility = {}, withCallSummary = true, tied } = args;
+  const [calls, messages, emails, whatsapps, manuals, ...entryLists] = await Promise.all([
     db.callSession.findMany({
-      where: { lead_id: leadId, organization_id: organizationId, ...visibility },
+      where: { lead_id: leadId, organization_id: organizationId, ...visibilityFor(visibility, 'calls') },
       include: CALL_INCLUDE,
     }),
     db.message.findMany({
-      where: { lead_id: leadId, organization_id: organizationId, ...visibility },
+      where: { lead_id: leadId, organization_id: organizationId, ...visibilityFor(visibility, 'messages') },
       include: MESSAGE_INCLUDE,
     }),
-    db.email.findMany({
-      where: { lead_id: leadId, organization_id: organizationId, ...visibility },
-      include: EMAIL_INCLUDE,
-    }),
+    tabEmails(db, { lead_id: leadId }, { organizationId, visibility, tied }),
     // NOTE: still keyed on the CHAT's lead link, not WhatsAppMessage.lead_id.
     // Slice 8a added that column for scoping and backfilled it from here, so the
     // two agree; repointing this query is a separate, behaviour-changing call.
     db.whatsAppMessage.findMany({
-      where: { organization_id: organizationId, chat: { lead_id: leadId }, ...visibility },
+      where: { organization_id: organizationId, chat: { lead_id: leadId }, ...visibilityFor(visibility, 'whatsapps') },
       include: WHATSAPP_INCLUDE,
     }),
     // The manual log rides the same lead_id scoping and the same anchor-inherited visibility
     // filter as the four real channels - it carries lead_id and job_id, so the filter's shape
     // applies to it unchanged.
     db.manualCommunicationLog.findMany({
-      where: { lead_id: leadId, organization_id: organizationId, ...visibility },
+      where: { lead_id: leadId, organization_id: organizationId, ...visibilityFor(visibility, 'manuals') },
       include: MANUAL_INCLUDE,
     }),
+    customerDecisionEntries(db, { organizationId, tie: { lead_id: leadId }, visibility }),
+    paymentEntries(db, { organizationId, tie: PAYMENT_TIES.lead(leadId), visibility }),
   ]);
 
-  return unionAscending(calls, messages, emails, whatsapps, manuals);
+  return unionAscending(calls, messages, emails, whatsapps, manuals, withCallSummary, entryLists.flat(), tied);
 }

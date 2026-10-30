@@ -1,9 +1,14 @@
 import { isLiveVisit, latestVisitStamp, resolveCurrentVisit, type JobVisitRow } from '@/lib/visits';
+import { isCompletedOrLaterJobStatus } from '@/lib/jobs/closeOut';
 
 /**
  * Multi-visit S5 (D11): the bar is Job Created -> Visit 1..N -> Completed -> Invoice Sent ->
  * Payment Received. The fixed Scheduled and On Site nodes are gone: they were only ever visit
  * one's properties, read off the job row's milestone mirror.
+ *
+ * Roles & Permissions, PRD 6 (S06.21, M9): the close-out adds two steps, so the bar reads Job Created ->
+ * Visit 1..N -> Completed -> Office review -> Invoice Sent -> Payment Received -> Done. The marker follows the
+ * job's status from Office review on, and a step the job moved past without reaching is `skipped`.
  *
  * `scheduled` survives as a key for one thing only - the placeholder the bar draws for a job that
  * holds no visits yet, so a brand-new job can still be booked from the rail.
@@ -12,8 +17,10 @@ export type StageKey =
   | 'created'
   | 'scheduled'
   | 'completed'
+  | 'office_review'
   | 'invoice_sent'
   | 'payment_received'
+  | 'done'
   | `visit:${string}`;
 
 export interface Stage {
@@ -22,6 +29,11 @@ export interface Stage {
   at: string | null;
   reached: boolean;
   current: boolean;
+  /**
+   * The job moved past this step without reaching it (PRD 6, M9): a visit still live once the job was completed, or
+   * an invoice or payment that never happened once the job is Done. Never true on Office review or on a cancelled job.
+   */
+  skipped: boolean;
   /** Present on a visit node only. The ROW, so a click can name the trip it belongs to. */
   visit?: JobVisitRow;
 }
@@ -36,7 +48,16 @@ type JobInput = {
   completed_at?: string | null;
   status: string;
   cancelled_at?: string | null;
+  /** When the job was marked Done (PRD 6, S06.13); the Done step's date. */
+  closed_at?: string | null;
 };
+
+/**
+ * The two facts the server sends on a Done job so the bar can tell a skipped money step from one that never
+ * applied (the server's money rule is the only definition of either; the browser never works them out): money is
+ * still owed on the job, and the job's total is zero. Null on a job that is not Done.
+ */
+export type CloseOutMoneyInput = { money_owed: boolean; zero_total: boolean } | null | undefined;
 
 export type FinancialsInput = {
   final_invoice?: {
@@ -89,10 +110,14 @@ function byTimeThenCreation(a: JobVisitRow, b: JobVisitRow): number {
   return new Date(a.created_at).getTime() - new Date(b.created_at).getTime();
 }
 
+/** The statuses in which the review is finished: Office review is reached from Ready to close on. */
+const REVIEW_FINISHED_STATUSES: readonly string[] = ['READY_TO_CLOSE', 'DONE'];
+
 export function computeLifecycle(
   job: JobInput,
   financials: FinancialsInput,
   visits: JobVisitRow[] = [],
+  closeOutMoney?: CloseOutMoneyInput,
 ): Stage[] {
   const inv = financials?.final_invoice ?? null;
 
@@ -115,16 +140,21 @@ export function computeLifecycle(
     at: latestVisitStamp(v) ?? v.scheduled_at,
     reached: false,
     current: false,
+    skipped: false,
     visit: v,
   }));
 
-  // Build stages in order with their raw `at` values
+  // Build stages in order with their raw `at` values. Office review reads "Ready to close" while the job rests there:
+  // the two share the one step (PRD 6, R4-04), so the step's label says which of them it is.
+  const stage = (key: StageKey, label: string, at: string | null): Stage => ({ key, label, at, reached: false, current: false, skipped: false });
   const stages: Stage[] = [
-    { key: 'created',           label: 'Job Created',        at: job.created_at ?? null,       reached: false, current: false },
+    stage('created', 'Job Created', job.created_at ?? null),
     ...visitStages,
-    { key: 'completed',         label: 'Completed',          at: job.completed_at ?? null,     reached: false, current: false },
-    { key: 'invoice_sent',      label: 'Invoice Sent',       at: sentAt,                       reached: false, current: false },
-    { key: 'payment_received',  label: 'Payment Received',   at: paymentAt,                    reached: false, current: false },
+    stage('completed', 'Completed', job.completed_at ?? null),
+    stage('office_review', job.status === 'READY_TO_CLOSE' ? 'Ready to close' : 'Office review', null),
+    stage('invoice_sent', 'Invoice Sent', sentAt),
+    stage('payment_received', 'Payment Received', paymentAt),
+    stage('done', 'Done', job.closed_at ?? null),
   ];
 
   // D11a: per-node truth. The forward-fill this replaces marked a stage reached whenever any
@@ -142,6 +172,11 @@ export function computeLifecycle(
     // one carries a cancelled_at (D19 keeps its node, greyed, never reached).
     s.reached = s.visit ? s.visit.status === 'COMPLETED' : s.at != null;
   }
+  // The two close-out steps light from the job's status, not from a stamp: the review is finished once the job rests in
+  // Ready to close or later, and Done is the Done status itself.
+  const byKey = (key: StageKey) => stages.find((s) => s.key === key)!;
+  byKey('office_review').reached = REVIEW_FINISHED_STATUSES.includes(job.status);
+  byKey('done').reached = job.status === 'DONE';
 
   // `current` needs a rule of its own now that D11a has removed the fill: B5 deliberately leaves a
   // live trip unreached, so the legacy "last reached stage" scan could never name one.
@@ -152,7 +187,13 @@ export function computeLifecycle(
   // recent trip that HAPPENED) is right for a hero and wrong for the rail, so liveness is asserted
   // here: a fully billed job with only finished trips should still highlight Invoice Sent.
   const isCancelled = !!job.cancelled_at;
-  if (!isCancelled) {
+  // From Office review on the job's status names the step, whatever a visit or an invoice is doing: Office review and
+  // Ready to close share one step, and Done is its own.
+  const statusStep: StageKey | null =
+    job.status === 'OFFICE_REVIEW' || job.status === 'READY_TO_CLOSE' ? 'office_review' : job.status === 'DONE' ? 'done' : null;
+  if (!isCancelled && statusStep) {
+    byKey(statusStep).current = true;
+  } else if (!isCancelled) {
     const currentVisit = resolveCurrentVisit(visits);
     const currentVisitStage = currentVisit && isLiveVisit(currentVisit)
       ? stages.find((s) => s.visit?.id === currentVisit.id)
@@ -168,5 +209,37 @@ export function computeLifecycle(
     }
   }
 
+  markSkipped(stages, job, financials, closeOutMoney, isCancelled);
   return stages;
+}
+
+/**
+ * PRD 6 (M9): a step is skipped only when the job's status has moved past it without it. Office review and Completed are
+ * never skipped, and a cancelled job shows no skipped step.
+ *  - Once the job is Completed or later, a visit still live (not finished, not cancelled) is skipped; a cancelled visit
+ *    stays grey, including the ones the complete confirmation cancelled.
+ *  - Once the job is Done, Invoice sent and Payment received are skipped if not reached, and Payment received is skipped
+ *    whenever money is still owed. A job whose total is zero never shows a money step as skipped.
+ * The money facts come from the server (`closeOutMoney`) and from the job's financials; while either is unknown (still
+ * loading, or an older answer without them) no money step is called skipped, because saying so would be a guess.
+ */
+function markSkipped(
+  stages: Stage[],
+  job: JobInput,
+  financials: FinancialsInput,
+  closeOutMoney: CloseOutMoneyInput,
+  isCancelled: boolean,
+): void {
+  if (isCancelled || !isCompletedOrLaterJobStatus(job.status)) return;
+  for (const s of stages) {
+    if (s.visit && isLiveVisit(s.visit)) s.skipped = true;
+  }
+  if (job.status !== 'DONE' || !closeOutMoney || financials == null || closeOutMoney.zero_total) return;
+  for (const s of stages) {
+    if (s.key === 'invoice_sent' && !s.reached) s.skipped = true;
+    if (s.key === 'payment_received' && (!s.reached || closeOutMoney.money_owed)) {
+      s.skipped = true;
+      s.reached = false;
+    }
+  }
 }

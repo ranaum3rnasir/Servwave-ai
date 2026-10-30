@@ -22,7 +22,7 @@ const EMAILS_FIXTURE: Email[] = [
     id: 'e_inbox_1',
     account: 'system',
     from: { name: 'Dana Lee', email: 'dana@example.com' },
-    to: 'emanuel@example.com',
+    to: 'sam@example.com',
     subject: 'AC still not cooling',
     snippet: 'Following up on the visit from last week...',
     body: ['Following up on the visit from last week.'],
@@ -111,13 +111,13 @@ describe('v2 InboxPage — narrow viewport rail auto-collapse (#1343)', () => {
     mockMatchMedia(() => false);
   });
 
-  it('collapses the rail when a message is opened below lg', async () => {
+  it('keeps the rail closed when a message is opened below lg', async () => {
     const user = userEvent.setup();
     renderInbox();
-    // Mobile slice 46: the rail now STARTS closed below lg, so open it by hand first; otherwise
-    // this test would pass without the collapse-on-open it is about.
+    // The rail STARTS closed below lg and opens as a menu overlay over the list (so a message cannot be opened while it is
+    // open); picking a folder in it closes it again. Open it by hand first so this proves the rail is still closed after.
     await user.click(screen.getByRole('button', { name: 'Open menu' }));
-    expect(screen.getByRole('button', { name: /^Drafts/ })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /^Inbox/ }));
     await user.click(await screen.findByText('AC still not cooling'));
 
     // The reader is a modal dialog below lg, which hides the page behind it from the

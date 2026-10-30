@@ -6,7 +6,7 @@ import { Route, Routes } from 'react-router-dom';
 
 import api from '@/lib/axios';
 import type { WorkflowCatalog } from '@/lib/api/workflows';
-import { renderWithProviders } from '@/__tests__/helpers';
+import { automationsManageAbility, renderWithProviders } from '@/__tests__/helpers';
 
 import AutomationBuilderPage from '../AutomationBuilderPage';
 
@@ -58,7 +58,7 @@ function renderAt(path: string) {
       <Route path="/automations/new" element={<AutomationBuilderPage />} />
       <Route path="/automations/:id" element={<AutomationBuilderPage />} />
     </Routes>,
-    { initialEntries: [path] },
+    { initialEntries: [path], ability: automationsManageAbility() },
   );
 }
 

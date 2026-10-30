@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
+import type { Mock } from 'vitest';
 
 // Capture array must exist before the hoisted vi.mock factory references it.
 const { sentEmails } = vi.hoisted(() => ({ sentEmails: [] as Array<Record<string, string>> }));
@@ -10,6 +11,8 @@ vi.mock('../config/env', () => ({
     NODE_ENV: 'test',
     EMAIL_FROM: 'Alpha <noreply@test.com>',
     RESEND_API_KEY: 're_test_key',
+    // PRD 10 (S10.12): the domain a sender's own address is built on; a document goes out from it.
+    MAILBOX_DOMAIN: 'mail.test.com',
     FRONTEND_URL: 'http://localhost:5173',
   },
 }));
@@ -27,24 +30,44 @@ vi.mock('resend', () => ({
 }));
 
 // setup.ts mocks '../lib/email' globally; pull the REAL module here.
-let sendClockOverrideRequestedEmail: typeof import('../lib/email')['sendClockOverrideRequestedEmail'];
+import { prisma } from '../lib/prisma';
+
+
+// PRD 10 (S10.12): a document is sent by hand, from the sender's own mailbox (the id the suite-wide mailbox stub answers to).
+const HAND_SENDER = { mailboxId: 'main-mailbox-id', userId: 'user-1' };
+let sendStagePickupEmail: typeof import('../lib/email')['sendStagePickupEmail'];
 
 beforeAll(async () => {
   const real = await vi.importActual<typeof import('../lib/email')>('../lib/email');
-  sendClockOverrideRequestedEmail = real.sendClockOverrideRequestedEmail;
+  sendStagePickupEmail = real.sendStagePickupEmail;
 });
 
 beforeEach(() => {
   sentEmails.length = 0;
+  (prisma.organization.findUnique as Mock).mockResolvedValue({ email_sending_enabled: true, name: 'Acme' });
 });
 
 // 2026-06-08T15:00:00Z === 11:00 AM US Eastern (EDT). The bug rendered this as
 // "3:00 PM" (server UTC). The fix must render "11:00 AM".
-const easternElevenAM = new Date('2026-06-08T15:00:00Z');
+const easternElevenAM = '2026-06-08T15:00:00Z';
 const ORG_ID = '00000000-0000-0000-0000-000000000001';
 
 function blob(e: Record<string, string>): string {
   return `${e.subject ?? ''} ${e.text ?? ''} ${e.html ?? ''}`;
+}
+
+function pickupTicket(timezone?: string) {
+  return {
+    organizationId: ORG_ID,
+    org: { id: ORG_ID, name: 'Acme', logo_url: null, brand_color: '#0C2D3A' },
+    to: 'tech@example.com',
+    jobNumber: 'J00001',
+    customer: 'Cust',
+    site: '1 Test Way',
+    scheduledFor: easternElevenAM,
+    lines: [],
+    ...(timezone ? { timezone } : {}),
+  };
 }
 
 describe('Scheduling emails render in the org timezone, not server UTC', () => {
@@ -52,34 +75,17 @@ describe('Scheduling emails render in the org timezone, not server UTC', () => {
   // used to cover this were retired by the hard-coded → Automation Center migration
   // (their timezone rendering now lives in the automation merge-field pipeline,
   // covered by the automations test suite — see executors.test.ts / context tests).
-  // formatDateTimeInZone (lib/timezone.ts) is shared, load-bearing infra used by
-  // every transactional sender — re-pointed here at
-  // sendClockOverrideRequestedEmail, one of the senders that stays hard-coded.
-  it('clock override requested email shows 11:00 AM (org tz), not 3:00 PM (UTC)', async () => {
-    await sendClockOverrideRequestedEmail({
-      org: { id: ORG_ID, name: 'Acme', logo_url: null, brand_color: '#0C2D3A' },
-      to: ['approver@example.com'],
-      technicianName: 'Tech',
-      requestedAt: easternElevenAM,
-      distanceM: 500,
-      nearestLabel: 'Haverhill, MA',
-      timezone: 'America/New_York',
-    });
+  // The pickup ticket is a sender that stays hard-coded and prints a visit time.
+  it('pickup ticket email shows 11:00 AM (org tz), not 3:00 PM (UTC)', async () => {
+    await sendStagePickupEmail({ ...pickupTicket('America/New_York'), handSender: HAND_SENDER });
 
     const all = sentEmails.map(blob).join(' ');
     expect(all).toContain('11:00 AM');
     expect(all).not.toContain('3:00 PM');
   });
 
-  it('clock override requested email falls back to Eastern (not UTC) when timezone is omitted', async () => {
-    await sendClockOverrideRequestedEmail({
-      org: { id: ORG_ID, name: 'Acme', logo_url: null, brand_color: '#0C2D3A' },
-      to: ['approver@example.com'],
-      technicianName: 'Tech',
-      requestedAt: easternElevenAM,
-      distanceM: 500,
-      nearestLabel: 'Haverhill, MA',
-    });
+  it('pickup ticket email falls back to Eastern (not UTC) when timezone is omitted', async () => {
+    await sendStagePickupEmail({ ...pickupTicket(), handSender: HAND_SENDER });
 
     const all = sentEmails.map(blob).join(' ');
     expect(all).toContain('11:00 AM');

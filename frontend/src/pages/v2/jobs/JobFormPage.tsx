@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { Navigate, useLocation } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -7,10 +7,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/axios';
 import { refreshAfterVisitWrite } from '@/lib/refreshAfterVisitWrite';
 import { useOrganization } from '@/lib/api/organization';
+import { useAssignableUsers } from '@/lib/api/users';
+import { useJobCreatorPrefill } from '@/lib/api/jobs';
+import { useAuthStore } from '@/stores/auth.store';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import type { AppAbility } from '@/lib/ability';
 import { extractApiError } from '@/lib/utils';
 import { phoneFieldValue } from '@/ui-kit/lib/phoneField';
+import { phoneParamDigits } from '@/lib/phonePrefill';
 import { useFormFlow } from '@/ui-kit/lib/formFlow';
 import { useLeaveGuard } from '@/hooks/useLeaveGuard';
 import { buildCreateJobPayload } from '@/lib/job-create-payload';
@@ -32,10 +36,15 @@ import { Input } from '@/ui-kit/components/ui/input';
 import { Label } from '@/ui-kit/components/ui/label';
 import { SelectField } from '@/ui-kit/components/form/selectField';
 import { Switch } from '@/ui-kit/components/ui/switch';
+import { toast } from '@/ui-kit/components/ui/sonner';
 import { Textarea } from '@/ui-kit/components/ui/textarea';
+import { Checkbox } from '@/ui-kit/components/ui/checkbox';
 
 import { BackLink } from '../_shared/backLink';
 import { ScheduleTimeFields } from '../_shared/scheduleTimeFields';
+import { PersonSlotField } from '../_shared/personSlotField';
+import { ScheduleClashNotice } from '../_shared/scheduleClashNotice';
+import type { ScheduleConflictItem } from '../_shared/scheduleConflict';
 import { v2Path } from '../uiV2';
 import { useRecordVisit } from '../pageBreadcrumbs';
 
@@ -118,12 +127,16 @@ export default function JobFormPage() {
 
   // Read ONCE on render, exactly as the legacy page does - not reactive to a
   // later URL change.
-  const customerIdParam = new URLSearchParams(location.search).get('customer_id');
+  const searchParams = new URLSearchParams(location.search);
+  const customerIdParam = searchParams.get('customer_id');
+  // Create-prefill from the Texts inbox and the dialer: /jobs/new?phone=+1XXXXXXXXXX seeds the phone field.
+  const phoneParam = searchParams.get('phone');
   return (
     <CreateJobForm
       queryClient={queryClient}
       ability={ability}
       preselectedCustomerId={customerIdParam}
+      prefillPhone={phoneParam}
     />
   );
 }
@@ -132,10 +145,12 @@ function CreateJobForm({
   queryClient,
   ability,
   preselectedCustomerId,
+  prefillPhone,
 }: {
   queryClient: ReturnType<typeof useQueryClient>;
   ability: AppAbility;
   preselectedCustomerId?: string | null;
+  prefillPhone?: string | null;
 }) {
   const { data: org } = useOrganization();
   // The schedule fields are zoneless wall-clock in the ORG's zone, not the
@@ -143,9 +158,28 @@ function CreateJobForm({
   // it a Manila-booked 9am job stores as 9pm New York. Same call, same place as
   // the legacy form.
   const timezone = useScheduleTimezone();
+  // Only a person with Assign people to jobs gets pickers (S03.16); anyone else sees the creator rule's result as
+  // fixed text and the server applies it, so neither roster is asked for.
+  const mayNamePeople = ability.can('assign', 'Job');
+  const sellerRoster = useAssignableUsers({ purpose: 'directory', eligibleFor: 'owner', enabled: mayNamePeople });
+  const dispatcherRoster = useAssignableUsers({ purpose: 'directory', eligibleFor: 'dispatcher', enabled: mayNamePeople });
+  const assignableSellers = sellerRoster.data ?? [];
+  const assignableDispatchers = dispatcherRoster.data ?? [];
+  // The creator rule's pre-fill (Sold By or Dispatcher, never both): the form shows it, the create route applies it.
+  const { data: prefill, isPending: prefillPending, isError: prefillFailed } = useJobCreatorPrefill();
+  const me = useAuthStore((s) => s.user);
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
   const [selectedCustomer, setSelectedCustomer] = useState<PickCustomer | null>(null);
   const [showSchedule, setShowSchedule] = useState(false);
+  // "I'll do this visit" puts the creator, and only the creator, on visit 1 (S03.17). Checked to start with for a
+  // person without Assign people to jobs, for whom this is the only scheduling they do; unchecked for a holder.
+  const [doItMyself, setDoItMyself] = useState(!mayNamePeople);
+  // A clash with the creator's other work: the server's verdict on the last try, and the form it refused, so
+  // "Schedule anyway" can send the same job again with `visit_force`.
+  const [clash, setClash] = useState<{ data: CreateFormData; when: string; conflicts: ScheduleConflictItem[] } | null>(null);
+  // "Schedule anyway" stays chosen if the duplicate-customer guard sends the same job again afterwards.
+  const forceVisit = useRef(false);
+  const scheduleKey = (d: CreateFormData) => [d.scheduled_date, d.scheduled_time, d.scheduled_end_date, d.scheduled_end_time].join('|');
 
   const [dupExisting, setDupExisting] = useState<ExistingCustomer | null>(null);
   const [pendingData, setPendingData] = useState<CreateFormData | null>(null);
@@ -160,13 +194,20 @@ function CreateJobForm({
     resolver: zodResolver(createJobFormSchema),
     shouldFocusError: false,
     defaultValues: {
-      first_name: '', last_name: '', company_name: '', phone: '', phone_ext: '', email: '',
+      first_name: '', last_name: '', company_name: '',
+      phone: prefillPhone ? phoneFieldValue(phoneParamDigits(prefillPhone)) : '',
+      phone_ext: '', email: '',
       service_location_id: '',
       service_address_line1: '', service_address_line2: '', service_city: '', service_state: '', service_zip: '',
       service_request: '', job_type: '', ad_source: '',
       scheduled_date: '', scheduled_time: '', scheduled_end_date: '', scheduled_end_time: '',
     },
   });
+
+  // What the two people fields hold: whatever the person picked, else the pre-fill. The fields stay unset until a
+  // picker is used, so the pre-fill is not their work (an untouched form never asks before leaving).
+  const soldById = form.watch('sold_by_id') ?? prefill?.sold_by_id ?? '';
+  const dispatcherId = form.watch('dispatcher_id') ?? prefill?.dispatcher_id ?? '';
 
   // Leaving a half-filled form asks first (mobile slice 66). A customer chosen before the page
   // opened (`?customer_id=`) is not work; typing, or choosing a different customer here, is.
@@ -224,7 +265,12 @@ function CreateJobForm({
 
   const mutation = useMutation({
     mutationFn: async ({ data, override }: { data: CreateFormData; override?: boolean }) => {
-      const body = buildCreateJobPayload(data, { selectedCustomerId, showSchedule, timezone });
+      // A holder saves what the pickers hold (kept, changed or cleared); anyone else sends no people and the
+      // server applies the creator rule, so what the form showed is what is saved.
+      const people = mayNamePeople ? { sold_by_id: soldById || null, dispatcher_id: dispatcherId || null } : undefined;
+      // Visit 1's crew is the creator alone, offered only to a person who can be on a crew; the server refuses anyone else.
+      const visitCrew = prefill?.can_be_on_crew && doItMyself && me?.id ? [me.id] : undefined;
+      const body = buildCreateJobPayload(data, { selectedCustomerId, showSchedule, timezone, people, visitCrew, forceVisit: forceVisit.current });
       // "Create anyway" (override) bypasses BOTH the new-customer duplicate guard
       // and the existing-customer cross-customer accretion guard.
       const url = override ? '/api/jobs?override=true' : '/api/jobs';
@@ -239,16 +285,19 @@ function CreateJobForm({
       // request (job.controller create).
       if (res.job?.id) refreshAfterVisitWrite(queryClient, { jobId: res.job.id });
       queryClient.invalidateQueries({ queryKey: ['customers'] });
-      // Route to the new job only if this user can read jobs at all; a
-      // create-only grantee would hit "Job not found", so send them to the list.
+      // Route to the new job only if this user can read jobs at all and can open this one; a
+      // create-only grantee would hit "Job not found", and a creator on Attached scope who handed the job to
+      // others would hit the not-authorised screen, so both go to the list. The latter is told the job is saved.
       // Class-level check (no instance) avoids fail-closed on row-scoped reads.
-      leave.finish(
-        res.job?.id && ability.can('read', 'Job')
-          ? v2Path(`/jobs/${res.job.id}`)
-          : v2Path('/jobs'),
-      );
+      const canOpen = Boolean(res.job?.id) && ability.can('read', 'Job') && res.job_openable !== false;
+      if (res.job?.id && ability.can('read', 'Job') && res.job_openable === false) {
+        toast.success(`Job ${res.job.job_number} created. You are not on it, so it will not show in your list.`);
+      }
+      leave.finish(canOpen ? v2Path(`/jobs/${res.job.id}`) : v2Path('/jobs'));
     },
     onError: (err, { data }) => {
+      const refused = (err as { response?: { status?: number; data?: { conflicts?: ScheduleConflictItem[] } } }).response;
+      if (refused?.status === 409 && Array.isArray(refused.data?.conflicts)) setClash({ data, when: scheduleKey(data), conflicts: refused.data.conflicts });
       const dup = getDuplicate(err);
       if (dup) {
         setDupExisting(dup);
@@ -311,6 +360,12 @@ function CreateJobForm({
     requestAnimationFrame(() => document.getElementById(field)?.focus());
   };
 
+  // A clash describes the time and the people that produced it; changing either retires it.
+  const resetClash = () => {
+    forceVisit.current = false;
+    setClash(null);
+  };
+
   const handleCreateAnyway = () => {
     if (!pendingData) return;
     mutation.mutate({ data: pendingData, override: true });
@@ -319,7 +374,8 @@ function CreateJobForm({
   const isOverriding = (mutation.isPending && Boolean(pendingData)) || openingExisting;
 
   const errors = form.formState.errors;
-  const inlineError = getDuplicate(mutation.error) ? null : mutation.error;
+  // ...and a clash with the creator's other work has its own block below.
+  const inlineError = getDuplicate(mutation.error) || clash ? null : mutation.error;
 
   const jobTypeOptions = org?.job_type_options ?? [];
   const baseSourceOptions = org?.source_options ?? [];
@@ -343,7 +399,7 @@ function CreateJobForm({
           second border a few pixels inside the first and the fields read as
           boxed-in. The form keeps the card's horizontal rhythm through px-1 and
           gets its separation from spacing instead. */}
-      <form noValidate {...flow.formProps} onSubmit={form.handleSubmit((d) => mutation.mutate({ data: d }), flow.focusFirstInvalid)}>
+      <form noValidate {...flow.formProps} onSubmit={form.handleSubmit((d) => { forceVisit.current = false; mutation.mutate({ data: d }); }, flow.focusFirstInvalid)}>
         <div className="px-1 pt-2">
           {/* items-start keeps the two columns independent: growth on the left
               never moves the right. */}
@@ -526,6 +582,36 @@ function CreateJobForm({
                 </Field>
               </div>
 
+              {/* Sold By and Dispatcher hold the creator rule's pre-fill: pickers with Assign people to jobs, fixed text otherwise. */}
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <PersonSlotField
+                  label="Sold By"
+                  empty="No Sold By"
+                  picker={mayNamePeople}
+                  value={soldById}
+                  ready={!prefillPending}
+                  onChange={(v) => form.setValue('sold_by_id', v, { shouldDirty: true })}
+                  roster={assignableSellers}
+                  me={me}
+                  loading={sellerRoster.isLoading}
+                  failed={sellerRoster.isError && !sellerRoster.data}
+                  onRetry={() => void sellerRoster.refetch()}
+                />
+                <PersonSlotField
+                  label="Dispatcher"
+                  empty="No dispatcher"
+                  picker={mayNamePeople}
+                  value={dispatcherId}
+                  ready={!prefillPending}
+                  onChange={(v) => form.setValue('dispatcher_id', v, { shouldDirty: true })}
+                  roster={assignableDispatchers}
+                  me={me}
+                  loading={dispatcherRoster.isLoading}
+                  failed={dispatcherRoster.isError && !dispatcherRoster.data}
+                  onRetry={() => void dispatcherRoster.refetch()}
+                />
+              </div>
+
               <div className="flex items-center justify-between border-t pt-3">
                 <SectionLabel>Schedule</SectionLabel>
                 <Switch
@@ -559,12 +645,36 @@ function CreateJobForm({
                       form.setValue('scheduled_time', next.startTime, { shouldDirty: true });
                       form.setValue('scheduled_end_date', next.endDate, { shouldDirty: true });
                       form.setValue('scheduled_end_time', next.endTime, { shouldDirty: true });
+                      resetClash();
                     }}
                   />
+                  {/* Visit 1 can carry the creator and nobody else: the crew is changed afterwards with the normal flow. */}
+                  {prefill?.can_be_on_crew && (
+                    <div className="flex items-center gap-2">
+                      <Checkbox
+                        id="v2-job-do-it-myself"
+                        checked={doItMyself}
+                        onCheckedChange={(v) => { setDoItMyself(v === true); resetClash(); }}
+                      />
+                      <Label htmlFor="v2-job-do-it-myself" className="cursor-pointer">I'll do this visit</Label>
+                    </div>
+                  )}
                 </>
               )}
             </div>
           </div>
+
+          {clash && clash.when === scheduleKey(form.getValues()) && (
+            <div className="mt-4">
+              <ScheduleClashNotice
+                conflicts={clash.conflicts}
+                timezone={timezone}
+                message="You are already booked over this slot."
+                pending={mutation.isPending}
+                onScheduleAnyway={() => { forceVisit.current = true; mutation.mutate({ data: clash.data }); }}
+              />
+            </div>
+          )}
 
           {inlineError && (
             <p className="text-destructive mt-4 text-sm">
@@ -572,9 +682,14 @@ function CreateJobForm({
             </p>
           )}
 
+          {/* Without the pre-fill the form cannot say who the job will hold, so it does not save blind. */}
+          {prefillFailed && (
+            <p className="text-destructive mt-4 text-sm">Couldn't load Sold By and Dispatcher. Reload the page to try again.</p>
+          )}
+
           <div className="mt-6 flex flex-wrap items-center justify-end gap-3 border-t pt-4">
             <Button type="button" variant="ghost" onClick={leave.leaveBack}>Cancel</Button>
-            <Button type="submit" disabled={mutation.isPending}>
+            <Button type="submit" disabled={mutation.isPending || prefillFailed || prefillPending}>
               {mutation.isPending ? 'Creating...' : 'Create Job'}
             </Button>
           </div>

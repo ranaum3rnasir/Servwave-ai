@@ -88,11 +88,16 @@ import { canSeePricing as canSeePricingAbility } from '@/lib/ability';
 import { toast } from '@/components/ui/use-toast';
 import { extractApiError } from '@/lib/utils';
 import { isInvoiceEditable } from '@/lib/invoiceEditable';
+import type { InvoiceAction } from '@/lib/invoices/invoiceMoney';
 
 /** The slice of an invoice the editor needs — InvoiceDetail is structurally assignable to this. */
 export interface InvoiceEditorInvoice {
   id: string;
   status: string;
+  /** The server's per-record answer: editing existing rows needs 'edit' on it (a switch, or the creator rule). */
+  actions?: InvoiceAction[];
+  /** The Done words when the invoice belongs to a Done job: its lines, scopes and prices are closed to everyone. Null otherwise. */
+  price_edit_closed_reason?: string | null;
   subtotal: string | number;
   tax_amount: string | number;
   tax_rate: string | number;
@@ -114,7 +119,7 @@ export function InvoiceLineItemsEditor({ invoice, estimateLines = [] }: InvoiceL
   const invoiceId = invoice.id;
 
   const isEditable = isInvoiceEditable(invoice.status);
-  const canUpdate = ability.can('update', 'Invoice');
+  const canUpdate = invoice.actions?.includes('edit') ?? false;
   const canManageLines = ability.can('manage_lines', 'Invoice');
   // Cost/margin visibility - shared with the backend's canSeePricing gate (SRVW-140), see
   // lib/ability.ts.
@@ -130,14 +135,16 @@ export function InvoiceLineItemsEditor({ invoice, estimateLines = [] }: InvoiceL
   // Editing is allowed until the invoice is settled (P2: DRAFT/SENT/PARTIAL editable; locked once
   // PAID/VOIDED/closed). Row edits also require the rows to be the invoice's OWN lines (not the
   // read-only estimate basis).
-  const canEditRows = isEditable && canUpdate && usingOwnLines;
+  // S06.19: an invoice of a Done job takes no line edit from anyone; the server says so with its words.
+  const priceClosedReason = invoice.price_edit_closed_reason ?? undefined;
+  const canEditRows = isEditable && canUpdate && usingOwnLines && !priceClosedReason;
   // v12 receipt consolidation: tip/invoice-discount/tax-rate editing now lives EXCLUSIVELY on the
   // page-level <InvoiceReceiptCard> (Card A) — always false here so <LineItemsTable>'s embedded
   // <TotalsFooter> never offers a second, competing set of money inputs. Mirrors the Job editor's
   // own already-hardcoded `canEditBilling={false}` (LineItemsEditor.tsx).
   const canEditBilling = false;
-  const canManageRows = isEditable && canManageLines && usingOwnLines;
-  const canAdd = isEditable && canManageLines;
+  const canManageRows = isEditable && canManageLines && usingOwnLines && !priceClosedReason;
+  const canAdd = isEditable && canManageLines && !priceClosedReason;
 
   const [addOpen, setAddOpen] = useState(false);
   const [editingLine, setEditingLine] = useState<InvoiceLineItem | null>(null);
@@ -268,6 +275,11 @@ export function InvoiceLineItemsEditor({ invoice, estimateLines = [] }: InvoiceL
             </Button>
           </div>
         )}
+        {!canAdd && isEditable && canManageLines && priceClosedReason && (
+          <Button type="button" variant="solid" tone="business" size="sm" className="ml-auto" disabled disabledReason={priceClosedReason}>
+            <Plus className="h-4 w-4" aria-hidden /> Add item
+          </Button>
+        )}
       </div>
 
       <LineItemsTable
@@ -344,6 +356,10 @@ export function InvoiceLineItemsEditor({ invoice, estimateLines = [] }: InvoiceL
 export interface InvoiceScopeOfWorkCardInvoice {
   id: string;
   status: string;
+  /** The server's per-record answer: editing an existing scope needs 'edit' on it (a switch, or the creator rule). */
+  actions?: InvoiceAction[];
+  /** The Done words when the invoice belongs to a Done job: its scopes are closed to everyone. Null otherwise. */
+  price_edit_closed_reason?: string | null;
   scopes?: Scope[];
 }
 
@@ -363,13 +379,15 @@ export function InvoiceScopeOfWorkCard({ invoice }: InvoiceScopeOfWorkCardProps)
 
   const isEditable = isInvoiceEditable(invoice.status);
   const canManageLines = ability.can('manage_lines', 'Invoice');
-  const canUpdate = ability.can('update', 'Invoice');
+  const canUpdate = invoice.actions?.includes('edit') ?? false;
   const canSeePricing = canSeePricingAbility(ability);
   // Backend split: POST/DELETE /scopes need only manage_lines; PATCH /scopes/:idx +
   // /scopes/reorder need only update — wired through as two separate props (not ANDed) so a
   // manage_lines-only caller (SALES) still gets working Add/Delete.
-  const canEdit = isEditable && canUpdate;
-  const canAddDelete = isEditable && canManageLines;
+  // S06.19: an invoice of a Done job takes no scope edit from anyone; the server says so with its words.
+  const priceClosedReason = invoice.price_edit_closed_reason ?? undefined;
+  const canEdit = isEditable && canUpdate && !priceClosedReason;
+  const canAddDelete = isEditable && canManageLines && !priceClosedReason;
 
   const scopes = invoice.scopes ?? [];
 
@@ -418,6 +436,7 @@ export function InvoiceScopeOfWorkCard({ invoice }: InvoiceScopeOfWorkCardProps)
       scopes={scopes}
       canEdit={canEdit}
       canAddDelete={canAddDelete}
+      lockedReason={isEditable && canManageLines ? priceClosedReason : undefined}
       canSeePricing={canSeePricing}
       busy={busy}
       onAdd={(payload) => addMutation.mutate(payload)}

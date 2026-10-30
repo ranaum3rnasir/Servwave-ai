@@ -4,6 +4,7 @@ import {
   Wrench,
   DollarSign,
   Package,
+  Mail,
   Phone,
   Clock,
   Shield,
@@ -61,10 +62,10 @@ function categoryColor(category: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Category → lucide icon
+// Category → lucide icon (a communication alert is told apart by its verb: one category holds calls, texts and email)
 // ---------------------------------------------------------------------------
 
-function CategoryIcon({ category }: { category: string }) {
+function CategoryIcon({ category, verb }: { category: string; verb: string }) {
   const color = categoryColor(category);
   const cls = 'h-4 w-4 text-on-fill';
   const cat = category.toUpperCase();
@@ -77,7 +78,7 @@ function CategoryIcon({ category }: { category: string }) {
   } else if (cat === 'INVENTORY') {
     Icon = Package;
   } else if (cat === 'COMMUNICATION') {
-    Icon = Phone;
+    Icon = verb === 'communication.email_inbound' ? Mail : Phone;
   } else if (cat === 'TEAM') {
     Icon = Clock;
   } else if (cat === 'SECURITY') {
@@ -167,12 +168,12 @@ function ActionButtons({ item, onActed }: ActionButtonsProps) {
   const type = (item.action_type ?? '').toUpperCase();
   const isBusy = pendingAction !== null || markActed.isPending;
 
-  if (type === 'APPROVE_OT' || type === 'APPROVE_STOCK') {
-    const approveKey = type === 'APPROVE_OT' ? 'APPROVE_OT' : 'APPROVE_STOCK';
-    const denyKey = type === 'APPROVE_OT' ? 'DENY_OT' : 'DENY_STOCK';
+  if (type === 'APPROVE_STOCK') {
+    const approveKey = 'APPROVE_STOCK';
+    const denyKey = 'DENY_STOCK';
 
     return (
-      <div className="mt-1.5 flex gap-2">
+      <div className="relative z-10 mt-1.5 flex gap-2">
         {/* Approve/Deny pair: no solid/success tone is minted on Button, and
             converting only Deny would misalign the pair's geometry - same
             reasoning as the Approve/Reject pairs deferred elsewhere. Deferred. */}
@@ -221,7 +222,7 @@ function ActionButtons({ item, onActed }: ActionButtonsProps) {
         : 'View';
 
   return (
-    <div className="mt-1.5">
+    <div className="relative z-10 mt-1.5">
       {/* No solid/success tone is minted on Button - same gap as the Approve/Deny
           pair above. Deferred. */}
       <button
@@ -272,23 +273,25 @@ export function NotificationItem({ item }: NotificationItemProps) {
     navigate(deepLink);
   }
 
+  // One named button covers the row (the stretched-button pattern the table cards use): a screen reader reaches the
+  // row as a single control, and a tap anywhere on it opens the notification (the click reaches the row's handler, which keyboard Enter/Space on the button also produces). The inline action buttons sit above it
+  // (z-10) so they keep their own taps. They are SIBLINGS of that button, never inside a control: a control inside a
+  // control is unusable with a screen reader and fails the mobile gate's nested-interactive check.
   return (
-    <div
-      role="button"
-      tabIndex={0}
-      className="flex cursor-pointer gap-3 px-4 py-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
-      onClick={handleRowClick}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') handleRowClick();
-      }}
-    >
+    <div className="relative flex gap-3 px-4 py-3" onClick={handleRowClick}>
+      <button
+        type="button"
+        data-stretched-link=""
+        aria-label={item.title}
+        className="absolute inset-0 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/50"
+      />
       {/* Category icon */}
-      <CategoryIcon category={item.category} />
+      <CategoryIcon category={item.category} verb={item.verb} />
 
       {/* Content */}
       <div className="min-w-0 flex-1">
         <div className="flex items-start justify-between gap-2">
-          {/* Title — bold when unread */}
+          {/* Title - bold when unread */}
           <p
             className={
               isUnread && !isActed
@@ -310,10 +313,10 @@ export function NotificationItem({ item }: NotificationItemProps) {
 
         {/* Optional body subline */}
         {item.body != null && item.body.length > 0 && (
-          <p className="mt-0.5 text-xs text-text-secondary line-clamp-2">{item.body}</p>
+          <p className="mt-0.5 whitespace-pre-line text-xs text-text-secondary line-clamp-4">{item.body}</p>
         )}
 
-        {/* Acted "✓ Done" chip — shown when acted optimistically or from server */}
+        {/* Acted "Done" chip - shown when acted optimistically or from server */}
         {isActed && item.needs_action && (
           <div className="mt-1.5 flex items-center gap-1 text-xs text-text-soft">
             <CheckCircle2 className="h-3.5 w-3.5 text-sage-500" aria-hidden="true" />
@@ -321,7 +324,7 @@ export function NotificationItem({ item }: NotificationItemProps) {
           </div>
         )}
 
-        {/* Action buttons — only when actionable (not yet acted) */}
+        {/* Action buttons - only when actionable (not yet acted) */}
         {item.needs_action && !isActed && item.action_type && (
           <ActionButtons
             item={item}

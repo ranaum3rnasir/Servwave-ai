@@ -103,8 +103,6 @@ const CASES: Case[] = [
   // ---- Lead ----
   { route: 'lead-detail', title: 'Mark Lead as Lost', intent: 'form', path: (f) => `/leads/${f.leadId}`, action: /Mark (as )?Lost/,
     open: (p, t) => invoke(p, t, exact('Mark Lost')) },
-  { route: 'lead-detail', title: 'Cancel Lead', intent: 'form', path: (f) => `/leads/${f.leadId}`,
-    open: (p, t) => invoke(p, t, exact('Cancel Lead')) },
 
   // ---- Customer ----
   { route: 'customer-detail', title: 'Delete Customer', intent: 'form', path: (f) => `/customers/${f.customerId}`,
@@ -145,8 +143,6 @@ const CASES: Case[] = [
     open: async (p, t) => { await tapFirst(t, [main(p).getByRole('button', { name: /To Be Invoiced/ })], 'To Be Invoiced tile'); return { ok: true }; } },
   { route: 'settings-users', title: 'Edit details', intent: 'form', path: () => '/settings/users',
     open: async (p, t) => { await tapFirst(t, [main(p).getByRole('button', { name: exact('Edit') })], 'Edit button on a user'); return { ok: true }; } },
-  { route: 'settings-users', title: /^Permissions - /, intent: 'form', path: () => '/settings/users',
-    open: async (p, t) => { await tapFirst(t, [main(p).getByRole('button', { name: exact('Permissions') })], 'Permissions button on a user'); return { ok: true }; } },
   { route: 'inventory-vendors', title: 'Vendor categories', intent: 'form', path: () => '/inventory/vendors',
     open: async (p, t) => { await tapFirst(t, [main(p).getByRole('button', { name: exact('Add category') })], 'Add category button'); return { ok: true }; } },
 ];

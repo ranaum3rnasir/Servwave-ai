@@ -6,8 +6,10 @@
  *
  * Trigger is a real `ui/dropdown-menu` (Radix), not a row of icon buttons — prior art
  * `components/workflows/StepNode.tsx`'s per-row kebab. Items: Download (always, anyone who can
- * see the list) and Rename (only when `renamable !== false && ability.can('update',
- * 'Attachment')` — ability-gated only, never a role name, OQ4). Delete is rendered here only
+ * see the list) and Rename (only when `renamable !== false` and the row's own
+ * server answer says `can_rename`; a row with no answer falls back to `ability.can('update',
+ * 'Attachment')` — never a role name, OQ4. Roles & Permissions S04.24: a rename or delete that only the
+ * completed-job lock withholds is drawn disabled, with `lockedReason` printed under it). Delete is rendered here only
  * when the call site passes `onDelete` (mobile slice 15): the tile's own Delete control is
  * hidden until hover on a desktop, so the menu is how a keyboard user, and anyone who never sees
  * that control, reaches Delete. Each call site passes `onDelete` exactly where its own Delete
@@ -33,6 +35,7 @@ import { Download, MoreVertical, Pencil, Trash2 } from 'lucide-react';
 import api from '@/lib/axios';
 import { extractApiError } from '@/lib/utils';
 import { useAttachmentChangePermission } from '@/lib/attachments/useAttachmentChangePermission';
+import { fileControl, type FileChangeAnswer } from '@/lib/attachments/fileChange';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Modal } from '@/components/ui/modal';
@@ -45,7 +48,7 @@ import {
 import { downloadAttachment, type DownloadAttachmentInput } from '@/lib/attachments/downloadAttachment';
 import { canAutoFocus } from '@/ui-kit/lib/autoFocus';
 
-export type AttachmentRowActionsAttachment = DownloadAttachmentInput;
+export type AttachmentRowActionsAttachment = DownloadAttachmentInput & FileChangeAnswer;
 
 export interface AttachmentRowActionsProps {
   attachment: AttachmentRowActionsAttachment;
@@ -64,6 +67,11 @@ export interface AttachmentRowActionsProps {
   onDelete?: () => void;
   /** Disables the menu's Delete while a delete is in flight. */
   deleteDisabled?: boolean;
+  /**
+   * The lock's reason. When the row's answer says the lock alone withholds Rename or Delete, the menu draws them
+   * disabled and prints this under them. Left out, a locked control is not drawn at all.
+   */
+  lockedReason?: string;
   align?: 'end' | 'start';
   className?: string;
 }
@@ -77,11 +85,16 @@ export function AttachmentRowActions({
   onRenamed,
   onDelete,
   deleteDisabled,
+  lockedReason,
   align = 'end',
   className,
 }: AttachmentRowActionsProps) {
   const mayChange = useAttachmentChangePermission(entityType);
-  const canRename = renamable !== false && mayChange('update', uploaderId);
+  // The server's per-file answer decides when the row carries one; the browser's own grant is the fallback.
+  const renameControl = renamable === false ? 'hidden' : fileControl(attachment, 'rename', mayChange('update', uploaderId));
+  const canRename = renameControl === 'enabled';
+  const renameLocked = renameControl === 'locked' && !!lockedReason;
+  const deleteLocked = !onDelete && !!lockedReason && attachment.locked_actions?.includes('delete') === true;
 
   const [renameOpen, setRenameOpen] = useState(false);
   const [value, setValue] = useState(attachment.display_name);
@@ -166,17 +179,20 @@ export function AttachmentRowActions({
             <Download className="mr-2 h-4 w-4" aria-hidden />
             Download
           </DropdownMenuItem>
-          {canRename && (
-            <DropdownMenuItem onClick={openRename}>
+          {(canRename || renameLocked) && (
+            <DropdownMenuItem disabled={renameLocked} onClick={openRename}>
               <Pencil className="mr-2 h-4 w-4" aria-hidden />
               Rename
             </DropdownMenuItem>
           )}
-          {onDelete && (
-            <DropdownMenuItem tone="danger" disabled={deleteDisabled} onClick={onDelete}>
+          {(onDelete || deleteLocked) && (
+            <DropdownMenuItem tone="danger" disabled={deleteDisabled || deleteLocked} onClick={onDelete}>
               <Trash2 className="mr-2 h-4 w-4" aria-hidden />
               Delete
             </DropdownMenuItem>
+          )}
+          {(renameLocked || deleteLocked) && (
+            <p className="max-w-56 px-2 py-1.5 text-xs text-text-secondary">{lockedReason}</p>
           )}
         </DropdownMenuContent>
       </DropdownMenu>

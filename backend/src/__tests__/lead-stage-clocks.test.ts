@@ -641,6 +641,6 @@ describe('transitionLeadStatus — the SQL guard honours both halves', () => {
     await transitionLeadStatus(not.client as never, {
       leadId: LEAD_FIXTURE.id, orgId: ALPHA_ORG_ID, to: 'WON', from: 'ESTIMATED', description: 'test',
     });
-    expect(not.updateMany.mock.calls[0][0].where.status).toEqual({ notIn: ['WON', 'LOST', 'CANCELLED'] });
+    expect(not.updateMany.mock.calls[0][0].where.status).toEqual({ notIn: ['WON', 'LOST'] });
   });
 });

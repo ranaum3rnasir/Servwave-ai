@@ -10,6 +10,7 @@ import { test, expect, type Page } from '@playwright/test';
 import { isNavigationRace, measure } from './measure';
 import { decide, type Allowlist } from './allowlist';
 import { findVendorTerms } from './vendor-terms';
+import { gateCustomerEmail } from './gate-customer';
 import { isFromVendorFrame, originOf, recordConsole } from './console-lines';
 
 const isTouch = (name: string) => name === 'selftest-touch';
@@ -22,8 +23,8 @@ async function show(page: Page, body: string, extraHead = '') {
   );
 }
 
-async function run(page: Page, o: { overlay?: boolean; console?: string[] } = {}) {
-  return measure(page, { touch: isTouch(test.info().project.name), onlyInOverlays: !!o.overlay, consoleLines: o.console ?? [] });
+async function run(page: Page, o: { overlay?: boolean; console?: string[]; gateTestInbox?: boolean } = {}) {
+  return measure(page, { touch: isTouch(test.info().project.name), onlyInOverlays: !!o.overlay, consoleLines: o.console ?? [], gateTestInbox: o.gateTestInbox });
 }
 
 const CLEAN = `<main><h1>Clean page</h1><p>Short text that fits.</p><button>Save</button></main>`;
@@ -190,6 +191,20 @@ test.describe('check 4: overlays', () => {
       ${Array.from({ length: 8 }, (_, i) => `<button role="menuitem" style="display:block">Item ${i + 1}</button>`).join('')}</div>`);
     expect((await run(page, { overlay: true })).overlays.offenders.join('\n')).toMatch(/menu\[Create\] last item "Item 8" not reachable/);
   });
+  // The filter popover on a desktop: a list of facets beside a value pane, each its own scroller. Once the facet list
+  // grew past its box, the check scrolled only the first scroller it found (the facets) and reported the last option
+  // of the pane, which scrolls too, as unreachable. A person scrolls whichever list they are in.
+  const twoScrollers = (paneOverflow: string) => `${CLEAN}<div role="dialog" aria-label="Filters" style="position:fixed;top:0;left:0;width:300px;height:120px;background:#fff;display:flex;overflow:hidden">
+    <div role="tablist" style="overflow-y:auto;width:100px">${Array.from({ length: 8 }, (_, i) => `<button role="tab" style="display:block;flex:none">Facet ${i + 1}</button>`).join('')}</div>
+    <div style="${paneOverflow};width:200px">${Array.from({ length: 8 }, (_, i) => `<button role="option" style="display:block">Value ${i + 1}</button>`).join('')}</div></div>`;
+  test('green: an overlay with two scrollers side by side reaches the last item of each', async ({ page }) => {
+    await show(page, twoScrollers('overflow-y:auto'));
+    expect((await run(page, { overlay: true })).overlays.offenders).toEqual([]);
+  });
+  test('red: a second scroller side by side whose last item cannot be reached', async ({ page }) => {
+    await show(page, twoScrollers('overflow:hidden'));
+    expect((await run(page, { overlay: true })).overlays.offenders.join('\n')).toMatch(/dialog\[Filters\] last item "Value 8" not reachable/);
+  });
   test('green: a fitting overlay that scrolls to its last item', async ({ page }) => {
     await show(page, `${CLEAN}<div role="menu" aria-label="Create" style="position:fixed;top:0;left:0;width:200px;height:120px;overflow-y:auto;background:#fff">
       ${Array.from({ length: 8 }, (_, i) => `<button role="menuitem" style="display:block">Item ${i + 1}</button>`).join('')}</div>`);
@@ -318,6 +333,36 @@ test.describe('check 6: vendor terms', () => {
   test('green: ordinary words that are also vendor names stay legal', async ({ page }) => {
     await show(page, `<main><p>Resend invite. We render your estimate as a PDF.</p><button>Resend deposit preview</button></main>`);
     expect((await run(page)).vendorTerms.offenders).toEqual([]);
+  });
+  // The accepted exception `gateTestInbox` (Ran, 13 Oct 2026): through the same measure() the real routes use.
+  const INBOX = gateCustomerEmail('gate-selftest1');
+  test('gateTestInbox: red without the exception, green with it, for the gate\'s own address in text, a placeholder and an accessible name', async ({ page }) => {
+    await show(page, `<main><p>Email ${INBOX}</p><input placeholder="${INBOX}"><button aria-label="Email ${INBOX}">Copy</button></main>`);
+    expect((await run(page)).vendorTerms.offenders.join('\n')).toMatch(/"Resend" in text/);
+    const m = await run(page, { gateTestInbox: true });
+    expect(m.vendorTerms.offenders).toEqual([]);
+    expect(m.vendorTerms.gateTestInbox).toEqual([INBOX, INBOX, INBOX]);
+  });
+  test('gateTestInbox: every other occurrence of the provider still fails with the exception on', async ({ page }) => {
+    await show(page, `<main><p>${INBOX} then delivered@resend.dev</p><p>support@resend.dev</p><p>https://resend.dev/docs</p><p>x${INBOX}</p><p>resend.com</p></main>`);
+    const m = await run(page, { gateTestInbox: true });
+    const r = m.vendorTerms.offenders.join('\n');
+    expect(r).toMatch(/delivered@resend\.dev/);
+    expect(r).toMatch(/support@resend\.dev/);
+    expect(r).toMatch(/https:\/\/resend\.dev\/docs/);
+    expect(r).toMatch(/resend\.com/);
+    expect(r).toMatch(new RegExp(`x${INBOX.replace(/[+.]/g, '\\$&')}`));
+    expect(m.vendorTerms.gateTestInbox).toEqual([INBOX]);
+  });
+  test('gateTestInbox: the title and the URL are not exempted', async ({ page }) => {
+    await show(page, CLEAN, `<script>document.title = ${JSON.stringify(`Receipts for ${INBOX}`)}</script>`);
+    expect((await run(page, { gateTestInbox: true })).vendorTerms.offenders.join('\n')).toMatch(/"Resend" in title/);
+  });
+  test('gateTestInbox: the browser console is not exempted, even with the exception on', async ({ page }) => {
+    await show(page, CLEAN);
+    const m = await run(page, { gateTestInbox: true, console: [`request failed for ${INBOX}`] });
+    expect(m.vendorConsole.offenders.join('\n')).toMatch(/"Resend" in browser console/);
+    expect(m.vendorTerms.offenders).toEqual([]);
   });
   test('the URL is checked too (path and query, not the deployment host)', () => {
     expect(findVendorTerms([{ source: 'url', text: '/settings/supabase-keys' }]).map((h) => h.term)).toEqual(['Supabase']);

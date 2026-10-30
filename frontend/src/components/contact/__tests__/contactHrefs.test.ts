@@ -33,6 +33,41 @@ describe('textPath: Text opens the ServWave conversation', () => {
   });
 });
 
+describe('textPath for a customer phone: it depends on whether the person may view customers', () => {
+  const CONTEXT = { customerId: 'c-1', customerName: 'Dana Reyes', jobId: 'j-1', leadId: 'l-1' };
+
+  it('goes by customer for a person who may view customers, as it always did', () => {
+    expect(textPath('5551234567', CONTEXT, { viewCustomers: true })).toBe('/communication/text?customerId=c-1');
+  });
+
+  it('goes by the tapped number for a person who may not, carrying the name and the record it was tapped from', () => {
+    const path = textPath('5551234567', CONTEXT, { viewCustomers: false });
+    const url = new URL(path, 'https://app.test');
+    expect(url.pathname).toBe('/communication/text');
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      to: '5551234567',
+      owner: 'customer',
+      name: 'Dana Reyes',
+      jobId: 'j-1',
+      leadId: 'l-1',
+    });
+    // The customer id is not what the composer finds the customer by.
+    expect(path).not.toContain('customerId');
+  });
+
+  it('keeps the plus of an international number', () => {
+    const url = new URL(textPath('+15551234567', null, { viewCustomers: false }), 'https://app.test');
+    expect(url.searchParams.get('to')).toBe('+15551234567');
+    expect(url.searchParams.get('owner')).toBe('customer');
+  });
+
+  it('goes by the number for a person who may view customers when the record names no customer', () => {
+    const url = new URL(textPath('5551234567', { jobId: 'j-1' }, { viewCustomers: true }), 'https://app.test');
+    expect(url.searchParams.get('to')).toBe('5551234567');
+    expect(url.searchParams.get('jobId')).toBe('j-1');
+  });
+});
+
 describe('mapsHref: an address opens the native maps app', () => {
   const ADDRESS = '12 Main St, Springfield, IL 62701';
 

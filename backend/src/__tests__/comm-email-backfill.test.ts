@@ -65,6 +65,8 @@ function mockEstimateJobCreation(estimateOverrides: Record<string, unknown> = {}
       // SERV10X-38 Task 6b — estimate branch copies line_items onto the new job.
       jobLineItem: { createMany: vi.fn().mockResolvedValue({ count: 0 }) },
       timelineEvent: { create: vi.fn().mockResolvedValue({}) },
+      // The lead's own entries are carried onto the job in the same transaction (S05.15); none here.
+      recordContactEntry: { findMany: vi.fn().mockResolvedValue([]) },
     }),
   );
 }
@@ -103,6 +105,8 @@ describe('POST /api/jobs — estimate-email backfill (story 5)', () => {
           create: vi.fn().mockResolvedValue(STANDALONE_JOB_FIXTURE),
         },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
+        // The lead's own entries are carried onto the job in the same transaction (S05.15); none here.
+        recordContactEntry: { findMany: vi.fn().mockResolvedValue([]) },
       }),
     );
 

@@ -1,11 +1,11 @@
 /**
- * The lead status menu offers Lost and Cancelled only to a user who may take the dedicated door.
+ * The lead status menu offers Lost only to a user who may take the dedicated door, and never offers Cancelled.
  *
- * Setting LOST or CANCELLED from the menu does what "Mark lost" and "Cancel lead" do (the booked
- * walkthrough trips are cancelled with it), so the server now asks for `mark_lost Lead` and
- * `cancel Lead` on that request, exactly as it does on those doors. The menu follows the same
- * abilities, so a user who may edit a lead but not close it is not offered a choice that would be
- * refused. Gated on `ability.can(...)`, never a role name.
+ * Setting LOST from the menu does what "Mark lost" does (the booked walkthrough trips are cancelled
+ * with it), so the server asks for `mark_lost Lead` on that request, exactly as it does on that door.
+ * The menu follows the same ability, so a user who may edit a lead but not close it is not offered a
+ * choice that would be refused. Gated on `ability.can(...)`, never a role name. A lead closes one way,
+ * as Lost: no ability, however broad, brings Cancelled back into the menu (S05.17).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
@@ -60,8 +60,8 @@ async function openStatusMenu(rules: Rules) {
   return items.map((i) => i.textContent?.trim());
 }
 
-describe('lead status menu: Lost and Cancelled follow the dedicated doors', () => {
-  it('offers every status to a user who may mark lost and cancel', async () => {
+describe('lead status menu: Lost follows its dedicated door, Cancelled is gone', () => {
+  it('offers every status but Cancelled to a user who may mark lost, even one holding the retired cancel ability', async () => {
     const options = await openStatusMenu([
       ...EDIT_LEAD,
       { action: 'mark_lost', subject: 'Lead' },
@@ -76,7 +76,6 @@ describe('lead status menu: Lost and Cancelled follow the dedicated doors', () =
       'Estimate Sent',
       'Won',
       'Lost',
-      'Cancelled',
     ]);
   });
 
@@ -84,13 +83,6 @@ describe('lead status menu: Lost and Cancelled follow the dedicated doors', () =
     const options = await openStatusMenu([...EDIT_LEAD, { action: 'cancel', subject: 'Lead' }]);
 
     expect(options).not.toContain('Lost');
-    expect(options).toContain('Cancelled');
-  });
-
-  it('drops Cancelled for a user who may edit the lead but not cancel it', async () => {
-    const options = await openStatusMenu([...EDIT_LEAD, { action: 'mark_lost', subject: 'Lead' }]);
-
-    expect(options).toContain('Lost');
     expect(options).not.toContain('Cancelled');
   });
 
@@ -102,16 +94,14 @@ describe('lead status menu: Lost and Cancelled follow the dedicated doors', () =
 });
 
 /**
- * Closing a lead always asks why (walkthrough lead-statuses PRD, D11). Picking Lost or Cancelled
- * from the status menu opens the same dialog the Mark Lost and Cancel Lead buttons open, and the
- * lead is closed through that dialog's door, with the typed reason. The menu itself never sends
- * a PATCH for these two.
+ * Closing a lead always asks why (walkthrough lead-statuses PRD, D11). Picking Lost from the status
+ * menu opens the same dialog the Mark Lost button opens, and the lead is closed through that
+ * dialog's door, with the typed reason. The menu itself never sends a PATCH for it.
  */
-describe('lead status menu: Lost and Cancelled ask for a reason', () => {
+describe('lead status menu: Lost asks for a reason', () => {
   const CLOSE_RULES: Rules = [
     ...EDIT_LEAD,
     { action: 'mark_lost', subject: 'Lead' },
-    { action: 'cancel', subject: 'Lead' },
   ];
 
   async function pickFromMenu(label: string) {
@@ -138,22 +128,7 @@ describe('lead status menu: Lost and Cancelled ask for a reason', () => {
     expect(mockApi.patch).not.toHaveBeenCalled();
   });
 
-  it('Cancelled opens the Cancel Lead dialog, and confirming cancels the lead with the typed reason', async () => {
-    const user = await pickFromMenu('Cancelled');
-
-    expect(await screen.findByRole('heading', { name: 'Cancel Lead' })).toBeInTheDocument();
-    await user.type(screen.getByLabelText(/reason/i), 'Duplicate of another lead');
-    await user.click(screen.getByRole('button', { name: 'Cancel Lead' }));
-
-    await waitFor(() =>
-      expect(mockApi.post).toHaveBeenCalledWith(`/api/leads/${LEAD_FIXTURE.id}/cancel`, {
-        cancelled_reason: 'Duplicate of another lead',
-      }),
-    );
-    expect(mockApi.patch).not.toHaveBeenCalled();
-  });
-
-  it('sends no PATCH just from picking Lost or Cancelled', async () => {
+  it('sends no PATCH just from picking Lost', async () => {
     await pickFromMenu('Lost');
     await screen.findByRole('heading', { name: 'Mark Lead as Lost' });
 

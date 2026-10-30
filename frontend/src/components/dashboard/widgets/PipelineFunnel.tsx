@@ -21,7 +21,7 @@ export default function PipelineFunnel({
             <button
               key={s.key}
               type="button"
-              onClick={() => navigate(s.link)}
+              onClick={() => s.link && navigate(s.link)}
               className="flex items-center gap-2.5 w-full text-left hover:bg-background-light rounded-md px-1 py-0.5 transition-colors"
             >
               <span className="w-16 shrink-0 text-[11px] font-semibold text-text-secondary">{s.label}</span>

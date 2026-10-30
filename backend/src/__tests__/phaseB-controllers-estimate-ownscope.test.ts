@@ -9,26 +9,25 @@ import {
   CUSTOMER_FIXTURE,
 } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 
 // Phase B — technician redesign. Estimate own-scope without role literals (F-004).
 //
-// The dangerous literal was `canAccessEstimate`'s `if (role !== 'SALES') return true` — it
-// allow-all'd any non-SALES role, so a per-user OWN-scoped `read Estimate` grant (a technician)
-// could read ANY estimate. After the fix, estimate access is grant-driven: a row-scoped reader
-// (SALES by default, or a granted tech) reaches ONLY estimates on a lead they own; ADMIN/DISPATCHER
-// (unconditional read) reach any. No `role === 'X'` literal may DEFEAT a per-user grant.
+// Estimate access is driven by the person's Estimates scope, never by a role name: a person on
+// Attached (a technician) reaches ONLY estimates on a lead or job they are attached to; one on
+// "Through own leads" (Sales) the estimates of leads they are an assignee of; one on All (Dispatcher,
+// Admin) any. Whether the requested estimate is inside that reach is the scoped probe's answer
+// (`estimate.findFirst`), the same reach the list uses, so list and detail cannot disagree.
 //
-// Estimate CREATE keeps the parent-lead ownership check (estimate.controller.ts:745), generalized
-// so a granted tech can create an estimate only on a lead they own.
+// Estimate CREATE keeps the parent-lead ownership check (estimate.controller.ts), so a person can create
+// an estimate only on a lead they own.
 
 // Zod validates POST bodies' ids as UUIDs (estimate create lead_id) — use UUID-shaped fixtures.
 const LEAD_ID = '00000000-0000-0000-0000-0000000beef1';
 const LEAD_OTHER_ID = '00000000-0000-0000-0000-0000000beef2';
 
 const mockPrisma = prisma as unknown as {
-  estimate: { findUnique: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn> };
-  lead: { findUnique: ReturnType<typeof vi.fn> };
+  estimate: { findUnique: ReturnType<typeof vi.fn>; findFirst: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn> };
+  lead: { findUnique: ReturnType<typeof vi.fn>; findFirst: ReturnType<typeof vi.fn> };
   priceBookItem: { findMany: ReturnType<typeof vi.fn> };
   stateTaxRate: { findFirst: ReturnType<typeof vi.fn> };
   userPermissionOverride: { findMany: ReturnType<typeof vi.fn> };
@@ -60,24 +59,23 @@ function grantTech(action: string) {
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache();
   (prisma.appSetting.findUnique as ReturnType<typeof vi.fn>).mockResolvedValue(null);
 });
 
 describe('GET /api/estimates/:id — Phase B own-scope (no role-literal leak)', () => {
-  it('granted tech CAN read an estimate on a lead they OWN', async () => {
+  it('tech CAN read an estimate on a lead they OWN', async () => {
     mockAuthAs('technician');
-    grantTech('read');
     mockPrisma.estimate.findUnique.mockResolvedValue(ESTIMATE_OWNED_BY_TECH);
+    mockPrisma.estimate.findFirst.mockResolvedValue({ id: 'est-1' }); // inside their Attached reach
 
     const res = await request(app).get('/api/estimates/est-1').set(authHeader('technician'));
     expect(res.status).toBe(200);
   });
 
-  it('granted tech CANNOT read an estimate on a lead they do NOT own (the F-004 fix)', async () => {
+  it('tech CANNOT read an estimate on a lead they do NOT own (the F-004 fix)', async () => {
     mockAuthAs('technician');
-    grantTech('read');
     mockPrisma.estimate.findUnique.mockResolvedValue(ESTIMATE_OWNED_BY_OTHER);
+    mockPrisma.estimate.findFirst.mockResolvedValue(null); // outside their Attached reach
 
     const res = await request(app).get('/api/estimates/est-2').set(authHeader('technician'));
     expect(res.status).toBe(403);
@@ -89,10 +87,12 @@ describe('GET /api/estimates/:id — Phase B own-scope (no role-literal leak)', 
       ...ESTIMATE_OWNED_BY_TECH,
       lead: { id: LEAD_ID, lead_assignees: [{ user_id: TEST_USERS.sales.id }] },
     });
+    mockPrisma.estimate.findFirst.mockResolvedValue({ id: 'est-1' });
     const ownRes = await request(app).get('/api/estimates/est-1').set(authHeader('sales'));
     expect(ownRes.status).toBe(200);
 
     mockPrisma.estimate.findUnique.mockResolvedValue(ESTIMATE_OWNED_BY_OTHER);
+    mockPrisma.estimate.findFirst.mockResolvedValue(null);
     const otherRes = await request(app).get('/api/estimates/est-2').set(authHeader('sales'));
     expect(otherRes.status).toBe(403);
   });
@@ -105,10 +105,9 @@ describe('GET /api/estimates/:id — Phase B own-scope (no role-literal leak)', 
   });
 });
 
-// R6/D19 (2026-07-22) — a lead-less estimate has no assignee to own-scope through (lead is
-// null), so canAccessEstimate falls back to created_by = self. No estimate produces a null lead
-// yet (createEstimateSchema still requires lead_id), but the RBAC branch must be correct now so
-// a future create path can land on top of it without reopening this gate.
+// A lead-less estimate has no lead or job to be attached through, and having created it attaches nobody,
+// so no Data Scope reaches it for a person who is not on All. The creator rule (S01.4) is what keeps a
+// person's own customer-only estimate open to them, for every role.
 const ESTIMATE_NO_LEAD_CREATED_BY_TECH = {
   id: 'est-3',
   estimate_number: 'E00012',
@@ -118,43 +117,29 @@ const ESTIMATE_NO_LEAD_CREATED_BY_TECH = {
   created_by: TEST_USERS.technician.id,
 };
 
-describe('GET /api/estimates/:id — Phase B own-scope, lead-less estimate (D19)', () => {
-  it('granted tech CAN read a lead-less estimate they created', async () => {
+describe('GET /api/estimates/:id — a lead-less estimate follows the scope, not who created it', () => {
+  it('tech CANNOT read a lead-less estimate they created (creating it attaches nobody)', async () => {
     mockAuthAs('technician');
-    grantTech('read');
     mockPrisma.estimate.findUnique.mockResolvedValue(ESTIMATE_NO_LEAD_CREATED_BY_TECH);
-
-    const res = await request(app).get('/api/estimates/est-3').set(authHeader('technician'));
-    expect(res.status).toBe(200);
-  });
-
-  it('granted tech CANNOT read a lead-less estimate someone else created (own-scope holds with no lead to fall back on)', async () => {
-    mockAuthAs('technician');
-    grantTech('read');
-    mockPrisma.estimate.findUnique.mockResolvedValue({
-      ...ESTIMATE_NO_LEAD_CREATED_BY_TECH,
-      created_by: TEST_USERS.dispatcher.id,
-    });
+    mockPrisma.estimate.findFirst.mockResolvedValue(null);
 
     const res = await request(app).get('/api/estimates/est-3').set(authHeader('technician'));
     expect(res.status).toBe(403);
   });
 
-  it('SALES own-scope also falls back to created_by on a lead-less estimate (regression-shaped, same rule as tech)', async () => {
+  it('SALES CANNOT read a lead-less estimate they created either: no created-by path in their scope', async () => {
     mockAuthAs('sales');
     mockPrisma.estimate.findUnique.mockResolvedValue({
       ...ESTIMATE_NO_LEAD_CREATED_BY_TECH,
       created_by: TEST_USERS.sales.id,
     });
-    const ownRes = await request(app).get('/api/estimates/est-3').set(authHeader('sales'));
-    expect(ownRes.status).toBe(200);
+    mockPrisma.estimate.findFirst.mockResolvedValue(null);
 
-    mockPrisma.estimate.findUnique.mockResolvedValue(ESTIMATE_NO_LEAD_CREATED_BY_TECH); // created_by: technician
-    const otherRes = await request(app).get('/api/estimates/est-3').set(authHeader('sales'));
-    expect(otherRes.status).toBe(403);
+    const res = await request(app).get('/api/estimates/est-3').set(authHeader('sales'));
+    expect(res.status).toBe(403);
   });
 
-  it('DISPATCHER (unconditional read) reads any lead-less estimate too', async () => {
+  it('DISPATCHER (Estimates scope All) reads any lead-less estimate', async () => {
     mockAuthAs('dispatcher');
     mockPrisma.estimate.findUnique.mockResolvedValue(ESTIMATE_NO_LEAD_CREATED_BY_TECH);
     const res = await request(app).get('/api/estimates/est-3').set(authHeader('dispatcher'));
@@ -186,6 +171,8 @@ describe('POST /api/estimates — Phase B create parent-ownership (granted tech)
       id: LEAD_ID, status: 'NEW',
       lead_assignees: [{ user_id: TEST_USERS.technician.id }],
     });
+    // The lead-scope probe (Create estimates reaches a lead the person can open) finds the lead.
+    mockPrisma.lead.findFirst.mockResolvedValue({ id: LEAD_ID });
 
     const res = await request(app).post('/api/estimates').set(authHeader('technician')).send(validBody);
     expect(res.status).not.toBe(403);
@@ -199,6 +186,8 @@ describe('POST /api/estimates — Phase B create parent-ownership (granted tech)
       id: LEAD_ID, status: 'NEW',
       lead_assignees: [{ user_id: TEST_USERS.dispatcher.id }],
     });
+    // The lead-scope probe finds nothing: the lead is not one this person can open.
+    mockPrisma.lead.findFirst.mockResolvedValue(null);
 
     const res = await request(app).post('/api/estimates').set(authHeader('technician')).send(validBody);
     expect(res.status).toBe(403);
@@ -218,6 +207,8 @@ describe('POST /api/estimates — Phase B create parent-ownership (granted tech)
       id: LEAD_ID, status: 'NEW',
       lead_assignees: [{ user_id: TEST_USERS.technician.id }],
     });
+    // The lead-scope probe (Create estimates reaches a lead the person can open) finds the lead.
+    mockPrisma.lead.findFirst.mockResolvedValue({ id: LEAD_ID });
 
     const res = await request(app).post('/api/estimates').set(authHeader('technician')).send(validBody);
     expect(res.status).toBe(201);
@@ -229,6 +220,8 @@ describe('POST /api/estimates — Phase B create parent-ownership (granted tech)
       id: LEAD_ID, status: 'NEW',
       lead_assignees: [{ user_id: TEST_USERS.dispatcher.id }],
     });
+    // The lead-scope probe finds nothing: the lead is not one this person can open.
+    mockPrisma.lead.findFirst.mockResolvedValue(null);
 
     const res = await request(app).post('/api/estimates').set(authHeader('technician')).send(validBody);
     expect(res.status).toBe(403);
@@ -240,6 +233,8 @@ describe('POST /api/estimates — Phase B create parent-ownership (granted tech)
       id: LEAD_ID, status: 'NEW',
       lead_assignees: [{ user_id: TEST_USERS.dispatcher.id }],
     });
+    // The lead-scope probe finds nothing: the lead is not one this person can open.
+    mockPrisma.lead.findFirst.mockResolvedValue(null);
 
     const res = await request(app).post('/api/estimates').set(authHeader('sales')).send(validBody);
     expect(res.status).toBe(403);

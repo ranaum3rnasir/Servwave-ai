@@ -2,6 +2,7 @@ import { AlertTriangle, ArrowRightLeft, Pencil, PackagePlus, Trash2, X } from 'l
 
 import { ItemIdentifiers } from '@/components/inventory/ItemIdentifiers';
 import { useAppAbility } from '@/contexts/AbilityContext';
+import { canSeePricing } from '@/lib/ability';
 import { totalOnHand, type Item, type Location, type Movement } from '@/lib/api/inventory';
 import { formatCurrency } from '@/lib/utils';
 import { cn } from '@/ui-kit/lib/utils';
@@ -71,6 +72,10 @@ export function ItemDetailPanel({
   const canUpdateInventory = ability.can('update', 'Inventory');
   const canUpdatePriceBook = ability.can('update', 'PriceBook');
   const canDeletePriceBook = ability.can('delete', 'PriceBook');
+  // S07.12 - the movement history is the Activity tab's data, one click away, so it follows the same switch.
+  const canSeeActivity = ability.can('see_inventory_activity', 'Inventory');
+  // S07.15 - the unit cost is company cost: it follows See financial data, and is left out rather than shown as a dash.
+  const canSeeCosts = canSeePricing(ability);
 
   return (
     <Card className="gap-0">
@@ -95,10 +100,12 @@ export function ItemDetailPanel({
           <Stat label="Avail" value={totalOnHand(item)} emphasis />
         </div>
         <div className="grid grid-cols-2 gap-2 text-xs">
-          <Stat
-            label="Unit Cost"
-            value={item.unitCost != null ? formatCurrency(item.unitCost) : '-'}
-          />
+          {canSeeCosts && (
+            <Stat
+              label="Unit Cost"
+              value={item.unitCost != null ? formatCurrency(item.unitCost) : '-'}
+            />
+          )}
           <Stat label="Sell Price" value={formatCurrency(item.sellPrice)} />
         </div>
       </CardContent>
@@ -147,39 +154,43 @@ export function ItemDetailPanel({
         </>
       )}
 
-      <Separator />
+      {canSeeActivity && (
+        <>
+          <Separator />
 
-      <CardContent className="px-4 py-3">
-        <SectionLabel>Recent Stock Movements</SectionLabel>
-        <ul className="mt-2 flex flex-col gap-2">
-          {movements.length === 0 ? (
-            <li className="text-muted-foreground text-xs">No movements recorded yet.</li>
-          ) : (
-            movements.map((m) => (
-              <li key={m.id} className="flex items-start gap-2 text-xs">
-                <span
-                  className={cn(
-                    'mt-1 inline-block size-2 shrink-0 rounded-full',
-                    MOVEMENT_DOT[m.type] ?? 'bg-status-amber',
-                  )}
-                />
-                <div className="min-w-0 flex-1">
-                  <p className="font-medium capitalize">
-                    {m.type} <span className="font-mono">{m.qty > 0 ? `+${m.qty}` : m.qty}</span> {item.uom}
-                  </p>
-                  <p className="text-muted-foreground text-[11px]">{m.reference}</p>
-                  <p className="text-muted-foreground text-[10px]">
-                    {m.actor} ·{' '}
-                    {new Date(m.occurredAt).toLocaleString(undefined, {
-                      month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
-                    })}
-                  </p>
-                </div>
-              </li>
-            ))
-          )}
-        </ul>
-      </CardContent>
+          <CardContent className="px-4 py-3">
+            <SectionLabel>Recent Stock Movements</SectionLabel>
+            <ul className="mt-2 flex flex-col gap-2">
+              {movements.length === 0 ? (
+                <li className="text-muted-foreground text-xs">No movements recorded yet.</li>
+              ) : (
+                movements.map((m) => (
+                  <li key={m.id} className="flex items-start gap-2 text-xs">
+                    <span
+                      className={cn(
+                        'mt-1 inline-block size-2 shrink-0 rounded-full',
+                        MOVEMENT_DOT[m.type] ?? 'bg-status-amber',
+                      )}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <p className="font-medium capitalize">
+                        {m.type} <span className="font-mono">{m.qty > 0 ? `+${m.qty}` : m.qty}</span> {item.uom}
+                      </p>
+                      <p className="text-muted-foreground text-[11px]">{m.reference}</p>
+                      <p className="text-muted-foreground text-[10px]">
+                        {m.actor} ·{' '}
+                        {new Date(m.occurredAt).toLocaleString(undefined, {
+                          month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit',
+                        })}
+                      </p>
+                    </div>
+                  </li>
+                ))
+              )}
+            </ul>
+          </CardContent>
+        </>
+      )}
 
       <CardFooter className="mt-auto flex-col gap-2 border-t px-4 py-3">
         {canUpdateInventory && (
@@ -194,8 +205,8 @@ export function ItemDetailPanel({
         )}
         <div className="flex w-full gap-2">
           {/* #2043 - this is the read-only requester's only entry point into
-              the item detail (Ran's Decision: cost/sell price/GM stay
-              visible). Always renders; the label distinguishes the mode. */}
+              the item detail (cost and margin follow See financial data
+              inside it, S07.17). Always renders; the label distinguishes the mode. */}
           <Button variant="outline" size="sm" className="flex-1" onClick={onEdit}>
             <Pencil />{canUpdatePriceBook ? 'Edit' : 'View'}
           </Button>

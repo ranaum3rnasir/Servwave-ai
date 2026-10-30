@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useRef, useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import api from '@/lib/axios';
@@ -18,15 +18,32 @@ import { Switch } from '@/components/ui/switch';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { Loader2, Send, AlertTriangle, X, Lock } from 'lucide-react';
+import { Check, Loader2, Send, AlertTriangle, X, Lock } from 'lucide-react';
 import { extractApiError } from '@/lib/utils';
 import { useOrganization, type PaymentMethod } from '@/lib/api/organization';
-import { PAYMENT_METHOD_LABELS, PAYMENT_METHOD_ORDER } from '@/lib/payment-methods';
-import { StripePaymentsBanner } from '@/components/payments/StripePaymentsBanner';
+import { PAYMENT_METHOD_LABELS } from '@/lib/payment-methods';
+import { useFeature } from '@/lib/entitlements';
+import {
+  DEFAULT_DEPOSIT_POLICY,
+  DEPOSIT_POLICY_LABELS,
+  describeMethods,
+  NOT_IN_PLAN_NOTE,
+  ONLINE_METHOD_LABELS,
+  onlineMethodActive,
+  orderMethods,
+  orgDefaultMethods,
+  orgManualMethods,
+  sameMethods,
+  type DepositPolicy,
+  type OnlineMethod,
+} from '@/lib/payment-options';
+import { PaymentsSetupBanner } from '@/components/payments/PaymentsSetupBanner';
 import { DepositControls } from '@/components/estimates/DepositControls';
 import { useDepositDraft } from '@/components/estimates/useDepositDraft';
 import type { DepositType } from '@/lib/deposit';
 import { canAutoFocus } from '@/ui-kit/lib/autoFocus';
+import { SendingAsLine } from '@/components/communication/inbox/ComposeWindow';
+import { useHandSender } from '@/components/communication/useHandSender';
 
 interface SendEstimateDialogProps {
   open: boolean;
@@ -61,8 +78,23 @@ interface SendEstimateDialogProps {
   // the frozen `existingDepositAmount` above is about to go stale - see useDepositDraft's
   // `depositInvoiceUnpaid`/`willReprice` for what this drives. Defaults `false`.
   depositInvoiceUnpaid?: boolean;
+  // Payments go-live slice 21 - this estimate's stored deposit-policy override; null/omitted = the
+  // org's policy. The dialog can change it (story 30); it is saved before the send.
+  depositPolicy?: DepositPolicy | null;
+  // The estimate is locked (deposit paid, or lock_on_send on a sent estimate): the backend refuses
+  // every PATCH, so the policy is shown read-only and never saved. Defaults `false`.
+  locked?: boolean;
+  // Slice 27 - the estimate's status, so the locked-policy note is worded for what can be done: a
+  // won estimate cannot be recalled to Draft. Omitted = the sent wording.
+  estimateStatus?: string | null;
+  // Slice 27 - the methods the estimate was last sent with (its send_config). A resend starts from
+  // these, so the methods and the stored deposit policy beside them agree. Ignored on a first send.
+  sentMethods?: PaymentMethod[] | null;
   onSuccess: () => void;
 }
+
+const DEPOSIT_POLICY_ORDER: DepositPolicy[] = ['REQUIRED_BEFORE_APPROVAL', 'PAY_LATER'];
+const ONLINE_METHODS: OnlineMethod[] = ['CARD', 'ACH'];
 
 const DEFAULT_MESSAGE =
   'Thank you for your recent service inquiry with us. Click the link below to view your estimate.';
@@ -83,6 +115,10 @@ export function SendEstimateDialog({
   existingDepositPercentage,
   canEditDeposit = true,
   depositInvoiceUnpaid = false,
+  depositPolicy = null,
+  locked = false,
+  estimateStatus = null,
+  sentMethods = null,
   onSuccess,
 }: SendEstimateDialogProps) {
   const queryClient = useQueryClient();
@@ -120,16 +156,40 @@ export function SendEstimateDialog({
     depositInvoiceUnpaid,
   });
 
-  // §4.5 — pre-fill from org defaults. Dispatcher can only narrow this set.
-  const [enabledMethods, setEnabledMethods] = useState<Set<PaymentMethod>>(
-    new Set(orgAcceptedMethods),
-  );
+  // §4.5 — pre-fill from org defaults. Slice 21: the org's DEFAULT offer (lib/payment-options),
+  // so a method the owner leaves out by default (Card or Bank) starts unticked but can be added.
+  // Slice 16: while the plan lacks online payments, Card and Bank start unticked and say why (the
+  // customer's page cannot offer them).
+  const onlinePaymentsInPlan = useFeature('online_payments');
+  const orgDefault = orgDefaultMethods(org, onlinePaymentsInPlan);
+  const orgDefaultKey = orgDefault.join('|');
+  // A resend starts from the methods the estimate went out with; a first send from the org's defaults.
+  const seedMethods = alreadySent && sentMethods && sentMethods.length > 0 ? sentMethods : orgDefault;
+  const [enabledMethods, setEnabledMethods] = useState<Set<PaymentMethod>>(new Set(seedMethods));
 
-  // When org data loads after the dialog mounts, sync the pre-fill.
-  useEffect(() => {
-    setEnabledMethods(new Set(orgAcceptedMethods));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [org?.accepted_payment_methods?.join('|')]);
+  // When org data loads after the dialog mounts, sync the pre-fill. Adjusted during render, like
+  // the `wasOpen` reset below (`react-hooks/set-state-in-effect`).
+  const [seededDefaultKey, setSeededDefaultKey] = useState(orgDefaultKey);
+  if (seededDefaultKey !== orgDefaultKey) {
+    setSeededDefaultKey(orgDefaultKey);
+    setEnabledMethods(new Set(seedMethods));
+  }
+  const manualMethods = orgManualMethods(org);
+  const methodsDiffer = !sameMethods(Array.from(enabledMethods), orgDefault);
+
+  // Slice 21 - the deposit policy for THIS estimate. `undefined` = untouched (shows what the
+  // estimate stores, else the org's); `null` = "Use org default". Kept as a choice rather than a
+  // value so an org that loads after the dialog opens still seeds it correctly.
+  const orgPolicy: DepositPolicy = org?.deposit_policy ?? DEFAULT_DEPOSIT_POLICY;
+  const [policyChoice, setPolicyChoice] = useState<DepositPolicy | null | undefined>(undefined);
+  const effectivePolicy: DepositPolicy =
+    policyChoice === undefined ? (depositPolicy ?? orgPolicy) : (policyChoice ?? orgPolicy);
+  const policyDiffers = effectivePolicy !== orgPolicy;
+  // What the estimate should store after this send: null whenever it matches the org.
+  const policyToStore: DepositPolicy | null = effectivePolicy === orgPolicy ? null : effectivePolicy;
+  const policyEditable = canEditDeposit && !locked;
+  const policyChanged =
+    policyEditable && policyChoice !== undefined && policyToStore !== (depositPolicy ?? null);
   const [ccEmails, setCcEmails] = useState<string[]>([]);
   const [ccInput, setCcInput] = useState<string>('');
   const [ccError, setCcError] = useState<string | null>(null);
@@ -176,7 +236,8 @@ export function SendEstimateDialog({
       setCcError(null);
       setMessageBody(DEFAULT_MESSAGE);
       setDepositRequired(true);
-      setEnabledMethods(new Set(orgAcceptedMethods));
+      setEnabledMethods(new Set(seedMethods));
+      setPolicyChoice(undefined);
     }
   }
 
@@ -234,6 +295,8 @@ export function SendEstimateDialog({
   // #2044 — missing payment methods is a warning, never a block: `enabledMethods.size` no longer
   // gates the button, it only drives the warning copy below.
   const canSend = recipientValid && depositValid;
+  // PRD 10 (S10.12): the estimate goes out from the sender's OWN address; a person with no address of their own cannot send it.
+  const handSender = useHandSender();
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -245,10 +308,14 @@ export function SendEstimateDialog({
       if (depositEditable && depositRequired && depositChanged) {
         await api.patch(`/api/estimates/${estimateId}`, depositPatchBody);
       }
+      // Slice 21 - the deposit-policy override, saved the same way and for the same reason.
+      if (depositRequired && policyChanged) {
+        await api.patch(`/api/estimates/${estimateId}`, { deposit_policy: policyToStore });
+      }
 
       const { data } = await api.post(`/api/estimates/${estimateId}/send`, {
         deposit_required: depositRequired,
-        payment_methods: Array.from(enabledMethods),
+        payment_methods: orderMethods(enabledMethods),
         message_body: messageBody,
         ...(!emailRedacted && ccEmails.length > 0 ? { cc_emails: ccEmails } : {}),
         ...(recipientOverride ? { recipient_override: recipientOverride } : {}),
@@ -284,7 +351,7 @@ export function SendEstimateDialog({
           <DialogTitle>Send Estimate</DialogTitle>
         </DialogHeader>
 
-        <StripePaymentsBanner onSetup={() => navigate('/settings/payments')} />
+        <PaymentsSetupBanner onSetup={() => navigate('/settings/payments')} />
 
         {/* Resend warning */}
         {alreadySent && (
@@ -296,6 +363,15 @@ export function SendEstimateDialog({
               Sending again will deliver a new email to the customer.
             </span>
           </div>
+        )}
+
+        {handSender.known && (
+          <SendingAsLine
+            address={handSender.sender.fromAddress}
+            name={handSender.sender.fromName}
+            addressNeeded={handSender.sender.addressNeeded}
+            className="border-b-0 px-0 py-0"
+          />
         )}
 
         <Tabs defaultValue="email">
@@ -459,14 +535,71 @@ export function SendEstimateDialog({
                     onAmountChange={handleDepositAmountChange}
                   />
 
+                  {/* Slice 21 - when this customer pays the deposit (story 30). */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <p id="send-deposit-policy" className="text-xs font-medium uppercase tracking-wide">
+                        When the deposit is paid
+                      </p>
+                      {policyDiffers && policyEditable && (
+                        <Button
+                          type="button"
+                          variant="link"
+                          size="sm"
+                          className="h-auto p-0 text-xs"
+                          onClick={() => setPolicyChoice(null)}
+                        >
+                          Use org default
+                        </Button>
+                      )}
+                    </div>
+                    <div
+                      role="radiogroup"
+                      aria-labelledby="send-deposit-policy"
+                      className="flex flex-col items-start gap-2"
+                    >
+                      {DEPOSIT_POLICY_ORDER.map((value) => (
+                        <Button
+                          key={value}
+                          type="button"
+                          role="radio"
+                          size="sm"
+                          variant={effectivePolicy === value ? 'solid' : 'outline'}
+                          tone="neutral"
+                          aria-checked={effectivePolicy === value}
+                          disabled={!policyEditable}
+                          onClick={() => setPolicyChoice(value)}
+                        >
+                          {effectivePolicy === value && (
+                            <Check data-testid="policy-selected-check" aria-hidden="true" />
+                          )}
+                          {DEPOSIT_POLICY_LABELS[value]}
+                        </Button>
+                      ))}
+                    </div>
+                    {policyDiffers && (
+                      <p className="text-xs text-muted-foreground">
+                        Org default: {DEPOSIT_POLICY_LABELS[orgPolicy]}
+                      </p>
+                    )}
+                    {locked && (
+                      <p className="text-xs text-muted-foreground">
+                        {estimateStatus === 'WON'
+                          ? 'Locked: this estimate is approved, so the deposit policy can no longer change.'
+                          : 'Locked with the estimate. Recall it to Draft to change it.'}
+                      </p>
+                    )}
+                  </div>
+
                   <div className="space-y-2">
                     <Label className="text-xs uppercase tracking-wide">
                       Payment methods
                     </Label>
 
-                    {PAYMENT_METHOD_ORDER
-                      .filter((key) => orgAcceptedMethods.includes(key))
-                      .map((key) => (
+                    {[...ONLINE_METHODS, ...manualMethods].map((key) => {
+                      const online = key === 'CARD' || key === 'ACH';
+                      const unavailable = online && !onlineMethodActive(org, key, onlinePaymentsInPlan);
+                      return (
                         <div key={key} className="space-y-0.5">
                           <div className="flex items-center gap-2">
                             <Checkbox
@@ -480,11 +613,27 @@ export function SendEstimateDialog({
                               htmlFor={`pm-${key}`}
                               className="text-sm font-medium cursor-pointer select-none"
                             >
-                              {PAYMENT_METHOD_LABELS[key]}
+                              {online ? ONLINE_METHOD_LABELS[key] : PAYMENT_METHOD_LABELS[key]}
                             </label>
                           </div>
+                          {unavailable && (
+                            <p className="pl-6 text-xs text-muted-foreground">
+                              {!onlinePaymentsInPlan
+                                ? NOT_IN_PLAN_NOTE
+                                : key === 'CARD'
+                                  ? 'Unavailable until card payments are active'
+                                  : 'Unavailable until bank payments are active'}
+                            </p>
+                          )}
                         </div>
-                      ))}
+                      );
+                    })}
+
+                    {methodsDiffer && orgAcceptedMethods.length > 0 && (
+                      <p className="text-xs text-muted-foreground">
+                        Org default: {describeMethods(orgDefault)}
+                      </p>
+                    )}
 
                     {orgAcceptedMethods.length === 0 && (
                       <p className="text-xs text-danger">
@@ -520,7 +669,8 @@ export function SendEstimateDialog({
           </Button>
           <Button
             onClick={() => mutation.mutate()}
-            disabled={!canSend || mutation.isPending}
+            disabled={!canSend || mutation.isPending || handSender.blockedReason !== undefined}
+            disabledReason={handSender.blockedReason}
           >
             {mutation.isPending ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />

@@ -54,6 +54,22 @@ export interface MintReplyTokenArgs {
   /** The address we are mailing. Normalized before storage. */
   expected_from: string;
   created_by_user_id?: string | null;
+  /**
+   * Which mailbox's conversation an ENTITY-anchored lookup may reuse (PRD 10, S10.12: a record conversation belongs to the
+   * mailbox its send went out from, so reuse applies per sending mailbox). `{ mailbox_id }` is a hand send's own mailbox;
+   * 'main' is an automated send's, the company's main mailbox, which also holds a token no conversation has been opened for
+   * yet. Left out, the lookup is not narrowed by mailbox. A thread-anchored lookup ignores it: the thread already sits in
+   * exactly one mailbox.
+   */
+  mailbox_scope?: { mailbox_id: string } | 'main';
+}
+
+/** The filter a mailbox scope puts on a token's conversation. */
+function mailboxScopeFilter(scope: MintReplyTokenArgs['mailbox_scope']) {
+  if (!scope) return {};
+  return scope === 'main'
+    ? { OR: [{ thread_id: null }, { thread: { mailbox: { kind: 'main' } } }] }
+    : { thread: { mailbox_id: scope.mailbox_id } };
 }
 
 /**
@@ -91,6 +107,11 @@ export function replyAddressFor(token: string): string {
  * the keyspace.
  */
 export function parseReplyAddress(raw: string): string | null {
+  return parseReplyAddressOn(raw, env.EMAIL_REPLY_DOMAIN);
+}
+
+/** `parseReplyAddress` for a reply domain given by the caller: the inbound router's pure core is handed its domains. */
+export function parseReplyAddressOn(raw: string, replyDomain: string): string | null {
   if (!raw) return null;
 
   // `Name <addr>` -> `addr`; a bare address is left as-is.
@@ -105,7 +126,7 @@ export function parseReplyAddress(raw: string): string | null {
 
   // Exact domain equality, NOT endsWith: `evilreply.servwave.com` ends with
   // `reply.servwave.com` and is a domain an attacker can register.
-  if (domain !== env.EMAIL_REPLY_DOMAIN.toLowerCase()) return null;
+  if (domain !== replyDomain.toLowerCase()) return null;
   if (!localPart) return null;
 
   return localPart;
@@ -156,13 +177,15 @@ export async function mintReplyToken(db: Db, args: MintReplyTokenArgs): Promise<
  * nothing.
  *
  * `persist: false` means an existing row was reused and the caller must NOT
- * write again. `persist: true` means the token is only a candidate so far and
- * the caller owes a persistReplyToken() once the send has actually succeeded.
+ * write again; `thread_id` is then the conversation that row already belongs to (null when it
+ * was minted before one existed), so a caller never needs a second read for it. `persist: true`
+ * means the token is only a candidate so far and the caller owes a persistReplyToken() once the
+ * send has actually succeeded.
  */
 export async function prepareReplyToken(
   db: Db,
   args: MintReplyTokenArgs,
-): Promise<{ token: string; persist: boolean }> {
+): Promise<{ token: string; persist: boolean; thread_id: string | null }> {
   const expectedFrom = normalizeAddress(args.expected_from);
 
   // Match on whichever anchor the caller actually has. thread_id is the
@@ -178,10 +201,10 @@ export async function prepareReplyToken(
   const anchor = args.thread_id
     ? { thread_id: args.thread_id }
     : args.entity_type && args.entity_id
-      ? { entity_type: args.entity_type, entity_id: args.entity_id }
+      ? { entity_type: args.entity_type, entity_id: args.entity_id, ...mailboxScopeFilter(args.mailbox_scope) }
       : null;
 
-  if (!anchor) return { token: generateReplyToken(), persist: true };
+  if (!anchor) return { token: generateReplyToken(), persist: true, thread_id: null };
 
   const existing = await db.replyToken.findFirst({
     where: {
@@ -194,9 +217,9 @@ export async function prepareReplyToken(
   // A live token is one that is neither revoked (filtered above) nor past its
   // expiry. Nothing sets expires_at today, but honour it here so a later policy
   // change mints a fresh token rather than handing back a dead one.
-  if (existing && !isExpired(existing)) return { token: existing.token, persist: false };
+  if (existing && !isExpired(existing)) return { token: existing.token, persist: false, thread_id: existing.thread_id ?? null };
 
-  return { token: generateReplyToken(), persist: true };
+  return { token: generateReplyToken(), persist: true, thread_id: null };
 }
 
 /**
@@ -230,6 +253,11 @@ export async function persistReplyToken(
   });
 }
 
+/** A token that is neither revoked nor past its expiry: the one rule for "this token still resolves". */
+export function isLiveReplyToken(row: ReplyTokenRow): boolean {
+  return !row.revoked_at && !isExpired(row);
+}
+
 function isExpired(row: ReplyTokenRow): boolean {
   return row.expires_at !== null && row.expires_at.getTime() <= Date.now();
 }
@@ -244,8 +272,5 @@ function isExpired(row: ReplyTokenRow): boolean {
  */
 export async function resolveReplyToken(db: Db, token: string): Promise<ReplyTokenRow | null> {
   const row = await db.replyToken.findUnique({ where: { token } });
-  if (!row) return null;
-  if (row.revoked_at) return null;
-  if (isExpired(row)) return null;
-  return row;
+  return row && isLiveReplyToken(row) ? row : null;
 }

@@ -1,7 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   isBareOrgDay, addOrgDays, orgDayStart, orgDayRange, orgDayOf, orgDayDiff, daysBetweenOrgDays,
-  orgTodayStart,
+  orgTodayStart, orgWallClockToInstant, orgWallClockOf,
 } from '../lib/orgDayRange';
 
 // America/New_York is the org zone the bug was found in (UTC-4 in August, so a UTC-anchored
@@ -274,5 +274,45 @@ describe('orgTodayStart', () => {
 
   it('defaults `at` to now', () => {
     expect(orgTodayStart(NY).toISOString()).toBe(orgTodayStart(NY, new Date()).toISOString());
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE WALL-CLOCK ROUND TRIP (slice 8).
+//
+// `orgWallClockToInstant` is what a form's captured wall clock goes IN through; `orgWallClockOf`
+// is what it comes back OUT through when that form is reopened for editing. If the two disagree,
+// reopening an entry and saving it unchanged silently MOVES it.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('orgWallClockOf', () => {
+  const realTZ = process.env.TZ;
+  // The process's own zone, deliberately neither of the org zones below: a reading that leaked
+  // the server's clock would land somewhere visible.
+  beforeEach(() => {
+    process.env.TZ = 'America/Los_Angeles';
+  });
+  afterEach(() => {
+    process.env.TZ = realTZ;
+  });
+
+  it.each([
+    ['America/New_York', '2026-08-26T16:00'],
+    ['Pacific/Auckland', '2026-08-27T09:00'],
+    ['Asia/Manila', '2026-08-27T04:00'],
+    // A day that straddles: the org calls it the 1st, UTC still calls it the 31st.
+    ['Pacific/Auckland', '2026-09-01T00:30'],
+  ])('round-trips a wall clock through %s unchanged', (tz, picked) => {
+    const instant = orgWallClockToInstant(picked, tz)!;
+    expect(instant).not.toBeNull();
+    expect(orgWallClockOf(instant, tz)).toBe(picked);
+  });
+
+  it('reads the same instant differently for two organisations, which is the point', () => {
+    const instant = orgWallClockToInstant('2026-08-26T16:00', 'America/New_York')!;
+    expect(orgWallClockOf(instant, 'America/New_York')).toBe('2026-08-26T16:00');
+    expect(orgWallClockOf(instant, 'Pacific/Auckland')).toBe('2026-08-27T08:00');
+    // …and neither is the server's own reading of it.
+    expect(orgWallClockOf(instant, 'America/New_York')).not.toBe(instant.toISOString().slice(0, 16));
   });
 });

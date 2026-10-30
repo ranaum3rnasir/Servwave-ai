@@ -291,7 +291,7 @@ describe('cancelling the same JOB visit twice at once', () => {
 });
 
 describe('a lead leaving the pipeline while its visit is being completed', () => {
-  it('auto-cancel loses the race SILENTLY — the lead still reaches CANCELLED', async () => {
+  it('auto-cancel loses the race SILENTLY — the lead still reaches LOST', async () => {
     // The asymmetry that matters. Auto-cancel is a side effect of the LEAD's own transition, not
     // the thing the caller asked for, so a lost race must not fail the request: refusing to cancel
     // the lead because somebody completed its walkthrough a moment earlier would be strictly
@@ -300,30 +300,30 @@ describe('a lead leaving the pipeline while its visit is being completed', () =>
     const completedAt = new Date('2026-09-05T15:20:00Z');
     storedVisit = freshStoredVisit({ status: 'COMPLETED', completed_at: completedAt });
     mockPrisma.lead.findUnique.mockResolvedValue({ ...LEAD_FIXTURE, status: 'CONTACTED' });
-    mockPrisma.lead.update.mockResolvedValue({ ...LEAD_FIXTURE, status: 'CANCELLED' });
+    mockPrisma.lead.update.mockResolvedValue({ ...LEAD_FIXTURE, status: 'LOST' });
 
     const res = await request(app)
-      .post(`/api/leads/${LEAD_FIXTURE.id}/cancel`)
+      .post(`/api/leads/${LEAD_FIXTURE.id}/mark-lost`)
       .set(authHeader('admin'))
-      .send({ cancelled_reason: 'No longer needed' });
+      .send({ lost_reason: 'No longer needed' });
 
     expect(res.status).toBe(200);
-    expect(res.body.lead.status).toBe('CANCELLED');
+    expect(res.body.lead.status).toBe('LOST');
     expect(storedVisit.status).toBe('COMPLETED');
     expect(storedVisit.completed_at).toBe(completedAt);
     expect(storedVisit.cancelled_at).toBeNull();
   });
 
   it('auto-cancel still calls off a visit that is genuinely still live', async () => {
-    mockPrisma.lead.update.mockResolvedValue({ ...LEAD_FIXTURE, status: 'CANCELLED' });
+    mockPrisma.lead.update.mockResolvedValue({ ...LEAD_FIXTURE, status: 'LOST' });
 
     const res = await request(app)
-      .post(`/api/leads/${LEAD_FIXTURE.id}/cancel`)
+      .post(`/api/leads/${LEAD_FIXTURE.id}/mark-lost`)
       .set(authHeader('admin'))
-      .send({ cancelled_reason: 'No longer needed' });
+      .send({ lost_reason: 'No longer needed' });
 
     expect(res.status).toBe(200);
     expect(storedVisit.status).toBe('CANCELLED');
-    expect(storedVisit.cancelled_reason).toBe('Lead cancelled');
+    expect(storedVisit.cancelled_reason).toBe('Lead marked as lost');
   });
 });

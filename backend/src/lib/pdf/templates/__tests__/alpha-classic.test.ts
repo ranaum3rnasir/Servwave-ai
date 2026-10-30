@@ -6,14 +6,14 @@ import { calculateTotals } from '../../../../controllers/estimate.controller';
 
 const FIXTURE_ORG = {
   id: '00000000-0000-0000-0000-000000000001',
-  name: 'Alpha Doors & Security INC.',
+  name: 'Example Doors & Security INC.',
   legal_name: null,
   address_line1: '1001 Willow Avenue',
   address_line2: null,
   city: 'Hoboken', state: 'NJ', postal_code: '07030', country: 'US',
-  email: 'info@alphasecurityus.com',
+  email: 'info@example-company.test',
   phone: null,
-  website: 'https://alphadoorsnewjersey.com/',
+  website: 'https://example-company.test/',
   logo_url: null,
   brand_color: '#E11D2E',
   estimate_template: 'alpha-classic',
@@ -32,7 +32,7 @@ describe('buildAlphaClassicPdf', () => {
 
   it('renders the org name as fallback when logo_url is null', () => {
     const doc = buildAlphaClassicPdf(PREVIEW_ESTIMATE_FIXTURE as any, FIXTURE_ORG);
-    expect(JSON.stringify(doc)).toContain('Alpha Doors & Security INC.');
+    expect(JSON.stringify(doc)).toContain('Example Doors & Security INC.');
   });
 
   it('renders "Same as billing" when lead has no service address', () => {
@@ -243,7 +243,7 @@ describe('buildAlphaClassicPdf — priced scope-of-work blocks (§2.5b)', () => 
 
 // #2028 slice 5 — `scope_notes` is declared in EstimateForPdf and (since slice 1) selected on
 // every path, but Alpha Classic never drew it. crm-default has rendered it since it shipped, and
-// Alpha Doors is on Alpha Classic, so this was a live omission on the documents actually being
+// The pilot org is on Alpha Classic, so this was a live omission on the documents actually being
 // sent: the salesperson types the scope of work and the customer's PDF does not carry it.
 describe('buildAlphaClassicPdf — scope notes', () => {
   it('renders the scope notes the salesperson typed', () => {

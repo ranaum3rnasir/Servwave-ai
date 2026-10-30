@@ -100,6 +100,8 @@ function mockTransaction(jobFixture: unknown, trackedItems: { id: string }[] = [
       orgTaxRate: { findFirst: vi.fn().mockResolvedValue(null) },
       stateTaxRate: { findFirst: txStateTaxRateFindFirst },
       timelineEvent: { create: vi.fn().mockResolvedValue({}) },
+      // The lead's own entries are carried onto the job in the same transaction (S05.15); none here.
+      recordContactEntry: { findMany: vi.fn().mockResolvedValue([]) },
     }),
   );
 }

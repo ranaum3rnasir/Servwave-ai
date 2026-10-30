@@ -112,3 +112,52 @@ describe('resolveNavHref', () => {
     expect(resolveNavHref(jobs, access())).toBe('/jobs');
   });
 });
+
+// Roles & Permissions S02.20 - once the person's switches are given, a group's children follow them and not the rules,
+// so a collapsed (rail) group lands on a child the person's switches show.
+describe('a group landing on the person\'s switches', () => {
+  const inventory = getDestination('inventory')!;
+  const withSwitches = (switches: Record<string, unknown>) =>
+    access({ orgFeatures: ['inventory', 'phone', 'email'], switches });
+
+  it('lands Price Book alone on Price Book, not on Stock the rules would still allow', () => {
+    const only = withSwitches({ view_price_book: true, show_price_book_page: true });
+    expect(visibleNavChildren(inventory, only).map((c) => c.key)).toEqual(['inv-pricebook']);
+    expect(resolveNavHref(inventory, only)).toBe('/inventory/price-book');
+  });
+
+  it('lands Vendors alone on Vendors', () => {
+    const only = withSwitches({ view_vendors: true, show_vendors_page: true });
+    expect(resolveNavHref(inventory, only)).toBe('/inventory/vendors');
+  });
+
+  it('lands Logistic Orders alone on the Logistic Orders tab, and drops the child when the Stock entry shows', () => {
+    const only = withSwitches({ view_logistic_orders: true, show_logistic_orders_page: true });
+    expect(visibleNavChildren(inventory, only).map((c) => c.key)).toEqual(['inv-logistic-orders']);
+    expect(resolveNavHref(inventory, only)).toBe('/inventory/logistic-orders');
+
+    const withStock = withSwitches({
+      view_logistic_orders: true, show_logistic_orders_page: true, view_stock: true, show_stock_page: true,
+    });
+    expect(visibleNavChildren(inventory, withStock).map((c) => c.key)).toEqual(['inv-stock']);
+  });
+
+  it('lists only the Communication children whose Show is on, with the demo-only one following Access', () => {
+    const only = withSwitches({ access_communication: true, show_text: true });
+    expect(visibleNavChildren(communication, only).map((c) => c.key)).toEqual(['comm-whatsapp', 'comm-text']);
+  });
+
+  // Roles & Permissions PRD 10, S10.7: Show Email hides the Email menu entry, and the entry follows the switch alone.
+  it('lists the Email entry only with Show Email on', () => {
+    const shown = withSwitches({ access_communication: true, show_email: true, show_text: true });
+    expect(visibleNavChildren(communication, shown).map((c) => c.key)).toContain('comm-email');
+    const hidden = withSwitches({ access_communication: true, show_email: false, show_text: true });
+    expect(visibleNavChildren(communication, hidden).map((c) => c.key)).not.toContain('comm-email');
+    expect(visibleNavChildren(communication, hidden).map((c) => c.key)).toContain('comm-text');
+  });
+
+  it('keeps asking the rules for a caller that gives no switches', () => {
+    expect(visibleNavChildren(inventory, access({ orgFeatures: ['inventory'] })).map((c) => c.key))
+      .toEqual(['inv-stock', 'inv-pricebook', 'inv-pos', 'inv-vendors', 'inv-logistic-orders']);
+  });
+});

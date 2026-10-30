@@ -25,6 +25,8 @@ export interface JobFormValues {
   service_request: string;
   job_type?: string;
   ad_source?: string;
+  sold_by_id?: string;
+  dispatcher_id?: string;
   scheduled_date?: string;
   scheduled_time?: string;
   scheduled_end_date?: string;
@@ -41,18 +43,33 @@ export interface BuildPayloadOpts {
    * a Manila-booked 9am job came to be stored as 9pm New York.
    */
   timezone: string;
+  /**
+   * The Sold By and Dispatcher the form holds, for a person with Assign people to jobs (null clears a field).
+   * Left out for anyone else: the server ignores people in their request and applies the creator rule.
+   */
+  people?: { sold_by_id: string | null; dispatcher_id: string | null };
+  /**
+   * Visit 1's crew: only ever the creator, and only sent with a booking time (the server books visit 1 from the
+   * time and refuses a crew without one). `forceVisit` is "Schedule anyway" after a clash with their other work.
+   */
+  visitCrew?: string[];
+  forceVisit?: boolean;
 }
 
 export function buildCreateJobPayload(data: JobFormValues, opts: BuildPayloadOpts): Record<string, unknown> {
+  const scheduledStart = opts.showSchedule
+    ? dayAndTimeToIso(data.scheduled_date, data.scheduled_time, opts.timezone)
+    : undefined;
   const base = {
     scope_notes: data.service_request,
     job_type: data.job_type || undefined,
-    scheduled_start: opts.showSchedule
-      ? dayAndTimeToIso(data.scheduled_date, data.scheduled_time, opts.timezone)
-      : undefined,
+    scheduled_start: scheduledStart,
     scheduled_end: opts.showSchedule
       ? dayAndTimeToIso(data.scheduled_end_date, data.scheduled_end_time, opts.timezone)
       : undefined,
+    ...(opts.people ?? {}),
+    ...(scheduledStart && opts.visitCrew?.length ? { visit_assignee_ids: opts.visitCrew } : {}),
+    ...(scheduledStart && opts.forceVisit ? { visit_force: true } : {}),
   };
 
   const newLocation = {

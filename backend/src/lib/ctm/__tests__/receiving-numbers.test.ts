@@ -3,7 +3,7 @@
  *
  * A forwarded inbound call arrives with NO agent object; the only identity in
  * the payload is `receiving_number_id`, which is CTM's numeric `filter_id`
- * (NOT the RPN string id). Confirmed against the live Alpha Doors sub-account
+ * (NOT the RPN string id). Confirmed against the live pilot org sub-account
  * on 2026-08-07: filter_id 3902576 is the number ending 5160, and the
  * receiving_numbers list endpoint carries `filter_id` on every record.
  *
@@ -38,7 +38,7 @@ const OTHER_ACCOUNT = '111111';
 
 // Shaped exactly like the live endpoint's records: `filter_id` is a NUMBER,
 // `number` is already E.164, and `name` is null on numbers nobody has labelled
-// in CTM yet (3 of the 6 live Alpha Doors records).
+// in CTM yet (3 of the 6 live pilot org records).
 const LIVE_SHAPE = [
   { id: 'RPN-A', filter_id: 3831362, name: 'Ran Roffe', number: '+15551115252' },
   { id: 'RPN-B', filter_id: 3902576, name: null, number: '+15551115160' },

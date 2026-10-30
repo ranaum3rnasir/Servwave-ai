@@ -24,9 +24,9 @@ import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from '@/ui-kit/components/ui/dropdownMenu';
 
-import { crewMemberName, isLiveVisit, nextVisitStep, visitMilestoneStamps, type JobVisitRow, type VisitVerb } from '@/lib/visits';
+import { crewMemberName, isLiveVisit, nextVisitStep, visitMilestoneStamps, visitStatusEntry, type JobVisitRow } from '@/lib/visits';
 import { useVisitLifecycle } from '@/lib/useVisitLifecycle';
-import { STATUS_REGISTRY, STATUS_INTENT_FILL } from '@/design-system/status-registry';
+import { STATUS_INTENT_FILL } from '@/design-system/status-registry';
 
 import { VisitLocationLine } from '../../_shared/visitLocationLine';
 
@@ -57,14 +57,14 @@ const STAMP_FORMAT: Intl.DateTimeFormatOptions = {
  * job visit can actually reach EN_ROUTE / ON_SITE / IN_PROGRESS, a crew standing in the customer's
  * driveway read as a booking nobody had left for yet. The registry's `job` block already carries a
  * label and an intent for all six VisitStatus values, so this is a lookup rather than a fourth
- * copy of the mapping.
+ * copy of the mapping. A finished visit reads "Finished" there, never the job's "Completed" (S04.15).
  */
 function statusLabel(v: JobVisitRow): string {
-  return STATUS_REGISTRY.job[v.status]?.label ?? v.status;
+  return visitStatusEntry(v.status)?.label ?? v.status;
 }
 
 function statusDotClass(status: string): string {
-  const intent = STATUS_REGISTRY.job[status]?.intent;
+  const intent = visitStatusEntry(status)?.intent;
   return intent ? STATUS_INTENT_FILL[intent] : 'bg-muted';
 }
 
@@ -91,16 +91,21 @@ export interface VisitsCardProps {
    */
   canAssignCrew?: boolean;
   /**
-   * S4 (D7a): which lifecycle verbs may this principal drive? One flag PER VERB, because the four
-   * routes are gated on three different abilities - see VISIT_ACTIONS above, and for the limit
-   * none of them can express. Absent means no, so a caller that passes nothing offers nothing.
+   * The completed-job lock (S04.22): when the person may schedule visits but the job is locked for them, the server
+   * withholds the action. Add visit and each row's Reschedule and Cancel then show disabled, with this reason, instead
+   * of vanishing. Ignored when `canSchedule` is true.
    */
-  visitAbilities?: Partial<Record<VisitVerb, boolean>>;
+  lockedReason?: string;
+  /**
+   * No new visit (S04.23): the job is locked, so Add visit shows disabled with the server's words for everyone,
+   * a person who can change locked jobs included. Existing visits keep their own controls.
+   */
+  newVisitClosedReason?: string;
 }
 
 export function VisitsCard({
-  jobId, visits, isLoading, canSchedule = true, canAssignCrew = true, visitAbilities = {},
-  visitsUnknown = false, onRetry,
+  jobId, visits, isLoading, canSchedule = true, canAssignCrew = true,
+  visitsUnknown = false, onRetry, lockedReason, newVisitClosedReason,
 }: VisitsCardProps) {
   const tz = useScheduleTimezone();
   const lifecycle = useVisitLifecycle(jobId);
@@ -170,11 +175,17 @@ export function VisitsCard({
     </>
   );
 
-  const header = canSchedule && (
+  // A closed job takes no new visit from anyone, so its reason leads; otherwise the lock's reason, otherwise enabled.
+  const addVisitReason = newVisitClosedReason ?? lockedReason;
+  const header = canSchedule || addVisitReason ? (
     <div className="flex justify-end">
-      <Button size="sm" variant="outline" onClick={() => setAddOpen(true)}>Add visit</Button>
+      {canSchedule && !newVisitClosedReason ? (
+        <Button size="sm" variant="outline" onClick={() => setAddOpen(true)}>Add visit</Button>
+      ) : (
+        <Button size="sm" variant="outline" disabled disabledReason={addVisitReason}>Add visit</Button>
+      )}
     </div>
-  );
+  ) : null;
 
   if (isLoading) return <p className="text-muted-foreground text-sm">Loading visits...</p>;
 
@@ -267,10 +278,11 @@ export function VisitsCard({
               {/* ONE primary button for the next milestone this viewer may perform, and the
                   later permitted milestones behind "Skip to" (story 19: a forgotten "On the way"
                   tap must never block "Start work"). Each verb still rides its own route's
-                  permission through `visitAbilities`, so a verb the role lacks is absent from
-                  both the button and the menu. */}
+                  permission through the visit's own `status_steps` (the server's per-visit
+                  answer), so a step the person may not take on THIS visit is absent from both
+                  the button and the menu. */}
               {(() => {
-                const step = nextVisitStep(v.status, visitAbilities);
+                const step = nextVisitStep(v.status, v.status_steps);
                 if (!step.primary) return null;
                 return (
                   <div role="group" aria-label="Next step" className="flex items-center gap-1">
@@ -316,6 +328,12 @@ export function VisitsCard({
                   >
                     Cancel
                   </Button>
+                </div>
+              )}
+              {!canSchedule && lockedReason && (
+                <div role="group" aria-label="Office actions" className="ms-auto flex items-center gap-1 border-s ps-2">
+                  <Button size="sm" variant="ghost" disabled disabledReason={lockedReason}>Reschedule</Button>
+                  <Button size="sm" variant="ghost" disabled disabledReason={lockedReason}>Cancel</Button>
                 </div>
               )}
             </div>

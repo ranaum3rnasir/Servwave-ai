@@ -10,6 +10,10 @@ import { cn } from "@/ui-kit/lib/utils";
  * margins give back what the target adds, so the switch keeps its 38x22 layout
  * footprint. The track reads the button's state through `group/switch`.
  *
+ * Off track: `bg-subtle-foreground`, not `bg-input`. `--input` is a hairline colour (1.6:1 on a white
+ * card); an off switch has to reach WCAG's 3:1 for a control against the card behind it, in light
+ * and dark (payments W2, guarded by __tests__/switch-off-contrast.test.ts).
+ *
  * Variants (AI Agentic Farm agent controls, 14 Oct). All additive: a Switch with none of these
  * props renders as before.
  *   - `size="lg"`: a 52x30 track with a 26px knob, the switch that leads a control row. Its
@@ -27,10 +31,9 @@ import { cn } from "@/ui-kit/lib/utils";
 type SwitchSize = "default" | "lg";
 type SwitchTone = "brand" | "success";
 
-// The brand tone keeps the existing off track; the success tone (the agent switch) uses the darker
-// off track so an off agent switch still reads against the card.
+// The first background class in this file is the OFF track the contrast guard reads: keep it first.
 const TRACK_TONE: Record<SwitchTone, string> = {
-  brand: "bg-input group-data-[state=checked]/switch:bg-brand",
+  brand: "bg-subtle-foreground group-data-[state=checked]/switch:bg-brand",
   success: "bg-subtle-foreground group-data-[state=checked]/switch:bg-success",
 };
 

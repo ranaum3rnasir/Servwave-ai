@@ -1,6 +1,3 @@
-import type { AppAbility } from '@/lib/ability';
-import { homeDestinationHref } from '@/pages/v2/dashboard/homeDestination';
-
 type ChunkLoader = () => Promise<unknown>;
 
 /**
@@ -8,8 +5,9 @@ type ChunkLoader = () => Promise<unknown>;
  * table uses (`pages/v2/routes/<module>.routes.tsx`), so the bundler gives both one chunk and the
  * router finds it already downloaded.
  *
- * Only the technician's landing page is listed: it is the largest chunk on a first-run path
- * (the scheduler and its board), and the phone it runs on is the slowest line in the field.
+ * Only the scheduler is listed: it is the largest chunk on a first-run path (the scheduler and its board), and the
+ * phone it runs on is the slowest line in the field. Everyone's home page is the dashboard, so the app root preloads
+ * nothing.
  */
 export const LANDING_CHUNKS: Record<string, ChunkLoader> = {
   '/schedule': () => import('@/pages/v2/schedule/SchedulePage'),
@@ -44,37 +42,31 @@ function safeLocalStorage(): Storage | undefined {
 const normalise = (path: string) => (path.replace(/\/+$/, '') || '/').toLowerCase();
 
 /**
- * Start downloading the landing page's chunk now, from the staff entry, instead of when the router
- * first renders it (mobile slice 61, PERF-03).
+ * Start downloading the page's chunk now, from the staff entry, instead of when the router first renders it (mobile
+ * slice 61, PERF-03).
  *
  * On a cold start the router renders "Loading..." until the sign-in check answers, and only then
  * the page, whose chunk is requested at that moment. The download is therefore queued behind a
  * network round trip it does not depend on. Asked at entry, the two run side by side.
  *
- * `/schedule` is preloaded as itself. At the app root the page is whichever one the cached
- * abilities redirect to (`homeDestinationHref`, the rule `V2HomeRoute` redirects with); someone
- * who lands on the dashboard, or has no cached abilities yet (a first visit), preloads nothing.
+ * Only the address bar decides: `/schedule` is preloaded as itself. The app root is the dashboard for everyone, which
+ * is not worth a preload, so it (like any page without a listed chunk) preloads nothing.
  *
  * A failed preload is swallowed: nothing here depends on it, and the router's own import of the
  * same chunk then runs, fails the same way and goes through the stale-chunk recovery as before.
  */
 export function preloadLandingRoute({
   pathname,
-  ability,
   signedIn,
   loaders = LANDING_CHUNKS,
 }: {
   pathname: string;
-  ability: AppAbility;
   /** Whether this device holds a sign-in (see `hasStoredSession`); without one nothing is fetched. */
   signedIn: boolean;
   loaders?: Record<string, ChunkLoader>;
 }): void {
   if (!signedIn) return;
-  const here = normalise(pathname);
-  const target = here === '/' ? homeDestinationHref(ability) : here;
-  if (!target) return;
-  const load = loaders[normalise(target)];
+  const load = loaders[normalise(pathname)];
   if (!load) return;
   void load().catch(() => {});
 }

@@ -90,6 +90,8 @@ function invoice(overrides: Partial<InvoiceEditorInvoice> = {}): InvoiceEditorIn
     tip: 0,
     total_amount: 324.75,
     line_items: [LINE],
+    // The server's answer for this invoice: the person may edit it (a switch, or the creator rule).
+    actions: ['edit'],
     ...overrides,
   };
 }
@@ -226,13 +228,28 @@ describe('InvoiceLineItemsEditor', () => {
     expect(screen.getByText('Compressor swap')).toBeInTheDocument();
   });
 
-  it('renders read-only when ability grants nothing, even on a DRAFT invoice', () => {
-    renderWithProviders(<InvoiceLineItemsEditor invoice={invoice()} />);
+  it('renders read-only when the answer for the invoice lists no edit, even on a DRAFT invoice', () => {
+    renderWithProviders(<InvoiceLineItemsEditor invoice={invoice({ actions: [] })} />);
 
     expect(screen.queryByRole('button', { name: /add item/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /remove compressor swap/i })).toBeNull();
     expect(screen.queryByLabelText(/quantity for compressor swap/i)).toBeNull();
     expect(screen.getByText('Compressor swap')).toBeInTheDocument();
+  });
+
+  // S04.27: editing an existing row follows the server's answer for THIS invoice, so a creator whose switches grant
+  // nothing on invoices still edits the invoice they made, and a holder of Edit invoices does not edit one the
+  // answer leaves out.
+  it('lets the person edit rows on the answer alone, with an ability that grants nothing on invoices', () => {
+    renderWithProviders(<InvoiceLineItemsEditor invoice={invoice({ actions: ['edit'] })} />);
+
+    expect(screen.getByLabelText(/quantity for compressor swap/i)).toBeInTheDocument();
+  });
+
+  it('keeps the rows read-only when the answer lists no edit, whatever the ability says', () => {
+    renderWithProviders(<InvoiceLineItemsEditor invoice={invoice({ actions: ['send'] })} />, { ability: adminAbility() });
+
+    expect(screen.queryByLabelText(/quantity for compressor swap/i)).toBeNull();
   });
 
   // A tip lives on the invoice independently of the line rows, so it can outlive the last line.
@@ -834,6 +851,7 @@ describe('InvoiceScopeOfWorkCard', () => {
       id: INVOICE_ID,
       status: 'DRAFT',
       scopes: [SCOPE],
+      actions: ['edit'],
       ...overrides,
     };
   }
@@ -943,8 +961,8 @@ describe('InvoiceScopeOfWorkCard', () => {
     expect(Number((screen.getByLabelText(/internal cost for scope 1/i) as HTMLInputElement).value)).toBe(100);
   });
 
-  it('renders read-only, with no add/edit/delete affordances, when the ability grants nothing', () => {
-    renderWithProviders(<InvoiceScopeOfWorkCard invoice={scopeInvoice()} />);
+  it('renders read-only, with no add/edit/delete affordances, when the ability grants nothing and the answer lists no edit', () => {
+    renderWithProviders(<InvoiceScopeOfWorkCard invoice={scopeInvoice({ actions: [] })} />);
 
     expect(screen.getByText('Demo & haul-away')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /add scope of work/i })).toBeNull();
@@ -959,7 +977,7 @@ describe('InvoiceScopeOfWorkCard', () => {
   // Add/Delete affordances, just not inline field editing or reorder (which would 403).
   it('shows Add/Delete but hides inline edit + reorder when the ability has manage_lines Invoice but NOT update (mirrors SALES)', () => {
     renderWithProviders(
-      <InvoiceScopeOfWorkCard invoice={scopeInvoice({ scopes: [SCOPE, SCOPE_B] })} />,
+      <InvoiceScopeOfWorkCard invoice={scopeInvoice({ scopes: [SCOPE, SCOPE_B], actions: [] })} />,
       { ability: manageLinesOnlyAbility() },
     );
 

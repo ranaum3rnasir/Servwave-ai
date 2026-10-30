@@ -77,107 +77,129 @@ const ROUTE_GUARDS: Record<string, string[]> = {
 
   // The app root, and the plain authenticated pages.
   '/': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
-  '/customers': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
-  '/customers/new': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
+  '/customers': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequirePageAccess(all=view_customers+show_customers_page)'],
+  '/customers/new': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequirePageAccess(all=create_customers+show_customers_page)'],
   '/customers/:id/edit': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
   '/customers/:id': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
   '/customers/:customerId/statement': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
-  '/estimates': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
+  '/estimates': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequirePageAccess(all=view_estimates+show_estimates_page)'],
   '/estimates/new': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
   '/estimates/:id': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
   // #2030 — a past version. Same guard stack as the workspace it belongs to: the route is meant
   // to be shareable with a colleague, and the API's own per-row ownership check is what decides
   // whether this particular estimate resolves for them.
   '/estimates/:id/versions/:version': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
-  '/jobs': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
+  '/jobs': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequirePageAccess(all=view_jobs+show_jobs_page)'],
   '/jobs/new': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
   '/jobs/:id': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
   '/jobs/:jobId/statement': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
-  '/invoices': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
+  '/invoices': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequirePageAccess(all=view_invoices+show_invoices_page)'],
+  '/payments': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequirePageAccess(all=view_payments+show_payments_page)'],
   '/invoices/:id': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
-  '/schedule': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
-  '/tasks': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
+  '/schedule': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequirePageAccess(all=access_schedule)'],
+  '/tasks': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequirePageAccess(all=view_tasks+show_tasks_page)'],
 
-  // Standalone invoice authoring - ADMIN + DISPATCHER only, matching the backend
-  // 403 and the `create Invoice` grant. Technicians invoice only via their own
-  // job. `fallback` means a SALES user gets the "no access" screen in place.
+  // Standalone invoice authoring - Standalone invoices plus Show Invoices page (Roles & Permissions S02.29), no
+  // role list: the backend decides the create on Standalone invoices. Technicians invoice only via their own job.
   '/invoices/new': [
     'ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)',
-    'ProtectedRoute(roles=ADMIN|DISPATCHER, fallback=true)',
+    'RequirePageAccess(all=standalone_invoices+show_invoices_page)',
   ],
 
-  // Reports - ADMIN + DISPATCHER only; the backend 403s SALES on /api/reports/*.
+  // Reports - Access Reports (Billing's one report: Access Billing or Access Reports), no role list (S02.29);
+  // the backend decides every /api/reports/* request on the same switches.
   '/reports': [
     'ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)',
-    'ProtectedRoute(roles=ADMIN|DISPATCHER, fallback=true)',
+    'RequirePageAccess(all=access_reports)',
   ],
   '/reports/:slug': [
     'ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)',
-    'ProtectedRoute(roles=ADMIN|DISPATCHER, fallback=true)',
+    'RequireReportAccess',
   ],
 
   // Marketing - a demo-only mock page with no /api/marketing behind it. The nav
   // lock is not enough on its own: the URL still resolves, hence DemoOnlyRoute.
   '/marketing': [
     'ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)',
+    'RequirePageAccess(all=access_marketing)',
     'DemoOnlyRoute',
   ],
 
-  // Users admin - ADMIN only, with the in-place 403 screen.
-  '/users': [
-    'ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)',
-    'ProtectedRoute(roles=ADMIN, fallback=true)',
-  ],
+  // The old Users stub is gone (Roles & Permissions PRD 2, S02.5): the address redirects to /settings/users,
+  // which decides on Show Users & Teams page, so no role list stays on it.
+  '/users': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
 
   // Leads, entitlement-gated.
-  '/leads': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(leads)'],
-  '/leads/new': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(leads)'],
+  '/leads': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(leads)', 'RequirePageAccess(all=view_leads+show_leads_page)'],
+  '/leads/new': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(leads)', 'RequirePageAccess(all=create_leads)'],
   '/leads/:id/edit': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(leads)'],
   '/leads/:id': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(leads)'],
 
   '/service-plans': [
     'ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)',
     'RequireFeature(service_plans)',
+    'RequirePageAccess(all=view_service_plans+show_service_plans_page)',
   ],
 
-  // Automations - Admin + Dispatcher AND the entitlement; the backend 403s
-  // Sales/Tech on /api/workflows/*.
+  // Automations - the entitlement, then the person's switches (S02.29), no role list: the list on View automations plus
+  // Show Automations page, a new automation on Create automations, an existing one on View automations. The backend
+  // decides every /api/workflows/* request on the same switches.
   '/automations': [
     'ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)',
-    'ProtectedRoute(roles=ADMIN|DISPATCHER, fallback=true)',
     'RequireFeature(automations)',
+    'RequirePageAccess(all=view_automations+show_automations_page)',
   ],
   '/automations/new': [
     'ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)',
-    'ProtectedRoute(roles=ADMIN|DISPATCHER, fallback=true)',
     'RequireFeature(automations)',
+    'RequirePageAccess(all=create_automations)',
   ],
   '/automations/:id': [
     'ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)',
-    'ProtectedRoute(roles=ADMIN|DISPATCHER, fallback=true)',
     'RequireFeature(automations)',
+    'RequirePageAccess(all=view_automations)',
   ],
   '/automations/:id/edit': [
     'ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)',
-    'ProtectedRoute(roles=ADMIN|DISPATCHER, fallback=true)',
     'RequireFeature(automations)',
+    'RequirePageAccess(all=view_automations)',
   ],
 
   // Inventory, entitlement-gated. `/inventory/approvals` is a redirect rather
   // than a page, and is gated the same way so it cannot become a hole.
-  '/inventory': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)'],
+  '/inventory': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)', 'RequirePageAccess(all=view_stock+show_stock_page)'],
   // Spider, the lead watcher (#2619): Admins only, and only behind the Spider gate (the `spider`
   // feature AND, while the launch is demo-only, a demo company).
   '/spider': ['ProtectedRoute(roles=ADMIN, fallback=false)', 'RequireSpider'],
-  '/inventory/staging': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)'],
-  '/inventory/assets': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)'],
-  '/inventory/low-stock': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)'],
-  '/inventory/activity': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)'],
-  '/inventory/logistic-orders': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)'],
+  '/inventory/staging': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)', 'RequirePageAccess(all=view_stock+show_stock_page)'],
+  '/inventory/assets': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)', 'RequirePageAccess(all=view_stock+show_stock_page)'],
+  '/inventory/low-stock': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)', 'RequirePageAccess(all=view_stock+show_stock_page)'],
+  '/inventory/activity': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)', 'RequirePageAccess(all=view_stock+show_stock_page)'],
+  '/inventory/logistic-orders': [
+    'ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)',
+    'RequireFeature(inventory)',
+    'RequirePageAccess(all=view_logistic_orders+show_logistic_orders_page)',
+  ],
   '/inventory/approvals': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)'],
-  '/inventory/price-book': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)'],
-  '/inventory/purchase-orders': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)'],
-  '/inventory/vendors': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)'],
+  '/inventory/price-book': [
+    'ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)',
+    'RequireFeature(inventory)',
+    'RequirePageAccess(all=view_price_book+show_price_book_page)',
+  ],
+  '/inventory/purchase-orders': [
+    'ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)',
+    'RequireFeature(inventory)',
+    'RequirePageAccess(all=view_purchase_orders+show_purchase_orders_page)',
+  ],
+  // One purchase order, opened from a job: a record route, so no list guard (the page asks the server).
+  // One logistic order, opened from its alert or a job: a record route, so no list guard (the page asks the server).
+  '/inventory/logistic-orders/:orderId': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)'],
+  '/inventory/purchase-orders/:poId': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireFeature(inventory)'],
+  '/inventory/vendors': [
+    'ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)',
+    'RequireFeature(inventory)',
+    'RequirePageAccess(all=view_vendors+show_vendors_page)',
+  ],
 
   // Communication: TWO entitlements, not one. The CTM channels stay on `phone`
   // (Pro+); email is its own `email` key, which every plan includes. Gating the
@@ -189,23 +211,25 @@ const ROUTE_GUARDS: Record<string, string[]> = {
   // `ProtectedRoute` (now `roles=ANY`, matching `/phone`'s auth-only gate) and
   // sits directly under it, ahead of every `RequireFeature`, so a denied
   // caller never reaches the entitlement check or the page.
-  '/communication/phone': ['ProtectedRoute(roles=ANY, fallback=false)', 'RequireCommunicationSection', 'RequireFeature(phone)'],
-  '/communication/phone/:tab': ['ProtectedRoute(roles=ANY, fallback=false)', 'RequireCommunicationSection', 'RequireFeature(phone)'],
-  '/communication/text': ['ProtectedRoute(roles=ANY, fallback=false)', 'RequireCommunicationSection', 'RequireFeature(phone)'],
-  '/communication/text/:tab': ['ProtectedRoute(roles=ANY, fallback=false)', 'RequireCommunicationSection', 'RequireFeature(phone)'],
+  // Roles & Permissions S08.17 - each page also follows its own Show switch (display only, so a person with it off is
+  // sent to their dashboard); the plan check stays the outer of the two.
+  '/communication/phone': ['ProtectedRoute(roles=ANY, fallback=false)', 'RequireCommunicationSection', 'RequireFeature(phone)', 'RequirePageAccess(all=show_phone)'],
+  '/communication/phone/:tab': ['ProtectedRoute(roles=ANY, fallback=false)', 'RequireCommunicationSection', 'RequireFeature(phone)', 'RequirePageAccess(all=show_phone)'],
+  '/communication/text': ['ProtectedRoute(roles=ANY, fallback=false)', 'RequireCommunicationSection', 'RequireFeature(phone)', 'RequirePageAccess(all=show_text)'],
+  '/communication/text/:tab': ['ProtectedRoute(roles=ANY, fallback=false)', 'RequireCommunicationSection', 'RequireFeature(phone)', 'RequirePageAccess(all=show_text)'],
   '/communication/whatsapp': [
     'ProtectedRoute(roles=ANY, fallback=false)',
     'RequireCommunicationSection',
     'RequireFeature(phone)',
     'DemoOnlyRoute',
   ],
-  '/communication/inbox': ['ProtectedRoute(roles=ANY, fallback=false)', 'RequireCommunicationSection', 'RequireFeature(email)'],
+  '/communication/inbox': ['ProtectedRoute(roles=ANY, fallback=false)', 'RequireCommunicationSection', 'RequireFeature(email)', 'RequirePageAccess(all=show_email)'],
 
   // Settings: NO route-level role guard on any tab, and that is deliberate.
   // Every authenticated user of any role can deep-link to any settings page;
   // the nav LIST is CASL-filtered inside SettingsLayout, but the routes are
-  // open, so a technician who types /settings/roles mounts the page, fires
-  // GET /api/roles, gets a 403 and lands on an empty list. Adding a guard here
+  // open, except /settings/users and /settings/roles, which follow a switch and
+  // send anyone without it to the dashboard (S02.5). Adding a guard to any other
   // would change who can reach a page. There is no RequireFeature either, not
   // even on the two comm-gated tabs: the entitlement gates their nav entry and
   // each of those pages gates itself.
@@ -213,13 +237,21 @@ const ROUTE_GUARDS: Record<string, string[]> = {
   '/settings/company': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
   '/settings/branding': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
   '/settings/locations': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
-  '/settings/users': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
-  '/settings/roles': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
+  // These two follow a switch (S02.5): Show Users & Teams page, and Manage roles and permissions.
+  '/settings/users': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireUsersTeamsPage'],
+  '/settings/roles': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireManageRoles'],
+  // A person's own switches (S02.9): Manage roles and permissions, like the Roles page.
+  '/settings/users/:userId/permissions': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)', 'RequireManageRoles'],
   '/settings/security': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
   '/settings/payments': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
+  // Payments go-live slice 34. Same open stack as its siblings: the page itself sends anyone without Manage payout
+  // account back to /settings, and the server refuses their session request.
+  '/settings/payout-account': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
+  // Payments go-live slice 35. Same open stack: the page sends anyone without View payments and payouts back to /settings.
+  '/settings/servwave-payments': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
   '/settings/job-sub-statuses': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
   // Decline-reasons slice B. Same open stack as every sibling - but NOT for the reason
-  // /settings/roles is open. "A 403-driven empty list" is not what a non-admin got here: this
+  // the settings tabs were once open. "A 403-driven empty list" is not what a non-admin got here: this
   // page's GET is gated on the coarser `read Estimate` on purpose (slice C needs a rep to read
   // these words while declining their own estimate), so a SALES user who typed the URL got the
   // organisation's REAL list under controls that each 403. The PAGE therefore gates itself on
@@ -227,6 +259,8 @@ const ROUTE_GUARDS: Record<string, string[]> = {
   // `settings-decline-reasons.test.tsx` for the assertions. This row records only that no ROUTE
   // guard was added, which is still true.
   '/settings/decline-reasons': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
+  // Job cancel reasons (S06.14): the same open stack, and the page gates itself on `update Organization` like its sibling.
+  '/settings/job-cancel-reasons': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
   '/settings/phone-sms': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
   '/settings/phone-numbers': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
   '/settings/inventory': ['ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)'],
@@ -276,7 +310,7 @@ describe('the route parser', () => {
     const invoicesNew = routes.find((r) => r.path === '/invoices/new');
     expect(invoicesNew?.guards).toEqual([
       'ProtectedRoute(roles=ADMIN|DISPATCHER|SALES|TECHNICIAN, fallback=false)',
-      'ProtectedRoute(roles=ADMIN|DISPATCHER, fallback=true)',
+      'RequirePageAccess(all=standalone_invoices+show_invoices_page)',
     ]);
   });
 

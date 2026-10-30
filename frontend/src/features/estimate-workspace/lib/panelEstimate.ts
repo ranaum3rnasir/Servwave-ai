@@ -45,6 +45,8 @@ export interface PanelEstimate {
     deposit_required?: boolean | null;
     deposit_amount?: number | null;
     deposit_percentage?: number | null;
+    /** Slice 27 - the methods the estimate was last sent with. */
+    payment_methods?: string[] | null;
   } | null;
   invoices?: Array<{
     id: string;
@@ -53,7 +55,14 @@ export interface PanelEstimate {
     // Copy-to-Invoice: GET /api/estimates/:id now returns both kinds (previously DEPOSIT only).
     kind: 'DEPOSIT' | 'STANDARD';
     total_amount?: number | string | null;
-    payments?: Array<{ method?: string | null; stripe_payment_intent_id?: string | null }>;
+    payments?: Array<{
+      method?: string | null;
+      paid_through_processor?: boolean;
+      // Slice 28b: what the deposit card needs to show a bank payment in flight.
+      amount?: number | string;
+      state?: string;
+      voided_at?: string | null;
+    }>;
   }>;
   lead_id?: string | null;
   lead?: {

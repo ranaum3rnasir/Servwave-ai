@@ -18,13 +18,18 @@ import app from '../app';
 import { mockAuthAs, authHeader, JOB_FIXTURE, TEST_USERS } from './helpers';
 import { prisma } from '../lib/prisma';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { emit } from '../services/notifications/notificationService';
+import { queueJobUnassignedAlert } from '../services/notifications/jobSchedulingAlerts';
 import { renderTemplate } from '../services/notifications/templates';
 import { buildDedupeKey } from '../services/automations/dedupe';
 
 vi.mock('../services/automations/dispatch', () => ({ dispatchAutomationEvent: vi.fn() }));
 import { dispatchAutomationEvent } from '../services/automations/dispatch';
-vi.mock('../services/notifications/notificationService', () => ({ emit: vi.fn().mockResolvedValue(undefined) }));
+// The personal "unassigned" alert is queued for after the response (S06.27); the queue entry point is what the route calls.
+vi.mock('../services/notifications/jobSchedulingAlerts', () => ({
+  queueJobSchedulingAlert: vi.fn(),
+  queueJobUnassignedAlert: vi.fn(),
+  queueStagingReadyAlert: vi.fn(),
+}));
 
 const mockPrisma = prisma as unknown as Record<string, any>;
 const mockDispatch = dispatchAutomationEvent as ReturnType<typeof vi.fn>;
@@ -102,8 +107,11 @@ const recrew = (visitId: string, assignee_ids: string[]) =>
 
 const dispatched = (type: string) =>
   mockDispatch.mock.calls.map((c: any[]) => c[0]).filter((e: any) => e.type === type);
-const emitted = (verb: string) =>
-  (emit as ReturnType<typeof vi.fn>).mock.calls.map((c: any[]) => c[0]).filter((e: any) => e.verb === verb);
+const emitted = (_verb: 'dispatch.job_unassigned') =>
+  (queueJobUnassignedAlert as ReturnType<typeof vi.fn>).mock.calls.map((c: any[]) => c[0]);
+/** The bell title the queued alert renders to. */
+const titleOf = (n: any) =>
+  renderTemplate('dispatch.job_unassigned', { object_label: n.jobNumber, ...(n.visitLabel ? { visit_label: n.visitLabel } : {}) }).title;
 
 // Sep 29 and Sep 30 2026, 09:00 in New York.
 const SEP_29 = new Date('2026-09-29T13:00:00Z');
@@ -180,8 +188,8 @@ describe('(c) off one trip, still on another live trip of the job', () => {
 
     const notices = emitted('dispatch.job_unassigned');
     expect(notices).toHaveLength(1);
-    expect(notices[0].entity.assignee_ids).toEqual([TECH_B]);
-    const { title } = renderTemplate(notices[0].verb, { ...notices[0].data, object_label: notices[0].object.label });
+    expect(notices[0].removedIds).toEqual([TECH_B]);
+    const title = titleOf(notices[0]);
     expect(title).toContain('Visit 2');
     expect(title).toContain('Wed, Sep 30');
     expect(title).not.toMatch(/unassigned from you/);
@@ -197,8 +205,7 @@ describe('(c) off one trip, still on another live trip of the job', () => {
 
     expect(dispatched('TECH_UNASSIGNED').map((e: any) => e.occurrenceKey)).toEqual([TECH_B]);
     const [notice] = emitted('dispatch.job_unassigned');
-    expect(renderTemplate(notice.verb, { ...notice.data, object_label: notice.object.label }).title)
-      .toMatch(/unassigned from you/);
+    expect(titleOf(notice)).toMatch(/unassigned from you/);
   });
 });
 

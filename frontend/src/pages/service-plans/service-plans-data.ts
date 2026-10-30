@@ -55,12 +55,12 @@ export interface PlanVisit {
 }
 
 // ── Domain vocab (reuse Alpha names from JobStatisticsReport) ────────────────
-const TECHS = ['Adam Elkarrat', 'Emanuel Dahan', 'Nadia', 'Ohad', 'Rami', 'Robert Bresnick', 'Sagiv Peker', 'Oved Adani'];
-const SELLERS = ['Shani Adani', 'Nadia', 'Emanuel Dahan', 'Ohad'];
+const TECHS = ['Pat Hollis', 'Sam Rivera', 'Quinn', 'Jordan', 'Reese', 'Jamie Park', 'Riley Chen', 'Morgan Diaz'];
+const SELLERS = ['Avery Stone', 'Quinn', 'Sam Rivera', 'Jordan'];
 const PLAN_NAMES = ['MONITORING - Annual', 'MONITORING - Quarterly', 'Akuvox Maintenance', 'Camera Health Check', 'Access Control Care', 'Fire Panel Inspection', 'Intercom Service', 'Alarm Test & Cert'];
 const STREETS = ['Jefferson St', 'Autumn Ln', 'Arsenal St', 'Market St', 'Foley St', 'Beacon St', 'Atlantic Ave', 'Hudson St', 'Grand Ave', 'Park Pl'];
 const CITIES = ['Hoboken, NJ', 'Boston, MA', 'Watertown, MA', 'Lynnfield, MA', 'Somerville, MA', 'Brooklyn, NY', 'Queens, NY', 'Newark, NJ'];
-const FIRST = ['Leon', 'Kevin', 'Aiden', 'Jenny', 'Marcus', 'Sofia', 'Devon', 'Priya', 'Tyler', 'Aisha', 'Omar', 'Dana'];
+const FIRST = ['Leon', 'Kevin', 'Aiden', 'Jenny', 'Marcus', 'Sofia', 'Devon', 'Drew', 'Tyler', 'Aisha', 'Omar', 'Dana'];
 const LAST = ['Mills', 'Park', 'Silva', 'Owens', 'Bell', 'Reyes', 'Clark', 'Nair', 'Brooks', 'Khan', 'Cole', 'Shah'];
 
 const FREQS: BillingFrequency[] = ['Monthly', 'Quarterly', 'Annual'];

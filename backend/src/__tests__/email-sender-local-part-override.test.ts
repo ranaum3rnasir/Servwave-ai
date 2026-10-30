@@ -1,4 +1,4 @@
-// The local part of an org's From address (`alphadoorssecurity@mail.servwave.com`)
+// The local part of an org's From address (`exampledoorssecurity@mail.servwave.com`)
 // has always been DERIVED from the company name with no way to change it. An
 // org that would rather be `service@` or `office@` had no control at all.
 //
@@ -25,24 +25,24 @@ beforeAll(async () => {
 
 describe('effectiveSenderLocalPart', () => {
   it('derives from the company name when the org has set nothing', () => {
-    expect(effectiveSenderLocalPart('Alpha Doors & Security', null)).toBe('alphadoorssecurity');
+    expect(effectiveSenderLocalPart('Example Doors & Security', null)).toBe('exampledoorssecurity');
   });
 
   it('uses the org own value when it has set one', () => {
-    expect(effectiveSenderLocalPart('Alpha Doors & Security', 'service')).toBe('service');
+    expect(effectiveSenderLocalPart('Example Doors & Security', 'service')).toBe('service');
   });
 
   it('treats undefined the same as null - both mean derive', () => {
     // The column is nullable and a `select` that omits it yields undefined, so
     // the two have to behave identically or the address would flip.
-    expect(effectiveSenderLocalPart('Alpha Doors & Security', undefined)).toBe('alphadoorssecurity');
+    expect(effectiveSenderLocalPart('Example Doors & Security', undefined)).toBe('exampledoorssecurity');
   });
 
   it('treats an empty or whitespace-only override as no override', () => {
     // Clearing the field must return the org to the derived default rather
     // than producing `@mail.servwave.com` with nothing in front of it.
-    expect(effectiveSenderLocalPart('Alpha Doors', '')).toBe('alphadoors');
-    expect(effectiveSenderLocalPart('Alpha Doors', '   ')).toBe('alphadoors');
+    expect(effectiveSenderLocalPart('Example Doors', '')).toBe('exampledoors');
+    expect(effectiveSenderLocalPart('Example Doors', '   ')).toBe('exampledoors');
   });
 
   it('still falls back to no-reply when there is neither a name nor an override', () => {

@@ -4,6 +4,8 @@ import { BarChart2 } from 'lucide-react';
 import { formatCurrency, formatCurrencyWhole } from '@/lib/utils';
 import { token, chartPalette } from '@/design-system';
 import type { RevenuePoint } from '@/lib/api/dashboard';
+import { Button } from '@/ui-kit/components/ui/button';
+import { EmptyState } from '@/ui-kit/components/data/emptyState';
 
 import { WidgetCard } from '../components/widgetCard';
 
@@ -41,28 +43,46 @@ function TooltipContent({ active, payload, label }: { active?: boolean; payload?
 /**
  * Monthly revenue, on recharts.
  *
- * No empty state and no loading state, exactly as before: an empty array
- * renders empty axes inside the fixed 220px box rather than a message, because
- * the series is always six contiguous zero-filled buckets from the server and
- * "no data" is not a state this chart can be in once the request lands.
+ * The series is always six contiguous zero-filled buckets from the server, so
+ * "no data" is a series where every bucket is zero (or an empty array): that
+ * draws one plain line instead of a chart of empty axes.
  */
-export default function RevenueChart({ data, target }: { data: RevenuePoint[]; target: number }) {
+export default function RevenueChart({ data, target, scopeLabel, onViewAll, isLoading }: {
+  data: RevenuePoint[];
+  target?: number;
+  scopeLabel?: string | null;
+  /** Set only when the server sent an address for the tile (the Invoices list); without it the card has no "View all". */
+  onViewAll?: () => void;
+  isLoading?: boolean;
+}) {
+  const viewAll = onViewAll && <Button type="button" variant="link" size={null} className="text-xs" onClick={onViewAll}>View all</Button>;
+  const nothingYet = data.every((m) => m.invoiced === 0 && m.collected === 0);
+  if (nothingYet) {
+    return (
+      <WidgetCard title="Monthly Revenue" icon={<BarChart2 className="h-4 w-4 text-muted-foreground" />} scopeLabel={scopeLabel} right={viewAll} loading={isLoading}>
+        <EmptyState title="No invoices or payments in this period" />
+      </WidgetCard>
+    );
+  }
   return (
-    <WidgetCard title="Monthly Revenue" icon={<BarChart2 className="h-4 w-4 text-muted-foreground" />}>
+    <WidgetCard title="Monthly Revenue" icon={<BarChart2 className="h-4 w-4 text-muted-foreground" />} scopeLabel={scopeLabel} right={viewAll}>
       <div className="px-5 pt-4 pb-3">
         <div className="flex items-center gap-4 text-[11px] text-text-secondary mb-3">
           <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-1.5 rounded-full bg-border" />Invoiced</span>
           <span className="flex items-center gap-1.5"><span className="inline-block w-3 h-1.5 rounded-full bg-sage-700" />Collected</span>
-          <span className="flex items-center gap-1.5"><span className="inline-block w-4 border-t border-dashed border-primary" />Target</span>
+          {target !== undefined && <span className="flex items-center gap-1.5"><span className="inline-block w-4 border-t border-dashed border-primary" />Target</span>}
         </div>
         <div className="h-[220px]">
           <ResponsiveContainer width="100%" height="100%">
             <ComposedChart data={data} barCategoryGap="30%" barGap={3}>
               <CartesianGrid strokeDasharray="3 3" stroke={token('--border-color')} vertical={false} />
               <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: token('--text-secondary') }} />
-              <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: token('--text-secondary') }} tickFormatter={(v: number) => formatCurrencyWhole(v)} width={88} domain={[0, (dataMax: number) => Math.max(dataMax * 1.15, target * 1.15, 1000)]} />
+              <YAxis axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: token('--text-secondary') }} tickFormatter={(v: number) => formatCurrencyWhole(v)} width={88} domain={[0, (dataMax: number) => Math.max(dataMax * 1.15, (target ?? 0) * 1.15, 1000)]} />
               <Tooltip content={<TooltipContent />} cursor={{ fill: token('--border-soft'), opacity: 0.5 }} />
-              <ReferenceLine y={target} stroke={TARGET} strokeDasharray="6 4" strokeOpacity={0.7} label={{ value: formatCurrencyWhole(target), position: 'right', fill: TARGET, fontSize: 10, fontWeight: 600 }} />
+              {/* The goal is the company's plan: it is drawn only when the server sent one (company mode). */}
+              {target !== undefined && (
+                <ReferenceLine y={target} stroke={TARGET} strokeDasharray="6 4" strokeOpacity={0.7} label={{ value: formatCurrencyWhole(target), position: 'right', fill: TARGET, fontSize: 10, fontWeight: 600 }} />
+              )}
               <Bar dataKey="invoiced" name="Invoiced" fill={INVOICED} radius={[3, 3, 0, 0]} />
               <Bar dataKey="collected" name="Collected" radius={[3, 3, 0, 0]}>
                 {data.map((entry, i) => (

@@ -1,10 +1,10 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, Ban, Trash2 } from 'lucide-react';
+import { AlertTriangle, Ban, RotateCcw, Trash2 } from 'lucide-react';
 
 import api from '@/lib/axios';
 import { refreshAfterVisitWrite } from '@/lib/refreshAfterVisitWrite';
-import { cancelLead, deleteLead } from '@/lib/api/leads';
+import { deleteLead } from '@/lib/api/leads';
 import { extractApiError } from '@/lib/utils';
 import { Button } from '@/ui-kit/components/ui/button';
 import {
@@ -55,7 +55,7 @@ function MarkLostDialog({ open, onOpenChange, leadId }: ReasonDialogProps) {
           <DialogIcon tone="danger"><AlertTriangle /></DialogIcon>
           <div>
             <DialogTitle>Mark Lead as Lost</DialogTitle>
-            <DialogDescription>This action cannot be undone. Please provide a reason.</DialogDescription>
+            <DialogDescription>A lost lead can be reopened by someone allowed to reopen leads. Please provide a reason.</DialogDescription>
           </div>
         </DialogHeader>
         <DialogBody>
@@ -90,15 +90,27 @@ function MarkLostDialog({ open, onOpenChange, leadId }: ReasonDialogProps) {
   );
 }
 
-function CancelLeadDialog({ open, onOpenChange, leadId }: ReasonDialogProps) {
+/**
+ * Reopen a Won or Lost lead (PRD 5, S05.19). The server picks where the lead lands (the status it had before it closed,
+ * or the furthest its data supports) and logs the reason in History; this asks only why. Reopen stays disabled until a
+ * reason is typed.
+ */
+function ReopenLeadDialog({ open, onOpenChange, leadId }: ReasonDialogProps) {
   const queryClient = useQueryClient();
   const [reason, setReason] = useState('');
 
   const mutation = useMutation({
-    mutationFn: () => cancelLead(leadId, { cancelled_reason: reason }),
+    mutationFn: async () => {
+      const { data } = await api.post(`/api/leads/${leadId}/reopen`, { reason: reason.trim() });
+      return data;
+    },
     onSuccess: () => {
-      // Leaving the lead auto-cancels its scheduled walkthrough visit (lead.controller).
-      refreshAfterVisitWrite(queryClient, { leadId });
+      // The lead is open again: its status, the lists it sits in, the customer page's Leads tab and its History.
+      queryClient.invalidateQueries({ queryKey: ['lead', leadId] });
+      queryClient.invalidateQueries({ queryKey: ['leads'] });
+      queryClient.invalidateQueries({ queryKey: ['customer'] });
+      queryClient.invalidateQueries({ queryKey: ['customer-leads'] });
+      queryClient.invalidateQueries({ queryKey: ['timeline', 'LEAD', leadId] });
       onOpenChange(false);
       setReason('');
     },
@@ -108,40 +120,31 @@ function CancelLeadDialog({ open, onOpenChange, leadId }: ReasonDialogProps) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent intent="form">
         <DialogHeader>
-          <DialogIcon tone="danger"><Ban /></DialogIcon>
+          <DialogIcon tone="brand"><RotateCcw /></DialogIcon>
           <div>
-            <DialogTitle>Cancel Lead</DialogTitle>
-            <DialogDescription>
-              Administratively void this lead. Use this for duplicates or leads created in
-              error. Please provide a reason.
-            </DialogDescription>
+            <DialogTitle>Reopen this lead?</DialogTitle>
           </div>
         </DialogHeader>
         <DialogBody>
           <div className="flex flex-col gap-1.5">
-            <Label htmlFor="v2-cancel-lead-reason">Reason *</Label>
+            <Label htmlFor="v2-reopen-lead-reason">Why is this lead being reopened?</Label>
             <Textarea
-              id="v2-cancel-lead-reason"
+              id="v2-reopen-lead-reason"
               value={reason}
               onChange={(e) => setReason(e.target.value)}
               rows={3}
-              placeholder="Why is this lead being cancelled?"
             />
           </div>
           {mutation.error && (
             <p className="text-destructive mt-2 text-sm">
-              {extractApiError(mutation.error, 'Failed to cancel lead')}
+              {extractApiError(mutation.error, 'Failed to reopen the lead')}
             </p>
           )}
         </DialogBody>
         <DialogFooter>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>Close</Button>
-          <Button
-            variant="destructive"
-            onClick={() => mutation.mutate()}
-            disabled={!reason.trim() || mutation.isPending}
-          >
-            {mutation.isPending ? 'Cancelling...' : 'Cancel Lead'}
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Go back</Button>
+          <Button onClick={() => mutation.mutate()} disabled={!reason.trim() || mutation.isPending}>
+            {mutation.isPending ? 'Reopening...' : 'Reopen'}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -304,4 +307,4 @@ function TaxWarningDialog({
   );
 }
 
-export { MarkLostDialog, CancelLeadDialog, CancelWalkthroughDialog, DeleteLeadDialog, TaxWarningDialog };
+export { MarkLostDialog, ReopenLeadDialog, CancelWalkthroughDialog, DeleteLeadDialog, TaxWarningDialog };

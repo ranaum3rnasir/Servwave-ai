@@ -18,9 +18,8 @@ import { flagKnownBug } from '../../helpers/known-bug';
  *    no 4xx). Only a LOCATION change is hard-400. We assert the location 400 and document the
  *    customer-freeze-by-omission.
  *  - LEAD-05 tax_warning is a SIBLING body.tax_warning (NOT body.lead.tax_warning).
- *  - LEAD-07 PAID branch: record-payment flips the lead to WON, so cancelLead returns 400 and
- *    never runs — the PAID deposit survives because cancel was REJECTED, not spared. We assert
- *    both the PAID deposit AND the 400, and flag the exemplar's misleading mechanism.
+ *  - LEAD-07: the lead-close cascade (mark-lost) voids an UNPAID deposit invoice. The retired Cancel lead
+ *    action (and its PAID-deposit branch) is gone: a lead closes one way, as Lost.
  *  - LEAD-09 a plain PATCH of a WON lead's service_request is NOT blocked (200) — humanCheck.
  *  - LEAD-10 happy-path delete returns 204 (empty body), not 200.
  */
@@ -217,7 +216,7 @@ test.describe('Stage 3 — Lead (redesign C3)', () => {
   });
 
   // ── LEAD-06 ────────────────────────────────────────────────────────────
-  test('LEAD-06: LOST counts in lost stats; CANCELLED is excluded from lost', async () => {
+  test('LEAD-06: LOST counts in lost stats', async () => {
     // Use the /stats month-scoped surface (lost_this_month gated on lost_at=now). Capture a
     // baseline delta — never an absolute count (shared org accumulates).
     const before = await api.getLeadStats();
@@ -225,11 +224,8 @@ test.describe('Stage 3 — Lead (redesign C3)', () => {
     const lost = await freshLead();
     await api.markLeadLost(lost.leadId, `lost-${api.suffix}`);
 
-    const cancelled = await freshLead();
-    await api.cancelLead(cancelled.leadId, `cancel-${api.suffix}`);
-
     const after = await api.getLeadStats();
-    // The mark-lost lead increments lost_this_month by (at least) 1; the cancel does NOT.
+    // The mark-lost lead increments lost_this_month by 1.
     expect(Number(after.lost_this_month) - Number(before.lost_this_month)).toBe(1);
 
     // Cross-check the inline list stats.lost (all-time org LOST count): also +1 vs baseline.
@@ -238,72 +234,33 @@ test.describe('Stage 3 — Lead (redesign C3)', () => {
   });
 
   // ── LEAD-07 ────────────────────────────────────────────────────────────
-  test('LEAD-07: cancel voids an UNPAID deposit invoice; a PAID deposit survives because cancel is rejected (lead already WON)', async () => {
-    // UNPAID branch: SENT estimate + unpaid kind=DEPOSIT invoice; cancel voids it.
+  test('LEAD-07: mark-lost voids an UNPAID deposit invoice', async () => {
+    // SENT estimate + unpaid kind=DEPOSIT invoice; marking the lead lost voids it.
     const a = await maEstimateSentWithDeposit(api, 10_000, 30);
-    const cancelA = await api.cancelLead(a.leadId, `customer gone ${api.suffix}`);
-    expect(cancelA.res.status()).toBe(200);
+    const lostA = await api.markLeadLost(a.leadId, `customer gone ${api.suffix}`);
+    expect(lostA.res.status()).toBe(200);
     const ea = await api.getEstimate(a.estimateId);
     expect(ea.invoices[0].status).toBe('VOIDED'); // unpaid deposit voided by the cascade
-
-    // PAID branch: record the deposit payment (auto-injects amount) -> deposit PAID, lead WON.
-    const b = await maEstimateSentWithDeposit(api, 10_000, 30);
-    const pay = await api.markDepositReceived(b.estimateId, { payment_method: 'CHECK' });
-    expect(pay.res.status()).toBe(200);
-    const ebPaid = await api.getLead(b.leadId);
-    expect(ebPaid.status).toBe('WON');
-
-    // The cancel is REJECTED with 400 (cannot cancel a WON lead) — it never runs.
-    const cancelB = await api.cancelLead(b.leadId, `changed mind ${api.suffix}`);
-    expect(cancelB.res.status()).toBe(400);
-    expect(String(cancelB.body.error)).toBe('Cannot cancel a won lead');
-
-    // The PAID deposit therefore survives — because cancel was rejected, NOT because cancel
-    // ran and spared it. Assert the PAID state too (the exemplar's positive claim).
-    const eb = await api.getEstimate(b.estimateId);
-    expect(eb.invoices[0].status).toBe('PAID');
-
-    // Document the exemplar's misleading mechanism (assertion is true for the wrong reason).
-    flagKnownBug(test.info(), {
-      id: 'LEAD-07',
-      spec: '§3 lead cancel cascade',
-      current: 'Recording the deposit payment flips the lead to WON; the subsequent cancelLead returns 400 and never runs, so the PAID deposit invoice survives because cancel was REJECTED.',
-      expected: 'The exemplar implies cancel ran and deliberately spared a PAID deposit; in reality cancel cannot run on a WON lead. Behaviour is correct but the exemplar mechanism is misleading.',
-    });
   });
 
   // ── LEAD-08 ────────────────────────────────────────────────────────────
-  test('LEAD-08: cancel AND mark-lost run the identical estimate-cascade (SENT estimate -> ARCHIVED, unpaid deposit -> VOIDED)', async () => {
-    // cancel branch.
-    const c = await maEstimateSentWithDeposit(api, 8_000, 25);
-    const cancelRes = await api.cancelLead(c.leadId, `cancel-cascade-${api.suffix}`);
-    expect(cancelRes.res.status()).toBe(200);
-    const ce = await api.getEstimate(c.estimateId);
-    expect(ce.status).toBe('ARCHIVED');            // SENT estimate -> ARCHIVED
-    expect(ce.invoices[0].status).toBe('VOIDED');   // unpaid deposit -> VOIDED
-
-    // mark-lost branch (separate lead) runs the SAME cascade.
+  test('LEAD-08: mark-lost runs the estimate-cascade (SENT estimate -> ARCHIVED, unpaid deposit -> VOIDED)', async () => {
     const l = await maEstimateSentWithDeposit(api, 8_000, 25);
     const lostRes = await api.markLeadLost(l.leadId, `lost-cascade-${api.suffix}`);
     expect(lostRes.res.status()).toBe(200);
     const le = await api.getEstimate(l.estimateId);
-    expect(le.status).toBe('ARCHIVED');
-    expect(le.invoices[0].status).toBe('VOIDED');
+    expect(le.status).toBe('ARCHIVED');            // SENT estimate -> ARCHIVED
+    expect(le.invoices[0].status).toBe('VOIDED');   // unpaid deposit -> VOIDED
   });
 
   // ── LEAD-09 ────────────────────────────────────────────────────────────
-  test('LEAD-09: WON lead blocks cancel/mark-lost (400) but a plain field PATCH is NOT blocked (200)', async () => {
+  test('LEAD-09: WON lead blocks mark-lost (400) but a plain field PATCH is NOT blocked (200)', async () => {
     // Reach WON via record-payment on a deposit estimate.
     const w = await maEstimateSentWithDeposit(api, 9_000, 20);
     const pay = await api.markDepositReceived(w.estimateId, { payment_method: 'CHECK' });
     expect(pay.res.status()).toBe(200);
     const wonLead = await api.getLead(w.leadId);
     expect(wonLead.status).toBe('WON');
-
-    // cancel -> 400.
-    const cancel = await api.cancelLead(w.leadId, `try-cancel-${api.suffix}`);
-    expect(cancel.res.status()).toBe(400);
-    expect(String(cancel.body.error)).toBe('Cannot cancel a won lead');
 
     // mark-lost -> 400.
     const lost = await api.markLeadLost(w.leadId, `try-lost-${api.suffix}`);
@@ -318,11 +275,11 @@ test.describe('Stage 3 — Lead (redesign C3)', () => {
     expect(reread.service_request).toContain('won-edit-');
 
     // Flagged for human: the plan's intent ("edit a WON lead -> 4xx") diverges from the code,
-    // which only blocks cancel/mark-lost (and location edits, via the unrelated estimate-freeze).
+    // which only blocks mark-lost (and location edits, via the unrelated estimate-freeze).
     flagKnownBug(test.info(), {
       id: 'LEAD-09',
       spec: '§3 lead WON terminal guard',
-      current: 'A plain PATCH of service_request/notes on a WON lead returns 200 and persists — update() has no terminal-status guard; only cancel/mark-lost (and location edits) are blocked.',
+      current: 'A plain PATCH of service_request/notes on a WON lead returns 200 and persists — update() has no terminal-status guard; only mark-lost (and location edits) are blocked.',
       expected: "If the spec intends ALL edits blocked once WON, that guard is unimplemented. Needs a human decision on whether generic field edits should be frozen on a WON lead.",
     });
   });
@@ -334,7 +291,7 @@ test.describe('Stage 3 — Lead (redesign C3)', () => {
     const blocked = await api.deleteLead(withEst.leadId);
     expect(blocked.status).toBe(400);
     const blockedBody = await blocked.res.json().catch(() => ({}));
-    expect(String(blockedBody.error)).toBe('Lead has estimates — cancel or mark lost instead');
+    expect(String(blockedBody.error)).toBe('Lead has estimates — mark it lost instead');
 
     // Positive: a bare lead (no estimate, no payment) deletes with 204 No Content (NOT 200).
     const bare = await freshLead();
@@ -347,27 +304,27 @@ test.describe('Stage 3 — Lead (redesign C3)', () => {
 
   // ── LEAD-11 ────────────────────────────────────────────────────────────
   // fixme: the lead list controller has NO default terminal-status filter (it builds `where`
-  // without excluding WON/LOST/CANCELLED), so terminal leads appear in the default list.
+  // without excluding WON/LOST), so terminal leads appear in the default list.
   // Whether terminal-hiding belongs in the API or the FE is unresolved — related to GH #129.
   // Un-skip once the intended layer ships.
   test.fixme('LEAD-11: default list = open pipeline (terminal hidden); ?status= returns terminal', async () => {
-    // Seed one open (NEW) lead and one terminal (CANCELLED) lead, both unique to this run.
+    // Seed one open (NEW) lead and one terminal (LOST) lead, both unique to this run.
     const open = await freshLead(`open-${api.suffix}`);
     const term = await freshLead(`term-${api.suffix}`);
-    await api.cancelLead(term.leadId, `to-terminal-${api.suffix}`);
+    await api.markLeadLost(term.leadId, `to-terminal-${api.suffix}`);
 
-    // Default list (no status/search): our CANCELLED lead is hidden, our NEW lead is present.
+    // Default list (no status/search): our LOST lead is hidden, our NEW lead is present.
     const def = await api.listLeads();
     const defIds = (def.body.leads as any[]).map((l) => l.id);
     expect(defIds).toContain(open.leadId);
     expect(defIds).not.toContain(term.leadId);
     // No terminal status leaks into the default page.
     for (const l of def.body.leads as any[]) {
-      expect(['WON', 'LOST', 'CANCELLED']).not.toContain(l.status);
+      expect(['WON', 'LOST']).not.toContain(l.status);
     }
 
-    // ?status=CANCELLED overrides the open-pipeline default and returns the terminal lead.
-    const filtered = await api.listLeads({ status: 'CANCELLED' });
+    // ?status=LOST overrides the open-pipeline default and returns the terminal lead.
+    const filtered = await api.listLeads({ status: 'LOST' });
     const filteredIds = (filtered.body.leads as any[]).map((l) => l.id);
     expect(filteredIds).toContain(term.leadId);
   });
@@ -382,22 +339,22 @@ test.describe('Stage 3 — Lead (redesign C3)', () => {
     const lostBefore = Number(before.body.stats.lost);
     const totalBefore = Number(before.body.stats.total);
 
-    // Seed 1 NEW + 1 LOST + 1 CANCELLED, all unique to this run.
+    // Seed 1 NEW + 2 LOST, all unique to this run.
     const openLead = await freshLead(`stat-open-${api.suffix}`);
     const lostLead = await freshLead(`stat-lost-${api.suffix}`);
     await api.markLeadLost(lostLead.leadId, `stat-lost-${api.suffix}`);
-    const cancelLead = await freshLead(`stat-cancel-${api.suffix}`);
-    await api.cancelLead(cancelLead.leadId, `stat-cancel-${api.suffix}`);
+    const secondLostLead = await freshLead(`stat-lost-two-${api.suffix}`);
+    await api.markLeadLost(secondLostLead.leadId, `stat-lost-two-${api.suffix}`);
 
     // Same default GET /api/leads call: list hides the two terminal leads, but stats count ALL.
     const after = await api.listLeads();
     const afterIds = (after.body.leads as any[]).map((l) => l.id);
     expect(afterIds).toContain(openLead.leadId);          // open lead visible
     expect(afterIds).not.toContain(lostLead.leadId);      // terminal hidden from list
-    expect(afterIds).not.toContain(cancelLead.leadId);    // terminal hidden from list
+    expect(afterIds).not.toContain(secondLostLead.leadId); // terminal hidden from list
 
-    // Stats are org-scoped and unfiltered: total +3 (all three) and lost +1 vs baseline.
+    // Stats are org-scoped and unfiltered: total +3 (all three) and lost +2 vs baseline.
     expect(Number(after.body.stats.total) - totalBefore).toBeGreaterThanOrEqual(3);
-    expect(Number(after.body.stats.lost) - lostBefore).toBe(1);
+    expect(Number(after.body.stats.lost) - lostBefore).toBe(2);
   });
 });

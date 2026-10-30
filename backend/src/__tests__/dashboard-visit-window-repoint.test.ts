@@ -106,7 +106,8 @@ describe('GET /api/dashboard — sites 1/2/5 (jobs today/yesterday/this-week) re
 
     const windowedCalls = (prisma.job.count as Mock).mock.calls
       .map((c: any[]) => c[0])
-      .filter((args: any) => Array.isArray(args?.where?.AND));
+      // The two windowed counts open their AND with the visit window; other counts that compose under AND (the Office review queue's) do not.
+      .filter((args: any) => Array.isArray(args?.where?.AND?.[0]?.OR));
     // Site #2 (yesterday) and site #5/#19 (this week) — two independent windowed counts.
     expect(windowedCalls.length).toBe(2);
     for (const args of windowedCalls) {
@@ -152,7 +153,7 @@ describe("GET /api/dashboard — site 4 (Today's Schedule) resolves the trip act
     const res = await request(app).get('/api/dashboard').set(authHeader('admin'));
     expect(res.status).toBe(200);
 
-    const lanes = res.body.schedule_today as { jobs: { job_number: string; scheduled_start: string | null }[] }[];
+    const lanes = res.body.data.schedule_today as { jobs: { job_number: string; scheduled_start: string | null }[] }[];
     const entries = lanes.flatMap((l) => l.jobs).filter((j) => j.job_number === 'J-MULTI');
     // Crew fan-out: J-MULTI appears once per assignee across ALL three trips (S8/D6, untouched).
     expect(entries.length).toBe(3);
@@ -217,9 +218,32 @@ describe('GET /api/dashboard — site 3 (needs attention: past start) resolves t
     const res = await request(app).get('/api/dashboard').set(authHeader('admin'));
     expect(res.status).toBe(200);
 
-    const attention = res.body.needs_attention as { type: string; title: string }[];
+    const attention = res.body.data.needs_attention as { type: string; title: string }[];
     const pastStart = attention.filter((a) => a.type === 'job_past_start');
     expect(pastStart.map((a) => a.title)).toEqual(['J-OVERDUE past start time']);
+  });
+});
+
+describe('GET /api/dashboard — the "past start time" item names the crew (S09.14)', () => {
+  it('names the crew "No crew" when nobody is on the overdue visit, never "Unassigned"', async () => {
+    mockAuthAs('admin');
+    const overdue = new Date(Date.now() - 90 * 60_000);
+    (prisma.job.findMany as Mock).mockImplementation(async (args: any) => {
+      if (args?.select?.job_number && !args?.select?.customer) {
+        return [
+          { id: 'job-no-crew', job_number: 'J-NOCREW', scope_notes: null, visits: [
+            { scheduled_at: overdue, scheduled_end: new Date(overdue.getTime() + 3_600_000), created_at: overdue, assignees: [] },
+          ] },
+        ];
+      }
+      return [];
+    });
+
+    const res = await request(app).get('/api/dashboard').set(authHeader('admin'));
+    expect(res.status).toBe(200);
+    const item = (res.body.data.needs_attention as { type: string; meta: string }[]).find((a) => a.type === 'job_past_start');
+    expect(item?.meta).toMatch(/^No crew · started /);
+    expect(JSON.stringify(res.body.data.needs_attention)).not.toMatch(/unassigned/i);
   });
 });
 
@@ -262,7 +286,7 @@ describe('GET /api/dashboard — site 6 (coming up) resolves the next live visit
     const res = await request(app).get('/api/dashboard').set(authHeader('admin'));
     expect(res.status).toBe(200);
 
-    const comingUp = res.body.coming_up as { id: string }[];
+    const comingUp = res.body.data.coming_up as { id: string }[];
     expect(comingUp.map((c) => c.id)).toEqual(['job-past-and-future']);
   });
 });

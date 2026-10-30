@@ -157,6 +157,15 @@ export const DOMAIN_ENUM_SOURCE: Partial<Record<StatusDomain, DomainEnumSource>>
   // as a queue membership rather than a badge, so it is excluded rather than
   // folded in here - see EXCLUDED_ENUMS in the guard test.
   inboundSender: { enums: ['InboundAuthVerdict'] },
+  // Payments go-live slice 04: the ledger's money states. The payment Processing badge and the
+  // refund Pending/Failed rows render through these (slices 28 and 29).
+  payment: { enums: ['PaymentState'] },
+  refund: { enums: ['RefundState'] },
+  // Payments go-live slice 09: where a customer's dispute stands (the money screens, slice 35).
+  dispute: { enums: ['DisputeStatus'] },
+  // Payments go-live slice 11: a payment needing attention (Settings > Payments) is open until a
+  // person refunds it (or it is resolved).
+  unappliedCapture: { enums: ['UnappliedCaptureStatus'] },
 };
 
 /**
@@ -177,6 +186,8 @@ export const SYNTHETIC_DOMAINS: Partial<Record<StatusDomain, string>> = {
   stage: 'lowercase job-staging lifecycle, no enum',
   estimateReservation: 'lowercase pre-PO reservation lifecycle, no enum',
   workflow: 'DERIVED: WorkflowStatus x is_enabled collapsed to DRAFT|LIVE|PAUSED',
+  paymentDisplay: 'label-only Payments page words folded from payment state, refunds, dispute and void; no enum',
+  payout: 'label-only Payouts tab words for the text payouts.status column (PENDING shows as Scheduled); no enum',
 };
 
 /**
@@ -185,6 +196,6 @@ export const SYNTHETIC_DOMAINS: Partial<Record<StatusDomain, string>> = {
  * over nothing. These counts are asserted explicitly so that failure mode is
  * loud. Update them ONLY together with a real domain change.
  */
-export const EXPECTED_ENUM_SOURCED_DOMAINS = 13;
-export const EXPECTED_CLAIMED_ENUMS = 14;
-export const EXPECTED_SYNTHETIC_DOMAINS = 6;
+export const EXPECTED_ENUM_SOURCED_DOMAINS = 17;
+export const EXPECTED_CLAIMED_ENUMS = 18;
+export const EXPECTED_SYNTHETIC_DOMAINS = 8;

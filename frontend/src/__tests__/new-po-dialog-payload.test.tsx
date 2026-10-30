@@ -8,7 +8,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { renderWithProviders } from './helpers';
+import { renderWithProviders, purchasingAbility } from './helpers';
 import { NewPODialog } from '@/components/inventory/NewPODialog';
 import type { Item, Vendor, InventoryJob, NewPOInput } from '@/lib/api/inventory';
 
@@ -50,6 +50,7 @@ function renderDialog() {
   const onClose = vi.fn();
   renderWithProviders(
     <NewPODialog open onClose={onClose} onCreate={onCreate} vendors={vendors} items={items} existingPOs={[]} jobs={jobs} />,
+    { ability: purchasingAbility() },
   );
   return { onCreate, onClose };
 }

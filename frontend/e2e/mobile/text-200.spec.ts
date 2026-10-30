@@ -77,24 +77,41 @@ function clippedText(): Clipped[] {
 /**
  * The dashboard KPI figures, measured against real-sized amounts. The throwaway org's own figures
  * are $0, which fit at any size (the first version of this slice passed on them and shipped
- * "$1,985/mo" cut to "$1,985/"), so the dashboard response's `kpis` are swapped for the five-digit
- * sums a working org carries; everything else in the response is the real one.
+ * "$1,985/mo" cut to "$1,985/"), so the dashboard response's tile data are swapped for the five-digit
+ * sums a working org carries; everything else in the response is the real one. The response is keyed by
+ * tile id (`data['kpi.revenue_mtd']`).
  */
 const BIG_KPIS = {
-  revenue_mtd: { collected: 128450, target: 150000 },
-  collected_today: { amount: 27390 },
-  recurring: { mrr: 1985, active_plans: 14 },
-  ar: { total: 67370, over_30: 12000, over_60: 4100 },
+  'kpi.revenue_mtd': { collected: 128450, target: 150000 },
+  'kpi.collected_today': { amount: 27390 },
+  'kpi.recurring': { mrr: 1985, active_plans: 14 },
+  'kpi.ar': { total: 67370, over_30: 12000, over_60: 4100 },
 };
 async function withBigKpis(page: Page) {
   await page.route((url) => url.pathname === '/api/dashboard', async (route: Route) => {
     if (route.request().method() !== 'GET') return route.fallback();
     const res = await route.fetch();
     const body = await res.json().catch(() => null);
-    if (!body || typeof body !== 'object' || !body.kpis) return route.fulfill({ response: res });
-    const kpis = { ...body.kpis };
-    for (const [k, v] of Object.entries(BIG_KPIS)) kpis[k] = { ...(kpis[k] ?? {}), ...v };
-    return route.fulfill({ response: res, json: { ...body, kpis } });
+    if (!body || typeof body !== 'object' || !body.data) return route.fulfill({ response: res });
+    const data = { ...body.data };
+    for (const [k, v] of Object.entries(BIG_KPIS)) data[k] = { ...(data[k] ?? {}), ...v };
+    return route.fulfill({ response: res, json: { ...body, data } });
+  });
+  // The page draws the tiles of the layout the server holds for the person (`GET /api/dashboard/layout`, answered as
+  // `{ layout, saved }`; an entry flagged `available: false` is a tile the person lost and is never drawn). The real
+  // layout is kept, with the four tiles measured here switched on, so the figures above are on the page to measure.
+  await page.route((url) => url.pathname === '/api/dashboard/layout', async (route: Route) => {
+    if (route.request().method() !== 'GET') return route.fallback();
+    const res = await route.fetch();
+    const body = await res.json().catch(() => null);
+    if (!body || !Array.isArray(body.layout)) return route.fulfill({ response: res });
+    const layout: Array<{ id: string; visible: boolean; available?: boolean }> = body.layout.map((e: { id: string; visible: boolean; available?: boolean }) => ({ ...e }));
+    for (const id of Object.keys(BIG_KPIS)) {
+      const held = layout.find((e) => e.id === id);
+      if (!held) layout.push({ id, visible: true });
+      else if (held.available !== false) held.visible = true;
+    }
+    return route.fulfill({ response: res, json: { ...body, layout, saved: body.saved ?? true } });
   });
 }
 

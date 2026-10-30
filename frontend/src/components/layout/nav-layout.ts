@@ -34,9 +34,11 @@ export function loadLayout(userId: string): string[] {
     const storedVersion = readVersion(userId);
     if (storedVersion < CURRENT_LAYOUT_VERSION) {
       const additions = LAYOUT_ADDITIONS
-        .filter((a) => a.version > storedVersion && !!getDestination(a.key) && !valid.includes(a.key))
-        .map((a) => a.key);
-      valid = [...valid, ...additions];
+        .filter((a) => a.version > storedVersion && !!getDestination(a.key) && !valid.includes(a.key));
+      for (const a of additions) {
+        const at = a.after ? valid.indexOf(a.after) : -1;
+        valid = at === -1 ? [...valid, a.key] : [...valid.slice(0, at + 1), a.key, ...valid.slice(at + 1)];
+      }
       saveLayout(userId, valid); // stamps CURRENT_LAYOUT_VERSION so the migration runs once
     }
     return valid;

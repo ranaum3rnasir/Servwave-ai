@@ -229,7 +229,7 @@ export const allRoles = (users: UserActivity[]): string[] =>
  * of the hierarchy; Role must exist within the selected divisions; Person must
  * exist within the selected divisions AND roles. Selections that no longer fit
  * are dropped — this prevents contradictory combos (e.g. Division=Door +
- * Person=Oved, who is in Locksmith) that would otherwise show all zeros.
+ * Person=Morgan, who is in Locksmith) that would otherwise show all zeros.
  */
 export function reconcileFilters(f: Filters, users: UserActivity[]): Filters {
   const inDiv = (u: UserActivity) => !f.divisionIds.length || f.divisionIds.includes(u.divisionId);

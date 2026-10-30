@@ -72,8 +72,8 @@ describe('GET /api/dashboard — AR KPI excludes DEPOSIT invoices (#497)', () =>
 
     expect(res.status).toBe(200);
     // AC #3: STANDARD balance only.
-    expect(res.body.kpis.ar.total).toBe(1000);
-    expect(res.body.kpis.ar.current).toBe(1000);
+    expect(res.body.data['kpi.ar'].total).toBe(1000);
+    expect(res.body.data['kpi.ar'].current).toBe(1000);
     // AC #1: the AR query filters out DEPOSIT invoices.
     expect(prisma.invoice.findMany).toHaveBeenCalledWith(
       expect.objectContaining({

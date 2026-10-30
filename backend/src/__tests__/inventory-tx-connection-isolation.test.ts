@@ -39,7 +39,6 @@ import {
   INVENTORY_LOCATION_FIXTURE,
 } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 import { processLogisticOrder, returnProcessedLo } from '../lib/logisticOrders';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -168,7 +167,6 @@ function syncedLine() {
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache();
   mockAuthAs('admin');
 
   setupTransaction();

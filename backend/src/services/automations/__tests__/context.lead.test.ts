@@ -737,7 +737,7 @@ describe('loadExecutionBundle — lead, per-visit resolution', () => {
 
   const DANA = {
     id: 't0000000-0000-0000-0000-0000000000b1',
-    email: 'dana@emanuel-demo.local',
+    email: 'dana@demo.local',
     first_name: 'Dana',
     last_name: 'Kaur',
     phone: '+15550100171',
@@ -745,7 +745,7 @@ describe('loadExecutionBundle — lead, per-visit resolution', () => {
   };
   const REUBEN = {
     id: 't0000000-0000-0000-0000-0000000000b2',
-    email: 'reuben@emanuel-demo.local',
+    email: 'reuben@demo.local',
     first_name: 'Reuben',
     last_name: 'Falk',
     phone: '+15550100188',

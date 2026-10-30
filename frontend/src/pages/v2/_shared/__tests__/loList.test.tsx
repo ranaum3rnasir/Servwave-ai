@@ -219,7 +219,14 @@ describe('v2 LOList - empty states', () => {
   it('the unfiltered empty list explains itself', () => {
     h.rows = [];
     renderWithProviders(<LOList />, { ability: createAbility() });
-    expect(screen.getByText(/No logistic orders yet/)).toBeInTheDocument();
+    expect(screen.getByText(/No logistic orders yet - create one/)).toBeInTheDocument();
+  });
+
+  it('does not tell a person without Create logistic orders to create one', () => {
+    h.rows = [];
+    renderWithProviders(<LOList />, { ability: buildAbility([{ action: 'read', subject: 'LogisticOrder' }]) });
+    expect(screen.getByText('No logistic orders yet.')).toBeInTheDocument();
+    expect(screen.queryByText(/create one/i)).not.toBeInTheDocument();
   });
 
   it('a chip that matches nothing names the status it filtered on', async () => {

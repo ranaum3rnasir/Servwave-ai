@@ -336,11 +336,11 @@ describe('route order inside the email router', () => {
     expect(p.email.findFirst).not.toHaveBeenCalled();
   });
 
-  it('GET /emails/:id still works for a literal-looking id', async () => {
+  it('GET /emails/:id still works for a message id', async () => {
     mockAuthAs('admin', EMAIL_ONLY_ORG);
-    p.email.findFirst.mockResolvedValue({ ...EMAIL_ROW, id: 'thread-read' });
+    p.email.findFirst.mockResolvedValue({ ...EMAIL_ROW, id: 'e3000000-0000-4000-8000-000000000001' });
 
-    const res = await request(app).get('/api/communication/emails/thread-read').set(authHeader('admin'));
+    const res = await request(app).get('/api/communication/emails/e3000000-0000-4000-8000-000000000001').set(authHeader('admin'));
 
     expect(res.status).toBe(200);
     expect(p.email.findFirst).toHaveBeenCalled();

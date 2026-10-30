@@ -21,7 +21,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 const mockApi = vi.mocked(api);
 const ROW = { id: 't1', task_number: 'T00001', title: 'X', description: '', status: 'TODO', priority: 'MEDIUM',
-  assignee_ids: ['u1'], assignees: [{ id: 'u1', name: 'Oved Adani' }],
+  assignee_ids: ['u1'], assignees: [{ id: 'u1', name: 'Morgan Diaz' }],
   due_at: null, linked_entity_type: 'JOB', linked_entity_id: 'job-1', tags: [],
   created_by: 'u1', created_at: '2026-06-17T00:00:00Z', updated_at: '2026-06-17T00:00:00Z', completed_at: null };
 
@@ -109,14 +109,14 @@ it('getTask maps the detail row to a full Task', async () => {
     ...ROW, linked_entity_label: 'J00934 · Access Control',
     risk: { score: 40, reason: 'high priority' },
     subtasks: [{ id:'s1', text:'Wire', done:true, position:0 }],
-    comments: [{ id:'n1', body:'Ordered', author_id:'u1', author_name:'Oved Adani', at:'2026-06-17T00:00:00Z' }],
-    activity: [{ id:'a1', type:'CREATED', description:'created the task', actor_id:'u1', actor_name:'Oved Adani', at:'2026-06-17T00:00:00Z', metadata:null }],
-    watchers: [{ id:'u2', name:'Priya' }],
+    comments: [{ id:'n1', body:'Ordered', author_id:'u1', author_name:'Morgan Diaz', at:'2026-06-17T00:00:00Z' }],
+    activity: [{ id:'a1', type:'CREATED', description:'created the task', actor_id:'u1', actor_name:'Morgan Diaz', at:'2026-06-17T00:00:00Z', metadata:null }],
+    watchers: [{ id:'u2', name:'Drew' }],
   } } });
   const t = await getTask('t1');
   expect(mockApi.get).toHaveBeenCalledWith('/api/tasks/t1');
   expect(t.subtasks[0].text).toBe('Wire');
-  expect(t.comments[0].author_name).toBe('Oved Adani');
+  expect(t.comments[0].author_name).toBe('Morgan Diaz');
   expect(t.activity[0].type).toBe('created');
   expect(t.linked_entity?.label).toBe('J00934 · Access Control');
   expect(t.ai.risk_score).toBe(40);
@@ -206,7 +206,7 @@ describe('assignee_ids on the wire', () => {
     const [task] = await listTasks();
     // 'ghost' has no entry in `assignees`, so it must still render as a person.
     expect(task.assignee_ids).toEqual(['u1', 'ghost']);
-    expect(task.assignees).toEqual([{ id: 'u1', name: 'Oved Adani' }, { id: 'ghost', name: null }]);
+    expect(task.assignees).toEqual([{ id: 'u1', name: 'Morgan Diaz' }, { id: 'ghost', name: null }]);
   });
 });
 
@@ -223,9 +223,9 @@ describe('updateTaskApi watcher_ids', () => {
 const DETAIL_ROW = {
   ...ROW,
   subtasks: [{ id: 's1', text: 'Wire', done: true, position: 0 }],
-  comments: [{ id: 'n1', body: 'Ordered', author_id: 'u1', author_name: 'Oved', at: '2026-06-17T00:00:00Z' }],
+  comments: [{ id: 'n1', body: 'Ordered', author_id: 'u1', author_name: 'Morgan', at: '2026-06-17T00:00:00Z' }],
   activity: [],
-  watchers: [{ id: 'u2', name: 'Priya' }],
+  watchers: [{ id: 'u2', name: 'Drew' }],
 };
 
 describe('store actions trigger fetchTaskDetail resync', () => {

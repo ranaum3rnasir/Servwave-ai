@@ -1,8 +1,8 @@
-import { Router } from 'express';
+import { Router, type NextFunction, type Request, type Response } from 'express';
 import { authenticate } from '../middleware/authenticate';
 import { attachAbility } from '../middleware/attachAbility';
 import { attachCustomerScope } from '../lib/permissions/customerScope';
-import { canDo, canDoAny } from '../middleware/canGuard';
+import { canDo } from '../middleware/canGuard';
 import { validate } from '../middleware/validate';
 import { requireUuidParam } from '../middleware/requireUuidParam';
 import { expensiveLimiter } from '../middleware/rate-limit';
@@ -23,30 +23,34 @@ router.get('/export', expensiveLimiter, canDo('export', 'Customer'), customerCon
 router.post('/bulk-tag', canDo('update', 'Customer'), validate(tagController.bulkTagEntitySchema), tagController.bulkAddTagToCustomers);
 
 // Org-wide picker (#2041 slice 1, R13's no-op narrowing) - must be before /:id, same reason
-// /stats and /export are above. `create` on ANY of the four create-form subjects is enough:
-// pickCustomer.tsx is the SAME component behind the lead, job, standalone-invoice and
-// estimate-dialog forms (R9). House `generalLimiter` only (app.ts's `/api` blanket) - never
-// `expensiveLimiter`, the typeahead fires per keystroke.
+// /stats and /export are above. pickCustomer.tsx is the SAME component behind the lead, job,
+// standalone-invoice and estimate-dialog forms (R9). House `generalLimiter` only (app.ts's `/api`
+// blanket) - never `expensiveLimiter`, the typeahead fires per keystroke.
 //
-// PICKER_GUARD alone is not enough: TECHNICIAN holds unconditional `create Job`/`create
-// Estimate` by default and NO `read Customer` grant at all, so it would clear PICKER_GUARD and
-// reach the org-wide directory (restricted rows) with a search oracle over email/phone/
-// customer_number - a surface that 403'd before this endpoint existed. `canDo('read',
-// 'Customer')` chains a SUBJECT-level probe after it - the same fail-closed check
-// `comm-calls.controller.ts::canReadCustomers` uses - so a role with zero `read Customer` still
-// gets 403 (same body PICKER_GUARD gives), while a conditioned reader like SALES (OWN_CUSTOMER)
-// keeps the picker exactly as-is (Ran's carve-out: pickers stay open for scoped readers).
-const PICKER_GUARD = canDoAny([
-  ['create', 'Lead'],
-  ['create', 'Job'],
-  ['create', 'Estimate'],
-  ['create', 'Invoice'],
-]);
-router.get('/picker', PICKER_GUARD, canDo('read', 'Customer'), customerController.picker);
+// Roles & Permissions S01.5: whoever can create a lead or a job gets the picker whatever View
+// customers says - they must be able to find the customer the work is for, and a customer they
+// could not otherwise open comes back restricted (`projectPickerRow`), so it is no back door to the
+// customer pages. The estimate and invoice forms keep today's rule: creating one is not enough, the
+// subject-level `read Customer` probe (the same fail-closed check `comm-calls.controller.ts::
+// canReadCustomers` uses) must pass too, so a role with no customer reach at all still gets a 403.
+const PICKER_GUARD = (req: Request, res: Response, next: NextFunction) => {
+  const ability = req.ability;
+  if (!ability) {
+    res.status(401).json({ error: 'Not authenticated' });
+    return;
+  }
+  const startsLeadOrJob = ability.can('create', 'Lead') || ability.can('create', 'Job');
+  const startsDocument = (ability.can('create', 'Estimate') || ability.can('create', 'Invoice')) && ability.can('read', 'Customer');
+  if (!startsLeadOrJob && !startsDocument) {
+    res.status(403).json({ error: 'Insufficient permissions' });
+    return;
+  }
+  next();
+};
+router.get('/picker', PICKER_GUARD, customerController.picker);
 router.get(
   '/picker/:id',
   PICKER_GUARD,
-  canDo('read', 'Customer'),
   requireUuidParam('id', 'Customer not found'),
   customerController.pickerGetById,
 );
@@ -70,6 +74,7 @@ router.patch('/:id/number', canDo('renumber', 'Customer'), validate(customerCont
 // Lifecycle (entity-redesign §10)
 router.post('/:id/archive', canDo('archive', 'Customer'), customerController.archiveCustomer);
 router.post('/:id/unarchive', canDo('archive', 'Customer'), customerController.unarchiveCustomer);
+router.get('/:id/purge-preview', canDo('force_purge', 'Customer'), customerController.purgePreview);
 router.post('/:id/purge', canDo('force_purge', 'Customer'), customerController.purgeCustomer);
 router.post('/:id/anonymize', canDo('anonymize', 'Customer'), customerController.anonymizeCustomer);
 

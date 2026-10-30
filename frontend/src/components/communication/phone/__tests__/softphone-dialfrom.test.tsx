@@ -5,8 +5,8 @@
 // officeSoftphone.call(e164, fromTpnId) — the OfficeSoftphone handle already
 // threads fromTpnId through dialFrom() before dialing
 // (useCtmSoftphone.ts:113-116); this task only has to fetch the number and
-// pass it in. The bridge/tel path (officeSoftphone null) never fetches this —
-// its from-number is resolved server-side.
+// pass it in. The bridge/tel path (officeSoftphone null) resolves its outgoing number
+// server-side; it reads the same answer only to NAME the number in the dialer (S05.22).
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -16,6 +16,15 @@ const stashAttribution = vi.hoisted(() => ({
   mutate: vi.fn(),
   mutateAsync: vi.fn().mockResolvedValue({ queued: true }),
   isPending: false,
+}));
+
+// Customer numbers on the Communication screens follow the person's switches (S05.6). This suite renders the
+// screen without a query client, so the person's switches are stubbed: every one on, the screen as it always was.
+vi.mock("@/components/contact/useContactPolicyInput", () => ({
+  useContactPolicyInput: () => ({
+    switches: { copyCustomerPhone: true, copyCustomerEmail: true, contactCustomers: true, viewCustomers: true },
+    phoneService: true,
+  }),
 }));
 
 vi.mock("@/lib/api/communication", () => ({
@@ -50,7 +59,7 @@ type Resolved =
 const myOutboundNumber = vi.hoisted(() => ({ current: null as null | Resolved }));
 
 vi.mock("@/lib/api/myOutboundNumber", () => ({
-  useMyOutboundNumber: vi.fn((enabled: boolean) => ({
+  useMyOutboundNumber: vi.fn((enabled: boolean = true) => ({
     data: enabled ? myOutboundNumber.current : undefined,
   })),
 }));
@@ -108,15 +117,17 @@ describe("Softphone dials from the resolved caller-ID number (Task B2)", () => {
     );
   });
 
-  it("fetches the resolved number (enabled=true) only when the office-softphone device is present", () => {
+  it("never switches the resolved-number fetch off when the office-softphone device is present", () => {
     softphone.current = { call: vi.fn(), hangup: vi.fn(), mute: vi.fn(), ready: true, awaitingStart: false };
     render(<Softphone surface="phone-tab" />);
-    expect(useMyOutboundNumber).toHaveBeenCalledWith(true);
+    expect(useMyOutboundNumber).not.toHaveBeenCalledWith(false);
   });
 
-  it("does not fetch (enabled=false) on the bridge/tel path (officeSoftphone null)", () => {
+  it("also reads the resolved number on the bridge path, so the dialer can name it (S05.22)", () => {
+    myOutboundNumber.current = { provider_number_id: "TPN1", phone_number_id: "pn_1", formatted: "(609) 555-0100" };
     render(<Softphone />);
-    expect(useMyOutboundNumber).toHaveBeenCalledWith(false);
+    expect(useMyOutboundNumber).not.toHaveBeenCalledWith(false);
+    expect(screen.getByText("Calling from (609) 555-0100")).toBeInTheDocument();
   });
 
   it("falls back to no fromTpnId when the resolver returns {none:true} (org has no number)", async () => {

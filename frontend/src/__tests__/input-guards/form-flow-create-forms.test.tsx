@@ -48,6 +48,10 @@ beforeEach(() => {
   scrollSpy = vi.fn();
   Element.prototype.scrollIntoView = scrollSpy as unknown as Element['scrollIntoView'];
   mockApi.get.mockImplementation(async (url: string) => {
+    // The new-lead form shows the creator rule's pre-fill and will not save blind without it.
+    if (url === '/api/leads/creator-prefill') return { data: { prefill: { owner_id: null, dispatcher_id: null } } };
+    // The new-job form shows the creator rule's pre-fill (Sold By and Dispatcher) and will not save blind without it.
+    if (url === '/api/jobs/creator-prefill') return { data: { prefill: { sold_by_id: null, dispatcher_id: null } } };
     if (url === '/api/customers/picker') return { data: { customers: [] } };
     return { data: { data: [] } };
   });

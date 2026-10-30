@@ -20,15 +20,14 @@ export const LEAD_STATUSES = [
   'ESTIMATED',
   'WON',
   'LOST',
-  'CANCELLED',
 ];
 
 /**
- * The closed end of the pipeline: a WON (converted), LOST or CANCELLED lead needs no more work.
+ * The closed end of the pipeline: a WON (converted) or LOST lead needs no more work.
  * The frontend copy of the backend's `TERMINAL_LEAD_STATUSES` (services/lead-stage.service.ts),
  * same members; kept beside LEAD_STATUSES so the lead vocabulary stays in one file.
  */
-export const TERMINAL_LEAD_STATUSES: readonly string[] = ['WON', 'LOST', 'CANCELLED'];
+export const TERMINAL_LEAD_STATUSES: readonly string[] = ['WON', 'LOST'];
 
 export function isTerminalLeadStatus(status: string): boolean {
   return TERMINAL_LEAD_STATUSES.includes(status);
@@ -45,7 +44,7 @@ export function isTerminalLeadStatus(status: string): boolean {
 export const WALKTHROUGH_FILTERS = [
   { value: 'needs_scheduling', label: 'Needs Scheduling' },
   { value: 'scheduled', label: 'Scheduled' },
-  { value: 'completed', label: 'Completed' },
+  { value: 'completed', label: 'Finished' },
   { value: 'not_needed', label: 'Not Needed' },
 ];
 
@@ -74,6 +73,8 @@ export const leadsRegistry: FacetConfig[] = [
     // Static: lead statuses are fixed (every company sees the same vocabulary), so the wire VALUE
     // and the label both come straight from the enum and the status registry.
     options: LEAD_STATUSES.map((s) => ({ value: s, label: STATUS_REGISTRY.lead[s]?.label ?? s })),
+    // Cancelled is retired for leads: every lead that was Cancelled is Lost, so a saved link filtering on it shows Lost leads.
+    retiredValues: { CANCELLED: 'LOST' },
   },
   {
     key: 'ad_source',
@@ -95,12 +96,22 @@ export const leadsRegistry: FacetConfig[] = [
     key: 'assigned_to',
     kind: 'multi',
     param: 'assigned_to',
-    label: 'Assigned To',
+    label: 'Owner',
     icon: 'M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2 M16 7A4 4 0 1 1 8 7A4 4 0 1 1 16 7Z',
     // Resolved by the page's resolveOptions('assignableUsers') — MUST include
-    // an {value:'UNASSIGNED', label:'Unassigned'} option; the backend facet
-    // (lead.filters.ts) treats that value specially (`lead_assignees: {none: {}}`).
+    // a {value:'NO_OWNER', label:'No owner'} option; the backend facet
+    // (lead.filters.ts) treats that value as the Missing lead owner predicate.
     optionSource: 'assignableUsers',
+  },
+  {
+    key: 'dispatcher',
+    kind: 'multi',
+    param: 'dispatcher',
+    label: 'Dispatcher',
+    icon: 'M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2 M16 7A4 4 0 1 1 8 7A4 4 0 1 1 16 7Z',
+    // Resolved by the page's resolveOptions('dispatchers'): the people who can be a dispatcher plus a
+    // {value:'NO_DISPATCHER', label:'No dispatcher'} option the backend facet reads as "no Dispatcher".
+    optionSource: 'dispatchers',
   },
   {
     key: 'walkthrough_status',

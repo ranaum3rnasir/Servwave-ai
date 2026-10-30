@@ -38,6 +38,9 @@ export interface CommItem {
   answeredBy?: string;
   /** Email rows sent by the system account (estimate/invoice/etc.). */
   transactional?: boolean;
+  /** PRD 10, S10.20 - an email linked to this customer by the sender's address although the sender's domain could not prove who
+   *  sent it. The row says "Unverified sender". Omitted otherwise, never `false`. */
+  unverifiedSender?: boolean;
   /** Reserved for the business-state chip (sage); NOT populated in v1. */
   state?: string;
   /** Call disposition etc. */
@@ -69,6 +72,17 @@ export interface CommItem {
    *  is applied by `canModifyLoggedEntry` below and enforced for real by the API on the write.
    *  Manual rows only. */
   loggedById?: string;
+  /** What the customer did, or paid, on the record (S08.9, S08.10) - `portal` rows only: an estimate they approved or
+   *  declined, or a payment received on one of its invoices or deposits. It is an entry, not a conversation: nothing to
+   *  reply to, attach or open. An estimate decision carries no total. */
+  entry?: 'estimate_approved' | 'estimate_declined' | 'payment_received';
+  /** A decline's reason, as the organization words it, and the customer's own words with it. Both omitted when none given. */
+  reason?: string;
+  reasonNote?: string;
+  /** A payment received (S08.10): its amount, which is the invoice's price (the server sends the entry only to people who
+   *  can open that invoice), and whether the customer paid on their own link or the office recorded it. */
+  amount?: number;
+  paidVia?: 'online' | 'office';
 }
 
 /**

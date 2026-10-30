@@ -34,6 +34,12 @@ export interface FacetConfig {
   // multi
   /** Static option list. */
   options?: FacetOption[];
+  /**
+   * Values a saved link or bookmark may still carry for an option that was retired, and the current value each now means
+   * (e.g. a lead filter on Cancelled reads as Lost). Applied when the URL is read, so the chip and the request both
+   * carry the current value.
+   */
+  retiredValues?: Record<string, string>;
   /** Id of a dynamic option source the page resolves (e.g. "users", "org"). */
   optionSource?: string;
 

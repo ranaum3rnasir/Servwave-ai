@@ -176,7 +176,7 @@ test.describe('Duplicate-customer guard (INT-11..INT-14)', () => {
     // If a customer-timeline endpoint ever lands, upgrade this to assert the metadata keys.
     const dash = await api.raw('get', '/api/dashboard');
     expect(dash.res.status()).toBe(200);
-    const evt = (dash.body.activity ?? []).find((e: any) =>
+    const evt = (dash.body.data?.recent_activity ?? []).find((e: any) =>
       e.entity_type === 'CUSTOMER' && e.entity_id === created.id && e.event_type === 'CUSTOMER_CREATED');
     expect(evt, 'override-create CUSTOMER_CREATED event surfaces in the activity feed').toBeTruthy();
     expect(evt.description).toBe(`Customer created (duplicate of ${a.customer_number} bypassed)`);

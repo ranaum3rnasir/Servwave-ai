@@ -347,7 +347,7 @@ describe('visit-write refresh guard - rule 2, every write refreshes in its own u
   });
 
   it('discovers the lib/api wrappers that send a visit write, so their callers are policed', () => {
-    expect([...wrappers.keys()]).toEqual(expect.arrayContaining(['reopenJob', 'cancelLead', 'deleteLead']));
+    expect([...wrappers.keys()]).toEqual(expect.arrayContaining(['reopenJob', 'deleteLead']));
   });
 
   it('each whole-file exemption still sends an unrefreshed visit write (no stale exemptions)', () => {

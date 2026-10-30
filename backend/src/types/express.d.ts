@@ -40,6 +40,9 @@ declare global {
       // al) stay pure/synchronous instead of re-awaiting the grant lookup at each of dozens of
       // call sites — see backend/src/lib/permissions/customerScope.ts.
       customerScope?: Record<string, unknown>;
+      // Roles & Permissions S01.5 - the customers of the leads and jobs the person can open, memoised next to
+      // `customerScope`: a customer's contact comes with such a record whatever Customers View says.
+      customerRecordScope?: Record<string, unknown>;
     }
   }
 }

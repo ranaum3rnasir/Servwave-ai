@@ -15,6 +15,7 @@
 import { STOP_IF_LABELS } from './workflowValidation';
 import type { EntityState } from './context';
 import { ESTIMATE_STATUS } from '../../constants/estimateStatus';
+import { isCompletedOrLater } from '../../lib/job-status-order';
 
 /**
  * Does `condition` hold for this entity state?
@@ -48,7 +49,8 @@ export function stopIfHolds(
     case 'job_cancelled':
       return state.jobStatus === 'CANCELLED';
     case 'job_completed':
-      return state.jobStatus === 'COMPLETED';
+      // The work is done from Complete on: Office review, Ready to close and Done count (a job never rests at Completed).
+      return isCompletedOrLater(state.jobStatus);
     case 'job_rescheduled':
       return Boolean(
         occurrenceKey && state.jobScheduledStart && state.jobScheduledStart.toISOString() !== occurrenceKey,

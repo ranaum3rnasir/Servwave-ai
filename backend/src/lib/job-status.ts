@@ -1,13 +1,22 @@
 import type { JobStatus, VisitStatus } from '@prisma/client';
 import { LIVE_VISIT_STATUSES } from './visit-status';
+import { JOB_STATUS_ORDER } from './job-status-order';
+
+/**
+ * The statuses a visit write must never move a job into or out of: Completed and every status after it in the order
+ * (Office review, Ready to close, Done) and Cancelled. These are explicit, human-set facts. Derived from the order, so a
+ * status placed there joins the guard without another edit.
+ */
+const HUMAN_SET_STATUSES: readonly JobStatus[] = JOB_STATUS_ORDER.slice(JOB_STATUS_ORDER.indexOf('COMPLETED'));
 
 /**
  * Multi-visit S4, D12: derive a job's status from its visit set.
  *
  * UNSCHEDULED means no live visits (D16). SCHEDULED means visits exist and none has been worked.
  * IN_PROGRESS means work has begun - a visit started, a visit finished, or the JOB itself started
- * before any visit existed (the urgent workflow). COMPLETED and CANCELLED are explicit, human-set
- * facts and are NEVER derived - the first clause below is the whole guard. A CANCELLED VISIT is
+ * before any visit existed (the urgent workflow). COMPLETED, the close-out statuses after it (OFFICE_REVIEW,
+ * READY_TO_CLOSE, DONE) and CANCELLED are explicit, human-set facts and are NEVER derived - the first clause below is
+ * the whole guard. A visit written on a job in one of them leaves the job's status where the office put it. A CANCELLED VISIT is
  * not evidence of anything: its stamps are kept as history and must not be read as work done.
  *
  * Returns `undefined` to mean "write nothing", not `current`. The difference is load-bearing: a
@@ -31,7 +40,7 @@ export function deriveJobStatus(
   visits: { status: VisitStatus; started_at: Date | null }[],
   jobStartedAt: Date | null = null,
 ): JobStatus | undefined {
-  if (current === 'COMPLETED' || current === 'CANCELLED') return undefined;
+  if (HUMAN_SET_STATUSES.includes(current)) return undefined;
   return deriveJobStatusFromVisits(visits, jobStartedAt);
 }
 
@@ -44,11 +53,18 @@ export function deriveJobStatus(
  * there produces a job that still reads Cancelled everywhere with no record of why, which nothing
  * ever re-derives - deriveJobStatus above is precisely the thing that refuses to touch it. Every
  * other caller must go through deriveJobStatus and keep the guard.
+ *
+ * The one thing it still refuses is a job in Office review, Ready to close or Done, or one that is Cancelled
+ * (`current`, when the caller says where the job stands): the office put the job there, a leaving move out of those is
+ * a close-out move (M7) that never goes through the visits, and a caller that forgot to check first must not silently
+ * pull the job out of them. Without `current` the rule has nothing to refuse on, so a caller names it.
  */
 export function deriveJobStatusFromVisits(
   visits: { status: VisitStatus; started_at: Date | null }[],
   jobStartedAt: Date | null = null,
-): JobStatus {
+  current?: JobStatus,
+): JobStatus | undefined {
+  if (current !== undefined && current !== 'COMPLETED' && HUMAN_SET_STATUSES.includes(current)) return undefined;
   // The JOB's own start stamp counts as much as a visit's, and the urgent workflow is why: a job
   // created UNSCHEDULED and started on the spot has no visit at all, so the whole visit set says
   // "nobody has started" while the crew is in the customer's house. Booking the return trip then

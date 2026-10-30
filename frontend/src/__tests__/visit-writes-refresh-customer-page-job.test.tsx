@@ -16,7 +16,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderWithProviders, ALL_JOB_ACTIONS } from '@/__tests__/helpers';
 import { expectCustomerPageStale, seedCustomerPage } from '@/__tests__/support/customerPageCache';
 import { VisitScheduleDialog } from '@/pages/v2/jobs/components/visitScheduleDialog';
 import { AssignJobDialog } from '@/components/jobs/AssignJobDialog';
@@ -51,7 +51,12 @@ beforeEach(() => {
   vi.clearAllMocks();
   post.mockResolvedValue({ data: {} });
   patch.mockResolvedValue({ data: {} });
-  get.mockResolvedValue({ data: {} });
+  // The cancel dialogs offer the company's job cancel reasons (S06.15); every other read is empty.
+  get.mockImplementation(async (url: string) => (
+    url === '/api/job-cancel-reasons'
+      ? { data: { job_cancel_reasons: [{ code: 'OTHER', label: 'Other', is_active: true, sort_order: 0, is_builtin: true }] } }
+      : { data: {} }
+  ));
 });
 
 /** Fills the four required schedule fields so the dialog's save button is enabled. */
@@ -127,7 +132,8 @@ describe('the assign-job dialog', () => {
 
   it('"Schedule Anyway" past a conflict marks the customer page stale too', async () => {
     const user = userEvent.setup();
-    post.mockRejectedValueOnce({ response: { status: 409, data: { error: 'Scheduling conflict' } } });
+    // The server's conflict 409 always lists the conflicts; a 409 without them is a plain refusal (S06.17).
+    post.mockRejectedValueOnce({ response: { status: 409, data: { error: 'Scheduling conflict', conflicts: [] } } });
     const { queryClient } = renderWithProviders(
       <AssignJobDialog
         open
@@ -158,7 +164,9 @@ describe('cancelling the job', () => {
     );
     seedCustomerPage(queryClient);
 
-    await user.type(screen.getByPlaceholderText('Why is this job being cancelled?'), 'Customer moved');
+    await user.click(await screen.findByRole('combobox', { name: /Reason/ }));
+    await user.click(await screen.findByRole('option', { name: 'Other' }));
+    await user.type(screen.getByLabelText('Note (optional)'), 'Customer moved');
     await user.click(screen.getByRole('button', { name: 'Cancel Job' }));
 
     await waitFor(() => expect(post).toHaveBeenCalledWith('/api/jobs/job-4/cancel', expect.anything()));
@@ -191,7 +199,7 @@ describe('the Visits card lifecycle steps', () => {
 });
 
 describe('the job page header', () => {
-  it('"Mark Complete" marks the customer page stale (it completes the job\'s visits)', async () => {
+  it('"Complete job" marks the customer page stale (it completes the job\'s visits)', async () => {
     get.mockImplementation(async (url: string) =>
       url === `/api/jobs/${JOB_ID}`
         ? {
@@ -199,7 +207,7 @@ describe('the job page header', () => {
               job: {
                 id: JOB_ID, job_number: 'J00001', status: 'IN_PROGRESS',
                 customer: { id: 'cust-1', first_name: 'Pat', last_name: 'Sample', company_name: null },
-                assignees: [], invoices: [], linked_estimates: [], tags: [],
+                assignees: [], invoices: [], linked_estimates: [], tags: [], actions: ALL_JOB_ACTIONS,
                 created_at: '2026-09-01T00:00:00.000Z', updated_at: '2026-09-01T00:00:00.000Z',
               },
             },
@@ -212,7 +220,7 @@ describe('the job page header', () => {
     });
     seedCustomerPage(queryClient);
 
-    await user.click(await screen.findByRole('button', { name: /Mark Complete/ }));
+    await user.click(await screen.findByRole('button', { name: /Complete job/ }));
 
     await waitFor(() => expect(post).toHaveBeenCalledWith(`/api/jobs/${JOB_ID}/complete`));
     await expectCustomerPageStale(queryClient);
@@ -236,13 +244,13 @@ describe('the jobs list bulk actions (they write every selected job\'s visits)',
     return utils.queryClient;
   }
 
-  it('a bulk status change (Completed) marks the customer page stale', async () => {
+  it('a bulk Complete job marks the customer page stale', async () => {
     const user = userEvent.setup();
     const queryClient = renderBulkBar();
 
     await user.click(screen.getByRole('button', { name: 'Change status' }));
-    await user.click(await screen.findByRole('menuitem', { name: 'Completed' }));
-    await user.click(await screen.findByRole('button', { name: 'Update' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Complete job' }));
+    await user.click(await screen.findByRole('button', { name: 'Complete jobs' }));
 
     await waitFor(() =>
       expect(post).toHaveBeenCalledWith('/api/jobs/bulk-status', { ids: SELECTED, action: 'complete' }),
@@ -256,8 +264,12 @@ describe('the jobs list bulk actions (they write every selected job\'s visits)',
 
     await user.click(screen.getByRole('button', { name: 'Change status' }));
     await user.click(await screen.findByRole('menuitem', { name: 'Cancelled' }));
-    await user.type(await screen.findByPlaceholderText('Why are these jobs being cancelled?'), 'Season over');
-    await user.click(screen.getByRole('button', { name: 'Cancel Job' }));
+    await user.click(await screen.findByRole('combobox', { name: /Reason/ }));
+    await user.click(await screen.findByRole('option', { name: 'Other' }));
+    await user.type(screen.getByLabelText('Note (optional)'), 'Season over');
+    // #891: the bulk cancel needs an explicit open-invoice choice.
+    await user.click(screen.getByRole('radio', { name: /Keep the invoices/ }));
+    await user.click(screen.getByRole('button', { name: 'Cancel 2 jobs' }));
 
     await waitFor(() =>
       expect(post).toHaveBeenCalledWith('/api/jobs/bulk-status', expect.objectContaining({ ids: SELECTED, action: 'cancel' })),

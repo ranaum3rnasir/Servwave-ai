@@ -1,40 +1,101 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
-import { Check, GripVertical, X } from 'lucide-react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { GripVertical, X } from 'lucide-react';
 
 import {
   useOrganization,
+  useStripeStatus,
+  useRefreshStripeStatus,
   useUpdateOrganization,
+  type DepositPolicy,
   type OrgFormValues,
   type PaymentMethod,
 } from '@/lib/api/organization';
 import { PAYMENT_METHOD_LABELS, PAYMENT_METHOD_ORDER } from '@/lib/payment-methods';
-// Both own their entire surface (Stripe account state, the onboarding steps and
-// the Connect handshake). The kit ships no equivalent, so they are reused whole
-// and recorded in the ledger.
-import { StripePaymentsStatusCard } from '@/components/payments/StripePaymentsStatusCard';
-import { StripeOnboardingDrawer } from '@/components/payments/StripeOnboardingDrawer';
+// Owns the payout account's status states. The kit ships no equivalent, so it is reused whole and recorded in
+// the ledger. Setup itself (terms, onboarding, bank and identity) lives on the owner-only payout account page.
+import { PaymentsStatusCard } from '@/components/payments/PaymentsStatusCard';
 // Owns its whole surface as well (the tag list, the inline rename/recolour editor
 // and the delete confirm), so it is reused whole - but it draws its chrome from
 // the same `Section` the ListSections below use, so it sits flush in their row.
 import { TagsSettingsCard } from './components/tagsSettingsCard';
 import { TaskCategoriesSettingsCard } from './components/taskCategoriesSettingsCard';
 import { useAppAbility } from '@/contexts/AbilityContext';
+import { useFeature } from '@/lib/entitlements';
+import { ActionLink } from '@/components/ui/action-link';
 import { MoveButtons } from '@/components/form/MoveButtons';
 import { moveInList, type MoveDirection } from '@/lib/moveInList';
 
+import { Badge } from '@/ui-kit/components/ui/badge';
 import { Button } from '@/ui-kit/components/ui/button';
 import { Checkbox } from '@/ui-kit/components/ui/checkbox';
 import { EmptyState } from '@/ui-kit/components/data/emptyState';
 import { Input } from '@/ui-kit/components/ui/input';
 import { Label } from '@/ui-kit/components/ui/label';
+import { Switch } from '@/ui-kit/components/ui/switch';
+import { Textarea } from '@/ui-kit/components/ui/textarea';
 import { cn } from '@/ui-kit/lib/utils';
 
 import { useSettingsBar } from './settingsBar';
 import { Section } from './components/section';
+import { InfoPopover } from '../_shared/infoPopover';
+import { FieldErrorSummary, type FieldProblem } from './components/fieldErrorSummary';
+import { jumpToField } from './components/jumpToField';
+import { SettingRow } from './components/field';
 import { LONG_TEXT_MAX } from '@/lib/textLimits';
 
-type FormValues = Pick<OrgFormValues, 'accepted_payment_methods' | 'source_options' | 'job_type_options' | 'deposit_default_type' | 'deposit_default_percentage' | 'deposit_default_fixed_amount'>;
+type FormValues = Pick<
+  OrgFormValues,
+  | 'accepted_payment_methods'
+  | 'source_options'
+  | 'job_type_options'
+  | 'deposit_default_type'
+  | 'deposit_default_percentage'
+  | 'deposit_default_fixed_amount'
+  | 'card_offered_by_default'
+  | 'bank_offered_by_default'
+  | 'tips_enabled'
+  | 'tip_presets'
+  | 'deposit_policy'
+  | 'bank_transfer_instructions'
+>;
+
+const DEPOSIT_POLICY_OPTIONS: ReadonlyArray<readonly [DepositPolicy, string]> = [
+  ['REQUIRED_BEFORE_APPROVAL', 'Require the deposit before approval'],
+  ['PAY_LATER', 'Allow approval now, deposit paid later'],
+];
+
+const TIP_RANGE_MESSAGE = 'Enter a whole number from 1 to 50.';
+const TIP_DUPLICATE_MESSAGE = 'Each choice must be different.';
+const DEPOSIT_PCT_MESSAGE = 'Enter a deposit percentage between 0 and 100.';
+const DEPOSIT_FIXED_MESSAGE = 'Enter a valid fixed deposit amount (>= 0).';
+const DEPOSIT_PCT_ID = 'deposit-pct';
+const FIELD_LABELS: Record<string, string> = {
+  'deposit-pct': 'Percentage',
+  'deposit-fixed': 'Fixed amount',
+  'tip-choice-1': 'Choice 1',
+  'tip-choice-2': 'Choice 2',
+  'tip-choice-3': 'Choice 3',
+};
+const DEPOSIT_FIXED_ID = 'deposit-fixed';
+
+const tipFieldId = (i: number) => `tip-choice-${i + 1}`;
+/** Reading order of every field that can fail a save: the first bad one is where the user is taken. */
+const FIELD_ORDER = [DEPOSIT_PCT_ID, DEPOSIT_FIXED_ID, tipFieldId(0), tipFieldId(1), tipFieldId(2)];
+
+/**
+ * The backend's rule (organization.controller patchOrgSchema): three whole percentages, 1-50.
+ * Returns the message for each bad box, keyed by its input id; a repeat is flagged on the later box.
+ */
+function tipPresetProblems(presets: number[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  presets.forEach((n, i) => {
+    if (!Number.isInteger(n) || n < 1 || n > 50) out[tipFieldId(i)] = TIP_RANGE_MESSAGE;
+    else if (presets.findIndex((m) => m === n) !== i) out[tipFieldId(i)] = TIP_DUPLICATE_MESSAGE;
+  });
+  return out;
+}
 
 function dirtyValues(dirtyFields: Record<string, unknown>, values: Record<string, unknown>) {
   const out: Record<string, unknown> = {};
@@ -59,17 +120,47 @@ export default function PaymentsListsPage() {
   const canManageTags = ability.can('update', 'Tag') && ability.can('delete', 'Tag');
   // `create`/`update TaskCategory` carry no defaultGrants row either: ADMIN-only.
   const canManageTaskCategories = ability.can('create', 'TaskCategory') && ability.can('update', 'TaskCategory');
+  // Payments go-live slice 16: an org whose plan lacks online payments is told so here, and is not
+  // offered onboarding (the backend refuses to open a new account for it with 403). An org that
+  // already has an account keeps its status card and "Fix now", so it can still get money it
+  // already collected paid out; the plan message then sits beside the card.
+  const onlinePaymentsInPlan = useFeature('online_payments');
+  const { data: payStatus } = useStripeStatus();
+  const hasPayoutAccount = Boolean(payStatus?.connected);
+  const navigate = useNavigate();
+  // Payments go-live slice 34: setting up and fixing the payout account is the owner's, on its own page.
+  const canManagePayoutAccount = ability.can('manage_payout_account', 'Organization');
   const { data: org } = useOrganization();
   const update = useUpdateOrganization();
   const { registerSaver } = useSettingsBar();
 
   const form = useForm<FormValues>({ defaultValues: {} });
-  const { reset, watch, setValue, getValues, formState } = form;
+  const { reset, watch, setValue, getValues, formState, register } = form;
 
   const [newSource, setNewSource] = useState('');
   const [newJobType, setNewJobType] = useState('');
-  const [depositError, setDepositError] = useState<string | null>(null);
-  const [payDrawerOpen, setPayDrawerOpen] = useState(false);
+  // A failed save leaves one message per bad field, keyed by the field's input id.
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const clearFieldError = (id: string) =>
+    setFieldErrors((cur) => {
+      if (!(id in cur)) return cur;
+      const { [id]: _removed, ...rest } = cur;
+      return rest;
+    });
+
+  // Back from the hosted onboarding (the return URL carries ?onboarding=return): re-read the
+  // account status once, so the card shows what the account can do now, not what was stored.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { mutate: refreshStripeStatus } = useRefreshStripeStatus();
+  const onboardingReturnHandled = useRef(false);
+  useEffect(() => {
+    if (onboardingReturnHandled.current || searchParams.get('onboarding') !== 'return') return;
+    onboardingReturnHandled.current = true;
+    refreshStripeStatus();
+    const next = new URLSearchParams(searchParams);
+    next.delete('onboarding');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams, refreshStripeStatus]);
 
   // Hydrate once per org, and never over an edit in progress - the same guard
   // CompanyProfilePage carries, for the same reason and against the same query.
@@ -96,6 +187,12 @@ export default function PaymentsListsPage() {
         deposit_default_type: org.deposit_default_type ?? 'PERCENTAGE',
         deposit_default_percentage: org.deposit_default_percentage ?? 50,
         deposit_default_fixed_amount: org.deposit_default_fixed_amount ?? 0,
+        card_offered_by_default: org.card_offered_by_default ?? true,
+        bank_offered_by_default: org.bank_offered_by_default ?? true,
+        tips_enabled: org.tips_enabled ?? false,
+        tip_presets: org.tip_presets ?? [10, 15, 20],
+        deposit_policy: org.deposit_policy ?? 'REQUIRED_BEFORE_APPROVAL',
+        bank_transfer_instructions: org.bank_transfer_instructions ?? '',
       });
     }
     // `isDirty` is read, not depended on: it is a getter on RHF's formState
@@ -105,6 +202,10 @@ export default function PaymentsListsPage() {
 
   const isDirty = formState.isDirty;
 
+  /** The failed fields among `ids`, in reading order, for a card's "Fix N fields" banner. */
+  const problemsFor = (ids: string[]): FieldProblem[] =>
+    ids.filter((id) => id in fieldErrors).map((id) => ({ id, label: FIELD_LABELS[id] ?? id }));
+
   useEffect(() => {
     registerSaver({
       save: async () => {
@@ -113,21 +214,35 @@ export default function PaymentsListsPage() {
         const depositType = values.deposit_default_type;
         const depositPct = Number(values.deposit_default_percentage);
         const depositFixed = Number(values.deposit_default_fixed_amount);
+        // Every bad field is collected, so the page can mark each one and take the user to the first.
+        const problems: Record<string, string> = {};
         if (depositType === 'PERCENTAGE' && (Number.isNaN(depositPct) || depositPct < 0 || depositPct > 100)) {
-          setDepositError('Enter a deposit percentage between 0 and 100.');
-          throw new Error('Invalid deposit percentage');
+          problems[DEPOSIT_PCT_ID] = DEPOSIT_PCT_MESSAGE;
         }
         if (depositType === 'FIXED' && (Number.isNaN(depositFixed) || depositFixed < 0)) {
-          setDepositError('Enter a valid fixed deposit amount (>= 0).');
-          throw new Error('Invalid deposit fixed amount');
+          problems[DEPOSIT_FIXED_ID] = DEPOSIT_FIXED_MESSAGE;
         }
-        setDepositError(null);
+        // The choices are only on screen while tips are on. Edited and then hidden, they are held to the
+        // same rule only when they would still be sent; a bad hidden set is simply not sent.
+        if ('tip_presets' in payload) {
+          const bad = tipPresetProblems(values.tip_presets ?? []);
+          if (values.tips_enabled) Object.assign(problems, bad);
+          else if (Object.keys(bad).length) delete payload.tip_presets;
+        }
+        setFieldErrors(problems);
+        const first = FIELD_ORDER.find((id) => id in problems);
+        if (first) {
+          jumpToField(first);
+          const err = new Error('Fix the highlighted fields to save');
+          err.name = 'FieldErrors';
+          throw err;
+        }
         if (Object.keys(payload).length) await update.mutateAsync(payload as Partial<OrgFormValues>);
         reset(values);
       },
       discard: () => {
         if (org) reset();
-        setDepositError(null);
+        setFieldErrors({});
       },
       isDirty,
     });
@@ -135,9 +250,20 @@ export default function PaymentsListsPage() {
   }, [isDirty]);
 
   const methods = (watch('accepted_payment_methods') as PaymentMethod[] | undefined) ?? [];
+  // What the payout account can take today, the same facts the backend resolver keys on: CARD and
+  // ACH in the accepted methods are server-owned capability mirrors, and neither works while
+  // charges are off. Read from the org, never from the form, which only echoes them back.
+  const chargesOn = org?.stripe_charges_enabled === true;
+  const canTakeCards = chargesOn && (org?.accepted_payment_methods ?? []).includes('CARD');
+  const canTakeBank = chargesOn && (org?.accepted_payment_methods ?? []).includes('ACH');
+  const onlineGroupId = useId();
+  const manualGroupId = useId();
   const sources = (watch('source_options') as string[] | undefined) ?? [];
   const jobTypes = (watch('job_type_options') as string[] | undefined) ?? [];
   const depositType = watch('deposit_default_type') ?? 'PERCENTAGE';
+  const depositPolicy = watch('deposit_policy') ?? 'REQUIRED_BEFORE_APPROVAL';
+  const tipsEnabled = watch('tips_enabled') ?? false;
+  const tipPresets = watch('tip_presets') ?? [10, 15, 20];
 
   const addToList = (key: 'source_options' | 'job_type_options', value: string, clear: () => void) => {
     const v = value.trim();
@@ -153,34 +279,38 @@ export default function PaymentsListsPage() {
 
   return (
     <div className="space-y-6">
-      {/* ServWave Payments status card (6.1) + its onboarding drawer (Task 2.4). This
-          page owns the drawer's open state; the card never imports the drawer itself. */}
-      <StripePaymentsStatusCard onOpenDrawer={() => setPayDrawerOpen(true)} />
-      <StripeOnboardingDrawer open={payDrawerOpen} onOpenChange={setPayDrawerOpen} />
+      {/* ServWave Payments status card (6.1). Its button hands the owner to the payout account page;
+          anyone else sees the status only. */}
+      {(onlinePaymentsInPlan || hasPayoutAccount) && (
+        <PaymentsStatusCard onOpenSetup={canManagePayoutAccount ? () => navigate('/settings/payout-account') : undefined} />
+      )}
+      {!onlinePaymentsInPlan && <OnlinePaymentsNotInPlan besideAccount={hasPayoutAccount} />}
 
       {/* Payments row */}
       <div className="grid items-start gap-6 lg:grid-cols-2">
-        <Section
-          title="Accepted Payment Methods"
-          description="Shown to customers on public estimate & invoice pages. Dispatchers can narrow this per estimate."
-        >
-          <div className="space-y-2">
-            {/* CARD is not a manual toggle here - card acceptance is governed entirely by
-                ServWave Payments (Stripe) connection status, not by dispatchers checking a
-                box. Once charges are live, show a read-only confirmation row instead: the
-                status card above only says "payouts enabled," which doesn't tell a
-                contractor whether customers can actually pay by card on their invoices. */}
-            {org?.stripe_charges_enabled && (
-              <div className="border-brand bg-brand-subtle flex items-center gap-3 rounded-md border p-3">
-                <Check aria-hidden className="text-brand size-4 shrink-0" />
-                <div>
-                  <span className="text-sm">ServWave Payments</span>
-                  <p className="text-muted-foreground text-xs">
-                    Accepted automatically - customers can pay by card.
-                  </p>
-                </div>
-              </div>
-            )}
+        <Section title="Accepted Payment Methods">
+          {/* Online methods: CARD and ACH in accepted_payment_methods are server-owned capability
+              facts (the payout account can take them), so these switches save the owner's DEFAULT
+              offer of each in its own field and never edit that list. */}
+          <div role="group" aria-labelledby={onlineGroupId} className="space-y-3 rounded-md border p-3">
+            <p id={onlineGroupId} className="text-xs font-medium">Online with ServWave Payments</p>
+            <OnlineMethodRow
+              label="Credit card"
+              available={onlinePaymentsInPlan && canTakeCards}
+              unavailableReason={onlinePaymentsInPlan ? ONLINE_UNAVAILABLE_REASON : NOT_IN_PLAN_REASON}
+              checked={watch('card_offered_by_default') ?? true}
+              onCheckedChange={(v) => setValue('card_offered_by_default', v, { shouldDirty: true })}
+            />
+            <OnlineMethodRow
+              label="Bank (ACH)"
+              available={onlinePaymentsInPlan && canTakeBank}
+              unavailableReason={onlinePaymentsInPlan ? ONLINE_UNAVAILABLE_REASON : NOT_IN_PLAN_REASON}
+              checked={watch('bank_offered_by_default') ?? true}
+              onCheckedChange={(v) => setValue('bank_offered_by_default', v, { shouldDirty: true })}
+            />
+          </div>
+          <div role="group" aria-labelledby={manualGroupId} className="space-y-2">
+            <p id={manualGroupId} className="text-xs font-medium">Recorded by hand</p>
             {PAYMENT_METHOD_ORDER.filter((method) => method !== 'CARD').map((method) => {
               const checked = methods.includes(method);
               return (
@@ -207,11 +337,26 @@ export default function PaymentsListsPage() {
           </div>
         </Section>
 
-        <Section
-          title="Default Deposit"
-          description="Default deposit when sending or recording payment on an estimate. Dispatchers can override per estimate."
-        >
+        <Section title="Default Deposit">
           <div className="space-y-3">
+            <FieldErrorSummary problems={problemsFor([DEPOSIT_PCT_ID, DEPOSIT_FIXED_ID])} />
+            <div className="space-y-1.5">
+              <p className="text-xs font-medium">When the deposit is paid</p>
+              <div role="radiogroup" aria-label="Deposit policy" className="flex flex-col items-start gap-2">
+                {DEPOSIT_POLICY_OPTIONS.map(([value, label]) => (
+                  <Button
+                    key={value}
+                    role="radio"
+                    size="sm"
+                    variant={depositPolicy === value ? 'secondary' : 'outline'}
+                    aria-checked={depositPolicy === value}
+                    onClick={() => setValue('deposit_policy', value, { shouldDirty: true })}
+                  >
+                    {label}
+                  </Button>
+                ))}
+              </div>
+            </div>
             {/* The kit ships no RadioGroup, so the pair is two `aria-checked`
                 buttons inside a `radiogroup` - the same shape the customers
                 module built for its own radio rows. */}
@@ -236,10 +381,10 @@ export default function PaymentsListsPage() {
             </div>
             {depositType === 'PERCENTAGE' ? (
               <div className="space-y-1.5">
-                <Label htmlFor="deposit-pct" className="text-xs">Percentage (0-100)</Label>
+                <Label htmlFor={DEPOSIT_PCT_ID} className="text-xs">Percentage (0-100)</Label>
                 <div className="flex items-center gap-2">
                   <Input
-                    id="deposit-pct"
+                    id={DEPOSIT_PCT_ID}
                     kind="percent"
                     min={0}
                     max={100}
@@ -247,36 +392,112 @@ export default function PaymentsListsPage() {
                     value={watch('deposit_default_percentage') ?? 50}
                     onChange={(e) => {
                       setValue('deposit_default_percentage', Number(e.target.value), { shouldDirty: true });
-                      setDepositError(null);
+                      clearFieldError(DEPOSIT_PCT_ID);
                     }}
-                    className="w-28"
-                    aria-invalid={!!depositError}
+                    className={cn('w-28', DEPOSIT_PCT_ID in fieldErrors && 'border-danger')}
+                    aria-invalid={DEPOSIT_PCT_ID in fieldErrors}
+                    aria-describedby={DEPOSIT_PCT_ID in fieldErrors ? `${DEPOSIT_PCT_ID}-error` : undefined}
                   />
                   <span className="text-muted-foreground text-sm">%</span>
                 </div>
+                <FieldMessage id={`${DEPOSIT_PCT_ID}-error`} message={fieldErrors[DEPOSIT_PCT_ID]} />
               </div>
             ) : (
               <div className="space-y-1.5">
-                <Label htmlFor="deposit-fixed" className="text-xs">Fixed amount</Label>
+                <Label htmlFor={DEPOSIT_FIXED_ID} className="text-xs">Fixed amount</Label>
                 <div className="flex items-center gap-2">
                   <span className="text-muted-foreground text-sm">$</span>
                   <Input
-                    id="deposit-fixed"
+                    id={DEPOSIT_FIXED_ID}
                     kind="money"
                     min={0}
                     step="0.01"
                     value={watch('deposit_default_fixed_amount') ?? 0}
                     onChange={(e) => {
                       setValue('deposit_default_fixed_amount', Number(e.target.value), { shouldDirty: true });
-                      setDepositError(null);
+                      clearFieldError(DEPOSIT_FIXED_ID);
                     }}
-                    className="w-28"
-                    aria-invalid={!!depositError}
+                    className={cn('w-28', DEPOSIT_FIXED_ID in fieldErrors && 'border-danger')}
+                    aria-invalid={DEPOSIT_FIXED_ID in fieldErrors}
+                    aria-describedby={DEPOSIT_FIXED_ID in fieldErrors ? `${DEPOSIT_FIXED_ID}-error` : undefined}
                   />
                 </div>
+                <FieldMessage id={`${DEPOSIT_FIXED_ID}-error`} message={fieldErrors[DEPOSIT_FIXED_ID]} />
               </div>
             )}
-            {depositError && <p className="text-destructive text-xs">{depositError}</p>}
+          </div>
+        </Section>
+      </div>
+
+      {/* Tips (org-level only, PRD call 6) */}
+      <div className="grid items-start gap-6 lg:grid-cols-2">
+        <Section
+          title="Tips"
+          info={<InfoPopover label="Tips">Customers can also enter their own amount or skip the tip.</InfoPopover>}
+        >
+          <FieldErrorSummary problems={problemsFor([tipFieldId(0), tipFieldId(1), tipFieldId(2)])} />
+          <SettingRow
+            title="Let customers add a tip"
+            control={
+              <Switch
+                aria-label="Let customers add a tip"
+                checked={tipsEnabled}
+                onCheckedChange={(v) => setValue('tips_enabled', v, { shouldDirty: true })}
+              />
+            }
+          />
+          {tipsEnabled && (
+            <div data-testid="tip-presets-row" className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              {[0, 1, 2].map((i) => {
+                const id = tipFieldId(i);
+                const bad = id in fieldErrors;
+                return (
+                  <div key={id} className="flex flex-col gap-1.5">
+                    <Label htmlFor={id} className="text-xs">{`Choice ${i + 1}`}</Label>
+                    <Input
+                      id={id}
+                      kind="count"
+                      endIcon="%"
+                      value={Number.isNaN(tipPresets[i]) ? '' : tipPresets[i]}
+                      onValueChange={(n) => {
+                        const next = [...tipPresets];
+                        next[i] = n ?? Number.NaN;
+                        setValue('tip_presets', next, { shouldDirty: true });
+                        // A duplicate depends on the other boxes, so any edit retires all the tip messages.
+                        setFieldErrors((cur) => Object.fromEntries(Object.entries(cur).filter(([k]) => !k.startsWith('tip-choice-'))));
+                      }}
+                      // aria-invalid:border-destructive emits no CSS in this build; draw it explicitly.
+                      className={cn(bad && 'border-danger')}
+                      aria-invalid={bad}
+                      aria-describedby={bad ? `${id}-error` : undefined}
+                    />
+                    <FieldMessage id={`${id}-error`} message={fieldErrors[id]} />
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </Section>
+
+        <Section
+          title="Bank-transfer instructions"
+          info={(
+            <InfoPopover label="Bank-transfer instructions">
+              Transfers are not tracked automatically. When a transfer arrives, record the payment on the invoice yourself.
+            </InfoPopover>
+          )}
+        >
+          <div className="space-y-1.5">
+            <Label htmlFor="bank-transfer-instructions" className="sr-only">
+              Bank-transfer instructions
+            </Label>
+            <Textarea
+              id="bank-transfer-instructions"
+              rows={4}
+              maxLength={LONG_TEXT_MAX}
+              placeholder="Account name, routing and account numbers, and the reference to use"
+              {...register('bank_transfer_instructions')}
+            />
           </div>
         </Section>
       </div>
@@ -285,7 +506,7 @@ export default function PaymentsListsPage() {
       <div className="grid items-start gap-6 lg:grid-cols-2">
         <ListSection
           title="Lead/Customer Sources"
-          help="Shown when creating or editing a customer or lead (e.g. Google, Referral). Changing this doesn't affect saved records."
+          help="Changing this doesn't affect saved records."
           items={sources}
           value={newSource}
           onValueChange={setNewSource}
@@ -295,7 +516,7 @@ export default function PaymentsListsPage() {
         />
         <ListSection
           title="Job Types"
-          help="Shown when creating or editing a lead. Changing this doesn't affect saved records."
+          help="Changing this doesn't affect saved records."
           items={jobTypes}
           value={newJobType}
           onValueChange={setNewJobType}
@@ -308,6 +529,90 @@ export default function PaymentsListsPage() {
         {canManageTaskCategories && <TaskCategoriesSettingsCard />}
       </div>
     </div>
+  );
+}
+
+const ONLINE_UNAVAILABLE_REASON = 'Finish payout account verification first.';
+const NOT_IN_PLAN_REASON = 'Not included in your plan.';
+
+/**
+ * The plan message for an org whose plan lacks online payments. With no payout account it stands
+ * in place of the status card, so the owner learns it before starting onboarding rather than
+ * part-way through. Beside an existing account it explains why customers can't pay online while
+ * the account itself stays fixable. The upgrade path is the one the upgrade page offers: a message
+ * to ServWave support.
+ */
+function OnlinePaymentsNotInPlan({ besideAccount }: { besideAccount: boolean }) {
+  return (
+    <Section title={besideAccount ? 'Your plan' : 'ServWave Payments'}>
+      <p className="text-sm">Online payments aren&apos;t included in your plan.</p>
+      {besideAccount && (
+        <p className="text-sm text-text-secondary">
+          Customers can&apos;t pay online right now. You can still keep your payout account up to date.
+        </p>
+      )}
+      <div>
+        <ActionLink variant="outline" href="mailto:support@servwave.com?subject=ServWave plan upgrade">
+          Contact us to upgrade
+        </ActionLink>
+      </div>
+    </Section>
+  );
+}
+
+/**
+ * One online method's default offer (Card or Bank). While the payout account cannot take the
+ * method the switch is disabled and the row reads "Unavailable" with the reason, so it never looks
+ * like the owner switched it off. The switch keeps the saved preference, which applies once the
+ * capability turns on.
+ */
+function OnlineMethodRow({
+  label,
+  available,
+  unavailableReason,
+  checked,
+  onCheckedChange,
+}: {
+  label: string;
+  available: boolean;
+  unavailableReason: string;
+  checked: boolean;
+  onCheckedChange: (next: boolean) => void;
+}) {
+  const reasonId = useId();
+  return (
+    <SettingRow
+      title={
+        <span className="inline-flex items-center gap-2">
+          {label}
+          {!available && (
+            <Badge variant="softNeutral" size="sm">
+              Unavailable
+            </Badge>
+          )}
+        </span>
+      }
+      hint={available ? undefined : <span id={reasonId}>{unavailableReason}</span>}
+      control={
+        <Switch
+          aria-label={label}
+          aria-describedby={available ? undefined : reasonId}
+          disabled={!available}
+          checked={checked}
+          onCheckedChange={onCheckedChange}
+        />
+      }
+    />
+  );
+}
+
+/** The message under a bad field, in the field's own words. Renders nothing when the field is fine. */
+function FieldMessage({ id, message }: { id: string; message?: string }) {
+  if (!message) return null;
+  return (
+    <p id={id} className="text-danger text-xs">
+      {message}
+    </p>
   );
 }
 
@@ -352,7 +657,7 @@ function ListSection({
   };
 
   return (
-    <Section title={title} description={help}>
+    <Section title={title} info={<InfoPopover label={title}>{help}</InfoPopover>}>
       <div className="flex min-h-[28px] flex-wrap gap-2">
         {items.length > 0 ? (
           items.map((opt, index) => (

@@ -4,7 +4,7 @@ import app from '../app';
 import { prisma } from '../lib/prisma';
 import { JobStatus } from '@prisma/client';
 import { changesSchedule, deriveStatusOnReschedule } from '../controllers/job.controller';
-import { mockAuthAs, authHeader, JOB_FIXTURE, TEST_USERS } from './helpers';
+import { mockAuthAs, authHeader, JOB_FIXTURE, TEST_USERS, mockRoleSwitches } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 describe('changesSchedule — which PATCH bodies count as a reschedule', () => {
@@ -53,8 +53,8 @@ describe('changesSchedule — which PATCH bodies count as a reschedule', () => {
 
 // SRVW-87 - the exhaustive contract for PATCH's status derivation. PATCH deliberately does NOT
 // reuse assign()'s `scheduled_start ? 'SCHEDULED' : existing.status`, because assign() pairs that
-// with milestoneClears('scheduled') + revertPlanVisitOnUncomplete. Only two of the 21 cells below
-// write a status at all; the other 19 leave the job exactly where it is.
+// with milestoneClears('scheduled') + revertPlanVisitOnUncomplete. Only two of the cells below
+// write a status at all; all the others leave the job exactly where it is.
 describe('deriveStatusOnReschedule - only promotes UNSCHEDULED and only demotes SCHEDULED', () => {
   const WHEN = new Date('2026-03-02T09:00:00Z');
 
@@ -67,6 +67,10 @@ describe('deriveStatusOnReschedule - only promotes UNSCHEDULED and only demotes 
     // values now. Their rows were all-undefined anyway, so nothing about the rule changed.
     IN_PROGRESS: [undefined, undefined, undefined],
     COMPLETED: [undefined, undefined, undefined],
+    // The close-out statuses (PRD 6) are the office's: an edit of the date never moves a job in or out of them.
+    OFFICE_REVIEW: [undefined, undefined, undefined],
+    READY_TO_CLOSE: [undefined, undefined, undefined],
+    DONE: [undefined, undefined, undefined],
     CANCELLED: [undefined, undefined, undefined],
   };
 
@@ -133,6 +137,8 @@ describe('PATCH /api/jobs/:id — reschedule guard (integration)', () => {
 
   it('403s a technician (no reschedule toggle) who tries to move scheduled_start', async () => {
     mockAuthAs('technician');
+    // Edit jobs on, so the refusal below is the reschedule guard's and not the switch's.
+    mockRoleSwitches({ edit_jobs: true });
 
     const res = await request(app)
       .patch(`/api/jobs/${JOB_FIXTURE.id}`)
@@ -143,8 +149,9 @@ describe('PATCH /api/jobs/:id — reschedule guard (integration)', () => {
     expect(mockPrisma.job.update).not.toHaveBeenCalled();
   });
 
-  it('allows a technician to edit a non-schedule field (scope_notes) without the toggle', async () => {
+  it('allows a technician with Edit jobs to edit a non-schedule field (scope_notes) without the toggle', async () => {
     mockAuthAs('technician');
+    mockRoleSwitches({ edit_jobs: true });
     mockPrisma.job.update.mockResolvedValue({ ...jobRow, scope_notes: 'bring a ladder' });
 
     const res = await request(app)

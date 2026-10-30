@@ -19,7 +19,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { screen, within } from '@testing-library/react';
 
-import { renderWithProviders } from '@/__tests__/helpers';
+import { buildAbility } from '@/lib/ability';
+import { renderWithProviders, seedMySwitches } from '@/__tests__/helpers';
 import InventoryPage from '@/pages/v2/inventory/InventoryPage';
 
 vi.mock('@/lib/api/inventory', async (importOriginal) => {
@@ -80,7 +81,12 @@ vi.mock('@/lib/api/logisticOrders', async (importOriginal) => {
 
 describe('v2 InventoryPage - Logistic Orders tab', () => {
   it('renders the tab with a total-count pill and an amber pending-approval badge', () => {
-    renderWithProviders(<InventoryPage />, { initialEntries: ['/inventory'] });
+    // The tab needs View logistic orders (a rule) and Show Logistic Orders page (a display switch).
+    seedMySwitches({ show_logistic_orders_page: true });
+    renderWithProviders(<InventoryPage />, {
+      initialEntries: ['/inventory'],
+      ability: buildAbility([{ action: 'read', subject: 'LogisticOrder' }]),
+    });
 
     const tab = screen.getByRole('tab', { name: /Logistic Orders/i });
     // Total-count pill ...

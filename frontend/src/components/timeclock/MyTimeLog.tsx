@@ -3,6 +3,7 @@ import { Card } from '@/components/ui/card';
 import { Heading } from '@/components/ui/heading';
 import { usePunches } from '@/lib/api/timeclock';
 import { buildSessions } from '@/lib/timeclock/aggregate';
+import { formatPlace } from '@/lib/timeclock/place';
 import { useScheduleTimezone, formatInstant } from '@/lib/schedule-tz';
 
 // Mirrors TimesheetsReport.tsx — viewer-local time, same as the header widget.
@@ -48,10 +49,16 @@ export function MyTimeLog() {
                 {sessions.map((s) => (
                   <tr key={s.inTs} className="border-b border-border last:border-0">
                     <td className="py-2 pr-4 text-text-primary">{fmtDate(s.inTs, tz)}</td>
-                    <td className="py-2 pr-4 tabular-nums text-text-primary">{fmtClock(s.inTs, tz)}</td>
+                    <td className="py-2 pr-4 tabular-nums text-text-primary">
+                      {fmtClock(s.inTs, tz)}
+                      <div className="text-xs text-text-secondary">{formatPlace(s.inLat, s.inLng)}</div>
+                    </td>
                     <td className="py-2 pr-4 tabular-nums">
                       {s.outTs !== null ? (
-                        <span className="text-text-primary">{fmtClock(s.outTs, tz)}</span>
+                        <>
+                          <span className="text-text-primary">{fmtClock(s.outTs, tz)}</span>
+                          <div className="text-xs text-text-secondary">{formatPlace(s.outLat, s.outLng)}</div>
+                        </>
                       ) : (
                         <span className="font-medium text-sage-700">On the clock</span>
                       )}

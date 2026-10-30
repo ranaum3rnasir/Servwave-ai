@@ -17,7 +17,7 @@ import { describe, expect, it } from 'vitest';
 
 const root = resolve(__dirname, '..');
 const css = readFileSync(resolve(root, 'design-system/tokens.css'), 'utf8');
-const card = readFileSync(resolve(root, 'components/payments/StripePaymentsStatusCard.tsx'), 'utf8');
+const card = readFileSync(resolve(root, 'components/payments/PaymentsStatusCard.tsx'), 'utf8');
 
 type Rgb = [number, number, number];
 
@@ -59,7 +59,7 @@ const WHITE: Rgb = [255, 255, 255]; // the Card the badge sits on
 
 const tints = ['SUCCESS_TINT', 'WARNING_TINT', 'DANGER_TINT'].map((constName) => {
   const m = card.match(new RegExp(`const ${constName} = '([^']+)'`));
-  if (!m) throw new Error(`${constName} not found in StripePaymentsStatusCard.tsx`);
+  if (!m) throw new Error(`${constName} not found in PaymentsStatusCard.tsx`);
   const classes = m[1]!.split(/\s+/);
   // The utility's name after its family prefix (`bg` or `text`, the part before the first dash).
   const named = (family: string) => {

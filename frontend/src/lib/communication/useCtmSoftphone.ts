@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useAuthStore } from '@/stores/auth.store';
+import { useAppAbility } from '@/contexts/AbilityContext';
 import { useFeature } from '@/lib/entitlements';
 import { requestPhoneAccessToken } from '@/lib/api/phoneNumbers';
 import { isCtmSoftphoneEnabled, type CtmSoftphone, type SoftphoneFault } from './ctmSoftphone';
@@ -18,14 +19,18 @@ import { usesBridgeTransport } from '@/lib/device/usesBridgeTransport';
 /**
  * Slice 4 — office WebRTC softphone lifecycle.
  *
- * Returns a handle for any signed-in user of a communication-enabled org,
- * whatever their role, WHEN the softphone flag is on AND the caller is the
- * `/phone` tab (`surface: 'phone-tab'`) AND the device is not a bridge device
- * (usesBridgeTransport: a phone, or the installed app on a touch device);
- * otherwise `null`, and the caller keeps the existing callback-bridge / `tel:`
- * path unchanged. This is the "device axis": the DEVICE selects the transport,
- * never the role (Ran, 2026-10-01 and 2026-10-03) - a computer gets the browser
- * phone, a phone or the installed app gets the bridge, for every role.
+ * Returns a handle for any signed-in user of a communication-enabled org who
+ * holds the "Office phone in the browser" switch, whatever their role, WHEN the
+ * softphone flag is on AND the caller is the `/phone` tab (`surface:
+ * 'phone-tab'`) AND the device is not a bridge device (usesBridgeTransport: a
+ * phone, or the installed app on a touch device); otherwise `null`, and the
+ * caller keeps the existing callback-bridge / `tel:` path unchanged (the phone
+ * service rings the person's own phone first, then the customer). This is the
+ * "device axis": the DEVICE selects the transport, never the role (Ran,
+ * 2026-10-01 and 2026-10-03) - a computer gets the browser phone, a phone or the
+ * installed app gets the bridge. The switch, not a role name, decides who may
+ * have the browser phone at all (Roles & Permissions S08.18); the server refuses
+ * the phone token without it too.
  *
  * The flag defaults OFF, so this changes no current behavior until it is flipped
  * on for the pilot during live QA.
@@ -109,6 +114,7 @@ export function useCtmSoftphone(handlers: {
 }): OfficeSoftphone | null {
   const role = useAuthStore((s) => s.user?.role);
   const canComm = useFeature('phone');
+  const mayUseBrowserPhone = useAppAbility().can('use_browser_phone', 'Communication');
   const surface = handlers.surface ?? 'inline';
   // `!!role` = someone is signed in: a remount after a logout teardown must
   // never boot a device for nobody.
@@ -125,6 +131,7 @@ export function useCtmSoftphone(handlers: {
   const enabled =
     isCtmSoftphoneEnabled() &&
     canComm &&
+    mayUseBrowserPhone &&
     !!role &&
     surface === 'phone-tab' &&
     !onPhone;

@@ -212,7 +212,7 @@ export const DEFAULT_AUTOMATIONS: DefaultAutomation[] = [
       'Follows up with the customer and notifies the lead owner after a site visit. Replaces the built-in "Site Visit Completed" emails.',
     trigger_type: 'WALKTHROUGH_COMPLETED',
     recipients: ['customer', 'salesperson'],
-    subject: 'Site Visit Completed',
+    subject: 'Site Visit Finished',
     body: "We've completed our site visit at {{lead.address}}. {{org.name}} will follow up with an estimate shortly.",
     seed_enabled: true,
   },

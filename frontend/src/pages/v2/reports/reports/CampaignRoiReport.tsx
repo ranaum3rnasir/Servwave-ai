@@ -8,6 +8,7 @@ import { ChartCard } from '@/components/charts';
 import { chartPalette, token } from '@/design-system/tokens';
 import { exportCsvFile } from '@/lib/csv';
 import { findReport } from '@/lib/reports/report-catalog';
+import { useCanExportReports } from '@/lib/reports/useCanExportReports';
 import { hashStr, mulberry32, rangeRnd } from '@/lib/reports/random';
 
 import { EmptyState } from '@/ui-kit/components/data/emptyState';
@@ -172,6 +173,7 @@ const SORT_OPTIONS: { key: SortKey; label: string }[] = [
 
 export default function CampaignRoiReport() {
   const report = findReport('campaign-roi')!;
+  const canExport = useCanExportReports();
   const [sort, setSort] = useState<SortKey>('revenue');
   const [sourceFilter, setSourceFilter] = useState<string>('all');
   const [month, setMonth] = useState<string>('all');
@@ -329,10 +331,12 @@ export default function CampaignRoiReport() {
             options={SORT_OPTIONS.map((o) => ({ value: o.key, label: o.label }))}
           />
 
-          <Button variant="outline" onClick={exportCsv}>
-            <Download />
-            Export CSV
-          </Button>
+          {canExport && (
+            <Button variant="outline" onClick={exportCsv}>
+              <Download />
+              Export CSV
+            </Button>
+          )}
         </>
       }
     >

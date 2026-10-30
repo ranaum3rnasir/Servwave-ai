@@ -5,6 +5,7 @@ import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import { renderWithProviders } from './helpers';
+import { useAuthStore } from '@/stores/auth.store';
 import { SendInvoiceDialog } from '@/components/invoices/SendInvoiceDialog';
 import type { InvoiceLineItem } from '@/lib/api/jobs';
 import { buildAbility } from '@/lib/ability';
@@ -12,7 +13,7 @@ import type { Organization } from '@/lib/api/organization';
 
 const mockApi = vi.mocked(api);
 
-// Task 2.5 — the JIT accept-cards banner (StripePaymentsBanner) is mounted right after
+// Task 2.5 — the JIT accept-cards banner (PaymentsSetupBanner) is mounted right after
 // SheetHeader. Default org to undefined (banner's `!org` guard renders null) so every
 // pre-existing test above stays unaffected; the banner-specific describe block below
 // sets hoisted.org explicitly per test.
@@ -254,4 +255,22 @@ describe('SendInvoiceDialog — JIT accept-cards banner (Task 2.5)', () => {
 
     expect(screen.queryByText(/Get paid faster/)).not.toBeInTheDocument();
   });
+
+  it('plan lacks online payments: no banner and no Set up button, for an admin or anyone else', () => {
+    planWithout();
+    hoisted.org = { ...ORG, stripe_charges_enabled: false };
+    const { container } = renderWithProviders(<SendInvoiceDialog {...baseProps()} />, { ability: ADMIN_ABILITY });
+
+    expect(container.ownerDocument.body.textContent).not.toMatch(/Get paid faster|ask your admin/);
+    expect(screen.queryByRole('button', { name: 'Set up' })).not.toBeInTheDocument();
+  });
 });
+
+// Slice 34b - an org whose plan lacks online payments is not nudged to set up card payments.
+function planWithout() {
+  vi.mocked(useAuthStore).mockImplementation(((selector: (s: Record<string, unknown>) => unknown) =>
+    selector({
+      user: { id: 'u1', role: 'ADMIN', organization_id: 'o1', org_features: ['payments', 'invoices'] },
+      isAuthenticated: true, isLoading: false, error: null,
+    })) as never);
+}

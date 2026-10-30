@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { BarChart3, Building2, Download, Layers, Plus, Truck } from 'lucide-react';
 
 import { useAppAbility } from '@/contexts/AbilityContext';
+import { canSeePricing } from '@/lib/ability';
 import { downloadCSV, toCSV } from '@/lib/inventory/csv';
 import { useScopedRowSelection } from '@/lib/useScopedRowSelection';
 import {
@@ -74,8 +75,11 @@ export function VendorsPage() {
   // the By Category tab read it, not the strings on the vendors.
   const { data: categoryRows } = useVendorCategories();
   const categoryList = categoryRows ?? NO_CATEGORIES;
-  const { data: purchaseOrders = [] } = usePurchaseOrders();
-  const { data: allItems = [] } = useInventoryItems();
+  const ability = useAppAbility();
+  // The purchase orders feed the spend figures and the vendor's order list, and the items feed the delete check: each
+  // is read only by a person who may read them, so no refused request goes out.
+  const { data: purchaseOrders = [] } = usePurchaseOrders(ability.can('read', 'PurchaseOrder'));
+  const { data: allItems = [] } = useInventoryItems(false, ability.can('read', 'Inventory'));
   const upsertVendor = useUpsertVendor();
   const deleteVendor = useDeleteVendor();
 
@@ -100,14 +104,22 @@ export function VendorsPage() {
   const [showCategories, setShowCategories] = useState(false);
   const [deleteCandidate, setDeleteCandidate] = useState<Vendor | null>(null);
 
-  const ability = useAppAbility();
-  // POST /api/inventory/vendors is an upsert used for both create and edit
-  // (lib/api/inventory.ts) and is gated `create Vendor` - Add Vendor rides it.
+  // Add Vendor rides POST /api/inventory/vendors without an id, gated Create vendors; an edit rides the same route
+  // with an id and is gated Edit vendors (the dialog reads that one).
   const editable = ability.can('create', 'Vendor');
   // POST /api/inventory/vendor-categories is gated on the same `create
   // Vendor`, so the three "Add category" entries share `editable`. Opening
   // the manager is all they do: it owns add / rename / delete and their gates.
   const openCategoryManager = editable ? () => setShowCategories(true) : undefined;
+  // Export vendors compiles into `export Vendor`. The spend file is built in the browser, so its buttons (and the
+  // checkboxes that exist only for Export selected) show only with it.
+  const canExport = ability.can('export', 'Vendor');
+  // Money on this page is vendor spend, summed from purchase-order line costs, and the vendor account number. Both
+  // need See financial data; spend needs the purchase orders too. A figure the person may not see is not drawn at
+  // all (no tile, tab, column or card strip), and never as a $0 that reads like a value.
+  const canSeeCosts = canSeePricing(ability);
+  const showSpend = canSeeCosts && ability.can('read', 'PurchaseOrder');
+  const showAccountNumber = canSeeCosts;
 
   // Keyed on vendor ID (S3.2): a rename keeps its spend, drafts count $0, and
   // every vendor has an entry - the catalog is no longer joined by SKU here.
@@ -136,7 +148,7 @@ export function VendorsPage() {
         if (
           !v.name.toLowerCase().includes(q) &&
           !(v.contactPersonName ?? '').toLowerCase().includes(q) &&
-          !(v.accountNumber ?? '').toLowerCase().includes(q) &&
+          !(showAccountNumber && (v.accountNumber ?? '').toLowerCase().includes(q)) &&
           !(v.contactEmail ?? '').toLowerCase().includes(q) &&
           !v.category.toLowerCase().includes(q)
         ) {
@@ -145,7 +157,7 @@ export function VendorsPage() {
       }
       return true;
     });
-  }, [vendors, statusFilter, categoryFilter, search]);
+  }, [vendors, statusFilter, categoryFilter, search, showAccountNumber]);
 
   const topShareOfYTD = top ? top.ytd / Math.max(totalYTD, 1) : 0;
 
@@ -262,8 +274,8 @@ export function VendorsPage() {
   );
 
   const spendColumns = useMemo(
-    () => buildVendorSpendColumns({ ranked, totalYTD, selectable: true }),
-    [ranked, totalYTD],
+    () => buildVendorSpendColumns({ ranked, totalYTD, selectable: canExport }),
+    [ranked, totalYTD, canExport],
   );
 
   // A selected id only makes sense against the CURRENT leaderboard, and the
@@ -356,9 +368,8 @@ export function VendorsPage() {
             <VendorCard
               key={v.id}
               vendor={v}
-              spend={spend}
-              shareOfYTD={totalYTD > 0 ? spend.ytd / totalYTD : 0}
-              topShareOfYTD={topShareOfYTD}
+              money={showSpend ? { spend, shareOfYTD: totalYTD > 0 ? spend.ytd / totalYTD : 0, topShareOfYTD } : null}
+              showAccountNumber={showAccountNumber}
               onClick={() => setOpenVendorId(v.id)}
             />
           );
@@ -388,16 +399,18 @@ export function VendorsPage() {
         </span>
       ),
     },
-    {
-      value: 'analytics',
-      label: (
-        <span className="flex items-center gap-1.5">
-          <BarChart3 className="size-3.5" />
-          Spend Analytics
-          <Badge variant="softNeutral" size="pill">{vendors.length}</Badge>
-        </span>
-      ),
-    },
+    ...(showSpend
+      ? [{
+          value: 'analytics',
+          label: (
+            <span className="flex items-center gap-1.5">
+              <BarChart3 className="size-3.5" />
+              Spend Analytics
+              <Badge variant="softNeutral" size="pill">{vendors.length}</Badge>
+            </span>
+          ),
+        }]
+      : []),
   ];
 
   return (
@@ -422,7 +435,7 @@ export function VendorsPage() {
 
       {/* Each tile is a clickable filter trigger: click jumps to the matching
           sub-tab and, where appropriate, flips a row filter. */}
-      <StatCardGroup className="mb-4 xl:grid-cols-3">
+      <StatCardGroup className={cn('mb-4', showSpend ? 'xl:grid-cols-3' : 'xl:grid-cols-2')}>
         <StatCard
           label="Active Vendors"
           value={String(activeCount)}
@@ -430,13 +443,15 @@ export function VendorsPage() {
           aria-label="Show only active vendors in the Directory"
           onClick={() => { setTab('directory'); setStatusFilter('active'); }}
         />
-        <StatCard
-          label="Total Spend YTD"
-          value={fmtMoneyFull(totalYTD)}
-          active={tab === 'analytics'}
-          aria-label="Open the Spend Analytics view"
-          onClick={() => setTab('analytics')}
-        />
+        {showSpend && (
+          <StatCard
+            label="Total Spend YTD"
+            value={fmtMoneyFull(totalYTD)}
+            active={tab === 'analytics'}
+            aria-label="Open the Spend Analytics view"
+            onClick={() => setTab('analytics')}
+          />
+        )}
         <StatCard
           label="Categories"
           value={String(categories.length)}
@@ -521,7 +536,7 @@ export function VendorsPage() {
                         {cat}
                         <Badge variant="softNeutral" size="pill">{list.length}</Badge>
                       </span>
-                      <span className="text-muted-foreground text-xs">{fmtMoney(catYTD)} YTD</span>
+                      {showSpend && <span className="text-muted-foreground text-xs">{fmtMoney(catYTD)} YTD</span>}
                     </div>
                     {list.length === 0 ? (
                       <p className="text-muted-foreground px-1 text-xs">No vendors in this category yet.</p>
@@ -535,57 +550,61 @@ export function VendorsPage() {
           )}
         </TabPanel>
 
-        <TabPanel value="analytics" activeValue={tab}>
-          {ranked.length === 0 ? (
-            <EmptyState title="No vendors match your filters." />
-          ) : (
-            <Card className="gap-0">
-              <CardHeader className="text-muted-foreground flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2 text-[10px] font-semibold uppercase">
-                Spend leaderboard · YTD
-                {/* Exports the whole ranked leaderboard. Its selected-row
-                    sibling lives in the bulk bar below and shares this page's
-                    one exporter. */}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  title={`Export ${ranked.length} vendors as CSV`}
-                  onClick={() => exportSpend(ranked, '')}
-                >
-                  <Download />
-                  Export
-                </Button>
-              </CardHeader>
-              <CardContent className="px-0 pb-0">
-                <DataTable
-                  scrollBox="inventory-vendors"
-                  columns={spendColumns}
-                  data={ranked}
-                  getRowId={(r) => r.vendor.id}
-                  onRowClick={(r) => setOpenVendorId(r.vendor.id)}
-                  rowSelection={rowSelection}
-                  onRowSelectionChange={setRowSelection}
-                  enableColumnResizing
-                  mobileCards
-                  empty={<EmptyState title="No vendors match your filters." />}
-                >
-                  {() => (
-                    <ExportBulkBar
-                      count={selectedRanked.length}
-                      noun={['vendor', 'vendors']}
-                      onClear={() => setRowSelection({})}
-                      onExportSelected={() => exportSpend(selectedRanked, '-selected')}
-                    />
+        {showSpend && (
+          <TabPanel value="analytics" activeValue={tab}>
+            {ranked.length === 0 ? (
+              <EmptyState title="No vendors match your filters." />
+            ) : (
+              <Card className="gap-0">
+                <CardHeader className="text-muted-foreground flex flex-wrap items-center justify-between gap-2 border-b px-3 py-2 text-[10px] font-semibold uppercase">
+                  Spend leaderboard · YTD
+                  {/* Exports the whole ranked leaderboard. Its selected-row
+                      sibling lives in the bulk bar below and shares this page's
+                      one exporter. */}
+                  {canExport && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      title={`Export ${ranked.length} vendors as CSV`}
+                      onClick={() => exportSpend(ranked, '')}
+                    >
+                      <Download />
+                      Export
+                    </Button>
                   )}
-                </DataTable>
-              </CardContent>
-              <CardFooter className="text-muted-foreground border-t px-3 py-2 text-[10px] italic">
-                Purchasing power = your share of total inventory spend. Vendors at the top of this list
-                are your strongest negotiation levers - when you&apos;re about to start a big job, lead
-                with your YTD volume to ask for better terms, faster ship, or discount tiers.
-              </CardFooter>
-            </Card>
-          )}
-        </TabPanel>
+                </CardHeader>
+                <CardContent className="px-0 pb-0">
+                  <DataTable
+                    scrollBox="inventory-vendors"
+                    columns={spendColumns}
+                    data={ranked}
+                    getRowId={(r) => r.vendor.id}
+                    onRowClick={(r) => setOpenVendorId(r.vendor.id)}
+                    rowSelection={rowSelection}
+                    onRowSelectionChange={setRowSelection}
+                    enableColumnResizing
+                    mobileCards
+                    empty={<EmptyState title="No vendors match your filters." />}
+                  >
+                    {() => (
+                      <ExportBulkBar
+                        count={selectedRanked.length}
+                        noun={['vendor', 'vendors']}
+                        onClear={() => setRowSelection({})}
+                        onExportSelected={() => exportSpend(selectedRanked, '-selected')}
+                      />
+                    )}
+                  </DataTable>
+                </CardContent>
+                <CardFooter className="text-muted-foreground border-t px-3 py-2 text-[10px] italic">
+                  Purchasing power = your share of total inventory spend. Vendors at the top of this list
+                  are your strongest negotiation levers - when you&apos;re about to start a big job, lead
+                  with your YTD volume to ask for better terms, faster ship, or discount tiers.
+                </CardFooter>
+              </Card>
+            )}
+          </TabPanel>
+        )}
       </div>
 
       <VendorCategoryDialog open={showCategories} onOpenChange={setShowCategories} />
@@ -598,7 +617,7 @@ export function VendorsPage() {
         open={!!openVendor}
         onClose={() => setOpenVendorId(null)}
         vendor={openVendor}
-        spend={openSpend as VendorSpend | null}
+        spend={showSpend ? (openSpend as VendorSpend | null) : null}
         pos={purchaseOrders}
         onSave={handleSave}
         onDeleteRequest={(v) => setDeleteCandidate(v)}

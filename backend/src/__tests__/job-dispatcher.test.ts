@@ -71,7 +71,7 @@ describe('POST /api/jobs/:id/dispatcher', () => {
     );
   });
 
-  it('admin sets an ADMIN-role user as dispatcher (ADMIN is dispatcher-eligible)', async () => {
+  it('admin sets an ADMIN-role user as dispatcher (the Admin box can be a dispatcher)', async () => {
     mockAuthAs('admin');
     mockPrisma.job.findUnique.mockResolvedValue(JOB_ROW);
     const tx = wireDispatcherTx({ ...JOB_FIXTURE, dispatcher_id: TEST_USERS.admin.id });
@@ -104,7 +104,7 @@ describe('POST /api/jobs/:id/dispatcher', () => {
     // No target-user eligibility lookup on clear — user.findUnique only served authenticate.
   });
 
-  it('rejects a SALES-role target (400, not dispatcher-eligible)', async () => {
+  it('rejects a SALES-role target (400, the Sales preset has Can be a dispatcher off)', async () => {
     mockAuthAs('admin');
     mockPrisma.job.findUnique.mockResolvedValue(JOB_ROW);
 
@@ -114,11 +114,11 @@ describe('POST /api/jobs/:id/dispatcher', () => {
       .send({ dispatcher_id: TEST_USERS.sales.id });
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/eligible/);
+    expect(res.body.error).toBe("This person can't be a dispatcher.");
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
   });
 
-  it('rejects a TECHNICIAN-role target (400, not dispatcher-eligible)', async () => {
+  it('rejects a TECHNICIAN-role target (400, the Technician preset has Can be a dispatcher off)', async () => {
     mockAuthAs('admin');
     mockPrisma.job.findUnique.mockResolvedValue(JOB_ROW);
 
@@ -128,7 +128,7 @@ describe('POST /api/jobs/:id/dispatcher', () => {
       .send({ dispatcher_id: TEST_USERS.technician.id });
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/eligible/);
+    expect(res.body.error).toBe("This person can't be a dispatcher.");
   });
 
   it('rejects an inactive DISPATCHER target (400)', async () => {
@@ -303,5 +303,24 @@ describe('POST /api/jobs/:id/dispatcher', () => {
         }),
       }),
     );
+  });
+
+  // The History line reads like the Owner and Sold By lines: the slot name is capitalised, on both timelines.
+  it('writes "set as Dispatcher" (capitalised) on the job and on the originating lead', async () => {
+    mockAuthAs('admin');
+    const leadId = '00000000-0000-0000-0000-0000000000aa';
+    mockPrisma.job.findUnique.mockResolvedValue({ ...JOB_ROW, estimate: { lead_id: leadId } });
+    const tx = wireDispatcherTx({ ...JOB_FIXTURE, dispatcher_id: TEST_USERS.dispatcher.id });
+
+    await request(app)
+      .post(`/api/jobs/${JOB_FIXTURE.id}/dispatcher`)
+      .set(authHeader('admin'))
+      .send({ dispatcher_id: TEST_USERS.dispatcher.id });
+
+    const descriptions = tx.txTimeline.mock.calls.map((c) => (c[0] as { data: { description: string } }).data.description);
+    expect(descriptions).toHaveLength(2);
+    for (const d of descriptions) {
+      expect(d).toMatch(/ set as Dispatcher on job /);
+    }
   });
 });

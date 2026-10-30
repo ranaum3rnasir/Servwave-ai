@@ -82,6 +82,10 @@ export interface ScheduleCreatePopoverProps {
   unscheduledWalkthroughs: Record<string, unknown>[];
   /** False without the `leads` entitlement - the tab is not offered rather than shown empty. */
   showWalkthroughs?: boolean;
+  /** Gates the Job tab on Schedule visits: the tab posts to the job-scheduling route. */
+  canScheduleJobs?: boolean;
+  /** Gates the Walkthrough tab on Book walkthroughs: the tab posts to the walkthrough-scheduling route. */
+  canBookWalkthroughs?: boolean;
   /** Gates the Event tab on the CalendarEntry create grant, as the old toolbar button was. */
   canCreateEvent?: boolean;
   /** Org default walkthrough length, for the walkthrough door's duration. */
@@ -255,7 +259,7 @@ export function ScheduleCreatePopover(props: ScheduleCreatePopoverProps) {
 
 function CreationBody({
   tz, seed, unassignedJobs, unscheduledWalkthroughs, showWalkthroughs = true,
-  canCreateEvent = true, defaultWalkthroughDurationMin = 60, onCreated, onDirtyChange,
+  canScheduleJobs = true, canBookWalkthroughs = true, canCreateEvent = true, defaultWalkthroughDurationMin = 60, onCreated, onDirtyChange,
   onRequestClose, onCloseAfterSave,
 }: ScheduleCreatePopoverProps & {
   onDirtyChange: (dirty: boolean) => void;
@@ -266,8 +270,16 @@ function CreationBody({
 }) {
   const queryClient = useQueryClient();
 
-  // `Job` every time - never the last-used tab.
-  const [tab, setTab] = useState<CreationTab>('job');
+  // The doors this person can use (the Job and Walkthrough tabs post to routes that refuse anyone
+  // without the matching switch, so they are not offered rather than offered and refused).
+  const tabs: { key: CreationTab; label: string; shown: boolean }[] = [
+    { key: 'job', label: 'Job', shown: canScheduleJobs },
+    { key: 'walkthrough', label: 'Walkthrough', shown: showWalkthroughs && canBookWalkthroughs },
+    { key: 'event', label: 'Event', shown: canCreateEvent },
+  ];
+
+  // The first tab on offer (`Job` for everyone who may schedule jobs) every time - never the last-used tab.
+  const [tab, setTab] = useState<CreationTab>(() => tabs.find((t) => t.shown)?.key ?? 'job');
 
   // ── Shared across tabs (spec: date/time/address persist when switching) ──
   const [time, setTime] = useState<ScheduleTimeValue>(() => (
@@ -413,12 +425,6 @@ function CreationBody({
     else if (tab === 'walkthrough') walkthroughMutation.mutate();
     else eventMutation.mutate();
   };
-
-  const tabs: { key: CreationTab; label: string; shown: boolean }[] = [
-    { key: 'job', label: 'Job', shown: true },
-    { key: 'walkthrough', label: 'Walkthrough', shown: showWalkthroughs },
-    { key: 'event', label: 'Event', shown: canCreateEvent },
-  ];
 
   return (
     <div className="flex min-h-0 flex-1 flex-col" data-schedule-create-popover="">

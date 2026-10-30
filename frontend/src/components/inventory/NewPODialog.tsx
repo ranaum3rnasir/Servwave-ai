@@ -11,6 +11,8 @@ import type { NewPOInput, NewPOLineInput, PurchaseOrder } from "@/lib/api/invent
 import type { Brand, Category, Item, Vendor } from "@/lib/api/inventory";
 import type { InventoryJob } from "@/lib/api/inventory";
 import { Button } from "@/components/ui/button";
+import { useAppAbility } from "@/contexts/AbilityContext";
+import { canSeePricing } from "@/lib/ability";
 import { canAutoFocus } from "@/ui-kit/lib/autoFocus";
 import { DIALOG_LINE_TABLE_SCROLL, SCROLL_BOX_FOCUS_CLASS } from "@/ui-kit/lib/intendedScrollers";
 import { DialogList } from '@/ui-kit/components/ui/dialogList';
@@ -105,6 +107,9 @@ export function NewPODialog({
   onAddCategory,
   brands = [],
 }: Props) {
+  // The unit cost is a cost (See financial data): without it the server would not send one and does not keep one
+  // sent, so the column is not drawn at all and a line goes in with no cost of its own.
+  const showCosts = canSeePricing(useAppAbility());
   // When set, the "Add Item" dialog is open and on save we auto-select
   // the new item on this row of the line-items table. null = dialog closed.
   const [addItemForRow, setAddItemForRow] = useState<string | null>(null);
@@ -638,7 +643,7 @@ export function NewPODialog({
                       column, which hid the digit behind the spinner. */}
                   <th className="min-w-[6.5rem] px-3 py-2 text-center">Qty</th>
                   <th className="min-w-[3.5rem] px-3 py-2">UoM</th>
-                  <th className="min-w-[7rem] px-3 py-2 text-right">Unit cost</th>
+                  {showCosts && <th className="min-w-[7rem] px-3 py-2 text-right">Unit cost</th>}
                   <th className="min-w-[3rem] px-3 py-2 text-center"></th>
                 </tr>
               </thead>
@@ -683,22 +688,24 @@ export function NewPODialog({
                       <td className="px-3 py-2 text-xs text-text-secondary">
                         {it?.uom ?? "-"}
                       </td>
-                      <td className="px-3 py-2">
-                        {/* Money input: defaults from the catalog on pick, two
-                            decimals, blank allowed (= no cost known → null). */}
-                        <Input
-                          kind="money"
-                          min="0"
-                          step="0.01"
-                          placeholder="-"
-                          aria-label={it ? `Unit cost for ${it.name}` : "Unit cost"}
-                          value={l.unitCost}
-                          onChange={(e) =>
-                            updateLine(l.rowId, { unitCost: e.target.value })
-                          }
-                          className="w-full px-2.5 py-1.5 text-right"
-                        />
-                      </td>
+                      {showCosts && (
+                        <td className="px-3 py-2">
+                          {/* Money input: defaults from the catalog on pick, two
+                              decimals, blank allowed (= no cost known → null). */}
+                          <Input
+                            kind="money"
+                            min="0"
+                            step="0.01"
+                            placeholder="-"
+                            aria-label={it ? `Unit cost for ${it.name}` : "Unit cost"}
+                            value={l.unitCost}
+                            onChange={(e) =>
+                              updateLine(l.rowId, { unitCost: e.target.value })
+                            }
+                            className="w-full px-2.5 py-1.5 text-right"
+                          />
+                        </td>
+                      )}
                       <td className="px-2 py-2 text-center">
                         {/* Deferred: neutral idle + danger hover-reveal on an
                             OUTLINE (bordered) icon button — no minted cell has

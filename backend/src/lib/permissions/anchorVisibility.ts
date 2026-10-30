@@ -31,6 +31,11 @@ import { scopeWhereForReq } from './enforce';
  * unconditional `read Job` and `read Lead` (defaultGrants.ts), so both anchor
  * scopes resolve to {} and `anchorInheritedWhere` returns {} - no restriction.
  *
+ * Roles & Permissions PRD 8 replaced the org-wide branch for calls, texts, email and the record Communication tabs: they
+ * read lib/communication/communicationScope.ts, where a customer-only row needs the customer and a row tied to nothing
+ * is reached through the section scope alone. This rule still serves WhatsApp (a demo-only prototype) and the attach
+ * routes, which PRD 8's attach slice moves onto the same module.
+ *
  * Access does NOT expire when the job closes (Workiz and Housecall Pro both
  * revoke; we deliberately do not). Nothing here is time-bounded.
  */

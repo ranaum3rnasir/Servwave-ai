@@ -88,6 +88,7 @@ describe('GET /api/estimates/:id/pdf — per-row RBAC (in-tenant cross-user pric
   it('the OWNING SALES rep gets 200 + application/pdf for their own estimate', async () => {
     mockAuthAs('sales');
     mockPrisma.estimate.findUnique.mockResolvedValue(PDF_FIXTURE_OWNED_BY_SALES);
+    mockPrisma.estimate.findFirst.mockResolvedValue({ id: PDF_FIXTURE_OWNED_BY_SALES.id }); // inside their Estimates scope
 
     const res = await request(app)
       .get(`/api/estimates/${PDF_FIXTURE_OWNED_BY_SALES.id}/pdf`)
@@ -141,7 +142,7 @@ describe('GET /api/estimates/:id/pdf — per-row RBAC (in-tenant cross-user pric
     expect(generateEstimatePdf).toHaveBeenCalledTimes(1);
   });
 
-  it('TECHNICIAN is blocked at the route (no read Estimate grant) → 403, PDF not generated', async () => {
+  it('TECHNICIAN on an estimate outside their Attached scope → 403, PDF not generated', async () => {
     mockAuthAs('technician');
     mockPrisma.estimate.findUnique.mockResolvedValue(PDF_FIXTURE_OWNED_BY_OTHER);
 
@@ -153,12 +154,9 @@ describe('GET /api/estimates/:id/pdf — per-row RBAC (in-tenant cross-user pric
     expect(generateEstimatePdf).not.toHaveBeenCalled();
   });
 
-  // R6 (2026-07-22) — getPdf's select previously omitted created_by/customer/service_location,
-  // so canAccessEstimate's null-lead fallback (D19) could never resolve here and PDF generation
-  // would throw for a null-lead estimate (independent review caught this: the anchor fix landed
-  // for estimateDetailSelect-based reads but not this hand-rolled select). No estimate currently
-  // has a null lead, but the gate must already be correct.
-  it('lead-less estimate: the CREATOR gets 200 (created_by fallback), a non-creator SALES gets 403', async () => {
+  // A lead-less estimate is reached only through the scope (a person on All, or attached through a job);
+  // having created it attaches nobody, and the creator rule (S01.4) is what opens it to its creator.
+  it('lead-less estimate: opens when the scope reaches it, 403 when it does not (no created_by path)', async () => {
     const LEAD_LESS_FIXTURE = {
       ...PDF_FIXTURE_OWNED_BY_SALES,
       lead: null,
@@ -169,12 +167,13 @@ describe('GET /api/estimates/:id/pdf — per-row RBAC (in-tenant cross-user pric
 
     mockAuthAs('sales');
     mockPrisma.estimate.findUnique.mockResolvedValue(LEAD_LESS_FIXTURE);
-    const ownRes = await request(app).get(`/api/estimates/${LEAD_LESS_FIXTURE.id}/pdf`).set(authHeader('sales'));
-    expect(ownRes.status).toBe(200);
+    mockPrisma.estimate.findFirst.mockResolvedValue({ id: LEAD_LESS_FIXTURE.id });
+    const reachedRes = await request(app).get(`/api/estimates/${LEAD_LESS_FIXTURE.id}/pdf`).set(authHeader('sales'));
+    expect(reachedRes.status).toBe(200);
 
-    mockPrisma.estimate.findUnique.mockResolvedValue({ ...LEAD_LESS_FIXTURE, created_by: TEST_USERS.dispatcher.id });
-    const otherRes = await request(app).get(`/api/estimates/${LEAD_LESS_FIXTURE.id}/pdf`).set(authHeader('sales'));
-    expect(otherRes.status).toBe(403);
+    mockPrisma.estimate.findFirst.mockResolvedValue(null);
+    const outsideRes = await request(app).get(`/api/estimates/${LEAD_LESS_FIXTURE.id}/pdf`).set(authHeader('sales'));
+    expect(outsideRes.status).toBe(403);
   });
 
   it('still 404s an unknown estimate id (own-check runs only after the row loads)', async () => {

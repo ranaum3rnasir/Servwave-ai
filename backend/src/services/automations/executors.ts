@@ -84,8 +84,8 @@ export interface ExecutionBundle {
   watchers: RecipientUser[];
   /** Job dispatcher (job only — jobs.dispatcher_id). */
   dispatcher?: RecipientUser | null;
-  /** Prefers the entity's own salesperson (job.salesperson_id); falls back to the
-   *  linked lead's commission owner (job → estimate → lead, or estimate → lead directly).
+  /** A job's is its stored Sold By (job.salesperson_id), empty when none: it never falls back to
+   *  the lead's Owner. A lead's and an estimate's is the lead's Owner (commission owner).
    *  Invoices don't resolve one (dropped per Ran — no direct lead path). */
   salesperson?: RecipientUser | null;
   /** Estimate creator (estimate.created_by; estimate only). */
@@ -280,10 +280,29 @@ function toHtmlFragment(body: string, ctx: Record<string, string>, fallbacks: Re
 
 // ── SEND_EMAIL ────────────────────────────────────────────────────────────────
 
+/**
+ * The record an automation email to the customer is about (PRD 10, S10.13): the job or lead that triggered it; for an
+ * estimate or an invoice trigger, that estimate or invoice; a trigger with no job or lead, the customer. A lead's email is
+ * also filed on the lead, so it shows on the lead's tab. The reply address and the conversation it opens come from this.
+ */
+function automationRecordOf(bundle: ExecutionBundle): {
+  entityType: string; entityId: string; leadId?: string;
+} {
+  const { type, id } = bundle.entityRef;
+  if (type === 'lead') return { entityType: 'lead', entityId: id, leadId: id };
+  if (type === 'job' || type === 'estimate' || type === 'invoice') return { entityType: type, entityId: id };
+  if (bundle.jobRef) return { entityType: 'job', entityId: bundle.jobRef.id };
+  return { entityType: 'customer', entityId: bundle.customer!.id };
+}
+
 async function sendEmailAction(config: NormalizedConfig, bundle: ExecutionBundle): Promise<ExecutionResult> {
   const ctx = audienceContext(config, bundle);
   const resolved = await resolveAll(config, ctx);
-  const customerEmail = bundle.customer?.email?.toLowerCase();
+  // Every address the customer is mailed on: the primary and the extras they opted in to automated mail.
+  const customerAddresses = new Set(
+    [bundle.customer?.email, ...(bundle.customer?.extra_emails ?? []).map((e) => e.email)]
+      .flatMap((address) => (address ? [address.toLowerCase()] : [])),
+  );
 
   // Union of every resolved address: the explicit `emails` (customer/custom) plus
   // each resolved user's own email. Dedupe case-insensitively, first-seen casing.
@@ -333,10 +352,13 @@ async function sendEmailAction(config: NormalizedConfig, bundle: ExecutionBundle
       },
       record: {
         organizationId: bundle.organizationId,
-        // Attribute the send to the customer only for the customer's own address.
-        customerId: customerEmail && to.toLowerCase() === customerEmail ? bundle.customer?.id ?? null : null,
+        // Attribute the send to the customer only for the customer's own addresses.
+        customerId: customerAddresses.has(to.toLowerCase()) ? bundle.customer?.id ?? null : null,
         jobId: bundle.jobRef?.id ?? null,
         jobLabel: bundle.jobRef?.label ?? null,
+        // A send to the customer names the record that triggered it and so carries the hidden reply address that ties
+        // the customer's answer to it (PRD 10, S10.13). A teammate's copy names none: it has no conversation to join.
+        ...(customerAddresses.has(to.toLowerCase()) ? automationRecordOf(bundle) : {}),
       },
     });
     dispatched.push({ address: to, result });
@@ -432,7 +454,7 @@ function emailAudienceOutcomes(
 // English Activity-tab copy. CTM_ERROR is handled separately as FAILED.
 const SMS_SKIP_COPY: Record<Exclude<CtmSmsFailureReason, 'CTM_ERROR'>, string> = {
   NOT_CONNECTED: 'Text messaging is not connected for this organization',
-  SMS_NOT_READY: 'Text messaging is not active yet — A2P registration is pending approval',
+  SMS_NOT_READY: 'Text messaging is not active yet — carrier approval is pending',
   ORG_SMS_DISABLED: 'Text messaging is turned off for this organization',
   NOT_ENTITLED: 'Text messaging is not available on this plan',
   NO_SMS_NUMBER: 'No SMS-capable phone number is available for this conversation',

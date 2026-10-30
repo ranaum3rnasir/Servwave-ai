@@ -9,6 +9,15 @@ import { MemoryRouter } from "react-router-dom";
 
 const useCallTranscript = vi.hoisted(() => vi.fn());
 
+// Customer numbers on the Communication screens follow the person's switches (S05.6). This suite renders the
+// screen without a query client, so the person's switches are stubbed: every one on, the screen as it always was.
+vi.mock("@/components/contact/useContactPolicyInput", () => ({
+  useContactPolicyInput: () => ({
+    switches: { copyCustomerPhone: true, copyCustomerEmail: true, contactCustomers: true, viewCustomers: true },
+    phoneService: true,
+  }),
+}));
+
 // These specs render deep phone components without a QueryClientProvider - every
 // data hook is stubbed individually. Times now resolve against the ORG's zone, so
 // the org query joins that list; pinned here so the rendered clock is fixed rather
@@ -36,6 +45,12 @@ vi.mock("@/components/communication/phone/shared", () => ({
 
 import { CustomerPanel, type DialerSelection } from "../Dialer";
 import type { CallSession } from "@/lib/api/communication";
+import { AbilityProvider } from "@/contexts/AbilityContext";
+import { abilityWithSwitches } from "@/__tests__/support/backendSwitchCatalog";
+
+// The transcript is behind View transcript (Roles & Permissions S08.12); these cases are about the lazy fetch, so the
+// person holds the switch here (dialer-transcript-switch.test.tsx covers the person who does not).
+const mayReadTranscripts = abilityWithSwitches("View transcript");
 
 const CALL_NO_STORED_TRANSCRIPT: CallSession = {
   id: "cc000000-0000-0000-0000-000000000001",
@@ -61,7 +76,9 @@ beforeEach(() => {
 function renderPanel(calls: CallSession[] = [CALL_NO_STORED_TRANSCRIPT]) {
   return render(
     <MemoryRouter>
-      <CustomerPanel selection={SELECTION} calls={calls} onCall={vi.fn()} />
+      <AbilityProvider ability={mayReadTranscripts}>
+        <CustomerPanel selection={SELECTION} calls={calls} onCall={vi.fn()} />
+      </AbilityProvider>
     </MemoryRouter>,
   );
 }

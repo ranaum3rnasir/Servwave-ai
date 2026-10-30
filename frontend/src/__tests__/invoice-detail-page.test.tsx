@@ -84,6 +84,8 @@ const BASE_INVOICE = {
   refund_reason_category: null,
   line_items: [LINE],
   scopes: [SCOPE],
+  // The server's answer for this invoice: every action the page can offer.
+  actions: ['edit', 'send', 'delete', 'copy_payment_link', 'record_payment'],
   net_collected: 0,
   created_at: '2026-07-01T00:00:00.000Z',
   updated_at: '2026-07-01T00:00:00.000Z',
@@ -842,7 +844,7 @@ describe('InvoiceDetailPage — payment attribution in the By column', () => {
           paid_at: '2026-08-04T00:00:00.000Z',
           collector: null,
           reference_number: null,
-          stripe_payment_intent_id: 'pi_live_1',
+          paid_through_processor: true,
         },
         {
           id: 'pay-own-terminal',
@@ -851,7 +853,7 @@ describe('InvoiceDetailPage — payment attribution in the By column', () => {
           paid_at: '2026-08-04T00:00:00.000Z',
           collector: null,
           reference_number: null,
-          stripe_payment_intent_id: null,
+          paid_through_processor: false,
         },
       ],
     });
@@ -861,10 +863,10 @@ describe('InvoiceDetailPage — payment attribution in the By column', () => {
     await user.click(await screen.findByRole('tab', { name: /^Payments/ }));
 
     await screen.findByTestId('invoice-ledger');
-    // Both labels come from PAYMENT_METHOD_LABELS - the same vocabulary Settings > Payments &
-    // Lists uses - so the column can only ever name a method the org actually configured.
-    expect(screen.getByText('Credit Card')).toBeInTheDocument();
-    expect(screen.getByText('External Credit Card Processor')).toBeInTheDocument();
+    // Slice 28 D2: an online payment reads "Customer (online)" (never a method); a terminal
+    // payment nobody is recorded against keeps the org's own method label.
+    expect(screen.getByText('Customer (online)')).toBeInTheDocument();
+    expect(screen.getByText('Card (outside ServWave)')).toBeInTheDocument();
     // The processor's name never reaches the screen, even though the row carries its intent id.
     expect(screen.queryByText(/stripe/i)).not.toBeInTheDocument();
   });
@@ -881,7 +883,7 @@ describe('InvoiceDetailPage — payment attribution in the By column', () => {
           paid_at: '2026-08-04T00:00:00.000Z',
           collector: { id: 'u1', first_name: 'Dana', last_name: 'Reyes' },
           reference_number: null,
-          stripe_payment_intent_id: null,
+          paid_through_processor: false,
         },
       ],
     });
@@ -891,7 +893,7 @@ describe('InvoiceDetailPage — payment attribution in the By column', () => {
     await user.click(await screen.findByRole('tab', { name: /^Payments/ }));
 
     expect(await screen.findByText('Dana Reyes')).toBeInTheDocument();
-    expect(screen.queryByText('External Credit Card Processor')).not.toBeInTheDocument();
+    expect(screen.queryByText('Card (outside ServWave)')).not.toBeInTheDocument();
   });
 });
 
@@ -994,5 +996,52 @@ describe('InvoiceDetailPage - record number editor gating', () => {
     renderWithProviders(<InvoiceDetailPage />, { ability: adminAbility });
 
     expect(await screen.findByRole('button', { name: /edit id/i })).toBeInTheDocument();
+  });
+});
+
+// Payments go-live slice 09: the staff invoice screen through a dispute's life, with the invoice
+// shapes the staff API returned for each stage on a local run (opened, won, lost). The page names
+// no processor at any stage.
+describe('InvoiceDetailPage - a disputed payment, opened then closed (slice 09)', () => {
+  const card = { id: 'p1', amount: 550, method: 'CARD', paid_at: '2026-07-02T00:00:00.000Z', collector: null, reference_number: null };
+  const noProcessorName = () => expect(document.body.textContent ?? '').not.toMatch(/stripe/i);
+
+  it('an open dispute reads Disputed, with nothing due', async () => {
+    mockInvoice({ status: 'DISPUTED', total_amount: 550, amount_due: 0, net_collected: 550, paid_at: '2026-07-02T00:00:00.000Z', payments: [card] });
+    renderWithProviders(<InvoiceDetailPage />, { ability: adminAbility });
+
+    await screen.findByTestId('invoice-receipt-card');
+    expect(screen.getAllByText('Disputed').length).toBeGreaterThan(0);
+    expect(screen.getByTestId('invoice-amount-due')).toHaveTextContent('$0.00');
+    noProcessorName();
+  });
+
+  it('a won dispute reads Paid again, no longer Disputed', async () => {
+    mockInvoice({ status: 'PAID', total_amount: 550, amount_due: 0, net_collected: 550, paid_at: '2026-07-02T00:00:00.000Z', payments: [card] });
+    renderWithProviders(<InvoiceDetailPage />, { ability: adminAbility });
+
+    await screen.findByTestId('invoice-receipt-card');
+    expect(screen.getAllByText('Paid').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Disputed')).not.toBeInTheDocument();
+    noProcessorName();
+  });
+
+  it('a lost dispute reopens the balance: the charged-back payment is listed voided and counts for nothing', async () => {
+    const user = userEvent.setup();
+    mockInvoice({
+      status: 'SENT', total_amount: 550, amount_due: 550, net_collected: 0, paid_at: null,
+      payments: [{ ...card, voided_at: '2026-07-05T00:00:00.000Z', void_category: 'CHARGEBACK' } as typeof card & { voided_at: string }],
+    });
+    renderWithProviders(<InvoiceDetailPage />, { ability: adminAbility });
+
+    await screen.findByTestId('invoice-receipt-card');
+    expect(screen.getAllByText('Sent').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Disputed')).not.toBeInTheDocument();
+    expect(screen.getByTestId('invoice-amount-due')).toHaveTextContent('$550.00');
+    await user.click(await screen.findByRole('tab', { name: /^Payments/ }));
+    const ledger = within(await screen.findByTestId('invoice-ledger'));
+    expect(ledger.getByText('voided')).toBeInTheDocument();
+    expect(ledger.queryByText(/\+\$550\.00 collected/)).not.toBeInTheDocument();
+    noProcessorName();
   });
 });

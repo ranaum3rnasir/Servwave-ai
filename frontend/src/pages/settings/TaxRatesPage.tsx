@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2, Plus, Search, Trash2 } from 'lucide-react';
 import { useAppAbility } from '@/contexts/AbilityContext';
+import NotAuthorizedPage from '@/components/NotAuthorizedPage';
 import { Card } from '@/components/ui/card';
 import { useConfirm } from '@/hooks/useConfirm';
 import { Button } from '@/components/ui/button';
@@ -42,10 +43,19 @@ interface PendingEdit {
  * "Show in dropdown" is what the estimate/invoice/job tax pickers read, so an HVAC shop working
  * one state stops scrolling past 50 others. Hiding never changes tax on an existing document, and
  * never changes what an out-of-state job is taxed - derivation reads hidden rates too.
+ *
+ * The page is Company settings (`update Organization`, the pair the writes are gated on): the tab is
+ * hidden without it and a person who types the address is refused. The gate is a wrapper rather than a
+ * branch in the body so a refused person fires no request. The rates themselves are reference data every
+ * form reads (GET /api/state-tax-rates); only the setup lives here.
  */
 export default function TaxRatesPage() {
   const ability = useAppAbility();
-  const canEdit = ability.can('update', 'Organization');
+  if (!ability.can('update', 'Organization')) return <NotAuthorizedPage />;
+  return <TaxRatesSettings />;
+}
+
+function TaxRatesSettings() {
   const queryClient = useQueryClient();
   const { confirm, confirmDialog } = useConfirm();
   const { data: rates, isLoading } = useQuery({
@@ -266,8 +276,7 @@ export default function TaxRatesPage() {
                           type="button"
                           // 24 px tall target, same row height (mobile slice 25, TOUCH-01).
                           className="-my-0.5 py-0.5 text-left font-medium text-text-primary disabled:cursor-default"
-                          onClick={() => canEdit && startEdit(r, 'name')}
-                          disabled={!canEdit}
+                          onClick={() => startEdit(r, 'name')}
                         >
                           {r.name}
                         </button>
@@ -295,8 +304,7 @@ export default function TaxRatesPage() {
                         <button
                           type="button"
                           className="-my-0.5 py-0.5 tabular-nums text-text-secondary disabled:cursor-default"
-                          onClick={() => canEdit && startEdit(r, 'rate')}
-                          disabled={!canEdit}
+                          onClick={() => startEdit(r, 'rate')}
                         >
                           {fmtPct(r.rate)}
                         </button>
@@ -305,32 +313,29 @@ export default function TaxRatesPage() {
                     <td className="py-2 pr-3">
                       <Switch
                         checked={r.is_visible}
-                        disabled={!canEdit}
                         onCheckedChange={(next) => toggleMutation.mutate({ id: r.id, is_visible: next })}
                         aria-label={`Show ${r.name} in tax dropdowns`}
                       />
                     </td>
                     <td className="py-2 text-right">
-                      {canEdit && (
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          onClick={async () => {
-                            const ok = await confirm({
-                              title: `Remove the "${r.name}" tax rate?`,
-                              description:
-                                'Documents already taxed at this rate keep it. It just stops being offered.',
-                              tone: 'danger',
-                            });
-                            if (ok) deleteMutation.mutate(r.id);
-                          }}
-                          disabled={deleteMutation.isPending}
-                          aria-label={`Delete ${r.name}`}
-                        >
-                          <Trash2 className="h-4 w-4 text-danger" />
-                        </Button>
-                      )}
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={async () => {
+                          const ok = await confirm({
+                            title: `Remove the "${r.name}" tax rate?`,
+                            description:
+                              'Documents already taxed at this rate keep it. It just stops being offered.',
+                            tone: 'danger',
+                          });
+                          if (ok) deleteMutation.mutate(r.id);
+                        }}
+                        disabled={deleteMutation.isPending}
+                        aria-label={`Delete ${r.name}`}
+                      >
+                        <Trash2 className="h-4 w-4 text-danger" />
+                      </Button>
                     </td>
                   </tr>
                 ))}
@@ -338,46 +343,44 @@ export default function TaxRatesPage() {
             </Table>
           )}
 
-          {canEdit && (
-            <div className="flex items-end gap-2 border-t border-border pt-4">
-              <div className="flex-1 space-y-1">
-                <Label className="text-xs">Name</Label>
-                <Input
-                  value={newName}
-                  aria-label="Name"
-                  onChange={(e) => setNewName(e.target.value)}
-                  placeholder="e.g. Hoboken Combined"
-                  className="h-9"
-                />
-              </div>
-              <div className="w-28 space-y-1">
-                <Label className="text-xs">Rate %</Label>
-                <Input
-                  kind="percent"
-                  value={newPct}
-                  aria-label="Rate %"
-                  onChange={(e) => setNewPct(e.target.value)}
-                  min={0}
-                  max={100}
-                  step={0.001}
-                  className="h-9"
-                />
-              </div>
-              <Button
-                type="button"
-                size="sm"
-                onClick={() => createMutation.mutate()}
-                disabled={!canAdd || createMutation.isPending}
-              >
-                {createMutation.isPending ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Plus className="h-4 w-4" />
-                )}
-                Add rate
-              </Button>
+          <div className="flex items-end gap-2 border-t border-border pt-4">
+            <div className="flex-1 space-y-1">
+              <Label className="text-xs">Name</Label>
+              <Input
+                value={newName}
+                aria-label="Name"
+                onChange={(e) => setNewName(e.target.value)}
+                placeholder="e.g. Hoboken Combined"
+                className="h-9"
+              />
             </div>
-          )}
+            <div className="w-28 space-y-1">
+              <Label className="text-xs">Rate %</Label>
+              <Input
+                kind="percent"
+                value={newPct}
+                aria-label="Rate %"
+                onChange={(e) => setNewPct(e.target.value)}
+                min={0}
+                max={100}
+                step={0.001}
+                className="h-9"
+              />
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              onClick={() => createMutation.mutate()}
+              disabled={!canAdd || createMutation.isPending}
+            >
+              {createMutation.isPending ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Plus className="h-4 w-4" />
+              )}
+              Add rate
+            </Button>
+          </div>
         </div>
       </Card>
 

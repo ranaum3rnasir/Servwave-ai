@@ -7,6 +7,7 @@ import {
   seedCrewForActor,
   type SchedulableEvent,
 } from './scheduleModel';
+import { buildAbility } from '@/lib/ability';
 import { asWallClock, type WallClock } from '@/lib/schedule-tz';
 import { token } from '@/design-system/tokens';
 import { contrastRatio, rgbDistance } from '@/design-system/contrast';
@@ -203,18 +204,49 @@ describe('conflictNoteFor (D5 — the modal\'s advisory note, never a blocker)',
   });
 });
 
-describe('boardCapabilitiesFor (D9 — UI-control gating; data scoping is server-side)', () => {
-  it('ADMIN → member view + full edit', () =>
-    expect(boardCapabilitiesFor('ADMIN')).toEqual({ memberView: true, readOnly: false }));
-  it('DISPATCHER → member view + full edit', () =>
-    expect(boardCapabilitiesFor('DISPATCHER')).toEqual({ memberView: true, readOnly: false }));
-  it('SALES → no member view, normal edits on their server-scoped data', () =>
-    expect(boardCapabilitiesFor('SALES')).toEqual({ memberView: false, readOnly: false }));
-  it('TECHNICIAN → no member view, READ-ONLY board', () =>
-    expect(boardCapabilitiesFor('TECHNICIAN')).toEqual({ memberView: false, readOnly: true }));
-  it('missing/unknown role fails SAFE → no member view, read-only', () => {
-    expect(boardCapabilitiesFor(undefined)).toEqual({ memberView: false, readOnly: true });
-    expect(boardCapabilitiesFor('SOMETHING_NEW')).toEqual({ memberView: false, readOnly: true });
+describe('boardCapabilitiesFor (S04.11 - UI-control gating follows switches; data scoping is server-side)', () => {
+  const can = (...pairs: Array<[string, string]>) =>
+    buildAbility(pairs.map(([action, subject]) => ({ action, subject }) as never));
+
+  it('an ability with no board switch → one lane, read-only, no plan mode, no buckets, no job complete', () => {
+    expect(boardCapabilitiesFor(can(['read', 'all']))).toEqual({
+      memberView: false, readOnly: true, moveJobs: false, assignJobCrew: false, reassignJobs: false,
+      moveWalkthroughs: false, reassignWalkthroughs: false, moveEntries: false, planMode: false,
+      unscheduledJobsBucket: false, unscheduledWalkthroughsBucket: false, completeJob: false,
+    });
+  });
+  it('Assign work to other people alone → lanes for others, still read-only', () => {
+    expect(boardCapabilitiesFor(can(['assign', 'User']))).toMatchObject({ memberView: true, readOnly: true, planMode: false });
+  });
+  it('Schedule visits → moves visits and offers the jobs bucket; plan mode also needs Assign work to other people', () => {
+    expect(boardCapabilitiesFor(can(['reschedule', 'Job']))).toMatchObject({
+      readOnly: false, moveJobs: true, unscheduledJobsBucket: true, planMode: false,
+    });
+    expect(boardCapabilitiesFor(can(['reschedule', 'Job'], ['assign', 'User']))).toMatchObject({ planMode: true });
+  });
+  // Scenario pass 2: these two sets are offered the bucket and Plan Mode by the PRD but cannot name a crew. The board
+  // keeps offering them (PRD 4), and the page books the visit without a crew for them (assignJobCrew false is what it reads).
+  it('Schedule visits without Assign people to jobs → the jobs bucket, and no crew door', () => {
+    expect(boardCapabilitiesFor(can(['reschedule', 'Job']))).toMatchObject({
+      unscheduledJobsBucket: true, assignJobCrew: false, reassignJobs: false,
+    });
+    expect(boardCapabilitiesFor(can(['reschedule', 'Job'], ['assign', 'User']))).toMatchObject({
+      planMode: true, assignJobCrew: false, reassignJobs: false,
+    });
+  });
+  it('between lanes needs Assign people to jobs AND Assign work to other people', () => {
+    expect(boardCapabilitiesFor(can(['assign', 'Job']))).toMatchObject({ assignJobCrew: true, reassignJobs: false, readOnly: true });
+    expect(boardCapabilitiesFor(can(['assign', 'Job'], ['assign', 'User']))).toMatchObject({ reassignJobs: true, readOnly: false });
+  });
+  it('Book walkthroughs → moves walkthroughs and offers their bucket, with no lanes for others', () => {
+    expect(boardCapabilitiesFor(can(['schedule_walkthrough', 'Lead']))).toMatchObject({
+      memberView: false, readOnly: false, moveWalkthroughs: true, reassignWalkthroughs: false,
+      unscheduledWalkthroughsBucket: true, unscheduledJobsBucket: false,
+    });
+  });
+  it('Edit events → moves calendar entries; Complete jobs → the job-level complete', () => {
+    expect(boardCapabilitiesFor(can(['update', 'CalendarEntry']))).toMatchObject({ moveEntries: true, readOnly: false });
+    expect(boardCapabilitiesFor(can(['complete', 'Job']))).toMatchObject({ completeJob: true, readOnly: true });
   });
 });
 

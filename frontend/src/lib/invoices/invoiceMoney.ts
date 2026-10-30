@@ -13,12 +13,14 @@
  * `InvoiceDetail`, and a hand-written second copy of that shape would drift the
  * moment a field is added.
  */
-import type { InvoiceKind, Refund, Credit, VoidPaymentReason } from '@/types/entities';
+import type { InvoiceKind, Refund, Credit, VoidPaymentReason, PaymentState } from '@/types/entities';
 import type { InvoiceLineItem, Scope } from '@/lib/api/jobs';
 import type { PaymentMethod } from '@/lib/api/organization';
 import { PAYMENT_METHOD_LABELS } from '@/lib/payment-methods';
 import type { AppAbility } from '@/lib/ability';
 import { orgDayDiff } from '@/lib/schedule-tz';
+import { paymentCounts, refundCounts } from '@/lib/payment-ledger';
+import { describePayment } from '@/lib/payment-display';
 
 // ─── Types ──────────────────────────────────────────
 
@@ -32,7 +34,7 @@ export interface Payment {
   method: string;
   paid_at: string;
   collected_by: string | null;
-  stripe_payment_intent_id: string | null;
+  paid_through_processor: boolean;
   reference_number: string | null;
   notes: string | null;
   created_at: string;
@@ -53,10 +55,28 @@ export interface Payment {
   // Slice 8 (customer-facing tipping) — the pay-time tip collected alongside this payment; never
   // part of `amount` (D10). Null/undefined when the customer left no tip.
   tip_amount?: number | string | null;
+  // Payments go-live slice 05 — only a SUCCEEDED payment counts as collected (lib/payment-ledger).
+  state?: PaymentState;
+  // Payments go-live slice 28 — how the customer paid, captured from the charge (lib/payment-display).
+  wallet?: 'APPLE_PAY' | 'GOOGLE_PAY' | 'LINK' | null;
+  card_brand?: string | null;
+  card_last4?: string | null;
+  bank_name?: string | null;
+  bank_last4?: string | null;
 }
+
+/**
+ * What the server says this person may do on THIS invoice (backend `invoiceActionsFor`): the switch behind each action
+ * or the creator rule, never a role name. `send` covers send, resend and mark sent.
+ */
+export type InvoiceAction = 'edit' | 'send' | 'delete' | 'copy_payment_link' | 'record_payment';
 
 export interface InvoiceDetail {
   id: string;
+  /** The server's per-record answer, on the invoice's own read. */
+  actions?: InvoiceAction[];
+  /** The Done words when the invoice belongs to a Done job (its lines, scopes, discount and tax are closed to everyone); null otherwise. */
+  price_edit_closed_reason?: string | null;
   invoice_number: string;
   status: string;
   subtotal: number | string;
@@ -98,13 +118,19 @@ export interface InvoiceDetail {
   // SRVW-103 - hydrated by GET /api/invoices/:id (and the list), not by mutation responses.
   tags?: { id: string; name: string; color: string }[];
   net_collected?: number | string;
-  stripe_dispute_id?: string | null;
+  // Payments go-live slice 28 - the bank money still clearing on this invoice (derived server-side;
+  // there is no "processing" invoice status). Detail and list rows alike.
+  processing_amount?: number | string;
   created_at: string;
   updated_at: string;
   // R3b (2026-07-21) — cost model (D2/D8), staff-only (stripped for non-privileged viewers).
   labor_hours?: number | string | null;
   overhead_mode?: 'PERCENTAGE' | 'FIXED' | null;
   overhead_value?: number | string | null;
+  // Payments go-live slice 19/21 - this invoice's payment options. null = the org default
+  // (methods), off (partial). Staff payload only; the public payload strips both.
+  payment_methods_override?: PaymentMethod[] | null;
+  allow_partial_payment?: boolean | null;
   // Top-level customer — backend source-of-truth for job-less (deposit/orphan) invoices.
   customer?: InvoiceCustomer;
   // Copy-to-Invoice (R5e): the ONLY way to reach the source estimate for a job-less, standalone
@@ -137,7 +163,7 @@ export interface InvoiceDetail {
         service_fee_amount?: number | string | null;
         // Set only when the money actually moved through Stripe - the honest signal for whether
         // this row can be attributed to Stripe (see `processorLabel`).
-        stripe_payment_intent_id?: string | null;
+        paid_through_processor?: boolean;
       }[];
     }[];
     lead?: { id: string; lead_assignees: { user_id: string }[] } | null;
@@ -185,7 +211,7 @@ export interface InvoiceDetail {
           platform_fee_amount?: number | string | null;
           net_amount?: number | string | null;
           service_fee_amount?: number | string | null;
-          stripe_payment_intent_id?: string | null;
+          paid_through_processor?: boolean;
         }[];
       }[];
       lead: { id: string; lead_assignees: { user_id: string }[] } | null;
@@ -226,6 +252,8 @@ export interface LedgerEvent {
   estimateId?: string;
   estimateNumber?: string;
   method: string;
+  /** Slice 28: how it was paid as one line ("Visa •••• 4242", "Link", "Bank of Example •••• 6789"). */
+  methodDisplay: string;
   amount: number;
   sign: '+' | '−';
   by: string;
@@ -250,6 +278,13 @@ export interface LedgerEvent {
    * still add up to the footer.
    */
   countsInNet: boolean;
+  /**
+   * Payments go-live slice 05: a payment or refund that is listed but does not count because it
+   * has not settled - a PROCESSING payment or PENDING refund still on its way, or a FAILED one
+   * that never moved money. Unset for a settled row and for the deposit-invoice rows above, so
+   * the page can say which of the two reasons keeps a row out of the totals.
+   */
+  settlement?: 'PROCESSING' | 'PENDING' | 'FAILED';
   // Slice 5 (card service fee) — the customer-paid fee collected alongside this payment; never
   // part of `amount` (D1). Undefined/null for non-CARD, disabled-org, or pre-feature payments,
   // and for the synthetic DEPOSIT-CREDIT row.
@@ -267,6 +302,21 @@ export interface LedgerEvent {
  * (invoice.controller.ts), so it sits at 0 on ordinary paid invoices. Everything here is derived
  * from the same ledger pass the Payments tab renders.
  */
+/** The ledger's "By" for a payment the customer made themselves, whatever the method. */
+const ONLINE_BY = 'Customer (online)';
+
+/** The event title for an online payment: it follows the state, "Invoice Paid" only for money received. */
+function onlinePaymentTitle(state: PaymentState | undefined): string {
+  if (state === 'PROCESSING') return 'Payment processing';
+  if (state === 'FAILED') return 'Payment failed';
+  return 'Invoice Paid';
+}
+
+function refundedPaymentDisplay(invoice: InvoiceDetail, r: Refund): string | null {
+  const p = r.payment_id ? invoice.payments.find((x) => x.id === r.payment_id) : undefined;
+  return p ? describePayment({ ...p, wallet: p.wallet ?? null }) : null;
+}
+
 /**
  * What to show in the ledger's "By" column for a payment nobody is recorded as having collected.
  *
@@ -284,8 +334,8 @@ export interface LedgerEvent {
  * The Stripe naming survives in the parameter, the intent check and this comment on purpose: the
  * wiring stays traceable in code even though the word never reaches the screen.
  */
-export function processorLabel(method: string, stripePaymentIntentId?: string | null): string {
-  const key = stripePaymentIntentId ? 'CARD' : method;
+export function processorLabel(method: string, paidThroughProcessor?: boolean | null): string {
+  const key = paidThroughProcessor ? 'CARD' : method;
   return PAYMENT_METHOD_LABELS[key as PaymentMethod] ?? method.replace(/_/g, ' ');
 }
 
@@ -350,9 +400,12 @@ export function buildLedgerEvents(invoice: InvoiceDetail): LedgerEvent[] {
   // (method/date/amount) is the first row in its payments list.
   const depositInvoice = estimate?.invoices?.[0];
   const depositPayment = depositInvoice?.payments?.[0];
+  // Slice 28: on the deposit invoice itself the "sibling" deposit IS this invoice, so its payment is
+  // already in the list below. Listing it again as "Deposit Paid" counted one payment twice.
+  const isTheDepositInvoice = depositInvoice?.id === invoice.id;
 
   // 1. Deposit Paid
-  if (depositPayment && depositPayment.paid_at) {
+  if (depositPayment && depositPayment.paid_at && !isTheDepositInvoice) {
     events.push({
       key: 'deposit-paid',
       date: depositPayment.paid_at,
@@ -361,9 +414,10 @@ export function buildLedgerEvents(invoice: InvoiceDetail): LedgerEvent[] {
       estimateId: estimate?.id,
       estimateNumber: estimate?.estimate_number,
       method: depositPayment.method || 'CARD',
+      methodDisplay: describePayment({ method: depositPayment.method || 'CARD' }),
       amount: Number(depositPayment.amount),
       sign: '+',
-      by: processorLabel(depositPayment.method || 'CARD', depositPayment.stripe_payment_intent_id),
+      by: processorLabel(depositPayment.method || 'CARD', Boolean(depositPayment.paid_through_processor)),
       isRefund: false,
       isCredit: false,
       voided: false,
@@ -385,11 +439,12 @@ export function buildLedgerEvents(invoice: InvoiceDetail): LedgerEvent[] {
       date: p.paid_at,
       label: isDepositCredit
         ? 'Deposit Credit Applied'
-        : p.method === 'CARD'
-        ? 'Invoice Paid'
+        : p.method === 'CARD' || p.method === 'ACH'
+        ? onlinePaymentTitle(p.state)
         : 'Manual Payment',
       source: 'INVOICE',
       method: isDepositCredit ? 'DEPOSIT_CREDIT' : p.method,
+      methodDisplay: isDepositCredit ? 'Deposit credit' : describePayment({ ...p, wallet: p.wallet ?? null }),
       amount: Number(p.amount),
       sign: '+',
       by: isDepositCredit
@@ -398,13 +453,17 @@ export function buildLedgerEvents(invoice: InvoiceDetail): LedgerEvent[] {
         ? `${p.collector.first_name} ${p.collector.last_name}`
         // Card rows name whoever actually processed them; the non-card methods keep '—' rather
         // than echoing the Method column back at the reader.
-        : p.method === 'CARD' || p.method === 'EXTERNAL_CARD'
-        ? processorLabel(p.method, p.stripe_payment_intent_id)
+        : p.method === 'CARD' || p.method === 'ACH' || p.paid_through_processor
+        ? ONLINE_BY
+        : p.method === 'EXTERNAL_CARD'
+        ? processorLabel(p.method, p.paid_through_processor)
         : '-',
       isRefund: false,
       isCredit: false,
       voided: p.voided_at != null,
-      countsInNet: true,
+      // Slice 05: a PROCESSING or FAILED payment is listed but was not collected.
+      countsInNet: paymentCounts(p),
+      settlement: paymentCounts(p) ? undefined : (p.state as LedgerEvent['settlement']),
       // A synthetic credit row carries no fee of its own - the deposit invoice's real payment does.
       serviceFeeAmount: isDepositCredit ? null : p.service_fee_amount,
       tipAmount: isDepositCredit ? null : p.tip_amount,
@@ -423,13 +482,18 @@ export function buildLedgerEvents(invoice: InvoiceDetail): LedgerEvent[] {
       label: 'Refund',
       source: 'INVOICE',
       method: r.method || 'CARD',
+      // O2: read the method off the refunded payment, as that payment's own row does.
+      methodDisplay: refundedPaymentDisplay(invoice, r) ?? describePayment({ method: r.method || 'CARD' }),
       amount: Number(r.amount),
       sign: '−',
-      by: '-',
+      // Slice 28: who sent the money back (recorded on the refund; the dash is for rows without one).
+      by: r.refunded_by_user ? `${r.refunded_by_user.first_name} ${r.refunded_by_user.last_name}`.trim() || '-' : '-',
       isRefund: true,
       isCredit: false,
       voided: false,
-      countsInNet: true,
+      // Slice 05: a PENDING or FAILED refund is listed but gave nothing back (yet).
+      countsInNet: refundCounts(r),
+      settlement: refundCounts(r) ? undefined : (r.state as LedgerEvent['settlement']),
     });
   }
 
@@ -442,6 +506,7 @@ export function buildLedgerEvents(invoice: InvoiceDetail): LedgerEvent[] {
       label: 'Credit',
       source: 'INVOICE',
       method: 'CREDIT',
+      methodDisplay: 'Credit',
       amount: Number(c.amount),
       sign: '−',
       by: '-',
@@ -461,6 +526,7 @@ export function buildLedgerEvents(invoice: InvoiceDetail): LedgerEvent[] {
       label: 'Invoice Refunded',
       source: 'INVOICE',
       method: 'CARD',
+      methodDisplay: describePayment({ method: 'CARD' }),
       amount: Number(invoice.total_refunded),
       sign: '−',
       by: '-',
@@ -474,6 +540,7 @@ export function buildLedgerEvents(invoice: InvoiceDetail): LedgerEvent[] {
   // 4. Deposit Refunded
   if (
     depositInvoice &&
+    !isTheDepositInvoice &&
     depositInvoice.status === 'REFUNDED' &&
     depositInvoice.refunded_at &&
     depositInvoice.total_refunded
@@ -486,11 +553,12 @@ export function buildLedgerEvents(invoice: InvoiceDetail): LedgerEvent[] {
       estimateId: estimate?.id,
       estimateNumber: estimate?.estimate_number,
       method: 'CARD',
+      methodDisplay: describePayment({ method: 'CARD' }),
       amount: Number(depositInvoice.total_refunded),
       sign: '−',
       // A deposit refund reverses the deposit payment, so it is attributed to whatever processed
       // that payment rather than assuming Stripe.
-      by: processorLabel(depositPayment?.method || 'CARD', depositPayment?.stripe_payment_intent_id),
+      by: processorLabel(depositPayment?.method || 'CARD', Boolean(depositPayment?.paid_through_processor)),
       isRefund: true,
       isCredit: false,
       voided: false,
@@ -505,30 +573,45 @@ export function buildLedgerEvents(invoice: InvoiceDetail): LedgerEvent[] {
   return events;
 }
 
-export function getAvailableActions(invoice: InvoiceDetail, role: string, ability: AppAbility) {
+/**
+ * Slice 28b: a PAID invoice that holds no money taken (paid only by a drawn deposit credit, or by
+ * nothing) can be voided; the server refuses only an invoice with a live SUCCEEDED or PROCESSING
+ * payment that is not the synthetic deposit-credit row.
+ */
+function paidWithoutMoneyTaken(invoice: InvoiceDetail): boolean {
+  if (invoice.status !== 'PAID') return false;
+  return !(invoice.payments ?? []).some((p) =>
+    !p.voided_at && (p.state === undefined || p.state === 'SUCCEEDED' || p.state === 'PROCESSING') && !isDepositCreditPayment(p));
+}
+
+export function getAvailableActions(invoice: InvoiceDetail, ability: AppAbility) {
   const isPayable = invoice.status === 'SENT' || invoice.status === 'PARTIAL';
   const isDraft = invoice.status === 'DRAFT';
-  const canManage = role === 'ADMIN' || role === 'DISPATCHER';
+  // Who may do what on this invoice is the server's answer for it (a switch, or the creator rule for a record the
+  // person made); the status below only says whether the action fits the invoice as it stands.
+  const may = (action: InvoiceAction) => invoice.actions?.includes(action) ?? false;
 
   return {
-    canSend: isDraft && canManage,
+    canSend: isDraft && may('send'),
+    // The mark-sent door shares Send's gate (canDoOrCreator('send', 'Invoice')), so the server's `send` answer is its flag.
+    canMarkSent: isDraft && may('send'),
     // "Was this ever sent" must come from the invoice's own sent state (status + `sent_at`,
     // mirroring the backend's `isSentInvoice()` in `backend/src/lib/invoice-editable.ts`), not
     // from `!!invoice.public_token` — #1997 round 3 made that key entirely ABSENT (not null) on a
     // document whose anchored customer the requester cannot read, which was hiding Resend for a
     // requester who still holds `resend Invoice` on a genuinely SENT invoice. Both `status` and
     // `sent_at` are always projected and untouched by that redaction.
-    canResend: isPayable && !!invoice.sent_at && canManage,
+    canResend: isPayable && !!invoice.sent_at && may('send'),
     // Sending first is not required — DRAFT invoices can take a payment too.
-    // D4: record_payment is a per-user capability, never a technician role default. The old
-    // `role === 'TECHNICIAN' && isOwnJob` granted by role what the toggle is supposed to gate.
-    canRecordPayment: (isPayable || isDraft) && ability.can('record_payment', 'Invoice'),
-    canVoid: isPayable && ability.can('void', 'Invoice'),
-    canDelete: isDraft && canManage,
-    canEdit: isDraft && canManage,
+    // D4: record_payment is a per-user capability (the Record payments switch), never a role default and never the
+    // creator rule's.
+    canRecordPayment: (isPayable || isDraft) && may('record_payment'),
+    canVoid: (isPayable || paidWithoutMoneyTaken(invoice)) && ability.can('void', 'Invoice'),
+    canDelete: isDraft && may('delete'),
+    canEdit: isDraft && may('edit'),
     // Available pre-send too — minting the link (if none exists yet) issues the invoice.
-    // Same grant as send/resend; VOIDED has no payable surface.
-    canCopyLink: invoice.status !== 'VOIDED' && canManage,
+    // Its own grant (the "Send payment links" switch), not send/resend and not a role name; VOIDED has no payable surface.
+    canCopyLink: invoice.status !== 'VOIDED' && may('copy_payment_link'),
   };
 }
 

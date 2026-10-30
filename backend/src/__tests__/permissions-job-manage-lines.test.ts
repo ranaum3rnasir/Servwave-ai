@@ -24,7 +24,6 @@ import { join } from 'path';
 import { PERMISSION_CATALOG } from '../lib/permissions/catalog';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 import { defineAbilityFor } from '../lib/permissions/defineAbility';
-import { USER_CAPABILITIES, isManagedCapability } from '../lib/permissions/userCapabilities';
 import { updateJobSchema, MANAGE_LINES_FIELDS } from '../controllers/job.controller';
 
 // Mirrors NOT_MANAGE_LINES_FIELDS in job.controller.ts. Deliberately re-declared rather than
@@ -95,35 +94,6 @@ describe('DEFAULT_GRANTS - manage_lines Job covers the same roles as update Job'
   it('ADMIN reaches it via manage all, with no explicit row', () => {
     expect(abilityFor('ADMIN').can('manage_lines', 'Job')).toBe(true);
     expect(manageLinesJob().some((g) => (g.role as string) === 'ADMIN')).toBe(false);
-  });
-});
-
-describe('USER_CAPABILITIES - the per-user toggle path is mirrored too', () => {
-  const cap = (action: string, subject: string) =>
-    USER_CAPABILITIES.find((c) => c.action === action && c.subject === subject);
-
-  it('manage_lines Job is a managed per-user capability', () => {
-    expect(isManagedCapability('manage_lines', 'Job')).toBe(true);
-  });
-
-  // Same re-point as the role default above. PR 2 gave the toggle OWN_JOB so that granting it
-  // changed nobody's access on merge; PR 3 gives it the meaning it was created for, and the two
-  // paths must agree or an admin's per-user grant would reach a different row set from the role's.
-  it('is creator-scoped, matching the role default rather than the update Job capability it split from', () => {
-    const update = cap('update', 'Job');
-    const manageLines = cap('manage_lines', 'Job');
-    expect(update).toBeDefined();
-    expect(manageLines).toBeDefined();
-    expect(manageLines?.ownCondition).toEqual({ created_by_id: '{{userId}}' });
-    expect(manageLines?.ownCondition).not.toEqual(update?.ownCondition);
-    const roleGrant = DEFAULT_GRANTS.find(
-      (g) => g.role === 'TECHNICIAN' && g.action === 'manage_lines' && g.subject === 'Job',
-    );
-    expect(manageLines?.ownCondition).toEqual(roleGrant?.conditions);
-    // The implied read still matters: without it a grantee could not SEE the rows they may now edit.
-    expect(manageLines?.impliesRead).toBe(update?.impliesRead);
-    // Neither is role-gated: an own-scoped capability cannot widen scope past the grantee's rows.
-    expect(manageLines?.roles).toBeUndefined();
   });
 });
 

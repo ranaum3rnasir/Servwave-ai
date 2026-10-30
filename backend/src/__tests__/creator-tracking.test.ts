@@ -23,9 +23,11 @@ import {
   LOCATION_FIXTURE,
   LEAD_FIXTURE,
   INVOICE_SENT_FIXTURE,
+  withCheckoutLedger,
+  servedBy,
+  withLedgerReads,
 } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 import { applyDepositCreditsWithPayments } from '../lib/deposit-credit';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -44,7 +46,6 @@ const DISPATCHER_STAMP = {
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache();
   for (const k of Object.keys(captured)) delete captured[k];
 });
 
@@ -253,14 +254,15 @@ describe('POST /api/invoices/:id/payments - a payment collected by staff', () =>
       },
     });
     mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
-      fn({
+      fn(withLedgerReads({
+        $executeRaw: vi.fn().mockResolvedValue(1), // recordPayment locks the invoice row
         invoice: {
           findUniqueOrThrow: vi.fn().mockResolvedValue({ amount_due: 1268, status: 'SENT' }),
           update: vi.fn().mockResolvedValue({ id: INVOICE_SENT_FIXTURE.id, status: 'PARTIAL' }),
         },
         payment: { create: capture('payment', { id: 'pay-1', collector: null }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
-      }),
+      })),
     );
 
     const res = await request(app)
@@ -309,16 +311,17 @@ describe('Stripe checkout.session.completed - the customer paid themselves', () 
       });
     });
     mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
-      fn({
+      fn(withCheckoutLedger({
         stripeEvent: { create: vi.fn().mockResolvedValue({}) },
         payment: { create: capture('payment', { id: 'pay-webhook-1' }) },
-        invoice: { update: vi.fn().mockResolvedValue({}), findFirst: vi.fn().mockResolvedValue(null) },
+        $executeRaw: vi.fn().mockResolvedValue(1), // #891: the checkout locks the invoice row
+        invoice: { findUnique: vi.fn().mockResolvedValue({ status: 'SENT' }), update: vi.fn().mockResolvedValue({}), findFirst: vi.fn().mockResolvedValue(null) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         depositCreditApplication: { findMany: vi.fn().mockResolvedValue([]) },
         lead: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         estimate: { update: vi.fn().mockResolvedValue({}) },
         job: { update: vi.fn().mockResolvedValue({}) },
-      }),
+      }, await servedBy(mockPrisma.invoice.findUnique))),
     );
 
     const res = await request(app)

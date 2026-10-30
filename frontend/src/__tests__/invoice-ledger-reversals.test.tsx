@@ -54,7 +54,7 @@ function payment(o: Record<string, unknown> = {}) {
     method: 'CASH',
     paid_at: '2026-07-02T00:00:00.000Z',
     collected_by: null,
-    stripe_payment_intent_id: null,
+    paid_through_processor: false,
     reference_number: null,
     notes: null,
     created_at: '2026-07-02T00:00:00.000Z',

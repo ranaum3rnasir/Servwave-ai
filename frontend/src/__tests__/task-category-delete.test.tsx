@@ -38,7 +38,7 @@ const PART_ORDER: TaskCategoryRef = { id: 'cat-parts', name: 'Part order', color
 const INTERNAL: TaskCategoryRef = { id: 'cat-internal', name: 'Internal', color: '#6B7280' };
 
 const ORG = {
-  id: 'o1', stripe_account_id: null, accepted_payment_methods: ['CASH'], source_options: ['Google'],
+  id: 'o1', stripe_connected: false, accepted_payment_methods: ['CASH'], source_options: ['Google'],
   job_type_options: [], deposit_default_type: 'PERCENTAGE', deposit_default_percentage: 40,
   deposit_default_fixed_amount: 0,
 };

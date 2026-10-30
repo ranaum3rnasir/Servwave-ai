@@ -4,7 +4,7 @@
  * The Workiz-style assign popover lets the user choose notification channels.
  * Backend contract:
  *   - POST /api/jobs/:id/assignees accepts optional notify { in_app?, email? }:
- *       in_app:false → suppress the dispatch.job_assigned emit for added crew ONLY
+ *       in_app:false → suppress the dispatch.job_assigned alert for added crew ONLY
  *       email:false  → suppress the added-crew assignment email ONLY
  *       removal notices (dispatch.job_unassigned + unassigned email) stay unconditional
  *   - POST /api/leads/:id/assign accepts optional notify { in_app? }:
@@ -36,6 +36,16 @@ vi.mock('../services/notifications/notificationService', () => ({
 import { emit } from '../services/notifications/notificationService';
 const mockEmit = emit as ReturnType<typeof vi.fn>;
 
+// The job alerts (assigned, unassigned) are queued for after the response (S06.27); the queue entry points are what the routes call.
+vi.mock('../services/notifications/jobSchedulingAlerts', () => ({
+  queueJobSchedulingAlert: vi.fn(),
+  queueJobUnassignedAlert: vi.fn(),
+  queueStagingReadyAlert: vi.fn(),
+}));
+import { queueJobSchedulingAlert, queueJobUnassignedAlert } from '../services/notifications/jobSchedulingAlerts';
+const mockScheduling = queueJobSchedulingAlert as ReturnType<typeof vi.fn>;
+const mockUnassigned = queueJobUnassignedAlert as ReturnType<typeof vi.fn>;
+
 // TECH_ASSIGNED/TECH_UNASSIGNED now travel through dispatchAutomationEvent rather
 // than a hard-coded sender — mocked here (mirroring automation-wiring.test.ts).
 vi.mock('../services/automations/dispatch', () => ({
@@ -48,7 +58,10 @@ const mockPrisma = prisma as any;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+/** What a route raised for a verb: the queued job alert (the personal one has a verb of its own), or an emitted one. */
 function emitCall(verb: string) {
+  if (verb === 'dispatch.job_unassigned') return mockUnassigned.mock.calls[0];
+  if (verb.startsWith('dispatch.')) return mockScheduling.mock.calls.find((c: any[]) => c[0].verb === verb);
   return mockEmit.mock.calls.find((c: any[]) => c[0].verb === verb);
 }
 
@@ -149,7 +162,7 @@ describe('POST /api/jobs/:id/assignees — notify options (#361)', () => {
     expect(dispatchedType('TECH_ASSIGNED')).toHaveLength(1);
   });
 
-  it('notify.email:false suppresses the TECH_ASSIGNED dispatch but STILL emits dispatch.job_assigned; removal path unaffected', async () => {
+  it('notify.email:false suppresses the TECH_ASSIGNED dispatch but STILL queues dispatch.job_assigned; removal path unaffected', async () => {
     mockAuthAs('admin');
     // Current crew = [sales]; new crew = [technician] → tech added, sales removed.
     // S8 (D6): the PRE-read crew is the union across the job's trips.

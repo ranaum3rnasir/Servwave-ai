@@ -13,6 +13,8 @@
  * and the legacy flat `walkthrough_*` response fields never disagree about which trip is current.
  */
 
+import { STATUS_REGISTRY, type StatusEntry } from '@/design-system/status-registry';
+
 /** A visit that has not happened yet and has not been called off. */
 export const LIVE_VISIT_STATUSES = ['SCHEDULED', 'EN_ROUTE', 'ON_SITE', 'IN_PROGRESS'] as const;
 
@@ -146,6 +148,12 @@ export interface JobVisitRow extends VisitRow {
    */
   assignees?: VisitCrewMember[];
   /**
+   * S04.12: the status steps THIS person may take on THIS visit, as the server answers per visit (the step's own
+   * switch AND a place on the visit's crew or Update any visit's status). Optional because a cached payload from
+   * before the answer existed carries none, and absent reads as no steps.
+   */
+  status_steps?: VisitMilestoneAction[];
+  /**
    * S4 (D7): the milestone stamps, which live on the VISIT now. `completed_at` and `cancelled_at`
    * come from VisitRow above.
    *
@@ -229,40 +237,39 @@ export type VisitAction = 'en-route' | 'arrive' | 'start' | 'complete' | 'cancel
 /** The four milestone verbs - every lifecycle verb except the one that carries a body. */
 export type VisitMilestoneAction = Exclude<VisitAction, 'cancel'>;
 
-/** The Job abilities the four per-visit routes are gated on. */
-export type VisitVerb = 'en_route' | 'arrive' | 'start';
-
-export const VISIT_ACTIONS: { action: VisitMilestoneAction; label: string; from: string[]; needs: VisitVerb }[] = [
-  // `needs` names the ability THAT ROUTE is gated on (backend/src/routes/job.routes.ts), which is
-  // not the same one for all four: complete rides `start Job`, and en-route has its own verb that
-  // the default TECHNICIAN role does not hold. Gating the whole row on one flag rendered an "En
-  // route" button for every crewed technician whose POST then 403'd - and useVisitLifecycle has no
-  // onError, so the button simply appeared to do nothing.
+export const VISIT_ACTIONS: { action: VisitMilestoneAction; label: string; from: string[] }[] = [
+  // WHO may take a step is the server's per-visit answer (`status_steps` on each visit, from the same function the
+  // visit routes ask); `from` is only WHEN, the statuses the step moves on from. The browser holds no permission
+  // rule of its own here: a step the answer leaves out is a step the route would refuse (S04.12).
   //
   // Labels are IMPERATIVE (scheduling-notifications slice 09, story 20): a button reading "On
   // site" beside a status chip reading "On Site" was taken for the visit's state, not a command.
-  { action: 'en-route', label: 'Mark on the way', from: ['SCHEDULED'], needs: 'en_route' },
-  { action: 'arrive', label: 'Mark on site', from: ['SCHEDULED', 'EN_ROUTE'], needs: 'arrive' },
-  { action: 'start', label: 'Start work', from: ['SCHEDULED', 'EN_ROUTE', 'ON_SITE'], needs: 'start' },
-  { action: 'complete', label: 'Complete', from: ['EN_ROUTE', 'ON_SITE', 'IN_PROGRESS'], needs: 'start' },
+  { action: 'en-route', label: 'Mark on the way', from: ['SCHEDULED'] },
+  { action: 'arrive', label: 'Mark on site', from: ['SCHEDULED', 'EN_ROUTE'] },
+  { action: 'start', label: 'Start work', from: ['SCHEDULED', 'EN_ROUTE', 'ON_SITE'] },
+  { action: 'complete', label: 'Finish visit', from: ['EN_ROUTE', 'ON_SITE', 'IN_PROGRESS'] },
 ];
 
 /**
- * What this principal may drive on a visit in `status`, in lifecycle order. A finished or
- * cancelled trip offers nothing - it is history (D19).
- *
- * The gate's honest limit, recorded rather than worked around: the ability answers from
- * `job.assignees`, which since S3 is the UNION across every visit, so a technician crewed only on
- * visit 3 is offered visit 1's controls and the API's per-visit check (D7a) will 403 them.
- * Building a second, visit-aware authorization engine in the client is the wrong fix; the right
- * one is repointing the stored OWN_JOB condition at the visits path, which the S3 migration
- * header already assigns to S8.
+ * What this person may drive on a visit in `status`, in lifecycle order: the steps the server listed for the visit
+ * that this status moves on from. A finished or cancelled trip offers nothing - it is history (D19). A visit whose
+ * payload carries no answer (a cached payload from before the answer existed) offers nothing.
  */
-export function availableActions(status: string, abilities: Partial<Record<VisitVerb, boolean>>) {
-  return VISIT_ACTIONS.filter((a) => a.from.includes(status) && abilities[a.needs]);
+export function availableActions(status: string, steps: readonly VisitMilestoneAction[] | null | undefined) {
+  return VISIT_ACTIONS.filter((a) => a.from.includes(status) && steps?.includes(a.action));
 }
 
 export type VisitStep = (typeof VISIT_ACTIONS)[number];
+
+/**
+ * A visit's status as the screen words it. A visit is FINISHED and a job is COMPLETED (Roles & Permissions, PRD 4,
+ * S04.15): "Completed" always means the whole job, never one visit. The status VALUE stays COMPLETED and the shared
+ * registry keeps its job word; only the visit's label differs, so the registry guard is untouched.
+ */
+export function visitStatusEntry(status: string): StatusEntry | undefined {
+  const entry = STATUS_REGISTRY.job[status];
+  return status === 'COMPLETED' && entry ? { ...entry, label: 'Finished' } : entry;
+}
 
 /**
  * Slice 09: the row's ONE next step, and the later milestones it may jump to.
@@ -273,11 +280,11 @@ export type VisitStep = (typeof VISIT_ACTIONS)[number];
  * first for a viewer who lacks an earlier one: a technician without `en_route` gets "Mark on
  * site" as primary and "Start work" behind Skip to, not an empty primary slot.
  */
-export function nextVisitStep(status: string, abilities: Partial<Record<VisitVerb, boolean>>): {
+export function nextVisitStep(status: string, steps: readonly VisitMilestoneAction[] | null | undefined): {
   primary: VisitStep | null;
   skipTo: VisitStep[];
 } {
-  const [primary = null, ...skipTo] = availableActions(status, abilities);
+  const [primary = null, ...skipTo] = availableActions(status, steps);
   return { primary, skipTo };
 }
 
@@ -303,6 +310,6 @@ export function visitMilestoneStamps(v: JobVisitRow): VisitMilestoneStamp[] {
   if (v.en_route_at) out.push({ milestone: 'en_route', label: 'On the way', at: v.en_route_at, skipped: v.en_route_skipped === true });
   if (v.on_site_at) out.push({ milestone: 'on_site', label: 'On site', at: v.on_site_at, skipped: v.on_site_skipped === true });
   if (v.started_at) out.push({ milestone: 'started', label: 'Started', at: v.started_at, skipped: v.started_skipped === true });
-  if (v.completed_at) out.push({ milestone: 'completed', label: 'Completed', at: v.completed_at, skipped: false });
+  if (v.completed_at) out.push({ milestone: 'completed', label: 'Finished', at: v.completed_at, skipped: false });
   return out;
 }

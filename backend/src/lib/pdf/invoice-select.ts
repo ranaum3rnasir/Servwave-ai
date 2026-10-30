@@ -75,6 +75,8 @@ export const invoicePdfSelect = {
     orderBy: { sequence: 'asc' as const },
   },
   payments: {
+    // Payments go-live slice 05: a PROCESSING or FAILED payment is not money paid.
+    where: { state: 'SUCCEEDED' },
     select: { amount: true, voided_at: true, reference_number: true },
   },
 } as const;

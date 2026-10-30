@@ -16,7 +16,7 @@ import { screen, waitFor } from '@testing-library/react';
 import { Route, Routes } from 'react-router-dom';
 import api from '@/lib/axios';
 import { renderWithProviders } from '@/__tests__/helpers';
-import { buildAbility } from '@/lib/ability';
+import { abilityWithSwitches, presetSwitchLabels } from '@/__tests__/support/backendSwitchCatalog';
 import { Toaster as KitToaster, toast } from '@/ui-kit/components/ui/sonner';
 import type { PhoneNumberRow } from '@/lib/api/communication';
 import { BACKGROUND_SYNC_RETRY_MS } from '@/lib/api/backgroundNumberSync';
@@ -39,7 +39,8 @@ const mockApi = vi.mocked(api);
 const SYNC_URL = '/api/communication/numbers/sync-if-stale';
 const NUMBERS_URL = '/api/communication/numbers';
 // A non-admin who can read the numbers list.
-const READER = buildAbility([{ action: 'read', subject: 'Communication' }]);
+// Someone who holds the phone tabs (S08.15): these tests are about the org gates, which sit on top of the tab switches.
+const READER = abilityWithSwitches(...presetSwitchLabels('DISPATCHER'));
 
 const wire = (over: Partial<PhoneNumberRow>): PhoneNumberRow => ({
   id: 'num-1',

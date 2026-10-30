@@ -129,13 +129,13 @@ describe('AddItemDialog — margin and markup side by side', () => {
     expect(within(profitability()).getByText(/add a unit cost/i)).toBeInTheDocument();
   });
 
-  it('does NOT invite a cost from a viewer who cannot see pricing', () => {
+  it('shows a viewer who cannot see pricing no cost, margin or markup at all, and nothing in their place', () => {
     renderDialog(undefined, 178, { canSeePricing: false });
 
-    // The dashes stay - the figures genuinely do not exist - but inviting this
-    // viewer into the cost field is inviting them to overwrite a cost they are
-    // not allowed to read.
-    expect(figureUnder('Margin')).toBe('\u2014');
+    // Not a dash and not an invitation into a cost field they may not read: the whole block is absent.
+    expect(screen.queryByRole('group', { name: /profitability/i })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/unit cost/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/margin|markup/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/add a unit cost/i)).not.toBeInTheDocument();
     expect(screen.queryByTitle(/add a unit cost/i)).not.toBeInTheDocument();
   });

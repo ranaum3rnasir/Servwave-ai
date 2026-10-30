@@ -39,6 +39,8 @@ router.delete('/categories/:id', canDo('delete', 'PriceBook'), priceBookControll
 // ─── Items ──────────────────────────────────────────────
 router.get('/items/search', canDo('read', 'PriceBook'), priceBookController.searchItems);
 router.get('/items', canDo('read', 'PriceBook'), priceBookController.listItems);
+// The Price Book page's own item list: catalog fields and prices, never the stock side (S07.16).
+router.get('/catalog-items', canDo('read', 'PriceBook'), priceBookController.listCatalogItems);
 router.post('/items', canDo('create', 'PriceBook'), validate(priceBookController.createItemSchema), priceBookController.createItem);
 // A CSV import is one row per array entry and the client sends the whole file at once, so it is
 // bounded by the 1mb body cap, not by row count: the smallest valid row is ~27 bytes (~39k rows)

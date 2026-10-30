@@ -3,8 +3,10 @@ import type { Request } from 'express';
 import { can, scopeWhereForReq, canAccessRow } from '../enforce';
 import { defineAbilityFor, type Grant } from '../defineAbility';
 import { MATCH_NOTHING } from '../scopeWhereFor';
-import { setCachedGrants, clearPermissionCache } from '../permissionCache';
+import { clearPermissionCache } from '../permissionCache';
 import { prisma } from '../../prisma';
+import { clearAllSwitchCaches } from '../switches/cache';
+import { attachedJobWhere } from '../../../__tests__/helpers';
 
 // Owner-scoped grants — the same shape a SALES/TECH role carries in prod.
 const ownLeadUpdate: Grant = {
@@ -12,11 +14,18 @@ const ownLeadUpdate: Grant = {
   subject: 'Lead',
   conditions: { lead_assignees: { some: { user_id: '{{userId}}' } } },
 };
-const ownLeadRead: Grant = {
-  action: 'read',
-  subject: 'Lead',
-  conditions: { lead_assignees: { some: { user_id: '{{userId}}' } } },
+
+// The switch catalog owns every scoped record's reach now, so a person's reach below comes from their switches (the
+// built-in preset of their role plus the stored values these cases mock), through purchase orders: the orders on
+// the jobs the person can open.
+const roleSwitchFind = () => prisma.permissionRoleSwitch.findMany as ReturnType<typeof vi.fn>;
+const userSwitchFind = () => prisma.permissionUserSwitch.findMany as ReturnType<typeof vi.fn>;
+const withSwitches = (values: Record<string, boolean | string>) => {
+  roleSwitchFind().mockResolvedValue(Object.entries(values).map(([switch_key, value]) => ({ switch_key, value })));
+  clearAllSwitchCaches();
 };
+// What the Sales preset reaches: the jobs that come from a lead the person is an assignee of.
+const salesJobReach = (userId: string) => ({ job: { estimate: { lead: { lead_assignees: { some: { user_id: userId } } } } } });
 
 function reqWith(grants: Grant[], userId = 'u1'): Request {
   const ability = defineAbilityFor({ id: userId, role: 'SALES' }, grants);
@@ -38,7 +47,7 @@ describe('can() enforcement helper', () => {
   });
 
   it('returns false when the role has no grant for that action at all', () => {
-    const req = reqWith([ownLeadRead]); // read-only, no update grant
+    const req = reqWith([{ action: 'read', subject: 'Lead', conditions: ownLeadUpdate.conditions }]); // read-only, no update grant
     expect(can(req, 'update', 'Lead', ownedRow)).toBe(false);
   });
 
@@ -66,6 +75,11 @@ describe('scopeWhereForReq() — list-scope where fragment for controllers', () 
     clearPermissionCache();
     (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockReset();
     (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    roleSwitchFind().mockReset();
+    userSwitchFind().mockReset();
+    roleSwitchFind().mockResolvedValue([]);
+    userSwitchFind().mockResolvedValue([]);
+    clearAllSwitchCaches();
   });
 
   it('ADMIN → no restriction ({}) without touching the DB', async () => {
@@ -74,24 +88,22 @@ describe('scopeWhereForReq() — list-scope where fragment for controllers', () 
     expect(prisma.rolePermission.findMany).not.toHaveBeenCalled();
   });
 
-  it('uses cached grants (no DB read) — owner read grant → owner where-fragment', async () => {
-    setCachedGrants(ORG, 'SALES', [ownLeadRead]);
-    const where = await scopeWhereForReq(listReq('SALES'), 'Lead');
-    expect(where).toEqual({ lead_assignees: { some: { user_id: 'u1' } } });
+  it('scopes from the person\'s switches alone — the switch-derived reach → owner where-fragment, no role-permission read', async () => {
+    const where = await scopeWhereForReq(listReq('SALES'), 'PurchaseOrder');
+    expect(where).toEqual(salesJobReach('u1'));
     expect(prisma.rolePermission.findMany).not.toHaveBeenCalled();
   });
 
-  it('cache miss → falls back to rolePermission.findMany and scopes from those rows', async () => {
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { action: 'read', subject: 'Job', conditions: { assignees: { some: { user_id: '{{userId}}' } } } },
-    ]);
-    const where = await scopeWhereForReq(listReq('TECHNICIAN'), 'Job');
-    expect(where).toEqual({ assignees: { some: { user_id: 'u1' } } });
-    expect(prisma.rolePermission.findMany).toHaveBeenCalledOnce();
+  it('a stored switch value changes the reach, and still no role-permission read', async () => {
+    withSwitches({ view_purchase_orders: true, jobs_scope: 'attached' });
+    const where = await scopeWhereForReq(listReq('TECHNICIAN'), 'PurchaseOrder');
+    expect(where).toEqual({ job: { OR: attachedJobWhere('u1') } });
+    expect(prisma.rolePermission.findMany).not.toHaveBeenCalled();
   });
 
-  it('FAIL-CLOSED: a non-ADMIN role with no read grant → MATCH_NOTHING (sees nothing)', async () => {
-    const where = await scopeWhereForReq(listReq('SALES'), 'Invoice');
+  it('FAIL-CLOSED: a non-ADMIN role without View purchase orders → MATCH_NOTHING (sees nothing)', async () => {
+    withSwitches({ view_purchase_orders: false });
+    const where = await scopeWhereForReq(listReq('SALES'), 'PurchaseOrder');
     expect(where).toEqual(MATCH_NOTHING);
   });
 
@@ -123,20 +135,10 @@ function fakeDelegate(returns: { id: string } | null): FakeDelegate {
   return { findFirst: vi.fn().mockResolvedValue(returns), count: vi.fn() } as unknown as FakeDelegate;
 }
 
-// The exact NESTED config Wave 2 broke: Estimate "Owned" scopes through the lead's
-// to-many assignees — a to-one (lead) → to-many (lead_assignees) condition that the
-// in-memory matcher throws on ("equals does not supports comparison of arrays…").
-const estimateOwnedRead: Grant = {
-  action: 'read',
-  subject: 'Estimate',
-  conditions: { lead: { lead_assignees: { some: { user_id: '{{userId}}' } } } },
-};
-// The Team/Location config Wave 2 broke: scope through assignees → user → department.
-const jobTeamRead: Grant = {
-  action: 'read',
-  subject: 'Job',
-  conditions: { assignees: { some: { user: { department_id: '{{teamId}}' } } } },
-};
+// The exact NESTED config Wave 2 broke: a reach through the job's estimate's lead's to-many assignees — a
+// to-one → to-one → to-many condition that the in-memory matcher throws on ("equals does not supports
+// comparison of arrays…"). It is the Sales preset's reach (Through own leads).
+// The Team config Wave 2 broke follows: scope through assignees → user → department.
 
 function rowReq(role: string, opts: { userId?: string; department_id?: string | null } = {}): Request {
   return {
@@ -150,17 +152,21 @@ function rowReq(role: string, opts: { userId?: string; department_id?: string | 
   } as unknown as Request;
 }
 
-describe('canAccessRow() — SQL per-instance ownership (nested-safe, grant-driven, fail-closed)', () => {
+describe('canAccessRow() — SQL per-instance ownership (nested-safe, switch-driven, fail-closed)', () => {
   beforeEach(() => {
     clearPermissionCache();
     (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockReset();
     (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    roleSwitchFind().mockReset();
+    userSwitchFind().mockReset();
+    roleSwitchFind().mockResolvedValue([]);
+    userSwitchFind().mockResolvedValue([]);
+    clearAllSwitchCaches();
   });
 
-  it('NESTED Estimate-Owned: resolves via the where-fragment without throwing; owned row → true', async () => {
-    setCachedGrants(ORG, 'SALES', [estimateOwnedRead]);
+  it('NESTED PurchaseOrder-Owned: resolves via the where-fragment without throwing; owned row → true', async () => {
     const delegate = fakeDelegate({ id: 'e1' });
-    const result = await canAccessRow(rowReq('SALES'), 'Estimate', delegate, 'e1');
+    const result = await canAccessRow(rowReq('SALES'), 'PurchaseOrder', delegate, 'e1');
     expect(result).toBe(true);
     // Built the SQL where from id + tenant + the nested scope fragment — NOT the matcher.
     expect(delegate.findFirst).toHaveBeenCalledTimes(1);
@@ -168,34 +174,39 @@ describe('canAccessRow() — SQL per-instance ownership (nested-safe, grant-driv
       where: {
         id: 'e1',
         organization_id: ORG,
-        lead: { lead_assignees: { some: { user_id: 'u1' } } },
+        ...salesJobReach('u1'),
       },
       select: { id: true },
     });
   });
 
-  it('NESTED Estimate-Owned: un-owned row (findFirst → null under scope) → false', async () => {
-    setCachedGrants(ORG, 'SALES', [estimateOwnedRead]);
+  it('NESTED PurchaseOrder-Owned: un-owned row (findFirst → null under scope) → false', async () => {
     const delegate = fakeDelegate(null);
-    expect(await canAccessRow(rowReq('SALES'), 'Estimate', delegate, 'e2')).toBe(false);
+    expect(await canAccessRow(rowReq('SALES'), 'PurchaseOrder', delegate, 'e2')).toBe(false);
     expect(delegate.findFirst).toHaveBeenCalledTimes(1);
   });
 
-  it('Team-scoped Job (assignees.some.user.department_id): builds nested where, never throws', async () => {
-    setCachedGrants(ORG, 'DISPATCHER', [jobTeamRead]);
-    const delegate = fakeDelegate({ id: 'j1' });
+  it('Team-scoped PurchaseOrder (job crew, Sold By or Dispatcher in the person\'s department): builds nested where, never throws', async () => {
+    withSwitches({ view_purchase_orders: true, jobs_scope: 'team' });
+    const delegate = fakeDelegate({ id: 'i1' });
     const result = await canAccessRow(
       rowReq('DISPATCHER', { department_id: 'dept-9' }),
-      'Job',
+      'PurchaseOrder',
       delegate,
-      'j1',
+      'i1',
     );
     expect(result).toBe(true);
     expect(delegate.findFirst).toHaveBeenCalledWith({
       where: {
-        id: 'j1',
+        id: 'i1',
         organization_id: ORG,
-        assignees: { some: { user: { department_id: 'dept-9' } } },
+        job: {
+          OR: [
+            { visits: { some: { assignees: { some: { user: { department_id: 'dept-9' } } } } } },
+            { salesperson: { department_id: 'dept-9' } },
+            { dispatcher: { department_id: 'dept-9' } },
+          ],
+        },
       },
       select: { id: true },
     });
@@ -203,17 +214,18 @@ describe('canAccessRow() — SQL per-instance ownership (nested-safe, grant-driv
 
   it('ADMIN → true via fast-path: empty scope fragment, no query issued', async () => {
     const delegate = fakeDelegate({ id: 'i1' });
-    const result = await canAccessRow(rowReq('ADMIN'), 'Invoice', delegate, 'i1');
+    const result = await canAccessRow(rowReq('ADMIN'), 'PurchaseOrder', delegate, 'i1');
     expect(result).toBe(true);
     expect(delegate.findFirst).not.toHaveBeenCalled();
     expect(prisma.rolePermission.findMany).not.toHaveBeenCalled();
   });
 
   it('FAIL-CLOSED: no read grant → MATCH_NOTHING (id:{in:[]}) → findFirst null → false', async () => {
-    // SALES with no Invoice read grant — the P0 invoice hole: previously canAccessInvoice
+    // SALES without View purchase orders — the P0 hole: previously canAccessInvoice
     // returned true for privileged roles; here the absent grant denies.
+    withSwitches({ view_purchase_orders: false });
     const delegate = fakeDelegate(null);
-    const result = await canAccessRow(rowReq('SALES'), 'Invoice', delegate, 'i9');
+    const result = await canAccessRow(rowReq('SALES'), 'PurchaseOrder', delegate, 'i9');
     expect(result).toBe(false);
     // Still queries (MATCH_NOTHING is a real where the DB evaluates to empty).
     // The spread of MATCH_NOTHING (`{ id: { in: [] } }`) overwrites the literal id —

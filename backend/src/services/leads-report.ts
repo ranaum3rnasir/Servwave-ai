@@ -19,7 +19,7 @@ export const WON_DISPLAY_STATUSES: LeadDisplayStatus[] = ['Converted', 'Sold', '
  * Map the DB LeadStatus enum to the report's display status.
  *  • WON                                   → Sold-done (work sold + scheduled/closed)
  *  • ESTIMATED                             → Converted (estimate issued — converted to a quote)
- *  • LOST / CANCELLED                      → Lost
+ *  • LOST                                 → Lost
  *  • NEW / CONTACTED / WALKTHROUGH_SCHEDULED / WALKTHROUGH_COMPLETED → Open (still in the pipeline)
  * Kept here (not the controller) so demo + live share one mapping.
  */
@@ -30,7 +30,6 @@ export function displayStatusFor(status: string): LeadDisplayStatus {
     case 'ESTIMATED':
       return 'Converted';
     case 'LOST':
-    case 'CANCELLED':
       return 'Lost';
     // Still in the pipeline: a lead with a walkthrough booked or done is open work. Written out so
     // the intent is on the page; the default below would give the same answer.

@@ -66,6 +66,16 @@ describe('CommRow — standard line', () => {
     expect(screen.getByText('Confirmed Thursday 8am.')).toBeInTheDocument();
   });
 
+  it('renders no preview line for a call whose summary the server left out (View transcript off)', () => {
+    const { container } = renderRow({ ...CALL_ITEM, preview: '' });
+
+    expect(screen.getByText('Inbound call · 4m 07s')).toBeInTheDocument();
+    expect(screen.queryByText('Confirmed Thursday 8am.')).not.toBeInTheDocument();
+    // No empty paragraph holding the line's place between the title and the facts.
+    expect(container.querySelectorAll('p.truncate.text-sm')).toHaveLength(0);
+    expect(screen.getByText('Inbound')).toBeInTheDocument();
+  });
+
   it('omits the answered-by fragment when the item has none', () => {
     renderRow({ ...CALL_ITEM, answeredBy: undefined });
 

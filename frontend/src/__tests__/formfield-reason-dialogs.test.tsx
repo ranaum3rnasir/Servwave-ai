@@ -34,7 +34,7 @@ import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import { renderWithProviders } from './helpers';
-import { CancelLeadDialog, CancelWalkthroughDialog, MarkLostDialog } from '@/pages/v2/leads/components/leadDialogs';
+import { CancelWalkthroughDialog, MarkLostDialog } from '@/pages/v2/leads/components/leadDialogs';
 import { CancelEstimateDialog } from '@/components/estimates/CancelEstimateDialog';
 import { DeclineEstimateInternalDialog } from '@/components/estimates/DeclineEstimateInternalDialog';
 import { AiImagePanel } from '@/features/estimate-workspace/components/AiImagePanel';
@@ -81,7 +81,7 @@ beforeEach(() => {
  * differs between them, and a table makes a future one a one-line addition
  * instead of a copy-paste.
  *
- * The three lead dialogs (Mark Lost, Cancel Lead, Cancel Walkthrough) were
+ * The lead dialogs (Mark Lost, Cancel Walkthrough) were
  * here too, in their legacy components/leads/ form. Those files were dead -
  * the lead page renders pages/v2/leads/components/leadDialogs - and were
  * deleted (code review #13); the routed ones, on the kit's own Label and
@@ -226,7 +226,6 @@ describe('FormField adoption - an explicit htmlFor preserves an id that already 
 describe('the routed lead reason dialogs (pages/v2/leads/components/leadDialogs)', () => {
   const LEAD_DIALOGS = [
     { name: 'MarkLostDialog', render: () => <MarkLostDialog open onOpenChange={vi.fn()} leadId="lead-1" />, placeholder: 'Why was this lead lost?', submit: 'Mark Lost' },
-    { name: 'CancelLeadDialog', render: () => <CancelLeadDialog open onOpenChange={vi.fn()} leadId="lead-1" />, placeholder: 'Why is this lead being cancelled?', submit: 'Cancel Lead' },
     { name: 'CancelWalkthroughDialog', render: () => <CancelWalkthroughDialog open onOpenChange={vi.fn()} leadId="lead-1" />, placeholder: 'Why is this walkthrough being cancelled?', submit: 'Cancel Walkthrough' },
   ] as const;
 

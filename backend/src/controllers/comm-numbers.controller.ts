@@ -17,6 +17,8 @@ import {
 } from '../lib/ctm/client';
 import { normalizeNAPhone } from '../lib/comms-identity';
 import { syncNumbers } from '../lib/ctm/numberSync';
+import { numbersInSectionWhereForReq, numberIdsInSectionForReq } from '../lib/communication/communicationScope';
+import { canSeePhoneNumberRouting } from '../lib/permissions/enforce';
 
 /**
  * Numbers platform (master plan §4 comm-numbers row, slice 7).
@@ -84,6 +86,17 @@ function mapNumber(row: {
   };
 }
 
+/** The wire shape for this requester: the routing and call-flow fields (`call_flow_id`, `forward_to`) only for a holder
+ *  of the Phone numbers tab. Everything else about a number goes to whoever may see the number. */
+function numberMapperFor(req: Request): (row: Parameters<typeof mapNumber>[0]) => Partial<ReturnType<typeof mapNumber>> {
+  if (canSeePhoneNumberRouting(req)) return mapNumber;
+  return (row) => {
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars -- the two fields are the ones left out
+    const { call_flow_id, forward_to, ...rest } = mapNumber(row);
+    return rest;
+  };
+}
+
 /** Resolve the org's CTM account or write the failure response (503/409) and
  *  return null — mirrors checkCtmA2p's gate order. */
 async function requireCtmAccount(req: Request, res: Response): Promise<string | null> {
@@ -106,11 +119,13 @@ async function requireCtmAccount(req: Request, res: Response): Promise<string | 
 
 export async function listNumbers(req: Request, res: Response) {
   try {
+    // Communication scope (M11): "All" lists every number, "Linked to me" the numbers linked to the person (the main
+    // line too, when the fallback covers them).
     const rows = await prisma.phoneNumber.findMany({
-      where: tenantWhere(req),
+      where: { ...tenantWhere(req), ...(await numbersInSectionWhereForReq(req)) },
       orderBy: { created_at: 'asc' },
     });
-    res.json({ numbers: rows.map(mapNumber) });
+    res.json({ numbers: rows.map(numberMapperFor(req)) });
   } catch (err) {
     logger.error('Failed to list phone numbers:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -174,10 +189,14 @@ export async function syncNumbersIfStale(req: Request, res: Response) {
       });
       result = { changed: false, stillRunning: false, numbers: rows };
     }
+    // The sync reads the whole company's list, so the answer is trimmed to the person's scope here: `changed` still
+    // tells the screen to re-read, and it never learns of a number it may not see.
+    const visibleIds = await numberIdsInSectionForReq(req);
+    const visible = visibleIds === null ? result.numbers : result.numbers.filter((n) => visibleIds.includes(n.id));
     res.json({
       changed: result.changed,
       stillRunning: result.stillRunning,
-      numbers: result.numbers.map(mapNumber),
+      numbers: visible.map(numberMapperFor(req)),
     });
   } catch (err) {
     logger.error('Failed to list phone numbers after a background sync:', err);
@@ -463,7 +482,7 @@ export async function buyNumber(req: Request, res: Response) {
       },
     });
 
-    res.status(201).json({ number: mapNumber(row), warnings });
+    res.status(201).json({ number: numberMapperFor(req)(row), warnings });
   } catch (err) {
     if (err instanceof CtmApiError) {
       if (err.httpStatus === 409 || NUMBER_GONE.test(err.reason)) {
@@ -597,7 +616,7 @@ export async function updateNumber(req: Request, res: Response) {
       });
     }
 
-    res.json({ number: mapNumber(updated) });
+    res.json({ number: numberMapperFor(req)(updated) });
   } catch (err) {
     logger.error('Failed to update phone number:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -674,7 +693,7 @@ export async function releaseNumberById(req: Request, res: Response) {
       metadata: { e164: row.e164, ctm_number_id: row.ctm_number_id, source: row.source },
     });
 
-    res.json({ number: mapNumber(updated) });
+    res.json({ number: numberMapperFor(req)(updated) });
   } catch (err) {
     logger.error('Failed to release phone number:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -708,7 +727,7 @@ export async function refreshNumbers(req: Request, res: Response) {
       added: result.added.length,
       texting_enabled: result.textingEnabled.length,
       texting_failed: result.textingFailed.length,
-      numbers: result.numbers.map(mapNumber),
+      numbers: result.numbers.map(numberMapperFor(req)),
     });
   } catch (err) {
     logger.error('Failed to refresh phone numbers:', err);
@@ -743,7 +762,7 @@ export async function registerByoNumber(req: Request, res: Response) {
         organization_id: req.user!.organization_id,
       },
     });
-    res.status(201).json({ number: mapNumber(row) });
+    res.status(201).json({ number: numberMapperFor(req)(row) });
   } catch (err) {
     if ((err as { code?: string }).code === 'P2002') {
       res.status(409).json({ error: 'This number is already registered' });

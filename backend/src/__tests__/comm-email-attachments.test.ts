@@ -260,14 +260,14 @@ describe('POST /api/communication/emails (attachments)', () => {
 describe('GET /api/communication/emails/:id/attachments/:index', () => {
   it('mints a fresh signed url for a valid index', async () => {
     mockAuthAs('admin');
-    p.email.findFirst.mockResolvedValue({ id: 'email-1' });
+    p.email.findFirst.mockResolvedValue({ id: 'e2000000-0000-4000-8000-000000000001' });
     p.emailAttachment.findMany.mockResolvedValue([
       { id: 'att-0', storage_path: `${ALPHA_ORG_ID}/email/email-1/1-a.jpg`, position: 0 },
       { id: 'att-1', storage_path: `${ALPHA_ORG_ID}/email/email-1/2-b.pdf`, position: 1 },
     ]);
 
     const res = await request(app)
-      .get('/api/communication/emails/email-1/attachments/1')
+      .get('/api/communication/emails/e2000000-0000-4000-8000-000000000001/attachments/1')
       .set(authHeader('admin'));
 
     expect(res.status).toBe(200);
@@ -280,7 +280,7 @@ describe('GET /api/communication/emails/:id/attachments/:index', () => {
     p.email.findFirst.mockResolvedValue(null);
 
     const res = await request(app)
-      .get('/api/communication/emails/email-1/attachments/0')
+      .get('/api/communication/emails/e2000000-0000-4000-8000-000000000001/attachments/0')
       .set(authHeader('admin'));
 
     expect(res.status).toBe(404);
@@ -295,13 +295,13 @@ describe('GET /api/communication/emails/:id/attachments/:index', () => {
     p.email.findFirst.mockResolvedValue(null); // row invisible under org B scoping
 
     const res = await request(app)
-      .get('/api/communication/emails/email-1/attachments/0')
+      .get('/api/communication/emails/e2000000-0000-4000-8000-000000000001/attachments/0')
       .set(authHeader('orgB_admin'));
 
     expect(res.status).toBe(404);
     expect(p.email.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({ id: 'email-1', organization_id: ORG_B_ID }),
+        where: expect.objectContaining({ id: 'e2000000-0000-4000-8000-000000000001', organization_id: ORG_B_ID }),
       }),
     );
     expect(storage.createSignedUrl).not.toHaveBeenCalled();
@@ -313,7 +313,7 @@ describe('GET /api/communication/emails/:id/attachments/:index', () => {
     p.emailAttachment.findMany.mockResolvedValue([{ id: 'att-0', storage_path: 'p', position: 0 }]);
 
     const res = await request(app)
-      .get('/api/communication/emails/email-1/attachments/5')
+      .get('/api/communication/emails/e2000000-0000-4000-8000-000000000001/attachments/5')
       .set(authHeader('admin'));
 
     expect(res.status).toBe(404);
@@ -360,8 +360,9 @@ describe('GET /api/communication/emails/attach-source', () => {
   // app. Same class of hole as the attachments/:index route above.
   it("403s a technician's lookup on a job they are not assigned to, and never queries Attachment", async () => {
     mockAuthAs('technician');
-    // S8 (D6): checkEntityAccess asks "on one of its TRIPS" - `job_assignees` is gone.
-    p.job.findUnique.mockResolvedValue({ visits: [{ assignees: [{ user_id: 'someone-else' }] }] });
+    // checkEntityAccess asks the access resolver, which finds no such job within the technician's reach.
+    p.job.findUnique.mockResolvedValue({ id: 'job-1' });
+    p.job.findFirst.mockResolvedValue(null);
 
     const res = await request(app)
       .get('/api/communication/emails/attach-source')
@@ -374,7 +375,10 @@ describe('GET /api/communication/emails/attach-source', () => {
 
   it('200s a technician looking up a job they ARE assigned to', async () => {
     mockAuthAs('technician');
-    p.job.findUnique.mockResolvedValue({ visits: [{ assignees: [{ user_id: TEST_USERS.technician.id }] }] });
+    // The access resolver answers for the technician's own reach: the row is found only through a scope naming them.
+    p.job.findUnique.mockResolvedValue({ id: 'job-1' });
+    p.job.findFirst.mockImplementation(async (args: any) =>
+      JSON.stringify(args?.where ?? {}).includes(TEST_USERS.technician.id) ? { id: 'job-1' } : null);
     p.attachment.findMany.mockResolvedValue([]);
 
     const res = await request(app)

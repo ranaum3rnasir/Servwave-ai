@@ -41,7 +41,7 @@ const NON_ADMIN = buildAbility([
 ]);
 
 const ORG = {
-  id: 'o1', stripe_account_id: null, accepted_payment_methods: ['CASH'], source_options: ['Google'],
+  id: 'o1', stripe_connected: false, accepted_payment_methods: ['CASH'], source_options: ['Google'],
   job_type_options: [], deposit_default_type: 'PERCENTAGE', deposit_default_percentage: 40,
   deposit_default_fixed_amount: 0,
 };
@@ -359,7 +359,7 @@ describe('Settings > Payments & Lists - Task categories card', () => {
     expect(tags.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(await screen.findByRole('list', { name: 'Task categories' })).toBeInTheDocument();
     // "Add category" sits in the card's header row, beside its title.
-    expect(heading.parentElement!.parentElement).toContainElement(screen.getByRole('button', { name: 'Add category' }));
+    expect(heading.closest('.justify-between') as HTMLElement).toContainElement(screen.getByRole('button', { name: 'Add category' }));
   });
 
   it('a non-admin does not see it', async () => {

@@ -164,6 +164,53 @@ describe('GET /api/reports/payment-fees', () => {
     expect(res.body.charged).toBe(500);
   });
 
+  // ─── Payments go-live slice 02 (D9) - historical fee rows keep reporting; new rows add 0 ───
+  // A payment taken before the fee removal carries a service fee and a platform fee. A payment
+  // taken after it carries no service fee (null) and a platform fee of 0, because no application
+  // fee exists on its charge for the reconciler to read.
+  it('still totals a historical service-fee payment and adds 0 fees for a payment taken after the fee removal', async () => {
+    mockAuthAs('admin');
+    const historical = {
+      amount: '1000.00',
+      service_fee_amount: '35.00',
+      tip_amount: null,
+      stripe_fee_amount: '30.32',
+      platform_fee_amount: '4.68',
+      net_amount: '1000.00',
+      refunded_amount: null,
+      paid_at: new Date('2026-07-01T10:00:00Z'),
+    };
+    const afterRemoval = {
+      amount: '100.00',
+      service_fee_amount: null,
+      tip_amount: null,
+      stripe_fee_amount: '3.20',
+      platform_fee_amount: '0.00',
+      net_amount: '96.80',
+      refunded_amount: null,
+      paid_at: new Date('2026-10-06T10:00:00Z'),
+    };
+    mockPrisma.payment.findMany
+      .mockResolvedValueOnce([historical, afterRemoval]) // cost query
+      .mockResolvedValueOnce([historical]); // extras query: only rows with a fee or tip
+
+    const res = await request(app)
+      .get('/api/reports/payment-fees?from=2026-06-01&to=2026-10-31')
+      .set(authHeader('admin'));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      gross: 1100,
+      charged: 1135, // 1000 + 35 fee, then 100 with nothing on top
+      stripeFees: 33.52,
+      platformFees: 4.68, // the historical row's fee, unchanged; the new row adds 0
+      net: 1096.8,
+      reconciledCount: 2,
+      serviceFees: 35,
+      serviceFeeCount: 1,
+    });
+  });
+
   // ─── Plan A (2026-08-04) - the extras (service fee + tip) query is independent ───
   it('issues a separate extras query that does not carry the cost-side reconciliation filters, while the cost query still carries both', async () => {
     mockAuthAs('admin');

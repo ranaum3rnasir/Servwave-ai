@@ -1,6 +1,6 @@
 // Phone module — Calls view.
 //
-// Ported from Emanuel's PhonePage monolith (regions L1807-3028 + L3376-3540).
+// Ported from the original PhonePage monolith (regions L1807-3028 + L3376-3540).
 // The Calls filter/sort/stat machinery, the CallsView table, its CallDetailDrawer,
 // and the Calls-local presentational helpers (RoundAction / QuickAction /
 // InsightCell / RecordingPlayer) all live here. Cross-cutting helpers and the
@@ -16,6 +16,8 @@
 //      from module-scope imports.
 import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useAppAbility } from "@/contexts/AbilityContext";
+import { canSeeCompanyFigures } from "@/lib/ability";
 import {
   AlertTriangle,
   Briefcase,
@@ -65,6 +67,7 @@ import {
   usePhoneCustomers,
   usePhoneAgents,
   useRecordingUrl,
+  useRecordingDownloadUrl,
   useCallTranscript,
   DISPOSITION_LABELS,
   fmtPhone,
@@ -129,11 +132,27 @@ import {
   ConferencePicker,
 } from "@/components/communication/phone/Dialer";
 import { requestCall } from "@/lib/communication/phoneTabHandoff";
+import { CustomerPhoneText } from "@/components/contact/ContactText";
 import { useIsDemoOrg } from "@/lib/useIsDemoOrg";
 import { useScheduleTimezone } from '@/lib/schedule-tz';
 import { fieldKindProps } from '@/ui-kit/lib/fieldKind';
 
 /* ─────────────────── Calls-local helpers ─────────────────── */
+
+/**
+ * One end of a call. The other party's number is a customer's phone and follows the contact display policy
+ * (Copy customer phone); the company's own line on the other end is not customer data and stays as it is.
+ */
+export function CallNumber({ call, side }: { call: CallSession; side: "from" | "to" }) {
+  const number = side === "from" ? call.fromNumber : call.toNumber;
+  const otherParty = call.direction === "outbound" ? "to" : "from";
+  return side === otherParty ? <CustomerPhoneText phone={number}>{fmtPhone(number)}</CustomerPhoneText> : <>{fmtPhone(number)}</>;
+}
+
+/** The number of the call's other party, for a caller with no customer record to be named by. */
+function OtherPartyNumber({ call }: { call: CallSession }) {
+  return <CallNumber call={call} side={call.direction === "outbound" ? "to" : "from"} />;
+}
 
 function agentById(agents: PhoneAgent[], id?: string): PhoneAgent | undefined {
   // Matches on the agent row id OR its linked user id - see agentMatchesId.
@@ -518,6 +537,16 @@ export function CallsView({
   const { data: customers = [] } = usePhoneCustomers();
   const { data: agents = [] } = usePhoneAgents();
   const tz = useScheduleTimezone();
+  // Call insights (Roles & Permissions S08.13): the Insights column, and the sentiment and review flag that Needs
+  // Attention counts, belong to See call insights. Who answered, the call score and the call details do not.
+  const ability = useAppAbility();
+  const mayInsights = ability.can("see_call_insights", "Communication");
+  // Export call log and Contact customers (S08.14): the export button and call back belong to those switches. The file
+  // is built here from the rows the server sent, so it carries a column only for what the person may see: sentiment and
+  // the review flag with See call insights, revenue with See company figures.
+  const mayExport = ability.can("export", "Communication");
+  const mayContact = ability.can("create", "Communication");
+  const mayFigures = canSeeCompanyFigures(ability);
 
   const [query, setQuery] = useState("");
   const [pageSize, setPageSize] = useState(10);
@@ -540,6 +569,7 @@ export function CallsView({
     query,
     sort,
     dismissed,
+    withInsights: mayInsights,
   });
 
   function toggleSort(key: SortKey) {
@@ -600,8 +630,8 @@ export function CallsView({
     const answerer = agentName(agents, c.answeredBy.id) ?? c.answeredBy.name;
     const recoverable = c.status === "missed" || c.status === "voicemail";
     const fields: RecordCardItem["fields"] = [
-      { label: "From", value: <span className="font-mono text-[12px]">{fmtPhone(c.fromNumber)}</span> },
-      { label: "To", value: <span className="font-mono text-[12px]">{fmtPhone(c.toNumber)}</span> },
+      { label: "From", value: <span className="font-mono text-[12px]"><CallNumber call={c} side="from" /></span> },
+      { label: "To", value: <span className="font-mono text-[12px]"><CallNumber call={c} side="to" /></span> },
       { label: "Duration", value: durationLabel(c.durationSec) },
       {
         label: "Answered by",
@@ -628,7 +658,7 @@ export function CallsView({
         ),
       });
     }
-    fields.push({ label: "Insights", value: <InsightCell call={c} /> });
+    if (mayInsights) fields.push({ label: "Insights", value: <InsightCell call={c} /> });
     if (c.jobLabel) {
       fields.push({
         label: "Related",
@@ -656,7 +686,7 @@ export function CallsView({
       ),
       // A caller with no customer record is named by their number: a column of "Unknown" tells a
       // reader on a phone nothing.
-      title: cust?.name ?? fmtPhone(c.direction === "outbound" ? c.toNumber : c.fromNumber),
+      title: cust?.name ?? <OtherPartyNumber call={c} />,
       aside: (
         <span className="block text-right text-[11.5px]">
           <span className="block font-semibold text-text-primary">{dateNumeric(c.startedAt, tz)}</span>
@@ -667,9 +697,11 @@ export function CallsView({
       onOpen: () => setSelectedCall(c),
       actions: (
         <>
-          <Button type="button" variant="outline" tone="neutral" size="sm" onClick={() => callBack(c)}>
-            <PhoneCall className="h-4 w-4" /> Call Back
-          </Button>
+          {mayContact && (
+            <Button type="button" variant="outline" tone="neutral" size="sm" onClick={() => callBack(c)}>
+              <PhoneCall className="h-4 w-4" /> Call Back
+            </Button>
+          )}
           {recoverable && (
             <Button type="button" variant="ghost" tone="neutral" size="sm" onClick={() => dismiss(c.id)}>
               <X className="h-4 w-4" /> Dismiss
@@ -697,6 +729,11 @@ export function CallsView({
       "Job",
       "Answered By",
     ];
+    // A column the person may not see is not in the file at all (never a blank one). Revenue also stays out when no call
+    // in the file carries a figure.
+    const withRevenue = mayFigures && filtered.some((c) => c.revenue !== undefined);
+    if (mayInsights) headers.push("Sentiment", "Review flag");
+    if (withRevenue) headers.push("Revenue");
     const rows = filtered.map((c) => [
       c.startedAt,
       c.direction,
@@ -707,6 +744,8 @@ export function CallsView({
       customerById(customers, c.customerId)?.name ?? "",
       c.jobLabel ?? "",
       answeredByLabel(c.answeredBy.kind),
+      ...(mayInsights ? [c.sentiment ?? "", c.reviewFlag ?? ""] : []),
+      ...(withRevenue ? [c.revenue ?? ""] : []),
     ]);
     // Filename dated from the page range anchor (not Date.now) so it stays
     // deterministic; falls back to the current day only when "All time" is set.
@@ -836,12 +875,14 @@ export function CallsView({
             className="w-[76px]"
             options={PAGE_SIZE_OPTIONS}
           />
-          <button
-            onClick={exportCsv}
-            className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface-light px-3 py-2 text-sm font-semibold text-text-primary hover:bg-background-light"
-          >
-            <Download className="h-4 w-4" /> Export
-          </button>
+          {mayExport && (
+            <button
+              onClick={exportCsv}
+              className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface-light px-3 py-2 text-sm font-semibold text-text-primary hover:bg-background-light"
+            >
+              <Download className="h-4 w-4" /> Export
+            </button>
+          )}
         </div>
       </div>
 
@@ -893,7 +934,7 @@ export function CallsView({
                     {cust?.name ?? "Unknown"}
                   </p>
                   <p className="font-mono text-[11px] text-primary">
-                    {fmtPhone(c.fromNumber)}
+                    <CallNumber call={c} side="from" />
                   </p>
                 </>
               );
@@ -905,7 +946,7 @@ export function CallsView({
             width: 140,
             min: 110,
             cellClassName: "font-mono text-[11px] text-text-secondary",
-            cell: (c) => fmtPhone(c.toNumber),
+            cell: (c) => <CallNumber call={c} side="to" />,
           },
           {
             id: "time",
@@ -959,16 +1000,20 @@ export function CallsView({
                 <span className="text-text-secondary">-</span>
               ),
           },
-          {
-            id: "insights",
-            header: (
-              <SortHeader label="Insights" sortKey="insights" sort={sort} onSort={toggleSort} />
-            ),
-            width: 180,
-            min: 120,
-            grow: 2,
-            cell: (c) => <InsightCell call={c} />,
-          },
+          ...(mayInsights
+            ? [
+                {
+                  id: "insights",
+                  header: (
+                    <SortHeader label="Insights" sortKey="insights" sort={sort} onSort={toggleSort} />
+                  ),
+                  width: 180,
+                  min: 120,
+                  grow: 2,
+                  cell: (c: CallSession) => <InsightCell call={c} />,
+                },
+              ]
+            : []),
           {
             id: "answeredBy",
             header: (
@@ -1036,11 +1081,13 @@ export function CallsView({
                   className="flex items-center justify-center gap-4"
                   onClick={(e) => e.stopPropagation()}
                 >
-                  <QuickAction
-                    icon={PhoneCall}
-                    label="Call Back"
-                    onClick={() => callBack(c)}
-                  />
+                  {mayContact && (
+                    <QuickAction
+                      icon={PhoneCall}
+                      label="Call Back"
+                      onClick={() => callBack(c)}
+                    />
+                  )}
                   {recoverable && (
                     <QuickAction
                       icon={X}
@@ -1109,6 +1156,23 @@ export function CallDetailDrawer({
   const cust = customerById(customers, call.customerId);
   const agent = agentById(agents, call.answeredBy.id);
   const isDemo = useIsDemoOrg();
+  // Recording switches (Roles & Permissions S08.11). The server leaves "has recording" out of a call for a person who
+  // holds neither switch, and this screen shows nothing about a recording to that person either: no player, no
+  // download control, and no "not recorded" line that might be untrue.
+  const ability = useAppAbility();
+  const mayPlayRecording = ability.can("play_recording", "Communication");
+  const mayKnowOfRecording = mayPlayRecording || ability.can("download_recording", "Communication");
+  // View transcript (Roles & Permissions S08.12) covers the transcript and the call summary together. The server leaves
+  // both out of the call and refuses the transcript route without it, so this screen asks for neither, and shows no
+  // transcript, no summary and no "no transcript / no insight yet" line that might be untrue.
+  const mayReadTranscript = ability.can("view_transcript", "Communication");
+  // See call insights (S08.13) covers the sentiment, the review flag and the agent's QA score. The server leaves the first
+  // two out of the call and the metrics out of the agent; the call score, the Answered By detail and the call details
+  // stay for everyone who can see the call.
+  const mayInsights = ability.can("see_call_insights", "Communication");
+  // Contact customers (S08.14) decides the call back and text buttons; the rest of the drawer is for everyone who can see
+  // the call.
+  const mayContact = ability.can("create", "Communication");
   // Lazy transcript + AI insight: fire whenever EITHER is still missing (the
   // backend fetches from CTM & persists on demand - it only needs ctm_call_id,
   // not a recording, so a call with no recording can still have a transcript).
@@ -1116,17 +1180,18 @@ export function CallDetailDrawer({
   // other; gating on the transcript alone would strand the insight forever.
   // Stored values win; a settled null → an honest "nothing here" state rather
   // than a perpetual "still generating" lie.
-  const wantsTranscript = !call.transcriptPreview || !call.summary;
+  const wantsTranscript = mayReadTranscript && (!call.transcriptPreview || !call.summary);
   const transcriptQuery = useCallTranscript(call.id, wantsTranscript);
-  const transcript =
-    call.transcriptPreview ?? transcriptQuery.data?.transcript ?? null;
-  const summary = call.summary ?? transcriptQuery.data?.summary ?? null;
+  const transcript = mayReadTranscript
+    ? call.transcriptPreview ?? transcriptQuery.data?.transcript ?? null
+    : null;
+  const summary = mayReadTranscript ? call.summary ?? transcriptQuery.data?.summary ?? null : null;
   // Structured, per-speaker turns (CTM's transcription.json outline[]) - the
   // flat `transcript` string above interleaves each channel fragment by
   // fragment and is unrecoverable once flattened, so the peek/reader render
   // turns when present and only fall back to the flat string for calls CTM
   // never diarized.
-  const turns = transcriptQuery.data?.turns ?? null;
+  const turns = mayReadTranscript ? transcriptQuery.data?.turns ?? null : null;
   const hasTurns = !!turns && turns.length > 0;
   const [readerOpen, setReaderOpen] = useState(false);
   const readerPlayerRef = useRef<RecordingPlayerHandle>(null);
@@ -1169,7 +1234,12 @@ export function CallDetailDrawer({
   // Attach-to-job/lead (story 21, widened). Unknown callers used to get NO
   // control at all here, despite the API accepting the attach — that gap is what
   // useAttachTargets' search mode closes.
-  const targets = useAttachTargets(call.customerId);
+  //
+  // Attach conversations to jobs and leads (S08.19) decides who gets the menu; Edit communication records plays no part
+  // in it. Without the switch the drawer still says where the call is filed, and fetches no target list for a menu it
+  // will not show.
+  const mayAttach = ability.can("attach", "Communication");
+  const targets = useAttachTargets(mayAttach ? call.customerId : undefined);
   const reassignCall = useReassignCallJob();
   const reassignCallLead = useReassignCallLead();
 
@@ -1179,8 +1249,17 @@ export function CallDetailDrawer({
       forCallId: call.id,
       job: target ? { id: target.id, kind: target.kind, label: target.label } : null,
     });
-    const onSuccess = () =>
+    // A detach can take the call out of the person's reach (it was readable only through the record it was taken
+    // off). The server says so in a success; the drawer then closes rather than staying open on a call they can no
+    // longer read, and the call log drops the row on its refetch.
+    const onSuccess = (result?: { left?: boolean }) => {
+      if (result?.left) {
+        onToast("Link removed. This call is no longer in your list.");
+        onClose();
+        return;
+      }
       onToast(target ? `Attached to ${target.label}` : "Link removed");
+    };
     const onError = () => {
       setJobOverride({ forCallId: call.id, job: prev });
       onToast("Couldn't update the link - try again");
@@ -1216,42 +1295,45 @@ export function CallDetailDrawer({
             <p className="text-lg font-semibold text-primary">
               {cust?.name ?? "Unknown caller"}
             </p>
-            <p className="mt-0.5 text-sm text-text-primary">{fmtPhone(otherNumber)}</p>
-            {/* Job/lead linkage — every call gets the attach / reassign menu.
-                A known customer lists that customer's jobs and leads; an unknown
-                caller searches the org instead (useAttachTargets). This used to
-                be gated on call.customerId, which left exactly the calls that
-                most need manual attribution with no control at all, even though
-                the API has always accepted the attach. */}
-            <div className="mt-1.5">
-              <CommJobMenu
-                jobs={targets.jobs}
-                leads={targets.leads}
-                onPick={pickJob}
-                search={targets.search}
-                onSearchChange={targets.setSearch}
-                querying={targets.querying}
-                needsMoreInput={targets.needsMoreInput}
-                loading={targets.loading}
-              >
-                {linkedJob ? (
-                  <button
-                    type="button"
-                    title={`Attached to ${linkedJob.label} - click to reassign`}
-                    className="rounded-pill transition hover:opacity-80"
+            <p className="mt-0.5 text-sm text-text-primary"><OtherPartyNumber call={call} /></p>
+            {/* Job/lead linkage. With Attach conversations to jobs and leads, the attach / reassign menu: a known
+                customer lists that customer's jobs and leads; an unknown caller searches the org instead
+                (useAttachTargets). Without it, only where the call is filed. */}
+            {(mayAttach || linkedJob) && (
+              <div className="mt-1.5">
+                {mayAttach ? (
+                  <CommJobMenu
+                    jobs={targets.jobs}
+                    leads={targets.leads}
+                    onPick={pickJob}
+                    search={targets.search}
+                    onSearchChange={targets.setSearch}
+                    querying={targets.querying}
+                    needsMoreInput={targets.needsMoreInput}
+                    loading={targets.loading}
                   >
-                    <JobBadge job={linkedJob.label} />
-                  </button>
+                    {linkedJob ? (
+                      <button
+                        type="button"
+                        title={`Attached to ${linkedJob.label} - click to reassign`}
+                        className="rounded-pill transition hover:opacity-80"
+                      >
+                        <JobBadge job={linkedJob.label} />
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-[11px] font-semibold text-primary transition hover:bg-primary/10"
+                      >
+                        <Briefcase className="h-3 w-3" /> Attach to job or lead
+                      </button>
+                    )}
+                  </CommJobMenu>
                 ) : (
-                  <button
-                    type="button"
-                    className="inline-flex items-center gap-1 rounded-md border border-border px-2 py-0.5 text-[11px] font-semibold text-primary transition hover:bg-primary/10"
-                  >
-                    <Briefcase className="h-3 w-3" /> Attach to job or lead
-                  </button>
+                  <JobBadge job={linkedJob?.label} />
                 )}
-              </CommJobMenu>
-            </div>
+              </div>
+            )}
             <div className="mt-3 flex items-center justify-end gap-3">
               {/* Conference ("Add to call") is a demo-only affordance — hidden on
                   real orgs until multi-party calling is wired end-to-end. */}
@@ -1262,16 +1344,20 @@ export function CallDetailDrawer({
                   onClick={() => setConfOpen(true)}
                 />
               )}
-              <RoundAction
-                icon={MessageSquare}
-                label="Message"
-                onClick={() => setTextOpen(true)}
-              />
-              <RoundAction
-                icon={Phone}
-                label="Call back"
-                onClick={() => requestCall(otherNumber, dialContext(call, partyName))}
-              />
+              {mayContact && (
+                <>
+                  <RoundAction
+                    icon={MessageSquare}
+                    label="Message"
+                    onClick={() => setTextOpen(true)}
+                  />
+                  <RoundAction
+                    icon={Phone}
+                    label="Call back"
+                    onClick={() => requestCall(otherNumber, dialContext(call, partyName))}
+                  />
+                </>
+              )}
             </div>
           </div>
 
@@ -1289,41 +1375,50 @@ export function CallDetailDrawer({
 
             {/* Call insights - CTM's AI summary, then the recording */}
             <div>
-              <p className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-text-primary">
-                Call insights
-                <span className="inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
-                  <Sparkles className="h-3 w-3" /> AI
-                </span>
-              </p>
-              {/* CTM writes the summary asynchronously alongside the transcript,
-                  so the honest states are: text / still generating / none. */}
-              {summary ? (
-                <div className="mb-3 rounded-card bg-background-light p-3">
-                  <p className="text-[13px] leading-relaxed text-text-primary">{summary}</p>
-                </div>
-              ) : transcriptQuery.isLoading ? (
-                <p className="mb-3 flex items-center gap-1.5 text-[12px] text-text-secondary">
-                  <Loader2 className="h-3 w-3 animate-spin" /> The AI insight is still being
-                  generated…
-                </p>
-              ) : (
-                <p className="mb-3 text-[12px] text-text-secondary">
-                  No AI insight for this call.
-                </p>
-              )}
-              {call.hasRecording ? (
-                <RecordingPlayer call={call} onToast={onToast} />
-              ) : (
-                <div className="flex flex-col items-center justify-center rounded-card bg-background-light px-4 py-8 text-center text-text-secondary">
-                  <Mic className="mb-2 h-7 w-7" />
-                  <p className="text-sm font-medium text-text-secondary">No recording for this call</p>
-                  <p className="text-[12px]">
-                    {call.status === "missed"
-                      ? "The call was missed before it connected."
-                      : "This call was not recorded."}
+              {mayReadTranscript && (
+                <>
+                  <p className="mb-2 flex items-center gap-1.5 text-sm font-semibold text-text-primary">
+                    Call insights
+                    <span className="inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold text-primary">
+                      <Sparkles className="h-3 w-3" /> AI
+                    </span>
                   </p>
-                </div>
+                  {/* CTM writes the summary asynchronously alongside the transcript,
+                      so the honest states are: text / still generating / none. */}
+                  {summary ? (
+                    <div className="mb-3 rounded-card bg-background-light p-3">
+                      <p className="text-[13px] leading-relaxed text-text-primary">{summary}</p>
+                    </div>
+                  ) : transcriptQuery.isLoading ? (
+                    <p className="mb-3 flex items-center gap-1.5 text-[12px] text-text-secondary">
+                      <Loader2 className="h-3 w-3 animate-spin" /> The AI insight is still being
+                      generated…
+                    </p>
+                  ) : (
+                    <p className="mb-3 text-[12px] text-text-secondary">
+                      No AI insight for this call.
+                    </p>
+                  )}
+                </>
               )}
+              {mayKnowOfRecording &&
+                (call.hasRecording ? (
+                  mayPlayRecording ? (
+                    <RecordingPlayer call={call} onToast={onToast} />
+                  ) : (
+                    <RecordingDownloadOnly call={call} />
+                  )
+                ) : (
+                  <div className="flex flex-col items-center justify-center rounded-card bg-background-light px-4 py-8 text-center text-text-secondary">
+                    <Mic className="mb-2 h-7 w-7" />
+                    <p className="text-sm font-medium text-text-secondary">No recording for this call</p>
+                    <p className="text-[12px]">
+                      {call.status === "missed"
+                        ? "The call was missed before it connected."
+                        : "This call was not recorded."}
+                    </p>
+                  </div>
+                ))}
             </div>
 
             {/* Transcript — shown regardless of hasRecording: CTM transcribes
@@ -1331,46 +1426,54 @@ export function CallDetailDrawer({
                 recording, to hydrate one on demand. Turns (structured,
                 per-speaker) render as a short bubble peek with a reader
                 trigger; the flat string is the fallback for calls CTM never
-                diarized into turns. */}
-            <div>
-              <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-text-secondary">
-                <FileText className="h-3 w-3" /> Transcript
-              </p>
-              {hasTurns ? (
-                <CallTranscriptBubbles turns={turns!.slice(0, 3)} />
-              ) : transcript ? (
-                <div className="rounded-card bg-background-light p-3">
-                  <p className="line-clamp-3 text-[13px] italic leading-relaxed text-text-primary">
-                    “{transcript}”
+                diarized into turns. Without View transcript the whole section
+                is absent (S08.12); the review flag below it is not part of
+                what was said, so it stays on its own switch (S08.13). */}
+            {(mayReadTranscript || (mayInsights && call.reviewFlag)) && (
+              <div>
+                {mayReadTranscript && (
+                  <>
+                    <p className="mb-2 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-text-secondary">
+                      <FileText className="h-3 w-3" /> Transcript
+                    </p>
+                    {hasTurns ? (
+                      <CallTranscriptBubbles turns={turns!.slice(0, 3)} />
+                    ) : transcript ? (
+                      <div className="rounded-card bg-background-light p-3">
+                        <p className="line-clamp-3 text-[13px] italic leading-relaxed text-text-primary">
+                          “{transcript}”
+                        </p>
+                      </div>
+                    ) : transcriptQuery.isLoading ? (
+                      <p className="flex items-center gap-1.5 text-[12px] text-text-secondary">
+                        <Loader2 className="h-3 w-3 animate-spin" /> Loading transcript…
+                      </p>
+                    ) : (
+                      <p className="text-[12px] text-text-secondary">
+                        No transcript available for this call.
+                      </p>
+                    )}
+                    {(hasTurns || transcript) && (
+                      <Button
+                        type="button"
+                        variant="link"
+                        onClick={() => setReaderOpen(true)}
+                        className="mt-2 h-auto p-0"
+                      >
+                        <Text size="xs" weight="medium">
+                          {hasTurns ? `Open transcript (${turns!.length} turns)` : "Open transcript"}
+                        </Text>
+                      </Button>
+                    )}
+                  </>
+                )}
+                {mayInsights && call.reviewFlag && (
+                  <p className="mt-2 flex items-center gap-1.5 rounded-md bg-danger/10 px-2.5 py-1.5 text-[11px] font-medium text-danger first:mt-0">
+                    <AlertTriangle className="h-3.5 w-3.5" /> {call.reviewFlag}
                   </p>
-                </div>
-              ) : transcriptQuery.isLoading ? (
-                <p className="flex items-center gap-1.5 text-[12px] text-text-secondary">
-                  <Loader2 className="h-3 w-3 animate-spin" /> Loading transcript…
-                </p>
-              ) : (
-                <p className="text-[12px] text-text-secondary">
-                  No transcript available for this call.
-                </p>
-              )}
-              {(hasTurns || transcript) && (
-                <Button
-                  type="button"
-                  variant="link"
-                  onClick={() => setReaderOpen(true)}
-                  className="mt-2 h-auto p-0"
-                >
-                  <Text size="xs" weight="medium">
-                    {hasTurns ? `Open transcript (${turns!.length} turns)` : "Open transcript"}
-                  </Text>
-                </Button>
-              )}
-              {call.reviewFlag && (
-                <p className="mt-2 flex items-center gap-1.5 rounded-md bg-danger/10 px-2.5 py-1.5 text-[11px] font-medium text-danger">
-                  <AlertTriangle className="h-3.5 w-3.5" /> {call.reviewFlag}
-                </p>
-              )}
-            </div>
+                )}
+              </div>
+            )}
 
             {/* Outcome — answered-by, call score, and the linked job merged
                 into one block: three facets of "how did this call resolve." */}
@@ -1384,7 +1487,7 @@ export function CallDetailDrawer({
                     {agent?.name ?? call.answeredBy.name ?? answeredByLabel(call.answeredBy.kind)}
                   </p>
                   {agent && <p className="text-[11px] text-text-secondary">{agent.role}</p>}
-                  {agent && (
+                  {agent && mayInsights && agent.scriptAdherencePct !== undefined && (
                     <div
                       className={`mt-2 inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold ring-1 ${scoreTone(agent.scriptAdherencePct)}`}
                     >
@@ -1403,7 +1506,7 @@ export function CallDetailDrawer({
                       >
                         {call.qaScore}
                       </span>
-                      {call.sentiment && (
+                      {mayInsights && call.sentiment && (
                         <p className="mt-1 text-[11px] capitalize text-text-secondary">
                           Sentiment: {call.sentiment}
                         </p>
@@ -1469,8 +1572,8 @@ export function CallDetailDrawer({
               <Collapse open={detailsOpen} className="mt-2">
                 <div className="space-y-3">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <InfoRow label="From" value={fmtPhone(call.fromNumber)} />
-                    <InfoRow label="To" value={fmtPhone(call.toNumber)} />
+                    <InfoRow label="From" value={<CallNumber call={call} side="from" />} />
+                    <InfoRow label="To" value={<CallNumber call={call} side="to" />} />
                     <InfoRow label="Ad source" value={call.trackingSource ?? "-"} />
                   </div>
                   <div>
@@ -1519,7 +1622,7 @@ export function CallDetailDrawer({
       {/* Reader — the full transcript over the dimmed drawer. Esc/overlay
           click returns to the call (Dialog's default behavior). Clicking a
           turn seeks this reader's own docked player, not the drawer's. */}
-      <Dialog open={readerOpen} onOpenChange={setReaderOpen}>
+      <Dialog open={readerOpen && mayReadTranscript} onOpenChange={setReaderOpen}>
         <DialogContent intent="content" layout="own" width="lg" className="grid-rows-[auto_1fr_auto]">
           <DialogHeader divider>
             <DialogTitle>Transcript</DialogTitle>
@@ -1543,7 +1646,7 @@ export function CallDetailDrawer({
               </p>
             )}
           </DialogList>
-          {call.hasRecording && (
+          {call.hasRecording && mayPlayRecording && (
             <DialogFooter className="block" cardClassName="border-t border-border pt-3">
               <RecordingPlayer ref={readerPlayerRef} call={call} onToast={onToast} />
             </DialogFooter>
@@ -1572,6 +1675,62 @@ function RoundAction({
     >
       <Icon className="h-5 w-5" />
     </button>
+  );
+}
+
+/* ─────────────────── Recording download ─────────────────── */
+
+/* The download of a recording: asks the download route (Download recording) for a link marked as a file download and
+ * hands it to the browser to save. A 404 means the recording is still being ingested; anything else (a refusal
+ * included) is a quiet "couldn't load" line, never a toast. */
+function useRecordingDownload(callId: string) {
+  const { refetch, isFetching } = useRecordingDownloadUrl(callId);
+  const [problem, setProblem] = useState<"processing" | "error" | null>(null);
+
+  async function start() {
+    const res = await refetch();
+    if (!res.data?.url) {
+      const code = (res.error as { response?: { status?: number } } | null)?.response?.status;
+      setProblem(code === 404 ? "processing" : "error");
+      return;
+    }
+    setProblem(null);
+    const a = document.createElement("a");
+    a.href = res.data.url;
+    a.download = `call-recording-${callId}`;
+    a.target = "_blank";
+    a.rel = "noopener noreferrer";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  return { start, isFetching, problem };
+}
+
+/* A person who may download a recording but not play it gets the download control on its own. */
+function RecordingDownloadOnly({ call }: { call: CallSession }) {
+  const download = useRecordingDownload(call.id);
+  return (
+    <div className="rounded-card bg-background-light px-3 py-2.5">
+      <Button
+        type="button"
+        variant="ghost"
+        tone="neutral"
+        size="sm"
+        aria-label="Download recording"
+        disabled={download.isFetching}
+        onClick={() => void download.start()}
+      >
+        {download.isFetching ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+        Download recording
+      </Button>
+      {download.problem === "processing" ? (
+        <p className="mt-2 text-[12px] text-text-secondary">Recording is still processing - try again shortly.</p>
+      ) : download.problem === "error" ? (
+        <p className="mt-2 text-[12px] text-danger">Couldn&apos;t load the recording - try again.</p>
+      ) : null}
+    </div>
   );
 }
 
@@ -1611,6 +1770,12 @@ const RecordingPlayer = forwardRef<RecordingPlayerHandle, {
   const [loaded, setLoaded] = useState(false); // a src is attached
   const [loadState, setLoadState] = useState<"idle" | "processing" | "error">("idle");
   const { refetch, isFetching } = useRecordingUrl(call.id);
+  // The download control is its own switch (Download recording) and its own link; the player never reaches for the
+  // playback link to save a file.
+  const mayDownload = useAppAbility().can("download_recording", "Communication");
+  const download = useRecordingDownload(call.id);
+  // One status line under the player: a playback problem first, else a download problem.
+  const status = loadState !== "idle" ? loadState : download.problem ?? "idle";
 
   const pct = duration > 0 ? Math.min(100, (pos / duration) * 100) : 0;
 
@@ -1728,20 +1893,6 @@ const RecordingPlayer = forwardRef<RecordingPlayerHandle, {
   }
 
   // Download reuses the exact same signed URL as playback.
-  async function handleDownload() {
-    let url: string | null = loaded ? (audioRef.current?.currentSrc || audioRef.current?.src || null) : null;
-    if (!url) url = await fetchUrl();
-    if (!url) return;
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `call-recording-${call.id}`;
-    a.target = "_blank";
-    a.rel = "noopener noreferrer";
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  }
-
   return (
     <div>
       {/* Hidden media element — all control goes through the custom UI. */}
@@ -1797,20 +1948,23 @@ const RecordingPlayer = forwardRef<RecordingPlayerHandle, {
             <RotateCw className="h-5 w-5" />
           </button>
         </div>
-        <button
-          type="button"
-          aria-label="Download recording"
-          onClick={() => void handleDownload()}
-          className="text-text-secondary hover:text-text-primary"
-        >
-          <Download className="h-5 w-5" />
-        </button>
+        {mayDownload && (
+          <button
+            type="button"
+            aria-label="Download recording"
+            disabled={download.isFetching}
+            onClick={() => void download.start()}
+            className="text-text-secondary hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            <Download className="h-5 w-5" />
+          </button>
+        )}
       </div>
-      {loadState === "processing" ? (
+      {status === "processing" ? (
         <p className="mt-2 text-center text-[12px] text-text-secondary">
           Recording is still processing - try again shortly.
         </p>
-      ) : loadState === "error" ? (
+      ) : status === "error" ? (
         <p className="mt-2 text-center text-[12px] text-danger">
           Couldn&apos;t load the recording - try again.
         </p>

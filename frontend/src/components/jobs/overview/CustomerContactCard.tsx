@@ -1,10 +1,9 @@
-import { Link } from 'react-router-dom';
-import { Phone, Mail, Map, MessageSquare } from 'lucide-react';
+import { Map } from 'lucide-react';
 import { useQuery } from '@tanstack/react-query';
-import { cn, getInitials } from '@/lib/utils';
+import { cn } from '@/lib/utils';
 import { customerDisplayName } from '@/lib/customer-name';
 import { useAppAbility } from '@/contexts/AbilityContext';
-import { ContactCallButton, ContactTextButton, PhoneNumberAction } from '@/components/contact/ContactAction';
+import { CustomerContactBlock } from '@/components/contact/CustomerContactBlock';
 import { isIosDevice, mapsHref } from '@/components/contact/contactHrefs';
 import { SectionCard, SectionLabel } from '@/components/jobs/overview/SectionCard';
 import { ServiceLocationMap } from '@/components/crm/service-location-map';
@@ -21,6 +20,7 @@ import { ChannelIcon, LoggedChip, channelLabel } from '@/components/communicatio
  * truth, which is why the duplicate is deleted rather than extended.
  */
 import { newestFirst, type CommItem } from '@/lib/api/jobCommunications';
+import type { RecordContactEntry } from '@/lib/api/recordContactEntries';
 import api from '@/lib/axios';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -31,7 +31,10 @@ interface Customer {
   last_name: string;
   company_name: string | null;
   email: string | null;
-  phone: string;
+  phone: string | null;
+  /** The full contact set the job detail answers: every phone and every email on file. */
+  phones?: { phone: string; label: string | null; extension: string | null; is_primary: boolean }[];
+  emails?: { email: string; label: string | null; is_primary: boolean }[];
 }
 
 interface ServiceLocation {
@@ -48,13 +51,21 @@ interface CustomerContactCardProps {
     job_number: string;
     customer: Customer;
     service_location: ServiceLocation | null;
+    /** The job's own phones and emails, added with the pencil. */
+    contact_entries?: RecordContactEntry[];
+    /** The completed-job lock for this person, for the job as a whole. */
+    locked?: boolean;
+    /**
+     * The lock for this person on the job's customer details: true takes the pencils off the block. The server answers it
+     * apart from `locked` because the review's holder keeps these while the job is in Office review (S06.9).
+     */
+    contact_locked?: boolean;
   };
   onViewAllCommunications?: () => void;
 }
 
-// The stacked icon + label tile the Call, Text, Email and Map actions share. Left as plain elements
-// rather than Buttons: all four must render pixel-identical in this one grid, and the tile look is
-// outside Button's reach.
+// The stacked icon + label tile of the Map action. Left a plain element rather than a Button: the tile
+// look is outside Button's reach. The customer's own Call, Text and Email actions are the contact block's.
 const TILE_CLASS = cn(
   'flex flex-col items-center gap-1 rounded-lg border border-border bg-background-light/40 py-2 px-1',
   'text-[11px] font-medium text-text-secondary hover:text-primary hover:border-primary/40 transition-colors',
@@ -66,17 +77,8 @@ export function CustomerContactCard({ job, onViewAllCommunications }: CustomerCo
   const { customer, service_location: loc } = job;
   const ability = useAppAbility();
   const canReadComms = ability.can('read', 'Communication');
-  // In-app call entry (E2) is the contact action's decision now: the dialer when the org has the
-  // phone service AND the user holds the `create Communication` grant (not a role check); everyone
-  // else (a user without that grant, a locked org) keeps the device's own call link, which can never 403.
 
   const name = customerDisplayName(customer);
-  const callContext = {
-    jobId: job.id,
-    jobLabel: job.job_number,
-    customerId: customer.id,
-    customerName: name,
-  };
 
   // The address (or, with no service location, the customer's name) the Map tile searches for;
   // mapsHref turns it into a link that opens the device's native maps app.
@@ -101,84 +103,23 @@ export function CustomerContactCard({ job, onViewAllCommunications }: CustomerCo
   // three most-recent.
   const lastThreeComms = newestFirst(recentComms).slice(0, 3);
 
-  const initials = getInitials(name);
 
   return (
     <SectionCard title="Customer &amp; Contact" bodyClassName="space-y-4">
-      {/* Monogram + Name + company — center so the name sits on the monogram's axis */}
-      <div className="flex items-center gap-3">
-        {/* Initials monogram */}
-        <div className="shrink-0 h-10 w-10 rounded-full bg-primary ring-2 ring-surface-light shadow-sm flex items-center justify-center">
-          <span className="text-xs font-semibold text-on-fill tracking-wide">{initials}</span>
-        </div>
-        <div>
-          <Link
-            to={`/customers/${customer.id}`}
-            className="text-sm font-medium text-primary hover:underline"
-          >
-            {name}
-          </Link>
-          {customer.company_name && (
-            <p className="text-xs text-text-secondary mt-0.5">{customer.company_name}</p>
-          )}
-        </div>
-      </div>
+      {/* Name, company, every phone and email, and the address, drawn through the contact display policy. */}
+      <CustomerContactBlock
+        customer={customer}
+        context={{ jobId: job.id, jobLabel: job.job_number }}
+        serviceAddress={mapQuery && loc ? mapQuery : null}
+        record={{ kind: 'job', id: job.id, locked: job.contact_locked ?? job.locked }}
+        entries={job.contact_entries}
+        showActions
+        editCustomer
+      />
 
-      {/* Contact details */}
-      <div className="space-y-1.5">
-        {customer.phone && (
-          <p className="text-sm text-text-secondary flex items-center gap-1.5">
-            <Phone className="h-3.5 w-3.5 shrink-0" />
-            <PhoneNumberAction
-              phone={customer.phone}
-              name={name}
-              context={callContext}
-            />
-          </p>
-        )}
-        {customer.email && (
-          <p className="text-sm text-text-secondary flex items-center gap-1.5">
-            <Mail className="h-3.5 w-3.5 shrink-0" />
-            <a
-              href={`mailto:${customer.email}`}
-              className="hover:text-primary hover:underline truncate"
-            >
-              {customer.email}
-            </a>
-          </p>
-        )}
-      </div>
-
-      {/* Action buttons. Two across on a narrow phone, so each tile is a thumb-sized target (a
-          four-across row left each one about 33 px wide at 320 px); four across from sm up. */}
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
-        {customer.phone && (
-          <ContactCallButton
-            kind="bare"
-            phone={customer.phone}
-            context={callContext}
-            className={TILE_CLASS}
-          >
-            <Phone className="h-4 w-4" />
-            Call
-          </ContactCallButton>
-        )}
-        {customer.phone && (
-          <ContactTextButton kind="bare" phone={customer.phone} context={callContext} className={TILE_CLASS}>
-            <MessageSquare className="h-4 w-4" />
-            Text
-          </ContactTextButton>
-        )}
-        {customer.email && (
-          <a
-            href={`mailto:${customer.email}`}
-            className={TILE_CLASS}
-          >
-            <Mail className="h-4 w-4" />
-            Email
-          </a>
-        )}
-        {mapQuery && (
+      {/* The Map action stays a tile: it opens the device's maps app, not a customer contact. */}
+      {mapQuery && (
+        <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
           <a
             href={mapsHref(mapQuery, { ios: isIosDevice() })}
             target="_blank"
@@ -188,8 +129,8 @@ export function CustomerContactCard({ job, onViewAllCommunications }: CustomerCo
             <Map className="h-4 w-4" />
             Map
           </a>
-        )}
-      </div>
+        </div>
+      )}
 
       {loc && (
         <ServiceLocationMap
@@ -225,20 +166,32 @@ export function CustomerContactCard({ job, onViewAllCommunications }: CustomerCo
           ) : (
             <div className="space-y-2">
               {lastThreeComms.map((msg) => {
-                const label = channelLabel(msg.channel);
+                const isPayment = msg.entry === 'payment_received';
+                const label = channelLabel(msg.channel, isPayment);
                 return (
                   <div key={msg.id} className="flex items-start justify-between gap-2">
                     <p className="min-w-0 text-xs text-text-secondary">
-                      <span
-                        className={cn(
-                          'font-medium',
-                          msg.direction === 'in' ? 'text-primary' : 'text-text-primary',
-                        )}
-                      >
-                        {msg.direction === 'in' ? customer.first_name : 'You'}
-                      </span>
-                      {': '}
-                      {(msg.preview || msg.title).slice(0, 64)}
+                      {isPayment ? (
+                        // Money on an invoice, not something the customer said: worded from its title, never "{customer}: ...".
+                        <>
+                          <span className="font-medium text-text-primary">{msg.title}</span>
+                          {': '}
+                          {msg.preview.slice(0, 64)}
+                        </>
+                      ) : (
+                        <>
+                          <span
+                            className={cn(
+                              'font-medium',
+                              msg.direction === 'in' ? 'text-primary' : 'text-text-primary',
+                            )}
+                          >
+                            {msg.direction === 'in' ? customer.first_name : 'You'}
+                          </span>
+                          {': '}
+                          {(msg.preview || msg.title).slice(0, 64)}
+                        </>
+                      )}
                     </p>
                     <div className="flex shrink-0 items-center gap-1.5">
                       {/* Manual Communication Log — the same two markers the full timeline uses
@@ -247,7 +200,7 @@ export function CustomerContactCard({ job, onViewAllCommunications }: CustomerCo
                           something ServWave recorded. */}
                       {msg.manuallyLogged && <LoggedChip />}
                       <span title={label} className="flex items-center">
-                        <ChannelIcon channel={msg.channel} handEntered={msg.manuallyLogged} />
+                        <ChannelIcon channel={msg.channel} handEntered={msg.manuallyLogged} payment={isPayment} />
                         <span className="sr-only">{label}</span>
                       </span>
                       <time className="text-[11px] text-text-secondary/70 whitespace-nowrap">

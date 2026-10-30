@@ -21,7 +21,6 @@ import {
   TEST_USERS, mockAuthAs, mockRoleGrantsWithout, authHeader, CUSTOMER_FIXTURE, LOCATION_FIXTURE,
 } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 import { projectPickerRow } from '../controllers/customer.controller';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -30,7 +29,6 @@ const mockPrisma = prisma as unknown as Record<string, any>;
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache();
 });
 
 const PICKER_ROW = {
@@ -72,7 +70,7 @@ describe('#2041 slice 1 — GET /api/customers/picker guard (canDoAny)', () => {
 
   it('a role holding none of the four -> 403, same body as canDo', async () => {
     mockAuthAs('technician');
-    mockRoleGrantsWithout('TECHNICIAN', ['create', 'Job'], ['create', 'Estimate']);
+    mockRoleGrantsWithout('TECHNICIAN', ['create', 'Lead'], ['create', 'Job'], ['create', 'Estimate']);
 
     const res = await request(app)
       .get('/api/customers/picker')
@@ -86,7 +84,7 @@ describe('#2041 slice 1 — GET /api/customers/picker guard (canDoAny)', () => {
 
   it('GET /api/customers/picker/:id — same guard applies', async () => {
     mockAuthAs('technician');
-    mockRoleGrantsWithout('TECHNICIAN', ['create', 'Job'], ['create', 'Estimate']);
+    mockRoleGrantsWithout('TECHNICIAN', ['create', 'Lead'], ['create', 'Job'], ['create', 'Estimate']);
 
     const res = await request(app)
       .get(`/api/customers/picker/${PICKER_ROW.id}`)
@@ -98,17 +96,41 @@ describe('#2041 slice 1 — GET /api/customers/picker guard (canDoAny)', () => {
 });
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════
-// Guard — a SUBJECT-level `read Customer` probe on top of canDoAny (findings 3/4/8): a role with
-// unconditional `create Job`/`create Estimate` but NO `read Customer` grant at all must still get
-// 403 on the picker, not the org-wide directory. Same fail-closed probe `comm-calls.controller.ts`
-// (`canReadCustomers`) uses — `req.ability?.can('read','Customer')` — chained after PICKER_GUARD.
-// TECHNICIAN below is `mockAuthAs('technician')` with UNMODIFIED DEFAULT_GRANTS: it holds
-// unconditional `create Job` (defaultGrants.ts:409) and `create Estimate` (:423) and holds no
-// `Customer` grant whatsoever, so it clears `canDoAny` but must still be refused here.
+// Roles & Permissions S01.5 - the picker needs no `read Customer` for whoever can create a lead or a
+// job, whatever Customers View says (TECHNICIAN has View off and still starts jobs and leads). A
+// person who can only create an estimate or an invoice keeps today's rule: the subject-level
+// `read Customer` probe (the same fail-closed check `comm-calls.controller.ts` `canReadCustomers`
+// uses) must pass too, so a role with no customer reach at all still gets a 403.
 // ═════════════════════════════════════════════════════════════════════════════════════════════
-describe('#2041 — picker also requires a subject-level read Customer grant (fail-closed for zero-grant roles)', () => {
-  it('TECHNICIAN with DEFAULT grants (unstripped) -> 403 on GET /picker, same body as the create-grant 403', async () => {
+describe('S01.5 — the picker follows Create leads and Create jobs, not Customers View', () => {
+  it('TECHNICIAN (Customers View off, Create jobs and Create leads on) -> 200 on GET /picker', async () => {
     mockAuthAs('technician');
+    mockPrisma.customer.findMany.mockResolvedValue([PICKER_ROW]);
+
+    const res = await request(app)
+      .get('/api/customers/picker')
+      .query({ search: 'qa-2041-Funnel' })
+      .set(authHeader('technician'));
+
+    expect(res.status).toBe(200);
+    // The row is one this person could not otherwise open, so it comes back restricted.
+    expect(res.body.customers[0]).toEqual(projectPickerRow(PICKER_ROW, false));
+  });
+
+  it('TECHNICIAN (Customers View off) -> 200 on GET /picker/:id', async () => {
+    mockAuthAs('technician');
+    mockPrisma.customer.findUnique.mockResolvedValue(PICKER_ROW);
+
+    const res = await request(app)
+      .get(`/api/customers/picker/${PICKER_ROW.id}`)
+      .set(authHeader('technician'));
+
+    expect(res.status).toBe(200);
+  });
+
+  it('a creator of estimates only, with Customers View off -> 403 on GET /picker, same body as the create-grant 403', async () => {
+    mockAuthAs('technician');
+    mockRoleGrantsWithout('TECHNICIAN', ['create', 'Lead'], ['create', 'Job']);
 
     const res = await request(app)
       .get('/api/customers/picker')
@@ -120,15 +142,15 @@ describe('#2041 — picker also requires a subject-level read Customer grant (fa
     expect(mockPrisma.customer.findMany).not.toHaveBeenCalled();
   });
 
-  it('TECHNICIAN with DEFAULT grants (unstripped) -> 403 on GET /picker/:id', async () => {
+  it('a creator of estimates only, with Customers View off -> 403 on GET /picker/:id', async () => {
     mockAuthAs('technician');
+    mockRoleGrantsWithout('TECHNICIAN', ['create', 'Lead'], ['create', 'Job']);
 
     const res = await request(app)
       .get(`/api/customers/picker/${PICKER_ROW.id}`)
       .set(authHeader('technician'));
 
     expect(res.status).toBe(403);
-    expect(res.body).toEqual({ error: 'Insufficient permissions' });
     expect(mockPrisma.customer.findUnique).not.toHaveBeenCalled();
   });
 

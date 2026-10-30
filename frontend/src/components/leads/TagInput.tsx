@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/axios';
+import { useAppAbility } from '@/contexts/AbilityContext';
 import { X, Plus, ArrowDownAZ, ArrowUpAZ } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
@@ -29,10 +30,12 @@ interface TagInputProps {
   entityType?: EntityType;
   entityId?: string;
   tags: Tag[];
+  /** Show the chips with no remove control and no add control, for a person who may not change this record's tags. */
+  readOnly?: boolean;
 }
 
 export function TagInput(props: TagInputProps) {
-  const { tags } = props;
+  const { tags, readOnly = false } = props;
   const entityType: EntityType = props.entityType ?? 'LEAD';
   const entityId: string = (props.entityId ?? props.leadId) as string;
   const { path: resourcePath, detailKey: invalidationKey } = TAG_ENTITY_ROUTES[entityType];
@@ -41,6 +44,7 @@ export function TagInput(props: TagInputProps) {
   const [color, setColor] = useState<string>(TAG_COLORS[0]!);
   const [sortAsc, setSortAsc] = useState(true);
   const queryClient = useQueryClient();
+  const canCreateTag = useAppAbility().can('create', 'Tag');
 
   // Fetch all tags for autocomplete
   const { data: allTags, refetch: refetchTags } = useQuery({
@@ -140,7 +144,8 @@ export function TagInput(props: TagInputProps) {
     .sort((a, b) => a.name.localeCompare(b.name) * (sortAsc ? 1 : -1));
 
   const exactMatch = (allTags ?? []).some(t => t.name.toLowerCase() === search.trim().toLowerCase());
-  const showCreate = search.trim().length > 0 && !exactMatch;
+  // The pinned create row follows Create tags: the server refuses a new tag from anyone without it.
+  const showCreate = canCreateTag && search.trim().length > 0 && !exactMatch;
 
   return (
     <div className="flex flex-wrap items-center gap-1.5">
@@ -152,6 +157,8 @@ export function TagInput(props: TagInputProps) {
           style={{ backgroundColor: tag.color }}
         >
           {tag.name}
+          {!readOnly && (
+          <>
           {/* Close-X inside a coloured chip - not Button-shaped. The 12 px icon stays; the
               button is a 24 px hit area (44 px on touch) whose negative margins keep the chip's
               size unchanged (mobile slice 25, TOUCH-01/02). */}
@@ -163,10 +170,13 @@ export function TagInput(props: TagInputProps) {
           >
             <X className="h-3 w-3" />
           </button>
+          </>
+          )}
         </span>
       ))}
 
       {/* Add-tag popover */}
+      {!readOnly && (
       <Popover
         open={open}
         onOpenChange={value => {
@@ -281,6 +291,7 @@ export function TagInput(props: TagInputProps) {
           )}
         </PopoverContent>
       </Popover>
+      )}
     </div>
   );
 }

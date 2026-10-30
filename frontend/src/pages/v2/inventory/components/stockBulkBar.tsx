@@ -8,8 +8,9 @@ import { Button } from '@/ui-kit/components/ui/button';
  *
  * Two actions, and the gates are different because the operations are:
  *
- *   - Export selected is ungated, like the toolbar Export beside it. It reads
- *     rows already on screen and writes a file; there is nothing to authorise.
+ *   - Export selected follows Export stock (`export Inventory`), like the
+ *     toolbar Export beside it. It reads rows already on screen and writes a
+ *     file in the browser, so the button is the whole gate.
  *   - Restock writes stock. It is gated on `update Inventory`, which is exactly
  *     what `POST /api/inventory/bulk-restock` enforces server-side
  *     (`canDo('update','Inventory')` in `inv-catalog.routes.ts`), so the button
@@ -19,9 +20,10 @@ import { Button } from '@/ui-kit/components/ui/button';
  * table as `rowSelection`/`onRowSelectionChange`.
  */
 export function StockBulkBar({
-  count, canRestock, onClear, onExportSelected, onRestock,
+  count, canExport, canRestock, onClear, onExportSelected, onRestock,
 }: {
   count: number;
+  canExport: boolean;
   canRestock: boolean;
   onClear: () => void;
   onExportSelected: () => void;
@@ -31,10 +33,12 @@ export function StockBulkBar({
 
   return (
     <BulkActionBar count={count} noun={['item', 'items']} onClear={onClear}>
-      <Button variant="outline" size="sm" onClick={onExportSelected}>
-        <Download />
-        Export selected
-      </Button>
+      {canExport && (
+        <Button variant="outline" size="sm" onClick={onExportSelected}>
+          <Download />
+          Export selected
+        </Button>
+      )}
       {canRestock && (
         <Button variant="outline" size="sm" onClick={onRestock}>
           <PackagePlus />

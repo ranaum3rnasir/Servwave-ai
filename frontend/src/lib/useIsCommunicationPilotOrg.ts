@@ -2,7 +2,7 @@ import { useAuthStore } from '@/stores/auth.store';
 
 /**
  * Which real (non-demo) organizations are the Phase-0 CTM pilot — currently
- * a single pilot org. Unrelated to the `phone` plan entitlement
+ * just the pilot org. Unrelated to the `phone` plan entitlement
  * (module access is gated by `useFeature('phone')` now); this is a narrower
  * allowlist for the still-unfinished CTM sub-surfaces below.
  *
@@ -26,8 +26,7 @@ export function communicationAllowedOrgIds(): string[] {
 }
 
 /**
- * True ONLY for an allowlisted real CTM pilot org (currently a single pilot
- * org) — NOT demo orgs.
+ * True ONLY for an allowlisted real CTM pilot org (currently one org) — NOT demo orgs.
  *
  * Drives access (alongside `useIsDemoOrg`) to the phone-module surfaces not
  * yet ready for every real org: the still-unfinished Call flows / Call groups

@@ -1,6 +1,12 @@
-import { computeInsights } from '@/lib/dashboard/insightRules';
-import type { DashboardResponse } from '@/lib/api/dashboard';
-import { Button } from '@/ui-kit/components/ui/button';
+import { Sparkles } from 'lucide-react';
+
+import type { Insight } from '@/lib/api/dashboard';
+import { cn } from '@/lib/utils';
+import { EmptyState } from '@/ui-kit/components/data/emptyState';
+
+import { WidgetCard } from '../components/widgetCard';
+import { ClickRow } from '../components/clickRow';
+import { opener } from '@/lib/dashboard/opener';
 
 /**
  * Tone chip fill. The legacy band painted these with the ServWave semantic
@@ -18,26 +24,33 @@ const TONE_BG: Record<string, string> = {
 /**
  * The full-width insight band.
  *
- * Deliberately NOT inside a WidgetCard - it has no title bar and never had one,
- * and the tiles are the surface. Two self-veto paths are preserved exactly: no
- * data and no insights both return `null`, which removes the grid cell rather
- * than leaving an empty box (`DashboardPage` drops a widget whose render
- * returns null).
+ * Deliberately NOT inside a WidgetCard when it has insights - it has no title
+ * bar and never had one, and the tiles are the surface. Before the first answer
+ * it returns `null`, which removes the grid cell (`DashboardPage` drops a widget
+ * whose render returns null). With an answer and nothing to say it is a card
+ * with one plain line, so a person who put it on their page sees why it is
+ * empty rather than a tile that is simply missing.
  *
- * `computeInsights` is imported, not reimplemented. It is the whole rule set -
- * which insight fires, its weight, its tone, its copy and its link - and it is
- * shared with the legacy band.
+ * The insights are built on the server (a Company figures tile, so only a person
+ * who holds See company figures is sent any): which insight fires, its weight, its
+ * tone, its copy and its link are all decided there, and this only draws them. A card the person may not open the
+ * list page of arrives without a link: it is drawn without a click and without the call to action that would promise one.
  */
 export default function SmartInsights({
-  data,
+  insights,
   navigate,
 }: {
-  data: DashboardResponse | undefined;
+  insights: Insight[] | undefined;
   navigate: (to: string) => void;
 }) {
-  if (!data) return null;
-  const insights = computeInsights(data);
-  if (insights.length === 0) return null;
+  if (!insights) return null;
+  if (insights.length === 0) {
+    return (
+      <WidgetCard title="Smart Insights" icon={<Sparkles className="h-4 w-4 text-muted-foreground" />}>
+        <EmptyState className="py-6" title="No insights right now" />
+      </WidgetCard>
+    );
+  }
   return (
     <div className="grid grid-cols-1 gap-3.5 sm:grid-cols-3">
       {insights.map((i) => (
@@ -45,22 +58,20 @@ export default function SmartInsights({
         // supplies the element, the focus ring and the press affordance, and
         // `variant={null}` keeps its own fill out of the way of the AI tint
         // this band has always carried.
-        <Button
+        <ClickRow
           key={i.id}
-          type="button"
           variant={null}
-          size={null}
-          onClick={() => navigate(i.link)}
-          className="h-auto items-start justify-start gap-2.5 whitespace-normal rounded-xl border border-ai-200 bg-ai-50 p-3 text-left font-normal hover:shadow-md"
+          onClick={opener(i.link, navigate)}
+          className={cn('h-auto items-start justify-start gap-2.5 whitespace-normal rounded-xl border border-ai-200 bg-ai-50 p-3 text-left font-normal', i.link && 'hover:shadow-md')}
         >
           <span className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-sm ${TONE_BG[i.tone]}`}>
             {i.icon}
           </span>
           <span className="text-[11.5px] leading-snug text-foreground">
             {i.text}
-            <span className="mt-0.5 block text-[10.5px] font-bold text-ai-text">{i.cta_label} →</span>
+            {i.link && <span className="mt-0.5 block text-[10.5px] font-bold text-ai-text">{i.cta_label} →</span>}
           </span>
-        </Button>
+        </ClickRow>
       ))}
     </div>
   );

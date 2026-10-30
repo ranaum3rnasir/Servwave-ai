@@ -58,6 +58,8 @@ export interface StepNodeProps {
   onMoveUp: () => void;
   onMoveDown: () => void;
   onDelete: () => void;
+  /** Read only (S07.21): no drag handle, no actions menu, and the card does not open the editing drawer. */
+  readOnly?: boolean;
 }
 
 export default function StepNode({
@@ -72,6 +74,7 @@ export default function StepNode({
   onMoveUp,
   onMoveDown,
   onDelete,
+  readOnly = false,
 }: StepNodeProps) {
   const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({
     id: step.uid,
@@ -88,6 +91,35 @@ export default function StepNode({
     transform: isDragging && baseTransform ? `${baseTransform} rotate(2deg)` : baseTransform,
     transition,
   };
+
+  const card = (
+    <>
+      <StepTypeTile type={step.step_type} size="md" />
+      <span className="min-w-0 flex-1">
+        <span className="text-brand block text-[10.5px] font-bold uppercase tracking-[0.08em]">
+          {isStop ? 'Stop if' : meta.label}
+        </span>
+        <span
+          className={cn(
+            'mt-0.5 block truncate text-[15px] font-bold tracking-tight',
+            sentence.configured ? 'text-foreground' : 'text-muted-foreground',
+          )}
+        >
+          {sentence.segments.map((seg, i) => (
+            <span key={i} className={seg.strong ? 'font-extrabold' : 'font-medium'}>
+              {seg.text}
+            </span>
+          ))}
+        </span>
+        {isStop && sentence.configured && (
+          <span className="text-muted-foreground mt-1 inline-flex items-center gap-1 text-[11px] font-medium">
+            <Flag className="text-status-amber size-3" aria-hidden />
+            If met, the flow ends here
+          </span>
+        )}
+      </span>
+    </>
+  );
 
   return (
     <div ref={setNodeRef} style={style} className={cn('relative w-full max-w-[468px]', isDragging && 'z-20')}>
@@ -107,74 +139,59 @@ export default function StepNode({
           isDragging ? 'shadow-md' : 'hover:shadow-md',
         )}
       >
-        <span
-          ref={setActivatorNodeRef}
-          aria-label={`Reorder step ${index + 1}: ${meta.label}`}
-          className="text-muted-foreground hover:bg-muted focus-visible:ring-brand flex w-11 shrink-0 cursor-grab touch-none items-center justify-center rounded-l-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset active:cursor-grabbing"
-          {...attributes}
-          {...listeners}
-        >
-          <GripVertical className="size-4" aria-hidden />
-        </span>
-
-        <Pressable
-          onPress={onSelect}
-          aria-current={selected || undefined}
-          className="focus-visible:ring-brand flex min-w-0 flex-1 items-center gap-3 py-3 pr-2 text-left focus-visible:ring-2 focus-visible:ring-inset"
-        >
-          <StepTypeTile type={step.step_type} size="md" />
-          <span className="min-w-0 flex-1">
-            <span className="text-brand block text-[10.5px] font-bold uppercase tracking-[0.08em]">
-              {isStop ? 'Stop if' : meta.label}
-            </span>
-            <span
-              className={cn(
-                'mt-0.5 block truncate text-[15px] font-bold tracking-tight',
-                sentence.configured ? 'text-foreground' : 'text-muted-foreground',
-              )}
-            >
-              {sentence.segments.map((seg, i) => (
-                <span key={i} className={seg.strong ? 'font-extrabold' : 'font-medium'}>
-                  {seg.text}
-                </span>
-              ))}
-            </span>
-            {isStop && sentence.configured && (
-              <span className="text-muted-foreground mt-1 inline-flex items-center gap-1 text-[11px] font-medium">
-                <Flag className="text-status-amber size-3" aria-hidden />
-                If met, the flow ends here
-              </span>
-            )}
+        {!readOnly && (
+          <span
+            ref={setActivatorNodeRef}
+            aria-label={`Reorder step ${index + 1}: ${meta.label}`}
+            className="text-muted-foreground hover:bg-muted focus-visible:ring-brand flex w-11 shrink-0 cursor-grab touch-none items-center justify-center rounded-l-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset active:cursor-grabbing"
+            {...attributes}
+            {...listeners}
+          >
+            <GripVertical className="size-4" aria-hidden />
           </span>
-        </Pressable>
+        )}
+
+        {readOnly ? (
+          <div className="flex min-w-0 flex-1 items-center gap-3 py-3 pr-2 text-left pl-3">{card}</div>
+        ) : (
+          <Pressable
+            onPress={onSelect}
+            aria-current={selected || undefined}
+            className="focus-visible:ring-brand flex min-w-0 flex-1 items-center gap-3 py-3 pr-2 text-left focus-visible:ring-2 focus-visible:ring-inset"
+          >
+            {card}
+          </Pressable>
+        )}
 
         <div className="flex shrink-0 flex-col items-end justify-between gap-1 py-3 pr-3">
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button type="button" variant="ghost" size="icon" aria-label={`Step ${index + 1} actions`} className="size-11">
-                <MoreVertical className="size-4" aria-hidden />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              <DropdownMenuItem disabled={index === 0} onClick={onMoveUp}>
-                <ArrowUp aria-hidden /> Move up
-              </DropdownMenuItem>
-              <DropdownMenuItem disabled={index === total - 1} onClick={onMoveDown}>
-                <ArrowDown aria-hidden /> Move down
-              </DropdownMenuItem>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                variant="destructive"
-                onSelect={async () => {
-                  if (!(await confirm(removeStepPrompt(meta.label)))) return;
-                  onDelete();
-                }}
-              >
-                <Trash2 aria-hidden />
-                Delete step
-              </DropdownMenuItem>
-            </DropdownMenuContent>
-          </DropdownMenu>
+          {!readOnly && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button type="button" variant="ghost" size="icon" aria-label={`Step ${index + 1} actions`} className="size-11">
+                  <MoreVertical className="size-4" aria-hidden />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem disabled={index === 0} onClick={onMoveUp}>
+                  <ArrowUp aria-hidden /> Move up
+                </DropdownMenuItem>
+                <DropdownMenuItem disabled={index === total - 1} onClick={onMoveDown}>
+                  <ArrowDown aria-hidden /> Move down
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  variant="destructive"
+                  onSelect={async () => {
+                    if (!(await confirm(removeStepPrompt(meta.label)))) return;
+                    onDelete();
+                  }}
+                >
+                  <Trash2 aria-hidden />
+                  Delete step
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
 
           {issues.length > 0 && (
             <Badge variant="softAmber" size="pill">

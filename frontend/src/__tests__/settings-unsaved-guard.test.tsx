@@ -114,6 +114,7 @@ describe('GlobalSearch result navigation — guarded (#113 AC1d)', () => {
       customers: [],
       leads: [],
       estimates: [],
+      invoices: [],
     },
   };
 

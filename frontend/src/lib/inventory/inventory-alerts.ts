@@ -3,7 +3,7 @@
 // TopBar bell dropdown (rev 2026-05-27). Read-only / pure: never mutates the
 // inputs and can be re-computed on every render.
 //
-// IMPORTANT (ALPHA port): callers must feed this LIVE query data. Emanuel
+// IMPORTANT (ALPHA port): callers must feed this LIVE query data. The original code
 // computed these counts ONCE at module-load (non-reactive) by importing the
 // seed arrays directly. In ALPHA, consumers must pass the seam hooks' `data`
 // (useInventoryItems/useLocations/usePurchaseOrders/useJobStages) into
@@ -114,7 +114,7 @@ export function computeInventoryAlerts(input: {
       kind: "backorder",
       severity: "critical",
       title: item.name,
-      subtitle: `${item.sku} · vendor ${item.vendor}`,
+      subtitle: item.vendor ? `${item.sku} · vendor ${item.vendor}` : item.sku,
       at: item.updatedAt,
       ref: { itemSku: item.sku },
     });

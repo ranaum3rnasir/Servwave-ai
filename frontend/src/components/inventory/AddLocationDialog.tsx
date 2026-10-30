@@ -5,13 +5,14 @@ import { Modal } from "@/components/ui/modal";
 import { FormField } from "@/components/patterns/FormField";
 import { SelectField } from "@/components/form/SelectField";
 import type { Branch, Location, Tech } from "@/lib/api/inventory";
-import { adoptServerId, useTechs, useLocations } from "@/lib/api/inventory";
+import { adoptServerId, inFieldRoster, useTechs, useLocations } from "@/lib/api/inventory";
 // LocationType enum is not in the seam's re-export type-list; pull it type-only
 // from _mock (the sanctioned exception, mirroring LocationStockHealth.tsx).
 import type { LocationType } from "@/lib/api/_mock/inventory";
 import { AddBranchDialog } from "@/components/inventory/AddBranchDialog";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useAppAbility } from "@/contexts/AbilityContext";
 import { extractApiError } from "@/lib/utils";
 import { canAutoFocus } from "@/ui-kit/lib/autoFocus";
 
@@ -75,9 +76,7 @@ export function AddLocationDialog({
   const { data: allTechs = [] } = useTechs();
   const driverTechs = useMemo(
     () =>
-      (allTechs as Tech[]).filter(
-        (t) => t.role === "field_tech" || t.role === "subcontractor",
-      ),
+      (allTechs as Tech[]).filter(inFieldRoster),
     [allTechs],
   );
 
@@ -85,6 +84,8 @@ export function AddLocationDialog({
   // not enforced; the schema has no unique on primary_tech_id).
   const { data: existingLocations = [] } = useLocations();
 
+  // A branch is stock data: adding one is a Create stock call, even from the form that edits a location.
+  const canCreateBranch = useAppAbility().can("create", "Inventory");
   const [showAddBranch, setShowAddBranch] = useState(false);
   const isEdit = !!editLocation;
   // P3 §1b: the tech binding is id-first (`primaryTechId` is what persists);
@@ -364,22 +365,28 @@ export function AddLocationDialog({
                     value: b.name,
                     label: `${b.name}${b.code ? ` · ${b.code}` : ""}`,
                   })),
-                  { value: "__separator__", label: "──────────", disabled: true },
-                  { value: "__add_new__", label: "+ Add new branch…" },
+                  ...(canCreateBranch
+                    ? [
+                        { value: "__separator__", label: "──────────", disabled: true },
+                        { value: "__add_new__", label: "+ Add new branch…" },
+                      ]
+                    : []),
                 ]}
               />
               {/* Raw by design: bg-background-light with a no-op hover (idle
                   and hover states are identical) - no minted outline cell
                   matches (outline/neutral carries bg-surface-light). */}
-              <button
-                type="button"
-                onClick={() => setShowAddBranch(true)}
-                title="Add a new branch"
-                aria-label="Add new branch"
-                className="flex flex-shrink-0 items-center justify-center rounded-md border border-border bg-background-light px-2 text-text-secondary hover:bg-background-light"
-              >
-                <Plus className="h-3.5 w-3.5 text-primary" />
-              </button>
+              {canCreateBranch && (
+                <button
+                  type="button"
+                  onClick={() => setShowAddBranch(true)}
+                  title="Add a new branch"
+                  aria-label="Add new branch"
+                  className="flex flex-shrink-0 items-center justify-center rounded-md border border-border bg-background-light px-2 text-text-secondary hover:bg-background-light"
+                >
+                  <Plus className="h-3.5 w-3.5 text-primary" />
+                </button>
+              )}
             </div>
           </FormField>
         </div>
@@ -438,7 +445,7 @@ export function AddLocationDialog({
                       { value: "__unassigned__", label: "Unassigned" },
                       ...driverTechs.map((t) => ({
                         value: t.id,
-                        label: `${t.name}${t.primaryTrade ? ` · ${t.primaryTrade}` : ""}${t.role === "subcontractor" ? " · 1099" : ""}`,
+                        label: `${t.name}${t.primaryTrade ? ` · ${t.primaryTrade}` : ""}`,
                       })),
                     ]}
                   />

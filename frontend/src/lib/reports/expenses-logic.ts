@@ -18,11 +18,11 @@ export type ExpenseCategory = (typeof EXPENSE_CATEGORIES)[number];
 export const BUSINESS_UNITS = ['Install', 'Service', 'Monitoring', 'Sales'] as const;
 export type BusinessUnit = (typeof BUSINESS_UNITS)[number];
 
-export const CARDHOLDERS = ['Efrain', 'Priya', 'Ohad', 'Emanuel', 'Adam', 'Shuli'] as const;
+export const CARDHOLDERS = ['Kai', 'Drew', 'Jordan', 'Sam', 'Cameron', 'Skyler'] as const;
 export type Cardholder = (typeof CARDHOLDERS)[number];
 
 // Who logged the expense (Workiz "User"), distinct from whose card was used.
-export const USERS = ['Emanuel Dahan', 'Ohad', 'Rami', 'Ben', 'Priya', 'Robert Bresnick', 'Yonatan', 'Logistics'] as const;
+export const USERS = ['Sam Rivera', 'Jordan', 'Reese', 'Blake', 'Drew', 'Jamie Park', 'Jesse', 'Logistics'] as const;
 export type ExpenseUser = (typeof USERS)[number];
 
 export const EXPENSE_STATUSES = ['Pending', 'Settled'] as const;

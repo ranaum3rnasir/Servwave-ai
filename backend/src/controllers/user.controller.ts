@@ -9,7 +9,7 @@ import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { clearTokenCache } from '../middleware/authenticate';
 import { tenantWhere } from '../lib/tenant';
-import { ASSIGNABLE_ROLES, OWNER_ELIGIBLE_ROLES, DISPATCHER_ELIGIBLE_ROLES } from '../lib/permissions/assignableRoles';
+import { eligibleUserIds, isSlot, type Slot } from '../lib/permissions/slotEligibility';
 import { resolveAssigneePoolForRequest, type AssigneePool, type AssigneePurpose } from '../lib/permissions/assigneePool';
 import { resolveWatcherPoolForRequest, watcherPoolWhere } from '../lib/permissions/watcherPool';
 import { env } from '../config/env';
@@ -19,15 +19,17 @@ import { userPhoneField } from '../lib/user-phone';
 import { assertEmailAvailable, EmailAlreadyRegisteredError, EMAIL_ALREADY_REGISTERED_MSG } from '../lib/user-email-guard';
 import { sendUserInviteEmail } from '../lib/email';
 import { writeSettingsAudit, logAudit } from '../lib/audit';
-import {
-  USER_CAPABILITIES,
-  isManagedCapability,
-  isManagedCapabilityForRole,
-  capabilityAllowsRole,
-} from '../lib/permissions/userCapabilities';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
+import { assignRoleToPerson, resolveSwitches, summarizePeopleRoles } from '../lib/permissions/switches/store';
+import { isSuperUser } from '../lib/permissions/effectiveRole';
 import { emit } from '../services/notifications/notificationService';
+import { alertAddressNeeded } from '../services/notifications/addressNeededAlert';
+import { issueUserMailbox, userAddressSuffix, userMailboxesFor } from '../lib/mailbox/register';
+import { emailPageClosedFor } from '../lib/mailbox/email-page-access';
+import { hasFeature } from '../middleware/requireFeature';
+import { runUnscoped } from '../lib/tenant-context';
 import { sweepDeactivatedUserFromTasks, announceTaskHandovers, STRANDED_IDS_REPORTED } from '../lib/tasks/deactivation';
+import { reactivateMailbox, type ReactivationOutcome } from '../lib/mailbox/reactivation';
+import { handOverMailbox, handoverToField, mailboxHandoverStates, resolveHandoverTarget, settleMailboxesBeforeDelete, HANDOVER_TARGET_REFUSED, type HandoverOutcome } from '../lib/mailbox/handover';
 import { signAvatarPaths, resolveAvatarUrl, removeAvatarObject } from '../lib/avatar';
 
 const userSelect = {
@@ -106,7 +108,12 @@ export const updateUserSchema = z.object({
   phone: userPhoneField,
   phone_ext: z.string().max(50).nullable().optional(),
   department_id: z.string().uuid().nullable().optional(),
+  // Only read when this update sets the user inactive: who gets their email (see lib/mailbox/handover.ts).
+  handover_to: handoverToField,
 });
+
+/** The body of the deactivate action: who gets the person's email, "main" (the default) or an active person's id. */
+export const deactivateUserSchema = z.object({ handover_to: handoverToField });
 
 // Self-service profile edit — whitelisted fields ONLY (.strict rejects privileged keys like role/is_active).
 export const meUpdateSchema = z
@@ -156,11 +163,38 @@ export async function list(req: Request, res: Response) {
 
     const users = await prisma.user.findMany({
       where,
-      select: userSelect,
+      select: { ...userSelect, based_on_role_key: true },
       orderBy: { created_at: 'desc' },
     });
 
-    res.json({ users: await withAvatarUrls(users) });
+    // The role column reads "<role> · N changes": the role's name and the switches that differ from it.
+    const orgId = tenantWhere(req).organization_id;
+    const summaries = await summarizePeopleRoles(orgId, users);
+    // The Email column (PRD 10, S10.25): each person's mailbox and whether their own switches close the Email page,
+    // each in a constant number of reads for the whole list. Only while the company has the Email plan feature.
+    const withEmail = hasFeature(req, 'email');
+    const mailboxes = withEmail ? await userMailboxesFor(prisma, users.map((u) => u.id)) : new Map();
+    // Where a deactivated person's mailbox went (S10.22), for the "Move mailbox" control.
+    const handovers = withEmail ? await mailboxHandoverStates(prisma, users.filter((u) => !u.is_active).map((u) => u.id)) : new Map();
+    const addressSuffix = withEmail ? await userAddressSuffix(prisma, orgId) : null;
+    const emailClosed = withEmail
+      ? await emailPageClosedFor(users.map((u) => ({ id: u.id, organization_id: orgId, role: u.role, custom_role_id: u.custom_role_id, custom_role: u.custom_role })))
+      : new Set<string>();
+    const rows = users.map(({ based_on_role_key: _basedOn, ...user }) => ({
+      ...user,
+      role_label: summaries.get(user.id)!.role_label,
+      change_count: summaries.get(user.id)!.change_count,
+      mailbox: mailboxes.has(user.id)
+        ? { status: mailboxes.get(user.id)!.status, address: mailboxes.get(user.id)!.address, address_suffix: addressSuffix }
+        : null,
+      mailbox_handover: handovers.get(user.id) ?? null,
+      email_page_closed: emailClosed.has(user.id),
+      // The Admin box (full access, no switches to set) is base role Admin AND no custom role; a role copied from
+      // Admin is not in it. The screen follows this answer rather than guessing from role names.
+      admin_box: isSuperUser(user),
+    }));
+
+    res.json({ users: await withAvatarUrls(rows) });
   } catch (err) {
     logger.error('List users error:', err);
     res.status(500).json({ error: 'Failed to list users' });
@@ -235,6 +269,9 @@ const WATCHER_PURPOSE = 'taskWatcher';
 const ROSTER_PURPOSES = [...POOL_PURPOSES, DIRECTORY_PURPOSE, WATCHER_PURPOSE] as const;
 
 type RosterPurpose = (typeof ROSTER_PURPOSES)[number];
+
+/** The one `eligible_for` value that is not a slot: the task owner and watcher pool is every active user. */
+const TASK_ELIGIBILITY = 'task';
 
 /**
  * A PICKER's row, and deliberately nothing more: the id to submit, the name to render, the role
@@ -346,7 +383,14 @@ export async function listAssignable(req: Request, res: Response) {
     const watcherPool = purposeParam === WATCHER_PURPOSE ? resolveWatcherPoolForRequest(req) : null;
 
     const departmentId = req.query.department_id as string | undefined;
-    const eligibleFor = req.query.eligible_for as 'owner' | 'task' | 'dispatcher' | undefined;
+    // `eligible_for` names the SLOT the picker fills (or `task`, which is not a slot). Checked against the
+    // closed set for the same reason `purpose` is: a typo must not quietly become "everyone".
+    const rawEligibleFor = req.query.eligible_for;
+    if (rawEligibleFor !== undefined && rawEligibleFor !== TASK_ELIGIBILITY && !isSlot(rawEligibleFor)) {
+      res.status(400).json({ error: `eligible_for must be one of: owner, dispatcher, crew, ${TASK_ELIGIBILITY}` });
+      return;
+    }
+    const eligibleFor = rawEligibleFor as Slot | typeof TASK_ELIGIBILITY | undefined;
     const referenced = req.query.include_referenced_in as 'jobs' | 'leads' | undefined;
 
     const where: Prisma.UserWhereInput = { ...tenantWhere(req) };
@@ -394,20 +438,14 @@ export async function listAssignable(req: Request, res: Response) {
     // `eligible_for` rules, never a short-circuit around them.
     if (watcherPool) Object.assign(where, watcherPoolWhere(watcherPool));
 
-    // Tasks can be owned/watched by ANY active user incl. DISPATCHER (issue #434) —
-    // task.controller does not role-validate owner/watchers, so eligible_for=task omits
-    // the role filter. Since #366 the crew/lead-owner pools also cover all active users
-    // via the widened ASSIGNABLE_ROLES (all four Role values). eligible_for=dispatcher
-    // (#291) is the narrow ADMIN+DISPATCHER pool for the job-dispatcher picker.
+    // A slot is answered by M5 (`slotEligibility.ts`): the active users whose switch for it is on, never a
+    // role name. Tasks can be owned/watched by ANY active user (issue #434), so `task` is not a slot and
+    // adds no filter; neither does a roster asked for no slot at all (the schedule's people lists).
     const assignableWhere: Prisma.UserWhereInput = { is_active: true };
-    if (eligibleFor !== 'task') {
-      assignableWhere.role = {
-        in: eligibleFor === 'owner'
-          ? [...OWNER_ELIGIBLE_ROLES]
-          : eligibleFor === 'dispatcher'
-            ? [...DISPATCHER_ELIGIBLE_ROLES]
-            : [...ASSIGNABLE_ROLES],
-      };
+    if (isSlot(eligibleFor)) {
+      // Under `AND`, never as `id`: the self-only scope above already holds `where.id`, and an id list
+      // there would replace it and hand a self-only requester the whole slot roster.
+      assignableWhere.AND = [{ id: { in: await eligibleUserIds(req.user!.organization_id, eligibleFor) } }];
     }
     if (departmentId) assignableWhere.department_id = departmentId;   // board-column dept scope; omit → org-wide borrow pool
 
@@ -439,7 +477,10 @@ export async function listAssignable(req: Request, res: Response) {
         : [];
       where.OR = [assignableWhere, ...referencedClauses];
     } else {
-      Object.assign(where, assignableWhere);
+      // `AND` is merged rather than assigned: the watcher cohort above may already hold one.
+      const { AND: slotClauses, ...rest } = assignableWhere;
+      Object.assign(where, rest);
+      if (slotClauses) where.AND = [...[where.AND ?? []].flat(), ...[slotClauses].flat()];
     }
 
     const users = await prisma.user.findMany({
@@ -470,7 +511,7 @@ async function resolveCustomRoleAssignment(
   req: Request,
   customRoleId: string,
   baseRole: string,
-): Promise<{ ok: true } | { ok: false; error: string }> {
+): Promise<{ ok: true; key: string } | { ok: false; error: string }> {
   const row = await prisma.customRole.findFirst({
     where: { id: customRoleId, ...tenantWhere(req), archived_at: null },
   });
@@ -478,7 +519,38 @@ async function resolveCustomRoleAssignment(
   if (row.base_role !== baseRole) {
     return { ok: false, error: `Custom role's base role is ${row.base_role}, not ${baseRole}` };
   }
-  return { ok: true };
+  return { ok: true, key: row.key };
+}
+
+/**
+ * Create the person and, in the SAME transaction, their mailbox and first.last.company address (PRD 10, S10.3): if
+ * either fails neither exists. The register spans every company, hence the unscoped run (the person's own
+ * organization is written explicitly). Every query inside goes through `tx`: the hosted pool holds one connection.
+ * A mailbox that came out without an address rings the new user and the holders of Edit users once the create has
+ * committed.
+ */
+async function createUserWithMailbox(data: Prisma.UserUncheckedCreateInput) {
+  const { user, mailbox } = await runUnscoped(() =>
+    prisma.$transaction(async (tx) => {
+      const created = await tx.user.create({ data, select: userSelect });
+      const issued = await issueUserMailbox(tx, {
+        id: created.id,
+        organization_id: data.organization_id,
+        first_name: data.first_name,
+        last_name: data.last_name,
+      });
+      return { user: created, mailbox: issued };
+    }),
+  );
+  if (mailbox.status === 'address_needed') {
+    void alertAddressNeeded({
+      organizationId: data.organization_id,
+      userId: user.id,
+      userName: `${data.first_name} ${data.last_name}`.trim(),
+      mailboxId: mailbox.mailboxId,
+    });
+  }
+  return user;
 }
 
 export async function create(req: Request, res: Response) {
@@ -526,20 +598,17 @@ export async function create(req: Request, res: Response) {
 
     // Create matching Prisma user with same ID (in requesting org)
     try {
-      const user = await prisma.user.create({
-        data: {
-          id: authData.user.id,
-          email,
-          first_name,
-          last_name,
-          role,
-          custom_role_id: custom_role_id ?? null,
-          phone: phone ?? null,
-          phone_ext: phone_ext ?? null,
-          department_id: department_id ?? null,
-          organization_id: req.user!.organization_id,
-        },
-        select: userSelect,
+      const user = await createUserWithMailbox({
+        id: authData.user.id,
+        email,
+        first_name,
+        last_name,
+        role,
+        custom_role_id: custom_role_id ?? null,
+        phone: phone ?? null,
+        phone_ext: phone_ext ?? null,
+        department_id: department_id ?? null,
+        organization_id: req.user!.organization_id,
       });
 
       void logAudit({ req, action: 'user.created', resourceType: 'User', resourceId: user.id, metadata: { email: user.email, role: user.role } });
@@ -598,21 +667,18 @@ export async function inviteUser(req: Request, res: Response) {
 
     await assertEmailAvailable(email);
 
-    const user = await prisma.user.create({
-      data: {
-        email,
-        first_name,
-        last_name,
-        role,
-        custom_role_id: custom_role_id ?? null,
-        phone: phone ?? null,
-        phone_ext: phone_ext ?? null,
-        has_login: true,
-        password_hash: '',
-        department_id: department_id ?? null,
-        organization_id: req.user!.organization_id,
-      },
-      select: userSelect,
+    const user = await createUserWithMailbox({
+      email,
+      first_name,
+      last_name,
+      role,
+      custom_role_id: custom_role_id ?? null,
+      phone: phone ?? null,
+      phone_ext: phone_ext ?? null,
+      has_login: true,
+      password_hash: '',
+      department_id: department_id ?? null,
+      organization_id: req.user!.organization_id,
     });
 
     const { inviteUrl, emailSent } = await dispatchInvite({
@@ -726,24 +792,47 @@ async function sweepTasksAfterDeactivation(req: Request, userId: string): Promis
   }
 }
 
+/** What the audit row for a mailbox handover says: to the main mailbox or to which person. Ids only. */
+function handoverAudit(handover: Exclude<HandoverOutcome, { handed: 'none' }>): Record<string, unknown> {
+  return handover.handed === 'person'
+    ? { handed_to: 'person', person_id: handover.userId, mailbox_ids: handover.mailboxIds }
+    : { handed_to: 'main', mailbox_ids: handover.mailboxIds };
+}
+
+/**
+ * What deactivating a person does to their sign-in, shared by both ways to deactivate (the Users page's Deactivate and the user
+ * update that sets is_active false) so they cannot drift apart: the auth user is removed and the row stops claiming a login. The
+ * caller merges the returned fields into the same write that flips is_active.
+ */
+async function revokeLoginForDeactivation(existing: { has_login: boolean; email: string | null }): Promise<{ has_login: false; password_hash: '' }> {
+  if (existing.has_login && existing.email) {
+    await deleteSupabaseAuthUserByEmail(existing.email);
+  }
+  return { has_login: false, password_hash: '' };
+}
+
 export async function update(req: Request, res: Response) {
   try {
-    // Guard against self-demotion lockout: an admin must not change their own
-    // role (mirrors the self-deactivate guard in deactivate()). Editing other
-    // fields on your own account is fine; only a real role change is blocked.
-    if (
-      req.user?.id === param(req, 'id') &&
-      req.body.role !== undefined &&
-      req.body.role !== req.user?.role
-    ) {
-      res.status(400).json({ error: 'Cannot change your own role' });
-      return;
-    }
-
-    const existing = await prisma.user.findFirst({ where: { id: param(req, 'id'), ...tenantWhere(req) } });
+    const existing = await prisma.user.findFirst({
+      where: { id: param(req, 'id'), ...tenantWhere(req) },
+      include: { custom_role: { select: { key: true } } },
+    });
     if (!existing) {
       res.status(404).json({ error: 'User not found' });
       return;
+    }
+
+    // Nobody changes their own role: neither the base role nor the custom-role link (an admin demoting themselves
+    // locks the company out; anyone else would be raising their own access). Editing other fields on your own
+    // account is fine, and sending back the role you already hold is not a change (mirrors the self-deactivate
+    // guard in deactivate()).
+    if (req.user?.id === existing.id) {
+      const changesBaseRole = req.body.role !== undefined && req.body.role !== existing.role;
+      const changesCustomRole = req.body.custom_role_id !== undefined && req.body.custom_role_id !== existing.custom_role_id;
+      if (changesBaseRole || changesCustomRole) {
+        res.status(400).json({ error: 'Cannot change your own role' });
+        return;
+      }
     }
 
     if (req.body.department_id) {
@@ -758,7 +847,8 @@ export async function update(req: Request, res: Response) {
     }
 
     if (await wouldRemoveLastAdmin(req, existing)) {
-      const demoting = req.body.role !== undefined && req.body.role !== 'ADMIN';
+      // Leaving the Admin box: another base role, or any custom role (one based on Admin included).
+      const demoting = (req.body.role !== undefined && req.body.role !== 'ADMIN') || !!req.body.custom_role_id;
       const deactivating = req.body.is_active === false;
       if (demoting || deactivating) {
         res.status(409).json({ error: 'Cannot remove the last active admin. Assign another admin first.' });
@@ -766,10 +856,28 @@ export async function update(req: Request, res: Response) {
       }
     }
 
+    // Setting a user inactive hands their mailbox on (PRD 10): a target that is not an active person is refused before anything is written.
+    const handoverTarget = req.body.is_active === false
+      ? await resolveHandoverTarget(prisma, { organizationId: req.user!.organization_id, leaverId: existing.id, raw: req.body.handover_to })
+      : null;
+    if (req.body.is_active === false && !handoverTarget) {
+      res.status(400).json({ error: HANDOVER_TARGET_REFUSED });
+      return;
+    }
+    let handover = null as HandoverOutcome | null;
+    // Setting a person active again returns their mailbox (PRD 10, S10.23), in the same write as the flip.
+    const reactivating = req.body.is_active === true && !existing.is_active;
+    // The register spans every company, so the write that returns a mailbox runs unscoped (the person's own organization is explicit).
+    const scoped = <T>(run: () => Promise<T>): Promise<T> => (reactivating ? runUnscoped(run) : run());
+    let returned = null as ReactivationOutcome | null;
+
     // SRVW-138/139: re-validate base_role/custom_role_id agreement whenever EITHER is touched -
     // changing only `role` while a custom_role_id is already set (or vice versa) can just as
     // easily strand the pair as setting both at once, and existing.custom_role_id is not
     // re-checked unless something here actually moves.
+    // The key of the role the person holds once this update lands: a custom role's key, else the
+    // built-in role's name. Roles & Permissions M2: giving a person a role fills their switches.
+    let newRoleKey: string = req.body.role !== undefined ? req.body.role : existing.role;
     if (req.body.role !== undefined || req.body.custom_role_id !== undefined) {
       const effectiveRole = req.body.role !== undefined ? req.body.role : existing.role;
       const effectiveCustomRoleId = req.body.custom_role_id !== undefined ? req.body.custom_role_id : existing.custom_role_id;
@@ -779,7 +887,10 @@ export async function update(req: Request, res: Response) {
           res.status(400).json({ error: check.error });
           return;
         }
+        newRoleKey = check.key;
       }
+    } else if (existing.custom_role?.key) {
+      newRoleKey = existing.custom_role.key;
     }
 
     // Explicit field allowlist (NOT `data: req.body`): the controller self-defends
@@ -794,20 +905,67 @@ export async function update(req: Request, res: Response) {
     if (body.role !== undefined) data.role = body.role;
     if (body.custom_role_id !== undefined) data.custom_role_id = body.custom_role_id;
     if (body.is_active !== undefined) data.is_active = body.is_active;
+    // Setting a person inactive removes their login, exactly as the Users page's Deactivate does.
+    if (body.is_active === false) Object.assign(data, await revokeLoginForDeactivation(existing));
     if (body.department_id !== undefined) data.department_id = body.department_id;
     // Personnel staff-mgmt (PR #218): admin Edit-details dialog PATCHes phone/ext.
     if (body.phone !== undefined) data.phone = body.phone;
     if (body.phone_ext !== undefined) data.phone_ext = body.phone_ext;
 
-    const user = await prisma.user.update({
-      where: { id: param(req, 'id') },
-      data,
-      select: userSelect,
-    });
+    // Giving the person a role (or a different one) fills their switches from it, once; sending
+    // back the role they already hold leaves a tailored set alone. Compared with the role their set
+    // was last filled from, so a fill that failed is retried by sending the same update again.
+    const filledFrom = existing.based_on_role_key ?? existing.custom_role?.key ?? existing.role;
+    const fillSwitches = (body.role !== undefined || body.custom_role_id !== undefined) && newRoleKey !== filledFrom;
+
+    if (fillSwitches) data.based_on_role_key = newRoleKey;
+
+    const user = fillSwitches
+      ? await (async () => {
+          // What the person resolved to before the new role, for the change log's "from".
+          const previous = await resolveSwitches(existing);
+          return scoped(() => prisma.$transaction(async (tx) => {
+            const updated = await tx.user.update({ where: { id: param(req, 'id') }, data, select: userSelect });
+            await assignRoleToPerson(tx, {
+              organizationId: existing.organization_id,
+              userId: existing.id,
+              roleKey: newRoleKey,
+              userBaseRole: updated.role,
+              previous,
+              actorId: req.user!.id,
+            });
+            if (handoverTarget) handover = await handOverMailbox(tx, { organizationId: existing.organization_id, userId: existing.id, target: handoverTarget });
+            if (reactivating) returned = await reactivateMailbox(tx, { id: existing.id, organization_id: existing.organization_id, first_name: updated.first_name, last_name: updated.last_name });
+            return updated;
+          }));
+        })()
+      : handoverTarget || reactivating
+        // The handover (or the return of the mailbox) is part of the same write as the flip, so a person is never left inactive with a
+        // mailbox nobody holds, nor active with a mailbox that is not theirs.
+        ? await scoped(() => prisma.$transaction(async (tx) => {
+            const updated = await tx.user.update({ where: { id: param(req, 'id') }, data, select: userSelect });
+            if (handoverTarget) handover = await handOverMailbox(tx, { organizationId: existing.organization_id, userId: existing.id, target: handoverTarget });
+            if (reactivating) returned = await reactivateMailbox(tx, { id: existing.id, organization_id: existing.organization_id, first_name: updated.first_name, last_name: updated.last_name });
+            return updated;
+          }))
+        : await prisma.user.update({
+            where: { id: param(req, 'id') },
+            data,
+            select: userSelect,
+          });
 
     clearTokenCache(param(req, 'id'));
     if (data.is_active === false) await sweepTasksAfterDeactivation(req, param(req, 'id'));
     void logAudit({ req, action: 'user.updated', resourceType: 'User', resourceId: param(req, 'id'), metadata: { fields: Object.keys(data) } });
+    if (returned && returned.returned !== 'none') {
+      void logAudit({ req, action: 'user.mailbox_returned', resourceType: 'User', resourceId: param(req, 'id'), metadata: { ...returned } });
+    }
+    if (returned?.returned === 'issued' && returned.addressNeeded) {
+      void alertAddressNeeded({
+        organizationId: existing.organization_id, userId: existing.id, userName: `${user.first_name} ${user.last_name}`.trim(), mailboxId: returned.mailboxId,
+      });
+    }
+    if (handover && handover.handed !== 'none') void logAudit({ req, action: 'user.mailbox_handed_over', resourceType: 'User', resourceId: param(req, 'id'), metadata: handoverAudit(handover) });
     if (data.role !== undefined) {
       void logAudit({ req, action: 'user.role_changed', resourceType: 'User', resourceId: param(req, 'id'), metadata: { role: data.role } });
     }
@@ -836,19 +994,30 @@ export async function deactivate(req: Request, res: Response) {
       return;
     }
 
-    // Deactivation force-revokes login so has_login never lies (and the seat can't sign in).
-    if (existing.has_login && existing.email) {
-      await deleteSupabaseAuthUserByEmail(existing.email);
+    // Who gets their email (PRD 10): the main mailbox unless the request names an active person. Refused before anything changes.
+    const handoverTarget = await resolveHandoverTarget(prisma, { organizationId: existing.organization_id, leaverId: existing.id, raw: req.body?.handover_to });
+    if (!handoverTarget) {
+      res.status(400).json({ error: HANDOVER_TARGET_REFUSED });
+      return;
     }
 
-    await prisma.user.update({
-      where: { id: param(req, 'id') },
-      data: { is_active: false, has_login: false, password_hash: '' },
+    // Deactivation force-revokes login so has_login never lies (and the seat can't sign in).
+    const revoked = await revokeLoginForDeactivation(existing);
+
+    // The flip and the mailbox handover are one write, so a person is never left inactive with a mailbox nobody holds.
+    const handover = await prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: param(req, 'id') },
+        data: { is_active: false, ...revoked },
+        select: { id: true },
+      });
+      return handOverMailbox(tx, { organizationId: existing.organization_id, userId: existing.id, target: handoverTarget });
     });
 
     clearTokenCache(param(req, 'id'));
     await sweepTasksAfterDeactivation(req, param(req, 'id'));
     void logAudit({ req, action: 'user.deactivated', resourceType: 'User', resourceId: param(req, 'id') });
+    if (handover.handed !== 'none') void logAudit({ req, action: 'user.mailbox_handed_over', resourceType: 'User', resourceId: param(req, 'id'), metadata: handoverAudit(handover) });
     res.json({ message: 'User deactivated' });
   } catch (err) {
     logger.error('Deactivate user error:', err);
@@ -860,7 +1029,9 @@ export async function deactivate(req: Request, res: Response) {
 // these we refuse the hard delete (DB-`Restrict` ones would throw anyway; the
 // `SetNull` ones we choose to protect so attribution isn't silently lost).
 // Cascade relations (crew memberships, table preferences) are intentionally
-// omitted — they auto-clean and are transient.
+// omitted — they auto-clean and are transient. A job's Dispatcher slot is not history either:
+// deleting the person empties it (Job.dispatcher_id is SetNull), as it does a crew membership. A lead's
+// Dispatcher is the same (Lead.dispatcher_id is SetNull).
 export const DELETE_BLOCKING_RELATIONS = {
   created_estimates: true,
   created_notes: true,
@@ -873,7 +1044,6 @@ export const DELETE_BLOCKING_RELATIONS = {
   voided_payments: true,
   refunded_invoices: true,
   commission_owned_leads: true,
-  dispatched_jobs: true,
   service_plans_sold: true,
   // Issue 04 widened what this one blocks: a task's timeline now OUTLIVES the task, so a user
   // whose whole history was creating and deleting one task still holds events here. That is the
@@ -896,7 +1066,6 @@ export const DELETE_RELATION_LABELS: Record<string, string> = {
   voided_payments: 'payments voided',
   refunded_invoices: 'invoices refunded',
   commission_owned_leads: 'leads owned',
-  dispatched_jobs: 'jobs dispatched',
   service_plans_sold: 'service plans sold',
   timeline_events: 'timeline events',
   cancelled_visits: 'walkthrough cancellations',
@@ -967,7 +1136,7 @@ export async function permanentDelete(req: Request, res: Response) {
 
     const existing = await prisma.user.findFirst({
       where: { id, ...tenantWhere(req) },
-      select: { id: true, email: true, is_active: true, avatar_path: true, _count: { select: DELETE_BLOCKING_RELATIONS } },
+      select: { id: true, organization_id: true, email: true, is_active: true, avatar_path: true, _count: { select: DELETE_BLOCKING_RELATIONS } },
     });
     if (!existing) {
       res.status(404).json({ error: 'User not found' });
@@ -989,8 +1158,16 @@ export async function permanentDelete(req: Request, res: Response) {
       return;
     }
 
+    // Mailbox rows and address rows are never history and no foreign key from them blocks this (the links to the user are
+    // SET NULL). A mailbox the delete would leave with nobody to read it is merged into the main mailbox in the same write,
+    // so a refused delete (below) rolls that back too. The address rows stay as reservations (PRD 10, S10.24).
+    let settled: HandoverOutcome;
     try {
-      await prisma.user.delete({ where: { id } });
+      settled = await prisma.$transaction(async (tx) => {
+        const outcome = await settleMailboxesBeforeDelete(tx, { organizationId: existing.organization_id, userId: id });
+        await tx.user.delete({ where: { id } });
+        return outcome;
+      });
     } catch (delErr) {
       if ((delErr as { code?: string }).code === 'P2003') {
         res.status(409).json({
@@ -1006,6 +1183,7 @@ export async function permanentDelete(req: Request, res: Response) {
     await deleteSupabaseAuthUserByEmail(existing.email);
     clearTokenCache(id);
     void logAudit({ req, action: 'user.permanently_deleted', resourceType: 'User', resourceId: id, metadata: { email: existing.email } });
+    if (settled.handed !== 'none') void logAudit({ req, action: 'user.mailbox_handed_over', resourceType: 'User', resourceId: id, metadata: handoverAudit(settled) });
     res.json({ message: 'User deleted' });
   } catch (err) {
     logger.error('Permanent delete user error:', err);
@@ -1014,10 +1192,14 @@ export async function permanentDelete(req: Request, res: Response) {
 }
 
 // Returns true if `target` is the org's last active admin (so demoting / deactivating /
-// revoking-login it would lock the org out of admin access).
-async function wouldRemoveLastAdmin(req: Request, target: { role: string; is_active: boolean }): Promise<boolean> {
-  if (target.role !== 'ADMIN' || !target.is_active) return false;
-  const activeAdmins = await prisma.user.count({ where: { role: 'ADMIN', is_active: true, ...tenantWhere(req) } });
+// revoking-login it would lock the org out of admin access). An admin is a person in the Admin box: the base role
+// Admin and no custom role. A custom role copied from Admin has the same base role but no full access, so it does
+// not keep the company reachable and is not counted (see isSuperUser).
+async function wouldRemoveLastAdmin(req: Request, target: { role: string; custom_role_id?: string | null; is_active: boolean }): Promise<boolean> {
+  if (!isSuperUser(target) || !target.is_active) return false;
+  const activeAdmins = await prisma.user.count({
+    where: { role: 'ADMIN', custom_role_id: null, is_active: true, ...tenantWhere(req) },
+  });
   return activeAdmins <= 1;
 }
 
@@ -1201,161 +1383,6 @@ export async function changeMyPassword(req: Request, res: Response) {
   } catch (err) {
     logger.error('Change my password error:', err);
     res.status(500).json({ error: 'Failed to update password' });
-  }
-}
-
-// ─── Per-user permission overrides (RBAC Phase 2 → expanded in Phase B) ───
-// The managed capability set is the single source of truth in `USER_CAPABILITIES`
-// (userCapabilities.ts) — these endpoints are driven entirely by it, with NO hardcoded
-// capability list. An override layers on the role grant: 'allow' grants a capability
-// beyond the role; 'deny' revokes one the role grants. ADMIN is `manage all` and is
-// never overridable.
-
-export const putPermissionsSchema = z.object({
-  overrides: z.array(
-    z.object({
-      action: z.string().min(1),
-      subject: z.string().min(1),
-      effect: z.enum(['allow', 'deny']),
-    }),
-  ),
-});
-
-// GET /api/users/:id/permissions — full managed-capability catalog (from USER_CAPABILITIES)
-// + each capability's computed effective state (allow / deny / inherit) for one user.
-export async function getPermissions(req: Request, res: Response) {
-  try {
-    const target = await prisma.user.findFirst({
-      where: { id: param(req, 'id'), ...tenantWhere(req) },
-      select: { id: true, role: true, first_name: true, last_name: true },
-    });
-    if (!target) {
-      res.status(404).json({ error: 'User not found' });
-      return;
-    }
-
-    const isAdmin = target.role === 'ADMIN';
-
-    // Live role grants for the target's role (org-scoped). ADMIN = manage all.
-    const roleKeys = new Set<string>();
-    if (!isAdmin) {
-      const rows = await prisma.rolePermission.findMany({
-        where: { ...tenantWhere(req), role: target.role },
-        select: { action: true, subject: true },
-      });
-      for (const r of rows) roleKeys.add(`${r.action}:${r.subject}`);
-    }
-
-    const overrideRows = isAdmin
-      ? []
-      : await prisma.userPermissionOverride.findMany({
-          where: { user_id: target.id, ...tenantWhere(req) },
-          select: { action: true, subject: true, effect: true },
-        });
-    const overrideByKey = new Map<string, 'allow' | 'deny'>(
-      overrideRows.map((o) => [`${o.action}:${o.subject}`, o.effect === 'deny' ? 'deny' : 'allow']),
-    );
-
-    // Role-gated capabilities (userCapabilities' `roles` allow-list) are not offered to a role
-    // that may not hold them — putPermissions rejects them for the same role, so rendering a
-    // toggle that always 400s would be a lie. ADMIN is filtered by the same rule; it needs no
-    // toggles anyway (editable:false, manage-all).
-    const capabilities = USER_CAPABILITIES.filter((c) => capabilityAllowsRole(c, target.role)).map((c) => {
-      const key = `${c.action}:${c.subject}`;
-      const roleAllowed = isAdmin || roleKeys.has(key);
-      const override: 'inherit' | 'allow' | 'deny' = isAdmin ? 'inherit' : overrideByKey.get(key) ?? 'inherit';
-      const effective = override === 'deny' ? false : override === 'allow' ? true : roleAllowed;
-      return {
-        action: c.action,
-        subject: c.subject,
-        label: c.label,
-        description: c.description,
-        roleDefault: roleAllowed ? 'allowed' : 'not-in-role',
-        override,
-        effective,
-      };
-    });
-
-    res.json({ user_id: target.id, editable: !isAdmin, capabilities });
-  } catch (err) {
-    logger.error('getPermissions error:', err);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-}
-
-// PUT /api/users/:id/permissions — replace the user's curated-capability overrides.
-// Body: { overrides: [{ action, subject, effect:'allow'|'deny' }] }. A capability absent
-// from the list = inherit (no row).
-export async function putPermissions(req: Request, res: Response) {
-  try {
-    const target = await prisma.user.findFirst({
-      where: { id: param(req, 'id'), ...tenantWhere(req) },
-      select: { id: true, role: true },
-    });
-    if (!target) {
-      res.status(404).json({ error: 'User not found' });
-      return;
-    }
-    if (target.role === 'ADMIN') {
-      res.status(400).json({ error: 'Administrators have full access and cannot be overridden' });
-      return;
-    }
-
-    const { overrides } = req.body as {
-      overrides: { action: string; subject: string; effect: 'allow' | 'deny' }[];
-    };
-
-    const bad = overrides.find((o) => !isManagedCapability(o.action, o.subject));
-    if (bad) {
-      res.status(400).json({ error: `Unsupported capability: ${bad.action} ${bad.subject}` });
-      return;
-    }
-    // A managed capability may still be off-limits to THIS user's role (userCapabilities' `roles`
-    // allow-list). Rejecting here is what keeps an org-wide capability — whose implied read is
-    // condition-less and so widens scopeWhereFor to every row in the org — off a role whose
-    // surface was never designed for it (e.g. `approve LogisticOrder` on a TECHNICIAN).
-    const wrongRole = overrides.find((o) => !isManagedCapabilityForRole(o.action, o.subject, target.role));
-    if (wrongRole) {
-      res.status(400).json({
-        error: `Capability not available to role ${target.role}: ${wrongRole.action} ${wrongRole.subject}`,
-      });
-      return;
-    }
-    // Dedupe by capability (last wins) so a doubled entry can't create two rows.
-    const byKey = new Map(overrides.map((o) => [`${o.action}:${o.subject}`, o]));
-
-    const orgId = req.user!.organization_id;
-    await prisma.$transaction(async (tx) => {
-      await tx.userPermissionOverride.deleteMany({
-        where: {
-          user_id: target.id,
-          organization_id: orgId,
-          OR: USER_CAPABILITIES.map((c) => ({ action: c.action, subject: c.subject })),
-        },
-      });
-      for (const o of byKey.values()) {
-        await tx.userPermissionOverride.create({
-          data: {
-            organization_id: orgId,
-            user_id: target.id,
-            action: o.action,
-            subject: o.subject,
-            effect: o.effect,
-          },
-        });
-      }
-    });
-
-    clearUserOverrideCache(target.id);
-    await writeSettingsAudit(req, 'user.permissions_updated', {
-      userId: target.id,
-      overrides: [...byKey.values()],
-    });
-    void logAudit({ req, action: 'user.permissions_updated', resourceType: 'User', resourceId: param(req, 'id') });
-    res.json({ ok: true });
-  } catch (err) {
-    logger.error('putPermissions error:', err);
-    res.status(500).json({ error: 'Internal server error' });
   }
 }
 

@@ -10,7 +10,7 @@
 // ALPHA port: counts compute from the live seam hooks (useInventoryItems /
 // useLocations / usePurchaseOrders / useJobStages) rather than module-load
 // seed imports, and the "navigate to this alert" intent is emitted through
-// the Zustand `useInventoryAlertStore` (replaces Emanuel's module-level
+// the Zustand `useInventoryAlertStore` (replaces the original module-level
 // `alert-bus` pub/sub).
 
 import { useEffect, useMemo, useRef, useState } from "react";

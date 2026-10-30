@@ -183,15 +183,15 @@ describe('CreateTaskModal — real assignee/watcher pickers (FE-3)', () => {
     expect(screen.queryByText(/Suggested:/i)).not.toBeInTheDocument();
   });
 
-  it('does NOT render MOCK_PEOPLE names (Priya, Ohad, Sagiv) as checkbox labels', () => {
+  it('does NOT render MOCK_PEOPLE names (Drew, Jordan, Riley) as checkbox labels', () => {
     renderWithProviders(
       <CreateTaskModal open={true} onOpenChange={vi.fn()} />
     );
     // Old mock-people watcher checkboxes should be gone
-    expect(screen.queryByLabelText('Priya')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Ohad')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Sagiv Peker')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Emanuel Dahan')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Drew')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Jordan')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Riley Chen')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Sam Rivera')).not.toBeInTheDocument();
   });
 
   it('does NOT render MOCK_PEOPLE as plain <option> elements in the assignee select', () => {
@@ -201,8 +201,8 @@ describe('CreateTaskModal — real assignee/watcher pickers (FE-3)', () => {
     // There should be no <option> elements with mock person names
     const options = Array.from(container.querySelectorAll('option'));
     const optionTexts = options.map((o) => o.textContent ?? '');
-    expect(optionTexts).not.toContain('Priya');
-    expect(optionTexts).not.toContain('Ohad');
+    expect(optionTexts).not.toContain('Drew');
+    expect(optionTexts).not.toContain('Jordan');
   });
 
   it('renders the MultiAssigneeSelect add-member combobox for watchers', () => {

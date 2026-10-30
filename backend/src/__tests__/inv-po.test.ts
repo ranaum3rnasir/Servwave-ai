@@ -2,9 +2,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { mockAuthAs, authHeader, TEST_USERS, JOB_FIXTURE, CUSTOMER_FIXTURE, PURCHASE_ORDER_FIXTURE, PRICE_BOOK_ITEM_FIXTURE, INVENTORY_LOCATION_FIXTURE, matchesScopeWhere } from './helpers';
+import { mockAuthAs, mockRoleSwitches, authHeader, TEST_USERS, JOB_FIXTURE, CUSTOMER_FIXTURE, PURCHASE_ORDER_FIXTURE, PRICE_BOOK_ITEM_FIXTURE, INVENTORY_LOCATION_FIXTURE, matchesScopeWhere } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 
 const mockPrisma = prisma as unknown as {
   purchaseOrder: { findMany: ReturnType<typeof vi.fn>; findFirst: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
@@ -596,14 +595,11 @@ describe('GET /api/inventory/jobs/:jobId/material-cost (V1/DEC2)', () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════════════════
-// #2042 SLICE 1 — enforcement of a conditioned `read PurchaseOrder` grant. DEFAULT_GRANTS
-// carries no such row for SALES yet (that is slice 2), so these hand-inject the job-scoped
-// condition on top of SALES's normal defaults — same technique as repro-2042.test.ts's (a)/(b).
+// #2042 SLICE 1 — enforcement of the job-scoped purchase-order read: the Sales preset holds View purchase orders
+// and reaches only the orders on jobs it can open (Roles & Permissions S01.9; the switch set replaces the old
+// hand-injected `read PurchaseOrder` row).
 // ═══════════════════════════════════════════════════════════════════════════════════════════
 describe('#2042 — GET /api/inventory/purchase-orders(+/:id) scoped to a conditioned read PurchaseOrder grant', () => {
-  const OWN_JOB_PO_CONDITION = {
-    job: { estimate: { lead: { lead_assignees: { some: { user_id: '{{userId}}' } } } } },
-  };
   const SALES_ID = TEST_USERS.sales.id;
   const OTHER_ID = TEST_USERS.admin.id;
   const PO_OWN_ID = 'aaaaaaa4-9000-0000-0000-000000000001';
@@ -625,11 +621,9 @@ describe('#2042 — GET /api/inventory/purchase-orders(+/:id) scoped to a condit
   const ALL_POS = [PO_OWN, PO_OTHER, PO_NOJOB];
 
   function mockSalesConditionedPoRead() {
+    // The rep's reach is the Sales preset's own: View purchase orders on, held to orders on jobs they can open.
     mockAuthAs('sales');
-    const rows = [
-      ...DEFAULT_GRANTS.filter((g) => g.role === 'SALES'),
-      { role: 'SALES', action: 'read', subject: 'PurchaseOrder', conditions: OWN_JOB_PO_CONDITION },
-    ];
+    mockRoleSwitches({ view_purchase_orders: true });
     mockPrisma.purchaseOrder.findMany.mockImplementation(({ where }: { where: Record<string, unknown> }) =>
       Promise.resolve(ALL_POS.filter((row) => matchesScopeWhere(where, row))),
     );
@@ -638,8 +632,6 @@ describe('#2042 — GET /api/inventory/purchase-orders(+/:id) scoped to a condit
       if (!row) return Promise.resolve(null);
       return Promise.resolve(matchesScopeWhere(where, row) ? row : null);
     });
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue(rows);
-    clearPermissionCache();
   }
 
   it('SALES list holds only the rep\'s own-job PO', async () => {
@@ -717,15 +709,10 @@ describe('#2042 (R3) — GET /api/inventory/jobs/:jobId/material-cost scoped to 
   }
 
   function mockSalesWithUnconditionalPoReadForRouteGate() {
+    // View purchase orders clears the ROUTE gate; the Job-scoping this test pins is enforced by the
+    // CONTROLLER's own `read Job` fragment (R3).
     mockAuthAs('sales');
-    const rows = [
-      ...DEFAULT_GRANTS.filter((g) => g.role === 'SALES'),
-      // Any `read PurchaseOrder` row clears the ROUTE gate; the Job-scoping this test pins is
-      // enforced by the CONTROLLER's own `read Job` fragment (R3), not by this row's condition.
-      { role: 'SALES', action: 'read', subject: 'PurchaseOrder', conditions: null },
-    ];
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue(rows);
-    clearPermissionCache();
+    mockRoleSwitches({ view_purchase_orders: true });
   }
 
   it('SALES: own job 200, another rep\'s job 404 {"error":"Job not found"}', async () => {

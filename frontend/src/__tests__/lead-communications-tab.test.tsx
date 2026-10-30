@@ -16,6 +16,7 @@ import { requestCall } from '@/lib/communication/phoneTabHandoff';
 import { LeadCommunicationsTab } from '@/components/communication/LeadCommunicationsTab';
 import { useAuthStore } from '@/stores/auth.store';
 import type { CommItem } from '@/lib/api/jobCommunications';
+import { MY_SWITCHES_URL, VIEWS_CUSTOMERS_ANSWER } from './support/viewsCustomers';
 
 const mockApi = vi.mocked(api);
 const mockRequestCall = vi.mocked(requestCall);
@@ -154,10 +155,11 @@ const ability = buildAbility([
   { action: 'create', subject: 'Communication' },
 ]);
 const readOnlyAbility = buildAbility([{ action: 'read', subject: 'Communication' }]);
-// Attribution management (the attach/move/detach menu) gates on update, not create.
+// Attribution management (the attach/move/detach menu) gates on attach (Attach conversations to jobs and leads),
+// not create or update.
 const manageAbility = buildAbility([
   { action: 'read', subject: 'Communication' },
-  { action: 'update', subject: 'Communication' },
+  { action: 'attach', subject: 'Communication' },
 ]);
 
 function renderTab(
@@ -1101,6 +1103,7 @@ const STORED_ENTRY = {
 
 function mockEditFetches(entry: Record<string, unknown> = STORED_ENTRY, items = [LOGGED_CALL_ITEM]) {
   mockApi.get.mockImplementation((url: string) => {
+    if (url === MY_SWITCHES_URL) return Promise.resolve(VIEWS_CUSTOMERS_ANSWER);
     if (url === '/api/communication/manual-log/performers') return Promise.resolve({ data: { users: ROSTER } });
     if (url === `/api/communication/manual-log/${entry.id}`) {
       return Promise.resolve({ data: { entry } });

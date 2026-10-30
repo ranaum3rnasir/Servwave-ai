@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  Construction, Download, ExternalLink, Image as ImageIcon, Layers, List, Package,
+  Download, ExternalLink, Image as ImageIcon, Layers, List, Package,
   Pencil, Plus, Tag, Trash2,
 } from 'lucide-react';
 
@@ -17,9 +17,9 @@ import { downloadCSV, toCSV } from '@/lib/inventory/csv';
 import {
   adoptServerId, startingThresholdsFor,
   useBrands, useCategories, useDeleteBrand, useDeleteCategory, useDeleteItemGroup,
-  useFinishes, useInventoryItems, useItemGroups, useSetThresholds, useUpsertBrand, useUpsertCategory,
+  useFinishes, useItemGroups, usePriceBookItems, useSetThresholds, useUpsertBrand, useUpsertCategory,
   useUpsertItem, useUpsertItemGroup, useUpsertVendor, useVendors,
-  type Brand, type Category, type Item, type ItemGroup, type ItemGroupLine,
+  type Brand, type CatalogItem, type Category, type ItemGroup, type ItemGroupLine,
   type ItemVisibility, type Vendor,
 } from '@/lib/api/inventory';
 import { formatCurrency } from '@/lib/utils';
@@ -38,7 +38,7 @@ import { SearchInput } from '@/ui-kit/components/form/searchInput';
 import { Avatar } from '@/ui-kit/components/ui/avatar';
 import { Badge } from '@/ui-kit/components/ui/badge';
 import { Button } from '@/ui-kit/components/ui/button';
-import { Card, CardContent, CardFooter, CardHeader } from '@/ui-kit/components/ui/card';
+import { Card, CardContent, CardHeader } from '@/ui-kit/components/ui/card';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/ui-kit/components/ui/select';
@@ -158,6 +158,14 @@ export function PriceBookPage() {
   const canDeletePriceBook = ability.can('delete', 'PriceBook');
   // The shared "See financial data" gate, not a local re-check (SRVW-140).
   const canSeePricing = canSeePricingAbility(ability);
+  // The download is built in the browser, so the button is the whole gate: the Export price book switch
+  // compiles into `export PriceBook`.
+  const canExport = ability.can('export', 'PriceBook');
+  // The page stands on View price book alone (S07.16): the vendor list is asked for only by a person who
+  // may read vendors (without it the item form has no vendor field), and the reserve levels an item can
+  // be given from here are stock data, so they need Edit stock.
+  const canViewVendors = ability.can('read', 'Vendor');
+  const canEditStock = ability.can('update', 'Inventory');
 
   // NO `= []` DEFAULT on a value a seed effect keys on.
   //
@@ -174,8 +182,8 @@ export function PriceBookPage() {
   // only resolved here - so it needs no local mirror and no seed effect.
   const { data: finishes } = useFinishes();
   const { data: seedGroups } = useItemGroups();
-  const { data: seedItems } = useInventoryItems();
-  const { data: seedVendors } = useVendors();
+  const { data: seedItems } = usePriceBookItems();
+  const { data: seedVendors } = useVendors(canViewVendors);
   const { data: seedCategories } = useCategories();
 
   const upsertItem = useUpsertItem();
@@ -190,7 +198,7 @@ export function PriceBookPage() {
 
   const [brands, setBrands] = useState<Brand[]>([]);
   const [groups, setGroups] = useState<ItemGroup[]>([]);
-  const [items, setItems] = useState<Item[]>([]);
+  const [items, setItems] = useState<CatalogItem[]>([]);
   const [allVendors, setAllVendors] = useState<Vendor[]>([]);
   const [allCategories, setAllCategories] = useState<Category[]>([]);
 
@@ -205,7 +213,7 @@ export function PriceBookPage() {
   // eslint-disable-next-line react-hooks/set-state-in-effect -- categories mirror is seeded here, then mutated by in-page category add / delete
   useEffect(() => { if (seedCategories) setAllCategories(seedCategories); }, [seedCategories]);
 
-  const [editingItem, setEditingItem] = useState<Item | null>(null);
+  const [editingItem, setEditingItem] = useState<CatalogItem | null>(null);
   const [showAddItem, setShowAddItem] = useState(false);
   const [showAddBrand, setShowAddBrand] = useState(false);
   const [editingBrand, setEditingBrand] = useState<Brand | null>(null);
@@ -293,7 +301,7 @@ export function PriceBookPage() {
    * cell as the single place that resolves a selling price, so there is no
    * second precedence rule here to drift away from what the screen quotes.
    */
-  const toExportRow = (it: Item) => ({
+  const toExportRow = (it: CatalogItem) => ({
     SKU: it.sku,
     Item: it.customerName ?? it.name,
     Brand: brands.find((b) => b.id === it.brandId)?.name ?? '',
@@ -303,7 +311,7 @@ export function PriceBookPage() {
     Visibility: (it.visibility ?? 'catalog') === 'catalog' ? 'Catalog' : 'Internal',
   });
 
-  function exportItems(list: Item[]) {
+  function exportItems(list: CatalogItem[]) {
     if (list.length === 0) return;
     const date = new Date().toISOString().slice(0, 10);
     downloadCSV(toCSV(list.map(toExportRow)), `price-book-${date}.csv`);
@@ -317,6 +325,7 @@ export function PriceBookPage() {
       buildPriceBookColumns({
         brands,
         finishNameById,
+        canToggleVisibility: canUpdatePriceBook,
         onToggleVisibility: (itemId) =>
           setItems((prev) =>
             prev.map((it) =>
@@ -331,7 +340,7 @@ export function PriceBookPage() {
       }),
     // finishNameById is a dependency because the Item cell reads it - leaving it
     // out prints the finish only for whatever map existed on first render.
-    [brands, finishNameById],
+    [brands, finishNameById, canUpdatePriceBook],
   );
 
   // Effective price/cost lookup mirrors the dialog - an override falls back to
@@ -490,17 +499,19 @@ export function PriceBookPage() {
                     </Button>
                   )}
                   {/* Exports what the table is showing, so it sits with the
-                      other table controls. */}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    type="button"
-                    title={`Export ${filteredItems.length} items as CSV`}
-                    onClick={() => exportItems(filteredItems)}
-                  >
-                    <Download />
-                    Export
-                  </Button>
+                      other table controls. Only with Export price book. */}
+                  {canExport && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      type="button"
+                      title={`Export ${filteredItems.length} items as CSV`}
+                      onClick={() => exportItems(filteredItems)}
+                    >
+                      <Download />
+                      Export
+                    </Button>
+                  )}
                 </>
               }
             />
@@ -590,7 +601,7 @@ export function PriceBookPage() {
                   <div className="text-muted-foreground">Items</div>
                   <div className="font-semibold">{itemsByBrand.get(b.id) ?? 0}</div>
                 </div>
-                {b.defaultMarkupPct != null && (
+                {canSeePricing && b.defaultMarkupPct != null && (
                   <div className="text-muted-foreground">
                     Default markup:{' '}
                     <span className="text-foreground font-medium">
@@ -672,7 +683,11 @@ export function PriceBookPage() {
           <EmptyState
             icon={<Layers />}
             title="No bundles yet"
-            description="Create your first preset bundle. Standard rekey jobs, lockout service, HVAC capacitor swap - bundle them once and reuse on every estimate."
+            description={
+              canCreatePriceBook
+                ? 'Create your first preset bundle. Standard rekey jobs, lockout service, HVAC capacitor swap - bundle them once and reuse on every estimate.'
+                : undefined
+            }
             action={
               canCreatePriceBook ? (
                 <Button size="sm" onClick={() => { setEditingGroup(null); setShowAddGroup(true); }}>
@@ -688,13 +703,9 @@ export function PriceBookPage() {
               const customerPrice = customerSeesPrice(g);
               const subtotal = groupSubtotal(g);
               const profitability = groupProfitability(g);
-              // Only ONE of the notes invites the operator into a cost field,
-              // and a viewer without "See financial data" must not be invited
-              // to fill one they are not allowed to read (SRVW-140).
-              const profitabilityNote =
-                profitability.state === 'uncosted' && !canSeePricing
-                  ? null
-                  : PROFITABILITY_NOTE[profitability.state];
+              // The pair below is drawn only for a viewer with "See financial
+              // data" (S07.17), so its note may invite them into a cost field.
+              const profitabilityNote = PROFITABILITY_NOTE[profitability.state];
               // A 100% margin derived from a zero cost is not a healthy
               // margin, so it does not get the healthy colour.
               const profitabilityTone =
@@ -782,7 +793,7 @@ export function PriceBookPage() {
                           nothing here is capped. With no usable customer price
                           there is nothing to divide by, so the pair stays off
                           the card entirely. */}
-                      {profitability.state !== 'invalid-price' && (
+                      {canSeePricing && profitability.state !== 'invalid-price' && (
                         <div
                           role="group"
                           aria-label={`Profitability for ${g.name}`}
@@ -892,41 +903,13 @@ export function PriceBookPage() {
       </TabPanel>
 
       <TabPanel value="catalog" activeValue={tab}>
-        <Card role="status" className="mx-auto max-w-[640px]">
-          <CardHeader className="flex items-center gap-3">
-            <Construction className="text-status-amber-emphasis size-5" />
-            <span role="heading" aria-level={2} className="text-lg font-semibold">
-              Catalog view ships in Phase B
-            </span>
-          </CardHeader>
-          <CardContent className="flex flex-col gap-5">
-            <p className="text-muted-foreground text-sm leading-relaxed">
-              The Catalog tab is the customer-facing surface - a grid of product cards with hero
-              photos, marketing-friendly names, key features, and list prices. Phase A (this rev)
-              ships the data spine (Brand + Group entities, taxonomy, visibility flag); Phase B
-              layers the photo upload UX + customer-copy editing surface + the grid rendering you
-              see here.
-            </p>
-            <div className="bg-muted rounded-md p-4">
-              <div className="text-muted-foreground text-[11px] font-semibold uppercase">Coming next</div>
-              <ul className="mt-2 flex flex-col gap-1.5 text-sm">
-                <li>Multi-photo upload per item (drag-to-reorder, hero shot, mobile camera capture)</li>
-                <li>Customer-facing name + description + key-features editor</li>
-                <li>Grid of photo cards filterable by Brand / Group / Category</li>
-                <li>Internal-only items hard-filtered from the customer view</li>
-              </ul>
-            </div>
-          </CardContent>
-          <CardFooter className="flex flex-wrap gap-1.5">
-            <Badge variant="softNeutral" size="pill">Owner: Emanuel</Badge>
-            <Badge variant="softNeutral" size="pill">Phase A → B transition</Badge>
-          </CardFooter>
-        </Card>
+        <EmptyState role="status" icon={<ImageIcon />} title="Catalog is not available yet" />
       </TabPanel>
 
       <AddBrandDialog
         open={showAddBrand}
         vendors={allVendors}
+        showVendor={canViewVendors}
         onClose={() => { setShowAddBrand(false); setEditingBrand(null); }}
         editBrand={editingBrand}
         onCreate={async (b) => {
@@ -987,6 +970,8 @@ export function PriceBookPage() {
         // already (the Add Item button above), so a create-only custom role
         // is never dropped into a read-only create form.
         readOnly={!!editingItem && !canUpdatePriceBook}
+        showVendor={canViewVendors}
+        showStartingStock={canEditStock}
         brands={brands}
         vendors={allVendors}
         onAddVendor={async (v) => {
@@ -1051,8 +1036,8 @@ export function PriceBookPage() {
                       modelNumber: payload.modelNumber,
                       name: payload.name,
                       category: payload.category,
-                      trade: payload.trade as Item['trade'],
-                      kind: payload.kind as Item['kind'],
+                      trade: payload.trade as CatalogItem['trade'],
+                      kind: payload.kind as CatalogItem['kind'],
                       uom: payload.uom,
                       unitCost: payload.unitCost,
                       sellPrice: payload.sellPrice,
@@ -1062,7 +1047,8 @@ export function PriceBookPage() {
                       // `type` is deliberately NOT mirrored - it is
                       // server-derived and the invalidation re-seeds it.
                       taxable: payload.taxable,
-                      vendor: payload.vendor,
+                      // Without View vendors the form has no vendor field, so there is nothing to mirror.
+                      ...(canViewVendors ? { vendor: payload.vendor } : {}),
                       // An uploaded picture answers with its storage URL; an explicit null is a
                       // clear and must not fall through to the picture it just removed.
                       photoUrl:
@@ -1082,7 +1068,7 @@ export function PriceBookPage() {
           // Create mode - the refetch supplies the real server row. Reserve
           // levels ride a separate write against the SERVER id.
           const thresholds = startingThresholdsFor(payload.startingStock);
-          if (thresholds && created?.id) {
+          if (canEditStock && thresholds && created?.id) {
             try {
               await setThresholds.mutateAsync({
                 itemId: created.id,

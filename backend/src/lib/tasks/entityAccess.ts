@@ -4,7 +4,7 @@ import {
   scopeTemplateForProfile,
   type PermissionUser,
 } from '../permissions/enforce';
-import type { AppAbility, PermissionOverride } from '../permissions/defineAbility';
+import type { AppAbility } from '../permissions/defineAbility';
 import type { ScopeResource } from '../permissions/scopeWhereFor';
 
 /** A task's polymorphic link target. `type` is untrusted input - unknown values fail closed. */
@@ -40,21 +40,57 @@ const SCOPED: Record<string, ScopeResource> = {
   CUSTOMER: 'Customer',
 };
 
+// Getters, not values: the client is read when a delegate is asked for, never while this module loads. A test file
+// that mocks '../lib/prisma' with no client (the real-database suites, when no database is configured) must still be
+// able to import everything that imports this file, so it can skip instead of crashing at import.
 export const ENTITY_DELEGATES: Record<string, EntityDelegate> = {
-  JOB: prisma.job,
-  LEAD: prisma.lead,
-  ESTIMATE: prisma.estimate,
-  CUSTOMER: prisma.customer,
+  get JOB() {
+    return prisma.job;
+  },
+  get LEAD() {
+    return prisma.lead;
+  },
+  get ESTIMATE() {
+    return prisma.estimate;
+  },
+  get CUSTOMER() {
+    return prisma.customer;
+  },
+};
+
+/**
+ * Records an ALERT can be about but a task cannot link to. An invoice is reached through its job (or, with no job,
+ * its estimate); the alert "someone" test (lib/permissions/alertSomeone.ts) asks who can open it. Kept apart from
+ * ENTITY_DELEGATES, which is also the list of kinds a task may link to.
+ */
+const ALERT_ONLY_SCOPED: Record<string, ScopeResource> = { INVOICE: 'Invoice' };
+export const ALERT_RECORD_DELEGATES: Record<string, EntityDelegate> = {
+  // Not `...ENTITY_DELEGATES`: spreading would read every getter at load.
+  get JOB() {
+    return ENTITY_DELEGATES.JOB;
+  },
+  get LEAD() {
+    return ENTITY_DELEGATES.LEAD;
+  },
+  get ESTIMATE() {
+    return ENTITY_DELEGATES.ESTIMATE;
+  },
+  get CUSTOMER() {
+    return ENTITY_DELEGATES.CUSTOMER;
+  },
+  get INVOICE() {
+    return prisma.invoice;
+  },
 };
 
 /**
  * `profile` switches the answer from "this reader" to "any reader with this permission profile":
- * `{{userId}}` resolves to `userIdPlaceholder` and the overrides are supplied rather than loaded.
+ * `{{userId}}` resolves to `userIdPlaceholder`.
  * The caller substitutes real ids into the returned fragment - see entityAccessCohort.ts.
  */
 export interface EntityScopeOpts {
   ability?: AppAbility;
-  profile?: { userIdPlaceholder: string; overrides: PermissionOverride[] };
+  profile?: { userIdPlaceholder: string };
 }
 
 export interface EntityAccessScope {
@@ -97,10 +133,10 @@ export async function entityAccessScope(
 ): Promise<EntityAccessScope | null> {
   const tenant = { organization_id: reader.organization_id };
 
-  const resource = SCOPED[type];
+  const resource = SCOPED[type] ?? ALERT_ONLY_SCOPED[type];
   if (resource) {
     const scope = opts.profile
-      ? await scopeTemplateForProfile(reader, resource, opts.profile.userIdPlaceholder, opts.profile.overrides)
+      ? await scopeTemplateForProfile(reader, resource, opts.profile.userIdPlaceholder)
       : await scopeWhereForUser(reader, resource);
     return { where: { ...tenant, ...scope }, restricted: Object.keys(scope).length > 0 };
   }

@@ -97,6 +97,14 @@ function mapEvent(row: any) {
   };
 }
 
+/**
+ * Without See all assets a person reaches only the assets they hold. Merged into the query itself, so the
+ * rows, the count and the pages agree, and an asset held by someone else is simply not found.
+ */
+function heldOnlyWhere(req: Request): { assigned_user_id?: string } {
+  return req.ability!.can('see_all_assets', 'Inventory') ? {} : { assigned_user_id: req.user!.id };
+}
+
 async function readAsset(req: Request, id: string) {
   return prisma.asset.findFirst({
     where: { id, ...tenantWhere(req) },
@@ -126,6 +134,8 @@ export async function listAssets(req: Request, res: Response) {
     if (req.query.assigned_user_id && typeof req.query.assigned_user_id === 'string') {
       where.assigned_user_id = req.query.assigned_user_id;
     }
+    // ANDed with the holder filter above, so asking for a colleague's assets finds none rather than widening the list.
+    where.AND = [heldOnlyWhere(req)];
 
     if (req.query.search) {
       const search = typeof req.query.search === 'string' ? req.query.search : '';
@@ -153,7 +163,10 @@ export async function listAssets(req: Request, res: Response) {
 
 export async function getAsset(req: Request, res: Response) {
   try {
-    const asset = await readAsset(req, req.params.id as string);
+    const asset = await prisma.asset.findFirst({
+      where: { id: req.params.id as string, ...tenantWhere(req), ...heldOnlyWhere(req) },
+      include: assetInclude,
+    });
     if (!asset) {
       res.status(404).json({ error: 'Asset not found' });
       return;
@@ -299,7 +312,7 @@ export async function deleteAsset(req: Request, res: Response) {
 export async function listAssetEvents(req: Request, res: Response) {
   try {
     const asset = await prisma.asset.findFirst({
-      where: { id: req.params.id as string, ...tenantWhere(req) },
+      where: { id: req.params.id as string, ...tenantWhere(req), ...heldOnlyWhere(req) },
     });
     if (!asset) {
       res.status(404).json({ error: 'Asset not found' });

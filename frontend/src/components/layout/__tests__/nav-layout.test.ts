@@ -57,3 +57,35 @@ describe('nav-layout', () => {
     expect(loadLayout('u1')).toEqual(['jobs', 'leads']); // service-plans NOT re-added
   });
 });
+
+describe('nav-layout: the Payments entry', () => {
+  beforeEach(() => localStorage.clear());
+
+  it('sits between Invoices and Service Plans in a fresh layout', () => {
+    const keys = loadLayout('fresh');
+    expect(keys.indexOf('payments')).toBe(keys.indexOf('invoices') + 1);
+    expect(keys.indexOf('service-plans')).toBe(keys.indexOf('payments') + 1);
+  });
+
+  it('is added exactly once, right after Invoices, to a layout stored at version 3', () => {
+    localStorage.setItem('servwave:nav-layout:u3', JSON.stringify(['dashboard', 'invoices', 'service-plans', 'jobs']));
+    localStorage.setItem('servwave:nav-layout-version:u3', '3');
+
+    const first = loadLayout('u3');
+    expect(first).toEqual(['dashboard', 'invoices', 'payments', 'service-plans', 'jobs']);
+    expect(first.filter((k) => k === 'payments')).toHaveLength(1);
+    // Stamped at the current version, so a second load does not add it again.
+    expect(loadLayout('u3')).toEqual(first);
+  });
+
+  it('is appended at the end when the stored layout has no Invoices', () => {
+    localStorage.setItem('servwave:nav-layout:u4', JSON.stringify(['dashboard', 'jobs']));
+    localStorage.setItem('servwave:nav-layout-version:u4', '3');
+    expect(loadLayout('u4')).toEqual(['dashboard', 'jobs', 'payments']);
+  });
+
+  it('does not come back for a person who removed it at the current version', () => {
+    saveLayout('u5', ['dashboard', 'invoices']);
+    expect(loadLayout('u5')).toEqual(['dashboard', 'invoices']);
+  });
+});

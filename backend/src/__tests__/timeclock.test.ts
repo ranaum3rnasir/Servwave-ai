@@ -2,10 +2,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import * as email from '../lib/email';
 import { TEST_USERS, TEST_ORG, ALPHA_ORG_ID, ORG_B_ID, mockAuthAs, authHeader } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { isCatalogEntry } from '../lib/permissions/catalog';
 
 // ─── Typed mock surface ────────────────────────────────
 const mockPrisma = prisma as unknown as {
@@ -16,34 +14,16 @@ const mockPrisma = prisma as unknown as {
     create: ReturnType<typeof vi.fn>;
     update: ReturnType<typeof vi.fn>;
   };
-  geofenceConfig: { findUnique: ReturnType<typeof vi.fn>; upsert: ReturnType<typeof vi.fn> };
-  geofenceStore: {
-    findMany: ReturnType<typeof vi.fn>;
-    findFirst: ReturnType<typeof vi.fn>;
-    create: ReturnType<typeof vi.fn>;
-    update: ReturnType<typeof vi.fn>;
-    deleteMany: ReturnType<typeof vi.fn>;
-  };
   timeClockOtReview: {
     findMany: ReturnType<typeof vi.fn>;
     upsert: ReturnType<typeof vi.fn>;
   };
-  organization: { findUnique: ReturnType<typeof vi.fn> };
 };
 
-// A store zone in Austin, TX. The tech fixtures punch right on top of it (in-zone)
-// or far away (out-of-zone) depending on the test.
+// Where the tech fixtures punch from: a spot in Austin, TX, and one far away in NYC (~2700km). Nothing checks it,
+// the point is that both are recorded the same way.
 const AUSTIN = { lat: 30.2672, lng: -97.7431 };
-const FAR_AWAY = { lat: 40.7128, lng: -74.006 }; // NYC — ~2700km away
-
-const STORE_ROW = {
-  id: 'store-id-1',
-  organization_id: ALPHA_ORG_ID,
-  label: 'HQ',
-  lat: AUSTIN.lat,
-  lng: AUSTIN.lng,
-  created_at: new Date('2026-01-01'),
-};
+const FAR_AWAY = { lat: 40.7128, lng: -74.006 };
 
 /**
  * Build a single prisma.user.findUnique implementation that returns an
@@ -69,11 +49,6 @@ function setClockUser(authKey: 'admin' | 'technician', over: Record<string, unkn
 beforeEach(() => {
   vi.resetAllMocks();
   clearPermissionCache();
-  // Org timezone lookup (used by override-request email path).
-  (prisma.organization.findUnique as any).mockResolvedValue({ timezone: 'America/New_York' });
-  // Default: one store zone + default radius config absent (→ 150).
-  (prisma.geofenceStore.findMany as any).mockResolvedValue([STORE_ROW]);
-  (prisma.geofenceConfig.findUnique as any).mockResolvedValue(null);
   // Default: no prior punches.
   (prisma.timeEntry.findFirst as any).mockResolvedValue(null);
   (prisma.timeEntry.findMany as any).mockResolvedValue([]);
@@ -92,20 +67,13 @@ describe('POST /api/timeclock/punches', () => {
         user_id: TEST_USERS.technician.id,
         user: { first_name: 'Test', last_name: 'Tech' },
         created_at: new Date('2026-06-10T12:00:00Z'),
-        reviewed_by: null,
-        reviewed_at: null,
-        matched_zone_id: null,
-        matched_zone_label: null,
-        matched_zone_kind: null,
-        matched_job_number: null,
-        distance_m: null,
         accuracy_m: null,
         ...args.data,
       })
     );
   }
 
-  it('IN inside the zone records IN_ZONE / review NONE and returns 201 with a PunchDTO', async () => {
+  it('IN records where it happened and returns 201 with a PunchDTO', async () => {
     mockAuthAs('technician');
     setClockUser('technician');
     stampCreate();
@@ -113,107 +81,38 @@ describe('POST /api/timeclock/punches', () => {
     const res = await request(app)
       .post('/api/timeclock/punches')
       .set(authHeader('technician'))
-      .send({ type: 'IN', lat: AUSTIN.lat, lng: AUSTIN.lng });
+      .send({ type: 'IN', lat: AUSTIN.lat, lng: AUSTIN.lng, accuracy_m: 8 });
 
     expect(res.status).toBe(201);
-    expect(res.body.punch).toMatchObject({
-      type: 'IN',
-      status: 'in_zone',
-      review: 'none',
-      matchedZoneLabel: 'HQ',
-      matchedZoneKind: 'store',
-    });
+    expect(res.body.punch).toMatchObject({ type: 'IN', lat: AUSTIN.lat, lng: AUSTIN.lng, accuracyM: 8 });
     expect(typeof res.body.punch.ts).toBe('number');
-    // tenant-scoped + correct enum casing in the write
+    // tenant-scoped write
     const writeData = (prisma.timeEntry.create as any).mock.calls[0][0].data;
     expect(writeData.organization_id).toBe(ALPHA_ORG_ID);
-    expect(writeData.status).toBe('IN_ZONE');
-    expect(writeData.review).toBe('NONE');
+    expect(writeData.user_id).toBe(TEST_USERS.technician.id);
+    expect(writeData.lat).toBe(AUSTIN.lat);
+    expect(writeData.lng).toBe(AUSTIN.lng);
   });
 
-  it('OUT always records IN_ZONE / NONE even out of zone (and even while clocked in)', async () => {
+  it('IN and OUT far from anywhere are recorded the same way, with no block and no override request', async () => {
     mockAuthAs('technician');
-    setClockUser('technician');
-    (prisma.timeEntry.findFirst as any).mockResolvedValue({ type: 'IN' }); // clocked in
+    setClockUser('technician', { enforce_clock_in_location: true });
     stampCreate();
 
-    const res = await request(app)
+    const clockIn = await request(app)
+      .post('/api/timeclock/punches')
+      .set(authHeader('technician'))
+      .send({ type: 'IN', lat: FAR_AWAY.lat, lng: FAR_AWAY.lng });
+    expect(clockIn.status).toBe(201);
+    expect(clockIn.body.requiresOverride).toBeUndefined();
+
+    (prisma.timeEntry.findFirst as any).mockResolvedValue({ type: 'IN' }); // now clocked in
+    const clockOut = await request(app)
       .post('/api/timeclock/punches')
       .set(authHeader('technician'))
       .send({ type: 'OUT', lat: FAR_AWAY.lat, lng: FAR_AWAY.lng });
-
-    expect(res.status).toBe(201);
-    const writeData = (prisma.timeEntry.create as any).mock.calls[0][0].data;
-    expect(writeData.status).toBe('IN_ZONE');
-    expect(writeData.review).toBe('NONE');
-    expect(writeData.type).toBe('OUT');
-  });
-
-  it('IN out-of-zone, enforce on, non-admin, no override → 422 requiresOverride, records nothing', async () => {
-    mockAuthAs('technician');
-    setClockUser('technician');
-
-    const res = await request(app)
-      .post('/api/timeclock/punches')
-      .set(authHeader('technician'))
-      .send({ type: 'IN', lat: FAR_AWAY.lat, lng: FAR_AWAY.lng });
-
-    expect(res.status).toBe(422);
-    expect(res.body.requiresOverride).toBe(true);
-    expect(res.body.verdict).toBeTruthy();
-    expect(prisma.timeEntry.create).not.toHaveBeenCalled();
-  });
-
-  it('IN out-of-zone with override:true → OVERRIDE/PENDING and emails approvers', async () => {
-    mockAuthAs('technician');
-    setClockUser('technician');
-    (prisma.user.findMany as any).mockResolvedValue([
-      { email: 'admin@test.com' },
-      { email: 'lead@test.com' },
-    ]);
-    stampCreate();
-
-    const res = await request(app)
-      .post('/api/timeclock/punches')
-      .set(authHeader('technician'))
-      .send({ type: 'IN', lat: FAR_AWAY.lat, lng: FAR_AWAY.lng, override: true });
-
-    expect(res.status).toBe(201);
-    const writeData = (prisma.timeEntry.create as any).mock.calls[0][0].data;
-    expect(writeData.status).toBe('OVERRIDE');
-    expect(writeData.review).toBe('PENDING');
-    expect(writeData.matched_zone_id).toBeNull();
-    expect(email.sendClockOverrideRequestedEmail).toHaveBeenCalledTimes(1);
-    const args = (email.sendClockOverrideRequestedEmail as any).mock.calls[0][0];
-    expect(args.to).toEqual(['admin@test.com', 'lead@test.com']);
-  });
-
-  it('IN admin out-of-zone bypasses geofence → records IN_ZONE', async () => {
-    mockAuthAs('admin');
-    setClockUser('admin');
-    stampCreate();
-
-    const res = await request(app)
-      .post('/api/timeclock/punches')
-      .set(authHeader('admin'))
-      .send({ type: 'IN', lat: FAR_AWAY.lat, lng: FAR_AWAY.lng });
-
-    expect(res.status).toBe(201);
-    expect((prisma.timeEntry.create as any).mock.calls[0][0].data.status).toBe('IN_ZONE');
-  });
-
-  it('IN with enforcement disabled out-of-zone → records IN_ZONE', async () => {
-    mockAuthAs('technician');
-    setClockUser('technician', { enforce_clock_in_location: false });
-    stampCreate();
-
-    const res = await request(app)
-      .post('/api/timeclock/punches')
-      .set(authHeader('technician'))
-      .send({ type: 'IN', lat: FAR_AWAY.lat, lng: FAR_AWAY.lng });
-
-    expect(res.status).toBe(201);
-    expect((prisma.timeEntry.create as any).mock.calls[0][0].data.status).toBe('IN_ZONE');
+    expect(clockOut.status).toBe(201);
+    expect((prisma.timeEntry.create as any).mock.calls.map((c: any) => c[0].data.type)).toEqual(['IN', 'OUT']);
   });
 
   it('double IN (already clocked in) → 409 Already clocked in', async () => {
@@ -259,16 +158,9 @@ describe('GET /api/timeclock/punches', () => {
     lat: AUSTIN.lat,
     lng: AUSTIN.lng,
     accuracy_m: 10,
-    matched_zone_id: 'store:store-id-1',
-    matched_zone_label: 'HQ',
-    matched_zone_kind: 'STORE',
-    matched_job_number: null,
-    distance_m: 5,
-    status: 'IN_ZONE',
-    review: 'NONE',
   };
 
-  it('technician is forced to scope=me even when scope=org requested', async () => {
+  it('a technician asking for scope=org is refused (no See everyone\'s timesheets) and nothing is read', async () => {
     mockAuthAs('technician');
     (prisma.timeEntry.findMany as any).mockResolvedValue([PUNCH_ROW]);
 
@@ -276,11 +168,35 @@ describe('GET /api/timeclock/punches', () => {
       .get('/api/timeclock/punches?scope=org')
       .set(authHeader('technician'));
 
+    expect(res.status).toBe(403);
+    expect(prisma.timeEntry.findMany).not.toHaveBeenCalled();
+  });
+
+  it('a technician sees their own punches, with where each happened', async () => {
+    mockAuthAs('technician');
+    (prisma.timeEntry.findMany as any).mockResolvedValue([PUNCH_ROW]);
+
+    const res = await request(app)
+      .get('/api/timeclock/punches')
+      .set(authHeader('technician'));
+
     expect(res.status).toBe(200);
     const where = (prisma.timeEntry.findMany as any).mock.calls[0][0].where;
     expect(where.organization_id).toBe(ALPHA_ORG_ID);
     expect(where.user_id).toBe(TEST_USERS.technician.id);
-    expect(res.body.punches[0]).toMatchObject({ status: 'in_zone', matchedZoneKind: 'store' });
+    expect(res.body.punches[0]).toMatchObject({ type: 'IN', lat: AUSTIN.lat, lng: AUSTIN.lng, accuracyM: 10 });
+  });
+
+  it('a dispatcher on the built-in role sees everyone through the preset, a salesperson does not', async () => {
+    mockAuthAs('dispatcher');
+    (prisma.timeEntry.findMany as any).mockResolvedValue([PUNCH_ROW]);
+    const dispatcher = await request(app).get('/api/timeclock/punches?scope=org').set(authHeader('dispatcher'));
+    expect(dispatcher.status).toBe(200);
+    expect((prisma.timeEntry.findMany as any).mock.calls[0][0].where.user_id).toBeUndefined();
+
+    mockAuthAs('sales');
+    const sales = await request(app).get('/api/timeclock/punches?scope=org').set(authHeader('sales'));
+    expect(sales.status).toBe(403);
   });
 
   it('admin scope=org returns all org rows (no user_id filter)', async () => {
@@ -329,242 +245,29 @@ describe('GET /api/timeclock/punches', () => {
 });
 
 // ═══════════════════════════════════════════════════════
-// Config + stores
-// ═══════════════════════════════════════════════════════
-describe('GET /api/timeclock/config', () => {
-  it('returns defaults when no config/stores', async () => {
-    mockAuthAs('technician');
-    (prisma.geofenceConfig.findUnique as any).mockResolvedValue(null);
-    (prisma.geofenceStore.findMany as any).mockResolvedValue([]);
-
-    const res = await request(app).get('/api/timeclock/config').set(authHeader('technician'));
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ radiusM: 150, stores: [] });
-  });
-
-  it('returns configured radius + stores', async () => {
-    mockAuthAs('technician');
-    (prisma.geofenceConfig.findUnique as any).mockResolvedValue({ radius_m: 200 });
-    (prisma.geofenceStore.findMany as any).mockResolvedValue([STORE_ROW]);
-
-    const res = await request(app).get('/api/timeclock/config').set(authHeader('technician'));
-    expect(res.body.radiusM).toBe(200);
-    expect(res.body.stores[0]).toMatchObject({ id: 'store-id-1', label: 'HQ', lat: AUSTIN.lat, lng: AUSTIN.lng });
-  });
-});
-
-describe('PUT /api/timeclock/config', () => {
-  it('non-admin → 403', async () => {
-    mockAuthAs('technician');
-    const res = await request(app)
-      .put('/api/timeclock/config')
-      .set(authHeader('technician'))
-      .send({ radiusM: 200 });
-    expect(res.status).toBe(403);
-  });
-
-  it('admin upserts radius', async () => {
-    mockAuthAs('admin');
-    (prisma.geofenceConfig.upsert as any).mockResolvedValue({ radius_m: 200 });
-    const res = await request(app)
-      .put('/api/timeclock/config')
-      .set(authHeader('admin'))
-      .send({ radiusM: 200 });
-    expect(res.status).toBe(200);
-    const args = (prisma.geofenceConfig.upsert as any).mock.calls[0][0];
-    expect(args.where.organization_id).toBe(ALPHA_ORG_ID);
-    expect(res.body.radiusM).toBe(200);
-  });
-
-  it('rejects radius out of 50-300 range', async () => {
-    mockAuthAs('admin');
-    const res = await request(app)
-      .put('/api/timeclock/config')
-      .set(authHeader('admin'))
-      .send({ radiusM: 5000 });
-    expect(res.status).toBe(400);
-  });
-});
-
-describe('stores CRUD', () => {
-  it('non-admin create → 403', async () => {
-    mockAuthAs('technician');
-    const res = await request(app)
-      .post('/api/timeclock/stores')
-      .set(authHeader('technician'))
-      .send({ label: 'X', lat: 1, lng: 2 });
-    expect(res.status).toBe(403);
-  });
-
-  it('admin creates a store (tenant-stamped)', async () => {
-    mockAuthAs('admin');
-    (prisma.geofenceStore.create as any).mockResolvedValue(STORE_ROW);
-    const res = await request(app)
-      .post('/api/timeclock/stores')
-      .set(authHeader('admin'))
-      .send({ label: 'HQ', lat: AUSTIN.lat, lng: AUSTIN.lng });
-    expect(res.status).toBe(201);
-    expect((prisma.geofenceStore.create as any).mock.calls[0][0].data.organization_id).toBe(ALPHA_ORG_ID);
-  });
-
-  it('PATCH a store updates only tenant rows', async () => {
-    mockAuthAs('admin');
-    (prisma.geofenceStore.findFirst as any).mockResolvedValue(STORE_ROW);
-    (prisma.geofenceStore.update as any).mockResolvedValue({ ...STORE_ROW, label: 'New' });
-    const res = await request(app)
-      .patch('/api/timeclock/stores/store-id-1')
-      .set(authHeader('admin'))
-      .send({ label: 'New' });
-    expect(res.status).toBe(200);
-    expect((prisma.geofenceStore.findFirst as any).mock.calls[0][0].where.organization_id).toBe(ALPHA_ORG_ID);
-  });
-
-  it('cross-org store → 404 on PATCH', async () => {
-    mockAuthAs('admin');
-    (prisma.geofenceStore.findFirst as any).mockResolvedValue(null);
-    const res = await request(app)
-      .patch('/api/timeclock/stores/other-org-store')
-      .set(authHeader('admin'))
-      .send({ label: 'New' });
-    expect(res.status).toBe(404);
-  });
-
-  it('DELETE store tenant-scoped; 404 when not found', async () => {
-    mockAuthAs('admin');
-    (prisma.geofenceStore.deleteMany as any).mockResolvedValue({ count: 0 });
-    const res = await request(app)
-      .delete('/api/timeclock/stores/nope')
-      .set(authHeader('admin'));
-    expect(res.status).toBe(404);
-    expect((prisma.geofenceStore.deleteMany as any).mock.calls[0][0].where.organization_id).toBe(ALPHA_ORG_ID);
-  });
-});
-
-// ═══════════════════════════════════════════════════════
-// User timeclock settings
-// ═══════════════════════════════════════════════════════
-describe('PATCH /api/timeclock/users/:id/timeclock-settings', () => {
-  it('non-admin → 403', async () => {
-    mockAuthAs('technician');
-    const res = await request(app)
-      .patch(`/api/timeclock/users/${TEST_USERS.technician.id}/timeclock-settings`)
-      .set(authHeader('technician'))
-      .send({ enforce_clock_in_location: false });
-    expect(res.status).toBe(403);
-  });
-
-  it('admin updates a tenant user', async () => {
-    mockAuthAs('admin');
-    (prisma.user.update as any).mockResolvedValue({
-      id: TEST_USERS.technician.id,
-      enforce_clock_in_location: false,
-      can_approve_clock_overrides: true,
-    });
-    // tenant guard: target must be in org
-    (prisma.user.findFirst as any).mockResolvedValue({ id: TEST_USERS.technician.id });
-    const res = await request(app)
-      .patch(`/api/timeclock/users/${TEST_USERS.technician.id}/timeclock-settings`)
-      .set(authHeader('admin'))
-      .send({ enforce_clock_in_location: false, can_approve_clock_overrides: true });
-    expect(res.status).toBe(200);
-  });
-});
-
-// ═══════════════════════════════════════════════════════
-// Override approve / reject
-// ═══════════════════════════════════════════════════════
-describe('override approve/reject', () => {
-  const PENDING_PUNCH = {
-    id: 'punch-9',
-    organization_id: ALPHA_ORG_ID,
-    user_id: TEST_USERS.technician.id,
-    review: 'PENDING',
-    user: { first_name: 'Test', last_name: 'Tech', email: 'tech@test.com' },
-  };
-
-  it('plain technician (not approver) → 403', async () => {
-    mockAuthAs('technician');
-    setClockUser('technician', { can_approve_clock_overrides: false });
-    const res = await request(app)
-      .post('/api/timeclock/punches/punch-9/override/approve')
-      .set(authHeader('technician'));
-    expect(res.status).toBe(403);
-  });
-
-  it('admin approves: sets review APPROVED + reviewer + emails tech', async () => {
-    mockAuthAs('admin');
-    setClockUser('admin');
-    (prisma.timeEntry.findFirst as any).mockResolvedValue(PENDING_PUNCH);
-    (prisma.timeEntry.update as any).mockResolvedValue({
-      ...PENDING_PUNCH,
-      review: 'APPROVED',
-      ts: new Date('2026-06-10T12:00:00Z'),
-      type: 'IN',
-      lat: 1, lng: 2, status: 'OVERRIDE',
-    });
-    const res = await request(app)
-      .post('/api/timeclock/punches/punch-9/override/approve')
-      .set(authHeader('admin'));
-    expect(res.status).toBe(200);
-    const upd = (prisma.timeEntry.update as any).mock.calls[0][0].data;
-    expect(upd.review).toBe('APPROVED');
-    expect(upd.reviewed_by).toBe(TEST_USERS.admin.id);
-    expect(upd.reviewed_at).toBeInstanceOf(Date);
-    expect(email.sendClockOverrideDecisionEmail).toHaveBeenCalledTimes(1);
-    expect((email.sendClockOverrideDecisionEmail as any).mock.calls[0][0].decision).toBe('approved');
-  });
-
-  it('can_approve user rejects', async () => {
-    mockAuthAs('technician');
-    setClockUser('technician', { can_approve_clock_overrides: true });
-    (prisma.timeEntry.findFirst as any).mockResolvedValue(PENDING_PUNCH);
-    (prisma.timeEntry.update as any).mockResolvedValue({
-      ...PENDING_PUNCH, review: 'REJECTED', ts: new Date(), type: 'IN', lat: 1, lng: 2, status: 'OVERRIDE',
-    });
-    const res = await request(app)
-      .post('/api/timeclock/punches/punch-9/override/reject')
-      .set(authHeader('technician'));
-    expect(res.status).toBe(200);
-    expect((prisma.timeEntry.update as any).mock.calls[0][0].data.review).toBe('REJECTED');
-  });
-
-  it('approving a non-PENDING punch → 409', async () => {
-    mockAuthAs('admin');
-    setClockUser('admin');
-    (prisma.timeEntry.findFirst as any).mockResolvedValue({ ...PENDING_PUNCH, review: 'APPROVED' });
-    const res = await request(app)
-      .post('/api/timeclock/punches/punch-9/override/approve')
-      .set(authHeader('admin'));
-    expect(res.status).toBe(409);
-  });
-
-  it('cross-org punch → 404', async () => {
-    mockAuthAs('admin');
-    setClockUser('admin');
-    (prisma.timeEntry.findFirst as any).mockResolvedValue(null);
-    const res = await request(app)
-      .post('/api/timeclock/punches/foreign/override/approve')
-      .set(authHeader('admin'));
-    expect(res.status).toBe(404);
-    expect((prisma.timeEntry.findFirst as any).mock.calls[0][0].where.organization_id).toBe(ALPHA_ORG_ID);
-  });
-});
-
-// ═══════════════════════════════════════════════════════
 // OT reviews
 // ═══════════════════════════════════════════════════════
 describe('ot-reviews', () => {
-  it('GET technician forced to me', async () => {
+  it('GET gives a technician their own reviews', async () => {
     mockAuthAs('technician');
     (prisma.timeClockOtReview.findMany as any).mockResolvedValue([
       { user_id: TEST_USERS.technician.id, period_key: '2026-W24', state: 'APPROVED', reviewed_by: TEST_USERS.admin.id, reviewed_at: new Date() },
     ]);
     const res = await request(app)
-      .get('/api/timeclock/ot-reviews?scope=org')
+      .get('/api/timeclock/ot-reviews')
       .set(authHeader('technician'));
     expect(res.status).toBe(200);
     expect((prisma.timeClockOtReview.findMany as any).mock.calls[0][0].where.user_id).toBe(TEST_USERS.technician.id);
     expect(res.body.reviews[0]).toMatchObject({ period_key: '2026-W24', state: 'APPROVED' });
+  });
+
+  it('GET with scope=org is refused for a technician (no See everyone\'s timesheets) and nothing is read', async () => {
+    mockAuthAs('technician');
+    const res = await request(app)
+      .get('/api/timeclock/ot-reviews?scope=org')
+      .set(authHeader('technician'));
+    expect(res.status).toBe(403);
+    expect(prisma.timeClockOtReview.findMany).not.toHaveBeenCalled();
   });
 
   it('POST requires approver → 403 for plain technician', async () => {
@@ -613,77 +316,24 @@ describe('ot-reviews', () => {
 });
 
 // ═══════════════════════════════════════════════════════
-// RBAC — timeclock admin mutations are CASL-gated (issue #236)
-//
-// Mutations moved off the legacy `authorize('ADMIN')` literal onto
-// `canDo('update', 'Timeclock')`. ADMIN passes via `manage all`; no non-admin
-// role has a Timeclock grant, so dispatcher/sales/technician still get 403 —
-// behavior preserved, now visible in the Roles & Permissions UI.
+// The location endpoints are gone (S01.13): not found, for every person
 // ═══════════════════════════════════════════════════════
-describe('RBAC: timeclock admin mutations gated by canDo("update","Timeclock")', () => {
-  it('catalog: update Timeclock IS a catalog entry; no Walkthrough subject remains', () => {
-    expect(isCatalogEntry('update', 'Timeclock')).toBe(true);
-    expect(isCatalogEntry('read', 'Timeclock')).toBe(true);
-    // #237 — the dead 'Walkthrough' CASL subject is gone (walkthrough = Lead action).
-    expect(isCatalogEntry('read', 'Walkthrough')).toBe(false);
-    expect(isCatalogEntry('update', 'Walkthrough')).toBe(false);
-    expect(isCatalogEntry('manage', 'Walkthrough')).toBe(false);
-  });
-
-  it('admin CAN PUT /config (not 403)', async () => {
-    mockAuthAs('admin');
-    (prisma.geofenceConfig.upsert as any).mockResolvedValue({ radius_m: 200 });
-    const res = await request(app)
-      .put('/api/timeclock/config')
-      .set(authHeader('admin'))
-      .send({ radiusM: 200 });
-    expect(res.status).not.toBe(403);
-    expect(res.status).toBe(200);
-  });
-
-  it('admin CAN POST /stores (not 403)', async () => {
-    mockAuthAs('admin');
-    (prisma.geofenceStore.create as any).mockResolvedValue(STORE_ROW);
-    const res = await request(app)
-      .post('/api/timeclock/stores')
-      .set(authHeader('admin'))
-      .send({ label: 'HQ', lat: AUSTIN.lat, lng: AUSTIN.lng });
-    expect(res.status).not.toBe(403);
-    expect(res.status).toBe(201);
-  });
-
-  // dispatcher / sales / technician each have no Timeclock grant → 403 on every mutation.
-  for (const role of ['dispatcher', 'sales', 'technician'] as const) {
-    describe(`${role} (no Timeclock grant) → 403 on mutations`, () => {
-      it('PUT /config → 403', async () => {
-        mockAuthAs(role);
-        const res = await request(app)
-          .put('/api/timeclock/config')
-          .set(authHeader(role))
-          .send({ radiusM: 200 });
-        expect(res.status).toBe(403);
-        expect(prisma.geofenceConfig.upsert).not.toHaveBeenCalled();
-      });
-
-      it('POST /stores → 403', async () => {
-        mockAuthAs(role);
-        const res = await request(app)
-          .post('/api/timeclock/stores')
-          .set(authHeader(role))
-          .send({ label: 'X', lat: 1, lng: 2 });
-        expect(res.status).toBe(403);
-        expect(prisma.geofenceStore.create).not.toHaveBeenCalled();
-      });
-
-      it('PATCH /users/:id/timeclock-settings → 403', async () => {
-        mockAuthAs(role);
-        const res = await request(app)
-          .patch(`/api/timeclock/users/${TEST_USERS.technician.id}/timeclock-settings`)
-          .set(authHeader(role))
-          .send({ enforce_clock_in_location: false });
-        expect(res.status).toBe(403);
-        expect(prisma.user.update).not.toHaveBeenCalled();
-      });
+describe('radius, work-zone, per-user location and override endpoints', () => {
+  for (const role of ['admin', 'dispatcher', 'sales', 'technician'] as const) {
+    it(`answer 404 to ${role}`, async () => {
+      mockAuthAs(role);
+      const id = TEST_USERS.technician.id;
+      const calls = [
+        request(app).get('/api/timeclock/config').set(authHeader(role)),
+        request(app).put('/api/timeclock/config').set(authHeader(role)).send({ radiusM: 200 }),
+        request(app).post('/api/timeclock/stores').set(authHeader(role)).send({ label: 'X', lat: 1, lng: 2 }),
+        request(app).patch(`/api/timeclock/stores/${id}`).set(authHeader(role)).send({ label: 'Y' }),
+        request(app).delete(`/api/timeclock/stores/${id}`).set(authHeader(role)),
+        request(app).patch(`/api/timeclock/users/${id}/timeclock-settings`).set(authHeader(role)).send({ enforce_clock_in_location: false }),
+        request(app).post(`/api/timeclock/punches/${id}/override/approve`).set(authHeader(role)),
+        request(app).post(`/api/timeclock/punches/${id}/override/reject`).set(authHeader(role)),
+      ];
+      for (const res of await Promise.all(calls)) expect(res.status).toBe(404);
     });
   }
 });

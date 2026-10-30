@@ -4,7 +4,6 @@ import app from '../app';
 import { prisma } from '../lib/prisma';
 import { TEST_USERS, mockAuthAs, authHeader } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 
 // ─── Typed mock aliases ──────────────────────────────────────────────────
 const findMany = prisma.notificationRecipient.findMany as ReturnType<typeof vi.fn>;
@@ -14,7 +13,6 @@ const updateMany = prisma.notificationRecipient.updateMany as ReturnType<typeof 
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache();
 });
 
 // ─── Fixtures ────────────────────────────────────────────────────────────

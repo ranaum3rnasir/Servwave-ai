@@ -73,14 +73,25 @@ describe('computeTaskRisk', () => {
   });
 });
 
-const reqAs = (role: string, id: string) =>
-  ({ user: { id, role, organization_id: 'org-1' } } as any);
+// `seesAll` stands for the ability a person holding See all tasks gets (the Admin box holds every action).
+const reqAs = (role: string, id: string, seesAll = role === 'ADMIN') =>
+  ({
+    user: { id, role, organization_id: 'org-1' },
+    ability: { can: (action: string, subject: string) => seesAll && action === 'see_all' && subject === 'Task' },
+  } as any);
 
 describe('taskVisibilityWhere', () => {
-  it('ADMIN hub → org-only, no OR scoping', () => {
+  it('See all tasks hub → org-only, no OR scoping', () => {
     const w = taskVisibilityWhere(reqAs('ADMIN', 'u-admin'), {});
     expect(w.organization_id).toBe('org-1');
     expect(w.OR).toBeUndefined();
+  });
+  it('a custom role based on Admin WITHOUT See all tasks is scoped like anyone else', () => {
+    const w = taskVisibilityWhere(reqAs('ADMIN', 'u-custom', false), {});
+    expect(w.OR).toEqual([
+      { assignee_ids: { has: 'u-custom' } },
+      { watcher_ids: { has: 'u-custom' } },
+    ]);
   });
   it('non-admin hub → assignee OR watcher, with no created_by arm', () => {
     const w = taskVisibilityWhere(reqAs('TECHNICIAN', 'u-tech'), {});
@@ -98,7 +109,7 @@ describe('taskVisibilityWhere', () => {
 });
 
 describe('diffTaskActivities', () => {
-  const NAMES = new Map([['u-1', 'Dana Cohen'], ['u-2', 'Sagiv Levi']]);
+  const NAMES = new Map([['u-1', 'Dana Cohen'], ['u-2', 'Riley Levi']]);
 
   it('status→DONE yields COMPLETED', () => {
     expect(diffTaskActivities({ status: 'TODO' }, { status: 'DONE' })[0].type).toBe('COMPLETED');
@@ -133,8 +144,8 @@ describe('diffTaskActivities', () => {
     );
     expect(evs).toEqual([
       { type: 'ASSIGNED',        description: 'assigned Dana Cohen' },
-      { type: 'UNASSIGNED',      description: 'unassigned Sagiv Levi' },
-      { type: 'WATCHER_ADDED',   description: 'added Sagiv Levi as watcher' },
+      { type: 'UNASSIGNED',      description: 'unassigned Riley Levi' },
+      { type: 'WATCHER_ADDED',   description: 'added Riley Levi as watcher' },
       { type: 'WATCHER_REMOVED', description: 'removed Dana Cohen as watcher' },
     ]);
   });
@@ -166,7 +177,7 @@ import { userFullName, customerLabel } from '../lib/tasks/enrich';
 
 describe('enrich formatters', () => {
   it('userFullName joins first + last', () => {
-    expect(userFullName({ first_name: 'Oved', last_name: 'Adani' })).toBe('Oved Adani');
+    expect(userFullName({ first_name: 'Morgan', last_name: 'Diaz' })).toBe('Morgan Diaz');
   });
   it('customerLabel prefers company_name, falls back to person, then number', () => {
     expect(customerLabel({ company_name: 'Acme', first_name: null, last_name: null, customer_number: 'C00001' })).toBe('Acme');

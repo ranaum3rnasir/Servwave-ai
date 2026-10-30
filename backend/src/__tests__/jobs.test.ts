@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
+import { FINISHED_JOB_STATUSES } from './finished-job-statuses';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import {
@@ -18,6 +19,9 @@ import {
   TRACKED_ITEM_FIXTURE,
   INVENTORY_LOCATION_FIXTURE,
   mockScopedFindFirst,
+  mockRoleSwitches,
+  attachedJobWhere,
+  stubReopenTransaction,
 } from './helpers';
 import * as resolveNotifs from '../services/notifications/resolveNotifications';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
@@ -36,6 +40,10 @@ vi.mock('../services/automations/dispatch', () => ({
   dispatchAutomationEvent: vi.fn(),
 }));
 import { dispatchAutomationEvent } from '../services/automations/dispatch';
+
+// The job's answer reads the money owed on a job in Ready to close (S06.13, for the Mark Done banner); this file's prisma
+// stub does not model invoices, and nothing here is about money.
+vi.mock('../lib/job-money-owed', () => ({ readJobMoneyOwed: vi.fn(async () => ({ owedCents: 0 })), readJobOwnTotal: vi.fn(async () => 0), lockJobInvoices: vi.fn() }));
 
 /** S8: the one trip a job-level crew statement lands on in these fixtures. */
 const FIXTURE_CURRENT_VISIT = {
@@ -153,6 +161,9 @@ beforeEach(() => {
   // prisma.customer.findMany; default to "no other customer matches" so existing-customer
   // accretion tests don't spuriously 409.
   (prisma.customer.findMany as any).mockResolvedValue([]);
+  // The job-level complete writes its visit cancels, history entries, status move and review round in one transaction
+  // (S06.1); the stub runs that callback against the same mocked client.
+  mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => fn(mockPrisma));
 });
 
 /**
@@ -283,12 +294,8 @@ describe('GET /api/jobs', () => {
     await request(app).get('/api/jobs').set(authHeader('technician'));
 
     const call = mockPrisma.job.findMany.mock.calls[0][0];
-    // Assigned OR created by them (technician-ownership spec, Part C). The OR half is what keeps
-    // a job the technician made but was taken off visible to them.
-    expect(call.where.OR).toEqual([
-      { visits: { some: { assignees: { some: { user_id: TEST_USERS.technician.id } } } } },
-      { created_by_id: TEST_USERS.technician.id },
-    ]);
+    // Attached (S01.2): on a visit's crew, Sold By or Dispatcher. Having created the job attaches nobody.
+    expect(call.where.OR).toEqual(attachedJobWhere(TEST_USERS.technician.id));
   });
 
   it('SALES auto-filters to jobs from own leads', async () => {
@@ -377,12 +384,7 @@ describe('GET /api/jobs', () => {
 
     await request(app).get('/api/jobs').set(authHeader('technician'));
 
-    const techFilter = {
-      OR: [
-        { visits: { some: { assignees: { some: { user_id: TEST_USERS.technician.id } } } } },
-        { created_by_id: TEST_USERS.technician.id },
-      ],
-    };
+    const techFilter = { OR: attachedJobWhere(TEST_USERS.technician.id) };
 
     // The groupBy call for stats must include the TECHNICIAN crew filter
     const groupByCall = mockPrisma.job.groupBy.mock.calls[0][0];
@@ -461,7 +463,7 @@ describe('GET /api/jobs', () => {
     mockPrisma.job.groupBy.mockResolvedValue([]);
     await request(app).get('/api/jobs?needs_invoice=true').set(authHeader('admin'));
     const where = mockPrisma.job.findMany.mock.calls[0][0].where;
-    expect(where.status).toBe('COMPLETED');
+    expect(where.status).toEqual({ in: FINISHED_JOB_STATUSES });
     expect(where.NOT).toEqual({ invoices: { some: { status: { not: 'VOIDED' } } } });
   });
 
@@ -476,11 +478,15 @@ describe('GET /api/jobs', () => {
     mockPrisma.job.count.mockResolvedValue(0);
     mockPrisma.job.groupBy.mockResolvedValue([]);
     await request(app).get('/api/jobs').set(authHeader('admin'));
+    // S06.30: the tile's conditions are the list's `completed_this_month` filter's, composed under AND.
     const completed = mockPrisma.job.count.mock.calls.find(
-      (c: any) => c[0].where?.status === 'COMPLETED' && Array.isArray(c[0].where?.AND),
+      (c: any) => Array.isArray(c[0].where?.AND)
+        && c[0].where.AND.some((cond: any) => Array.isArray(cond.status?.in) && cond.status.in.includes('COMPLETED')),
     );
     expect(completed).toBeDefined();
-    const orClause = completed![0].where.AND[0].OR;
+    // The tile counts every finished status, not Completed alone (PRD 6).
+    expect(completed![0].where.AND[0]).toEqual({ status: { in: FINISHED_JOB_STATUSES } });
+    const orClause = completed![0].where.AND[1].OR;
     expect(orClause).toBeInstanceOf(Array);
     const window = orClause[0].visits.some.scheduled_at;
     // Half-open on the ORG's calendar month: `[1st 00:00 org, next 1st 00:00 org)`. It was
@@ -523,10 +529,8 @@ describe('GET /api/jobs', () => {
   // NOTHING (never the whole org), applied to BOTH the findMany AND the count + groupBy.
   it('a scoped user whose team-conditioned read grant resolves to null team lists nothing (fail-closed)', async () => {
     mockAuthAs('technician'); // TEST_USERS.technician has no department_id (null team)
-    // Override: read Job conditioned on team — token {{teamId}} → null for this user.
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { action: 'read', subject: 'Job', conditions: { assignees: { some: { user_id: '{{userId}}', department_id: '{{teamId}}' } } } },
-    ]);
+    // Jobs scope Team: the person's team token resolves to null for this user.
+    mockRoleSwitches({ jobs_scope: 'team' });
     mockPrisma.job.findMany.mockResolvedValue([]);
     mockPrisma.job.count.mockResolvedValue(0);
     mockPrisma.job.groupBy.mockResolvedValue([]);
@@ -652,6 +656,8 @@ describe('GET /api/jobs', () => {
           },
         },
       },
+      // S06.30: the default view, composed after the filters, leaves Done out.
+      { status: { not: 'DONE' } },
     ]);
     expect(call.where).not.toHaveProperty('assignees');
   });
@@ -678,18 +684,17 @@ describe('GET /api/jobs', () => {
 
     const call = mockPrisma.job.findMany.mock.calls[0][0];
     // The role-scope's own restriction survives UNCHANGED — never overwritten by the
-    // query-param value. It is an OR union since the technician-ownership spec widened `read Job`
-    // to assigned-or-created; the property under test is that it is untouched, not its shape.
-    expect(call.where.OR).toEqual([
-      { visits: { some: { assignees: { some: { user_id: TEST_USERS.technician.id } } } } },
-      { created_by_id: TEST_USERS.technician.id },
-    ]);
+    // query-param value. It is an OR union over the people attached to a job; the property under test
+    // is that it is untouched, not its shape.
+    expect(call.where.OR).toEqual(attachedJobWhere(TEST_USERS.technician.id));
     // The attacker-supplied assigned_to is composed as a SEPARATE AND clause, additively
     // narrowing (never widening) visibility - the tech still can't see Sales's jobs. S8: it
     // reaches crew through the trips, like the row scope above; a top-level `assignees` key
     // would be a dead relation and a 500, not a narrower filter.
     expect(call.where.AND).toEqual([
       { visits: { some: { assignees: { some: { user_id: TEST_USERS.sales.id } } } } },
+      // S06.30: the default view, composed after the filters, leaves Done out.
+      { status: { not: 'DONE' } },
     ]);
     expect(call.where).not.toHaveProperty('assignees');
   });
@@ -750,6 +755,8 @@ describe('POST /api/jobs — standard', () => {
         // these estimate mocks, so the lookup is a no-op returning [].
         priceBookItem: { findMany: vi.fn().mockResolvedValue([]) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
+        // The lead's own entries are carried onto the job in the same transaction (S05.15); none here.
+        recordContactEntry: { findMany: vi.fn().mockResolvedValue([]) },
         // MV-BOARD-15: a create carrying a scheduled_start now books visit 1 in this same
         // transaction, so the tx fake has to answer the visit + org delegates.
         visit: {
@@ -790,6 +797,8 @@ describe('POST /api/jobs — standard', () => {
         jobLineItem: { createMany: vi.fn().mockResolvedValue({ count: 0 }) },
         priceBookItem: { findMany: vi.fn().mockResolvedValue([]) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
+        // The lead's own entries are carried onto the job in the same transaction (S05.15); none here.
+        recordContactEntry: { findMany: vi.fn().mockResolvedValue([]) },
         visit: {
           create: vi.fn().mockResolvedValue({ id: 'v-new', visit_seq: 1 }),
           update: vi.fn().mockResolvedValue({}),
@@ -842,6 +851,8 @@ describe('POST /api/jobs — standard', () => {
         jobLineItem: { createMany: vi.fn().mockResolvedValue({ count: 0 }) },
         priceBookItem: { findMany: vi.fn().mockResolvedValue([]) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
+        // The lead's own entries are carried onto the job in the same transaction (S05.15); none here.
+        recordContactEntry: { findMany: vi.fn().mockResolvedValue([]) },
         visit: {
           create: vi.fn().mockResolvedValue({ id: 'v-new', visit_seq: 1 }),
           update: vi.fn().mockResolvedValue({}),
@@ -923,6 +934,8 @@ describe('POST /api/jobs — standard', () => {
         jobLineItem: { createMany: vi.fn().mockResolvedValue({ count: 0 }) },
         priceBookItem: { findMany: vi.fn().mockResolvedValue([]) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
+        // The lead's own entries are carried onto the job in the same transaction (S05.15); none here.
+        recordContactEntry: { findMany: vi.fn().mockResolvedValue([]) },
         // MV-BOARD-15: a create carrying a scheduled_start now books visit 1 in this same
         // transaction, so the tx fake has to answer the visit + org delegates.
         visit: {
@@ -1162,6 +1175,8 @@ describe('POST /api/jobs — standard', () => {
         // these estimate mocks, so the lookup is a no-op returning [].
         priceBookItem: { findMany: vi.fn().mockResolvedValue([]) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
+        // The lead's own entries are carried onto the job in the same transaction (S05.15); none here.
+        recordContactEntry: { findMany: vi.fn().mockResolvedValue([]) },
         // MV-BOARD-15: a create carrying a scheduled_start now books visit 1 in this same
         // transaction, so the tx fake has to answer the visit + org delegates.
         visit: {
@@ -1395,6 +1410,8 @@ describe('POST /api/jobs — standard', () => {
         // these estimate mocks, so the lookup is a no-op returning [].
         priceBookItem: { findMany: vi.fn().mockResolvedValue([]) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
+        // The lead's own entries are carried onto the job in the same transaction (S05.15); none here.
+        recordContactEntry: { findMany: vi.fn().mockResolvedValue([]) },
         // MV-BOARD-15: a create carrying a scheduled_start now books visit 1 in this same
         // transaction, so the tx fake has to answer the visit + org delegates.
         visit: {
@@ -1452,6 +1469,8 @@ describe('POST /api/jobs — standard', () => {
         // these estimate mocks, so the lookup is a no-op returning [].
         priceBookItem: { findMany: vi.fn().mockResolvedValue([]) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
+        // The lead's own entries are carried onto the job in the same transaction (S05.15); none here.
+        recordContactEntry: { findMany: vi.fn().mockResolvedValue([]) },
         // MV-BOARD-15: a create carrying a scheduled_start now books visit 1 in this same
         // transaction, so the tx fake has to answer the visit + org delegates.
         visit: {
@@ -1510,6 +1529,8 @@ describe('POST /api/jobs — standard', () => {
         // these estimate mocks, so the lookup is a no-op returning [].
         priceBookItem: { findMany: vi.fn().mockResolvedValue([]) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
+        // The lead's own entries are carried onto the job in the same transaction (S05.15); none here.
+        recordContactEntry: { findMany: vi.fn().mockResolvedValue([]) },
         // MV-BOARD-15: a create carrying a scheduled_start now books visit 1 in this same
         // transaction, so the tx fake has to answer the visit + org delegates.
         visit: {
@@ -1567,6 +1588,8 @@ describe('POST /api/jobs — standard', () => {
         // these estimate mocks, so the lookup is a no-op returning [].
         priceBookItem: { findMany: vi.fn().mockResolvedValue([]) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
+        // The lead's own entries are carried onto the job in the same transaction (S05.15); none here.
+        recordContactEntry: { findMany: vi.fn().mockResolvedValue([]) },
         // MV-BOARD-15: a create carrying a scheduled_start now books visit 1 in this same
         // transaction, so the tx fake has to answer the visit + org delegates.
         visit: {
@@ -1608,6 +1631,8 @@ describe('POST /api/jobs — resolveScheduleJobNotifications', () => {
         // these estimate mocks, so the lookup is a no-op returning [].
         priceBookItem: { findMany: vi.fn().mockResolvedValue([]) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
+        // The lead's own entries are carried onto the job in the same transaction (S05.15); none here.
+        recordContactEntry: { findMany: vi.fn().mockResolvedValue([]) },
         // MV-BOARD-15: a create carrying a scheduled_start now books visit 1 in this same
         // transaction, so the tx fake has to answer the visit + org delegates.
         visit: {
@@ -1666,6 +1691,8 @@ describe('POST /api/jobs — resolveScheduleJobNotifications', () => {
         orgTaxRate: { findFirst: vi.fn().mockResolvedValue(null) },
         stateTaxRate: { findFirst: vi.fn().mockResolvedValue(null) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
+        // The lead's own entries are carried onto the job in the same transaction (S05.15); none here.
+        recordContactEntry: { findMany: vi.fn().mockResolvedValue([]) },
         // MV-BOARD-15: a create carrying a scheduled_start now books visit 1 in this same
         // transaction, so the tx fake has to answer the visit + org delegates.
         visit: {
@@ -1724,6 +1751,8 @@ describe('POST /api/jobs — create schema (one-of estimate | customer+location)
         orgTaxRate: { findFirst: vi.fn().mockResolvedValue(null) },
         stateTaxRate: { findFirst: vi.fn().mockResolvedValue(null) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
+        // The lead's own entries are carried onto the job in the same transaction (S05.15); none here.
+        recordContactEntry: { findMany: vi.fn().mockResolvedValue([]) },
         // MV-BOARD-15: a create carrying a scheduled_start now books visit 1 in this same
         // transaction, so the tx fake has to answer the visit + org delegates.
         visit: {
@@ -2780,8 +2809,9 @@ describe('PATCH /api/jobs/:id', () => {
       expect(mockPrisma.job.update).not.toHaveBeenCalled();
     });
 
-    it('does not require manage_lines Job - a technician on the crew can save it without pricing access', async () => {
+    it('does not require manage_lines Job - a technician on the crew with Edit jobs can save it without pricing access', async () => {
       mockAuthAs('technician');
+      mockRoleSwitches({ edit_jobs: true });
       mockPrisma.job.findUnique.mockResolvedValue({
         ...JOB_FIXTURE,
         ...withCrew([TEST_USERS.technician.id]),
@@ -2860,12 +2890,28 @@ describe('PATCH /api/jobs/:id', () => {
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
   });
 
-  // Spec A D3 (2026-07-21, main-app migration): `update Job` (OWN_JOB) became a TECHNICIAN role
-  // default so a technician can add notes and line items on their own job in the main app. So a
-  // technician on the crew CAN update their own job now — the un-owned/nested-team negative
-  // cases below still prove the per-instance gate holds.
-  it('allows a TECHNICIAN to update a job they are on the crew of (own-scoped role default)', async () => {
+  // Edit jobs is a switch (S01.11), off in the Technician preset: a technician on the crew edits the job's
+  // details only when the person is given the switch. Adding a note rides Add notes instead.
+  it('refuses a TECHNICIAN on the crew a job edit while Edit jobs is off (the Technician preset)', async () => {
     mockAuthAs('technician');
+    mockPrisma.job.findUnique.mockResolvedValue({
+      ...JOB_FIXTURE,
+      ...withCrew([TEST_USERS.technician.id]),
+    });
+    mockPrisma.job.findFirst.mockResolvedValue({ id: JOB_FIXTURE.id });
+
+    const res = await request(app)
+      .patch(`/api/jobs/${JOB_FIXTURE.id}`)
+      .set(authHeader('technician'))
+      .send({ scope_notes: 'my edit' });
+
+    expect(res.status).toBe(403);
+    expect(mockPrisma.job.update).not.toHaveBeenCalled();
+  });
+
+  it('allows a TECHNICIAN to update a job they are on the crew of once Edit jobs is on', async () => {
+    mockAuthAs('technician');
+    mockRoleSwitches({ edit_jobs: true });
     mockPrisma.job.findUnique.mockResolvedValue({
       ...JOB_FIXTURE,
       ...withCrew([TEST_USERS.technician.id]),
@@ -2898,11 +2944,8 @@ describe('PATCH /api/jobs/:id', () => {
       department_id: 'dept-9',
       organization: TEST_ORG,
     });
-    // read + update Job both conditioned on the crew member's TEAM (nested user.department_id).
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { action: 'read', subject: 'Job', conditions: { assignees: { some: { user: { department_id: '{{teamId}}' } } } } },
-      { action: 'update', subject: 'Job', conditions: { assignees: { some: { user: { department_id: '{{teamId}}' } } } } },
-    ]);
+    // read + update Job both reach the crew member's TEAM (Jobs scope Team, Edit jobs on).
+    mockRoleSwitches({ jobs_scope: 'team', edit_jobs: true });
     mockPrisma.job.findUnique.mockResolvedValue(JOB_FIXTURE);
     // canAccessRow's scoped visibility probe: un-owned under the team scope → null.
     mockPrisma.job.findFirst.mockResolvedValue(null);
@@ -2926,10 +2969,7 @@ describe('PATCH /api/jobs/:id', () => {
       department_id: 'dept-9',
       organization: TEST_ORG,
     });
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { action: 'read', subject: 'Job', conditions: { assignees: { some: { user: { department_id: '{{teamId}}' } } } } },
-      { action: 'update', subject: 'Job', conditions: { assignees: { some: { user: { department_id: '{{teamId}}' } } } } },
-    ]);
+    mockRoleSwitches({ jobs_scope: 'team', edit_jobs: true });
     mockPrisma.job.findUnique.mockResolvedValue(JOB_FIXTURE);
     // Visible under the team scope → findFirst returns the row id → access granted.
     mockPrisma.job.findFirst.mockResolvedValue({ id: JOB_FIXTURE.id });
@@ -3197,15 +3237,12 @@ describe('PATCH /api/jobs/:id', () => {
     });
 
     // DISPATCHER can update a Job unconditionally by default; every default role that can is
-    // ALSO a pricing holder, so this simulates the guard's real target the same way Estimate's
-    // does - a grant set with the "See financial data" grant withheld. SRVW-140 - the withheld
-    // subject is `Pricing`, not `Invoice`: canSeePricing was repointed.
+    // ALSO a cost holder, so this simulates the guard's real target the same way Estimate's
+    // does - a switch set with "See financial data" withheld.
     it('returns 403 and does not write when the requester can update the Job but cannot see pricing', async () => {
       clearPermissionCache();
       mockAuthAs('dispatcher');
-      (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue(
-        DEFAULT_GRANTS.filter((g) => g.role === 'DISPATCHER' && g.subject !== 'Pricing'),
-      );
+      mockRoleSwitches({ see_financial_data: false });
       mockPrisma.job.findUnique.mockResolvedValue(JOB_FIXTURE);
 
       const res = await request(app)
@@ -3381,23 +3418,26 @@ describe('PATCH /api/jobs/:id', () => {
       expect(captured.data.tax_rate).toBe(0);
     });
 
-    // Mirrors the existing cost-field (labor_hours/overhead) pricing gate.
-    it('returns 403 and does not write when the requester can update the Job but cannot see pricing', async () => {
+    // S01.15 - the tax rate is a PRICE: See financial data covers costs only, so a requester without it
+    // still writes the tax rate of a job it can edit (the cost-field gate above is labor and overhead only).
+    it('writes tax_rate for a requester who can update the Job but cannot see costs', async () => {
       clearPermissionCache();
       mockAuthAs('dispatcher');
-      (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue(
-        DEFAULT_GRANTS.filter((g) => g.role === 'DISPATCHER' && g.subject !== 'Pricing'),
-      );
+      mockRoleSwitches({ see_financial_data: false });
       mockPrisma.job.findUnique.mockResolvedValue(jobWithLines());
+      let captured: any;
+      mockPrisma.job.update.mockImplementation((args: any) => {
+        captured = args;
+        return Promise.resolve({ ...JOB_FIXTURE, tax_rate: 0.08 });
+      });
 
       const res = await request(app)
         .patch(`/api/jobs/${JOB_FIXTURE.id}`)
         .set(authHeader('dispatcher'))
         .send({ tax_rate: 0.08 });
 
-      expect(res.status).toBe(403);
-      expect(res.body.error).toContain('cost fields');
-      expect(mockPrisma.job.update).not.toHaveBeenCalled();
+      expect(res.status).toBe(200);
+      expect(captured.data.tax_rate).toBe(0.08);
     });
 
     it('rejects an invalid discount_type at the Zod layer', async () => {
@@ -3470,6 +3510,9 @@ describe('PATCH /api/jobs/:id', () => {
         on_site_at: new Date('2026-09-01T09:05:00Z'),
         started_at: new Date('2026-09-01T09:10:00Z'),
         completed_at: new Date('2026-09-01T10:45:00Z'),
+        // A trip still open on the job: the date moves that trip. A closed job with none would be refused instead
+        // (S04.23, no new visit on a locked job), see the next case.
+        visits: [{ status: 'SCHEDULED', scheduled_at: new Date('2026-09-01T09:00:00Z'), scheduled_end: new Date('2026-09-01T11:00:00Z'), is_all_day: false, created_at: new Date('2026-08-01T00:00:00Z'), assignees: [] }],
       });
       let captured: any;
       mockPrisma.job.update.mockImplementation((args: any) => {
@@ -3710,10 +3753,7 @@ describe('DELETE /api/jobs/:id', () => {
     expect(res.body.error).toMatch(/invoice/i);
   });
 
-  // TECHNICIAN holds `delete Job` since the technician-ownership spec, Part C - but conditioned on
-  // `created_by_id`, so a job they did not create is still refused, now by the CONTROLLER's
-  // per-instance check rather than the route guard. The creator's positive case (and the
-  // invoice-bearing-job rule that still outranks it) lives in job-creator-control.test.ts.
+  // The Technician preset holds Delete jobs off, so the route guard refuses before any per-instance check.
   it('TECHNICIAN cannot delete a job they did not create (403)', async () => {
     mockAuthAs('technician');
     mockPrisma.job.findUnique.mockResolvedValue({ ...JOB_FIXTURE, created_by_id: TEST_USERS.admin.id, invoices: [], ...withCrew([]) });
@@ -3733,18 +3773,12 @@ describe('DELETE /api/jobs/:id', () => {
   });
 
   // ── #106 per-instance ENFORCEMENT for delete ──
-  // Prove the controller's per-instance delete check fires even when a role HAS a
-  // conditional `delete Job` grant (so the subject-level route guard passes). We override
-  // the TECHNICIAN grants with a conditional `delete Job` (OWN_JOB); a row owned by another
-  // user must 403 from the CONTROLLER and must NOT call job.delete.
+  // Prove the controller's per-instance delete check fires even when a role HAS Delete jobs on (so the
+  // subject-level route guard passes). We give the Technician Delete jobs on Attached scope; a row owned
+  // by another user must 403 from the CONTROLLER and must NOT call job.delete.
   it('returns 403 + does NOT delete when a scoped (conditional-delete) user targets a job owned by another user', async () => {
     mockAuthAs('technician');
-    // Override default grants: give TECHNICIAN read + conditional delete on Job so the
-    // route guard (subject-level) passes and execution reaches the controller.
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { action: 'read', subject: 'Job', conditions: { assignees: { some: { user_id: '{{userId}}' } } } },
-      { action: 'delete', subject: 'Job', conditions: { assignees: { some: { user_id: '{{userId}}' } } } },
-    ]);
+    mockRoleSwitches({ delete_jobs: true });
     // Unassigned + no invoice would otherwise pass the status/invoice guards — the
     // ownership check must block first because the crew is someone else.
     mockPrisma.job.findUnique.mockResolvedValue({
@@ -3766,10 +3800,7 @@ describe('DELETE /api/jobs/:id', () => {
 
   it('allows a scoped (conditional-delete) user to delete a job they own', async () => {
     mockAuthAs('technician');
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { action: 'read', subject: 'Job', conditions: { assignees: { some: { user_id: '{{userId}}' } } } },
-      { action: 'delete', subject: 'Job', conditions: { assignees: { some: { user_id: '{{userId}}' } } } },
-    ]);
+    mockRoleSwitches({ delete_jobs: true });
     mockPrisma.job.findUnique.mockResolvedValue({
       ...JOB_FIXTURE,
       invoices: [],
@@ -3800,10 +3831,7 @@ describe('DELETE /api/jobs/:id', () => {
       department_id: 'dept-9',
       organization: TEST_ORG,
     });
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { action: 'read', subject: 'Job', conditions: { assignees: { some: { user: { department_id: '{{teamId}}' } } } } },
-      { action: 'delete', subject: 'Job', conditions: { assignees: { some: { user: { department_id: '{{teamId}}' } } } } },
-    ]);
+    mockRoleSwitches({ jobs_scope: 'team', delete_jobs: true });
     mockPrisma.job.findUnique.mockResolvedValue({ ...JOB_FIXTURE, invoices: [] });
     mockPrisma.job.findFirst.mockResolvedValue(null); // un-owned under team scope
 
@@ -3824,10 +3852,7 @@ describe('DELETE /api/jobs/:id', () => {
       department_id: 'dept-9',
       organization: TEST_ORG,
     });
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { action: 'read', subject: 'Job', conditions: { assignees: { some: { user: { department_id: '{{teamId}}' } } } } },
-      { action: 'delete', subject: 'Job', conditions: { assignees: { some: { user: { department_id: '{{teamId}}' } } } } },
-    ]);
+    mockRoleSwitches({ jobs_scope: 'team', delete_jobs: true });
     mockPrisma.job.findUnique.mockResolvedValue({ ...JOB_FIXTURE, invoices: [] });
     mockPrisma.job.findFirst.mockResolvedValue({ id: JOB_FIXTURE.id }); // visible under team scope
     mockPrisma.job.delete.mockResolvedValue(JOB_FIXTURE);
@@ -4020,9 +4045,11 @@ describe('POST /api/jobs/:id/assign', () => {
     expect(tx.txJobUpdate.mock.calls[0][0].data.customer_scheduled_email_sent_at).toBeInstanceOf(Date);
   });
 
-  it('accepts a DISPATCHER assignee (#366: all active users job-crew-eligible)', async () => {
-    // #366: job-crew eligibility = ALL active org users (widened ASSIGNABLE_ROLES).
+  it('accepts a DISPATCHER-role assignee whose Can be on a crew is on (the switch decides, not the role)', async () => {
+    // Slot eligibility: a person is crew-eligible by their own switch. The Dispatcher preset has it off, so
+    // it is turned on here for the whole mocked org.
     mockAuthAs('admin');
+    mockRoleSwitches({ can_be_on_crew: true });
     mockPrisma.job.findUnique.mockResolvedValue(JOB_FIXTURE);
     wireAssignTx({ ...JOB_FIXTURE, status: 'SCHEDULED' });
 
@@ -4454,7 +4481,8 @@ describe('POST /api/jobs/:id/assign', () => {
       const data = tx.txJobUpdate.mock.calls[0][0].data;
       expect(data.status).toBe('SCHEDULED');
       expect(data.completed_at).toBeNull();
-      expect(data.cancelled_at).toBeNull();
+      // S06.17: a moving window never touches the cancel record; a Cancelled job is refused before it gets here.
+      expect(data).not.toHaveProperty('cancelled_at');
       expect(tx.txVisitUpdate).toHaveBeenCalled();
       const eventTypes = tx.txTimeline.mock.calls.map((c: any[]) => c[0].data.event_type);
       expect(eventTypes).toContain('RESCHEDULED');
@@ -4847,8 +4875,9 @@ describe('POST /api/jobs/:id/assignees', () => {
     expect(dispatchedType('JOB_RESCHEDULED')).toHaveLength(0);
   });
 
-  it('accepts a DISPATCHER crew member (#366: all active users job-crew-eligible)', async () => {
+  it('accepts a DISPATCHER-role crew member whose Can be on a crew is on (the switch decides, not the role)', async () => {
     mockAuthAs('admin');
+    mockRoleSwitches({ can_be_on_crew: true });
     mockPrisma.job.findUnique.mockResolvedValue({ ...JOB_FIXTURE, status: 'SCHEDULED' });
     mockPrisma.job.findFirst.mockResolvedValue({ ...JOB_FIXTURE, status: 'SCHEDULED' });
     const tx = wireAssigneesTx({ ...JOB_FIXTURE, status: 'SCHEDULED' });
@@ -5213,66 +5242,61 @@ describe('POST /api/jobs/:id/complete', () => {
     expect(res.status).toBe(200);
   });
 
-  // Multi-visit S4 / D15: `complete Job` is no longer a TECHNICIAN role DEFAULT - it is seeded
-  // into role_permissions at org creation only, so orgs provisioned before the change keep it and
-  // new ones never get it. Whether the grant is present at all is covered end to end in
-  // technician-complete-grant.test.ts. These two tests are about something else and still are:
-  // given an org that HOLDS the grant, the OWN_JOB row-scope decides. The grant is therefore
-  // seeded explicitly rather than left to mockAuthAs's DEFAULT_GRANTS - without it the 403 below
-  // would pass because the technician has no `complete Job` at all, proving nothing about scope.
-  const legacyTechnicianGrants = () => [
-    ...DEFAULT_GRANTS.filter((g) => g.role === 'TECHNICIAN'),
-    {
-      role: 'TECHNICIAN',
-      action: 'complete',
-      subject: 'Job',
-      conditions: { assignees: { some: { user_id: '{{userId}}' } } },
-    },
-  ];
-
-  it('TECHNICIAN can complete their own assigned job when the org carries the grant', async () => {
-    mockAuthAs('technician');
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue(
-      legacyTechnicianGrants(),
-    );
-    clearPermissionCache();
-    mockPrisma.job.findUnique.mockResolvedValue({
-      ...JOB_FIXTURE,
-      status: 'IN_PROGRESS',
-      ...withCrew([TEST_USERS.technician.id]),
-    });
-    mockPrisma.job.update.mockResolvedValue({ ...JOB_FIXTURE, status: 'COMPLETED' });
-    mockPrisma.timelineEvent.create.mockResolvedValue({});
-
-    const res = await request(app)
+  // Roles & Permissions S01.8: Complete jobs is a switch (off in the Technician preset) and, with it on, any job in
+  // the person's Jobs scope completes - crew or not. The first case is a technician an admin gave the switch to;
+  // the second is the same person on a job outside their Attached scope; the third has the switch off.
+  const completeAs = () =>
+    request(app)
       .post(`/api/jobs/${JOB_FIXTURE.id}/complete`)
       .set(authHeader('technician'))
       .send({ completion_notes: 'Done' });
 
-    expect(res.status).toBe(200);
+  const jobWithCrew = (userIds: string[]) => ({ ...JOB_FIXTURE, status: 'IN_PROGRESS', ...withCrew(userIds) });
+
+  it('TECHNICIAN with Complete jobs on can complete a job they are attached to', async () => {
+    mockAuthAs('technician');
+    mockRoleSwitches({ complete_jobs: true });
+    const job = jobWithCrew([TEST_USERS.technician.id]);
+    mockPrisma.job.findUnique.mockResolvedValue(job);
+    mockScopedFindFirst(mockPrisma.job.findFirst, { ...job, organization_id: ALPHA_ORG_ID });
+    mockPrisma.job.update.mockResolvedValue({ ...JOB_FIXTURE, status: 'COMPLETED' });
+    mockPrisma.timelineEvent.create.mockResolvedValue({});
+
+    expect((await completeAs()).status).toBe(200);
   });
 
-  it('TECHNICIAN cannot complete a job they are not assigned to (403)', async () => {
+  it('TECHNICIAN with Complete jobs on cannot complete a job outside their Jobs scope (403)', async () => {
     mockAuthAs('technician');
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue(
-      legacyTechnicianGrants(),
-    );
-    clearPermissionCache();
-    mockPrisma.job.findUnique.mockResolvedValue({
-      ...JOB_FIXTURE,
-      status: 'IN_PROGRESS',
-      ...withCrew(['other-tech-id']),
-    });
+    mockRoleSwitches({ complete_jobs: true });
+    const job = jobWithCrew(['other-tech-id']);
+    mockPrisma.job.findUnique.mockResolvedValue(job);
+    mockScopedFindFirst(mockPrisma.job.findFirst, { ...job, organization_id: ALPHA_ORG_ID });
     mockPrisma.job.update.mockResolvedValue({ ...JOB_FIXTURE, status: 'COMPLETED' });
     mockPrisma.timelineEvent.create.mockResolvedValue({});
 
-    const res = await request(app)
-      .post(`/api/jobs/${JOB_FIXTURE.id}/complete`)
-      .set(authHeader('technician'))
-      .send({ completion_notes: 'Done' });
-
+    const res = await completeAs();
     expect(res.status).toBe(403);
-    expect(res.body.error).toBe('Insufficient permissions');
+    expect(mockPrisma.job.update).not.toHaveBeenCalled();
+  });
+
+  it('TECHNICIAN with Complete jobs on completes a job they are not crew on when Jobs scope is All', async () => {
+    mockAuthAs('technician');
+    mockRoleSwitches({ complete_jobs: true, jobs_scope: 'all' });
+    mockPrisma.job.findUnique.mockResolvedValue(jobWithCrew(['other-tech-id']));
+    mockPrisma.job.update.mockResolvedValue({ ...JOB_FIXTURE, status: 'COMPLETED' });
+    mockPrisma.timelineEvent.create.mockResolvedValue({});
+
+    expect((await completeAs()).status).toBe(200);
+  });
+
+  it('TECHNICIAN with Complete jobs off (the preset) cannot complete even a job they are crew on (403)', async () => {
+    mockAuthAs('technician');
+    const job = jobWithCrew([TEST_USERS.technician.id]);
+    mockPrisma.job.findUnique.mockResolvedValue(job);
+    mockScopedFindFirst(mockPrisma.job.findFirst, { ...job, organization_id: ALPHA_ORG_ID });
+
+    const res = await completeAs();
+    expect(res.status).toBe(403);
     expect(mockPrisma.job.update).not.toHaveBeenCalled();
   });
 });
@@ -5459,7 +5483,8 @@ describe('POST /api/jobs/:id/cancel', () => {
     updated: any,
     opts: { jobSyncedLines?: any[]; invoiceSyncedLines?: any[]; items?: any[] } = {},
   ) {
-    const txInvoiceUpdate = vi.fn().mockResolvedValue({});
+    // #891: the cascade's void is a conditional updateMany (count 1 = voided).
+    const txInvoiceUpdate = vi.fn().mockResolvedValue({ count: 1 });
     const txJobUpdate = vi.fn().mockResolvedValue(updated);
     const txTimeline = vi.fn().mockResolvedValue({});
     const txJobLineFindMany = vi.fn().mockResolvedValue(opts.jobSyncedLines ?? []);
@@ -5468,7 +5493,11 @@ describe('POST /api/jobs/:id/cancel', () => {
     const txInvLineUpdateMany = vi.fn().mockResolvedValue({ count: (opts.invoiceSyncedLines ?? []).length });
     mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
       fn({
-        invoice: { update: txInvoiceUpdate },
+        // #891: the cascade locks the invoices it voids before voiding them.
+        $executeRaw: vi.fn().mockResolvedValue(1),
+        invoice: { updateMany: txInvoiceUpdate },
+        // #891: a cascade-voided invoice releases any deposit credit drawn onto it.
+        depositCreditApplication: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         job: { update: txJobUpdate },
         timelineEvent: { create: txTimeline },
         jobLineItem: { findMany: txJobLineFindMany, updateMany: txJobLineUpdateMany },
@@ -5491,6 +5520,8 @@ describe('POST /api/jobs/:id/cancel', () => {
     mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
       fn({
         invoice: { update: vi.fn().mockResolvedValue({}) },
+        // #891: a cascade-voided invoice releases any deposit credit drawn onto it.
+        depositCreditApplication: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         job: { update: vi.fn().mockResolvedValue({ ...JOB_FIXTURE, status: 'CANCELLED' }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         organization: { findUnique: vi.fn().mockResolvedValue({ default_job_duration_min: 120 }) },
@@ -5506,7 +5537,7 @@ describe('POST /api/jobs/:id/cancel', () => {
     const res = await request(app)
       .post(`/api/jobs/${JOB_FIXTURE.id}/cancel`)
       .set(authHeader('admin'))
-      .send({ cancelled_reason: 'Visit not needed' });
+      .send({ cancel_reason_code: 'OTHER', cancelled_reason: 'Visit not needed' });
 
     expect(res.status).toBe(200);
     expect(txPlanVisitUpdateMany).toHaveBeenCalledWith(
@@ -5525,7 +5556,7 @@ describe('POST /api/jobs/:id/cancel', () => {
     const res = await request(app)
       .post(`/api/jobs/${JOB_FIXTURE.id}/cancel`)
       .set(authHeader('admin'))
-      .send({ cancelled_reason: 'Customer cancelled' });
+      .send({ cancel_reason_code: 'OTHER', cancelled_reason: 'Customer cancelled' });
 
     expect(res.status).toBe(200);
     expect(res.body.collected_total).toBe(0);
@@ -5540,7 +5571,7 @@ describe('POST /api/jobs/:id/cancel', () => {
     const res = await request(app)
       .post(`/api/jobs/${JOB_FIXTURE.id}/cancel`)
       .set(authHeader('admin'))
-      .send({ cancelled_reason: 'No show' });
+      .send({ cancel_reason_code: 'OTHER', cancelled_reason: 'No show' });
 
     expect(res.status).toBe(200);
   });
@@ -5553,7 +5584,7 @@ describe('POST /api/jobs/:id/cancel', () => {
     const res = await request(app)
       .post(`/api/jobs/${JOB_FIXTURE.id}/cancel`)
       .set(authHeader('admin'))
-      .send({ cancelled_reason: 'Emergency' });
+      .send({ cancel_reason_code: 'OTHER', cancelled_reason: 'Emergency' });
 
     expect(res.status).toBe(200);
   });
@@ -5564,14 +5595,26 @@ describe('POST /api/jobs/:id/cancel', () => {
       ...JOB_FIXTURE,
       status: 'IN_PROGRESS',
       invoices: [
-        // OPEN/billable SENT invoice with $300 collected, $0 refunded → voided to 0.
+        // OPEN/billable SENT invoice with nothing collected → voided to 0. (#891: an OPEN invoice
+        // carrying money now blocks the cancel - see job-cancel-with-payments.test.ts.)
         {
           id: 'inv-open-1',
           status: 'SENT',
           kind: 'STANDARD',
           amount_due: 700,
-          total_amount: 1000,
-          payments: [{ amount: 300, reference_number: null }],
+          total_amount: 700,
+          payments: [],
+          refunds: [],
+        },
+        // A PAID invoice with $300 collected: never voided, but its cash is surfaced. Money on it
+        // means the cancel needs an explicit choice (#891), so the request sends one.
+        {
+          id: 'inv-paid-1',
+          status: 'PAID',
+          kind: 'STANDARD',
+          amount_due: 0,
+          total_amount: 300,
+          payments: [{ amount: 300, reference_number: null, state: 'SUCCEEDED' }],
           refunds: [],
         },
         // A DRAFT invoice is NOT voided (it is delete-able), and carries no collected money.
@@ -5591,15 +5634,22 @@ describe('POST /api/jobs/:id/cancel', () => {
     const res = await request(app)
       .post(`/api/jobs/${JOB_FIXTURE.id}/cancel`)
       .set(authHeader('admin'))
-      .send({ cancelled_reason: 'Customer cancelled' });
+      .send({ cancel_reason_code: 'OTHER', cancelled_reason: 'Customer cancelled', void_invoices: true });
 
     expect(res.status).toBe(200);
-    // Only the SENT invoice is voided to status VOIDED + amount_due 0 (DRAFT is skipped).
-    expect(txInvoiceUpdate).toHaveBeenCalledTimes(1);
+    // Only the SENT invoice is voided to status VOIDED + amount_due 0 (DRAFT and PAID are skipped);
+    // W4: the DRAFT is not voided but its payment link is retired (public_token cleared).
+    expect(txInvoiceUpdate).toHaveBeenCalledTimes(2);
     expect(txInvoiceUpdate).toHaveBeenCalledWith(
       expect.objectContaining({
-        where: { id: 'inv-open-1' },
+        where: expect.objectContaining({ id: 'inv-open-1' }),
         data: expect.objectContaining({ status: 'VOIDED', amount_due: 0 }),
+      }),
+    );
+    expect(txInvoiceUpdate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: { in: ['inv-draft-1'] }, status: 'DRAFT' }),
+        data: { public_token: null },
       }),
     );
     expect(res.body.collected_total).toBe(300);
@@ -5628,7 +5678,7 @@ describe('POST /api/jobs/:id/cancel', () => {
     const res = await request(app)
       .post(`/api/jobs/${JOB_FIXTURE.id}/cancel`)
       .set(authHeader('admin'))
-      .send({ cancelled_reason: 'Customer cancelled' });
+      .send({ cancel_reason_code: 'OTHER', cancelled_reason: 'Customer cancelled' });
 
     expect(res.status).toBe(200);
     expect(txJobLineFindMany).toHaveBeenCalledWith(expect.objectContaining({
@@ -5682,7 +5732,7 @@ describe('POST /api/jobs/:id/cancel', () => {
     const res = await request(app)
       .post(`/api/jobs/${JOB_FIXTURE.id}/cancel`)
       .set(authHeader('admin'))
-      .send({ cancelled_reason: 'Customer cancelled' });
+      .send({ cancel_reason_code: 'OTHER', cancelled_reason: 'Customer cancelled' });
 
     expect(res.status).toBe(200);
     // Scope rule: only the voided invoice's SYNCED (= invoice-born) lines are candidates —
@@ -5732,7 +5782,7 @@ describe('POST /api/jobs/:id/cancel', () => {
     const res = await request(app)
       .post(`/api/jobs/${JOB_FIXTURE.id}/cancel`)
       .set(authHeader('admin'))
-      .send({ cancelled_reason: 'Customer cancelled' });
+      .send({ cancel_reason_code: 'OTHER', cancelled_reason: 'Customer cancelled' });
 
     expect(res.status).toBe(200);
     expect(res.body.collected_total).toBe(0);
@@ -5746,15 +5796,16 @@ describe('POST /api/jobs/:id/cancel', () => {
       ...JOB_FIXTURE,
       status: 'IN_PROGRESS',
       invoices: [
+        // #891: a PAID invoice carrying real cash - kept under the explicit choice sent below.
         {
           id: 'inv-mixed',
-          status: 'SENT',
+          status: 'PAID',
           kind: 'STANDARD',
-          amount_due: 500,
-          total_amount: 1000,
+          amount_due: 0,
+          total_amount: 500,
           payments: [
-            { amount: 200, reference_number: null },
-            { amount: 300, reference_number: 'DEPOSIT-CREDIT' },
+            { amount: 200, reference_number: null, state: 'SUCCEEDED' },
+            { amount: 300, reference_number: 'DEPOSIT-CREDIT', state: 'SUCCEEDED' },
           ],
           refunds: [],
         },
@@ -5765,22 +5816,24 @@ describe('POST /api/jobs/:id/cancel', () => {
     const res = await request(app)
       .post(`/api/jobs/${JOB_FIXTURE.id}/cancel`)
       .set(authHeader('admin'))
-      .send({ cancelled_reason: 'Customer cancelled' });
+      .send({ cancel_reason_code: 'OTHER', cancelled_reason: 'Customer cancelled', void_invoices: true });
 
     expect(res.status).toBe(200);
     expect(res.body.collected_total).toBe(200);
     expect(res.body.refund_suggested).toBe(true);
   });
 
-  it('returns 400 if cancelled_reason is empty', async () => {
+  it('returns 400 if the cancel reason is missing or blank (a note alone is not a reason, S06.15)', async () => {
     mockAuthAs('admin');
 
-    const res = await request(app)
-      .post(`/api/jobs/${JOB_FIXTURE.id}/cancel`)
-      .set(authHeader('admin'))
-      .send({ cancelled_reason: '' });
+    for (const body of [{ cancelled_reason: 'only a note' }, { cancel_reason_code: '' }, { cancel_reason_code: '   ' }]) {
+      const res = await request(app)
+        .post(`/api/jobs/${JOB_FIXTURE.id}/cancel`)
+        .set(authHeader('admin'))
+        .send(body);
 
-    expect(res.status).toBe(400);
+      expect(res.status, JSON.stringify(body)).toBe(400);
+    }
   });
 
   it('allows cancelling an already-COMPLETED job (cancellation is not terminal, Spec B1)', async () => {
@@ -5791,7 +5844,7 @@ describe('POST /api/jobs/:id/cancel', () => {
     const res = await request(app)
       .post(`/api/jobs/${JOB_FIXTURE.id}/cancel`)
       .set(authHeader('admin'))
-      .send({ cancelled_reason: 'Error' });
+      .send({ cancel_reason_code: 'OTHER', cancelled_reason: 'Error' });
 
     expect(res.status).toBe(200);
   });
@@ -5800,10 +5853,14 @@ describe('POST /api/jobs/:id/cancel', () => {
 // ─── POST /api/jobs/:id/reopen ─────────────────────────
 
 describe('POST /api/jobs/:id/reopen', () => {
+  /** The job as the reopen leaves it, which the response is built from. */
+  const reopened = (extra: Record<string, unknown> = {}) => ({ ...JOB_FIXTURE, status: 'IN_PROGRESS', ...extra });
+
   it('admin reopens a COMPLETED job with no issued invoice → 200, IN_PROGRESS', async () => {
     mockAuthAs('admin');
-    mockPrisma.job.findUnique.mockResolvedValue({ ...JOB_FIXTURE, status: 'COMPLETED', invoices: [] });
-    mockPrisma.job.update.mockResolvedValue({ ...JOB_FIXTURE, status: 'IN_PROGRESS' });
+    stubReopenTransaction({ status: 'COMPLETED' });
+    mockPrisma.job.findUnique.mockResolvedValue(reopened());
+    mockPrisma.job.update.mockResolvedValue(reopened());
     mockPrisma.timelineEvent.create.mockResolvedValue({});
 
     const res = await request(app)
@@ -5817,10 +5874,11 @@ describe('POST /api/jobs/:id/reopen', () => {
     );
   });
 
-  it('a DRAFT invoice does NOT block reopen', async () => {
+  it.each([['DRAFT'], ['VOIDED'], ['SENT']])('a %s invoice does NOT block reopen: job and invoice state are independent, Spec B1', async (invoiceStatus) => {
     mockAuthAs('admin');
-    mockPrisma.job.findUnique.mockResolvedValue({ ...JOB_FIXTURE, status: 'COMPLETED', invoices: [{ status: 'DRAFT' }] });
-    mockPrisma.job.update.mockResolvedValue({ ...JOB_FIXTURE, status: 'IN_PROGRESS' });
+    stubReopenTransaction({ status: 'COMPLETED' });
+    mockPrisma.job.findUnique.mockResolvedValue(reopened({ invoices: [{ status: invoiceStatus }] }));
+    mockPrisma.job.update.mockResolvedValue(reopened());
     mockPrisma.timelineEvent.create.mockResolvedValue({});
 
     const res = await request(app)
@@ -5828,45 +5886,22 @@ describe('POST /api/jobs/:id/reopen', () => {
       .set(authHeader('admin'));
 
     expect(res.status).toBe(200);
+    expect(mockPrisma.invoice.update).not.toHaveBeenCalled();
   });
 
-  it('a VOIDED invoice does NOT block reopen', async () => {
+  it.each(['UNSCHEDULED', 'SCHEDULED', 'IN_PROGRESS', 'OFFICE_REVIEW', 'READY_TO_CLOSE'])('refuses a job in %s, which is not closed, and writes nothing (S06.16)', async (status) => {
     mockAuthAs('admin');
-    mockPrisma.job.findUnique.mockResolvedValue({ ...JOB_FIXTURE, status: 'COMPLETED', invoices: [{ status: 'VOIDED' }] });
-    mockPrisma.job.update.mockResolvedValue({ ...JOB_FIXTURE, status: 'IN_PROGRESS' });
-    mockPrisma.timelineEvent.create.mockResolvedValue({});
+    stubReopenTransaction({ status });
+    mockPrisma.job.findUnique.mockResolvedValue({ ...JOB_FIXTURE, status });
 
     const res = await request(app)
       .post(`/api/jobs/${JOB_FIXTURE.id}/reopen`)
       .set(authHeader('admin'));
 
-    expect(res.status).toBe(200);
-  });
-
-  it('allows reopening even when an issued (SENT) invoice exists — job/invoice state are independent, Spec B1', async () => {
-    mockAuthAs('admin');
-    mockPrisma.job.findUnique.mockResolvedValue({ ...JOB_FIXTURE, status: 'COMPLETED', invoices: [{ status: 'SENT' }] });
-    mockPrisma.job.update.mockResolvedValue({ ...JOB_FIXTURE, status: 'IN_PROGRESS' });
-    mockPrisma.timelineEvent.create.mockResolvedValue({});
-
-    const res = await request(app)
-      .post(`/api/jobs/${JOB_FIXTURE.id}/reopen`)
-      .set(authHeader('admin'));
-
-    expect(res.status).toBe(200);
-  });
-
-  it('allows reopening a job that is not COMPLETED (free status transitions, Spec B1)', async () => {
-    mockAuthAs('admin');
-    mockPrisma.job.findUnique.mockResolvedValue({ ...JOB_FIXTURE, status: 'IN_PROGRESS', invoices: [] });
-    mockPrisma.job.update.mockResolvedValue({ ...JOB_FIXTURE, status: 'IN_PROGRESS' });
-    mockPrisma.timelineEvent.create.mockResolvedValue({});
-
-    const res = await request(app)
-      .post(`/api/jobs/${JOB_FIXTURE.id}/reopen`)
-      .set(authHeader('admin'));
-
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('JOB_CLOSE_OUT_REFUSED');
+    expect(mockPrisma.job.update).not.toHaveBeenCalled();
+    expect(mockPrisma.timelineEvent.create).not.toHaveBeenCalled();
   });
 
   it('returns 404 when the job is not found', async () => {
@@ -5987,7 +6022,8 @@ describe('POST /api/jobs/:id/status', () => {
     expect(res.status).toBe(200);
     // Proof it went THROUGH complete() rather than writing status itself: the completed_at
     // stamp and the completion_notes are complete()'s work, not the dispatcher's.
-    expect(captured.data.status).toBe('COMPLETED');
+    // Complete never rests at Completed: it stamps and lands in Office review in the same write (S06.1).
+    expect(captured.data.status).toBe('OFFICE_REVIEW');
     expect(captured.data.completed_at).toBeInstanceOf(Date);
     expect(captured.data.completion_notes).toBe('done');
     expect(mockPrisma.timelineEvent.create).toHaveBeenCalledWith(
@@ -6007,7 +6043,7 @@ describe('POST /api/jobs/:id/status', () => {
     const res = await request(app)
       .post(`/api/jobs/${JOB_FIXTURE.id}/status`)
       .set(authHeader('dispatcher'))
-      .send({ status: 'CANCELLED', cancelled_reason: 'x' });
+      .send({ status: 'CANCELLED', cancel_reason_code: 'OTHER', cancelled_reason: 'x' });
 
     expect(res.status).toBe(403);
     expect(res.body.error).toBe('Insufficient permissions');
@@ -6299,6 +6335,10 @@ describe('POST /api/jobs/:id/notes', () => {
       created_at: new Date(),
       creator: { id: TEST_USERS.admin.id, first_name: 'Test', last_name: 'Admin' },
     });
+    // The note and its history entry commit together.
+    mockPrisma.$transaction.mockImplementation(async (fn: any) =>
+      fn({ note: { create: mockPrisma.note.create }, timelineEvent: { create: vi.fn().mockResolvedValue({}) } }),
+    );
 
     const res = await request(app)
       .post(`/api/jobs/${JOB_FIXTURE.id}/notes`)
@@ -6309,8 +6349,9 @@ describe('POST /api/jobs/:id/notes', () => {
     expect(res.body.note.content).toBe('New note');
   });
 
-  it('SALES cannot add notes (403)', async () => {
+  it('a person with Add notes turned off cannot add notes (403)', async () => {
     mockAuthAs('sales');
+    mockRoleSwitches({ add_notes: false });
 
     const res = await request(app)
       .post(`/api/jobs/${JOB_FIXTURE.id}/notes`)
@@ -6318,6 +6359,29 @@ describe('POST /api/jobs/:id/notes', () => {
       .send({ content: 'Note' });
 
     expect(res.status).toBe(403);
+    expect(mockPrisma.note.create).not.toHaveBeenCalled();
+  });
+
+  it('a technician, who is off Edit jobs, adds a note to a job they can open', async () => {
+    mockAuthAs('technician');
+    mockPrisma.job.findUnique.mockResolvedValue(JOB_FIXTURE);
+    mockPrisma.job.findFirst.mockResolvedValue({ id: JOB_FIXTURE.id });
+    mockPrisma.note.create.mockResolvedValue({
+      id: 'n2',
+      content: 'Field note',
+      created_at: new Date(),
+      creator: { id: TEST_USERS.technician.id, first_name: 'Test', last_name: 'Tech' },
+    });
+    mockPrisma.$transaction.mockImplementation(async (fn: any) =>
+      fn({ note: { create: mockPrisma.note.create }, timelineEvent: { create: vi.fn().mockResolvedValue({}) } }),
+    );
+
+    const res = await request(app)
+      .post(`/api/jobs/${JOB_FIXTURE.id}/notes`)
+      .set(authHeader('technician'))
+      .send({ content: 'Field note' });
+
+    expect(res.status).toBe(201);
   });
 });
 
@@ -6556,14 +6620,13 @@ describe('GET /api/jobs/export', () => {
 
   it('scopes export to a TECHNICIAN\'s own jobs (row-scope respected)', async () => {
     mockAuthAs('technician');
+    // The download is its own switch (Export jobs), off in the Technician preset.
+    mockRoleSwitches({ export_jobs: true });
     mockPrisma.job.findMany.mockResolvedValue([]);
 
     await request(app).get('/api/jobs/export').set(authHeader('technician'));
 
-    expect(mockPrisma.job.findMany.mock.calls[0][0].where.OR).toEqual([
-      { visits: { some: { assignees: { some: { user_id: TEST_USERS.technician.id } } } } },
-      { created_by_id: TEST_USERS.technician.id },
-    ]);
+    expect(mockPrisma.job.findMany.mock.calls[0][0].where.OR).toEqual(attachedJobWhere(TEST_USERS.technician.id));
   });
 
   // JOB-B1 — unpaginated, capped at the defensive 50k row limit (NOT the list page size).

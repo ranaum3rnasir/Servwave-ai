@@ -11,9 +11,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { TEST_USERS, mockAuthAs, authHeader } from './helpers';
+import { TEST_USERS, mockAuthAs, mockRoleSwitches, authHeader } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 
 const mockPrisma = prisma as unknown as {
   inventoryLocation: { findFirst: ReturnType<typeof vi.fn> };
@@ -49,7 +48,6 @@ const BALANCE_ROWS = [
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache();
   mockAuthAs('technician');
   mockPrisma.inventoryLocation.findFirst.mockResolvedValue(VAN_ROW);
   mockPrisma.stockBalance.findMany.mockResolvedValue(BALANCE_ROWS);
@@ -115,9 +113,9 @@ describe('GET /api/inventory/my-van', () => {
     expect(mockPrisma.inventoryLocation.findFirst.mock.calls[0][0].orderBy).toEqual({ created_at: 'asc' });
   });
 
-  it('gate: a role WITHOUT read PriceBook → 403 (route never reaches the controller)', async () => {
-    // Simulate a pre-backfill org / stripped role: no PriceBook read in the role grants.
-    mockPrisma.rolePermission.findMany.mockResolvedValue([]);
+  it('gate: a person WITHOUT View price book → 403 (route never reaches the controller)', async () => {
+    // View price book is the switch that stands for `read PriceBook` (Roles & Permissions S01.9).
+    mockRoleSwitches({ view_price_book: false });
 
     const res = await request(app).get('/api/inventory/my-van').set(authHeader('technician'));
 
@@ -125,10 +123,8 @@ describe('GET /api/inventory/my-van', () => {
     expect(mockPrisma.inventoryLocation.findFirst).not.toHaveBeenCalled();
   });
 
-  it('restricted:true when the tech carries the location_restricted allow-override', async () => {
-    mockPrisma.userPermissionOverride.findMany.mockResolvedValue([
-      { action: 'location_restricted', subject: 'Inventory', effect: 'allow' },
-    ]);
+  it('restricted:true when the person holds Restrict stock to own van', async () => {
+    mockRoleSwitches({ restrict_stock_to_own_van: true });
 
     const res = await request(app).get('/api/inventory/my-van').set(authHeader('technician'));
 
@@ -136,7 +132,26 @@ describe('GET /api/inventory/my-van', () => {
     expect(res.body.restricted).toBe(true);
   });
 
-  it('a DISPATCHER with a van gets their van too (restricted always false for non-techs); without one → 404', async () => {
+  it('restricted:false for a technician who does not hold the switch (the preset), and a stored location_restricted override opens nothing', async () => {
+    mockPrisma.userPermissionOverride.findMany.mockResolvedValue([
+      { action: 'location_restricted', subject: 'Inventory', effect: 'allow' },
+    ]);
+
+    const res = await request(app).get('/api/inventory/my-van').set(authHeader('technician'));
+
+    expect(res.status).toBe(200);
+    expect(res.body.restricted).toBe(false);
+  });
+
+  it('restricted follows the switch for any role: a DISPATCHER holding it is restricted', async () => {
+    mockAuthAs('dispatcher');
+    mockRoleSwitches({ restrict_stock_to_own_van: true });
+    const res = await request(app).get('/api/inventory/my-van').set(authHeader('dispatcher'));
+    expect(res.status).toBe(200);
+    expect(res.body.restricted).toBe(true);
+  });
+
+  it('a DISPATCHER with a van gets their van too (restricted false by preset); without one → 404', async () => {
     mockAuthAs('dispatcher');
     const ok = await request(app).get('/api/inventory/my-van').set(authHeader('dispatcher'));
     expect(ok.status).toBe(200);

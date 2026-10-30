@@ -24,7 +24,7 @@ const TINY_JPEG =
   'AAAAAAAAAAAAAAAAAAAACf/EABQQAQAAAAAAAAAAAAAAAAAAAAD/2gAIAQEAAD8AKp//2Q==';
 
 const ORG = {
-  name: 'Alpha Doors', address_line1: '1', address_line2: null,
+  name: 'Example Doors', address_line1: '1', address_line2: null,
   city: 'Hoboken', state: 'NJ', postal_code: '07030',
   email: 'a@b.c', phone: null, website: null, logo_url: null, brand_color: '#E11D2E',
   estimate_terms: '', estimate_notes: '', estimate_payment_terms: '',

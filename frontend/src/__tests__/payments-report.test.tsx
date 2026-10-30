@@ -18,6 +18,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen } from '@testing-library/react';
 import { Routes, Route } from 'react-router-dom';
 import { renderWithProviders } from './helpers';
+import { buildAbility } from '@/lib/ability';
 import ReportRoute from '@/pages/v2/reports/ReportRoute';
 import type { PaymentTxn } from '@/lib/reports/payments-report-data';
 
@@ -57,18 +58,23 @@ const TIPPED_ROW: PaymentTxn = {
   client: 'Acme Co',
   email: 'ap@acme.com',
   card: '',
-  technician: 'Emanuel Dahan',
+  technician: 'Sam Rivera',
   txnKind: 'Keyed',
   confirmation: '',
   isDepositCredit: false,
 };
+
+// The Total tips tile is company-wide money, drawn only with See company figures (S01.16). These tests are about
+// tips on a real org's report, so the person reading it holds that switch; the absence is covered by
+// pages/v2/reports/reports/__tests__/companyFiguresTotals.test.tsx.
+const WITH_FIGURES = buildAbility([{ action: 'read', subject: 'Report' }, { action: 'read', subject: 'CompanyFigures' }]);
 
 function renderReport() {
   return renderWithProviders(
     <Routes>
       <Route path="/reports/:slug" element={<ReportRoute />} />
     </Routes>,
-    { initialEntries: ['/reports/payments'] },
+    { initialEntries: ['/reports/payments'], ability: WITH_FIGURES },
   );
 }
 

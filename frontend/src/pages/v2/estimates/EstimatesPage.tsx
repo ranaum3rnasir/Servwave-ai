@@ -11,10 +11,11 @@ import { useAppAbility } from '@/contexts/AbilityContext';
 import { summariseBulkResult } from '@/lib/bulk-result';
 import { customerDisplayName } from '@/lib/customer-name';
 import { endOfMonthDay, startOfMonthDay } from '@/lib/date-range';
-import { estimatesRegistry, MONTHLY_ESTIMATE_STATUSES } from '@/lib/filters/registries/estimates';
+import { estimatesRegistry, estimatesRegistryWithoutCreator, MONTHLY_ESTIMATE_STATUSES } from '@/lib/filters/registries/estimates';
 import type { FacetConfig, FacetOption, FilterState } from '@/lib/filters/types';
 import { useFilterState } from '@/lib/filters/useFilterState';
 import { downloadCSV, toCSV } from '@/lib/inventory/csv';
+import { useMySwitches } from '@/lib/api/mySwitches';
 import { useTagFacetOptions } from '@/lib/api/tags';
 import { useScopedRowSelection } from '@/lib/useScopedRowSelection';
 import { formatCurrency } from '@/lib/utils';
@@ -34,6 +35,8 @@ import { toast } from '@/ui-kit/components/ui/sonner';
 import { useDebounce } from '@/ui-kit/hooks/useDebounce';
 
 import { useConfirm } from '@/hooks/useConfirm';
+import { SendingAsLine } from '@/components/communication/inbox/ComposeWindow';
+import { useHandSender } from '@/components/communication/useHandSender';
 import { useRecordVisit } from '../pageBreadcrumbs';
 import { v2Path } from '../uiV2';
 import { AppliedFilterBar as EstimateFilterBar } from '../_shared/appliedFilters';
@@ -106,6 +109,10 @@ export default function EstimatesPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const ability = useAppAbility();
+  // The Export control on the list: the Export estimates switch, for any role.
+  const canExport = ability.can('export', 'Estimate');
+  // The New Estimate button: the Create estimates switch (the list itself already needed View and Show to open).
+  const canCreate = ability.can('create', 'Estimate');
   const [searchParams, setSearchParams] = useSearchParams();
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
@@ -129,7 +136,13 @@ export default function EstimatesPage() {
   // settled value, so no state is written from an effect.
   const search = useDebounce(searchInput, 300);
 
-  const { value, setValue, listParams: filterParams } = useFilterState(estimatesRegistry);
+  // The "Created By" filter and its creators roster are for a person who reads every estimate (Estimates scope All, or the
+  // Admin box). The server refuses the roster to anyone narrower, so they are neither asked for it nor offered the
+  // filter. Until the person's switches have arrived the filter stays in place and the roster is not asked for.
+  const mySwitches = useMySwitches();
+  const mayListCreators = !!mySwitches && (mySwitches.admin_box || mySwitches.values.estimates_scope === 'all');
+  const registry = !mySwitches || mayListCreators ? estimatesRegistry : estimatesRegistryWithoutCreator;
+  const { value, setValue, listParams: filterParams } = useFilterState(registry);
 
   // Auto-open the picker when returning from lead/customer creation, or from a
   // quick-create shortcut. The param is consumed so a refresh does not reopen.
@@ -137,17 +150,22 @@ export default function EstimatesPage() {
     const newCustomerId = searchParams.get('newCustomerId');
     const action = searchParams.get('action');
     if (newCustomerId) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- consumes a one-shot URL param, which IS the external system being synced from
-      setPreSelectedCustomerId(newCustomerId);
-      setShowNewDialog(true);
+      // The return path from creating a customer follows the same rule as `?action=new-estimate` below (S02.26): without
+      // the Create estimates switch the page opens and the dialog does not. The param is still consumed.
+      if (canCreate) {
+        // eslint-disable-next-line react-hooks/set-state-in-effect -- consumes a one-shot URL param, which IS the external system being synced from
+        setPreSelectedCustomerId(newCustomerId);
+        setShowNewDialog(true);
+      }
       searchParams.delete('newCustomerId');
       setSearchParams(searchParams, { replace: true });
     } else if (action === 'new-estimate') {
-      setShowNewDialog(true);
+      // Without the Create estimates switch the page opens and the dialog does not (S02.25); the param is still consumed.
+      if (canCreate) setShowNewDialog(true);
       searchParams.delete('action');
       setSearchParams(searchParams, { replace: true });
     }
-  }, [searchParams, setSearchParams]);
+  }, [searchParams, setSearchParams, canCreate]);
 
   const { data: creatorsData } = useQuery({
     queryKey: ['estimate-creators'],
@@ -155,6 +173,7 @@ export default function EstimatesPage() {
       const { data } = await api.get('/api/estimates/creators');
       return data.users as Creator[];
     },
+    enabled: mayListCreators,
   });
 
   // Memoized on the underlying query data (a stable react-query reference) per
@@ -344,6 +363,8 @@ export default function EstimatesPage() {
   };
 
   const bulkSendOverCap = selectedEstimateIds.length > 25;
+  // PRD 10 (S10.12): a bulk reminder is a hand send by the person who clicked, from their own address; with none, nothing is sent.
+  const handSender = useHandSender();
 
   const handleSearchChange = useCallback((next: string) => {
     setSearchInput(next);
@@ -446,8 +467,8 @@ export default function EstimatesPage() {
   // `value` keeps after removing the last chip of a multi facet - does not
   // leave a chip row with nothing in it.
   const hasActiveFilters = useMemo(
-    () => estimatesRegistry.some((facet) => facetSelectionCount(value[facet.key]) > 0),
-    [value],
+    () => registry.some((facet) => facetSelectionCount(value[facet.key]) > 0),
+    [registry, value],
   );
 
   const columns = useMemo(
@@ -496,10 +517,12 @@ export default function EstimatesPage() {
       <PageHeader
         title="Estimates"
         actions={
-          <Button onClick={() => setShowNewDialog(true)}>
-            <Plus />
-            New Estimate
-          </Button>
+          canCreate ? (
+            <Button onClick={() => setShowNewDialog(true)}>
+              <Plus />
+              New Estimate
+            </Button>
+          ) : undefined
         }
       />
 
@@ -561,7 +584,7 @@ export default function EstimatesPage() {
       {hasActiveFilters && (
         <EstimateFilterBar
           className="mb-3"
-          registry={estimatesRegistry}
+          registry={registry}
           value={value}
           onChange={handleFilterChange}
           resolveOptions={resolveOptions}
@@ -598,15 +621,25 @@ export default function EstimatesPage() {
             </>
           )}
           {ability.can('send', 'Estimate') && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleBulkSendReminder}
-              disabled={bulkSendReminderMutation.isPending || bulkSendOverCap}
-              disabledReason={bulkSendOverCap ? 'Select 25 or fewer estimates to send a reminder' : undefined}
-            >
-              {bulkSendReminderMutation.isPending ? 'Sending...' : 'Send reminder'}
-            </Button>
+            <>
+              {handSender.known && (
+                <SendingAsLine
+                  address={handSender.sender.fromAddress}
+                  name={handSender.sender.fromName}
+                  addressNeeded={handSender.sender.addressNeeded}
+                  className="border-b-0 px-0 py-0"
+                />
+              )}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleBulkSendReminder}
+                disabled={bulkSendReminderMutation.isPending || bulkSendOverCap || handSender.blockedReason !== undefined}
+                disabledReason={handSender.blockedReason ?? (bulkSendOverCap ? 'Select 25 or fewer estimates to send a reminder' : undefined)}
+              >
+                {bulkSendReminderMutation.isPending ? 'Sending...' : 'Send reminder'}
+              </Button>
+            </>
           )}
           {ability.can('delete', 'Estimate') && (
             <Button
@@ -657,31 +690,33 @@ export default function EstimatesPage() {
             actions={
               <>
                 <FilterPopover
-                  registry={estimatesRegistry}
+                  registry={registry}
                   value={value}
                   onChange={handleFilterChange}
                   resolveOptions={resolveOptions}
                   resolveMax={resolveMax}
                   renderOption={paintEstimateFilterOption}
                 />
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button variant="outline" size="sm">
-                      <Download />
-                      Export
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    <DropdownMenuLabel>Export as CSV</DropdownMenuLabel>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem onClick={handleExportCurrentPage}>
-                      Current page ({rows.length} rows)
-                    </DropdownMenuItem>
-                    <DropdownMenuItem onClick={handleExportAll}>
-                      All ({pagination?.total ?? '...'})
-                    </DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
+                {canExport && (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button variant="outline" size="sm">
+                        <Download />
+                        Export
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuLabel>Export as CSV</DropdownMenuLabel>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem onClick={handleExportCurrentPage}>
+                        Current page ({rows.length} rows)
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={handleExportAll}>
+                        All ({pagination?.total ?? '...'})
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                )}
               </>
             }
           />

@@ -4,15 +4,15 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { parsePagination, buildPaginationMeta, parseSortParams, respondInvalidSort } from '../lib/pagination';
-import { PRICE_BOOK_ITEM_SORT_FIELDS } from '../lib/sortFields';
+import { INV_CATALOG_ITEM_SORT_FIELDS, PRICE_BOOK_ITEM_SORT_FIELDS } from '../lib/sortFields';
 import { tenantWhere } from '../lib/tenant';
 import { logAudit } from '../lib/audit';
-import { canSeePricing } from '../lib/permissions/enforce';
+import { canSeeCosts, canSeeVendors } from '../lib/permissions/enforce';
 import { resolvedCatalogItemFields } from '../lib/catalog/item-resolution';
 import { emitBackorderIfFlipped } from '../services/notifications/inventoryEmit';
 // Brand/item-group reads stay on inv-catalog; the write handlers moved here (P0 §D2)
 // and reuse its row mappers so both sides keep emitting the same camelCase shape.
-import { mapBrand, mapItemGroup, mapFinish, mapUomOption } from './inv-catalog.controller';
+import { mapBrand, mapCatalogItem, mapItemGroup, mapFinish, mapUomOption } from './inv-catalog.controller';
 import { LONG_TEXT_MAX } from '../lib/text-limits';
 
 // Hybrid-delete usage gate, DERIVED not hardcoded: every table that references a
@@ -188,21 +188,43 @@ async function guardItemFks(req: Request, res: Response): Promise<boolean> {
   return true;
 }
 
-// Cost stripping (P0 §D7): unit_cost/list_price are internal cost/margin data,
-// gated by the same canSeePricing (`read Invoice`) predicate as job-lines.
-// unit_price/sell_price are customer-facing selling prices — NEVER stripped.
+// Cost stripping (P0 §D7, S01.15): unit_cost is internal cost/margin data, gated by the canSeeCosts
+// (`read Pricing`, "See financial data") predicate. unit_price/sell_price/list_price are prices - the
+// price book's list price among them - and are NEVER stripped.
 //
 // `unitCost` is the RESOLVED answer for the same concept (lib/catalog/item-resolution) and
 // is stripped with the raw column it answers for — a resolved field left in place, or
-// spread back on after this runs, hands a reader without pricing permission the very
+// spread back on after this runs, hands a reader without cost visibility the very
 // margin data the strip exists to withhold.
 function stripItemCost<T extends Record<string, unknown>>(item: T, req: Request): T {
-  if (canSeePricing(req)) return item;
+  if (canSeeCosts(req)) return item;
   const out: Record<string, unknown> = { ...item };
   delete out.unit_cost;
   delete out.unitCost;
-  delete out.list_price;
   return out as T;
+}
+
+// The price book is the catalog, not the stock room (S07.16): a row's serial numbers are
+// per-unit stock data, which View price book alone must not reach. Stock levels and locations
+// live on stock_balances, which no price book read includes.
+function stripItemStock<T extends Record<string, unknown>>(item: T): T {
+  const out: Record<string, unknown> = { ...item };
+  delete out.serials;
+  return out as T;
+}
+
+// A row's vendor id is supplier data (S07.18): it rides on a price book item only for a requester who holds
+// View vendors (canSeeVendors), and the key is left out otherwise.
+function stripItemVendor<T extends Record<string, unknown>>(item: T, req: Request): T {
+  if (canSeeVendors(req)) return item;
+  const out: Record<string, unknown> = { ...item };
+  delete out.vendor_id;
+  return out as T;
+}
+
+// What every item answer goes through before it leaves: no serials, and cost and vendor only for those who may.
+function disclosedItem<T extends Record<string, unknown>>(item: T, req: Request): T {
+  return stripItemVendor(stripItemCost(stripItemStock(item), req), req);
 }
 
 /**
@@ -229,7 +251,7 @@ function stripItemCost<T extends Record<string, unknown>>(item: T, req: Request)
 function pickerItemPayload(row: Record<string, unknown>, req: Request) {
   // Resolve first, strip second. The other order leaves the resolved `unitCost` sitting on
   // the payload after the strip has run.
-  return stripItemCost({ ...row, ...resolvedCatalogItemFields(row) }, req);
+  return disclosedItem({ ...row, ...resolvedCatalogItemFields(row) }, req);
 }
 
 // ─── Category Handlers ─────────────────────────────────
@@ -455,6 +477,50 @@ export async function listItems(req: Request, res: Response) {
   }
 }
 
+/**
+ * The Price Book page's own item list (S07.16): the camelCase catalog shape the inventory grid reads,
+ * minus its stock side, so a person with View price book alone can open the page without View stock.
+ * Archived items stay out unless `include_archived=true`, as on the grid it replaces. Cost needs
+ * See financial data and the vendor name needs View vendors; neither is ever sent as an empty value.
+ */
+export async function listCatalogItems(req: Request, res: Response) {
+  try {
+    const { page, limit, skip } = parsePagination(req.query as { page?: string; limit?: string });
+    const sort = parseSortParams(req.query as any, INV_CATALOG_ITEM_SORT_FIELDS, 'sort_order', 'asc');
+    if (!sort.ok) {
+      respondInvalidSort(res, sort);
+      return;
+    }
+
+    const where: Prisma.PriceBookItemWhereInput = { ...tenantWhere(req) };
+    if (req.query.include_archived !== 'true') {
+      where.is_active = true;
+    }
+    const canSeeVendor = canSeeVendors(req);
+    const [items, total] = await Promise.all([
+      prisma.priceBookItem.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: sort.orderBy,
+        include: {
+          category: { select: { id: true, name: true } },
+          ...(canSeeVendor ? { vendor: { select: { id: true, name: true } } } : {}),
+        },
+      }),
+      prisma.priceBookItem.count({ where }),
+    ]);
+
+    res.json({
+      data: items.map((i) => mapCatalogItem(i, req)),
+      meta: buildPaginationMeta(total, { page, limit, skip }),
+    });
+  } catch (err) {
+    logger.error('Failed to list price book catalog items:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
 export async function searchItems(req: Request, res: Response) {
   try {
     const q = typeof req.query.q === 'string' ? req.query.q : '';
@@ -497,7 +563,7 @@ export async function searchItems(req: Request, res: Response) {
         // the resolution module, which is why searching an item whose photo landed in
         // `photo_url` and whose price landed in `sell_price` used to answer with a grey
         // placeholder and the legacy price while BROWSING the same item was correct.
-        // `list_price` stays out on purpose — it is internal cost/margin data, and the
+        // `list_price` stays out: the picker prices a line from the sell price, and the
         // two columns added here are customer-facing selling data.
         photo_url: true,
         image_url: true,
@@ -521,6 +587,9 @@ export async function createItem(req: Request, res: Response) {
   try {
     const orgId = req.user!.organization_id;
     const body = req.body as z.infer<typeof createItemSchema>;
+    // A vendor sent by a person without View vendors is dropped, not stored (and not looked up, so the answer
+    // never says whether that vendor exists).
+    if (!canSeeVendors(req)) delete body.vendor_id;
 
     if (!(await guardItemFks(req, res))) return;
 
@@ -538,7 +607,8 @@ export async function createItem(req: Request, res: Response) {
         image_url: body.image_url ?? null,
         type: body.type ?? typeForKind(body.kind),
         category_id: body.category_id ?? null,
-        unit_cost: body.unit_cost ?? null,
+        // A cost sent by a person without See financial data is dropped, not stored (S01.15's rule for lines).
+        unit_cost: canSeeCosts(req) ? body.unit_cost ?? null : null,
         unit_price: unitPrice as number,
         sell_price: sellPrice,
         taxable: body.taxable ?? true,
@@ -579,7 +649,7 @@ export async function createItem(req: Request, res: Response) {
       resourceId: item.id,
     });
 
-    res.status(201).json({ data: item });
+    res.status(201).json({ data: disclosedItem(item as Record<string, unknown>, req) });
   } catch (err) {
     if (isUniqueViolation(err)) {
       respondSkuConflict(res);
@@ -605,7 +675,7 @@ export async function getItem(req: Request, res: Response) {
     }
 
     // Single-item read must not leak what the list hides (P0 §D7).
-    res.json({ data: stripItemCost(item as Record<string, unknown>, req) });
+    res.json({ data: disclosedItem(item as Record<string, unknown>, req) });
   } catch (err) {
     logger.error('Failed to get item:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -623,9 +693,16 @@ export async function updateItem(req: Request, res: Response) {
       return;
     }
 
+    const body = req.body as z.infer<typeof updateItemSchema>;
+    // A vendor sent by a person without View vendors is dropped before the write: the stored supplier stays,
+    // and a save from the form that has no vendor field cannot change it.
+    if (!canSeeVendors(req)) delete body.vendor_id;
+
     if (!(await guardItemFks(req, res))) return;
 
-    const body = req.body as z.infer<typeof updateItemSchema>;
+    // A cost sent by a person without See financial data is dropped before the write, so it is never stored
+    // and a save from the stripped form (which has no cost to send) cannot blank the stored one.
+    if (!canSeeCosts(req)) delete body.unit_cost;
 
     // Explicit data build (no raw req.body passthrough) — needed for the price
     // mirror rule. Keys are already column names.
@@ -706,7 +783,7 @@ export async function updateItem(req: Request, res: Response) {
       },
     });
 
-    res.json({ data: item });
+    res.json({ data: disclosedItem(item as Record<string, unknown>, req) });
   } catch (err) {
     if (isUniqueViolation(err)) {
       respondSkuConflict(res);
@@ -768,7 +845,10 @@ export async function upsertBrand(req: Request, res: Response) {
   try {
     const orgId = req.user!.organization_id;
     const body = req.body as z.infer<typeof upsertBrandSchema>;
-    if (body.defaultVendorId) {
+    // The default vendor is supplier data: a vendor sent without View vendors is ignored, a new brand gets none
+    // and a saved one keeps what is stored (the key stays out of the update).
+    const withVendor = canSeeVendors(req);
+    if (withVendor && body.defaultVendorId) {
       const vendor = await prisma.vendor.findFirst({ where: { id: body.defaultVendorId, ...tenantWhere(req) } });
       if (!vendor) { res.status(404).json({ error: 'Vendor not found' }); return; }
     }
@@ -777,6 +857,10 @@ export async function upsertBrand(req: Request, res: Response) {
       description: body.description ?? null, default_markup_pct: body.defaultMarkupPct ?? null,
       default_vendor_id: body.defaultVendorId ?? null, is_active: body.isActive ?? true,
     };
+    // The default markup is margin data. Without See financial data a markup sent is ignored: a new brand
+    // gets none and a saved one keeps what is stored (the key stays out of the update).
+    if (!canSeeCosts(req)) delete data.default_markup_pct;
+    if (!withVendor) delete data.default_vendor_id;
     if (body.id) {
       const result = await prisma.brand.updateMany({ where: { id: body.id, ...tenantWhere(req) }, data });
       if (result.count === 0) { res.status(404).json({ error: 'Brand not found' }); return; }
@@ -790,7 +874,7 @@ export async function upsertBrand(req: Request, res: Response) {
         metadata: { fields: Object.keys(req.body) },
       });
 
-      res.json({ brand: mapBrand(brand) });
+      res.json({ brand: mapBrand(brand, req) });
       return;
     }
     const brand = await prisma.brand.create({ data: { ...data, organization_id: orgId } });
@@ -802,7 +886,7 @@ export async function upsertBrand(req: Request, res: Response) {
       resourceId: brand.id,
     });
 
-    res.status(201).json({ brand: mapBrand(brand) });
+    res.status(201).json({ brand: mapBrand(brand, req) });
   } catch (err) {
     logger.error('Failed to upsert brand:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -1036,8 +1120,40 @@ export const upsertItemGroupSchema = z.object({
     priceOverride: z.number().min(0).nullable().optional(),
     costOverride: z.number().min(0).nullable().optional(),
     notes: z.string().max(LONG_TEXT_MAX).nullable().optional(),
+    // The id the read answered with; the server uses it to keep a stored cost the caller cannot see.
+    id: z.string().max(100).optional(),
   })).optional(),
 });
+
+type StoredGroupLine = { id: string; item_id: string | null; name: string; cost_override: Prisma.Decimal | null };
+
+/**
+ * The cost each sent line is saved with. With See financial data it is the cost sent. Without it a cost
+ * sent is ignored and each line keeps the cost already stored for it, found by the id the read gave it, or
+ * (for a client that did not send ids) by the item and name; a line that matches nothing stored has none.
+ * The save replaces every line, so this is the only thing standing between a stripped read and a blanked cost.
+ */
+function lineCostsToSave(
+  req: Request,
+  sent: NonNullable<z.infer<typeof upsertItemGroupSchema>['lines']>,
+  stored: StoredGroupLine[],
+): Array<Prisma.Decimal | number | null> {
+  if (canSeeCosts(req)) return sent.map((l) => l.costOverride ?? null);
+  const unclaimed = new Map(stored.map((l) => [l.id, l]));
+  const matched: Array<StoredGroupLine | undefined> = sent.map((l) => {
+    const byId = l.id ? unclaimed.get(l.id) : undefined;
+    if (byId) unclaimed.delete(byId.id);
+    return byId;
+  });
+  return sent.map((l, i) => {
+    let line = matched[i];
+    if (!line) {
+      line = [...unclaimed.values()].find((s) => s.item_id === (l.itemId ?? null) && s.name === l.name);
+      if (line) unclaimed.delete(line.id);
+    }
+    return line?.cost_override ?? null;
+  });
+}
 
 export async function upsertItemGroup(req: Request, res: Response) {
   try {
@@ -1048,22 +1164,35 @@ export async function upsertItemGroup(req: Request, res: Response) {
       group_type: body.groupType, flat_rate_price_override: body.flatRatePriceOverride ?? null,
       is_active: body.isActive ?? true,
     };
-    const linesCreate = (body.lines ?? []).map((l) => ({
-      item_id: l.itemId ?? null, name: l.name, quantity: l.quantity,
-      price_override: l.priceOverride ?? null, cost_override: l.costOverride ?? null,
-      notes: l.notes ?? null, organization_id: orgId,
-    }));
+    const buildLines = (stored: StoredGroupLine[]) => {
+      const sent = body.lines ?? [];
+      const costs = lineCostsToSave(req, sent, stored);
+      return sent.map((l, i) => ({
+        item_id: l.itemId ?? null, name: l.name, quantity: l.quantity,
+        price_override: l.priceOverride ?? null, cost_override: costs[i],
+        notes: l.notes ?? null, organization_id: orgId,
+      }));
+    };
     const include = { lines: { orderBy: { created_at: 'asc' as const } } };
 
     if (body.id) {
       const exists = await prisma.itemGroup.findFirst({ where: { id: body.id, ...tenantWhere(req) }, select: { id: true } });
       if (!exists) { res.status(404).json({ error: 'Item group not found' }); return; }
+      let linesCreate: ReturnType<typeof buildLines> | undefined;
       if (body.lines !== undefined) {
+        // Read the stored costs before the lines are replaced: a person without See financial data keeps them.
+        const stored = canSeeCosts(req)
+          ? []
+          : await prisma.itemGroupLine.findMany({
+              where: { group_id: body.id, ...tenantWhere(req) },
+              select: { id: true, item_id: true, name: true, cost_override: true },
+            });
+        linesCreate = buildLines(stored);
         await prisma.itemGroupLine.deleteMany({ where: { group_id: body.id, ...tenantWhere(req) } });
       }
       const group = await prisma.itemGroup.update({
         where: { id: body.id },
-        data: { ...baseData, ...(body.lines !== undefined ? { lines: { create: linesCreate } } : {}) },
+        data: { ...baseData, ...(linesCreate ? { lines: { create: linesCreate } } : {}) },
         include,
       });
 
@@ -1075,11 +1204,11 @@ export async function upsertItemGroup(req: Request, res: Response) {
         metadata: { fields: Object.keys(req.body) },
       });
 
-      res.json({ itemGroup: mapItemGroup(group) });
+      res.json({ itemGroup: mapItemGroup(group, req) });
       return;
     }
     const group = await prisma.itemGroup.create({
-      data: { ...baseData, organization_id: orgId, lines: { create: linesCreate } },
+      data: { ...baseData, organization_id: orgId, lines: { create: buildLines([]) } },
       include,
     });
 
@@ -1090,7 +1219,7 @@ export async function upsertItemGroup(req: Request, res: Response) {
       resourceId: group.id,
     });
 
-    res.status(201).json({ itemGroup: mapItemGroup(group) });
+    res.status(201).json({ itemGroup: mapItemGroup(group, req) });
   } catch (err) {
     logger.error('Failed to upsert item group:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -1226,6 +1355,10 @@ export async function importItems(req: Request, res: Response) {
   try {
     const orgId = req.user!.organization_id;
     const rows = (req.body as { items: unknown[] }).items;
+    const seesCosts = canSeeCosts(req);
+    // Vendors are matched by name, which answers "does this vendor exist": without View vendors a vendor
+    // column is not read at all - no lookup, no warning, nothing linked.
+    const seesVendors = canSeeVendors(req);
 
     let created = 0;
     let updated = 0;
@@ -1251,7 +1384,7 @@ export async function importItems(req: Request, res: Response) {
         )
       : new Map<string, string>();
 
-    const vendorByName = named('vendor')
+    const vendorByName = seesVendors && named('vendor')
       ? indexByName(
           await prisma.vendor.findMany({
             where: tenantWhere(req),
@@ -1271,6 +1404,7 @@ export async function importItems(req: Request, res: Response) {
     // other. A vendor is also a business entity with POs, contacts and message
     // threads hanging off it; a CSV cell is not enough to mint one.
     const resolveVendor = (cell: string | null | undefined, index: number): string | undefined => {
+      if (!seesVendors) return undefined;
       const name = csvName(cell);
       if (!name) return undefined;
       const id = vendorByName.get(name.toLowerCase());
@@ -1345,7 +1479,8 @@ export async function importItems(req: Request, res: Response) {
               ...(categoryId ? { category_id: categoryId } : {}),
               ...(vendorId ? { vendor_id: vendorId } : {}),
               uom: row.uom ?? null,
-              unit_cost: row.unitCost ?? null,
+              // Without See financial data a cost in the file is ignored and the stored cost stays.
+              ...(seesCosts ? { unit_cost: row.unitCost ?? null } : {}),
               unit_price: row.sellPrice,
               sell_price: row.sellPrice,
             },
@@ -1363,7 +1498,7 @@ export async function importItems(req: Request, res: Response) {
               category_id: categoryId ?? null,
               vendor_id: vendorId ?? null,
               uom: row.uom ?? null,
-              unit_cost: row.unitCost ?? null,
+              unit_cost: seesCosts ? row.unitCost ?? null : null,
               unit_price: row.sellPrice,
               sell_price: row.sellPrice,
               organization_id: orgId,

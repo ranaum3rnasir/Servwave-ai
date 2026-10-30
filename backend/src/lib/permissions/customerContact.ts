@@ -26,7 +26,7 @@
  * bare estimate sites, a decision this issue puts out of scope (see spec Ruling 1).
  */
 import type { Request } from 'express';
-import { isCustomerReadableRow, stripCustomerProofKeys } from './customerScope';
+import { isCustomerReadableRow, isCustomerOnOpenRecord, stripCustomerProofKeys } from './customerScope';
 
 /** The seven keys a customer row must not carry when the requester cannot read that customer. */
 export const CUSTOMER_CONTACT_KEYS = [
@@ -53,6 +53,13 @@ type CustomerRow = Record<string, unknown>;
  */
 const SERVICE_LOCATIONS_KEY = 'service_locations';
 
+/**
+ * S05.1 - the job detail's customer carries its whole contact set as `phones` and `emails`. They are the same
+ * class of information as the scalar keys above, so every strip removes them too. Separate from
+ * `CUSTOMER_CONTACT_KEYS` for the same reason `service_locations` is: that constant's count is pinned.
+ */
+const CONTACT_SET_KEYS = ['phones', 'emails'] as const;
+
 /** `public_token` — see the anchor-resolution doc on `redactCustomerContactFor` below. */
 const PUBLIC_TOKEN_KEY = 'public_token';
 
@@ -78,12 +85,16 @@ const SERVICE_LOCATION_ADDRESS_KEYS = ['address_line1', 'address_line2', 'city',
  * a throw. FAIL-CLOSED: no `id` on the row (a condition on a column the detail select never
  * projects) and any non-match both read as "not readable".
  *
+ * Roles & Permissions S01.5: a customer who has a lead or job the person can open also reads as readable
+ * here, whatever Customers View says - the customer's name, phone and address on that record are part of
+ * the record, not the Customers module. Only a customer with no such record is judged on the Customer scope.
+ *
  * Exported (round 3) so a response that mints/returns a `public_token`-derived URL or field
  * OUTSIDE the two presenters below (`invoice.controller.ts::createPaymentLink`) can apply the
  * identical verdict without a second query.
  */
 export function isCustomerReadable(req: Request, row: CustomerRow): boolean {
-  return isCustomerReadableRow(req, row);
+  return isCustomerReadableRow(req, row) || isCustomerOnOpenRecord(req, row);
 }
 
 /**
@@ -99,6 +110,7 @@ function redactRow(req: Request, row: CustomerRow): CustomerRow {
   const out: CustomerRow = { ...stripped };
   for (const key of CUSTOMER_CONTACT_KEYS) delete out[key];
   delete out[SERVICE_LOCATIONS_KEY];
+  for (const key of CONTACT_SET_KEYS) delete out[key];
   return out;
 }
 
@@ -125,6 +137,7 @@ export function redactCustomerRowUnless(
   const out: CustomerRow = { ...row };
   for (const key of CUSTOMER_CONTACT_KEYS) delete out[key];
   delete out[SERVICE_LOCATIONS_KEY];
+  for (const key of CONTACT_SET_KEYS) delete out[key];
   return out;
 }
 
@@ -232,7 +245,27 @@ export function redactCustomerContactFor<T>(req: Request, doc: T): T {
  * `stripEstimateCost` or `projectEstimateLeadWalkthrough`.
  */
 export function presentEstimateDetail<T>(req: Request, doc: T): T {
-  return redactCustomerContactFor(req, doc);
+  return withoutDepositProcessorIds(redactCustomerContactFor(req, doc));
+}
+
+/**
+ * Payments go-live slice 33 - the estimate carries its deposit invoice's payments, and the processor
+ * payment-intent id on them must not reach the browser. Each payment gets a neutral
+ * `paid_through_processor` boolean (all the page needs) and loses the id.
+ */
+function withoutDepositProcessorIds<T>(doc: T): T {
+  const d = doc as { invoices?: unknown } | null;
+  if (!d || typeof d !== 'object' || !Array.isArray(d.invoices)) return doc;
+  const invoices = (d.invoices as Array<Record<string, unknown>>).map((inv) => {
+    if (!inv || !Array.isArray(inv.payments)) return inv;
+    const payments = (inv.payments as Array<Record<string, unknown>>).map((p) => {
+      if (!p || !('stripe_payment_intent_id' in p)) return p;
+      const { stripe_payment_intent_id: intentId, ...rest } = p;
+      return { ...rest, paid_through_processor: Boolean(intentId) };
+    });
+    return { ...inv, payments };
+  });
+  return { ...(d as object), invoices } as T;
 }
 
 /**

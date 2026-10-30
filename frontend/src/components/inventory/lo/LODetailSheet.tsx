@@ -6,12 +6,12 @@
  *   • loId set  → view / edit an existing LO (useLogisticOrder).
  *   • loId null → create mode. Anchor comes from props; a standalone create shows ZERO anchor UI.
  *
- * ONE PRIMARY ACTION PER STATE AND PERMISSION (§12 rec 1). A grant holder (holds approve + process)
- * on a DRAFT sees a single sage **Process** button that fast-forwards DRAFT→PROCESSED server-side;
- * in CREATE mode that same button persists then processes in the same click, so the small-shop
- * happy path is exactly three actions: open create → add lines → Process. A non-holder sees
- * **Submit for approval**; an approver on a PENDING order sees **Approve**; a processor on an
- * APPROVED order sees **Process**. Editing a PROCESSED order posts a stock delta, previewed before
+ * ONE PRIMARY ACTION PER STATE AND PERMISSION (§12 rec 1). Which buttons an order gets is the server's list for this
+ * person and this order (`detail.actions`, see ./loActions): the sheet draws it and never tests a switch against the
+ * order's status. A person who may carry a DRAFT straight through sees a single sage **Process** button that
+ * fast-forwards DRAFT→PROCESSED server-side; in CREATE mode that same button persists then processes in the same
+ * click, so the small-shop happy path is exactly three actions: open create → add lines → Process. Otherwise a
+ * draft offers **Submit for approval**, a PENDING order **Approve**, an APPROVED order **Process**. Editing a PROCESSED order posts a stock delta, previewed before
  * commit ("Saving returns 2 to Main Warehouse"). Print view is deferred (§12 rec 8).
  *
  * The 409 SHORTAGE (per-line), 422 LO_LINE_INVALID (per-line) and 409 STALE_STATUS responses all
@@ -35,6 +35,7 @@ import {
   type LoAnchors,
   type LoApiError,
   type LoDetailLine,
+  type LogisticOrderAction,
   type LogisticOrderDetail,
   type LogisticOrderStatus,
   type ProcessLogisticOrderResult,
@@ -51,7 +52,10 @@ import { Label } from '@/components/ui/label';
 import { StatusBadge } from '@/components/data/status-badge';
 import { LOLinePicker, toLoLineInput, type LOLineDraft } from './LOLinePicker';
 import { formatLoDate } from './loStatus';
+import { newOrderActions, primaryLifecycle, type LoLifecycleVerb } from './loActions';
+import { LoPickupButtons, LoTakenLine } from './LoPickup';
 import { useConfirm } from '@/hooks/useConfirm';
+import { switchOn, useMySwitches } from '@/lib/api/mySwitches';
 
 export interface LODetailSheetProps {
   open: boolean;
@@ -62,9 +66,6 @@ export interface LODetailSheetProps {
   anchor?: { jobId?: string; invoiceId?: string; servicePlanId?: string };
 }
 
-type LifecycleVerb = 'process' | 'submit' | 'approve';
-
-const OPEN_STATUSES: LogisticOrderStatus[] = ['DRAFT', 'PENDING_APPROVAL', 'APPROVED'];
 
 // ─── Pure helpers (module-level so effects don't depend on component identity) ──
 
@@ -125,13 +126,11 @@ function computeLocationDeltas(
 export function LODetailSheet({ open, onOpenChange, loId, anchor }: LODetailSheetProps) {
   const { confirm, confirmDialog } = useConfirm();
   const ability = useAppAbility();
-  const canApprove = ability.can('approve', 'LogisticOrder');
-  const canProcess = ability.can('process', 'LogisticOrder');
-  const canSubmit = ability.can('submit', 'LogisticOrder');
-  const canUpdate = ability.can('update', 'LogisticOrder');
-  const canCancel = ability.can('cancel', 'LogisticOrder');
-  const canDelete = ability.can('delete', 'LogisticOrder');
-  const isGrantHolder = canApprove && canProcess;
+  // The link opens the logistic-order filter of the inventory action log, so it follows that log's switch and the
+  // route it sits on (the Stock page's View stock and Show Stock page), or it would bounce the person to their dashboard.
+  const mine = useMySwitches()?.values;
+  const canSeeActivity =
+    ability.can('see_inventory_activity', 'Inventory') && switchOn(mine, 'view_stock') && switchOn(mine, 'show_stock_page');
 
   const [activeId, setActiveId] = useState<string | null>(loId);
   const isCreate = activeId === null;
@@ -139,6 +138,13 @@ export function LODetailSheet({ open, onOpenChange, loId, anchor }: LODetailShee
   const detailQuery = useLogisticOrder(activeId);
   const detail = detailQuery.data ?? null;
   const status: LogisticOrderStatus = detail?.status ?? 'DRAFT';
+
+  // What this person may do to the order now is the server's list; only a new order, which has no record to ask about
+  // yet, works it out from their ability (see loActions).
+  const actions: readonly LogisticOrderAction[] = isCreate ? newOrderActions(ability) : (detail?.actions ?? []);
+  const canUpdate = actions.includes('edit');
+  const canCancel = actions.includes('cancel');
+  const canDelete = actions.includes('delete');
 
   const locationsQuery = useLocations();
 
@@ -177,7 +183,7 @@ export function LODetailSheet({ open, onOpenChange, loId, anchor }: LODetailShee
   const terminal = status === 'CANCELLED' || status === 'RETURNED';
   const readOnly = !isCreate && terminal;
   // Editing the lines/notes of an EXISTING order requires `update`. `readOnly` (terminal) only stops
-  // editing on CANCELLED/RETURNED; a SALES actor (create+submit, NO update) opening a non-terminal
+  // editing on CANCELLED/RETURNED; a person who may create and submit but not update opening a non-terminal
   // DRAFT must NOT be able to dirty the form, or Submit would fire a doomed PATCH → 403. Create mode
   // is always editable (the create endpoint is gated on `create`, not `update`).
   const canEditLines = isCreate || (canUpdate && !terminal);
@@ -198,18 +204,7 @@ export function LODetailSheet({ open, onOpenChange, loId, anchor }: LODetailShee
       : [];
 
   // -- One primary lifecycle action per state + permission ------------------
-  function resolveLifecycle(): { label: string; verb: LifecycleVerb } | null {
-    const s: LogisticOrderStatus = isCreate ? 'DRAFT' : status;
-    if (s === 'DRAFT') {
-      if (isGrantHolder) return { label: 'Process', verb: 'process' };
-      if (canSubmit) return { label: 'Submit for approval', verb: 'submit' };
-      return null;
-    }
-    if (s === 'PENDING_APPROVAL') return canApprove ? { label: 'Approve', verb: 'approve' } : null;
-    if (s === 'APPROVED') return canProcess ? { label: 'Process', verb: 'process' } : null;
-    return null; // PROCESSED / CANCELLED / RETURNED — no forward lifecycle action
-  }
-  const lifecycle = resolveLifecycle();
+  const lifecycle = primaryLifecycle(isCreate ? 'DRAFT' : status, actions);
   const showSave = !readOnly && (isCreate || (canUpdate && dirty));
   const saveLabel = isCreate || status === 'DRAFT' ? 'Save draft' : 'Save changes';
 
@@ -242,7 +237,7 @@ export function LODetailSheet({ open, onOpenChange, loId, anchor }: LODetailShee
     return activeId!;
   }
 
-  async function runAction(verb: LifecycleVerb | 'save') {
+  async function runAction(verb: LoLifecycleVerb | 'save') {
     setApiError(null);
     setBusy(true);
     try {
@@ -327,7 +322,7 @@ export function LODetailSheet({ open, onOpenChange, loId, anchor }: LODetailShee
               {isCreate ? 'New logistic order' : (detail?.number ?? 'Logistic order')}
             </SheetTitle>
             {!isCreate && detail && <StatusBadge domain="logisticOrder" status={detail.status} />}
-            {!isCreate && detail && (detail.status === 'PROCESSED' || detail.status === 'RETURNED') && (
+            {!isCreate && detail && canSeeActivity && (detail.status === 'PROCESSED' || detail.status === 'RETURNED') && (
               <Link
                 to={`/inventory/activity?lo=${detail.id}`}
                 className="text-sm font-medium text-primary hover:underline"
@@ -348,6 +343,7 @@ export function LODetailSheet({ open, onOpenChange, loId, anchor }: LODetailShee
 
           {/* Actor trail */}
           {!isCreate && detail && <ActorTrail detail={detail} />}
+          {!isCreate && detail && <LoTakenLine detail={detail} />}
         </div>
 
         {/* Body */}
@@ -449,7 +445,7 @@ export function LODetailSheet({ open, onOpenChange, loId, anchor }: LODetailShee
                   Delete
                 </Button>
               )}
-              {!isCreate && canCancel && OPEN_STATUSES.includes(status) && (
+              {!isCreate && canCancel && (
                 <Button
                   variant="ghost" tone="danger" revealOnHover
                   size="sm"
@@ -462,6 +458,7 @@ export function LODetailSheet({ open, onOpenChange, loId, anchor }: LODetailShee
             </div>
 
             <div className="flex items-center gap-2">
+              {!isCreate && activeId && <LoPickupButtons orderId={activeId} actions={actions} />}
               {showSave && (
                 <Button
                   variant={lifecycle ? 'outline' : 'solid'}

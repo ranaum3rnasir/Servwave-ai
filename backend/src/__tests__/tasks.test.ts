@@ -171,11 +171,11 @@ describe('GET /api/tasks', () => {
     mockAuthAs('admin');
     mockPrisma.task.findMany.mockResolvedValue([{ ...TASK_FIXTURE, assignee_ids: ['00000000-0000-0000-0000-000000000001'] }]);
     // assignee-name + label resolvers read these:
-    mockPrisma.user.findMany.mockResolvedValue([{ id: '00000000-0000-0000-0000-000000000001', first_name: 'Oved', last_name: 'Adani' }]);
+    mockPrisma.user.findMany.mockResolvedValue([{ id: '00000000-0000-0000-0000-000000000001', first_name: 'Morgan', last_name: 'Diaz' }]);
     mockPrisma.job.findMany.mockResolvedValue([{ id: JOB_ID, job_number: 'J00934', job_type: 'Access Control' }]);
     const res = await request(app).get('/api/tasks').set(authHeader('admin'));
     expect(res.body.tasks[0].assignees).toEqual([
-      { id: '00000000-0000-0000-0000-000000000001', name: 'Oved Adani' },
+      { id: '00000000-0000-0000-0000-000000000001', name: 'Morgan Diaz' },
     ]);
     expect(res.body.tasks[0].owner_name).toBeUndefined();
     expect(res.body.tasks[0].linked_entity_label).toBe('J00934 · Access Control');
@@ -389,14 +389,14 @@ describe('GET /api/tasks/:id', () => {
     mockPrisma.taskSubtask.findMany.mockResolvedValue([{ id: 's1', task_id: TASK_ID, text: 'Wire reader', done: true, position: 0 }]);
     mockPrisma.note.findMany.mockResolvedValue([{ id: 'n1', content: 'Ordered', created_by: 'u-1', created_at: new Date(), entity_type: 'TASK', entity_id: TASK_ID }]);
     mockPrisma.timelineEvent.findMany.mockResolvedValue([{ id: 't1', event_type: 'CREATED', description: 'created the task', created_by: 'u-1', created_at: new Date(), metadata: null }]);
-    mockPrisma.user.findMany.mockResolvedValue([{ id: 'u-1', first_name: 'Oved', last_name: 'Adani' }, { id: 'u-2', first_name: 'Priya', last_name: 'D' }]);
+    mockPrisma.user.findMany.mockResolvedValue([{ id: 'u-1', first_name: 'Morgan', last_name: 'Diaz' }, { id: 'u-2', first_name: 'Drew', last_name: 'D' }]);
     const res = await request(app).get(`/api/tasks/${TASK_ID}`).set(authHeader('admin'));
     expect(res.status).toBe(200);
     expect(res.body.task.subtasks[0].text).toBe('Wire reader');
-    expect(res.body.task.comments[0].author_name).toBe('Oved Adani');
+    expect(res.body.task.comments[0].author_name).toBe('Morgan Diaz');
     expect(res.body.task.activity[0].type).toBe('CREATED');
-    expect(res.body.task.watchers).toEqual([{ id: 'u-2', name: 'Priya D' }]);
-    expect(res.body.task.assignees).toEqual([{ id: 'u-1', name: 'Oved Adani' }]);
+    expect(res.body.task.watchers).toEqual([{ id: 'u-2', name: 'Drew D' }]);
+    expect(res.body.task.assignees).toEqual([{ id: 'u-1', name: 'Morgan Diaz' }]);
   });
   it('404 when task not in tenant', async () => {
     mockAuthAs('admin');
@@ -788,12 +788,12 @@ describe('GET /api/tasks/:id — created_by_name', () => {
     mockAuthAs('admin');
     const CREATOR_ID = '00000000-0000-0000-0000-000000000001';
     mockPrisma.task.findFirst.mockResolvedValue({ ...TASK_FIXTURE, created_by: CREATOR_ID, assignee_ids: [], watcher_ids: [] });
-    mockPrisma.user.findMany.mockResolvedValue([{ id: CREATOR_ID, first_name: 'Oved', last_name: 'Adani' }]);
+    mockPrisma.user.findMany.mockResolvedValue([{ id: CREATOR_ID, first_name: 'Morgan', last_name: 'Diaz' }]);
 
     const res = await request(app).get(`/api/tasks/${TASK_ID}`).set(authHeader('admin'));
 
     expect(res.status).toBe(200);
-    expect(res.body.task.created_by_name).toBe('Oved Adani');
+    expect(res.body.task.created_by_name).toBe('Morgan Diaz');
   });
 
   it('created_by_name is null when creator not found in user table', async () => {
@@ -860,22 +860,24 @@ const OTHER_USER_ID = '00000000-0000-0000-0000-0000000000aa';
 const TECH_ID = '00000000-0000-0000-0000-000000000004'; // TEST_USERS.technician
 
 describe('POST /api/tasks — assignment authority', () => {
-  it('a caller WITHOUT assign:Task is force-assigned to themselves (and only themselves)', async () => {
-    mockAuthAs('dispatcher'); // DEFAULT_GRANTS gives DISPATCHER no assign:Task
+  const SALES_ID = '00000000-0000-0000-0000-000000000003'; // TEST_USERS.sales
 
-    const res = await request(app).post('/api/tasks').set(authHeader('dispatcher')).send({ title: 'my own to-do' });
+  it('a caller WITHOUT assign:Task is force-assigned to themselves (and only themselves)', async () => {
+    mockAuthAs('sales'); // the Sales preset leaves Assign tasks to others off
+
+    const res = await request(app).post('/api/tasks').set(authHeader('sales')).send({ title: 'my own to-do' });
 
     expect(res.status).toBe(201);
     const createArgs = mockPrisma.task.create.mock.calls[0][0] as any;
-    expect(createArgs.data.assignee_ids).toEqual(['00000000-0000-0000-0000-000000000002']);
+    expect(createArgs.data.assignee_ids).toEqual([SALES_ID]);
   });
 
   it('a caller WITHOUT assign:Task asking for someone else → 403, nothing created', async () => {
-    mockAuthAs('dispatcher');
+    mockAuthAs('sales');
 
     const res = await request(app)
       .post('/api/tasks')
-      .set(authHeader('dispatcher'))
+      .set(authHeader('sales'))
       .send({ title: 'work for you', assignee_ids: [OTHER_USER_ID] });
 
     expect(res.status).toBe(403);
@@ -884,14 +886,28 @@ describe('POST /api/tasks — assignment authority', () => {
   });
 
   it('a caller WITHOUT assign:Task naming exactly themselves is fine (201)', async () => {
+    mockAuthAs('sales');
+
+    const res = await request(app)
+      .post('/api/tasks')
+      .set(authHeader('sales'))
+      .send({ title: 'mine', assignee_ids: [SALES_ID] });
+
+    expect(res.status).toBe(201);
+  });
+
+  it('a dispatcher can give a task to someone else: the Dispatcher preset holds Assign tasks to others', async () => {
     mockAuthAs('dispatcher');
+    mockPrisma.user.findMany.mockResolvedValue([{ id: OTHER_USER_ID, first_name: 'Dana', last_name: 'Cohen' }]);
 
     const res = await request(app)
       .post('/api/tasks')
       .set(authHeader('dispatcher'))
-      .send({ title: 'mine', assignee_ids: ['00000000-0000-0000-0000-000000000002'] });
+      .send({ title: 'delegated', assignee_ids: [OTHER_USER_ID] });
 
     expect(res.status).toBe(201);
+    const createArgs = mockPrisma.task.create.mock.calls[0][0] as any;
+    expect(createArgs.data.assignee_ids).toEqual([OTHER_USER_ID]);
   });
 
   it('a grant holder creating for someone else leaves the CREATOR off the task', async () => {
@@ -970,7 +986,7 @@ describe('PATCH /api/tasks/:id — assignment authority', () => {
     mockAuthAs('admin');
     mockPrisma.task.findFirst.mockResolvedValue({ ...TASK_FIXTURE, assignee_ids: [OTHER_USER_ID] });
     mockPrisma.user.findMany.mockResolvedValue([
-      { id: OTHER_USER_ID, first_name: 'Sagiv', last_name: 'Levi' },
+      { id: OTHER_USER_ID, first_name: 'Riley', last_name: 'Levi' },
       { id: TECH_ID, first_name: 'Dana', last_name: 'Cohen' },
     ]);
 
@@ -981,7 +997,7 @@ describe('PATCH /api/tasks/:id — assignment authority', () => {
 
     expect(res.status).toBe(200);
     const descriptions = mockPrisma.timelineEvent.create.mock.calls.map((c: any[]) => c[0].data.description);
-    expect(descriptions).toEqual(['assigned Dana Cohen', 'unassigned Sagiv Levi']);
+    expect(descriptions).toEqual(['assigned Dana Cohen', 'unassigned Riley Levi']);
   });
 });
 

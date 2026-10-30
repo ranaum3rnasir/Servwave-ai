@@ -229,7 +229,7 @@ async function* paginate<T>(
     // so it is a "there is more" flag and nothing else. This walk used to do
     // Number(next_page), got NaN, and stopped after page one - silently, since
     // a truncated list looks exactly like a short one. Page size is 10, so
-    // every caller saw the first 10 of everything: 10 of Alpha Doors' 20
+    // every caller saw the first 10 of everything: 10 of the pilot org's 20
     // numbers, 10 of its 123 calls. Advance by counting, and prefer
     // total_pages (a real number) as the bound.
     if (items.length === 0) break;
@@ -366,7 +366,7 @@ export async function createReceivingNumber(
  *  Each record carries BOTH ids CTM uses for a receiving number: the `id`
  *  string (RPN…) that the routing endpoints take, and a numeric `filter_id`.
  *  The call webhook's `answered_by.receiving_number_id` is the FILTER_ID -
- *  verified against the live Alpha Doors account on 2026-08-07 - which is what
+ *  verified against the live pilot org account on 2026-08-07 - which is what
  *  makes "who picked up this forwarded call" answerable at all. */
 export async function listReceivingNumbers(
   accountId: string,

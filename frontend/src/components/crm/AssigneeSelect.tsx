@@ -2,7 +2,7 @@ import { useMemo } from 'react';
 
 import { Combobox } from '@/components/ui/combobox';
 import type { SelectFieldOption } from '@/components/form/SelectField';
-import { useAssignableUsers, type AssigneePurpose } from '@/lib/api/users';
+import { useAssignableUsers, type AssigneePurpose, type EligibleFor } from '@/lib/api/users';
 import { namesById, type KnownPerson } from './knownPeople';
 
 export type { KnownPerson };
@@ -13,7 +13,7 @@ export type { KnownPerson };
    This file USED to be the hand-rolled original: its own Popover + search Input
    + useMemo filter + listbox, written for #514 (a Radix Select's closed-trigger
    typeahead committed the first prefix match on a single keystroke, so typing
-   "S" instantly assigned "Sherry Dispatcher" and made "Sagiv" unreachable).
+   "S" instantly assigned "Sherry Dispatcher" and made "Sasha" unreachable).
    `components/ui/combobox.tsx` was then built FROM this composition - its own
    header says so - which left the two as the same shape maintained twice.
 
@@ -47,7 +47,7 @@ interface AssigneeSelectBaseProps {
   placeholder?: string;
   disabled?: boolean;
   enabled?: boolean;
-  eligibleFor?: 'owner' | 'task' | 'dispatcher';
+  eligibleFor?: EligibleFor;
   /** Accessible name for the trigger. The combobox's visible text is the CHOSEN PERSON, which
    *  says nothing about what choosing them means, so a caller that renders more than one of
    *  these - or any picker whose adjacent <Label> cannot be associated by id - should name it. */

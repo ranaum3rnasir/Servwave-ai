@@ -7,10 +7,9 @@
  *
  *   - someone raises the FRONTEND constant and forgets the test -> red immediately, though
  *     nothing is broken yet;
- *   - the BACKEND cap is raised and the frontend is forgotten -> both suites green, while
- *     the client silently refuses every video between the old cap and the new one that the
- *     API would now accept. That is the raise undone on the client with nothing failing.
- *     It is not hypothetical: the video cap went 50MB -> 512MB on 2026-09-20.
+ *   - a slice raises the BACKEND to 512MB and the frontend is forgotten -> both suites green,
+ *     while the client silently refuses every 51-512MB video the API would now accept. That
+ *     is the PRD undone on the client with nothing failing.
  *
  * Reading both trees is the only shape that catches the second case. The idiom (and the
  * fail-loudly-on-no-match rule below) is lifted from `selfOnlyRefusalCopy.test.ts`.
@@ -34,6 +33,9 @@ import {
 const ROOT = join(__dirname, '..', '..', '..');
 const CONTROLLER_PATH = 'backend/src/controllers/attachment.controller.ts';
 const CONTROLLER = readFileSync(join(ROOT, CONTROLLER_PATH), 'utf8');
+/** The type allowlist is defined here, not in the controller (which only re-exports it). */
+const TYPES_PATH = 'backend/src/lib/attachment-types.ts';
+const TYPES = readFileSync(join(ROOT, TYPES_PATH), 'utf8');
 
 /**
  * `export const NAME = 25 * 1024 * 1024;` -> 26214400.
@@ -84,10 +86,10 @@ describe('client upload limits mirror the server', () => {
 
   // Slice 13: the New Task dialog refuses a type before create with this list, so it must be
   // the server's list exactly - a client list SHORTER than the server's refuses files the API
-  // would take. The controller's array carries comments, so only the quoted entries are read.
+  // would take. The array carries comments, so only the quoted entries are read.
   it('matches ALLOWED_MIME_TYPES', () => {
-    const match = /const ALLOWED_MIME_TYPES = \[([^\]]+)\];/.exec(CONTROLLER);
-    if (!match) throw new Error(`Could not find \`const ALLOWED_MIME_TYPES = [...]\` in ${CONTROLLER_PATH}.`);
+    const match = /const ALLOWED_MIME_TYPES = \[([^\]]+)\];/.exec(TYPES);
+    if (!match) throw new Error(`Could not find \`const ALLOWED_MIME_TYPES = [...]\` in ${TYPES_PATH}.`);
     const server = match[1]!
       .split('\n')
       .map((line) => line.replace(/\/\/.*$/, ''))

@@ -102,12 +102,14 @@ describe('AddGroupDialog — per-line margin and markup', () => {
     expect(figureUnder('Comped part', 'Markup')).toBe('—');
   });
 
-  it('does not invite a viewer without pricing access to add a cost', () => {
+  it('shows a viewer without pricing access no cost, margin or markup at all', () => {
     renderDialog([{ id: 'ln_2', name: 'Travel fee', quantity: 1, priceOverride: 50 }], {
       canSeePricing: false,
     });
 
-    expect(figureUnder('Travel fee', 'Margin')).toBe('—');
-    expect(profitability('Travel fee').getAttribute('title')).toBeNull();
+    expect(screen.queryByRole('group', { name: /profitability for travel fee/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('columnheader', { name: 'Cost' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('columnheader', { name: 'Profitability' })).not.toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Price' })).toBeInTheDocument();
   });
 });

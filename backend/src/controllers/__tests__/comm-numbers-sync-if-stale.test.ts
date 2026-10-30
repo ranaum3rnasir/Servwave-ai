@@ -19,7 +19,7 @@ import * as ctmClient from '../../lib/ctm/client';
 import { resetNumberSyncThrottle, AUTO_SYNC_WINDOW_MS } from '../../lib/ctm/numberSync';
 import { clearTokenCache } from '../../middleware/authenticate';
 import { clearPermissionCache } from '../../lib/permissions/permissionCache';
-import { mockAuthAs, authHeader, ALPHA_ORG_ID } from '../../__tests__/helpers';
+import { mockAuthAs, mockRoleSwitches, authHeader, ALPHA_ORG_ID } from '../../__tests__/helpers';
 import { installPhoneNumberStore } from '../../lib/ctm/__tests__/phoneNumberStore';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -31,12 +31,19 @@ const OTHER_ORG_ID = '00000000-0000-0000-0000-0000000000ff';
 const URL = '/api/communication/numbers/sync-if-stale';
 
 type UserKey = 'admin' | 'dispatcher' | 'sales' | 'technician';
-const syncIfStale = (who: UserKey = 'dispatcher') => {
+/** The switch values the person's role holds on top of its preset (Roles & Permissions S01.10). */
+type Switches = Record<string, boolean | string>;
+// These cases are about the sync, so the person sees every number (Communication scope "All"). What a person on
+// "Linked to me" sees of the list is covered in comm-numbers-scope.test.ts.
+const SEES_EVERY_NUMBER: Switches = { communication_scope: 'all' };
+const syncIfStale = (who: UserKey = 'dispatcher', switches: Switches = {}) => {
   mockAuthAs(who);
+  mockRoleSwitches({ ...SEES_EVERY_NUMBER, ...switches });
   return request(app).post(URL).set(authHeader(who)).send({});
 };
-const list = (who: UserKey = 'dispatcher') => {
+const list = (who: UserKey = 'dispatcher', switches: Switches = {}) => {
   mockAuthAs(who);
+  mockRoleSwitches({ ...SEES_EVERY_NUMBER, ...switches });
   return request(app).get('/api/communication/numbers').set(authHeader(who));
 };
 
@@ -99,9 +106,10 @@ describe('who may call it', () => {
     expect(client.listNumbers).toHaveBeenCalledWith(CTM_ACCOUNT_ID);
   });
 
-  it('gives a sales user, who cannot read the list, the same refusal as the list endpoint, and never syncs', async () => {
-    const listed = await list('sales');
-    const synced = await syncIfStale('sales');
+  it('gives a user without Access Communication, who cannot read the list, the same refusal as the list endpoint, and never syncs', async () => {
+    const off = { access_communication: false };
+    const listed = await list('sales', off);
+    const synced = await syncIfStale('sales', off);
 
     expect(listed.status).toBe(403);
     expect(synced.status).toBe(listed.status);
@@ -185,6 +193,7 @@ describe('org scoping', () => {
 
   it('ignores an org id sent in the body or the query and syncs the caller\'s own org', async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches(SEES_EVERY_NUMBER);
     const res = await request(app)
       .post(URL)
       .query({ orgId: OTHER_ORG_ID, organization_id: OTHER_ORG_ID })

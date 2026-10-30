@@ -47,16 +47,16 @@ import { assertInvoiceReconciles } from '../../helpers/reconcile';
  *    schedule-walkthrough needs CONTACTED/WALKTHROUGH_COMPLETED/_SCHEDULED.
  *    :1030-1037 performer must be active + hold `perform Walkthrough` (DISPATCHER and
  *    TECHNICIAN both hold it → both are eligible performers). :1147-1155
- *    walkthrough/complete = status guard, then manage-all OR the assigned performer —
- *    the error string names "Dispatcher" but the CODE checks `manage all`, which
- *    DISPATCHER does NOT have ⇒ a dispatcher can complete ONLY his own walkthroughs
- *    (X-11a step 5b documents the contradiction; X-11c is the positive self-perform).
+ *    walkthrough/complete = Perform walkthroughs AND (on the crew of the scheduled
+ *    walkthrough OR Update any visit's status). The DISPATCHER preset holds both
+ *    switches, so a dispatcher may also finish a walkthrough someone else performs
+ *    (a refusal answers 'Insufficient permissions'; X-11c is the positive self-perform).
  *    :891-935 lead-assign has NO status guard; target needs be_assigned Lead (SALES
  *    only) else 400 (:910-913). :856-861 delete blocked when estimates exist.
- *    CASCADES (X-12e): cancelLead :1285-1296 cancels DRAFT/SENT/PENDING estimates via
+ *    CASCADES (X-12e): markLeadLost cancels DRAFT/SENT/PENDING estimates via
  *    RAW prisma.estimate.updateMany and :1298-1303 voids unpaid DRAFT/SENT deposit
  *    invoices via voidUnpaidDepositInvoices (:286-304, raw updateMany) — NO ability
- *    check on either sub-step, so the dispatcher's cancel-Lead grant transitively
+ *    check on either sub-step, so the dispatcher's Mark leads lost grant transitively
  *    cancels estimates + voids invoices he holds no grant for. markLost mirrors it
  *    (:1477-1495) and auto-cancels a scheduled walkthrough (:1443-1449).
  *  - estimate.controller.ts:1299-1306 record-payment is DRAFT/SENT/PENDING-only;
@@ -185,8 +185,8 @@ async function adminApprovedEstimate() {
  * The dispatcher intake half of the day, compressed (X-11b/X-11c reuse; X-11a runs the
  * same chain INLINE with per-hop asserts — it is the gate spine):
  * admin customer/location → dispatcher lead → contact → walkthrough scheduled on the
- * seeded TECH → TECH completes (the dispatcher CANNOT complete someone else's
- * walkthrough, lead.controller.ts:1153) → dispatcher assigns the lead to SALES →
+ * seeded TECH → TECH completes (the dispatcher could complete it too: Update any
+ * visit's status) → dispatcher assigns the lead to SALES →
  * SALES creates + sends the estimate with a deposit. Returns ids.
  */
 async function dispatcherIntakeToSalesSentEstimate(methods: string[]) {
@@ -275,17 +275,6 @@ test.describe('redesign-27 dispatcher day — X-11 operational spine (run AS dis
     });
     expect(wt.res.status(), 'step 5: dispatcher schedules walkthrough').toBe(200);
     expect(wt.body.lead.status).toBe('WALKTHROUGH_SCHEDULED');
-
-    // 5b. The dispatcher CANNOT complete a walkthrough performed by someone else:
-    //     the controller requires manage-all OR the assigned performer
-    //     (lead.controller.ts:1153) and DISPATCHER is neither. The 403 string
-    //     literally names "Dispatcher" as allowed — message/code contradiction,
-    //     asserted verbatim so a baseline flip is loud. (X-11c proves the positive:
-    //     he CAN complete his OWN walkthrough.)
-    const wrongComplete = await dispatcher.completeWalkthrough(leadId);
-    expect(wrongComplete.res.status(), 'step 5b: dispatcher cannot complete tech walkthrough').toBe(403);
-    expect(String(wrongComplete.body.error))
-      .toBe('Only the assigned performer, Admin, or Dispatcher can complete this walkthrough');
 
     // 6. The assigned TECH completes it (route canDo('perform','Walkthrough'),
     //    lead.routes.ts:37; controller passes — he IS the performer).
@@ -677,7 +666,7 @@ test.describe('redesign-27 dispatcher day — X-12 edge grid (what must still br
     const del = await dispatcher.deleteLead(leadId);
     expect(del.status, 'delete lead with estimate').toBe(400);
     const delBody = await del.res.json().catch(() => ({}));
-    expect(String(delBody.error)).toBe('Lead has estimates — cancel or mark lost instead');
+    expect(String(delBody.error)).toBe('Lead has estimates — mark it lost instead');
     expect((await admin.getLead(leadId)).id, 'lead survives the blocked delete').toBe(leadId);
   });
 
@@ -802,11 +791,11 @@ test.describe('redesign-27 dispatcher day — X-12 edge grid (what must still br
   });
 
   // ── X-12e ──────────────────────────────────────────────────────────────────
-  test('X-12e: cascade-acquired powers — lead cancel voids the deposit invoice; job cancel voids a SENT invoice (+refund_suggested shape); mark-lost auto-cancels the walkthrough', async () => {
+  test('X-12e: cascade-acquired powers — lead mark-lost voids the deposit invoice; job cancel voids a SENT invoice (+refund_suggested shape); mark-lost auto-cancels the walkthrough', async () => {
     test.setTimeout(150_000); // three admin seed chains (two with Auth-user creation)
 
-    // (1) Lead cancel cascade. The dispatcher holds cancel Lead but NEITHER cancel
-    //     Estimate NOR void Invoice — yet cancelLead cancels DRAFT/SENT/PENDING
+    // (1) Lead mark-lost cascade. The dispatcher holds Mark leads lost but NEITHER cancel
+    //     Estimate NOR void Invoice — yet markLeadLost cancels DRAFT/SENT/PENDING
     //     estimates via RAW prisma.estimate.updateMany (lead.controller.ts:1285-1296)
     //     and voids unpaid DRAFT/SENT deposit invoices via voidUnpaidDepositInvoices
     //     (:1298-1303 → :286-304), with NO ability check on either sub-step. This is
@@ -816,9 +805,9 @@ test.describe('redesign-27 dispatcher day — X-12 edge grid (what must still br
     const depInvA = (await admin.getEstimate(a.estimateId)).invoices?.[0];
     expect(depInvA?.status, 'seed: unpaid deposit invoice SENT').toBe('SENT');
 
-    const cancelLead = await dispatcher.cancelLead(a.leadId, 'X-12e cascade probe');
-    expect(cancelLead.res.status(), 'dispatcher cancels lead').toBe(200);
-    expect(cancelLead.body.lead.status).toBe('CANCELLED');
+    const lostLead = await dispatcher.markLeadLost(a.leadId, 'X-12e cascade probe');
+    expect(lostLead.res.status(), 'dispatcher marks lead lost').toBe(200);
+    expect(lostLead.body.lead.status).toBe('LOST');
 
     expect((await admin.getEstimate(a.estimateId)).status, 'estimate ARCHIVED by cascade').toBe('ARCHIVED');
     const depInvAAfter = await admin.getInvoice(depInvA.id);

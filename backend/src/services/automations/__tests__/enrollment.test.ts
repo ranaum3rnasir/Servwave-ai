@@ -1251,7 +1251,7 @@ describe('advanceEnrollment - the carried visit governs staleness (criterion 16)
       id: 'c0000000-0000-0000-0000-000000000001',
       first_name: 'Sarah',
       last_name: 'Mitchell',
-      email: 'sarah@emanuel-demo.local',
+      email: 'sarah@demo.local',
       phone: '+15550100155',
     },
     visits: [

@@ -8,6 +8,8 @@ import {
   useStripeAccountSession,
   useAcceptPaymentsTerms,
   useStripeAccountLink,
+  useRefreshStripeStatus,
+  useOrganization,
   type StripeStatus,
 } from './organization';
 
@@ -17,13 +19,13 @@ const wrapper = (qc: QueryClient) =>
   };
 
 const baseStatus: StripeStatus = {
-  stripe_account_id: 'acct_123',
+  connected: true,
+  terms_accepted: true,
   stripe_charges_enabled: true,
   stripe_payouts_enabled: false,
   stripe_details_submitted: true,
   stripe_requirements_due: [],
   stripe_disabled_reason: null,
-  platform_fee_bps: 50,
   collected_awaiting_payout: 12000,
 };
 
@@ -50,7 +52,7 @@ describe('useConnectStripe', () => {
   });
 
   it('POSTs /api/organization/stripe/connect and invalidates the organization query', async () => {
-    vi.mocked(api.post).mockResolvedValue({ data: { stripe_account_id: 'acct_456' } });
+    vi.mocked(api.post).mockResolvedValue({ data: { connected: true } });
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     const invalidate = vi.spyOn(qc, 'invalidateQueries');
     const { result } = renderHook(() => useConnectStripe(), { wrapper: wrapper(qc) });
@@ -58,7 +60,7 @@ describe('useConnectStripe', () => {
     const response = await result.current.mutateAsync();
 
     expect(api.post).toHaveBeenCalledWith('/api/organization/stripe/connect');
-    expect(response).toEqual({ stripe_account_id: 'acct_456' });
+    expect(response).toEqual({ connected: true });
     await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['organization'] }));
   });
 
@@ -84,8 +86,18 @@ describe('useStripeAccountSession', () => {
 
     const response = await result.current.mutateAsync();
 
-    expect(api.post).toHaveBeenCalledWith('/api/organization/stripe/account-session');
+    expect(api.post).toHaveBeenCalledWith('/api/organization/stripe/account-session', { surface: 'owner' });
     expect(response).toEqual({ client_secret: 'seti_123_secret' });
+  });
+
+  it('asks for the viewer surface when the viewer components are what the page mounts', async () => {
+    vi.mocked(api.post).mockResolvedValue({ data: { client_secret: 'cs_viewer' } });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { result } = renderHook(() => useStripeAccountSession('viewer'), { wrapper: wrapper(qc) });
+
+    await result.current.mutateAsync();
+
+    expect(api.post).toHaveBeenCalledWith('/api/organization/stripe/account-session', { surface: 'viewer' });
   });
 
   it('propagates a 403 PAYMENTS_TERMS_ACCEPTANCE_REQUIRED failure untouched (no onError swallow)', async () => {
@@ -140,5 +152,52 @@ describe('useStripeAccountLink', () => {
 
     expect(api.post).toHaveBeenCalledWith('/api/organization/stripe/account-link');
     expect(response).toEqual({ url: 'https://connect.stripe.com/setup/xyz' });
+  });
+});
+
+describe('useRefreshStripeStatus', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('POSTs /api/organization/stripe/refresh-status and replaces the cached status with the refreshed one', async () => {
+    const refreshed = { ...baseStatus, stripe_charges_enabled: false };
+    vi.mocked(api.post).mockResolvedValue({ data: refreshed });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    qc.setQueryData(['organization', 'stripe-status'], baseStatus);
+    const { result } = renderHook(() => useRefreshStripeStatus(), { wrapper: wrapper(qc) });
+
+    const response = await result.current.mutateAsync();
+
+    expect(api.post).toHaveBeenCalledWith('/api/organization/stripe/refresh-status');
+    expect(response).toEqual(refreshed);
+    expect(qc.getQueryData(['organization', 'stripe-status'])).toEqual(refreshed);
+  });
+
+  // Fix round 1: the organization row carries the same "can take cards" flag, and screens
+  // (the accepted-methods row on Settings > Payments) read it from there. The refresh must
+  // re-read it too, or those screens keep saying the org can take cards.
+  it('re-reads the organization row as well, so its "can take cards" flag follows the refresh', async () => {
+    let chargesEnabled = true;
+    vi.mocked(api.get).mockImplementation((url: string) => {
+      if (url === '/api/organization') {
+        return Promise.resolve({ data: { id: 'o1', stripe_connected: true, stripe_charges_enabled: chargesEnabled } });
+      }
+      return Promise.resolve({ data: baseStatus });
+    });
+    vi.mocked(api.post).mockImplementation(() => {
+      chargesEnabled = false;
+      return Promise.resolve({ data: { ...baseStatus, stripe_charges_enabled: false } });
+    });
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const { result } = renderHook(
+      () => ({ org: useOrganization(), refresh: useRefreshStripeStatus() }),
+      { wrapper: wrapper(qc) },
+    );
+    await waitFor(() => expect(result.current.org.data?.stripe_charges_enabled).toBe(true));
+
+    await result.current.refresh.mutateAsync();
+
+    await waitFor(() => expect(result.current.org.data?.stripe_charges_enabled).toBe(false));
   });
 });

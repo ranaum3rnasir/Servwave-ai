@@ -62,6 +62,9 @@ import { buildAlphaClassicPdf } from '../lib/pdf/templates/alpha-classic';
 import { mockAuthAs, authHeader } from './helpers';
 import { estimateDocumentSelect } from '../lib/estimate-document';
 
+
+// PRD 10 (S10.12): a document is sent by hand, from the sender's own mailbox (the id the suite-wide mailbox stub answers to).
+const HAND_SENDER = { mailboxId: 'main-mailbox-id', userId: 'user-1' };
 let sendEstimateEmail: typeof import('../lib/email')['sendEstimateEmail'];
 
 beforeAll(async () => {
@@ -96,13 +99,13 @@ export function applySelect(row: unknown, select: unknown): unknown {
 
 const ORG = {
   id: 'org-1',
-  name: 'Alpha Doors & Security INC.',
+  name: 'Example Doors & Security INC.',
   address_line1: '1001 Willow Avenue',
   address_line2: null,
   city: 'Hoboken',
   state: 'NJ',
   postal_code: '07030',
-  email: 'info@alphasecurityus.com',
+  email: 'info@example-company.test',
   phone: null,
   website: null,
   logo_url: null,
@@ -226,7 +229,7 @@ function renderedEstimate(): any {
 
 describe('the emailed estimate PDF', () => {
   it("prints the priced scope block that its Sub total already contains", async () => {
-    await sendEstimateEmail(SEND_PARAMS);
+    await sendEstimateEmail({ ...SEND_PARAMS, handSender: HAND_SENDER });
 
     const doc = buildAlphaClassicPdf(renderedEstimate(), ORG as any);
     const json = JSON.stringify(doc);
@@ -250,7 +253,7 @@ describe('the emailed estimate PDF', () => {
         ),
     );
 
-    await sendEstimateEmail(SEND_PARAMS);
+    await sendEstimateEmail({ ...SEND_PARAMS, handSender: HAND_SENDER });
 
     const json = JSON.stringify(buildAlphaClassicPdf(renderedEstimate(), ORG as any));
     expect(json).toContain('Repeat customer');
@@ -260,7 +263,7 @@ describe('the emailed estimate PDF', () => {
   // #2028 slice 5 — end to end: the projection carries scope_notes AND Alpha Classic now draws
   // it. Either half alone leaves the customer's document without the scope of work.
   it('prints the scope-of-work narrative the salesperson typed', async () => {
-    await sendEstimateEmail(SEND_PARAMS);
+    await sendEstimateEmail({ ...SEND_PARAMS, handSender: HAND_SENDER });
 
     const json = JSON.stringify(buildAlphaClassicPdf(renderedEstimate(), ORG as any));
     expect(json).toContain('Work is performed during business hours.');
@@ -280,7 +283,7 @@ describe('the emailed estimate PDF', () => {
         ),
     );
 
-    await sendEstimateEmail(SEND_PARAMS);
+    await sendEstimateEmail({ ...SEND_PARAMS, handSender: HAND_SENDER });
 
     const json = JSON.stringify(buildAlphaClassicPdf(renderedEstimate(), ORG as any));
     // $200.00 gross struck through, $150.00 net — the figure the Sub total actually contains.
@@ -296,7 +299,7 @@ describe('the previewed PDF and the emailed PDF', () => {
     const previewed = renderedEstimate();
 
     vi.mocked(generateEstimatePdf).mockClear();
-    await sendEstimateEmail(SEND_PARAMS);
+    await sendEstimateEmail({ ...SEND_PARAMS, handSender: HAND_SENDER });
     const emailed = renderedEstimate();
 
     // Compared as JSON: a pdfmake docDefinition carries `layout` callbacks, which are fresh
@@ -387,7 +390,7 @@ describe('every estimate-document surface', () => {
   });
 
   it('asks the database for every field the projection declares — emailed PDF', async () => {
-    await sendEstimateEmail(SEND_PARAMS);
+    await sendEstimateEmail({ ...SEND_PARAMS, handSender: HAND_SENDER });
 
     const asked = selectPaths(selectPassedTo(prisma.estimate.findUnique as Mock));
     expect(asked).toEqual(expect.arrayContaining(DOCUMENT_PATHS));

@@ -2,8 +2,9 @@ import { lazy, Suspense, useEffect, useState } from 'react';
 import { ChevronDown, Plus } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
-import { quickCreateItems } from '@/components/layout/nav-config';
+import { quickCreateItems, quickCreateItemShows } from '@/components/layout/nav-config';
 import { useAppAbility } from '@/contexts/AbilityContext';
+import { useMySwitches } from '@/lib/api/mySwitches';
 import { useSettingsGuard } from '@/stores/settingsGuard.store';
 import { useSidebar } from '@/ui-kit/components/layout/appShell';
 import { Button } from '@/ui-kit/components/ui/button';
@@ -39,9 +40,13 @@ function useMountedOnceOpened(open: boolean): boolean {
  * The global "Create New" action, pinned to the head of the sidebar.
  *
  * The list is `quickCreateItems` - imported from the shared nav module rather
- * than forked, filtered by the same `ability.can(action, subject)` check, so a
- * role that cannot create a Job never sees the row. Most hrefs are the app's
- * plain paths and are used as they are; `preferV2Path` around them is a no-op
+ * than forked. An item shows only when its Create ability (`ability.can(action,
+ * subject)`) AND its page's Show switch are both on (Roles & Permissions S02.24),
+ * so a person who cannot create a Job, or whose Jobs page is not shown, never
+ * sees the row. Show is display only, so it is read from the person's own
+ * switches (`useMySwitches`), and nothing is drawn until they have arrived.
+ * Most hrefs are the app's plain paths and are used as they are; `preferV2Path`
+ * around them is a no-op
  * shim left in place, not a rewrite (see `uiV2.ts`). New Estimate and New Task
  * are the two exceptions - their hrefs are `?action=` handshakes meant for a
  * module list page (still used by deep links and the legacy sidebar), so here
@@ -62,6 +67,7 @@ function useMountedOnceOpened(open: boolean): boolean {
  */
 export function SidebarCreateMenu() {
   const ability = useAppAbility();
+  const mySwitches = useMySwitches();
   const navigate = useNavigate();
   const requestLeave = useSettingsGuard((s) => s.requestLeave);
   const { isRail, isDrawer, closeDrawer } = useSidebar();
@@ -84,7 +90,8 @@ export function SidebarCreateMenu() {
     return () => clearTimeout(handle);
   }, []);
 
-  const items = quickCreateItems.filter((item) => ability.can(item.action, item.subject));
+  const items = quickCreateItems.filter((item) =>
+    quickCreateItemShows(item, (action, subject) => ability.can(action, subject), mySwitches?.values));
   if (items.length === 0) return null;
 
   // A dialog opened from the drawer lives in THIS component, which the drawer unmounts when it

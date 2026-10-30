@@ -28,7 +28,9 @@ import { withNumberCollisionRetry } from '../lib/number-collision-retry';
 import { hasPaymentInSubtree, paymentSummaryForSubtree, purgeCustomerSubtree } from '../lib/purge';
 import { findDuplicateCustomer, duplicateConflictBody } from '../lib/customer-duplicate';
 import { phoneSearchClauses, phoneRelationSearchClauses } from '../lib/phone-search';
-import { logAudit } from '../lib/audit';
+import { logAudit, getClientIp } from '../lib/audit';
+import { assessPurge, type PurgeAssessment } from '../lib/purge-policy';
+import { closePurgeCheckoutLinks } from '../lib/purge-checkout';
 import { computeRenumber, applyRenumber, type RenumberComputation } from '../lib/record-renumber';
 import { optionalCustomerEmail, hasPhoneOrEmail, CONTACT_REQUIRED_MSG } from '../lib/email-schema';
 import { requiredCustomerPhone, optionalCustomerPhone } from '../lib/phone-schema';
@@ -39,11 +41,12 @@ import { mergeCustomFields, validateCustomFieldValues, CustomFieldValidationErro
 import { openTaskStatusFilter } from '../lib/tasks/status';
 import { getRequestOrgTimezone } from '../lib/timezone';
 import { orgTodayStart } from '../lib/orgDayRange';
+import { paidCents, fromCents } from '../lib/payment-ledger';
 import { LONG_TEXT_MAX } from '../lib/text-limits';
 
 // ─── Shared status sets ────────────────────────────────
 
-// Every status that is not closed (Won, Lost, Cancelled): a lead with a walkthrough booked or done
+// Every status that is not closed (Won, Lost): a lead with a walkthrough booked or done
 // is still open work.
 const OPEN_LEAD_STATUSES: LeadStatus[] = ['NEW', 'CONTACTED', 'WALKTHROUGH_SCHEDULED', 'WALKTHROUGH_COMPLETED', 'ESTIMATED'];
 // Open pipeline minus untouched NEW — leads being actively worked (see lead-semantics note).
@@ -901,6 +904,7 @@ async function loadCustomerFinancials(id: string, orgId: string, timeZone: strin
       COALESCE((SELECT SUM(p.amount) FROM payments p
                 JOIN invoices i2 ON p.invoice_id = i2.id
                 WHERE i2.customer_id = ${id}::uuid AND i2.organization_id = ${orgId}::uuid
+                  AND p.state = 'SUCCEEDED'
                   AND (p.reference_number IS DISTINCT FROM 'DEPOSIT-CREDIT')), 0) AS lifetime_revenue,
       COALESCE((SELECT SUM(i2.total_amount) FROM invoices i2
                 WHERE i2.customer_id = ${id}::uuid AND i2.organization_id = ${orgId}::uuid
@@ -1083,7 +1087,7 @@ export async function getById(req: Request, res: Response) {
       }>>`
         SELECT
           COALESCE(SUM(CASE WHEN i.status = 'PAID' THEN i.total_amount ELSE 0 END), 0) AS deposits_collected,
-          COALESCE(SUM(CASE WHEN i.status IN ('DRAFT', 'SENT') THEN i.amount_due ELSE 0 END), 0) AS deposits_pending
+          COALESCE(SUM(CASE WHEN i.status IN ('SENT', 'PARTIAL') THEN i.amount_due ELSE 0 END), 0) AS deposits_pending
         FROM invoices i
         JOIN estimates e ON i.estimate_id = e.id
         WHERE i.kind = 'DEPOSIT'
@@ -1097,7 +1101,7 @@ export async function getById(req: Request, res: Response) {
           total_amount: true, amount_due: true, due_date: true, created_at: true,
           job: { select: { id: true, job_number: true } },
           payments: {
-            select: { id: true, amount: true, method: true, paid_at: true, notes: true,
+            select: { id: true, amount: true, method: true, paid_at: true, notes: true, state: true, voided_at: true,
                       collector: { select: { id: true, first_name: true, last_name: true } } },
             orderBy: { paid_at: 'desc' as const },
           },
@@ -1126,6 +1130,8 @@ export async function getById(req: Request, res: Response) {
     // Flatten the nested `job` relation into scalar `job_number`/`job_id` on each invoice row.
     const mappedInvoices = (allInvoices ?? []).map((inv) => ({
       ...inv,
+      // Slice 28 D1: bank money still clearing on this invoice, for the list's Processing badge.
+      processing_amount: fromCents(paidCents(inv.payments.filter((p) => p.state === 'PROCESSING' && p.voided_at == null))),
       job_number: inv.job?.job_number ?? null,
       job_id: inv.job?.id ?? null,
       job: undefined,
@@ -1413,9 +1419,9 @@ export async function update(req: Request, res: Response) {
       delete rest.billing_same_as_service_location;
     }
 
-    const isAdmin = req.user?.role === 'ADMIN';
+    const canBackdate = Boolean(req.ability?.can('change_created_date', 'Customer'));
     const createdAtChanged =
-      isAdmin && created_at !== undefined &&
+      canBackdate && created_at !== undefined &&
       (!existing.created_at ||
        (created_at as Date).toISOString().slice(0, 10) !== (existing.created_at as Date).toISOString().slice(0, 10));
     // §5.1 — kind is derived, never client-supplied. Re-derive it whenever this PATCH
@@ -1493,7 +1499,8 @@ export async function remove(req: Request, res: Response) {
     const id = param(req, 'id');
     const orgId = req.user!.organization_id;
     const existing = await prisma.customer.findUnique({ where: { id, ...tenantWhere(req) } });
-    if (!existing) {
+    // S01.5 - an action switch acts only on a customer within reach, the probe the read uses.
+    if (!existing || !(await canReadCustomerById(req, id))) {
       res.status(404).json({ error: 'Customer not found' });
       return;
     }
@@ -1540,7 +1547,8 @@ export async function archiveCustomer(req: Request, res: Response) {
   try {
     const id = param(req, 'id');
     const existing = await prisma.customer.findUnique({ where: { id, ...tenantWhere(req) } });
-    if (!existing) {
+    // S01.5 - an action switch acts only on a customer within reach, the probe the read uses.
+    if (!existing || !(await canReadCustomerById(req, id))) {
       res.status(404).json({ error: 'Customer not found' });
       return;
     }
@@ -1574,7 +1582,8 @@ export async function unarchiveCustomer(req: Request, res: Response) {
   try {
     const id = param(req, 'id');
     const existing = await prisma.customer.findUnique({ where: { id, ...tenantWhere(req) } });
-    if (!existing) {
+    // S01.5 - an action switch acts only on a customer within reach, the probe the read uses.
+    if (!existing || !(await canReadCustomerById(req, id))) {
       res.status(404).json({ error: 'Customer not found' });
       return;
     }
@@ -1612,6 +1621,62 @@ export const purgeCustomerSchema = z.object({
 // schema only guards the wire shape: `number` must be present and a string.
 export const renumberCustomerSchema = z.object({ number: z.string() }).strict();
 
+
+// ─── Force-purge guard (payments go-live F1) ────────────
+
+const PURGE_LINKS_ERROR = "Could not close this client's payment links. Nothing was deleted. Try again.";
+
+const PURGE_IN_FLIGHT_BODY = {
+  error: 'This client has a payment that is still being recorded. Try again in a few minutes.',
+  code: 'PURGE_BLOCKED_PAYMENT_IN_FLIGHT',
+};
+
+/** A new invoice appeared after the links were closed: its link (if any) was never swept. */
+class PurgeInvoiceAppearedError extends Error {}
+
+class PurgeBlockedError extends Error {
+  constructor(readonly assessment: PurgeAssessment) {
+    super('PURGE_BLOCKED_FINANCIAL_RECORDS');
+  }
+}
+
+/** What the dialog shows before anything is deleted; also the numbers a refusal carries. */
+function purgeFacts(a: PurgeAssessment) {
+  return {
+    allowed: a.allowed,
+    blockers: a.blockers,
+    invoice_count: a.invoice_count,
+    payment_count: a.payment_count,
+    payment_total: a.payment_total,
+    open_disputes: a.open_disputes,
+    newest_financial_date: a.newest_financial_date,
+    has_card_payments: a.has_card_payments,
+  };
+}
+
+function purgeBlockedBody(a: PurgeAssessment) {
+  return {
+    error: 'This client has invoices or payments that must be kept. Archive the client instead.',
+    code: 'PURGE_BLOCKED_FINANCIAL_RECORDS',
+    ...purgeFacts(a),
+  };
+}
+
+export async function purgePreview(req: Request, res: Response) {
+  try {
+    const id = param(req, 'id');
+    const existing = await prisma.customer.findUnique({ where: { id, ...tenantWhere(req) } });
+    if (!existing) {
+      res.status(404).json({ error: 'Customer not found' });
+      return;
+    }
+    res.json(purgeFacts(await assessPurge(prisma, id, req.user!.organization_id)));
+  } catch (err) {
+    logger.error('Purge preview error:', err);
+    res.status(500).json({ error: 'Failed to check this client' });
+  }
+}
+
 export async function purgeCustomer(req: Request, res: Response) {
   try {
     const id = param(req, 'id');
@@ -1636,12 +1701,74 @@ export async function purgeCustomer(req: Request, res: Response) {
       return;
     }
 
+    // Payments go-live F1: a customer whose subtree holds records that must be kept is archived, not purged.
+    // Checked here first so nothing is touched at the processor for a purge that will be refused, and checked
+    // again inside the transaction below so a record that lands in between cannot slip past.
+    const firstLook = await assessPurge(prisma, id, orgId);
+    if (!firstLook.allowed) {
+      res.status(409).json(purgeBlockedBody(firstLook));
+      return;
+    }
+
+    // Close every open payment link of the subtree's invoices (a draft can carry one) BEFORE the delete: a
+    // dead link cannot take money for an invoice that no longer exists. Nothing is deleted if one stays open.
+    const links = await closePurgeCheckoutLinks(orgId, firstLook.invoices);
+    if (links === 'payment_in_flight') {
+      res.status(409).json(PURGE_IN_FLIGHT_BODY);
+      return;
+    }
+    if (links !== 'ok') {
+      res.status(502).json({ error: PURGE_LINKS_ERROR });
+      return;
+    }
+
     // Money-gate audit — ADMIN may purge regardless, but we surface a destructive warning.
     const money = await paymentSummaryForSubtree(id, orgId);
 
-    await prisma.$transaction(async (tx) => {
-      await purgeCustomerSubtree(tx, id, orgId);
-    });
+    try {
+      await prisma.$transaction(async (tx) => {
+        // Lock the customer, then its invoices, before looking: a payment, refund or dispute being written for
+        // them waits for this transaction (or is committed and seen), so the check cannot be raced.
+        const assessment = await assessPurge(tx, id, orgId, { lockRows: true });
+        if (!assessment.allowed) throw new PurgeBlockedError(assessment);
+        // Only invoices whose links were closed above may be deleted: a new one is refused, nothing is deleted.
+        const swept = new Set(firstLook.invoices.map((i) => i.id));
+        if (assessment.invoices.some((i) => !swept.has(i.id))) throw new PurgeInvoiceAppearedError();
+        // The durable record of the purge, in the same transaction: a purge without it cannot happen. The
+        // person's name, email and phone are deliberately absent; audit_logs survives every purge (lib/purge.ts).
+        await tx.auditLog.create({
+          data: {
+            org_id: orgId,
+            actor_id: req.user!.id,
+            actor_email: req.user!.email ?? null,
+            action: 'customer.purged',
+            resource_type: 'Customer',
+            resource_id: id,
+            metadata: {
+              customer_number: existing.customer_number,
+              invoice_ids: assessment.invoices.map((i) => i.id),
+              invoice_numbers: assessment.invoices.map((i) => i.invoice_number),
+              draft_invoice_count: assessment.draft_invoice_count,
+              payment_count: assessment.payment_count,
+              payment_total: assessment.payment_total,
+            },
+            ip_address: getClientIp(req),
+            user_agent: req.headers['user-agent'] ?? null,
+          },
+        });
+        await purgeCustomerSubtree(tx, id, orgId);
+      });
+    } catch (err) {
+      if (err instanceof PurgeBlockedError) {
+        res.status(409).json(purgeBlockedBody(err.assessment));
+        return;
+      }
+      if (err instanceof PurgeInvoiceAppearedError) {
+        res.status(409).json(PURGE_IN_FLIGHT_BODY);
+        return;
+      }
+      throw err;
+    }
 
     // Emit the audit AFTER the subtree wipe (the wipe deletes the customer's own timeline rows).
     await prisma.timelineEvent.create({
@@ -1666,7 +1793,7 @@ export async function purgeCustomer(req: Request, res: Response) {
       response.payment_total = money.paymentTotal;
       response.has_stripe_charge = money.hasStripeCharge;
       if (money.hasStripeCharge) {
-        response.stripe_warning = 'One or more payments have a Stripe charge — purging does not refund the customer';
+        response.stripe_warning = 'One or more payments were taken online by card — purging does not refund the customer';
       }
     }
     res.json(response);
@@ -1715,7 +1842,8 @@ export async function previewCustomerNumber(req: Request, res: Response) {
     const orgId = req.user!.organization_id;
 
     const existing = await prisma.customer.findFirst({ where: { id, ...tenantWhere(req) } });
-    if (!existing) {
+    // S01.5 - an action switch acts only on a customer within reach, the probe the read uses.
+    if (!existing || !(await canReadCustomerById(req, id))) {
       res.status(404).json({ error: 'Customer not found' });
       return;
     }
@@ -1740,7 +1868,8 @@ export async function renameCustomer(req: Request, res: Response) {
     // Cheap existence + tenant-ownership check BEFORE opening a transaction, so a request
     // that's going to 404 anyway never takes the row lock.
     const existing = await prisma.customer.findFirst({ where: { id, ...tenantWhere(req) } });
-    if (!existing) {
+    // S01.5 - an action switch acts only on a customer within reach, the probe the read uses.
+    if (!existing || !(await canReadCustomerById(req, id))) {
       res.status(404).json({ error: 'Customer not found' });
       return;
     }
@@ -2022,7 +2151,8 @@ export async function removeLocation(req: Request, res: Response) {
     const customerId = param(req, 'id');
     const locId = param(req, 'locId');
     const customer = await prisma.customer.findUnique({ where: { id: customerId, ...tenantWhere(req) } });
-    if (!customer) {
+    // S01.5 - an action switch acts only on a customer within reach, the probe the read uses.
+    if (!customer || !(await canReadCustomerById(req, customerId))) {
       res.status(404).json({ error: 'Customer not found' });
       return;
     }
@@ -2084,7 +2214,8 @@ export async function archiveLocation(req: Request, res: Response) {
     const customerId = param(req, 'id');
     const locId = param(req, 'locId');
     const customer = await prisma.customer.findUnique({ where: { id: customerId, ...tenantWhere(req) } });
-    if (!customer) {
+    // S01.5 - an action switch acts only on a customer within reach, the probe the read uses.
+    if (!customer || !(await canReadCustomerById(req, customerId))) {
       res.status(404).json({ error: 'Customer not found' });
       return;
     }
@@ -2174,7 +2305,7 @@ export async function getSummary(req: Request, res: Response) {
       }>>`
         SELECT
           COALESCE(SUM(CASE WHEN i.status = 'PAID' THEN i.total_amount ELSE 0 END), 0) AS deposits_collected,
-          COALESCE(SUM(CASE WHEN i.status IN ('DRAFT', 'SENT') THEN i.amount_due ELSE 0 END), 0) AS deposits_pending
+          COALESCE(SUM(CASE WHEN i.status IN ('SENT', 'PARTIAL') THEN i.amount_due ELSE 0 END), 0) AS deposits_pending
         FROM invoices i
         JOIN estimates e ON i.estimate_id = e.id
         WHERE i.kind = 'DEPOSIT'

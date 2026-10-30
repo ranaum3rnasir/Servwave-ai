@@ -35,12 +35,14 @@
  *     seed's BEHAVIOUR on the target that needs it, this one proves the ability reaches the modal
  *     through the page's real wiring.
  *
- * WHY THE FIXTURE'S ROLE IS ADMIN WHILE THE ABILITY IS SELF-ONLY, and why that is not a
- * contrivance: `boardCapabilitiesFor` reads `user.role`, and it gives SALES `memberView: false` -
- * so the ONLY board a seeded SALES rep ever sees is the standard calendar, i.e. exactly the view
- * half 2 cannot drive. An ADMIN with `assign User` withheld is a real, supported configuration
- * (the per-user allow/deny overrides the assignee-pool decision record calls out), and it is the
- * one shape that puts a self-only viewer in front of a member lane a jsdom test can drop onto.
+ * WHY THERE IS NO MEMBER-LANE DROP FOR A SELF-ONLY VIEWER ANY MORE (Roles & Permissions S04.11): the
+ * Member view's lanes for other people follow the Assign work to other people switch (`assign User`), where
+ * they used to follow the signed-in person's role name. A viewer who may name nobody but themselves has one
+ * lane and no Member view, so the only board they have is the standard calendar - the view half 2 cannot
+ * drive, covered by `dropModalStandardLaneSelfCrew.test.tsx` (its self-only cases assert the same locked
+ * chip, the absent rule and the live Schedule button this file used to assert on a member lane). What stays
+ * here is the grant holder, whose Member view and removable chip are still reachable, and the proof that the
+ * self-only viewer is not offered the lane at all.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -66,16 +68,20 @@ global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
 
 const ACTOR = { id: 'm-sales', first_name: 'Sam', last_name: 'Sales' };
 
-/** Reads the board, may schedule - and may NOT name anybody but themselves. */
+/** Reads the board, may schedule visits and assign people to jobs - and may NOT name anybody but themselves. */
 const SELF_ONLY = buildAbility([
   { action: 'read', subject: 'all' },
   { action: 'update', subject: 'Job' },
+  { action: 'reschedule', subject: 'Job' },
+  { action: 'assign', subject: 'Job' },
   { action: 'create', subject: 'Job' },
 ]);
 /** The same viewer plus the one grant. Nothing else differs. */
 const GRANT_HOLDER = buildAbility([
   { action: 'read', subject: 'all' },
   { action: 'update', subject: 'Job' },
+  { action: 'reschedule', subject: 'Job' },
+  { action: 'assign', subject: 'Job' },
   { action: 'create', subject: 'Job' },
   { action: 'assign', subject: 'User' },
 ]);
@@ -118,7 +124,7 @@ function mockBoard() {
   });
 }
 
-/** Board-capability role stays ADMIN (see the file note); WHO is at the keyboard is the actor. */
+/** WHO is at the keyboard is the actor. The board's controls follow the ability, never this role. */
 function signedInAsActor() {
   vi.mocked(useAuthStore).mockImplementation((selector: (s: never) => unknown) =>
     selector({
@@ -159,48 +165,22 @@ async function dropBucketCardOnOwnLane(ability = SELF_ONLY) {
   return screen.findByRole('dialog');
 }
 
-/** The Crew field's own picker - the time fields are comboboxes too. */
-const crewPicker = (dialog: HTMLElement) =>
-  within(within(dialog).getByRole('group')).getByRole('combobox');
-
 beforeEach(() => {
   vi.clearAllMocks();
   signedInAsActor();
 });
 
-describe('the board drop modal, for a viewer who may name nobody but themselves', () => {
-  it('opens holding that viewer, by name', async () => {
-    const dialog = await dropBucketCardOnOwnLane();
-    // Not a placeholder and not a hint - the value the Schedule button will post.
-    expect(await within(dialog).findByText('Sam Sales')).toBeInTheDocument();
-  });
-
-  it('locks the chip and the dropdown rather than offering a choice that does not exist', async () => {
-    const dialog = await dropBucketCardOnOwnLane();
-    await within(dialog).findByText('Sam Sales');
-
-    // The chip is a statement, not an editable selection: taking themselves off would leave a
-    // field they cannot refill. This is the assertion the lock owns - the trigger below is
-    // disabled either way here, because a one-row roster already holding its one row has nothing
-    // left to offer, which is exactly the server's answer to this viewer.
-    expect(within(dialog).queryByRole('button', { name: /Remove Sam Sales/i })).not.toBeInTheDocument();
-    expect(crewPicker(dialog)).toBeDisabled();
-    // ...and it says which of the two silences this is - the rule, not an exhausted list.
-    expect(within(dialog).getByText('You cannot add others')).toBeInTheDocument();
-  });
-
-  it('states NO rule - the locked field is the message', async () => {
-    const dialog = await dropBucketCardOnOwnLane();
-    // Ran removed the explanatory sentence on 1 Sep, from all three surfaces at once. Asserted
-    // as an absence so a re-add on this door alone is caught: the board and the lead tab saying
-    // different things is worse than either choice on its own. The API still answers a real
-    // violation with that sentence; `selfOnlyRefusalCopy.test.ts` pins the backend copy.
-    expect(within(dialog).queryByText('You can only assign yourself as job crew.')).not.toBeInTheDocument();
-  });
-
-  it('leaves Schedule alive - the lock is about WHO, never about whether', async () => {
-    const dialog = await dropBucketCardOnOwnLane();
-    expect(within(dialog).getByRole('button', { name: 'Schedule' })).toBeEnabled();
+describe('the board, for a viewer who may name nobody but themselves', () => {
+  it('has one lane: no Member view to drop a card on', async () => {
+    mockBoard();
+    renderWithProviders(
+      <TooltipProvider>
+        <SchedulePage />
+      </TooltipProvider>,
+      { ability: SELF_ONLY },
+    );
+    await screen.findAllByText(/J00043/);
+    expect(screen.queryByLabelText('Member')).not.toBeInTheDocument();
   });
 });
 
@@ -229,14 +209,14 @@ describe('openDropModal wires the seed and the lock (source scan)', () => {
 
   it('routes the drop-derived crew through seedCrewForActor with the live grant and actor', () => {
     expect(SOURCE).toContain(
-      'draft: { ...draft, crew: seedCrewForActor(draft.crew, canAssignOthers, actorId) },',
+      'crew: ev.type === \'job\' && !canAssignJobCrew ? [] : seedCrewForActor(draft.crew, canAssignOthers, actorId),',
     );
   });
 
   it('re-seeds when the grant or the actor changes, rather than closing over a stale pair', () => {
     // A drop is a user action, so there is no mount-time hydration window to cover - but the
     // callback must not be memoised on `[org]` alone or it would keep the pre-session verdict.
-    expect(SOURCE).toContain('[org, canAssignOthers, actorId],');
+    expect(SOURCE).toContain('[org, canAssignOthers, canAssignJobCrew, actorId],');
   });
 
   it('hands the modal the SAME verdict the seed used, not a literal', () => {

@@ -16,6 +16,10 @@ import { prisma } from '../prisma';
 import { tenantWhere } from '../tenant';
 import { logger } from '../logger';
 import { scopeWhereForReq } from './enforce';
+import { scopeWhereFor, MATCH_NOTHING } from './scopeWhereFor';
+import { resolveSwitches } from './switches/store';
+import { SCOPE_SWITCH_KEY } from './switches/catalog';
+import { customerThroughRecordsReach } from './recordPeople';
 
 type Where = Record<string, unknown>;
 
@@ -23,14 +27,32 @@ type Where = Record<string, unknown>;
 //
 // `attachCustomerScope` (mounted right after `attachAbility` on every router that reads/writes a
 // Customer) resolves `scopeWhereForReq(req, 'Customer')` ONCE and stamps it on `req.customerScope`
-// (types/express.d.ts). `grantsForUser`/`loadUserOverrides` are both already short-TTL cached by
-// the time `attachAbility` finishes building `req.ability`, so this second call is a cache hit in
-// the common case, not a second DB round trip.
+// (types/express.d.ts). A person's resolved switches are already cached (short TTL) by the time
+// `attachAbility` finishes building `req.ability`, so this second call is a cache hit in the common case, not a
+// second DB round trip.
 
-/** Resolve + memoise the Customer scope on `req`. Idempotent — a second call is a no-op read. */
+/**
+ * The customers that come with a lead or job the person can open (Roles & Permissions S01.5): the customer's
+ * name, phone and address on that record are part of the record, not the Customers module, so this reach
+ * holds whatever Customers View says. It is the through-records half of the Customer reach alone (no
+ * customers the person only created), which View customers would add on top.
+ */
+async function resolveCustomerRecordScope(req: Request): Promise<Where> {
+  const user = req.user;
+  if (!user) return { ...MATCH_NOTHING };
+  const values = await resolveSwitches(user);
+  const arms = customerThroughRecordsReach(values[SCOPE_SWITCH_KEY.Lead], values[SCOPE_SWITCH_KEY.Job]);
+  if (!arms) return { ...MATCH_NOTHING };
+  return scopeWhereFor(user, 'Customer', arms.map((conditions) => ({ action: 'read', subject: 'Customer', conditions })));
+}
+
+/** Resolve + memoise the Customer scope (and the customers-with-an-openable-record scope) on `req`. Idempotent — a second call is a no-op read. */
 export async function resolveCustomerScope(req: Request): Promise<Where> {
   if (req.customerScope === undefined) {
     req.customerScope = await scopeWhereForReq(req, 'Customer');
+  }
+  if (req.customerRecordScope === undefined) {
+    req.customerRecordScope = await resolveCustomerRecordScope(req);
   }
   return req.customerScope;
 }
@@ -120,11 +142,11 @@ export function proofSelectFor(where: Where, userId: string): Record<string, unk
   const select: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(where)) {
     if (key === 'AND' || key === 'OR') {
-      for (const frag of value as Where[]) Object.assign(select, proofSelectFor(frag, userId));
+      for (const frag of value as Where[]) mergeProofSelects(select, proofSelectFor(frag, userId));
       continue;
     }
     if (key === 'NOT') {
-      Object.assign(select, proofSelectFor(value as Where, userId));
+      mergeProofSelects(select, proofSelectFor(value as Where, userId));
       continue;
     }
     if (value !== null && typeof value === 'object') {
@@ -134,9 +156,12 @@ export function proofSelectFor(where: Where, userId: string): Record<string, unk
         continue;
       }
       if ('some' in obj) {
+        // `some: {}` is "has any such row" (a scope that reaches every lead or job): a select must name
+        // a field, so the row's id stands as the proof that one exists.
+        const inner = obj.some as Where;
         select[key] = {
-          where: obj.some,
-          select: proofSelectFor(obj.some as Where, userId),
+          where: inner,
+          select: Object.keys(inner).length ? proofSelectFor(inner, userId) : { id: true },
           take: 1,
         };
         continue;
@@ -150,6 +175,29 @@ export function proofSelectFor(where: Where, userId: string): Record<string, unk
     select[key] = true;
   }
   return select;
+}
+
+/**
+ * Fold one arm's proof select into the others'. Two arms of a union may reach through the same relation
+ * (a customer's leads, by two different paths), and one select can name a relation only once, so the
+ * relation is read once for both: a to-many relation returns a row satisfying either arm's condition, and
+ * what is read off it is the union of what the two arms need. One row that satisfies one arm is all the
+ * union needs, so the single row `take: 1` returns is enough.
+ */
+function mergeProofSelects(into: Record<string, unknown>, from: Record<string, unknown>): void {
+  for (const [key, next] of Object.entries(from)) {
+    const current = into[key];
+    if (current === undefined || current === true) {
+      into[key] = next;
+      continue;
+    }
+    if (next === true) continue;
+    const a = current as { where?: Where; select: Record<string, unknown>; take?: number };
+    const b = next as { where?: Where; select: Record<string, unknown>; take?: number };
+    const select = { ...a.select };
+    mergeProofSelects(select, b.select);
+    into[key] = a.where && b.where ? { where: { OR: [a.where, b.where] }, select, take: 1 } : { select };
+  }
 }
 
 // ─── canReadCustomerById — decision 3's dedicated probe ─────────────────────────────────────
@@ -206,6 +254,18 @@ export function isCustomerReadableRow(req: Request, row: Record<string, unknown>
   return matchesFragment(req.customerScope, row);
 }
 
+// ─── isCustomerOnOpenRecord — the sync verdict for "this customer comes with a record the person can open" ───
+//
+// The same in-memory judgement as `isCustomerReadableRow`, against the through-records scope instead of the
+// Customer one: true for a customer who has a lead or job the person can open or is attached to. FAIL-CLOSED
+// the same way: a request that never resolved the scope (the public estimate and invoice pages, which carry
+// no signed-in person) answers `false`.
+export function isCustomerOnOpenRecord(req: Request, row: Record<string, unknown> | null | undefined): boolean {
+  if (!row || !row.id) return false;
+  if (req.customerRecordScope === undefined) return false;
+  return matchesFragment(req.customerRecordScope, row);
+}
+
 // ─── Static proof projection for the enumerated detail selects (decision 5) ─────────────────
 //
 // UNFILTERED (no `where`, no `take`) on purpose: `estimateDetailSelect` / `invoiceDetailSelect`
@@ -214,10 +274,35 @@ export function isCustomerReadableRow(req: Request, row: Record<string, unknown>
 // customer's own leads/jobs) relation set and letting `matchesFragment` judge it in memory is the
 // trade decision 5 makes explicitly; `stripCustomerProofKeys` removes these keys again before any
 // response goes out, on EVERY branch (readable or not) — they were never part of the wire shape.
+// S01.5: Attached, Team and Location scope all ask who is on a lead or job (crew, owner, sold by, dispatcher),
+// and Team and Location ask which department / location each of them is in, so the proof carries those people.
+const PERSON = { select: { department_id: true, location_id: true } } as const;
+const CREW = { select: { user_id: true, user: PERSON } } as const;
+
 export const CUSTOMER_PROOF_SELECT = {
   created_by_id: true,
-  leads: { select: { lead_assignees: { select: { user_id: true } } } },
-  jobs: { select: { visits: { select: { assignees: { select: { user_id: true } } } } } },
+  leads: {
+    select: {
+      lead_assignees: CREW,
+      commission_owner_id: true,
+      commission_owner: PERSON,
+      dispatcher_id: true,
+      dispatcher: PERSON,
+      visits: { select: { assignees: CREW } },
+    },
+  },
+  jobs: {
+    select: {
+      visits: { select: { assignees: CREW } },
+      salesperson_id: true,
+      salesperson: PERSON,
+      dispatcher_id: true,
+      dispatcher: PERSON,
+      estimate: {
+        select: { lead: { select: { lead_assignees: CREW } } },
+      },
+    },
+  },
 } as const;
 
 export const CUSTOMER_PROOF_KEYS = ['created_by_id', 'leads', 'jobs'] as const;

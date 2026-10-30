@@ -35,13 +35,41 @@ export function smsHref(phone: string): string {
 }
 
 /**
+ * What a customer phone's Text needs to know about the person tapping it (Roles & Permissions, PRD 5).
+ * `viewCustomers` is their View customers switch: the composer finds a customer by id through the customer
+ * directory, which only a person who may view customers can read.
+ */
+export interface CustomerTextAccess {
+  viewCustomers: boolean;
+}
+
+/** The query value that marks the number as a customer's, so the composer draws it under the copy rule. */
+export const CUSTOMER_PHONE_OWNER = 'customer';
+
+/**
  * The ServWave conversation with a number. By customer when the record is a customer (the inbox
  * opens that customer's thread, or starts one with them preselected); by number otherwise (a
  * vendor, a team member), which opens the composer pre-filled with it.
+ *
+ * A CUSTOMER's phone passes `customer`. A person who may view customers goes by customer, as above. A person who
+ * may not has no directory to find the customer in, so the composer is opened addressed to the number the person
+ * tapped instead, carrying the name and the job or lead the number was tapped from: the text is filed on that
+ * record, and the number is drawn under the copy rule (`owner`).
  */
-export function textPath(phone: string, context?: DialerEntityContext | null): string {
-  if (context?.customerId) return `/communication/text?customerId=${encodeURIComponent(context.customerId)}`;
-  return `/communication/text?to=${encodeURIComponent(phone.trim())}`;
+export function textPath(phone: string, context?: DialerEntityContext | null, customer?: CustomerTextAccess): string {
+  const number = phone.trim();
+  if (!customer) {
+    if (context?.customerId) return `/communication/text?customerId=${encodeURIComponent(context.customerId)}`;
+    return `/communication/text?to=${encodeURIComponent(number)}`;
+  }
+  if (customer.viewCustomers && context?.customerId) {
+    return `/communication/text?customerId=${encodeURIComponent(context.customerId)}`;
+  }
+  const params = new URLSearchParams({ to: number, owner: CUSTOMER_PHONE_OWNER });
+  if (context?.customerName) params.set('name', context.customerName);
+  if (context?.jobId) params.set('jobId', context.jobId);
+  if (context?.leadId) params.set('leadId', context.leadId);
+  return `/communication/text?${params.toString()}`;
 }
 
 /**

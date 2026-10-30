@@ -12,6 +12,12 @@ import app from '../app';
 import { mockAuthAs, authHeader } from './helpers';
 import { prisma } from '../lib/prisma';
 
+// The register is the one place that decides whether a company part is free and moves the main
+// address; its own rules are proved against a real database in mailbox-register-db.test.ts. Here the
+// route is checked for what it asks of the register and how it answers.
+const { changeCompanyPart } = vi.hoisted(() => ({ changeCompanyPart: vi.fn() }));
+vi.mock('../lib/mailbox/register', () => ({ changeCompanyPart }));
+
 const ORG_ID = '00000000-0000-0000-0000-0000000000a1';
 
 /** `as` must name the SAME user mockAuthAs was given - authHeader() defaults to
@@ -19,22 +25,20 @@ const ORG_ID = '00000000-0000-0000-0000-0000000000a1';
 const patch = (body: Record<string, unknown>, as: 'admin' | 'technician' | 'dispatcher' = 'admin') =>
   request(app).patch('/api/organization/email-sender').set(authHeader(as)).send(body);
 
+const changed = (part: string, derivedFromName = false) => ({
+  ok: true as const,
+  part,
+  address: `${part}@mail.test.com`,
+  derivedFromName,
+  previousPart: 'before',
+  changed: true,
+  usersMoved: 0,
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockAuthAs('admin');
-  (prisma.organization.update as ReturnType<typeof vi.fn>).mockResolvedValue({
-    id: ORG_ID,
-    name: 'Alpha Doors & Security',
-    email_sender_local_part: 'service',
-    email_sending_enabled: true,
-  });
-  (prisma.organization.findUnique as ReturnType<typeof vi.fn>).mockResolvedValue({
-    id: ORG_ID,
-    name: 'Alpha Doors & Security',
-    email_sender_local_part: 'service',
-    email_sending_enabled: true,
-  });
-  (prisma.organization.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue(null);
+  changeCompanyPart.mockResolvedValue(changed('service'));
 });
 
 describe('PATCH /api/organization/email-sender - validation', () => {
@@ -49,8 +53,18 @@ describe('PATCH /api/organization/email-sender - validation', () => {
     // pedantry, and storing it uppercased would make the unique index miss.
     await patch({ local_part: 'Service' });
 
-    const arg = (prisma.organization.update as ReturnType<typeof vi.fn>).mock.calls[0]![0];
-    expect(arg.data.email_sender_local_part).toBe('service');
+    expect(changeCompanyPart).toHaveBeenCalledWith(expect.anything(), expect.any(String), 'service', { dryRun: false });
+  });
+
+  it('passes a dry run down as a dry run, and still runs the same validation first', async () => {
+    const ok = await patch({ local_part: 'Service', dry_run: true });
+    expect(ok.status).toBe(200);
+    expect(changeCompanyPart).toHaveBeenCalledWith(expect.anything(), expect.any(String), 'service', { dryRun: true });
+
+    changeCompanyPart.mockClear();
+    const reserved = await patch({ local_part: 'postmaster', dry_run: true });
+    expect(reserved.status).toBe(400);
+    expect(changeCompanyPart).not.toHaveBeenCalled();
   });
 
   it('rejects characters an address local part cannot carry', async () => {
@@ -68,7 +82,7 @@ describe('PATCH /api/organization/email-sender - validation', () => {
 
   it('rejects a full email address - the domain is not the org to choose', async () => {
     // The single most likely thing an admin types into a field like this.
-    const res = await patch({ local_part: 'service@alphadoors.com' });
+    const res = await patch({ local_part: 'service@example-company.test' });
 
     expect(res.status).toBe(400);
   });
@@ -80,50 +94,66 @@ describe('PATCH /api/organization/email-sender - validation', () => {
     for (const reserved of ['postmaster', 'abuse', 'bounce', 'no-reply', 'noreply']) {
       const res = await patch({ local_part: reserved });
       expect(res.status, reserved).toBe(400);
+      expect(JSON.stringify(res.body.details), reserved).toContain('This address is reserved.');
     }
+    expect(changeCompanyPart).not.toHaveBeenCalled();
   });
 
-  it('clears the override when sent an empty value, returning to the derived name', async () => {
-    (prisma.organization.update as ReturnType<typeof vi.fn>).mockResolvedValue({
-      id: ORG_ID,
-      name: 'Alpha Doors & Security',
-      email_sender_local_part: null,
-      email_sending_enabled: true,
-    });
+  it('goes back to the name-derived part when sent an empty value', async () => {
+    changeCompanyPart.mockResolvedValue(changed('exampledoorssecurity', true));
 
     const res = await patch({ local_part: '' });
 
     expect(res.status).toBe(200);
-    const arg = (prisma.organization.update as ReturnType<typeof vi.fn>).mock.calls[0]![0];
-    expect(arg.data.email_sender_local_part).toBeNull();
+    expect(changeCompanyPart).toHaveBeenCalledWith(expect.anything(), expect.any(String), null, { dryRun: false });
+    expect(res.body).toMatchObject({ local_part: 'exampledoorssecurity', local_part_is_custom: false });
+  });
+
+  it('answers with the part, whether it is the admin own, and the fixed domain', async () => {
+    const res = await patch({ local_part: 'service' });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ local_part: 'service', local_part_is_custom: true, sender_domain: 'mail.test.com' });
   });
 });
 
 describe('PATCH /api/organization/email-sender - uniqueness', () => {
-  it('409s when another org already sends from that address', async () => {
-    (prisma.organization.findFirst as ReturnType<typeof vi.fn>).mockResolvedValue({ id: 'other-org' });
+  it('409s when the register says another company holds that address, without naming anyone', async () => {
+    changeCompanyPart.mockResolvedValue({ ok: false, reason: 'taken' });
 
     const res = await patch({ local_part: 'service' });
 
     expect(res.status).toBe(409);
-    expect(res.body.code).toBe('LOCAL_PART_TAKEN');
+    expect(res.body).toEqual({
+      error: 'This email address is already in use. Choose a different one.',
+      code: 'LOCAL_PART_TAKEN',
+    });
   });
 
-  it('does not treat the org own current value as a conflict', async () => {
-    // Re-saving an unchanged form must not fail; the lookup excludes self.
+  it('refuses a reserved part the register reports, in the page’s own words', async () => {
+    changeCompanyPart.mockResolvedValue({ ok: false, reason: 'reserved' });
+
+    const res = await patch({ local_part: 'service' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('This address is reserved.');
+  });
+
+  it('asks the register about the org on the token, never one named in the request', async () => {
     await patch({ local_part: 'service' });
 
-    const where = (prisma.organization.findFirst as ReturnType<typeof vi.fn>).mock.calls[0]![0].where;
-    expect(where.id).toEqual({ not: expect.any(String) });
+    expect(changeCompanyPart).toHaveBeenCalledWith(
+      expect.anything(),
+      '00000000-0000-0000-0000-000000000001',
+      'service',
+      { dryRun: false },
+    );
   });
 
   it('survives the database losing the race and raising a unique violation', async () => {
-    // Two admins of two orgs can pass the pre-check simultaneously; the index
-    // is the real guarantee, so P2002 has to land as the same clean 409 rather
-    // than a 500.
-    (prisma.organization.update as ReturnType<typeof vi.fn>).mockRejectedValue(
-      Object.assign(new Error('unique'), { code: 'P2002' }),
-    );
+    // A writer outside the register's lock can still lose to the unique index; that has to land as the
+    // same clean 409 rather than a 500.
+    changeCompanyPart.mockRejectedValue(Object.assign(new Error('unique'), { code: 'P2002' }));
 
     const res = await patch({ local_part: 'service' });
 
@@ -155,13 +185,6 @@ describe('PATCH /api/organization/email-sender - authorization', () => {
     const res = await patch({ local_part: 'service', organization_id: 'someone-else' });
 
     expect(res.status).toBe(400);
-    expect(prisma.organization.update).not.toHaveBeenCalled();
-  });
-
-  it('writes to the org on the token, with no id anywhere in the path', async () => {
-    await patch({ local_part: 'service' });
-
-    const arg = (prisma.organization.update as ReturnType<typeof vi.fn>).mock.calls[0]![0];
-    expect(arg.where.id).toBe('00000000-0000-0000-0000-000000000001');
+    expect(changeCompanyPart).not.toHaveBeenCalled();
   });
 });

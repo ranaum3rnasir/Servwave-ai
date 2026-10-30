@@ -9,12 +9,12 @@ export type Session = {
   inTs: number;
   outTs: number | null; // null => still clocked in
   minutes: number; // 0 while open
-  inStatus: Punch['status'];
-  inReview: Punch['review'];
-  matchedZoneId: string | null;
-  matchedZoneLabel: string | null;
-  zoneKind: 'store' | 'job' | null;
-  jobNumber: string | null;
+  /** Where the clock-in happened. */
+  inLat: number;
+  inLng: number;
+  /** Where the clock-out happened; null while the session is still open. */
+  outLat: number | null;
+  outLng: number | null;
 };
 
 export function minutesOfDay(ts: number): number {
@@ -33,12 +33,10 @@ function toSession(inP: Punch, outP: Punch | null): Session {
     inTs: inP.ts,
     outTs: outP ? outP.ts : null,
     minutes: outP ? Math.max(0, Math.round((outP.ts - inP.ts) / 60000)) : 0,
-    inStatus: inP.status,
-    inReview: inP.review,
-    matchedZoneId: inP.matchedZoneId,
-    matchedZoneLabel: inP.matchedZoneLabel,
-    zoneKind: inP.matchedZoneKind,
-    jobNumber: inP.matchedJobNumber,
+    inLat: inP.lat,
+    inLng: inP.lng,
+    outLat: outP ? outP.lat : null,
+    outLng: outP ? outP.lng : null,
   };
 }
 

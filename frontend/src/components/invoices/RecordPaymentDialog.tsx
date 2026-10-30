@@ -10,13 +10,15 @@ import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
-import { SelectField } from '@/components/form/SelectField';
 import { DateField } from '@/ui-kit/components/form/dateField';
 import { FormField } from '@/components/patterns/FormField';
 import { extractApiError, formatCurrency } from '@/lib/utils';
-import { PAYMENT_METHOD_LABELS, PAYMENT_METHOD_ORDER } from '@/lib/payment-methods';
+import { RecordPaymentMethodField } from '@/components/payments/RecordPaymentMethodField';
+import { selectedPaymentMethod, useRecordablePaymentMethods } from '@/lib/api/recordablePaymentMethods';
 import { TIP_PRESET_PCT } from '@/lib/tips';
 import { AlertTriangle, Loader2 } from 'lucide-react';
+
+const METHOD_REASON_ID = 'record-payment-method-reason';
 
 interface RecordPaymentDialogProps {
   open: boolean;
@@ -30,6 +32,12 @@ interface RecordPaymentDialogProps {
   jobId?: string;
   /** True when the customer holds a paid deposit — withholds the composite path. */
   hasUnspentDeposit?: boolean;
+  /**
+   * Slice 28b: bank money still clearing on this invoice. It is not collected yet, but it is not
+   * collected a second time by hand either: the dialog works from payable-now (balance due less
+   * this), and the server refuses a hand payment above it.
+   */
+  processingAmount?: number;
 }
 
 export function RecordPaymentDialog({
@@ -41,12 +49,19 @@ export function RecordPaymentDialog({
   onSuccess,
   jobId,
   hasUnspentDeposit,
+  processingAmount = 0,
 }: RecordPaymentDialogProps) {
   const queryClient = useQueryClient();
   const timezone = useScheduleTimezone();
   const defaultPaidAt = isoToPickerValue(new Date().toISOString(), timezone);
-  const [amount, setAmount] = useState(amountDue);
-  const [method, setMethod] = useState('CASH');
+  const processing = invoiceId === null ? 0 : Math.max(0, processingAmount);
+  const payableNow = Math.max(0, Math.round((amountDue - processing) * 100) / 100);
+  const [amount, setAmount] = useState(payableNow);
+  // What the person picked; the method shown and sent is that while it is still on offer, else the first on offer
+  // (the lists arrive after the dialog mounts, so the preselection cannot be seeded here).
+  const [pickedMethod, setPickedMethod] = useState('');
+  const recordable = useRecordablePaymentMethods();
+  const method = selectedPaymentMethod(pickedMethod, recordable.methods);
   const [paidAt, setPaidAt] = useState(defaultPaidAt);
   // `useScheduleTimezone()` answers the Eastern default until GET /api/organization lands, and
   // this dialog is mounted by its host page rather than on open (see the tip note below), so it
@@ -93,8 +108,8 @@ export function RecordPaymentDialog({
   const [overpayAcknowledged, setOverpayAcknowledged] = useState(false);
 
   const resetForm = () => {
-    setAmount(amountDue);
-    setMethod('CASH');
+    setAmount(payableNow);
+    setPickedMethod('');
     setPaidAt(defaultPaidAt);
     // Keeps "what was seeded" honest, so a zone landing after a reset is still read as untouched.
     setSeededPaidAt(defaultPaidAt);
@@ -106,6 +121,8 @@ export function RecordPaymentDialog({
   };
 
   const isNoInvoice = invoiceId === null;
+  // Nothing the person may record: the button is greyed and the field says why.
+  const noMethod = recordable.ready && recordable.methods.length === 0;
 
   const tipDollars = tipSelection === 'other'
     ? Math.max(0, parseFloat(tipOtherValue) || 0)
@@ -120,6 +137,8 @@ export function RecordPaymentDialog({
   // on-site urgent-workflow collection demand an acknowledgement of a nonsensical "more than the
   // $0.00 balance due".
   const isOverpay = !isNoInvoice && Number.isFinite(amount) && overpayment > 0;
+  // Slice 28b: above payable-now while a debit is clearing is refused (the server answers 409).
+  const overPayableNow = processing > 0 && Number.isFinite(amount) && amount > payableNow + 0.0001;
 
   const mutation = useMutation({
     mutationFn: async () => {
@@ -221,9 +240,9 @@ export function RecordPaymentDialog({
             </Button>
             <Button
               onClick={handleSubmit}
-              aria-describedby={isOverpay && !overpayAcknowledged ? 'record-payment-overpay-warning' : undefined}
+              aria-describedby={noMethod ? METHOD_REASON_ID : isOverpay && !overpayAcknowledged ? 'record-payment-overpay-warning' : undefined}
               disabled={
-                !amount || amount <= 0 || !paidAt || (isOverpay && !overpayAcknowledged) || isPending
+                !method || !amount || amount <= 0 || !paidAt || overPayableNow || (isOverpay && !overpayAcknowledged) || isPending
               }
             >
               {isPending ? (
@@ -284,6 +303,17 @@ export function RecordPaymentDialog({
             {!isNoInvoice && (
               <p className="mt-1 text-xs text-text-secondary">
                 Balance due: {formatCurrency(amountDue)}
+              </p>
+            )}
+            {processing > 0 && (
+              <p className="mt-1 text-xs text-text-secondary" data-testid="record-payment-processing">
+                A bank payment of {formatCurrency(processing)} is still processing. You can record up to{' '}
+                {formatCurrency(payableNow)} now.
+              </p>
+            )}
+            {overPayableNow && (
+              <p className="mt-1 text-xs text-danger" role="alert" data-testid="record-payment-processing-over">
+                That is more than can be recorded while the bank payment clears: up to {formatCurrency(payableNow)}.
               </p>
             )}
 
@@ -358,25 +388,13 @@ export function RecordPaymentDialog({
             )}
           </div>
 
-          {/* Not a FormField: SelectField's props are a closed list (value /
-              onValueChange / options / placeholder / disabled / className /
-              aria-label) with no id or aria-* passthrough, so the id FormField
-              generates would be dropped on the floor and the label would point
-              at nothing. Wiring it needs a change to SelectField, not to this
-              call site - same documented exception as
-              RecordEstimatePaymentDialog's Payment method field. */}
-          <div>
-            <Label>Payment method *</Label>
-            <SelectField
-              aria-label="Payment method"
-              value={method}
-              onValueChange={setMethod}
-              className="w-full h-9"
-              // R5b (2026-07-22) — derived from the shared list (was a hand-maintained duplicate)
-              // so D3's +4 values reach this dialog too, not just the ones someone remembered.
-              options={PAYMENT_METHOD_ORDER.map((value) => ({ value, label: PAYMENT_METHOD_LABELS[value] }))}
-            />
-          </div>
+          <RecordPaymentMethodField
+            methods={recordable.methods}
+            ready={recordable.ready}
+            value={method}
+            onValueChange={setPickedMethod}
+            reasonId={METHOD_REASON_ID}
+          />
 
           {/* Not converted to FormField in this pass; out of scope for the
               DateField/TimeField migration (SRVW-247).

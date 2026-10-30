@@ -134,7 +134,7 @@ describe('StageDetailDialog — Storage-backed attachments (P5 §5.4)', () => {
     // Copy updated in S5: the refusal now names the real size, the limit and a next step,
     // instead of the system-voice "skipped." that left the user at a dead end.
     expect(
-      await screen.findByText(/"huge\.jpg" is 9 MB — over the 8 MB limit, so it wasn't uploaded\./)
+      await screen.findByText(/"huge\.jpg" is 9MB — over the 8MB limit, so it wasn't uploaded\./)
     ).toBeInTheDocument();
     expect(mockApi.post).not.toHaveBeenCalled();
   });

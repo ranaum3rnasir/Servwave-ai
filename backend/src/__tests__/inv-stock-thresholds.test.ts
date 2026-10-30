@@ -21,11 +21,11 @@ import {
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 // Low-stock notification emit - spied, never awaited (fire-and-forget).
-vi.mock('../services/notifications/notificationService', () => ({
-  emit: vi.fn().mockResolvedValue(undefined),
+vi.mock('../services/notifications/noRecordAlerts', () => ({
+  queueNoRecordAlert: vi.fn(),
 }));
-import { emit } from '../services/notifications/notificationService';
-const mockEmit = emit as ReturnType<typeof vi.fn>;
+import { queueNoRecordAlert } from '../services/notifications/noRecordAlerts';
+const mockEmit = queueNoRecordAlert as ReturnType<typeof vi.fn>;
 
 const mockPrisma = prisma as unknown as {
   priceBookItem: { findFirst: ReturnType<typeof vi.fn> };

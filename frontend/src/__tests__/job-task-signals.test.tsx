@@ -11,7 +11,7 @@ import { screen, waitFor, act } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import * as jobsApi from '@/lib/api/jobs';
-import { renderWithProviders } from './helpers';
+import { renderWithProviders, ALL_JOB_ACTIONS } from './helpers';
 import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
 import { useTasksStore } from '@/stores/tasksStore';
 
@@ -88,6 +88,7 @@ const BASE_JOB = {
   }>,
   tags: [] as Array<{ id: string; name: string; color: string }>,
   source_plan_id: null,
+  actions: ALL_JOB_ACTIONS,
   source_plan: null,
 };
 

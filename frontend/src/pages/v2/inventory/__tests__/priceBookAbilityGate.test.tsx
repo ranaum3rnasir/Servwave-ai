@@ -81,7 +81,7 @@ vi.mock('@/lib/api/inventory', async (importOriginal) => {
   ];
   return {
     ...actual,
-    useInventoryItems: stable(items),
+    usePriceBookItems: stable(items),
     useBrands: stable(brands),
     useItemGroups: stable(groups),
     useCategories: stable(categories),
@@ -135,13 +135,15 @@ beforeEach(() => {
 
 describe('#2009 — Price Book ability gate (routed v2 page)', () => {
   describe('read-only ability (SALES-shaped: read PriceBook + read Pricing only)', () => {
-    it('hides every write control on every tab, but keeps the read affordances', async () => {
+    it('hides every write control and the download on every tab, but keeps the read affordances', async () => {
       renderPriceBook(readOnlyAbility());
       await screen.findByText('qa-2009-item');
 
       // Items tab.
       expect(screen.queryByRole('button', { name: /Add Item/i })).not.toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /Export/i })).toBeInTheDocument();
+      // The download is its own box (Export price book, S07.17): View price book and See financial data do not
+      // carry it.
+      expect(screen.queryByRole('button', { name: /Export/i })).not.toBeInTheDocument();
       expect(screen.getByRole('button', { name: /Columns/i })).toBeInTheDocument();
       expect(screen.getByText('1 of 1 items')).toBeInTheDocument();
 

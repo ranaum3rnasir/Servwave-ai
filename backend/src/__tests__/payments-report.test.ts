@@ -15,24 +15,32 @@ function input(over: Partial<PaymentInput> = {}): PaymentInput {
     method: 'CARD',
     paidAt: new Date('2026-06-01T00:00:00.000Z'),
     refundedAt: null,
+    refundedAmount: null,
     voidedAt: null,
     isDepositCredit: false,
     invoiceKind: 'STANDARD',
     customerName: 'Acme Co',
     customerEmail: 'ap@acme.com',
-    collectorName: 'Emanuel Dahan',
+    collectorName: 'Sam Rivera',
     tipAmount: 0,
     ...over,
   };
 }
 
 describe('methodLabel', () => {
-  it('maps both card kinds to "Credit card"', () => {
+  it('maps the processor card to "Credit card" and a card taken elsewhere to its own label', () => {
     expect(methodLabel('CARD')).toBe('Credit card');
-    expect(methodLabel('EXTERNAL_CARD')).toBe('Credit card');
+    expect(methodLabel('EXTERNAL_CARD')).toBe('Card (outside ServWave)');
   });
-  it('maps BANK_TRANSFER to "ACH / Bank transfer"', () => {
-    expect(methodLabel('BANK_TRANSFER')).toBe('ACH / Bank transfer');
+  // Payments go-live slice 28: ACH means the online bank debit only. A transfer recorded by hand
+  // is just a bank transfer.
+  it('maps a hand-recorded BANK_TRANSFER to "Bank transfer", with no ACH in it', () => {
+    expect(methodLabel('BANK_TRANSFER')).toBe('Bank transfer');
+  });
+  // Payments go-live slice 13: an online bank debit (ACH) is a row the report must name, from the
+  // first bank payment on. The union is the database enum itself, so a new method cannot be missed.
+  it('maps an online bank payment (ACH) to "Bank (ACH)"', () => {
+    expect(methodLabel('ACH')).toBe('Bank (ACH)');
   });
   it('maps CASH and CHECK through', () => {
     expect(methodLabel('CASH')).toBe('Cash');
@@ -56,17 +64,31 @@ describe('categoryLabel', () => {
 });
 
 describe('statusLabel', () => {
+  const none = { amount: 100, refundedAt: null, refundedAmount: null, voidedAt: null };
   it('is Succeeded by default (live payments are recorded only once collected)', () => {
-    expect(statusLabel({ refundedAt: null, voidedAt: null })).toBe('Succeeded');
+    expect(statusLabel(none)).toBe('Succeeded');
   });
-  it('is Failed when voided', () => {
-    expect(statusLabel({ refundedAt: null, voidedAt: new Date() })).toBe('Failed');
+  // Slice 28: a voided payment was cancelled; "Failed" now means a bank debit that did not clear.
+  it('is Charged back when voided because of a chargeback, and Voided for every other void (slice 33b)', () => {
+    expect(statusLabel({ ...none, voidedAt: new Date(), voidCategory: 'CHARGEBACK' })).toBe('Charged back');
+    expect(statusLabel({ ...none, voidedAt: new Date(), voidCategory: 'BOUNCED' })).toBe('Voided');
+    expect(statusLabel({ ...none, voidedAt: new Date(), voidCategory: null })).toBe('Voided');
+    expect(toPaymentRow(input({ voidedAt: new Date(), voidCategory: 'CHARGEBACK' })).status).toBe('Charged back');
   });
-  it('is Refunded when refunded', () => {
-    expect(statusLabel({ refundedAt: new Date(), voidedAt: null })).toBe('Refunded');
+  it('is Voided when voided', () => {
+    expect(statusLabel({ ...none, voidedAt: new Date() })).toBe('Voided');
+  });
+  it('is Refunded when the whole payment was refunded', () => {
+    expect(statusLabel({ ...none, refundedAt: new Date(), refundedAmount: 100 })).toBe('Refunded');
+  });
+  it('is Partly refunded when only part of it went back', () => {
+    expect(statusLabel({ ...none, refundedAt: new Date(), refundedAmount: 40 })).toBe('Partly refunded');
+  });
+  it('treats a refund with no recorded amount as a full refund (rows from before the amount was kept)', () => {
+    expect(statusLabel({ ...none, refundedAt: new Date() })).toBe('Refunded');
   });
   it('refund wins over void when both are set', () => {
-    expect(statusLabel({ refundedAt: new Date(), voidedAt: new Date() })).toBe('Refunded');
+    expect(statusLabel({ ...none, refundedAt: new Date(), refundedAmount: 100, voidedAt: new Date() })).toBe('Refunded');
   });
 });
 
@@ -81,7 +103,7 @@ describe('toPaymentRow', () => {
       status: 'Succeeded',
       client: 'Acme Co',
       email: 'ap@acme.com',
-      technician: 'Emanuel Dahan',
+      technician: 'Sam Rivera',
       txnKind: 'Keyed',
       confirmation: 'Approved',
     });
@@ -99,17 +121,57 @@ describe('toPaymentRow', () => {
     expect(toPaymentRow(input({ tipAmount: 0 })).tip).toBe(0);
   });
 
-  it('only card payments carry a card mask + confirmation', () => {
-    expect(toPaymentRow(input({ method: 'CARD' })).card).not.toBe('');
+  it('only card and bank payments carry a confirmation', () => {
     expect(toPaymentRow(input({ method: 'CASH' })).card).toBe('');
     expect(toPaymentRow(input({ method: 'CHECK' })).confirmation).toBe('');
     expect(toPaymentRow(input({ method: 'BANK_TRANSFER' })).confirmation).toBe('Approved');
+  });
+
+  it('an online bank payment (ACH) is labelled and carries the processor confirmation', () => {
+    const row = toPaymentRow(input({ method: 'ACH' }));
+    expect(row.method).toBe('Bank (ACH)');
+    expect(row.confirmation).toBe('Approved');
+    expect(row.card).toBe('');
+  });
+
+  // Conductor ruling 2026-10-10 (D3): the Card column reads like the ledger, from the fields the
+  // payment row stores, never a placeholder mask.
+  it('a card payment reads brand plus last four', () => {
+    expect(toPaymentRow(input({ method: 'CARD', cardBrand: 'visa', cardLast4: '4242' })).card).toBe('Visa •••• 4242');
+  });
+  it('a bank debit reads bank name plus last four', () => {
+    expect(toPaymentRow(input({ method: 'ACH', bankName: 'First Test Bank', bankLast4: '6789' })).card).toBe('First Test Bank •••• 6789');
+  });
+  it('a wallet payment names the wallet and the card behind it', () => {
+    expect(toPaymentRow(input({ method: 'CARD', wallet: 'APPLE_PAY', cardBrand: 'visa', cardLast4: '4242' })).card).toBe('Apple Pay (Visa •••• 4242)');
+  });
+  it('a card with no stored details reads empty rather than a mask, and a hand payment stays empty', () => {
+    expect(toPaymentRow(input({ method: 'CARD' })).card).toBe('');
+    expect(toPaymentRow(input({ method: 'CASH', cardLast4: '4242' })).card).toBe('');
   });
 
   it('falls back to Dispatch when no collector and empty email when none', () => {
     const r = toPaymentRow(input({ collectorName: null, customerEmail: null }));
     expect(r.technician).toBe('Dispatch');
     expect(r.email).toBe('');
+  });
+
+  // Payments go-live slice 35 (from the slice 13 acceptance): an online payment was made by the customer, not keyed
+  // by anyone, so it names no technician and reads "Online" rather than "Dispatch" / "Keyed".
+  it('an online payment reads Online with no technician', () => {
+    const r = toPaymentRow(input({ method: 'ACH', collectorName: null, paidOnline: true }));
+    expect(r.txnKind).toBe('Online');
+    expect(r.technician).toBe('');
+  });
+
+  it('an online card payment reads the same way', () => {
+    const r = toPaymentRow(input({ method: 'CARD', collectorName: null, paidOnline: true }));
+    expect(r).toMatchObject({ txnKind: 'Online', technician: '' });
+  });
+
+  it('a payment someone keyed stays Keyed, and still falls back to Dispatch without a collector', () => {
+    expect(toPaymentRow(input({ paidOnline: false })).txnKind).toBe('Keyed');
+    expect(toPaymentRow(input({ collectorName: null })).technician).toBe('Dispatch');
   });
 
   it('falls back to Unknown when no customer name', () => {

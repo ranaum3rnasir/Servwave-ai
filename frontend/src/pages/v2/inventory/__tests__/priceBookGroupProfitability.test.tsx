@@ -70,7 +70,7 @@ vi.mock('@/lib/api/inventory', async (importOriginal) => {
   ];
   return {
     ...actual,
-    useInventoryItems: stable(items),
+    usePriceBookItems: stable(items),
     useBrands: stable([]),
     useItemGroups: stable(groups),
     useCategories: stable([]),

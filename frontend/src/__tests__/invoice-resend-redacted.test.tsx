@@ -80,6 +80,8 @@ function baseInvoice(overrides: Record<string, unknown> = {}) {
     credits: [],
     payments: [],
     tags: [],
+    // The server's answer for this invoice: every action the page can offer.
+    actions: ['edit', 'send', 'delete', 'copy_payment_link', 'record_payment'],
     ...overrides,
   };
 }

@@ -61,6 +61,15 @@ describe('FilterPopover presentation', () => {
     expect(screen.queryByRole('button', { name: 'Apply' })).not.toBeInTheDocument();
   });
 
+  it('keeps every facet tab its full height when the list outgrows its box (they scroll, never shrink)', async () => {
+    renderFilter();
+    await userEvent.click(screen.getByRole('button', { name: /Filter/ }));
+    const list = await screen.findByRole('tablist', { name: 'Filter facets' });
+    // jsdom has no layout: the facet list is a flex column, so a tab without shrink-0 is squashed (32 px down to 20 px)
+    // once the facets no longer fit. The mobile gate measured 171x20 tabs on the Jobs filter.
+    for (const tab of within(list).getAllByRole('tab')) expect(tab.className).toMatch(/(^|\s)shrink-0(\s|$)/);
+  });
+
   it('is a bottom sheet below md: the facet list first, no side rail', async () => {
     setViewport(320, 568);
     renderFilter();

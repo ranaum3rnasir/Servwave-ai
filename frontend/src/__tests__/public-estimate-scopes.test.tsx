@@ -67,7 +67,7 @@ const PAYLOAD = {
     invoices: [],
     send_config: null,
   },
-  organization: { name: 'Alpha Doors', brand_color: '#E11D2E' },
+  organization: { name: 'Example Doors', brand_color: '#E11D2E' },
   terms: null,
   payment_instructions: {},
   expired: false,

@@ -86,7 +86,7 @@ vi.mock('@/components/inventory/GeneratePODialog', () => ({
   },
 }));
 
-const poAbility = () => buildAbility([{ action: 'create', subject: 'PurchaseOrder' }]);
+const poAbility = () => buildAbility([{ action: 'create', subject: 'PurchaseOrder' }, { action: 'read', subject: 'Vendor' }]);
 
 function serve(totalPages = 1) {
   hoisted.useLowStock.mockReturnValue({

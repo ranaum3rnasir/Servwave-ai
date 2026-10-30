@@ -207,7 +207,7 @@ const FIXTURE_C = {
           amount: '3187.50',
           method: 'CHECK',
           paid_at: '2026-06-01T10:00:00.000Z',
-          stripe_payment_intent_id: null,
+          paid_through_processor: false,
           reference_number: 'CHK-9',
         },
       ],

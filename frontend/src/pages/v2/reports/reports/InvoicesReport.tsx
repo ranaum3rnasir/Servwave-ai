@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import { AlertTriangle, CheckCircle2, DollarSign, FileText, X } from 'lucide-react';
 
+import { useAppAbility } from '@/contexts/AbilityContext';
+import { canSeeCompanyFigures } from '@/lib/ability';
 import { useIsDemoOrg } from '@/lib/useIsDemoOrg';
 import { exportCsvFile } from '@/lib/csv';
 import { findReport } from '@/lib/reports/report-catalog';
@@ -26,8 +28,9 @@ import { DateField } from '@/ui-kit/components/form/dateField';
  * Invoices report - a filtered follow-up list you can hand to a rep or a tech.
  *
  * `useInvoicesReport(isDemo)` is imported and is the whole demo-vs-live fork,
- * including what "salesperson" and "technician" mean (the estimate's seller via
- * lead commission owner, and the first job assignee). Every filter, the
+ * including what "salesperson" and "technician" mean (the job's stored Sold By,
+ * which a service plan's invoice takes from the plan, and the first job assignee;
+ * the server sends a dash for an empty seller). Every filter, the
  * status-KPI switcher and the two-stage `filteredNoStatus` / `filtered`
  * derivation are carried over exactly - the first stage is what keeps the
  * status cards showing their real totals while acting as filters.
@@ -83,6 +86,8 @@ const fmtDate = (ms: number) =>
 export default function InvoicesReport() {
   const report = findReport('invoices')!;
   const isDemo = useIsDemoOrg();
+  // The sums of this report (status tiles, totals strip) are company-wide money; the invoices themselves are not.
+  const showsTotals = canSeeCompanyFigures(useAppAbility());
   const { rows: ALL, now: NOW } = useInvoicesReport(isDemo);
 
   // Filter options: fixed roster for the demo, derived from the live rows for a
@@ -205,11 +210,11 @@ export default function InvoicesReport() {
       ),
     },
     { id: 'created', header: 'Created', width: 140, min: 125, sortValue: (r) => r.created, cell: (r) => <span className="text-muted-foreground whitespace-nowrap">{fmtDate(r.created)}</span> },
-    { id: 'subtotal', header: 'Subtotal', width: 110, min: 95, align: 'right', sortValue: (r) => r.subtotal, cell: (r) => <span className="text-muted-foreground tabular-nums">{money(r.subtotal)}</span>, footer: <span className="tabular-nums">{money(totals.subtotal)}</span> },
-    { id: 'tax', header: 'Tax', width: 110, min: 95, align: 'right', sortValue: (r) => r.tax, cell: (r) => <span className="text-muted-foreground tabular-nums">{money(r.tax)}</span>, footer: <span className="tabular-nums">{money(totals.tax)}</span> },
+    { id: 'subtotal', header: 'Subtotal', width: 110, min: 95, align: 'right', sortValue: (r) => r.subtotal, cell: (r) => <span className="text-muted-foreground tabular-nums">{money(r.subtotal)}</span>, footer: showsTotals ? <span className="tabular-nums">{money(totals.subtotal)}</span> : undefined },
+    { id: 'tax', header: 'Tax', width: 110, min: 95, align: 'right', sortValue: (r) => r.tax, cell: (r) => <span className="text-muted-foreground tabular-nums">{money(r.tax)}</span>, footer: showsTotals ? <span className="tabular-nums">{money(totals.tax)}</span> : undefined },
     { id: 'discount', header: 'Discount', width: 100, min: 90, align: 'right', sortValue: (r) => r.discountPct, cell: (r) => <span className="text-muted-foreground tabular-nums">{r.discountPct.toFixed(2)}%</span> },
-    { id: 'amount', header: 'Amount', width: 120, min: 100, align: 'right', sortValue: (r) => r.amount, cell: (r) => <span className="font-medium tabular-nums">{money(r.amount)}</span>, footer: <span className="tabular-nums">{money(totals.amount)}</span> },
-    { id: 'due', header: 'Due', width: 120, min: 100, align: 'right', sortValue: (r) => r.due, cell: (r) => <span className="tabular-nums">{money(r.due)}</span>, footer: <span className="tabular-nums">{money(totals.due)}</span> },
+    { id: 'amount', header: 'Amount', width: 120, min: 100, align: 'right', sortValue: (r) => r.amount, cell: (r) => <span className="font-medium tabular-nums">{money(r.amount)}</span>, footer: showsTotals ? <span className="tabular-nums">{money(totals.amount)}</span> : undefined },
+    { id: 'due', header: 'Due', width: 120, min: 100, align: 'right', sortValue: (r) => r.due, cell: (r) => <span className="tabular-nums">{money(r.due)}</span>, footer: showsTotals ? <span className="tabular-nums">{money(totals.due)}</span> : undefined },
     { id: 'status', header: 'Status', width: 120, min: 105, sortValue: (r) => r.status, cell: (r) => <Badge variant={STATUS_VARIANT[r.status]} size="pill">{r.status}</Badge> },
     { id: 'job', header: 'Job', width: 100, min: 85, sortValue: (r) => r.job, cell: (r) => <span className="text-brand">{r.job}</span> },
     { id: 'salesperson', header: 'Salesperson', width: 150, min: 130, sortValue: (r) => r.salesperson, cell: (r) => <span>{r.salesperson}</span> },
@@ -221,10 +226,10 @@ export default function InvoicesReport() {
       {/* Click a card to filter the table by that status. */}
       <ReportKpis
         items={[
-          { icon: DollarSign, label: 'Due', value: money(k.due), tone: 'primary', active: statuses.includes('Due'), onClick: () => toggleStatus('Due') },
-          { icon: AlertTriangle, label: 'Overdue', value: money(k.overdue), tone: 'danger', emphasize: true, active: statuses.includes('Overdue'), onClick: () => toggleStatus('Overdue') },
+          { icon: DollarSign, label: 'Due', value: showsTotals ? money(k.due) : k.dueN, tone: 'primary', active: statuses.includes('Due'), onClick: () => toggleStatus('Due') },
+          { icon: AlertTriangle, label: 'Overdue', value: showsTotals ? money(k.overdue) : k.overdueN, tone: 'danger', emphasize: true, active: statuses.includes('Overdue'), onClick: () => toggleStatus('Overdue') },
           { icon: FileText, label: 'Unsent', value: k.unsentN, tone: 'warning', emphasize: k.unsentN > 0, active: statuses.includes('Unsent'), onClick: () => toggleStatus('Unsent') },
-          { icon: CheckCircle2, label: 'Collected', value: money(k.collected), tone: 'success', emphasize: true, active: statuses.includes('Paid'), onClick: () => toggleStatus('Paid') },
+          { icon: CheckCircle2, label: showsTotals ? 'Collected' : 'Paid', value: showsTotals ? money(k.collected) : k.collectedN, tone: 'success', emphasize: true, active: statuses.includes('Paid'), onClick: () => toggleStatus('Paid') },
         ]}
       />
 
@@ -311,8 +316,8 @@ export default function InvoicesReport() {
       <p className="text-muted-foreground text-xs">
         {isDemo && 'Sample data shown so the layout is reviewable without a backend. '}
         Filter by salesperson or technician (plus status/date/job type), then Export CSV to hand them
-        their follow-up list. Technician maps to the job assignee; salesperson maps to the estimate&apos;s
-        seller (lead commission owner).
+        their follow-up list. Technician maps to the job assignee; salesperson maps to the job&apos;s Sold By
+        (a service plan&apos;s invoice shows the plan&apos;s Sold by).
       </p>
     </ReportShell>
   );

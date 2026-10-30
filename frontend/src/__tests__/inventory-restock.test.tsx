@@ -125,6 +125,7 @@ const inventoryAbility = () =>
     { action: 'manage', subject: 'Inventory' },
     { action: 'read', subject: 'Invoice' },
     { action: 'create', subject: 'PurchaseOrder' },
+    { action: 'read', subject: 'Vendor' }, // Generate PO needs a vendor to pick
   ]);
 
 async function openRestockDialog() {

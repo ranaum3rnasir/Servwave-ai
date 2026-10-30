@@ -56,17 +56,27 @@ export interface VoidPaymentPayload {
 
 /** POST /api/invoices/:id/refund — partial or full refund of a paid invoice. */
 export function refundInvoice(id: string, body: RefundInvoicePayload) {
-  return api.post(`/api/invoices/${id}/refund`, body).then((r) => r.data);
+  // silentErrors: the dialog shows the server's own reason inline; the app-wide "server error" toast
+  // would only bury it (a refund the processor refuses answers 500 with a ServWave message).
+  return api.post(`/api/invoices/${id}/refund`, body, { silentErrors: true }).then((r) => r.data);
 }
 
 /** POST /api/invoices/:id/credit — apply a credit / give-back. */
 export function creditInvoice(id: string, body: CreditInvoicePayload) {
-  return api.post(`/api/invoices/${id}/credit`, body).then((r) => r.data);
+  return api.post(`/api/invoices/${id}/credit`, body, { silentErrors: true }).then((r) => r.data);
 }
 
 /** POST /api/invoices/:id/void-payment — void a single recorded payment. */
 export function voidPayment(invoiceId: string, body: VoidPaymentPayload) {
   return api.post(`/api/invoices/${invoiceId}/void-payment`, body).then((r) => r.data);
+}
+
+/**
+ * POST /api/invoices/:id/cancel-bank-payment - payments go-live slice 29: stop a bank payment that
+ * is still processing (it has not landed, so there is nothing to refund yet).
+ */
+export function cancelBankPayment(invoiceId: string, paymentId: string) {
+  return api.post(`/api/invoices/${invoiceId}/cancel-bank-payment`, { payment_id: paymentId }, { silentErrors: true }).then((r) => r.data);
 }
 
 /**
@@ -77,6 +87,11 @@ export function voidPayment(invoiceId: string, body: VoidPaymentPayload) {
  */
 export function createInvoicePaymentLink(invoiceId: string) {
   return api.post(`/api/invoices/${invoiceId}/payment-link`).then((r) => r.data as { invoice: unknown; url: string });
+}
+
+/** POST /api/invoices/:id/mark-sent - issues a DRAFT without an email. */
+export function markInvoiceSent(invoiceId: string) {
+  return api.post(`/api/invoices/${invoiceId}/mark-sent`).then((r) => r.data as { invoice: unknown });
 }
 
 // ─── Line-item CRUD ───────────────────────────────────────────────────────────

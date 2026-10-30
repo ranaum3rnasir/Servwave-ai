@@ -35,8 +35,8 @@ let admin: ApiClient;
 let sales: ApiClient;
 let tech: ApiClient;
 let dispatcher: ApiClient;
-// The seeded technician's user id — ROLE-5 needs it for the per-user permission grant
-// (PUT /api/users/:id/permissions) and for job crew membership.
+// The seeded technician's user id — ROLE-5b needs it for the per-person Create invoices switch and for job crew
+// membership.
 let techId: string;
 
 async function seedRoleUser(role: 'SALES' | 'TECHNICIAN' | 'DISPATCHER', tag: string) {
@@ -512,26 +512,28 @@ test.describe('standalone invoices — lifecycle + role gating (DS/ROLE)', () =>
     expect(Number(body.invoice.subtotal)).toBe(50);
   });
 
-  test('ROLE-5: TECHNICIAN job-anchored invoice — per-user grant + own-job scope', async () => {
-    // GUARD ORDERING (invoice.controller.ts create()): on the job-anchored path the
-    // one-ACTIVE-invoice 409 runs BEFORE the per-instance ownership 403 — so sub-tests (c)
-    // and (d) MUST each use a FRESH completed direct job with NO active invoice (never the
-    // JI block's shared job, which ends that block carrying an ACTIVE invoice), or they
-    // would get 409 instead of the asserted 201/403.
+  test('ROLE-5: TECHNICIAN job-anchored invoice — bare technician is refused', async () => {
     const lineItems = [{ description: 'Tech labor', quantity: 1, unit_price: 100, is_taxable: false }];
 
-    // (a) bare TECHNICIAN (no create-Invoice grant since Phase B #253): route-level canDo 403.
-    // This 403 precedes even the 409, so the (not-yet-invoiced) fresh job below is reusable in (d).
+    // (a) bare TECHNICIAN (the Create invoices switch is off in the Technician preset): route-level canDo 403.
     const { jobId: foreignJob } = await seedCompletedDirectJob(); // crew does NOT include techId
     const bare = await tech.raw('post', '/api/invoices', { job_id: foreignJob, line_items: lineItems });
     expect(bare.res.status(), 'bare tech 403 (route canDo)').toBe(403);
+  });
 
-    // (b) ADMIN grants the per-user create-Invoice capability (own-scoped via job assignment —
-    // userCapabilities.ts OWN_INVOICE_VIA_JOB, impliesRead).
-    const grant = await admin.raw('put', `/api/users/${techId}/permissions`, {
-      overrides: [{ action: 'create', subject: 'Invoice', effect: 'allow' }],
-    });
-    expect(grant.res.ok(), 'grant create-Invoice override').toBeTruthy();
+  // The per-user create-Invoice grant this half stood on (a per-person override row) is retired: Create invoices is a
+  // switch now. Turning it on for one person needs the per-person switches API (S01.20), which does not exist yet,
+  // so this half is parked rather than deleted. Re-enable it by setting that person's Create invoices switch.
+  test.fixme('ROLE-5b: TECHNICIAN with Create invoices switched on — own-job scope', async () => {
+    // GUARD ORDERING (invoice.controller.ts create()): on the job-anchored path the
+    // one-ACTIVE-invoice 409 runs BEFORE the per-instance ownership 403 — so (c) and (d) MUST each
+    // use a FRESH completed direct job with NO active invoice (never the JI block's shared job,
+    // which ends that block carrying an ACTIVE invoice), or they would get 409 instead of 201/403.
+    const lineItems = [{ description: 'Tech labor', quantity: 1, unit_price: 100, is_taxable: false }];
+    // (a2) a job the technician is NOT on the crew of, seeded before the switch is turned on.
+    const { jobId: foreignJob } = await seedCompletedDirectJob();
+
+    // (b) ADMIN switches on Create invoices for this technician alone (per-person switches API, S01.20).
 
     // (c) fresh completed direct job WITH the tech in the crew → 201.
     const { jobId: ownJob } = await seedCompletedDirectJob([techId]);

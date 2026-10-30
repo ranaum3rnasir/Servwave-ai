@@ -246,7 +246,6 @@ collecting is their job, not because they are attached to the invoice.
 | `billing.payments_action_needed` | duty † | event | Stripe `account.updated`: requirements outstanding | All admins **I PIN** [View] |
 | `billing.payments_paused` | duty † | event | Stripe `account.updated`: charges disabled | All admins **I PIN** [View] |
 | `billing.payouts_pending_first_payment` | duty † | event | Stripe payment webhook: payouts held pending the first payment | All admins **F** |
-| `billing.platform_fee_rate_changed` | duty † | event | A within-ceiling platform fee rate change | All admins **F** |
 
 > **Refund, dispute and chargeback are loud but not pinned.** Their templates name a `VIEW` CTA
 > and set the template-level `needs_action`, but `resolveRecipients` gives the admin row

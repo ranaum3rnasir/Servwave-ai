@@ -5,7 +5,8 @@ import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { tenantWhere } from '../lib/tenant';
 import { logAudit } from '../lib/audit';
-import { canSeePricing } from '../lib/permissions/enforce';
+import { canSeeCosts, canSeeVendors } from '../lib/permissions/enforce';
+import { resolveSwitches } from '../lib/permissions/switches/store';
 import { parsePagination, parseSortParams, buildPaginationMeta, respondInvalidSort } from '../lib/pagination';
 import { STOCK_MOVEMENT_SORT_FIELDS } from '../lib/sortFields';
 import { emitStockApprovalRequested, emitLowStockIfCrossing } from '../services/notifications/inventoryEmit';
@@ -21,7 +22,7 @@ import { LONG_TEXT_MAX } from '../lib/text-limits';
 // P5 Action log: every pre-P5 key is preserved (item-panel back-compat); the
 // enrichment keys (ids + server-joined display names) come from the read-path
 // include below. unit_cost is cost data → strip-by-omission for requesters
-// without canSeePricing (same predicate as stripMappedItemCost / job-lines).
+// without canSeeCosts (same predicate as stripMappedItemCost / job-lines).
 function mapMovement(m: any, withCost = false) {
   return {
     id: m.id,
@@ -430,16 +431,16 @@ export function legacyStockLineResponse(res: Response): void {
   res.status(400).json({ error: 'LEGACY_STOCK_LINE', reason: 'qty_frozen' });
 }
 
-/** D10/D13: the restriction is ON only for role TECHNICIAN carrying the
- *  `location_restricted:Inventory` allow-override. The role gate is REQUIRED: ADMIN is
- *  `manage all` (defineAbility short-circuit) so a bare ability check would read true for
- *  every admin; a DISPATCHER carrying a stray override row is also exempt by role.
- *  vanId = the tech's own van (InventoryLocation.primary_tech_id, one-van-per-tech by
+/** D10/D13: the restriction is ON for whoever holds the Restrict stock to own van switch, whatever their role
+ *  (Roles & Permissions S01.9; it used to need the TECHNICIAN role plus a per-user override). The switch is read
+ *  from the person's resolved switches: the Admin box holds every switch at its preset, so it is never restricted.
+ *  vanId = the person's own van (InventoryLocation.primary_tech_id, one-van-per-tech by
  *  convention — deterministic oldest-first if ever violated); null when none assigned. */
 export async function resolveRestrictedVan(
   req: Request,
 ): Promise<{ restricted: boolean; vanId: string | null }> {
-  if (req.user!.role !== 'TECHNICIAN' || !req.ability?.can('location_restricted', 'Inventory')) {
+  const values = await resolveSwitches(req.user!);
+  if (values.restrict_stock_to_own_van !== true) {
     return { restricted: false, vanId: null };
   }
   const van = await prisma.inventoryLocation.findFirst({
@@ -619,7 +620,7 @@ export async function listMovements(req: Request, res: Response) {
       prisma.stockMovement.count({ where }),
     ]);
 
-    const withCost = canSeePricing(req);
+    const withCost = canSeeCosts(req);
     res.json({
       data: movements.map((m) => mapMovement(m, withCost)),
       meta: buildPaginationMeta(total, { page, limit, skip }),
@@ -642,7 +643,7 @@ export async function getMovement(req: Request, res: Response) {
       return;
     }
 
-    res.json({ movement: mapMovement(movement, canSeePricing(req)) });
+    res.json({ movement: mapMovement(movement, canSeeCosts(req)) });
   } catch (err) {
     logger.error('Failed to get movement:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -660,7 +661,9 @@ const lowStockQuerySchema = z.object({
   limit: z.string().optional(),
 });
 
-function mapLowStockRow(r: any) {
+// The vendor id and name are supplier data: they ride on a row only for a requester who holds View vendors
+// (canSeeVendors), and the keys are left out otherwise.
+function mapLowStockRow(r: any, withVendor: boolean) {
   return {
     itemId: r.item_id,
     sku: r.item?.sku ?? '',
@@ -669,8 +672,12 @@ function mapLowStockRow(r: any) {
     status: r.item?.status ?? undefined,
     isActive: !!r.item?.is_active,
     trackInventory: !!r.item?.track_inventory,
-    vendorId: r.item?.vendor_id ?? null,
-    vendorName: r.item?.vendor?.name ?? null, // vendor NAME — the P2 proposal groups on it
+    ...(withVendor
+      ? {
+          vendorId: r.item?.vendor_id ?? null,
+          vendorName: r.item?.vendor?.name ?? null, // vendor NAME — the P2 proposal groups on it
+        }
+      : {}),
     locationId: r.location_id,
     locationName: r.location?.name ?? '',
     locationType: r.location?.type ?? undefined,
@@ -691,6 +698,7 @@ export async function listLowStock(req: Request, res: Response) {
       return;
     }
     const { page, limit, skip } = parsePagination(parsed.data);
+    const withVendor = canSeeVendors(req);
 
     const rows = await prisma.stockBalance.findMany({
       where: {
@@ -703,7 +711,8 @@ export async function listLowStock(req: Request, res: Response) {
         item: {
           select: {
             id: true, sku: true, name: true, kind: true, status: true, is_active: true,
-            track_inventory: true, vendor_id: true, vendor: { select: { id: true, name: true } },
+            track_inventory: true,
+            ...(withVendor ? { vendor_id: true, vendor: { select: { id: true, name: true } } } : {}),
           },
         },
         location: { select: { id: true, name: true, type: true } },
@@ -719,7 +728,7 @@ export async function listLowStock(req: Request, res: Response) {
       );
 
     res.json({
-      data: low.slice(skip, skip + limit).map(mapLowStockRow),
+      data: low.slice(skip, skip + limit).map((r: any) => mapLowStockRow(r, withVendor)),
       meta: buildPaginationMeta(low.length, { page, limit, skip }),
     });
   } catch (err) {

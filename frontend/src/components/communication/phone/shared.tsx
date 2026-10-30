@@ -1,6 +1,6 @@
 // Phone module — shared kernel.
 //
-// Extracted from Emanuel's PhonePage monolith BEFORE it was split into 17
+// Extracted from the original PhonePage monolith BEFORE it was split into 17
 // per-section view files. Everything here is used by >=2 of those future view
 // files; single-view symbols stay local to their view. Logic is verbatim from
 // the monolith; only two things changed:
@@ -10,7 +10,7 @@
 //   2. Data-dependent lookups (customerById) take their data array as the FIRST
 //      param — ALPHA feeds data from the `@/lib/api/communication` seam hooks,
 //      not from module-scope imports.
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   Bot,
@@ -68,15 +68,24 @@ export function partyNumber(c: CallSession): string {
 
 /** Owner-review flag — surfaces any call the owner should personally check:
  *  after-hours emergencies, manager-needed calls, angry customers (negative
- *  sentiment), or a low-confidence / flagged AI insight. */
-export function callNeedsAttention(c: CallSession): boolean {
+ *  sentiment), or a low-confidence / flagged AI insight.
+ *
+ *  Sentiment and the review flag are call insights (Roles & Permissions
+ *  S08.13). For a person without See call insights only the outcome-based
+ *  items count, and that holds even if a sentiment or a flag is on the call:
+ *  the count never rests on data the person may not see. */
+export function callNeedsAttention(c: CallSession, withInsights = true): boolean {
   return (
     c.disposition === "after_hours_emergency" ||
     c.disposition === "needs_manager" ||
-    c.sentiment === "negative" ||
-    !!c.reviewFlag
+    (withInsights && (c.sentiment === "negative" || !!c.reviewFlag))
   );
 }
+
+/** The help text of the Needs Attention tile and its focus banner, for a person without See call insights. */
+export const NEEDS_ATTENTION_WITHOUT_INSIGHTS_HELP =
+  "Counts after-hours emergency calls and calls that need a manager. Call sentiment and review flags are not counted: " +
+  "call insights are not part of your access.";
 
 const ORDINAL = (d: number) => {
   if (d > 3 && d < 21) return "th";
@@ -324,7 +333,7 @@ export function Stat({ label, value }: { label: string; value: string }) {
 }
 
 /** Stacked label-over-value row used in detail/info panels. */
-export function InfoRow({ label, value }: { label: string; value: string }) {
+export function InfoRow({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div>
       <p className="text-[10px] font-semibold uppercase tracking-wide text-text-secondary">{label}</p>

@@ -451,7 +451,7 @@ export function buildAlphaClassicPdf(
   // #2028 slice 3 — which sections this document has is the view-model's call, so the previewed
   // PDF, the emailed PDF and the public page make the same three decisions. The scope-of-work
   // narrative the salesperson typed leads the scope section: this template never drew it at all
-  // (slice 5), so Alpha Doors were sending customers documents with the scope of work missing.
+  // (slice 5), so the pilot org was sending customers documents with the scope of work missing.
   //
   // Every priced row still prints in the Amount column of its own section's table, so the Sub
   // total below remains the literal sum of everything printed above it. Slice 4: an UNPRICED

@@ -34,3 +34,26 @@ export function resetAccountScopedStores(): void {
     }
   }
 }
+
+const signInHooks = new Set<ResetFn>();
+
+/**
+ * Slice 33b: the other half of the sign-out reset. Something that keeps working after sign-out
+ * (the embedded-session frame watcher) registers here to stop when someone signs in again.
+ * Returns the unregister function.
+ */
+export function registerSignInHook(fn: ResetFn): () => void {
+  signInHooks.add(fn);
+  return () => { signInHooks.delete(fn); };
+}
+
+/** Called by the auth store once a sign-in has succeeded. Never throws. */
+export function notifySignedIn(): void {
+  for (const hook of signInHooks) {
+    try {
+      hook();
+    } catch {
+      // One bad hook must not break the sign-in.
+    }
+  }
+}

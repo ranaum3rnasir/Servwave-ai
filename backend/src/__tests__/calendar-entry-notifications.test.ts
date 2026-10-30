@@ -11,7 +11,7 @@
  * `lib/email` is globally mocked in setup.ts (see sendCalendarEntryScheduledEmail et al there);
  * `services/notifications/notificationService` is mocked HERE, file-local, so assertions can
  * read the exact verb/entity emit() was called with without needing to also exercise
- * loadRoleHolders/filterRecipientsByAccess/realtimePublish — those belong to notificationService's
+ * filterRecipientsByAccess/realtimePublish — those belong to notificationService's
  * own test suite, not this controller's.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';

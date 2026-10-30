@@ -18,7 +18,7 @@ import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import api from '@/lib/axios';
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderWithProviders, ALL_JOB_ACTIONS } from '@/__tests__/helpers';
 import { buildAbility } from '@/lib/ability';
 
 import JobDetailPage from '../JobDetailPage';
@@ -85,6 +85,7 @@ const BASE_JOB = {
   invoices: [],
   tags: [],
   source_plan_id: null,
+  actions: ALL_JOB_ACTIONS,
   source_plan: null,
 };
 

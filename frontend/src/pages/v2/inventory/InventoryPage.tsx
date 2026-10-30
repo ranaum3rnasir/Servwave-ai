@@ -17,8 +17,11 @@ import {
 import type { Branch, Category, Item, Location, Vendor } from '@/lib/api/inventory';
 import { useLogisticOrders } from '@/lib/api/logisticOrders';
 import { useAppAbility } from '@/contexts/AbilityContext';
+import { canSeePricing, canStartPurchaseOrder } from '@/lib/ability';
+import { switchOn, useMySwitches } from '@/lib/api/mySwitches';
 import { useConfirm } from '@/hooks/useConfirm';
 import { extractApiError, formatCurrencyWhole } from '@/lib/utils';
+import { cn } from '@/ui-kit/lib/utils';
 import { useInventoryAlertStore } from '@/stores/inventory-alert.store';
 import { downloadCSV, toCSV } from '@/lib/inventory/csv';
 import { importSummary } from '@/lib/inventory/import-summary';
@@ -165,40 +168,66 @@ export default function InventoryPage() {
   useRecordVisit('inventory');
   const location = useLocation();
   const navigate = useNavigate();
-  const view = viewFromPath(location.pathname);
+  const routedView = viewFromPath(location.pathname);
   const archivedSwitchId = useId();
   const { confirm, confirmDialog } = useConfirm();
 
   // "Show archived" toggle (Items tab) - re-fetches with include_archived=true
   // so hybrid-delete-archived rows surface alongside active ones.
   const [showArchived, setShowArchived] = useState(false);
-  const itemsQuery = useInventoryItems(showArchived);
+  const ability = useAppAbility();
+  // S07.13 - the tab set. View is a rule, Show is display only and arrives with the person's own switches. A tab
+  // needs both, the same pair its route is guarded by, so a tab never leads to a redirect. The Logistic Orders tab
+  // stands on its own pair and does not depend on Stock.
+  const mine = useMySwitches()?.values;
+  const canReadStock = ability.can('read', 'Inventory');
+  const canSeeStockTabs = canReadStock && switchOn(mine, 'show_stock_page');
+  const canReadLogisticOrders = ability.can('read', 'LogisticOrder');
+  const canSeeLogisticOrdersTab = canReadLogisticOrders && switchOn(mine, 'show_logistic_orders_page');
+  // Every stock read below waits for View stock, so a person who holds only the Logistic Orders tab makes no refused read.
+  const itemsQuery = useInventoryItems(showArchived, canReadStock);
   // Below md the items list renders as cards (the same query DataTable's
   // `mobileCards` uses), and a card is about twice a row's DOM: 25 of them put
   // the page past 1,500 nodes on a phone (mobile slice 31, PERF-04). Phones
   // start at 10 per page, one of the page-size picker's own options.
   const isPhoneCards = useMediaQuery('(max-width: 767px)');
-  const locationsQuery = useLocations();
-  const vendorsQuery = useVendors();
-  const categoriesQuery = useCategories();
-  const branchesQuery = useBranches();
-  const brandsQuery = useBrands();
+  const locationsQuery = useLocations(canReadStock);
+  // Supplier data follows View vendors (S07.18): without it the page asks for no vendor list and shows no vendor column,
+  // field, filter or export column, because the server sends none.
+  const canViewVendors = ability.can('read', 'Vendor');
+  const vendorsQuery = useVendors(canViewVendors);
+  const categoriesQuery = useCategories(canReadStock);
+  const branchesQuery = useBranches(canReadStock);
+  const brandsQuery = useBrands(canReadStock);
   // Finish is read-only here - it is edited from the item dialog and only
   // resolved on this page - so it needs no local mirror and no seed effect.
-  const finishesQuery = useFinishes();
-  const jobStagesQuery = useJobStages();
+  const finishesQuery = useFinishes(canReadStock);
+  const jobStagesQuery = useJobStages(canSeeStockTabs);
   // Assets tab count only - the same {status:'ACTIVE'} key AssetsView uses by
   // default, so TanStack dedupes this with the tab body's own query.
-  const assetsQuery = useAssets({ status: 'ACTIVE' }, 1);
-  // P5 tab counts - meta.total only (limit 1 keeps the payloads tiny).
-  const movementsCountQuery = useMovements({ limit: 1 });
-  const lowStockCountQuery = useLowStock({ limit: 1 });
+  const assetsQuery = useAssets({ status: 'ACTIVE' }, 1, canSeeStockTabs);
+  // S07.12 - the Activity tab, its count and an item's movement history follow See inventory activity.
+  const canSeeActivity = ability.can('see_inventory_activity', 'Inventory');
+  // The views this person may open, in tab order. A deep link to any other lands on the first of them and leaves the
+  // address, never on a refused list. While the person has no tab at all the route is left alone (its guard decides).
+  const allowedViews: InventoryView[] = [
+    ...(canSeeStockTabs ? (['items', 'staging', 'assets', 'low_stock'] as const) : []),
+    ...(canSeeStockTabs && canSeeActivity ? (['activity'] as const) : []),
+    ...(canSeeLogisticOrdersTab ? (['logistic_orders'] as const) : []),
+  ];
+  const redirectTo = allowedViews.length > 0 && !allowedViews.includes(routedView) ? allowedViews[0] : null;
+  const view: InventoryView = redirectTo ?? routedView;
+  useEffect(() => {
+    if (redirectTo) navigate(VIEW_PATHS[redirectTo], { replace: true });
+  }, [redirectTo, navigate]);
+  // P5 tab counts - meta.total only (limit 1 keeps the payloads tiny). A hidden tab makes no count read.
+  const movementsCountQuery = useMovements({ limit: 1 }, canSeeStockTabs && canSeeActivity);
+  const lowStockCountQuery = useLowStock({ limit: 1 }, canSeeStockTabs);
   // Logistic Orders tab - total count plus the pending-approval count that
   // drives the amber flag. `retry:false` in the hook keeps a non-reader 403 quiet.
-  const loCountQuery = useLogisticOrders({ limit: 1 });
-  const loPendingCountQuery = useLogisticOrders({ status: 'PENDING_APPROVAL', limit: 1 });
+  const loCountQuery = useLogisticOrders({ limit: 1 }, { enabled: canSeeLogisticOrdersTab });
+  const loPendingCountQuery = useLogisticOrders({ status: 'PENDING_APPROVAL', limit: 1 }, { enabled: canSeeLogisticOrdersTab });
 
-  const ability = useAppAbility();
   // #2043 - the toolbar's four write buttons, the two "Showing" selectors and
   // the row kebab each gate on the ability(ies) the route they call actually
   // enforces (spec §A/§A.2). `isLocationAdmin`/`manage Inventory` is gone:
@@ -215,8 +244,13 @@ export default function InventoryPage() {
   // (`canDo('update','Inventory')`). Gating the button on anything else would
   // either hide an action the API allows or offer one it 403s.
   const canBulkRestock = canUpdateInventory;
+  // S07.15 - Export stock compiles into `export Inventory`. Both downloads are built in the browser, so the buttons
+  // are the whole gate. Cost is company cost: it follows See financial data on the grid, the cards, the item detail
+  // and the file. The server leaves it out of the items for a person without it; the page never fills the gap.
+  const canExport = ability.can('export', 'Inventory');
+  const canSeeCosts = canSeePricing(ability);
   // Inventory P2 (D16 entry #3) - the Generate-PO surfaces gate on create PurchaseOrder.
-  const canCreatePO = ability.can('create', 'PurchaseOrder');
+  const canCreatePO = canStartPurchaseOrder(ability);
   const upsertItem = useUpsertItem();
   const upsertLocation = useUpsertLocation();
   const deleteLocation = useDeleteLocation();
@@ -356,7 +390,7 @@ export default function InventoryPage() {
 
   // Per-item recent movements for the detail panel - server-filtered (P5 SS 2.2).
   // Runs unconditionally (hooks rule); tiny page when unscoped.
-  const itemMovementsQuery = useMovements({ itemId: selectedItem?.id, limit: 25 });
+  const itemMovementsQuery = useMovements({ itemId: selectedItem?.id, limit: 25 }, canSeeActivity);
 
   // `finishNameById` is what lets the search box match the finish NAME the row
   // shows; the item itself carries only the opaque id.
@@ -453,7 +487,8 @@ export default function InventoryPage() {
                 serialized: payload.serialized,
                 hazmat: payload.hazmat,
                 trackInventory: payload.trackInventory,
-                vendor: payload.vendor,
+                // Without View vendors the form has no vendor field, so there is no vendor name to mirror.
+                vendor: canViewVendors ? payload.vendor : i.vendor,
                 // An uploaded picture answers with its storage URL; an explicit null is a clear
                 // and must not fall through to the picture it just removed.
                 photoUrl:
@@ -486,7 +521,7 @@ export default function InventoryPage() {
       hazmat: payload.hazmat,
       trackInventory: payload.trackInventory,
       status: 'active',
-      vendor: payload.vendor,
+      ...(canViewVendors ? { vendor: payload.vendor } : {}),
       photoUrl:
         (created as { image_url?: string } | undefined)?.image_url ?? payload.photoUrl ?? undefined,
       brandId: payload.brandId,
@@ -612,11 +647,11 @@ export default function InventoryPage() {
     Category: i.category,
     Kind: i.kind,
     UoM: i.uom,
-    'Unit Cost': (i.unitCost ?? 0).toFixed(2),
+    ...(canSeeCosts ? { 'Unit Cost': (i.unitCost ?? 0).toFixed(2) } : {}),
     'Sell Price': i.sellPrice.toFixed(2),
     'Total On Hand': totalOnHand(i),
     'Total Available': totalOnHand(i),
-    Vendor: i.vendor,
+    ...(canViewVendors ? { Vendor: i.vendor ?? '' } : {}),
     MPN: i.mpn ?? '',
     UPC: i.upc ?? '',
     Serialized: i.serialized ? 'Y' : '',
@@ -699,10 +734,11 @@ export default function InventoryPage() {
           onDelete: (item) => { setSelectedId(item.id); setActiveDialog('delete'); },
           onRestore: (item) => { void handleRestore(item); },
         },
-        // Unconditional: the always-available bulk action is Export selected,
-        // and the toolbar Export it mirrors carries no gate either. Restock is
-        // the gated one, and that gate is on the button, not the checkbox.
-        selectable: true,
+        // The checkbox column exists for the two bulk actions, Export selected
+        // and Restock, each gated on its own button. A person with neither has
+        // nothing to do with a selection, so no checkbox is offered (S07.15).
+        selectable: canExport || canBulkRestock,
+        canSeeCosts,
         // #2043 R1 - the kebab's per-entry gates. `buildItemColumns` is a pure
         // function outside the React tree, so the booleans are passed in.
         canUpdatePriceBook,
@@ -718,6 +754,7 @@ export default function InventoryPage() {
     [
       allLocations, activeLocation, finishNameById,
       canUpdatePriceBook, canUpdateInventory, canCreatePO, canDeletePriceBook,
+      canExport, canBulkRestock, canSeeCosts,
     ],
   );
 
@@ -732,7 +769,7 @@ export default function InventoryPage() {
       : `${filteredItems.length} ${word.trim()} · of ${allItems.length} total`;
   })();
 
-  const tabs = [
+  const stockTabs = [
     {
       value: 'items',
       label: (
@@ -764,22 +801,28 @@ export default function InventoryPage() {
         <TabLabel icon={AlertTriangle} label="Low stock" count={lowStockCountQuery.data?.meta?.total ?? 0} />
       ),
     },
-    {
-      value: 'activity',
-      label: <TabLabel icon={History} label="Activity" count={movementsCountQuery.data?.meta?.total ?? 0} />,
-    },
-    {
-      value: 'logistic_orders',
-      label: (
-        <TabLabel
-          icon={ClipboardList}
-          label="Logistic Orders"
-          count={loCountQuery.data?.total ?? 0}
-          highlight={loPendingCountQuery.data?.total ?? 0}
-          highlightLabel="pending"
-        />
-      ),
-    },
+    ...(canSeeActivity
+      ? [{
+          value: 'activity',
+          label: <TabLabel icon={History} label="Activity" count={movementsCountQuery.data?.meta?.total ?? 0} />,
+        }]
+      : []),
+  ];
+  const logisticOrdersTab = {
+    value: 'logistic_orders',
+    label: (
+      <TabLabel
+        icon={ClipboardList}
+        label="Logistic Orders"
+        count={loCountQuery.data?.total ?? 0}
+        highlight={loPendingCountQuery.data?.total ?? 0}
+        highlightLabel="pending"
+      />
+    ),
+  };
+  const tabs = [
+    ...(canSeeStockTabs ? stockTabs : []),
+    ...(canSeeLogisticOrdersTab ? [logisticOrdersTab] : []),
   ];
 
   return (
@@ -798,7 +841,7 @@ export default function InventoryPage() {
       ) : view === 'low_stock' ? (
         <LowStockView />
       ) : view === 'activity' ? (
-        <ActionLogView />
+        <ActionLogView canExport={canExport} />
       ) : view === 'logistic_orders' ? (
         <LOList />
       ) : (
@@ -825,15 +868,17 @@ export default function InventoryPage() {
                     Import CSV
                   </Button>
                 )}
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleExport}
-                  title={`Export ${filteredItems.length} items as CSV`}
-                >
-                  <Download />
-                  Export
-                </Button>
+                {canExport && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleExport}
+                    title={`Export ${filteredItems.length} items as CSV`}
+                  >
+                    <Download />
+                    Export
+                  </Button>
+                )}
                 {/* Propose one draft PO per vendor for every item below its
                     reorder threshold. Visible regardless of the Low-Stock tile
                     filter state - the dialog operates on ALL flagged items. */}
@@ -864,7 +909,7 @@ export default function InventoryPage() {
 
           {/* Four clickable KPIs, single-active stock-state semantics carried
               over exactly - lighting one strips the other three. */}
-          <StatCardGroup className="mb-4 xl:grid-cols-4">
+          <StatCardGroup className={cn('mb-4', canSeeCosts ? 'xl:grid-cols-4' : 'xl:grid-cols-3')}>
             <StatCard
               label="Active SKUs"
               value={stats.totalSkus.toLocaleString()}
@@ -907,24 +952,28 @@ export default function InventoryPage() {
                 }))
               }
             />
-            <StatCard
-              label="Inventory Value"
-              value={formatCurrencyWhole(stats.value)}
-              active={filters.stockStates.includes('in_stock')}
-              onClick={() =>
-                setFilters((f) => ({
-                  ...f,
-                  stockStates: f.stockStates.includes('in_stock')
-                    ? f.stockStates.filter((s) => s !== 'in_stock')
-                    : [
-                        ...f.stockStates.filter(
-                          (s) => s !== 'low_stock' && s !== 'out_of_stock' && s !== 'backorder',
-                        ),
-                        'in_stock',
-                      ],
-                }))
-              }
-            />
+            {/* The value is a sum of item costs, so without See financial data the card is not drawn: a $0 here
+                would read as a real figure. */}
+            {canSeeCosts && (
+              <StatCard
+                label="Inventory Value"
+                value={formatCurrencyWhole(stats.value)}
+                active={filters.stockStates.includes('in_stock')}
+                onClick={() =>
+                  setFilters((f) => ({
+                    ...f,
+                    stockStates: f.stockStates.includes('in_stock')
+                      ? f.stockStates.filter((s) => s !== 'in_stock')
+                      : [
+                          ...f.stockStates.filter(
+                            (s) => s !== 'low_stock' && s !== 'out_of_stock' && s !== 'backorder',
+                          ),
+                          'in_stock',
+                        ],
+                  }))
+                }
+              />
+            )}
           </StatCardGroup>
 
           {/* The "Showing" scope row. Both selectors are the legacy components -
@@ -1058,6 +1107,7 @@ export default function InventoryPage() {
                           filters={filters}
                           onChange={setFilters}
                           vendors={allVendors}
+                          showVendor={canViewVendors}
                           resultCount={filteredItems.length}
                           totalCount={allItems.length}
                         />
@@ -1078,6 +1128,7 @@ export default function InventoryPage() {
                   />
                   <StockBulkBar
                     count={selectedItems.length}
+                    canExport={canExport}
                     canRestock={canBulkRestock}
                     onClear={() => setRowSelection({})}
                     onExportSelected={handleExportSelected}
@@ -1119,6 +1170,7 @@ export default function InventoryPage() {
             readOnly={!!editingItem && !canUpdatePriceBook}
             onSave={handleSave}
             vendors={allVendors}
+            showVendor={canViewVendors}
             onAddVendor={async (v) => {
               const saved = await persistVendor(v);
               showToast(`✓ Vendor "${saved.name}" added - selected for this item`);
@@ -1301,6 +1353,7 @@ export default function InventoryPage() {
             onClose={() => setActiveDialog(null)}
             onImport={handleImport}
             existingCategories={allCategories.map((c) => c.name)}
+            showVendor={canViewVendors}
           />
           <GeneratePODialog
             open={activeDialog === 'generate_po'}

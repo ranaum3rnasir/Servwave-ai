@@ -31,6 +31,8 @@ const mockPrisma = prisma as unknown as {
   email: { findMany: ReturnType<typeof vi.fn> };
   whatsAppMessage: { findMany: ReturnType<typeof vi.fn> };
   manualCommunicationLog: { findMany: ReturnType<typeof vi.fn> };
+  estimate: { findMany: ReturnType<typeof vi.fn> };
+  payment: { findMany: ReturnType<typeof vi.fn> };
 };
 
 const LEAD_ID = LEAD_FIXTURE.id;
@@ -199,6 +201,10 @@ describe('GET /api/jobs/:id/communications — per-row RBAC', () => {
     mockPrisma.email.findMany.mockResolvedValue([]);
     mockPrisma.whatsAppMessage.findMany.mockResolvedValue([]);
     mockPrisma.manualCommunicationLog.findMany.mockResolvedValue([]);
+    // And the estimates whose portal decisions the tab shows as entries (S08.9).
+    mockPrisma.estimate.findMany.mockResolvedValue([]);
+    // And the payments received on the record's invoices (S08.10).
+    mockPrisma.payment.findMany.mockResolvedValue([]);
   });
 
   it('SALES requesting comms on a job they do NOT own → 403 (aggregator never queried)', async () => {

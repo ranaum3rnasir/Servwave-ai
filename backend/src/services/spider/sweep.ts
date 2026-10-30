@@ -8,7 +8,7 @@
  *   Spider is switched on. Ending finished alerts runs for every company with a settings row,
  *   so alerts already raised still end after Spider is switched off or the gate is revoked.
  * - Which leads: every open lead (no row cap) in a status the company switched on, or only the
- *   selected leads when "watch all open leads" is off. Won, Lost and Cancelled never.
+ *   selected leads when "watch all open leads" is off. Won and Lost never.
  * - Time in status: now minus the later of (a) the instant the lead entered its current status -
  *   its latest STATUS_CHANGE History entry into that status, else its creation - and (b) the
  *   company's activated_at. Nothing else on the lead is read to decide its stage.
@@ -102,7 +102,10 @@ export function _spiderSweepInFlight(): boolean {
 function openLockClient(): PrismaClient {
   const url = new URL(env.DATABASE_URL);
   url.searchParams.set('connection_limit', '1');
-  return new PrismaClient({ datasources: { db: { url: url.toString() } } });
+  // The cast is type-only. Returning the options-typed client as the default PrismaClient makes tsc relate two
+  // instantiations of the whole generated client, which alone cost ~570k types / ~4M instantiations and put
+  // `tsc -p tsconfig.build.json` within ~2% of the 2 GB heap CI gives it (every new model tipped it over).
+  return new PrismaClient({ datasources: { db: { url: url.toString() } } }) as unknown as PrismaClient;
 }
 
 async function withSweepLock(fn: () => Promise<SpiderSweepResult>): Promise<SpiderSweepResult> {

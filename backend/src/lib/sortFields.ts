@@ -30,7 +30,7 @@ export const JOB_SORT_FIELDS: SortFieldMap = {
   status: ['status'],
   // A1 (RATIFIED, multi-visit S8 §4) - NOT scheduled_start. That column is the FORWARD-looking
   // mirror and goes null the moment a job's last live visit is worked; staging measures 7,492
-  // jobs (7,349 Talon Septic + 141 ServWave Test + 2 Alpha Doors) with scheduled_start set but no
+  // jobs (7,349 Talon Septic + 141 ServWave Test + 2 pilot org) with scheduled_start set but no
   // live visit, so sorting on it would blank the Scheduled column for every completed job in the
   // biggest org. first_visit_start is the BACKWARD-looking span start (A2+): it equals
   // scheduled_start's value for every single-visit job, never reverts to null once a visit has
@@ -89,6 +89,16 @@ export const STOCK_MOVEMENT_SORT_FIELDS: SortFieldMap = {
   occurred_at: ['occurred_at'],
 };
 
+// Payments page (P3). `amount` is ordered on the CHARGED amount (invoice amount + tip + service fee) and `fee` on
+// the processing fee + platform fee by the controller, which cannot be a single column; the entries name the
+// column each starts from.
+export const PAYMENT_PAGE_SORT_FIELDS: SortFieldMap = {
+  date: ['paid_at'],
+  amount: ['amount'],
+  fee: ['stripe_fee_amount'],
+  net: ['net_amount'],
+};
+
 // Registry for the DMMF schema-validity guard: pairs each map with its Prisma model name.
 export const SORT_FIELD_MAPS: ReadonlyArray<{ model: string; map: SortFieldMap }> = [
   { model: 'Customer', map: CUSTOMER_SORT_FIELDS },
@@ -100,4 +110,5 @@ export const SORT_FIELD_MAPS: ReadonlyArray<{ model: string; map: SortFieldMap }
   { model: 'PriceBookItem', map: INV_CATALOG_ITEM_SORT_FIELDS },
   { model: 'Asset', map: ASSET_SORT_FIELDS },
   { model: 'StockMovement', map: STOCK_MOVEMENT_SORT_FIELDS },
+  { model: 'Payment', map: PAYMENT_PAGE_SORT_FIELDS },
 ];

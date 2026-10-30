@@ -13,7 +13,7 @@
  */
 export const NAV_SECTIONS: { section: string; keys: readonly string[] }[] = [
   { section: 'Workspace', keys: ['dashboard', 'schedule', 'tasks', 'leads', 'jobs', 'clients'] },
-  { section: 'Billing', keys: ['estimates', 'invoices', 'service-plans'] },
+  { section: 'Billing', keys: ['estimates', 'invoices', 'payments', 'service-plans'] },
   {
     section: 'Operations',
     keys: ['automations', 'pricebook', 'billing', 'reports', 'inventory', 'communication', 'marketing'],

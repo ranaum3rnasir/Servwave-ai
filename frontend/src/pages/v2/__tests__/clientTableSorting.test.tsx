@@ -69,7 +69,7 @@ const ITEMS = [
 describe('the inventory stock list', () => {
   it('offers a sort control on every column that carries a value', () => {
     expect(sortableHeaders(buildItemColumns({
-      locations: LOCATIONS, activeLocation: null, finishNameById: new Map(), actions: ITEM_ACTIONS,
+      locations: LOCATIONS, activeLocation: null, finishNameById: new Map(), actions: ITEM_ACTIONS, canSeeCosts: true,
     }) as ColumnDef<never, unknown>[])).toEqual([
       'SKU', 'Item', 'Category', 'On Hand', 'Available', 'Unit Cost',
     ]);
@@ -135,7 +135,7 @@ describe('the purchase-order lists', () => {
   it('open POs offer a sort control on every column that carries a value', () => {
     expect(sortableHeaders(buildOpenPOColumns({
       isLate: () => false, isArrivingThisWeek: () => false,
-      onPreview: () => {}, onReceive: () => {},
+      onPreview: () => {}, onReceive: () => {}, showTotal: true,
     }) as ColumnDef<never, unknown>[])).toEqual([
       'Status', 'PO #', 'Vendor', 'Job / Customer', 'Ordered', 'Expected', 'Lines', 'Total', 'Received',
     ]);
@@ -144,7 +144,7 @@ describe('the purchase-order lists', () => {
 
   it('PO history offers a sort control on every column that carries a value', () => {
     expect(sortableHeaders(
-      buildHistoryPOColumns({ onPreview: () => {} }) as ColumnDef<never, unknown>[],
+      buildHistoryPOColumns({ onPreview: () => {}, showTotal: true }) as ColumnDef<never, unknown>[],
     )).toEqual([
       'Status', 'PO #', 'Vendor', 'Job / Customer', 'Ordered', 'Received on', 'Lead time', 'Total',
     ]);
@@ -159,7 +159,7 @@ describe('the purchase-order lists', () => {
 
     render(
       <DataTable
-        columns={buildHistoryPOColumns({ onPreview: () => {} })}
+        columns={buildHistoryPOColumns({ onPreview: () => {}, showTotal: true })}
         data={pos}
         getRowId={(po) => po.id}
       />,

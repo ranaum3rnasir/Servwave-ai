@@ -66,7 +66,11 @@ export type VoidPaymentReason =
   | 'CHARGEBACK';
 
 /** Payment method — backend PaymentMethod (schema.prisma). */
-export type PaymentMethod = 'CARD' | 'EXTERNAL_CARD' | 'CASH' | 'CHECK' | 'BANK_TRANSFER' | 'ZELLE' | 'VENMO' | 'CASH_APP' | 'OTHER';
+export type PaymentMethod = 'CARD' | 'EXTERNAL_CARD' | 'CASH' | 'CHECK' | 'BANK_TRANSFER' | 'ZELLE' | 'VENMO' | 'CASH_APP' | 'OTHER' | 'ACH';
+
+/** Payment.state / Refund.state — backend PaymentState / RefundState (payments go-live slice 04). */
+export type PaymentState = 'PROCESSING' | 'SUCCEEDED' | 'FAILED';
+export type RefundState = 'PENDING' | 'SUCCEEDED' | 'FAILED';
 
 // ─── Customer phone (new repeatable phones[] on Customer) ──────────────────────────────
 
@@ -97,8 +101,11 @@ export interface Refund {
   tax_portion?: number | string;
   /** True when the refund is a non-taxable concession (tax not reversed). */
   non_taxable_concession?: boolean;
-  stripe_refund_id?: string | null;
   created_at?: string;
+  /** Payments go-live slice 05 — only a SUCCEEDED refund counts as refunded (lib/payment-ledger). */
+  state?: RefundState;
+  /** Slice 28 — who sent the money back (staff payload). */
+  refunded_by_user?: { id: string; first_name: string; last_name: string } | null;
 }
 
 /**

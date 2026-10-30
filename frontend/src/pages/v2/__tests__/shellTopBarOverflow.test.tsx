@@ -21,7 +21,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AbilityProvider } from '@/contexts/AbilityContext';
-import { communicationSectionAbility } from '@/__tests__/helpers';
+import { communicationSectionAbility, seedMySwitches } from '@/__tests__/helpers';
 import { useAuthStore } from '@/stores/auth.store';
 
 import V2AppLayout from '../V2AppLayout';
@@ -85,6 +85,8 @@ const topBar = () => document.querySelector('[data-slot="topbar"]') as HTMLEleme
 
 beforeEach(() => {
   localStorage.clear();
+  // Text messages and Inbox follow Show Text and Show Email (Roles & Permissions S08.17).
+  seedMySwitches({ show_text: true, show_email: true });
   openPhoneTab.mockReset();
   vi.mocked(useAuthStore).mockImplementation((selector: (s: never) => unknown) =>
     selector({

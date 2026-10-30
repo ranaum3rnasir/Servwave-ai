@@ -17,6 +17,7 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { renderWithProviders } from '@/__tests__/helpers';
+import { buildAbility } from '@/lib/ability';
 // The REAL writer, deliberately not the mocked `@/lib/inventory/csv`
 // re-export: it is what turns the row objects' key order into the file's
 // header row, so it is the only honest way to assert that header.
@@ -95,7 +96,7 @@ vi.mock('@/lib/api/inventory', async (importOriginal) => {
   const mutation = () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false });
   return {
     ...actual,
-    useInventoryItems: stable(hoisted.items as unknown as import('@/lib/api/inventory').Item[]),
+    usePriceBookItems: stable(hoisted.items as unknown as import('@/lib/api/inventory').Item[]),
     useBrands: stable(EMPTY),
     useItemGroups: stable(EMPTY),
     useCategories: stable(EMPTY),
@@ -129,7 +130,14 @@ beforeEach(() => {
 });
 
 async function renderPriceBook() {
-  renderWithProviders(<PriceBookPage />, { initialEntries: ['/inventory/price-book'] });
+  // Export price book compiles into `export PriceBook`; the button is not drawn without it.
+  renderWithProviders(<PriceBookPage />, {
+    initialEntries: ['/inventory/price-book'],
+    ability: buildAbility([
+      { action: 'read', subject: 'PriceBook' },
+      { action: 'export', subject: 'PriceBook' },
+    ]),
+  });
   expect(await screen.findByText('Mortise Cylinder')).toBeInTheDocument();
 }
 

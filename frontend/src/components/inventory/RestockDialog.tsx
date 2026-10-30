@@ -1,4 +1,5 @@
 import type React from "react";
+import { useAppAbility } from "@/contexts/AbilityContext";
 import { useEffect, useMemo, useState } from "react";
 import { Eye, PackagePlus, Truck } from "lucide-react";
 import { Modal } from "@/components/ui/modal";
@@ -85,7 +86,9 @@ export function RestockDialog({
   // Falls back to the seam's items query when the parent doesn't pass live items.
   const { data: seedItems = [] } = useInventoryItems();
   const items = itemsProp ?? seedItems;
-  const { data: purchaseOrders = [] } = usePurchaseOrders();
+  // Read only by a person who may read them: the server refuses the list to others, and this dialog is mounted (closed) on pages they open.
+  const ability = useAppAbility();
+  const { data: purchaseOrders = [] } = usePurchaseOrders(ability.can('read', 'PurchaseOrder'));
   const { data: org } = useOrganization();
   const restock = useRestock();
   const transferStock = useTransferStock();

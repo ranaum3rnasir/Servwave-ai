@@ -55,22 +55,6 @@ async function handleScheduleJob(
 }
 
 /**
- * APPROVE_OT — approve an overtime punch override.
- */
-async function handleApproveOt(item: NotificationView): Promise<void> {
-  const punchId = item.data.punch_id as string;
-  await api.post(`/api/timeclock/punches/${punchId}/override/approve`);
-}
-
-/**
- * DENY_OT — reject an overtime punch override.
- */
-async function handleDenyOt(item: NotificationView): Promise<void> {
-  const punchId = item.data.punch_id as string;
-  await api.post(`/api/timeclock/punches/${punchId}/override/reject`);
-}
-
-/**
  * APPROVE_STOCK — approve a stock-level approval request.
  */
 async function handleApproveStock(item: NotificationView): Promise<void> {
@@ -121,8 +105,6 @@ async function handleView(
 
 export const ACTION_HANDLERS: Record<string, ActionHandler> = {
   SCHEDULE_JOB: handleScheduleJob,
-  APPROVE_OT: handleApproveOt,
-  DENY_OT: handleDenyOt,
   APPROVE_STOCK: handleApproveStock,
   DENY_STOCK: handleDenyStock,
   SEND_REMINDER: handleSendReminder,

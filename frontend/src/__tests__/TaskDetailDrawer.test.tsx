@@ -37,14 +37,14 @@ const TASK = {
   status: 'TODO' as const,
   priority: 'HIGH' as const,
   assignee_ids: ['u1'],
-  assignees: [{ id: 'u1', name: 'Oved Adani' }],
+  assignees: [{ id: 'u1', name: 'Morgan Diaz' }],
   watcher_ids: ['u2'],
-  watchers: [{ id: 'u2', name: 'Priya' }],
+  watchers: [{ id: 'u2', name: 'Drew' }],
   due_at: null,
   linked_entity: null,
   tags: [],
   subtasks: [{ id: 's1', text: 'Order parts', done: false }],
-  comments: [{ id: 'c1', author_id: 'u1', author_name: 'Oved', body: 'In progress', at: '2026-06-17T10:00:00Z' }],
+  comments: [{ id: 'c1', author_id: 'u1', author_name: 'Morgan', body: 'In progress', at: '2026-06-17T10:00:00Z' }],
   activity: [],
   ai: { risk_score: 0, risk_reason: null, suggested_by: null, source: 'manual' as const },
   created_by: 'u1',
@@ -272,10 +272,10 @@ describe('TaskDetailDrawer FE-6 rich mutations', () => {
 
   it('renders created_by_name when present (not the raw UUID)', () => {
     // Swap tasks list to include created_by_name before render
-    mockTasks = [{ ...TASK, created_by_name: 'Oved Adani' }];
+    mockTasks = [{ ...TASK, created_by_name: 'Morgan Diaz' }];
     renderWithProviders(<TaskDetailDrawer />);
     // "Created by" row should show the name, not the raw id
-    expect(screen.getByText('Oved Adani')).toBeInTheDocument();
+    expect(screen.getByText('Morgan Diaz')).toBeInTheDocument();
   });
 
   it('falls back to created_by UUID when created_by_name is absent', () => {

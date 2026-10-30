@@ -30,6 +30,8 @@ export interface TriggerNodeProps {
   catalog?: WorkflowCatalog;
   selected: boolean;
   onSelect: () => void;
+  /** Read only (S07.21): the trigger is a readout, not a control that opens the editing drawer. */
+  readOnly?: boolean;
 }
 
 export default function TriggerNode({
@@ -39,11 +41,32 @@ export default function TriggerNode({
   catalog,
   selected,
   onSelect,
+  readOnly = false,
 }: TriggerNodeProps) {
   const title = triggerConfigured
     ? describeWorkflow(triggerType, triggerConfig, [], catalog)
     : 'Choose what starts this automation';
   const description = triggerConfigured ? catalog?.triggers[triggerType]?.description : undefined;
+
+  const cardClass =
+    'bg-primary text-primary-foreground border-primary shadow-md flex w-full items-start gap-3 rounded-lg border p-4 text-left transition-shadow';
+  const selectedClass = 'ring-primary-foreground/70 ring-2 ring-offset-2';
+  const card = (
+    <>
+      <span className="bg-primary-foreground/15 flex size-11 shrink-0 items-center justify-center rounded-md">
+        <Zap className="size-5" aria-hidden />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="text-primary-foreground/60 block text-[10.5px] font-bold uppercase tracking-[0.09em]">
+          Trigger
+        </span>
+        <span className="mt-0.5 block truncate text-[15px] font-bold tracking-tight">{title}</span>
+        {description && (
+          <span className="text-primary-foreground/70 mt-1 block text-xs leading-snug">{description}</span>
+        )}
+      </span>
+    </>
+  );
 
   return (
     <div className="relative w-full max-w-[468px]">
@@ -51,30 +74,16 @@ export default function TriggerNode({
         <span className="bg-brand size-1.5 rounded-full" aria-hidden />
         Starts here
       </span>
-      <Pressable
-        onPress={onSelect}
-        aria-label={`Edit trigger: ${title}`}
-        className={cn(
-          'bg-primary text-primary-foreground border-primary shadow-md flex w-full items-start gap-3 rounded-lg border p-4 text-left transition-shadow',
-          selected && 'ring-primary-foreground/70 ring-2 ring-offset-2',
-        )}
-      >
-        <span className="bg-primary-foreground/15 flex size-11 shrink-0 items-center justify-center rounded-md">
-          <Zap className="size-5" aria-hidden />
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="text-primary-foreground/60 block text-[10.5px] font-bold uppercase tracking-[0.09em]">
-            Trigger
+      {readOnly ? (
+        <div className={cn(cardClass, selected && selectedClass)}>{card}</div>
+      ) : (
+        <Pressable onPress={onSelect} aria-label={`Edit trigger: ${title}`} className={cn(cardClass, selected && selectedClass)}>
+          {card}
+          <span className="text-primary-foreground/70 flex items-center gap-1 text-xs font-semibold">
+            <Pencil className="size-3.5" aria-hidden />
           </span>
-          <span className="mt-0.5 block truncate text-[15px] font-bold tracking-tight">{title}</span>
-          {description && (
-            <span className="text-primary-foreground/70 mt-1 block text-xs leading-snug">{description}</span>
-          )}
-        </span>
-        <span className="text-primary-foreground/70 flex items-center gap-1 text-xs font-semibold">
-          <Pencil className="size-3.5" aria-hidden />
-        </span>
-      </Pressable>
+        </Pressable>
+      )}
       {/* bottom port, docks the trigger to the rail */}
       <span
         className="border-primary-foreground/40 bg-primary absolute -bottom-[5px] left-1/2 z-10 size-[9px] -translate-x-1/2 rounded-full border-2"

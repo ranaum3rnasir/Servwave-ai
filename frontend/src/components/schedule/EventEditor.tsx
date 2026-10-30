@@ -95,7 +95,7 @@ export interface EventEditorProps {
   canUnschedule: boolean;
   /** Why, when canUnschedule=false (timed events only). */
   unscheduleDisabledReason?: string;
-  /** Job in an active status + caller may manage it — enables the "Mark Complete" action. */
+  /** Job in an active status + caller may manage it — enables the "Complete job" action. */
   canComplete?: boolean;
   onSaveCrew: (crew: string[]) => void;
   onSaveTime: (start: WallClock, durationMin: number) => void;
@@ -333,11 +333,11 @@ function EditorBody({
           <p className="text-sm italic text-text-secondary">Unscheduled - {stateMeta.hint}</p>
         )}
 
-        {/* Mark Complete — close out an active job directly from the board (jobs only). */}
+        {/* Complete job — close out an active job directly from the board (jobs only). */}
         {event.type === 'job' && canComplete && !readOnly && onComplete && (
           <div className="border-t border-border pt-3">
             <Button size="sm" variant="solid" tone="business" className="w-full" onClick={onComplete}>
-              <CheckCircle2 className="h-3.5 w-3.5" /> Mark Complete
+              <CheckCircle2 className="h-3.5 w-3.5" /> Complete job
             </Button>
           </div>
         )}

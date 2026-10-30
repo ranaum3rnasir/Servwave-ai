@@ -39,13 +39,15 @@ import type React from 'react';
 import { useEffect, useState } from 'react';
 import {
   AlertTriangle, ArrowRight, Calendar, CheckCircle2, ChevronDown, Clock, Eye,
-  FileText, MapPin, Package, PackageCheck, Plus, Send, Truck, User,
+  FileText, MapPin, Package, PackageCheck, Plus, Send, User,
 } from 'lucide-react';
 
 import { CreateStageDialog } from '@/components/inventory/CreateStageDialog';
 import { StageDetailDialog } from '@/components/inventory/StageDetailDialog';
 import { POPreviewDialog } from '@/components/inventory/POPreviewDialog';
+import { StagePickup } from '@/components/inventory/StagePickup';
 import { StagingAreaPicker } from '@/components/inventory/StagingAreaPicker';
+import { useStageLineDisclosure } from '@/components/inventory/stageLineDisclosure';
 import {
   useJobStages, usePurchaseOrders, useVendors,
   useReceiveStageLine, useNotifyTechReady,
@@ -57,6 +59,7 @@ import type { JobStage, StageAuditEntry, Location, PurchaseOrder } from '@/lib/a
 import type { StagingStatus } from '@/lib/api/_mock/inventory';
 import { useAuthStore } from '@/stores/auth.store';
 import { useAppAbility } from '@/contexts/AbilityContext';
+import { formatCurrency } from '@/lib/utils';
 
 import { EmptyState } from '@/ui-kit/components/data/emptyState';
 import { StatCard, StatCardGroup } from '@/ui-kit/components/data/statCard';
@@ -128,8 +131,11 @@ export function StagingView({ locations, onToast, pendingIntent }: Props) {
   // No `= []` default: the seed effect below keys on this, and a fresh array
   // per render would re-fire it forever. Same rule as `PriceBookPage`.
   const { data: seedStages } = useJobStages();
-  const { data: purchaseOrders = [] } = usePurchaseOrders();
-  const { data: allVendors = [] } = useVendors();
+  // The PO and vendor lists are read only by a person who may read them: a Technician-preset person opens this tab and the
+  // server refuses both lists to them, so the tab does not ask (the lines show without a PO number or a vendor).
+  const ability = useAppAbility();
+  const { data: purchaseOrders = [] } = usePurchaseOrders(ability.can('read', 'PurchaseOrder'));
+  const { data: allVendors = [] } = useVendors(ability.can('read', 'Vendor'));
   const receiveStageLine = useReceiveStageLine();
   const notifyTechReady = useNotifyTechReady();
 
@@ -138,9 +144,8 @@ export function StagingView({ locations, onToast, pendingIntent }: Props) {
   const actorName = authUser ? `${authUser.first_name} ${authUser.last_name}`.trim() : 'Unknown user';
 
   // #2043 §E - New Pickup / From PO / Create New Pickup all POST /job-stages
-  // (create Inventory); Receive +1, Notify Tech / Mark Delivered and the
-  // staging-area picker all ride update Inventory routes.
-  const ability = useAppAbility();
+  // (create Inventory); Receive +1, Notify Tech and the staging-area picker
+  // all ride update Inventory routes. "Taken by me" rides pick_up_staged.
   const canCreate = ability.can('create', 'Inventory');
   const canUpdate = ability.can('update', 'Inventory');
 
@@ -209,20 +214,16 @@ export function StagingView({ locations, onToast, pendingIntent }: Props) {
 
   function markReady(id: string) {
     const stage = stages.find((s) => s.id === id);
-    setStages((prev) =>
-      prev.map((s) =>
-        s.id === id
-          ? { ...s, status: s.status === 'ready_for_pickup' ? 'delivered' : 'ready_for_pickup' }
-          : s,
-      ),
-    );
-    // Mock mutation: notifies the tech that a stage is ready for pickup.
+    setStages((prev) => prev.map((s) => (s.id === id ? { ...s, status: 'ready_for_pickup' } : s)));
+    // Notifies the tech that a stage is ready for pickup. Marking it taken is "Taken by me" (StagePickup), saved on the server.
     notifyTechReady.mutate({ stageId: id });
-    onToast(
-      stage?.status === 'ready_for_pickup'
-        ? `✓ ${stage?.jobNumber} marked delivered`
-        : `✓ ${stage?.jobNumber} marked ready for pickup · tech notified`,
-    );
+    onToast(`✓ ${stage?.jobNumber} marked ready for pickup · tech notified`);
+  }
+
+  /** The server saved a pickup: show the stage as it now stands. */
+  function pickedUp(taken: JobStage) {
+    setStages((prev) => prev.map((s) => (s.id === taken.id ? taken : s)));
+    onToast(`✓ ${taken.jobNumber} taken by ${taken.takenByName ?? 'you'}`);
   }
 
   /**
@@ -479,7 +480,7 @@ export function StagingView({ locations, onToast, pendingIntent }: Props) {
         {filtered.length === 0 && (
           <Card>
             <EmptyState
-              title="No staged jobs match this filter."
+              title={stages.length === 0 ? 'No staging to show.' : 'No staged jobs match this filter.'}
               action={
                 canCreate ? (
                   <Button size="sm" onClick={() => setShowCreate(true)}>
@@ -501,6 +502,7 @@ export function StagingView({ locations, onToast, pendingIntent }: Props) {
             canUpdate={canUpdate}
             onToggle={() => setExpandedId(expandedId === stage.id ? null : stage.id)}
             onMarkReady={() => markReady(stage.id)}
+            onTaken={pickedUp}
             onReceiveOne={(itemId) => receiveOne(stage.id, itemId)}
             onOpenDetail={() => setDetailId(stage.id)}
             onPreviewPO={(poNumber) => setPreviewPONumber(poNumber)}
@@ -568,7 +570,7 @@ export function StagingView({ locations, onToast, pendingIntent }: Props) {
 }
 
 function StageCard({
-  stage, locations, vendors, expanded, canUpdate, onToggle, onMarkReady, onReceiveOne,
+  stage, locations, vendors, expanded, canUpdate, onToggle, onMarkReady, onTaken, onReceiveOne,
   onOpenDetail, onPreviewPO, onChangeStagedArea,
 }: {
   stage: JobStage;
@@ -578,12 +580,14 @@ function StageCard({
   canUpdate: boolean;
   onToggle: () => void;
   onMarkReady: () => void;
+  onTaken: (taken: JobStage) => void;
   onReceiveOne: (itemId: string) => void;
   onOpenDetail: () => void;
   onPreviewPO: (poNumber: string) => void;
   onChangeStagedArea?: (next: string | undefined) => void;
 }) {
   const { received, ordered, pct } = stageProgress(stage);
+  const { showCost, showVendor } = useStageLineDisclosure();
   const stagedLoc = locations.find((l) => l.id === stage.stagedLocationId);
   const isReady = stage.status === 'complete' || stage.status === 'ready_for_pickup';
 
@@ -718,8 +722,12 @@ function StageCard({
                       </div>
                       <p className="truncate text-sm font-medium">{it.itemName}</p>
                       <div className="text-muted-foreground mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px]">
-                        <span>{it.vendor}</span>
-                        <span>·</span>
+                        {showVendor && it.vendor && (
+                          <>
+                            <span>{it.vendor}</span>
+                            <span>·</span>
+                          </>
+                        )}
                         <Button
                           variant="link"
                           size="sm"
@@ -730,6 +738,12 @@ function StageCard({
                           <Eye />
                           {it.poNumber}
                         </Button>
+                        {showCost && it.unitCost != null && (
+                          <>
+                            <span>·</span>
+                            <span>Unit cost {formatCurrency(it.unitCost)}</span>
+                          </>
+                        )}
                         {!itemDone && it.expectedDate && (
                           <>
                             <span>·</span>
@@ -832,12 +846,7 @@ function StageCard({
                   Notify Tech · Ready for Pickup
                 </Button>
               )}
-              {canUpdate && stage.status === 'ready_for_pickup' && (
-                <Button size="sm" onClick={onMarkReady}>
-                  <Truck />
-                  Mark Delivered to Tech
-                </Button>
-              )}
+              <StagePickup stage={stage} onTaken={onTaken} />
               {(stage.status === 'awaiting' || stage.status === 'partial') && (
                 <span className="text-muted-foreground inline-flex items-center gap-1 text-xs">
                   <Clock className="size-3" />

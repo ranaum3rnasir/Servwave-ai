@@ -13,7 +13,6 @@ import { ResizableTable } from '@/components/data/ResizableTable';
 import {
   usePhoneCustomers,
   usePhoneAgents,
-  fmtPhone,
   type CallSession,
 } from '@/lib/api/communication';
 import {
@@ -24,6 +23,7 @@ import {
 } from '@/components/communication/phone/shared';
 import { formatCurrency } from '@/lib/utils';
 import {
+  CallNumber,
   SortHeader,
   InsightCell,
   agentName,
@@ -34,6 +34,8 @@ import {
   type SortState,
 } from '@/components/communication/phone/CallsView';
 import { useScheduleTimezone } from '@/lib/schedule-tz';
+import { useAppAbility } from '@/contexts/AbilityContext';
+import { canSeeCompanyFigures } from '@/lib/ability';
 
 export function CallsTable({
   calls,
@@ -48,6 +50,11 @@ export function CallsTable({
   const { data: agents = [] } = usePhoneAgents();
   const [sort, setSort] = useState<SortState | null>(null);
   const tz = useScheduleTimezone();
+  // Roles & Permissions S08.13: the Insights column is See call insights, and the Revenue column is See company figures
+  // (the server leaves both out of the call, and a column of zeros would say something untrue).
+  const ability = useAppAbility();
+  const mayInsights = ability.can('see_call_insights', 'Communication');
+  const mayFigures = canSeeCompanyFigures(ability);
 
   function toggleSort(key: SortKey) {
     setSort((prev) =>
@@ -96,7 +103,7 @@ export function CallsTable({
             return (
               <>
                 <p className="font-semibold text-text-primary">{cust?.name ?? 'Unknown'}</p>
-                <p className="font-mono text-[11px] text-primary">{fmtPhone(c.fromNumber)}</p>
+                <p className="font-mono text-[11px] text-primary"><CallNumber call={c} side="from" /></p>
               </>
             );
           },
@@ -107,7 +114,7 @@ export function CallsTable({
           width: 140,
           min: 110,
           cellClassName: 'font-mono text-[11px] text-text-secondary',
-          cell: (c) => fmtPhone(c.toNumber),
+          cell: (c) => <CallNumber call={c} side="to" />,
         },
         {
           id: 'time',
@@ -162,14 +169,18 @@ export function CallsTable({
               <span className="text-text-secondary">-</span>
             ),
         },
-        {
-          id: 'insights',
-          header: <SortHeader label="Insights" sortKey="insights" sort={sort} onSort={toggleSort} />,
-          width: 180,
-          min: 120,
-          grow: 2,
-          cell: (c) => <InsightCell call={c} />,
-        },
+        ...(mayInsights
+          ? [
+              {
+                id: 'insights',
+                header: <SortHeader label="Insights" sortKey="insights" sort={sort} onSort={toggleSort} />,
+                width: 180,
+                min: 120,
+                grow: 2,
+                cell: (c: CallSession) => <InsightCell call={c} />,
+              },
+            ]
+          : []),
         {
           id: 'answeredBy',
           header: <SortHeader label="Answered By" sortKey="answeredBy" sort={sort} onSort={toggleSort} />,
@@ -204,15 +215,19 @@ export function CallsTable({
               <span className="text-text-secondary">-</span>
             ),
         },
-        {
-          id: 'revenue',
-          header: <SortHeader label="Revenue" sortKey="revenue" sort={sort} onSort={toggleSort} align="right" />,
-          align: 'right',
-          width: 120,
-          min: 90,
-          cellClassName: 'tabular-nums font-mono font-semibold text-text-primary',
-          cell: (c) => formatCurrency(c.revenue ?? 0),
-        },
+        ...(mayFigures
+          ? [
+              {
+                id: 'revenue',
+                header: <SortHeader label="Revenue" sortKey="revenue" sort={sort} onSort={toggleSort} align="right" />,
+                align: 'right' as const,
+                width: 120,
+                min: 90,
+                cellClassName: 'tabular-nums font-mono font-semibold text-text-primary',
+                cell: (c: CallSession) => formatCurrency(c.revenue ?? 0),
+              },
+            ]
+          : []),
       ]}
     />
   );

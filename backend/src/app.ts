@@ -11,6 +11,8 @@ import { publicBodyLimit } from './middleware/publicBodyLimit';
 import { auditAccessDenied } from './middleware/auditAccessDenied';
 import { originVerify } from './middleware/originVerify';
 import { unscopedRequest } from './middleware/unscopedRequest';
+import { reviewAttentionScope } from './middleware/reviewAttentionScope';
+import { realtimePingScope } from './middleware/realtimePingScope';
 import { globalMulterErrorHandler } from './middleware/multerErrors';
 import authRoutes from './routes/auth.routes';
 import versionRoutes from './routes/version.routes';
@@ -29,10 +31,13 @@ import scopePresetRoutes from './routes/scope-preset.routes';
 import jobRoutes from './routes/job.routes';
 import jobSubStatusRoutes from './routes/jobSubStatus.routes';
 import lostReasonOptionRoutes from './routes/lostReasonOption.routes';
+import jobCancelReasonRoutes from './routes/jobCancelReason.routes';
 import searchRoutes from './routes/search.routes';
 import attachmentRoutes from './routes/attachment.routes';
 import invoiceRoutes from './routes/invoice.routes';
 import statementRoutes from './routes/statement.routes';
+import paymentAttentionRoutes from './routes/payment-attention.routes';
+import paymentsPageRoutes from './routes/payments-page.routes';
 import dashboardRoutes from './routes/dashboard.routes';
 import reportRoutes from './routes/report.routes';
 import organizationRoutes from './routes/organization.routes';
@@ -42,6 +47,7 @@ import taskRoutes from './routes/task.routes';
 import taskCategoryRoutes from './routes/task-category.routes';
 import calendarEntryRoutes from './routes/calendar-entry.routes';
 import roleRoutes from './routes/role.routes';
+import permissionSwitchRoutes from './routes/permission-switch.routes';
 import tableViewRoutes from './routes/table-view.routes';
 import webhookRoutes from './routes/webhook.routes';
 import copilotRoutes from './routes/copilot.routes';
@@ -93,7 +99,8 @@ const app = express();
 app.set('trust proxy', 1);
 
 // Middleware
-app.use(helmet({ frameguard: { action: 'deny' } }));
+// same-origin-allow-popups: the embedded payout flow opens its sign-in in a popup that must reach its opener.
+app.use(helmet({ frameguard: { action: 'deny' }, crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' } }));
 // maxAge caches the CORS preflight (OPTIONS) response; without it browsers re-preflight
 // every few seconds, adding a round-trip to most requests. Browsers clamp to their own cap.
 // Auth is bearer-token only (no cookies anywhere in the app), so credentials:true is
@@ -134,6 +141,10 @@ app.use(originVerify);
 
 // Rate limiting
 app.use('/api', generalLimiter);
+// S06.24: each API request gets a queue for the Office review attention alerts its writers raise; it is sent after the response.
+app.use('/api', reviewAttentionScope);
+// Live-update pings an API request raises are sent after its response has been written, not while it is still building the answer.
+app.use('/api', realtimePingScope);
 
 // Budget for the /health DB ping. A stalled query is NOT the same failure as a
 // rejected one: the probe below once sat on its very first `SELECT 1` for 49s
@@ -211,10 +222,13 @@ app.use('/api/scope-presets', scopePresetRoutes);
 app.use('/api/jobs', jobRoutes);
 app.use('/api/job-sub-statuses', jobSubStatusRoutes);
 app.use('/api/lost-reason-options', lostReasonOptionRoutes);
+app.use('/api/job-cancel-reasons', jobCancelReasonRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api/attachments', attachmentRoutes);
 app.use('/api/invoices', invoiceRoutes);
 app.use('/api/statements', statementRoutes);
+app.use('/api/payments-needing-attention', paymentAttentionRoutes);
+app.use('/api/payments-page', paymentsPageRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/organization', organizationRoutes);
@@ -224,6 +238,7 @@ app.use('/api/tasks', taskRoutes);
 app.use('/api/task-categories', taskCategoryRoutes);
 app.use('/api/calendar-entries', calendarEntryRoutes);
 app.use('/api/roles', roleRoutes);
+app.use('/api/permission-switches', permissionSwitchRoutes);
 app.use('/api/me/table-views', tableViewRoutes);
 app.use('/api/copilot', copilotRoutes);
 app.use('/api/timeclock', timeclockRoutes);
@@ -338,6 +353,10 @@ if (process.env.NODE_ENV !== 'production') {
 
         // ─── Delete in FK-safe order (leaves first, roots last) ───
         // Parallelize independent deletes at each FK depth level.
+
+        // Payments go-live slice 09: a dispute names its invoice and payment (both RESTRICT), so it
+        // goes before the payments.
+        await tx.dispute.deleteMany({ where: { invoice_id: { in: invoiceIds } } });
 
         // Polymorphic records + leaf payments (no FK between them)
         const [timeline, notes, attachments, payments, tagAssignments] = await Promise.all([

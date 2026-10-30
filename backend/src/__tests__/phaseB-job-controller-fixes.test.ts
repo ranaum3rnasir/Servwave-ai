@@ -2,9 +2,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { TEST_USERS, mockAuthAs, authHeader, JOB_FIXTURE, mockRoleGrantsWithout } from './helpers';
-import { clearPermissionCache, setCachedGrants } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
+import { TEST_USERS, mockAuthAs, authHeader, JOB_FIXTURE, mockRoleSwitches } from './helpers';
+import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Two Phase-B-reachable job.controller.ts leaks (flagged by two prior fix agents,
@@ -34,7 +33,7 @@ const mockPrisma = prisma as unknown as {
     update: ReturnType<typeof vi.fn>;
   };
   timelineEvent: { create: ReturnType<typeof vi.fn> };
-  userPermissionOverride: { findMany: ReturnType<typeof vi.fn> };
+  invoice: { findMany: ReturnType<typeof vi.fn> };
 };
 
 const JOB_ID = JOB_FIXTURE.id;
@@ -53,7 +52,6 @@ function deepHas(node: unknown, key: string): boolean {
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache();
   (prisma.tagAssignment.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
 });
 
@@ -65,30 +63,19 @@ describe('GET /api/jobs (LIST) — multi-read scope OR survives a search OR (Fix
     mockPrisma.job.groupBy.mockResolvedValue([]);
   });
 
-  it('SALES (role read OWN_JOB_VIA_ESTIMATE) + override create Job + ?search=: BOTH scope arms kept', async () => {
+  it('a scope with several arms (Attached) + ?search=: every scope arm is kept next to the search arm', async () => {
     mockAuthAs('sales');
-    // SALES default role read Job = OWN_JOB_VIA_ESTIMATE (estimate.lead.lead_assignees).
-    setCachedGrants(TEST_USERS.sales.organization_id, 'SALES', [
-      {
-        action: 'read',
-        subject: 'Job',
-        conditions: { estimate: { lead: { lead_assignees: { some: { user_id: '{{userId}}' } } } } },
-      },
-    ]);
-    // Per-user override `create Job` synthesizes a SECOND distinct conditional read = OWN_JOB
-    // (visits.some.assignees.some.user_id). Two distinct conditions => scopeWhereFor returns { OR: [via_estimate, own] }.
-    mockPrisma.userPermissionOverride.findMany.mockResolvedValue([
-      { action: 'create', subject: 'Job', effect: 'allow' },
-    ]);
+    // Attached is a union: crew on a visit, Sold By, Dispatcher. Several distinct arms => { OR: [...] }.
+    mockRoleSwitches({ jobs_scope: 'attached' });
 
     const res = await request(app).get('/api/jobs?search=J00001').set(authHeader('sales'));
 
     expect(res.status).toBe(200);
     const where = mockPrisma.job.findMany.mock.calls[0][0].where as Record<string, unknown>;
 
-    // Both scope arms survive: the via-estimate arm has `estimate`; the own arm has `visits`.
-    expect(deepHas(where, 'estimate')).toBe(true); // unique to OWN_JOB_VIA_ESTIMATE
-    expect(deepHas(where, 'visits')).toBe(true); // OWN_JOB (S8: the visits path)
+    // Every scope arm survives: the crew arm has `visits`, the Sold By arm `salesperson_id`.
+    expect(deepHas(where, 'visits')).toBe(true);
+    expect(deepHas(where, 'salesperson_id')).toBe(true);
     // …and the search clauses are present too (neither OR clobbered the other).
     expect(deepHas(where, 'job_number')).toBe(true);
 
@@ -98,22 +85,13 @@ describe('GET /api/jobs (LIST) — multi-read scope OR survives a search OR (Fix
     expect(Array.isArray(where.AND)).toBe(true);
     const andArms = where.AND as Record<string, unknown>[];
     // One AND arm is the scope OR (carries the ownership relations); another is the search OR.
-    expect(andArms.some((c) => deepHas(c, 'estimate') && deepHas(c, 'visits'))).toBe(true);
+    expect(andArms.some((c) => deepHas(c, 'visits') && deepHas(c, 'salesperson_id'))).toBe(true);
     expect(andArms.some((c) => deepHas(c, 'job_number'))).toBe(true);
   });
 
-  it('SALES multi-read, NO search: scope OR stays the (uncontested) top-level OR', async () => {
+  it('a scope with several arms (Attached), NO search: the scope OR stays the (uncontested) top-level OR', async () => {
     mockAuthAs('sales');
-    setCachedGrants(TEST_USERS.sales.organization_id, 'SALES', [
-      {
-        action: 'read',
-        subject: 'Job',
-        conditions: { estimate: { lead: { lead_assignees: { some: { user_id: '{{userId}}' } } } } },
-      },
-    ]);
-    mockPrisma.userPermissionOverride.findMany.mockResolvedValue([
-      { action: 'create', subject: 'Job', effect: 'allow' },
-    ]);
+    mockRoleSwitches({ jobs_scope: 'attached' });
 
     const res = await request(app).get('/api/jobs').set(authHeader('sales'));
 
@@ -121,8 +99,8 @@ describe('GET /api/jobs (LIST) — multi-read scope OR survives a search OR (Fix
     const where = mockPrisma.job.findMany.mock.calls[0][0].where as Record<string, unknown>;
     // No search → the scope OR is the plain top-level OR (cheap path, unchanged shape).
     expect(Array.isArray(where.OR)).toBe(true);
-    expect(deepHas(where, 'estimate')).toBe(true);
     expect(deepHas(where, 'visits')).toBe(true);
+    expect(deepHas(where, 'salesperson_id')).toBe(true);
   });
 });
 
@@ -153,26 +131,26 @@ describe('POST /api/jobs/:id/start — Phase B pricing strip on advance response
     };
   }
 
-  // The pre-update findUnique in start() selects only id/status/visits/job_number.
+  // The pre-update findUnique in start() selects only id/status/visits/job_number; the visit carries what the
+  // current-visit check reads (S04.5).
   const START_PRECHECK_OWNED_BY_TECH = {
     id: JOB_ID,
     status: 'SCHEDULED',
-    visits: [{ assignees: [{ user_id: TEST_USERS.technician.id }] }],
+    visits: [{ status: 'SCHEDULED', scheduled_at: new Date(Date.now() + 86_400_000), scheduled_end: null, created_at: new Date(), assignees: [{ user_id: TEST_USERS.technician.id }] }],
     job_number: 'J00001',
   };
 
   beforeEach(() => {
     mockPrisma.timelineEvent.create.mockResolvedValue({});
+    // The invoices the person can open: none unless a case says so (S04.26).
+    mockPrisma.invoice.findMany.mockResolvedValue([]);
   });
 
-  it('technician granted `start Job` (override) but WITHOUT read Invoice gets pricing STRIPPED', async () => {
+  it('technician who may start visits but WITHOUT View estimates / View invoices gets the estimate money stripped and no invoice listed', async () => {
     mockAuthAs('technician');
-    mockRoleGrantsWithout('TECHNICIAN', ['read', 'Pricing']);  // price-blind on purpose: read Pricing is a TECHNICIAN default since the ownership spec
-    // Override grants `start Job` (passes canDo('start','Job')) + the paired own-scoped read Job —
-    // but NOT read Invoice. So the strip must fire on the action response.
-    mockPrisma.userPermissionOverride.findMany.mockResolvedValue([
-      { action: 'start', subject: 'Job', effect: 'allow' },
-    ]);
+    mockRoleSwitches({ view_estimates: false, view_invoices: false });  // View invoices is already off in the preset
+    // The Technician preset holds Start and finish visits and View jobs — but NOT View estimates / View invoices
+    // (turned off above). So the strip must fire on the action response.
     mockPrisma.job.findUnique.mockResolvedValue(START_PRECHECK_OWNED_BY_TECH);
     mockPrisma.job.update.mockResolvedValue(startedJobDetailOwnedByTech());
 
@@ -180,8 +158,9 @@ describe('POST /api/jobs/:id/start — Phase B pricing strip on advance response
 
     expect(res.status).toBe(200);
     const job = res.body.job;
-    // Estimate as-sold figures stripped; work detail (description/quantity) kept.
-    expect(job.amount_invoiced).toBeUndefined();
+    // Estimate as-sold figures stripped; work detail (description/quantity) kept. The job's own
+    // amount_invoiced is its price and stays (S01.15: prices follow the record).
+    expect(job.amount_invoiced).toBe(400);
     expect(job.estimate.total_amount).toBeUndefined();
     expect(job.remaining_unbilled == null).toBe(true);
     for (const li of job.estimate.line_items) {
@@ -190,13 +169,8 @@ describe('POST /api/jobs/:id/start — Phase B pricing strip on advance response
       expect(li.description).toBeDefined();
       expect(li.quantity).toBeDefined();
     }
-    // Embedded invoice money stripped, identity kept.
-    for (const inv of job.invoices) {
-      expect(inv.total_amount).toBeUndefined();
-      expect(inv.amount_due).toBeUndefined();
-      expect(inv.invoice_number).toBeDefined();
-      expect(inv.status).toBeDefined();
-    }
+    // An invoice the person cannot open is not echoed back at all (S04.26).
+    expect(job.invoices).toEqual([]);
   });
 
   it('DISPATCHER (read Invoice) gets full estimate pricing + invoice totals on the start response', async () => {

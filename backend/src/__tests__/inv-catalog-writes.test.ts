@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { mockAuthAs, authHeader, TEST_USERS, PRICE_BOOK_ITEM_FIXTURE, INVENTORY_LOCATION_FIXTURE } from './helpers';
+import { mockAuthAs, mockRoleSwitches, authHeader, TEST_USERS, PRICE_BOOK_ITEM_FIXTURE, INVENTORY_LOCATION_FIXTURE } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 const mockPrisma = prisma as unknown as {
@@ -136,9 +136,9 @@ describe('GET /api/inventory/items — cost stripping (P0 §D7)', () => {
     updated_at: new Date('2026-02-01'),
   };
 
-  it('strips unitCost + listPrice for a reader without read Invoice, keeps sellPrice', async () => {
+  it('strips unitCost for a reader without See financial data, keeps the prices (sellPrice and listPrice)', async () => {
     mockAuthAs('technician');
-    // Grant the tech stock visibility (read Inventory) but NOT read Invoice.
+    // Grant the tech stock visibility (read Inventory) but NOT See financial data (read Pricing).
     (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
       { role: 'TECHNICIAN', action: 'read', subject: 'Inventory' },
     ]);
@@ -149,7 +149,7 @@ describe('GET /api/inventory/items — cost stripping (P0 §D7)', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data[0].unitCost).toBeUndefined();
-    expect(res.body.data[0].listPrice).toBeUndefined();
+    expect(res.body.data[0].listPrice).toBe(60);
     expect(res.body.data[0].sellPrice).toBe(40);
   });
 
@@ -176,7 +176,7 @@ describe('GET /api/inventory/items — cost stripping (P0 §D7)', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.item.unitCost).toBeUndefined();
-    expect(res.body.item.listPrice).toBeUndefined();
+    expect(res.body.item.listPrice).toBe(60);
     expect(res.body.item.sellPrice).toBe(40);
   });
 });
@@ -396,9 +396,8 @@ describe('inv-catalog pure-catalog reads gate on read PriceBook', () => {
     ['/api/inventory/item-groups'],
   ])('GET %s 403s for a reader with Inventory but not PriceBook', async (path) => {
     mockAuthAs('technician');
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { role: 'TECHNICIAN', action: 'read', subject: 'Inventory' },
-    ]);
+    // View stock on, View price book off: the Technician preset holds both, so the case turns the price book off.
+    mockRoleSwitches({ view_stock: true, view_price_book: false });
     const res = await request(app).get(path).set(authHeader('technician'));
     expect(res.status).toBe(403);
   });

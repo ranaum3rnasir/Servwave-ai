@@ -34,6 +34,7 @@ const COUNTS_URL = '/api/communication/unread-counts';
 
 let visibility: DocumentVisibilityState = 'visible';
 let smsUnread = 1;
+let orgFeatures = ['phone', 'email'];
 
 function setVisibility(next: DocumentVisibilityState) {
   visibility = next;
@@ -79,6 +80,7 @@ beforeEach(() => {
   vi.useFakeTimers();
   visibility = 'visible';
   smsUnread = 1;
+  orgFeatures = ['phone', 'email'];
   Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => visibility });
   mockApi.get.mockImplementation(async (url: string) => {
     if (url === COUNTS_URL) return { data: { sms: smsUnread, whatsapp: 0, email: 2 } };
@@ -90,7 +92,7 @@ beforeEach(() => {
   mockApi.patch.mockResolvedValue({ data: {} });
   vi.mocked(useAuthStore).mockImplementation((selector: (s: never) => unknown) =>
     selector({
-      user: { id: '00000000-0000-0000-0000-000000000001', role: 'ADMIN', org_features: ['phone', 'email'] },
+      user: { id: '00000000-0000-0000-0000-000000000001', role: 'ADMIN', org_features: orgFeatures },
       isAuthenticated: true,
       isLoading: false,
       error: null,
@@ -100,6 +102,21 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.useRealTimers();
+});
+
+describe('Roles & Permissions S10.6 - the badge when the company\'s Email plan feature goes off', () => {
+  it('shows no email count from the answer it already holds, while texts keep theirs', async () => {
+    const { result, rerender } = renderHook(() => useUnreadCounts(), { wrapper: wrapper() });
+    await advance(0);
+    expect(result.current).toEqual({ sms: 1, whatsapp: 0, email: 2 });
+
+    // The company loses the feature: the next render of the shell has no email entitlement, and the answer it cached
+    // before still says 2. The number must not show while the feature is off.
+    orgFeatures = ['phone'];
+    rerender();
+
+    expect(result.current).toEqual({ sms: 1, whatsapp: 0, email: 0 });
+  });
 });
 
 describe('mobile slice 07 - the unread badge on a page without a communication surface', () => {

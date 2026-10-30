@@ -4,6 +4,7 @@ import { X } from 'lucide-react';
 
 import { useAppAbility } from '@/contexts/AbilityContext';
 import { useFeature } from '@/lib/entitlements';
+import { switchOn, useMySwitches } from '@/lib/api/mySwitches';
 import { useSettingsGuard } from '@/stores/settingsGuard.store';
 import type { AppAction, AppSubject } from '@/lib/ability';
 
@@ -29,6 +30,14 @@ interface NavItem {
   action?: AppAction;
   subject?: AppSubject;
   always?: boolean;
+  // A switch the person must hold (from their own resolved switches) to see the entry, for a page whose switch
+  // is display only and so has no rule to read.
+  switchKey?: string;
+  // A second CASL pair that ALSO shows the entry, for a page that serves a narrower audience
+  // part of what it holds - e.g. Payments & Lists, whose "Payments needing attention" list
+  // belongs to everyone allowed to refund (payments go-live slice 22).
+  orAction?: AppAction;
+  orSubject?: AppSubject;
   // Additionally require communication-module access (the `phone` entitlement,
   // master switch for the whole Communication module), on top of the CASL
   // action/subject check - e.g. the Caller ID admin page.
@@ -37,6 +46,8 @@ interface NavItem {
   // Separate from commGated: email left the `phone` master switch as its own
   // entitlement (nav-registry.ts).
   emailGated?: boolean;
+  // The page itself sends a visitor without the switch back to Settings, so it never becomes a step in the trail.
+  redirectsWhenRefused?: boolean;
 }
 
 /**
@@ -53,15 +64,23 @@ interface NavItem {
  * is three settings pages a user can only reach by typing the URL, which is the
  * same as losing them.
  */
+/** Pages with nothing to save: the shell hides Discard / Save Changes for them. */
+const READ_ONLY_PAGES = ['payout-account'];
+
 const NAV: NavItem[] = [
   { to: 'profile', label: 'My Profile', group: 'ACCOUNT', always: true },
   { to: 'company', label: 'Company Profile', group: 'ORGANIZATION', action: 'read', subject: 'Organization' },
   { to: 'branding', label: 'Branding & Templates', group: 'ORGANIZATION', action: 'read', subject: 'Organization' },
   { to: 'locations', label: 'Locations', group: 'ORGANIZATION', action: 'read', subject: 'Location' },
-  { to: 'users', label: 'Users & Teams', group: 'PEOPLE & ACCESS', action: 'update', subject: 'User' },
-  { to: 'roles', label: 'Roles & Permissions', group: 'PEOPLE & ACCESS', action: 'read', subject: 'Role' },
+  // Follows Show Users & Teams page, not Edit users (PRD 2, S02.5).
+  { to: 'users', label: 'Users & Teams', group: 'PEOPLE & ACCESS', switchKey: 'show_users_teams_page' },
+  // Follows Manage roles and permissions; nobody else sees the tab, not even read-only (PRD 2, S02.5).
+  { to: 'roles', label: 'Roles & Permissions', group: 'PEOPLE & ACCESS', action: 'manage_roles', subject: 'Role' },
   { to: 'security', label: 'Login & Security', group: 'PEOPLE & ACCESS', action: 'read', subject: 'Organization' },
+  // Configuration only (payments go-live P8): the attention list and the payments area moved to the Payments page.
   { to: 'payments', label: 'Payments & Lists', group: 'ADVANCED', action: 'update', subject: 'Organization' },
+  // Payments go-live slice 34: the owner's own page. Shown only to whoever holds Manage payout account.
+  { to: 'payout-account', label: 'Payout account & verification', group: 'ADVANCED', action: 'manage_payout_account', subject: 'Organization', redirectsWhenRefused: true },
   // SRVW-112 - the CASL pair matches the backend write gate on /api/job-sub-statuses.
   { to: 'job-sub-statuses', label: 'Job Sub-Statuses', group: 'ADVANCED', action: 'update', subject: 'Organization' },
   // Decline-reasons slice B - the CASL pair matches the WRITE gate on /api/lost-reason-options.
@@ -69,6 +88,8 @@ const NAV: NavItem[] = [
   // Payments & Lists: it is the same kind of settings surface that one is, and that page's lists
   // are a different shape entirely (string arrays on the organisation row, saved through the save bar).
   { to: 'decline-reasons', label: 'Estimate Decline Reasons', group: 'ADVANCED', action: 'update', subject: 'Organization' },
+  // Roles & Permissions S06.14 - the job twin of the row above; the CASL pair matches the WRITE gate on /api/job-cancel-reasons.
+  { to: 'job-cancel-reasons', label: 'Job Cancel Reasons', group: 'ADVANCED', action: 'update', subject: 'Organization' },
   // Org-owned tax rates: same CASL pair as the other org-list pages, matching
   // the write gate on /api/org-tax-rates.
   { to: 'tax-rates', label: 'Tax Rates', group: 'ADVANCED', action: 'update', subject: 'Organization' },
@@ -103,6 +124,8 @@ export default function SettingsLayout() {
   const ability = useAppAbility();
   const canComm = useFeature('phone');
   const canEmail = useFeature('email');
+  // Undefined while loading or when the read fails: every switch counts as off.
+  const mine = useMySwitches();
   const navigate = useNavigate();
   const location = useLocation();
   const [saver, setSaver] = useState<SettingsSaver>({ save: () => {}, discard: () => {}, isDirty: false });
@@ -182,7 +205,10 @@ export default function SettingsLayout() {
 
   const visible = NAV.filter(
     (n) =>
-      (n.always || (n.action && n.subject && ability.can(n.action, n.subject))) &&
+      (n.always ||
+        (n.switchKey && switchOn(mine?.values, n.switchKey)) ||
+        (n.action && n.subject && ability.can(n.action, n.subject)) ||
+        (n.orAction && n.orSubject && ability.can(n.orAction, n.orSubject))) &&
       (!n.commGated || canComm) &&
       (!n.emailGated || canEmail),
   );
@@ -191,11 +217,21 @@ export default function SettingsLayout() {
   // to a tab the user lacks CASL for leaves `current` undefined and the title
   // blank. Substituting a fallback title would change behaviour.
   const current = visible.find((n) => location.pathname.includes(`/settings/${n.to}`));
+  const hideSaveBar = READ_ONLY_PAGES.includes(current?.to ?? '')
+    // Payments & Lists opened by URL without the nav item shows the no-access state: nothing there to save.
+    || (!current && location.pathname.includes('/settings/payments'));
 
   // Every settings page is a distinct URL, so each is its own step in the
   // trail; naming them all "Settings" would make walking between two of them
   // look like the trail had stalled.
-  useRecordVisit('settings', current ? `Settings · ${current.label}` : 'Settings');
+  // A page the visitor has no nav entry for (a typed URL) still names itself: the trail would otherwise read
+  // "Settings > Settings > Settings". The on-page title stays blank for it, as above.
+  const named = current ?? NAV.find((n) => location.pathname.includes(`/settings/${n.to}`));
+  // Two hops are not steps: a page that refuses the visitor and bounces them to Settings, and the bare /settings it
+  // bounces through on the way to the first page they can open. After either, the trail names only where they are.
+  const refusedRedirect = Boolean(named?.redirectsWhenRefused) && !current;
+  const bareSettings = location.pathname.replace(/\/+$/, '') === '/settings';
+  useRecordVisit('settings', named ? `Settings · ${named.label}` : 'Settings', !refusedRedirect && !bareSettings);
 
   const guardedNav = (to: string) => requestLeave(() => navigate(to));
 
@@ -294,18 +330,22 @@ export default function SettingsLayout() {
                   write are still edits, and throwing them away is the one
                   action that is always safe - greying this out with Save would
                   trap the user in a form with no way out but a bad value. */}
-              <Button variant="ghost" size="sm" disabled={!saver.isDirty || saving} onClick={() => saver.discard()}>
-                Discard
-              </Button>
+              {!hideSaveBar && (
+                <Button variant="ghost" size="sm" disabled={!saver.isDirty || saving} onClick={() => saver.discard()}>
+                  Discard
+                </Button>
+              )}
               {/* Save reads BOTH signals: there must be something to save, and
                   the page must not be holding an edit it is going to refuse
                   (`canSave`, omitted by every page without a client-side rule).
                   Deriving this from `isDirty` alone left My Profile offering a
                   live Save for an unusable phone number, which sent nothing and
                   toasted an error - see canSubmitSaver in lib/settings/types. */}
-              <Button size="sm" disabled={!canSubmitSaver(saver) || saving} onClick={() => void handleSave()}>
-                {saving ? 'Saving...' : 'Save Changes'}
-              </Button>
+              {!hideSaveBar && (
+                <Button size="sm" disabled={!canSubmitSaver(saver) || saving} onClick={() => void handleSave()}>
+                  {saving ? 'Saving...' : 'Save Changes'}
+                </Button>
+              )}
               <Button variant="ghost" size="icon-sm" aria-label="Close settings" onClick={() => guardedNav('/')}>
                 <X />
               </Button>

@@ -2,7 +2,9 @@
  * logistic-order-notifications.test.ts — LO-2 §2.6
  *
  * Notification wiring for Logistic Orders:
- *   - lo.submitted → approve-grant holders ∪ ADMINs (INTERRUPT + needs_action)
+ *   - lo.submitted → the people who must approve the order (INTERRUPT + needs_action): the caller
+ *     (services/notifications/logisticOrderAlerts) walks the chain and hands them in as `lane_two_ids`, so no role list
+ *     adds anyone (Roles & Permissions S01.9, S07.9; who is told is pinned by permission-order-submitted-alert-db.test.ts)
  *   - lo.approved  → the LO creator (INTERRUPT)
  *
  * These tests pin the pieces THIS stream owns — the `templates` copy and the
@@ -11,7 +13,7 @@
  * helper. That keeps the suite decoupled from the controller/helper stream while
  * still proving the end-to-end notification behaviour:
  *
- *   1. recipient resolution = approvers ∪ ADMINs, de-duplicated, actor dropped;
+ *   1. recipient resolution = the approvers the caller names, de-duplicated, actor dropped;
  *   2. LOGISTIC_ORDER passes filterByAccess UNFILTERED (a non-owner SALES approver
  *      survives — proof there is no row-scope drop);
  *   3. the notification row is written AFTER the status-change write (ordering);
@@ -36,7 +38,7 @@ import {
 } from './helpers';
 import { renderTemplate, isKnownVerb } from '../services/notifications/templates';
 import { resolveRecipients } from '../services/notifications/resolveRecipients';
-// The REAL emit — templates + resolveRecipients + roleHolders + filterByAccess +
+// The REAL emit — templates + resolveRecipients + filterByAccess +
 // the DB writes all run; only prisma is mocked (setup.ts).
 import { emit } from '../services/notifications/notificationService';
 import { processLogisticOrder } from '../lib/logisticOrders';
@@ -47,68 +49,54 @@ const mockPrisma = prisma as unknown as Record<string, any>;
 const LO_ID = 'bbbbbbb1-0000-0000-0000-000000000001';
 const LO_NUMBER = 'LO-J00001-1';
 
-const ROLE_HOLDERS = {
-  ADMIN: ['admin-1', 'admin-2'],
-  DISPATCHER: ['disp-1'],
-  SALES: ['sales-1'],
-  TECHNICIAN: ['tech-1'],
-};
-
 // ═══════════════════════════════════════════════════════════════════════════════
 // resolveRecipients — routing matrix (pure)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('resolveRecipients — lo.submitted', () => {
-  it('routes to approve-grant holders ∪ ADMINs, all INTERRUPT + needs_action', () => {
+  it('routes to exactly the people the caller names, all INTERRUPT + needs_action, and to no role list', () => {
     const recipients = resolveRecipients({
       verb: 'lo.submitted',
       organizationId: ALPHA_ORG_ID,
       actorId: null,
-      // sales-9 = a non-admin grant holder; admin-2 = an admin who ALSO holds
-      // an explicit grant (must NOT produce a duplicate row).
-      entity: { approver_ids: ['sales-9', 'admin-2'] },
-      roleHolders: ROLE_HOLDERS,
+      // sales-9 = a non-admin holder; admin-2 = an admin holder. admin-1 is an admin who is NOT a holder
+      // (an admin-based custom role with approval off), so no role list may add them.
+      entity: { lane_two_ids: ['sales-9', 'admin-2'] },
     });
 
-    expect(recipients.map((r) => r.userId).sort()).toEqual(['admin-1', 'admin-2', 'sales-9']);
+    expect(recipients.map((r) => r.userId).sort()).toEqual(['admin-2', 'sales-9']);
     expect(recipients.every((r) => r.priority === 'INTERRUPT' && r.needs_action === true)).toBe(true);
   });
 
-  it('de-duplicates a grant-holding admin into a single row', () => {
+  it('de-duplicates an approver named twice into a single row', () => {
     const recipients = resolveRecipients({
       verb: 'lo.submitted',
       organizationId: ALPHA_ORG_ID,
       actorId: null,
-      entity: { approver_ids: ['admin-1'] },
-      roleHolders: ROLE_HOLDERS,
+      entity: { lane_two_ids: ['admin-1', 'admin-1'] },
     });
     expect(recipients.filter((r) => r.userId === 'admin-1')).toHaveLength(1);
   });
 
-  it('drops the actor (an admin submitting their own LO is not notified)', () => {
+  it('drops the actor (a submitter who holds Approve is not told about their own order)', () => {
     const recipients = resolveRecipients({
       verb: 'lo.submitted',
       organizationId: ALPHA_ORG_ID,
       actorId: 'admin-1',
-      entity: { approver_ids: [] },
-      roleHolders: ROLE_HOLDERS,
+      entity: { lane_two_ids: ['admin-1', 'admin-2'] },
     });
     expect(recipients.map((r) => r.userId)).not.toContain('admin-1');
     expect(recipients.map((r) => r.userId).sort()).toEqual(['admin-2']);
   });
 
-  it('does NOT notify a user who lost the approve override (absent from approver_ids)', () => {
-    // sales-9 previously held the grant but it was revoked → the caller's query
-    // no longer returns them → they are not in approver_ids → not a recipient.
+  it('notifies nobody when no one is named: the admins are not alerted by role', () => {
     const recipients = resolveRecipients({
       verb: 'lo.submitted',
       organizationId: ALPHA_ORG_ID,
       actorId: null,
-      entity: { approver_ids: [] },
-      roleHolders: { ADMIN: ['admin-1'], DISPATCHER: [], SALES: [], TECHNICIAN: [] },
+      entity: { lane_two_ids: [] },
     });
-    expect(recipients.map((r) => r.userId)).not.toContain('sales-9');
-    expect(recipients.map((r) => r.userId)).toEqual(['admin-1']);
+    expect(recipients).toEqual([]);
   });
 });
 
@@ -119,7 +107,6 @@ describe('resolveRecipients — lo.approved', () => {
       organizationId: ALPHA_ORG_ID,
       actorId: 'admin-1',
       entity: { created_by_id: 'sales-9' },
-      roleHolders: ROLE_HOLDERS,
     });
     expect(recipients).toEqual([{ userId: 'sales-9', priority: 'INTERRUPT', needs_action: false }]);
   });
@@ -130,7 +117,6 @@ describe('resolveRecipients — lo.approved', () => {
       organizationId: ALPHA_ORG_ID,
       actorId: 'sales-9',
       entity: { created_by_id: 'sales-9' },
-      roleHolders: ROLE_HOLDERS,
     });
     expect(recipients).toEqual([]);
   });
@@ -154,7 +140,12 @@ describe('templates — lo.submitted', () => {
       action_type: 'VIEW',
     });
     expect(t.title).toContain('LO-J00001-1');
-    expect(t.body).toContain('Ada Admin');
+    expect(t.body).toBe('Submitted by Ada Admin');
+  });
+
+  it('puts the why line under the body for the people covering when nobody can approve it', () => {
+    const t = renderTemplate('lo.submitted', { object_label: 'LO-J00001-1', actor_name: 'Ada Admin', fallback_reason: 'Nobody can approve this order.' });
+    expect(t.body).toBe('Submitted by Ada Admin\nNobody can approve this order.');
   });
 
   it('registers the verb', () => {
@@ -193,8 +184,8 @@ describe('emit() — lo.submitted end-to-end', () => {
     mockPrisma.notificationRecipient.createMany.mockResolvedValue({ count: 3 });
   });
 
-  it('writes a LOGISTIC_ORDER notification to approvers ∪ ADMINs, unfiltered and de-duped', async () => {
-    // roleHolders source: two admins + a SALES approver (all active).
+  it('writes a LOGISTIC_ORDER notification to the named approvers, unfiltered and de-duped', async () => {
+    // The company's people: two admins + a SALES approver (all active).
     mockPrisma.user.findMany.mockResolvedValue([
       { id: 'admin-1', role: 'ADMIN' },
       { id: 'admin-2', role: 'ADMIN' },
@@ -206,8 +197,8 @@ describe('emit() — lo.submitted end-to-end', () => {
       organizationId: ALPHA_ORG_ID,
       actorId: 'someone-else', // not a recipient — nothing to drop
       object: { type: 'LOGISTIC_ORDER', id: LO_ID, label: LO_NUMBER },
-      // sales-9 = explicit grant holder; admin-2 = admin who ALSO holds a grant.
-      entity: { approver_ids: ['sales-9', 'admin-2'] },
+      // sales-9 = a non-admin holder; admin-2 = an admin holder (named twice by mistake: one row).
+      entity: { lane_two_ids: ['sales-9', 'admin-2', 'admin-2'] },
       data: { logistic_order_id: LO_ID, object_label: LO_NUMBER },
       dedupKey: `lo.submitted:${LO_ID}:1`,
     });
@@ -223,12 +214,12 @@ describe('emit() — lo.submitted end-to-end', () => {
       action_type: 'VIEW',
     });
 
-    // Recipient rows: {admin-1, admin-2, sales-9}, no dupes, all INTERRUPT + needs_action.
+    // Recipient rows: {admin-2, sales-9} (admin-1 holds no approval and is not named), no dupes, all INTERRUPT + needs_action.
     // sales-9 is a non-owner SALES user; that they survive proves LOGISTIC_ORDER is
     // NOT row-scope-filtered (filterByAccess passthrough).
     const recRows = mockPrisma.notificationRecipient.createMany.mock.calls[0][0].data;
     expect(recRows.map((r: { recipient_id: string }) => r.recipient_id).sort()).toEqual([
-      'admin-1', 'admin-2', 'sales-9',
+      'admin-2', 'sales-9',
     ]);
     expect(recRows.every((r: { priority: string; needs_action: boolean }) =>
       r.priority === 'INTERRUPT' && r.needs_action === true)).toBe(true);
@@ -307,7 +298,7 @@ describe('emit-after-write ordering (submit controller contract)', () => {
       organizationId: ALPHA_ORG_ID,
       actorId: 'someone-else',
       object: { type: 'LOGISTIC_ORDER', id: LO_ID, label: LO_NUMBER },
-      entity: { approver_ids: ['admin-1'] },
+      entity: { lane_two_ids: ['admin-1'] },
       data: { logistic_order_id: LO_ID, object_label: LO_NUMBER },
       dedupKey: `lo.submitted:${LO_ID}:2`,
     });

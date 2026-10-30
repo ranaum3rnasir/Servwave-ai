@@ -54,6 +54,13 @@ vi.mock('@/lib/api/myOutboundNumber', () => ({
 
 // A comm-enabled org — one of the two conditions (with the flag) that used
 // to be enough to cold-boot the warm singleton.
+// Roles & Permissions S08.18: the browser phone is the "Office phone in the browser" switch, read from the person's
+// ability. These cases are about the device and the surface, so the person holds the switch.
+vi.mock('@/contexts/AbilityContext', async (importOriginal) => {
+  const { buildAbility } = await import('@/lib/ability');
+  const ability = buildAbility([{ action: 'use_browser_phone', subject: 'Communication' }]);
+  return { ...(await importOriginal<typeof import('@/contexts/AbilityContext')>()), useAppAbility: () => ability };
+});
 vi.mock('@/lib/entitlements', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/entitlements')>()),
   useFeature: vi.fn(() => true),

@@ -310,12 +310,6 @@ describe('terminalStaleReason', () => {
         expect(terminalStaleReason('LEAD_DATE_ANCHORED', undefined, state, NOW, 'after')).toBe('Lead was marked as lost');
       });
 
-      it('is stale when the lead was cancelled, regardless of direction', () => {
-        const state: EntityState = { leadStatus: 'CANCELLED', leadWalkthroughScheduledAt: FUTURE };
-        expect(terminalStaleReason('LEAD_DATE_ANCHORED', undefined, state, NOW, 'before')).toBe('Lead was cancelled');
-        expect(terminalStaleReason('LEAD_DATE_ANCHORED', undefined, state, NOW, 'after')).toBe('Lead was cancelled');
-      });
-
       it('is stale when the walkthrough date was cleared (null), regardless of direction', () => {
         const state: EntityState = { leadStatus: 'CONTACTED', leadWalkthroughScheduledAt: null };
         expect(terminalStaleReason('LEAD_DATE_ANCHORED', undefined, state, NOW, 'before')).toBe(

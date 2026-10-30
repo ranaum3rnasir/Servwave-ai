@@ -3,16 +3,21 @@
  *
  * Before this card the switch wrote exactly one grant, `read Report`, which gates the /api/reports
  * routes and the Reports/Billing nav and appears NOWHERE in the cost/price path. The predicate that
- * actually strips every cost, margin and money field - `canSeePricing` (lib/permissions/enforce.ts)
+ * actually strips every cost, margin and money field - `canSeeCosts` (lib/permissions/enforce.ts)
  * - keyed on `read Invoice`, a completely different control (the Invoices "View" cell in the CRUD
  * matrix). SALES therefore rendered the switch OFF in all 16 staging orgs while seeing every cost.
  *
- * The fix introduces a dedicated `read Pricing` catalog grant, repoints canSeePricing at it, and
+ * The fix introduces a dedicated `read Pricing` catalog grant, repoints canSeeCosts at it, and
  * makes the switch its single writer. `read Report` gets its own honest "View reports" sensitive
  * row so 13 report routes and 8 nav entries stay admin-configurable.
  *
- * Harness: supertest against `app`, prisma fully mocked (setup.ts), grants via setCachedGrants -
- * mirrors job-lines-pricing-leak.test.ts / estimate-pricing-leak.test.ts.
+ * Harness: supertest against `app`, prisma fully mocked (setup.ts), grants via setCachedGrants and the
+ * person's switch values via mockRoleSwitches - mirrors job-lines-pricing-leak.test.ts /
+ * estimate-pricing-leak.test.ts.
+ *
+ * Roles & Permissions S01.15: the switch is a catalog switch (`see_financial_data`) now, so the stored
+ * `read Pricing` row no longer counts and each state below is a switch value. It covers COSTS only: the
+ * prices on the same responses stay.
  *
  * THE FIXTURE THIS FILE EXISTS FOR is a requester holding `read Invoice` and NOT `read Pricing`.
  * That is the one state this card changes, and it is the state estimate-pricing-leak.test.ts and
@@ -24,10 +29,9 @@ import type { Request } from 'express';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { TEST_USERS, mockAuthAs, authHeader, ALPHA_ORG_ID, JOB_FIXTURE, ESTIMATE_FIXTURE } from './helpers';
-import { setCachedGrants, clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
-import { canSeePricing } from '../lib/permissions/enforce';
+import { TEST_USERS, mockAuthAs, authHeader, ALPHA_ORG_ID, JOB_FIXTURE, ESTIMATE_FIXTURE, mockRoleSwitches } from './helpers';
+import { clearPermissionCache } from '../lib/permissions/permissionCache';
+import { canSeeCosts } from '../lib/permissions/enforce';
 import { defineAbilityFor } from '../lib/permissions/defineAbility';
 
 // ─── Typed mock accessors ──────────────────────────────────
@@ -48,20 +52,30 @@ const INVOICE_ID = '00000000-0000-0000-0000-000000000901';
 
 type TestGrant = { action: string; subject: string; conditions: Record<string, unknown> | null };
 
-// The switch-OFF state: `read Invoice` present, `read Pricing` absent, plus whatever route gate
+// Jobs, estimates and invoices are reached through their Data Scope switches, not stored grants: an
+// unconditional read is the module's View on with its scope All. See financial data is a switch too.
+function openRecordsIfAsked(extra: string[], opts: { invoices: boolean; seeFinancialData: boolean }) {
+  const open: Record<string, boolean | string> = { see_financial_data: opts.seeFinancialData };
+  if (extra.includes('Job')) open.jobs_scope = 'all';
+  if (extra.includes('Estimate')) Object.assign(open, { view_estimates: true, estimates_scope: 'all' });
+  if (opts.invoices || extra.includes('Invoice')) Object.assign(open, { view_invoices: true, invoices_scope: 'all' });
+  mockRoleSwitches(open);
+}
+
+// The switch-OFF state: See financial data off and `read Invoice` present, plus whatever route gate
 // the surface under test needs. Unconditional grants so canAccessRow short-circuits.
 function grantsWithoutPricing(...extra: string[]) {
   const grants: TestGrant[] = [{ action: 'read', subject: 'Invoice', conditions: null }];
   for (const subject of extra) grants.push({ action: 'read', subject, conditions: null });
-  setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', grants as never);
+  openRecordsIfAsked(extra, { invoices: true, seeFinancialData: false });
 }
 
-// The switch-ON state expressed the NEW way: `read Pricing` and no `read Invoice` at all. Proves
-// the new grant is the door, not a second lock stacked on top of read Invoice.
+// The switch-ON state without any invoice access: proves the switch is the door to costs, not a second
+// lock stacked on top of read Invoice.
 function grantsWithPricingOnly(...extra: string[]) {
-  const grants: TestGrant[] = [{ action: 'read', subject: 'Pricing', conditions: null }];
+  const grants: TestGrant[] = [];
   for (const subject of extra) grants.push({ action: 'read', subject, conditions: null });
-  setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', grants as never);
+  openRecordsIfAsked(extra, { invoices: false, seeFinancialData: true });
 }
 
 function priceBookSearchRow() {
@@ -250,34 +264,33 @@ function invoiceDetailRow() {
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache();
   mockAuthAs('technician');
 });
 
 // ════════════════════════════════════════════════════════════════════════════
 // 1. The predicate itself
 // ════════════════════════════════════════════════════════════════════════════
-describe('canSeePricing - the predicate', () => {
+describe('canSeeCosts - the predicate', () => {
   it('is FALSE for an ability holding read Invoice but NOT read Pricing', () => {
     const ability = defineAbilityFor({ id: TEST_USERS.technician.id, role: 'TECHNICIAN' }, [
       { action: 'read', subject: 'Invoice', conditions: null },
     ]);
-    expect(canSeePricing({ ability } as unknown as Request)).toBe(false);
+    expect(canSeeCosts({ ability } as unknown as Request)).toBe(false);
   });
 
   it('is TRUE for an ability holding read Pricing and NOT read Invoice', () => {
     const ability = defineAbilityFor({ id: TEST_USERS.technician.id, role: 'TECHNICIAN' }, [
       { action: 'read', subject: 'Pricing', conditions: null },
     ]);
-    expect(canSeePricing({ ability } as unknown as Request)).toBe(true);
+    expect(canSeeCosts({ ability } as unknown as Request)).toBe(true);
   });
 });
 
 // ════════════════════════════════════════════════════════════════════════════
 // 2-8. The consumer surfaces, driven over HTTP in the switch-OFF state
 // ════════════════════════════════════════════════════════════════════════════
-describe('switch OFF (read Invoice, no read Pricing) - costs are stripped everywhere', () => {
-  it('price-book search strips unit_cost/list_price', async () => {
+describe('switch OFF (read Invoice, See financial data off) - costs are stripped everywhere, prices stay', () => {
+  it('price-book search strips unit_cost', async () => {
     grantsWithoutPricing('PriceBook');
     mockPrisma.priceBookItem.findMany.mockResolvedValue([priceBookSearchRow()]);
 
@@ -288,12 +301,11 @@ describe('switch OFF (read Invoice, no read Pricing) - costs are stripped everyw
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveLength(1);
     expect(res.body.data[0].unit_cost).toBeUndefined();
-    expect(res.body.data[0].list_price).toBeUndefined();
     // The customer-facing selling price is NEVER stripped.
     expect(res.body.data[0].unit_price).toBe(4);
   });
 
-  it('inventory catalog strips unitCost/listPrice', async () => {
+  it('inventory catalog strips unitCost and keeps the prices', async () => {
     grantsWithoutPricing('Inventory');
     mockPrisma.priceBookItem.findMany.mockResolvedValue([catalogItemRow()]);
     mockPrisma.priceBookItem.count.mockResolvedValue(1);
@@ -303,7 +315,7 @@ describe('switch OFF (read Invoice, no read Pricing) - costs are stripped everyw
     expect(res.status).toBe(200);
     expect(res.body.data).toHaveLength(1);
     expect(res.body.data[0].unitCost).toBeUndefined();
-    expect(res.body.data[0].listPrice).toBeUndefined();
+    expect(res.body.data[0].listPrice).toBe(55);
     expect(res.body.data[0].sellPrice).toBe(40);
   });
 
@@ -321,7 +333,7 @@ describe('switch OFF (read Invoice, no read Pricing) - costs are stripped everyw
     expect(res.body.labor_rate).toBeUndefined();
   });
 
-  it('job line items strip money and return billing: null', async () => {
+  it('job line items strip cost, keep the prices and the billing totals', async () => {
     grantsWithoutPricing('Job');
     mockPrisma.job.findUnique.mockResolvedValue(jobGuardRow([jobLineWithCost()]));
 
@@ -331,9 +343,9 @@ describe('switch OFF (read Invoice, no read Pricing) - costs are stripped everyw
     const line = res.body.lines[0];
     expect(line.unit_cost).toBeUndefined();
     expect(line.markup_percent).toBeUndefined();
-    expect(line.unit_price).toBeUndefined();
-    expect(line.line_total).toBeUndefined();
-    expect(res.body.billing).toBeNull();
+    expect(line.unit_price).toBe(1000);
+    expect(line.line_total).toBe(1000);
+    expect(res.body.billing).not.toBeNull();
     // Work detail survives - a technician still needs to know WHAT is on the job.
     expect(line.description).toBe('AC Unit');
   });
@@ -366,43 +378,58 @@ describe('switch OFF (read Invoice, no read Pricing) - costs are stripped everyw
     expect(res.body.scopes[0].flat_price).toBe(300);
   });
 
-  it('job financials strips every money field (stripFinancialsForRequester), over HTTP', async () => {
+  const financialsInvoiceRow = () => ({
+    id: INVOICE_ID,
+    invoice_number: 'I00001',
+    kind: 'STANDARD',
+    status: 'SENT',
+    total_amount: 2468,
+    amount_due: 1268,
+    sent_at: new Date('2026-02-02'),
+    paid_at: null,
+    voided_at: null,
+    tip: 0,
+    tax_rate: 0.08,
+    tax_amount: 168,
+    discount_amount: 0,
+    subtotal: 2300,
+    line_items: [
+      { id: 'l1', sequence: 1, description: 'AC Unit', quantity: 1, unit_price: 1800, is_taxable: true, line_total: 1800, discount_type: null, discount_value: null, discount_amount: 0, item_type: 'PART', price_book_item_id: null, price_book_item: null },
+    ],
+    payments: [
+      { id: 'p1', amount: 1200, method: 'CHECK', paid_at: new Date('2026-02-03'), voided_at: null, reference_number: 'CHK-1', stripe_fee_amount: null, platform_fee_amount: null, net_amount: null },
+    ],
+  });
+
+  it('job financials keep the invoice money for someone who reads invoices: it is prices, and See financial data covers costs only', async () => {
     grantsWithoutPricing('Job');
     mockPrisma.job.findUnique.mockResolvedValue({ estimate_id: null });
-    mockPrisma.invoice.findMany.mockResolvedValue([
-      {
-        id: INVOICE_ID,
-        invoice_number: 'I00001',
-        kind: 'STANDARD',
-        status: 'SENT',
-        total_amount: 2468,
-        amount_due: 1268,
-        sent_at: new Date('2026-02-02'),
-        paid_at: null,
-        voided_at: null,
-        tip: 0,
-        tax_rate: 0.08,
-        tax_amount: 168,
-        discount_amount: 0,
-        subtotal: 2300,
-        line_items: [
-          { id: 'l1', sequence: 1, description: 'AC Unit', quantity: 1, unit_price: 1800, is_taxable: true, line_total: 1800, discount_type: null, discount_value: null, discount_amount: 0, item_type: 'PART', price_book_item_id: null, price_book_item: null },
-        ],
-        payments: [
-          { id: 'p1', amount: 1200, method: 'CHECK', paid_at: new Date('2026-02-03'), voided_at: null, reference_number: 'CHK-1', stripe_fee_amount: null, platform_fee_amount: null, net_amount: null },
-        ],
-      },
-    ]);
+    mockPrisma.invoice.findMany.mockResolvedValue([financialsInvoiceRow()]);
 
     const res = await request(app).get(`/api/jobs/${JOB_ID}/financials`).set(authHeader('technician'));
 
     expect(res.status).toBe(200);
-    expect(res.body.final_invoice.total_amount).toBeUndefined();
-    expect(res.body.final_invoice.amount_due).toBeUndefined();
+    expect(res.body.final_invoice.total_amount).toBe(2468);
+    expect(res.body.final_invoice.amount_due).toBe(1268);
+    expect(res.body.payments).toHaveLength(1);
+    expect(res.body.total_invoiced).toBe(2468);
+  });
+
+  it('job financials list no invoice for someone who can open none, but the job\'s own figures and the lifecycle bar stay', async () => {
+    // View invoices off (the Technician preset), and the invoice is not one they made.
+    mockRoleSwitches({ jobs_scope: 'all', view_invoices: false, see_financial_data: true });
+    mockPrisma.job.findUnique.mockResolvedValue({ estimate_id: null });
+    mockPrisma.invoice.findMany.mockResolvedValueOnce([financialsInvoiceRow()]).mockResolvedValueOnce([]);
+
+    const res = await request(app).get(`/api/jobs/${JOB_ID}/financials`).set(authHeader('technician'));
+
+    expect(res.status).toBe(200);
+    expect(res.body.invoices).toEqual([]);
     expect(res.body.payments).toEqual([]);
-    expect(res.body.total_invoiced).toBeUndefined();
-    expect(res.body.total_paid).toBeUndefined();
-    // The lifecycle bar still needs a well-formed answer.
+    // The job's totals and balance show to anyone who can open the job.
+    expect(res.body.final_invoice.total_amount).toBe(2468);
+    expect(res.body.final_invoice.amount_due).toBe(1268);
+    expect(res.body.total_invoiced).toBe(2468);
     expect(res.body.final_invoice.invoice_number).toBe('I00001');
   });
 
@@ -431,7 +458,7 @@ describe('switch OFF (read Invoice, no read Pricing) - costs are stripped everyw
 // ════════════════════════════════════════════════════════════════════════════
 // 9. read Pricing is the door, not a second lock
 // ════════════════════════════════════════════════════════════════════════════
-describe('read Pricing WITHOUT read Invoice is sufficient to see costs', () => {
+describe('See financial data WITHOUT read Invoice is sufficient to see costs', () => {
   it('price-book search returns unit_cost', async () => {
     grantsWithPricingOnly('PriceBook');
     mockPrisma.priceBookItem.findMany.mockResolvedValue([priceBookSearchRow()]);
@@ -442,133 +469,5 @@ describe('read Pricing WITHOUT read Invoice is sufficient to see costs', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data[0].unit_cost).toBe(2);
-  });
-});
-
-// ════════════════════════════════════════════════════════════════════════════
-// 10-15. The write path - driven through the REAL PUT handler, never isCatalogEntry
-// (see the gate note in catalog.ts: an isCatalogEntry-only assertion is a placebo).
-// ════════════════════════════════════════════════════════════════════════════
-describe('PUT /api/roles/:role/permissions - the switch is the single writer of read Pricing', () => {
-  const upsert = vi.fn();
-  const deleteMany = vi.fn();
-
-  const OWN_INVOICE_VIA_JOB = { job: { visits: { some: { assignees: { some: { user_id: '{{userId}}' } } } } } };
-
-  const upserted = () =>
-    upsert.mock.calls.map((c) => ({
-      action: c[0].create.action as string,
-      subject: c[0].create.subject as string,
-    }));
-
-  const deletedPairs = () =>
-    deleteMany.mock.calls.flatMap(
-      (c) => (c[0].where.OR ?? []) as { action: string; subject: string }[],
-    );
-
-  function seedExisting(rows: { action: string; subject: string }[]) {
-    mockPrisma.rolePermission.findMany.mockResolvedValue(
-      rows.map((r) => ({ ...r, conditions: null })),
-    );
-  }
-
-  const save = (role: string, body: Record<string, unknown>) =>
-    request(app).put(`/api/roles/${role}/permissions`).set(authHeader('admin')).send({
-      matrix: {},
-      scope: {},
-      general: { description: '' },
-      ...body,
-    });
-
-  beforeEach(() => {
-    upsert.mockReset().mockResolvedValue({});
-    deleteMany.mockReset().mockResolvedValue({ count: 0 });
-    seedExisting([]);
-    mockPrisma.$transaction.mockImplementation((fn: (tx: unknown) => unknown) =>
-      fn({ rolePermission: { deleteMany, upsert } }),
-    );
-    mockAuthAs('admin');
-  });
-
-  it('seeFinancials true persists read:Pricing and NOT read:Report', async () => {
-    const res = await save('SALES', {
-      sensitive: { seeFinancials: true, managePayments: false, viewReports: false },
-    });
-
-    expect(res.status).toBe(200);
-    expect(upserted()).toContainEqual({ action: 'read', subject: 'Pricing' });
-    expect(upserted()).not.toContainEqual({ action: 'read', subject: 'Report' });
-  });
-
-  it('viewReports true persists read:Report, so the report routes stay admin-configurable', async () => {
-    const res = await save('DISPATCHER', {
-      sensitive: { seeFinancials: false, managePayments: false, viewReports: true },
-    });
-
-    expect(res.status).toBe(200);
-    expect(upserted()).toContainEqual({ action: 'read', subject: 'Report' });
-    expect(upserted()).not.toContainEqual({ action: 'read', subject: 'Pricing' });
-  });
-
-  it('turning See financial data OFF removes only the pricing grant and never nulls the Invoice data scope', async () => {
-    seedExisting([
-      { action: 'read', subject: 'Pricing' },
-      { action: 'read', subject: 'Invoice' },
-    ]);
-
-    const res = await save('SALES', {
-      matrix: { Invoice: { read: true, create: true, update: true, delete: true } },
-      scope: { Invoice: 'Owned' },
-      sensitive: { seeFinancials: false, managePayments: false, viewReports: true },
-    });
-
-    expect(res.status).toBe(200);
-    expect(deletedPairs()).toContainEqual({ action: 'read', subject: 'Pricing' });
-    expect(deletedPairs()).not.toContainEqual({ action: 'read', subject: 'Invoice' });
-
-    const invoiceReads = upsert.mock.calls.filter(
-      (c) => c[0].create.action === 'read' && c[0].create.subject === 'Invoice',
-    );
-    expect(invoiceReads).toHaveLength(1);
-    expect(invoiceReads[0][0].create.conditions).toEqual(OWN_INVOICE_VIA_JOB);
-  });
-
-  // ─── The three legacy-body directions (a tab that loaded against the OLD API and is saved
-  // after this deploy; the PUT schema is z.record, so a partial body is a 200, not a 400).
-  it('a legacy Save body with no viewReports key does NOT delete read:Report', async () => {
-    seedExisting([{ action: 'read', subject: 'Report' }]);
-
-    const res = await save('DISPATCHER', {
-      sensitive: { seeFinancials: true, managePayments: false },
-    });
-
-    expect(res.status).toBe(200);
-    expect(deletedPairs()).not.toContainEqual({ action: 'read', subject: 'Report' });
-  });
-
-  it('a legacy Save body with seeFinancials true does NOT create read:Report on a role that lacked it', async () => {
-    seedExisting([{ action: 'read', subject: 'Pricing' }]);
-
-    const res = await save('SALES', {
-      sensitive: { seeFinancials: true, managePayments: false },
-    });
-
-    expect(res.status).toBe(200);
-    // Sales must not gain the Reports and Billing nav or the 13 report routes from a body
-    // nobody set that key in.
-    expect(upserted()).not.toContainEqual({ action: 'read', subject: 'Report' });
-  });
-
-  it('a legacy Save body with seeFinancials false does NOT delete read:Pricing', async () => {
-    seedExisting([{ action: 'read', subject: 'Pricing' }]);
-
-    const res = await save('SALES', {
-      sensitive: { seeFinancials: false, managePayments: false },
-    });
-
-    expect(res.status).toBe(200);
-    // The stale value carries the OLD meaning (read Report) and must never be applied to the
-    // NEW grant the backfill migration just wrote.
-    expect(deletedPairs()).not.toContainEqual({ action: 'read', subject: 'Pricing' });
   });
 });

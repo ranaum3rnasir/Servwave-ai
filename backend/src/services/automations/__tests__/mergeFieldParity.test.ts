@@ -106,7 +106,7 @@ const CUSTOMER = {
  *  feature reads a crew, so the fixture carries the pair. */
 const CREW_MEMBER = {
   id: 'u0000000-0000-0000-0000-000000000001',
-  email: 'lena@emanuel-demo.local',
+  email: 'lena@demo.local',
   first_name: 'Lena',
   last_name: 'Ortiz',
   phone: '+15550100142',
@@ -116,7 +116,7 @@ const CREW_MEMBER = {
 /** The crew on the SECOND trip — a different person, on a different number, with no extension. */
 const SECOND_CREW_MEMBER = {
   id: 'u0000000-0000-0000-0000-000000000002',
-  email: 'marcus@emanuel-demo.local',
+  email: 'marcus@demo.local',
   first_name: 'Marcus',
   last_name: 'Webb',
   phone: '+15550100199',

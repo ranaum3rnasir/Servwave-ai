@@ -21,7 +21,7 @@ export type JobStatusLabel =
   | 'On the way'
   | 'On site'
   | 'Pending'
-  | 'Done'
+  | 'Completed'
   | 'done pending'
   | 'Canceled';
 
@@ -31,7 +31,13 @@ export const STATUS_LABEL: Record<string, JobStatusLabel> = {
   // S4 (D17): EN_ROUTE and ON_SITE retired from JobStatus - being on the way and being on site
   // are properties of a TRIP now, reported per visit rather than per job.
   IN_PROGRESS: 'In progress',
-  COMPLETED: 'Done',
+  // PRD 6 completed-or-later set: Completed and the close-out statuses after it are all finished work, so the report counts
+  // them in one bucket and calls it "Completed", never "Done" (that word names only the Done status), and finishing a
+  // review never makes a job drop out of the report's completed figures.
+  COMPLETED: 'Completed',
+  OFFICE_REVIEW: 'Completed',
+  READY_TO_CLOSE: 'Completed',
+  DONE: 'Completed',
   CANCELLED: 'Canceled',
 };
 

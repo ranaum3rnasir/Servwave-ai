@@ -2,21 +2,18 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { TEST_USERS, mockAuthAs, authHeader } from './helpers';
+import { TEST_USERS, mockAuthAs, authHeader, attachedEstimateWhere, creatorEstimateWhere } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 
-// Live QA, 2026-08-05: the technician creator-control promotion (PR #1300) granted TECHNICIAN
-// `create Estimate` but no `read Estimate` of any kind, so a technician who raises a STANDALONE
-// estimate (lead-less, `lead: null`) cannot see it afterwards - list scope resolved to
-// MATCH_NOTHING (no read grant at all). The fix reuses OWN_ESTIMATE_VIA_LEAD_OR_CREATOR, the same
-// condition SALES already holds for exactly this shape (estimate-leadless-ownscope.test.ts) - a
-// technician's estimate is always lead-less, so it lands on the creator arm.
+// Technician's Estimates scope is Attached: the estimates on a lead or job they are attached to. Having
+// created a lead-less (standalone) estimate attaches nobody, so it is no longer reached by this scope; the
+// creator rule (S01.4) is what keeps a person's own customer-only estimate open to them, for every role.
 
 const mockTech = prisma as unknown as {
   estimate: {
     findMany: ReturnType<typeof vi.fn>;
     findUnique: ReturnType<typeof vi.fn>;
+    findFirst: ReturnType<typeof vi.fn>;
     count: ReturnType<typeof vi.fn>;
     groupBy: ReturnType<typeof vi.fn>;
     aggregate: ReturnType<typeof vi.fn>;
@@ -28,7 +25,6 @@ const mockTech = prisma as unknown as {
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache();
   mockTech.estimate.findMany.mockResolvedValue([]);
   mockTech.estimate.count.mockResolvedValue(0);
   mockTech.estimate.groupBy.mockResolvedValue([]);
@@ -40,34 +36,31 @@ beforeEach(() => {
 const listWhere = () =>
   mockTech.estimate.findMany.mock.calls[0][0].where as Record<string, unknown>;
 
-describe('GET /api/estimates (LIST) - TECHNICIAN own-scope (creator arm)', () => {
-  it("TECHNICIAN's read grant carries the lead_id:null + created_by-self arm, pinned to their own id", async () => {
+describe('GET /api/estimates (LIST) - TECHNICIAN Attached scope', () => {
+  it("TECHNICIAN's list is the estimates attached to them through their lead or job", async () => {
     mockAuthAs('technician');
 
     const res = await request(app).get('/api/estimates').set(authHeader('technician'));
 
     expect(res.status).toBe(200);
     expect(listWhere().OR).toEqual([
-      { lead: { lead_assignees: { some: { user_id: TEST_USERS.technician.id } } } },
-      { AND: [{ lead_id: null }, { created_by: TEST_USERS.technician.id }] },
+      { OR: attachedEstimateWhere(TEST_USERS.technician.id) },
+      creatorEstimateWhere(TEST_USERS.technician.id),
     ]);
   });
 
-  it("does not leak another technician's lead-less estimate: the creator arm is pinned to the requester", async () => {
+  it("does not reach a lead-less estimate by who created it through the scope; only the creator rule's own arm does", async () => {
     mockAuthAs('technician');
 
     await request(app).get('/api/estimates').set(authHeader('technician'));
 
-    const or = listWhere().OR as Array<Record<string, unknown>>;
-    const leadlessArm = or.find((b) => Array.isArray(b.AND));
-    expect(leadlessArm).toBeDefined();
-    expect(leadlessArm!.AND).toContainEqual({ created_by: TEST_USERS.technician.id });
-    expect(leadlessArm!.AND).not.toContainEqual({ created_by: TEST_USERS.sales.id });
+    const [scopeArm] = listWhere().OR as Record<string, unknown>[];
+    expect(JSON.stringify(scopeArm)).not.toContain('created_by');
   });
 });
 
-describe('GET /api/estimates/:id - TECHNICIAN own-scope (canAccessEstimate)', () => {
-  it('TECHNICIAN gets 200 on a standalone estimate it created (lead: null, created_by: self)', async () => {
+describe('GET /api/estimates/:id - TECHNICIAN Attached scope', () => {
+  it('TECHNICIAN gets 403 on an estimate it created on a job it is not on: creating it attaches nobody', async () => {
     mockAuthAs('technician');
     mockTech.estimate.findUnique.mockResolvedValue({
       id: 'est-tech-1',
@@ -80,8 +73,29 @@ describe('GET /api/estimates/:id - TECHNICIAN own-scope (canAccessEstimate)', ()
       scopes: [],
       scope_photos: [],
     });
+    mockTech.estimate.findFirst.mockResolvedValue(null); // outside the scope
 
     const res = await request(app).get('/api/estimates/est-tech-1').set(authHeader('technician'));
+
+    expect(res.status).toBe(403);
+  });
+
+  it('TECHNICIAN gets 200 on an estimate on a lead or job they are attached to', async () => {
+    mockAuthAs('technician');
+    mockTech.estimate.findUnique.mockResolvedValue({
+      id: 'est-tech-2',
+      estimate_number: 'E00101',
+      status: 'DRAFT',
+      total_amount: 250,
+      lead: null,
+      created_by: TEST_USERS.sales.id,
+      line_items: [],
+      scopes: [],
+      scope_photos: [],
+    });
+    mockTech.estimate.findFirst.mockResolvedValue({ id: 'est-tech-2' }); // inside the scope
+
+    const res = await request(app).get('/api/estimates/est-tech-2').set(authHeader('technician'));
 
     expect(res.status).toBe(200);
   });
@@ -99,6 +113,7 @@ describe('GET /api/estimates/:id - TECHNICIAN own-scope (canAccessEstimate)', ()
       scopes: [],
       scope_photos: [],
     });
+    mockTech.estimate.findFirst.mockResolvedValue(null);
 
     const res = await request(app).get('/api/estimates/est-other-1').set(authHeader('technician'));
 

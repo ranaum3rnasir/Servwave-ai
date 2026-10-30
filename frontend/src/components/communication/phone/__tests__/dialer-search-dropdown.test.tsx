@@ -42,6 +42,15 @@ const EMPTY_RESULT = {
   identity: null,
 };
 
+// Customer numbers on the Communication screens follow the person's switches (S05.6). This suite renders the
+// screen without a query client, so the person's switches are stubbed: every one on, the screen as it always was.
+vi.mock("@/components/contact/useContactPolicyInput", () => ({
+  useContactPolicyInput: () => ({
+    switches: { copyCustomerPhone: true, copyCustomerEmail: true, contactCustomers: true, viewCustomers: true },
+    phoneService: true,
+  }),
+}));
+
 // ── Seam mocks ──────────────────────────────────────────────────────────────
 // These specs render deep phone components without a QueryClientProvider - every
 // data hook is stubbed individually. Times now resolve against the ORG's zone, so

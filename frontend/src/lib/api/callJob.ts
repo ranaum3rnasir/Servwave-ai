@@ -10,6 +10,7 @@
 
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/axios';
+import type { ConversationLinkResult } from '@/lib/api/communication';
 
 /** Every surface that renders a call row, invalidated as one. */
 function useCallLinkInvalidation() {
@@ -23,7 +24,8 @@ function useCallLinkInvalidation() {
 }
 
 /** One-click attach/reassign — link a call to a job (or clear with null).
- *  Backend: PATCH /api/communication/calls/:id/job { job_id } → { call }.
+ *  Backend: PATCH /api/communication/calls/:id/job { job_id } → { call } (or { call: null, left: true } when a
+ *  detach took the call out of the person's reach).
  *  Callers update local state + toast on success ("act + cheap undo"). */
 export function useReassignCallJob() {
   const invalidate = useCallLinkInvalidation();
@@ -31,7 +33,7 @@ export function useReassignCallJob() {
     mutationFn: ({ callId, jobId }: { callId: string; jobId: string | null }) =>
       api
         .patch(`/api/communication/calls/${callId}/job`, { job_id: jobId })
-        .then((r) => r.data),
+        .then((r) => r.data as ConversationLinkResult),
     onSuccess: invalidate,
   });
 }
@@ -46,7 +48,7 @@ export function useReassignCallLead() {
     mutationFn: ({ callId, leadId }: { callId: string; leadId: string | null }) =>
       api
         .patch(`/api/communication/calls/${callId}/lead`, { lead_id: leadId })
-        .then((r) => r.data),
+        .then((r) => r.data as ConversationLinkResult),
     onSuccess: invalidate,
   });
 }

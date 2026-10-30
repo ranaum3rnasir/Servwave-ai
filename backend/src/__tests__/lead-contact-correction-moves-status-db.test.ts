@@ -124,7 +124,7 @@ suite('the hand contact correction moves a New lead to Contacted (real database)
   });
 
   it.each<LeadStatus>([
-    'CONTACTED', 'WALKTHROUGH_SCHEDULED', 'WALKTHROUGH_COMPLETED', 'ESTIMATED', 'WON', 'LOST', 'CANCELLED',
+    'CONTACTED', 'WALKTHROUGH_SCHEDULED', 'WALKTHROUGH_COMPLETED', 'ESTIMATED', 'WON', 'LOST',
   ])('%s: the clock is corrected and the status is left alone, with no status History row', async (status) => {
     const f = await fixture(status);
     const res = await f.correct(WHEN);

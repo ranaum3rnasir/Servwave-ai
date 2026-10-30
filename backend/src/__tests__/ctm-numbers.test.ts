@@ -25,7 +25,10 @@ const req = (body: Record<string, unknown> = {}, params: Record<string, string> 
     body,
     params,
     headers: {},
-    user: { id: 'user-1', organization_id: 'org-1', email: 'admin@test.dev' },
+    // The Admin box holds Communication scope "All", so the list is every number of the company.
+    user: { id: 'user-1', organization_id: 'org-1', email: 'admin@test.dev', role: 'ADMIN' },
+    // Holds the Phone numbers tab, so a number goes out with its routing and call-flow fields.
+    ability: { can: (action: string) => action === 'phone_numbers_tab' },
   }) as any;
 
 function ctmError(httpStatus: number, reason: string) {
@@ -182,6 +185,16 @@ describe('listNumbers', () => {
       sms_enabled: true,
       status: 'active',
     });
+  });
+
+  it('leaves the call flow and the forward-to out for a person without the Phone numbers tab', async () => {
+    const res = mockRes();
+    await numbersController.listNumbers({ ...req(), ability: { can: () => false } }, res);
+
+    const row = res.json.mock.calls[0][0].numbers[0];
+    expect(row).toMatchObject({ id: 'pn-1', e164: '+12015550123', sms_enabled: true, status: 'active' });
+    expect(row).not.toHaveProperty('call_flow_id');
+    expect(row).not.toHaveProperty('forward_to');
   });
 
   // Vendor names stay out of what the browser receives (CLAUDE.md boundary):

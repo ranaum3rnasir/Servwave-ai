@@ -23,8 +23,8 @@ const mins = (m: number) => m * 60;
 export const USERS: UserActivity[] = [
   // ── Locksmith ───────────────────────────────────────────────────────────────
   {
-    id: 'u-oved',
-    name: 'Oved Adani',
+    id: 'u-morgan',
+    name: 'Morgan Diaz',
     role: 'Sales',
     divisionId: 'locksmith',
     active: true,
@@ -57,8 +57,8 @@ export const USERS: UserActivity[] = [
     ],
   },
   {
-    id: 'u-emanuel',
-    name: 'Emanuel Dahan',
+    id: 'u-sam',
+    name: 'Sam Rivera',
     role: 'Sales',
     divisionId: 'locksmith',
     active: true,
@@ -93,7 +93,7 @@ export const USERS: UserActivity[] = [
   },
   {
     id: 'u-priya',
-    name: 'Priya',
+    name: 'Drew',
     role: 'Dispatcher',
     divisionId: 'locksmith',
     active: true,
@@ -125,8 +125,8 @@ export const USERS: UserActivity[] = [
     ],
   },
   {
-    id: 'u-shani',
-    name: 'Shani Adani',
+    id: 'u-avery',
+    name: 'Avery Stone',
     role: 'Sales',
     divisionId: 'locksmith',
     active: true,
@@ -191,8 +191,8 @@ export const USERS: UserActivity[] = [
     ],
   },
   {
-    id: 'u-sagiv',
-    name: 'Sagiv Peker',
+    id: 'u-riley',
+    name: 'Riley Chen',
     role: 'Dispatcher',
     divisionId: 'door',
     active: true,
@@ -310,7 +310,7 @@ export const USERS: UserActivity[] = [
   },
   {
     id: 'u-logi-2',
-    name: 'Ohad',
+    name: 'Jordan',
     role: 'Dispatcher',
     divisionId: 'logistics',
     active: true,
@@ -353,8 +353,8 @@ interface ApiActivityUser {
   name: string;
   role: string;
   active: boolean;
-  revenueTouched: number;
-  prevRevenueTouched: number;
+  revenueTouched?: number;
+  prevRevenueTouched?: number;
   conversions: number;
   leads: number;
   responseSec: number;
@@ -372,6 +372,9 @@ interface ApiActivityUser {
 function toUserActivity(u: ApiActivityUser): UserActivity {
   return {
     ...u,
+    // The server leaves the revenue keys off for a person without See company figures; the report's sums read 0 then.
+    revenueTouched: u.revenueTouched ?? 0,
+    prevRevenueTouched: u.prevRevenueTouched ?? 0,
     divisionId: 'all',
     breakdown: u.breakdown.map((b) => ({ label: b.label, icon: '•', count: b.count })),
     response7d: [],

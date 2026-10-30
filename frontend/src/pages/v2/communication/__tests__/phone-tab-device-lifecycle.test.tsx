@@ -51,6 +51,15 @@ const { createSpy, devices, bootMode, outbound, myNumbers } = vi.hoisted(() => (
   myNumbers: { current: undefined as undefined | { numbers: Array<Record<string, unknown>> } },
 }));
 
+// Customer numbers on the Communication screens follow the person's switches (S05.6). This suite renders the
+// screen without a query client, so the person's switches are stubbed: every one on, the screen as it always was.
+vi.mock("@/components/contact/useContactPolicyInput", () => ({
+  useContactPolicyInput: () => ({
+    switches: { copyCustomerPhone: true, copyCustomerEmail: true, contactCustomers: true, viewCustomers: true },
+    phoneService: true,
+  }),
+}));
+
 vi.mock('@/lib/communication/ctmSoftphone', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/communication/ctmSoftphone')>();
   createSpy.mockImplementation(() => {
@@ -110,6 +119,13 @@ vi.mock('@/lib/communication/phoneTabDevice', async (importOriginal) => {
   };
 });
 
+// Roles & Permissions S08.18: the browser phone is the "Office phone in the browser" switch, read from the person's
+// ability. These cases are about the device and the surface, so the person holds the switch.
+vi.mock('@/contexts/AbilityContext', async (importOriginal) => {
+  const { buildAbility } = await import('@/lib/ability');
+  const ability = buildAbility([{ action: 'use_browser_phone', subject: 'Communication' }]);
+  return { ...(await importOriginal<typeof import('@/contexts/AbilityContext')>()), useAppAbility: () => ability };
+});
 vi.mock('@/lib/entitlements', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/entitlements')>()),
   useFeature: vi.fn(() => true),

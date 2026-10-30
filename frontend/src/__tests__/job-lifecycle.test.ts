@@ -110,10 +110,10 @@ describe('per-visit nodes (D11, D13)', () => {
     );
 
     expect(stages.map((s) => s.key)).toEqual([
-      'created', 'visit:v-2', 'visit:v-1', 'visit:v-3', 'completed', 'invoice_sent', 'payment_received',
+      'created', 'visit:v-2', 'visit:v-1', 'visit:v-3', 'completed', 'office_review', 'invoice_sent', 'payment_received', 'done',
     ]);
     expect(stages.map((s) => s.label)).toEqual([
-      'Job Created', 'Visit 2', 'Visit 1', 'Visit 3', 'Completed', 'Invoice Sent', 'Payment Received',
+      'Job Created', 'Visit 2', 'Visit 1', 'Visit 3', 'Completed', 'Office review', 'Invoice Sent', 'Payment Received', 'Done',
     ]);
   });
 });
@@ -217,5 +217,160 @@ describe('the current node names the live visit (B7)', () => {
       [DONE_VISIT],
     );
     expect(stages.filter((s) => s.current).map((s) => s.key)).toEqual(['invoice_sent']);
+  });
+});
+
+/**
+ * Roles & Permissions, PRD 6, S06.21 (M9): the bar is Created, Visits, Completed, Office review, Invoice sent, Payment
+ * received, Done. The marker follows the job's status; a step the job moved past without reaching is skipped.
+ */
+describe('the close-out steps and the marker (S06.21)', () => {
+  const JOB = { created_at: '2026-03-01T09:00:00Z', completed_at: '2026-03-05T09:00:00Z', cancelled_at: null };
+  const stagesFor = (status: string, extra: Partial<typeof JOB> = {}, visits: JobVisitRow[] = [], money?: { money_owed: boolean; zero_total: boolean }) =>
+    computeLifecycle({ ...JOB, ...extra, status }, { final_invoice: null }, visits, money);
+  const byKey = (stages: ReturnType<typeof computeLifecycle>) => Object.fromEntries(stages.map((s) => [s.key, s]));
+  const visit = (over: Partial<JobVisitRow> & { id: string; visit_seq: number }): JobVisitRow => ({
+    status: 'SCHEDULED', scheduled_at: '2026-03-02T09:00:00Z', scheduled_end: null, is_all_day: false, created_at: '2026-03-01T00:00:00Z', ...over,
+  });
+
+  it('draws the steps in the PRD order with no visits', () => {
+    expect(stagesFor('OFFICE_REVIEW').map((s) => s.key)).toEqual([
+      'created', 'completed', 'office_review', 'invoice_sent', 'payment_received', 'done',
+    ]);
+  });
+
+  it('puts the marker on the Office review step in Office review, labelled Office review, not yet reached', () => {
+    const stages = stagesFor('OFFICE_REVIEW');
+    expect(stages.filter((s) => s.current).map((s) => s.key)).toEqual(['office_review']);
+    expect(byKey(stages).office_review!.label).toBe('Office review');
+    expect(byKey(stages).office_review!.reached).toBe(false);
+  });
+
+  it('keeps the marker on the same step in Ready to close, which reads Ready to close and is reached', () => {
+    const stages = stagesFor('READY_TO_CLOSE');
+    expect(stages.filter((s) => s.current).map((s) => s.key)).toEqual(['office_review']);
+    expect(byKey(stages).office_review!.label).toBe('Ready to close');
+    expect(byKey(stages).office_review!.reached).toBe(true);
+    expect(byKey(stages).done!.reached).toBe(false);
+  });
+
+  it('puts the marker on Done, reached, once the job is Done, and Office review is reached too', () => {
+    const stages = stagesFor('DONE');
+    expect(stages.filter((s) => s.current).map((s) => s.key)).toEqual(['done']);
+    expect(byKey(stages).done!.reached).toBe(true);
+    expect(byKey(stages).office_review!.reached).toBe(true);
+    expect(byKey(stages).office_review!.label).toBe('Office review');
+  });
+
+  it('does not light Office review or Done before the review is finished', () => {
+    for (const status of ['IN_PROGRESS', 'COMPLETED', 'OFFICE_REVIEW']) {
+      const by = byKey(stagesFor(status, status === 'IN_PROGRESS' ? { completed_at: null } : {}));
+      expect(by.office_review!.reached).toBe(false);
+      expect(by.done!.reached).toBe(false);
+    }
+  });
+
+  it('puts the marker on the status step even while a visit is still live', () => {
+    const stages = stagesFor('OFFICE_REVIEW', {}, [visit({ id: 'v-1', visit_seq: 1, status: 'SCHEDULED' })]);
+    expect(stages.filter((s) => s.current).map((s) => s.key)).toEqual(['office_review']);
+  });
+
+  it('leaves a cancelled job with no marker and no skipped step', () => {
+    const stages = stagesFor('CANCELLED', { cancelled_at: '2026-03-06T09:00:00Z' }, [visit({ id: 'v-1', visit_seq: 1 })], { money_owed: true, zero_total: false });
+    expect(stages.some((s) => s.current)).toBe(false);
+    expect(stages.some((s) => s.skipped)).toBe(false);
+  });
+});
+
+describe('skipped steps (S06.21)', () => {
+  const JOB = { created_at: '2026-03-01T09:00:00Z', completed_at: '2026-03-05T09:00:00Z', cancelled_at: null };
+  const visit = (over: Partial<JobVisitRow> & { id: string; visit_seq: number }): JobVisitRow => ({
+    status: 'SCHEDULED', scheduled_at: '2026-03-02T09:00:00Z', scheduled_end: null, is_all_day: false, created_at: '2026-03-01T00:00:00Z', ...over,
+  });
+  const skippedKeys = (status: string, opts: {
+    visits?: JobVisitRow[]; financials?: Parameters<typeof computeLifecycle>[1];
+    money?: { money_owed: boolean; zero_total: boolean } | null; cancelled_at?: string | null;
+  } = {}) =>
+    computeLifecycle(
+      { ...JOB, status, cancelled_at: opts.cancelled_at ?? null },
+      'financials' in opts ? opts.financials : { final_invoice: null },
+      opts.visits ?? [],
+      opts.money,
+    ).filter((s) => s.skipped).map((s) => s.key);
+
+  const NOT_ZERO = { money_owed: false, zero_total: false };
+  const SENT_UNPAID = { final_invoice: null, first_sent_at: '2026-03-10T12:00:00Z', total_invoiced: 500, total_paid: 100 };
+  const PAID = { final_invoice: null, first_sent_at: '2026-03-10T12:00:00Z', total_invoiced: 500, total_paid: 500 };
+
+  describe('a visit still live once the job is Completed or later', () => {
+    it.each(['COMPLETED', 'OFFICE_REVIEW', 'READY_TO_CLOSE', 'DONE'])('is skipped in %s', (status) => {
+      expect(skippedKeys(status, { visits: [visit({ id: 'v-1', visit_seq: 1, status: 'EN_ROUTE' })], money: NOT_ZERO, financials: PAID }))
+        .toEqual(['visit:v-1']);
+    });
+
+    it('is not skipped before the job is completed: it is the open trip', () => {
+      expect(skippedKeys('IN_PROGRESS', { visits: [visit({ id: 'v-1', visit_seq: 1 })] })).toEqual([]);
+    });
+
+    it('never skips a finished visit, and never a cancelled one (kept grey, including the ones the complete cancelled)', () => {
+      const keys = skippedKeys('OFFICE_REVIEW', {
+        visits: [
+          visit({ id: 'v-1', visit_seq: 1, status: 'COMPLETED' }),
+          visit({ id: 'v-2', visit_seq: 2, status: 'CANCELLED', cancelled_at: '2026-03-05T09:00:00Z' }),
+        ],
+      });
+      expect(keys).toEqual([]);
+    });
+  });
+
+  describe('the money steps once the job is Done', () => {
+    it('skips Invoice sent and Payment received on a job with a price that was never invoiced', () => {
+      expect(skippedKeys('DONE', { money: NOT_ZERO, financials: { final_invoice: null, total_invoiced: 0, total_paid: 0 } }))
+        .toEqual(['invoice_sent', 'payment_received']);
+    });
+
+    it('skips only Payment received on a job closed with money owed', () => {
+      expect(skippedKeys('DONE', { money: { money_owed: true, zero_total: false }, financials: SENT_UNPAID })).toEqual(['payment_received']);
+    });
+
+    it('skips Payment received when the server says money is owed even if the invoices read as paid', () => {
+      expect(skippedKeys('DONE', { money: { money_owed: true, zero_total: false }, financials: PAID })).toEqual(['payment_received']);
+    });
+
+    it('skips nothing on a job that was invoiced and paid', () => {
+      expect(skippedKeys('DONE', { money: NOT_ZERO, financials: PAID })).toEqual([]);
+    });
+
+    it('never skips a money step on a job whose total is zero', () => {
+      expect(skippedKeys('DONE', { money: { money_owed: false, zero_total: true }, financials: { final_invoice: null, total_invoiced: 0, total_paid: 0 } })).toEqual([]);
+    });
+
+    it('does not say a step was skipped while the server has not said whether the total is zero', () => {
+      expect(skippedKeys('DONE', { financials: { final_invoice: null, total_invoiced: 0, total_paid: 0 } })).toEqual([]);
+      expect(skippedKeys('DONE', { money: null, financials: SENT_UNPAID })).toEqual([]);
+    });
+
+    it('does not say a step was skipped while the job money is still loading', () => {
+      expect(skippedKeys('DONE', { money: NOT_ZERO, financials: undefined })).toEqual([]);
+    });
+
+    it('draws a skipped step as not reached', () => {
+      const stages = computeLifecycle({ ...JOB, status: 'DONE', cancelled_at: null }, SENT_UNPAID, [], { money_owed: true, zero_total: false });
+      const payment = stages.find((s) => s.key === 'payment_received')!;
+      expect(payment.skipped).toBe(true);
+      expect(payment.reached).toBe(false);
+    });
+
+    it.each(['COMPLETED', 'OFFICE_REVIEW', 'READY_TO_CLOSE'])('skips no money step in %s: the job is not closed yet', (status) => {
+      expect(skippedKeys(status, { money: NOT_ZERO, financials: { final_invoice: null, total_invoiced: 0, total_paid: 0 } })).toEqual([]);
+    });
+  });
+
+  it('never skips Office review or Completed, whatever the status', () => {
+    for (const status of ['COMPLETED', 'OFFICE_REVIEW', 'READY_TO_CLOSE', 'DONE']) {
+      const keys = skippedKeys(status, { money: NOT_ZERO, financials: { final_invoice: null, total_invoiced: 0, total_paid: 0 } });
+      expect(keys).not.toContain('office_review');
+      expect(keys).not.toContain('completed');
+    }
   });
 });

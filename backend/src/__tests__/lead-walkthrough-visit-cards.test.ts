@@ -10,7 +10,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { mockAuthAs, authHeader, LEAD_FIXTURE, TEST_USERS, ALPHA_ORG_ID, ORG_B_ID } from './helpers';
+import { mockAuthAs, mockRoleSwitches, authHeader, LEAD_FIXTURE, TEST_USERS, ALPHA_ORG_ID, ORG_B_ID } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { dispatchAutomationEvent } from '../services/automations/dispatch';
 
@@ -250,6 +250,8 @@ describe('PATCH /api/leads/:id/visits/:visitId - reschedule ONE walkthrough', ()
   });
 
   it('the legacy door still moves the lead\'s earliest live trip', async () => {
+    // PERFORMER_B is a Dispatcher-role person, and that preset is not crew-eligible.
+    mockRoleSwitches({ can_be_on_crew: true });
     const res = await request(app).post(`/api/leads/${LEAD_ID}/walkthrough/schedule`).set(authHeader('admin')).send(body);
     expect(res.status).toBe(200);
     expect(movedIds()).toEqual([V1]);

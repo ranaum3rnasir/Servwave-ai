@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  Archive, Briefcase, Copy, Download, Eye, FileCheck, FileText, History,
+  AlertTriangle, Archive, Briefcase, Copy, Download, Eye, FileCheck, FileText, History,
   Link2, Lock, MailWarning, Receipt, Redo2, Send, ShieldOff, ThumbsDown, ThumbsUp,
   Trash2, Undo2,
 } from 'lucide-react';
@@ -38,6 +38,8 @@ import { PdfPreviewDialog } from '@/components/estimates/PdfPreviewDialog';
 import { RecordEstimatePaymentDialog } from '@/components/estimates/RecordEstimatePaymentDialog';
 import { RefundDepositDialog } from '@/components/estimates/RefundDepositDialog';
 import { SendEstimateDialog } from '@/components/estimates/SendEstimateDialog';
+import type { DepositPolicy } from '@/lib/payment-options';
+import type { PaymentMethod } from '@/lib/api/organization';
 import { VoidApprovalDialog } from '@/components/estimates/VoidApprovalDialog';
 import { WaiveDepositDialog } from '@/components/estimates/WaiveDepositDialog';
 import { TagInput } from '@/components/leads/TagInput';
@@ -76,6 +78,8 @@ import {
   EstimateStatusMenu, type EstimateStatusMenuProps,
 } from './components/statusMenu';
 import { useRecordVisit } from '../pageBreadcrumbs';
+import NotAuthorizedPage from '@/components/NotAuthorizedPage';
+import { isForbiddenError, retryUnlessRefused } from '../_shared/loadErrorState';
 
 /**
  * /v2/estimates/:id — the estimate workspace on the CRM UI kit.
@@ -99,8 +103,16 @@ import { useRecordVisit } from '../pageBreadcrumbs';
  * post-create redirect all land on the plain URL. See `uiV2.ts`.
  */
 
+/**
+ * What the server says this person may do on THIS estimate (backend `estimateActionsFor`): the switch behind each
+ * action or the creator rule, never a role name. `send` covers send, resend and mark sent.
+ */
+type EstimateAction = 'edit' | 'send' | 'delete' | 'cancel' | 'record_payment';
+
 type RawEstimate = PanelEstimate & {
   id: string;
+  /** The server's per-record answer, on the estimate's own read. */
+  actions?: EstimateAction[];
   name?: string | null;
   scope_name?: string | null;
   scope_notes?: string | null;
@@ -120,6 +132,8 @@ type RawEstimate = PanelEstimate & {
   labor_hours?: number | string | null;
   overhead_mode?: 'PERCENTAGE' | 'FIXED' | null;
   overhead_value?: number | string | null;
+  /** Payments go-live slice 19/21 - this estimate's deposit-policy override; null = the org's. */
+  deposit_policy?: DepositPolicy | null;
 };
 
 /**
@@ -287,16 +301,21 @@ export default function EstimateWorkspacePage() {
   const [linkCopied, setLinkCopied] = useState(false);
   const [downloading, setDownloading] = useState(false);
 
-  const { data: estimate, isLoading } = useQuery<RawEstimate>({
+  const { data: estimate, isLoading, error: estimateError } = useQuery<RawEstimate>({
     queryKey: ['estimate', id],
     queryFn: async () => {
       const res = await api.get(`/api/estimates/${id}`);
       return res.data.estimate;
     },
     enabled: !!id,
+    retry: retryUnlessRefused,
   });
 
   useRecordVisit('estimates', estimate?.estimate_number);
+
+  // Who may do what on this estimate is the server's answer for it (a switch, or the creator rule for an estimate the
+  // person made); the status below only says whether the action fits the estimate as it stands.
+  const may = (action: EstimateAction) => estimate?.actions?.includes(action) ?? false;
 
   const { data: org } = useOrganization();
 
@@ -332,7 +351,7 @@ export default function EstimateWorkspacePage() {
   // the signature-invalidation path, not a blocked action.
   const canEditNow = !locked && !isTerminal && (status === ESTIMATE_STATUS.DRAFT || isSentLike);
   // The single ability gating every granular line/scope mutation.
-  const canManageLines = canEditNow && ability.can('update', 'Estimate');
+  const canManageLines = canEditNow && may('edit');
   // Cost/margin visibility, shared with the backend's canSeePricing gate.
   const canSeePricing = canSeePricingAbility(ability);
   // Writing INTO the catalog is a separate, admin-grantable ability; editing
@@ -436,14 +455,23 @@ export default function EstimateWorkspacePage() {
   const createJobMutation = useMutation({
     mutationFn: async () => {
       const { data } = await api.post('/api/jobs', { estimate_id: id });
-      return data.job as { id: string };
+      // The server also says whether the job opens for this person (S04.21). An older answer without it opens.
+      return { job: data.job as { id: string; job_number?: string }, openable: data.job_openable !== false };
     },
-    onSuccess: (job) => {
+    onSuccess: ({ job, openable }) => {
       queryClient.invalidateQueries({ queryKey: ['estimate', id] });
       queryClient.invalidateQueries({ queryKey: ['estimates'] });
       // A new job on the estimate's customer, landing in the board's unscheduled bucket.
       refreshAfterVisitWrite(queryClient, { jobId: job.id });
-      navigate(preferV2Path(`/jobs/${job.id}`));
+      if (openable) {
+        navigate(preferV2Path(`/jobs/${job.id}`));
+        return;
+      }
+      // The person is not on the new job (a walkthrough crew is not carried to it), so its page would refuse
+      // them. They stay on the estimate and are told the job exists.
+      toast.success(`Job ${job.job_number} was created`, {
+        description: 'You are not on it, so it does not open for you. You stay on this estimate.',
+      });
     },
     onError: (err: unknown) =>
       toast.error('Create job failed', { description: extractApiError(err, 'Failed to create job') }),
@@ -464,6 +492,9 @@ export default function EstimateWorkspacePage() {
       toast.error('Copy to invoice failed', { description: extractApiError(err, 'Failed to copy estimate to invoice') }),
   });
 
+  // The server refused the estimate: the person may not open it (the page never decides that itself).
+  if (!estimate && isForbiddenError(estimateError)) return <NotAuthorizedPage />;
+
   if (isLoading || !estimate) {
     return (
       <div className="flex flex-col gap-4">
@@ -480,10 +511,10 @@ export default function EstimateWorkspacePage() {
   const isDraft = status === ESTIMATE_STATUS.DRAFT;
   const isSent = status === ESTIMATE_STATUS.SENT;
   const isApproved = status === ESTIMATE_STATUS.WON;
-  const canSend = ability.can('send', 'Estimate');
-  const canCancelEstimate = ability.can('cancel', 'Estimate');
-  const canDeleteEstimate = ability.can('delete', 'Estimate');
-  const canRecordPayment = ability.can('record_payment', 'Estimate');
+  const canSend = may('send');
+  const canCancelEstimate = may('cancel');
+  const canDeleteEstimate = may('delete');
+  const canRecordPayment = may('record_payment');
   const canCreateJob = ability.can('create', 'Job');
   // Copy-to-Invoice is gated on `create Invoice`, NOT on WON status: the
   // backend allows any estimate status. An existing standard invoice or job
@@ -513,7 +544,7 @@ export default function EstimateWorkspacePage() {
   // document" intent). void_approval has no non-admin grant row, so
   // `ability.can` resolves false for everyone else without a round-trip.
   const canMarkSent = canSend && isDraft;
-  const canSetStatus = ability.can('update', 'Estimate');
+  const canSetStatus = may('edit');
   const canBackToDraft = canSetStatus && isSentLike;
 
   // Spec B1 — the ONE rule that still blocks a status change: a won estimate
@@ -550,9 +581,9 @@ export default function EstimateWorkspacePage() {
   };
   const confirmApproveInternal = async () => {
     const ok = await confirm({
-      title: `Record ${estimate.estimate_number} as approved?`,
-      description: 'Verbal or off-platform win. No signature will be captured.',
-      confirmLabel: 'Record as approved',
+      title: `Approve ${estimate.estimate_number}?`,
+      description: 'No signature will be captured.',
+      confirmLabel: 'Approve',
     });
     if (ok) statusMutation.mutate({ status: ESTIMATE_STATUS.WON });
   };
@@ -634,12 +665,12 @@ export default function EstimateWorkspacePage() {
   // Security round 1 (#2010) finding 1 - the shared deposit editor took no ability check, so a
   // role holding `send Estimate` but not `update Estimate` saw fully editable inputs in Mark Sent
   // and typing into them wedged the action behind a PATCH the backend correctly 403s. Computed
-  // once here (the same `ability.can('update', 'Estimate')` `canManageLines` above uses) and
+  // once here (the same answer for this estimate `canManageLines` above uses) and
   // ANDed into `useDepositDraft`'s `editable` in both dialogs.
-  const canEditDeposit = ability.can('update', 'Estimate');
+  const canEditDeposit = may('edit');
   const depPayment = depositInvoice?.payments?.[0];
   const depMethod = depPayment?.method ?? null;
-  const hasStripePayment = Boolean(depPayment?.stripe_payment_intent_id);
+  const hasStripePayment = Boolean(depPayment?.paid_through_processor);
   // An estimate reaches its customer through the lead when it is lead-anchored
   // and through its own direct relation when it is customer-anchored. Read
   // both, in the order the backend's send() and CustomerHeader already use.
@@ -659,7 +690,10 @@ export default function EstimateWorkspacePage() {
   // action (full width on a phone); the rest are inline buttons from sm up and Actions-menu items
   // on a phone. Each is {node: as the primary, action: as a secondary}.
   const headerButtons: Array<{ key: string; node: ReactNode; action: DetailHeaderAction }> = [];
-  if (RECORD_PAYMENT_STATUSES.includes(status) && canRecordPayment) {
+  // Slice 27: a WON estimate offers it only while its deposit is still open (pay later signs first
+  // and pays after); the backend refuses it on any other WON estimate.
+  const depositOpenOnWon = status === ESTIMATE_STATUS.WON && ['SENT', 'PARTIAL'].includes(depositInvoice?.status ?? '');
+  if ((RECORD_PAYMENT_STATUSES.includes(status) || depositOpenOnWon) && canRecordPayment) {
     headerButtons.push({
       key: 'record-payment',
       node: <Button onClick={() => setRecordPaymentOpen(true)}>Record Payment</Button>,
@@ -755,7 +789,7 @@ export default function EstimateWorkspacePage() {
             leadId={estimate.lead_id ?? ''}
             name={estimate.name}
             estimateNumber={estimate.estimate_number}
-            canEdit={ability.can('update', 'Estimate')}
+            canEdit={may('edit')}
             numberSlot={
               <RecordNumberEditor
                 entity="estimate"
@@ -826,16 +860,7 @@ export default function EstimateWorkspacePage() {
                   onClick={() => createJobMutation.mutate()}
                 >
                   <Briefcase />
-                  <span className="flex flex-col">
-                    <span>{convertGate.action === 'view' ? 'View job' : 'Convert to job'}</span>
-                    {/* Visible, not only a title: a touch screen never shows a title
-                        (mobile slice 40). */}
-                    {convertGate.disabled && convertGate.reason && (
-                      <span className="whitespace-normal text-xs font-normal text-text-secondary">
-                        {convertGate.reason}
-                      </span>
-                    )}
-                  </span>
+                  {convertGate.action === 'view' ? 'View job' : 'Convert to job'}
                 </DropdownMenuItem>
               )}
 
@@ -855,7 +880,7 @@ export default function EstimateWorkspacePage() {
               {canApproveInternal && (
                 <DropdownMenuItem onClick={confirmApproveInternal}>
                   <ThumbsUp />
-                  Approve (Verbal)
+                  Approve
                 </DropdownMenuItem>
               )}
               {canDeclineInternal && (
@@ -921,8 +946,8 @@ export default function EstimateWorkspacePage() {
                 <DropdownMenuSeparator />
               )}
               {/* Labelled "Archive"; the internal action id
-                  (ability.can('cancel', 'Estimate')) and the grant behind it
-                  are UNCHANGED — copy only. */}
+                  ('cancel' in the answer for this estimate) and the grant behind
+                  it are UNCHANGED — copy only. */}
               {canCancelEstimate && (isDraft || isSent) && (
                 <DropdownMenuItem onClick={() => setCancelOpen(true)} variant="destructive">
                   <Archive />
@@ -983,6 +1008,15 @@ export default function EstimateWorkspacePage() {
           {estimateSendItem?.deliveryStatusReason && (
             <span className="font-normal opacity-80"> ({estimateSendItem.deliveryStatusReason})</span>
           )}
+        </Banner>
+      )}
+
+      {/* Slice 15 acceptance 5: a voided deposit leaves a SENT/PENDING estimate asking for a deposit
+          nobody can pay, and nothing moves it on. Say so, and name the two ways forward. */}
+      {depositInvoice?.status === 'VOIDED' && isSentLike && sc?.deposit_required && (
+        <Banner tone="warning" icon={<AlertTriangle className="size-4" />}>
+          The deposit was voided, so the customer has nothing to pay and this estimate will not move on by itself.
+          You can mark the estimate Approved from its status menu, or recall it to Draft and send it again to ask for a new deposit.
         </Banner>
       )}
 
@@ -1142,6 +1176,10 @@ export default function EstimateWorkspacePage() {
         existingDepositPercentage={sc?.deposit_percentage ?? null}
         canEditDeposit={canEditDeposit}
         depositInvoiceUnpaid={depositInvoiceUnpaid}
+        depositPolicy={estimate.deposit_policy ?? null}
+        locked={locked}
+        estimateStatus={estimate.status}
+        sentMethods={(sc?.payment_methods as PaymentMethod[] | null | undefined) ?? null}
         onSuccess={() => queryClient.invalidateQueries({ queryKey: ['estimate', id] })}
       />
       <RecordEstimatePaymentDialog

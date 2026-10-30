@@ -3,7 +3,7 @@
  *
  * The old AssigneeSelect wrapped a Radix Select whose closed-trigger typeahead
  * committed the first prefix-matching item on a single keystroke (typing "S"
- * instantly assigned "Sherry Dispatcher", making "Sagiv" unreachable). The fix
+ * instantly assigned "Sherry Dispatcher", making "Sasha" unreachable). The fix
  * replaces it with a Popover + search Input combobox that only commits on an
  * explicit item click. These tests lock that behavior in.
  *
@@ -25,7 +25,7 @@ import { type AssignableUser } from '@/lib/api/users';
 
 const MOCK_USERS: AssignableUser[] = [
   { id: 'sherry', first_name: 'Sherry', last_name: 'Dispatcher', role: 'DISPATCHER', is_active: true, has_login: true, department: null },
-  { id: 'sagiv', first_name: 'Sagiv', last_name: 'Peker', role: 'ADMIN', is_active: true, has_login: true, department: null },
+  { id: 'sasha', first_name: 'Sasha', last_name: 'Chen', role: 'ADMIN', is_active: true, has_login: true, department: null },
 ];
 
 // Mutable so a single test can swap the pool; the factory body never
@@ -58,7 +58,7 @@ describe('AssigneeSelect (#514 keyboard typeahead)', () => {
     const options = screen.getAllByRole('option');
     const labels = options.map((o) => o.textContent ?? '');
     expect(labels.some((l) => l.includes('Sherry Dispatcher'))).toBe(true);
-    expect(labels.some((l) => l.includes('Sagiv Peker'))).toBe(true);
+    expect(labels.some((l) => l.includes('Sasha Chen'))).toBe(true);
     expect(onChange).not.toHaveBeenCalled();
   });
 
@@ -71,7 +71,7 @@ describe('AssigneeSelect (#514 keyboard typeahead)', () => {
     await user.type(screen.getByPlaceholderText('Search…'), 'Sa');
 
     const labels = screen.getAllByRole('option').map((o) => o.textContent ?? '');
-    expect(labels.some((l) => l.includes('Sagiv Peker'))).toBe(true);
+    expect(labels.some((l) => l.includes('Sasha Chen'))).toBe(true);
     expect(labels.some((l) => l.includes('Sherry Dispatcher'))).toBe(false);
     expect(onChange).not.toHaveBeenCalled();
   });
@@ -83,10 +83,10 @@ describe('AssigneeSelect (#514 keyboard typeahead)', () => {
 
     await user.click(screen.getByRole('combobox'));
     await user.type(screen.getByPlaceholderText('Search…'), 'Sa');
-    await user.click(screen.getByRole('option', { name: /Sagiv Peker/ }));
+    await user.click(screen.getByRole('option', { name: /Sasha Chen/ }));
 
     expect(onChange).toHaveBeenCalledTimes(1);
-    expect(onChange).toHaveBeenCalledWith('sagiv');
+    expect(onChange).toHaveBeenCalledWith('sasha');
   });
 });
 
@@ -255,10 +255,10 @@ describe('AssigneeSelect - labelling a value the scoped roster does not contain'
     const user = userEvent.setup();
     renderWithProviders(
       <AssigneeSelect
-        value="sagiv"
+        value="sasha"
         onChange={vi.fn()}
         purpose="jobCrew"
-        knownPeople={[{ id: 'sagiv', first_name: 'Stale', last_name: 'Copy' }]}
+        knownPeople={[{ id: 'sasha', first_name: 'Stale', last_name: 'Copy' }]}
       />,
     );
 
@@ -266,7 +266,7 @@ describe('AssigneeSelect - labelling a value the scoped roster does not contain'
 
     const options = screen.getAllByRole('option').map((o) => (o.textContent ?? '').trim());
     // Two rows, not three: the record's copy is not appended alongside the roster's.
-    expect(options).toEqual(['Sherry Dispatcher', 'Sagiv Peker']);
+    expect(options).toEqual(['Sherry Dispatcher', 'Sasha Chen']);
     expect(screen.queryByText('Stale Copy')).not.toBeInTheDocument();
   });
 });

@@ -2,6 +2,7 @@ import { lazy } from 'react';
 import { Route } from 'react-router-dom';
 
 import ProtectedRoute from '@/components/ProtectedRoute';
+import RequirePageAccess from '@/components/RequirePageAccess';
 
 import V2AppLayout from '../V2AppLayout';
 
@@ -30,7 +31,9 @@ export function estimatesV2Routes() {
   return (
     <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN']} />}>
       <Route element={<V2AppLayout />}>
-        <Route path="/estimates" element={<EstimatesPage />} />
+        <Route element={<RequirePageAccess all={['view_estimates', 'show_estimates_page']} />}>
+          <Route path="/estimates" element={<EstimatesPage />} />
+        </Route>
         <Route path="/estimates/new" element={<NewEstimateRedirect />} />
         <Route path="/estimates/:id" element={<EstimateWorkspacePage />} />
         {/* #2030 — a past version, on its OWN route rather than a mode flag on the workspace, so

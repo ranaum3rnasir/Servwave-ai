@@ -12,7 +12,7 @@ import type { Request } from 'express';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { mockAuthAs, authHeader, TEST_USERS, CUSTOMER_FIXTURE, LOCATION_FIXTURE } from './helpers';
+import { mockAuthAs, mockRoleSwitches, authHeader, TEST_USERS, CUSTOMER_FIXTURE, LOCATION_FIXTURE } from './helpers';
 import { clearTokenCache } from '../middleware/authenticate';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
@@ -206,18 +206,14 @@ const EXISTING_ROW = {
   phones: [],
   extra_emails: [],
   // #2041 — SALES's read Customer is now row-scoped (OWN_CUSTOMER); the "readable match" tests
-  // below associate this row via created_by_id. `mockDeniedCustomerRead` below overrides the
-  // WHOLE grant to a shape that ignores created_by_id entirely, so it still denies correctly.
+  // below associate this row via created_by_id. `mockDeniedCustomerRead` below turns View
+  // customers off, which reaches no customer at all, so it still denies correctly.
   created_by_id: TEST_USERS.sales.id,
 };
 
-function mockDeniedCustomerRead(role: string) {
-  const rows = [
-    ...DEFAULT_GRANTS.filter((g) => !(g.role === role && g.action === 'read' && g.subject === 'Customer')),
-    { role, action: 'read', subject: 'Customer', conditions: { id: 'zz-not-' + EXISTING_ID } },
-  ];
-  mockPrisma.rolePermission.findMany.mockResolvedValue(rows.filter((g) => g.role === role));
-  clearPermissionCache();
+function mockDeniedCustomerRead(_role: string) {
+  // With View customers off the person reaches no customer, so THIS row is denied.
+  mockRoleSwitches({ view_customers: false });
 }
 
 describe('#1996 AC7 — override audit metadata, one writer per controller', () => {
@@ -367,13 +363,9 @@ describe('#1996 AC7 — override audit metadata, one writer per controller', () 
  * inverse of `mockDeniedCustomerRead` above: the requester holds the grant AND is in scope on
  * this specific row.
  */
-function mockInScopeCustomerRead(role: string) {
-  const rows = [
-    ...DEFAULT_GRANTS.filter((g) => !(g.role === role && g.action === 'read' && g.subject === 'Customer')),
-    { role, action: 'read', subject: 'Customer', conditions: { id: EXISTING_ID } },
-  ];
-  mockPrisma.rolePermission.findMany.mockResolvedValue(rows.filter((g) => g.role === role));
-  clearPermissionCache();
+function mockInScopeCustomerRead(_role: string) {
+  // Reaches every customer: Leads scope and Jobs scope both All.
+  mockRoleSwitches({ leads_scope: 'all', jobs_scope: 'all' });
 }
 
 describe('H1 — an in-scope conditioned read Customer grant gets the full body, at all five call sites', () => {

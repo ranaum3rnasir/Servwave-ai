@@ -55,6 +55,9 @@ export type MessageThread = {
    *  Do not read it as "which counterparty is this": a staff thread is identified
    *  by `userId`, a supplier thread by `vendorId`, a lead thread by `leadId`. */
   customerId?: string;
+  /** The customer's display name, sent beside `customerId` so the conversation is titled for a person who cannot read
+   *  the customer directory. Only for a thread the person may see; no other customer field comes with it. */
+  linkedCustomer?: { id: string; name: string };
   channel: "sms";
   campaignType: CampaignType;
   unread: number;

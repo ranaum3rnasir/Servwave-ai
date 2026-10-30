@@ -54,6 +54,8 @@ beforeEach(() => {
   clearPermissionCache();
   p.customer.findFirst.mockResolvedValue(null);
   p.lead.findFirst.mockResolvedValue(null);
+  // The customer a reply's conversation is already linked to: none.
+  p.email.findMany.mockResolvedValue([]);
   p.vendor.findFirst.mockResolvedValue(null);
   p.vendorContact.findFirst.mockResolvedValue(null);
   p.replyToken.findFirst.mockResolvedValue(null);
@@ -102,6 +104,33 @@ describe('POST /api/communication/emails - Reply-To carries a reply token', () =
     const sentToken = replyToOf(sendComposedEmail)!.split('@')[0];
     expect(p.replyToken.create).toHaveBeenCalledTimes(1);
     expect(p.replyToken.create.mock.calls[0][0].data.token).toBe(sentToken);
+  });
+
+  // PRD 10 / S10.4 and S10.11 - a fresh compose starts a conversation in the SENDER'S OWN mailbox (the mailbox it
+  // went out from), origin "started", owned by the person who wrote it.
+  it('starts the conversation in the sender\'s own mailbox with origin "started", owned by the sender', async () => {
+    mockAuthAs('admin');
+    const sendComposedEmail = await sentDispatch();
+    p.mailbox.findFirst.mockResolvedValueOnce({
+      id: 'own-mailbox-7', status: 'active', addresses: [{ local_part: 'jane.smith.acme' }],
+      user: { first_name: 'Jane', last_name: 'Smith' }, organization: { name: 'Acme' },
+    });
+
+    await request(app)
+      .post('/api/communication/emails')
+      .set(authHeader('admin'))
+      .field('to', 'angel@example.com')
+      .field('body', JSON.stringify(['hi']));
+
+    expect(p.mailbox.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.objectContaining({ organization_id: ALPHA_ORG_ID, kind: 'user', user_id: ADMIN_ID }) }),
+    );
+    expect(p.emailThread.create.mock.calls[0][0].data).toEqual({
+      organization_id: ALPHA_ORG_ID, assigned_to_user_id: ADMIN_ID, mailbox_id: 'own-mailbox-7', origin: 'started',
+    });
+    expect(sendComposedEmail).toHaveBeenCalledWith(
+      expect.objectContaining({ handSender: { mailboxId: 'own-mailbox-7', userId: ADMIN_ID } }),
+    );
   });
 
   it('persists the token against the thread that the send just created', async () => {

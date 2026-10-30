@@ -657,7 +657,7 @@ describe('ingestCall — pending attribution consume', () => {
     await ingestCall(
       prisma,
       ORG_ID,
-      { ...OUT_END, agent: { id: 'USR9', name: 'Emanuel Dahan', email: 'e@x.com' } },
+      { ...OUT_END, agent: { id: 'USR9', name: 'Sam Rivera', email: 'e@x.com' } },
       'end',
     );
 
@@ -665,7 +665,7 @@ describe('ingestCall — pending attribution consume', () => {
     expect(args.create.answered_by).toEqual({
       kind: 'csr',
       ctm_agent_id: 'USR9',
-      name: 'Emanuel Dahan',
+      name: 'Sam Rivera',
       email: 'e@x.com',
     });
     // Only the agent-email lookup ran — the requester fallback never fired.

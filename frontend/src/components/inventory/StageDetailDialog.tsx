@@ -50,6 +50,7 @@ import { StagePreviewDialog } from "./StagePreviewDialog";
 import { EmailComposeDialog } from "./EmailComposeDialog";
 import {
   tradeColor,
+  inFieldRoster,
   useVendors,
   useTechs,
   useUploadStageAttachment,
@@ -61,7 +62,8 @@ import {
 } from "@/lib/api/inventory";
 import { useAuthStore } from "@/stores/auth.store";
 import { useAppAbility } from "@/contexts/AbilityContext";
-import { extractApiError } from "@/lib/utils";
+import { extractApiError, formatCurrency } from "@/lib/utils";
+import { useStageLineDisclosure } from "./stageLineDisclosure";
 import { formatExactDay } from "@/lib/format-date";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/data/status-badge";
@@ -118,7 +120,7 @@ export async function uploadPdfPages(
 // JobStage shape so we depend only on the seam, never `_mock`.
 type StagingStatus = JobStage["status"];
 
-// Pure progress helper. Emanuel exports this from `data/staging.ts`, but the
+// Pure progress helper. The original code exports this from `data/staging.ts`, but the
 // data-seam rule forbids importing runtime values from `_mock/*` and the seam
 // does not (yet) re-export it - see `concerns`. It is tiny and pure, so it is
 // inlined here. (Status badge rendering now goes through the shared
@@ -163,8 +165,10 @@ export function StageDetailDialog({
   // was seeded by slicing the raw ISO (so it showed UTC) and saved via `new Date(...)` (so it
   // stored the browser's), which is the same pairing that mis-stored the walkthrough times.
   const timezone = useScheduleTimezone();
-  // Live mock data via the seam (Emanuel read these as module-scope arrays).
-  const { data: allVendors = [] } = useVendors();
+  // Live mock data via the seam (the original code read these as module-scope arrays).
+  // Read only by a person who may read vendors: the server refuses the list to others, and this dialog is mounted (closed) on pages they open.
+  const ability = useAppAbility();
+  const { data: allVendors = [] } = useVendors(ability.can("read", "Vendor"));
   const { data: allTechs = [] } = useTechs();
   // P5 §5.4 — attachments persist through the Storage-backed endpoints; the
   // ['inventory','job-stages'] invalidation re-seeds StagingView afterwards.
@@ -187,8 +191,9 @@ export function StageDetailDialog({
   // read-only requester can never land in edit mode, in-progress stage or
   // not, so the per-line qtyReceived inputs (which render under `editing`)
   // never appear for them either.
-  const ability = useAppAbility();
   const canUpdate = ability.can("update", "Inventory");
+  // S07.4 - a line's vendor and unit cost show only with View vendors / See financial data.
+  const { showCost, showVendor } = useStageLineDisclosure();
 
   const [editing, setEditing] = useState(isInProgress && canUpdate);
   const [form, setForm] = useState<JobStage | null>(stage);
@@ -603,9 +608,7 @@ export function StageDetailDialog({
       ? "bg-info/10 text-info ring-info/20"
       : tradeColor[form.trade];
 
-  const driverTechs = allTechs.filter(
-    (t) => t.role === "field_tech" || t.role === "subcontractor",
-  );
+  const driverTechs = allTechs.filter(inFieldRoster);
 
   const isDirty = pendingAudit.length > 0;
 
@@ -923,7 +926,7 @@ export function StageDetailDialog({
                   { value: "NONE", label: "Unassigned" },
                   ...driverTechs.map((t) => ({
                     value: t.id,
-                    label: `${t.name} · ${t.primaryTrade}`,
+                    label: `${t.name}${t.primaryTrade ? ` · ${t.primaryTrade}` : ""}`,
                   })),
                 ]}
               />
@@ -1300,7 +1303,7 @@ export function StageDetailDialog({
                       {it.itemName}
                     </p>
                     <p className="text-[10px] text-text-secondary">
-                      {it.vendor} ·{" "}
+                      {showVendor && it.vendor && <>{it.vendor} · </>}
                       {/* Deferred: font-mono (SOFT) signals "this is a code" —
                           the frozen SOFT ratchet has no slack to restore it
                           after conversion, and dropping it would silently lose
@@ -1314,6 +1317,9 @@ export function StageDetailDialog({
                         <Eye className="h-2.5 w-2.5" />
                         {it.poNumber}
                       </button>
+                      {showCost && it.unitCost != null && (
+                        <span className="ml-1">· Unit cost {formatCurrency(it.unitCost)}</span>
+                      )}
                       {it.expectedDate && !done && (
                         <span className="ml-1 text-warning">
                           · ETA{" "}

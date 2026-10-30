@@ -80,7 +80,7 @@ import {
 } from '@/lib/api/jobs';
 import type { InvoiceLineItem, Scope } from '@/lib/api/jobs';
 import { useAppAbility } from '@/contexts/AbilityContext';
-import { canSeePricing as canSeePricingAbility } from '@/lib/ability';
+import { canSeePricing as canSeePricingAbility, canStartPurchaseOrder } from '@/lib/ability';
 import { useModuleAccess } from '@/lib/entitlements';
 import { toast } from '@/components/ui/use-toast';
 import { extractApiError } from '@/lib/utils';
@@ -88,20 +88,22 @@ import { extractApiError } from '@/lib/utils';
 export interface LineItemsEditorProps {
   jobId: string;
   /**
-   * Per-instance `manage_lines Job` answer, computed by the parent from the JOB
-   * (`canOnJob(ability, 'manage_lines', job, userId)`).
+   * The server's per-record answer for this job: whether `edit_line_items` (Edit job line items) is on the job's
+   * action list. Edit job line items alone decides, on any job the person can open; creating or selling the job
+   * grants nothing.
    *
-   * REQUIRED, with no ability fallback, deliberately. Since the technician-ownership spec (Part C)
-   * the grant is conditioned on `created_by_id`, so the subject-level question this component used
-   * to ask - `ability.can('manage_lines','Job')` - is true for EVERY technician and cannot see which
-   * job is on screen: it would render the editor on jobs the API refuses. An optional prop with that
-   * expression as its default is worse than either, because a new call site that forgets the prop
-   * silently gets the wrong, permissive answer with no signal. Required means the compiler asks.
+   * REQUIRED, with no ability fallback, deliberately: the browser-side ability answers "could this person ever", not
+   * "on this job", so an optional prop defaulting to it would silently give a new call site the wrong answer.
    */
   canManage: boolean;
+  /**
+   * The completed-job lock (S04.22): when set, the person's switches allow line edits but the job is locked for them, so
+   * the Add item button shows disabled with this reason instead of vanishing. Ignored when `canManage` is true.
+   */
+  lockedReason?: string;
 }
 
-export function LineItemsEditor({ jobId, canManage }: LineItemsEditorProps) {
+export function LineItemsEditor({ jobId, canManage, lockedReason }: LineItemsEditorProps) {
   const ability = useAppAbility();
   const queryClient = useQueryClient();
   // Cost/margin visibility - shared with the backend's canSeePricing gate (SRVW-140), see
@@ -115,7 +117,7 @@ export function LineItemsEditor({ jobId, canManage }: LineItemsEditorProps) {
   // useModuleAccess adds the org axis: purchase orders live behind
   // requireFeature('inventory'), so on a sub-Scale plan this action must not
   // render at all. Job line items themselves are Starter core and stay editable.
-  const canCreatePO = useModuleAccess('inventory', 'create', 'PurchaseOrder');
+  const canCreatePO = useModuleAccess('inventory', 'create', 'PurchaseOrder') && canStartPurchaseOrder(ability);
 
   const { data } = useQuery({
     queryKey: ['job-line-items', jobId],
@@ -283,6 +285,10 @@ export function LineItemsEditor({ jobId, canManage }: LineItemsEditorProps) {
     >
       <Plus className="h-4 w-4" aria-hidden /> Add item
     </Button>
+  ) : lockedReason ? (
+    <Button type="button" variant="solid" tone="business" size="sm" disabled disabledReason={lockedReason}>
+      <Plus className="h-4 w-4" aria-hidden /> Add item
+    </Button>
   ) : undefined;
 
   // Inventory P2 (D16 entry #2): "Create PO" — leftmost (a side-flow, not the primary add
@@ -391,21 +397,27 @@ export function LineItemsEditor({ jobId, canManage }: LineItemsEditorProps) {
         }}
       />
 
-      <CreatePOFromJobDialog
-        open={createPOOpen}
-        onOpenChange={setCreatePOOpen}
-        jobId={jobId}
-        lines={materialLines}
-        canSeePricing={canSeePricing}
-      />
+      {/* Mounted only for a person who can order parts: the dialog reads the item and vendor lists as it mounts, which
+          a person without the ability would be refused. */}
+      {canCreatePO && (
+        <CreatePOFromJobDialog
+          open={createPOOpen}
+          onOpenChange={setCreatePOOpen}
+          jobId={jobId}
+          lines={materialLines}
+          canSeePricing={canSeePricing}
+        />
+      )}
     </SectionCard>
   );
 }
 
 export interface JobScopeOfWorkCardProps {
   jobId: string;
-  /** Per-instance `manage_lines Job` answer from the parent - see LineItemsEditorProps.canManage. */
+  /** The job's `edit_line_items` answer from the parent - see LineItemsEditorProps.canManage. */
   canManage: boolean;
+  /** When the job closes the card to this person, the Add scope of work button shows disabled with this reason instead of vanishing. */
+  lockedReason?: string;
 }
 
 /**
@@ -414,7 +426,7 @@ export interface JobScopeOfWorkCardProps {
  * `LineItemsEditor` above, since the backend gates every job-scope mutation on the identical
  * single `manage_lines Job` ability.
  */
-export function JobScopeOfWorkCard({ jobId, canManage }: JobScopeOfWorkCardProps) {
+export function JobScopeOfWorkCard({ jobId, canManage, lockedReason }: JobScopeOfWorkCardProps) {
   const ability = useAppAbility();
   const queryClient = useQueryClient();
   const canSeePricing = canSeePricingAbility(ability);
@@ -476,6 +488,7 @@ export function JobScopeOfWorkCard({ jobId, canManage }: JobScopeOfWorkCardProps
     <ScopeOfWorkCard
       scopes={scopes}
       canEdit={canManage}
+      lockedReason={canManage ? undefined : lockedReason}
       canSeePricing={canSeePricing}
       // Job is the ONE surface whose backend removes the sell price outright for a requester
       // without `read Pricing`: job-lines.controller.ts strips flat_price from every scopes

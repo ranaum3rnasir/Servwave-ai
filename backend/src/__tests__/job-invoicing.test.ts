@@ -10,7 +10,7 @@ import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import { mockAuthAs, authHeader, JOB_FIXTURE, ALPHA_ORG_ID } from './helpers';
-import { clearPermissionCache, setCachedGrants } from '../lib/permissions/permissionCache';
+import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { DEPOSIT_CREDIT_REFERENCE } from '../controllers/invoice.controller';
 
 const mockPrisma = prisma as unknown as {
@@ -328,10 +328,6 @@ describe('POST /api/jobs/:id/invoices — access control (canAccessRow)', () => 
     // job.findFirst lookup keyed on a `read Job` grant; mock that to null (not visible under
     // the technician's own-job scope) to simulate a foreign job, per job-lines.test.ts's
     // "TECHNICIAN (granted update Job) still gets 403 on a FOREIGN job" pattern.
-    setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', [
-      { action: 'read', subject: 'Job', conditions: { assignees: { some: { user_id: '{{userId}}' } } } },
-      { action: 'create', subject: 'Invoice' },
-    ] as any);
     mockPrisma.job.findUnique.mockResolvedValue(
       jobRow({ jobLineItems: [{ quantity: 2, unit_price: 100, is_taxable: false, line_total: 200 }] }),
     );

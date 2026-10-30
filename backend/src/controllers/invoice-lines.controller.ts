@@ -26,9 +26,11 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { tenantWhere } from '../lib/tenant';
-import { canAccessRow, canSeePricing } from '../lib/permissions/enforce';
+import { canAccessRow, canSeeCosts } from '../lib/permissions/enforce';
+import { changesDiscount, changesInvoiceDiscount, refusedForDiscount } from '../lib/permissions/discountWrite';
 import { presentInvoiceDetail } from '../lib/permissions/customerContact';
 import { recomputeInvoiceTotals, type LineForTotals } from '../lib/invoice-totals';
+import { closeOpenCheckoutLinks } from '../lib/invoice-checkout-expiry';
 import { asScopeArray, toScopeForTotals, type ScopeOfWork } from '../lib/scopes';
 import { invoiceDetailSelect, stripInvoiceCost } from './invoice.controller';
 import {
@@ -47,11 +49,18 @@ import {
 } from './inv-stock.controller';
 import { logAudit } from '../lib/audit';
 import { isInvoiceEditable, amountPaidOf, creditsTotalOf, isSentInvoice } from '../lib/invoice-editable';
+import { creditCoveredStatus } from '../lib/invoice-money-status';
 import { LINE_DESCRIPTION_MAX } from '../lib/line-items';
+import { jobLineSnapshot, recordInvoiceLineChange, recordInvoiceDiscountChange } from '../lib/job-change-history';
 import { LONG_TEXT_MAX } from '../lib/text-limits';
 
 function param(req: Request, name: string): string {
   return req.params[name] as string;
+}
+
+// S06.6: who made the edit, for the entry it leaves on the job's timeline.
+function actorOf(req: Request) {
+  return { orgId: req.user!.organization_id, userId: req.user!.id };
 }
 
 function round2(n: number): number {
@@ -324,7 +333,14 @@ async function recomputeAndPersist(
   // When real money is on the invoice, keep status coherent with the new balance: an edit that
   // covers the balance settles (and locks) it; otherwise it stays PARTIAL. Invoices without
   // payments (DRAFT/SENT) keep their status.
-  const settledStatus = amountPaid > 0 ? (cashBalance <= 0 ? 'PAID' : 'PARTIAL') : null;
+  // Slice 32b: no cash yet, but a SENT invoice whose deposit credit alone now covers the total
+  // reads PAID too (the one shared rule); a DRAFT is still being written and keeps its status.
+  const settledStatus = amountPaid > 0
+    ? (cashBalance <= 0 ? 'PAID' : 'PARTIAL')
+    : (invoice.status !== 'DRAFT'
+      && creditCoveredStatus({ status: 'SENT', cashBalanceCents: Math.round(cashBalance * 100), depositCreditCents: Math.round(depositCredit * 100) }) === 'PAID'
+      ? 'PAID' as const
+      : null);
 
   const updated = await tx.invoice.update({
     where: { id: invoice.id, ...tenantWhere(req) },
@@ -350,6 +366,16 @@ async function recomputeAndPersist(
   return updated;
 }
 
+/**
+ * Payments go-live slice 14: a checkout link opened before this edit asks for the old amount, so
+ * every link still open for the invoice is expired once the edit has committed. W4: a DRAFT with a
+ * public link is payable too, so a DRAFT is swept like any other status. Fire-and-forget: a
+ * processor outage never fails the edit.
+ */
+function closeLinksAfterEdit(req: Request, invoice: GuardedInvoice): void {
+  void closeOpenCheckoutLinks(req.user!.organization_id, [invoice], 'invoice_edited');
+}
+
 // --- Handlers ---
 
 // B6: POST /api/invoices/:id/line-items
@@ -358,11 +384,14 @@ export async function addLine(req: Request, res: Response) {
     const invoice = await loadGuardedInvoice(req, res);
     if (!invoice) return;
 
+    // Apply discounts: a new line carrying a discount sets one.
+    if (refusedForDiscount(req, res, 'Invoice', changesDiscount(req.body, null))) return;
+
     const body = req.body as z.infer<typeof addLineSchema>;
-    // Drop cost/margin fields BEFORE the write when the requester can't `read Invoice` — mirrors
+    // Drop cost/margin fields BEFORE the write when the requester can't see costs (See financial data) — mirrors
     // job-lines.controller.ts's identical addLine guard (job-lines pricing-leak follow-up,
     // invoice-lines half). Both the write AND the response must strip these (see stripInvoiceCost).
-    if (!canSeePricing(req)) {
+    if (!canSeeCosts(req)) {
       body.unit_cost = undefined;
       body.markup_percent = undefined;
     }
@@ -390,7 +419,7 @@ export async function addLine(req: Request, res: Response) {
       });
       const nextSequence = existing.reduce((m: number, l: { sequence: number }) => Math.max(m, l.sequence), 0) + 1;
 
-      await tx.invoiceLineItem.create({
+      const created = await tx.invoiceLineItem.create({
         data: {
           invoice_id: invoice.id,
           sequence: nextSequence,
@@ -410,10 +439,30 @@ export async function addLine(req: Request, res: Response) {
           stock_location_id: null,
         },
       });
+      // S06.6: the new line on the job's timeline, in the same transaction as the edit.
+      await recordInvoiceLineChange(
+        tx,
+        actorOf(req),
+        invoice.job_id,
+        invoice,
+        created.id,
+        null,
+        jobLineSnapshot({
+          description: body.description,
+          quantity,
+          unit_price: unitPrice,
+          line_total: lineTotal,
+          is_taxable: isTaxable,
+          discount_type: body.discount_type ?? null,
+          discount_value: body.discount_value ?? null,
+          discount_amount: discountAmount,
+        }),
+      );
 
       return recomputeAndPersist(tx, req, invoice, {}, { fields: ['line_items'] });
     });
 
+    closeLinksAfterEdit(req, invoice);
     void logAudit({
       req,
       action: 'invoice.line_added',
@@ -445,7 +494,21 @@ export async function deleteLine(req: Request, res: Response) {
     const updated = await prisma.$transaction(async (tx) => {
       const line = await tx.invoiceLineItem.findFirst({
         where: { id: lineId, invoice_id: invoice.id },
-        select: { id: true, quantity: true, price_book_item_id: true, stock_location_id: true, stock_status: true },
+        select: {
+          id: true,
+          quantity: true,
+          price_book_item_id: true,
+          stock_location_id: true,
+          stock_status: true,
+          // S06.6: the values the job's timeline records as removed.
+          description: true,
+          unit_price: true,
+          line_total: true,
+          is_taxable: true,
+          discount_type: true,
+          discount_value: true,
+          discount_amount: true,
+        },
       });
       if (line?.stock_status === 'SYNCED') {
         await returnSyncedLines(tx, [line], {
@@ -460,9 +523,14 @@ export async function deleteLine(req: Request, res: Response) {
       await tx.invoiceLineItem.deleteMany({
         where: { id: lineId, invoice_id: invoice.id },
       });
+      // S06.6: what was removed, on the job's timeline, in the same transaction.
+      if (line) {
+        await recordInvoiceLineChange(tx, actorOf(req), invoice.job_id, invoice, lineId, jobLineSnapshot(line), null);
+      }
       return recomputeAndPersist(tx, req, invoice, {}, { fields: ['line_items'] });
     });
 
+    closeLinksAfterEdit(req, invoice);
     void logAudit({
       req,
       action: 'invoice.line_deleted',
@@ -717,9 +785,21 @@ export async function updateLine(req: Request, res: Response) {
 
     const lineId = param(req, 'lineId');
     const body = req.body as z.infer<typeof updateLineSchema>;
-    // Drop cost/margin fields BEFORE the write when the requester can't `read Invoice` — see
+
+    // Apply discounts: judged against the line as stored, so an edit that leaves its discount alone
+    // passes. Only a request that names a discount field needs the read. A line this invoice does not
+    // have is left to the 404 below.
+    if (body.discount_type !== undefined || body.discount_value !== undefined) {
+      const stored = await prisma.invoiceLineItem.findFirst({
+        where: { id: lineId, invoice_id: invoice.id },
+        select: { discount_type: true, discount_value: true },
+      });
+      if (stored && refusedForDiscount(req, res, 'Invoice', changesDiscount(body, stored))) return;
+    }
+
+    // Drop cost/margin fields BEFORE the write when the requester can't see costs (See financial data) — see
     // addLine's identical guard for why both the write AND the response must strip these.
-    if (!canSeePricing(req)) {
+    if (!canSeeCosts(req)) {
       body.unit_cost = undefined;
       body.markup_percent = undefined;
     }
@@ -780,6 +860,27 @@ export async function updateLine(req: Request, res: Response) {
         },
       });
 
+      // S06.6: old and new values on the job's timeline, in the same transaction. A save that
+      // moved nothing writes nothing.
+      await recordInvoiceLineChange(
+        tx,
+        actorOf(req),
+        invoice.job_id,
+        invoice,
+        lineId,
+        jobLineSnapshot(line),
+        jobLineSnapshot({
+          description: body.description ?? line.description,
+          quantity,
+          unit_price: unitPrice,
+          line_total: lineTotal,
+          is_taxable: isTaxable,
+          discount_type: discountType ?? null,
+          discount_value: discountValue ?? null,
+          discount_amount: discountAmount,
+        }),
+      );
+
       return recomputeAndPersist(tx, req, invoice, {}, { fields: ['line_items'] });
     });
 
@@ -787,6 +888,7 @@ export async function updateLine(req: Request, res: Response) {
       res.status(404).json({ error: 'Line item not found' });
       return;
     }
+    closeLinksAfterEdit(req, invoice);
     void logAudit({
       req,
       action: 'invoice.line_updated',
@@ -879,6 +981,8 @@ export async function updateBilling(req: Request, res: Response) {
     if (!invoice) return;
 
     const body = req.body as z.infer<typeof updateBillingSchema>;
+    // Apply discounts: the billing discount, judged against the one stored.
+    if (refusedForDiscount(req, res, 'Invoice', changesInvoiceDiscount(body.discount_amount, invoice.discount_amount))) return;
     // SERV10X-59 materiality: discount_amount/tax_rate change the public payload's totals — Yes.
     // tip does NOT (tip is not in getPublic yet — a customer paying through the public link can
     // neither see nor add one; see the plan's "Tip (deferred)" note) — so a tip-only PATCH must
@@ -887,14 +991,26 @@ export async function updateBilling(req: Request, res: Response) {
       ...(body.discount_amount !== undefined ? ['discount_amount'] : []),
       ...(body.tax_rate !== undefined ? ['tax_rate'] : []),
     ];
-    const updated = await prisma.$transaction(async (tx) =>
-      recomputeAndPersist(tx, req, invoice, {
+    const updated = await prisma.$transaction(async (tx) => {
+      // S06.6: a discount that actually moved goes on the job's timeline, in the same transaction.
+      if (body.discount_amount !== undefined) {
+        await recordInvoiceDiscountChange(
+          tx,
+          actorOf(req),
+          invoice.job_id,
+          invoice,
+          Number(invoice.discount_amount ?? 0),
+          body.discount_amount,
+        );
+      }
+      return recomputeAndPersist(tx, req, invoice, {
         ...(body.tip !== undefined ? { tip: body.tip } : {}),
         ...(body.discount_amount !== undefined ? { invoiceDiscountAmount: body.discount_amount } : {}),
         ...(body.tax_rate !== undefined ? { taxRate: body.tax_rate } : {}),
-      }, { material: materialFields.length > 0, fields: materialFields }),
-    );
+      }, { material: materialFields.length > 0, fields: materialFields });
+    });
 
+    closeLinksAfterEdit(req, invoice);
     void logAudit({
       req,
       action: 'invoice.billing_updated',
@@ -919,11 +1035,11 @@ export async function addScope(req: Request, res: Response) {
     if (!invoice) return;
 
     const body = req.body as z.infer<typeof addScopeSchema>;
-    // Drop cost data BEFORE the write when the requester can't `read Invoice` — symmetric with
+    // Drop cost data BEFORE the write when the requester can't see costs (See financial data) — symmetric with
     // job-lines.controller.ts's identical addScope guard (job-lines pricing-leak follow-up,
     // invoice half). `delete`, not `= undefined` — see updateScope's identical guard below for
     // why the distinction matters there; harmless either way here (brand-new scope).
-    if (!canSeePricing(req)) {
+    if (!canSeeCosts(req)) {
       delete body.internal_cost;
     }
     const newScope: ScopeOfWork = {
@@ -952,6 +1068,7 @@ export async function addScope(req: Request, res: Response) {
       return recomputeAndPersist(tx, req, invoice, {}, { fields: ['scopes'] });
     });
 
+    closeLinksAfterEdit(req, invoice);
     void logAudit({
       req,
       action: 'invoice.scope_added',
@@ -974,7 +1091,7 @@ export async function updateScope(req: Request, res: Response) {
 
     const idx = parseInt(param(req, 'idx'), 10);
     const body = req.body as z.infer<typeof updateScopeSchema>;
-    // Drop cost data BEFORE the merge when the requester can't `read Invoice` — symmetric with
+    // Drop cost data BEFORE the merge when the requester can't see costs (See financial data) — symmetric with
     // job-lines.controller.ts's identical updateScope guard. MUST be `delete`, not
     // `body.internal_cost = undefined`: the merge below is a full-object spread over the
     // EXISTING scope, and an explicitly-undefined-valued key is still an own enumerable
@@ -982,7 +1099,7 @@ export async function updateScope(req: Request, res: Response) {
     // undefined even when the low-priv caller's edit never mentioned that field. `delete`
     // makes an ignored/attempted submission behave exactly like zod's own "omitted key"
     // semantics the merge below already relies on for every other field.
-    if (!canSeePricing(req)) {
+    if (!canSeeCosts(req)) {
       delete body.internal_cost;
     }
 
@@ -1013,6 +1130,7 @@ export async function updateScope(req: Request, res: Response) {
       res.status(404).json({ error: 'Scope not found' });
       return;
     }
+    closeLinksAfterEdit(req, invoice);
     void logAudit({
       req,
       action: 'invoice.scope_updated',
@@ -1120,6 +1238,7 @@ export async function deleteScope(req: Request, res: Response) {
       res.status(404).json({ error: 'Scope not found' });
       return;
     }
+    closeLinksAfterEdit(req, invoice);
     void logAudit({
       req,
       action: 'invoice.scope_deleted',

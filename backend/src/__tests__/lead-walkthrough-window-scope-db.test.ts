@@ -8,7 +8,9 @@
    tech's OWN trip in view", and assigned over the scope they would drop it (an RBAC bypass).
    Both are nested relation filters that only Postgres evaluates honestly, so the composed
    `where` is built by the real code and run against real rows:
-     - the tech whose own trip is outside the window, with a sibling trip inside it, gets the lead;
+     - the tech whose own trip is outside the window, with a sibling trip inside it, does not get the lead
+       (S04.10: under Attached the board carries the walkthroughs the person is crewed on);
+     - the sibling whose own trip is inside the window does;
      - a tech on no trip of the lead never does, window or not;
      - a sibling trip inside the window that was CANCELLED does not bring the lead into view.
 
@@ -26,7 +28,7 @@ import { PrismaClient } from '@prisma/client';
 import { prisma as appClient } from '../lib/prisma';
 import { buildLeadListWhere } from '../controllers/lead.controller';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
-import { clearPermissionCache, setCachedGrants } from '../lib/permissions/permissionCache';
+import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 const url = process.env.TEST_DATABASE_URL;
 const suite = url ? describe : describe.skip;
@@ -84,7 +86,7 @@ suite('technician lead scope + walkthrough window (real database)', () => {
       { at: nextMonth, status: 'SCHEDULED', crew: ownTripTech },
       { at: inWeek, status: 'CANCELLED', crew: siblingTech },
     ]);
-    return { orgId, ownTripTech, strangerTech, splitLead, cancelledSiblingLead };
+    return { orgId, ownTripTech, siblingTech, strangerTech, splitLead, cancelledSiblingLead };
   }
 
   /** The board's windowed lead list, as `userId` (a TECHNICIAN) asks for it. */
@@ -117,20 +119,20 @@ suite('technician lead scope + walkthrough window (real database)', () => {
   });
 
   function grantTechnicianDefaults(orgId: string) {
-    setCachedGrants(
-      orgId,
-      'TECHNICIAN',
-      DEFAULT_GRANTS.filter((g) => g.role === 'TECHNICIAN').map((g) => ({
-        action: g.action, subject: g.subject, conditions: (g as { conditions?: Record<string, unknown> }).conditions ?? null,
-      })),
-    );
   }
 
-  it("returns the lead to a tech whose own trip is outside the window when a sibling trip is inside it", async () => {
+  it("does not return the lead to a tech whose own trip is outside the window when a sibling trip is inside it", async () => {
     const f = await fixture();
     grantTechnicianDefaults(f.orgId);
 
-    expect(await boardLeads(f.orgId, f.ownTripTech)).toEqual([f.splitLead]);
+    expect(await boardLeads(f.orgId, f.ownTripTech)).toEqual([]);
+  });
+
+  it('returns the lead to the sibling whose own trip is inside the window', async () => {
+    const f = await fixture();
+    grantTechnicianDefaults(f.orgId);
+
+    expect(await boardLeads(f.orgId, f.siblingTech)).toEqual([f.splitLead]);
   });
 
   it('never returns it to a tech on no trip of the lead, with or without the window', async () => {

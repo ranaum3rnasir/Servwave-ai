@@ -13,6 +13,7 @@ import { chartPalette, token } from '@/design-system/tokens';
 import { formatCurrencyWhole } from '@/lib/utils';
 import { exportCsvFile } from '@/lib/csv';
 import { findReport } from '@/lib/reports/report-catalog';
+import { useCanExportReports } from '@/lib/reports/useCanExportReports';
 import { buildExpenses, buildMonthlyRevenue } from '@/lib/reports/expenses-data';
 import {
   BUSINESS_UNITS, CARDHOLDERS, EXPENSE_ATTRIBUTES, EXPENSE_CATEGORIES, EXPENSE_STATUSES, USERS,
@@ -183,6 +184,7 @@ function CardholderBreakdown({ cardholder, rows }: { cardholder: string; rows: E
 
 export default function ExpensesReport() {
   const report = findReport('expenses')!;
+  const canExport = useCanExportReports();
   const [rows] = useState(() => buildExpenses());
   const monthlyRevenue = useMemo(() => buildMonthlyRevenue(NOW), []);
 
@@ -485,10 +487,12 @@ export default function ExpensesReport() {
             className="w-[80px]"
             options={[10, 25, 50].map((n) => ({ value: String(n), label: String(n) }))}
           />
-          <Button variant="outline" size="sm" onClick={exportCsv}>
-            <Download />
-            Export
-          </Button>
+          {canExport && (
+            <Button variant="outline" size="sm" onClick={exportCsv}>
+              <Download />
+              Export
+            </Button>
+          )}
         </div>
       </div>
 

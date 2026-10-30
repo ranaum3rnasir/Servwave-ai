@@ -12,14 +12,13 @@ import {
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
-import { Label } from '@/components/ui/label';
 import { FormField } from '@/components/patterns/FormField';
-import { SelectField } from '@/components/form/SelectField';
 import { DateField } from '@/ui-kit/components/form/dateField';
 import { Loader2, DollarSign } from 'lucide-react';
 import { formatCurrency, extractApiError } from '@/lib/utils';
 import { instantFromLocalDay, todayLocalDay } from '@/lib/format-date';
-import { PAYMENT_METHOD_LABELS, PAYMENT_METHOD_ORDER } from '@/lib/payment-methods';
+import { RecordPaymentMethodField } from '@/components/payments/RecordPaymentMethodField';
+import { selectedPaymentMethod, useRecordablePaymentMethods } from '@/lib/api/recordablePaymentMethods';
 import {
   resolveDeposit,
   amountFromPercent,
@@ -27,6 +26,8 @@ import {
   round2,
   type DepositType,
 } from '@/lib/deposit';
+
+const METHOD_REASON_ID = 'record-estimate-payment-method-reason';
 
 interface Props {
   open: boolean;
@@ -74,7 +75,11 @@ export function RecordEstimatePaymentDialog({
 
   const [percentage, setPercentage] = useState<string>(String(defaultPct));
   const [amount, setAmount] = useState<string>(String(defaultAmount));
-  const [method, setMethod] = useState<string>('EXTERNAL_CARD');
+  // What the person picked; the method shown and sent is that while it is still on offer, else the first on offer
+  // (the lists arrive after the dialog mounts, so the preselection cannot be seeded here).
+  const [pickedMethod, setPickedMethod] = useState<string>('');
+  const recordable = useRecordablePaymentMethods();
+  const method = selectedPaymentMethod(pickedMethod, recordable.methods);
   const [paidAt, setPaidAt] = useState<string>(today);
   const [referenceNumber, setReferenceNumber] = useState<string>('');
   const [notes, setNotes] = useState<string>('');
@@ -94,7 +99,7 @@ export function RecordEstimatePaymentDialog({
     if (open) {
       setPercentage(String(defaultPct));
       setAmount(String(defaultAmount));
-      setMethod('EXTERNAL_CARD');
+      setPickedMethod('');
       setPaidAt(today);
       setReferenceNumber('');
       setNotes('');
@@ -150,6 +155,8 @@ export function RecordEstimatePaymentDialog({
 
   const amountValid = !Number.isNaN(parseFloat(amount)) && parseFloat(amount) > 0;
   const canSubmit = amountValid && Boolean(method) && Boolean(paidAt);
+  // Nothing the person may record: the button is greyed and the field says why.
+  const noMethod = recordable.ready && recordable.methods.length === 0;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -190,22 +197,14 @@ export function RecordEstimatePaymentDialog({
             </FormField>
           </div>
 
-          {/* Not a FormField: SelectField's props are a closed list (value /
-              onValueChange / options / placeholder / disabled / className /
-              aria-label) with no id or aria-* passthrough, so the id FormField
-              generates would be dropped on the floor and the label would point
-              at nothing. Wiring it needs a change to SelectField, not to this
-              call site. Same for RefundDepositDialog's Reason category. */}
-          <div>
-            <Label id="rp-method-label">Payment method *</Label>
-            <SelectField
-              aria-label="Payment method"
-              value={method}
-              onValueChange={setMethod}
-              className="w-full h-9"
-              options={PAYMENT_METHOD_ORDER.map((m) => ({ value: m, label: PAYMENT_METHOD_LABELS[m] }))}
-            />
-          </div>
+          <RecordPaymentMethodField
+            methods={recordable.methods}
+            ready={recordable.ready}
+            value={method}
+            onValueChange={setPickedMethod}
+            reasonId={METHOD_REASON_ID}
+            labelId="rp-method-label"
+          />
 
           <FormField label="Date received *" htmlFor="rp-date">
             <DateField value={paidAt} onChange={setPaidAt} />
@@ -240,7 +239,11 @@ export function RecordEstimatePaymentDialog({
           <Button variant="outline" onClick={() => onOpenChange(false)}>
             Cancel
           </Button>
-          <Button onClick={() => mutation.mutate()} disabled={!canSubmit || mutation.isPending}>
+          <Button
+            onClick={() => mutation.mutate()}
+            aria-describedby={noMethod ? METHOD_REASON_ID : undefined}
+            disabled={!canSubmit || mutation.isPending}
+          >
             {mutation.isPending ? (
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
             ) : (

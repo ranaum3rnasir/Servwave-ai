@@ -61,12 +61,14 @@ function rowsFor(sections: ReturnType<typeof buildNavSections>) {
   return sections.flatMap((s) => s.items.flatMap((item) => [item, ...(item.children ?? [])]));
 }
 
-function buildSections(ability: ReturnType<typeof buildAbility>) {
+// Roles & Permissions S02.20: the group follows the person's switches (Access Communication plus a Show), not the rules.
+function buildSections(ability: ReturnType<typeof buildAbility>, values: Record<string, unknown> = {}) {
   return buildNavSections({
     keys: DEFAULT_LAYOUT_KEYS,
     sections: NAV_SECTIONS,
     getDestination,
     can: ability.can.bind(ability),
+    values,
     isLocked: () => false,
     isFeatureLocked: () => false,
   });
@@ -101,7 +103,9 @@ describe('#2046 buildNavSections — Communication group visibility', () => {
   });
 
   it('keeps the Communication group + children for an ability holding the section gate (must stay green)', () => {
-    const labels = rowsFor(buildSections(sectionGateAbility())).map((r) => r.dest.label);
+    const labels = rowsFor(buildSections(sectionGateAbility(), {
+      access_communication: true, show_phone: true, show_text: true,
+    })).map((r) => r.dest.label);
     expect(labels).toContain('Communication');
     expect(labels).toContain('Phone');
     expect(labels).toContain('Text');

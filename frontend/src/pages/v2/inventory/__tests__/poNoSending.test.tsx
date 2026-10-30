@@ -11,7 +11,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderWithProviders, purchasingAbility } from '@/__tests__/helpers';
 
 const hoisted = vi.hoisted(() => {
   function po(n: number, status: 'draft' | 'ordered' | 'received', vendor: string) {
@@ -82,7 +82,7 @@ beforeEach(() => {
 
 describe('purchase orders page — nothing here sends (S1.1)', () => {
   it('Open-tab row actions offer Preview and Receive, never Email', async () => {
-    renderWithProviders(<PurchaseOrdersPage />, { initialEntries: ['/inventory/purchase-orders'] });
+    renderWithProviders(<PurchaseOrdersPage />, { initialEntries: ['/inventory/purchase-orders'], ability: purchasingAbility() });
     expect(await screen.findByText('PO-2001')).toBeInTheDocument();
 
     // Two Open rows (an ordered PO and a draft): both preview, only the
@@ -93,7 +93,7 @@ describe('purchase orders page — nothing here sends (S1.1)', () => {
   });
 
   it('page has no sending language anywhere', async () => {
-    renderWithProviders(<PurchaseOrdersPage />, { initialEntries: ['/inventory/purchase-orders'] });
+    renderWithProviders(<PurchaseOrdersPage />, { initialEntries: ['/inventory/purchase-orders'], ability: purchasingAbility() });
     await screen.findByText('PO-2001');
 
     expect(document.body.textContent).not.toMatch(/you've sent|open orders with vendors|send to vendor/i);
@@ -101,14 +101,14 @@ describe('purchase orders page — nothing here sends (S1.1)', () => {
 
   it('the Open empty state has no sending language', async () => {
     posForRender = hoisted.none;
-    renderWithProviders(<PurchaseOrdersPage />, { initialEntries: ['/inventory/purchase-orders'] });
+    renderWithProviders(<PurchaseOrdersPage />, { initialEntries: ['/inventory/purchase-orders'], ability: purchasingAbility() });
 
     expect(await screen.findByText('Nothing open. Every order has been received or closed.')).toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/sent/i);
   });
 
   it('History has no Variance column and shows "—" for Received on', async () => {
-    renderWithProviders(<PurchaseOrdersPage />, { initialEntries: ['/inventory/purchase-orders'] });
+    renderWithProviders(<PurchaseOrdersPage />, { initialEntries: ['/inventory/purchase-orders'], ability: purchasingAbility() });
     await screen.findByText('PO-2001');
     await userEvent.click(screen.getByRole('tab', { name: /History/ }));
     const row = (await screen.findByText('PO-2003')).closest('tr')!;
@@ -122,7 +122,7 @@ describe('purchase orders page — nothing here sends (S1.1)', () => {
   });
 
   it('the History CSV keeps the "Received on" header and emits an empty value', async () => {
-    renderWithProviders(<PurchaseOrdersPage />, { initialEntries: ['/inventory/purchase-orders'] });
+    renderWithProviders(<PurchaseOrdersPage />, { initialEntries: ['/inventory/purchase-orders'], ability: purchasingAbility() });
     await screen.findByText('PO-2001');
     await userEvent.click(screen.getByRole('tab', { name: /History/ }));
     await screen.findByText('PO-2003');

@@ -1563,17 +1563,7 @@ const RAW_TAG_CEILINGS: Record<string, number> = {
   // grep of its diff against its staging base f1a12742b nets zero raw <button>s); it is
   // conversions/deletions that landed on staging without the ceiling being lowered.
   // Zero conversions here; re-measured with countRawTagOccurrences over rawTagFiles().
-  // 570 -> 575, selective promotion of this build to main (2026-09-28): main never got the
-  // staging-only conversions/deletions that 570 measured, so this test's own ratchet line
-  // printed "575 / 570" on the promotion branch. Set to that measured count, not a raise
-  // on main's 665.
-  // 575 -> 577, selective promotion of #2155 (per-org schedule event colors) to main
-  // (2026-09-30): eventColorsCard.tsx adds two raw <button>s - the underlined "Reset to
-  // default" link button and the colour swatch radio options (role="radio", the same
-  // list-row/radio-option deferral SubStatusPicker.tsx carries). Staging already counts
-  // both under its own 570; main never got staging's conversions. This test's own ratchet
-  // line printed "577 / 575" on the promotion branch. Set to the measured count, not a raise.
-  button: 577,
+  button: 570,
   // 252 -> 248, phase 11a "pattern-toolbar" batch: InventoryPage.tsx,
   // PurchaseOrdersPage.tsx and PriceBookPage.tsx (2 sites, Items + Groups
   // tabs) each hand-rolled a raw <input> search box; all 4 now render
@@ -2044,7 +2034,7 @@ const RAW_TAG_CEILINGS: Record<string, number> = {
   // components/notifications/NotificationPanel.tsx (the sr-only/visible dual-mode
   // h2 - both branches now share one Heading, `className={hideHeaderTitle ?
   // 'sr-only' : undefined}`, since sr-only doesn't compete with the retained
-  // type-size classes) and components/payments/StripePaymentsStatusCard.tsx. The
+  // type-size classes) and components/payments/PaymentsStatusCard.tsx. The
   // other 4 raw headings stay raw, each commented in place: two eyebrow-style
   // labels with no matching Heading variant (EstimateDocumentView.tsx's "Scope of
   // Work" h3, NotesCard.tsx's "Notes" h4 - both uppercase+tracking-wide small-caps),

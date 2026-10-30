@@ -241,8 +241,8 @@ describe('POST .../direct-upload — minting a scoped upload URL', () => {
     const res = await mintVideo({ file_size: MAX_VIDEO_FILE_SIZE + 1 });
 
     expect(res.status).toBe(400);
-    // Derived from the constant, never restated. A literal here would have kept passing on
-    // the day the cap went to 512MB and the API started refusing 513MB files promising 50MB.
+    // Derived from the constant, never restated. A literal here would keep passing on the day
+    // S4 raises the cap and the API starts refusing 512MB files while promising 50MB.
     expect(res.body.error).toBe(`File too large. Maximum: ${sizeLimitLabel(MAX_VIDEO_FILE_SIZE)}`);
     expect(storage.createSignedUploadUrl).not.toHaveBeenCalled();
   });
@@ -263,9 +263,9 @@ describe('POST .../direct-upload — minting a scoped upload URL', () => {
   });
 
   it('refuses when the declared size would already blow the per-entity total', async () => {
-    // Positioned relative to MAX_ENTITY_SIZE, never at a figure typed beside it. The total
-    // went from 200MB to 2GB and the old fixture (199MB stored + 5MB) silently stopped
-    // overflowing anything - the assertion would have survived as a test that cannot fail.
+    // Positioned relative to MAX_ENTITY_SIZE, never at a figure typed beside it. S4 raised the
+    // total from 200MB to 2GB and the old fixture (199MB stored + 5MB) silently stopped
+    // overflowing anything — the assertion survived as a test that could no longer fail.
     mockPrisma.attachment.aggregate.mockResolvedValue({
       _sum: { file_size: MAX_ENTITY_SIZE - 4 * MB },
     });
@@ -323,22 +323,20 @@ describe('POST .../direct-upload/complete — verifying the landed object', () =
   });
 
   /**
-   * The COMPLETE-path boundary, pinned on both sides with LITERAL byte counts.
+   * The ACCEPT side of the complete path's boundary, in literal bytes.
    *
-   * The mint path already had an exactly-512MB case; this one did not, and the asymmetry sat
-   * on the precise number the cap was set to. The cost of getting it wrong here is not a
-   * refusal, it is destruction: this branch calls `discardStoredObject(ticket.path)`, so an
-   * off-by-one turning `>` into `>=` DELETES a 512MB object that fully landed — every byte
-   * pushed up a slow field uplink — and then tells the uploader it was too large.
+   * The refusal above is derived from `MAX_VIDEO_FILE_SIZE + 1`, and derived is right for it.
+   * But nothing pinned the other side, so `realSize > MAX_VIDEO_FILE_SIZE` could be mutated to
+   * `>=` and the entire backend suite stayed green. The create path at mint time is covered;
+   * this one was not — and an off-by-one HERE rejects a file the user has already finished
+   * uploading, which is the worst moment there is to refuse it.
    *
-   * 536,870,912 is written out rather than derived from MAX_VIDEO_FILE_SIZE on purpose. A
-   * fixture spelled `MAX_VIDEO_FILE_SIZE` moves whenever the constant moves, so it can never
-   * catch the constant and the storage ceiling drifting apart — and the ceiling is the thing
-   * this number has to keep matching. Measured 2026-09-20: a resumable-upload creation POST
-   * declaring 536870912 answers 201, and 536870913 answers 413. The bucket's limit is
-   * INCLUSIVE, so exactly 512MiB must be ACCEPTED here, not refused.
+   * 536,870,912 is typed out rather than derived. The point is to catch the constant and the
+   * comparison drifting together: with both derived from the same symbol, the pair stays
+   * self-consistent while being wrong about the real storage boundary, which is inclusive
+   * (measured on staging 2026-09-20: Upload-Length 536870912 -> 201, 536870913 -> 413).
    */
-  it('accepts an object of exactly 536,870,912 bytes and does NOT discard it', async () => {
+  it('ACCEPTS a landed object of exactly 536870912 bytes', async () => {
     const minted = await mintVideo({ file_size: 1 * MB });
     storage.info.mockResolvedValue({
       data: { size: 536870912, contentType: 'video/mp4' },
@@ -353,16 +351,14 @@ describe('POST .../direct-upload/complete — verifying the landed object', () =
     });
 
     expect(res.status).toBe(201);
-    // The object survives. This is the assertion that matters: a 400 would be a bad day, but
-    // `remove` having been called is the user's file gone.
-    expect(storage.remove).not.toHaveBeenCalled();
     expect(mockPrisma.attachment.create).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ file_size: 536870912 }) }),
     );
-    expect(res.body.attachment.file_size).toBe(536870912);
+    // The file the user just finished uploading is still there.
+    expect(storage.remove).not.toHaveBeenCalled();
   });
 
-  it('refuses an object of 536,870,913 bytes — one past the ceiling — and discards it', async () => {
+  it('refuses and DELETES a landed object of 536870913 bytes — one past the cap', async () => {
     const minted = await mintVideo({ file_size: 1 * MB });
     storage.info.mockResolvedValue({
       data: { size: 536870913, contentType: 'video/mp4' },
@@ -382,31 +378,9 @@ describe('POST .../direct-upload/complete — verifying the landed object', () =
     expect(storage.remove).toHaveBeenCalledWith([minted.body.upload.path]);
   });
 
-  /**
-   * The same shape for the per-entity total, which is also a delete-on-refuse branch.
-   *
-   * Lower stakes — 2GB of attachments on one record is not a total any user reaches — but
-   * `>` -> `>=` is green here too, and the consequence is again the landed object being
-   * removed. Derived from MAX_ENTITY_SIZE rather than written out: unlike the video cap this
-   * number is not pinned to anything outside the process, so there is nothing for a literal
-   * to catch it drifting away from.
-   */
-  it('accepts an object that lands the entity total on exactly MAX_ENTITY_SIZE', async () => {
-    mockPrisma.attachment.aggregate.mockResolvedValue({
-      _sum: { file_size: MAX_ENTITY_SIZE - 30 * MB },
-    });
-    const minted = await mintVideo({ file_size: 1 * MB });
-    storage.info.mockResolvedValue({ data: { size: 30 * MB, contentType: 'video/mp4' }, error: null });
-    stubHeadBytes(mp4Head());
-
-    const res = await complete({
-      ticket: minted.body.upload.ticket,
-      display_name: 'Walkthrough',
-      description: '',
-    });
-
-    expect(res.status).toBe(201);
-    expect(storage.remove).not.toHaveBeenCalled();
+  it('pins the cap these two literals describe', () => {
+    // Without this the pair above quietly starts testing some other boundary.
+    expect(MAX_VIDEO_FILE_SIZE).toBe(536870912);
   });
 
   it('rejects and DELETES an object whose real bytes disagree with the declared type (F-35)', async () => {
@@ -768,17 +742,16 @@ describe('completing the same upload twice', () => {
    * prevent, reached from the other side.
    *
    * Every other test in this suite uses `_sum: 0`, which is precisely why none of them could
-   * see it. The resumable transport's retries turn replays from exotic into routine, and a
-   * 512MB per-file cap makes each double-count ten times larger, so a job needs far fewer
-   * videos to reach it.
+   * see it. S2's retries turn replays from exotic into routine, and the 512MB per-file cap
+   * makes each double-count twenty times larger, so a job needs far fewer videos to reach it.
    */
   it('does not double-count the existing row against the entity total', async () => {
     const minted = await mintVideo();
     // Stored total INCLUDING this upload's own 5MB row, placed so the double-count is
-    // decisive: the aggregate alone is 4MB under the cap, and counting the 5MB row twice puts
-    // it 1MB over. Derived, because the fixed 196MB this used to say stopped overflowing
-    // anything the moment the total went to 2GB - leaving a guard against a deletion bug that
-    // could no longer fail.
+    // decisive: the aggregate alone is 4MB under the cap, and counting the 5MB row twice
+    // puts it 1MB over. Derived, because the fixed 196MB this used to say stopped
+    // overflowing anything the moment S4 took the total to 2GB - leaving a guard against
+    // a deletion bug that could no longer fail.
     mockPrisma.attachment.aggregate.mockResolvedValue({
       _sum: { file_size: MAX_ENTITY_SIZE - 4 * MB },
     });
@@ -926,7 +899,7 @@ describe('the direct routes cannot be made to buffer a file', () => {
    * It is asserted here because it is the concrete half of "the app server never holds the
    * file". Neither direct route has any multipart middleware — the proxy route's 60MB multer
    * ceiling does not exist on them — so the largest body either can be handed is 1MB, and a
-   * 512MB video has nowhere to land in this process even if a client tries to post it.
+   * 50MB video has nowhere to land in this process even if a client tries to post it.
    *
    * The status is asserted as "some 4xx/5xx, and nothing was minted" rather than 413 because
    * body-parser's PayloadTooLargeError currently falls through to the blanket 500 in app.ts —

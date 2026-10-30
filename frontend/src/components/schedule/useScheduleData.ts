@@ -7,6 +7,10 @@ export interface ScheduleDataArgs {
   dateRange: { start: WallClock; end: WallClock };
   departmentFilter: string;
   tz: string;
+  /** View events: without it the server refuses the calendar-entries read, so the board never makes the request. */
+  canReadEvents: boolean;
+  /** The "No crew" filter (S09.12): the server answers with only the visits and walkthroughs nobody is on. */
+  noCrew?: boolean;
 }
 
 export interface UseScheduleDataReturn {
@@ -26,7 +30,7 @@ export interface UseScheduleDataReturn {
  * so cache hits and invalidations (which still live in the page mutations)
  * stay identical.
  */
-export function useScheduleData({ dateRange, departmentFilter, tz }: ScheduleDataArgs): UseScheduleDataReturn {
+export function useScheduleData({ dateRange, departmentFilter, tz, canReadEvents, noCrew = false }: ScheduleDataArgs): UseScheduleDataReturn {
   // Walkthroughs are lead-shaped, and /api/leads sits behind requireFeature('leads')
   // (Pro). Scheduling is Starter core, so the two lead queries below are skipped
   // rather than left to 402 - the calendar keeps working, minus walkthrough rows.
@@ -38,17 +42,22 @@ export function useScheduleData({ dateRange, departmentFilter, tz }: ScheduleDat
   const scheduledBefore = toInstant(dateRange.end, tz).toISOString();
 
   const { data: scheduledJobs, isLoading: jobsLoading } = useQuery({
-    queryKey: ['schedule-jobs', dateRange, departmentFilter],
+    queryKey: ['schedule-jobs', dateRange, departmentFilter, noCrew],
     queryFn: async () => {
       const { data } = await api.get('/api/jobs', {
         params: {
           // Multi-visit S4 (D17): EN_ROUTE and ON_SITE retired from JobStatus - they describe a
           // TRIP. A job whose crew is on the way or on site now reads SCHEDULED or IN_PROGRESS,
           // so the same work is still in this window.
-          status: ['SCHEDULED', 'IN_PROGRESS', 'COMPLETED'],
+          //
+          // PRD 6: a completed job goes on to Office review, Ready to close and Done. Its trips stay on the board as
+          // finished work, so those statuses are asked for with Completed.
+          status: ['SCHEDULED', 'IN_PROGRESS', 'COMPLETED', 'OFFICE_REVIEW', 'READY_TO_CLOSE', 'DONE'],
           scheduled_after: scheduledAfter,
           scheduled_before: scheduledBefore,
           ...(departmentFilter !== 'all' ? { department_id: departmentFilter } : {}),
+          // S09.12: the shared Missing crew test, applied by the server, so no other card reaches the browser.
+          ...(noCrew ? { missing_crew: 'true' } : {}),
           limit: 500,
         },
       });
@@ -57,12 +66,13 @@ export function useScheduleData({ dateRange, departmentFilter, tz }: ScheduleDat
   });
 
   const { data: walkthroughLeads, isLoading: walkthroughsLoading } = useQuery({
-    queryKey: ['schedule-walkthroughs', dateRange],
+    queryKey: ['schedule-walkthroughs', dateRange, noCrew],
     queryFn: async () => {
       const { data } = await api.get('/api/leads', {
         params: {
           walkthrough_after: scheduledAfter,
           walkthrough_before: scheduledBefore,
+          ...(noCrew ? { missing_crew: 'true' } : {}),
           limit: 500,
         },
       });
@@ -99,9 +109,13 @@ export function useScheduleData({ dateRange, departmentFilter, tz }: ScheduleDat
   // scheduler for every plan tier, unlike the two lead queries above. `start_after`/
   // `start_before` match the controller's overlap filter (calendar-entry.controller.ts list()):
   // an entry included when `start <= start_before AND end >= start_after`, so a multi-day entry
-  // appears in every window it spans.
+  // appears in every window it spans. Asked only with View events (`read CalendarEntry`): the server answers 403 without
+  // it, so the board makes no request rather than logging a refusal on every load.
+  //
+  // The "No crew" filter shows visits and walkthroughs only, so it fetches none (S09.12).
   const { data: calendarEntries } = useQuery({
     queryKey: ['schedule-calendar-entries', dateRange],
+    enabled: canReadEvents && !noCrew,
     queryFn: async () => {
       const { data } = await api.get('/api/calendar-entries', {
         params: {
@@ -118,7 +132,8 @@ export function useScheduleData({ dateRange, departmentFilter, tz }: ScheduleDat
     walkthroughLeads,
     unassignedJobs,
     unscheduledWalkthroughs,
-    calendarEntries,
+    // A disabled query still hands back what an earlier, unfiltered view cached.
+    calendarEntries: noCrew ? undefined : calendarEntries,
     jobsLoading,
     walkthroughsLoading,
     unassignedError,

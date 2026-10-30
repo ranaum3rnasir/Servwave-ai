@@ -157,10 +157,11 @@ const ability = buildAbility([
   { action: 'create', subject: 'Communication' },
 ]);
 const readOnlyAbility = buildAbility([{ action: 'read', subject: 'Communication' }]);
-// Attribution management (the attach/move/detach menu) gates on update, not create.
+// Attribution management (the attach/move/detach menu) gates on attach (Attach conversations to jobs and leads),
+// not create or update.
 const manageAbility = buildAbility([
   { action: 'read', subject: 'Communication' },
-  { action: 'update', subject: 'Communication' },
+  { action: 'attach', subject: 'Communication' },
 ]);
 
 function renderTab(

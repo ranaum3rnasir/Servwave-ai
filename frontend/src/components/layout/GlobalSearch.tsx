@@ -8,6 +8,7 @@ import {
   User,
   Filter,
   FileText,
+  Receipt,
   Loader2,
   MapPin,
 } from 'lucide-react';
@@ -18,6 +19,7 @@ import { type SearchResult, type SearchResponse, statusDotClass, statusLabel, hi
 import { useSettingsGuard } from '@/stores/settingsGuard.store';
 import { EmptyState } from '@/components/ui/empty-state';
 import { fieldKindProps } from '@/ui-kit/lib/fieldKind';
+import { CustomerEmailText } from '@/components/contact/ContactText';
 
 // Re-export for backwards compat
 export type { SearchResult } from './search-shared';
@@ -57,6 +59,7 @@ const ENTITY_CONFIG: Record<string, { icon: typeof Briefcase; label: string; pat
   customer: { icon: User,      label: 'Customers', path: '/customers' },
   lead:     { icon: Filter,    label: 'Leads',     path: '/leads' },
   estimate: { icon: FileText,  label: 'Estimates', path: '/estimates' },
+  invoice:  { icon: Receipt,   label: 'Invoices',  path: '/invoices' },
 };
 
 // ─── Component ──────────────────────────────────────────
@@ -103,6 +106,7 @@ export default function GlobalSearch({
         ...data.results.customers,
         ...data.results.leads,
         ...data.results.estimates,
+        ...data.results.invoices,
       ]
     : [];
 
@@ -218,7 +222,14 @@ export default function GlobalSearch({
             <div className="flex items-center gap-1 mt-0.5 text-xs text-text-secondary truncate">
               {result.subtitle && (
                 <>
-                  <span className="truncate">{highlightMatch(result.subtitle, debouncedQuery)}</span>
+                  {/* A customer row's second line is the customer's email: the copy switch decides whether it can be copied. */}
+                  {result.entity_type === 'customer' ? (
+                    <CustomerEmailText email={result.subtitle} className="truncate">
+                      {highlightMatch(result.subtitle, debouncedQuery)}
+                    </CustomerEmailText>
+                  ) : (
+                    <span className="truncate">{highlightMatch(result.subtitle, debouncedQuery)}</span>
+                  )}
                   {meta.length > 0 && <span className="flex-shrink-0">·</span>}
                 </>
               )}
@@ -325,6 +336,7 @@ export default function GlobalSearch({
                 {renderSection('customer', data!.results.customers)}
                 {renderSection('lead', data!.results.leads)}
                 {renderSection('estimate', data!.results.estimates)}
+                {renderSection('invoice', data!.results.invoices)}
               </div>
               <div className="px-3 py-2 text-[11px] text-text-secondary border-t border-border/40">
                 {hitCap

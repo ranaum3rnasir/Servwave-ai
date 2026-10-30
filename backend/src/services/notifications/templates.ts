@@ -24,6 +24,7 @@
  */
 
 import { NotificationCategory, NotificationPriority } from '@prisma/client';
+import { UNMATCHED_REPLY_MESSAGE } from './whyLines';
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -33,11 +34,92 @@ function s(data: Record<string, any>, key: string, fallback = ''): string {
   return typeof v === 'string' && v.length > 0 ? v : fallback;
 }
 
+/**
+ * The why line of an alert that came to a person as a fallback (Roles & Permissions, PRD 6): the sentence that says why it reached
+ * them ("This invoice has no job or lead"), added under the body. Nothing when the person was told as the record's own person.
+ */
+function withWhy(data: Record<string, any>, body?: string): string | undefined {
+  return [body ?? '', s(data, 'fallback_reason')].filter(Boolean).join('\n') || undefined;
+}
+
+/** "Dana", "Dana and Sam", "Dana, Sam and Lee": the names an alert gives to the people it is about. */
+function joinNames(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? '';
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+
+/** The people an alert names, from the data bag (the "naming" wording of Job assigned); empty when it names nobody. */
+function namedPeople(data: Record<string, any>): string[] {
+  const v = data['assigned_names'];
+  return Array.isArray(v) ? v.filter((n): n is string => typeof n === 'string' && n.length > 0) : [];
+}
+
+/**
+ * Payments go-live slice 09: a dispute or bank return on money that has no payment row (written
+ * down as unapplied, or a bank payment recorded by hand) changes nothing on the invoice, so the
+ * alert says what a person must check. Undefined when the dispute is on a recorded payment.
+ */
+function unrecordedDisputeBody(data: Record<string, any>, stage: 'open' | 'lost'): string | undefined {
+  const unrecorded = s(data, 'unrecorded');
+  if (unrecorded === 'bank') {
+    return 'This bank payment was not recorded automatically, so nothing on the invoice changed. '
+      + 'If it was recorded by hand, void that payment and check the balance.';
+  }
+  if (unrecorded === 'card') {
+    return 'This payment was not recorded on the invoice, so nothing on the invoice changed. '
+      + (stage === 'open'
+        ? 'Do not refund it while the dispute is open; contact ServWave support if you need help.'
+        : 'The money was taken back: do not refund it.');
+  }
+  return undefined;
+}
+
+/** The processor's reason code, in words an owner reads ("product_not_received" -> "Product not received"). */
+export function disputeReasonWords(reason: string | null | undefined): string {
+  const words = (reason ?? '').replace(/_/g, ' ').trim();
+  return words ? words.charAt(0).toUpperCase() + words.slice(1) : '';
+}
+
+/** Slice 32: the body of a dispute alert - what, why and by when. */
+function openedDisputeBody(data: Record<string, any>): string | undefined {
+  const amount = s(data, 'amount');
+  const reason = s(data, 'reason_words');
+  if (s(data, 'variant') === 'bank_return') {
+    if (!amount) return undefined;
+    return `The bank took back $${amount}.` + (reason ? ` Reason: ${reason}.` : '');
+  }
+  const parts = [
+    amount ? `Amount: $${amount}.` : '',
+    reason ? `Reason: ${reason}.` : '',
+    s(data, 'evidence_due') ? `Respond by ${s(data, 'evidence_due')}.` : '',
+  ].filter(Boolean);
+  return parts.length > 0 ? parts.join(' ') : undefined;
+}
+
 /** Communication verbs: customer name → caller number → object label. */
 function comWho(data: Record<string, any>): string {
   return s(data, 'customer_name')
     || s(data, 'caller_number')
     || s(data, 'object_label', 'Unknown number');
+}
+
+/**
+ * The never-silent fallback of a call or text alert (S08.24) adds the company number it came in on and the time to the data. A
+ * holder who cannot read the conversation gets the alert with `redacted` set and none of the caller's details: the title names the
+ * company number, and the body says when. A holder who can read it gets the ordinary title, then the line that says on which
+ * number and when, ahead of the reason line.
+ */
+function fallbackTitle(what: string, data: Record<string, any>): string {
+  return `${what} on ${s(data, 'company_number', 'a company number')}`;
+}
+
+/** "On (555) 555-0142, October 12, 2026 at 7:05 PM": where and when a call or text the fallback tells came in; nothing when unknown. */
+function fallbackWhere(data: Record<string, any>): string | undefined {
+  const number = s(data, 'company_number');
+  const at = s(data, 'occurred_at');
+  if (number && at) return `On ${number}, ${at}`;
+  if (number) return `On ${number}`;
+  return at || undefined;
 }
 
 // ── public interface ──────────────────────────────────────────────────────────
@@ -86,9 +168,12 @@ const registry = {
     priority: 'FEED',
     action_type: null,
     needs_action: false,
-    title: 'New unassigned lead'
+    title: 'New lead with no owner'
       + (s(data, 'customer_name') ? ': ' + s(data, 'customer_name') : '')
       + (s(data, 'object_label') ? ' (' + s(data, 'object_label') + ')' : ''),
+    // Roles & Permissions, PRD 6 (S06.26): `fallback_reason` is the sentence that says why the person covering for a missing
+    // Dispatcher was told. Every verb that moved onto M6's chain carries it as its body.
+    body: s(data, 'fallback_reason') || undefined,
   }),
 
   'lead.reassigned_away': (data) => ({
@@ -110,6 +195,7 @@ const registry = {
     title: 'Walkthrough scheduled for '
       + s(data, 'object_label', 'lead')
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
+    body: s(data, 'fallback_reason') || undefined,
   }),
 
   // Spider lead watcher (#2619): a lead stayed in an open status longer than the company's
@@ -139,10 +225,14 @@ const registry = {
     // #2090 - what the customer actually bought. An estimate that offered no add-ons carries
     // neither key, so its body is exactly the amount line it was before this existed.
     body: [
-      s(data, 'amount') ? 'Amount: $' + s(data, 'amount') : '',
-      s(data, 'options_chosen') ? 'Chose: ' + s(data, 'options_chosen') : '',
-      s(data, 'options_declined') ? 'Declined: ' + s(data, 'options_declined') : '',
-    ].filter(Boolean).join(' · ') || undefined,
+      [
+        s(data, 'amount') ? 'Amount: $' + s(data, 'amount') : '',
+        s(data, 'options_chosen') ? 'Chose: ' + s(data, 'options_chosen') : '',
+        s(data, 'options_declined') ? 'Declined: ' + s(data, 'options_declined') : '',
+      ].filter(Boolean).join(' · '),
+      // S06.26: why this reached a person who is covering for a missing Dispatcher, on its own line.
+      s(data, 'fallback_reason'),
+    ].filter(Boolean).join('\n') || undefined,
   }),
 
   'estimate.declined': (data) => ({
@@ -153,6 +243,7 @@ const registry = {
     needs_action: false,
     title: s(data, 'object_label', 'Estimate') + ' declined'
       + (s(data, 'customer_name') ? ' by ' + s(data, 'customer_name') : ''),
+    body: s(data, 'fallback_reason') || undefined,
   }),
 
   'estimate.deposit_paid': (data) => ({
@@ -163,7 +254,7 @@ const registry = {
     needs_action: true,
     title: 'Deposit paid for ' + s(data, 'object_label', 'estimate')
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
-    body: s(data, 'amount') ? 'Amount: $' + s(data, 'amount') : undefined,
+    body: [s(data, 'amount') ? 'Amount: $' + s(data, 'amount') : '', s(data, 'fallback_reason')].filter(Boolean).join('\n') || undefined,
   }),
 
   'estimate.cancelled': (data) => ({
@@ -174,6 +265,7 @@ const registry = {
     needs_action: false,
     title: s(data, 'object_label', 'Estimate') + ' archived'
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
+    body: s(data, 'fallback_reason') || undefined,
   }),
 
   'estimate.deposit_waived': (data) => ({
@@ -184,6 +276,7 @@ const registry = {
     needs_action: false,
     title: 'Deposit waived for ' + s(data, 'object_label', 'estimate')
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
+    body: s(data, 'fallback_reason') || undefined,
   }),
 
   // R4 (2026-07-21) — D13 guarded unwind (port-plan §3.2).
@@ -195,6 +288,7 @@ const registry = {
     needs_action: false,
     title: 'Approval voided for ' + s(data, 'object_label', 'estimate')
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
+    body: s(data, 'fallback_reason') || undefined,
   }),
 
   // R4b (2026-07-21) — backtodraft/backtosent (port-plan §3.2/§14.2). No `estimate.marked_sent`
@@ -209,19 +303,29 @@ const registry = {
     needs_action: false,
     title: s(data, 'object_label', 'Estimate') + ' ' + s(data, 'transition_label', 'status corrected')
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
+    body: s(data, 'fallback_reason') || undefined,
   }),
 
   // ── DISPATCH ───────────────────────────────────────────────────────────────
 
-  'dispatch.job_assigned': (data) => ({
-    category: 'DISPATCH',
-    object_type: 'JOB',
-    priority: 'INTERRUPT',
-    action_type: null,
-    needs_action: false,
-    title: s(data, 'object_label', 'Job') + ' assigned to you'
-      + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
-  }),
+  // Job assigned (S06.27) has two wordings of one event: "J00123 assigned to you" for the person named, and, for everyone else the
+  // chain reaches, the same alert naming whoever was assigned ("Dana was assigned to J00123"; `assigned_names` is set on that one).
+  // `fallback_reason` is the sentence that says why the person covering for a missing Dispatcher was told.
+  'dispatch.job_assigned': (data) => {
+    const named = namedPeople(data);
+    return {
+      category: 'DISPATCH',
+      object_type: 'JOB',
+      priority: 'INTERRUPT',
+      action_type: null,
+      needs_action: false,
+      title: named.length > 0
+        ? `${joinNames(named)} ${named.length > 1 ? 'were' : 'was'} assigned to ${s(data, 'object_label', 'the job')}`
+        : s(data, 'object_label', 'Job') + ' assigned to you'
+          + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
+      body: s(data, 'fallback_reason') || undefined,
+    };
+  },
 
   'dispatch.job_unassigned': (data) => ({
     category: 'DISPATCH',
@@ -244,6 +348,7 @@ const registry = {
     needs_action: false,
     title: s(data, 'object_label', 'Job') + ' rescheduled'
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
+    body: s(data, 'fallback_reason') || undefined,
   }),
 
   'dispatch.job_created': (data) => ({
@@ -255,10 +360,14 @@ const registry = {
     title: 'Job created'
       + (s(data, 'object_label') ? ': ' + s(data, 'object_label') : '')
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
+    body: s(data, 'fallback_reason') || undefined,
   }),
 
   // ── JOB ────────────────────────────────────────────────────────────────────
 
+  // Roles & Permissions, PRD 6 (S06.25). Job started, cancelled and reopened go through M6's two lanes like the job completed
+  // alert below; `fallback_reason` is the sentence that says why the person covering for a missing Dispatcher was told.
+  // The words and the priorities are what they always were.
   'job.started': (data) => ({
     category: 'JOB',
     object_type: 'JOB',
@@ -267,16 +376,46 @@ const registry = {
     needs_action: false,
     title: s(data, 'object_label', 'Job') + ' started'
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
+    body: s(data, 'fallback_reason') || undefined,
   }),
 
+  // Roles & Permissions, PRD 6 (S06.23). Completing a job lands it in Office review, so the alert says so. `panel` rides
+  // in the notification's data (the job page opens that panel); `fallback_reason` is the sentence that says why the
+  // person covering for a missing Dispatcher was told.
   'job.completed': (data) => ({
     category: 'JOB',
     object_type: 'JOB',
     priority: 'FEED',
     action_type: null,
     needs_action: false,
-    title: s(data, 'object_label', 'Job') + ' completed'
-      + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
+    title: 'Job completed: ' + s(data, 'object_label', 'the job') + ' is ready for office review',
+    body: s(data, 'fallback_reason') || undefined,
+  }),
+
+  // Roles & Permissions, PRD 6 (S06.24). Finishing a review moves the job to Ready to close; the alert asks the people
+  // who close jobs to look. Its link opens the job itself (no `panel`), where the banner offers Mark Done. FEED, and
+  // the resolver sets "needs action" for the Close jobs holders only. `fallback_reason` says why the Manage roles
+  // and permissions holders were told when nobody who can close jobs can open the job.
+  'job.ready_to_close': (data) => ({
+    category: 'JOB',
+    object_type: 'JOB',
+    priority: 'FEED',
+    action_type: null,
+    needs_action: true,
+    title: s(data, 'object_label', 'The job') + ' is ready to close',
+    body: s(data, 'fallback_reason') || undefined,
+  }),
+
+  // Roles & Permissions, PRD 6 (S06.24). Office review attention: one alert for a landing, listing what changed in the
+  // panel's own words (`items_text`, one line per item). High priority, bell only; its link opens the review panel.
+  'job.review_attention': (data) => ({
+    category: 'JOB',
+    object_type: 'JOB',
+    priority: 'INTERRUPT',
+    action_type: null,
+    needs_action: false,
+    title: s(data, 'object_label', 'The job') + ' needs your attention',
+    body: [s(data, 'items_text'), s(data, 'fallback_reason')].filter(Boolean).join('\n') || undefined,
   }),
 
   'job.cancelled': (data) => ({
@@ -287,6 +426,7 @@ const registry = {
     needs_action: false,
     title: s(data, 'object_label', 'Job') + ' cancelled'
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
+    body: s(data, 'fallback_reason') || undefined,
   }),
 
   'job.reopened': (data) => ({
@@ -297,7 +437,38 @@ const registry = {
     needs_action: false,
     title: s(data, 'object_label', 'Job') + ' reopened'
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
+    body: s(data, 'fallback_reason') || undefined,
   }),
+
+  // Roles & Permissions, PRD 4 (S04.16). One alert per finished visit, through M6's two lanes. The last
+  // live visit's alert is the one that asks somebody to complete the job, so it carries needs_action; the
+  // resolver sets it per person (only the people who must act are asked). `fallback_reason` is the sentence
+  // that says why lane 2 reached them when the job has no Dispatcher.
+  'job.visit_finished': (data) => {
+    const finished = 'Visit ' + s(data, 'visit_seq', '1') + ' finished on ' + s(data, 'object_label', 'the job')
+      + (s(data, 'actor_name') ? ', by ' + s(data, 'actor_name') : '');
+    const reason = s(data, 'fallback_reason');
+    if (data.all_finished === true) {
+      return {
+        category: 'JOB',
+        object_type: 'JOB',
+        priority: 'FEED',
+        action_type: null,
+        needs_action: true,
+        title: 'All visits finished: ready to complete',
+        body: finished + (reason ? '. ' + reason : ''),
+      };
+    }
+    return {
+      category: 'JOB',
+      object_type: 'JOB',
+      priority: 'FEED',
+      action_type: null,
+      needs_action: false,
+      title: finished,
+      body: reason || undefined,
+    };
+  },
 
   // ── TASK ───────────────────────────────────────────────────────────────────
   // Design §5. `object_label` is the task's TITLE, not its number: a task's number
@@ -402,7 +573,7 @@ const registry = {
     needs_action: false,
     title: 'Payment received for ' + s(data, 'object_label', 'invoice')
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
-    body: s(data, 'amount') ? 'Amount: $' + s(data, 'amount') : undefined,
+    body: withWhy(data, s(data, 'amount') ? 'Amount: $' + s(data, 'amount') : undefined),
   }),
 
   'billing.partial_payment': (data) => ({
@@ -413,7 +584,7 @@ const registry = {
     needs_action: false,
     title: 'Partial payment received for ' + s(data, 'object_label', 'invoice')
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
-    body: s(data, 'amount') ? 'Amount: $' + s(data, 'amount') : undefined,
+    body: withWhy(data, s(data, 'amount') ? 'Amount: $' + s(data, 'amount') : undefined),
   }),
 
   'billing.invoice_overdue': (data) => ({
@@ -424,7 +595,7 @@ const registry = {
     needs_action: true,
     title: s(data, 'object_label', 'Invoice') + ' is overdue'
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
-    body: s(data, 'amount') ? 'Balance due: $' + s(data, 'amount') : undefined,
+    body: withWhy(data, s(data, 'amount') ? 'Balance due: $' + s(data, 'amount') : undefined),
   }),
 
   'billing.invoice_due_soon': (data) => ({
@@ -435,7 +606,7 @@ const registry = {
     needs_action: true,
     title: s(data, 'object_label', 'Invoice') + ' is due soon'
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
-    body: s(data, 'amount') ? 'Balance due: $' + s(data, 'amount') : undefined,
+    body: withWhy(data, s(data, 'amount') ? 'Balance due: $' + s(data, 'amount') : undefined),
   }),
 
   'billing.refunded': (data) => ({
@@ -446,42 +617,145 @@ const registry = {
     needs_action: true,
     title: 'Refund issued for ' + s(data, 'object_label', 'invoice')
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
-    body: s(data, 'amount') ? 'Amount: $' + s(data, 'amount') : undefined,
+    body: withWhy(data, s(data, 'amount') ? 'Amount: $' + s(data, 'amount') : undefined),
   }),
 
   'billing.disputed': (data) => ({
     category: 'BILLING',
-    object_type: 'INVOICE',
+    // A dispute on money no invoice of this org carries is recorded on the org itself.
+    object_type: s(data, 'object_kind') === 'ORGANIZATION' ? 'ORGANIZATION' : 'INVOICE',
     priority: 'INTERRUPT',
     action_type: 'VIEW',
     needs_action: true,
-    title: 'Payment disputed for ' + s(data, 'object_label', 'invoice')
+    // Payments go-live slice 09: a bank payment returned after it cleared arrives as a dispute.
+    title: (s(data, 'variant') === 'bank_return' ? 'Bank returned the payment for ' : 'Payment disputed for ')
+      + s(data, 'object_label', 'invoice')
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
-    body: s(data, 'amount') ? 'Amount: $' + s(data, 'amount') : undefined,
+    // Slice 32: what was disputed, why, and by when the owner must answer.
+    body: withWhy(data, unrecordedDisputeBody(data, 'open') ?? openedDisputeBody(data)),
   }),
 
   'billing.chargeback': (data) => ({
+    category: 'BILLING',
+    object_type: s(data, 'object_kind') === 'ORGANIZATION' ? 'ORGANIZATION' : 'INVOICE',
+    priority: 'INTERRUPT',
+    action_type: 'VIEW',
+    needs_action: true,
+    title: (s(data, 'variant') === 'partial_chargeback'
+      ? 'Part of a payment charged back for '
+      : s(data, 'variant') === 'bank_return' ? 'Bank payment returned for ' : 'Chargeback received for ')
+      + s(data, 'object_label', 'invoice')
+      + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
+    // Payments go-live slice 09: a lost dispute for less than the payment leaves the payment as
+    // recorded, so a person must check the balance.
+    body: withWhy(data, unrecordedDisputeBody(data, 'lost') ?? (s(data, 'variant') === 'partial_chargeback'
+      ? (s(data, 'amount') ? '$' + s(data, 'amount') + ' was taken back. ' : '')
+        + 'The payment was left as recorded and the balance was not changed. Review the balance by hand.'
+      : s(data, 'amount') ? 'Amount: $' + s(data, 'amount') + ' was taken back from your ServWave Payments balance.' : undefined)),
+  }),
+
+  // Payments go-live slice 32: a dispute reached a final answer that cost nothing (the owner won,
+  // or it ended without a chargeback). A lost one is billing.chargeback.
+  'billing.dispute_closed': (data) => ({
+    category: 'BILLING',
+    object_type: 'INVOICE',
+    priority: 'FEED',
+    action_type: null,
+    needs_action: false,
+    title: (s(data, 'outcome') === 'WON' ? 'Dispute won for ' : 'Dispute closed for ') + s(data, 'object_label', 'invoice')
+      + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
+    body: withWhy(data, (s(data, 'amount') ? 'Amount: $' + s(data, 'amount') + '. ' : '')
+      + (s(data, 'outcome') === 'WON'
+        ? 'It was decided in your favor and the payment stands.'
+        : 'It ended without a chargeback.')),
+  }),
+
+  // Payments go-live slice 32: a bank payment's three moments. Started and cleared are feed items;
+  // a failure interrupts, since the invoice is owed again.
+  'billing.bank_payment_started': (data) => ({
+    category: 'BILLING',
+    object_type: 'INVOICE',
+    priority: 'FEED',
+    action_type: null,
+    needs_action: false,
+    title: 'Bank payment started for ' + s(data, 'object_label', 'invoice')
+      + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
+    body: withWhy(data, (s(data, 'amount') ? 'Amount: $' + s(data, 'amount') + '. ' : '') + 'It usually takes a few business days to clear.'),
+  }),
+
+  'billing.bank_payment_cleared': (data) => ({
+    category: 'BILLING',
+    object_type: 'INVOICE',
+    priority: 'FEED',
+    action_type: null,
+    needs_action: false,
+    title: 'Bank payment cleared for ' + s(data, 'object_label', 'invoice')
+      + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
+    body: withWhy(data, s(data, 'amount') ? 'Amount: $' + s(data, 'amount') : undefined),
+  }),
+
+  'billing.bank_payment_failed': (data) => ({
     category: 'BILLING',
     object_type: 'INVOICE',
     priority: 'INTERRUPT',
     action_type: 'VIEW',
     needs_action: true,
-    title: 'Chargeback received for ' + s(data, 'object_label', 'invoice')
+    title: 'Bank payment failed for ' + s(data, 'object_label', 'invoice')
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
-    body: s(data, 'amount') ? 'Amount: $' + s(data, 'amount') : undefined,
+    body: withWhy(data, (s(data, 'amount') ? 'Amount: $' + s(data, 'amount') + '. ' : '')
+      + (s(data, 'pay_again')
+        ? 'No money moved. The customer has been sent a link to pay again.'
+        : 'No money moved. The invoice is no longer open for payment.')),
+  }),
+
+  // Payments go-live slice 32: a refund the processor could not complete.
+  'billing.refund_failed': (data) => ({
+    category: 'BILLING',
+    // A refund of money no invoice of this org carries is recorded on the org itself.
+    object_type: s(data, 'object_kind') === 'ORGANIZATION' ? 'ORGANIZATION' : 'INVOICE',
+    priority: 'INTERRUPT',
+    action_type: 'VIEW',
+    needs_action: true,
+    title: 'Refund failed for ' + s(data, 'object_label', 'invoice')
+      + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
+    body: withWhy(data, (s(data, 'refund_kind') === 'bank' ? 'A bank refund' : 'A refund')
+      + (s(data, 'amount') ? ' of $' + s(data, 'amount') : '')
+      + ' to ' + s(data, 'customer_name', 'the customer')
+      + ' failed. The money is back in your ServWave Payments balance and the customer still needs to be repaid.'),
   }),
 
   // #2031 slice 5 (F1) — a card capture the system refused to apply. The money exists and nothing
   // in the ledger accounts for it, so this is an INTERRUPT: it needs a person, today.
   'billing.payment_unrecorded': (data) => ({
     category: 'BILLING',
-    object_type: 'INVOICE',
+    // Slice 08: money no invoice of this org can carry is recorded on the org itself.
+    object_type: s(data, 'object_kind') === 'ORGANIZATION' ? 'ORGANIZATION' : 'INVOICE',
     priority: 'INTERRUPT',
     action_type: 'VIEW',
     needs_action: true,
-    title: 'Card payment could not be applied to ' + s(data, 'object_label', 'an invoice'),
-    body: 'The customer was charged but the amount does not match what this invoice is owed, '
-      + 'so no payment was recorded. Check the payment against the invoice before replying to the customer.',
+    title: s(data, 'reason') === 'REFUND_UNMATCHED'
+      ? 'A refund could not be matched to a payment'
+      : s(data, 'payment_label', 'Card payment') + ' could not be applied to ' + s(data, 'object_label', 'an invoice'),
+    body: withWhy(data, s(data, 'reason') === 'OVERPAYMENT'
+      ? 'The customer paid more than this invoice was owed. The balance is paid; the rest was not applied. '
+        + 'Check the payment against the invoice before replying to the customer.'
+      : s(data, 'reason') === 'INVOICE_NOT_PAYABLE'
+        ? 'The payment cleared after this invoice was closed for payment, so it was not applied. '
+          + 'Check the payment against the invoice before replying to the customer.'
+        : s(data, 'reason') === 'INVOICE_NOT_FOUND' || s(data, 'reason') === 'WRONG_ORG'
+            ? 'The customer was charged, but the payment does not belong to any invoice in this account, '
+              + 'so no payment was recorded. Open Payments needing attention in Settings to send the money back.'
+            : s(data, 'reason') === 'REFUND_UNMATCHED'
+              ? 'Money was refunded from this account for a payment ServWave has no record of. '
+                + 'Contact ServWave support if you did not expect this refund.'
+              : s(data, 'reason') === 'DEPOSIT_SUPERSEDED' || s(data, 'reason') === 'DEPOSIT_ON_HOLD'
+                ? 'The customer paid a deposit request that is no longer current, so no payment was recorded. '
+                  + 'Check the payment against the estimate before replying to the customer.'
+                : s(data, 'reason') === 'DOCUMENT_MISMATCH'
+                  ? 'The customer was charged, but the payment was made for a different document than this invoice, '
+                    + 'so no payment was recorded. Check the payment against the invoice before replying to the customer.'
+                  : 'The customer was charged but the amount does not match what this invoice is owed, '
+                    + 'so no payment was recorded. Check the payment against the invoice before replying to the customer.'),
   }),
 
   'billing.voided': (data) => ({
@@ -492,6 +766,7 @@ const registry = {
     needs_action: false,
     title: s(data, 'object_label', 'Invoice') + ' voided'
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
+    body: withWhy(data),
   }),
 
   'billing.credit_applied': (data) => ({
@@ -502,34 +777,45 @@ const registry = {
     needs_action: false,
     title: 'Credit applied to ' + s(data, 'object_label', 'invoice')
       + (s(data, 'customer_name') ? ' — ' + s(data, 'customer_name') : ''),
-    body: s(data, 'amount') ? 'Amount: $' + s(data, 'amount') : undefined,
+    body: withWhy(data, s(data, 'amount') ? 'Amount: $' + s(data, 'amount') : undefined),
   }),
 
   // ── BILLING: payments-account lifecycle (Stripe Connect, Task 1.8) ─────────
-  // Fired by webhook.controller.ts's handleAccountLifecycle on account.updated
-  // flag transitions. object_type ORGANIZATION is non-scoped (absent from
+  // Fired after the account events (services/payment-reconciler) and the status
+  // refresh store the account's status (lib/payments-notifications.ts). object_type ORGANIZATION is non-scoped (absent from
   // filterByAccess's SCOPE_TYPE_MAP) so recipients pass through unfiltered.
 
   'billing.payments_activated': (data) => ({
     category: 'BILLING', object_type: 'ORGANIZATION', priority: 'FEED', action_type: null, needs_action: false,
     title: 'ServWave Payments is active — you can take card payments now.',
+    body: withWhy(data),
   }),
 
   'billing.payouts_activated': (data) => ({
     category: 'BILLING', object_type: 'ORGANIZATION', priority: 'FEED', action_type: null, needs_action: false,
-    title: 'Payouts enabled — your bank is connected.',
+    title: 'Payouts enabled — your bank account is ready.',
+    body: withWhy(data),
   }),
 
   'billing.payments_action_needed': (data) => ({
     category: 'BILLING', object_type: 'ORGANIZATION', priority: 'INTERRUPT', action_type: 'VIEW', needs_action: true,
-    title: 'Stripe needs one more thing to keep your payments running.',
-    body: s(data, 'requirements') || undefined,
+    title: 'ServWave Payments needs one more thing to keep your payments running.',
+    // What to do, in ServWave words (the notice builds it); never the processor's own codes.
+    body: withWhy(data, s(data, 'what_to_do') || undefined),
   }),
 
   'billing.payments_paused': (data) => ({
     category: 'BILLING', object_type: 'ORGANIZATION', priority: 'INTERRUPT', action_type: 'VIEW', needs_action: true,
-    title: 'Card payments are paused — Stripe needs more information.',
-    body: s(data, 'reason') || undefined,
+    title: 'Card payments are paused — ServWave Payments needs more information.',
+    body: withWhy(data, s(data, 'reason') || undefined),
+  }),
+
+  // Payments go-live slice 10: the payments account was disconnected from ServWave
+  // (account.application.deauthorized). No online payment can be taken until it is set up again.
+  'billing.payments_disconnected': (data) => ({
+    category: 'BILLING', object_type: 'ORGANIZATION', priority: 'INTERRUPT', action_type: 'VIEW', needs_action: true,
+    title: 'ServWave Payments is turned off — online payments are off until it is set up again.',
+    body: withWhy(data),
   }),
 
   // ── BILLING: deferred-bank first-payment nudge (Task 1.9, §6.6/§6.8) ──────
@@ -539,33 +825,11 @@ const registry = {
   // (e.g. "$500.00") — interpolated straight into the §6.8 copy, not re-prefixed.
   'billing.payouts_pending_first_payment': (data) => ({
     category: 'BILLING', object_type: 'ORGANIZATION', priority: 'FEED', action_type: null, needs_action: false,
-    title: `You've collected ${s(data, 'amount', 'a payment')}. Connect your bank to get paid out.`,
-    body: s(data, 'amount') || undefined,
-  }),
-
-  // ── BILLING: within-ceiling platform-fee rate-change notice (Task 4.3, §3.6) ──
-  // Fired by lib/platform-fee-rate-notice.ts's notifyPlatformFeeRateChange when
-  // Organization.platform_fee_bps changes within the 2% ceiling (no re-acceptance
-  // needed). data.new_rate/effective_date arrive pre-formatted (e.g. "0.75%" /
-  // "August 20, 2026") — interpolated straight into copy, not re-derived here.
-  'billing.platform_fee_rate_changed': (data) => ({
-    category: 'BILLING', object_type: 'ORGANIZATION', priority: 'FEED', action_type: null, needs_action: false,
-    title: `Your ServWave Payments rate is changing to ${s(data, 'new_rate', 'a new rate')}.`,
-    body: s(data, 'effective_date') ? `Effective ${s(data, 'effective_date')}. No action is needed.` : undefined,
+    title: `You've collected ${s(data, 'amount', 'a payment')}. Add your bank account to get paid out.`,
+    body: withWhy(data, s(data, 'amount') || undefined),
   }),
 
   // ── TEAM ───────────────────────────────────────────────────────────────────
-
-  'team.ot_override_requested': (data) => ({
-    category: 'TEAM',
-    object_type: 'TIME_ENTRY',
-    priority: 'INTERRUPT',
-    action_type: 'APPROVE_OT',
-    needs_action: true,
-    title: 'OT override requested'
-      + (s(data, 'actor_name') ? ' by ' + s(data, 'actor_name') : ''),
-    body: s(data, 'object_label') ? 'Entry: ' + s(data, 'object_label') : undefined,
-  }),
 
   'team.invite_accepted': (data) => ({
     category: 'TEAM',
@@ -574,6 +838,30 @@ const registry = {
     action_type: null,
     needs_action: false,
     title: (s(data, 'actor_name') || 'A new user') + ' accepted their invite',
+    body: withWhy(data),
+  }),
+
+  // Roles & Permissions, PRD 10 (S10.3). A user mailbox created without an address (the user's first.last was
+  // already taken, or the user has no usable name) rings the new user and, once, every active holder of Edit
+  // users. Two verbs, because an alert carries one line for everyone on it. In-app only, and nothing names a
+  // provider: the mailbox is the company's own.
+  'mailbox.address_needed': (_data) => ({
+    category: 'TEAM',
+    object_type: 'USER',
+    priority: 'FEED',
+    action_type: null,
+    needs_action: false,
+    title: "You don't have an email address yet. An admin needs to set one before you can send email.",
+  }),
+
+  'mailbox.address_needed_admin': (data) => ({
+    category: 'TEAM',
+    object_type: 'USER',
+    priority: 'FEED',
+    action_type: null,
+    needs_action: false,
+    title: (s(data, 'user_name') || 'A new user') + ' has no email address yet',
+    body: 'Their name was already taken by another address in your company. Set a free address for them on the Users page so they can send email.',
   }),
 
   // ── CALENDAR ENTRY (slice 07, spec §5) ──────────────────────────────────────
@@ -582,7 +870,7 @@ const registry = {
   // the email trio in lib/email.ts instead — see lib/calendar-entries/notify.ts). No CALENDAR
   // NotificationCategory exists in the schema, and adding one is a migration this slice does
   // not need — TEAM already covers org-visible, non-work coordination notices (see
-  // team.ot_override_requested / team.invite_accepted above), which is exactly what a calendar
+  // team.invite_accepted above), which is exactly what a calendar
   // entry is. FEED, not INTERRUPT: a Calendar Entry is never a request for action (no
   // assignment, no approval to make), so needs_action stays false for all three.
   //
@@ -628,7 +916,7 @@ const registry = {
     needs_action: true,
     title: 'Stock approval requested'
       + (s(data, 'item_name') ? ': ' + s(data, 'item_name') : ''),
-    body: s(data, 'object_label') ? 'Request: ' + s(data, 'object_label') : undefined,
+    body: withWhy(data, s(data, 'object_label') ? 'Request: ' + s(data, 'object_label') : undefined),
   }),
 
   'inventory.low_stock': (data) => ({
@@ -641,9 +929,9 @@ const registry = {
     // P5: the emit payload carries on_hand/min (numbers) — render them, never
     // fabricate. (No location NAME here: the emitter only has location_id, and
     // enriching it would mean a query inside applyStockMovement's tx.)
-    body: data.on_hand != null && data.min != null
+    body: withWhy(data, data.on_hand != null && data.min != null
       ? `${data.on_hand} on hand (min ${data.min})`
-      : undefined,
+      : undefined),
   }),
 
   'inventory.backorder': (data) => ({
@@ -653,6 +941,7 @@ const registry = {
     action_type: null,
     needs_action: false,
     title: 'Item on backorder' + (s(data, 'item_name') ? ': ' + s(data, 'item_name') : ''),
+    body: withWhy(data),
   }),
 
   'inventory.staging_ready': (data) => ({
@@ -663,7 +952,7 @@ const registry = {
     needs_action: false,
     title: 'Parts staged and ready'
       + (s(data, 'object_label') ? ' for ' + s(data, 'object_label') : ''),
-    body: s(data, 'item_name') ? s(data, 'item_name') : undefined,
+    body: s(data, 'fallback_reason') || (s(data, 'item_name') ? s(data, 'item_name') : undefined),
   }),
 
   'inventory.staging_no_area': (data) => ({
@@ -674,7 +963,7 @@ const registry = {
     needs_action: false,
     title: 'No staging area for parts'
       + (s(data, 'object_label') ? ' — ' + s(data, 'object_label') : ''),
-    body: s(data, 'item_name') ? s(data, 'item_name') : undefined,
+    body: withWhy(data, s(data, 'item_name') ? s(data, 'item_name') : undefined),
   }),
 
   'inventory.po_partial': (data) => ({
@@ -685,7 +974,7 @@ const registry = {
     needs_action: false,
     title: 'Partial PO received'
       + (s(data, 'object_label') ? ': ' + s(data, 'object_label') : ''),
-    body: s(data, 'item_name') ? 'Item: ' + s(data, 'item_name') : undefined,
+    body: withWhy(data, s(data, 'item_name') ? 'Item: ' + s(data, 'item_name') : undefined),
   }),
 
   // ── LOGISTIC ORDERS (LO-2) ───────────────────────────────────────────────────
@@ -707,7 +996,8 @@ const registry = {
     needs_action: true,
     title: 'Logistic order submitted for approval'
       + (s(data, 'object_label') ? ': ' + s(data, 'object_label') : ''),
-    body: s(data, 'actor_name') ? 'Submitted by ' + s(data, 'actor_name') : undefined,
+    // S07.9: the why line of the Manage roles and permissions holders who cover when nobody can approve it, on its own line.
+    body: withWhy(data, s(data, 'actor_name') ? 'Submitted by ' + s(data, 'actor_name') : undefined),
   }),
 
   'lo.approved': (data) => ({
@@ -773,7 +1063,13 @@ const registry = {
     // so the pinned needs-action row can be cleared by navigating to the call.
     action_type: 'VIEW',
     needs_action: true,
-    title: (s(data, 'call_status') === 'voicemail' ? 'Voicemail — ' : 'Missed call — ') + comWho(data),
+    title: data.redacted === true
+      ? fallbackTitle(s(data, 'call_status') === 'voicemail' ? 'Voicemail' : 'Missed call', data)
+      : (s(data, 'call_status') === 'voicemail' ? 'Voicemail — ' : 'Missed call — ') + comWho(data),
+    // Only the never-silent fallback carries a body: when, and why they are being told (the reason line, S08.24).
+    body: data.redacted === true
+      ? withWhy(data, s(data, 'occurred_at') || undefined)
+      : withWhy(data, s(data, 'fallback_reason') ? fallbackWhere(data) : undefined),
   }),
 
   'communication.sms_inbound': (data) => ({
@@ -782,23 +1078,27 @@ const registry = {
     priority: 'FEED',
     action_type: null,
     needs_action: false,
-    title: 'New text — ' + comWho(data),
-    body: s(data, 'preview') || undefined,
+    title: data.redacted === true ? fallbackTitle('New text', data) : 'New text — ' + comWho(data),
+    // The preview, for whoever may read the conversation; the fallback adds where and when and why. The alert without caller
+    // details has none of the preview.
+    body: data.redacted === true
+      ? withWhy(data, s(data, 'occurred_at') || undefined)
+      : withWhy(data, [s(data, 'preview'), s(data, 'fallback_reason') ? fallbackWhere(data) ?? '' : ''].filter(Boolean).join('\n') || undefined),
   }),
 
-  // A customer reply landing in the shared inbox. FEED at the EVENT level on
-  // purpose: resolveRecipients raises it to INTERRUPT for the one person who
-  // owns the thread, and an unowned reply should not interrupt the whole room.
-  // `comWho` falls back customer name → object_label (the sender address),
-  // which is all an inbound reply with no Customer row behind it leaves us.
+  // A customer's reply to an email. FEED at the EVENT level on purpose: resolveRecipients raises it to INTERRUPT for the people the
+  // conversation is theirs to answer, and the rest of the record's people are told on the feed. `fallback_reason` is the sentence
+  // that says why a person covering for a record with nobody to take the reply was told. `comWho` falls back customer name →
+  // object_label (the sender address), which is all an inbound reply with no Customer row behind it leaves us.
   'communication.email_inbound': (data) => ({
     category: 'COMMUNICATION',
     object_type: 'EMAIL_THREAD',
     priority: 'FEED',
     action_type: null,
     needs_action: false,
-    title: 'New email — ' + comWho(data),
-    body: s(data, 'subject') || undefined,
+    // A reply from an address we did not send to (S10.19) is told in PRD 10's words and opens the held message.
+    title: data.unmatched_reply === true ? UNMATCHED_REPLY_MESSAGE : 'New email — ' + comWho(data),
+    body: withWhy(data, s(data, 'subject') || undefined),
   }),
 
   // ── AUTOMATION CENTER ───────────────────────────────────────────────────────
@@ -891,32 +1191,33 @@ export const VERB_RULES: Record<KnownVerb, VerbRule> = {
 
   // ── LEAD ───────────────────────────────────────────────────────────────────
   // The owner is attached to the lead; an unowned one has nobody attached yet, which is
-  // exactly why claiming it falls to a role.
+  // exactly why claiming it falls to whoever holds Assign people to leads (M6's chain, S06.26).
   'lead.assigned': { family: 'involvement', timing: 'event' },
   'lead.unassigned_created': { family: 'duty', timing: 'event' },
   'lead.reassigned_away': { family: 'involvement', timing: 'event' },
   'lead.walkthrough_scheduled': {
     family: 'involvement',
     timing: 'event',
-    exception: 'Dispatchers receive this one too, as board coverage. The family names the '
-      + 'owner and the performers, who are attached to the lead and to the walkthrough.',
+    exception: 'The lead\'s Dispatcher, who must act, and the holders of Alert me about every lead receive this one too, '
+      + 'through M6\'s chain (S06.26). The family names the owner and the performers, who are attached to the lead and '
+      + 'to the walkthrough.',
   },
 
   // ── ESTIMATE ───────────────────────────────────────────────────────────────
-  // Every estimate verb reaches the commission owner, who is attached to the record. The
-  // admin FEED is awareness; two verbs add a real dispatch duty, noted where they do.
+  // Every estimate verb reaches the commission owner, who is attached to the record, and the rest of M6's chain (S06.26): the
+  // record's people, who must act, and the copy holders. Two verbs add a real dispatch duty, noted where they do.
   'estimate.approved': {
     family: 'involvement',
     timing: 'event',
-    exception: 'The dispatcher rider is a genuine duty - it carries needs_action = '
-      + 'SCHEDULE_JOB. The family names the commission owner, who is the reason the '
+    exception: 'The people who must act (the record\'s Dispatcher, else the Assign people to jobs holders) carry a genuine '
+      + 'duty - needs_action = SCHEDULE_JOB. The family names the commission owner, who is the reason the '
       + 'notification exists at all.',
   },
   'estimate.declined': { family: 'involvement', timing: 'event' },
   'estimate.deposit_paid': {
     family: 'involvement',
     timing: 'event',
-    exception: 'Same split as estimate.approved: the dispatcher rider carries needs_action '
+    exception: 'Same split as estimate.approved: the people who must act carry needs_action '
       + '= SCHEDULE_JOB, and the family names the attached commission owner.',
   },
   'estimate.cancelled': { family: 'involvement', timing: 'event' },
@@ -944,9 +1245,32 @@ export const VERB_RULES: Record<KnownVerb, VerbRule> = {
   // a job carries a dispatch duty, a task does not. The difference is real, and making the
   // two reach the same people would be a product change, not a classification.
   'job.started': { family: 'duty', timing: 'event' },
-  'job.completed': { family: 'duty', timing: 'event' },
+  'job.completed': {
+    family: 'involvement',
+    timing: 'event',
+    exception: 'Lane 1 is the people attached to the job (stored Sold By, crew, Dispatcher). Lane 2 and the copy are found '
+      + 'by switch, never by role name, so the family names the attachment and the fallback people are recorded here.',
+  },
+  'job.ready_to_close': {
+    family: 'involvement',
+    timing: 'event',
+    exception: 'Lane 1 is the people attached to the job (stored Sold By, crew, Dispatcher). Lane 2 is every Close jobs holder, found '
+      + 'by switch and never by role name, so the family names the attachment and the closers are recorded here.',
+  },
+  'job.review_attention': {
+    family: 'involvement',
+    timing: 'event',
+    exception: 'Lane 1 is the people attached to the job (stored Sold By, crew, Dispatcher). Lane 2 and the copy are found by '
+      + 'switch, never by role name, so the family names the attachment and the fallback people are recorded here.',
+  },
   'job.cancelled': { family: 'duty', timing: 'event' },
   'job.reopened': { family: 'duty', timing: 'event' },
+  'job.visit_finished': {
+    family: 'involvement',
+    timing: 'event',
+    exception: 'Lane 1 is the people attached to the job (Sold By, crew, Dispatcher). Lane 2 and the copy are found by '
+      + 'switch, never by role name, so the family names the attachment and the fallback people are recorded here.',
+  },
 
   // ── TASK ───────────────────────────────────────────────────────────────────
   // Pure attachment: assignees, watchers, and the deltas of those two lists. No role is
@@ -984,63 +1308,109 @@ export const VERB_RULES: Record<KnownVerb, VerbRule> = {
   'billing.disputed': {
     family: 'duty',
     timing: 'event',
-    exception: 'Its only path is the Stripe dispute webhook (webhook.controller.ts:1021), '
+    exception: 'Its only path is the payment event reconciler (services/payment-reconciler, disputes), '
       + 'which passes a null actor. Rule 0 is vacuous here.',
   },
   'billing.chargeback': {
     family: 'duty',
     timing: 'event',
-    exception: 'Its only path is the Stripe dispute-closed webhook '
-      + '(webhook.controller.ts:1173), which passes a null actor. Rule 0 is vacuous here.',
+    exception: 'Its only path is the payment event reconciler (services/payment-reconciler, a lost '
+      + 'dispute or bank return), which passes a null actor. Rule 0 is vacuous here.',
+  },
+  'billing.dispute_closed': {
+    family: 'duty',
+    timing: 'event',
+    exception: 'Its only path is the payment event reconciler (services/payment-reconciler, a dispute that '
+      + 'closed without a chargeback), which passes a null actor. Rule 0 is vacuous here.',
+  },
+  'billing.bank_payment_started': {
+    family: 'duty',
+    timing: 'event',
+    exception: 'Its only path is the payment event reconciler (services/payment-reconciler, a bank payment '
+      + 'that started), which passes a null actor. Rule 0 is vacuous here.',
+  },
+  'billing.bank_payment_cleared': {
+    family: 'duty',
+    timing: 'event',
+    exception: 'Its only path is the payment event reconciler (services/payment-reconciler, a bank payment '
+      + 'that cleared), which passes a null actor. Rule 0 is vacuous here.',
+  },
+  'billing.bank_payment_failed': {
+    family: 'duty',
+    timing: 'event',
+    exception: 'Its only path is the payment event reconciler (services/payment-reconciler, a bank payment '
+      + 'that failed), which passes a null actor. Rule 0 is vacuous here.',
+  },
+  'billing.refund_failed': {
+    family: 'duty',
+    timing: 'event',
+    exception: 'Its only path is the payment event reconciler (services/payment-reconciler, a refund the '
+      + 'processor reported as failed), which passes a null actor. Rule 0 is vacuous here.',
   },
   'billing.payment_unrecorded': {
     family: 'duty',
     timing: 'event',
-    exception: 'Its only path is the card-capture webhook (webhook.controller.ts), which passes a '
-      + 'null actor. Rule 0 is vacuous here.',
+    exception: 'Its paths are the card-capture webhook (webhook.controller.ts) and the ledger\'s '
+      + 'settlePayment (lib/payment-ledger.ts), both of which pass a null actor. Rule 0 is vacuous here.',
   },
   'billing.voided': { family: 'duty', timing: 'event' },
   'billing.credit_applied': { family: 'duty', timing: 'event' },
   'billing.payments_activated': {
     family: 'duty',
     timing: 'event',
-    exception: 'Its only path is emitPaymentsNotif (webhook.controller.ts:229) off Stripe '
-      + 'account.updated, which passes a null actor. Rule 0 is vacuous here.',
+    exception: 'Its only path is sendAccountNotices (lib/payments-notifications.ts), fed by the payment event '
+      + 'reconciler\'s account decision (account.updated and the status refresh), which passes a null actor. '
+      + 'Rule 0 is vacuous here.',
   },
   'billing.payouts_activated': {
     family: 'duty',
     timing: 'event',
-    exception: 'Its only path is emitPaymentsNotif (webhook.controller.ts:229) off Stripe '
-      + 'account.updated, which passes a null actor. Rule 0 is vacuous here.',
+    exception: 'Its only path is sendAccountNotices (lib/payments-notifications.ts), fed by the payment event '
+      + 'reconciler\'s account decision (account.updated and the status refresh), which passes a null actor. '
+      + 'Rule 0 is vacuous here.',
   },
   'billing.payments_action_needed': {
     family: 'duty',
     timing: 'event',
-    exception: 'Its only path is emitPaymentsNotif (webhook.controller.ts:229) off Stripe '
-      + 'account.updated, which passes a null actor. Rule 0 is vacuous here.',
+    exception: 'Its only path is sendAccountNotices (lib/payments-notifications.ts), fed by the payment event '
+      + 'reconciler\'s account decision (account.updated and the status refresh), which passes a null actor. '
+      + 'Rule 0 is vacuous here.',
   },
   'billing.payments_paused': {
     family: 'duty',
     timing: 'event',
-    exception: 'Its only path is emitPaymentsNotif (webhook.controller.ts:229) off Stripe '
-      + 'account.updated, which passes a null actor. Rule 0 is vacuous here.',
+    exception: 'Its only path is sendAccountNotices (lib/payments-notifications.ts), fed by the payment event '
+      + 'reconciler\'s account decision (account.updated and the status refresh), which passes a null actor. '
+      + 'Rule 0 is vacuous here.',
+  },
+  'billing.payments_disconnected': {
+    family: 'duty',
+    timing: 'event',
+    exception: 'Its only path is sendAccountNotices (lib/payments-notifications.ts) off the processor\'s '
+      + 'account.application.deauthorized, which passes a null actor. Rule 0 is vacuous here.',
   },
   'billing.payouts_pending_first_payment': {
     family: 'duty',
     timing: 'event',
-    exception: 'Its only path is the Stripe payment webhook (webhook.controller.ts:609), '
+    exception: 'Its only path is the payment webhook (webhook.controller.ts:609), '
       + 'which passes a null actor. Rule 0 is vacuous here.',
-  },
-  'billing.platform_fee_rate_changed': {
-    family: 'duty',
-    timing: 'event',
-    exception: 'Its only path is the platform-fee rate notice (lib/platform-fee-rate-notice'
-      + '.ts:77), a system-emitted notice with a null actor. Rule 0 is vacuous here.',
   },
 
   // ── TEAM ───────────────────────────────────────────────────────────────────
-  'team.ot_override_requested': { family: 'duty', timing: 'event' },
   'team.invite_accepted': { family: 'duty', timing: 'event' },
+  'mailbox.address_needed': {
+    family: 'self',
+    timing: 'event',
+    exception: 'About the new user\'s own account: the one recipient arrives pre-resolved in entity.recipient_ids. The '
+      + 'mailbox is created by the system (the invite or create that made the user), so the alert carries no actor.',
+  },
+  'mailbox.address_needed_admin': {
+    family: 'duty',
+    timing: 'event',
+    exception: 'The recipients are the active holders of Edit users, found by the switch-holder lookup (never a role '
+      + 'name) and handed over in entity.recipient_ids. The alert carries no actor: the person who created the user '
+      + 'did not know the name was taken, so they are told too.',
+  },
 
   // ── CALENDAR ENTRY ─────────────────────────────────────────────────────────
   // Participants only, never a role: an event concerns the people attached to it.
@@ -1122,10 +1492,9 @@ export const VERB_RULES: Record<KnownVerb, VerbRule> = {
   'communication.email_inbound': {
     family: 'involvement',
     timing: 'event',
-    exception: 'Two things worth recording. Its only path is the Resend inbound webhook '
-      + '(resend-webhook.controller.ts:49), which passes a null actor. And when no one holds '
-      + 'the thread it falls back to the dispatcher/admin room, which is a duty audience - '
-      + 'the family names the thread holder, because an owned reply is theirs to answer.',
+    exception: 'Its only path is the inbound email webhook (emailReplyAlerts.ts via resend-webhook.controller.ts), which passes a '
+      + 'null actor. The family names the people the reply is theirs to answer (the sender, the record\'s people); when none of '
+      + 'them can take it the covering people are a duty audience told why, and nobody is addressed by a role.',
   },
 
   // ── AUTOMATION CENTER ──────────────────────────────────────────────────────

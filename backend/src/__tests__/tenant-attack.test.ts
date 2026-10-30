@@ -176,7 +176,7 @@ describe('Attack 2 — Cross-org mutation', () => {
     const res = await request(app)
       .patch(`/api/leads/${LEAD_FIXTURE.id}`)
       .set(authHeader('orgB_admin'))
-      .send({ status: 'CANCELLED', notes: 'pwn' });
+      .send({ status: 'CONTACTED', notes: 'pwn' });
 
     expect(res.status).toBe(404);
     everyWhereScopedTo(prisma.lead.findUnique as Mock, ORG_B_ID);
@@ -304,21 +304,21 @@ describe('Attack 3 — Cross-org action endpoints', () => {
     const res = await request(app)
       .post(`/api/jobs/${JOB_FIXTURE.id}/cancel`)
       .set(authHeader('orgB_admin'))
-      .send({ cancelled_reason: 'pwn' });
+      .send({ cancel_reason_code: 'OTHER', cancelled_reason: 'pwn' });
 
     expect([403, 404]).toContain(res.status);
     everyWhereScopedTo(prisma.job.findUnique as Mock, ORG_B_ID);
     expect(prisma.job.update).not.toHaveBeenCalled();
   });
 
-  it('POST /api/leads/:id/cancel (Org A lead, Org B admin) → 404, no update', async () => {
+  it('POST /api/leads/:id/mark-lost (Org A lead, Org B admin) → 404, no update', async () => {
     mockAuthAs('orgB_admin');
     (prisma.lead.findUnique as Mock).mockResolvedValue(null);
 
     const res = await request(app)
-      .post(`/api/leads/${LEAD_FIXTURE.id}/cancel`)
+      .post(`/api/leads/${LEAD_FIXTURE.id}/mark-lost`)
       .set(authHeader('orgB_admin'))
-      .send({ cancelled_reason: 'pwn' });
+      .send({ lost_reason: 'pwn' });
 
     expect([403, 404]).toContain(res.status);
     everyWhereScopedTo(prisma.lead.findUnique as Mock, ORG_B_ID);

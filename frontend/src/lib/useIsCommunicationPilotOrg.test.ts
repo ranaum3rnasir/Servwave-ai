@@ -13,9 +13,9 @@ vi.mock('@/stores/auth.store', () => ({ useAuthStore: vi.fn() }));
 import { useAuthStore } from '@/stores/auth.store';
 import { useIsCommunicationPilotOrg } from '@/lib/useIsCommunicationPilotOrg';
 
-// Alpha Doors & Security — the Phase-0 CTM pilot (same id in staging + prod, and
+// The pilot org — the Phase-0 CTM pilot (same id in staging + prod, and
 // the hardcoded default when VITE_COMMUNICATION_ALLOWED_ORG_IDS is unset).
-const ALPHA_DOORS_ORG_ID = 'd40afcec-0ddf-471f-b99d-8e5f23cbdadf';
+const PILOT_ORG_ID = 'd40afcec-0ddf-471f-b99d-8e5f23cbdadf';
 
 function mockUser(user: unknown) {
   vi.mocked(useAuthStore).mockImplementation((sel: any) => sel({ user }));
@@ -25,7 +25,7 @@ describe('useIsCommunicationPilotOrg (flows/groups/training gate)', () => {
   beforeEach(() => vi.clearAllMocks());
 
   it('is true ONLY for the allowlisted pilot org', () => {
-    mockUser({ organization_id: ALPHA_DOORS_ORG_ID, org_is_demo: false });
+    mockUser({ organization_id: PILOT_ORG_ID, org_is_demo: false });
     expect(renderHook(() => useIsCommunicationPilotOrg()).result.current).toBe(true);
   });
 

@@ -1,7 +1,7 @@
 /**
  * report-inventory-usage.controller.test.ts — P5 §3.1: GET /api/reports/inventory-usage
  *
- * Route gate: `read Report` (Admin + Dispatcher) like every live report.
+ * Route gate: `read Report` (the Access Reports switch) like every live report.
  * Tenancy via tenantWhere; consume-only fetch; default trailing-12-month window
  * (mirrors resolveFilters); cost + unpricedUnits stripped for a requester
  * without `read Invoice` (canSeePricing — per-user overrides make it mandatory).
@@ -10,8 +10,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { mockAuthAs, authHeader, ALPHA_ORG_ID, PRICE_BOOK_ITEM_FIXTURE, TEST_USERS } from './helpers';
-import { setCachedGrants, clearPermissionCache } from '../lib/permissions/permissionCache';
+import { mockAuthAs, mockRoleSwitches, mockRoleGrantsWithout, authHeader, ALPHA_ORG_ID, PRICE_BOOK_ITEM_FIXTURE, TEST_USERS } from './helpers';
+import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { clearTokenCache } from '../middleware/authenticate';
 
 const mockPrisma = prisma as unknown as {
@@ -164,11 +164,9 @@ describe('GET /api/reports/inventory-usage', () => {
 
   it('strips cost AND unpricedUnits from every row when the requester lacks read Invoice', async () => {
     mockAuthAs('dispatcher');
-    // read Report without read Invoice — the per-user-override shape that makes the strip mandatory.
-    setCachedGrants(ALPHA_ORG_ID, 'DISPATCHER', [
-      { action: 'read', subject: 'Report' },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ] as any);
+    // Access Reports without See financial data (read Pricing) — the per-user shape that makes the strip mandatory.
+    mockRoleGrantsWithout('DISPATCHER', ['read', 'Pricing']);
+    mockRoleSwitches({ access_reports: true });
     mockPrisma.stockMovement.findMany.mockResolvedValue([consumeRow(), consumeRow({ unit_cost: null })]);
 
     const res = await request(app).get('/api/reports/inventory-usage').set(authHeader('dispatcher'));

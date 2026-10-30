@@ -85,7 +85,7 @@ const ESTIMATE = {
 };
 
 const ORG = {
-  id: ORG_ID, name: 'Alpha Doors', address_line1: '1', address_line2: null,
+  id: ORG_ID, name: 'Example Doors', address_line1: '1', address_line2: null,
   city: 'Hoboken', state: 'NJ', postal_code: '07030', email: 'a@b.c', phone: null,
   website: null, logo_url: null, brand_color: '#E11D2E',
   estimate_terms: 'Live terms.', estimate_notes: '', estimate_payment_terms: '',
@@ -171,7 +171,7 @@ describe('minting a version', () => {
     expect(data.estimate_id).toBe(ESTIMATE_ID);
     expect(data.version).toBe(1);
     expect(data.document.view.rows).toHaveLength(2);
-    expect(data.document.org.name).toBe('Alpha Doors');
+    expect(data.document.org.name).toBe('Example Doors');
     expect(data.document.templateKey).toBe('crm-default');
   });
 

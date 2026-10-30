@@ -342,12 +342,13 @@ describe('upload caps', () => {
   });
 
   it('names the file, its REAL size, the limit and what to do next', () => {
-    // 620MB rather than the 62MB this used to say. The whole sentence is asserted, so the
-    // fixture has to be genuinely over whatever the cap currently is or the test stops
-    // testing a refusal at all — and the cap is now 512MB, which 62MB comfortably clears.
+    // 620MB rather than a fixed figure chosen against the old 50MB cap: the whole sentence is
+    // asserted, so the fixture has to be genuinely over whatever the cap currently is or this
+    // test stops testing a refusal at all. The cap is 512MB now and the previous 62MB
+    // fixture stopped being oversized long before that.
     const big = videoFile(620 * MB, 'walkthrough.mp4');
     expect(oversizeRefusalMessage(big)).toBe(
-      '"walkthrough.mp4" is 620 MB — over the 512 MB limit, so it wasn\'t uploaded. ' +
+      '"walkthrough.mp4" is 620MB — over the 512MB limit, so it wasn\'t uploaded. ' +
         'Record a shorter clip, or contact support to send it another way.'
     );
   });
@@ -355,22 +356,22 @@ describe('upload caps', () => {
   it('distinguishes a file just over the cap from one far over it', () => {
     // The reason the size is in the sentence at all: "over the limit" reads identically for
     // both, and only one of them is worth re-filming.
-    expect(oversizeRefusalMessage(videoFile(513 * MB, 'a.mp4'))).toContain('is 513 MB');
-    expect(oversizeRefusalMessage(videoFile(4000 * MB, 'a.mp4'))).toContain('is 4000 MB');
+    expect(oversizeRefusalMessage(videoFile(513 * MB, 'a.mp4'))).toContain('is 513MB');
+    expect(oversizeRefusalMessage(videoFile(4000 * MB, 'a.mp4'))).toContain('is 4000MB');
   });
 
   it('does not tell someone to re-film a PDF', () => {
     const pdf = new File(['x'], 'plans.pdf', { type: 'application/pdf' });
     Object.defineProperty(pdf, 'size', { value: 40 * MB });
     const message = oversizeRefusalMessage(pdf)!;
-    expect(message).toContain('over the 25 MB limit');
+    expect(message).toContain('over the 25MB limit');
     expect(message).not.toContain('Record a shorter clip');
     expect(message).toContain('Contact support');
   });
 
   it('takes an explicit cap, so a route with its own limit quotes that one', () => {
     const big = videoFile(150 * MB, 'huge.mp4');
-    expect(oversizeRefusalMessage(big, 100 * MB)).toContain('over the 100 MB limit');
+    expect(oversizeRefusalMessage(big, 100 * MB)).toContain('over the 100MB limit');
   });
 
   it('points at support, never at a vendor dashboard', () => {

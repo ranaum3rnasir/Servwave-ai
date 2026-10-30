@@ -44,13 +44,15 @@ export interface ReportOnlyCheck {
 
 /**
  * A documented, owner-approved exception applied BEFORE a check judges (not a per-route allowance):
- * who accepted it and what it covers. Two exist:
+ * who accepted it and what it covers. Three exist:
  * - `vendorConsole`: console lines from the vendors' embedded frames (console-lines.ts);
  * - `scheduleDoubleBooked`: the Schedule's double-booked event cards, narrower than the 24 px floor and
  *   covering each other (Ran, 2026-10-08, Option A; schedule-double-booked.ts). The gate applies it only
- *   while this record exists.
+ *   while this record exists;
+ * - `gateTestInbox`: the copy check ignores exactly the test-inbox address the gate seeds its customers with
+ *   (Ran, 2026-10-13; gate-inbox.ts, vendor-terms.ts). The console is never exempted.
  */
-export type AcceptedExceptionName = 'vendorConsole' | 'scheduleDoubleBooked';
+export type AcceptedExceptionName = 'vendorConsole' | 'scheduleDoubleBooked' | 'gateTestInbox';
 
 export interface AcceptedException {
   owner: string;

@@ -26,9 +26,9 @@ import { Prisma } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { tenantWhere } from '../lib/tenant';
-import { canActOnRow, canSeePricing } from '../lib/permissions/enforce';
+import { canActOnRow, canSeeCosts } from '../lib/permissions/enforce';
 import { computeJobBilling } from '../lib/jobBilling';
-import { asScopeArray, toScopeForTotals, stripScopeCost, stripScopeMoney, type ScopeOfWork } from '../lib/scopes';
+import { asScopeArray, toScopeForTotals, stripScopeCost, type ScopeOfWork } from '../lib/scopes';
 import { addScopeSchema, updateScopeSchema, reorderScopeSchema } from './invoice-lines.controller';
 import {
   applyStockMovement,
@@ -45,9 +45,19 @@ import {
 } from './inv-stock.controller';
 import { logAudit } from '../lib/audit';
 import { LINE_DESCRIPTION_MAX } from '../lib/line-items';
+import {
+  jobLineSnapshot,
+  jobScopeSnapshot,
+  recordJobLineChange,
+  recordJobScopeChange,
+} from '../lib/job-change-history';
 
 function param(req: Request, name: string): string {
   return req.params[name] as string;
+}
+
+function actorOf(req: Request) {
+  return { orgId: req.user!.organization_id, userId: req.user!.id };
 }
 
 function round2(n: number): number {
@@ -70,9 +80,8 @@ class LineAlreadyGoneError extends Error {}
 export const addLineSchema = z.object({
   description: z.string().min(1).max(LINE_DESCRIPTION_MAX),
   quantity: z.number().positive().max(100000),
-  // Required for a price-visible requester (enforced in addLine — Zod alone can't see req.ability).
-  // OPTIONAL here for a price-blind requester (D13c): the server resolves it from the price book
-  // item's catalog price, defaulting to 0 when there is no price_book_item_id to resolve from.
+  // Required unless the line names a price book item (enforced in addLine — Zod alone can't see req.ability):
+  // a requester without cost visibility who leaves it out gets the item's catalog price.
   unit_price: z.number().min(0).optional(),
   unit_cost: z.number().min(0).nullable().optional(),
   markup_percent: z.number().min(0).finite().nullable().optional(),
@@ -242,39 +251,23 @@ function billingFor(job: GuardedJob, lines: JobLineRow[], scopesOverride?: unkno
   });
 }
 
-// Job-lines pricing strip — cost/margin (unit_cost, markup_percent) AND sell price (unit_price,
-// line_total) are gated by the SAME canSeePricing (`read Invoice`) predicate that guards
-// estimate/invoice money elsewhere. `update Job` (which gates every route here) is a TECHNICIAN
-// role default since Spec A D3 and does NOT imply `read Invoice` — so a technician managing job
-// lines sees a MATERIALS LIST: description, quantity, item type. No money. Strips the KEYS
-// (mirrors job.controller's stripJobPricingForRequester convention).
-function stripLinePricing<T extends Record<string, unknown>>(line: T, req: Request): T {
-  if (canSeePricing(req)) return line;
+// Job-lines cost strip - cost/margin (unit_cost, markup_percent) is gated by the SAME canSeeCosts
+// (`read Pricing`, the "See financial data" switch) predicate that guards estimate/invoice cost
+// elsewhere. Prices (unit_price, line_total, the billing preview) are NEVER stripped: they follow the
+// job the person can open, and who may change them is the Edit job line items switch. A person without
+// cost visibility sees a priced list: description, quantity, item type, price. Strips the KEYS
+// (mirrors job.controller's stripJobCostForRequester convention).
+function stripLineCost<T extends Record<string, unknown>>(line: T, req: Request): T {
+  if (canSeeCosts(req)) return line;
   const out: Record<string, unknown> = { ...line };
   delete out.unit_cost;
   delete out.markup_percent;
-  delete out.unit_price;
-  delete out.line_total;
   return out as T;
 }
 
-function stripLinesPricing<T extends Record<string, unknown>>(lines: T[], req: Request): T[] {
-  if (canSeePricing(req)) return lines;
-  return lines.map((l) => stripLinePricing(l, req));
-}
-
-/**
- * The `billing` object is entirely money (subtotal/total/remaining preview). There is no useful
- * price-blind projection of it, so a price-blind requester gets null rather than a redacted
- * shell — the client must render "—", not a wrong number.
- */
-function billingOrNull(
-  job: GuardedJob,
-  lines: JobLineRow[],
-  req: Request,
-  scopesOverride?: unknown,
-): ReturnType<typeof billingFor> | null {
-  return canSeePricing(req) ? billingFor(job, lines, scopesOverride) : null;
+function stripLinesCost<T extends Record<string, unknown>>(lines: T[], req: Request): T[] {
+  if (canSeeCosts(req)) return lines;
+  return lines.map((l) => stripLineCost(l, req));
 }
 
 // --- Handlers ---
@@ -284,7 +277,7 @@ export async function list(req: Request, res: Response) {
   try {
     const job = await loadGuardedJob(req, res);
     if (!job) return;
-    res.json({ lines: stripLinesPricing(job.job_line_items, req), billing: billingOrNull(job, job.job_line_items, req) });
+    res.json({ lines: stripLinesCost(job.job_line_items, req), billing: billingFor(job, job.job_line_items) });
   } catch (err) {
     logger.error('Error listing job line items:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -302,12 +295,14 @@ export async function addLine(req: Request, res: Response) {
     }
 
     const body = req.body as z.infer<typeof addLineSchema>;
-    if (!canSeePricing(req)) {
-      // D13c: a price-blind submitter's own unit_price (if any — the field is optional for this
-      // path) is never trusted. Resolve BOTH sell price and cost server-side from the catalog
-      // snapshot so internal job-costing stays accurate even though this requester never sees
-      // either value (stripLinePricing strips both from the response below). No catalog ref →
-      // a free-text line, priced 0 (the requester cannot supply a price to fall back to).
+    if (!canSeeCosts(req)) {
+      // A submitter without cost visibility never supplies a cost: whatever unit_cost / markup_percent they
+      // send is dropped, and the line's cost is resolved server-side from the catalog snapshot so internal
+      // job-costing stays accurate even though this requester never sees it (stripLineCost strips it from
+      // the response below). The PRICE is theirs to set (Edit job line items decides who may); a catalog
+      // line that names none takes the catalog's.
+      body.unit_cost = undefined;
+      body.markup_percent = undefined;
       if (body.price_book_item_id) {
         const catalogItem = await prisma.priceBookItem.findFirst({
           where: { id: body.price_book_item_id, ...tenantWhere(req), is_active: true },
@@ -317,45 +312,48 @@ export async function addLine(req: Request, res: Response) {
           res.status(404).json({ error: 'Price book item not found' });
           return;
         }
-        body.unit_price = Number(catalogItem.unit_price);
+        if (body.unit_price === undefined) body.unit_price = Number(catalogItem.unit_price);
         body.unit_cost = catalogItem.unit_cost != null ? Number(catalogItem.unit_cost) : undefined;
-      } else {
-        body.unit_price = 0;
-        body.unit_cost = undefined;
       }
-      body.markup_percent = undefined;
-    } else if (body.unit_price === undefined) {
+    }
+    if (body.unit_price === undefined) {
       res.status(400).json({ error: 'unit_price is required' });
       return;
     }
-    const lineTotal = round2(body.quantity * body.unit_price);
+    const unitPrice: number = body.unit_price;
+    const lineTotal = round2(body.quantity * unitPrice);
     // Next sequence = max(existing) + 1 (robust to a prior delete leaving a gap).
     const nextSequence = job.job_line_items.reduce((m, l) => Math.max(m, l.sequence), 0) + 1;
 
     // LO-4: adding a line NEVER moves stock — Logistic Orders own all deduction. Every new line
     // is stamped NOT_TRACKED (clean-era marker; the legacy UNSYNCED/SYNCED add stamps retired
     // with the sync routes). The line is a pure independent snapshot; no catalog/inventory read.
-    const line = await prisma.jobLineItem.create({
-      data: {
-        job_id: job.id,
-        organization_id: req.user!.organization_id,
-        sequence: nextSequence,
-        description: body.description,
-        quantity: body.quantity,
-        unit_price: body.unit_price,
-        is_taxable: body.is_taxable,
-        line_total: lineTotal,
-        item_type: body.item_type,
-        ...(body.unit_cost != null ? { unit_cost: body.unit_cost } : {}),
-        ...(body.markup_percent != null ? { markup_percent: body.markup_percent } : {}),
-        ...(body.price_book_item_id ? { price_book_item_id: body.price_book_item_id } : {}),
-        stock_status: 'NOT_TRACKED' as const,
-        stock_location_id: null,
-      },
-      select: jobLineSelect,
+    // S06.5: the line and its entry on the job's history commit together.
+    const line = await prisma.$transaction(async (tx) => {
+      const created = await tx.jobLineItem.create({
+        data: {
+          job_id: job.id,
+          organization_id: req.user!.organization_id,
+          sequence: nextSequence,
+          description: body.description,
+          quantity: body.quantity,
+          unit_price: unitPrice,
+          is_taxable: body.is_taxable,
+          line_total: lineTotal,
+          item_type: body.item_type,
+          ...(body.unit_cost != null ? { unit_cost: body.unit_cost } : {}),
+          ...(body.markup_percent != null ? { markup_percent: body.markup_percent } : {}),
+          ...(body.price_book_item_id ? { price_book_item_id: body.price_book_item_id } : {}),
+          stock_status: 'NOT_TRACKED' as const,
+          stock_location_id: null,
+        },
+        select: jobLineSelect,
+      });
+      await recordJobLineChange(tx, actorOf(req), job.id, created.id, null, jobLineSnapshot(created));
+      return created;
     });
 
-    const billing = billingOrNull(job, [...job.job_line_items, line], req);
+    const billing = billingFor(job, [...job.job_line_items, line]);
 
     void logAudit({
       req,
@@ -364,7 +362,7 @@ export async function addLine(req: Request, res: Response) {
       resourceId: job.id,
       metadata: { stock_status: 'NOT_TRACKED' },
     });
-    res.status(201).json({ line: stripLinePricing(line, req), billing });
+    res.status(201).json({ line: stripLineCost(line, req), billing });
   } catch (err) {
     logger.error('Error adding job line:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -420,13 +418,13 @@ export async function reorderLines(req: Request, res: Response) {
       .map((l) => ({ ...l, sequence: sequenceById.get(l.id)! }))
       .sort((a, b) => a.sequence - b.sequence);
 
-    const billing = billingOrNull(job, reordered, req);
+    const billing = billingFor(job, reordered);
 
     void logAudit({ req, action: 'job.lines_reordered', resourceType: 'Job', resourceId: job.id });
     // Same {line, billing} shape updateLine returns below, so callers don't need special-casing
     // for this endpoint — but a reorder touches EVERY line (not "the" one line an edit touches),
     // so `line` holds the full resequenced array rather than a single row.
-    res.json({ line: stripLinesPricing(reordered, req), billing });
+    res.json({ line: stripLinesCost(reordered, req), billing });
   } catch (err) {
     logger.error('Error reordering job lines:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -451,16 +449,11 @@ export async function updateLine(req: Request, res: Response) {
     }
 
     const body = req.body as z.infer<typeof updateLineSchema>;
-    // Drop cost/margin fields BEFORE the write when the requester can't `read Invoice` — see
+    // Drop cost/margin fields BEFORE the write when the requester can't see costs (See financial data) — see
     // addLine's identical guard for why both the write AND the response must strip these.
-    if (!canSeePricing(req)) {
+    if (!canSeeCosts(req)) {
       body.unit_cost = undefined;
       body.markup_percent = undefined;
-      // Sell-price write lock (D13, Spec A). The response strip alone is not enough: without
-      // this a price-blind technician could add a line at the server-resolved price, then PATCH
-      // it to any number. The `??` fallback below already treats an undefined value as "keep
-      // the existing value", which is exactly the semantics we want here.
-      body.unit_price = undefined;
     }
     const quantity = body.quantity ?? Number(existingLine.quantity);
     const unitPrice = body.unit_price ?? Number(existingLine.unit_price);
@@ -483,8 +476,8 @@ export async function updateLine(req: Request, res: Response) {
     }
 
     // Scoped to the line AND its parent job (no cross-job edit). No stock movement runs here.
-    const updated = await prisma.$transaction(async (tx) =>
-      tx.jobLineItem.update({
+    const updated = await prisma.$transaction(async (tx) => {
+      const row = await tx.jobLineItem.update({
         where: { id: lineId, job_id: job.id },
         data: {
           ...(body.description !== undefined ? { description: body.description } : {}),
@@ -497,11 +490,14 @@ export async function updateLine(req: Request, res: Response) {
           ...(body.markup_percent !== undefined ? { markup_percent: body.markup_percent } : {}),
         },
         select: jobLineSelect,
-      }),
-    );
+      });
+      // S06.5: the old and new values land on the job's history in the same transaction.
+      await recordJobLineChange(tx, actorOf(req), job.id, lineId, jobLineSnapshot(existingLine), jobLineSnapshot(row));
+      return row;
+    });
 
     const nextLines = job.job_line_items.map((l) => (l.id === lineId ? updated : l));
-    const billing = billingOrNull(job, nextLines, req);
+    const billing = billingFor(job, nextLines);
 
     void logAudit({
       req,
@@ -510,7 +506,7 @@ export async function updateLine(req: Request, res: Response) {
       resourceId: job.id,
       metadata: { line_id: lineId },
     });
-    res.json({ line: stripLinePricing(updated, req), billing });
+    res.json({ line: stripLineCost(updated, req), billing });
   } catch (err) {
     logger.error('Error updating job line:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -555,10 +551,12 @@ export async function deleteLine(req: Request, res: Response) {
       // Scoped to the line AND its parent job — never a cross-job delete.
       const result = await tx.jobLineItem.deleteMany({ where: { id: lineId, job_id: job.id } });
       if (result.count === 0) throw new LineAlreadyGoneError();
+      // S06.5: what was removed, on the job's history, in the same transaction.
+      await recordJobLineChange(tx, actorOf(req), job.id, lineId, jobLineSnapshot(existingLine), null);
     });
 
     const remainingLines = job.job_line_items.filter((l) => l.id !== lineId);
-    const billing = billingOrNull(job, remainingLines, req);
+    const billing = billingFor(job, remainingLines);
 
     void logAudit({
       req,
@@ -712,8 +710,8 @@ export async function syncStockLine(req: Request, res: Response) {
       metadata: { line_id: lineId, location_id: location.id },
     });
     res.json({
-      line: stripLinePricing(synced, req),
-      billing: billingOrNull(job, lines, req),
+      line: stripLineCost(synced, req),
+      billing: billingFor(job, lines),
       stock: { shortage: result.shortage, on_hand_after: result.onHandAfter, location_id: location.id },
     });
   } catch (err) {
@@ -788,7 +786,7 @@ export async function bulkSyncStock(req: Request, res: Response) {
       },
     });
     // billing is unchanged by sync — returned for shape consistency with the other line mutations.
-    res.json({ results, lines: stripLinesPricing(lines, req), billing: billingOrNull(job, lines, req) });
+    res.json({ results, lines: stripLinesCost(lines, req), billing: billingFor(job, lines) });
   } catch (err) {
     logger.error('Error bulk-syncing job line stock:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -814,8 +812,8 @@ export async function listScopes(req: Request, res: Response) {
     const job = await loadGuardedJob(req, res);
     if (!job) return;
     const scopes = asScopeArray(job.scopes);
-    const billing = billingOrNull(job, job.job_line_items, req, scopes);
-    res.json({ scopes: canSeePricing(req) ? scopes : stripScopeMoney(scopes), billing });
+    const billing = billingFor(job, job.job_line_items, scopes);
+    res.json({ scopes: canSeeCosts(req) ? scopes : stripScopeCost(scopes), billing });
   } catch (err) {
     logger.error('Error listing job scopes:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -833,17 +831,13 @@ export async function addScope(req: Request, res: Response) {
     }
 
     const body = req.body as z.infer<typeof addScopeSchema>;
-    // Drop cost data BEFORE the write when the requester can't `read Invoice` — mirrors
+    // Drop cost data BEFORE the write when the requester can't see costs (See financial data) — mirrors
     // addLine's identical unit_cost/markup_percent guard above (job-lines pricing-leak
     // follow-up, scopes half). `delete`, not `= undefined` — see updateScope's identical
     // guard for why the distinction matters there; harmless either way here since this is a
     // brand-new scope with no pre-existing value to preserve, but kept consistent.
-    if (!canSeePricing(req)) {
+    if (!canSeeCosts(req)) {
       delete body.internal_cost;
-      // Sell-price write lock (D13, Spec A) — mirror of the internal_cost guard above. A
-      // requester who cannot see a price must not be able to SET one either, or the response
-      // strip merely hides the number they just planted.
-      delete body.flat_price;
     }
     const newScope: ScopeOfWork = {
       id: crypto.randomUUID(),
@@ -865,11 +859,13 @@ export async function addScope(req: Request, res: Response) {
         where: { id: job.id, ...tenantWhere(req) },
         data: { scopes: fresh as unknown as Prisma.InputJsonValue },
       });
+      // S06.5: the new scope on the job's history, in the same transaction.
+      await recordJobScopeChange(tx, actorOf(req), job.id, newScope.id, null, jobScopeSnapshot(newScope));
 
       return fresh;
     });
 
-    const billing = billingOrNull(job, job.job_line_items, req, scopes);
+    const billing = billingFor(job, job.job_line_items, scopes);
 
     void logAudit({
       req,
@@ -878,7 +874,7 @@ export async function addScope(req: Request, res: Response) {
       resourceId: job.id,
       metadata: { scope_id: newScope.id },
     });
-    res.status(201).json({ scopes: canSeePricing(req) ? scopes : stripScopeMoney(scopes), billing });
+    res.status(201).json({ scopes: canSeeCosts(req) ? scopes : stripScopeCost(scopes), billing });
   } catch (err) {
     logger.error('Error adding job scope:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -897,7 +893,7 @@ export async function updateScope(req: Request, res: Response) {
 
     const idx = parseInt(param(req, 'idx'), 10);
     const body = req.body as z.infer<typeof updateScopeSchema>;
-    // Drop cost data BEFORE the merge when the requester can't `read Invoice` — mirrors
+    // Drop cost data BEFORE the merge when the requester can't see costs (See financial data) — mirrors
     // updateLine's identical unit_cost/markup_percent guard. MUST be `delete`, not
     // `body.internal_cost = undefined`: the merge below is a full-object spread over the
     // EXISTING scope, and an explicitly-undefined-valued key is still an own enumerable
@@ -905,14 +901,8 @@ export async function updateScope(req: Request, res: Response) {
     // undefined even when the low-priv caller's edit never mentioned that field. `delete`
     // makes an ignored/attempted submission behave exactly like zod's own "omitted key"
     // semantics the comment below already relies on for every other field.
-    if (!canSeePricing(req)) {
+    if (!canSeeCosts(req)) {
       delete body.internal_cost;
-      // Sell-price write lock (D13, Spec A). MUST be `delete`, not `body.flat_price = undefined`
-      // — the merge below is a full-object spread over the EXISTING scope, and an
-      // explicitly-undefined-valued key is still an own enumerable property that spread applies,
-      // so it would clobber a pre-existing flat_price to undefined even when the low-priv
-      // caller's edit never mentioned the field. Mirrors the existing internal_cost handling.
-      delete body.flat_price;
     }
 
     const scopes = await prisma.$transaction(async (tx) => {
@@ -928,12 +918,15 @@ export async function updateScope(req: Request, res: Response) {
       // Merge onto the existing scope — a field the client omits is left untouched; a field
       // explicitly sent as null (e.g. flat_price: null) overwrites with null (zod's .partial()
       // omits untouched keys entirely from the parsed body, so the spread never clobbers them).
-      fresh[idx] = { ...fresh[idx], ...body };
+      const before = fresh[idx];
+      fresh[idx] = { ...before, ...body };
 
       await tx.job.update({
         where: { id: job.id, ...tenantWhere(req) },
         data: { scopes: fresh as unknown as Prisma.InputJsonValue },
       });
+      // S06.5: old and new values on the job's history, in the same transaction.
+      await recordJobScopeChange(tx, actorOf(req), job.id, before.id, jobScopeSnapshot(before), jobScopeSnapshot(fresh[idx]));
 
       return fresh;
     });
@@ -943,7 +936,7 @@ export async function updateScope(req: Request, res: Response) {
       return;
     }
 
-    const billing = billingOrNull(job, job.job_line_items, req, scopes);
+    const billing = billingFor(job, job.job_line_items, scopes);
 
     void logAudit({
       req,
@@ -952,7 +945,7 @@ export async function updateScope(req: Request, res: Response) {
       resourceId: job.id,
       metadata: { idx },
     });
-    res.json({ scopes: canSeePricing(req) ? scopes : stripScopeMoney(scopes), billing });
+    res.json({ scopes: canSeeCosts(req) ? scopes : stripScopeCost(scopes), billing });
   } catch (err) {
     logger.error('Error updating job scope:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -1017,7 +1010,7 @@ export async function reorderScopes(req: Request, res: Response) {
       return;
     }
 
-    const billing = billingOrNull(job, job.job_line_items, req, reordered);
+    const billing = billingFor(job, job.job_line_items, reordered);
 
     void logAudit({
       req,
@@ -1025,7 +1018,7 @@ export async function reorderScopes(req: Request, res: Response) {
       resourceType: 'Job',
       resourceId: job.id,
     });
-    res.json({ scopes: canSeePricing(req) ? reordered : stripScopeMoney(reordered), billing });
+    res.json({ scopes: canSeeCosts(req) ? reordered : stripScopeCost(reordered), billing });
   } catch (err) {
     logger.error('Error reordering job scopes:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -1052,12 +1045,15 @@ export async function deleteScope(req: Request, res: Response) {
       if (!Number.isInteger(idx) || idx < 0 || idx >= fresh.length) {
         return null;
       }
+      const removed = fresh[idx];
       const filtered = fresh.filter((_, i) => i !== idx);
 
       await tx.job.update({
         where: { id: job.id, ...tenantWhere(req) },
         data: { scopes: filtered as unknown as Prisma.InputJsonValue },
       });
+      // S06.5: what was removed, on the job's history, in the same transaction.
+      await recordJobScopeChange(tx, actorOf(req), job.id, removed.id, jobScopeSnapshot(removed), null);
 
       return filtered;
     });
@@ -1067,7 +1063,7 @@ export async function deleteScope(req: Request, res: Response) {
       return;
     }
 
-    const billing = billingOrNull(job, job.job_line_items, req, next);
+    const billing = billingFor(job, job.job_line_items, next);
 
     void logAudit({
       req,

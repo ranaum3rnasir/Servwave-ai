@@ -1,6 +1,6 @@
 // Phone module — Performance view.
 //
-// Ported from Emanuel's PhonePage monolith (L4524-4815): PerformanceView,
+// Ported from the original PhonePage monolith (L4524-4815): PerformanceView,
 // AgentDetailDrawer, ScriptScore. One-yardstick scorecard — human CSRs and the
 // AI receptionist scored on the same metrics (booking rate, sentiment, script
 // adherence, attributed revenue) per PRD §4 / R05.
@@ -10,10 +10,11 @@
 // reuse (Stat, DirIcon, customerById, partyNumber), and token-swap only.
 import { useMemo, useState } from "react";
 import { AlertTriangle, Bot, ChevronDown, User } from "lucide-react";
-import type { CallSession, PhoneAgent } from "@/lib/api/communication";
+import type { CallSession, ScoredPhoneAgent } from "@/lib/api/communication";
 import {
   usePhoneAgents,
   usePhoneCustomers,
+  hasScorecard,
   fmtAht,
   fmtPhone,
   DISPOSITION_LABELS,
@@ -31,6 +32,11 @@ import { CallDetailDrawer } from "@/components/communication/phone/CallsView";
 import { agentMatchesId } from "@/components/communication/phone/useCallsPipeline";
 import { Sheet, SheetContent, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { useScheduleTimezone } from '@/lib/schedule-tz';
+import { useAppAbility } from "@/contexts/AbilityContext";
+import { canSeeCompanyFigures } from "@/lib/ability";
+
+/** Revenue in thousands, as the cards and the table have always drawn it. Only called where the person may see it. */
+const fmtRevenue = (amount: number | undefined) => `$${((amount ?? 0) / 1000).toFixed(1)}k`;
 
 export function PerformanceView({
   calls,
@@ -39,12 +45,17 @@ export function PerformanceView({
   calls: CallSession[];
   onToast: (m: string) => void;
 }) {
-  const { data: phoneAgents = [] } = usePhoneAgents();
+  const { data: everyAgent = [] } = usePhoneAgents();
+  // The scorecards are call insights: an agent that arrived with identity only (a person without See call insights gets
+  // no metrics) has no card. Agent revenue is a company figure on top of that, so it shows only with See company
+  // figures, and a missing figure is never drawn as zero.
+  const phoneAgents = useMemo(() => everyAgent.filter(hasScorecard), [everyAgent]);
+  const showRevenue = canSeeCompanyFigures(useAppAbility());
   const totalRevenue = useMemo(
-    () => phoneAgents.reduce((s, a) => s + a.revenue, 0),
+    () => phoneAgents.reduce((s, a) => s + (a.revenue ?? 0), 0),
     [phoneAgents],
   );
-  const [selectedAgent, setSelectedAgent] = useState<PhoneAgent | null>(null);
+  const [selectedAgent, setSelectedAgent] = useState<ScoredPhoneAgent | null>(null);
   const [selectedCall, setSelectedCall] = useState<CallSession | null>(null);
 
   // Real orgs have no phone_agents rows (agent scorecards are a demo prototype);
@@ -101,7 +112,7 @@ export function PerformanceView({
               <Stat label="Booking rate" value={`${a.bookingRatePct}%`} />
               <Stat label="AHT" value={fmtAht(a.ahtSec)} />
               {a.containmentPct != null && <Stat label="Containment" value={`${a.containmentPct}%`} />}
-              <Stat label="Revenue" value={`$${(a.revenue / 1000).toFixed(1)}k`} />
+              {showRevenue && <Stat label="Revenue" value={fmtRevenue(a.revenue)} />}
             </div>
           </button>
         ))}
@@ -112,9 +123,11 @@ export function PerformanceView({
           <span className="text-[11px] font-semibold uppercase tracking-wide text-text-secondary">
             Scorecard · this period
           </span>
-          <span className="text-[11px] text-text-secondary">
-            ${(totalRevenue / 1000).toFixed(1)}k attributed revenue
-          </span>
+          {showRevenue && (
+            <span className="text-[11px] text-text-secondary">
+              {fmtRevenue(totalRevenue)} attributed revenue
+            </span>
+          )}
         </div>
         <table className="w-full text-xs">
           <thead className="bg-background-light text-[10px] uppercase tracking-wide text-text-secondary">
@@ -125,7 +138,7 @@ export function PerformanceView({
               <th className="px-3 py-2 text-right">Booking</th>
               <th className="px-3 py-2 text-left">Sentiment</th>
               <th className="px-3 py-2 text-left">Script</th>
-              <th className="px-3 py-2 text-right">Revenue</th>
+              {showRevenue && <th className="px-3 py-2 text-right">Revenue</th>}
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
@@ -151,16 +164,18 @@ export function PerformanceView({
                 <td className="px-3 py-2">
                   <ScriptScore pct={a.scriptAdherencePct} />
                 </td>
-                <td className="px-3 py-2 text-right font-mono font-semibold text-text-primary">
-                  ${(a.revenue / 1000).toFixed(1)}k
-                </td>
+                {showRevenue && (
+                  <td className="px-3 py-2 text-right font-mono font-semibold text-text-primary">
+                    {fmtRevenue(a.revenue)}
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>
         </table>
         <div className="border-t border-border bg-background-light px-3 py-2 text-[10px] italic text-text-secondary">
           Human CSRs and the AI receptionist are scored on one yardstick - booking
-          rate, sentiment, script adherence, and attributed revenue.
+          rate, sentiment, script adherence{showRevenue ? ", and attributed revenue" : ""}.
         </div>
       </section>
 
@@ -194,7 +209,7 @@ function AgentDetailDrawer({
   onOpenCall,
   onToast,
 }: {
-  agent: PhoneAgent;
+  agent: ScoredPhoneAgent;
   calls: CallSession[];
   onClose: () => void;
   onOpenCall: (c: CallSession) => void;
@@ -202,6 +217,7 @@ function AgentDetailDrawer({
 }) {
   const { data: customers = [] } = usePhoneCustomers();
   const tz = useScheduleTimezone();
+  const showRevenue = canSeeCompanyFigures(useAppAbility());
   // A real call's answeredBy.id is the ServWave USER id, not this row's own
   // primary key - comparing them directly is why this drawer listed zero calls
   // for every agent regardless of what ingest resolved.
@@ -251,7 +267,7 @@ function AgentDetailDrawer({
             <Stat label="Booking rate" value={`${agent.bookingRatePct}%`} />
             <Stat label="AHT" value={fmtAht(agent.ahtSec)} />
             <Stat label="Sentiment" value={`${agent.sentimentPct}%`} />
-            <Stat label="Revenue" value={`$${(agent.revenue / 1000).toFixed(1)}k`} />
+            {showRevenue && <Stat label="Revenue" value={fmtRevenue(agent.revenue)} />}
             {agent.containmentPct != null && (
               <Stat label="Containment" value={`${agent.containmentPct}%`} />
             )}

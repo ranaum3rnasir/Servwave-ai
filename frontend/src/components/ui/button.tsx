@@ -50,7 +50,7 @@ import { DisabledReasonShell, activeReason } from "@/ui-kit/components/ui/disabl
    typed as a single ordinary component now - nothing computes a COMPUTED
    variant string spanning old and new names anymore, so the escape-hatch
    signature that existed for exactly that (2 real call sites,
-   settings/UserPermissionsDialog.tsx and payments/StripePaymentsStatusCard.tsx
+   a settings dialog (since removed) and payments/PaymentsStatusCard.tsx
    - both re-derived to compute `tone` instead) is gone too. `Meta<typeof
    Button>` in button.stories.tsx no longer needs the `ComponentType` cast this
    change made unnecessary. The rendered class string of every surviving name

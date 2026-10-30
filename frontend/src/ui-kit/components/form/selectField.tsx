@@ -25,6 +25,8 @@ export interface SelectFieldProps {
   disabled?: boolean;
   invalid?: boolean;
   className?: string;
+  /** Extra classes for the open list of the plain select (ignored by the searchable branch). */
+  contentClassName?: string;
   id?: string;
   /** Mirrors `SelectTrigger`'s own prop - `sm` is h-8.5, `default` is h-10. */
   size?: React.ComponentProps<typeof SelectTrigger>["size"];
@@ -134,6 +136,7 @@ function SelectField({
   disabled,
   invalid,
   className,
+  contentClassName,
   id,
   size,
   searchable,
@@ -243,6 +246,7 @@ function SelectField({
         <SelectValue placeholder={placeholder}>{selectedTriggerLabel}</SelectValue>
       </SelectTrigger>
       <SelectContent
+        className={contentClassName}
         side={side}
         align={align}
         avoidCollisions={avoidCollisions}

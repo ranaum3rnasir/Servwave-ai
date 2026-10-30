@@ -20,13 +20,14 @@ import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import { TEST_USERS, mockAuthAs, authHeader, ALPHA_ORG_ID, JOB_FIXTURE, TRACKED_ITEM_FIXTURE } from './helpers';
-import { setCachedGrants, clearPermissionCache } from '../lib/permissions/permissionCache';
+import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 // ─── Typed mock accessors ──────────────────────────────────
 const mockPrisma = prisma as unknown as {
   job: {
     findUnique: ReturnType<typeof vi.fn>;
     findFirst: ReturnType<typeof vi.fn>;
+    findMany: ReturnType<typeof vi.fn>;
     update: ReturnType<typeof vi.fn>;
   };
   jobLineItem: {
@@ -41,6 +42,7 @@ const mockPrisma = prisma as unknown as {
     findUnique: ReturnType<typeof vi.fn>;
   };
   organization: { findUnique: ReturnType<typeof vi.fn> };
+  timelineEvent: { create: ReturnType<typeof vi.fn> };
   $transaction: ReturnType<typeof vi.fn>;
 };
 
@@ -57,6 +59,8 @@ function setupTransaction() {
         job: {
           findUnique: mockPrisma.job.findUnique,
           update: mockPrisma.job.update,
+          // S06.20: a job-history write asks which jobs it touches are in Ready to close.
+          findMany: mockPrisma.job.findMany,
         },
         // P1: addLine/updateLine are tx-wrapped for the stock movements — same delegation
         // convention as job-lines.test.ts keeps every pre-P1 assertion here green.
@@ -72,6 +76,8 @@ function setupTransaction() {
           findUnique: mockPrisma.stockBalance.findUnique,
         },
         organization: { findUnique: mockPrisma.organization.findUnique },
+        // S06.5: line/scope edits write their entry on the job's history in the same transaction.
+        timelineEvent: { create: mockPrisma.timelineEvent.create },
       });
     }
     return Promise.all(arg as Promise<unknown>[]);
@@ -93,12 +99,6 @@ const OWN_JOB = { assignees: { some: { user_id: '{{userId}}' } } };
 // condition, exactly as the real grants pair them - this file is about the PRICING strip, not
 // about the gate, so it holds whichever actions get it through the door.
 function grantTechUpdateJobWithoutInvoiceRead() {
-  setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', [
-    { action: 'read', subject: 'Job', conditions: OWN_JOB },
-    { action: 'update', subject: 'Job', conditions: OWN_JOB },
-    { action: 'manage_lines', subject: 'Job', conditions: OWN_JOB },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ] as any);
 }
 
 // An existing line with NO cost data recorded (unit_cost/markup_percent null) — the shape used
@@ -185,7 +185,7 @@ beforeEach(() => {
 // GET /api/jobs/:id/line-items — list
 // ════════════════════════════════════════════════════════════════════════════
 describe('GET /api/jobs/:id/line-items — pricing leak', () => {
-  it('requester granted update Job but NOT read Invoice gets unit_cost/markup_percent ABSENT', async () => {
+  it('requester granted update Job but NOT read Invoice gets unit_cost/markup_percent ABSENT and keeps the prices', async () => {
     mockAuthAs('technician');
     grantTechUpdateJobWithoutInvoiceRead();
     mockPrisma.job.findUnique.mockResolvedValue(jobRow({ jobLineItems: [existingLineWithCost()] }));
@@ -198,19 +198,18 @@ describe('GET /api/jobs/:id/line-items — pricing leak', () => {
     const line = res.body.lines[0];
     expect(line.unit_cost).toBeUndefined();
     expect(line.markup_percent).toBeUndefined();
-    // D13b (Spec A) widened this strip to sell price too — a price-blind requester sees a
-    // materials list (description/quantity/item type), no money at all.
-    expect(line.unit_price).toBeUndefined();
-    expect(line.line_total).toBeUndefined();
+    // S01.15: See financial data covers costs only, so the line keeps its price.
+    expect(line.unit_price).toBe(1000);
+    expect(line.line_total).toBe(1000);
     // Work detail is preserved.
     expect(line.description).toBe('AC Unit');
   });
 
-  it('DISPATCHER (read Invoice) sees unit_cost/markup_percent on the list response', async () => {
-    mockAuthAs('dispatcher');
+  it('ADMIN (sees costs) sees unit_cost/markup_percent on the list response', async () => {
+    mockAuthAs('admin');
     mockPrisma.job.findUnique.mockResolvedValue(jobRow({ jobLineItems: [existingLineWithCost()] }));
 
-    const res = await request(app).get(`/api/jobs/${JOB_ID}/line-items`).set(authHeader('dispatcher'));
+    const res = await request(app).get(`/api/jobs/${JOB_ID}/line-items`).set(authHeader('admin'));
 
     expect(res.status).toBe(200);
     const line = res.body.lines[0];
@@ -223,7 +222,7 @@ describe('GET /api/jobs/:id/line-items — pricing leak', () => {
 // POST /api/jobs/:id/line-items — add
 // ════════════════════════════════════════════════════════════════════════════
 describe('POST /api/jobs/:id/line-items — pricing leak', () => {
-  it('requester granted update Job but NOT read Invoice gets unit_cost/markup_percent ABSENT on the add response', async () => {
+  it('requester granted update Job but NOT read Invoice gets unit_cost/markup_percent ABSENT and keeps the prices on the add response', async () => {
     mockAuthAs('technician');
     grantTechUpdateJobWithoutInvoiceRead();
     mockPrisma.job.findFirst.mockResolvedValue({ id: JOB_ID });
@@ -245,8 +244,8 @@ describe('POST /api/jobs/:id/line-items — pricing leak', () => {
     expect(res.body.line.description).toBe('Compressor');
   });
 
-  it('DISPATCHER (read Invoice) sees unit_cost/markup_percent on the add response', async () => {
-    mockAuthAs('dispatcher');
+  it('ADMIN (sees costs) sees unit_cost/markup_percent on the add response', async () => {
+    mockAuthAs('admin');
     mockPrisma.jobLineItem.create.mockResolvedValue({
       id: 'new-line-id', job_id: JOB_ID, sequence: 1, description: 'Compressor', quantity: 1,
       unit_price: 500, unit_cost: 300, markup_percent: 40, is_taxable: true, line_total: 500,
@@ -256,7 +255,7 @@ describe('POST /api/jobs/:id/line-items — pricing leak', () => {
 
     const res = await request(app)
       .post(`/api/jobs/${JOB_ID}/line-items`)
-      .set(authHeader('dispatcher'))
+      .set(authHeader('admin'))
       .send({ description: 'Compressor', quantity: 1, unit_price: 500, unit_cost: 300, markup_percent: 40 });
 
     expect(res.status).toBe(201);
@@ -297,10 +296,10 @@ describe('POST /api/jobs/:id/line-items — pricing leak', () => {
       discount_type: null, discount_value: null, discount_amount: 0,
       item_type: createArg.data.item_type, price_book_item_id: createArg.data.price_book_item_id ?? null,
     };
-    mockAuthAs('dispatcher');
+    mockAuthAs('admin');
     mockPrisma.job.findUnique.mockResolvedValue(jobRow({ jobLineItems: [persistedLine] }));
 
-    const listRes = await request(app).get(`/api/jobs/${JOB_ID}/line-items`).set(authHeader('dispatcher'));
+    const listRes = await request(app).get(`/api/jobs/${JOB_ID}/line-items`).set(authHeader('admin'));
     expect(listRes.status).toBe(200);
     expect(listRes.body.lines[0].unit_cost).toBeNull();
     expect(listRes.body.lines[0].markup_percent).toBeNull();
@@ -311,7 +310,7 @@ describe('POST /api/jobs/:id/line-items — pricing leak', () => {
 // PATCH /api/jobs/:id/line-items/:lineId — edit
 // ════════════════════════════════════════════════════════════════════════════
 describe('PATCH /api/jobs/:id/line-items/:lineId — pricing leak', () => {
-  it('requester granted update Job but NOT read Invoice gets unit_cost/markup_percent ABSENT on the update response', async () => {
+  it('requester granted update Job but NOT read Invoice gets unit_cost/markup_percent ABSENT and keeps the prices on the update response', async () => {
     mockAuthAs('technician');
     grantTechUpdateJobWithoutInvoiceRead();
     mockPrisma.job.findUnique.mockResolvedValue(jobRow({ jobLineItems: [existingLineWithCost()] }));
@@ -328,14 +327,14 @@ describe('PATCH /api/jobs/:id/line-items/:lineId — pricing leak', () => {
     expect(res.body.line.markup_percent).toBeUndefined();
   });
 
-  it('DISPATCHER (read Invoice) sees unit_cost/markup_percent on the update response', async () => {
-    mockAuthAs('dispatcher');
+  it('ADMIN (sees costs) sees unit_cost/markup_percent on the update response', async () => {
+    mockAuthAs('admin');
     mockPrisma.job.findUnique.mockResolvedValue(jobRow({ jobLineItems: [existingLineWithCost()] }));
     mockPrisma.jobLineItem.update.mockResolvedValue(existingLineWithCost({ quantity: 3, line_total: 3000 }));
 
     const res = await request(app)
       .patch(`/api/jobs/${JOB_ID}/line-items/${LINE_ID}`)
-      .set(authHeader('dispatcher'))
+      .set(authHeader('admin'))
       .send({ quantity: 3 });
 
     expect(res.status).toBe(200);
@@ -370,10 +369,10 @@ describe('PATCH /api/jobs/:id/line-items/:lineId — pricing leak', () => {
       unit_cost: updateArg.data.unit_cost ?? null,
       markup_percent: updateArg.data.markup_percent ?? null,
     });
-    mockAuthAs('dispatcher');
+    mockAuthAs('admin');
     mockPrisma.job.findUnique.mockResolvedValue(jobRow({ jobLineItems: [persistedLine] }));
 
-    const listRes = await request(app).get(`/api/jobs/${JOB_ID}/line-items`).set(authHeader('dispatcher'));
+    const listRes = await request(app).get(`/api/jobs/${JOB_ID}/line-items`).set(authHeader('admin'));
     expect(listRes.status).toBe(200);
     expect(listRes.body.lines[0].unit_cost).toBeNull();
     expect(listRes.body.lines[0].markup_percent).toBeNull();
@@ -397,17 +396,17 @@ describe('GET /api/jobs/:id/scopes — pricing leak', () => {
     expect(res.status).toBe(200);
     expect(res.body.scopes).toHaveLength(1);
     expect(res.body.scopes[0].internal_cost).toBeUndefined();
-    // D13b (Spec A) widened this strip to sell price too (stripScopeMoney, not stripScopeCost).
-    expect(res.body.scopes[0].flat_price).toBeUndefined();
+    // S01.15: the scope keeps its flat price (stripScopeCost drops the cost only).
+    expect(res.body.scopes[0].flat_price).toBe(300);
     // Work detail is preserved.
     expect(res.body.scopes[0].title).toBe('Permit fee');
   });
 
-  it('DISPATCHER (read Invoice) sees internal_cost on the list response', async () => {
-    mockAuthAs('dispatcher');
+  it('ADMIN (sees costs) sees internal_cost on the list response', async () => {
+    mockAuthAs('admin');
     mockPrisma.job.findUnique.mockResolvedValue(jobRow({ scopes: [scopeFixtureWithCost()] }));
 
-    const res = await request(app).get(`/api/jobs/${JOB_ID}/scopes`).set(authHeader('dispatcher'));
+    const res = await request(app).get(`/api/jobs/${JOB_ID}/scopes`).set(authHeader('admin'));
 
     expect(res.status).toBe(200);
     expect(res.body.scopes[0].internal_cost).toBe(150);
@@ -433,14 +432,14 @@ describe('POST /api/jobs/:id/scopes — pricing leak', () => {
     expect(res.body.scopes[0].title).toBe('Permit fee');
   });
 
-  it('DISPATCHER (read Invoice) sees internal_cost on the add response', async () => {
-    mockAuthAs('dispatcher');
+  it('ADMIN (sees costs) sees internal_cost on the add response', async () => {
+    mockAuthAs('admin');
     mockPrisma.job.findUnique.mockResolvedValue(jobRow());
     mockPrisma.job.update.mockResolvedValue({});
 
     const res = await request(app)
       .post(`/api/jobs/${JOB_ID}/scopes`)
-      .set(authHeader('dispatcher'))
+      .set(authHeader('admin'))
       .send({ title: 'Permit fee', flat_price: 300, internal_cost: 150 });
 
     expect(res.status).toBe(201);
@@ -465,10 +464,9 @@ describe('POST /api/jobs/:id/scopes — pricing leak', () => {
     const updateArg = mockPrisma.job.update.mock.calls[0][0];
     expect(updateArg.data.scopes).toHaveLength(1);
     expect(updateArg.data.scopes[0].internal_cost).toBeNull();
-    // D13b (Spec A): a price-blind submitter can't set a price on a brand-new scope either —
-    // it persists null, not the 300 they submitted (see updateScope's PATCH sibling below for
-    // the case where a PRE-EXISTING price must survive untouched instead of being nulled).
-    expect(updateArg.data.scopes[0].flat_price).toBeNull();
+    // S01.15: the price is theirs to set (Edit job line items decides who may), so the 300
+    // they submitted is saved; only the cost is dropped.
+    expect(updateArg.data.scopes[0].flat_price).toBe(300);
     // Work detail is still saved.
     expect(updateArg.data.scopes[0].title).toBe('Permit fee');
   });
@@ -491,14 +489,14 @@ describe('PATCH /api/jobs/:id/scopes/:idx — pricing leak', () => {
     expect(res.body.scopes[0].internal_cost).toBeUndefined();
   });
 
-  it('DISPATCHER (read Invoice) sees internal_cost on the update response', async () => {
-    mockAuthAs('dispatcher');
+  it('ADMIN (sees costs) sees internal_cost on the update response', async () => {
+    mockAuthAs('admin');
     mockPrisma.job.findUnique.mockResolvedValue(jobRow({ scopes: [scopeFixtureWithCost()] }));
     mockPrisma.job.update.mockResolvedValue({});
 
     const res = await request(app)
       .patch(`/api/jobs/${JOB_ID}/scopes/0`)
-      .set(authHeader('dispatcher'))
+      .set(authHeader('admin'))
       .send({ flat_price: 500 });
 
     expect(res.status).toBe(200);
@@ -523,10 +521,8 @@ describe('PATCH /api/jobs/:id/scopes/:idx — pricing leak', () => {
     // internal_cost.
     const updateArg = mockPrisma.job.update.mock.calls[0][0];
     expect(updateArg.data.scopes[0].internal_cost).toBeNull();
-    // D13b (Spec A): flat_price is now write-locked the same way — the submitted 500 is
-    // dropped BEFORE the merge, so the PRE-EXISTING price (300, from scopeFixtureWithCost's
-    // default) survives untouched rather than being overwritten by the low-priv submission.
-    expect(updateArg.data.scopes[0].flat_price).toBe(300);
+    // S01.15: flat_price is a price, so the submitted 500 is saved; only the cost is dropped.
+    expect(updateArg.data.scopes[0].flat_price).toBe(500);
   });
 
   it('a low-privilege edit to an unrelated field does NOT clobber a pre-existing internal_cost', async () => {

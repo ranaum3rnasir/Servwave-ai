@@ -14,6 +14,11 @@ E2E_ALLOWED_DB_HOSTS=aws-1-us-east-1.pooler.supabase.com   # the staging pooler 
 E2E_ALLOWED_DB_REF=knriiqdqxgfoecsfarlx                    # the staging project ref (hard guard)
 ```
 
+No mailbox key is needed for the teardown: a backend started with `E2E_TEST_DOORS=true` (this one, the
+Playwright `webServer` backends, `e2e-api-server.ts`) falls back to a harness-only
+`MAILBOX_ADDRESS_HASH_KEY` when none is set, never in production, and a key you set in `backend/.env` wins.
+The company purge needs a key, and every provisioned company has a mailbox address to hash.
+
 `provisionTestOrg` refuses to run unless the DB host **and** project ref match the allowlist — the
 Supabase pooler host is shared with prod, so the **ref** is the real guard. Teardown only ever
 deletes the `e2e-qa-<runId>` org (name-guarded purge) and `@e2e-qa.invalid` Auth users (full-domain

@@ -29,11 +29,6 @@ import app from '../app';
 import { prisma } from '../lib/prisma';
 import { PERMISSION_CATALOG, isCatalogEntry } from '../lib/permissions/catalog';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
-import { SENSITIVE, assembleRoleViewModel, viewModelToGrants } from '../lib/permissions/roleViewModel';
-import { defineAbilityFor } from '../lib/permissions/defineAbility';
-import { isManagedCapability, getManagedCapability } from '../lib/permissions/userCapabilities';
-import { mockAuthAs, authHeader } from './helpers';
-import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 const PAIR = { action: 'assign', subject: 'User' } as const;
 
@@ -58,8 +53,8 @@ describe('PERMISSION_CATALOG — the assign:User entry', () => {
 
   it('describes ONE capability spanning BOTH job crew and walkthrough performers', () => {
     const row = PERMISSION_CATALOG.find((e) => e.action === 'assign' && e.subject === 'User')!;
-    // PERMISSION_CATALOG.description is not rendered anywhere - the Roles screen's own label is
-    // asserted in settings-roles-v2-assign-others.test.tsx, and that is the user-visible one.
+    // PERMISSION_CATALOG.description is not rendered anywhere - the Roles screen draws the label and help text
+    // of the switch catalog, and that is the user-visible one.
     // This guards the catalog as the place a DEVELOPER learns what the grant covers: one naming
     // only one surface reads as a walkthrough-only grant, and the next person needing the other
     // surface adds a SECOND grant rather than reusing this one.
@@ -68,7 +63,7 @@ describe('PERMISSION_CATALOG — the assign:User entry', () => {
     expect(row.description.toLowerCase()).toContain('other than yourself');
   });
 
-  it('isCatalogEntry recognizes it — without this putRolePermissions silently drops the grant', () => {
+  it('isCatalogEntry recognizes it', () => {
     expect(isCatalogEntry('assign', 'User')).toBe(true);
   });
 });
@@ -207,187 +202,5 @@ describe('backfill migration — every existing org AND every custom role, idemp
     const root = join(__dirname, '../../prisma/migrations');
     const names = readdirSync(root).filter((n) => statSync(join(root, n)).isDirectory());
     expect(names).toContain('20260831120000_assign_others_grant_backfill');
-  });
-});
-
-describe('roleViewModel — the Roles screen switch', () => {
-  it('SENSITIVE.assignOthers writes assign:User and nothing else', () => {
-    expect(SENSITIVE.assignOthers).toEqual([{ action: 'assign', subject: 'User' }]);
-  });
-
-  it('assembles TRUE from a stored grant and FALSE from its absence', () => {
-    expect(assembleRoleViewModel('DISPATCHER', [{ ...PAIR, conditions: null }]).sensitive.assignOthers).toBe(true);
-    expect(assembleRoleViewModel('SALES', []).sensitive.assignOthers).toBe(false);
-  });
-
-  it('emits exactly one unconditional grant when on, and none when off', () => {
-    const vm = (assignOthers: boolean) => ({
-      role: 'DISPATCHER',
-      matrix: {},
-      sensitive: { seeFinancials: false, managePayments: false, viewReports: false, editRecordIds: false, assignOthers },
-      toggles: {} as never,
-      scope: {},
-      general: { description: '' },
-    });
-    const on = viewModelToGrants(vm(true) as never).filter((g) => g.subject === 'User');
-    expect(on).toEqual([{ action: 'assign', subject: 'User', conditions: null }]);
-    expect(viewModelToGrants(vm(false) as never).filter((g) => g.action === 'assign')).toEqual([]);
-  });
-});
-
-describe('PUT /api/roles/:role/permissions — the switch round-trips through the REAL gate', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    clearPermissionCache();
-  });
-
-  const save = (assignOthers: boolean, stored: Array<Record<string, unknown>> = []) => {
-    mockAuthAs('admin');
-    (prisma.rolePermission.findMany as never as ReturnType<typeof vi.fn>).mockResolvedValue(stored);
-    const deleteMany = vi.fn().mockResolvedValue({ count: 0 });
-    const upsert = vi.fn().mockResolvedValue({});
-    (prisma.$transaction as never as ReturnType<typeof vi.fn>).mockImplementation((fn: never) =>
-      (fn as unknown as (tx: unknown) => unknown)({ rolePermission: { deleteMany, upsert } }),
-    );
-    return {
-      deleteMany,
-      upsert,
-      res: request(app)
-        .put('/api/roles/DISPATCHER/permissions')
-        .set(authHeader('admin'))
-        .send({
-          matrix: {},
-          sensitive: { seeFinancials: false, managePayments: false, viewReports: false, editRecordIds: false, assignOthers },
-          toggles: {},
-          scope: {},
-          general: { description: '' },
-        }),
-    };
-  };
-
-  it('assignOthers:true persists assign:User with a JSON-null condition', async () => {
-    const { upsert, res } = save(true);
-    expect((await res).status).toBe(200);
-    const calls = upsert.mock.calls.filter((c) => c[0].create.subject === 'User' && c[0].create.action === 'assign');
-    expect(calls).toHaveLength(1);
-    // role.controller writes an absent condition as Prisma.JsonNull (the JSON-column sentinel),
-    // never a bare JS null.
-    expect(calls[0][0].create.conditions).toEqual(Prisma.JsonNull);
-  });
-
-  it('assignOthers:false persists no assign:User grant', async () => {
-    const { upsert, res } = save(false);
-    expect((await res).status).toBe(200);
-    expect(upsert.mock.calls.filter((c) => c[0].create.subject === 'User')).toEqual([]);
-  });
-
-  it('turning it off DELETES a pre-existing grant — the pair is inside MANAGED_KEYS', async () => {
-    // If assign:User were outside MANAGED_KEYS the Save would PRESERVE it, the switch would read
-    // ON again after a reload, and revoking would be impossible from the UI.
-    const { deleteMany, res } = save(false, [{ action: 'assign', subject: 'User', conditions: null }]);
-    expect((await res).status).toBe(200);
-    const deleted = deleteMany.mock.calls.flatMap((c) => c[0]?.where?.OR ?? []);
-    expect(deleted).toContainEqual(expect.objectContaining({ action: 'assign', subject: 'User' }));
-  });
-
-  // ─── the stale-tab hole, and the reason this slice is HITL ────────────────────────────────
-  // Frontend (Vercel) and backend (Render) deploy independently, so between them there is a real
-  // window in which an admin's open Roles tab has no `assignOthers` key while the migration has
-  // ALREADY written the grant. Absence is otherwise read as OFF, and MANAGED_KEYS then deletes
-  // the only copy of a row nothing re-creates. That is the silent demotion the whole slice exists
-  // to prevent, arriving through the editor instead of through the backfill.
-  const saveWithoutTheKey = (stored: Array<Record<string, unknown>> = []) => {
-    mockAuthAs('admin');
-    (prisma.rolePermission.findMany as never as ReturnType<typeof vi.fn>).mockResolvedValue(stored);
-    const deleteMany = vi.fn().mockResolvedValue({ count: 0 });
-    const upsert = vi.fn().mockResolvedValue({});
-    (prisma.$transaction as never as ReturnType<typeof vi.fn>).mockImplementation((fn: never) =>
-      (fn as unknown as (tx: unknown) => unknown)({ rolePermission: { deleteMany, upsert } }),
-    );
-    return {
-      deleteMany,
-      upsert,
-      res: request(app)
-        .put('/api/roles/DISPATCHER/permissions')
-        .set(authHeader('admin'))
-        .send({
-          matrix: {},
-          // A PRE-DEPLOY tab's body: post-SRVW-140 (it carries viewReports, so the legacy freeze
-          // does NOT fire) but with no `assignOthers` key at all.
-          sensitive: { seeFinancials: false, managePayments: false, viewReports: false, editRecordIds: false },
-          toggles: {},
-          scope: {},
-          general: { description: '' },
-        }),
-    };
-  };
-
-  it('a body that OMITS assignOthers leaves a backfilled grant alone', async () => {
-    const { deleteMany, res } = saveWithoutTheKey([{ action: 'assign', subject: 'User', conditions: null }]);
-    expect((await res).status).toBe(200);
-    const deleted = deleteMany.mock.calls.flatMap((c) => c[0]?.where?.OR ?? []);
-    expect(deleted).not.toContainEqual(expect.objectContaining({ action: 'assign', subject: 'User' }));
-  });
-
-  it('omitting the key does not GRANT it either — the freeze only refuses deletions', async () => {
-    const { upsert, res } = saveWithoutTheKey([]);
-    expect((await res).status).toBe(200);
-    expect(upsert.mock.calls.filter((c) => c[0].create.subject === 'User' && c[0].create.action === 'assign')).toEqual([]);
-  });
-
-  it('an explicit false still revokes — the freeze must not make the switch one-way', async () => {
-    const { deleteMany, res } = save(false, [{ action: 'assign', subject: 'User', conditions: null }]);
-    expect((await res).status).toBe(200);
-    const deleted = deleteMany.mock.calls.flatMap((c) => c[0]?.where?.OR ?? []);
-    expect(deleted).toContainEqual(expect.objectContaining({ action: 'assign', subject: 'User' }));
-  });
-});
-
-describe('defineAbilityFor — real ability build, not a literal', () => {
-  const grantsFor = (role: string) =>
-    DEFAULT_GRANTS.filter((g) => g.role === role && g.action === 'assign' && g.subject === 'User');
-
-  it('ADMIN reaches it via manage-all, with no explicit row', () => {
-    expect(defineAbilityFor({ id: 'u1', role: 'ADMIN' }, []).can('assign', 'User')).toBe(true);
-  });
-
-  it('DISPATCHER and TECHNICIAN hold it from DEFAULT_GRANTS alone', () => {
-    expect(defineAbilityFor({ id: 'u2', role: 'DISPATCHER' }, grantsFor('DISPATCHER')).can('assign', 'User')).toBe(true);
-    expect(defineAbilityFor({ id: 'u3', role: 'TECHNICIAN' }, grantsFor('TECHNICIAN')).can('assign', 'User')).toBe(true);
-  });
-
-  it('SALES does not', () => {
-    expect(defineAbilityFor({ id: 'u4', role: 'SALES' }, grantsFor('SALES')).can('assign', 'User')).toBe(false);
-  });
-
-  it('a per-user ALLOW override grants it to one salesperson, unconditionally', () => {
-    const ability = defineAbilityFor({ id: 'u5', role: 'SALES' }, [], [{ ...PAIR, effect: 'allow' }]);
-    expect(ability.can('assign', 'User')).toBe(true);
-    // No ownCondition on the capability -> the emitted rule must be UNCONDITIONAL. Asserted on the
-    // real rule rather than assumed: an own-scoped rule here would silently never match.
-    expect(ability.rules.find((r) => r.action === 'assign' && r.subject === 'User')?.conditions).toBeUndefined();
-  });
-
-  it('a per-user DENY override takes it away from one dispatcher', () => {
-    const ability = defineAbilityFor(
-      { id: 'u6', role: 'DISPATCHER' },
-      grantsFor('DISPATCHER'),
-      [{ ...PAIR, effect: 'deny' }],
-    );
-    expect(ability.can('assign', 'User')).toBe(false);
-  });
-});
-
-describe('userCapabilities — the per-user override is managed', () => {
-  it('assign:User is a managed capability (the PUT endpoint 400s on an unmanaged pair)', () => {
-    expect(isManagedCapability('assign', 'User')).toBe(true);
-  });
-
-  it('carries no ownCondition and no impliesRead', () => {
-    const cap = getManagedCapability('assign', 'User')!;
-    expect(cap.ownCondition).toBeUndefined();
-    // The paired read would be `read User` — the org directory. That is a separate decision, made
-    // per role, and not one to make as a side effect of this switch.
-    expect(cap.impliesRead).toBeUndefined();
   });
 });

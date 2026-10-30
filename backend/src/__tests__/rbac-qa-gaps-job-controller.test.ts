@@ -2,9 +2,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { TEST_USERS, mockAuthAs, authHeader, JOB_FIXTURE, mockRoleGrantsWithout } from './helpers';
-import { clearPermissionCache, setCachedGrants } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
+import { TEST_USERS, mockAuthAs, authHeader, JOB_FIXTURE, mockRoleGrantsWithout, mockRoleSwitches } from './helpers';
+import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // RBAC QA gaps in job.controller.ts found by the security QA of PR #253
@@ -56,7 +55,6 @@ function deepHas(node: unknown, key: string): boolean {
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache();
   (prisma.tagAssignment.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
 });
 
@@ -118,12 +116,10 @@ describe('GET /api/jobs/:id — per-instance gate is grant/override-aware (GAP-1
 
   it('DISPATCHER with a NARROWED (own-only) read Job grant is 403 on a FOREIGN job', async () => {
     mockAuthAs('dispatcher');
-    // Org narrows the DISPATCHER read-Job grant to OWN_JOB (no longer the unconditional default).
+    // Org narrows the DISPATCHER's Jobs scope to Attached (no longer the All default).
     // Route guard canDo('read','Job') still passes (bare-subject: a conditional `can` exists),
     // so enforcement falls entirely to the per-instance gate — which must now be scope-driven.
-    setCachedGrants(TEST_USERS.dispatcher.organization_id, 'DISPATCHER', [
-      { action: 'read', subject: 'Job', conditions: { assignees: { some: { user_id: '{{userId}}' } } } },
-    ]);
+    mockRoleSwitches({ jobs_scope: 'attached' });
     // 1st findUnique = the access-check projection (relations only). The fixed canAccessRow then
     // issues a SCOPED findFirst that returns null for a job the dispatcher does not own → 403.
     mockPrisma.job.findUnique.mockResolvedValue(ACCESS_SELECT_FOREIGN);
@@ -137,9 +133,7 @@ describe('GET /api/jobs/:id — per-instance gate is grant/override-aware (GAP-1
 
   it('DISPATCHER with a NARROWED read Job grant still sees their OWN job', async () => {
     mockAuthAs('dispatcher');
-    setCachedGrants(TEST_USERS.dispatcher.organization_id, 'DISPATCHER', [
-      { action: 'read', subject: 'Job', conditions: { assignees: { some: { user_id: '{{userId}}' } } } },
-    ]);
+    mockRoleSwitches({ jobs_scope: 'attached' });
     mockPrisma.job.findUnique
       .mockResolvedValueOnce({ assignees: [{ user_id: TEST_USERS.dispatcher.id }], estimate: { lead: { lead_assignees: [] } } })
       .mockResolvedValueOnce({ ...JOB_FIXTURE }); // the full jobDetailSelect fetch
@@ -237,7 +231,12 @@ describe('POST /api/jobs/:id/cancel — money fields gated behind pricing visibi
   function wireCancelTx(updated: Record<string, unknown>) {
     mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
       fn({
-        invoice: { update: vi.fn().mockResolvedValue({}) },
+        // #891: the cascade's void is a conditional updateMany (count 1 = voided).
+        // #891: the cascade locks the invoices it voids before voiding them.
+        $executeRaw: vi.fn().mockResolvedValue(1),
+        invoice: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+        // #891: a cascade-voided invoice releases any deposit credit drawn onto it.
+        depositCreditApplication: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         job: { update: vi.fn().mockResolvedValue(updated) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         // Inventory P1 (§4.2): cancel's auto-return pass — nothing SYNCED in these flows.
@@ -252,26 +251,26 @@ describe('POST /api/jobs/:id/cancel — money fields gated behind pricing visibi
   const CANCELLABLE_WITH_COLLECTED = {
     ...JOB_FIXTURE,
     status: 'IN_PROGRESS',
+    // #891: the $300 sits on a PAID invoice, which is never voided. Any invoice carrying money
+    // needs an explicit choice (else 409, job-cancel-with-payments.test.ts), so these send one.
     invoices: [
-      { id: 'inv-open-1', status: 'SENT', kind: 'STANDARD', amount_due: 700, total_amount: 1000, payments: [{ amount: 300, reference_number: null }], refunds: [] },
+      { id: 'inv-open-1', status: 'SENT', kind: 'STANDARD', amount_due: 700, total_amount: 700, payments: [], refunds: [] },
+      { id: 'inv-paid-1', status: 'PAID', kind: 'STANDARD', amount_due: 0, total_amount: 300, payments: [{ amount: 300, reference_number: null, state: 'SUCCEEDED' }], refunds: [] },
     ],
   };
 
   it('DISPATCHER narrowed to NO read Invoice does NOT get collected_total/refund_suggested in the cancel response', async () => {
     mockAuthAs('dispatcher');
-    // Org keeps DISPATCHER's cancel + read Job but REMOVES read Invoice (a valid narrowing). The
+    // The person holds Cancel jobs and View jobs but has View invoices off (a valid narrowing). The
     // cancel route guard (canDo('cancel','Job')) still passes; the money fields must be gated.
-    setCachedGrants(TEST_USERS.dispatcher.organization_id, 'DISPATCHER', [
-      { action: 'read', subject: 'Job', conditions: null },
-      { action: 'cancel', subject: 'Job', conditions: null },
-    ]);
+    mockRoleSwitches({ cancel_jobs: true, view_invoices: false });
     mockPrisma.job.findUnique.mockResolvedValue(CANCELLABLE_WITH_COLLECTED);
     wireCancelTx({ ...JOB_FIXTURE, status: 'CANCELLED' });
 
     const res = await request(app)
       .post(`/api/jobs/${JOB_ID}/cancel`)
       .set(authHeader('dispatcher'))
-      .send({ cancelled_reason: 'Customer cancelled' });
+      .send({ cancel_reason_code: 'OTHER', cancelled_reason: 'Customer cancelled', void_invoices: true });
 
     expect(res.status).toBe(200);
     // Money fields withheld for a non-pricing role…
@@ -289,7 +288,7 @@ describe('POST /api/jobs/:id/cancel — money fields gated behind pricing visibi
     const res = await request(app)
       .post(`/api/jobs/${JOB_ID}/cancel`)
       .set(authHeader('admin'))
-      .send({ cancelled_reason: 'Customer cancelled' });
+      .send({ cancel_reason_code: 'OTHER', cancelled_reason: 'Customer cancelled', void_invoices: true });
 
     expect(res.status).toBe(200);
     expect(res.body.collected_total).toBe(300);

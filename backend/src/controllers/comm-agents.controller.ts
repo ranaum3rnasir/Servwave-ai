@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { tenantWhere } from '../lib/tenant';
 import { blockedNumberKey, findBlockedNumber } from '../lib/communication/blockedNumbers';
+import { canSeeCallInsights, canSeeCompanyFigures } from '../lib/permissions/enforce';
 import { LONG_TEXT_MAX } from '../lib/text-limits';
 
 // ─── Zod Schemas ───────────────────────────────────────
@@ -29,20 +30,29 @@ export const unblockNumberSchema = z.object({
 
 // PhoneAgent mock shape: { id, kind, name, role, calls, answerRatePct,
 //   bookingRatePct, ahtSec, sentimentPct, revenue, scriptAdherencePct, containmentPct? }
-function toPhoneAgent(row: any) {
+//
+// One endpoint serves the scorecards AND each agent's identity (the Answered By name and the filter by person read the
+// identity), so it is never refused. The identity is for everyone who can read the section. The scorecard metrics are
+// call insights, left out without See call insights (S08.13); agent revenue is also a company figure, so it needs See
+// company figures on top (S01.16's predicate). A left-out key is gone, never zero.
+function toPhoneAgent(row: any, req: Request) {
+  const withMetrics = canSeeCallInsights(req);
+  const withRevenue = withMetrics && canSeeCompanyFigures(req);
   return {
     id: row.id,
     kind: row.kind,
     name: row.name,
     role: row.role,
-    calls: row.calls,
-    answerRatePct: row.answer_rate_pct,
-    bookingRatePct: row.booking_rate_pct,
-    ahtSec: row.aht_sec,
-    sentimentPct: row.sentiment_pct,
-    revenue: row.revenue == null ? 0 : Number(row.revenue),
-    scriptAdherencePct: row.script_adherence_pct,
-    ...(row.containment_pct == null ? {} : { containmentPct: row.containment_pct }),
+    ...(withMetrics && {
+      calls: row.calls,
+      answerRatePct: row.answer_rate_pct,
+      bookingRatePct: row.booking_rate_pct,
+      ahtSec: row.aht_sec,
+      sentimentPct: row.sentiment_pct,
+      scriptAdherencePct: row.script_adherence_pct,
+      ...(row.containment_pct == null ? {} : { containmentPct: row.containment_pct }),
+    }),
+    ...(withRevenue && { revenue: row.revenue == null ? 0 : Number(row.revenue) }),
     ...(row.user != null && {
       userId: row.user.id,
       linkedUser: { id: row.user.id, name: `${row.user.first_name} ${row.user.last_name}`.trim(), email: row.user.email },
@@ -97,7 +107,7 @@ export async function listPhoneAgents(req: Request, res: Response) {
       },
     });
 
-    res.json({ agents: agents.map(toPhoneAgent) });
+    res.json({ agents: agents.map((a) => toPhoneAgent(a, req)) });
   } catch (err) {
     logger.error('Failed to list phone agents:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -118,7 +128,7 @@ export async function getPhoneAgent(req: Request, res: Response) {
       return;
     }
 
-    res.json({ agent: toPhoneAgent(agent) });
+    res.json({ agent: toPhoneAgent(agent, req) });
   } catch (err) {
     logger.error('Failed to get phone agent:', err);
     res.status(500).json({ error: 'Internal server error' });

@@ -5,8 +5,8 @@ import { prisma } from '../lib/prisma';
 import { ALPHA_ORG_ID, ORG_B_ID, mockAuthAs, authHeader } from './helpers';
 
 const mockPrisma = prisma as unknown as {
-  organization: { update: ReturnType<typeof vi.fn> };
-  appSetting: { upsert: ReturnType<typeof vi.fn> };
+  organization: { update: ReturnType<typeof vi.fn>; findUnique: ReturnType<typeof vi.fn> };
+  appSetting: { upsert: ReturnType<typeof vi.fn>; findUnique: ReturnType<typeof vi.fn> };
 };
 
 describe('PATCH /api/settings/:key — updateByKey', () => {
@@ -120,5 +120,46 @@ describe('PATCH /api/settings/:key — updateByKey', () => {
     const call = mockPrisma.organization.update.mock.calls[0][0];
     expect(call.where.id).toBe(ALPHA_ORG_ID);
     expect(call.where.id).not.toBe(ORG_B_ID);
+  });
+});
+
+// Payments go-live slice 19 - bank-transfer instructions moved to the organization row, which both
+// public pages read. The old per-org settings row must not be a second, silently ignored copy.
+describe('/api/settings/bank_transfer_instructions follows the organization column', () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+    mockAuthAs('admin');
+  });
+
+  it('refuses a write to the old settings row and changes nothing', async () => {
+    const res = await request(app)
+      .patch('/api/settings/bank_transfer_instructions')
+      .set(authHeader('admin'))
+      .send({ value: 'Wire to account 123' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('Bank-transfer instructions are saved with the payment settings');
+    expect(mockPrisma.appSetting.upsert).not.toHaveBeenCalled();
+    expect(mockPrisma.organization.update).not.toHaveBeenCalled();
+  });
+
+  it('reads the instructions the public pages show, from the caller org only', async () => {
+    mockPrisma.appSetting.findUnique.mockResolvedValue({ organization_id: ALPHA_ORG_ID, key: 'bank_transfer_instructions', value: 'Stale text' });
+    mockPrisma.organization.findUnique.mockResolvedValue({ bank_transfer_instructions: 'Current text' });
+
+    const res = await request(app).get('/api/settings/bank_transfer_instructions').set(authHeader('admin'));
+
+    expect(res.status).toBe(200);
+    expect(res.body.data).toEqual({ key: 'bank_transfer_instructions', value: 'Current text' });
+    expect(mockPrisma.organization.findUnique.mock.calls[0][0].where).toEqual({ id: ALPHA_ORG_ID });
+  });
+
+  it('answers 404 while the org has no instructions', async () => {
+    mockPrisma.appSetting.findUnique.mockResolvedValue({ organization_id: ALPHA_ORG_ID, key: 'bank_transfer_instructions', value: 'Stale text' });
+    mockPrisma.organization.findUnique.mockResolvedValue({ bank_transfer_instructions: null });
+
+    const res = await request(app).get('/api/settings/bank_transfer_instructions').set(authHeader('admin'));
+
+    expect(res.status).toBe(404);
   });
 });

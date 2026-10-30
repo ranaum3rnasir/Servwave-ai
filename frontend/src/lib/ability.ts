@@ -4,6 +4,12 @@ export type AppSubject =
   | 'Dashboard' | 'Customer' | 'Lead' | 'Estimate' | 'Job' | 'Task'
   | 'Invoice' | 'User' | 'Department' | 'PriceBook' | 'Tag'
   | 'Report' | 'Organization' | 'StateTaxRate' | 'AppSetting'
+  // Roles & Permissions S01.14 - the pages opened by their own "Access" switch (Access Schedule, Access Billing), kept in
+  // lockstep with the backend permissions catalog.
+  | 'Schedule' | 'Billing'
+  // Roles & Permissions S01.16 - company-wide money (the "See company figures" switch), kept in lockstep with the backend
+  // permissions catalog.
+  | 'CompanyFigures'
   | 'Attachment' | 'Inventory' | 'Communication'
   // Inventory P0 purchasing subjects (kept in lockstep with backend permissions catalog)
   | 'PurchaseOrder' | 'Vendor'
@@ -27,6 +33,12 @@ export type AppAction =
   | 'manage_lines'
   | 'record_payment' | 'waive_deposit'
   | 'void' | 'refund' | 'credit' | 'void_payment'
+  // Roles & Permissions S01.17 - creating a payable link for an invoice (the "Send payment links" switch), kept in
+  // lockstep with the backend permissions catalog.
+  | 'send_payment_link'
+  // Roles & Permissions S01.18 - making an estimate with no lead or job, or an invoice with no job (the "Standalone
+  // estimates" and "Standalone invoices" switches), kept in lockstep with the backend permissions catalog.
+  | 'create_standalone'
   | 'assign' | 'unassign' | 'en_route' | 'arrive' | 'start' | 'complete' | 'reopen' | 'reschedule'
   | 'export' | 'mark_lost' | 'contact' | 'schedule_walkthrough' | 'perform_walkthrough'
   | 'perform' | 'be_assigned'
@@ -48,6 +60,47 @@ export type AppAction =
   // endpoints (POST .../:id/number/preview, PATCH .../:id/number), kept in lockstep with
   // backend permissions catalog (backend/src/lib/permissions/catalog.ts).
   | 'renumber'
+  // Roles & Permissions S01.5 - backdating a customer's created date (the "Change customer created date"
+  // switch), kept in lockstep with the backend permissions catalog.
+  | 'change_created_date'
+  // Roles & Permissions S01.7 - setting a lead's status from its status menu (the "Change lead status by hand"
+  // switch), kept in lockstep with the backend permissions catalog.
+  | 'change_status'
+  // Roles & Permissions S01.8 - stepping a visit or job's status (on my way, arrived, start, finish) on one the
+  // person is not crew on (the "Update any visit's status" switch), kept in lockstep with the backend catalog.
+  | 'update_any_visit_status'
+  // Roles & Permissions S04.22 - changing anything about a locked job (Completed or later, or Cancelled) (the "Change
+  // locked jobs" switch), kept in lockstep with the backend catalog.
+  | 'change_locked'
+  // Roles & Permissions S01.10 - attaching or re-pointing a call, text or email to a job or lead (the "Attach
+  // conversations to jobs and leads" switch) and editing someone else's hand-logged entry (the "Edit other people's
+  // logged communications" switch), kept in lockstep with the backend permissions catalog.
+  | 'attach' | 'edit_others_log'
+  // Roles & Permissions S01.11 - seeing every task in the company (the "See all tasks" switch) and adding a note to a
+  // job or lead (the "Add notes" switch), kept in lockstep with the backend permissions catalog.
+  | 'see_all' | 'add_note'
+  // Roles & Permissions S04.25 - deleting a note someone else wrote on a job or lead (the "Delete other people's notes"
+  // switch), kept in lockstep with the backend permissions catalog.
+  | 'delete_others_note'
+  // Roles & Permissions S05.7 - adding or changing a job-only or lead-only phone or email with the pencil (the "Edit job
+  // and lead contact details" switch), kept in lockstep with the backend permissions catalog.
+  | 'edit_contact_details'
+  // Roles & Permissions S01.12 - sending or resending an invitation (the "Invite users" switch) and setting which role a
+  // user is on (the "Manage roles and permissions" switch, on the Role subject), kept in lockstep with the backend
+  // permissions catalog.
+  | 'invite' | 'manage_roles'
+  // Roles & Permissions S07.1 - seeing every asset, not only the ones the person holds (the "See all assets"
+  // switch), kept in lockstep with the backend permissions catalog.
+  | 'see_all_assets'
+  // Roles & Permissions S07.12 - reading the stock movement history: the Activity tab, its count and an item's movement
+  // history (the "See inventory activity" switch), kept in lockstep with the backend permissions catalog.
+  | 'see_inventory_activity'
+  // Roles & Permissions S07.6 - marking a stage as taken by the person (the "Pick up staged items" switch), kept in
+  // lockstep with the backend permissions catalog.
+  | 'pick_up_staged'
+  // Roles & Permissions S07.7 - recording that someone else took a stage's parts (the "Record pickup for someone else"
+  // switch), kept in lockstep with the backend permissions catalog.
+  | 'record_pickup_for_other'
   // Manual Communication Log - "record a communication that already happened, by hand". A NEW
   // action on the existing Communication subject, kept in lockstep with the backend permissions
   // catalog. Deliberately NOT `create Communication`: that one is in the shared baseline and
@@ -58,7 +111,42 @@ export type AppAction =
   // the backend permissions catalog (catalog.ts:54). Deliberately NOT `read Communication`: that
   // one is the shared baseline that also covers the per-record Communication tab on a lead/job/
   // customer, which must keep working for a role that lacks this action.
-  | 'access_inbox';
+  | 'access_inbox'
+  // Roles & Permissions S01.14 - opening a page that is not one record type (the "Access Schedule" and "Access Billing"
+  // switches, on the Schedule and Billing subjects), kept in lockstep with the backend permissions catalog.
+  | 'access'
+  // Roles & Permissions S08.18 - the office phone in the browser (the "Office phone in the browser" switch): the server
+  // refuses a phone token without it, and the browser phone is offered only with it. Kept in lockstep with the backend
+  // permissions catalog.
+  | 'use_browser_phone'
+  // Roles & Permissions S08.11 - the call player (the "Play recording" switch): the server refuses the playback link
+  // without it, and the drawer shows the player only with it. Kept in lockstep with the backend permissions catalog.
+  | 'play_recording'
+  // Roles & Permissions S08.11 - the download control (the "Download recording" switch): the server refuses the
+  // download link without it, and the drawer shows the control only with it. Kept in lockstep with the backend catalog.
+  | 'download_recording'
+  // Roles & Permissions S08.12 - the transcript and the call summary (the "View transcript" switch): the server refuses
+  // the transcript route and leaves both out of every call response without it, and no screen shows either without it.
+  // Kept in lockstep with the backend permissions catalog.
+  | 'view_transcript'
+  // Roles & Permissions S08.13 - call insights (the "See call insights" switch): the sentiment and the "needs review" flag
+  // on a call, the Insights column, the Performance & QA sub-tab and the agents' scorecard metrics. The server leaves them
+  // out without it, and no screen shows them either. Kept in lockstep with the backend permissions catalog.
+  | 'see_call_insights'
+  // Roles & Permissions S08.15 - the Phone page's tabs and usage bar, one action per switch (Phone numbers tab, Call flows tab,
+  // Call masking tab, Call groups tab, Training tab, Blocked callers tab, Phone usage bar): the page draws a tab or the bar only
+  // for the holder of its action. Kept in lockstep with the backend permissions catalog.
+  | 'phone_numbers_tab'
+  | 'call_flows_tab'
+  | 'call_masking_tab'
+  | 'call_groups_tab'
+  | 'training_tab'
+  | 'blocked_callers_tab'
+  | 'phone_usage_bar'
+  // Payments go-live slice 34 - the "Manage payout account" switch: shows the owner-only Payout account page.
+  // Kept in lockstep with the backend permissions catalog.
+  | 'manage_payout_account'
+  | 'view_payments';
 
 export type AppAbility = MongoAbility<[AppAction, AppSubject]>;
 export type AbilityRule = RawRuleOf<AppAbility>;
@@ -76,6 +164,25 @@ export const emptyAbility: AppAbility = createMongoAbility([]);
  */
 export function canSeePricing(ability: AppAbility): boolean {
   return ability.can('read', 'Pricing');
+}
+
+/**
+ * May this person start a purchase order (the Purchase Orders page's New PO, Generate PO, the job page's Create PO)?
+ * Every one of those flows asks for a vendor and the only vendor list is behind View vendors, which PRD 7 keeps whole
+ * (no contact-only or names-only vendor access). So Create purchase orders alone offers a control with nobody to pick;
+ * the control needs both.
+ */
+export function canStartPurchaseOrder(ability: AppAbility): boolean {
+  return ability.can('create', 'PurchaseOrder') && ability.can('read', 'Vendor');
+}
+
+/**
+ * Company-wide money (Roles & Permissions S01.16, the "See company figures" switch): dashboard money tiles, chart
+ * amounts, scoreboard revenue, report totals. The server leaves these out of a response for a person without it, so
+ * this only decides whether a screen offers a place for them; it is never what keeps them hidden.
+ */
+export function canSeeCompanyFigures(ability: AppAbility): boolean {
+  return ability.can('read', 'CompanyFigures');
 }
 
 /**

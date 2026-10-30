@@ -83,7 +83,7 @@ vi.mock('@/lib/api/inventory', async (importOriginal) => {
   const mutation = () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false });
   return {
     ...actual,
-    useInventoryItems: stable(h.items as unknown as import('@/lib/api/inventory').Item[]),
+    usePriceBookItems: stable(h.items as unknown as import('@/lib/api/inventory').Item[]),
     // Finish is a foreign key, so unlike mpn/modelNumber the grid has to
     // resolve an id to a name - hence a populated list rather than EMPTY.
     useFinishes: stable(h.finishes),

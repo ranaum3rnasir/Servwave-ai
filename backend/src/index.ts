@@ -7,9 +7,11 @@ import cron from 'node-cron';
 import { runInvoiceDueChecks } from './services/notifications/invoiceDueCron';
 import { runAutomationTick } from './services/automations/cron';
 import { runUnscoped } from './lib/tenant-context';
-import { backfillStripeFlags } from './lib/backfill-stripe-flags';
+import { refreshAllAccountStatuses } from './lib/account-status';
 import { sweepUncapturedFees } from './lib/reconcile-stripe-fees';
+import { runNightlyReconcile } from './services/payment-reconcile';
 import { runSpiderSweep } from './services/spider/sweep';
+import { sweepReceivedAttachments } from './lib/inbound-attachments';
 
 const server = app.listen(env.PORT, '0.0.0.0', () => {
   logger.info(`ServWave API running on port ${env.PORT}`);
@@ -51,11 +53,6 @@ cron.schedule('0 6 * * *', () => {
 // Automation Center poller — every minute: scans time-based triggers
 // ("24h before job" etc.) and executes due / send-window-deferred runs.
 // runAutomationTick never throws; the catch is belt-and-braces.
-//
-// NO runUnscoped here, unlike the two sweeps above and below: runAutomationTick opens its own
-// cross-org bypass internally (see its docblock). It has to - a poller with no tenant context
-// reads zero rows under the DB tenant guard and goes silently dead, which is precisely what
-// happened when this line was a bare call, and index.ts boots a server so no test could see it.
 cron.schedule('* * * * *', () => {
   runAutomationTick().catch((err) => logger.error('automation tick failed', err));
 });
@@ -67,6 +64,13 @@ logger.info('Automation Center poller scheduled (every minute)');
 // runSpiderSweep never throws; the catch is belt-and-braces.
 cron.schedule('*/2 * * * *', () => {
   runSpiderSweep().catch((err) => logger.error('spider sweep failed', err));
+});
+
+// Received-mail attachments (PRD 10, S10.17) — every 10 minutes: received messages whose files were still on their way after the
+// first try (the provider was unreachable, the process stopped mid-way) are tried again, a fixed number of times each. Cross-company,
+// so unscoped at the top. sweepReceivedAttachments never throws and never runs twice at once; the catch is belt-and-braces.
+cron.schedule('*/10 * * * *', () => {
+  runUnscoped(() => sweepReceivedAttachments()).catch((err) => logger.error('received attachments sweep failed', err));
 });
 
 // Nightly Stripe fee reconciliation sweep (Task 3.3) — backfills any Payment whose
@@ -93,10 +97,24 @@ void runUnscoped(() => sweepUncapturedFees())
   .then((r) => logger.info(`[boot] Stripe fee sweep: ${r.swept} payment(s) backfilled`))
   .catch((err) => logger.error('[boot] Stripe fee sweep failed', err));
 
-// Deploy-time (boot) backfill of Stripe capability flags for orgs that already
-// carry a stripe_account_id. Idempotent + fire-and-forget: never blocks boot,
-// never crashes it — see lib/backfill-stripe-flags.ts for why this must run
-// at boot (not lazily on first status fetch).
-void backfillStripeFlags()
-  .then((r) => logger.info('[boot] stripe backfill', r))
-  .catch((err) => logger.error('[boot] stripe backfill failed', err));
+// Nightly payment reconcile against the processor (payments go-live slice 37). Runs after the fee
+// sweep (07:00) and the account-status refresh (07:30), at 08:07 rather than 08:00 so it does not
+// start in the same second as the hourly and per-minute jobs (staging's pool has one connection).
+// Listing the orgs is the only cross-org read (unscoped, like the crons above); each org is then
+// compared in its own tenant context, and one org failing never stops the rest. Drift is alerted by an ops email and a log line per finding.
+cron.schedule('7 8 * * *', () => {
+  runUnscoped(() => runNightlyReconcile())
+    .then((r) => logger.info(`Payment reconcile: ${r.orgs.length} org(s) checked, ${r.driftCount} difference(s), ${r.errorCount} not checked`))
+    .catch((err) => logger.error('Payment reconcile cron failed', err));
+}, { timezone: 'UTC' });
+
+// Nightly Stripe account-status refresh (payments go-live slice 06, #1987). Replaces the old
+// boot-time backfill, which ran with no tenant context and failed OPEN. Listing the orgs is
+// the only cross-org read (unscoped, like the crons above); each org is then refreshed in its
+// own tenant context and FAILS CLOSED on any processor error (lib/account-status.ts). The
+// account event and the return from onboarding refresh between runs.
+cron.schedule('30 7 * * *', () => {
+  runUnscoped(() => refreshAllAccountStatuses())
+    .then((r) => logger.info(`Stripe account status refresh: ${r.orgs.length} org(s) checked`))
+    .catch((err) => logger.error('Stripe account status refresh cron failed', err));
+}, { timezone: 'UTC' });

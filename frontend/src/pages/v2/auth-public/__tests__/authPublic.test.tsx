@@ -99,4 +99,38 @@ describe('v2 auth-public smoke', () => {
     expect(screen.getByRole('button', { name: /Pay by Check/i })).toBeInTheDocument();
     vi.unstubAllGlobals();
   });
+
+  // Payments go-live slice 05: a bank payment still processing is not money received.
+  it('public invoice counts only payments that landed in "Payments received"', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          invoice: {
+            id: 'i1', invoice_number: 'I00001', status: 'PARTIAL', kind: 'INVOICE',
+            subtotal: 300, discount_amount: 0, tax_amount: 0, deposit_credit: 0,
+            total_amount: 300, amount_due: 200, due_date: null, sent_at: null,
+            paid_at: null, created_at: '2026-01-01', customer: null,
+            line_items: [{ id: 'l1', sequence: 1, description: 'Work', quantity: 1, unit_price: 300, is_taxable: false, line_total: 300 }],
+            job: null,
+            payments: [
+              { id: 'p1', amount: 100, method: 'CASH', paid_at: '2026-01-02', state: 'SUCCEEDED' },
+              { id: 'p2', amount: 50, method: 'ACH', paid_at: '2026-01-03', state: 'PROCESSING' },
+              { id: 'p3', amount: 25, method: 'ACH', paid_at: '2026-01-03', state: 'FAILED' },
+            ],
+          },
+          organization: { name: 'Acme' },
+          available_payment_methods: ['CHECK'],
+          payment_instructions: { check: 'Mail it' },
+          service_fee_preview: 0,
+        }),
+      }),
+    );
+    renderWithProviders(<V2PublicInvoicePage />, { initialEntries: ['/p/invoices/i1?token=t'] });
+    await waitFor(() => expect(screen.getByText('I00001')).toBeInTheDocument());
+    const received = screen.getByText('Payments received').parentElement!;
+    expect(received).toHaveTextContent('-$100.00');
+    vi.unstubAllGlobals();
+  });
 });

@@ -197,6 +197,29 @@ control covered by a fixed bottom bar; `chromeRatio` counts a sticky element onl
 the top or the bottom (one that sticks sideways, such as a table's empty state, scrolls away) and
 names the bands it counted.
 
+#### The gate's test-inbox address (Ran, 13 Oct 2026)
+
+The gate's customers are on the email provider's test inbox (`delivered+<label>@resend.dev`, see "What it
+will not do"), and a customer's email renders on the customer pages, so the always-enforced `vendorTerms`
+check would flag it on `customers`, `customer-detail` and `invoice-detail`. That is
+`acceptedExceptions.gateTestInbox` in `allowlist.json` (owner Ran, reason recorded there), and it is as narrow
+as the gate can make it ([`gate-inbox.ts`](gate-inbox.ts), [`vendor-terms.ts`](vendor-terms.ts); tests in
+`src/__tests__/mobile-gate-test-inbox-exception.test.ts` and the `gateTestInbox` cases of `selftest.spec.ts`):
+
+- **What is ignored.** Exactly the address `gateCustomerEmail(label)` builds, as a whole token, in the page's
+  rendered text, placeholders and accessible names. The label charset is `[a-z0-9-]`; the builder refuses any other
+  label, and the match uses the same charset.
+- **Still fails:** the provider's name (`Resend API`, `Resend dashboard`), `resend.com`, `resend.dev` in a URL,
+  `delivered@resend.dev` without the gate label, `support@resend.dev` and every other address on that host, a
+  sub-domain, a label outside the charset, the address inside a longer token (`x` or `.` before it, `.com`, `/path`,
+  `:port`, `?query` or `-more` after it, `mailto:` or `https://` before it), the address in the page title or the
+  URL, and the **browser console** (console lines are never exempted).
+- **The report.** The ignored addresses are printed as
+  `EXEMPT gateTestInbox: N gate test-inbox address(es) in the copy (...)`.
+- **Where it applies.** The gate's copy check on every page, and only while the `gateTestInbox` record exists
+  in `allowlist.json` (delete the record and the exception is off). Other specs call `measure()` and
+  `findVendorTerms()` without the option, so it is off for them.
+
 ## The checks
 
 | Check | Fails when | Devices |
@@ -207,7 +230,7 @@ names the bands it counted.
 | `inputFont` | a text field's text is under 16 px (iOS zooms on focus). Enforced on every key route since slice 14. Its record also lists the computed size of every visible text field, select trigger and combobox (`checks.inputFont.info.sizes`, desktop included), so a slice that touches text entry can diff the desktop control against a run on staging | touch |
 | `overlays` | an open dialog, menu, listbox, popover or the drawer is outside the viewport, or its last item cannot be scrolled to and tapped | all |
 | `scrollReach` | after scrolling the main scroller to its end, its lowest enabled control is off screen or covered. A control out of view sideways (past the screen edge, or clipped by its own sideways scroll box, such as a wide table's far column) is not a candidate: that is the `overflow` check's business (slice 29) | all (page states) |
-| `vendorTerms` | a vendor name is in the rendered text, title, an accessible name, a placeholder or the URL path. **Enforced from day one: it cannot be allow-listed.** The list is [`vendor-terms.ts`](vendor-terms.ts) | all |
+| `vendorTerms` | a vendor name is in the rendered text, title, an accessible name, a placeholder or the URL path. **Enforced from day one: it cannot be allow-listed.** The list is [`vendor-terms.ts`](vendor-terms.ts). One accepted exception: the gate's own test-inbox address (`acceptedExceptions.gateTestInbox`, printed as `EXEMPT`); the title, the URL and the console are never exempted | all |
 | `a11y` | axe-core finds a WCAG 2.2 AA violation (tags `wcag2a`, `wcag2aa`, `wcag21a`, `wcag21aa`, `wcag22aa`; [`a11y.ts`](a11y.ts)). One offender per rule: `<rule id> (<impact>): <n> node(s): <first targets>`. An overlay state scans only the open overlay. Frames (`iframe`) are excluded: their documents are not ours | touch |
 | `vendorConsole` | a vendor name in a browser-console line from our own document. **Enforced from day one: it cannot be allow-listed.** Lines from the vendors' embedded frames (the phone dialer, the payment form) are excluded before the check, a documented exception ([`console-lines.ts`](console-lines.ts); `acceptedExceptions` in `allowlist.json`), printed as `EXEMPT`. So are Firefox's `clipboard-read`/`clipboard-write` Feature Policy warnings from the dialer's own embed script (nothing else from it) | all |
 | `scrimBlur` | a layer covering at least 90% of the viewport applies a backdrop blur (a dialog or sheet scrim, the navigation drawer's scrim). Slice 16 put every scrim blur behind the `pointer-fine:` variant, so it has no allow-list entries: any offender is new | touch |
@@ -294,7 +317,7 @@ Specs that run in the same six device projects, with the gate's session, beside 
 - [`remaining-dialogs.spec.ts`](remaining-dialogs.spec.ts) (`lead-detail`, `customer-detail`, `estimate-detail`,
   `job-detail`, `tasks`, `invoices`, `settings-users`, `inventory-vendors`; slice 65): every other dialog (the kit dialog
   and the older `components/ui/dialog`, which slot their own header, body and footer) that those routes can open in
-  the throwaway org: Mark Lost, Cancel Lead, Delete client, Add Location, Send / Duplicate / Archive Estimate, Cancel
+  the throwaway org: Mark Lost, Delete client, Add Location, Send / Duplicate / Archive Estimate, Cancel
   Job, Assign, the Price Book picker, Task categories, To Be Invoiced, a user's Edit and Permissions, Add category.
   Same device rules as `legacy-modal.spec.ts` (a form or reader full-screen below md and on the landscape phone, the
   card from md up; close 44 px; footer on screen and unmoved while the body scrolls; the panel itself does not
@@ -326,8 +349,7 @@ Specs that run in the same six device projects, with the gate's session, beside 
   slice 29): the Settings shell, Users & Teams and Roles & Permissions. On every device the page never
   scrolls sideways and Save Changes, Close settings and Invite User are inside the viewport; below
   1024 px the page picker replaces the Settings side nav, from 1024 px the side nav is shown. Roles:
-  the permission matrix box is at least 240 px wide and, scrolled to its far end, every Module cell
-  still starts inside it; every role in the roles list is on screen. Users: below md the users are a
+  the switch editor does not make the page scroll sideways; every role in the roles list is on screen. Users: below md the users are a
   card list (`list` named "Users") with no table, from md the table as before. Read-only.
   Since slice 29 the Settings side nav is a picker below 1024 px, so the tax-rates table fits its box
   on every gate device and `admin-tables.spec.ts` no longer requires it to overflow anywhere.
@@ -745,8 +767,13 @@ and that every touch helper drives the page by touch only. Run it after any chan
 
 - The API it boots (`backend/src/scripts/e2e-api-server.ts`) runs no crons: `npm run dev` would
   start the cross-org automation poller against staging and send other orgs' due texts.
-- The throwaway org has email sending off; seeding marks estimates sent and makes invoice links
-  without emailing anyone. Nothing places calls or sends texts.
+- The throwaway org has outgoing email off, and seeding marks estimates sent and makes invoice
+  links without sending them. The "Payment Received" receipt ignores that switch, though, so a
+  recorded payment DOES send one receipt. Every customer the gate seeds is therefore on the email
+  provider's test inbox (`delivered+<label>@resend.dev`, [`gate-customer.ts`](gate-customer.ts)),
+  which accepts mail and never bounces; an address on a domain that cannot resolve (`.invalid`,
+  `.test`, `.example`) bounces and hurts the staging sending domain.
+  `src/__tests__/mobile-gate-receipt-inbox.test.ts` holds that. Nothing places calls or sends texts.
 - Teardown deletes only this run's own Auth users (`auth_sweep: 'org'`), so a gate run in another
   worktree keeps its session. `MOBILE_GATE_KEEP_ORG=1` keeps the org for debugging; tear it down
   afterwards.

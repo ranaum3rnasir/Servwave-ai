@@ -2,8 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { mockAuthAs, authHeader, BRAND_FIXTURE } from './helpers';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
+import { mockAuthAs, mockRoleSwitches, authHeader, BRAND_FIXTURE } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 // ─── Typed mocks ──────────────────────────────────────
@@ -39,7 +38,6 @@ beforeEach(() => {
   // The per-user override cache (60s TTL, keyed by user id) survives across tests in this file
   // since it's a module-level Map, not a vi mock — clear it so a test that sets an override
   // (e.g. the PriceBook allow-override case) can't leak into a later `mockAuthAs('sales')` test.
-  clearUserOverrideCache();
 });
 
 // ─── Fixtures ─────────────────────────────────────────
@@ -197,11 +195,9 @@ describe('POST /api/price-book/categories', () => {
     expect(res.status).toBe(403);
   });
 
-  it('allows SALES with a per-user PriceBook allow override to create categories', async () => {
+  it('allows SALES given Create price book items to create categories', async () => {
     mockAuthAs('sales');
-    clearUserOverrideCache(); // override cache is per-user with 60s TTL; earlier tests cached []
-    (prisma.userPermissionOverride.findMany as ReturnType<typeof vi.fn>)
-      .mockResolvedValue([{ action: 'create', subject: 'PriceBook', effect: 'allow' }]);
+    mockRoleSwitches({ create_price_book_items: true });
     mockPrisma.priceBookCategory.findFirst.mockResolvedValue(null);
     mockPrisma.priceBookCategory.create.mockResolvedValue({ ...CATEGORY_FIXTURE, name: 'New Category' });
 
@@ -1195,7 +1191,7 @@ describe('price-book cost stripping (P0 §D7)', () => {
     ]);
   };
 
-  it('list strips unit_cost + list_price for a reader without read Invoice, keeps selling prices', async () => {
+  it('list strips unit_cost for a reader without See financial data, keeps the prices (selling and list)', async () => {
     mockAuthAs('technician');
     grantTechPriceBookRead();
     mockPrisma.priceBookItem.findMany.mockResolvedValue([ROW]);
@@ -1207,7 +1203,7 @@ describe('price-book cost stripping (P0 §D7)', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data[0].unit_cost).toBeUndefined();
-    expect(res.body.data[0].list_price).toBeUndefined();
+    expect(res.body.data[0].list_price).toBe(200);
     expect(res.body.data[0].unit_price).toBe(150);
     expect(res.body.data[0].sell_price).toBe(150);
   });
@@ -1227,7 +1223,7 @@ describe('price-book cost stripping (P0 §D7)', () => {
     expect(res.body.data[0].list_price).toBe(200);
   });
 
-  it('search strips unit_cost for a reader without read Invoice', async () => {
+  it('search strips unit_cost for a reader without See financial data', async () => {
     mockAuthAs('technician');
     grantTechPriceBookRead();
     mockPrisma.priceBookItem.findMany.mockResolvedValue([
@@ -1254,7 +1250,7 @@ describe('price-book cost stripping (P0 §D7)', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.data.unit_cost).toBeUndefined();
-    expect(res.body.data.list_price).toBeUndefined();
+    expect(res.body.data.list_price).toBe(200);
     expect(res.body.data.unit_price).toBe(150);
   });
 });

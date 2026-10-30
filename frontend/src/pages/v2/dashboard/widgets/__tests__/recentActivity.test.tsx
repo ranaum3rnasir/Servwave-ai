@@ -72,7 +72,7 @@ describe('dashboard mock seed', () => {
   it('carries the same activity shape the live payload does', () => {
     // Typed as the seam's ActivityEvent, so a seed row missing either new field
     // is a compile error, not a runtime surprise.
-    const rows: ActivityEvent[] = dashboardSeed.activity;
+    const rows: ActivityEvent[] = dashboardSeed.data.recent_activity!;
     expect(rows.length).toBeGreaterThan(0);
 
     for (const row of rows) {
@@ -90,7 +90,7 @@ describe('dashboard mock seed', () => {
   });
 
   it('renders the whole seed feed, deleted row included', () => {
-    render(<RecentActivity events={dashboardSeed.activity} />);
+    render(<RecentActivity events={dashboardSeed.data.recent_activity!} />);
 
     expect(screen.getByText('T00042 · Inspect compressor')).toBeInTheDocument();
     expect(screen.getByText('Deleted')).toBeInTheDocument();

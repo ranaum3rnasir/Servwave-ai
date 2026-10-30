@@ -49,6 +49,11 @@ export function WaiveDepositDialog({ open, onOpenChange, estimateId, estimateSta
               Choose what to do with the estimate after waiving the deposit.
             </DialogDescription>
           )}
+          {estimateStatus === 'WON' && (
+            <DialogDescription>
+              The estimate stays approved. Waiving only closes the deposit, so the customer is no longer asked to pay it.
+            </DialogDescription>
+          )}
         </DialogHeader>
 
         <div className="space-y-4">

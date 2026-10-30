@@ -1,6 +1,6 @@
 import '@testing-library/jest-dom';
-import { vi } from 'vitest';
-import { configure } from '@testing-library/react';
+import { afterAll, afterEach, vi } from 'vitest';
+import { cleanup, configure } from '@testing-library/react';
 
 // ─── Mock @/lib/axios ─────────────────────────────────────
 vi.mock('@/lib/axios', () => ({
@@ -170,3 +170,25 @@ if (typeof globalThis.localStorage === 'undefined') {
 // react-day-picker into those chunks. The components are not slow; the
 // bundler is cold, and it is worst under full-suite worker contention.
 configure({ asyncUtilTimeout: 20_000 });
+
+// ─── Let focus-scope unmount timers run while this file's window is alive ───
+// @radix-ui/react-focus-scope (Dialog, Sheet, Popover, dropdown menus) schedules a
+// setTimeout(0) when a scope unmounts; the timer builds a CustomEvent from the global scope and
+// dispatches it on the unmounted container. React Testing Library unmounts everything in its own
+// afterEach, so for the last test of a file that timer is created right as the file ends. If it
+// fires after the file's jsdom window was torn down or swapped, the CustomEvent class no longer
+// belongs to the container's realm and dispatchEvent throws "parameter 1 is not of type 'Event'"
+// outside any test: vitest counts that as an unhandled error and fails the whole run, a rare race
+// under CPU load. So: unmount everything ourselves, then wait one macrotask turn (a timer queued
+// before ours with the same delay fires first) so no focus-scope timer survives the test or the
+// file. Under fake timers the callback sits in the fake clock and never fires on its own, so
+// there is nothing to wait for. Real unhandled errors still fail the run; nothing is swallowed.
+// The real setTimeout is captured now, so a test that stubs the global one cannot make the wait hang.
+const realSetTimeout = globalThis.setTimeout;
+async function settleFocusScopeTimers() {
+  cleanup();
+  if (vi.isFakeTimers()) return;
+  await new Promise<void>((resolve) => realSetTimeout(resolve, 0));
+}
+afterEach(settleFocusScopeTimers);
+afterAll(settleFocusScopeTimers);

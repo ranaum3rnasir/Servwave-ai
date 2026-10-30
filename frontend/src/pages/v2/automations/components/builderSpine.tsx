@@ -43,6 +43,11 @@ export interface BuilderSpineProps {
   onAddStep: (type: WorkflowStepType, atIndex?: number) => void;
   onMoveStep: (from: number, to: number) => void;
   onRemoveStep: (uid: string) => void;
+  /**
+   * Roles & Permissions S07.21: a person who cannot change this automation reads it. No step can be added, reordered,
+   * removed or opened for editing; the trigger and steps stay on the canvas as plain readouts.
+   */
+  readOnly?: boolean;
 }
 
 /** A rail segment with a centred `+` insert button. */
@@ -73,6 +78,7 @@ export default function BuilderSpine({
   onAddStep,
   onMoveStep,
   onRemoveStep,
+  readOnly = false,
 }: BuilderSpineProps) {
   const { steps, selectedUid } = draft;
   const [activeUid, setActiveUid] = useState<string | null>(null);
@@ -115,12 +121,13 @@ export default function BuilderSpine({
         catalog={catalog}
         selected={selectedUid === 'trigger'}
         onSelect={onSelectTrigger}
+        readOnly={readOnly}
       />
 
       {steps.length === 0 ? (
         <>
           <RailLine />
-          <AddStepButton variant="first" onPick={(t) => onAddStep(t, 0)} lockedTypes={lockedTypes} />
+          {!readOnly && <AddStepButton variant="first" onPick={(t) => onAddStep(t, 0)} lockedTypes={lockedTypes} />}
         </>
       ) : (
         <DndContext
@@ -131,9 +138,13 @@ export default function BuilderSpine({
           onDragEnd={handleDragEnd}
           onDragCancel={handleDragCancel}
         >
-          <Rail>
-            <AddStepButton onPick={(t) => onAddStep(t, 0)} label="Insert a step at the top" lockedTypes={lockedTypes} />
-          </Rail>
+          {readOnly ? (
+            <RailLine />
+          ) : (
+            <Rail>
+              <AddStepButton onPick={(t) => onAddStep(t, 0)} label="Insert a step at the top" lockedTypes={lockedTypes} />
+            </Rail>
+          )}
 
           <SortableContext items={steps.map((s) => s.uid)} strategy={verticalListSortingStrategy}>
             {steps.map((step, i) => (
@@ -150,8 +161,9 @@ export default function BuilderSpine({
                   onMoveUp={() => onMoveStep(i, i - 1)}
                   onMoveDown={() => onMoveStep(i, i + 1)}
                   onDelete={() => onRemoveStep(step.uid)}
+                  readOnly={readOnly}
                 />
-                {i < steps.length - 1 ? (
+                {i < steps.length - 1 && !readOnly ? (
                   <Rail>
                     <AddStepButton
                       onPick={(t) => onAddStep(t, i + 1)}
@@ -166,7 +178,9 @@ export default function BuilderSpine({
             ))}
           </SortableContext>
 
-          <AddStepButton variant="block" onPick={(t) => onAddStep(t)} label="Add a step" lockedTypes={lockedTypes} />
+          {!readOnly && (
+            <AddStepButton variant="block" onPick={(t) => onAddStep(t)} label="Add a step" lockedTypes={lockedTypes} />
+          )}
         </DndContext>
       )}
 

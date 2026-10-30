@@ -51,7 +51,6 @@ export function findTitleOnlyReasons(src: string, name: 'Button' | 'button'): Hi
 
 /** file (relative to frontend/src) -> number of raw <button> title-only reasons still open. */
 const RAW_BUTTON_DEFERRED: Record<string, number> = {
-  'components/communication/inbox/ComposeWindow.tsx': 2, // sending-off label
   'components/inventory/AddItemDialog.tsx': 2, // read-only upload / camera
   'components/inventory/ApprovalEmailDialog.tsx': 1, // already-added recipient chip
   'components/inventory/EmailComposeDialog.tsx': 1, // already-added recipient chip
@@ -59,7 +58,6 @@ const RAW_BUTTON_DEFERRED: Record<string, number> = {
   'components/inventory/StageDetailDialog.tsx': 1, // upload needs Edit Stage
   'components/inventory/TransferDialog.tsx': 2,
   'features/estimate-workspace/components/EstimateNameTitle.tsx': 1, // read-only title, no reason shown
-  'pages/settings/RolesPage.tsx': 1, // v1 page, not routed
 };
 /** Kit/legacy Buttons whose bare title is a label, not a reason. */
 const BUTTON_EXEMPT: Record<string, string> = {

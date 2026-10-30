@@ -4,7 +4,7 @@ import { JobStatus } from '@prisma/client';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import { subStatusClears } from '../lib/job-sub-status';
-import { mockAuthAs, authHeader, JOB_FIXTURE, ALPHA_ORG_ID, ORG_B_ID } from './helpers';
+import { mockAuthAs, authHeader, JOB_FIXTURE, ALPHA_ORG_ID, ORG_B_ID, stubReopenTransaction } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 // SRVW-113 - setSubStatus dispatches JOB_SUB_STATUS_ENTERED post-commit (#271); mocked here
@@ -499,9 +499,7 @@ const VERBS: { path: string; body?: object; movingFrom: JobStatus; nonMovingFrom
   // from JobStatus (D17), so neither verb moves the job's status at all any more and there is no
   // status change to invalidate a sub_status. Their milestone now lands on the VISIT.
   { path: 'start', movingFrom: 'SCHEDULED', nonMovingFrom: 'IN_PROGRESS' },
-  { path: 'complete', movingFrom: 'IN_PROGRESS', nonMovingFrom: 'COMPLETED' },
-  { path: 'cancel', body: { cancelled_reason: 'customer cancelled' }, movingFrom: 'IN_PROGRESS', nonMovingFrom: 'CANCELLED' },
-  { path: 'reopen', movingFrom: 'COMPLETED', nonMovingFrom: 'IN_PROGRESS' },
+  { path: 'cancel', body: { cancel_reason_code: 'OTHER', cancelled_reason: 'customer cancelled' }, movingFrom: 'IN_PROGRESS', nonMovingFrom: 'CANCELLED' },
   // assign derives its target from the BODY: a scheduled_start makes it SCHEDULED, its absence
   // keeps existing.status. So the two halves differ by body, not by source status.
   {
@@ -547,9 +545,47 @@ describe('status verbs clear a now-invalid sub_status_id', () => {
         .send(verb.nonMovingBody ?? verb.body ?? {});
 
       expect(stayed.status).toBeLessThan(400);
-      expect(statusUpdateCall()?.data).not.toHaveProperty('sub_status_id');
+      // A job already Cancelled that is cancelled again (S06.15) only changes its reason: it writes no status at all.
+      expect(statusUpdateCall()?.data ?? {}).not.toHaveProperty('sub_status_id');
     });
   }
+});
+
+// Complete always moves the job (to Office review, S06.1) and is refused from a job that is already past it, so it has
+// no "does not move" half: it is checked on its own.
+describe('POST /complete clears a now-invalid sub_status_id', () => {
+  it('nulls sub_status_id because the job moves into Office review', async () => {
+    mockAuthAs('admin');
+    mockPrisma.job.findUnique.mockResolvedValue({
+      ...JOB_FIXTURE, status: 'IN_PROGRESS', assignees: [], invoices: [], source_plan_id: null,
+    });
+    // The fixture's job holds a booked visit (the assign half needs one), so the complete says to cancel it (S04.17).
+    const res = await request(app)
+      .post(`/api/jobs/${JOB_FIXTURE.id}/complete`)
+      .set(authHeader('admin'))
+      .send({ cancel_open_visits: true });
+
+    expect(res.status).toBeLessThan(400);
+    expect(statusUpdateCall()?.data).toMatchObject({ status: 'OFFICE_REVIEW', sub_status_id: null });
+  });
+});
+
+// Reopen starts only from a closed job and always lands in In Progress (S06.16), so it always moves the job and has no
+// "does not move" half: it is checked on its own.
+describe('POST /reopen clears a now-invalid sub_status_id', () => {
+  it.each(['COMPLETED', 'DONE', 'CANCELLED'] as const)('nulls sub_status_id because a %s job moves to In Progress', async (status) => {
+    mockAuthAs('admin');
+    stubReopenTransaction({ status });
+    mockPrisma.job.findUnique.mockResolvedValue({ ...JOB_FIXTURE, status: 'IN_PROGRESS', assignees: [], invoices: [], source_plan_id: null });
+
+    const res = await request(app)
+      .post(`/api/jobs/${JOB_FIXTURE.id}/reopen`)
+      .set(authHeader('admin'))
+      .send({});
+
+    expect(res.status).toBeLessThan(400);
+    expect(statusUpdateCall()?.data).toMatchObject({ status: 'IN_PROGRESS', sub_status_id: null });
+  });
 });
 
 describe('subStatusClears', () => {

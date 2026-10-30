@@ -136,7 +136,8 @@ async function fetchEntities(type: LinkedEntityType, q: string): Promise<LinkedE
   const params = { ...(q ? { search: q } : {}), limit: 10 };
 
   if (type === 'JOB') {
-    const { data } = await api.get<{ jobs: JobLite[] }>('/api/jobs', { params });
+    // A task can be about any job, a Done one included: the Jobs list's default view leaves Done out, a picker asks for it.
+    const { data } = await api.get<{ jobs: JobLite[] }>('/api/jobs', { params: { ...params, include_done: 'true' } });
     return data.jobs.map((j) => ({ type: 'JOB' as const, id: j.id, label: jobLabel(j) }));
   }
   if (type === 'LEAD') {

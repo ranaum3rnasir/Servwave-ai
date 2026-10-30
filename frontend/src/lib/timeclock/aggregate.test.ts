@@ -6,10 +6,7 @@ function punch(p: Partial<Punch> & Pick<Punch, 'userId' | 'type' | 'ts'>): Punch
   return {
     id: `${p.userId}-${p.type}-${p.ts}`,
     userName: 'Tester',
-    lat: 0, lng: 0,
-    matchedZoneId: 'store', matchedZoneLabel: 'Main office',
-    matchedZoneKind: 'store', matchedJobNumber: null,
-    distanceM: 0, status: 'in_zone', review: 'none',
+    lat: 0, lng: 0, accuracyM: null,
     ...p,
   } as Punch;
 }
@@ -34,13 +31,17 @@ describe('buildSessions', () => {
     expect(sessions[0]!.minutes).toBe(0);
   });
 
-  it('carries job attribution from the IN punch', () => {
+  it('carries where the IN and the OUT happened onto the session', () => {
     const sessions = buildSessions([
-      punch({ userId: 'a', type: 'IN', ts: 1000, matchedZoneKind: 'job', matchedJobNumber: 'J00123' }),
-      punch({ userId: 'a', type: 'OUT', ts: 1000 + HOUR }),
+      punch({ userId: 'a', type: 'IN', ts: 1000, lat: 30.1, lng: -97.2 }),
+      punch({ userId: 'a', type: 'OUT', ts: 1000 + HOUR, lat: 40.5, lng: -74.6 }),
     ]);
-    expect(sessions[0]!.zoneKind).toBe('job');
-    expect(sessions[0]!.jobNumber).toBe('J00123');
+    expect(sessions[0]).toMatchObject({ inLat: 30.1, inLng: -97.2, outLat: 40.5, outLng: -74.6 });
+  });
+
+  it('leaves the OUT place empty while the session is still open', () => {
+    const [open] = buildSessions([punch({ userId: 'a', type: 'IN', ts: 1000, lat: 30.1, lng: -97.2 })]);
+    expect(open).toMatchObject({ inLat: 30.1, inLng: -97.2, outLat: null, outLng: null });
   });
 
   it('keeps users separate', () => {

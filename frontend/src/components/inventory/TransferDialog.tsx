@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useAppAbility } from "@/contexts/AbilityContext";
 import type React from "react";
 import { ArrowRight, Briefcase, Eye, FileText, Package, Truck } from "lucide-react";
 import { Modal } from "@/components/ui/modal";
@@ -86,7 +87,9 @@ export function TransferDialog({
   errorMessage,
   submitting,
 }: Props) {
-  const { data: purchaseOrders = [] } = usePurchaseOrders();
+  // Read only by a person who may read them: the server refuses the list to others, and this dialog is mounted (closed) on pages they open.
+  const ability = useAppAbility();
+  const { data: purchaseOrders = [] } = usePurchaseOrders(ability.can('read', 'PurchaseOrder'));
   const { data: allJobs = [] } = useInventoryJobs();
 
   const [mode, setMode] = useState<TransferMode>("single");
@@ -109,7 +112,7 @@ export function TransferDialog({
   const [previewPONumber, setPreviewPONumber] = useState<string | null>(null);
 
   // Default the item picker to the first material item once the seam resolves
-  // (Emanuel seeded `items[0].id` at module-load; the seam hydrates async).
+  // (the original code seeded `items[0].id` at module-load; the seam hydrates async).
   useEffect(() => {
     if (!itemId && items.length > 0) {
       const firstMaterial = items.find((i) => i.kind === "material") ?? items[0];

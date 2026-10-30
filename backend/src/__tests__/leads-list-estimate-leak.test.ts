@@ -5,6 +5,7 @@ import { prisma } from '../lib/prisma';
 import {
   TEST_USERS,
   mockAuthAs,
+  mockRoleSwitches,
   authHeader,
   LEAD_FIXTURE,
 } from './helpers';
@@ -100,6 +101,8 @@ describe('GET /api/leads — estimate monetary leak in the LIST (#233 / F-012)',
 describe('GET /api/leads/export — estimate monetary leak in the EXPORT (#233 / F-012)', () => {
   it('strips estimate total_amount for a walkthrough-only TECHNICIAN (no read Estimate grant)', async () => {
     mockAuthAs('technician');
+    // The download is its own switch (Export leads), off in the Technician preset.
+    mockRoleSwitches({ export_leads: true });
     mockPrisma.lead.findMany.mockResolvedValue([leadWithEstimate([TEST_USERS.technician.id])]);
 
     const res = await request(app)

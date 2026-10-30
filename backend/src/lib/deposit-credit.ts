@@ -38,10 +38,41 @@ function sumOf(agg: { _sum: { amount: Prisma.Decimal | number | null } } | null 
 }
 
 /**
- * remainingDepositCredit
- *   = (Σ Payment.amount on the deposit invoice, non-voided)
- *   − (Σ DepositCreditApplication.amount where deposit_invoice_id = id AND reversed_at IS NULL)
- *   − (Σ Refund.amount where invoice_id = id)
+ * depositHeldCents - the money a deposit invoice still holds, in cents:
+ *   (Σ Payment.amount, non-voided, SUCCEEDED)
+ *   − (Σ Refund.amount, not FAILED, on a payment that still stands)
+ *
+ * Payments go-live slice 05 (lib/payment-ledger.ts holds the rule; restated here because that
+ * module imports this one): a PROCESSING bank debit may still fail, so it is not money held; a
+ * PENDING refund is already on its way back, so it is gone; a FAILED refund gave nothing back.
+ * Slice 29: a refund on a voided payment (a chargeback, a returned bank payment) left the ledger
+ * with that payment, so it does not come off the money paid since (heldRefundCents). The one sum
+ * remainingDepositCredit and the credit reversal (deposit-credit-reversal.ts) both start from.
+ */
+export async function depositHeldCents(
+  tx: Prisma.TransactionClient,
+  depositInvoiceId: string,
+): Promise<number> {
+  const [paymentAgg, refundAgg] = await Promise.all([
+    tx.payment.aggregate({
+      where: { invoice_id: depositInvoiceId, voided_at: null, state: 'SUCCEEDED' },
+      _sum: { amount: true },
+    }),
+    tx.refund.aggregate({
+      where: {
+        invoice_id: depositInvoiceId,
+        state: { not: 'FAILED' },
+        OR: [{ payment_id: null }, { payment: { voided_at: null } }],
+      },
+      _sum: { amount: true },
+    }),
+  ]);
+  return Math.round((sumOf(paymentAgg) - sumOf(refundAgg)) * 100);
+}
+
+/**
+ * remainingDepositCredit = depositHeldCents − (Σ DepositCreditApplication.amount where
+ * deposit_invoice_id = id AND reversed_at IS NULL), in dollars.
  *
  * This single subtraction is the source of the no-double-credit invariant: the sum of
  * active applications across a job's STANDARD invoices can never exceed the deposit's
@@ -53,26 +84,14 @@ export async function remainingDepositCredit(
   tx: Prisma.TransactionClient,
   depositInvoiceId: string,
 ): Promise<number> {
-  const [paymentAgg, applicationAgg, refundAgg] = await Promise.all([
-    tx.payment.aggregate({
-      where: { invoice_id: depositInvoiceId, voided_at: null },
-      _sum: { amount: true },
-    }),
+  const [heldCents, applicationAgg] = await Promise.all([
+    depositHeldCents(tx, depositInvoiceId),
     tx.depositCreditApplication.aggregate({
       where: { deposit_invoice_id: depositInvoiceId, reversed_at: null },
       _sum: { amount: true },
     }),
-    tx.refund.aggregate({
-      where: { invoice_id: depositInvoiceId },
-      _sum: { amount: true },
-    }),
   ]);
-
-  const paid = sumOf(paymentAgg);
-  const applied = sumOf(applicationAgg);
-  const refunded = sumOf(refundAgg);
-
-  return toCents(paid - applied - refunded);
+  return toCents(heldCents / 100 - sumOf(applicationAgg));
 }
 
 /**
@@ -118,7 +137,24 @@ export async function applyDepositCredit(
  */
 
 /**
- * The PAID kind=DEPOSIT invoices for a set of estimate ids, in a deterministic drawdown order.
+ * Payments go-live slice 18: lock the kind=DEPOSIT invoices of these estimates (FOR UPDATE, in id
+ * order so two drawers cannot deadlock) before their credit is read. The refund, void-payment and
+ * settle doors change a deposit's money under this same lock, so a drawdown waits for one in
+ * flight and then reads what it left - never credit a refund is taking back at that moment, and
+ * never the same credit twice. Call it inside the drawing transaction, before any credit read.
+ */
+export async function lockDepositInvoicesForEstimates(
+  tx: Prisma.TransactionClient,
+  estimateIds: string[],
+  organizationId: string,
+): Promise<void> {
+  if (estimateIds.length === 0) return;
+  await tx.$executeRaw`SELECT id FROM invoices WHERE estimate_id = ANY(${estimateIds}::uuid[]) AND kind = 'DEPOSIT' AND organization_id = ${organizationId}::uuid ORDER BY id FOR UPDATE`;
+}
+
+/**
+ * The PAID kind=DEPOSIT invoices for a set of estimate ids, in a deterministic drawdown order,
+ * read under their row lock (lockDepositInvoicesForEstimates).
  * Returns [] WITHOUT querying when the set is empty - callers on the no-estimate path must not
  * need an `invoice.findMany` on their transaction surface.
  */
@@ -128,6 +164,7 @@ export async function resolvePaidDepositInvoices(
   organizationId: string,
 ): Promise<{ id: string }[]> {
   if (estimateIds.length === 0) return [];
+  await lockDepositInvoicesForEstimates(tx, estimateIds, organizationId);
   return tx.invoice.findMany({
     where: { estimate_id: { in: estimateIds }, kind: 'DEPOSIT', status: 'PAID', organization_id: organizationId },
     select: { id: true },
@@ -158,6 +195,13 @@ export async function computeDepositCredit(
   return depositCredit;
 }
 
+/** One deposit's draw onto a target invoice, for the caller to put on the job's history (S06.7). */
+export interface AppliedDepositCredit {
+  deposit_invoice_id: string;
+  amount: number;
+  payment_id: string | null;
+}
+
 /**
  * PASS 2 (post-create): ONE DepositCreditApplication ledger row + ONE post-tax Payment per
  * deposit that draws > 0. Pass 1 was read-only, so each applyDepositCredit re-reads the SAME
@@ -171,7 +215,8 @@ export async function applyDepositCreditsWithPayments(
   targetInvoiceId: string,
   invoiceTotal: number,
   organizationId: string,
-): Promise<void> {
+): Promise<AppliedDepositCredit[]> {
+  const appliedCredits: AppliedDepositCredit[] = [];
   let applyRoom = invoiceTotal;
   for (const dep of depositInvoices) {
     if (applyRoom <= 0) break;
@@ -180,7 +225,7 @@ export async function applyDepositCreditsWithPayments(
       applyRoom = toCents(applyRoom - applied);
       // Post-tax Payment, NEVER a discount line - the deposit invoice's own Payment carries the
       // real payment method; this one is tagged for refundInvoice's reference_number filter.
-      await tx.payment.create({
+      const creditPayment = await tx.payment.create({
         data: {
           invoice_id: targetInvoiceId,
           amount: applied,
@@ -195,8 +240,10 @@ export async function applyDepositCreditsWithPayments(
           ...CREATED_BY_SYSTEM,
         },
       });
+      appliedCredits.push({ deposit_invoice_id: dep.id, amount: applied, payment_id: creditPayment?.id ?? null });
     }
   }
+  return appliedCredits;
 }
 
 /**

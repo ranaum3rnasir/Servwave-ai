@@ -11,12 +11,12 @@ export const MOCK_DEPARTMENTS: { id: string; name: string }[] = [
 ];
 
 export const MOCK_PEOPLE: TaskPerson[] = [
-  { id: 'u_emanuel', name: 'Emanuel Dahan', role: 'admin',     department: 'mgmt' },
-  { id: 'u_priya',   name: 'Priya',         role: 'manager',   department: 'mgmt' },
-  { id: 'u_oved',    name: 'Oved Adani',    role: 'tech',      department: 'field' },
-  { id: 'u_sagiv',   name: 'Sagiv Peker',   role: 'logistics', department: 'logistics' },
-  { id: 'u_shani',   name: 'Shani Adani',   role: 'sales',     department: 'sales' },
-  { id: 'u_ohad',    name: 'Ohad',          role: 'tech',      department: 'field' },
+  { id: 'u_sam', name: 'Sam Rivera', role: 'admin',     department: 'mgmt' },
+  { id: 'u_drew',   name: 'Drew',         role: 'manager',   department: 'mgmt' },
+  { id: 'u_morgan',    name: 'Morgan Diaz',    role: 'tech',      department: 'field' },
+  { id: 'u_riley',   name: 'Riley Chen',   role: 'logistics', department: 'logistics' },
+  { id: 'u_avery',   name: 'Avery Stone',   role: 'sales',     department: 'sales' },
+  { id: 'u_jordan',    name: 'Jordan',          role: 'tech',      department: 'field' },
 ];
 
 // `redacted` is spelled out rather than left off, so a demo row carries the same key set
@@ -37,12 +37,12 @@ function base(n: number, over: Partial<Task>): Task {
   return {
     id: `t_${n}`, task_number: num, title: '', description: '',
     status: 'TODO', priority: 'MEDIUM',
-    assignee_ids: ['u_oved'], assignees: [{ id: 'u_oved', name: personName('u_oved') }],
+    assignee_ids: ['u_morgan'], assignees: [{ id: 'u_morgan', name: personName('u_morgan') }],
     watcher_ids: [],
     due_at: null, linked_entity: null, tags: [], subtasks: [],
-    created_by: 'u_emanuel', created_at: iso('2026-06-01T09:00:00Z'),
+    created_by: 'u_sam', created_at: iso('2026-06-01T09:00:00Z'),
     updated_at: iso('2026-06-03T09:00:00Z'), completed_at: null,
-    activity: [{ id: `a_${n}`, type: 'created', actor_id: 'u_emanuel', at: iso('2026-06-01T09:00:00Z') }],
+    activity: [{ id: `a_${n}`, type: 'created', actor_id: 'u_sam', at: iso('2026-06-01T09:00:00Z') }],
     comments: [],
     ai: { risk_score: 0, risk_reason: null, suggested_by: null, source: 'manual' },
     ...over,
@@ -51,30 +51,30 @@ function base(n: number, over: Partial<Task>): Task {
 
 // Spread of statuses, priorities, due dates (overdue / today / soon / future / done).
 export const MOCK_TASKS: Task[] = [
-  base(1, { title: 'Order glass for the Limon job', assignee_ids: ['u_sagiv'], assignees: [{ id: 'u_sagiv', name: personName('u_sagiv') }], status: 'IN_PROGRESS', priority: 'HIGH',
-    due_at: iso('2026-06-06T17:00:00Z'), linked_entity: MOCK_ENTITIES[2], tags: ['parts'], watcher_ids: ['u_priya'],
+  base(1, { title: 'Order glass for the Limon job', assignee_ids: ['u_riley'], assignees: [{ id: 'u_riley', name: personName('u_riley') }], status: 'IN_PROGRESS', priority: 'HIGH',
+    due_at: iso('2026-06-06T17:00:00Z'), linked_entity: MOCK_ENTITIES[2], tags: ['parts'], watcher_ids: ['u_drew'],
     updated_at: iso('2026-06-02T09:00:00Z') }),
-  base(2, { title: 'Confirm install window with customer', assignee_ids: ['u_shani'], assignees: [{ id: 'u_shani', name: personName('u_shani') }], status: 'TODO', priority: 'URGENT',
+  base(2, { title: 'Confirm install window with customer', assignee_ids: ['u_avery'], assignees: [{ id: 'u_avery', name: personName('u_avery') }], status: 'TODO', priority: 'URGENT',
     due_at: iso('2026-06-07T20:00:00Z'), linked_entity: MOCK_ENTITIES[1] }),
-  base(3, { title: 'Program access control panel', assignee_ids: ['u_oved'], assignees: [{ id: 'u_oved', name: personName('u_oved') }], status: 'IN_PROGRESS', priority: 'MEDIUM',
+  base(3, { title: 'Program access control panel', assignee_ids: ['u_morgan'], assignees: [{ id: 'u_morgan', name: personName('u_morgan') }], status: 'IN_PROGRESS', priority: 'MEDIUM',
     due_at: iso('2026-06-10T17:00:00Z'), linked_entity: MOCK_ENTITIES[0],
     subtasks: [{ id: 's1', text: 'Wire reader', done: true }, { id: 's2', text: 'Enroll badges', done: false }] }),
-  base(4, { title: 'Follow up on alarm estimate', assignee_ids: ['u_shani'], assignees: [{ id: 'u_shani', name: personName('u_shani') }], status: 'BLOCKED', priority: 'HIGH',
+  base(4, { title: 'Follow up on alarm estimate', assignee_ids: ['u_avery'], assignees: [{ id: 'u_avery', name: personName('u_avery') }], status: 'BLOCKED', priority: 'HIGH',
     due_at: iso('2026-06-05T17:00:00Z'), linked_entity: MOCK_ENTITIES[4], tags: ['follow-up'],
     updated_at: iso('2026-05-30T09:00:00Z') }),
-  base(5, { title: 'Site survey notes write-up', assignee_ids: ['u_ohad'], assignees: [{ id: 'u_ohad', name: personName('u_ohad') }], status: 'DONE', priority: 'LOW',
+  base(5, { title: 'Site survey notes write-up', assignee_ids: ['u_jordan'], assignees: [{ id: 'u_jordan', name: personName('u_jordan') }], status: 'DONE', priority: 'LOW',
     due_at: iso('2026-06-04T17:00:00Z'), completed_at: iso('2026-06-03T15:00:00Z'),
     linked_entity: MOCK_ENTITIES[3] }),
-  base(6, { title: 'Schedule CCTV crew', assignee_ids: ['u_oved'], assignees: [{ id: 'u_oved', name: personName('u_oved') }], status: 'TODO', priority: 'MEDIUM',
+  base(6, { title: 'Schedule CCTV crew', assignee_ids: ['u_morgan'], assignees: [{ id: 'u_morgan', name: personName('u_morgan') }], status: 'TODO', priority: 'MEDIUM',
     due_at: iso('2026-06-12T17:00:00Z'), linked_entity: MOCK_ENTITIES[2] }),
-  base(7, { title: 'Call supplier about buzzer backorder', assignee_ids: ['u_sagiv'], assignees: [{ id: 'u_sagiv', name: personName('u_sagiv') }], status: 'BLOCKED', priority: 'MEDIUM',
+  base(7, { title: 'Call supplier about buzzer backorder', assignee_ids: ['u_riley'], assignees: [{ id: 'u_riley', name: personName('u_riley') }], status: 'BLOCKED', priority: 'MEDIUM',
     due_at: iso('2026-06-08T17:00:00Z'), tags: ['parts'], updated_at: iso('2026-05-31T09:00:00Z') }),
-  base(8, { title: 'Close out bulletproof glass job', assignee_ids: ['u_oved'], assignees: [{ id: 'u_oved', name: personName('u_oved') }], status: 'DONE', priority: 'MEDIUM',
+  base(8, { title: 'Close out bulletproof glass job', assignee_ids: ['u_morgan'], assignees: [{ id: 'u_morgan', name: personName('u_morgan') }], status: 'DONE', priority: 'MEDIUM',
     due_at: iso('2026-06-02T17:00:00Z'), completed_at: iso('2026-06-02T12:00:00Z'), linked_entity: MOCK_ENTITIES[1] }),
-  base(9, { title: 'Standalone: order new ladder rack for van 3', assignee_ids: ['u_oved'], assignees: [{ id: 'u_oved', name: personName('u_oved') }], status: 'TODO', priority: 'LOW',
+  base(9, { title: 'Standalone: order new ladder rack for van 3', assignee_ids: ['u_morgan'], assignees: [{ id: 'u_morgan', name: personName('u_morgan') }], status: 'TODO', priority: 'LOW',
     due_at: iso('2026-06-25T17:00:00Z') }),
-  base(10, { title: 'Prep badges for Paramus go-live', assignee_ids: ['u_priya'], assignees: [{ id: 'u_priya', name: personName('u_priya') }], status: 'TODO', priority: 'HIGH',
-    due_at: iso('2026-06-09T17:00:00Z'), linked_entity: MOCK_ENTITIES[0], watcher_ids: ['u_emanuel'] }),
+  base(10, { title: 'Prep badges for Paramus go-live', assignee_ids: ['u_drew'], assignees: [{ id: 'u_drew', name: personName('u_drew') }], status: 'TODO', priority: 'HIGH',
+    due_at: iso('2026-06-09T17:00:00Z'), linked_entity: MOCK_ENTITIES[0], watcher_ids: ['u_sam'] }),
 ];
 
 export function personName(id: string): string {

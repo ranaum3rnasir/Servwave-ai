@@ -10,7 +10,8 @@ import { describe, it, expect } from 'vitest';
 import type { Request } from 'express';
 import { defineAbilityFor, type Grant } from '../defineAbility';
 import { scopeWhereFor, MATCH_NOTHING } from '../scopeWhereFor';
-import { CUSTOMER_CONTACT_KEYS, redactCustomerContactFor, presentEstimateDetail, presentInvoiceDetail } from '../customerContact';
+import { customerThroughRecordsReach } from '../recordPeople';
+import { CUSTOMER_CONTACT_KEYS, redactCustomerContactFor, redactCustomerRowUnless, presentEstimateDetail, presentInvoiceDetail } from '../customerContact';
 
 /**
  * #2041 — `isCustomerReadable` (customerContact.ts) no longer asks `req.ability` per row (was
@@ -390,5 +391,135 @@ describe('redactCustomerContactFor — public_token (#1997 round 3)', () => {
 
     expect('public_token' in estOut).toBe(false);
     expect('public_token' in invOut).toBe(false);
+  });
+});
+
+// Roles & Permissions S01.5: a customer who has a lead or job the requester can open comes with that
+// record, so the contact stays whatever Customers View says. The verdict is on the customer's own people
+// proof (CUSTOMER_PROOF_SELECT), against the through-records scope `attachCustomerScope` memoises.
+describe('redactCustomerContactFor — customers that come with a record the requester can open (S01.5)', () => {
+  /** A requester with Customers View off, on Attached scope for Leads and Jobs. */
+  function reqViewOff(userId = 'u1'): Request {
+    const arms = customerThroughRecordsReach('attached', 'attached')!;
+    const customerRecordScope = scopeWhereFor(
+      { id: userId, role: 'SALES' },
+      'Customer',
+      arms.map((conditions) => ({ action: 'read', subject: 'Customer', conditions })),
+    );
+    return { ability: defineAbilityFor({ id: userId, role: 'SALES' }, []), customerScope: { ...MATCH_NOTHING }, customerRecordScope } as unknown as Request;
+  }
+  const onMyLead = (userId = 'u1') => ({ leads: [{ lead_assignees: [{ user_id: userId }] }] });
+  const onMyJob = (userId = 'u1') => ({ jobs: [{ visits: [{ assignees: [{ user_id: userId }] }] }] });
+  const someoneElsesLead = () => ({ leads: [{ lead_assignees: [{ user_id: 'u2' }] }] });
+
+  it('keeps lead.customer for a customer with a lead the requester is attached to', () => {
+    const doc = { id: 'e1', customer: null, lead: { id: 'lead-1', customer: fullCustomer(onMyLead()) } };
+
+    const out = redactCustomerContactFor(reqViewOff(), doc);
+
+    for (const key of CUSTOMER_CONTACT_KEYS) expect(key in out.lead.customer).toBe(true);
+    expect(out.lead.id).toBe('lead-1');
+  });
+
+  it('keeps job.customer for a customer with a job the requester is attached to (invoice shape)', () => {
+    const doc = { id: 'inv-1', customer: null, job: { id: 'job-1', customer: fullCustomer(onMyJob()) } };
+
+    const out = redactCustomerContactFor(reqViewOff(), doc);
+
+    for (const key of CUSTOMER_CONTACT_KEYS) expect(key in out.job.customer).toBe(true);
+  });
+
+  it('keeps the address and the public_token with the contact', () => {
+    const customer = fullCustomer({ ...onMyLead(), service_locations: [{ address_line1: '1 Elm St' }] });
+    const doc = { id: 'e1', public_token: 'tok-1', customer: null, lead: { id: 'lead-1', customer } };
+
+    const out = redactCustomerContactFor(reqViewOff(), doc);
+
+    expect((out.lead.customer as Record<string, unknown>).service_locations).toEqual([{ address_line1: '1 Elm St' }]);
+    expect(out.public_token).toBe('tok-1');
+  });
+
+  it('still redacts a document that sits on a lead the requester cannot open', () => {
+    const doc = { id: 'e1', public_token: 'tok-1', customer: null, lead: { id: 'lead-1', customer: fullCustomer(someoneElsesLead()) } };
+
+    const out = redactCustomerContactFor(reqViewOff(), doc);
+
+    for (const key of CUSTOMER_CONTACT_KEYS) expect(key in out.lead.customer).toBe(false);
+    expect('public_token' in out).toBe(false);
+  });
+
+  it('still redacts a document that sits on a job the requester cannot open', () => {
+    const doc = { id: 'inv-1', customer: fullCustomer(), job: { id: 'job-1', customer: fullCustomer({ jobs: [{ visits: [{ assignees: [{ user_id: 'u2' }] }] }] }) } };
+
+    const out = redactCustomerContactFor(reqViewOff(), doc);
+
+    for (const key of CUSTOMER_CONTACT_KEYS) {
+      expect(key in out.customer).toBe(false);
+      expect(key in out.job.customer).toBe(false);
+    }
+  });
+
+  it('still redacts the customer of a document with no lead and no job', () => {
+    const doc = { id: 'e1', customer: fullCustomer(), lead: null, job: null };
+
+    const out = redactCustomerContactFor(reqViewOff(), doc);
+
+    for (const key of CUSTOMER_CONTACT_KEYS) expect(key in out.customer).toBe(false);
+  });
+
+  it('does not let a lead on the document vouch for the customer when nobody is signed in (the public estimate and invoice pages)', () => {
+    const doc = {
+      id: 'e1',
+      public_token: 'tok-1',
+      customer: fullCustomer(onMyLead()),
+      lead: { id: 'lead-1', customer: fullCustomer(onMyLead()) },
+      job: { id: 'job-1', customer: fullCustomer(onMyJob()) },
+    };
+
+    const out = redactCustomerContactFor(NO_ABILITY_REQ, doc);
+
+    for (const key of CUSTOMER_CONTACT_KEYS) {
+      expect(key in out.customer).toBe(false);
+      expect(key in out.lead.customer).toBe(false);
+      expect(key in out.job.customer).toBe(false);
+    }
+    expect('public_token' in out).toBe(false);
+  });
+
+  it('judges Team scope on the department of the people on the lead', () => {
+    const arms = customerThroughRecordsReach('team', 'attached')!;
+    const scopeFor = (department: string | null) => scopeWhereFor(
+      { id: 'u1', role: 'SALES', department_id: department },
+      'Customer',
+      arms.map((conditions) => ({ action: 'read', subject: 'Customer', conditions })),
+    );
+    const teamLead = { leads: [{ lead_assignees: [{ user_id: 'u2', user: { department_id: 'dep-1', location_id: null } }] }] };
+    const doc = { id: 'e1', customer: null, lead: { id: 'lead-1', customer: fullCustomer(teamLead) } };
+    const reqIn = (department: string | null) =>
+      ({ ability: defineAbilityFor({ id: 'u1', role: 'SALES' }, []), customerScope: { ...MATCH_NOTHING }, customerRecordScope: scopeFor(department) }) as unknown as Request;
+
+    expect('email' in redactCustomerContactFor(reqIn('dep-1'), doc).lead.customer).toBe(true);
+    expect('email' in redactCustomerContactFor(reqIn('dep-2'), doc).lead.customer).toBe(false);
+    expect('email' in redactCustomerContactFor(reqIn(null), doc).lead.customer).toBe(false);
+  });
+});
+
+describe('redactCustomerRowUnless - the customer contact set a job carries (S05.1)', () => {
+  const withSet = () => fullCustomer({
+    phones: [{ phone: '5550001111', label: 'Mobile', extension: null, is_primary: true }],
+    emails: [{ email: 'dana@example.com', label: null, is_primary: true }],
+  });
+
+  it('strips the phones and emails with the other contact keys when the customer is not readable', () => {
+    const out = redactCustomerRowUnless(withSet(), false)!;
+    expect('phones' in out).toBe(false);
+    expect('emails' in out).toBe(false);
+    expect(out.id).toBe('cust-1');
+  });
+
+  it('keeps them when the customer is readable', () => {
+    const out = redactCustomerRowUnless(withSet(), true)!;
+    expect(out.phones).toHaveLength(1);
+    expect(out.emails).toHaveLength(1);
   });
 });

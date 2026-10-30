@@ -35,6 +35,7 @@ import { EmptyState } from '@/components/ui/empty-state';
 import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { TAG_COLORS } from '@/lib/tag-colors';
 import { TAG_EMBEDDING_QUERY_KEYS } from '@/lib/tag-entities';
+import { InfoPopover } from '../../_shared/infoPopover';
 import { Section } from './section';
 import { canAutoFocus } from '@/ui-kit/lib/autoFocus';
 
@@ -133,7 +134,7 @@ export function TagsSettingsCard() {
   return (
     <Section
       title="Tags"
-      description="Tags used across customers, leads, estimates, jobs and invoices. Add new ones from any record; rename, recolour or delete them here. Changes save immediately and apply everywhere."
+      info={<InfoPopover label="Tags">Changes save immediately and apply everywhere.</InfoPopover>}
     >
       {isLoading ? (
         <p className="text-sm text-text-secondary">Loading tags…</p>

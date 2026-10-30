@@ -7,7 +7,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { renderWithProviders } from "@/__tests__/helpers";
+import { renderWithProviders, purchasingAbility } from "@/__tests__/helpers";
 import api from "@/lib/axios";
 import { AddVendorDialog } from "../AddVendorDialog";
 
@@ -22,7 +22,7 @@ beforeEach(() => {
 
 describe("AddVendorDialog - retired sending fields (S1.2)", () => {
   it("renders no Payment Terms, Lead Time or PO Transmit Method controls", () => {
-    renderWithProviders(<AddVendorDialog open onClose={vi.fn()} onCreate={vi.fn()} />);
+    renderWithProviders(<AddVendorDialog open onClose={vi.fn()} onCreate={vi.fn()} />, { ability: purchasingAbility() });
 
     expect(screen.queryByText(/payment terms/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/lead time/i)).not.toBeInTheDocument();
@@ -41,7 +41,7 @@ describe("AddVendorDialog - retired sending fields (S1.2)", () => {
 
   it("saves a vendor from name + category alone, with none of the retired keys on the object", async () => {
     const onCreate = vi.fn();
-    renderWithProviders(<AddVendorDialog open onClose={vi.fn()} onCreate={onCreate} />);
+    renderWithProviders(<AddVendorDialog open onClose={vi.fn()} onCreate={onCreate} />, { ability: purchasingAbility() });
 
     await userEvent.type(screen.getByPlaceholderText("ADI, Ferguson, Winsupply…"), "S12 Vendor");
     // The category picker is the dialog's only combobox now.
@@ -62,7 +62,7 @@ describe("AddVendorDialog - retired sending fields (S1.2)", () => {
   });
 
   it("offers the company list plus Uncategorized - no free-text '+ Add new category…' row", async () => {
-    renderWithProviders(<AddVendorDialog open onClose={vi.fn()} onCreate={vi.fn()} />);
+    renderWithProviders(<AddVendorDialog open onClose={vi.fn()} onCreate={vi.fn()} />, { ability: purchasingAbility() });
 
     await userEvent.click(screen.getByRole("combobox"));
 
@@ -73,7 +73,7 @@ describe("AddVendorDialog - retired sending fields (S1.2)", () => {
 
   it("saves an Uncategorized vendor as categoryId null and an empty name (S4.1)", async () => {
     const onCreate = vi.fn();
-    renderWithProviders(<AddVendorDialog open onClose={vi.fn()} onCreate={onCreate} />);
+    renderWithProviders(<AddVendorDialog open onClose={vi.fn()} onCreate={onCreate} />, { ability: purchasingAbility() });
 
     await userEvent.type(screen.getByPlaceholderText("ADI, Ferguson, Winsupply…"), "S41 Loose Vendor");
     await userEvent.click(screen.getByRole("button", { name: /save vendor/i }));

@@ -3,7 +3,7 @@ import { screen } from '@testing-library/react';
 
 import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderWithProviders, ALL_JOB_ACTIONS } from '@/__tests__/helpers';
 
 import JobsPage from '../JobsPage';
 import JobDetailPage from '../JobDetailPage';
@@ -104,6 +104,7 @@ const BASE_JOB = {
   invoices: [],
   tags: [],
   source_plan_id: null,
+  actions: ALL_JOB_ACTIONS,
   source_plan: null,
 };
 
@@ -117,7 +118,11 @@ describe('v2 JobsPage', () => {
   it('renders the header, the six KPI tiles and a row', async () => {
     mockApi.get.mockResolvedValue({ data: JOB_LIST_FIXTURE });
 
-    renderWithProviders(<JobsPage />, { initialEntries: ['/jobs'] });
+    // Need Invoices is the sixth tile only for a viewer who holds View invoices (S04.2).
+    renderWithProviders(<JobsPage />, {
+      ability: buildAbility([{ action: 'read', subject: 'Invoice' }]),
+      initialEntries: ['/jobs'],
+    });
 
     expect(await screen.findByRole('heading', { name: 'Jobs' })).toBeInTheDocument();
     expect(await screen.findByText('J00001')).toBeInTheDocument();

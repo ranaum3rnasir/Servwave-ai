@@ -153,7 +153,7 @@ const LEADS_FIXTURE = {
     },
   ],
   pagination: PAGINATION,
-  stats: { total: 1, new_this_week: 1, unassigned: 1, won: 0, lost: 0 },
+  stats: { total: 1, new_this_week: 1, no_owner: 1, won: 0, lost: 0 },
 };
 
 /**
@@ -212,7 +212,8 @@ const LISTS = [
     path: '/jobs',
     endpoint: '/api/jobs',
     data: JOBS_FIXTURE,
-    ability: () => buildAbility([{ action: 'assign', subject: 'Job' }]),
+    // Bulk Assign is the Jobs list's one action here: it needs both assign switches.
+    ability: () => buildAbility([{ action: 'assign', subject: 'Job' }, { action: 'assign', subject: 'User' }]),
     rowText: 'J00001',
     sortHeader: 'Job #',
     sortBy: 'job_number',

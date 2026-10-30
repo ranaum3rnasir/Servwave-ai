@@ -35,7 +35,39 @@ export interface NavChild {
    * it is just a row you cannot find. Mirrors NavDestination.demoOnly.
    */
   demoOnly?: boolean;
+  /** The switches behind this child's menu visibility; see `NavGate`. Absent: the child follows `action` and `subject`. */
+  gate?: NavGate;
 }
+
+/**
+ * Which switches decide whether a destination's menu entry shows (Roles & Permissions S02.19, S02.20). Read from the
+ * person's resolved switches, never from the compiled rules, because Show and Access are display-only values the rules
+ * do not carry. A destination with no gate still follows its `action` and `subject`.
+ *
+ *   always   every person has it, whatever they hold (the Dashboard: their home page, with no switch)
+ *   record   a record module's list page: its View switch AND its Show switch are both on. With `unless` named, the
+ *            entry is also hidden while that other entry (its own View AND Show) shows: the Logistic Orders child
+ *            gives way to the Stock entry, which already leads to the Inventory page and its Logistic Orders tab.
+ *   page     a page that is not one record type: its Access switch is on
+ *   show     a sub-page of a section (Phone, Text, Email): its Show switch is on
+ *   group    an expandable group, which has no switch of its own: it shows when at least one of its children that has a
+ *            `record` or `show` gate shows and, when `access` is named, that Access switch is on. A child gated on a
+ *            `page` switch (the demo-only messaging child) follows its own Access switch but never counts toward this,
+ *            so it cannot open its group on its own.
+ */
+export type NavGate =
+  | { kind: 'always' }
+  | { kind: 'record'; view: string; show: string; unless?: { view: string; show: string } }
+  | { kind: 'page'; access: string }
+  | { kind: 'show'; show: string }
+  | { kind: 'group'; access?: string };
+
+const always: NavGate = { kind: 'always' };
+const record = (view: string, show: string, unless?: { view: string; show: string }): NavGate =>
+  ({ kind: 'record', view, show, unless });
+const page = (access: string): NavGate => ({ kind: 'page', access });
+const showOf = (show: string): NavGate => ({ kind: 'show', show });
+const group = (access?: string): NavGate => ({ kind: 'group', access });
 
 export interface NavDestination {
   key: string;
@@ -46,6 +78,8 @@ export interface NavDestination {
   subject: AppSubject;
   /** Human-readable home shown in the Add-shortcut picker. */
   home: string;
+  /** The switches behind this entry's menu visibility; see `NavGate`. Absent: the entry follows `action` and `subject`. */
+  gate?: NavGate;
   /**
    * Backend integration still pending. Flat rows render the amber clock badge;
    * groups stack a "Coming soon" caption under the label (ServWave treatment —
@@ -116,6 +150,11 @@ export interface NavAccess {
   /** True once the entitlement payload has actually arrived. */
   entitlementsReady: boolean;
   isDemoOrg: boolean;
+  /**
+   * The person's resolved switches. When given, a child with a `gate` follows them; when absent (the legacy sidebar,
+   * which still asks the compiled rules), every child follows `action` and `subject`.
+   */
+  switches?: Record<string, unknown>;
 }
 
 /**
@@ -154,7 +193,9 @@ export function isNavChildLocked(child: NavChild, access: NavAccess): boolean {
  */
 export function visibleNavChildren(dest: NavDestination, access: NavAccess): NavChild[] {
   return (dest.children ?? []).filter(
-    (child) => access.can(child.action, child.subject) && hasNavFeature(child.feature, access),
+    (child) =>
+      (access.switches ? navEntryShows(child, access.can, access.switches) : access.can(child.action, child.subject))
+      && hasNavFeature(child.feature, access),
   );
 }
 
@@ -176,30 +217,34 @@ export function resolveNavHref(dest: NavDestination, access: NavAccess): string 
 }
 
 export const NAV_REGISTRY: NavDestination[] = [
-  { key: 'dashboard',     label: 'Dashboard',      icon: BarChart3,       href: '/',                     action: 'read',   subject: 'Dashboard',     home: 'Page' },
-  { key: 'schedule',      label: 'Schedule',       icon: CalendarDays,    href: '/schedule',             action: 'read',   subject: 'Job',           home: 'Page' },
-  { key: 'tasks',         label: 'Tasks',          icon: ClipboardList,   href: '/tasks',                action: 'read',   subject: 'Task',          home: 'Page' },
-  { key: 'leads',         label: 'Leads',          icon: Filter,          href: '/leads',                action: 'read',   subject: 'Lead',          home: 'Page', feature: 'leads' },
-  { key: 'jobs',          label: 'Jobs',           icon: Briefcase,       href: '/jobs',                 action: 'read',   subject: 'Job',           home: 'Page' },
-  { key: 'clients',       label: 'Customers',      icon: User,            href: '/customers',            action: 'read',   subject: 'Customer',      home: 'Page' },
-  { key: 'estimates',     label: 'Estimates',      icon: FileText,        href: '/estimates',            action: 'read',   subject: 'Estimate',      home: 'Page' },
-  { key: 'invoices',      label: 'Invoices',       icon: Receipt,         href: '/invoices',             action: 'read',   subject: 'Invoice',       home: 'Page' },
-  { key: 'service-plans', label: 'Service Plans',  icon: Repeat,          href: '/service-plans',        action: 'read',   subject: 'ServicePlan',   home: 'Page', feature: 'service_plans' },
+  { key: 'dashboard',     label: 'Dashboard',      icon: BarChart3,       href: '/',                     action: 'read',   subject: 'Dashboard',     home: 'Page', gate: always },
+  { key: 'schedule',      label: 'Schedule',       icon: CalendarDays,    href: '/schedule',             action: 'read',   subject: 'Job',           home: 'Page', gate: page('access_schedule') },
+  { key: 'tasks',         label: 'Tasks',          icon: ClipboardList,   href: '/tasks',                action: 'read',   subject: 'Task',          home: 'Page', gate: record('view_tasks', 'show_tasks_page') },
+  { key: 'leads',         label: 'Leads',          icon: Filter,          href: '/leads',                action: 'read',   subject: 'Lead',          home: 'Page', gate: record('view_leads', 'show_leads_page'), feature: 'leads' },
+  { key: 'jobs',          label: 'Jobs',           icon: Briefcase,       href: '/jobs',                 action: 'read',   subject: 'Job',           home: 'Page', gate: record('view_jobs', 'show_jobs_page') },
+  { key: 'clients',       label: 'Customers',      icon: User,            href: '/customers',            action: 'read',   subject: 'Customer',      home: 'Page', gate: record('view_customers', 'show_customers_page') },
+  { key: 'estimates',     label: 'Estimates',      icon: FileText,        href: '/estimates',            action: 'read',   subject: 'Estimate',      home: 'Page', gate: record('view_estimates', 'show_estimates_page') },
+  { key: 'invoices',      label: 'Invoices',       icon: Receipt,         href: '/invoices',             action: 'read',   subject: 'Invoice',       home: 'Page', gate: record('view_invoices', 'show_invoices_page') },
+  { key: 'payments',      label: 'Payments',       icon: CircleDollarSign, href: '/payments',            action: 'view_payments', subject: 'Organization', home: 'Page', gate: record('view_payments', 'show_payments_page') },
+  { key: 'service-plans', label: 'Service Plans',  icon: Repeat,          href: '/service-plans',        action: 'read',   subject: 'ServicePlan',   home: 'Page', gate: record('view_service_plans', 'show_service_plans_page'), feature: 'service_plans' },
   // Automation Center — icon per the ServWave board mapping (automation → Zap in servwave-icons).
-  { key: 'automations',   label: 'Automations',    icon: Zap,             href: '/automations',          action: 'read',   subject: 'Automation',    home: 'Page', feature: 'automations' },
+  { key: 'automations',   label: 'Automations',    icon: Zap,             href: '/automations',          action: 'read',   subject: 'Automation',    home: 'Page', gate: record('view_automations', 'show_automations_page'), feature: 'automations' },
   // feature: 'inventory' - /inventory/price-book is inside <RequireFeature feature="inventory">
   // in App.tsx and PriceBookPage reads the Scale-gated /api/inventory/* catalog hooks. Without
   // this key the row rendered unlocked on Starter/Pro and bounced to /upgrade on click; it now
   // locks with a plan badge like every other gated module.
-  { key: 'pricebook',     label: 'Price Book',     icon: Tag,             href: '/inventory/price-book', action: 'read',   subject: 'Inventory',     home: 'Inventory', feature: 'inventory' },
-  { key: 'billing',       label: 'Billing',        icon: Hourglass,       href: '/reports/unpaid-invoices', action: 'read', subject: 'Report', home: 'Reports · Unpaid Invoices' },
-  { key: 'reports',       label: 'Reports',        icon: LineChart,       href: '/reports',              action: 'read',   subject: 'Report',        home: 'Page' },
-  { key: 'inventory',     label: 'Inventory',      icon: Boxes,           href: '/inventory',            action: 'read',   subject: 'Inventory',     home: 'Page', feature: 'inventory',
+  { key: 'pricebook',     label: 'Price Book',     icon: Tag,             href: '/inventory/price-book', action: 'read',   subject: 'Inventory',     home: 'Inventory', gate: record('view_price_book', 'show_price_book_page'), feature: 'inventory' },
+  { key: 'billing',       label: 'Billing',        icon: Hourglass,       href: '/reports/unpaid-invoices', action: 'read', subject: 'Report', home: 'Reports · Unpaid Invoices', gate: page('access_billing') },
+  { key: 'reports',       label: 'Reports',        icon: LineChart,       href: '/reports',              action: 'read',   subject: 'Report',        home: 'Page', gate: page('access_reports') },
+  { key: 'inventory',     label: 'Inventory',      icon: Boxes,           href: '/inventory',            action: 'read',   subject: 'Inventory',     home: 'Page', gate: group(), feature: 'inventory',
     children: [
-      { key: 'inv-stock',      label: 'Stock',           icon: Package,      href: '/inventory',                action: 'read', subject: 'Inventory' },
-      { key: 'inv-pricebook',  label: 'Price Book',      icon: Tag,          href: '/inventory/price-book',     action: 'read', subject: 'Inventory' },
-      { key: 'inv-pos',        label: 'Purchase Orders', icon: ShoppingCart, href: '/inventory/purchase-orders', action: 'read', subject: 'PurchaseOrder' },
-      { key: 'inv-vendors',    label: 'Vendors',         icon: Truck,        href: '/inventory/vendors',        action: 'read', subject: 'Vendor' },
+      { key: 'inv-stock',      label: 'Stock',           icon: Package,      href: '/inventory',                action: 'read', subject: 'Inventory',     gate: record('view_stock', 'show_stock_page') },
+      { key: 'inv-pricebook',  label: 'Price Book',      icon: Tag,          href: '/inventory/price-book',     action: 'read', subject: 'Inventory',     gate: record('view_price_book', 'show_price_book_page') },
+      { key: 'inv-pos',        label: 'Purchase Orders', icon: ShoppingCart, href: '/inventory/purchase-orders', action: 'read', subject: 'PurchaseOrder', gate: record('view_purchase_orders', 'show_purchase_orders_page') },
+      { key: 'inv-vendors',    label: 'Vendors',         icon: Truck,        href: '/inventory/vendors',        action: 'read', subject: 'Vendor',        gate: record('view_vendors', 'show_vendors_page') },
+      // Only for a person who can open the Logistic Orders tab but whose Stock entry is hidden: when Stock shows, it
+      // already leads to the Inventory page and that tab, so there is no second entry.
+      { key: 'inv-logistic-orders', label: 'Logistic Orders', icon: ClipboardList, href: '/inventory/logistic-orders', action: 'read', subject: 'LogisticOrder', gate: record('view_logistic_orders', 'show_logistic_orders_page', { view: 'view_stock', show: 'show_stock_page' }) },
       // Children are not DEFAULT_LAYOUT_KEYS entries → no layout-version bump.
     ] },
   // Communication is TWO entitlements, not one. The CTM phone system (calls,
@@ -212,36 +257,36 @@ export const NAV_REGISTRY: NavDestination[] = [
   // Communication SECTION (sidebar + /communication/* pages), a different
   // surface from the per-record Communication tab on a lead/job/customer,
   // which keeps working on `read Communication` alone.
-  { key: 'communication', label: 'Communication',  icon: MessagesSquare,  href: '/communication/phone',  action: 'access_inbox',   subject: 'Communication', home: 'Page', comingSoon: false, feature: ['phone', 'email'],
+  { key: 'communication', label: 'Communication',  icon: MessagesSquare,  href: '/communication/phone',  action: 'access_inbox',   subject: 'Communication', home: 'Page', comingSoon: false, gate: group('access_communication'), feature: ['phone', 'email'],
     children: [
-      { key: 'comm-phone',    label: 'Phone',    icon: Phone,         href: '/communication/phone',         action: 'access_inbox', subject: 'Communication', comingSoon: false, feature: 'phone' },
+      { key: 'comm-phone',    label: 'Phone',    icon: Phone,         href: '/communication/phone',         action: 'access_inbox', subject: 'Communication', comingSoon: false, gate: showOf('show_phone'), feature: 'phone' },
       // demoOnly: WhatsApp has no connected Business account for a real org (the
       // page says so and the send 409s), so the row locks instead of promising a
       // channel that cannot send. Route blocked by <DemoOnlyRoute> to match.
-      { key: 'comm-whatsapp', label: 'WhatsApp', icon: MessageCircle, href: '/communication/whatsapp',      action: 'access_inbox', subject: 'Communication', comingSoon: true,  feature: 'phone', demoOnly: true },
+      { key: 'comm-whatsapp', label: 'WhatsApp', icon: MessageCircle, href: '/communication/whatsapp',      action: 'access_inbox', subject: 'Communication', comingSoon: true,  gate: page('access_communication'), feature: 'phone', demoOnly: true },
       // comingSoon STAYS until the inbox is correct for shared use - it is a
-      // badge, not a gate (nothing but HomeRoute's landing pick reads it).
-      { key: 'comm-email',    label: 'Email',    icon: Mail,          href: '/communication/inbox',         action: 'access_inbox', subject: 'Communication', comingSoon: true,  feature: 'email' },
-      { key: 'comm-text',     label: 'Text',     icon: MessageSquare, href: '/communication/text',          action: 'access_inbox', subject: 'Communication', comingSoon: false, feature: 'phone' },
+      // badge, not a gate.
+      { key: 'comm-email',    label: 'Email',    icon: Mail,          href: '/communication/inbox',         action: 'access_inbox', subject: 'Communication', comingSoon: true,  gate: showOf('show_email'), feature: 'email' },
+      { key: 'comm-text',     label: 'Text',     icon: MessageSquare, href: '/communication/text',          action: 'access_inbox', subject: 'Communication', comingSoon: false, gate: showOf('show_text'), feature: 'phone' },
     ] },
   // Marketing is a mock-only screen (no /api/marketing). One real org is
   // allowlisted by id so the screen can be presented to them; every other org keeps
   // the row locked. Same org id in staging and prod. Remove the allowlist once a
   // real backend lands and the `demoOnly` flag comes off.
-  { key: 'marketing',     label: 'Marketing',      icon: Megaphone,       href: '/marketing',            action: 'read',   subject: 'Report',        home: 'Page', demoOnly: true,
+  { key: 'marketing',     label: 'Marketing',      icon: Megaphone,       href: '/marketing',            action: 'read',   subject: 'Report',        home: 'Page', gate: page('access_marketing'), demoOnly: true,
     demoOnlyUnlockOrgIds: ['d40afcec-0ddf-471f-b99d-8e5f23cbdadf'] },
   // Extra reports — pinnable via Add-shortcut, not in the default sidebar:
-  { key: 'rpt-job-profit', label: 'Job Profitability',       icon: PieChart,   href: '/reports/job-profitability', action: 'read', subject: 'Report',  home: 'Reports · Finance' },
-  { key: 'rpt-rep-board',  label: 'Salesperson Leaderboard', icon: Trophy,     href: '/reports/rep-leaderboard',   action: 'read', subject: 'Report',  home: 'Reports · Sales' },
-  { key: 'rpt-revenue',    label: 'Revenue',                 icon: TrendingUp, href: '/reports/revenue',           action: 'read', subject: 'Report',  home: 'Reports · Finance' },
-  { key: 'rpt-payments',   label: 'Payments Collected',      icon: CircleDollarSign, href: '/reports/payments',    action: 'read', subject: 'Report',  home: 'Reports · Finance' },
-  { key: 'rpt-tech-perf',  label: 'Technician Performance',  icon: Award,      href: '/reports/tech-performance',  action: 'read', subject: 'Report',  home: 'Reports · Sales' },
+  { key: 'rpt-job-profit', label: 'Job Profitability',       icon: PieChart,   href: '/reports/job-profitability', action: 'read', subject: 'Report',  home: 'Reports · Finance', gate: page('access_reports') },
+  { key: 'rpt-rep-board',  label: 'Salesperson Leaderboard', icon: Trophy,     href: '/reports/rep-leaderboard',   action: 'read', subject: 'Report',  home: 'Reports · Sales', gate: page('access_reports') },
+  { key: 'rpt-revenue',    label: 'Revenue',                 icon: TrendingUp, href: '/reports/revenue',           action: 'read', subject: 'Report',  home: 'Reports · Finance', gate: page('access_reports') },
+  { key: 'rpt-payments',   label: 'Payments Collected',      icon: CircleDollarSign, href: '/reports/payments',    action: 'read', subject: 'Report',  home: 'Reports · Finance', gate: page('access_reports') },
+  { key: 'rpt-tech-perf',  label: 'Technician Performance',  icon: Award,      href: '/reports/tech-performance',  action: 'read', subject: 'Report',  home: 'Reports · Sales', gate: page('access_reports') },
 ];
 
 /** Flat default order ("Option C") — keys present on a fresh sidebar. */
 export const DEFAULT_LAYOUT_KEYS: string[] = [
   'dashboard', 'schedule', 'tasks', 'leads', 'jobs', 'clients',
-  'estimates', 'invoices', 'service-plans', 'automations', 'pricebook', 'billing', 'reports',
+  'estimates', 'invoices', 'payments', 'service-plans', 'automations', 'pricebook', 'billing', 'reports',
   'inventory', 'communication', 'marketing',
 ];
 
@@ -251,13 +296,44 @@ export const DEFAULT_LAYOUT_KEYS: string[] = [
  * with `version` greater than the user's stored layout version is appended once — so a newly
  * released default appears without clobbering their order or re-adding items they removed.
  */
-export const CURRENT_LAYOUT_VERSION = 3;
-export const LAYOUT_ADDITIONS: { version: number; key: string }[] = [
+export const CURRENT_LAYOUT_VERSION = 4;
+/** `after`: slot the addition right behind that key when the stored layout has it, else append at the end. */
+export const LAYOUT_ADDITIONS: { version: number; key: string; after?: string }[] = [
   { version: 2, key: 'service-plans' },
   { version: 3, key: 'automations' },
+  { version: 4, key: 'payments', after: 'invoices' },
 ];
 
 const BY_KEY = new Map(NAV_REGISTRY.map((d) => [d.key, d]));
+
+/**
+ * Whether a destination's (or a group child's) menu entry shows for a person.
+ *
+ * A gated destination reads the person's resolved switches and shows nothing until they have arrived (only the
+ * Dashboard shows before then). An ungated one keeps asking the compiled rules. Plan locks and the demo-only rollout
+ * limit are NOT decided here: they apply on top, as a lock on the row.
+ */
+export function navEntryShows(
+  dest: Pick<NavDestination, 'gate' | 'action' | 'subject' | 'children'>,
+  can: NavAccess['can'],
+  values: Record<string, unknown> | undefined,
+): boolean {
+  const gate = dest.gate;
+  if (!gate) return can(dest.action, dest.subject);
+  if (gate.kind === 'always') return true;
+  if (!values) return false;
+  if (gate.kind === 'page') return values[gate.access] === true;
+  if (gate.kind === 'show') return values[gate.show] === true;
+  if (gate.kind === 'group') {
+    if (gate.access && values[gate.access] !== true) return false;
+    return (dest.children ?? []).some(
+      (child) =>
+        (child.gate?.kind === 'record' || child.gate?.kind === 'show') && navEntryShows(child, can, values),
+    );
+  }
+  if (gate.unless && values[gate.unless.view] === true && values[gate.unless.show] === true) return false;
+  return values[gate.view] === true && values[gate.show] === true;
+}
 
 export function getDestination(key: string): NavDestination | undefined {
   return BY_KEY.get(key);

@@ -2,7 +2,7 @@
 // print preview shows the org brand, not "FieldOS".
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen } from '@testing-library/react';
-import { renderWithProviders } from './helpers';
+import { renderWithProviders, purchasingAbility } from './helpers';
 import { PODetailDialog } from '@/components/inventory/PODetailDialog';
 import { POPreviewDialog } from '@/components/inventory/POPreviewDialog';
 import { formatCurrency } from '@/lib/utils';
@@ -54,14 +54,14 @@ beforeEach(() => {
 
 describe('D6 — PO tax-exclusive + preview branding', () => {
   it('PODetailDialog shows no tax row and Total equals Subtotal', () => {
-    renderWithProviders(<PODetailDialog open onClose={vi.fn()} po={PO_WITH_COSTS} onReceive={vi.fn()} />);
+    renderWithProviders(<PODetailDialog open onClose={vi.fn()} po={PO_WITH_COSTS} onReceive={vi.fn()} />, { ability: purchasingAbility() });
     expect(screen.queryByText(/tax/i)).toBeNull();
     // Subtotal + Total (+ the line Ext.) all render $50.00 — never a taxed total.
     expect(screen.getAllByText(formatCurrency(EXPECTED_SUBTOTAL)).length).toBeGreaterThanOrEqual(2);
   });
 
   it('POPreviewDialog renders the org name (not FieldOS), no tax row, and Total equals Subtotal', () => {
-    renderWithProviders(<POPreviewDialog open onClose={vi.fn()} po={PO_WITH_COSTS} />);
+    renderWithProviders(<POPreviewDialog open onClose={vi.fn()} po={PO_WITH_COSTS} />, { ability: purchasingAbility() });
     expect(screen.queryByText(/FieldOS/i)).toBeNull();
     expect(screen.getAllByText(new RegExp(ORG_NAME, 'i')).length).toBeGreaterThan(0);
     expect(screen.queryByText(/^Tax$/)).toBeNull();

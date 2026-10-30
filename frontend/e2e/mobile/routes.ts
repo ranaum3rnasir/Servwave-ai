@@ -79,6 +79,8 @@ const PAGES: GateState[] = [
   route('money', 'invoices', fixed('/invoices')),
   route('money', 'invoice-detail', (f) => `/invoices/${f.invoiceOpen.id}`),
   route('money', 'invoice-new', fixed('/invoices/new')),
+  // Payments go-live P5: the Payments page (tiles, period picker, tab strip).
+  route('money', 'payments', fixed('/payments')),
   // field
   route('field', 'jobs', fixed('/jobs')),
   route('field', 'job-detail', (f) => `/jobs/${f.jobId}`),

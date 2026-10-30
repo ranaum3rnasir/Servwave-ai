@@ -1,13 +1,13 @@
+import { invoiceDisplayLines } from '@/lib/invoices/displayLines';
 import { useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   AlertTriangle, Calendar, CreditCard, Download, Eye, FileText, Gift, Link2, Loader2,
-  Mail, MapPin, Phone, Send, Trash2, XCircle, DollarSign,
+  Lock, MapPin, Send, Trash2, XCircle, DollarSign,
 } from 'lucide-react';
 
 import api from '@/lib/axios';
-import { useAuthStore } from '@/stores/auth.store';
 import { useScheduleTimezone, formatInstant, ORG_DAY_FORMAT } from '@/lib/schedule-tz';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import { RecordNumberEditor } from '@/components/crm/RecordNumberEditor';
@@ -15,7 +15,7 @@ import { canSeePricing as canSeePricingAbility } from '@/lib/ability';
 import { customerDisplayName } from '@/lib/customer-name';
 import { cn, downloadBlob, extractApiError, formatCurrency } from '@/lib/utils';
 import { isInvoiceEditable, isInvoiceRenumberLocked } from '@/lib/invoiceEditable';
-import { createInvoicePaymentLink, fetchStateTaxRates, updateInvoiceBilling } from '@/lib/api/invoices';
+import { createInvoicePaymentLink, markInvoiceSent, fetchStateTaxRates, updateInvoiceBilling } from '@/lib/api/invoices';
 import { useOrganization } from '@/lib/api/organization';
 
 // Feature components with no kit equivalent - reused, never forked. Each owns
@@ -28,6 +28,7 @@ import { InternalCostsCard } from '@/components/crm/InternalCostsCard';
 import { TagInput } from '@/components/leads/TagInput';
 import { PdfPreviewDialog } from '@/components/estimates/PdfPreviewDialog';
 import { InvoiceReceiptCard } from '@/components/invoices/InvoiceReceiptCard';
+import { InvoicePaymentOptionsCard } from '@/components/invoices/InvoicePaymentOptionsCard';
 import {
   InvoiceLineItemsEditor, InvoiceScopeOfWorkCard,
 } from '@/components/invoices/InvoiceLineItemsEditor';
@@ -36,28 +37,44 @@ import { RecordPaymentDialog } from '@/components/invoices/RecordPaymentDialog';
 import { VoidInvoiceDialog } from '@/components/invoices/VoidInvoiceDialog';
 import { DeleteInvoiceDialog } from '@/components/invoices/DeleteInvoiceDialog';
 import { RefundInvoiceDialog } from '@/components/invoices/RefundInvoiceDialog';
+import { paymentCounts, refundCounts, refundHoldsCap } from '@/lib/payment-ledger';
 import { CreditInvoiceDialog } from '@/components/invoices/CreditInvoiceDialog';
 import { VoidPaymentDialog } from '@/components/invoices/VoidPaymentDialog';
+import { CancelBankPaymentDialog } from '@/components/invoices/CancelBankPaymentDialog';
 
 import { EmptyState } from '@/ui-kit/components/data/emptyState';
 import { StatCard, StatCardGroup } from '@/ui-kit/components/data/statCard';
 import { Badge } from '@/ui-kit/components/ui/badge';
-import { PhoneNumberAction } from '@/components/contact/ContactAction';
+import { PrimaryContactLines } from '@/components/contact/CustomerContactBlock';
+import { useContactPolicyInput } from '@/components/contact/useContactPolicyInput';
+import { customerNameDisplay } from '@/components/contact/contactDisplayPolicy';
 import { Button } from '@/ui-kit/components/ui/button';
 import { Card, CardContent } from '@/ui-kit/components/ui/card';
+import { ConfirmDialog } from '@/ui-kit/components/ui/confirmDialog';
 import { Skeleton } from '@/ui-kit/components/ui/skeleton';
 import { toast } from '@/ui-kit/components/ui/sonner';
 import { Table } from '@/ui-kit/components/ui/table';
 
 import { v2Path, preferV2Path } from '../uiV2';
 import { StatusChip } from '../_shared/statusChip';
+import { ProcessingBadge } from '@/components/invoices/ProcessingBadge';
 import { TabPanel, TabStrip } from '../_shared/tabs';
 import { useRecordVisit } from '../pageBreadcrumbs';
+import NotAuthorizedPage from '@/components/NotAuthorizedPage';
+import { isForbiddenError, retryUnlessRefused } from '../_shared/loadErrorState';
 import {
   buildLedgerEvents, deriveInvoiceMoney, getAvailableActions, getDueDateLabel,
   isDepositCreditPayment, isOverdue, round2,
   type InvoiceDetail, type Payment as InvoicePayment, type LedgerEvent,
 } from '@/lib/invoices/invoiceMoney';
+
+/** Payments go-live slice 05: the tooltip on a history row that has not settled. */
+const SETTLEMENT_TITLES: Record<NonNullable<LedgerEvent['settlement']>, (isRefund: boolean) => string> = {
+  PROCESSING: () => 'This payment has not cleared yet - it counts once it does',
+  PENDING: () => 'This refund has not landed yet - it counts once it does',
+  FAILED: (isRefund) =>
+    isRefund ? 'This refund did not go through - nothing was given back' : 'This payment did not go through - it never counted',
+};
 
 /**
  * /v2/invoices/:id - the invoice detail page on the CRM UI kit.
@@ -80,8 +97,9 @@ export default function InvoiceDetailPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
-  const user = useAuthStore((s) => s.user);
   const ability = useAppAbility();
+  // Whether the customer's name opens the customer's page: only for a person who may open it.
+  const customerNameLinks = customerNameDisplay(useContactPolicyInput()).link;
 
   const [sendOpen, setSendOpen] = useState(false);
   const [resendOpen, setResendOpen] = useState(false);
@@ -92,20 +110,24 @@ export default function InvoiceDetailPage() {
   const [creditOpen, setCreditOpen] = useState(false);
   const [voidPaymentOpen, setVoidPaymentOpen] = useState(false);
   const [voidPaymentTarget, setVoidPaymentTarget] = useState<InvoicePayment | null>(null);
+  const [cancelBankTarget, setCancelBankTarget] = useState<InvoicePayment | null>(null);
   const [pdfPreviewOpen, setPdfPreviewOpen] = useState(false);
   const [downloadingPdf, setDownloadingPdf] = useState(false);
   const [linkCopied, setLinkCopied] = useState(false);
+  const [markSentPromptOpen, setMarkSentPromptOpen] = useState(false);
+  const [markSentOpen, setMarkSentOpen] = useState(false);
   // Controlled so the Payments stat card's "View all payments" can jump tabs.
   const [activeTab, setActiveTab] = useState('line-items');
 
   // --- Queries -------------------------------------------------------------
 
-  const { data: invoice, isLoading } = useQuery({
+  const { data: invoice, isLoading, error: invoiceError } = useQuery({
     queryKey: ['invoice', id],
     queryFn: async () => {
       const { data } = await api.get(`/api/invoices/${id}`);
       return data.invoice as InvoiceDetail;
     },
+    retry: retryUnlessRefused,
   });
 
   useRecordVisit('invoices', invoice?.invoice_number);
@@ -122,7 +144,9 @@ export default function InvoiceDetailPage() {
   // The receipt card is the sole editable money surface, so this page owns the
   // billing mutation and the tax-rate lookup.
   const canEditInvoiceBilling =
-    !!invoice && isInvoiceEditable(invoice.status) && ability.can('update', 'Invoice');
+    !!invoice && isInvoiceEditable(invoice.status) && (invoice.actions?.includes('edit') ?? false);
+  // The invoice of a Done job takes no discount or tax change from anyone (S06.19); the tip is not a price and stays editable.
+  const canEditInvoicePrices = canEditInvoiceBilling && !invoice?.price_edit_closed_reason;
 
   const { data: taxRates = [] } = useQuery({
     queryKey: ['state-tax-rates'],
@@ -153,6 +177,28 @@ export default function InvoiceDetailPage() {
     onError: (err) => toast.error(extractApiError(err, 'Could not save')),
   });
 
+  // Copying a link never changes the status. On a DRAFT it offers to mark the invoice as sent.
+  const announceCopied = () => {
+    setLinkCopied(true);
+    setTimeout(() => setLinkCopied(false), 2000);
+    toast('Payment link copied');
+    if (invoice?.status === 'DRAFT' && invoice.actions?.includes('send')) setMarkSentPromptOpen(true);
+  };
+
+  const markSentMutation = useMutation({
+    mutationFn: async () => {
+      if (!id) throw new Error('Missing invoice id');
+      return markInvoiceSent(id);
+    },
+    onSuccess: () => {
+      setMarkSentPromptOpen(false);
+      setMarkSentOpen(false);
+      invalidateInvoice();
+      toast.success('Invoice marked as sent');
+    },
+    onError: (err: unknown) => toast.error(extractApiError(err, 'Could not mark the invoice as sent')),
+  });
+
   const createPaymentLinkMutation = useMutation({
     mutationFn: async () => {
       if (!id) throw new Error('Missing invoice id');
@@ -161,11 +207,7 @@ export default function InvoiceDetailPage() {
     onSuccess: ({ url }) => {
       invalidateInvoice();
       navigator.clipboard.writeText(url);
-      setLinkCopied(true);
-      setTimeout(() => setLinkCopied(false), 2000);
-      toast('Payment link created', {
-        description: 'The invoice is now marked as Sent, and the link is copied to your clipboard.',
-      });
+      announceCopied();
     },
     onError: (err: unknown) => {
       toast.error('Could not create payment link', {
@@ -186,8 +228,7 @@ export default function InvoiceDetailPage() {
     if (invoice?.public_token) {
       const url = `${window.location.origin}/p/invoices/${invoice.id}?token=${invoice.public_token}`;
       navigator.clipboard.writeText(url);
-      setLinkCopied(true);
-      setTimeout(() => setLinkCopied(false), 2000);
+      announceCopied();
     } else {
       createPaymentLinkMutation.mutate();
     }
@@ -256,6 +297,9 @@ export default function InvoiceDetailPage() {
     );
   }
 
+  // The server refused the invoice: the person may not open it (the page never decides that itself).
+  if (!invoice && isForbiddenError(invoiceError)) return <NotAuthorizedPage />;
+
   if (!invoice) {
     return (
       <Card>
@@ -271,7 +315,15 @@ export default function InvoiceDetailPage() {
 
   // --- Derived data --------------------------------------------------------
 
-  const actions = getAvailableActions(invoice, user?.role || '', ability);
+  const actions = getAvailableActions(invoice, ability);
+  // Payments go-live slice 21 - one invoice's payment options, on the page and in the send sheet.
+  const paymentOptions = {
+    paymentMethodsOverride: invoice.payment_methods_override,
+    allowPartialPayment: invoice.allow_partial_payment,
+    org,
+    canEdit: canEditInvoiceBilling,
+    isDeposit: invoice.kind === 'DEPOSIT',
+  };
   const overdue = isOverdue(invoice, timeZone);
   const canSeePricing = canSeePricingAbility(ability);
   // Customer resolves from the top-level field (deposit/orphan invoices) or via
@@ -294,9 +346,8 @@ export default function InvoiceDetailPage() {
   const estimate = invoice.job?.estimate ?? invoice.estimate ?? null;
   const ownLineItems = invoice.line_items ?? [];
   const estimateItems = estimate?.line_items ?? [];
-  const allItems = (ownLineItems.length > 0 ? ownLineItems : estimateItems)
-    .map((li) => ({ ...li }))
-    .sort((a, b) => a.sequence - b.sequence);
+  // Own lines win; with scope blocks and no own lines nothing is borrowed from the estimate (slice 35).
+  const allItems = invoiceDisplayLines(ownLineItems, invoice.scopes, estimateItems).map((li) => ({ ...li }));
   // Invoice-BORN synced lines only. Void and delete auto-return these
   // server-side; the dialogs say so.
   const syncedLineCount = ownLineItems.filter((li) => li.stock_status === 'SYNCED').length;
@@ -306,10 +357,11 @@ export default function InvoiceDetailPage() {
   const customerPayments = invoice.payments.filter((payment) => !isDepositCreditPayment(payment));
   // Voided payments are money that never really changed hands - the backend
   // adds them straight back onto amount_due - so no "paid"/"collected" figure
-  // may count them.
+  // may count them. Nor may a payment that has not SUCCEEDED (payments go-live
+  // slice 05): a PROCESSING bank payment has not landed and a FAILED one never will.
   const paymentsTotal = round2(
     customerPayments
-      .filter((payment) => payment.voided_at == null)
+      .filter((payment) => payment.voided_at == null && paymentCounts(payment))
       .reduce((sum, payment) => sum + Number(payment.amount), 0),
   );
 
@@ -319,17 +371,32 @@ export default function InvoiceDetailPage() {
 
   // Net-paid cap for refunds. net_collected is in the GET select but legacy
   // rows carry 0; fall back to the non-voided customer payments.
-  const netPaid = Number(invoice.net_collected ?? 0) || paymentsTotal;
+  // Slice 05: net_collected subtracts only SUCCEEDED refunds, but a PENDING refund already holds
+  // its share of what can still be refunded - the backend's cap counts it - so it comes off here.
+  const pendingRefundsTotal = round2(
+    (invoice.refunds ?? [])
+      .filter((r) => refundHoldsCap(r) && !refundCounts(r))
+      .reduce((sum, r) => sum + Number(r.amount), 0),
+  );
+  const netPaid = round2(Math.max(0, (Number(invoice.net_collected ?? 0) || paymentsTotal) - pendingRefundsTotal));
+  // Only a payment that went through can be reversed: the backend's refund door reads only
+  // non-voided SUCCEEDED payments and answers 400 for any other id.
+  const refundablePayments = customerPayments.filter((p) => p.voided_at == null && paymentCounts(p));
   // Manual (non-card, non-PI-backed), non-voided payments can be individually
   // voided - mirrors the backend's voidPayment guard exactly rather than an
   // allowlist of method names.
-  const isVoidableMethod = (payment: { method: string; stripe_payment_intent_id: string | null }) =>
-    payment.method !== 'CARD' && payment.method !== 'EXTERNAL_CARD' && !payment.stripe_payment_intent_id;
+  const isVoidableMethod = (payment: { method: string; paid_through_processor: boolean }) =>
+    payment.method !== 'CARD' && payment.method !== 'EXTERNAL_CARD' && !payment.paid_through_processor;
   const openVoidPayment = (payment: InvoicePayment) => {
     setVoidPaymentTarget(payment);
     setVoidPaymentOpen(true);
   };
-  const canVoidPayment = ability.can('void_payment', 'Invoice');
+  // The server voids a payment only on these invoices (a terminal one is never reopened), so the
+  // row's Void is offered only there (slice 29).
+  const canVoidPayment = ability.can('void_payment', 'Invoice')
+    && ['PAID', 'PARTIAL', 'PARTIALLY_REFUNDED'].includes(invoice.status);
+  // Payments go-live slice 29 (D17): a bank payment still processing is cancelled, not refunded.
+  const canCancelBankPayment = ability.can('refund', 'Invoice');
 
   // A durable breadcrumb trail: incoming state wins; otherwise reconstruct from
   // the invoice's own job data so reloads do not eject from job context. Job
@@ -355,6 +422,15 @@ export default function InvoiceDetailPage() {
       payment !== undefined &&
       !isDepositCreditPayment(payment) &&
       isVoidableMethod(payment) &&
+      // Slice 05: only a payment that went through can be voided (the backend refuses the rest).
+      paymentCounts(payment) &&
+      !isVoided;
+    const canOfferCancel =
+      canCancelBankPayment &&
+      payment !== undefined &&
+      payment.method === 'ACH' &&
+      payment.state === 'PROCESSING' &&
+      !!payment.paid_through_processor &&
       !isVoided;
 
     return (
@@ -385,13 +461,22 @@ export default function InvoiceDetailPage() {
             <span className={cn('text-sm font-medium', isOutbound && 'text-status-red-emphasis')}>
               {event.label}
             </span>
-            {!event.countsInNet && (
+            {event.settlement ? (
               <span
                 className="text-muted-foreground text-[10px] font-medium uppercase tracking-wide no-underline"
-                title="Money that moved on the deposit invoice - only the applied deposit credit counts here"
+                title={SETTLEMENT_TITLES[event.settlement](event.isRefund)}
               >
-                on deposit invoice
+                {event.settlement.toLowerCase()}
               </span>
+            ) : (
+              !event.countsInNet && (
+                <span
+                  className="text-muted-foreground text-[10px] font-medium uppercase tracking-wide no-underline"
+                  title="Money that moved on the deposit invoice - only the applied deposit credit counts here"
+                >
+                  on deposit invoice
+                </span>
+              )
             )}
             {isVoided && (
               <span className="text-muted-foreground text-[10px] font-medium uppercase tracking-wide no-underline">
@@ -410,7 +495,7 @@ export default function InvoiceDetailPage() {
           )}
         </td>
         <td className="py-2.5 pr-3">
-          <Badge variant="outline" size="sm">{event.method.replace('_', ' ')}</Badge>
+          <Badge variant="outline" size="sm">{event.methodDisplay}</Badge>
         </td>
         <td
           className={cn(
@@ -444,6 +529,16 @@ export default function InvoiceDetailPage() {
                 Void
               </Button>
             )}
+            {canOfferCancel && payment && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-status-red-emphasis h-auto px-1.5 py-0.5 text-xs no-underline"
+                onClick={() => setCancelBankTarget(payment)}
+              >
+                Cancel payment
+              </Button>
+            )}
           </span>
         </td>
       </tr>
@@ -461,8 +556,9 @@ export default function InvoiceDetailPage() {
     ability.can('refund', 'Invoice') &&
     netPaid > 0 &&
     ['PAID', 'PARTIAL', 'PARTIALLY_REFUNDED'].includes(invoice.status);
+  // The statuses the server applies a credit on (slice 29: a REFUNDED invoice is refused).
   const canCreditNow =
-    ability.can('credit', 'Invoice') && invoice.status !== 'DRAFT' && invoice.status !== 'VOIDED';
+    ability.can('credit', 'Invoice') && ['SENT', 'PARTIAL', 'PAID', 'PARTIALLY_REFUNDED'].includes(invoice.status);
   const primaryAction = actions.canSend ? (
     <Button onClick={() => setSendOpen(true)}>
       <Send /> Send Invoice
@@ -478,9 +574,7 @@ export default function InvoiceDetailPage() {
       ? 'Copied!'
       : createPaymentLinkMutation.isPending
         ? 'Creating link...'
-        : invoice.public_token
-          ? 'Copy Payment Link'
-          : 'Create Payment Link';
+        : 'Copy payment link';
   const invoiceHeaderActions: DetailHeaderAction[] = [
     ...(actions.canResend
       ? [{ key: 'resend', label: 'Resend Invoice', icon: <Send />, inline: true, buttonVariant: 'outline' as const, group: 'pay', onSelect: () => setResendOpen(true) }]
@@ -504,6 +598,9 @@ export default function InvoiceDetailPage() {
       : []),
     ...(actions.canCopyLink
       ? [{ key: 'copy-link', label: copyLinkLabel, icon: <Link2 />, group: 'doc', disabled: createPaymentLinkMutation.isPending || linkRedacted, onSelect: handleCopyLink }]
+      : []),
+    ...(actions.canMarkSent
+      ? [{ key: 'mark-sent', label: 'Mark as sent', icon: <Send />, group: 'doc', onSelect: () => setMarkSentOpen(true) }]
       : []),
     { key: 'preview-pdf', label: 'Preview PDF', icon: <Eye />, group: 'doc', onSelect: () => setPdfPreviewOpen(true) },
     {
@@ -570,7 +667,7 @@ export default function InvoiceDetailPage() {
                 />
               </span>
               <span aria-hidden="true" className="text-subtle-foreground shrink-0">·</span>
-              {customer.id ? (
+              {customer.id && customerNameLinks ? (
                 <Link
                   to={preferV2Path(`/customers/${customer.id}`)}
                   title={customerName}
@@ -587,6 +684,7 @@ export default function InvoiceDetailPage() {
             <div className="flex min-w-0 basis-full flex-col gap-3">
               <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5">
                 <StatusChip domain="invoice" status={overdue ? 'OVERDUE' : invoice.status} />
+                <ProcessingBadge amount={invoice.processing_amount} />
                 {invoice.kind === 'DEPOSIT' && <Badge variant="softBlue" size="sm">Deposit</Badge>}
                 {invoice.kind === 'PLAN' && <Badge variant="softGreen" size="sm">Service Plan</Badge>}
               </div>
@@ -595,36 +693,15 @@ export default function InvoiceDetailPage() {
                   glued together with interpuncts. The customer's name is no
                   longer repeated here - it is the heading now. */}
               <div className="text-muted-foreground flex min-w-0 flex-wrap items-center gap-x-5 gap-y-1 text-sm">
-                {/* The phone is the shared contact action (Call or Text). `mailto:` goes
-                    through the kit's link Button, not a raw <a>: the design-system
-                    raw-tag ratchet is at its floor for anchors, so a v2 page may not
-                    add one. Same device the lead detail page
-                    (pages/v2/leads/LeadDetailPage) uses for the customer's email. A long email or address
-                    wraps (the link Button is nowrap by default) so its full value
-                    stays on screen. */}
-                {customer.phone && (
-                  <span className="flex items-center gap-1.5">
-                    <Phone className="size-3.5 shrink-0" />
-                    <PhoneNumberAction
-                      phone={customer.phone}
-                      name={customerName}
-                      context={{ customerId: customer.id, customerName }}
-                    />
-                  </span>
-                )}
-                {customer.email && (
-                  <span className="flex min-w-0 max-w-full items-center gap-1.5">
-                    <Mail className="size-3.5 shrink-0" />
-                    <Button
-                      variant="link"
-                      size="sm"
-                      className="h-auto min-w-0 whitespace-normal break-all px-0 text-left font-normal"
-                      onClick={() => { window.location.href = `mailto:${customer.email}`; }}
-                    >
-                      {customer.email}
-                    </Button>
-                  </span>
-                )}
+                {/* The customer's primary phone and email, drawn by the shared block through the contact display
+                    policy: what a tap, a copy and a selection do follows the person's switches. A long email
+                    or address wraps so its full value stays on screen. */}
+                <PrimaryContactLines
+                  customer={customer}
+                  name={customerName}
+                  context={{ customerId: customer.id, customerName }}
+                  icons
+                />
                 {loc && (
                   <span className="flex min-w-0 items-center gap-1.5">
                     <MapPin className="size-3.5 shrink-0" />
@@ -771,13 +848,23 @@ export default function InvoiceDetailPage() {
                   the user holds `update Invoice` - the card's own contract is
                   "a control is interactive iff its handler prop is provided",
                   so a locked or read-only viewer gets undefined handlers. */}
+              {invoice.price_edit_closed_reason && (
+                <div
+                  data-testid="invoice-done-prices-notice"
+                  role="status"
+                  className="border-border bg-muted text-foreground flex items-center gap-2 rounded-md border px-3 py-2 text-[13px] font-medium"
+                >
+                  <Lock className="size-4 shrink-0" />
+                  <span>{invoice.price_edit_closed_reason}</span>
+                </div>
+              )}
               <InvoiceReceiptCard
                 invoice={invoice}
                 overdue={overdue}
-                onDiscountChange={canEditInvoiceBilling ? (v) => billingMutation.mutate({ discount_amount: v }) : undefined}
+                onDiscountChange={canEditInvoicePrices ? (v) => billingMutation.mutate({ discount_amount: v }) : undefined}
                 onTipChange={canEditInvoiceBilling ? (v) => billingMutation.mutate({ tip: v }) : undefined}
-                onTaxRateChange={canEditInvoiceBilling ? (r) => billingMutation.mutate({ tax_rate: r }) : undefined}
-                taxRates={canEditInvoiceBilling ? taxRates : undefined}
+                onTaxRateChange={canEditInvoicePrices ? (r) => billingMutation.mutate({ tax_rate: r }) : undefined}
+                taxRates={canEditInvoicePrices ? taxRates : undefined}
                 refundedTotal={money.refundedTotal}
                 creditedTotal={money.creditedTotal}
                 settledTotal={money.settled}
@@ -819,6 +906,10 @@ export default function InvoiceDetailPage() {
 
               <InvoiceScopeOfWorkCard invoice={invoice} />
               <InvoiceLineItemsEditor invoice={invoice} estimateLines={estimateItems} />
+              {/* Payments go-live slice 21 - which methods this invoice offers and whether it
+                  takes partial payments, against the org's defaults. Editable on the same gate
+                  as the rest of the invoice. */}
+              <InvoicePaymentOptionsCard invoiceId={invoice.id} {...paymentOptions} />
               {canSeePricing && (
                 <InternalCostsCard
                   lineItems={invoice.line_items ?? []}
@@ -944,6 +1035,25 @@ export default function InvoiceDetailPage() {
         {/* Dialogs. Send is mounted TWICE - the resend instance is a separate
             component instance with its own state. Refund, Credit and
             VoidPayment self-invalidate and take no onSuccess prop. */}
+        <ConfirmDialog
+          open={markSentPromptOpen}
+          onOpenChange={setMarkSentPromptOpen}
+          title="Mark this invoice as sent?"
+          description={null}
+          confirmLabel="Mark as sent"
+          cancelLabel="Not now"
+          isPending={markSentMutation.isPending}
+          onConfirm={() => markSentMutation.mutate()}
+        />
+        <ConfirmDialog
+          open={markSentOpen}
+          onOpenChange={setMarkSentOpen}
+          title={`Mark ${invoice.invoice_number} as sent?`}
+          description="No email is sent."
+          confirmLabel="Mark as sent"
+          isPending={markSentMutation.isPending}
+          onConfirm={() => markSentMutation.mutate()}
+        />
         <SendInvoiceDialog
           open={sendOpen}
           onOpenChange={setSendOpen}
@@ -955,6 +1065,7 @@ export default function InvoiceDetailPage() {
           amountDue={amountDue}
           lineItems={allItems}
           onSuccess={invalidateInvoice}
+          paymentOptions={paymentOptions}
         />
         <SendInvoiceDialog
           open={resendOpen}
@@ -967,6 +1078,7 @@ export default function InvoiceDetailPage() {
           amountDue={amountDue}
           lineItems={allItems}
           onSuccess={invalidateInvoice}
+          paymentOptions={paymentOptions}
           isResend
         />
 
@@ -976,6 +1088,7 @@ export default function InvoiceDetailPage() {
           invoiceId={invoice.id}
           invoiceNumber={invoice.invoice_number}
           amountDue={amountDue}
+          processingAmount={Number(invoice.processing_amount ?? 0)}
           onSuccess={invalidateInvoice}
         />
 
@@ -1012,11 +1125,12 @@ export default function InvoiceDetailPage() {
           onOpenChange={setRefundOpen}
           invoiceId={invoice.id}
           netPaid={netPaid}
-          payments={customerPayments.map((p) => ({
+          payments={refundablePayments.map((p) => ({
             id: p.id,
             amount: p.amount,
             method: p.method,
             paid_at: p.paid_at,
+            paid_through_processor: p.paid_through_processor,
           }))}
           refunds={invoice.refunds}
         />
@@ -1027,7 +1141,27 @@ export default function InvoiceDetailPage() {
           invoiceId={invoice.id}
           balanceOwed={amountDue}
           credits={invoice.credits}
+          canRefund={ability.can('refund', 'Invoice')}
+          payments={refundablePayments.map((p) => ({
+            id: p.id,
+            amount: p.amount,
+            method: p.method,
+            paid_at: p.paid_at,
+            paid_through_processor: p.paid_through_processor,
+          }))}
+          refunds={invoice.refunds}
         />
+
+        {cancelBankTarget && (
+          <CancelBankPaymentDialog
+            open
+            onOpenChange={(open) => {
+              if (!open) setCancelBankTarget(null);
+            }}
+            invoiceId={invoice.id}
+            payment={cancelBankTarget}
+          />
+        )}
 
         {voidPaymentTarget && (
           <VoidPaymentDialog

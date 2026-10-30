@@ -28,7 +28,7 @@ describe('demoVisitsForLeadStatus', () => {
     }
   });
 
-  it.each(['NEW', 'CONTACTED', 'ESTIMATED', 'WON', 'LOST', 'CANCELLED'])('%s gets no visits', (status) => {
+  it.each(['NEW', 'CONTACTED', 'ESTIMATED', 'WON', 'LOST'])('%s gets no visits', (status) => {
     expect(demoVisitsForLeadStatus(status, { scheduledAt: FUTURE, completedAt: PAST })).toEqual([]);
   });
 });

@@ -1,4 +1,5 @@
 import type React from "react";
+import { useAppAbility } from "@/contexts/AbilityContext";
 import { useEffect, useMemo, useState } from "react";
 import { Eye, FileText, MapPin, Plus, Sparkles, Trash2, User as UserIcon } from "lucide-react";
 import { Modal } from "@/components/ui/modal";
@@ -11,12 +12,12 @@ import {
   usePurchaseOrders,
   useInventoryJobs,
   useTechs,
+  INVENTORY_VIEW_LABEL,
   useCreateStage,
   type Location,
   type JobStage,
   type StagedItem,
   type PurchaseOrder,
-  type Tech,
 } from "@/lib/api/inventory";
 import { POPreviewDialog } from "@/components/inventory/POPreviewDialog";
 import { NoInventoryLocationDialog } from "@/components/inventory/NoInventoryLocationDialog";
@@ -63,11 +64,13 @@ export function CreateStageDialog({
   const timezone = useScheduleTimezone();
 
   // Seam data (Track 1: mock-backed TanStack hooks; Track 2 flips to /api/*).
-  // Emanuel imported these as module-scope arrays from ../data/*; here they
+  // The original code imported these as module-scope arrays from ../data/*; here they
   // come from the query layer so the dialog re-reads after any mutation.
   const { data: allItems = [] } = useInventoryItems();
-  const { data: allVendors = [] } = useVendors();
-  const { data: purchaseOrders = [] } = usePurchaseOrders();
+  // Read only by a person who may read them: the server refuses both lists to others, and this dialog is mounted (closed) on pages they open.
+  const ability = useAppAbility();
+  const { data: allVendors = [] } = useVendors(ability.can('read', 'Vendor'));
+  const { data: purchaseOrders = [] } = usePurchaseOrders(ability.can('read', 'PurchaseOrder'));
   const { data: allJobs = [] } = useInventoryJobs();
   const { data: allTechs = [] } = useTechs();
   // This dialog is the SOLE writer of a new stage: it POSTs here, and `onCreate`
@@ -75,7 +78,7 @@ export function CreateStageDialog({
   // parent's side - that is what wrote every stage to the database twice.
   const createStage = useCreateStage();
 
-  // `newLine` closes over the seam `allItems` (Emanuel had it module-scope
+  // `newLine` closes over the seam `allItems` (it was module-scope originally
   // referencing the static array). Guarded for noUncheckedIndexedAccess.
   function newLine(): DraftLine {
     return {
@@ -579,7 +582,7 @@ export function CreateStageDialog({
                     { value: "NONE", label: "Unassigned" },
                     ...allTechs.map((t) => ({
                       value: t.id,
-                      label: `${t.name} - ${techRoleLabel(t.role)}${t.primaryTrade ? ` · ${t.primaryTrade}` : ""}`,
+                      label: `${t.name} - ${INVENTORY_VIEW_LABEL[t.inventoryView]}${t.primaryTrade ? ` · ${t.primaryTrade}` : ""}`,
                     })),
                   ]}
                 />
@@ -879,15 +882,3 @@ function MiniLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
-function techRoleLabel(role: Tech["role"]): string {
-  switch (role) {
-    case "field_tech":
-      return "Field Tech";
-    case "warehouse_lead":
-      return "Warehouse Lead";
-    case "counter":
-      return "Counter";
-    case "subcontractor":
-      return "Subcontractor (1099)";
-  }
-}

@@ -8,7 +8,6 @@ lead.WALKTHROUGH_COMPLETED -> intent=info | label=Walkthrough Completed | chip=b
 lead.ESTIMATED -> intent=warning | label=Estimate Sent | chip=bg-warning-surface text-warning-text border-warning-border | fill=bg-warning-strong | text=text-warning-text
 lead.WON -> intent=success | label=Won | chip=bg-success-surface text-success-text border-success-border | fill=bg-success-strong | text=text-success-text
 lead.LOST -> intent=danger | label=Lost | chip=bg-danger-surface text-danger-text border-danger-border | fill=bg-danger-strong | text=text-danger-text
-lead.CANCELLED -> intent=neutral | label=Cancelled | chip=bg-neutral-surface text-neutral-text border-neutral-border | fill=bg-neutral-strong | text=text-neutral-text
 estimate.DRAFT -> intent=neutral | label=Draft | chip=bg-neutral-surface text-neutral-text border-neutral-border | fill=bg-neutral-strong | text=text-neutral-text
 estimate.SENT -> intent=info | label=Sent | chip=bg-info-surface text-info-text border-info-border | fill=bg-info-strong | text=text-info-text
 estimate.PENDING -> intent=warning | label=Approved - Deposit Pending | chip=bg-warning-surface text-warning-text border-warning-border | fill=bg-warning-strong | text=text-warning-text
@@ -23,6 +22,9 @@ job.EN_ROUTE -> intent=warning | label=On the way | chip=bg-warning-surface text
 job.ON_SITE -> intent=warning | label=On Site | chip=bg-warning-surface text-warning-text border-warning-border | fill=bg-warning-strong | text=text-warning-text
 job.IN_PROGRESS -> intent=warning | label=In Progress | chip=bg-warning-surface text-warning-text border-warning-border | fill=bg-warning-strong | text=text-warning-text
 job.COMPLETED -> intent=success | label=Completed | chip=bg-success-surface text-success-text border-success-border | fill=bg-success-strong | text=text-success-text
+job.OFFICE_REVIEW -> intent=warning | label=Office review | chip=bg-warning-surface text-warning-text border-warning-border | fill=bg-warning-strong | text=text-warning-text
+job.READY_TO_CLOSE -> intent=info | label=Ready to close | chip=bg-info-surface text-info-text border-info-border | fill=bg-info-strong | text=text-info-text
+job.DONE -> intent=success | label=Done | chip=bg-success-surface text-success-text border-success-border | fill=bg-success-strong | text=text-success-text
 job.CANCELLED -> intent=neutral | label=Cancelled | chip=bg-neutral-surface text-neutral-text border-neutral-border | fill=bg-neutral-strong | text=text-neutral-text
 invoice.DRAFT -> intent=neutral | label=Draft | chip=bg-neutral-surface text-neutral-text border-neutral-border | fill=bg-neutral-strong | text=text-neutral-text
 invoice.SENT -> intent=warning | label=Sent | chip=bg-warning-surface text-warning-text border-warning-border | fill=bg-warning-strong | text=text-warning-text
@@ -98,5 +100,32 @@ messageDelivery.COMPLAINED -> intent=danger | label=Marked as spam | chip=bg-dan
 inboundSender.PASS -> intent=success | label=Verified sender | chip=bg-success-surface text-success-text border-success-border | fill=bg-success-strong | text=text-success-text
 inboundSender.FAIL -> intent=danger | label=Failed verification | chip=bg-danger-surface text-danger-text border-danger-border | fill=bg-danger-strong | text=text-danger-text
 inboundSender.NO_POLICY -> intent=neutral | label=Unverified - no DMARC on sender domain | chip=bg-neutral-surface text-neutral-text border-neutral-border | fill=bg-neutral-strong | text=text-neutral-text
-inboundSender.UNAVAILABLE -> intent=neutral | label=Unverified - no sender check available | chip=bg-neutral-surface text-neutral-text border-neutral-border | fill=bg-neutral-strong | text=text-neutral-text"
+inboundSender.UNAVAILABLE -> intent=neutral | label=Unverified - no sender check available | chip=bg-neutral-surface text-neutral-text border-neutral-border | fill=bg-neutral-strong | text=text-neutral-text
+payment.PROCESSING -> intent=info | label=Processing | chip=bg-info-surface text-info-text border-info-border | fill=bg-info-strong | text=text-info-text
+payment.SUCCEEDED -> intent=success | label=Succeeded | chip=bg-success-surface text-success-text border-success-border | fill=bg-success-strong | text=text-success-text
+payment.FAILED -> intent=danger | label=Failed | chip=bg-danger-surface text-danger-text border-danger-border | fill=bg-danger-strong | text=text-danger-text
+paymentDisplay.Succeeded -> intent=success | label=Succeeded | chip=bg-success-surface text-success-text border-success-border | fill=bg-success-strong | text=text-success-text
+paymentDisplay.Pending -> intent=warning | label=Pending | chip=bg-warning-surface text-warning-text border-warning-border | fill=bg-warning-strong | text=text-warning-text
+paymentDisplay.Failed -> intent=danger | label=Failed | chip=bg-danger-surface text-danger-text border-danger-border | fill=bg-danger-strong | text=text-danger-text
+paymentDisplay.Refunded -> intent=neutral | label=Refunded | chip=bg-neutral-surface text-neutral-text border-neutral-border | fill=bg-neutral-strong | text=text-neutral-text
+paymentDisplay.Partially refunded -> intent=warning | label=Partially refunded | chip=bg-warning-surface text-warning-text border-warning-border | fill=bg-warning-strong | text=text-warning-text
+paymentDisplay.Disputed -> intent=danger | label=Disputed | chip=bg-danger-surface text-danger-text border-danger-border | fill=bg-danger-strong | text=text-danger-text
+paymentDisplay.Charged back -> intent=danger | label=Charged back | chip=bg-danger-surface text-danger-text border-danger-border | fill=bg-danger-strong | text=text-danger-text
+paymentDisplay.Voided -> intent=neutral | label=Voided | chip=bg-neutral-surface text-neutral-text border-neutral-border | fill=bg-neutral-strong | text=text-neutral-text
+payout.PAID -> intent=success | label=Paid | chip=bg-success-surface text-success-text border-success-border | fill=bg-success-strong | text=text-success-text
+payout.IN_TRANSIT -> intent=info | label=In transit | chip=bg-info-surface text-info-text border-info-border | fill=bg-info-strong | text=text-info-text
+payout.PENDING -> intent=neutral | label=Scheduled | chip=bg-neutral-surface text-neutral-text border-neutral-border | fill=bg-neutral-strong | text=text-neutral-text
+payout.FAILED -> intent=danger | label=Failed | chip=bg-danger-surface text-danger-text border-danger-border | fill=bg-danger-strong | text=text-danger-text
+payout.CANCELED -> intent=neutral | label=Canceled | chip=bg-neutral-surface text-neutral-text border-neutral-border | fill=bg-neutral-strong | text=text-neutral-text
+refund.PENDING -> intent=info | label=Pending | chip=bg-info-surface text-info-text border-info-border | fill=bg-info-strong | text=text-info-text
+refund.SUCCEEDED -> intent=success | label=Succeeded | chip=bg-success-surface text-success-text border-success-border | fill=bg-success-strong | text=text-success-text
+refund.FAILED -> intent=danger | label=Failed | chip=bg-danger-surface text-danger-text border-danger-border | fill=bg-danger-strong | text=text-danger-text
+dispute.NEEDS_RESPONSE -> intent=danger | label=Needs response | chip=bg-danger-surface text-danger-text border-danger-border | fill=bg-danger-strong | text=text-danger-text
+dispute.UNDER_REVIEW -> intent=warning | label=Under review | chip=bg-warning-surface text-warning-text border-warning-border | fill=bg-warning-strong | text=text-warning-text
+dispute.WON -> intent=success | label=Won | chip=bg-success-surface text-success-text border-success-border | fill=bg-success-strong | text=text-success-text
+dispute.LOST -> intent=danger | label=Lost | chip=bg-danger-surface text-danger-text border-danger-border | fill=bg-danger-strong | text=text-danger-text
+dispute.CLOSED -> intent=neutral | label=Closed | chip=bg-neutral-surface text-neutral-text border-neutral-border | fill=bg-neutral-strong | text=text-neutral-text
+unappliedCapture.OPEN -> intent=warning | label=Needs attention | chip=bg-warning-surface text-warning-text border-warning-border | fill=bg-warning-strong | text=text-warning-text
+unappliedCapture.REFUNDED -> intent=success | label=Refunded | chip=bg-success-surface text-success-text border-success-border | fill=bg-success-strong | text=text-success-text
+unappliedCapture.RESOLVED -> intent=neutral | label=Resolved | chip=bg-neutral-surface text-neutral-text border-neutral-border | fill=bg-neutral-strong | text=text-neutral-text"
 `;

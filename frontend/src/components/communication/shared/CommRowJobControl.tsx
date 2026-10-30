@@ -3,12 +3,12 @@
  * (slice E3) when the viewer may manage attribution:
  *
  *   gate = org comms access (useFeature('phone')) AND
- *          ability.can('update', 'Communication') AND
+ *          ability.can('attach', 'Communication') (the Attach conversations to jobs and leads switch) AND
  *          the channel has a per-row reassign seam (call | sms | email) AND
  *          the row is a PLATFORM record, not a hand-logged one.
  *
  * Gated on  → the pill opens CommJobMenu: unattributed rows attach to one of the
- * customer's open jobs or leads; attributed rows move elsewhere or detach.
+ * customer's open jobs or leads (a call, a text and an email alike); attributed rows move elsewhere or detach.
  * PATCHes commit server-first (the shared mutation hooks refetch every comm
  * surface — hub + job/customer/lead tabs); success/failure toasts mirror the
  * call-drawer copy.
@@ -26,7 +26,13 @@ import { toast } from '@/components/ui/use-toast';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import { useFeature } from '@/lib/entitlements';
 import { useReassignCallJob, useReassignCallLead } from '@/lib/api/callJob';
-import { useReassignEmailJob, useReassignSmsJob } from '@/lib/api/communication';
+import {
+  useReassignEmailJob,
+  useReassignEmailLead,
+  useReassignSmsJob,
+  useReassignSmsLead,
+  type ConversationLinkResult,
+} from '@/lib/api/communication';
 import type { CommItem } from '@/lib/api/jobCommunications';
 import { JobBadge } from './atoms';
 import { CommJobMenu, type AttachPick } from './CommJobMenu';
@@ -45,7 +51,7 @@ export function CommRowJobControl({ item, customerId, currentJobId }: CommRowJob
   const canAccessComms = useFeature('phone');
   const canManage =
     canAccessComms &&
-    ability.can('update', 'Communication') &&
+    ability.can('attach', 'Communication') &&
     (item.channel === 'call' || item.channel === 'sms' || item.channel === 'email') &&
     // Manual Communication Log: NOT re-attributable here. Every branch of `pick` below PATCHes a
     // channel-specific endpoint that resolves a CallSession / Message / Email by id, and a
@@ -64,7 +70,9 @@ export function CommRowJobControl({ item, customerId, currentJobId }: CommRowJob
   const reassignCall = useReassignCallJob();
   const reassignCallLead = useReassignCallLead();
   const reassignSms = useReassignSmsJob();
+  const reassignSmsLead = useReassignSmsLead();
   const reassignEmail = useReassignEmailJob();
+  const reassignEmailLead = useReassignEmailLead();
 
   if (!canManage) {
     // Static pill — navigable when attributed (goal: chips align across tabs),
@@ -86,25 +94,67 @@ export function CommRowJobControl({ item, customerId, currentJobId }: CommRowJob
 
   // "Move to" lists the OTHER targets; the currently attached one is not one.
   const menuJobs = targets.jobs.filter((j) => j.id !== item.jobId);
-  // Only calls have a lead endpoint — SMS and email can attach to jobs alone, so
-  // they get no Leads group rather than a group that cannot commit.
-  const menuLeads = item.channel === 'call' ? targets.leads : [];
+  // Jobs and leads are targets for a call, a text and an email alike (Attach conversations to jobs and leads).
+  const menuLeads = targets.leads;
+
+  // A change that took the row out of the person's reach (a detach of a conversation they could read only through
+  // the record it was taken off) is a success: the row leaves their screen on the refetch, and the note says so
+  // instead of reporting an error.
+  const done = (target: AttachPick | null, result?: ConversationLinkResult) =>
+    toast({
+      title: result?.left
+        ? 'Link removed. This conversation is no longer in your list.'
+        : target
+          ? `Attached to ${target.label}`
+          : 'Link removed',
+    });
+  const failed = () => toast({ title: "Couldn't update the link - try again", variant: 'destructive' });
+
+  /**
+   * A text and an email keep their job and their lead separately, so "No job or lead" clears each end the row has,
+   * the lead first (a row on a job is always reachable through it, so the lead step never strands it). The chain stops
+   * as soon as a step reports that the row left the person's reach: there is nothing more they may change.
+   */
+  async function detachSeparateEnds() {
+    const ends =
+      item.channel === 'sms'
+        ? {
+            clearLead: () => reassignSmsLead.mutateAsync({ messageId: item.id, leadId: null }),
+            clearJob: () => reassignSms.mutateAsync({ messageId: item.id, jobId: null }),
+          }
+        : {
+            clearLead: () => reassignEmailLead.mutateAsync({ emailId: item.id, leadId: null }),
+            clearJob: () => reassignEmail.mutateAsync({ emailId: item.id, jobId: null }),
+          };
+    try {
+      let result: ConversationLinkResult | undefined;
+      if (item.leadId) {
+        result = await ends.clearLead();
+        if (result?.left) return done(null, result);
+      }
+      if (item.jobId || !item.leadId) result = await ends.clearJob();
+      done(null, result);
+    } catch {
+      failed();
+    }
+  }
 
   function pick(target: AttachPick | null) {
-    const onSuccess = () =>
-      toast({ title: target ? `Attached to ${target.label}` : 'Link removed' });
-    const onError = () =>
-      toast({ title: "Couldn't update the link - try again", variant: 'destructive' });
+    const options = { onSuccess: (result: ConversationLinkResult) => done(target, result), onError: failed };
     if (item.channel === 'call') {
       if (target?.kind === 'lead') {
-        reassignCallLead.mutate({ callId: item.id, leadId: target.id }, { onSuccess, onError });
+        reassignCallLead.mutate({ callId: item.id, leadId: target.id }, options);
       } else {
-        reassignCall.mutate({ callId: item.id, jobId: target?.id ?? null }, { onSuccess, onError });
+        reassignCall.mutate({ callId: item.id, jobId: target?.id ?? null }, options);
       }
     } else if (item.channel === 'email') {
-      reassignEmail.mutate({ emailId: item.id, jobId: target?.id ?? null }, { onSuccess, onError });
+      if (!target) void detachSeparateEnds();
+      else if (target.kind === 'lead') reassignEmailLead.mutate({ emailId: item.id, leadId: target.id }, options);
+      else reassignEmail.mutate({ emailId: item.id, jobId: target.id }, options);
     } else {
-      reassignSms.mutate({ messageId: item.id, jobId: target?.id ?? null }, { onSuccess, onError });
+      if (!target) void detachSeparateEnds();
+      else if (target.kind === 'lead') reassignSmsLead.mutate({ messageId: item.id, leadId: target.id }, options);
+      else reassignSms.mutate({ messageId: item.id, jobId: target.id }, options);
     }
   }
 

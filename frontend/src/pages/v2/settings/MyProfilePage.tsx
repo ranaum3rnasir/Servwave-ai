@@ -6,6 +6,7 @@ import { useAuthStore } from '@/stores/auth.store';
 import { useSettingsGuard } from '@/stores/settingsGuard.store';
 import { useUpdateMe, type UpdateMePayload } from '@/lib/api/users';
 import MyTimeLog from '@/components/timeclock/MyTimeLog';
+import { MyMailboxAddress } from '@/components/communication/MyMailboxAddress';
 import { formatPhone } from '@/lib/utils';
 import { isUsableUserPhone, userPhoneForSubmit, USER_PHONE_INVALID_MESSAGE } from '@/lib/user-phone';
 
@@ -203,6 +204,8 @@ export default function MyProfilePage() {
             <Input value={user?.role ?? ''} disabled readOnly />
           </Field>
         </div>
+        {/* The person's own company address (PRD 10, S10.3); nothing while the company lacks the Email plan feature. */}
+        <MyMailboxAddress variant="field" />
         <p className="text-muted-foreground text-xs">
           Your role, team, and access are managed by an administrator.
         </p>

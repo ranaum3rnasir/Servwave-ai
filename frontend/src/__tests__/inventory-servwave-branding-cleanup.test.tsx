@@ -25,7 +25,7 @@ const hoisted = vi.hoisted(() => ({
     },
   ],
   techs: [
-    { id: 'tech_1', name: 'Alex Rivera', email: 'alex.rivera@downtown.example.com', role: 'field_tech' as const, branch: 'Downtown Branch', vehicle: 'Van 1' },
+    { id: 'tech_1', name: 'Alex Rivera', email: 'alex.rivera@downtown.example.com', inventoryView: 'field' as const, branch: 'Downtown Branch', vehicle: 'Van 1' },
   ],
   org: { id: 'org-1', name: 'Downtown Security Co' },
   emailSpy: vi.fn(),

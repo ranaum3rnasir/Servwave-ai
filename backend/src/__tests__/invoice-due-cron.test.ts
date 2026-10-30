@@ -8,7 +8,8 @@
  *   - billing.invoice_due_soon  — now <= due_date <= now + 3 days
  *
  * Strategy:
- *   - vi.mock captures emit calls (same pattern as invoice-notifications.test.ts).
+ *   - vi.mock captures the billing alert the sweep asks for (S06.28: it goes through M6's two-lane chain, so who it reaches is
+ *     permission-billing-alerts-db.test.ts; here the sweep is held to WHAT it asks for and HOW MANY reads it costs).
  *   - prisma.invoice.findMany is mocked directly (no supertest — cron is a pure function).
  *   - Fixed now = 2026-06-18T12:00:00Z for deterministic date assertions.
  *   - dedupKey format: `${verb}:${invoice.id}:YYYY-MM-DD` (daily, per-invoice).
@@ -18,20 +19,24 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { prisma } from '../lib/prisma';
 import { runInvoiceDueChecks } from '../services/notifications/invoiceDueCron';
 
-// ─── Mock the notification emit function ─────────────────────────────────────
+// ─── Mock the billing alert sender ───────────────────────────────────────────
 
-vi.mock('../services/notifications/notificationService', () => ({
-  emit: vi.fn().mockResolvedValue(undefined),
+vi.mock('../services/notifications/invoiceBillingAlerts', async (original) => ({
+  ...(await original<typeof import('../services/notifications/invoiceBillingAlerts')>()),
+  alertInvoice: vi.fn().mockResolvedValue([]),
 }));
 
 // Import AFTER mock is registered so we get the spy reference.
-import { emit } from '../services/notifications/notificationService';
+import { alertInvoice as emit } from '../services/notifications/invoiceBillingAlerts';
 const mockEmit = emit as ReturnType<typeof vi.fn>;
 
 // ─── Prisma typed surface ─────────────────────────────────────────────────────
 
 const mockPrisma = prisma as unknown as {
   invoice: {
+    findMany: ReturnType<typeof vi.fn>;
+  };
+  notification: {
     findMany: ReturnType<typeof vi.fn>;
   };
 };
@@ -42,29 +47,26 @@ const FIXED_NOW = new Date('2026-06-18T12:00:00Z');
 const TODAY_DATE = '2026-06-18';
 
 const ORG_A = '00000000-0000-0000-0000-000000000001';
-const COMMISSION_OWNER_ID = '00000000-0000-0000-0000-000000000099';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
+/** An open invoice as the sweep reads it: with the people it needs for the alert (INVOICE_PEOPLE_SELECT). */
 function makeInvoice(overrides: {
   id?: string;
   invoice_number?: string;
   due_date?: Date | null;
   organization_id?: string;
-  commission_owner_id?: string | null;
+  job?: any;
+  estimate?: any;
 } = {}) {
   return {
     id: 'inv-1',
     invoice_number: 'I00001',
     due_date: new Date('2026-06-17T00:00:00Z'), // yesterday (overdue) by default
     organization_id: ORG_A,
-    job: {
-      estimate: {
-        lead: {
-          commission_owner_id: COMMISSION_OWNER_ID,
-        },
-      },
-    },
+    job_id: 'job-1',
+    job: { salesperson_id: '00000000-0000-0000-0000-000000000099', dispatcher_id: null, visits: [] },
+    estimate: null,
     ...overrides,
   };
 }
@@ -73,6 +75,9 @@ function makeInvoice(overrides: {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockEmit.mockResolvedValue([]);
+  // Nothing was sent today yet.
+  mockPrisma.notification.findMany.mockResolvedValue([]);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -98,7 +103,6 @@ describe('runInvoiceDueChecks', () => {
     expect(args.object.id).toBe(invoice.id);
     expect(args.object.label).toBe(invoice.invoice_number);
     expect(args.actorId).toBeNull();
-    expect(args.entity.customer_owner_id).toBe(COMMISSION_OWNER_ID);
     expect(args.dedupKey).toBe(`billing.invoice_overdue:${invoice.id}:${TODAY_DATE}`);
     expect(args.data.due_date).toBe(invoice.due_date!.toISOString());
     expect(args.data.object_label).toBe(invoice.invoice_number);
@@ -139,22 +143,20 @@ describe('runInvoiceDueChecks', () => {
     expect(mockEmit).not.toHaveBeenCalled();
   });
 
-  // ─── Case 4: entity.customer_owner_id sourced from nested lead ───────────
+  // ─── Case 4: the invoice's people ride in with the invoice ────────────────
 
-  it('sets entity.customer_owner_id from the nested lead commission_owner_id', async () => {
-    const ownerId = '00000000-0000-0000-0000-000000000077';
-    const invoice = makeInvoice({
-      due_date: new Date('2026-06-17T00:00:00Z'), // overdue
-      commission_owner_id: ownerId, // used via job.estimate.lead.commission_owner_id
-    });
-    // Override the nested lead's commission_owner_id
-    invoice.job.estimate.lead.commission_owner_id = ownerId;
+  it('hands the invoice and its people to the alert, so the alert reads nothing about the invoice and names no seller', async () => {
+    const invoice = makeInvoice({ due_date: new Date('2026-06-17T00:00:00Z') });
     mockPrisma.invoice.findMany.mockResolvedValue([invoice]);
 
     await runInvoiceDueChecks(FIXED_NOW);
 
     const args = mockEmit.mock.calls[0][0];
-    expect(args.entity.customer_owner_id).toBe(ownerId);
+    expect(args.known).toBe(invoice);
+    expect(args).not.toHaveProperty('entity');
+    // The sweep reads the people with the invoices, in the one read.
+    const select = mockPrisma.invoice.findMany.mock.calls[0][0].select;
+    expect(select).toMatchObject({ job_id: true, job: expect.anything(), estimate: expect.anything() });
   });
 
   // ─── Case 5: actorId is always null (system cron, no user) ───────────────
@@ -189,22 +191,47 @@ describe('runInvoiceDueChecks', () => {
     expect(args.dedupKey).not.toContain('2026-02-10');
   });
 
-  // ─── Case 7: null commission_owner_id falls back to null gracefully ───────
+  // ─── Case 7: a company-sized sweep does not repeat its company-wide reads ─
 
-  it('sets entity.customer_owner_id to null when the lead chain is absent', async () => {
-    const invoice = {
-      id: 'inv-7',
-      invoice_number: 'I00007',
-      due_date: new Date('2026-06-17T00:00:00Z'),
-      organization_id: ORG_A,
-      job: null, // no job → no lead chain
-    };
-    mockPrisma.invoice.findMany.mockResolvedValue([invoice]);
+  it('asks once what was sent today for all the invoices, and reads each company\'s switch holders once for the whole run', async () => {
+    const invoices = Array.from({ length: 30 }, (_, i) => makeInvoice({ id: `inv-many-${i}`, invoice_number: `I${i}` }));
+    mockPrisma.invoice.findMany.mockResolvedValue(invoices);
 
     await runInvoiceDueChecks(FIXED_NOW);
 
-    const args = mockEmit.mock.calls[0][0];
-    expect(args.entity.customer_owner_id).toBeNull();
+    expect(mockEmit).toHaveBeenCalledTimes(30);
+    // One read of "sent already" for thirty invoices, not one per invoice; each alert is told it was asked.
+    expect(mockPrisma.notification.findMany).toHaveBeenCalledTimes(1);
+    expect(mockEmit.mock.calls.every((c: any[]) => c[0].dedupChecked === true)).toBe(true);
+    // The same remembering reader of "who holds this switch" is shared by every alert of the run.
+    const readers = new Set(mockEmit.mock.calls.map((c: any[]) => c[0].holdersOf));
+    expect(readers.size).toBe(1);
+    expect(typeof [...readers][0]).toBe('function');
+  });
+
+  it('skips an invoice that was alerted earlier today (the plain alert or the one that carries the why line)', async () => {
+    const plain = makeInvoice({ id: 'inv-plain' });
+    const why = makeInvoice({ id: 'inv-why' });
+    const fresh = makeInvoice({ id: 'inv-fresh' });
+    mockPrisma.invoice.findMany.mockResolvedValue([plain, why, fresh]);
+    mockPrisma.notification.findMany.mockResolvedValue([
+      { dedup_key: `billing.invoice_overdue:inv-plain:${TODAY_DATE}` },
+      { dedup_key: `billing.invoice_overdue:inv-why:${TODAY_DATE}:why` },
+    ]);
+
+    await runInvoiceDueChecks(FIXED_NOW);
+
+    expect(mockEmit.mock.calls.map((c: any[]) => c[0].object.id)).toEqual(['inv-fresh']);
+  });
+
+  it('if it cannot tell what was sent today, each alert checks for itself rather than the sweep staying silent', async () => {
+    mockPrisma.invoice.findMany.mockResolvedValue([makeInvoice()]);
+    mockPrisma.notification.findMany.mockRejectedValue(new Error('read failed'));
+
+    await runInvoiceDueChecks(FIXED_NOW);
+
+    expect(mockEmit).toHaveBeenCalledOnce();
+    expect(mockEmit.mock.calls[0][0].dedupChecked).toBe(false);
   });
 
   // ─── Case 8: no invoices → emit never called ──────────────────────────────

@@ -193,8 +193,10 @@ export function AssignJobDialog({ open, onOpenChange, jobId, mode = 'assign', cu
       onOpenChange(false);
     },
     onError: (err: unknown) => {
-      const axiosErr = err as { response?: { status?: number; data?: { error?: string } } };
-      if (axiosErr.response?.status === 409) {
+      const axiosErr = err as { response?: { status?: number; data?: { error?: string; conflicts?: unknown[] } } };
+      // Only a 409 that lists the conflicts offers "schedule anyway"; a job that must be reopened first (S06.17) also
+      // answers 409, and that one stays the plain refusal shown below.
+      if (axiosErr.response?.status === 409 && axiosErr.response.data?.conflicts) {
         const msg = extractApiError(err, 'Scheduling conflict detected.');
         setConflictMessage(msg);
         setPendingForce({ techIds, start: startIso ?? '', end: endIso ?? '' });

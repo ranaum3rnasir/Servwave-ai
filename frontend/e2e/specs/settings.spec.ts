@@ -28,13 +28,13 @@ test.describe('Organization Settings module', () => {
     await expect(page.getByText('Customers', { exact: true })).toBeVisible();
   });
 
-  test('Roles screen loads a role and its permission matrix', async ({ page }) => {
+  test('Roles screen loads a role and its switches', async ({ page }) => {
     const settings = new SettingsPage(page);
     await settings.goto('roles');
     await settings.waitForApi('/api/roles');
     await page.getByRole('button', { name: /Sales/ }).first().click();
-    await expect(settings.tab('Permissions')).toBeVisible();
-    await expect(settings.tab('Data Scope')).toBeVisible();
+    await expect(page.getByRole('region', { name: 'Data Scope' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'Customers' })).toBeVisible();
   });
 
   test('each settings screen renders without error', async ({ page }) => {
@@ -66,23 +66,5 @@ test.describe('Organization Settings module', () => {
     await page.reload();
     await settings.waitForNavigation();
     await expect(page.locator('input[name="display_name"]')).toHaveValue(value);
-  });
-
-  test('Roles: save then reset clears the dirty bar', async ({ page }) => {
-    const settings = new SettingsPage(page);
-    await settings.goto('roles');
-    await settings.waitForApi('/api/roles');
-    await page.getByRole('button', { name: /Sales/ }).first().click();
-
-    // Toggle the first permission cell → the Save bar enables.
-    await page.getByRole('switch').first().click();
-    await expect(settings.saveButton()).toBeEnabled();
-
-    await settings.saveButton().click();
-    await settings.waitForApi('/api/roles/SALES/permissions'); // PUT
-    await expect(settings.saveButton()).toBeDisabled(); // dirty cleared
-
-    await page.getByRole('button', { name: 'Reset to default' }).click();
-    await settings.waitForApi('/api/roles/SALES/reset'); // POST
   });
 });

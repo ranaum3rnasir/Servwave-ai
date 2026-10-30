@@ -8,6 +8,10 @@
  * automation runs (texts, emails) alongside the deployed staging API. A suite that only needs the
  * HTTP API and the test doors must not do that, so this entry point serves `app` and nothing else.
  *
+ * The test doors tear a provisioned company down through the company purge, which needs
+ * MAILBOX_ADDRESS_HASH_KEY. This server runs with E2E_TEST_DOORS=true, so config/env supplies a
+ * harness-only key when backend/.env has none (config/e2eHarnessMailboxKey.ts); a key set there wins.
+ *
  * Usage (from backend/): PORT=3340 E2E_TEST_DOORS=true npx tsx src/scripts/e2e-api-server.ts
  */
 import app from '../app';

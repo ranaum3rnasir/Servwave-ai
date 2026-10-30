@@ -65,6 +65,9 @@ beforeEach(() => {
   p.webFormIntegration.findFirst.mockResolvedValue(INTEGRATION);
   p.webFormIntegration.update.mockResolvedValue({});
   p.webFormSubmission.create.mockResolvedValue({ id: 'wfs-1' });
+  // This file is about the webhook plumbing, not the Customer and Lead work. The transaction
+  // hands back what the real one does: the lead that was opened.
+  p.$transaction.mockResolvedValue({ id: 'lead-1', lead_number: 'L0001' });
 });
 
 describe('web-form webhook gates', () => {

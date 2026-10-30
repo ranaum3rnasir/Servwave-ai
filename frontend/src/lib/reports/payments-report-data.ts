@@ -14,25 +14,25 @@ export const DAY = 86_400_000;
 
 // R5b (2026-07-22) — D3. Kept identical to backend/src/services/payments-report.ts's
 // PaymentMethodLabel (that file's own comment states the two must stay in lockstep).
-export const PAYMENT_METHODS = ['Credit card', 'Check', 'ACH / Bank transfer', 'Cash', 'Zelle', 'Venmo', 'Cash App', 'Other'] as const;
+export const PAYMENT_METHODS = ['Credit card', 'Card (outside ServWave)', 'Check', 'Bank transfer', 'Bank (ACH)', 'Cash', 'Zelle', 'Venmo', 'Cash App', 'Other'] as const;
 export type PaymentMethod = (typeof PAYMENT_METHODS)[number];
 
 export const PAYMENT_CATEGORIES = ['Invoice', 'Deposit', 'Account', 'Recurring'] as const;
 export type PaymentCategory = (typeof PAYMENT_CATEGORIES)[number];
 
-export const PAYMENT_STATUSES = ['Succeeded', 'Pending', 'Failed', 'Refunded'] as const;
+export const PAYMENT_STATUSES = ['Succeeded', 'Pending', 'Failed', 'Voided', 'Charged back', 'Partly refunded', 'Refunded'] as const;
 export type PaymentStatus = (typeof PAYMENT_STATUSES)[number];
 
 export const TECHNICIANS = [
-  'Emanuel Dahan',
-  'Ohad',
-  'Rami',
-  'Priya',
-  'Shaked',
-  'Liran - Dor',
-  'Ofir Sub',
+  'Sam Rivera',
+  'Jordan',
+  'Reese',
+  'Drew',
+  'Hayden',
+  'Lee - Dana',
+  'Oak Sub',
   'Sem Pinto',
-  'Shani',
+  'Avery',
   'Dispatch',
 ] as const;
 
@@ -104,7 +104,8 @@ export function buildPayments(): PaymentTxn[] {
     const client = pick(rng, CLIENTS);
     const method = weighted<PaymentMethod>(rng, [
       ['Credit card', 5],
-      ['ACH / Bank transfer', 3],
+      ['Bank transfer', 2],
+      ['Bank (ACH)', 1],
       ['Check', 2],
       ['Cash', 2],
     ]);
@@ -137,7 +138,7 @@ export function buildPayments(): PaymentTxn[] {
 
     const card = method === 'Credit card' ? `XXXX${1000 + Math.floor(rng() * 8999)}` : '';
     const confirmation =
-      method === 'Credit card' || method === 'ACH / Bank transfer' ? 'Approved' : '';
+      method === 'Credit card' || method === 'Bank transfer' || method === 'Bank (ACH)' ? 'Approved' : '';
 
     const date = BASE_MS - Math.floor(rangeRnd(rng, 0, 120)) * DAY;
 
@@ -165,18 +166,16 @@ export function buildPayments(): PaymentTxn[] {
  * Payment transactions for the report, plus the "now" both the relative-date
  * presets (resolveRange) and the weekly-window aggregations
  * (weeklyCollected/categoryBreakdown/weeklyTrend) resolve against.
- *  • demo org → the deterministic seeded mock, anchored to BASE_MS so its
- *    presets and 8-week windows match the seeded dataset.
- *  • real org → GET /api/reports/payments (every org payment, mapped to the same
- *    row shape, tip included), against the live clock — so presets and windows
- *    resolve against today, not BASE_MS.
- * The same payments-report-logic.ts aggregation runs over both, so demo + live
- * stay in lockstep. Live `now` is memoized once per mount so the report's
+ *  • every org, a demo org included → GET /api/reports/payments (every org
+ *    payment, mapped to the same row shape, tip included), against the live
+ *    clock, so presets and windows resolve against today. (A demo org used to
+ *    see the seeded mock here; payments go-live slice 35 retired that so the
+ *    labels the build changed can be read on real rows.) `buildPayments` stays
+ *    as the deterministic fixture the logic tests use.
+ * Live `now` is memoized once per mount so the report's
  * downstream useMemos stay stable.
  */
-export function usePaymentsReport(isDemo: boolean): { rows: PaymentTxn[]; now: Date; isLoading: boolean } {
-  // Memoized so the report's downstream useMemos stay referentially stable.
-  const mock = useMemo(() => buildPayments(), []);
+export function usePaymentsReport(): { rows: PaymentTxn[]; now: Date; isLoading: boolean } {
   const liveNow = useMemo(() => new Date(), []);
   const live = useQuery({
     queryKey: ['payments-report'],
@@ -185,9 +184,7 @@ export function usePaymentsReport(isDemo: boolean): { rows: PaymentTxn[]; now: D
       return (data.payments ?? []) as PaymentTxn[];
     },
     staleTime: 60_000,
-    enabled: !isDemo,
   });
 
-  if (isDemo) return { rows: mock, now: new Date(BASE_MS), isLoading: false };
   return { rows: live.data ?? [], now: liveNow, isLoading: live.isLoading };
 }

@@ -3,10 +3,7 @@ import { z } from 'zod';
 import { supabaseAdmin, supabaseAuth } from '../lib/supabase';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
-import { defineAbilityFor, type PermissionOverride } from '../lib/permissions/defineAbility';
-import { getCachedGrants, setCachedGrants } from '../lib/permissions/permissionCache';
-import { grantRoleKey, isSuperUser } from '../lib/permissions/effectiveRole';
-import { loadUserOverrides } from '../lib/permissions/loadUserOverrides';
+import { abilityForUser } from '../lib/permissions/enforce';
 import { resolveAppUser } from '../lib/auth-user';
 import { emailSchema } from '../lib/email-schema';
 import { clearTokenCache } from '../middleware/authenticate';
@@ -14,6 +11,7 @@ import { verifyInviteToken } from '../lib/invite-token';
 import { generateCode, hashCode, verifyCode, encryptRefreshToken, decryptRefreshToken } from '../lib/mfa-otp';
 import { sendMfaCodeEmail } from '../lib/email';
 import { emit } from '../services/notifications/notificationService';
+import { queueNoRecordAlert } from '../services/notifications/noRecordAlerts';
 import { logAudit } from '../lib/audit';
 import { CURRENT_TERMS_VERSION, TERMS_URL, PRIVACY_URL, TERMS_ENFORCEMENT_EFFECTIVE_SINCE } from '../lib/legal';
 import { signAvatarPaths, resolveAvatarUrl } from '../lib/avatar';
@@ -656,8 +654,8 @@ export async function refresh(req: Request, res: Response) {
 }
 
 /**
- * Load the CASL ability rules for a user (admin → manage all; others → DB grants
- * with a per-org cache). Shared by `me` and `googleFinalize`.
+ * Load the CASL ability rules for a user (the Admin box → manage all; everyone else → their switches plus the fixed
+ * reads, the same ability the server enforces). Shared by `me` and `googleFinalize`.
  */
 async function loadAbilityRules(user: {
   id: string;
@@ -667,35 +665,7 @@ async function loadAbilityRules(user: {
   custom_role_id?: string | null;
   custom_role?: { key: string } | null;
 }) {
-  let grants: Array<{ action: string; subject: string; conditions?: Record<string, unknown> | null }> = [];
-  let overrides: PermissionOverride[] = [];
-  // Only an unrestricted ADMIN skips grant loading. An ADMIN-DERIVED custom role must ship
-  // its real rules to the frontend, or the UI would render full access while the API
-  // enforced the subtracted set.
-  if (!isSuperUser(user)) {
-    const roleKey = grantRoleKey(user);
-    const cached = getCachedGrants(user.organization_id, roleKey);
-    if (cached) {
-      grants = cached;
-    } else {
-      const rows = await prisma.rolePermission.findMany({
-        where: { organization_id: user.organization_id, role: roleKey },
-        select: { action: true, subject: true, conditions: true },
-      });
-      grants = rows.map((r) => ({
-        action: r.action,
-        subject: r.subject,
-        conditions: r.conditions as Record<string, unknown> | null,
-      }));
-      setCachedGrants(user.organization_id, roleKey, grants);
-    }
-    // Per-user overrides flow to the frontend rules too, so the affected user's UI
-    // (e.g. the "New Invoice" menu item) reflects the toggle. ADMIN is unaffected.
-    overrides = await loadUserOverrides(user.id);
-  }
-
-  const ability = defineAbilityFor(user, grants, overrides);
-  return ability.rules;
+  return (await abilityForUser(user)).rules;
 }
 
 // req.user (cached auth) never carries avatar_path — a light side lookup, not folded into that
@@ -841,7 +811,7 @@ export async function acceptInvite(req: Request, res: Response) {
     return;
   }
 
-  let emitPayload: Parameters<typeof emit>[0] | null = null;
+  let invitedAlert: Parameters<typeof queueNoRecordAlert>[0] | null = null;
 
   try {
     const appUser = await prisma.user.findUnique({
@@ -888,12 +858,11 @@ export async function acceptInvite(req: Request, res: Response) {
     // must leave the row exactly as it was rather than half-apply the form.
     await persistInvitePhone(appUser.id, parsed.data.phone);
 
-    emitPayload = {
+    invitedAlert = {
       verb: 'team.invite_accepted',
       organizationId: appUser.organization_id,
       actorId: appUser.id,
       object: { type: 'USER', id: appUser.id },
-      entity: {},
       data: { object_label: `${appUser.first_name ?? ''} ${appUser.last_name ?? ''}`.trim() || appUser.email },
       dedupKey: `team.invite_accepted:${appUser.id}`,
     };
@@ -933,8 +902,9 @@ export async function acceptInvite(req: Request, res: Response) {
     res.status(500).json({ error: 'Could not complete your invitation.' });
   }
 
-  // Fire-and-forget: emit AFTER responding so it never blocks or leaks into the try/catch.
-  if (emitPayload) emit(emitPayload);
+  // Left for after the response (S06.29): it is sent once the response has gone out with a success status, so it never blocks or
+  // leaks into the try/catch, and a request that failed part-way alerts nobody. It goes to the holders of Invite users.
+  if (invitedAlert) queueNoRecordAlert(invitedAlert);
 }
 
 const acceptInviteTermsSchema = z.object({
@@ -1140,12 +1110,11 @@ export async function googleFinalize(req: Request, res: Response) {
     // users (has_login already true) do not re-emit — the dedupKey alone would
     // suppress duplicates, but the guard is the authoritative first-time signal.
     if (!appUser.has_login) {
-      emit({
+      queueNoRecordAlert({
         verb: 'team.invite_accepted',
         organizationId: appUser.organization_id,
         actorId: appUser.id,
         object: { type: 'USER', id: appUser.id },
-        entity: {},
         data: { object_label: `${appUser.first_name ?? ''} ${appUser.last_name ?? ''}`.trim() || appUser.email },
         dedupKey: `team.invite_accepted:${appUser.id}`,
       });

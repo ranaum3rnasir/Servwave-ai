@@ -15,7 +15,7 @@ import { renderWithProviders } from '@/__tests__/helpers';
 import { expectCustomerPageStale, seedCustomerPage } from '@/__tests__/support/customerPageCache';
 import { WalkthroughTabContent } from '@/pages/v2/leads/components/walkthroughTab';
 import {
-  CancelLeadDialog, CancelWalkthroughDialog, DeleteLeadDialog, MarkLostDialog,
+  CancelWalkthroughDialog, DeleteLeadDialog, MarkLostDialog,
 } from '@/pages/v2/leads/components/leadDialogs';
 
 vi.mock('@/components/crm/MultiAssigneeSelect', () => ({
@@ -123,7 +123,7 @@ describe('the lead "Book Visit" form', () => {
     const { queryClient } = renderTab(SCHEDULED_LEAD);
     seedCustomerPage(queryClient);
 
-    await user.click(screen.getByRole('button', { name: 'Complete' }));
+    await user.click(screen.getByRole('button', { name: 'Finish walkthrough' }));
 
     await waitFor(() => expect(post).toHaveBeenCalledWith('/api/leads/lead-1/walkthrough/complete'));
     await expectCustomerPageStale(queryClient);
@@ -147,11 +147,11 @@ describe('the lead page "Cancel Walkthrough" dialog', () => {
 });
 
 /**
- * Leaving the lead - lost or cancelled - auto-cancels its scheduled walkthrough visit in the same
- * transaction (lead.controller markLost / cancelLead -> cancelLiveWalkthroughsOnLeadExit),
- * so both are visit writes.
+ * Leaving the lead as lost auto-cancels its scheduled walkthrough visit in the same
+ * transaction (lead.controller markLost -> cancelLiveWalkthroughsOnLeadExit),
+ * so it is a visit write.
  */
-describe('the lead page "Mark Lost" and "Cancel Lead" dialogs', () => {
+describe('the lead page "Mark Lost" dialog', () => {
   it('marking the lead lost marks the customer page stale', async () => {
     const user = userEvent.setup();
     const { queryClient } = renderWithProviders(<MarkLostDialog open onOpenChange={() => {}} leadId="lead-1" />);
@@ -161,18 +161,6 @@ describe('the lead page "Mark Lost" and "Cancel Lead" dialogs', () => {
     await user.click(screen.getByRole('button', { name: 'Mark Lost' }));
 
     await waitFor(() => expect(post).toHaveBeenCalledWith('/api/leads/lead-1/mark-lost', expect.anything()));
-    await expectCustomerPageStale(queryClient);
-  });
-
-  it('cancelling the lead marks the customer page stale', async () => {
-    const user = userEvent.setup();
-    const { queryClient } = renderWithProviders(<CancelLeadDialog open onOpenChange={() => {}} leadId="lead-1" />);
-    seedCustomerPage(queryClient);
-
-    await user.type(screen.getByPlaceholderText('Why is this lead being cancelled?'), 'Duplicate request');
-    await user.click(screen.getByRole('button', { name: 'Cancel Lead' }));
-
-    await waitFor(() => expect(post).toHaveBeenCalledWith('/api/leads/lead-1/cancel', expect.anything()));
     await expectCustomerPageStale(queryClient);
   });
 });

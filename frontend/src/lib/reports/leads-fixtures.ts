@@ -9,7 +9,7 @@
  */
 import { hashStr, mulberry32 } from './random';
 
-// ── Domain vocab (Alpha Security US) ─────────────────────────────────────────
+// ── Domain vocab (an example doors-and-security company) ─────────────────────────────────────────
 export const STATUSES = ['Open', 'Converted', 'Sold', 'Sold-done', 'Lost'] as const;
 export type Status = (typeof STATUSES)[number];
 // Statuses that count as a win for the conversion KPIs.
@@ -19,8 +19,8 @@ export const SOURCES = [
   'Office', 'Google', 'Account', 'Returning customer', 'Village',
   'Village - Returned Customer', 'Google Local Service', 'Reserve with Google', 'Return Customer',
 ];
-export const TEAM = ['Emanuel Dahan', 'Dispatch', 'Ohad', 'Rami', 'Logistics', 'Nadia', 'Shaked', 'Liran - Dor', 'Ofir Sub'];
-export const CREATORS = ['Emanuel Dahan', 'Dispatch', 'Ohad', 'Rami', 'Logistics', 'Nadia', 'Robert Bresnick', 'Efrain & Zhao', 'Onboarding'];
+export const TEAM = ['Sam Rivera', 'Dispatch', 'Jordan', 'Reese', 'Logistics', 'Quinn', 'Hayden', 'Lee - Dana', 'Oak Sub'];
+export const CREATORS = ['Sam Rivera', 'Dispatch', 'Jordan', 'Reese', 'Logistics', 'Quinn', 'Jamie Park', 'Ridge & Cole', 'Onboarding'];
 export const TAGS = [
   'Followup', 'Callback', 'NEED TO COLLECT', 'NOT ANSWERING', 'NEED TO ORDER PART',
   'Waiting for pictures', 'Waiting for the client', 'Need more info', 'Today job',

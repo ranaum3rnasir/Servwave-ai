@@ -23,11 +23,16 @@ function sourceFiles(dir: string): string[] {
   });
 }
 
-const CREATES_ORG = /organization\.(create|upsert|createMany)\(|INSERT INTO "?organizations/;
+// createCompanyWithMainMailbox is the register's way to create a company (it freezes the company part and
+// issues the main mailbox in the same transaction), so its callers are organization creators too. The
+// register itself is the helper, not a creator: the files that call it are what this guard looks at.
+const CREATES_ORG = /organization\.(create|upsert|createMany)\(|INSERT INTO "?organizations|createCompanyWithMainMailbox\(/;
+const ORG_CREATING_HELPER = join('src', 'lib', 'mailbox', 'register.ts');
 const SEEDS_STARTERS = /seedStarterTaskCategories|starterTaskCategoriesSql/;
 
 describe('organization creators seed the starter task categories', () => {
-  const creators = ROOTS.flatMap(sourceFiles).filter((f) => CREATES_ORG.test(readFileSync(f, 'utf8')));
+  const creators = ROOTS.flatMap(sourceFiles).filter((f) => relative(BACKEND, f) !== ORG_CREATING_HELPER)
+    .filter((f) => CREATES_ORG.test(readFileSync(f, 'utf8')));
 
   it('finds the organization creators (the guard is looking at something)', () => {
     expect(creators.length).toBeGreaterThanOrEqual(5);

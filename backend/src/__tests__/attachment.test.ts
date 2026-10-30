@@ -286,13 +286,6 @@ describe('GET /api/attachments/JOB/:id?include_lead=true', () => {
   });
 });
 
-/**
- * THE PROXY PATH'S caps. The 50MB below is MAX_PROXY_VIDEO_FILE_SIZE, not the 512MB video
- * cap — this route's multer buffers the whole file in the process, so it deliberately kept
- * the ceiling it had when video moved to the direct-to-storage path. Do not "correct" these
- * numbers upward to match the direct path; `attachment-video-cap-split.test.ts` holds the
- * two apart and explains why.
- */
 describe('POST /api/attachments/:entityType/:entityId — size caps', () => {
   beforeEach(() => {
     mockAuthAs('admin');

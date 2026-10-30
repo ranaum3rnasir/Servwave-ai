@@ -64,6 +64,8 @@ function visit(seq: number, crew: string[]) {
     cancelled_at: null,
     customer_email_sent_at: null,
     notes: null,
+    // The server's per-visit answer: this technician holds the step switches and may take them on their own visit only.
+    status_steps: crew.includes(TECH_ID) ? ['en-route', 'arrive', 'start', 'complete'] : [],
     assignees: crew.map((u) => ({ user_id: u, user: { id: u, first_name: 'A', last_name: 'B' } })),
   };
 }
@@ -95,6 +97,8 @@ function mount({ visitCrew }: { visitCrew: string[][] }) {
     tags: [],
     source_plan_id: null,
     source_plan: null,
+    // The server's per-record answer: Schedule visits is listed on a job the technician is crewed on, and not on one they are not.
+    actions: visitCrew.flat().includes(TECH_ID) ? ['schedule'] : [],
   };
 
   vi.mocked(api).get.mockImplementation(async (url: string) => {
@@ -119,14 +123,13 @@ beforeEach(() => {
 });
 
 describe('S8 - a technician crewed through a visit keeps the controls the API will honour', () => {
-  it('offers the visit-2 lifecycle controls to a technician crewed on visit 2 only', async () => {
+  it('offers the lifecycle controls on visit 2 only to a technician crewed on visit 2 only', async () => {
     mount({ visitCrew: [[OTHER_ID], [TECH_ID]] });
 
     await screen.findByText('J00001');
-    // canOnJob answers per JOB, not per visit, so the observable fact is that the page offers
-    // the per-visit lifecycle controls at all. "Mark on site" is the rail's own primary-step label.
-    // The lifecycle rail's per-visit control. Two visits, so two of them.
-    expect((await screen.findAllByRole('button', { name: /^mark on site$/i })).length).toBe(2);
+    // The per-visit answer lists steps on visit 2 alone, so the rail offers one control, not one per visit.
+    // "Mark on the way" is the rail's own primary-step label for a visit whose answer lists every step.
+    expect((await screen.findAllByRole('button', { name: /^mark on the way$/i })).length).toBe(1);
   });
 
   it('offers the per-visit Reschedule control for that same technician', async () => {
@@ -144,7 +147,7 @@ describe('S8 - a technician crewed through a visit keeps the controls the API wi
     mount({ visitCrew: [[OTHER_ID], [OTHER_ID]] });
 
     await screen.findByText('J00001');
-    expect(screen.queryAllByRole('button', { name: /^mark on site$/i })).toHaveLength(0);
+    expect(screen.queryAllByRole('button', { name: /^mark on (the way|site)$/i })).toHaveLength(0);
 
     await userEvent.click(screen.getByRole('tab', { name: /visits/i }));
     expect((await screen.findAllByText('Visit 2')).length).toBeGreaterThan(0);

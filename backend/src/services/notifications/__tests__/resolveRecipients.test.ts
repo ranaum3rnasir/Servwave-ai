@@ -1,63 +1,74 @@
 import { describe, it, expect } from 'vitest';
-import { resolveRecipients } from '../resolveRecipients';
+import { resolveRecipients, VERBS_WITHOUT_ROLE_LISTS } from '../resolveRecipients';
 import { VERB_RULES, type KnownVerb } from '../templates';
 
-const roleHolders = { ADMIN: ['admin1'], DISPATCHER: ['disp1'], SALES: ['sales1', 'sales2'], TECHNICIAN: ['tech1', 'tech2'] };
-const base = { organizationId: 'org1', actorId: null as string | null, roleHolders };
+const base = { organizationId: 'org1', actorId: null as string | null };
+
+/** The invoice and payment alerts S06.28 moved onto the chain: the ten the PRD names and the five that sit beside them. */
+const BILLING_VERBS_ON_THE_CHAIN = [
+  'billing.payment_received', 'billing.partial_payment', 'billing.invoice_overdue', 'billing.invoice_due_soon', 'billing.refunded',
+  'billing.disputed', 'billing.chargeback', 'billing.payment_unrecorded', 'billing.voided', 'billing.credit_applied',
+  'billing.bank_payment_started', 'billing.bank_payment_cleared', 'billing.bank_payment_failed', 'billing.dispute_closed',
+  'billing.refund_failed',
+];
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Brief representative tests (verbatim from task-1.1-brief.md)
 // ──────────────────────────────────────────────────────────────────────────────
 
 describe('resolveRecipients — brief representative tests', () => {
-  it('estimate.approved → owner INTERRUPT+needs nothing, dispatcher FEED+needs_action(schedule), admin FEED', () => {
+  // S06.26: the estimate alerts are addressed by the chain's lanes, never by a role list. The role holders handed in here (an
+  // Admin and a Dispatcher) are not told just for their role.
+  it('estimate.approved → the Owner INTERRUPT, the people who must act FEED + needs_action(schedule), everyone else FEED, no role list', () => {
     const r = resolveRecipients({ ...base, verb: 'estimate.approved',
-      entity: { id: 'e1', commission_owner_id: 'sales1' } });
+      entity: { id: 'e1', commission_owner_id: 'sales1', lane_one_ids: ['sales1', 'tech2'], lane_two_ids: ['rev1'], copy_ids: ['boss1'] } });
     expect(r).toContainEqual({ userId: 'sales1', priority: 'INTERRUPT', needs_action: false });
-    expect(r).toContainEqual({ userId: 'disp1', priority: 'FEED', needs_action: true });
-    expect(r).toContainEqual({ userId: 'admin1', priority: 'FEED', needs_action: false });
+    expect(r).toContainEqual({ userId: 'rev1', priority: 'FEED', needs_action: true });
+    expect(r).toContainEqual({ userId: 'tech2', priority: 'FEED', needs_action: false });
+    expect(r).toContainEqual({ userId: 'boss1', priority: 'FEED', needs_action: false });
+    expect(r.map(x => x.userId)).not.toContain('admin1');
+    expect(r.map(x => x.userId)).not.toContain('disp1');
   });
 
-  it('dispatch.job_assigned → assignees INTERRUPT, assigner(dispatcher) FEED, never admin', () => {
+  // S06.27: the dispatch alerts are addressed by the chain's lanes, never by a role list. The role holders handed in here (an Admin
+  // and a Dispatcher) are not told just for their role.
+  it('dispatch.job_assigned → the people named INTERRUPT, everyone else the chain found FEED, never a role list', () => {
     const r = resolveRecipients({ ...base, verb: 'dispatch.job_assigned', actorId: 'disp1',
-      entity: { id: 'j1', assignee_ids: ['tech1', 'tech2'] } });
+      entity: { id: 'j1', named_ids: ['tech1', 'tech2'], lane_one_ids: ['tech1', 'tech2', 'sales1'], lane_two_ids: ['rev1'], copy_ids: ['boss1', 'disp1'] } });
     expect(r).toContainEqual({ userId: 'tech1', priority: 'INTERRUPT', needs_action: false });
     expect(r).toContainEqual({ userId: 'tech2', priority: 'INTERRUPT', needs_action: false });
-    expect(r.find(x => x.userId === 'admin1')).toBeUndefined();
+    for (const id of ['sales1', 'rev1', 'boss1']) expect(r).toContainEqual({ userId: id, priority: 'FEED', needs_action: false });
+    expect(r.map(x => x.userId)).not.toContain('admin1');
+    expect(r.map(x => x.userId)).not.toContain('disp1'); // the actor
   });
 
-  it('inventory.staging_ready → admin + dispatcher FEED + assigned tech INTERRUPT', () => {
+  it('inventory.staging_ready → the technician it is staged for INTERRUPT, everyone else the chain found FEED, never a role list', () => {
     const r = resolveRecipients({ ...base, verb: 'inventory.staging_ready',
-      entity: { id: 'stg1', assignee_ids: ['tech1'] } });
+      entity: { id: 'stg1', assignee_ids: ['tech1'], lane_one_ids: ['tech1', 'sales1'], lane_two_ids: ['rev1'], copy_ids: ['boss1'] } });
     expect(r).toContainEqual({ userId: 'tech1', priority: 'INTERRUPT', needs_action: false });
-    expect(r.map(x => x.userId)).toContain('admin1');
-    expect(r.map(x => x.userId)).toContain('disp1');
+    for (const id of ['sales1', 'rev1', 'boss1']) expect(r).toContainEqual({ userId: id, priority: 'FEED', needs_action: false });
+    expect(r.map(x => x.userId)).not.toContain('admin1');
+    expect(r.map(x => x.userId)).not.toContain('disp1');
   });
 
-  it('inventory.staging_ready with no assignee → admin + dispatcher only (no INTERRUPT)', () => {
+  it('inventory.staging_ready with nobody on the chain → nobody (no role list to fall back on)', () => {
     const r = resolveRecipients({ ...base, verb: 'inventory.staging_ready', entity: { id: 'stg1' } });
-    expect(r.map(x => x.userId).sort()).toEqual(['admin1', 'disp1']);
-    expect(r.find(x => x.priority === 'INTERRUPT')).toBeUndefined();
+    expect(r).toEqual([]);
   });
 
   it('drops the actor from recipients', () => {
-    const r = resolveRecipients({ ...base, verb: 'job.completed', actorId: 'tech1',
-      entity: { id: 'j1', assignee_ids: ['tech1'] } });
+    const r = resolveRecipients({ ...base, verb: 'job.started', actorId: 'tech1',
+      entity: { id: 'j1', lane_one_ids: ['tech1'] } });
     expect(r.find(x => x.userId === 'tech1')).toBeUndefined();
   });
 
-  it('billing.payment_received → admin + dispatcher + owning rep (their customer), all FEED', () => {
+  // S06.28: the billing alerts are addressed by the chain's lanes, never by a role list. The role holders handed in here (an Admin and a
+  // Dispatcher) and a customer owner are not told just for who they are.
+  it('billing.payment_received → everyone the chain found FEED; no role list, no customer owner', () => {
     const r = resolveRecipients({ ...base, verb: 'billing.payment_received',
-      entity: { id: 'i1', customer_owner_id: 'sales2' } });
-    expect(r.map(x => x.userId).sort()).toContain('sales2');
-    expect(r.map(x => x.userId)).toContain('disp1');
-    expect(r.map(x => x.userId)).toContain('admin1');
-  });
-
-  it('team.ot_override_requested → ADMIN only, INTERRUPT + needs_action', () => {
-    const r = resolveRecipients({ ...base, verb: 'team.ot_override_requested',
-      entity: { id: 't1', user_id: 'tech1' } });
-    expect(r).toEqual([{ userId: 'admin1', priority: 'INTERRUPT', needs_action: true }]);
+      entity: { id: 'i1', customer_owner_id: 'sales2', lane_one_ids: ['sales1'], lane_two_ids: ['rev1'], copy_ids: ['boss1'] } });
+    expect(r.map(x => x.userId).sort()).toEqual(['boss1', 'rev1', 'sales1']);
+    expect(r.every(x => x.priority === 'FEED' && x.needs_action === false)).toBe(true);
   });
 
   it('security.* → only the account owner', () => {
@@ -66,9 +77,17 @@ describe('resolveRecipients — brief representative tests', () => {
     expect(r).toEqual([{ userId: 'sales1', priority: 'FEED', needs_action: false }]);
   });
 
-  it('lead.unassigned_created → admin + dispatcher FEED (no sales-manager role)', () => {
-    const r = resolveRecipients({ ...base, verb: 'lead.unassigned_created', entity: { id: 'l1' } });
-    expect(r.map(x => x.userId).sort()).toEqual(['admin1', 'disp1']);
+  it('lead.unassigned_created → the people the chain found, FEED, nobody asked to act, and no role list', () => {
+    const r = resolveRecipients({ ...base, verb: 'lead.unassigned_created',
+      entity: { id: 'l1', lane_one_ids: ['tech1'], lane_two_ids: ['rev1'], copy_ids: ['rev1', 'boss1'] } });
+    expect(r.map(x => x.userId).sort()).toEqual(['boss1', 'rev1', 'tech1']);
+    expect(r.every(x => x.priority === 'FEED' && x.needs_action === false)).toBe(true);
+    expect(r.map(x => x.userId)).not.toContain('admin1');
+    expect(r.map(x => x.userId)).not.toContain('disp1');
+  });
+
+  it('lead.unassigned_created with no lanes in the entity reaches nobody, whatever the roles', () => {
+    expect(resolveRecipients({ ...base, verb: 'lead.unassigned_created', entity: { id: 'l1' } })).toEqual([]);
   });
 });
 
@@ -93,263 +112,306 @@ describe('resolveRecipients — LEAD verbs', () => {
     expect(r.find(x => x.userId === 'admin1')).toBeUndefined();
   });
 
-  it('lead.walkthrough_scheduled → dispatcher FEED + owner FEED + performers INTERRUPT', () => {
+  // S06.26: the people booked on the walkthrough are interrupted, whichever lane found them; everyone else is told on the feed.
+  it('lead.walkthrough_scheduled → the people booked INTERRUPT, the Owner and everyone else the chain found FEED, no role list', () => {
     const r = resolveRecipients({ ...base, verb: 'lead.walkthrough_scheduled',
-      entity: { id: 'l1', commission_owner_id: 'sales1', performer_ids: ['tech1', 'tech2'] } });
-    expect(r).toContainEqual({ userId: 'disp1', priority: 'FEED', needs_action: false });
+      entity: { id: 'l1', commission_owner_id: 'sales1', performer_ids: ['tech1', 'tech2'],
+        lane_one_ids: ['sales1', 'tech1', 'tech2'], lane_two_ids: ['rev1'], copy_ids: ['boss1'] } });
+    expect(r).toContainEqual({ userId: 'rev1', priority: 'FEED', needs_action: false });
     expect(r).toContainEqual({ userId: 'sales1', priority: 'FEED', needs_action: false });
+    expect(r).toContainEqual({ userId: 'boss1', priority: 'FEED', needs_action: false });
     expect(r).toContainEqual({ userId: 'tech1', priority: 'INTERRUPT', needs_action: false });
     expect(r).toContainEqual({ userId: 'tech2', priority: 'INTERRUPT', needs_action: false });
+    expect(r.map(x => x.userId)).not.toContain('admin1');
+    expect(r.map(x => x.userId)).not.toContain('disp1');
   });
 
-  it('lead.walkthrough_scheduled — no performers → only dispatcher + owner', () => {
+  it('lead.walkthrough_scheduled — nobody booked → everyone the chain found on the feed', () => {
     const r = resolveRecipients({ ...base, verb: 'lead.walkthrough_scheduled',
-      entity: { id: 'l1', commission_owner_id: 'sales1' } });
-    expect(r.map(x => x.userId).sort()).toEqual(['disp1', 'sales1']);
+      entity: { id: 'l1', commission_owner_id: 'sales1', lane_one_ids: ['sales1'], lane_two_ids: ['rev1'] } });
+    expect(r.map(x => x.userId).sort()).toEqual(['rev1', 'sales1']);
+    expect(r.every(x => x.priority === 'FEED')).toBe(true);
+  });
+
+  it('lead.walkthrough_scheduled with no lanes in the entity reaches nobody, whatever the roles', () => {
+    expect(resolveRecipients({ ...base, verb: 'lead.walkthrough_scheduled', entity: { id: 'l1', commission_owner_id: 'sales1', performer_ids: ['tech1'] } })).toEqual([]);
   });
 });
 
 describe('resolveRecipients — ESTIMATE verbs', () => {
-  it('estimate.declined → owner INTERRUPT + admin FEED', () => {
-    const r = resolveRecipients({ ...base, verb: 'estimate.declined',
-      entity: { id: 'e1', commission_owner_id: 'sales1' } });
+  const lanes = { lane_one_ids: ['sales1', 'tech2'], lane_two_ids: ['rev1'], copy_ids: ['boss1'] };
+  const everyoneBut = (r: Array<{ userId: string }>, ...ids: string[]) => ids.every((id) => !r.map(x => x.userId).includes(id));
+
+  it('estimate.declined → the Owner INTERRUPT, everyone else the chain found FEED, nobody asked to act, no role list', () => {
+    const r = resolveRecipients({ ...base, verb: 'estimate.declined', entity: { id: 'e1', commission_owner_id: 'sales1', ...lanes } });
     expect(r).toContainEqual({ userId: 'sales1', priority: 'INTERRUPT', needs_action: false });
-    expect(r).toContainEqual({ userId: 'admin1', priority: 'FEED', needs_action: false });
-    expect(r.find(x => x.userId === 'disp1')).toBeUndefined();
+    expect(r).toContainEqual({ userId: 'rev1', priority: 'FEED', needs_action: false });
+    expect(r).toContainEqual({ userId: 'tech2', priority: 'FEED', needs_action: false });
+    expect(r).toContainEqual({ userId: 'boss1', priority: 'FEED', needs_action: false });
+    expect(everyoneBut(r, 'admin1', 'disp1')).toBe(true);
   });
 
-  it('estimate.deposit_paid → owner INTERRUPT + dispatcher FEED+needs_action + admin FEED', () => {
-    const r = resolveRecipients({ ...base, verb: 'estimate.deposit_paid',
-      entity: { id: 'e1', commission_owner_id: 'sales1' } });
+  it('estimate.deposit_paid → the Owner INTERRUPT, the people who must act FEED + needs_action(schedule), everyone else FEED, no role list', () => {
+    const r = resolveRecipients({ ...base, verb: 'estimate.deposit_paid', entity: { id: 'e1', commission_owner_id: 'sales1', ...lanes } });
     expect(r).toContainEqual({ userId: 'sales1', priority: 'INTERRUPT', needs_action: false });
-    expect(r).toContainEqual({ userId: 'disp1', priority: 'FEED', needs_action: true });
-    expect(r).toContainEqual({ userId: 'admin1', priority: 'FEED', needs_action: false });
+    expect(r).toContainEqual({ userId: 'rev1', priority: 'FEED', needs_action: true });
+    expect(r).toContainEqual({ userId: 'boss1', priority: 'FEED', needs_action: false });
+    expect(everyoneBut(r, 'admin1', 'disp1')).toBe(true);
   });
 
-  it('estimate.cancelled → owner FEED + admin FEED', () => {
-    const r = resolveRecipients({ ...base, verb: 'estimate.cancelled',
-      entity: { id: 'e1', commission_owner_id: 'sales2' } });
-    expect(r).toContainEqual({ userId: 'sales2', priority: 'FEED', needs_action: false });
-    expect(r).toContainEqual({ userId: 'admin1', priority: 'FEED', needs_action: false });
-    expect(r.find(x => x.userId === 'disp1')).toBeUndefined();
+  it('an Owner who is also who must act keeps both: interrupted and asked to schedule the job', () => {
+    const r = resolveRecipients({ ...base, verb: 'estimate.approved',
+      entity: { id: 'e1', commission_owner_id: 'sales1', lane_one_ids: ['sales1'], lane_two_ids: ['sales1'] } });
+    expect(r).toEqual([{ userId: 'sales1', priority: 'INTERRUPT', needs_action: true }]);
   });
 
-  it('estimate.deposit_waived → owner FEED + admin FEED', () => {
-    const r = resolveRecipients({ ...base, verb: 'estimate.deposit_waived',
-      entity: { id: 'e1', commission_owner_id: 'sales1' } });
-    expect(r).toContainEqual({ userId: 'sales1', priority: 'FEED', needs_action: false });
-    expect(r).toContainEqual({ userId: 'admin1', priority: 'FEED', needs_action: false });
-  });
+  it.each(['estimate.cancelled', 'estimate.deposit_waived', 'estimate.approval_voided', 'estimate.status_corrected'])(
+    '%s → everyone the chain found on the feed, the Owner included, nobody asked to act, no role list',
+    (verb) => {
+      const r = resolveRecipients({ ...base, verb, entity: { id: 'e1', commission_owner_id: 'sales1', ...lanes } });
+      expect(r.map(x => x.userId).sort()).toEqual(['boss1', 'rev1', 'sales1', 'tech2']);
+      expect(r.every(x => x.priority === 'FEED' && x.needs_action === false)).toBe(true);
+      expect(everyoneBut(r, 'admin1', 'disp1')).toBe(true);
+    },
+  );
+
+  it.each(['estimate.approved', 'estimate.declined', 'estimate.deposit_paid', 'estimate.cancelled', 'estimate.deposit_waived', 'estimate.approval_voided', 'estimate.status_corrected'])(
+    '%s with no lanes in the entity reaches nobody, whatever the roles',
+    (verb) => {
+      expect(resolveRecipients({ ...base, verb, entity: { id: 'e1', commission_owner_id: 'sales1' } })).toEqual([]);
+    },
+  );
 });
 
 describe('resolveRecipients — DISPATCH verbs', () => {
-  it('dispatch.job_unassigned → removed assignees INTERRUPT + dispatcher FEED', () => {
+  // "Unassigned from you" is personal: the people taken off and nobody else.
+  it('dispatch.job_unassigned → only the removed assignees, INTERRUPT: no Dispatcher, no lanes, no copies', () => {
     const r = resolveRecipients({ ...base, verb: 'dispatch.job_unassigned',
-      entity: { id: 'j1', assignee_ids: ['tech1'] } });
-    expect(r).toContainEqual({ userId: 'tech1', priority: 'INTERRUPT', needs_action: false });
-    expect(r).toContainEqual({ userId: 'disp1', priority: 'FEED', needs_action: false });
+      entity: { id: 'j1', assignee_ids: ['tech1'], lane_one_ids: ['sales1'], lane_two_ids: ['rev1'], copy_ids: ['boss1'] } });
+    expect(r).toEqual([{ userId: 'tech1', priority: 'INTERRUPT', needs_action: false }]);
   });
 
-  it('dispatch.job_rescheduled → assignees INTERRUPT + dispatcher FEED', () => {
+  it('dispatch.job_rescheduled → the job crew INTERRUPT, everyone else the chain found FEED, never a role list', () => {
     const r = resolveRecipients({ ...base, verb: 'dispatch.job_rescheduled',
-      entity: { id: 'j1', assignee_ids: ['tech1', 'tech2'] } });
+      entity: { id: 'j1', crew_ids: ['tech1', 'tech2'], lane_one_ids: ['tech1', 'tech2', 'sales1'], lane_two_ids: ['rev1'], copy_ids: ['boss1'] } });
     expect(r).toContainEqual({ userId: 'tech1', priority: 'INTERRUPT', needs_action: false });
     expect(r).toContainEqual({ userId: 'tech2', priority: 'INTERRUPT', needs_action: false });
-    expect(r).toContainEqual({ userId: 'disp1', priority: 'FEED', needs_action: false });
+    for (const id of ['sales1', 'rev1', 'boss1']) expect(r).toContainEqual({ userId: id, priority: 'FEED', needs_action: false });
+    expect(r.map(x => x.userId).sort()).toEqual(['boss1', 'rev1', 'sales1', 'tech1', 'tech2']);
   });
 
-  it('dispatch.job_created → admin FEED + dispatcher INTERRUPT + assignees INTERRUPT', () => {
+  it('dispatch.job_created → the crew and the people who must act INTERRUPT, the rest FEED, never a role list', () => {
     const r = resolveRecipients({ ...base, verb: 'dispatch.job_created',
-      entity: { id: 'j1', assignee_ids: ['tech1'] } });
-    expect(r).toContainEqual({ userId: 'admin1', priority: 'FEED', needs_action: false });
-    expect(r).toContainEqual({ userId: 'disp1', priority: 'INTERRUPT', needs_action: false });
+      entity: { id: 'j1', crew_ids: ['tech1'], lane_one_ids: ['tech1', 'sales1', 'disp2'], lane_two_ids: ['disp2'], copy_ids: ['boss1'] } });
     expect(r).toContainEqual({ userId: 'tech1', priority: 'INTERRUPT', needs_action: false });
+    expect(r).toContainEqual({ userId: 'disp2', priority: 'INTERRUPT', needs_action: false });
+    expect(r).toContainEqual({ userId: 'sales1', priority: 'FEED', needs_action: false });
+    expect(r).toContainEqual({ userId: 'boss1', priority: 'FEED', needs_action: false });
+    expect(r.map(x => x.userId)).not.toContain('admin1');
+    expect(r.map(x => x.userId)).not.toContain('disp1');
   });
 
-  it('dispatch.job_created — no assignees yet → admin + dispatcher only', () => {
-    const r = resolveRecipients({ ...base, verb: 'dispatch.job_created',
-      entity: { id: 'j1' } });
-    expect(r.map(x => x.userId).sort()).toEqual(['admin1', 'disp1']);
+  it('dispatch.job_created — nobody on the chain → nobody', () => {
+    const r = resolveRecipients({ ...base, verb: 'dispatch.job_created', entity: { id: 'j1' } });
+    expect(r).toEqual([]);
+  });
+});
+
+// A verb listed as free of role lists is handed no role list by emit(), so it must really not read one: the resolver, given a
+// role list full of people and a chain that found nobody, tells nobody.
+describe('resolveRecipients — the verbs that no longer read a role list', () => {
+  it.each([...VERBS_WITHOUT_ROLE_LISTS])('%s tells nobody on its own, whatever the role holders are', (verb) => {
+    const r = resolveRecipients({ ...base, verb, entity: { id: 'x1' } });
+    expect(r).toEqual([]);
   });
 });
 
 describe('resolveRecipients — JOB verbs', () => {
-  it('job.started → dispatcher FEED + sold_by sales FEED', () => {
-    const r = resolveRecipients({ ...base, verb: 'job.started',
-      entity: { id: 'j1', assignee_ids: ['tech1'], sold_by_id: 'sales1' } });
-    expect(r).toContainEqual({ userId: 'disp1', priority: 'FEED', needs_action: false });
-    expect(r).toContainEqual({ userId: 'sales1', priority: 'FEED', needs_action: false });
-    // assignee who acts is dropped if actor, but they get FEED if not actor
-    expect(r).toContainEqual({ userId: 'tech1', priority: 'FEED', needs_action: false });
+  // S06.25: job started, cancelled and reopened are addressed by the chain's lanes, never by a role list. The role holders
+  // handed in here (an Admin and a Dispatcher) are not told just for their role.
+  it('job.started → the people the chain found, FEED, nobody asked to act, and no role list', () => {
+    const r = resolveRecipients({ ...base, verb: 'job.started', actorId: 'tech1',
+      entity: { id: 'j1', lane_one_ids: ['tech1', 'sales2'], lane_two_ids: ['disp2'], copy_ids: ['disp2', 'boss1'] } });
+    expect(r.map(x => x.userId).sort()).toEqual(['boss1', 'disp2', 'sales2']);
+    expect(r.every(x => x.priority === 'FEED' && x.needs_action === false)).toBe(true);
+    expect(r.map(x => x.userId)).not.toContain('admin1');
+    expect(r.map(x => x.userId)).not.toContain('disp1');
+  });
+
+  it('job.started with no lanes in the entity reaches nobody, whatever the roles', () => {
+    expect(resolveRecipients({ ...base, verb: 'job.started', entity: { id: 'j1', assignee_ids: ['tech1'], sold_by_id: 'sales1' } })).toEqual([]);
   });
 
   it('job.started — actor (tech) dropped from result', () => {
     const r = resolveRecipients({ ...base, verb: 'job.started', actorId: 'tech1',
-      entity: { id: 'j1', assignee_ids: ['tech1'], sold_by_id: 'sales1' } });
+      entity: { id: 'j1', lane_one_ids: ['tech1', 'sales1'] } });
     expect(r.find(x => x.userId === 'tech1')).toBeUndefined();
+    expect(r.map(x => x.userId)).toEqual(['sales1']);
   });
 
-  it('job.completed → dispatcher + sold_by + assignees FEED', () => {
-    const r = resolveRecipients({ ...base, verb: 'job.completed',
-      entity: { id: 'j1', assignee_ids: ['tech1', 'tech2'], sold_by_id: 'sales2' } });
-    expect(r).toContainEqual({ userId: 'disp1', priority: 'FEED', needs_action: false });
-    expect(r).toContainEqual({ userId: 'sales2', priority: 'FEED', needs_action: false });
-    expect(r).toContainEqual({ userId: 'tech1', priority: 'FEED', needs_action: false });
-    expect(r).toContainEqual({ userId: 'tech2', priority: 'FEED', needs_action: false });
+  // S06.23: the job completed alert is addressed by the chain's lanes, never by a role list. The role holders handed in
+  // here (an Admin and a Dispatcher) are not told just for their role.
+  it('job.completed → the people the chain found, FEED, nobody asked to act, and no role list', () => {
+    const r = resolveRecipients({ ...base, verb: 'job.completed', actorId: 'tech1',
+      entity: { id: 'j1', lane_one_ids: ['tech1', 'sales2'], lane_two_ids: ['rev1'], copy_ids: ['rev1', 'boss1'] } });
+    expect(r.map(x => x.userId).sort()).toEqual(['boss1', 'rev1', 'sales2']);
+    expect(r.every(x => x.priority === 'FEED' && x.needs_action === false)).toBe(true);
+    expect(r.map(x => x.userId)).not.toContain('admin1');
+    expect(r.map(x => x.userId)).not.toContain('disp1');
   });
 
-  it('job.cancelled → dispatcher FEED + sold_by FEED + assignees INTERRUPT', () => {
-    const r = resolveRecipients({ ...base, verb: 'job.cancelled',
-      entity: { id: 'j1', assignee_ids: ['tech1'], sold_by_id: 'sales1' } });
-    expect(r).toContainEqual({ userId: 'disp1', priority: 'FEED', needs_action: false });
-    expect(r).toContainEqual({ userId: 'sales1', priority: 'FEED', needs_action: false });
+  it('job.completed with no lanes in the entity reaches nobody, whatever the roles', () => {
+    expect(resolveRecipients({ ...base, verb: 'job.completed', entity: { id: 'j1', assignee_ids: ['tech1'], sold_by_id: 'sales2' } })).toEqual([]);
+  });
+
+  // S06.24: Ready to close asks the Close jobs holders (lane 2) to act and only tells the job's people and the copies.
+  it('job.ready_to_close → FEED for everyone the chain found, needs action for lane 2 only, no role list', () => {
+    const r = resolveRecipients({ ...base, verb: 'job.ready_to_close', actorId: 'actor1',
+      entity: { id: 'j1', lane_one_ids: ['sales2', 'closer1'], lane_two_ids: ['closer1', 'actor1'], copy_ids: ['boss1'] } });
+    expect(r.map(x => x.userId).sort()).toEqual(['boss1', 'closer1', 'sales2']);
+    expect(r.every(x => x.priority === 'FEED')).toBe(true);
+    expect(r.filter(x => x.needs_action).map(x => x.userId)).toEqual(['closer1']);
+    expect(r.map(x => x.userId)).not.toContain('admin1');
+    expect(r.map(x => x.userId)).not.toContain('disp1');
+  });
+
+  // S06.24: the Office review attention alert is high priority for everyone and asks nobody to act.
+  it('job.review_attention → INTERRUPT for the lanes and the copies, nobody asked to act, and no role list', () => {
+    const r = resolveRecipients({ ...base, verb: 'job.review_attention', actorId: 'actor1',
+      entity: { id: 'j1', lane_one_ids: ['sales2'], lane_two_ids: ['rev1', 'actor1'], copy_ids: ['boss1'] } });
+    expect(r.map(x => x.userId).sort()).toEqual(['boss1', 'rev1', 'sales2']);
+    expect(r.every(x => x.priority === 'INTERRUPT' && x.needs_action === false)).toBe(true);
+    expect(resolveRecipients({ ...base, verb: 'job.review_attention', entity: { id: 'j1', assignee_ids: ['tech1'] } })).toEqual([]);
+  });
+
+  // A cancelled job interrupts its crew, whichever lane found them, and tells everyone else the way it always did.
+  it('job.cancelled → the people the chain found; the crew interrupts, everyone else is FEED, nobody asked to act, no role list', () => {
+    const r = resolveRecipients({ ...base, verb: 'job.cancelled', actorId: 'actor1',
+      entity: { id: 'j1', crew_ids: ['tech1', 'tech2'], lane_one_ids: ['tech1', 'sales1', 'actor1'], lane_two_ids: ['disp2', 'tech2'], copy_ids: ['boss1'] } });
     expect(r).toContainEqual({ userId: 'tech1', priority: 'INTERRUPT', needs_action: false });
+    expect(r).toContainEqual({ userId: 'tech2', priority: 'INTERRUPT', needs_action: false });
+    expect(r).toContainEqual({ userId: 'sales1', priority: 'FEED', needs_action: false });
+    expect(r).toContainEqual({ userId: 'disp2', priority: 'FEED', needs_action: false });
+    expect(r).toContainEqual({ userId: 'boss1', priority: 'FEED', needs_action: false });
+    expect(r.map(x => x.userId).sort()).toEqual(['boss1', 'disp2', 'sales1', 'tech1', 'tech2']);
+    expect(r.map(x => x.userId)).not.toContain('admin1');
+    expect(r.map(x => x.userId)).not.toContain('disp1');
   });
 
-  it('job.reopened → dispatcher FEED + assignees FEED', () => {
-    const r = resolveRecipients({ ...base, verb: 'job.reopened',
-      entity: { id: 'j1', assignee_ids: ['tech1'] } });
-    expect(r).toContainEqual({ userId: 'disp1', priority: 'FEED', needs_action: false });
-    expect(r).toContainEqual({ userId: 'tech1', priority: 'FEED', needs_action: false });
+  it('job.cancelled with no lanes in the entity reaches nobody, whatever the roles', () => {
+    expect(resolveRecipients({ ...base, verb: 'job.cancelled', entity: { id: 'j1', assignee_ids: ['tech1'], sold_by_id: 'sales1' } })).toEqual([]);
+  });
+
+  it('job.reopened → the people the chain found, FEED, nobody asked to act, and no role list', () => {
+    const r = resolveRecipients({ ...base, verb: 'job.reopened', actorId: 'actor1',
+      entity: { id: 'j1', crew_ids: ['tech1'], lane_one_ids: ['tech1', 'sales1'], lane_two_ids: ['rev1', 'actor1'], copy_ids: ['boss1'] } });
+    expect(r.map(x => x.userId).sort()).toEqual(['boss1', 'rev1', 'sales1', 'tech1']);
+    expect(r.every(x => x.priority === 'FEED' && x.needs_action === false)).toBe(true);
+    expect(resolveRecipients({ ...base, verb: 'job.reopened', entity: { id: 'j1', assignee_ids: ['tech1'] } })).toEqual([]);
   });
 });
 
 describe('resolveRecipients — BILLING verbs', () => {
-  it('billing.partial_payment → admin + dispatcher + customer_owner_id FEED', () => {
-    const r = resolveRecipients({ ...base, verb: 'billing.partial_payment',
-      entity: { id: 'i1', customer_owner_id: 'sales1' } });
-    expect(r).toContainEqual({ userId: 'admin1', priority: 'FEED', needs_action: false });
-    expect(r).toContainEqual({ userId: 'disp1', priority: 'FEED', needs_action: false });
-    expect(r).toContainEqual({ userId: 'sales1', priority: 'FEED', needs_action: false });
+  // S06.28: every invoice and payment alert is addressed by the chain's lanes (invoiceBillingAlerts.ts has already asked who is
+  // active, can open the invoice and is not the actor). A role list and a customer owner are never read.
+  const chain = { lane_one_ids: ['sales1'], lane_two_ids: ['rev1'], copy_ids: ['boss1'] };
+  const roleListAndOwner = { customer_owner_id: 'sales2' };
+  const prioritiesOf = (verb: string) => {
+    const r = resolveRecipients({ ...base, verb, entity: { id: 'i1', ...roleListAndOwner, ...chain } });
+    expect(r.map(x => x.userId).sort(), `${verb}: only the chain is told`).toEqual(['boss1', 'rev1', 'sales1']);
+    return Object.fromEntries(r.map(x => [x.userId, `${x.priority}${x.needs_action ? '+action' : ''}`]));
+  };
+
+  it.each([
+    'billing.payment_received', 'billing.partial_payment', 'billing.voided', 'billing.credit_applied',
+    'billing.bank_payment_started', 'billing.bank_payment_cleared', 'billing.dispute_closed',
+  ])('%s → the whole chain on the feed, nobody asked to act', (verb) => {
+    expect(prioritiesOf(verb)).toEqual({ sales1: 'FEED', rev1: 'FEED', boss1: 'FEED' });
   });
 
-  it('billing.invoice_overdue → admin FEED+needs_action + customer_owner FEED+needs_action', () => {
-    const r = resolveRecipients({ ...base, verb: 'billing.invoice_overdue',
-      entity: { id: 'i1', customer_owner_id: 'sales1' } });
-    expect(r).toContainEqual({ userId: 'admin1', priority: 'FEED', needs_action: true });
-    expect(r).toContainEqual({ userId: 'sales1', priority: 'FEED', needs_action: true });
-    expect(r.find(x => x.userId === 'disp1')).toBeUndefined();
+  it.each(['billing.invoice_overdue', 'billing.invoice_due_soon'])(
+    '%s → the people who must act are asked to send a reminder (FEED + needs_action); the record\'s people and the copies are only told',
+    (verb) => {
+      expect(prioritiesOf(verb)).toEqual({ sales1: 'FEED', rev1: 'FEED+action', boss1: 'FEED' });
+    },
+  );
+
+  it.each([
+    'billing.refunded', 'billing.disputed', 'billing.chargeback', 'billing.payment_unrecorded',
+    'billing.bank_payment_failed', 'billing.refund_failed',
+  ])('%s → the people who must act and the copies are interrupted; the record\'s own people are told on the feed', (verb) => {
+    expect(prioritiesOf(verb)).toEqual({ sales1: 'FEED', rev1: 'INTERRUPT', boss1: 'INTERRUPT' });
   });
 
-  it('billing.invoice_due_soon → admin FEED+needs_action + customer_owner FEED+needs_action', () => {
-    const r = resolveRecipients({ ...base, verb: 'billing.invoice_due_soon',
-      entity: { id: 'i1', customer_owner_id: 'sales2' } });
-    expect(r).toContainEqual({ userId: 'admin1', priority: 'FEED', needs_action: true });
-    expect(r).toContainEqual({ userId: 'sales2', priority: 'FEED', needs_action: true });
+  it('a person the chain found in more than one lane is one person: INTERRUPT wins and the reminder flag is kept', () => {
+    const interrupted = resolveRecipients({ ...base, verb: 'billing.refunded', entity: { lane_one_ids: ['x'], lane_two_ids: ['x'] } });
+    expect(interrupted).toEqual([{ userId: 'x', priority: 'INTERRUPT', needs_action: false }]);
+    const reminded = resolveRecipients({ ...base, verb: 'billing.invoice_overdue', entity: { lane_one_ids: ['x'], copy_ids: ['x'], lane_two_ids: ['x'] } });
+    expect(reminded).toEqual([{ userId: 'x', priority: 'FEED', needs_action: true }]);
   });
 
-  it('billing.refunded → admin INTERRUPT', () => {
-    const r = resolveRecipients({ ...base, verb: 'billing.refunded',
-      entity: { id: 'i1' } });
-    expect(r).toContainEqual({ userId: 'admin1', priority: 'INTERRUPT', needs_action: false });
-    expect(r.find(x => x.userId === 'disp1')).toBeUndefined();
+  it('the person who did it is never told', () => {
+    const r = resolveRecipients({ ...base, verb: 'billing.refunded', actorId: 'rev1', entity: { ...chain } });
+    expect(r.map(x => x.userId)).not.toContain('rev1');
   });
 
-  it('billing.disputed → admin INTERRUPT', () => {
-    const r = resolveRecipients({ ...base, verb: 'billing.disputed',
-      entity: { id: 'i1' } });
-    expect(r).toContainEqual({ userId: 'admin1', priority: 'INTERRUPT', needs_action: false });
+  it('a billing alert with nobody on the chain reaches nobody: there is no role list to fall back on', () => {
+    for (const verb of BILLING_VERBS_ON_THE_CHAIN) {
+      expect(resolveRecipients({ ...base, verb, entity: { id: 'i1', ...roleListAndOwner } }), verb).toEqual([]);
+    }
   });
 
-  it('billing.chargeback → admin INTERRUPT', () => {
-    const r = resolveRecipients({ ...base, verb: 'billing.chargeback',
-      entity: { id: 'i1' } });
-    expect(r).toContainEqual({ userId: 'admin1', priority: 'INTERRUPT', needs_action: false });
+  it('every billing alert that moved to the chain is in the set that is never handed a role list, and the set holds nothing that still reads one', () => {
+    for (const verb of BILLING_VERBS_ON_THE_CHAIN) expect(VERBS_WITHOUT_ROLE_LISTS.has(verb), verb).toBe(true);
   });
 
-  it('billing.voided → admin FEED', () => {
-    const r = resolveRecipients({ ...base, verb: 'billing.voided',
-      entity: { id: 'i1' } });
-    expect(r).toContainEqual({ userId: 'admin1', priority: 'FEED', needs_action: false });
-    expect(r.find(x => x.userId === 'disp1')).toBeUndefined();
-    expect(r.find(x => x.userId === 'sales1')).toBeUndefined();
-  });
-
-  it('billing.credit_applied → admin FEED', () => {
-    const r = resolveRecipients({ ...base, verb: 'billing.credit_applied',
-      entity: { id: 'i1' } });
-    expect(r).toContainEqual({ userId: 'admin1', priority: 'FEED', needs_action: false });
-  });
-
-  // ── payments-account lifecycle (Task 1.8) — recipients = org ADMIN only ──
-  it('billing.payments_activated → admin FEED, no dispatcher/sales/technician', () => {
-    const r = resolveRecipients({ ...base, verb: 'billing.payments_activated', entity: {} });
-    expect(r).toEqual([{ userId: 'admin1', priority: 'FEED', needs_action: false }]);
-  });
-
-  it('billing.payouts_activated → admin FEED, no dispatcher/sales/technician', () => {
-    const r = resolveRecipients({ ...base, verb: 'billing.payouts_activated', entity: {} });
-    expect(r).toEqual([{ userId: 'admin1', priority: 'FEED', needs_action: false }]);
-  });
-
-  it('billing.payments_action_needed → admin INTERRUPT + needs_action, no dispatcher/sales/technician', () => {
-    const r = resolveRecipients({ ...base, verb: 'billing.payments_action_needed', entity: {} });
-    expect(r).toEqual([{ userId: 'admin1', priority: 'INTERRUPT', needs_action: true }]);
-  });
-
-  it('billing.payments_paused → admin INTERRUPT + needs_action, no dispatcher/sales/technician', () => {
-    const r = resolveRecipients({ ...base, verb: 'billing.payments_paused', entity: {} });
-    expect(r).toEqual([{ userId: 'admin1', priority: 'INTERRUPT', needs_action: true }]);
-  });
-
-  // ── deferred-bank first-payment nudge (Task 1.9) — recipients = org ADMIN only ──
-  it('billing.payouts_pending_first_payment → admin FEED, no dispatcher/sales/technician', () => {
-    const r = resolveRecipients({ ...base, verb: 'billing.payouts_pending_first_payment', entity: {} });
-    expect(r).toEqual([{ userId: 'admin1', priority: 'FEED', needs_action: false }]);
-  });
-
-  // ── within-ceiling rate-change notice (Task 4.3) — recipients = org ADMIN only ──
-  it('billing.platform_fee_rate_changed → admin FEED, no dispatcher/sales/technician', () => {
-    const r = resolveRecipients({ ...base, verb: 'billing.platform_fee_rate_changed', entity: {} });
-    expect(r).toEqual([{ userId: 'admin1', priority: 'FEED', needs_action: false }]);
+  // S06.29: the payments-account alerts have no record. The caller (noRecordAlerts.ts) walked the chain from its second step, so
+  // the people who must act arrive in lane_two_ids and nobody is found by a role. Not one of them reads a role list.
+  it.each([
+    ['billing.payments_activated', 'FEED', false], ['billing.payouts_activated', 'FEED', false], ['billing.payouts_pending_first_payment', 'FEED', false],
+    ['billing.payments_action_needed', 'INTERRUPT', true], ['billing.payments_paused', 'INTERRUPT', true], ['billing.payments_disconnected', 'INTERRUPT', true],
+  ])('%s → the people the chain found, %s, needs action %s, and no role list', (verb, priority, needsAction) => {
+    const r = resolveRecipients({ ...base, verb, entity: { lane_two_ids: ['holder1', 'holder2'] } });
+    expect(r).toEqual([
+      { userId: 'holder1', priority, needs_action: needsAction },
+      { userId: 'holder2', priority, needs_action: needsAction },
+    ]);
+    expect(VERBS_WITHOUT_ROLE_LISTS.has(verb), verb).toBe(true);
   });
 });
 
 describe('resolveRecipients — TEAM verbs', () => {
-  it('team.invite_accepted → admin FEED', () => {
-    const r = resolveRecipients({ ...base, verb: 'team.invite_accepted',
-      entity: { user_id: 'tech1' } });
-    expect(r).toContainEqual({ userId: 'admin1', priority: 'FEED', needs_action: false });
-    expect(r.find(x => x.userId === 'disp1')).toBeUndefined();
+  it('team.invite_accepted → the people the chain found on the feed, never the Admin role list, and never the person who accepted', () => {
+    const r = resolveRecipients({ ...base, verb: 'team.invite_accepted', actorId: 'newbie',
+      entity: { user_id: 'tech1', lane_two_ids: ['holder1', 'newbie'] } });
+    expect(r).toEqual([{ userId: 'holder1', priority: 'FEED', needs_action: false }]);
+    expect(VERBS_WITHOUT_ROLE_LISTS.has('team.invite_accepted')).toBe(true);
   });
 });
 
 describe('resolveRecipients — INVENTORY verbs', () => {
-  it('inventory.stock_approval_requested → admin INTERRUPT + needs_action', () => {
+  it('inventory.stock_approval_requested → the people the chain found, INTERRUPT + needs_action, never the Admin role list', () => {
     const r = resolveRecipients({ ...base, verb: 'inventory.stock_approval_requested',
-      entity: { id: 'sr1' } });
-    expect(r).toEqual([{ userId: 'admin1', priority: 'INTERRUPT', needs_action: true }]);
+      entity: { id: 'sr1', lane_two_ids: ['holder1'] } });
+    expect(r).toEqual([{ userId: 'holder1', priority: 'INTERRUPT', needs_action: true }]);
   });
 
-  it('inventory.low_stock → admin + dispatcher FEED', () => {
-    const r = resolveRecipients({ ...base, verb: 'inventory.low_stock',
-      entity: { id: 'item1' } });
-    expect(r.map(x => x.userId).sort()).toEqual(['admin1', 'disp1']);
-    r.forEach(rec => expect(rec.priority).toBe('FEED'));
-  });
+  it.each(['inventory.low_stock', 'inventory.backorder', 'inventory.staging_no_area', 'inventory.po_partial'])(
+    '%s → the people the chain found on the feed, nobody asked to act, never the Admin or Dispatcher role list',
+    (verb) => {
+      const r = resolveRecipients({ ...base, verb, entity: { id: 'item1', lane_two_ids: ['holder1', 'holder2'] } });
+      expect(r).toEqual([
+        { userId: 'holder1', priority: 'FEED', needs_action: false },
+        { userId: 'holder2', priority: 'FEED', needs_action: false },
+      ]);
+      expect(VERBS_WITHOUT_ROLE_LISTS.has(verb), verb).toBe(true);
+    },
+  );
 
-  it('inventory.backorder → admin + dispatcher FEED', () => {
-    const r = resolveRecipients({ ...base, verb: 'inventory.backorder',
-      entity: { id: 'item1' } });
-    expect(r.map(x => x.userId).sort()).toEqual(['admin1', 'disp1']);
-  });
-
-  it('inventory.staging_ready → admin + dispatcher FEED', () => {
-    const r = resolveRecipients({ ...base, verb: 'inventory.staging_ready',
-      entity: { id: 'item1' } });
-    expect(r.map(x => x.userId).sort()).toEqual(['admin1', 'disp1']);
-  });
-
-  it('inventory.staging_no_area → admin + dispatcher FEED', () => {
-    const r = resolveRecipients({ ...base, verb: 'inventory.staging_no_area',
-      entity: { id: 'item1' } });
-    expect(r.map(x => x.userId).sort()).toEqual(['admin1', 'disp1']);
-  });
-
-  it('inventory.po_partial → admin + dispatcher FEED', () => {
-    const r = resolveRecipients({ ...base, verb: 'inventory.po_partial',
-      entity: { id: 'item1' } });
-    expect(r.map(x => x.userId).sort()).toEqual(['admin1', 'disp1']);
+  it('a moved inventory alert with nobody on the chain reaches nobody: there is no role list to fall back on', () => {
+    for (const verb of ['inventory.stock_approval_requested', 'inventory.low_stock', 'inventory.backorder', 'inventory.staging_no_area', 'inventory.po_partial']) {
+      expect(resolveRecipients({ ...base, verb, entity: { id: 'item1' } }), verb).toEqual([]);
+    }
   });
 });
 
@@ -386,19 +448,17 @@ describe('resolveRecipients — SECURITY verbs', () => {
 
 describe('resolveRecipients — de-dup and priority merging', () => {
   it('INTERRUPT wins over FEED when the same user appears in two roles', () => {
-    // tech1 is both an assignee (INTERRUPT in job.cancelled) and a SALES rep
-    const rh = { ADMIN: ['admin1'], DISPATCHER: ['disp1'], SALES: ['tech1'], TECHNICIAN: ['tech1'] };
-    const r = resolveRecipients({ ...base, roleHolders: rh, verb: 'job.cancelled',
-      entity: { id: 'j1', assignee_ids: ['tech1'], sold_by_id: 'tech1' } });
+    // tech1 is both a crew member (INTERRUPT in job.cancelled) and found by every lane (FEED on its own)
+    const r = resolveRecipients({ ...base, verb: 'job.cancelled',
+      entity: { id: 'j1', crew_ids: ['tech1'], lane_one_ids: ['tech1'], lane_two_ids: ['tech1'], copy_ids: ['tech1'] } });
     const entry = r.find(x => x.userId === 'tech1');
     expect(entry).toBeDefined();
     expect(entry!.priority).toBe('INTERRUPT');
   });
 
-  it('needs_action ORs: if either slot has needs_action the merged result does too', () => {
-    // Use admin who is both admin (FEED, no action on billing.invoice_overdue) — just verify directly
+  it('needs_action ORs: a person found by two lanes keeps the flag the lane that asked them to act gave', () => {
     const r = resolveRecipients({ ...base, verb: 'billing.invoice_overdue',
-      entity: { id: 'i1', customer_owner_id: 'admin1' } }); // admin is also customer_owner
+      entity: { id: 'i1', lane_one_ids: ['admin1'], lane_two_ids: ['admin1'] } }); // the person is the record's own AND must act
     const entry = r.find(x => x.userId === 'admin1');
     expect(entry).toBeDefined();
     expect(entry!.needs_action).toBe(true);
@@ -429,7 +489,6 @@ const fullEntity: Record<string, unknown> = {
   commission_owner_id: EVERYONE,
   previous_owner_id: EVERYONE,
   sold_by_id: EVERYONE,
-  customer_owner_id: EVERYONE,
   thread_assignee_id: EVERYONE,
   created_by_id: EVERYONE,
   user_id: EVERYONE,
@@ -441,10 +500,10 @@ const fullEntity: Record<string, unknown> = {
   watcher_ids: [EVERYONE],
   removed_ids: [EVERYONE],
   recipient_ids: [EVERYONE],
-  approver_ids: [EVERYONE],
+  lane_one_ids: [EVERYONE],
+  lane_two_ids: [EVERYONE],
+  copy_ids: [EVERYONE],
 };
-
-const everyRole = { ADMIN: [EVERYONE], DISPATCHER: [EVERYONE], SALES: [EVERYONE], TECHNICIAN: [EVERYONE] };
 
 const allVerbs = Object.keys(VERB_RULES) as KnownVerb[];
 const nonSelfVerbs = allVerbs.filter((v) => VERB_RULES[v].family !== 'self');
@@ -461,7 +520,7 @@ describe('resolveRecipients - Rule 0 across every verb', () => {
   it('with the actor seated in every recipient field, no non-self verb returns anyone', () => {
     for (const verb of nonSelfVerbs) {
       const r = resolveRecipients({
-        verb, organizationId: 'org1', actorId: EVERYONE, entity: fullEntity, roleHolders: everyRole,
+        verb, organizationId: 'org1', actorId: EVERYONE, entity: fullEntity,
       });
       expect(r, `${verb} told the actor about their own action`).toEqual([]);
     }
@@ -470,7 +529,7 @@ describe('resolveRecipients - Rule 0 across every verb', () => {
   it('with a different actor, every non-self verb returns at least one recipient', () => {
     for (const verb of nonSelfVerbs) {
       const r = resolveRecipients({
-        verb, organizationId: 'org1', actorId: 'someone-else', entity: fullEntity, roleHolders: everyRole,
+        verb, organizationId: 'org1', actorId: 'someone-else', entity: fullEntity,
       });
       const reason = REACHES_NOBODY_UNDER_A_FULL_FIXTURE[verb];
       if (reason) {
@@ -488,12 +547,13 @@ describe('resolveRecipients - Rule 0 across every verb', () => {
 
   // The timing axis is a label, not a branch. Both cron reminders go through exactly the same
   // dedupe() call as the other 59 verbs; a null actor simply gives it nothing to drop.
-  it('a time-driven invoice reminder resolves to the admins and the commission owner with a null actor', () => {
+  it('a time-driven invoice reminder resolves to the people the chain found with a null actor, and asks the people who must act to send it', () => {
     for (const verb of ['billing.invoice_overdue', 'billing.invoice_due_soon']) {
       const r = resolveRecipients({ ...base, verb, actorId: null,
-        entity: { id: 'i1', customer_owner_id: 'sales1' } });
-      expect(r.map((x) => x.userId).sort(), verb).toEqual(['admin1', 'sales1']);
-      expect(r.every((x) => x.needs_action), `${verb} carries SEND_REMINDER`).toBe(true);
+        entity: { id: 'i1', lane_one_ids: ['sales1'], lane_two_ids: ['rev1'] } });
+      expect(r.map((x) => x.userId).sort(), verb).toEqual(['rev1', 'sales1']);
+      expect(r.find((x) => x.userId === 'rev1')!.needs_action, `${verb} carries SEND_REMINDER for who must act`).toBe(true);
+      expect(r.find((x) => x.userId === 'sales1')!.needs_action).toBe(false);
     }
   });
 
@@ -506,8 +566,8 @@ describe('resolveRecipients - Rule 0 across every verb', () => {
 
     const task = resolveRecipients({ ...base, verb: 'task.completed', actorId: completer,
       entity: { id: 't1', assignee_ids: ['tech1', 'tech2'], watcher_ids: ['sales1'] } });
-    const job = resolveRecipients({ ...base, verb: 'job.completed', actorId: completer,
-      entity: { id: 'j1', assignee_ids: ['tech1', 'tech2'], sold_by_id: 'sales1' } });
+    const job = resolveRecipients({ ...base, verb: 'job.started', actorId: completer,
+      entity: { id: 'j1', lane_one_ids: ['tech1', 'tech2', 'sales1'], lane_two_ids: ['disp1'] } });
 
     expect(task.map((x) => x.userId)).not.toContain(completer);
     expect(job.map((x) => x.userId)).not.toContain(completer);
@@ -515,7 +575,7 @@ describe('resolveRecipients - Rule 0 across every verb', () => {
     // alone rather than the whole roster falling out.
     expect(task.map((x) => x.userId)).toContain('tech2');
     expect(job.map((x) => x.userId)).toContain('tech2');
-    // The declared difference: the job reaches dispatch, the task does not.
+    // The declared difference: the job reaches whoever the chain found (here its Dispatcher), the task does not.
     expect(job.map((x) => x.userId)).toContain('disp1');
     expect(task.map((x) => x.userId)).not.toContain('disp1');
   });
@@ -524,7 +584,7 @@ describe('resolveRecipients - Rule 0 across every verb', () => {
     expect(selfVerbs.length).toBeGreaterThan(0);
     for (const verb of selfVerbs) {
       const r = resolveRecipients({
-        verb, organizationId: 'org1', actorId: EVERYONE, entity: fullEntity, roleHolders: everyRole,
+        verb, organizationId: 'org1', actorId: EVERYONE, entity: fullEntity,
       });
       expect(r.map((x) => x.userId), `${verb} dropped its own recipient`).toContain(EVERYONE);
     }
@@ -533,44 +593,134 @@ describe('resolveRecipients - Rule 0 across every verb', () => {
 
 // ──────────────────────────────────────────────────────────────────────────────
 
-// communication.email_inbound — a customer reply landing in the shared inbox.
-//
-// A thread is owned ("assigned to one, visible to all", slice 8b), so the reply
-// goes to whoever holds it rather than interrupting the whole office. Only when
-// nobody holds it does it fall back to the room, matching sms_inbound.
+// job.visit_finished (S04.16): the caller walks M6's two-lane chain and hands over the people; the resolver
+// merges them, asks only lane 2 to act, and reads no role list.
+describe('resolveRecipients - job.visit_finished', () => {
+  const entity = { lane_one_ids: ['tech2', 'sales1'], lane_two_ids: ['disp1'], copy_ids: ['admin2'] };
+
+  it('tells every lane and the copy holders, and reads no role list', () => {
+    const r = resolveRecipients({ ...base, verb: 'job.visit_finished', actorId: 'tech1', entity });
+    expect(r.map((x) => x.userId).sort()).toEqual(['admin2', 'disp1', 'sales1', 'tech2']);
+    // The role lists hold admin1, sales2, tech1 and disp1: only the one named by the chain is told.
+    expect(r.map((x) => x.userId)).not.toContain('admin1');
+  });
+
+  it('asks only lane 2 to act, and only when every visit is finished', () => {
+    const last = resolveRecipients({ ...base, verb: 'job.visit_finished', actorId: 'tech1', entity: { ...entity, all_finished: true } });
+    expect(last.filter((x) => x.needs_action).map((x) => x.userId)).toEqual(['disp1']);
+    const notLast = resolveRecipients({ ...base, verb: 'job.visit_finished', actorId: 'tech1', entity });
+    expect(notLast.some((x) => x.needs_action)).toBe(false);
+  });
+
+  it('merges a person found by two lanes into one alert that asks them to act', () => {
+    const r = resolveRecipients({
+      ...base, verb: 'job.visit_finished', actorId: 'tech1',
+      entity: { lane_one_ids: ['disp1'], lane_two_ids: ['disp1'], copy_ids: ['disp1'], all_finished: true },
+    });
+    expect(r).toEqual([{ userId: 'disp1', priority: 'FEED', needs_action: true }]);
+  });
+});
+
+// mailbox.address_needed and mailbox.address_needed_admin (S10.3): the caller has already found the new user and
+// the active holders of Edit users; the resolver tells exactly those people and reads no role list.
+describe('resolveRecipients - mailbox.address_needed', () => {
+  it.each(['mailbox.address_needed', 'mailbox.address_needed_admin'])('%s tells the pre-resolved people and nobody from the role lists', (verb) => {
+    const r = resolveRecipients({ ...base, verb, actorId: null, entity: { recipient_ids: ['u1', 'u2'] } });
+    expect(r).toEqual([
+      { userId: 'u1', priority: 'FEED', needs_action: false },
+      { userId: 'u2', priority: 'FEED', needs_action: false },
+    ]);
+  });
+
+  it('tells nobody when no one was resolved', () => {
+    expect(resolveRecipients({ ...base, verb: 'mailbox.address_needed', actorId: null, entity: {} })).toEqual([]);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+
+// communication.email_inbound (S10.10) - a customer's reply to an email. The caller walked M6's chain for the conversation (the holder
+// of the mailbox it sits in, the person who sent the mail by hand, the record's people, the fallback and the copies) and ran them
+// through the single read of the conversation; the resolver only gives each of them a weight. The people the conversation is theirs
+// to answer interrupt; everyone else is told on the feed. No role list is read, so a company's Admins and Dispatchers hear of a reply
+// only when the chain named them.
 // ──────────────────────────────────────────────────────────────────────────────
 
 describe('resolveRecipients — communication.email_inbound', () => {
-  it('routes a reply to the thread assignee, and to nobody else', () => {
+  it('interrupts the conversation\'s own people and feeds the rest of the chain, lane by lane', () => {
     const r = resolveRecipients({ ...base, verb: 'communication.email_inbound',
-      entity: { id: 'em1', thread_assignee_id: 'tech1' } });
-    expect(r).toEqual([{ userId: 'tech1', priority: 'INTERRUPT', needs_action: false }]);
+      entity: { lane_one_ids: ['sender', 'crew1'], lane_two_ids: ['cover1'], copy_ids: ['copy1'], conversation_owner_ids: ['sender'] } });
+    expect(r).toEqual([
+      { userId: 'sender', priority: 'INTERRUPT', needs_action: false },
+      { userId: 'crew1', priority: 'FEED', needs_action: false },
+      { userId: 'cover1', priority: 'FEED', needs_action: false },
+      { userId: 'copy1', priority: 'FEED', needs_action: false },
+    ]);
   });
 
-  it('falls back to dispatcher + admin when the thread is unassigned', () => {
+  it('tells a person the chain found twice once, interrupting if they are the conversation\'s own', () => {
     const r = resolveRecipients({ ...base, verb: 'communication.email_inbound',
-      entity: { id: 'em1' } });
-    expect(r.map(x => x.userId).sort()).toEqual(['admin1', 'disp1']);
-    // The room gets a feed entry, not an interrupt - nobody owns this yet, so
-    // there is no one it is urgent FOR.
-    expect(r.find(x => x.priority === 'INTERRUPT')).toBeUndefined();
+      entity: { lane_one_ids: ['p1'], copy_ids: ['p1'], conversation_owner_ids: ['p1'] } });
+    expect(r).toEqual([{ userId: 'p1', priority: 'INTERRUPT', needs_action: false }]);
   });
 
-  it('does not also notify the room when the thread IS assigned', () => {
-    // The whole point of assignment. An assignee plus a broadcast would make
-    // ownership decorative.
-    const r = resolveRecipients({ ...base, verb: 'communication.email_inbound',
-      entity: { id: 'em1', thread_assignee_id: 'tech1' } });
-    expect(r.map(x => x.userId)).not.toContain('admin1');
-    expect(r.map(x => x.userId)).not.toContain('disp1');
+  it('rings nobody when the chain named nobody: there is no room to fall back to', () => {
+    expect(resolveRecipients({ ...base, verb: 'communication.email_inbound', entity: { thread_assignee_id: 'tech1' } })).toEqual([]);
+    expect(resolveRecipients({ ...base, verb: 'communication.email_inbound', entity: {} })).toEqual([]);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// communication.call_missed (S08.22) - a missed call or a voicemail. The caller found the people (the call's record, the holders of
+// All, the people linked to the number) and ran them through the access filter; the resolver only gives each of them the weight the
+// alert always had: interrupt, and a call back to make.
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('resolveRecipients - communication.call_missed', () => {
+  it('interrupts and asks for a call back, for each person the caller found', () => {
+    const r = resolveRecipients({ ...base, verb: 'communication.call_missed', entity: { recipient_ids: ['p1', 'p2'] } });
+    expect(r).toEqual([
+      { userId: 'p1', priority: 'INTERRUPT', needs_action: true },
+      { userId: 'p2', priority: 'INTERRUPT', needs_action: true },
+    ]);
   });
 
-  it('falls back to the room when the assignee is the actor', () => {
-    // dedupe() drops the actor. Without a fallback the reply would notify
-    // nobody at all - worse than notifying too many.
-    const r = resolveRecipients({ ...base, verb: 'communication.email_inbound', actorId: 'tech1',
-      entity: { id: 'em1', thread_assignee_id: 'tech1' } });
-    expect(r.map(x => x.userId).sort()).toEqual(['admin1', 'disp1']);
+  it('tells one person once even when found twice', () => {
+    const r = resolveRecipients({ ...base, verb: 'communication.call_missed', entity: { recipient_ids: ['p1', 'p1'] } });
+    expect(r).toEqual([{ userId: 'p1', priority: 'INTERRUPT', needs_action: true }]);
+  });
+
+  it('reads no role list: the Admin and Dispatcher holders handed in are not told, and nobody found means nobody told', () => {
+    const r = resolveRecipients({ ...base, verb: 'communication.call_missed', entity: { id: 'c1' } });
+    expect(r).toEqual([]);
+    expect(VERBS_WITHOUT_ROLE_LISTS.has('communication.call_missed')).toBe(true);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// communication.sms_inbound (S08.23) - an inbound text. The caller found the people (the text's record, the holders of All, the
+// people linked to the number and the person its reply is attributed to) and ran them through the access filter; the resolver only
+// gives each of them the weight the alert always had: a feed item, with nothing to do.
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('resolveRecipients - communication.sms_inbound', () => {
+  it('is a feed item that asks for nothing, for each person the caller found', () => {
+    const r = resolveRecipients({ ...base, verb: 'communication.sms_inbound', entity: { recipient_ids: ['p1', 'p2'] } });
+    expect(r).toEqual([
+      { userId: 'p1', priority: 'FEED', needs_action: false },
+      { userId: 'p2', priority: 'FEED', needs_action: false },
+    ]);
+  });
+
+  it('tells one person once even when found twice', () => {
+    const r = resolveRecipients({ ...base, verb: 'communication.sms_inbound', entity: { recipient_ids: ['p1', 'p1'] } });
+    expect(r).toEqual([{ userId: 'p1', priority: 'FEED', needs_action: false }]);
+  });
+
+  it('reads no role list: the Admin and Dispatcher holders handed in are not told, and nobody found means nobody told', () => {
+    const r = resolveRecipients({ ...base, verb: 'communication.sms_inbound', entity: { message_id: 'm1' } });
+    expect(r).toEqual([]);
+    expect(VERBS_WITHOUT_ROLE_LISTS.has('communication.sms_inbound')).toBe(true);
   });
 });
 

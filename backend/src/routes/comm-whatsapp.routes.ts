@@ -36,13 +36,13 @@ router.use(
 // section, so all four routes get the second gate.
 router.get('/whatsapp', canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), commController.listWhatsAppChats);
 router.post('/whatsapp', canDo('create', 'Communication'), canDo('access_inbox', 'Communication'), validate(commController.sendWhatsAppSchema), commController.sendWhatsApp);
-router.get('/whatsapp/:id', canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), commController.getWhatsAppChat);
 // #2049 slice 2 - the WhatsApp mirror of comm-threads.routes.ts's thread
 // read-state routes. Read-side rights only (never `update`), but
 // `access_inbox` stays on both - WhatsApp is section-only (R10), unlike SMS's
 // `read`-alone gate. `requireUuidParam` answers the same non-disclosing
 // `{"error":"Chat not found"}` a malformed :id would otherwise 500 on.
 const chatId = requireUuidParam('id', 'Chat not found');
+router.get('/whatsapp/:id', canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), chatId, commController.getWhatsAppChat);
 router.patch('/whatsapp/:id/read', canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), chatId, commController.markWhatsAppChatRead);
 router.patch('/whatsapp/:id/unread', canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), chatId, commController.markWhatsAppChatUnread);
 router.post('/whatsapp-chats', canDo('create', 'Communication'), canDo('access_inbox', 'Communication'), validate(commController.createWhatsAppChatSchema), commController.createWhatsAppChat);

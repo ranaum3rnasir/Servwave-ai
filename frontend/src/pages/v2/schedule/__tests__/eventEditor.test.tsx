@@ -19,13 +19,13 @@
  *     sat at different URLs; `preferV2Path` is a no-op shim now (see `uiV2.ts`),
  *     so the destinations are pinned here to catch it ever growing logic again.
  *
- *  2. CALL / TEXT ARE THE SHARED CONTACT ACTION (mobile slice 50). They used to be kit
- *     Buttons that assigned `window.location.href` to a `tel:` / `sms:` URL, with no href
- *     for a screen reader's link list. They are now `components/contact`'s explicit Call and
- *     Text buttons: in an org with the phone service Call opens the dialer pre-filled with
- *     the number and the visit's record (a button), Text opens the ServWave conversation
- *     (a link into the app); without it they are the device's own links, real anchors with an
- *     `href`. Same accessible names throughout.
+ *  2. CALL / TEXT FOLLOW THE CONTACT DISPLAY POLICY (Roles & Permissions, PRD 5, S05.3). They used to be kit
+ *     Buttons that assigned `window.location.href` to a `tel:` / `sms:` URL, then the shared contact action
+ *     decided on the ability. Now `components/contact/PhoneContactActions` decides from the person's switches and
+ *     the company's phone service: in a company with the phone service, Call opens the dialer pre-filled with the
+ *     number and the visit's record (a button) and Text opens the ServWave conversation (a link into the app);
+ *     without it they are the device's own links, real anchors with an `href`. Same accessible names throughout.
+ *     This harness is a company without the phone service unless a case says otherwise.
  */
 import { asWallClock } from '@/lib/schedule-tz';
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest';
@@ -35,7 +35,8 @@ import type { ComponentProps } from 'react';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderWithProviders, seedMySwitches } from '@/__tests__/helpers';
+import { catalogToggle } from '@/__tests__/support/backendSwitchCatalog';
 import { buildAbility } from '@/lib/ability';
 import api from '@/lib/axios';
 import type { SchedulableEvent } from '@/components/schedule/scheduleModel';
@@ -49,6 +50,14 @@ import { EventEditor } from '../components/eventEditor';
 const navSpy = vi.hoisted(() => vi.fn());
 // The dial handoff opens a window; the editor tests only watch that it was asked.
 vi.mock('@/lib/communication/phoneTabHandoff', () => ({ requestCall: vi.fn() }));
+
+// Whether the company has the phone service. This file's harness is a company without it unless a case says otherwise;
+// the contact display policy's own cases are in eventEditorContactPolicy.test.tsx.
+const phoneService = vi.hoisted(() => ({ value: false }));
+vi.mock('@/lib/entitlements', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/entitlements')>()),
+  useFeature: () => phoneService.value,
+}));
 
 vi.mock('react-router-dom', async (orig) => ({
   ...(await orig() as object),
@@ -188,7 +197,18 @@ function renderEditor(
   return { onSaveCrew, onSaveTime, onUnschedule, onComplete, onClose };
 }
 
+/** The person holds exactly these switches: drawn from the last known answer and confirmed by the "Me" request. */
+function holdSwitches(labels: string[]) {
+  const values = Object.fromEntries(labels.map((label) => [catalogToggle(label).key, true]));
+  seedMySwitches(values);
+  vi.mocked(api.get).mockImplementation(async (url: string) =>
+    url === '/api/permission-switches/me' ? { data: { admin_box: false, values } } : { data: MEMBERS },
+  );
+}
+
 beforeEach(() => {
+  localStorage.clear();
+  phoneService.value = false;
   vi.mocked(requestCall).mockClear();
   // MultiAssigneeSelect self-fetches the org-wide assignable roster for chip labels.
   // GET /api/users/assignable answers with a BARE array - no `{ users }` wrapper.
@@ -335,20 +355,23 @@ describe('v2 EventEditor', () => {
     expect(screen.queryByRole('button', { name: /Move to Unscheduled/ })).not.toBeInTheDocument();
   });
 
-  it('Mark Complete is a job-only, canComplete-only affordance and emits onComplete', () => {
+  it('Complete job is a job-only, canComplete-only affordance and emits onComplete', () => {
     const { onComplete } = renderEditor({ canComplete: true });
-    fireEvent.click(screen.getByRole('button', { name: /Mark Complete/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Complete job/ }));
     expect(onComplete).toHaveBeenCalledTimes(1);
     expect(vi.mocked(api.post)).not.toHaveBeenCalled();
   });
 
-  it('Mark Complete is absent without canComplete, on a walkthrough, and when readOnly', () => {
+  it('Complete job is absent without canComplete and on a walkthrough', () => {
     renderEditor();
-    expect(screen.queryByRole('button', { name: /Mark Complete/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Complete job/ })).not.toBeInTheDocument();
     renderEditor({ event: walkthrough, canComplete: true });
-    expect(screen.queryByRole('button', { name: /Mark Complete/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Complete job/ })).not.toBeInTheDocument();
+  });
+
+  it('Complete job follows canComplete alone: a read-only editor still offers it (S04.11)', () => {
     renderEditor({ canComplete: true, readOnly: true });
-    expect(screen.queryByRole('button', { name: /Mark Complete/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Complete job/ })).toBeInTheDocument();
   });
 
   // ── whole-popup click, Open-full-page icon, call/text affordances ──
@@ -455,16 +478,18 @@ describe('v2 EventEditor', () => {
   });
 
   it('offers call/text next to the customer name from the payload phone', () => {
+    holdSwitches(['Copy customer phone']);
     renderEditor();
-    // No phone service in this harness: the device's own call link, and the text link into the app.
+    // No phone service in this harness: the device's own call and text links, since the person may copy the number.
     expect(screen.getByLabelText('Call Acme Corp')).toHaveAttribute('href', 'tel:555-0199');
-    expect(screen.getByLabelText('Text Acme Corp')).toHaveAttribute('href', '/communication/text?to=555-0199');
+    expect(screen.getByLabelText('Text Acme Corp')).toHaveAttribute('href', 'sms:555-0199');
   });
 
-  it('with the phone service, Call opens the dialer attributed to the visit and the customer', () => {
-    const dialer = buildAbility([{ action: 'create', subject: 'Communication' }]);
-    const { onClose } = renderEditor({}, { ability: dialer });
-    fireEvent.click(screen.getByLabelText('Call Acme Corp'));
+  it('with the phone service, Call opens the dialer attributed to the visit and the customer', async () => {
+    phoneService.value = true;
+    holdSwitches(['Contact customers']);
+    const { onClose } = renderEditor();
+    fireEvent.click(await screen.findByLabelText('Call Acme Corp'));
     expect(vi.mocked(requestCall)).toHaveBeenCalledWith('555-0199', {
       jobId: 'job-1',
       customerName: 'Acme Corp',
@@ -474,13 +499,11 @@ describe('v2 EventEditor', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
-  it('a walkthrough call is attributed to its lead', () => {
-    const dialer = buildAbility([{ action: 'create', subject: 'Communication' }]);
-    renderEditor(
-      { event: { ...walkthrough, raw: { ...walkthrough.raw, customer: { phone: '555-0177' } } } },
-      { ability: dialer },
-    );
-    fireEvent.click(screen.getByLabelText('Call Acme Corp'));
+  it('a walkthrough call is attributed to its lead', async () => {
+    phoneService.value = true;
+    holdSwitches(['Contact customers']);
+    renderEditor({ event: { ...walkthrough, raw: { ...walkthrough.raw, customer: { phone: '555-0177' } } } });
+    fireEvent.click(await screen.findByLabelText('Call Acme Corp'));
     expect(vi.mocked(requestCall)).toHaveBeenCalledWith('555-0177', {
       leadId: 'lead-1',
       customerName: 'Acme Corp',
@@ -490,7 +513,7 @@ describe('v2 EventEditor', () => {
   it('crew contact affordances: crew member with a PAYLOAD phone gets call/text, phoneless member gets none (edit mode)', () => {
     renderEditor();
     expect(screen.getByLabelText('Call Alice Ng')).toHaveAttribute('href', 'tel:555-0101');
-    expect(screen.getByLabelText('Text Alice Ng')).toHaveAttribute('href', '/communication/text?to=555-0101');
+    expect(screen.getByLabelText('Text Alice Ng')).toHaveAttribute('href', 'sms:555-0101');
     expect(screen.queryByLabelText('Call Bob Ortiz')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Text Bob Ortiz')).not.toBeInTheDocument();
   });
@@ -513,13 +536,13 @@ describe('v2 EventEditor', () => {
     vi.mocked(api.get).mockResolvedValue({ data: [] });
     renderEditor({ members: [], readOnly: true });
     expect(screen.getByLabelText('Call Alice Ng')).toHaveAttribute('href', 'tel:555-0101');
-    expect(screen.getByLabelText('Text Alice Ng')).toHaveAttribute('href', '/communication/text?to=555-0101');
+    expect(screen.getByLabelText('Text Alice Ng')).toHaveAttribute('href', 'sms:555-0101');
   });
 
   it('crew contact affordances render in readOnly mode too', () => {
     renderEditor({ readOnly: true });
     expect(screen.getByLabelText('Call Alice Ng')).toHaveAttribute('href', 'tel:555-0101');
-    expect(screen.getByLabelText('Text Alice Ng')).toHaveAttribute('href', '/communication/text?to=555-0101');
+    expect(screen.getByLabelText('Text Alice Ng')).toHaveAttribute('href', 'sms:555-0101');
     expect(screen.queryByLabelText('Call Bob Ortiz')).not.toBeInTheDocument();
   });
 

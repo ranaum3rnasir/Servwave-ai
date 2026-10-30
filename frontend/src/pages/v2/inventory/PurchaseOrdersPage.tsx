@@ -7,21 +7,21 @@ import {
 import {
   HISTORY_PO_STATUSES, OPEN_PO_STATUSES,
   useBrands, useCategories, useCreatePO,
-  useInventoryItems, useInventoryJobs, useLocations,
-  usePurchaseOrders, useReceivePO, useVendors,
+  useInventoryItems, useInventoryJobs,
+  usePurchaseOrders, useVendors,
 } from '@/lib/api/inventory';
 import type {
   Brand, Category, Item, NewPOInput, PurchaseOrder, Vendor,
 } from '@/lib/api/inventory';
-import { extractApiError } from '@/lib/utils';
 import { downloadCSV, toCSV } from '@/lib/inventory/csv';
 import { useScopedRowSelection } from '@/lib/useScopedRowSelection';
 import { useAppAbility } from '@/contexts/AbilityContext';
+import { canSeePricing, canStartPurchaseOrder } from '@/lib/ability';
 
 // Legacy dialogs reused unchanged - each owns the receive / lifecycle
 // contracts and their server error handling.
 import { NewPODialog } from '@/components/inventory/NewPODialog';
-import { PODetailDialog, type ReceiveSubmit } from '@/components/inventory/PODetailDialog';
+import { PODetailDialog } from '@/components/inventory/PODetailDialog';
 import { POPreviewDialog } from '@/components/inventory/POPreviewDialog';
 
 import { DataTable } from '@/ui-kit/components/data/dataTable/dataTable';
@@ -37,6 +37,7 @@ import { toast } from '@/ui-kit/components/ui/sonner';
 import { useRecordVisit } from '../pageBreadcrumbs';
 import { TabPanel, TabStrip } from '../_shared/tabs';
 import { ExportBulkBar } from './components/exportBulkBar';
+import { usePurchaseOrderReceive } from './components/poReceive';
 import { buildHistoryPOColumns, buildOpenPOColumns, fmtDate, fmtInstant } from './poColumns';
 import { poTotal } from '@/lib/inventory/po-money';
 
@@ -92,7 +93,13 @@ const EMPTY_COPY: Record<Tab, { title: string; description: string }> = {
 export default function PurchaseOrdersPage() {
   useRecordVisit('inventory', 'Purchase Orders');
   const ability = useAppAbility();
-  const canCreatePO = ability.can('create', 'PurchaseOrder');
+  const canCreatePO = canStartPurchaseOrder(ability);
+  // Export purchase orders compiles into `export PurchaseOrder`. The files are built in the browser, so the buttons
+  // (and the checkboxes that exist only for Export selected) show only with it.
+  const canExport = ability.can('export', 'PurchaseOrder');
+  // Amounts are costs: without See financial data the server sends none, and the page draws no Total column and
+  // writes none to a file, rather than a $0 that reads like a value.
+  const canSeeCosts = canSeePricing(ability);
   const [tab, setTabRaw] = useState<Tab>('open'); // default landing tab
   const [search, setSearch] = useState('');
   const [vendorFilter, setVendorFilter] = useState('');
@@ -121,15 +128,13 @@ export default function PurchaseOrdersPage() {
   // into state.
   const { data: seedPOs } = usePurchaseOrders();
   const { data: seedJobs = [] } = useInventoryJobs();
-  const { data: seedVendors } = useVendors();
+  // The vendor list is read only by a person who may read vendors (S07.18); without it the page does not ask.
+  const { data: seedVendors } = useVendors(ability.can('read', 'Vendor'));
   const { data: seedItems } = useInventoryItems();
   const { data: seedCategories } = useCategories();
   const { data: seedBrands } = useBrands();
-  // Resolves the receive destination's display name for the success toast.
-  const { data: seedLocations = [] } = useLocations();
 
   const createPO = useCreatePO();
-  const receivePO = useReceivePO();
 
   // KPI click: clicking a different tile moves the active state to it (and
   // navigates to the Open tab, where all four buckets live); clicking the
@@ -249,64 +254,10 @@ export default function PurchaseOrdersPage() {
   }
 
   // NO optimistic fold - the server's {purchaseOrder} response is the truth.
-  function handleReceive(event: ReceiveSubmit) {
-    receivePO.mutate(event, {
-      onSuccess: (r) => {
-        const serverPO = r.purchaseOrder;
-        setAllPOs((prev) => prev.map((p) => (p.id === serverPO.id ? serverPO : p)));
-        setDetailPO(serverPO);
-        const locationName =
-          seedLocations.find((l) => l.id === event.destinationLocationId)?.name ?? 'stock';
-        toast(`✓ ${serverPO.poNumber} updated · received into ${locationName}`);
-      },
-      onError: (err) => {
-        // Matches the real server contracts (inv-po.controller.receivePurchaseOrder):
-        //   400 OVER_RECEIVE       -> { error, item_sku, qty_ordered, qty_received }
-        //   409 STAGED_PO          -> { error, message, staged_skus: string[] }
-        //   409 NO_STOCK_LOCATION  -> { error, message }
-        const data = (err as {
-          response?: {
-            data?: {
-              error?: string;
-              message?: string;
-              item_sku?: string;
-              qty_ordered?: number;
-              qty_received?: number;
-              staged_skus?: string[];
-            };
-          };
-        })?.response?.data;
-
-        if (data?.error === 'OVER_RECEIVE') {
-          toast.error("Received can't exceed ordered", {
-            description: data.item_sku
-              ? `${data.item_sku}: tried to receive ${data.qty_received ?? '?'}, only ${data.qty_ordered ?? '?'} ordered`
-              : undefined,
-          });
-          return;
-        }
-
-        if (data?.error === 'STAGED_PO') {
-          const skus = (data.staged_skus ?? []).join(', ');
-          toast.error('Receive staged items from the Staging view', {
-            description: skus ? `Staged line${skus.includes(',') ? 's' : ''}: ${skus}` : data.message,
-          });
-          return;
-        }
-
-        if (data?.error === 'NO_STOCK_LOCATION') {
-          // The dialog normally catches this before the POST (no destination
-          // options); the server is the authority when it slips through.
-          toast.error('No inventory location yet', {
-            description: data.message ?? 'Add an inventory location under Settings → Locations before receiving.',
-          });
-          return;
-        }
-
-        toast.error(extractApiError(err, 'Failed to save the receipt'));
-      },
-    });
-  }
+  const handleReceive = usePurchaseOrderReceive((serverPO) => {
+    setAllPOs((prev) => prev.map((p) => (p.id === serverPO.id ? serverPO : p)));
+    setDetailPO(serverPO);
+  });
 
   const openColumns = useMemo(
     () =>
@@ -315,14 +266,15 @@ export default function PurchaseOrdersPage() {
         isArrivingThisWeek,
         onPreview: setPreviewPO,
         onReceive: setDetailPO,
-        selectable: true,
+        selectable: canExport,
+        showTotal: canSeeCosts,
       }),
-    [],
+    [canExport, canSeeCosts],
   );
 
   const historyColumns = useMemo(
-    () => buildHistoryPOColumns({ onPreview: setPreviewPO, selectable: true }),
-    [],
+    () => buildHistoryPOColumns({ onPreview: setPreviewPO, selectable: canExport, showTotal: canSeeCosts }),
+    [canExport, canSeeCosts],
   );
 
   // Open rows sort late first, then by expected ASC.
@@ -388,6 +340,9 @@ export default function PurchaseOrdersPage() {
    * through `exportRows`, which is the shared `toCSV`/`downloadCSV` writer the
    * CSV export guard requires.
    */
+  /** The Total column of a file: present only for a person who may see costs, so a file never holds a $0 for an amount withheld. */
+  const totalColumn = (p: PurchaseOrder) => (canSeeCosts ? { Total: poTotal(p) } : {});
+
   const toOpenExportRow = (p: PurchaseOrder) => ({
     Status: p.status,
     'PO #': p.poNumber,
@@ -397,7 +352,7 @@ export default function PurchaseOrdersPage() {
     Ordered: fmtDate(p.orderedAt),
     Expected: fmtDate(p.expectedDate),
     Lines: p.lines.length,
-    Total: poTotal(p),
+    ...totalColumn(p),
     'Qty Ordered': p.lines.reduce((sum, l) => sum + l.qtyOrdered, 0),
     'Qty Received': p.lines.reduce((sum, l) => sum + l.qtyReceived, 0),
   });
@@ -414,7 +369,7 @@ export default function PurchaseOrdersPage() {
     // receivedAt − orderedAt, blank when either date is missing.
     'Received on': p.receivedAt ? fmtInstant(p.receivedAt) : '',
     'Lead time (days)': p.leadTimeDays ?? '',
-    Total: poTotal(p),
+    ...totalColumn(p),
   });
 
   function exportRows(rows: Record<string, unknown>[], name: string) {
@@ -537,10 +492,12 @@ export default function PurchaseOrdersPage() {
             search/filter row because that row is what scopes both grids;
             its selected-row sibling lives in each grid's own bulk bar and
             shares that grid's mapping. */}
-        <Button variant="outline" size="sm" onClick={handleExportTab}>
-          <Download />
-          Export
-        </Button>
+        {canExport && (
+          <Button variant="outline" size="sm" onClick={handleExportTab}>
+            <Download />
+            Export
+          </Button>
+        )}
       </div>
 
       <div className="pt-4">

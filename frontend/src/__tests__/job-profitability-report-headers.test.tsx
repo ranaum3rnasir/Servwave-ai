@@ -15,7 +15,11 @@ import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { renderWithProviders } from './helpers';
+import { buildAbility } from '@/lib/ability';
 import JobProfitabilityReport from '@/pages/v2/reports/reports/JobProfitabilityReport';
+
+/** The download button shows only with Export reports (S07.20), and these tests click it. */
+const CAN_EXPORT = buildAbility([{ action: 'export', subject: 'Report' }]);
 
 const hoisted = vi.hoisted(() => ({ exportCsvFile: vi.fn() }));
 
@@ -58,7 +62,7 @@ describe('Job Profitability report vocabulary', () => {
   });
 
   it('exports header cells that match the on-screen headers exactly', async () => {
-    renderWithProviders(<JobProfitabilityReport />);
+    renderWithProviders(<JobProfitabilityReport />, { ability: CAN_EXPORT });
     await screen.findByRole('columnheader', { name: /job/i });
 
     const headers = onScreenHeaders();
@@ -72,7 +76,7 @@ describe('Job Profitability report vocabulary', () => {
   });
 
   it('moves the labels and not the figures', async () => {
-    renderWithProviders(<JobProfitabilityReport />);
+    renderWithProviders(<JobProfitabilityReport />, { ability: CAN_EXPORT });
     await screen.findByRole('columnheader', { name: /job/i });
 
     // The fixture's ten jobs total $64,730 of revenue, and the thinnest-margin

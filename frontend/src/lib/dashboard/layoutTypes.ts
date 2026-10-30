@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import type { DashboardResponse } from '@/lib/api/dashboard';
+import type { DashboardTileData, DashboardTileMeta } from '@/lib/api/dashboard';
 
 export type WidgetSize = 'kpi' | 'third' | 'half' | 'full'; // grid spans 2 / 4 / 6 / 12 of 12
 export type TimeRange = 'today' | '7d' | '30d' | 'month' | 'all';
@@ -9,11 +9,19 @@ export interface LayoutItem {
   visible: boolean;
   size?: WidgetSize;
   range?: TimeRange;
+  /**
+   * `false` marks a stored tile the person cannot have right now (PRD 9). The server keeps it in the list so a save keeps
+   * it in place; the page never draws it, counts it or offers it in the picker (the layout hook leaves it out).
+   */
+  available?: false;
 }
 export type DashboardLayout = LayoutItem[];
 
 export interface WidgetRenderCtx {
-  data: DashboardResponse | undefined;
+  /** Each eligible tile's data, keyed by the tile's id (undefined until the first answer lands). */
+  data: DashboardTileData | undefined;
+  /** This tile's category, mode and label as the server sent them; the label shows next to a money tile's title. */
+  tile?: DashboardTileMeta;
   range: TimeRange;
   navigate: (to: string) => void;
   /**
@@ -27,7 +35,6 @@ export interface WidgetRenderCtx {
 export interface WidgetDef {
   id: string;
   title: string;
-  category: 'KPI' | 'Operations' | 'Financial' | 'Sales' | 'Pipeline' | 'Team';
   defaultSize: WidgetSize;
   defaultVisible: boolean;
   defaultRange?: TimeRange;

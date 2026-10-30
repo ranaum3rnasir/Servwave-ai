@@ -1,26 +1,25 @@
 /**
  * A lead leaving the pipeline takes its booked walkthroughs with it.
  *
- * Mark-lost and cancel-lead are the two doors that close a lead, and both run one shared step:
+ * Mark-lost is the door that closes a lead, and it runs one shared step:
  * every LIVE walkthrough visit of the lead is cancelled, in the transaction that moves the status
  * (every live trip, not only the earliest, since a lead can hold several booked trips). Finished and
  * already-cancelled trips are history and are left alone. The visit table below is an in-memory
  * stand-in that honours the `where` the writer uses (organization, lead, id, status set), so the
  * assertions are about which rows changed.
  *
- * Closing a lead always asks why (walkthrough lead-statuses PRD D11), so the generic PATCH does not
- * close a lead at all: a status of LOST or CANCELLED without a reason is refused with a 400 and
- * nothing written. The status menu opens the Mark Lost / Cancel Lead dialogs and closes the lead
- * through the two doors above.
+ * Closing a lead always asks why (walkthrough lead-statuses PRD D11), so the generic PATCH refuses a status of LOST
+ * without a reason with a 400 and nothing written, and refuses CANCELLED outright, as a value no lead has any more (S05.17, S05.18). A PATCH to LOST that carries a reason is the same close as
+ * Mark lost (S05.16): the same shared step cancels every live trip. The status menu itself opens the Mark Lost dialog
+ * and closes the lead through the dedicated door.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import {
-  mockAuthAs, authHeader, mockRoleGrantsWithout, mockScopedFindFirst, LEAD_FIXTURE, ALPHA_ORG_ID, ORG_B_ID, TEST_USERS,
+  mockAuthAs, authHeader, mockRoleGrantsWithout, mockRoleSwitches, mockScopedFindFirst, LEAD_FIXTURE, ALPHA_ORG_ID, ORG_B_ID, TEST_USERS,
 } from './helpers';
 import { prisma } from '../lib/prisma';
-import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 vi.mock('../services/automations/dispatch', () => ({ dispatchAutomationEvent: vi.fn() }));
@@ -110,11 +109,11 @@ describe('the lead status menu (PATCH /api/leads/:id) does not close a lead with
     expectNothingWritten();
   });
 
-  it('CANCELLED with no reason is a 400, and the lead, its trips and its History are untouched', async () => {
+  it('CANCELLED is a 400 whatever comes with it, and the lead, its trips and its History are untouched', async () => {
     const res = await patchStatus('CANCELLED');
 
     expect(res.status).toBe(400);
-    expect(res.body).toEqual({ error: 'Please give a reason.' });
+    expect(typeof res.body.error).toBe('string');
     expectNothingWritten();
   });
 
@@ -145,7 +144,43 @@ describe('the lead status menu (PATCH /api/leads/:id) does not close a lead with
   });
 });
 
-describe('the dedicated doors cancel every booked trip, not only the earliest', () => {
+describe('a PATCH to LOST that carries a reason cancels every booked trip, as Mark lost does (S05.16)', () => {
+  it('cancels the live trips and writes the reason and the lost date through the one status writer', async () => {
+    const res = await request(app)
+      .patch(`/api/leads/${LEAD_FIXTURE.id}`)
+      .set(authHeader('admin'))
+      .send({ status: 'LOST', lost_reason: 'Went elsewhere' });
+
+    expect(res.status).toBe(200);
+    expectLiveTripsCancelled('Lead marked as lost');
+    const write = mockPrisma.lead.updateMany.mock.calls.find(([a]: any[]) => a.data?.status === 'LOST')?.[0];
+    expect(write.data).toMatchObject({ status: 'LOST', lost_reason: 'Went elsewhere', lost_at: expect.any(Date) });
+  });
+
+  it('archives the open estimates', async () => {
+    await request(app)
+      .patch(`/api/leads/${LEAD_FIXTURE.id}`)
+      .set(authHeader('admin'))
+      .send({ status: 'LOST', lost_reason: 'Went elsewhere' });
+
+    expect(mockPrisma.estimate.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: 'ARCHIVED', cancelled_reason: 'Lead marked as lost' }) }),
+    );
+  });
+
+  it('refuses a blank reason, and a reason on any other status, writing nothing', async () => {
+    const blank = await request(app).patch(`/api/leads/${LEAD_FIXTURE.id}`).set(authHeader('admin')).send({ status: 'LOST', lost_reason: '   ' });
+    const stray = await request(app).patch(`/api/leads/${LEAD_FIXTURE.id}`).set(authHeader('admin')).send({ status: 'ESTIMATED', lost_reason: 'x' });
+
+    expect(blank.status).toBe(400);
+    expect(blank.body).toEqual({ error: 'Please give a reason.' });
+    expect(stray.status).toBe(400);
+    expect(mockPrisma.visit.updateMany).not.toHaveBeenCalled();
+    expect(mockPrisma.lead.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe('the dedicated door cancels every booked trip, not only the earliest', () => {
   it('mark-lost', async () => {
     const res = await request(app)
       .post(`/api/leads/${LEAD_FIXTURE.id}/mark-lost`)
@@ -154,16 +189,6 @@ describe('the dedicated doors cancel every booked trip, not only the earliest', 
 
     expect(res.status).toBe(200);
     expectLiveTripsCancelled('Lead marked as lost');
-  });
-
-  it('cancel', async () => {
-    const res = await request(app)
-      .post(`/api/leads/${LEAD_FIXTURE.id}/cancel`)
-      .set(authHeader('admin'))
-      .send({ cancelled_reason: 'Duplicate' });
-
-    expect(res.status).toBe(200);
-    expectLiveTripsCancelled('Lead cancelled');
   });
 });
 
@@ -211,11 +236,11 @@ describe('the status menu needs the same verb as the dedicated door', () => {
       expectNothingWritten();
     });
 
-    it('is past the permission check for CANCELLED, which it does hold, and asked for a reason instead', async () => {
+    it('is refused CANCELLED too: a lead closes one way, as Lost', async () => {
       const res = await patch({ status: 'CANCELLED' });
 
       expect(res.status).toBe(400);
-      expect(res.body).toEqual({ error: 'Please give a reason.' });
+      expect(typeof res.body.error).toBe('string');
       expectNothingWritten();
     });
 
@@ -234,37 +259,11 @@ describe('the status menu needs the same verb as the dedicated door', () => {
     });
   });
 
-  describe('a role that may edit leads but not cancel them', () => {
+  describe('a verb held only on the leads the user is attached to', () => {
     beforeEach(() => {
       mockAuthAs('dispatcher');
-      mockRoleGrantsWithout('DISPATCHER', ['cancel', 'Lead']);
-    });
-
-    it('is refused CANCELLED, and every booked trip stays booked', async () => {
-      const res = await patch({ status: 'CANCELLED' });
-
-      expect(res.status).toBe(403);
-      expect(res.body).toEqual({ error: 'Insufficient permissions' });
-      expectNothingWritten();
-    });
-
-    it('is past the permission check for LOST, which it does hold, and asked for a reason instead', async () => {
-      const res = await patch({ status: 'LOST' });
-
-      expect(res.status).toBe(400);
-      expect(res.body).toEqual({ error: 'Please give a reason.' });
-      expectNothingWritten();
-    });
-  });
-
-  describe('a verb held only on the leads the user owns', () => {
-    const OWN_LEAD = { lead_assignees: { some: { user_id: '{{userId}}' } } };
-    beforeEach(() => {
-      mockAuthAs('dispatcher');
-      (mockPrisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
-        ...DEFAULT_GRANTS.filter((g) => g.role === 'DISPATCHER' && !(g.action === 'mark_lost' && g.subject === 'Lead')),
-        { role: 'DISPATCHER', action: 'mark_lost', subject: 'Lead', conditions: OWN_LEAD },
-      ]);
+      // Leads scope Attached: Mark leads lost reaches only leads the person is on.
+      mockRoleSwitches({ leads_scope: 'attached' });
     });
 
     it('is refused LOST on a lead that is not theirs', async () => {
@@ -289,32 +288,31 @@ describe('the status menu needs the same verb as the dedicated door', () => {
   });
 
   describe('the default roles are unchanged', () => {
-    it('a dispatcher holds both verbs, so it is asked for a reason rather than refused', async () => {
+    it('a dispatcher holds Mark leads lost, so it is asked for a reason rather than refused', async () => {
       mockAuthAs('dispatcher');
 
       expect((await patch({ status: 'LOST' })).status).toBe(400);
-      expect((await patch({ status: 'CANCELLED' })).status).toBe(400);
       expectNothingWritten();
     });
 
-    it('an admin holds both verbs, so it is asked for a reason rather than refused', async () => {
+    it('an admin holds Mark leads lost, so it is asked for a reason rather than refused', async () => {
       mockAuthAs('admin');
       const send = (status: string) =>
         request(app).patch(`/api/leads/${LEAD_FIXTURE.id}`).set(authHeader('admin')).send({ status });
 
       expect((await send('LOST')).status).toBe(400);
-      expect((await send('CANCELLED')).status).toBe(400);
       expectNothingWritten();
     });
 
-    it('sales still gets a 200 with the status dropped, on its own lead, exactly as before', async () => {
+    it('sales is refused the status change on its own lead: Change lead status by hand is off in its preset', async () => {
       mockAuthAs('sales');
       mockScopedFindFirst(mockPrisma.lead.findFirst, { ...LEAD_FIXTURE, organization_id: ALPHA_ORG_ID });
 
       const res = await patch({ status: 'LOST' }, 'sales');
 
-      expect(res.status).toBe(200);
-      // The status is stripped before anything else, so it is neither refused nor applied.
+      expect(res.status).toBe(403);
+      expect(res.body).toEqual({ error: 'Insufficient permissions' });
+      // Refused before anything is written: neither the status nor the trips move.
       expect(statusOf('01').status).toBe('SCHEDULED');
       expect(mockPrisma.visit.updateMany).not.toHaveBeenCalled();
       expect(mockPrisma.lead.updateMany).not.toHaveBeenCalled();

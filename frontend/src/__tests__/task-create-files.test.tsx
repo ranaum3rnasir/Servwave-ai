@@ -361,7 +361,7 @@ describe.each(DIALOGS)('%s create dialog - limits are checked before create', (_
 
     const alerts = screen.getAllByRole('alert').map((a) => a.textContent);
     expect(alerts).toContain(
-      '"huge.pdf" is 26 MB — over the 25 MB limit, so it wasn\'t uploaded. Contact support to send it another way.',
+      '"huge.pdf" is 26MB — over the 25MB limit, so it wasn\'t uploaded. Contact support to send it another way.',
     );
     expect(alerts.some((a) => a?.startsWith('"setup.exe" can\'t be attached.'))).toBe(true);
 

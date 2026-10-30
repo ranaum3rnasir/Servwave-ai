@@ -1,13 +1,22 @@
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { render, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 import { vi, beforeEach } from 'vitest';
 import { TeamCard } from '@/components/jobs/TeamCard';
+import api from '@/lib/axios';
 
 // Ability gate for the dispatcher Assign/Change affordance (#291). Default: no grant —
 // the pre-existing display-only assertions stay meaningful.
 const canMock = vi.fn().mockReturnValue(false);
 vi.mock('@/contexts/AbilityContext', () => ({
   useAppAbility: () => ({ can: canMock }),
+}));
+
+// This file is about the card's layout, not its phone rules: the company has no phone service, so a crew phone
+// keeps the device's own links. The phone rules are in crew-card-contact-policy.test.tsx.
+vi.mock('@/lib/entitlements', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/entitlements')>()),
+  useFeature: () => false,
 }));
 
 // The dispatcher dialog mounts an AssigneeSelect (react-query) — silence network.
@@ -23,7 +32,9 @@ function renderCard(job: Omit<Parameters<typeof TeamCard>[0]['job'], 'id'>) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <TeamCard job={{ id: 'job-1', ...job }} />
+      <MemoryRouter>
+        <TeamCard job={{ id: 'job-1', ...job }} />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -35,7 +46,9 @@ function renderCardWithOnAssign(
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <TeamCard job={{ id: 'job-1', ...job }} onAssign={onAssign} />
+      <MemoryRouter>
+        <TeamCard job={{ id: 'job-1', ...job }} onAssign={onAssign} />
+      </MemoryRouter>
     </QueryClientProvider>,
   );
 }
@@ -43,11 +56,40 @@ function renderCardWithOnAssign(
 it('renders technician as "HVAC Technician" and hides Call when phone is missing', () => {
   renderCard({
     dispatcher: { first_name: 'Dana', last_name: 'Brooks', phone: '5551234567' },
-    estimate: { lead: { commission_owner: { first_name: 'Ryan', last_name: 'Cole' } } },
+    salesperson: { first_name: 'Ryan', last_name: 'Cole' },
     assignees: [{ user: { first_name: 'David', last_name: 'Martinez', role: 'TECHNICIAN', department: { name: 'HVAC' }, phone: null } }],
   });
   expect(screen.getByText('HVAC Technician')).toBeInTheDocument();
   expect(screen.queryByRole('link', { name: /call David/i })).toBeNull();   // tech has no phone
+});
+
+// ─── Sold By (S03.8) ────────────────────────────────────────────────────────
+
+// The card reads the Sold By stored on the job. A job built from several estimates and a service plan
+// visit job have a seller but no single estimate to walk, and a job with nobody credited shows "—"
+// even when the lead it came from has an Owner (conversion copies the Owner; it is not a live link).
+function soldBySection(): HTMLElement {
+  return screen.getByText('Sold By').closest('section') as HTMLElement;
+}
+
+it('shows the stored Sold By, not the Owner of the lead the job came from', () => {
+  renderCard({
+    salesperson: { id: 'u-seller', first_name: 'Ryan', last_name: 'Cole', role: 'SALES' },
+    estimate: { lead: { commission_owner: { id: 'u-owner', first_name: 'Olivia', last_name: 'Owner' } } },
+    assignees: [],
+  } as never);
+  expect(within(soldBySection()).getByText('Ryan Cole')).toBeInTheDocument();
+  expect(within(soldBySection()).queryByText('Olivia Owner')).toBeNull();
+});
+
+it('shows a dash for a job with no Sold By, even when its lead has an Owner', () => {
+  renderCard({
+    salesperson: null,
+    estimate: { lead: { commission_owner: { id: 'u-owner', first_name: 'Olivia', last_name: 'Owner' } } },
+    assignees: [],
+  } as never);
+  expect(within(soldBySection()).getByText('\u2014')).toBeInTheDocument();
+  expect(within(soldBySection()).queryByText('Olivia Owner')).toBeNull();
 });
 
 it('titles a technician with no department as just the role', () => {
@@ -136,5 +178,76 @@ it('opens the dispatcher dialog from the affordance', () => {
   const dispatcherSection = screen.getByText('Dispatcher').closest('section') as HTMLElement;
   fireEvent.click(within(dispatcherSection).getByRole('button', { name: 'Assign' }));
   expect(screen.getByText('Assign Dispatcher')).toBeInTheDocument();
-  expect(screen.getByText(/only dispatchers and admins/i)).toBeInTheDocument();
+  expect(screen.getByText('Only people who can be a dispatcher are listed.')).toBeInTheDocument();
+  expect(screen.queryByText(/only dispatchers and admins/i)).toBeNull();
+});
+
+// ─── Sold By assign / change / clear (S03.11) ───────────────────────────────
+
+// Sold By rides the same switch as the Dispatcher (Assign people to jobs), so the card shows its control
+// on exactly the answer the parent already gave for this job: `onAssign`.
+describe('Sold By control', () => {
+  const mockApi = vi.mocked(api);
+
+  beforeEach(() => {
+    mockApi.get.mockReset();
+    mockApi.get.mockResolvedValue({ data: [] });
+    mockApi.post.mockReset();
+    mockApi.post.mockResolvedValue({ data: {} });
+  });
+
+  const seller = { id: 'u-seller', first_name: 'Ryan', last_name: 'Cole', role: 'SALES' };
+
+  it('offers "Assign" on an empty Sold By and "Change" on a filled one when the parent says this job is assignable', () => {
+    const { unmount } = renderCardWithOnAssign({ salesperson: null, assignees: [] }, vi.fn());
+    expect(within(soldBySection()).getByRole('button', { name: 'Assign' })).toBeInTheDocument();
+    unmount();
+
+    renderCardWithOnAssign({ salesperson: seller, assignees: [] }, vi.fn());
+    expect(within(soldBySection()).getByRole('button', { name: 'Change' })).toBeInTheDocument();
+  });
+
+  it('hides the control when the parent withheld onAssign, whatever the subject-level ability says', () => {
+    canMock.mockReturnValue(true);
+    renderCard({ salesperson: seller, assignees: [] });
+    expect(within(soldBySection()).queryByRole('button')).toBeNull();
+  });
+
+  it('opens a dialog that says only people who can be Sold By are listed, and asks the roster for that slot', async () => {
+    renderCardWithOnAssign({ salesperson: null, assignees: [] }, vi.fn());
+    fireEvent.click(within(soldBySection()).getByRole('button', { name: 'Assign' }));
+
+    expect(screen.getByText('Assign Sold By')).toBeInTheDocument();
+    expect(screen.getByText('Only people who can be Sold By are listed.')).toBeInTheDocument();
+    await waitFor(() => {
+      const rosterCalls = mockApi.get.mock.calls.filter(([url]) => url === '/api/users/assignable');
+      expect(rosterCalls.length).toBeGreaterThan(0);
+      expect((rosterCalls[0]![1] as { params: Record<string, string> }).params).toMatchObject({ eligible_for: 'owner' });
+    });
+  });
+
+  it('titles the dialog "Change Sold By" when a seller is set, and clears the Sold By from it', async () => {
+    renderCardWithOnAssign({ salesperson: seller, assignees: [] }, vi.fn());
+    fireEvent.click(within(soldBySection()).getByRole('button', { name: 'Change' }));
+    expect(screen.getByText('Change Sold By')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear Sold By' }));
+
+    await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/api/jobs/job-1/sold-by', { sold_by_id: null }));
+  });
+
+  it('does not offer to clear an empty Sold By', () => {
+    renderCardWithOnAssign({ salesperson: null, assignees: [] }, vi.fn());
+    fireEvent.click(within(soldBySection()).getByRole('button', { name: 'Assign' }));
+    expect(screen.queryByRole('button', { name: 'Clear Sold By' })).toBeNull();
+  });
+
+  it('keeps the Dispatcher dialog on its own endpoint', async () => {
+    renderCardWithOnAssign({ dispatcher: { id: 'u-disp', first_name: 'Dana', last_name: 'Brooks', role: 'DISPATCHER' }, assignees: [] }, vi.fn());
+    // No seller on this job, so the only "Change" on the card is the Dispatcher's.
+    fireEvent.click(screen.getByRole('button', { name: 'Change' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear dispatcher' }));
+
+    await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/api/jobs/job-1/dispatcher', { dispatcher_id: null }));
+  });
 });

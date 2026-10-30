@@ -9,6 +9,8 @@ vi.mock('../config/env', () => ({
     EMAIL_FROM: 'Alpha <noreply@test.com>',
     EMAIL_FROM_BUSINESS: 'Alpha <noreply@test.com>',
     RESEND_API_KEY: 're_test_key',
+    // PRD 10 (S10.12): the domain a sender's own address is built on; a document goes out from it.
+    MAILBOX_DOMAIN: 'mail.test.com',
     FRONTEND_URL: 'http://localhost:5173',
   },
 }));
@@ -26,6 +28,9 @@ vi.mock('../lib/pdf', () => ({
 import { prisma } from '../lib/prisma';
 import { generateInvoicePdf } from '../lib/pdf';
 
+
+// PRD 10 (S10.12): a document is sent by hand, from the sender's own mailbox (the id the suite-wide mailbox stub answers to).
+const HAND_SENDER = { mailboxId: 'main-mailbox-id', userId: 'user-1' };
 let sendInvoiceEmail: typeof import('../lib/email')['sendInvoiceEmail'];
 
 beforeAll(async () => {
@@ -92,9 +97,9 @@ describe('sendInvoiceEmail — attaches the invoice PDF', () => {
   it('renders the invoice PDF and attaches it to the outgoing email', async () => {
     resendSend.mockResolvedValue({ data: { id: 're_1' }, error: null });
 
-    const res = await sendInvoiceEmail(BASE_PARAMS);
+    const res = await sendInvoiceEmail({ ...BASE_PARAMS, handSender: HAND_SENDER });
 
-    expect(res).toEqual({ status: 'sent', providerMessageId: 're_1', fromAddress: 'Alpha <noreply@test.com>', fromName: 'Acme' });
+    expect(res).toEqual({ status: 'sent', providerMessageId: 're_1', fromAddress: 'jane.smith.acme@mail.test.com', fromName: 'Jane Smith at Acme' });
     expect(generateInvoicePdf).toHaveBeenCalledTimes(1);
     const sendCall = resendSend.mock.calls.at(-1)?.[0];
     expect(sendCall.attachments).toEqual([
@@ -105,7 +110,7 @@ describe('sendInvoiceEmail — attaches the invoice PDF', () => {
   it('fetches the invoice by the id passed in params, not a hardcoded default', async () => {
     resendSend.mockResolvedValue({ data: { id: 're_1' }, error: null });
 
-    await sendInvoiceEmail(BASE_PARAMS);
+    await sendInvoiceEmail({ ...BASE_PARAMS, handSender: HAND_SENDER });
 
     expect(prisma.invoice.findUnique).toHaveBeenCalledWith(
       expect.objectContaining({ where: expect.objectContaining({ id: 'inv-1' }) }),
@@ -116,7 +121,7 @@ describe('sendInvoiceEmail — attaches the invoice PDF', () => {
     resendSend.mockResolvedValue({ data: { id: 're_1' }, error: null });
     (prisma.organization.findUnique as Mock).mockResolvedValue({ ...ORG, estimate_template: 'crm-default' });
 
-    await sendInvoiceEmail(BASE_PARAMS);
+    await sendInvoiceEmail({ ...BASE_PARAMS, handSender: HAND_SENDER });
 
     const call = vi.mocked(generateInvoicePdf).mock.calls.at(-1);
     expect(call?.[2]).toBe('crm-default');
@@ -125,7 +130,7 @@ describe('sendInvoiceEmail — attaches the invoice PDF', () => {
   it('fails the whole send (no partial email) when PDF rendering throws', async () => {
     (prisma.invoice.findUnique as Mock).mockResolvedValue(null);
 
-    const res = await sendInvoiceEmail(BASE_PARAMS);
+    const res = await sendInvoiceEmail({ ...BASE_PARAMS, handSender: HAND_SENDER });
 
     expect(res.status).toBe('failed');
     expect(resendSend).not.toHaveBeenCalled();

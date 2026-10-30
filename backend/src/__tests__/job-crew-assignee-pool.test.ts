@@ -33,6 +33,7 @@ import app from '../app';
 import {
   mockAuthAs,
   mockRoleGrantsWithout,
+  mockRoleSwitches,
   mockScopedFindFirst,
   authHeader,
   JOB_FIXTURE,
@@ -175,11 +176,15 @@ function wireReads(crew: string[], jobOver: Record<string, unknown> = {}) {
 function asNonHolder() {
   mockAuthAs('dispatcher');
   mockRoleGrantsWithout('DISPATCHER', ['assign', 'User']);
+  // The requester names themselves, and the Dispatcher preset is not crew-eligible (Can be on a crew is off
+  // in it), so the switch is turned on here: the cases are about the pool rule, not slot eligibility.
+  mockRoleSwitches({ assign_work_to_others: false, can_be_on_crew: true });
 }
 
 /** A DISPATCHER with the defaults slice 1 ships - the grant holder. */
 function asHolder() {
   mockAuthAs('dispatcher');
+  mockRoleSwitches({ can_be_on_crew: true });
 }
 
 beforeEach(() => {
@@ -271,7 +276,7 @@ describe('POST /api/jobs/:id/assign - the assignee pool', () => {
       .send({ assignee_ids: [COLLEAGUE], ...WINDOW });
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe('Cannot assign job to an inactive technician');
+    expect(res.body.error).toBe('This person is inactive.');
   });
 });
 
@@ -772,29 +777,46 @@ describe('POST /api/jobs/bulk-assign - the assignee pool', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
-// THE REGRESSION GUARD ON SLICE 1
+// THE TECHNICIAN CASE
 //
-// The single most important assertion in this file. Slice 1 defaults `assign User` to TECHNICIAN
-// precisely so that a technician who created a job keeps the ability to add colleagues to its
-// crew - a capability they have today. The two grants compose: `assign Job` scoped
-// CREATED_BY_ME says WHICH jobs, `assign User` (org-wide) says WHOSE names. Dropping TECHNICIAN
-// from slice 1's defaults would turn this green suite red, which is the point.
+// A technician who holds Assign people to jobs and Assign work to other people (both off in the Technician
+// preset, so an admin turned them on) may name colleagues on the crew of a job they are attached to. Two things
+// compose: Assign people to jobs (within Jobs scope) says WHICH jobs, the other switch (org-wide) says WHOSE
+// names. Since Roles & Permissions S01.2 having created a job no longer opens it: the job must also be one
+// the technician is attached to, which the second case pins.
 //
 // `job.findFirst` is wired through `mockScopedFindFirst` here rather than a blanket
 // `mockResolvedValue({ id })`, because this case turns entirely on a row scope: a blanket mock
 // makes `created_by_id` irrelevant and the negative case below vacuous.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 
-describe('a TECHNICIAN and the crew of a job they created', () => {
+describe('a TECHNICIAN holding Assign work to other people and the crew of a job they created', () => {
   const TECH = TEST_USERS.technician.id;
 
   beforeEach(() => {
     mockAuthAs('technician');
+    mockRoleSwitches({ assign_people_to_jobs: true, assign_work_to_others: true });
     wireReads([]);
     wireTx();
   });
 
-  it('can still add a colleague to the crew of a job they created', async () => {
+  it('can add a colleague to the crew of a job they created and are on', async () => {
+    mockScopedFindFirst(mockPrisma.job.findFirst, {
+      id: JOB_ID,
+      organization_id: ALPHA_ORG_ID,
+      created_by_id: TECH,
+      visits: [{ assignees: [{ user_id: TECH }] }],
+    });
+
+    const res = await request(app)
+      .post(`/api/jobs/${JOB_ID}/assignees`)
+      .set(authHeader('technician'))
+      .send({ assignee_ids: [TECH, TEST_USERS.sales.id] });
+
+    expect(res.status).toBe(200);
+  });
+
+  it('cannot re-crew a job they created once they are off it: having made it attaches nobody', async () => {
     mockScopedFindFirst(mockPrisma.job.findFirst, {
       id: JOB_ID,
       organization_id: ALPHA_ORG_ID,
@@ -805,9 +827,9 @@ describe('a TECHNICIAN and the crew of a job they created', () => {
     const res = await request(app)
       .post(`/api/jobs/${JOB_ID}/assignees`)
       .set(authHeader('technician'))
-      .send({ assignee_ids: [TECH, TEST_USERS.dispatcher.id] });
+      .send({ assignee_ids: [TECH, TEST_USERS.sales.id] });
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(403);
   });
 
   it('still cannot re-crew a job somebody else created', async () => {
@@ -824,7 +846,7 @@ describe('a TECHNICIAN and the crew of a job they created', () => {
     const res = await request(app)
       .post(`/api/jobs/${JOB_ID}/assignees`)
       .set(authHeader('technician'))
-      .send({ assignee_ids: [TECH, TEST_USERS.dispatcher.id] });
+      .send({ assignee_ids: [TECH, TEST_USERS.sales.id] });
 
     expect(res.status).toBe(403);
     expect(res.body.error).toBe('Insufficient permissions');

@@ -156,6 +156,12 @@ describe('Spider settings', () => {
     expect(screen.queryByText('Statuses to watch')).toBeNull();
   });
 
+  it('say a lead that is Won or Lost is never watched, and never name a Cancelled lead', async () => {
+    renderWithProviders(<SpiderPage />);
+    expect(await screen.findByText('Won and Lost leads are never watched.')).toBeInTheDocument();
+    expect(screen.queryByText(/cancel/i)).not.toBeInTheDocument();
+  });
+
   it('show a load error, and no form, when the settings cannot be read', async () => {
     mockApi.get.mockImplementation(async (url: string) => {
       if (url === SETTINGS) throw Object.assign(new Error('x'), { response: { data: { error: 'Could not load Spider settings' } } });

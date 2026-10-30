@@ -30,7 +30,7 @@ const ACTIONS: { path: string; body?: object }[] = [
   { path: 'arrive' },
   { path: 'start' },
   { path: 'complete', body: { completion_notes: 'done' } },
-  { path: 'cancel', body: { cancelled_reason: 'customer cancelled' } },
+  { path: 'cancel', body: { cancel_reason_code: 'OTHER', cancelled_reason: 'customer cancelled' } },
   { path: 'en-route' },
   { path: 'unassign' },
   { path: 'reopen' },
@@ -121,7 +121,11 @@ describe('free status transitions — every action accepts every status', () => 
   // `!== 400`, so an un-completion would pass silently. The two cases that matter (a bare
   // status=SCHEDULED on a COMPLETED job 400s; an explicit window rewinds milestones) are pinned
   // by their own assertions in jobs.test.ts, deliberately not here.
-  for (const target of ALL_STATUSES) {
+  //
+  // Office review, Ready to close and Done are the exception (PRD 6, S06.1): each is reached only by its own close-out
+  // move, so the door refuses them as targets (job-close-out-complete-db.test.ts pins that, against a real database).
+  const CLOSE_OUT_STATUSES: JobStatus[] = ['OFFICE_REVIEW', 'READY_TO_CLOSE', 'DONE'];
+  for (const target of ALL_STATUSES.filter((s) => !CLOSE_OUT_STATUSES.includes(s))) {
     for (const source of ALL_STATUSES) {
       it(`POST /status accepts target ${target} from a ${source} job`, async () => {
         mockAuthAs('admin');
@@ -139,6 +143,7 @@ describe('free status transitions — every action accepts every status', () => 
             scheduled_start: '2026-09-01T09:00:00.000Z',
             scheduled_end: '2026-09-01T11:00:00.000Z',
             completion_notes: 'done',
+            cancel_reason_code: 'OTHER',
             cancelled_reason: 'test',
           });
 

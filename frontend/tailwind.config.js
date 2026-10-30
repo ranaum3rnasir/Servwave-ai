@@ -216,6 +216,13 @@ export default {
           text: 'rgb(var(--neutral-text) / <alpha-value>)',
           strong: 'rgb(var(--neutral-strong) / <alpha-value>)',
         },
+        // A progress-bar step the job moved past without reaching (PRD 6, S06.21). Red-ish, readable in both themes;
+        // the tokens live in tokens-v2.css (light in :root, dark in .dark).
+        skipped: {
+          DEFAULT: 'rgb(var(--skipped) / <alpha-value>)',
+          surface: 'rgb(var(--skipped-surface) / <alpha-value>)',
+          text: 'rgb(var(--skipped-text) / <alpha-value>)',
+        },
         // Foreground on a solid semantic fill. Use instead of literal text-white
         // so a re-pointed fill token actually repaints its label.
         'on-fill': 'rgb(var(--text-on-fill) / <alpha-value>)',

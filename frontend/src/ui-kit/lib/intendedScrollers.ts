@@ -27,7 +27,6 @@ export const ADMIN_SCROLL_TABLES = [
   'marketing-organic',
   // Settings.
   'settings-users',
-  'settings-roles-permissions',
   'settings-locations',
   'settings-tax-rates',
   'settings-phone-numbers',
@@ -67,7 +66,6 @@ export const ADMIN_SCROLL_TABLE_LABELS: Record<AdminScrollTable, string> = {
   'marketing-profitability': 'Profitability table',
   'marketing-organic': 'Organic traffic table',
   'settings-users': 'Users table',
-  'settings-roles-permissions': 'Permissions table',
   'settings-locations': 'Locations table',
   'settings-tax-rates': 'Tax rates table',
   'settings-phone-numbers': 'Phone numbers table',

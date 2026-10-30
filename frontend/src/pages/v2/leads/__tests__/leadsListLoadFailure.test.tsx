@@ -28,7 +28,7 @@ const LEAD = {
   customer: { id: 'c1', first_name: 'John', last_name: 'Doe', company_name: null, phone: '5551234567', ad_source: null },
   commission_owner: null, lead_assignees: [], walkthrough_performers: [], tags: [], estimates: [],
 };
-const STATS = { total: 1, won: 0, lost: 0, new_this_week: 1, unassigned: 1 };
+const STATS = { total: 1, won: 0, lost: 0, new_this_week: 1, no_owner: 1 };
 
 function serve(failing: { on: boolean }) {
   mockApi.get.mockImplementation(async (url: string) => {

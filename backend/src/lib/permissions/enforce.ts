@@ -3,12 +3,12 @@ import { subject } from '@casl/ability';
 import { prisma } from '../prisma';
 import { tenantWhere } from '../tenant';
 import type { Action, Subject } from './catalog';
-import { defineAbilityFor, type AppAbility, type Grant, type PermissionOverride } from './defineAbility';
-import { getCachedGrants, setCachedGrants } from './permissionCache';
-import { loadUserOverrides } from './loadUserOverrides';
-import { getManagedCapability, capabilityAllowsRole } from './userCapabilities';
+import { defineAbilityFor, type AppAbility, type Grant } from './defineAbility';
 import { scopeWhereFor, MATCH_NOTHING, type ScopeResource } from './scopeWhereFor';
-import { grantRoleKey, isSuperUser } from './effectiveRole';
+import { isSuperUser } from './effectiveRole';
+import { grantsForPerson } from './switches/store';
+import { creatorReach } from './recordPeople';
+import { substituteConditions } from './substituteConditions';
 
 /**
  * Minimal slice of a Prisma model delegate — just the visibility probe we need.
@@ -73,30 +73,13 @@ export interface PermissionUser {
 }
 
 /**
- * Resolve the role's persisted grants the SAME way `attachAbility` does
- * (60s request cache, falling back to a `rolePermission` read). Kept here so a
- * list handler can derive its row-scope without the raw grants being plumbed
- * onto `req`. ADMIN short-circuits with no DB read.
+ * Resolve the person's grants the SAME way `attachAbility` does: what their switches compile into, plus the fixed
+ * reads every signed-in person holds (see `grantsForPerson`). The role-permission and per-person override tables are
+ * not read. Kept here so a list handler can derive its row-scope without the raw grants being plumbed onto `req`.
+ * The Admin box short-circuits with no DB read.
  */
 async function grantsForUser(user: PermissionUser): Promise<Grant[]> {
-  const orgId = user.organization_id;
-  // SRVW-138: grants live under the CUSTOM role's key when the user has one, else the
-  // base role name. Same key for the lookup and the cache, so the two cannot diverge.
-  const role = grantRoleKey(user);
-  let grants = getCachedGrants(orgId, role);
-  if (!grants) {
-    const rows = await prisma.rolePermission.findMany({
-      where: { organization_id: orgId, role },
-      select: { action: true, subject: true, conditions: true },
-    });
-    grants = rows.map((r) => ({
-      action: r.action,
-      subject: r.subject,
-      conditions: r.conditions as Record<string, unknown> | null,
-    }));
-    setCachedGrants(orgId, role, grants);
-  }
-  return grants;
+  return grantsForPerson(user);
 }
 
 function grantsForReq(req: Request): Promise<Grant[]> {
@@ -111,64 +94,14 @@ function grantsForReq(req: Request): Promise<Grant[]> {
 export async function abilityForUser(user: PermissionUser): Promise<AppAbility> {
   // An ADMIN-DERIVED custom role is NOT a superuser: it must load and apply its grants.
   if (isSuperUser(user)) return defineAbilityFor(user, []);
-  const grants = await grantsForUser(user);
-  const overrides = await loadUserOverrides(user.id);
-  return defineAbilityFor(user, grants, overrides);
-}
-
-/**
- * Synthesize the own-scoped `read` grants implied by a user's per-user ALLOW overrides — the SQL
- * mirror of the paired own-scoped `read <subject>` that `defineAbility` materializes into the CASL
- * ability for an allow override (so SQL scope == CASL grant). For each ALLOW override that is a
- * managed capability with `impliesRead`, emit `{ action:'read', subject, conditions }` using the
- * SAME `userCapabilities` ownCondition when the capability declares one (unsubstituted —
- * `scopeWhereFor` substitutes `{{userId}}`). Per-USER, not per-role, so these are loaded
- * separately and NOT cached in the role-grants cache. DENY overrides synthesize nothing (they
- * only block writes via CASL `cannot`).
- *
- * `role` gates role-restricted capabilities (userCapabilities' `roles` allow-list): an allow row
- * for a role that may not hold the capability synthesizes NOTHING.
- *
- * #2042 security fix round 1 (F2). A capability with NO `ownCondition` (an org-wide authority,
- * e.g. `approve LogisticOrder`) used to always synthesize a condition-less read — makes
- * `scopeWhereFor` return {} — every row in the org, REGARDLESS of the role's own read scope on
- * that subject. That was correct only while the role's own `read <subject>` grant was itself
- * unconditional; #2042 conditioned SALES's `read LogisticOrder` to the rep's own job, so an
- * admin flipping the unrelated "Approve logistic orders" toggle on a SALES user silently undid
- * that scoping. `roleGrants` (the role's OWN persisted grants, already loaded by every caller) is
- * how the synthesized read now inherits the role's own condition instead: if the role's own
- * `read <subject>` grant is conditioned, the synthesized read carries THAT condition; if it is
- * unconditional (DISPATCHER) or absent, the synthesized read stays condition-less exactly as
- * before. A capability WITH an `ownCondition` is unaffected — its own condition always wins.
- * defineAbility.ts's per-user-override loop applies the identical rule, so the CASL ability and
- * this SQL scope stay in agreement.
- *
- * Exported for direct unit testing of that filter (the request-level path is `scopeWhereForReq`).
- */
-export function overrideReadGrants(
-  overrides: { action: string; subject: string; effect: 'allow' | 'deny' }[],
-  role: string,
-  roleGrants: Grant[] = [],
-): Grant[] {
-  const reads: Grant[] = [];
-  for (const ov of overrides) {
-    if (ov.effect !== 'allow') continue;
-    const cap = getManagedCapability(ov.action, ov.subject);
-    if (!cap || !cap.impliesRead) continue;
-    if (!capabilityAllowsRole(cap, role)) continue;
-    const roleOwnRead = roleGrants.find((g) => g.action === 'read' && g.subject === ov.subject);
-    const conditions = cap.ownCondition ?? roleOwnRead?.conditions ?? undefined;
-    reads.push({ action: 'read', subject: ov.subject, conditions });
-  }
-  return reads;
+  return defineAbilityFor(user, await grantsForUser(user));
 }
 
 /**
  * Controller-facing wrapper over the pure `scopeWhereFor`: the grant-driven
  * Prisma `where` fragment for the requesting user's row-scope on a resource.
- * Folds the role's persisted read grants TOGETHER WITH the own-scoped reads synthesized from the
- * user's per-user ALLOW overrides (so the SQL scope agrees with the CASL ability, which materializes
- * the same paired read). Spread it into the list `where` alongside `tenantWhere(req)`:
+ * Built from the same grants as the CASL ability, so the SQL scope and the ability agree. Spread it into the
+ * list `where` alongside `tenantWhere(req)`:
  *
  *   const scopeWhere = { ...tenantWhere(req), ...(await scopeWhereForReq(req, 'Job')) };
  *   const rows = await prisma.job.findMany({ where: scopeWhere, … });
@@ -188,7 +121,7 @@ export async function scopeWhereForReq(
 
 /**
  * `scopeWhereForReq` for a reader who is not the requester - same union rules, same fail-closed
- * behaviour, same per-user override path. Split out so a batched check can ask the row-scope
+ * behaviour. Split out so a batched check can ask the row-scope
  * question about an arbitrary user without fabricating a Request.
  */
 export async function scopeWhereForUser(
@@ -198,9 +131,7 @@ export async function scopeWhereForUser(
   // SRVW-138: only an unrestricted ADMIN is unscoped; an ADMIN-derived custom role
   // resolves through its grants like any other role.
   if (isSuperUser(user)) return {};
-  // Per-user overrides are per-USER (separate cache) — never merged into the role-grants cache.
-  const overrides = await loadUserOverrides(user.id);
-  return scopeTemplateForProfile(user, resource, user.id, overrides);
+  return scopeTemplateForProfile(user, resource, user.id);
 }
 
 /**
@@ -209,26 +140,19 @@ export async function scopeWhereForUser(
  * The transpose of the usual question. `scopeWhereForUser` asks "one reader, which rows?"; a caller
  * asking "one row, which of these readers?" would derive the same fragment once per candidate, and
  * every derivation but the substitution is identical for everyone who shares a permission profile
- * (super-user-ness, grant role key, base role, department, location, override set). Deriving the
+ * (super-user-ness, switch values, department, location). Deriving the
  * template once per PROFILE and substituting afterwards is what removes the per-candidate work.
  *
- * `overrides` is passed in rather than loaded here for the same reason: a cohort loads them for
- * everyone in one query (`loadUserOverridesMany`).
- *
  * Same body as the per-user path - `scopeWhereForUser` delegates to it - so the two cannot drift.
- * Capability role-gating compares the BASE role, consistent with the bridge rule everywhere else:
- * a custom role with base_role SALES qualifies wherever SALES does.
  */
 export async function scopeTemplateForProfile(
   user: PermissionUser,
   resource: ScopeResource,
   placeholderUserId: string,
-  overrides: PermissionOverride[],
 ): Promise<Record<string, unknown>> {
   if (isSuperUser(user)) return {};
-  const roleGrants = await grantsForUser(user);
-  const grants = [...roleGrants, ...overrideReadGrants(overrides, user.role, roleGrants)];
-  return scopeWhereFor(
+  const grants = await grantsForUser(user);
+  const viewScope = scopeWhereFor(
     {
       id: placeholderUserId,
       role: user.role,
@@ -239,6 +163,26 @@ export async function scopeTemplateForProfile(
     resource,
     grants,
   );
+  return withCreatorRule(viewScope, resource, placeholderUserId);
+}
+
+/**
+ * The creator rule (every role): the estimates and invoices a person made are theirs to open on top of what
+ * their View scope reaches, while they are attached to the job or lead or for good when for a customer alone
+ * (M3). So a list is the union of the View scope's rows and the creator rows, and with View off (nothing
+ * reached) it is the creator rows alone, often none. Every other kind of record is left as it is.
+ */
+function withCreatorRule(
+  viewScope: Record<string, unknown>,
+  resource: ScopeResource,
+  userId: string,
+): Record<string, unknown> {
+  if (resource !== 'Estimate' && resource !== 'Invoice') return viewScope;
+  // Every row is already reached.
+  if (Object.keys(viewScope).length === 0) return viewScope;
+  const creator = substituteConditions(creatorReach(resource), { userId })!;
+  const reachesNothing = JSON.stringify(viewScope) === JSON.stringify(MATCH_NOTHING);
+  return { OR: reachesNothing ? [creator] : [viewScope, creator] };
 }
 
 /**
@@ -385,11 +329,8 @@ export async function canCreateOnAnchor(
 /**
  * The AUTHORITY fragment for one verb - `scopeWhereForReq`'s sibling for a non-`read` action.
  *
- * Same union rules, same fail-closed behaviour and the same per-user override path, except that an
- * ALLOW override synthesizes the capability under ITS OWN action rather than the paired read
- * (`overrideReadGrants` does the read half). So a user handed "Edit own job line items" as a
- * per-user toggle resolves to that capability's own-condition here, exactly as `defineAbility`
- * materializes it into the CASL ability - the SQL scope and the ability stay in agreement.
+ * Same union rules and the same fail-closed behaviour, over the person's grants for that action, so the SQL
+ * scope and the CASL ability stay in agreement.
  *
  * Deliberately NOT exported: `canActOnRow` is the only correct consumer, because an authority
  * fragment on its own is not a visibility check.
@@ -400,10 +341,9 @@ async function actionScopeWhereForReq(
   action: string,
 ): Promise<Record<string, unknown>> {
   if (!req.user) return { ...MATCH_NOTHING };
-  if (req.user.role === 'ADMIN') return {};
-  const roleGrants = await grantsForReq(req);
-  const overrides = await loadUserOverrides(req.user.id);
-  const grants = [...roleGrants, ...overrideActionGrants(overrides, req.user.role, action)];
+  // Only the Admin box is unscoped; a custom role copied from Admin is held to its switches like any other.
+  if (isSuperUser(req.user)) return {};
+  const grants = await grantsForReq(req);
   return scopeWhereFor(
     {
       id: req.user.id,
@@ -418,57 +358,86 @@ async function actionScopeWhereForReq(
 }
 
 /**
- * The per-user ALLOW overrides for ONE action, expressed as grants under that action - the
- * write-side mirror of `overrideReadGrants`. Same role allow-list filter and the same
- * own-condition source, so a capability's meaning is defined in exactly one place
- * (userCapabilities.ts) no matter which layer asks. DENY overrides synthesize nothing: they block
- * through CASL's `cannot`, and the route guard runs before any of this.
+ * Cost visibility predicate (S01.15; first the "Pricing" predicate of Phase B §E, repointed by SRVW-140).
+ *
+ * COSTS - estimate/invoice/job line unit_cost and markup_percent, the labor_hours/overhead cost model on
+ * estimates, invoices and jobs, scope internal_cost, the org labor rate and overhead, price-book and
+ * inventory cost, movement cost, purchase-order line cost and the vendor account number - are visible to
+ * a requester holding the dedicated `read Pricing` grant. That grant has exactly ONE writer: the
+ * "See financial data" switch (`see_financial_data` in switches/catalog.ts). ADMIN still passes via manage-all.
+ *
+ * It covers costs ONLY. A price (line unit_price and line_total, totals, tax, balance, deposit, the price
+ * book's list and sell price, a scope's flat price) follows the record: whoever can open an estimate, job or
+ * invoice sees its prices, with or without this grant. Anything a price-blind person used to lose is a
+ * question for the record's own read ability, never for this predicate.
+ *
+ * It used to key on `read Invoice`, a DIFFERENT control ("may this user open an invoice RECORD"). The two
+ * came apart in practice. Opening invoices confers no cost visibility; an admin's remedy is the switch.
+ *
+ * The non-test consumers, so the next reader does not have to grep:
+ *   price-book.controller.ts        (stripItemCost: unit_cost)
+ *   inv-catalog.controller.ts       (stripMappedItemCost: unitCost)
+ *   inv-stock.controller.ts         (movement unit_cost)
+ *   inv-po.controller.ts            (PO line cost, low-stock proposal cost, job material cost)
+ *   inv-vendors.controller.ts       (vendor account number)
+ *   organization.controller.ts      (labor_rate/overhead_mode/overhead_value select merge)
+ *   job.controller.ts               (job-detail cost model, cost-model write guard)
+ *   job-lines.controller.ts         (line unit_cost/markup_percent, scope internal_cost)
+ *   estimate.controller.ts          (stripEstimateCost, cost-model write guard)
+ *   estimate-lines.controller.ts    (line + scope internal_cost)
+ *   invoice.controller.ts           (stripInvoiceCost on every detail-shaped response, cost-model write guard)
+ *   invoice-lines.controller.ts     (line + scope cost on the manage_lines routes)
+ *   report.controller.ts            (inventory-usage cost / unpricedUnits; the jobs report's profit and cost keys)
  */
-function overrideActionGrants(
-  overrides: { action: string; subject: string; effect: 'allow' | 'deny' }[],
-  role: string,
-  action: string,
-): Grant[] {
-  const out: Grant[] = [];
-  for (const ov of overrides) {
-    if (ov.effect !== 'allow' || ov.action !== action) continue;
-    const cap = getManagedCapability(ov.action, ov.subject);
-    if (!cap || !capabilityAllowsRole(cap, role)) continue;
-    out.push({ action: ov.action, subject: ov.subject, conditions: cap.ownCondition });
-  }
-  return out;
+export function canSeeCosts(req: Request): boolean {
+  return !!req.ability?.can('read', 'Pricing' as Subject);
 }
 
 /**
- * Pricing visibility predicate (Phase B §E, repointed by SRVW-140).
- *
- * Pricing - estimate/invoice money, job-line unit_cost/markup_percent, price-book and inventory
- * cost/list price, the org labor rate and overhead model, scope internal_cost - is visible to a
- * requester holding the dedicated `read Pricing` grant. That grant has exactly ONE writer: the
- * Roles UI "See financial data" switch (SENSITIVE.seeFinancials in roleViewModel.ts). ADMIN still
- * passes via manage-all.
- *
- * It used to key on `read Invoice`, which is a DIFFERENT control (the Invoices "View" cell in the
- * CRUD matrix) and a different question - "may this user open an invoice RECORD". The two came
- * apart in practice: SALES held `read Invoice` and no `read Report`, so the switch rendered OFF in
- * every org while Sales saw every cost, and granting a technician a per-user Invoice capability
- * (create/send/update/record_payment, all impliesRead) silently unlocked org-wide cost data. A
- * per-user Invoice capability NO LONGER confers pricing; an admin's remedy is the switch.
- *
- * The 11 non-test consumers, so the next reader does not have to grep:
- *   price-book.controller.ts        (stripItemCost: unit_cost/list_price)
- *   inv-catalog.controller.ts       (stripMappedItemCost: unitCost/listPrice)
- *   inv-stock.controller.ts         (movement unit_cost)
- *   organization.controller.ts      (labor_rate/overhead_mode/overhead_value select merge)
- *   job.controller.ts               (job-detail strip, timeline money redaction,
- *                                    stripFinancialsForRequester, cancel-response money)
- *   job-lines.controller.ts         (line unit_cost/markup_percent/unit_price/line_total, billing)
- *   estimate.controller.ts          (stripEstimateCost)
- *   estimate-lines.controller.ts    (line + scope internal_cost)
- *   invoice.controller.ts           (stripInvoiceCost on every detail-shaped response)
- *   invoice-lines.controller.ts     (line + scope cost on the manage_lines routes)
- *   report.controller.ts            (inventory-usage cost / unpricedUnits)
+ * Vendor-fields predicate (S07.18): may this requester see which vendor supplies what - the vendor name on a
+ * stock item, the vendor id on a price book item, the default vendor id on a brand? It is View vendors ("read
+ * Vendor"), the same switch that opens the Vendors page, so a role that holds View stock and View price book
+ * but not View vendors gets neither. The key is left off the answer, never sent empty.
  */
-export function canSeePricing(req: Request): boolean {
-  return !!req.ability?.can('read', 'Pricing' as Subject);
+export function canSeeVendors(req: Request): boolean {
+  return !!req.ability?.can('read', 'Vendor');
+}
+
+/**
+ * Company-figures predicate (S01.16): may this requester see company-wide money - dashboard money tiles, chart
+ * amounts, revenue on the scoreboards, dollar amounts in the activity feed, report totals, and (PRD 8) call and
+ * agent revenue.
+ *
+ * It reads only the requester's own switches: the `read CompanyFigures` grant the "See company figures" switch
+ * (`see_company_figures` in switches/catalog.ts) compiles into, which is that switch's one writer. ADMIN passes via
+ * manage-all (the Admin box has no switches), so an admin always sees them. Nothing else counts: not a role's name,
+ * not Reports access, not a Data Scope. Prices on a record the person can open are NOT company figures and never go
+ * through here. The redaction itself is in companyFigures.ts.
+ *
+ * The non-test consumers: dashboard.controller.ts (getDashboard), report.controller.ts (revenue, payment-fees,
+ * estimate-conversion, ar-aging, activity) and estimate.controller.ts (getStats' pending deposits). PRD 8's call-revenue endpoints and PRD 9's dashboard tiles call this too.
+ */
+export function canSeeCompanyFigures(req: Request): boolean {
+  return !!req.ability?.can('read', 'CompanyFigures' as Subject);
+}
+
+/**
+ * Call-insights predicate (S08.13): may this requester see the sentiment and the "needs review" flag on a call, and the
+ * scorecard metrics of a phone agent. It reads only the `see_call_insights` grant the "See call insights" switch compiles
+ * into (ADMIN passes via manage-all), never a role's name. Who answered a call, the call score and the call details do not
+ * go through here: everyone who can see a call keeps them. Call revenue and agent revenue are company figures and also
+ * need `canSeeCompanyFigures`, whatever this returns.
+ */
+export function canSeeCallInsights(req: Request): boolean {
+  return !!req.ability?.can('see_call_insights', 'Communication' as Subject);
+}
+
+/**
+ * Phone numbers tab predicate (S08.15): may this requester see how a company number is routed (where it rings, which
+ * call flow answers it)? It reads only the `phone_numbers_tab` grant the "Phone numbers tab" switch compiles into (ADMIN
+ * passes via manage-all), never a role's name. The numbers list itself is not behind it: the number, its label, its type
+ * and whether it can text stay with everyone who may see the number.
+ */
+export function canSeePhoneNumberRouting(req: Request): boolean {
+  return !!req.ability?.can('phone_numbers_tab', 'Communication' as Subject);
 }

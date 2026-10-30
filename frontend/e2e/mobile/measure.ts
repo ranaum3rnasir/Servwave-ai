@@ -1,7 +1,7 @@
 import type { Page } from '@playwright/test';
 import { CHECKS, collectVisibleCopy, measuredOnly, runCheck, scheduleCardProbe, type CheckName, type CheckResult } from './checks';
 import { SCHEDULE_CARD_SELECTOR, SCHEDULE_COLUMN_SELECTOR, splitScrollReachOffenders, splitTargetOffenders } from './schedule-double-booked';
-import { findVendorTerms } from './vendor-terms';
+import { findVendorTerms, gateTestInboxIn } from './vendor-terms';
 import { a11yCheck } from './a11y';
 
 export interface MeasureOptions {
@@ -10,6 +10,8 @@ export interface MeasureOptions {
   consoleLines: string[];
   withMeasuredOnly?: boolean;
   scheduleDoubleBooked?: boolean;
+  /** Apply the accepted exception `gateTestInbox` to the copy check (never to the console). */
+  gateTestInbox?: boolean;
 }
 
 export type Measurement = Record<CheckName, CheckResult> & { measured?: Record<string, unknown> };
@@ -24,6 +26,10 @@ export type Measurement = Record<CheckName, CheckResult> & { measured?: Record<s
  * `scheduleDoubleBooked`: apply the Schedule's accepted exception (schedule-double-booked.ts; Ran,
  * 2026-10-08, Option A). Only the gate asks for it, and only on the Schedule page when
  * allowlist.json records it. An offender it excuses moves from `offenders` to `exempt`; nothing else changes.
+ *
+ * `gateTestInbox`: apply the accepted exception of that name (vendor-terms.ts; Ran, 13 Oct 2026) to the
+ * rendered-copy check: the gate's own test-inbox address is ignored, listed in `vendorTerms.gateTestInbox`,
+ * and nothing else about the provider is. The console check never gets it.
  */
 export async function measure(
   page: Page,
@@ -65,7 +71,10 @@ async function measureOnce(
   }
   const copy = await page.evaluate(collectVisibleCopy, { onlyInOverlays: o.onlyInOverlays });
   const fmt = (h: { term: string; source: string; excerpt: string }) => `"${h.term}" in ${h.source}: ...${h.excerpt}...`;
-  out.vendorTerms = { offenders: findVendorTerms(copy).map(fmt) };
+  out.vendorTerms = {
+    offenders: findVendorTerms(copy, { gateTestInbox: o.gateTestInbox }).map(fmt),
+    ...(o.gateTestInbox ? { gateTestInbox: gateTestInboxIn(copy) } : {}),
+  };
   out.a11y = await a11yCheck(page, { touch: o.touch, onlyInOverlays: o.onlyInOverlays, scheduleDoubleBooked: o.scheduleDoubleBooked });
   out.vendorConsole = { offenders: [...new Set(findVendorTerms(o.consoleLines.map((text) => ({ source: 'browser console', text }))).map(fmt))] };
   if (o.withMeasuredOnly) {

@@ -7,7 +7,7 @@
  *   components/crm/AttachmentSection.tsx        CRM entity section
  *
  * These four share `ACCEPTED_UPLOAD_TYPES`, the `/api/attachments/:entity/:id` route and the
- * server's 25MB / 512MB caps. They are NOT the only places a video can be uploaded: the fifth
+ * server's 25MB / 50MB caps. They are NOT the only places a video can be uploaded: the fifth
  * is `components/inventory/StageDetailDialog.tsx`, whose "Record video" control declares
  * `accept="video/*" capture="environment"` and posts to the inventory stage-attachment route
  * under its own 100MB cap. Grepping `ACCEPTED_UPLOAD_TYPES` does not find it, which is
@@ -110,8 +110,8 @@ function videoFile(megabytes: number, name = 'walkthrough.mp4'): File {
  * A non-video attachment, likewise sized without allocating anything.
  *
  * Kept under `MAX_UPLOAD_BYTES` (25MB). The non-video cap is a twentieth of the video one
- * since the 512MB raise, so a file sized like the video fixtures above would be refused
- * before it was ever sent.
+ * since S4, so a file sized like the video fixtures above would be refused before it was ever
+ * sent.
  */
 function docFile(megabytes: number, name = 'report.pdf'): File {
   const f = new File(['x'], name, { type: 'application/pdf' });
@@ -470,10 +470,8 @@ describe.each(SURFACES)('$name', ({ render, confirm }) => {
     await select(container, videoFile(600, 'too-big.mp4'));
 
     // Visible, not silent: a file that disappears with no message reads as data loss.
-    // 600MB, not the 60MB this used to say: the cap is 512MB, so 60MB is now accepted and
-    // the fixture had to grow or the test would have stopped exercising a refusal.
     expect(
-      await screen.findByText(/"too-big\.mp4" is 600 MB — over the 512 MB limit/)
+      await screen.findByText(/"too-big\.mp4" is 600MB — over the 512MB limit/)
     ).toBeInTheDocument();
 
     if (confirm) {
@@ -491,7 +489,7 @@ describe.each(SURFACES)('$name', ({ render, confirm }) => {
     const { container } = render();
 
     await select(container, videoFile(600, 'too-big.mp4'));
-    await screen.findByText(/"too-big\.mp4" is 600 MB — over the 512 MB limit/);
+    await screen.findByText(/"too-big\.mp4" is 600MB — over the 512MB limit/);
 
     // The nudge ends in "You can upload it as is." — saying that about a refused file is
     // the contradiction this pairing exists to prevent.

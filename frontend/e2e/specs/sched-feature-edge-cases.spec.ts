@@ -68,7 +68,7 @@ test.describe.serial('Category N-A — Completed/Cancelled Event Protection (P0)
     await ctx1.post(`/api/jobs/${completedJobId}/start`);
     // Complete the job
     await ctx1.post(`/api/jobs/${completedJobId}/complete`, {
-      data: { completion_notes: 'E2E test completion for N-A' },
+      data: { completion_notes: 'E2E test completion for N-A', cancel_open_visits: true },
     });
     await ctx1.dispose();
   });

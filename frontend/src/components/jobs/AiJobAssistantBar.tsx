@@ -4,6 +4,7 @@ import { Heading } from '@/components/ui/heading';
 import { AI_AGENTS, type AIAgent } from '@/lib/ai-center/agents';
 import { useAiCenterStore } from '@/stores/aiCenterStore';
 import { AgentPortrait } from '@/components/ai-center/AgentPortrait';
+import { isCompletedOrLaterJobStatus } from '@/lib/jobs/closeOut';
 
 // The job AI assistant doesn't run on its own — it's a launch pad into the AI
 // Farm. Each tile is a real agent from the catalog, paired with a
@@ -36,7 +37,7 @@ export function buildJobAgentTiles(ctx: JobAssistantContext = {}): JobAgentTile[
   const jobLabel = ctx.jobNumber?.trim() || 'this job';
   const customer = ctx.customerName?.trim() || 'the customer';
   const service = ctx.service?.trim() ? ctx.service.trim().toLowerCase() : null;
-  const isDone = ctx.status === 'COMPLETED';
+  const isDone = isCompletedOrLaterJobStatus(ctx.status);
 
   return [
     {

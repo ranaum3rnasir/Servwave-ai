@@ -27,7 +27,7 @@ const base = {
 
 describe('createJobFormSchema', () => {
   it('accepts an existing customer + picked location even when the stored address is not schema-clean (imported "New Jersey" state, empty zip/city)', () => {
-    // This is the reported bug: selecting an existing Alpha Doors customer copies
+    // This is the reported bug: selecting an existing pilot org customer copies
     // the imported location into hidden fields (state="New Jersey"). Because the
     // location id is what actually gets sent, validation must NOT block on it.
     const result = createJobFormSchema.safeParse({

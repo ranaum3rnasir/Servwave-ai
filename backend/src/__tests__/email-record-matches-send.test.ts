@@ -36,6 +36,8 @@ vi.mock('../config/env', () => ({
     EMAIL_FROM: 'noreply@test.servwave.com',
     EMAIL_FROM_BUSINESS: 'noreply@mail.test.servwave.com',
     RESEND_API_KEY: 're_test_key',
+    // PRD 10 (S10.12): the domain a sender's own address is built on; a document goes out from it.
+    MAILBOX_DOMAIN: 'mail.test.com',
     FRONTEND_URL: 'http://localhost:5173',
   },
 }));
@@ -57,6 +59,9 @@ vi.mock('../lib/pdf', () => ({
 import { prisma } from '../lib/prisma';
 import type { OrganizationBrandingSubset } from '../lib/email';
 
+
+// PRD 10 (S10.12): a document is sent by hand, from the sender's own mailbox (the id the suite-wide mailbox stub answers to).
+const HAND_SENDER = { mailboxId: 'main-mailbox-id', userId: 'user-1' };
 type Email = typeof import('../lib/email');
 let email: Email;
 
@@ -208,6 +213,7 @@ describe('BUG E - a mirrored row must name everyone who received the mail', () =
     });
 
     await email.sendEstimateEmail({
+      handSender: HAND_SENDER,
       estimateId: 'est-1',
       org: { id: ORG_ID, name: 'Acme Plumbing', logo_url: null, brand_color: '#0C2D3A' },
       to: 'jane@example.com', cc: CC, customerName: 'Jane Doe', estimateNumber: 'E00001',

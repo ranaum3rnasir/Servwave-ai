@@ -17,7 +17,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { renderWithProviders } from "./helpers";
+import { renderWithProviders, purchasingAbility } from "./helpers";
 import { AddBranchDialog } from "@/components/inventory/AddBranchDialog";
 import { AddCategoryDialog } from "@/components/inventory/AddCategoryDialog";
 import { AddVendorDialog } from "@/components/inventory/AddVendorDialog";
@@ -111,7 +111,7 @@ describe("inventory Input/Textarea conversion — batch A regression", () => {
 
   it("AddVendorDialog: the Account Number Input renders without its dropped font-mono treatment, still holds a value", async () => {
     const onCreate = vi.fn();
-    renderWithProviders(<AddVendorDialog open onClose={vi.fn()} onCreate={onCreate} />);
+    renderWithProviders(<AddVendorDialog open onClose={vi.fn()} onCreate={onCreate} />, { ability: purchasingAbility() });
 
     const vendorName = screen.getByPlaceholderText("ADI, Ferguson, Winsupply…");
     await userEvent.type(vendorName, "Ferguson");

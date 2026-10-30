@@ -10,7 +10,8 @@
 //   • Free-text MATERIAL lines (no price_book_item_id) render disabled with the
 //     no-catalog hint and never enter the payload.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { screen, waitFor } from '@testing-library/react';
+import { act, screen, waitFor } from '@testing-library/react';
+import { useLocation } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from './helpers';
 import { LineItemsEditor } from '@/components/jobs/items/LineItemsEditor';
@@ -92,6 +93,10 @@ vi.mock('@/lib/api/organization', async (importOriginal) => {
   return { ...actual, useOrganization: () => ({ data: org, isLoading: false, isError: false }) };
 });
 
+function Where() {
+  return <div data-testid="where">{useLocation().pathname}</div>;
+}
+
 const JOB_ID = 'j0000000-0000-0000-0000-000000000001';
 
 const MATERIAL_LINE: JobLineItem = {
@@ -138,6 +143,7 @@ const poAbility = () =>
   buildAbility([
     { action: 'manage_lines', subject: 'Job' },
     { action: 'create', subject: 'PurchaseOrder' },
+    { action: 'read', subject: 'Vendor' }, // a new order needs a vendor to pick
   ]);
 const noPoAbility = () => buildAbility([{ action: 'manage_lines', subject: 'Job' }]);
 
@@ -223,6 +229,53 @@ describe('Job Items tab — Create PO from job (P2 §2)', () => {
     // id or poNumber; both are server-assigned via allocateNumber.
     expect(body).not.toHaveProperty('poNumber');
     expect(body).not.toHaveProperty('id');
+  });
+
+  it("offers the toast's View link to a person who holds View purchase orders, whether or not the Purchase Orders page is shown to them, and it opens that one order", async () => {
+    const lines = [MATERIAL_LINE];
+    const submit = async (switches: Record<string, boolean>) => {
+      localStorage.clear();
+      hoisted.toast.mockClear();
+      getSpy.mockRestore();
+      getSpy = vi.spyOn(api, 'get').mockImplementation((async (url: string) =>
+        url === '/api/permission-switches/me'
+          ? { data: { admin_box: false, values: switches } }
+          : { data: { lines, billing: billingFor(lines) } }) as typeof api.get);
+      const view = renderWithProviders(
+        <>
+          <LineItemsEditor jobId={JOB_ID} canManage />
+          <Where />
+        </>,
+        { ability: poAbility() },
+      );
+      await userEvent.click(await screen.findByRole('button', { name: /create po/i }));
+      await waitFor(() => expect(getSpy).toHaveBeenCalledWith('/api/permission-switches/me'));
+      await userEvent.click(screen.getByRole('button', { name: /create purchase order/i }));
+      await waitFor(() => expect(hoisted.toast).toHaveBeenCalled());
+      const arg = hoisted.toast.mock.calls[0]![0] as { action?: { props: { onClick: () => void } } };
+      return { arg, view };
+    };
+    seedLines(lines);
+
+    // The order is a record: the Show switch for the list page plays no part, View purchase orders does.
+    const hiddenList = await submit({ view_purchase_orders: true, show_purchase_orders_page: false });
+    expect(hiddenList.arg.action).toBeDefined();
+    act(() => hiddenList.arg.action!.props.onClick());
+    expect(screen.getByTestId('where')).toHaveTextContent('/inventory/purchase-orders/po-1');
+    hiddenList.view.unmount();
+
+    const withoutView = await submit({ view_purchase_orders: false, show_purchase_orders_page: true });
+    expect(withoutView.arg.action).toBeUndefined();
+  });
+
+  it('hides the button from a person with Create purchase orders but not View vendors (a new order needs a vendor to pick)', async () => {
+    seedLines([MATERIAL_LINE]);
+    renderWithProviders(<LineItemsEditor jobId={JOB_ID} canManage />, {
+      ability: buildAbility([{ action: 'manage_lines', subject: 'Job' }, { action: 'create', subject: 'PurchaseOrder' }]),
+    });
+
+    await screen.findByText(/HES 1006/);
+    expect(screen.queryByRole('button', { name: /create po/i })).not.toBeInTheDocument();
   });
 
   it('omits unit costs from the payload without read Invoice (cost inputs hidden)', async () => {

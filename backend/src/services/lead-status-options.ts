@@ -11,8 +11,12 @@
 import type { LeadStatus, Prisma, PrismaClient } from '@prisma/client';
 
 import { LIVE_VISIT_STATUSES } from '../lib/visit-status';
+import { TERMINAL_LEAD_STATUSES } from './lead-stage.service';
 
-/** The order the menu, the filters and the sort all use (PRD section 5). */
+/**
+ * The order the menu offers (PRD section 5). Cancelled is not in it: a lead closes one way, as Lost, and no lead is
+ * Cancelled any more (S05.17, S05.18).
+ */
 export const LEAD_STATUS_ORDER: readonly LeadStatus[] = [
   'NEW',
   'CONTACTED',
@@ -21,8 +25,10 @@ export const LEAD_STATUS_ORDER: readonly LeadStatus[] = [
   'ESTIMATED',
   'WON',
   'LOST',
-  'CANCELLED',
 ] as const;
+
+/** The open statuses: every status before Won in the order, so one added after Won stays closed. */
+export const OPEN_LEAD_STATUSES: readonly LeadStatus[] = LEAD_STATUS_ORDER.slice(0, LEAD_STATUS_ORDER.indexOf('WON'));
 
 export interface LeadStatusFacts {
   /** The lead's status now. It is always offered as picked, never locked. */
@@ -42,6 +48,13 @@ export interface LeadStatusOption {
   reason: string | null;
 }
 
+/**
+ * The closed-lead lock (Roles & Permissions, PRD 5, S05.19). A Won or Lost lead takes no hand status change: its menu
+ * shows every other status locked with this sentence, and the lead update refuses the move with the same words. The way
+ * out of Won or Lost is Reopen lead.
+ */
+export const CLOSED_LEAD_STATUS_LOCK = 'To change the status, reopen the lead first.';
+
 export const ESTIMATE_ALREADY_SENT_REASON =
   "An estimate was already sent to this lead, so it can't go back to this step.";
 
@@ -56,8 +69,12 @@ const NO_ESTIMATE_SENT = 'No estimate has been sent to this lead yet.';
 /** The statuses an estimate that went out rules out (PRD 7.2 rule 1). */
 const BEFORE_ESTIMATE: readonly LeadStatus[] = ['NEW', 'CONTACTED', 'WALKTHROUGH_SCHEDULED', 'WALKTHROUGH_COMPLETED'];
 
-/** The lock reason for `status` given the facts, or null when it can be picked. */
-function lockReason(status: LeadStatus, facts: LeadStatusFacts): string | null {
+/**
+ * The lock reason for `status` given what the lead's data says, or null when the data supports it. This is the data
+ * rule alone, with no regard to whether the lead is closed: Reopen asks it to find the furthest status a closed lead
+ * still supports, "as if it were open".
+ */
+export function dataLockReason(status: LeadStatus, facts: LeadStatusFacts): string | null {
   const { openVisits, finishedVisits, estimateSent } = facts;
 
   if (estimateSent && BEFORE_ESTIMATE.includes(status)) return ESTIMATE_ALREADY_SENT_REASON;
@@ -74,17 +91,19 @@ function lockReason(status: LeadStatus, facts: LeadStatusFacts): string | null {
       return finishedVisits === 0 ? NO_WALKTHROUGH_DONE : null;
     case 'ESTIMATED':
       return estimateSent ? null : NO_ESTIMATE_SENT;
-    // Won needs no estimate (D9); Lost and Cancelled ask for a reason instead (D11).
+    // Won needs no estimate (D9); Lost asks for a reason instead (D11).
     default:
       return null;
   }
 }
 
-/** All eight statuses, in PRD section 5 order, each with `available` and the lock text. */
+/** Every status the menu offers, in PRD section 5 order, each with `available` and the lock text. */
 export function leadStatusOptions(facts: LeadStatusFacts): LeadStatusOption[] {
   return LEAD_STATUS_ORDER.map((status) => {
     // The status the lead is in is shown as the selected item, not as locked (PRD 7.1).
-    const reason = status === facts.current ? null : lockReason(status, facts);
+    // A closed lead locks every other status first (S05.19); only Reopen lead moves it.
+    const reason =
+      status === facts.current ? null : TERMINAL_LEAD_STATUSES.includes(facts.current) ? CLOSED_LEAD_STATUS_LOCK : dataLockReason(status, facts);
     return { status, available: reason === null, reason };
   });
 }

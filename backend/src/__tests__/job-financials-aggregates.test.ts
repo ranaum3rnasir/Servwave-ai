@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { mockAuthAs, authHeader, mockRoleGrantsWithout } from './helpers';
+import { mockAuthAs, authHeader, mockRoleSwitches } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 // ─── Typed mocks ──────────────────────────────────────
@@ -26,8 +26,11 @@ function mockFinancialsFor(
   mockPrisma.job.findUnique.mockResolvedValue({ estimate_id: null, linked_estimates: [], ...jobRow });
   mockPrisma.invoice.findMany.mockResolvedValue(invoices);
   // TECHNICIAN's `read Job` grant is conditional (OWN_JOB) — canAccessRow queries
-  // job.findFirst to confirm ownership. Admin's grant is unconditional and skips this.
-  mockPrisma.job.findFirst.mockResolvedValue({ id: jobId });
+  // job.findFirst to confirm ownership. Admin's grant is unconditional and skips this. The same read answers the job's own
+  // total (no priced lines here), which the money totals ask whenever nothing says what the job was sold for.
+  mockPrisma.job.findFirst.mockResolvedValue({
+    id: jobId, job_line_items: [], scopes: null, tax_rate: 0, discount_amount: 0, customer: { tax_exempt: false },
+  });
 }
 
 describe('GET /api/jobs/:id/financials — multi-draw aggregates', () => {
@@ -54,16 +57,21 @@ describe('GET /api/jobs/:id/financials — multi-draw aggregates', () => {
     expect(res.body.total_paid).toBe(3000);
   });
 
-  it('strips the two totals for a price-blind requester but keeps first_sent_at', async () => {
+  it('keeps the job\'s totals for a requester who can open none of the invoices, and lists none of them (S04.26)', async () => {
     mockAuthAs('technician');
-    mockRoleGrantsWithout('TECHNICIAN', ['read', 'Pricing']);  // price-blind on purpose: read Pricing is a TECHNICIAN default since the ownership spec
+    mockRoleSwitches({ view_invoices: false });
     mockFinancialsFor('job-1', invoices);
+    // The query that asks which of the job's invoices the person can open: none.
+    mockPrisma.invoice.findMany.mockResolvedValueOnce(invoices).mockResolvedValueOnce([]);
 
     const res = await request(app).get('/api/jobs/job-1/financials').set(authHeader('technician'));
 
-    expect(res.body.total_invoiced).toBeUndefined();
-    expect(res.body.total_paid).toBeUndefined();
+    expect(res.status).toBe(200);
+    expect(res.body.total_invoiced).toBe(7000);
+    expect(res.body.total_paid).toBe(3000);
     expect(res.body.first_sent_at).toBe(new Date('2026-03-10').toISOString());
+    expect(res.body.invoices).toEqual([]);
+    expect(res.body.payments).toEqual([]);
   });
 });
 
@@ -150,13 +158,11 @@ describe('GET /api/jobs/:id/financials - credit notes are not cash', () => {
     expect(admin.body.invoices[0].credits).toBeUndefined();
 
     mockAuthAs('technician');
-    mockRoleGrantsWithout('TECHNICIAN', ['read', 'Pricing']);  // price-blind on purpose: read Pricing is a TECHNICIAN default since the ownership spec
+    mockRoleSwitches({ view_invoices: true });
     mockFinancialsFor('job-1', creditedInvoices);
     const tech = await request(app).get('/api/jobs/job-1/financials').set(authHeader('technician'));
-    // stripFinancialsForRequester removes every money field from invoices[] by NAME, so a credit
-    // amount spread into the row would sail straight past it and leak to a price-blind requester.
+    // The credit amounts feed the aggregate only: a requester who opens the invoice does not get them either.
     expect(tech.body.invoices[0].credits).toBeUndefined();
-    expect(tech.body.invoices[0].total_amount).toBeUndefined();
   });
 });
 
@@ -273,5 +279,71 @@ describe('GET /api/jobs/:id/financials - linked-estimate deposits (SRVW-96)', ()
     // The voided draw contributes to neither aggregate.
     expect(res.body.total_invoiced).toBe(4953.81);
     expect(res.body.total_paid).toBe(0);
+  });
+});
+
+describe('GET /api/jobs/:id/financials - how each payment was made (payments go-live slice 28)', () => {
+  it('carries the card, wallet and bank details of each payment to the Payments tab', async () => {
+    mockAuthAs('admin');
+    mockFinancialsFor('job-1', [
+      {
+        id: 'i1', invoice_number: 'I00001', kind: 'STANDARD', status: 'PARTIAL', voided_at: null,
+        total_amount: 500, amount_due: 300, sent_at: new Date('2026-03-10'), paid_at: null,
+        payments: [
+          { id: 'p1', amount: 100, method: 'CARD', state: 'SUCCEEDED', wallet: 'APPLE_PAY', card_brand: 'visa', card_last4: '4242', bank_name: null, bank_last4: null },
+          { id: 'p2', amount: 100, method: 'ACH', state: 'PROCESSING', wallet: null, card_brand: null, card_last4: null, bank_name: 'Bank of Example', bank_last4: '6789' },
+        ],
+      },
+    ]);
+
+    const res = await request(app).get('/api/jobs/job-1/financials').set(authHeader('admin'));
+
+    expect(res.status).toBe(200);
+    expect(res.body.payments[0]).toMatchObject({ wallet: 'APPLE_PAY', card_brand: 'visa', card_last4: '4242' });
+    expect(res.body.payments[1]).toMatchObject({ state: 'PROCESSING', bank_name: 'Bank of Example', bank_last4: '6789' });
+  });
+});
+
+// Payments go-live slice 28 conductor ruling D1: a bank payment still clearing is shown beside the
+// balance, never counted as collected.
+describe('GET /api/jobs/:id/financials - processing_amount per invoice (D1)', () => {
+  const invoices = [
+    { id: 'i1', invoice_number: 'I00001', kind: 'STANDARD', status: 'SENT', voided_at: null,
+      total_amount: 300, amount_due: 225.25, sent_at: new Date('2026-03-10'), paid_at: null,
+      payments: [
+        { id: 'p1', amount: 74.75, state: 'SUCCEEDED', voided_at: null },
+        { id: 'p2', amount: 100, state: 'PROCESSING', voided_at: null },
+        { id: 'p3', amount: 20.5, state: 'PROCESSING', voided_at: null },
+        { id: 'p4', amount: 9, state: 'FAILED', voided_at: null },
+      ] },
+    { id: 'i2', invoice_number: 'I00002', kind: 'DEPOSIT', status: 'SENT', voided_at: null,
+      total_amount: 50, amount_due: 50, sent_at: null, paid_at: null, payments: [] },
+  ];
+
+  it('sums only the PROCESSING payments per invoice and leaves total_paid alone', async () => {
+    mockAuthAs('admin');
+    mockFinancialsFor('job-1', invoices);
+
+    const res = await request(app).get('/api/jobs/job-1/financials').set(authHeader('admin'));
+
+    expect(res.status).toBe(200);
+    const byId = Object.fromEntries(res.body.invoices.map((i: { id: string }) => [i.id, i]));
+    expect(byId.i1.processing_amount).toBe(120.5);
+    expect(byId.i2.processing_amount).toBe(0);
+    // Processing money has not arrived: collected is still total - amount_due.
+    expect(res.body.total_paid).toBe(74.75);
+    expect(byId.i1.payments).toBeUndefined();
+  });
+
+  it('lists no invoice, so no processing_amount, for a requester who can open none of them', async () => {
+    mockAuthAs('technician');
+    mockRoleSwitches({ view_invoices: false });
+    mockFinancialsFor('job-1', invoices);
+    mockPrisma.invoice.findMany.mockResolvedValueOnce(invoices).mockResolvedValueOnce([]);
+
+    const res = await request(app).get('/api/jobs/job-1/financials').set(authHeader('technician'));
+
+    expect(res.status).toBe(200);
+    expect(res.body.invoices).toEqual([]);
   });
 });

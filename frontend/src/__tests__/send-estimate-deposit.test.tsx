@@ -25,8 +25,8 @@ vi.mock('@/lib/api/organization', () => ({
   useOrganization: () => mockOrg(),
 }));
 
-vi.mock('@/components/payments/StripePaymentsBanner', () => ({
-  StripePaymentsBanner: () => null,
+vi.mock('@/components/payments/PaymentsSetupBanner', () => ({
+  PaymentsSetupBanner: () => null,
 }));
 
 const TOTAL = 106.63;

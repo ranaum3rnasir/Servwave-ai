@@ -129,7 +129,9 @@ function armStaff(): Captured {
       },
       lead: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
       timelineEvent: { create: vi.fn().mockResolvedValue({}) },
-      invoice: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      // Slice 15: the deposit void locks the deposits, then reads the unpaid ones (none here).
+      $executeRaw: vi.fn().mockResolvedValue(0),
+      invoice: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
       estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
     }),
   );
@@ -149,7 +151,9 @@ function armPublicDecline(): Captured {
           return Promise.resolve({ id: ESTIMATE_ID, status: 'DECLINED' });
         }),
       },
-      invoice: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      // Slice 15: the deposit void locks the deposits, then reads the unpaid ones (none here).
+      $executeRaw: vi.fn().mockResolvedValue(0),
+      invoice: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
       timelineEvent: { create: vi.fn().mockResolvedValue({}) },
     }),
   );

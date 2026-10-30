@@ -6,7 +6,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
+import { renderWithProviders, ALL_JOB_ACTIONS } from './helpers';
 import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
 import { buildAbility } from '@/lib/ability';
 import { useAuthStore, type User } from '@/stores/auth.store';
@@ -38,7 +38,8 @@ const JOB = {
   updated_at: '2026-02-01T00:00:00.000Z',
   customer: { id: 'c1', first_name: 'John', last_name: 'Doe', company_name: null, email: 'j@d.com', phone: '5551234567' },
   assignees: [], service_location: null, estimate: null, invoices: [], linked_estimates: [], tags: [],
-  source_plan_id: null, source_plan: null,
+  source_plan_id: null,
+  actions: ALL_JOB_ACTIONS, source_plan: null,
 };
 
 function setUser(id: string) {

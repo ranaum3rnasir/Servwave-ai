@@ -2,7 +2,7 @@
  * resolveRecipients — pure function
  *
  * Encodes the §3 routing matrix from the in-app-notifications design spec.
- * All DB reads happen in the caller (`emit`) and are passed via `entity` + `roleHolders`.
+ * All DB reads happen in the caller (`emit`) and are passed via `entity`.
  * The function drops the actor (ctx.actorId) from the final result, then de-duplicates
  * by userId merging priority (INTERRUPT wins) and needs_action (OR).
  *
@@ -32,13 +32,6 @@ export interface ResolveContext {
   actorId: string | null;
   /** Pre-loaded entity + relations (assignees, owner, customer.owner, performers). */
   entity: Record<string, unknown>;
-  /** Active user-id arrays keyed by role. */
-  roleHolders: {
-    ADMIN: string[];
-    DISPATCHER: string[];
-    SALES: string[];
-    TECHNICIAN: string[];
-  };
 }
 
 // ── small helpers ──────────────────────────────────────────────────────────────
@@ -48,15 +41,6 @@ const FEED = 'FEED' as const;
 
 function spec(userId: string, priority: typeof INTERRUPT | typeof FEED, needs_action = false): RecipientSpec {
   return { userId, priority, needs_action };
-}
-
-/** Expand a role group into RecipientSpecs. */
-function forRole(
-  userIds: string[],
-  priority: typeof INTERRUPT | typeof FEED,
-  needs_action = false,
-): RecipientSpec[] {
-  return userIds.map(id => spec(id, priority, needs_action));
 }
 
 /**
@@ -89,11 +73,40 @@ function dedupe(raw: RecipientSpec[], actorId: string | null): RecipientSpec[] {
   return result;
 }
 
+// ── verbs and role lists ──────────────────────────────────────────────────────
+
+/**
+ * The verbs whose recipients come from the caller's walk of M6's two-lane chain (or are named by the caller outright), never from
+ * "everyone on the Admin role" or "everyone on the Dispatcher role". The resolver is never handed a role list at all: S06.29 closed
+ * the sweep, S07.9 moved a logistic order submitted and S10.10 moved the last one, a customer's email reply, so every verb is here.
+ */
+export const VERBS_WITHOUT_ROLE_LISTS: ReadonlySet<string> = new Set([
+  'lead.assigned', 'lead.reassigned_away', 'lead.unassigned_created', 'lead.walkthrough_scheduled',
+  'estimate.approved', 'estimate.deposit_paid', 'estimate.declined', 'estimate.cancelled',
+  'estimate.deposit_waived', 'estimate.approval_voided', 'estimate.status_corrected',
+  'dispatch.job_created', 'dispatch.job_assigned', 'dispatch.job_unassigned', 'dispatch.job_rescheduled',
+  'job.started', 'job.reopened', 'job.cancelled', 'job.completed', 'job.ready_to_close', 'job.review_attention', 'job.visit_finished',
+  'inventory.staging_ready', 'inventory.stock_approval_requested', 'inventory.low_stock', 'inventory.backorder',
+  'inventory.staging_no_area', 'inventory.po_partial',
+  'billing.payment_received', 'billing.partial_payment', 'billing.invoice_overdue', 'billing.invoice_due_soon', 'billing.refunded',
+  'billing.disputed', 'billing.chargeback', 'billing.payment_unrecorded', 'billing.voided', 'billing.credit_applied',
+  'billing.bank_payment_started', 'billing.bank_payment_cleared', 'billing.bank_payment_failed', 'billing.dispute_closed',
+  'billing.refund_failed',
+  'billing.payments_activated', 'billing.payouts_activated', 'billing.payments_action_needed', 'billing.payments_paused',
+  'billing.payments_disconnected', 'billing.payouts_pending_first_payment',
+  'team.invite_accepted',
+  'task.assigned', 'task.watching', 'task.completed', 'task.cancelled', 'task.removed', 'task.commented', 'task.deleted',
+  'calendar_entry.scheduled', 'calendar_entry.moved', 'calendar_entry.cancelled',
+  'automation.message', 'mailbox.address_needed', 'mailbox.address_needed_admin', 'spider.alert',
+  'lo.submitted', 'lo.approved',
+  'security.new_signin', 'security.password_changed', 'security.mfa_enabled', 'security.mfa_disabled',
+  'communication.call_missed', 'communication.sms_inbound', 'communication.email_inbound',
+]);
+
 // ── main function ──────────────────────────────────────────────────────────────
 
 export function resolveRecipients(ctx: ResolveContext): RecipientSpec[] {
-  const { verb, entity, roleHolders, actorId } = ctx;
-  const { ADMIN, DISPATCHER, SALES: _SALES, TECHNICIAN } = roleHolders;
+  const { verb, entity, actorId } = ctx;
 
   /** Safely read a string field from entity. */
   function str(key: string): string | undefined {
@@ -107,6 +120,11 @@ export function resolveRecipients(ctx: ResolveContext): RecipientSpec[] {
     return Array.isArray(v) ? (v as string[]) : [];
   }
 
+  /** Everyone the caller's walk of M6's two-lane chain found: the record's people, who must act, and the copies. */
+  function chainIds(): string[] {
+    return [...strArr('lane_one_ids'), ...strArr('lane_two_ids'), ...strArr('copy_ids')];
+  }
+
   let raw: RecipientSpec[] = [];
 
   switch (verb) {
@@ -118,10 +136,10 @@ export function resolveRecipients(ctx: ResolveContext): RecipientSpec[] {
       break;
     }
 
+    // New lead with no owner (S06.26): on M6's two-lane chain. The caller (leadEstimateAlerts.ts) has already walked the lanes, so
+    // every id here is active, can open the lead and is not the person who made it. FEED for everyone, nobody is asked to act.
     case 'lead.unassigned_created': {
-      // Admin FEED + Dispatcher FEED (no sales-manager role exists)
-      raw.push(...forRole(ADMIN, FEED));
-      raw.push(...forRole(DISPATCHER, FEED));
+      chainIds().forEach(id => raw.push(spec(id, FEED)));
       break;
     }
 
@@ -132,40 +150,33 @@ export function resolveRecipients(ctx: ResolveContext): RecipientSpec[] {
       break;
     }
 
+    // Walkthrough scheduled (S06.26): on the chain, with the priorities it always had: the people booked on it are interrupted
+    // (`performer_ids`, whichever lane found them) and everyone else is told on the feed.
     case 'lead.walkthrough_scheduled': {
-      // Dispatcher FEED + owner FEED + performers INTERRUPT
-      raw.push(...forRole(DISPATCHER, FEED));
-      const owner = str('commission_owner_id');
-      if (owner) raw.push(spec(owner, FEED));
-      const performers = strArr('performer_ids');
-      performers.forEach(id => raw.push(spec(id, INTERRUPT)));
+      const performers = new Set(strArr('performer_ids'));
+      chainIds().forEach(id => raw.push(spec(id, performers.has(id) ? INTERRUPT : FEED)));
       break;
     }
 
     // ── ESTIMATE ────────────────────────────────────────────────────────────────
-    case 'estimate.approved': {
-      // Admin FEED + Dispatcher FEED + needs_action(SCHEDULE_JOB) + owner INTERRUPT
-      raw.push(...forRole(ADMIN, FEED));
-      raw.push(...forRole(DISPATCHER, FEED, true)); // needs_action = SCHEDULE_JOB
+    // The estimate alerts (S06.26) are on M6's two-lane chain: the caller (leadEstimateAlerts.ts) has already walked the lanes, so
+    // every id here is active, can open the estimate and its lead or job, and is not the person who did it. Bell only. The
+    // priorities are what each verb always had: the estimate's Owner (`commission_owner_id`, whichever lane found them) is
+    // interrupted by a win, a decline and a deposit, everyone else is told on the feed. Won and Deposit paid are "schedule the
+    // job": the people who must act (lane 2) are asked to, the record's own people and the copies are only told.
+    case 'estimate.approved':
+    case 'estimate.deposit_paid': {
       const owner = str('commission_owner_id');
-      if (owner) raw.push(spec(owner, INTERRUPT));
+      const priorityOf = (id: string) => (id === owner ? INTERRUPT : FEED);
+      strArr('lane_one_ids').forEach(id => raw.push(spec(id, priorityOf(id))));
+      strArr('lane_two_ids').forEach(id => raw.push(spec(id, priorityOf(id), true))); // needs_action = SCHEDULE_JOB
+      strArr('copy_ids').forEach(id => raw.push(spec(id, priorityOf(id))));
       break;
     }
 
     case 'estimate.declined': {
-      // Admin FEED + owner INTERRUPT
-      raw.push(...forRole(ADMIN, FEED));
       const owner = str('commission_owner_id');
-      if (owner) raw.push(spec(owner, INTERRUPT));
-      break;
-    }
-
-    case 'estimate.deposit_paid': {
-      // Admin FEED + Dispatcher FEED + needs_action(SCHEDULE_JOB) + owner INTERRUPT
-      raw.push(...forRole(ADMIN, FEED));
-      raw.push(...forRole(DISPATCHER, FEED, true)); // needs_action = SCHEDULE_JOB
-      const owner = str('commission_owner_id');
-      if (owner) raw.push(spec(owner, INTERRUPT));
+      chainIds().forEach(id => raw.push(spec(id, id === owner ? INTERRUPT : FEED)));
       break;
     }
 
@@ -173,74 +184,98 @@ export function resolveRecipients(ctx: ResolveContext): RecipientSpec[] {
     case 'estimate.deposit_waived':
     case 'estimate.approval_voided':
     case 'estimate.status_corrected': {
-      // Admin FEED + owner FEED
-      raw.push(...forRole(ADMIN, FEED));
-      const owner = str('commission_owner_id');
-      if (owner) raw.push(spec(owner, FEED));
+      chainIds().forEach(id => raw.push(spec(id, FEED)));
       break;
     }
 
     // ── DISPATCH ────────────────────────────────────────────────────────────────
-    case 'dispatch.job_assigned': {
-      // Assignees INTERRUPT + Dispatcher FEED (assigner); admin not a recipient
-      const assignees = strArr('assignee_ids');
-      assignees.forEach(id => raw.push(spec(id, INTERRUPT)));
-      raw.push(...forRole(DISPATCHER, FEED));
+    // Job created, assigned and rescheduled (S06.27) are on M6's two-lane chain. The caller (jobSchedulingAlerts.ts) has already
+    // walked the lanes, so every id here is active, can open the job and is not the person who did it. Bell only, nobody is
+    // asked to act, and the priorities are what each verb always had: the people it is about are interrupted, whichever lane found
+    // them, and everyone else is told on the feed.
+    //   created      the job's crew and the people who must act (the Dispatcher placing it): `crew_ids`, lane 2
+    //   assigned     the people just named (`named_ids`): their alert is the "you" form; the others' names them
+    //   rescheduled  the job's crew (`crew_ids`)
+    case 'dispatch.job_created': {
+      const crew = new Set(strArr('crew_ids'));
+      strArr('lane_one_ids').forEach(id => raw.push(spec(id, crew.has(id) ? INTERRUPT : FEED)));
+      strArr('lane_two_ids').forEach(id => raw.push(spec(id, INTERRUPT)));
+      strArr('copy_ids').forEach(id => raw.push(spec(id, crew.has(id) ? INTERRUPT : FEED)));
       break;
     }
 
-    case 'dispatch.job_unassigned': {
-      // Removed assignees INTERRUPT + Dispatcher FEED
-      const assignees = strArr('assignee_ids');
-      assignees.forEach(id => raw.push(spec(id, INTERRUPT)));
-      raw.push(...forRole(DISPATCHER, FEED));
+    case 'dispatch.job_assigned': {
+      const named = new Set(strArr('named_ids'));
+      chainIds().forEach(id => raw.push(spec(id, named.has(id) ? INTERRUPT : FEED)));
       break;
     }
 
     case 'dispatch.job_rescheduled': {
-      // Assignees INTERRUPT + Dispatcher FEED
-      const assignees = strArr('assignee_ids');
-      assignees.forEach(id => raw.push(spec(id, INTERRUPT)));
-      raw.push(...forRole(DISPATCHER, FEED));
+      const crew = new Set(strArr('crew_ids'));
+      chainIds().forEach(id => raw.push(spec(id, crew.has(id) ? INTERRUPT : FEED)));
       break;
     }
 
-    case 'dispatch.job_created': {
-      // Admin FEED + Dispatcher INTERRUPT + assignees INTERRUPT
-      raw.push(...forRole(ADMIN, FEED));
-      raw.push(...forRole(DISPATCHER, INTERRUPT));
-      const assignees = strArr('assignee_ids');
-      assignees.forEach(id => raw.push(spec(id, INTERRUPT)));
+    // "Unassigned from you" (S06.27) is personal: the people taken off the job, and nobody else (no lanes, no copies). INTERRUPT.
+    case 'dispatch.job_unassigned': {
+      strArr('assignee_ids').forEach(id => raw.push(spec(id, INTERRUPT)));
       break;
     }
 
     // ── JOB ─────────────────────────────────────────────────────────────────────
+    // Job started, cancelled and reopened (S06.25), on M6's two-lane chain like the job completed alert below. The caller
+    // (jobLifecycleAlerts.ts) has already walked the lanes, so every id here is active, can open the job and is not the
+    // person who did it. Bell only, nobody is asked to act, and the priorities are what each verb always had: FEED for
+    // everyone, except that a cancelled job interrupts its crew (`crew_ids`, the job's crew, whichever lane found them).
     case 'job.started':
-    case 'job.completed': {
-      // Dispatcher FEED + sold_by FEED (if set) + assignees FEED
-      raw.push(...forRole(DISPATCHER, FEED));
-      const soldBy = str('sold_by_id');
-      if (soldBy) raw.push(spec(soldBy, FEED));
-      const assignees = strArr('assignee_ids');
-      assignees.forEach(id => raw.push(spec(id, FEED)));
+    case 'job.reopened': {
+      chainIds().forEach(id => raw.push(spec(id, FEED)));
       break;
     }
 
     case 'job.cancelled': {
-      // Dispatcher FEED + sold_by FEED (if set) + assignees INTERRUPT
-      raw.push(...forRole(DISPATCHER, FEED));
-      const soldBy = str('sold_by_id');
-      if (soldBy) raw.push(spec(soldBy, FEED));
-      const assignees = strArr('assignee_ids');
-      assignees.forEach(id => raw.push(spec(id, INTERRUPT)));
+      const crew = new Set(strArr('crew_ids'));
+      chainIds().forEach(id => raw.push(spec(id, crew.has(id) ? INTERRUPT : FEED)));
       break;
     }
 
-    case 'job.reopened': {
-      // Dispatcher FEED + assignees FEED
-      raw.push(...forRole(DISPATCHER, FEED));
-      const assignees = strArr('assignee_ids');
-      assignees.forEach(id => raw.push(spec(id, FEED)));
+    // The job completed alert (S06.23), the first PRD 6 row on M6's two-lane chain. The caller (jobCompletedAlert.ts)
+    // has already walked the lanes, so every id here is active, can open the job and is not the person who completed
+    // it. Bell only and FEED for everyone, and nobody is asked to act: priority and "needs action" are what the verb
+    // always had.
+    case 'job.completed': {
+      strArr('lane_one_ids').forEach(id => raw.push(spec(id, FEED)));
+      strArr('lane_two_ids').forEach(id => raw.push(spec(id, FEED)));
+      strArr('copy_ids').forEach(id => raw.push(spec(id, FEED)));
+      break;
+    }
+
+    // Ready to close (S06.24): the caller (jobReviewAlerts.ts) has walked the lanes. The Close jobs holders (lane 2) are the
+    // people asked to act; the job's own people and the copies are only told.
+    case 'job.ready_to_close': {
+      strArr('lane_one_ids').forEach(id => raw.push(spec(id, FEED)));
+      strArr('lane_two_ids').forEach(id => raw.push(spec(id, FEED, true)));
+      strArr('copy_ids').forEach(id => raw.push(spec(id, FEED)));
+      break;
+    }
+
+    // Office review attention (S06.24): high priority for everyone the chain found, and nobody is asked to act.
+    case 'job.review_attention': {
+      strArr('lane_one_ids').forEach(id => raw.push(spec(id, INTERRUPT)));
+      strArr('lane_two_ids').forEach(id => raw.push(spec(id, INTERRUPT)));
+      strArr('copy_ids').forEach(id => raw.push(spec(id, INTERRUPT)));
+      break;
+    }
+
+    // The visit-finish alert (S04.16). The caller has already walked M6's two-lane chain (alertChain.ts), asking the
+    // "someone" test of every candidate, so every id here is active, can open the job and is not the person who
+    // tapped. A person in more than one list is merged by dedupe(). Only lane 2 is asked to act, and only on the
+    // alert that says every visit is finished.
+    case 'job.visit_finished': {
+      const asksToAct = entity.all_finished === true;
+      strArr('lane_one_ids').forEach(id => raw.push(spec(id, FEED)));
+      strArr('lane_two_ids').forEach(id => raw.push(spec(id, FEED, asksToAct)));
+      strArr('copy_ids').forEach(id => raw.push(spec(id, FEED)));
       break;
     }
 
@@ -342,36 +377,31 @@ export function resolveRecipients(ctx: ResolveContext): RecipientSpec[] {
     // Org-wide phone coverage: every dispatcher + admin. actorId is always null
     // (webhook-driven) so actor exclusion never applies. There is deliberately
     // no call_incoming verb — inbound rings the cell, not the app (#870).
+    // S08.21: the access filter keeps a person only if they may read the call, text conversation or email conversation
+    // (filterByAccess.ts, the same single read the routes ask).
+    //
+    // A missed call or voicemail (S08.22) and an inbound text (S08.23) are already replaced: the caller (notificationService.emit,
+    // through conversationAlertRecipients.ts) found the record's people, the holders of All, the people linked to the number and,
+    // for a text, the person the reply is attributed to, and no role list is read. A missed call interrupts and asks for a call
+    // back; a text is a feed item.
     case 'communication.call_missed': {
       // needs_action → "call back" follow-up (cleared via the VIEW inline action)
-      raw.push(...forRole(DISPATCHER, INTERRUPT, true));
-      raw.push(...forRole(ADMIN, INTERRUPT, true));
+      strArr('recipient_ids').forEach(id => raw.push(spec(id, INTERRUPT, true)));
       break;
     }
 
     case 'communication.sms_inbound': {
-      raw.push(...forRole(DISPATCHER, FEED));
-      raw.push(...forRole(ADMIN, FEED));
+      strArr('recipient_ids').forEach(id => raw.push(spec(id, FEED)));
       break;
     }
 
+    // A customer's email reply (S10.10): the caller (emailReplyAlerts.ts) walked M6's chain for the conversation, so every id here is
+    // someone who may read it and none comes from a role. The people it is theirs to answer (the holder of the mailbox it sits in, the
+    // person who sent the mail by hand, its assignee) are interrupted; the rest of the record's people, the fallback and the copies are
+    // told on the feed, so a reply does not interrupt the whole room.
     case 'communication.email_inbound': {
-      // Unlike sms_inbound, an email thread has an OWNER (slice 8b's "assigned
-      // to one, visible to all"). A reply goes to whoever holds the thread, and
-      // interrupts them, because it is their conversation to answer - adding
-      // the whole room on top would make ownership decorative.
-      //
-      // The fallback is the room, at FEED: an unowned reply is nobody's in
-      // particular, so it is not urgent FOR anyone. The `!== actorId` guard
-      // matters because dedupe() drops the actor afterwards - an assignee who
-      // is also the actor would otherwise leave the reply notifying no one.
-      const assignee = str('thread_assignee_id');
-      if (assignee && assignee !== actorId) {
-        raw.push(spec(assignee, INTERRUPT));
-      } else {
-        raw.push(...forRole(DISPATCHER, FEED));
-        raw.push(...forRole(ADMIN, FEED));
-      }
+      const owners = new Set(strArr('conversation_owner_ids'));
+      chainIds().forEach(id => raw.push(spec(id, owners.has(id) ? INTERRUPT : FEED)));
       break;
     }
 
@@ -386,6 +416,15 @@ export function resolveRecipients(ctx: ResolveContext): RecipientSpec[] {
       break;
     }
 
+    // ── MAILBOX ─────────────────────────────────────────────────────────────────
+    // A user mailbox created without an address (S10.3). The caller found the people: the new user for the first
+    // verb, the active holders of Edit users (by the switch-holder lookup, never a role name) for the second.
+    case 'mailbox.address_needed':
+    case 'mailbox.address_needed_admin': {
+      strArr('recipient_ids').forEach(id => raw.push(spec(id, FEED)));
+      break;
+    }
+
     // ── SPIDER ──────────────────────────────────────────────────────────────────
     case 'spider.alert': {
       // Pre-resolved by Spider's single recipient rule (services/spider/recipients.ts), the
@@ -395,90 +434,80 @@ export function resolveRecipients(ctx: ResolveContext): RecipientSpec[] {
     }
 
     // ── BILLING ─────────────────────────────────────────────────────────────────
-    case 'billing.payment_received': {
-      // Admin FEED + Dispatcher FEED + customer_owner FEED
-      raw.push(...forRole(ADMIN, FEED));
-      raw.push(...forRole(DISPATCHER, FEED));
-      const custOwner = str('customer_owner_id');
-      if (custOwner) raw.push(spec(custOwner, FEED));
-      break;
-    }
-
-    case 'billing.partial_payment': {
-      // Admin FEED + Dispatcher FEED + customer_owner FEED
-      raw.push(...forRole(ADMIN, FEED));
-      raw.push(...forRole(DISPATCHER, FEED));
-      const custOwner = str('customer_owner_id');
-      if (custOwner) raw.push(spec(custOwner, FEED));
+    // The invoice and payment alerts (S06.28) are on M6's two-lane chain. The caller (invoiceBillingAlerts.ts) has already walked
+    // the lanes, so every id here is active, can open the invoice and its job or lead (an alert about money never says more than
+    // the invoice's own screens), and is not the person who did it. Bell only. The priorities are what each verb always had for
+    // the people who got it (the Admins); the record's own people are told on the feed.
+    //   told on the feed, nobody asked to act: a payment (full, partial, a bank payment started or cleared), a void, a credit and
+    //     a dispute that closed without costing anything
+    //   asked to send a reminder (lane 2, the people who must act): an invoice that is overdue or due soon
+    //   interrupts the people who must act and the copies: a refund (and one that failed), a dispute, a chargeback, a card payment
+    //     that could not be applied, a bank payment that failed
+    case 'billing.payment_received':
+    case 'billing.partial_payment':
+    case 'billing.bank_payment_started':
+    case 'billing.bank_payment_cleared':
+    case 'billing.dispute_closed':
+    case 'billing.voided':
+    case 'billing.credit_applied': {
+      chainIds().forEach(id => raw.push(spec(id, FEED)));
       break;
     }
 
     case 'billing.invoice_overdue':
     case 'billing.invoice_due_soon': {
-      // Admin FEED + needs_action(SEND_REMINDER) + customer_owner FEED + needs_action
-      raw.push(...forRole(ADMIN, FEED, true)); // needs_action = SEND_REMINDER
-      const custOwner = str('customer_owner_id');
-      if (custOwner) raw.push(spec(custOwner, FEED, true)); // needs_action = SEND_REMINDER
+      strArr('lane_one_ids').forEach(id => raw.push(spec(id, FEED)));
+      strArr('lane_two_ids').forEach(id => raw.push(spec(id, FEED, true))); // needs_action = SEND_REMINDER
+      strArr('copy_ids').forEach(id => raw.push(spec(id, FEED)));
       break;
     }
 
     case 'billing.refunded':
     case 'billing.disputed':
     case 'billing.chargeback':
-    // #2031 slice 5 (F1) — an unapplied card capture is money nothing accounts for. Same room as
-    // a chargeback: the books' business, and it interrupts.
-    case 'billing.payment_unrecorded': {
-      // Admin INTERRUPT (Refund / dispute / chargeback → 🔴 Admin)
-      raw.push(...forRole(ADMIN, INTERRUPT));
+    // #2031 slice 5 (F1) - an unapplied card capture is money nothing accounts for. Same room as a chargeback: the books' business,
+    // and it interrupts.
+    case 'billing.payment_unrecorded':
+    // Payments go-live slice 32: the owner's payment notifications. A failure needs a person.
+    case 'billing.bank_payment_failed':
+    case 'billing.refund_failed': {
+      strArr('lane_one_ids').forEach(id => raw.push(spec(id, FEED)));
+      strArr('lane_two_ids').forEach(id => raw.push(spec(id, INTERRUPT)));
+      strArr('copy_ids').forEach(id => raw.push(spec(id, INTERRUPT)));
       break;
     }
 
-    case 'billing.voided':
-    case 'billing.credit_applied': {
-      // Admin FEED
-      raw.push(...forRole(ADMIN, FEED));
-      break;
-    }
-
-    // ── BILLING: payments-account lifecycle (Stripe Connect, Task 1.8) ───────────
+    // ── BILLING: payments-account lifecycle (Task 1.8) ───────────────────────────
+    // The payments-account alerts (S06.29) have no record: the caller (noRecordAlerts.ts) walked the chain from its second step,
+    // so every id is in lane_two_ids (the active holders of Company settings, else the Manage roles and permissions holders)
+    // and none was found by a role. The good news is on the feed; the ones that need the owner interrupt and ask for action.
     case 'billing.payments_activated':
-    case 'billing.payouts_activated': {
-      raw.push(...forRole(ADMIN, FEED));
+    case 'billing.payouts_activated':
+    // ── deferred-bank first-payment nudge (Task 1.9) ──
+    case 'billing.payouts_pending_first_payment': {
+      chainIds().forEach(id => raw.push(spec(id, FEED)));
       break;
     }
     case 'billing.payments_action_needed':
-    case 'billing.payments_paused': {
-      raw.push(...forRole(ADMIN, INTERRUPT, true));
-      break;
-    }
-    // ── deferred-bank first-payment nudge (Task 1.9) ──
-    case 'billing.payouts_pending_first_payment': {
-      raw.push(...forRole(ADMIN, FEED));
-      break;
-    }
-    // ── within-ceiling rate-change notice (Task 4.3) ──
-    case 'billing.platform_fee_rate_changed': {
-      raw.push(...forRole(ADMIN, FEED));
+    case 'billing.payments_paused':
+    case 'billing.payments_disconnected': {
+      chainIds().forEach(id => raw.push(spec(id, INTERRUPT, true)));
       break;
     }
 
     // ── TEAM ─────────────────────────────────────────────────────────────────────
-    case 'team.ot_override_requested': {
-      // Admin INTERRUPT + needs_action (APPROVE_OT / DENY_OT)
-      raw.push(...forRole(ADMIN, INTERRUPT, true));
-      break;
-    }
-
+    // Invite accepted (S06.29): no record, so the holders of Invite users (else the Manage roles and permissions holders) found by
+    // the caller; the person who accepted is the actor and falls out at dedupe().
     case 'team.invite_accepted': {
-      // Admin FEED
-      raw.push(...forRole(ADMIN, FEED));
+      chainIds().forEach(id => raw.push(spec(id, FEED)));
       break;
     }
 
     // ── INVENTORY ────────────────────────────────────────────────────────────────
+    // The inventory alerts have no record (S06.29): the caller (noRecordAlerts.ts) found the active holders of the alert's switch,
+    // else the Manage roles and permissions holders. A stock approval asks them to act; the others are only told.
     case 'inventory.stock_approval_requested': {
-      // Admin INTERRUPT + needs_action (APPROVE_STOCK / DENY_STOCK)
-      raw.push(...forRole(ADMIN, INTERRUPT, true));
+      chainIds().forEach(id => raw.push(spec(id, INTERRUPT, true))); // needs_action = APPROVE_STOCK / DENY_STOCK
       break;
     }
 
@@ -486,34 +515,31 @@ export function resolveRecipients(ctx: ResolveContext): RecipientSpec[] {
     case 'inventory.backorder':
     case 'inventory.staging_no_area':
     case 'inventory.po_partial': {
-      // Admin FEED + Dispatcher FEED
-      raw.push(...forRole(ADMIN, FEED));
-      raw.push(...forRole(DISPATCHER, FEED));
+      chainIds().forEach(id => raw.push(spec(id, FEED)));
       break;
     }
 
+    // Parts staged and ready (S06.27): on M6's two-lane chain. The caller (jobSchedulingAlerts.ts) has already walked the lanes.
+    // The technician the parts are staged for (`assignee_ids`, whichever lane found them) is interrupted, it is their pickup;
+    // everyone else is told on the feed.
     case 'inventory.staging_ready': {
-      // Admin FEED + Dispatcher FEED + the assigned tech INTERRUPT (it's their pickup).
-      raw.push(...forRole(ADMIN, FEED));
-      raw.push(...forRole(DISPATCHER, FEED));
-      strArr('assignee_ids').forEach(id => raw.push(spec(id, INTERRUPT)));
+      const tech = new Set(strArr('assignee_ids'));
+      chainIds().forEach(id => raw.push(spec(id, tech.has(id) ? INTERRUPT : FEED)));
       break;
     }
 
     // ── LOGISTIC ORDERS (LO-2) ──────────────────────────────────────────────────
     // NOTE: object_type 'LOGISTIC_ORDER' is NOT in filterByAccess SCOPE_TYPE_MAP,
     // so these recipients pass the downstream row-scope filter UNFILTERED. That is
-    // correct while recipients are approve-grant holders + ADMINs (lo.submitted)
-    // and the creator (lo.approved) — all org-wide LO readers. If a row-scoped
-    // reader (e.g. a technician) is ever added here, wire LOGISTIC_ORDER →
-    // 'LogisticOrder' into filterByAccess.SCOPE_TYPE_MAP so it is access-checked.
+    // correct because the caller (logisticOrderAlerts.ts) has already walked the chain for
+    // lo.submitted (active Approve logistic orders holders who can reach the order, else the
+    // Manage roles and permissions holders), and lo.approved goes to the creator. If a
+    // row-scoped reader is ever added here, wire LOGISTIC_ORDER → 'LogisticOrder' into
+    // filterByAccess.SCOPE_TYPE_MAP so it is access-checked.
     case 'lo.submitted': {
-      // Approve-grant holders ∪ ADMINs, both INTERRUPT + needs_action. The grant
-      // holders are pre-resolved by the caller into entity.approver_ids
-      // (automation.message precedent); ADMINs come from roleHolders. dedupe()
-      // merges an admin who also holds an explicit grant into a single row.
-      strArr('approver_ids').forEach(id => raw.push(spec(id, INTERRUPT, true)));
-      raw.push(...forRole(ADMIN, INTERRUPT, true));
+      // Submitted for approval (S07.9): the people who must approve it, INTERRUPT + needs_action. No role list, no
+      // order or job people, no copies.
+      chainIds().forEach(id => raw.push(spec(id, INTERRUPT, true)));
       break;
     }
 
@@ -543,9 +569,7 @@ export function resolveRecipients(ctx: ResolveContext): RecipientSpec[] {
   // Rule 0, and its one named exception. A `self` verb is about the recipient's own account
   // (or a receipt they asked for), so it must reach them even when they appear to be the
   // actor - the sign-in an attacker made with your session is exactly the alert you still
-  // need. Passing a null actor rather than branching inside the switch is deliberate:
-  // `communication.email_inbound` reads actorId INSIDE its case to fall back to the room, so
-  // nulling the actor any earlier would break that fallback.
+  // need. Passing a null actor rather than branching inside the switch is deliberate.
   const isSelf = ruleForVerb(verb)?.family === 'self';
   return dedupe(raw, isSelf ? null : actorId);
 }

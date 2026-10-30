@@ -60,15 +60,15 @@ import { TabPanel, TabStrip } from '../../_shared/tabs';
  * the selected-row tint.
  */
 
-const STATUSES = ['Submitted', 'In progress', 'Done', 'Canceled'] as const;
+const STATUSES = ['Submitted', 'In progress', 'Completed', 'Canceled'] as const;
 type Status = (typeof STATUSES)[number];
-// weighted draw so most jobs are Done/Submitted
-const STATUS_WEIGHTED: Status[] = ['Done', 'Done', 'Done', 'Submitted', 'Submitted', 'In progress', 'Canceled'];
+// weighted draw so most jobs are Completed/Submitted
+const STATUS_WEIGHTED: Status[] = ['Completed', 'Completed', 'Completed', 'Submitted', 'Submitted', 'In progress', 'Canceled'];
 
-const SOURCES = ['Account', 'Returning customer', 'Google', 'LVD', 'LVD return customer', 'Referral', 'Village - Returned Customer', 'Website -Submission'];
+const SOURCES = ['Account', 'Returning customer', 'Google', 'Partner referral', 'Partner return customer', 'Referral', 'Village - Returned Customer', 'Website -Submission'];
 const JOB_TYPES = ['Alarm System', 'Burglar Alarm', 'Access Control', 'Buzzer System', 'Business Lockout', 'Bullet Proof', 'AV + NETWORK', 'Gate', 'Garage', 'CALL BACK', 'Troubleshoot', 'Commercial', 'Residential'];
-const TECHS = ['Adam Elkarrat', 'Emanuel Dahan', 'Nadia', 'Ohad', 'Rami', 'Robert Bresnick', 'Sagiv Peker', 'Oved Adani'];
-const DISPATCHERS = ['Dispatch', 'Emanuel Dahan', 'Nadia', 'Ohad', 'Rami', 'Shani Adani'];
+const TECHS = ['Pat Hollis', 'Sam Rivera', 'Quinn', 'Jordan', 'Reese', 'Jamie Park', 'Riley Chen', 'Morgan Diaz'];
+const DISPATCHERS = ['Dispatch', 'Sam Rivera', 'Quinn', 'Jordan', 'Reese', 'Avery Stone'];
 const AREAS = ['Brooklyn', 'Queens', 'Bronx', 'Manhattan', 'Jersey City', 'Newark', 'Boston'];
 
 // Calm categorical palette (cycled) - replaces the prior rainbow set.
@@ -76,7 +76,7 @@ const PALETTE = chartPalette;
 
 const pick = <T,>(rng: () => number, arr: readonly T[]): T => arr[Math.floor(rng() * arr.length)]!;
 
-const FIRST = ['Aiden', 'Jenny', 'Diogo', 'Brett', 'Jasmine', 'Marcus', 'Sofia', 'Devon', 'Priya', 'Tyler', 'Aisha', 'Omar', 'Tina', 'Leo', 'Dana', 'Robin', 'Casey', 'Alex', 'Sam', 'Jordan'];
+const FIRST = ['Aiden', 'Jenny', 'Diogo', 'Brett', 'Jasmine', 'Marcus', 'Sofia', 'Devon', 'Drew', 'Tyler', 'Aisha', 'Omar', 'Tina', 'Leo', 'Dana', 'Robin', 'Casey', 'Alex', 'Sam', 'Jordan'];
 const LAST = ['Mills', 'Park', 'Silva', 'Owens', 'Lee', 'Bell', 'Reyes', 'Clark', 'Nair', 'Brooks', 'Khan', 'Said', 'Marsh', 'Cole', 'Shah', 'Ng', 'Ortiz', 'Diaz', 'Pope', 'Klein'];
 const makeClientName = (id: number) => `${FIRST[id % FIRST.length]} ${LAST[(id * 7) % LAST.length]}`;
 
@@ -91,11 +91,11 @@ interface Job {
   tech: string;
   dispatcher: string;
   area: string;
-  gross: number; // realized on Done only
+  gross: number; // realized on Completed only
   profit: number;
   laborCost: number;
   techExpenses: number;
-  completionHours: number; // Done only
+  completionHours: number; // Completed only
   singleVisit: boolean;
   isCallback: boolean;
   jobDate: Date;
@@ -113,7 +113,7 @@ function buildJobs(): Job[] {
     const jobDate = new Date(now);
     jobDate.setDate(now.getDate() - Math.floor(rng() * 365));
     jobDate.setHours(8 + Math.floor(rng() * 9), Math.floor(rng() * 60), 0, 0);
-    const done = status === 'Done';
+    const done = status === 'Completed';
     const completedAt = done ? new Date(jobDate.getTime() + Math.floor(rng() * 3) * 86400000) : null;
 
     const subtotal = Math.round((150 + rng() * 4200) / 5) * 5;
@@ -161,7 +161,7 @@ function buildJobs(): Job[] {
     for (const j of arr) {
       if (j.jobType === 'CALL BACK') { j.isCallback = true; j.callbackReason = 'CALL BACK type'; }
       else if (lastCompleted != null && j.jobDate.getTime() - lastCompleted > 0 && j.jobDate.getTime() - lastCompleted <= 30 * DAY) { j.isCallback = true; j.callbackReason = 'Repeat under 30d'; }
-      if (j.status === 'Done') lastCompleted = (j.completedAt ?? j.jobDate).getTime();
+      if (j.status === 'Completed') lastCompleted = (j.completedAt ?? j.jobDate).getTime();
     }
   }
   return jobs;
@@ -205,7 +205,7 @@ interface Agg {
 
 function aggregate(key: string, js: Job[]): Agg {
   const all = js.length;
-  const done = js.filter((j) => j.status === 'Done').length;
+  const done = js.filter((j) => j.status === 'Completed').length;
   const canceled = js.filter((j) => j.status === 'Canceled').length;
   const open = all - done - canceled;
   const gross = js.reduce((s, j) => s + j.gross, 0);
@@ -247,7 +247,7 @@ function StatsTable({ rows, groupLabel, costCols }: { rows: Agg[]; groupLabel: s
   const cols: Col[] = [
     { key: 'key', label: groupLabel, align: 'left', width: 200, min: 160 },
     { key: 'all', label: 'All Jobs', align: 'right', width: 110, min: 95 },
-    { key: 'done', label: 'Done Jobs', align: 'right', width: 110, min: 95 },
+    { key: 'done', label: 'Completed Jobs', align: 'right', width: 110, min: 95 },
     { key: 'open', label: 'Open Jobs', align: 'right', width: 110, min: 95 },
     { key: 'canceled', label: 'Canceled Jobs', align: 'right', width: 130, min: 110 },
     { key: 'canceledPct', label: 'Canceled %', pct: true, align: 'right', width: 120, min: 105 },
@@ -329,7 +329,7 @@ function techQuality(js: Job[]): TechQuality[] {
   }
   return Array.from(m, ([tech, arr]) => {
     const all = arr.length;
-    const doneJobs = arr.filter((j) => j.status === 'Done');
+    const doneJobs = arr.filter((j) => j.status === 'Completed');
     const done = doneJobs.length;
     const callbacks = arr.filter((j) => j.isCallback).length;
     const ftf = doneJobs.filter((j) => j.singleVisit && !j.isCallback).length;
@@ -465,7 +465,7 @@ export default function JobStatisticsReport() {
   const kpis = useMemo(() => {
     const by = (s: Status) => filtered.filter((j) => j.status === s).length;
     return {
-      done: by('Done'),
+      done: by('Completed'),
       submitted: by('Submitted'),
       inProgress: by('In progress'),
       canceled: by('Canceled'),
@@ -588,7 +588,7 @@ export default function JobStatisticsReport() {
           {/* KPI rail */}
           <Card>
             {[
-              { n: kpis.done, l: 'Jobs Done' },
+              { n: kpis.done, l: 'Jobs Completed' },
               { n: kpis.submitted, l: 'Jobs Submitted' },
               { n: kpis.inProgress, l: 'Jobs In Progress' },
               { n: kpis.canceled, l: 'Jobs Canceled' },
@@ -729,7 +729,7 @@ export default function JobStatisticsReport() {
           {ftfRows.length > 0 ? (
             <div className="bg-status-green-subtle text-status-green-emphasis rounded-lg border px-4 py-3 text-sm">
               <span className="font-semibold">🏆 Best first-time-fix{ftfType !== 'all' ? ` on ${ftfType}` : ''}: {ftfRows[0]!.tech}</span>
-              <span> - {pct1(ftfRows[0]!.ftfPct)} ({ftfRows[0]!.ftf}/{ftfRows[0]!.done} done jobs)</span>
+              <span> - {pct1(ftfRows[0]!.ftfPct)} ({ftfRows[0]!.ftf}/{ftfRows[0]!.done} completed jobs)</span>
             </div>
           ) : (
             <div className="bg-muted text-muted-foreground rounded-lg border px-4 py-3 text-sm">
@@ -754,7 +754,7 @@ export default function JobStatisticsReport() {
                       </span>
                     ),
                   },
-                  { id: 'done', header: 'Done Jobs', align: 'right', width: 120, min: 105, sortValue: (t) => t.done, cell: (t) => <span className="tabular-nums">{t.done}</span> },
+                  { id: 'done', header: 'Completed Jobs', align: 'right', width: 120, min: 105, sortValue: (t) => t.done, cell: (t) => <span className="tabular-nums">{t.done}</span> },
                   { id: 'ftf', header: 'First-Time Fixes', align: 'right', width: 150, min: 130, sortValue: (t) => t.ftf, cell: (t) => <span className="tabular-nums">{t.ftf}</span> },
                   { id: 'ftfPct', header: 'First-Time Fix Rate', align: 'right', width: 170, min: 140, sortValue: (t) => t.ftfPct, cell: (t) => <span className="text-status-green-emphasis font-semibold tabular-nums">{pct1(t.ftfPct)}</span> },
                 ]}
@@ -775,7 +775,7 @@ export default function JobStatisticsReport() {
           {actRows.length > 0 ? (
             <div className="bg-status-green-subtle text-status-green-emphasis rounded-lg border px-4 py-3 text-sm">
               <span className="font-semibold">🏆 Fastest{actType !== 'all' ? ` on ${actType}` : ''}: {actRows[0]!.tech}</span>
-              <span> - {actRows[0]!.avgHours.toFixed(1)}h avg over {actRows[0]!.done} done job{actRows[0]!.done !== 1 ? 's' : ''}</span>
+              <span> - {actRows[0]!.avgHours.toFixed(1)}h avg over {actRows[0]!.done} completed job{actRows[0]!.done !== 1 ? 's' : ''}</span>
             </div>
           ) : (
             <div className="bg-muted text-muted-foreground rounded-lg border px-4 py-3 text-sm">
@@ -800,14 +800,14 @@ export default function JobStatisticsReport() {
                       </span>
                     ),
                   },
-                  { id: 'done', header: 'Done Jobs', align: 'right', width: 130, min: 110, sortValue: (t) => t.done, cell: (t) => <span className="tabular-nums">{t.done}</span> },
+                  { id: 'done', header: 'Completed Jobs', align: 'right', width: 130, min: 110, sortValue: (t) => t.done, cell: (t) => <span className="tabular-nums">{t.done}</span> },
                   { id: 'avgHours', header: 'Avg Completion (hrs)', align: 'right', width: 180, min: 150, sortValue: (t) => t.avgHours, cell: (t) => <span className="font-semibold tabular-nums">{t.avgHours.toFixed(1)}</span> },
                 ]}
               />
             </>
           )}
           <p className="text-muted-foreground text-xs">
-            Average hours from start to done over the last 12 months, for completed jobs{actType !== 'all' ? ` of type "${actType}"` : ''}.
+            Average hours from start to completion over the last 12 months, for completed jobs{actType !== 'all' ? ` of type "${actType}"` : ''}.
             Lower is faster - the top of the list is your best performer. (This tab uses a 12-month window so per-job-type
             comparisons have enough data.)
           </p>
@@ -823,7 +823,7 @@ export default function JobStatisticsReport() {
           <PiePair
             leftTitle="By Sales Amount"
             left={groupBy(filtered, (j) => j.dispatcher).map((g) => ({ name: g.key, value: g.gross }))}
-            rightTitle="By Jobs Done"
+            rightTitle="By Jobs Completed"
             right={groupBy(filtered, (j) => j.dispatcher).map((g) => ({ name: g.key, value: g.done }))}
           />
           <StatsTable rows={groupBy(filtered, (j) => j.dispatcher)} groupLabel="Dispatcher" />

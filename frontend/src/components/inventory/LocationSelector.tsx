@@ -7,7 +7,6 @@ import {
   MapPin,
   Pencil,
   Plus,
-  ShieldCheck,
   Trash2,
   Truck,
   Warehouse,
@@ -198,31 +197,25 @@ export function LocationSelector({
       /* Pinned below the filtered list on purpose: a query matching nothing is
          exactly when "Add Location / Van" is the thing the user wants. */
       footer={
-        (canAdd || canEdit || canDelete) && (
-          <div className="border-t border-border bg-background-light px-2 py-1.5">
-            {canAdd && (
-              // Raw by design: a brand-tinted footer CTA (text-primary,
-              // hover:bg-primary-subtle, no border) - no minted ghost/brand
-              // cell (ghost only has neutral/subtle/danger tones).
-              <button
-                onClick={() => {
-                  setOpen(false);
-                  onAddNew();
-                }}
-                className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-sm font-medium text-primary hover:bg-primary-subtle"
-              >
-                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary-subtle">
-                  <Plus className="h-3.5 w-3.5" />
-                </span>
-                Add Location / Van
-              </button>
-            )}
-            {(canEdit || canDelete) && (
-              <p className="px-2.5 pb-1 pt-0.5 text-[10px] text-text-secondary">
-                <ShieldCheck className="mr-0.5 inline h-2.5 w-2.5 text-success" />
-                Admin · edit or delete a location from its row
-              </p>
-            )}
+        /* The strip only ever holds the Add button, so it is drawn only for
+           a person who can add: edit and delete live on the rows. */
+        canAdd && (
+          <div data-testid="location-selector-footer" className="border-t border-border bg-background-light px-2 py-1.5">
+            {/* Raw by design: a brand-tinted footer CTA (text-primary,
+                hover:bg-primary-subtle, no border) - no minted ghost/brand
+                cell (ghost only has neutral/subtle/danger tones). */}
+            <button
+              onClick={() => {
+                setOpen(false);
+                onAddNew();
+              }}
+              className="flex w-full items-center gap-2 rounded-md px-2.5 py-2 text-sm font-medium text-primary hover:bg-primary-subtle"
+            >
+              <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary-subtle">
+                <Plus className="h-3.5 w-3.5" />
+              </span>
+              Add Location / Van
+            </button>
           </div>
         )
       }
@@ -300,7 +293,7 @@ function LocationRow({
             e.stopPropagation();
             onEdit();
           }}
-          title="Edit location (admin)"
+          title="Edit location"
           aria-label="Edit location"
           className="hover-reveal ml-1 rounded-md p-1 text-text-secondary transition hover:bg-secondary-light hover:text-text-primary"
         >
@@ -317,7 +310,7 @@ function LocationRow({
             e.stopPropagation();
             onDelete();
           }}
-          title="Delete location (admin)"
+          title="Delete location"
           aria-label="Delete location"
           className="hover-reveal rounded-md p-1 text-text-secondary transition hover:bg-danger/10 hover:text-danger"
         >

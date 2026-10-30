@@ -10,10 +10,13 @@
 //   POST /:id/approve → LogisticOrderDetail
 //   POST /:id/process → ProcessLogisticOrderResult   (NOT the detail shape — line movements)
 //   POST /:id/cancel  → LogisticOrderDetail
+//   POST /:id/taken-by-me → LogisticOrderDetail   (the pickup mark on a Processed order; moves no stock)
+//   POST /:id/taken-by    → LogisticOrderDetail   (body { takenById })
+//   GET  /:id/pickup-people → { people: LoPickupPerson[] }
 //   DELETE /:id       → { success: true }
 //
-// Every LO-reading role holds an UNCONDITIONAL read, but the list still 403s for roles without
-// it (SALES-minus etc.) — `retry: false` on the queries so a 403 doesn't retry-loop (the shipped
+// Everyone who may read orders holds an UNCONDITIONAL read, but the list still 403s for a person without
+// it (View logistic orders off) — `retry: false` on the queries so a 403 doesn't retry-loop (the shipped
 // useJobMaterialCost idiom). All mutations invalidate ['logistic-orders']; the three that MOVE
 // STOCK (process / delete / a PROCESSED-line edit) also invalidate ['inventory'] so balances,
 // movement log and low-stock counts refresh.
@@ -117,6 +120,12 @@ export interface LoDetailLine {
   sequence: number;
 }
 
+/**
+ * What the person may do to ONE order right now, as the server decides it (status, their switches, their reach and the
+ * job's state together). The screens draw exactly these and never test a switch against the order's status themselves.
+ */
+export type LogisticOrderAction = 'submit' | 'approve' | 'process' | 'cancel' | 'edit' | 'delete' | 'pick_up' | 'record_pickup';
+
 export interface LogisticOrderDetail {
   id: string;
   number: string;
@@ -136,8 +145,14 @@ export interface LogisticOrderDetail {
   processedAt: string | null;
   cancelledAt: string | null;
   cancelledReason: string | null;
+  /** The pickup mark (after Processed): who took the parts, who recorded it, and when; all null until it is taken. */
+  takenBy: LoPerson;
+  recordedBy: LoPerson;
+  takenAt: string | null;
   createdAt: string;
   updatedAt: string;
+  /** The server's list for this person and this order; see LogisticOrderAction. */
+  actions: LogisticOrderAction[];
 }
 
 /** A row on the LIST payload (mapLoListRow) — lighter than the detail. */
@@ -218,7 +233,8 @@ export type LoApiError =
   | { kind: 'STALE_STATUS'; message: string; expectedStatus: LogisticOrderStatus[] }
   | { kind: 'ITEM_SWAP_FORBIDDEN'; message: string; lineId: string }
   | { kind: 'ANCHOR_NOT_FOUND'; message: string; anchor: string }
-  | { kind: 'JOB_CANCELLED'; message: string };
+  | { kind: 'JOB_CANCELLED'; message: string }
+  | { kind: 'ALREADY_TAKEN'; message: string };
 
 function errBody(err: unknown): { status?: number; data?: Record<string, unknown> } | null {
   const r = (err as { response?: { status?: number; data?: unknown } })?.response;
@@ -281,6 +297,8 @@ export function extractLoError(err: unknown): LoApiError | null {
       return { kind: 'ANCHOR_NOT_FOUND', message, anchor: str(d.anchor) };
     case 'JOB_CANCELLED':
       return { kind: 'JOB_CANCELLED', message };
+    case 'ALREADY_TAKEN':
+      return { kind: 'ALREADY_TAKEN', message };
     default:
       return null;
   }
@@ -317,6 +335,23 @@ export function useLogisticOrder(
     enabled: !!id,
     retry: false,
     ...options,
+  });
+}
+
+/** One choice in the picker of "Taken by...": the order's requester comes first. */
+export interface LoPickupPerson {
+  id: string;
+  name: string;
+  requester: boolean;
+}
+
+/** The people "Taken by..." can name on an order: the company's active people, the requester first. Real API, 403/404 not retried. */
+export function useLoPickupPeople(id: string, enabled: boolean) {
+  return useQuery<LoPickupPerson[]>({
+    queryKey: ['logistic-orders', id, 'pickup-people'],
+    queryFn: () => api.get(`/api/logistic-orders/${id}/pickup-people`).then((r) => r.data.people as LoPickupPerson[]),
+    enabled,
+    retry: false,
   });
 }
 
@@ -403,3 +438,25 @@ export function useDeleteLo() {
     },
   });
 }
+
+/**
+ * The pickup mark on a Processed order. The server saves who took the parts, who recorded it and when, and moves no stock,
+ * so only the orders refresh (never the inventory).
+ */
+function usePickupMutation<TVars>(post: (vars: TVars) => Promise<LogisticOrderDetail>) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: post,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['logistic-orders'] }),
+  });
+}
+
+/** "Taken by me": the caller took the parts. */
+export const useTakeLo = () =>
+  usePickupMutation((id: string) =>
+    api.post(`/api/logistic-orders/${id}/taken-by-me`).then((r) => r.data as LogisticOrderDetail));
+
+/** "Taken by...": the chosen colleague took the parts and the caller records it. */
+export const useTakeLoForOther = () =>
+  usePickupMutation((vars: { id: string; takenById: string }) =>
+    api.post(`/api/logistic-orders/${vars.id}/taken-by`, { takenById: vars.takenById }).then((r) => r.data as LogisticOrderDetail));

@@ -16,6 +16,14 @@ import webhookRoutes from '../routes/webhook.routes';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { processWebFormSubmission } from '../lib/web-form/process';
+import { alertLead } from '../services/notifications/leadEstimateAlerts';
+
+// The alert itself is built and delivered elsewhere (permission-lead-estimate-alerts-db.test.ts walks the chain for a form lead
+// against a real database); here only WHETHER and for WHICH lead it is sent.
+vi.mock('../services/notifications/leadEstimateAlerts', () => ({
+  alertLead: vi.fn().mockResolvedValue(undefined),
+}));
+const mockAlert = alertLead as ReturnType<typeof vi.fn>;
 
 const app = express();
 app.use('/api/webhooks', webhookRoutes);
@@ -320,7 +328,45 @@ describe('what the office reads on the lead', () => {
     const data = createData(p.lead);
     expect(data).not.toHaveProperty('commission_owner_id');
     expect(data).not.toHaveProperty('lead_assignees');
+    // No creator, so the creator rule has nobody to pre-fill: no Dispatcher either.
+    expect(data).not.toHaveProperty('dispatcher_id');
     expect(data).not.toHaveProperty('visits');
+  });
+});
+
+describe('the "New lead with no owner" alert', () => {
+  it('fires for a form lead, which never has an owner or a creator', async () => {
+    // Today a website-form lead sends nothing, so a lead nobody is attached to goes unseen.
+    await post(SUBMISSION);
+    await flush();
+
+    expect(mockAlert).toHaveBeenCalledTimes(1);
+    // Nobody signed in made it, so there is no actor to leave out; who is told is the chain's answer, not this file's.
+    expect(mockAlert).toHaveBeenCalledWith({
+      verb: 'lead.unassigned_created',
+      organizationId: ORG_ID,
+      actorId: null,
+      leadId: 'lead-1',
+    });
+  });
+
+  it('is not sent when the lead could not be created', async () => {
+    p.lead.create.mockRejectedValue(new Error('boom'));
+    await post(SUBMISSION);
+    await flush();
+
+    expect(mockAlert).not.toHaveBeenCalled();
+  });
+
+  it('is not sent for a duplicate delivery of the same submission', async () => {
+    p.webFormSubmission.create.mockRejectedValue(
+      new Prisma.PrismaClientKnownRequestError('dup', { code: 'P2002', clientVersion: 'x' }),
+    );
+    await post(SUBMISSION);
+    await flush();
+
+    expect(p.lead.create).not.toHaveBeenCalled();
+    expect(mockAlert).not.toHaveBeenCalled();
   });
 });
 

@@ -971,7 +971,7 @@ describe('executeAction - SEND_SMS addressed to staff', () => {
     [
       'SMS_NOT_READY',
       () => mockPrisma.organization.findUnique.mockResolvedValue({ ...staffOrgRow, ctm_sms_ready: false }),
-      'Text messaging is not active yet — A2P registration is pending approval',
+      'Text messaging is not active yet — carrier approval is pending',
     ],
     [
       'ORG_SMS_DISABLED',

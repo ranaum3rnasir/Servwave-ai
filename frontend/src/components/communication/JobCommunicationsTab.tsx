@@ -23,6 +23,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { cn, extractApiError } from '@/lib/utils';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import { useFeature } from '@/lib/entitlements';
+import { composeSenderProps, useSendingIdentity } from '@/lib/api/communication';
+import { SendingAsLine, sendBlockedReason } from '@/components/communication/inbox/ComposeWindow';
 import { requestCall } from '@/lib/communication/phoneTabHandoff';
 import { SectionCard } from '@/components/jobs/overview/SectionCard';
 import { CommRow } from '@/components/communication/shared/CommRow';
@@ -48,6 +50,8 @@ interface JobCommunicationsTabProps {
   customerEmail?: string;
   /** Customer's phone — absent hides the "Call customer" header action. */
   customerPhone?: string;
+  /** The server's per-record answer for Log past communications on this job; the person's switch decides when absent. */
+  canLogPast?: boolean;
 }
 
 type ComposeMode = 'sms' | 'email';
@@ -71,11 +75,17 @@ export function JobCommunicationsTab({
   customerName,
   customerEmail,
   customerPhone,
+  canLogPast: canLogPastAnswer,
 }: JobCommunicationsTabProps) {
   const tz = useScheduleTimezone();
   const { data: items, isLoading, isError, error } = useJobCommunications(jobId);
   const sendSms = useSendJobSms(jobId);
   const sendEmail = useSendJobEmail(jobId);
+  // PRD 10 (S10.11): an email written here goes out from the sender's OWN address, whoever the customer is; the line says
+  // so, and a person with no address yet cannot send it.
+  const { data: sendingIdentity } = useSendingIdentity();
+  const sender = composeSenderProps(sendingIdentity);
+  const emailBlockedReason = sendBlockedReason(sender);
   const ability = useAppAbility();
   const canAccessComms = useFeature('phone');
   // Composer + call entry (E5): the org must have comms-module access AND the
@@ -89,7 +99,7 @@ export function JobCommunicationsTab({
   // hide it from the organisations that never had ServWave Phone, which are the ones this
   // feature exists for; and `create Communication` is the wrong gate (it is the shared baseline
   // every role holds, and it gates click-to-call and texts, not this).
-  const canLogPast = ability.can('log_past', 'Communication');
+  const canLogPast = canLogPastAnswer ?? ability.can('log_past', 'Communication');
   // WHO IS LOOKING — the other half of the edit affordance below (the logger, or an org admin).
   const viewer = useAuthStore((s) => s.user);
   const [logOpen, setLogOpen] = useState(false);
@@ -270,6 +280,14 @@ export function JobCommunicationsTab({
           </div>
 
           {mode === 'email' && (
+            <SendingAsLine
+              address={sender.fromAddress}
+              name={sender.fromName}
+              addressNeeded={sender.addressNeeded}
+              className="mb-2 border-b-0 px-0 py-0"
+            />
+          )}
+          {mode === 'email' && (
             <Input
               value={subject}
               onChange={(e) => setSubject(e.target.value)}
@@ -291,7 +309,13 @@ export function JobCommunicationsTab({
               placeholder={mode === 'sms' ? `Text ${customerName}…` : `Email ${customerName}…`}
               className="min-h-0 flex-1 resize-none"
             />
-            <Button variant="solid" tone="business" onClick={handleSend} disabled={sendPending || !body.trim()}>
+            <Button
+              variant="solid"
+              tone="business"
+              onClick={handleSend}
+              disabled={sendPending || !body.trim() || (mode === 'email' && emailBlockedReason !== undefined)}
+              disabledReason={mode === 'email' ? emailBlockedReason : undefined}
+            >
               Send
             </Button>
           </div>

@@ -3,7 +3,6 @@ import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import {
-  TEST_USERS,
   mockAuthAs,
   authHeader,
   CUSTOMER_FIXTURE,
@@ -11,7 +10,6 @@ import {
   ESTIMATE_APPROVED_FIXTURE,
 } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 
 // Phase B — technician redesign. Job CREATE ownership + auto-assign (#232 / role-literal drop).
@@ -19,12 +17,14 @@ import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 //   • strict (un-granted) tech → route guard blocks `create Job` → 403.
 //   • granted OWN-scoped `create Job` tech → may create, BUT must end up OWNING the job
 //     (auto-assigned as an assignee) so they aren't locked out of the job they just made (#232).
-//       - estimate branch: must own the parent estimate's lead.
+//       - estimate branch: must be able to open the parent estimate's lead (S04.21: Leads scope, asked of the
+//         lead table; the real rule is covered against a real database in permission-convert-to-job-db.test.ts).
 //       - standalone branch: allowed (closes the urgent-job #232 path) + auto-assigned.
 //   • unconditional creators (dispatcher/admin) are NOT auto-assigned (they read org-wide already).
 
 const mockPrisma = prisma as unknown as {
   job: { findUnique: ReturnType<typeof vi.fn>; findFirst: ReturnType<typeof vi.fn> };
+  lead: { findFirst: ReturnType<typeof vi.fn> };
   estimate: { findUnique: ReturnType<typeof vi.fn> };
   customer: { findUnique: ReturnType<typeof vi.fn> };
   serviceLocation: { findFirst: ReturnType<typeof vi.fn> };
@@ -37,7 +37,7 @@ const mockPrisma = prisma as unknown as {
 
 const CREATED_JOB = { id: 'j0000000-0000-0000-0000-0000000000aa', job_number: 'J00001', assignees: [] };
 
-// Estimate the tech OWNS via its lead (lead_assignees ∋ tech).
+// An estimate on a lead the tech can open (the lead probe below answers for it).
 const ESTIMATE_OWNED_BY_TECH = {
   id: ESTIMATE_APPROVED_FIXTURE.id,
   status: 'WON',
@@ -48,14 +48,9 @@ const ESTIMATE_OWNED_BY_TECH = {
     service_location_id: LOCATION_FIXTURE.id,
     service_address_line1: '123 Main St',
     customer: { id: CUSTOMER_FIXTURE.id },
-    lead_assignees: [{ user_id: TEST_USERS.technician.id }],
   },
 };
 
-const ESTIMATE_NOT_OWNED_BY_TECH = {
-  ...ESTIMATE_OWNED_BY_TECH,
-  lead: { ...ESTIMATE_OWNED_BY_TECH.lead, lead_assignees: [{ user_id: TEST_USERS.dispatcher.id }] },
-};
 
 function grantTechCreateJob() {
   mockPrisma.userPermissionOverride.findMany.mockResolvedValue([
@@ -80,11 +75,11 @@ let capturedAssigneeCreate: unknown[] = [];
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache();
   capturedAssigneeCreate = [];
 
   mockPrisma.invoice.findFirst.mockResolvedValue(null); // no blocking deposit invoice
   mockPrisma.job.findFirst.mockResolvedValue(null);      // no existing job for the estimate
+  mockPrisma.lead.findFirst.mockResolvedValue({ id: 'lead-1' }); // the lead opens for the requester
   mockPrisma.customer.findUnique.mockResolvedValue({ id: CUSTOMER_FIXTURE.id });
   mockPrisma.serviceLocation.findFirst.mockResolvedValue({ id: LOCATION_FIXTURE.id });
 
@@ -100,6 +95,8 @@ beforeEach(() => {
         }),
       },
       timelineEvent: { create: vi.fn() },
+      // The lead's own entries are carried onto the job in the same transaction (S05.15); none here.
+      recordContactEntry: { findMany: vi.fn().mockResolvedValue([]) },
     }),
   );
   // tagAssignment lookups during withTags serialization
@@ -173,7 +170,8 @@ describe('POST /api/jobs — granted OWN-scoped technician', () => {
   it('CANNOT create a job from an estimate on a lead they do NOT own (403)', async () => {
     mockAuthAs('technician');
     grantTechCreateJob();
-    mockPrisma.estimate.findUnique.mockResolvedValue(ESTIMATE_NOT_OWNED_BY_TECH);
+    mockPrisma.estimate.findUnique.mockResolvedValue(ESTIMATE_OWNED_BY_TECH);
+    mockPrisma.lead.findFirst.mockResolvedValue(null); // the Leads scope does not reach this lead
 
     const res = await request(app)
       .post('/api/jobs')
@@ -218,7 +216,8 @@ describe('POST /api/jobs — unconditional creators are NOT auto-assigned', () =
 
   it('DISPATCHER creating a job from an estimate (lead they do not own) succeeds + not auto-assigned', async () => {
     mockAuthAs('dispatcher');
-    mockPrisma.estimate.findUnique.mockResolvedValue(ESTIMATE_NOT_OWNED_BY_TECH);
+    mockPrisma.estimate.findUnique.mockResolvedValue(ESTIMATE_OWNED_BY_TECH);
+    mockPrisma.lead.findFirst.mockResolvedValue(null); // the Leads scope does not reach this lead
 
     const res = await request(app)
       .post('/api/jobs')

@@ -5,15 +5,16 @@
  * always, assignee or watcher always, anyone else only through the linked record). The feed is
  * org-wide, and every upload, rename and delete of a task file writes a timeline event whose
  * description carries the file's name. So a dispatcher refused a task's files still read their
- * names on the dashboard. The feed keeps the event (the activity happened) but drops the name for a
- * viewer who cannot open the task.
+ * names on the dashboard. PRD 9 goes further than hiding the name: the feed shows a task event only to a person who
+ * may open the task (assignee, watcher, the linked record, or See all tasks), so the event itself is left out for
+ * anyone else, and a task that is gone shows only to See all tasks.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { Mock } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { mockAuthAs, authHeader, ALPHA_ORG_ID, TEST_USERS } from './helpers';
+import { mockAuthAs, mockRoleSwitches, authHeader, ALPHA_ORG_ID, TEST_USERS } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 const TASK_ID = 'bb000000-0000-4000-8000-0000000000f1';
@@ -37,6 +38,7 @@ function stubEveryDashboardQuery() {
   (prisma.user.findMany as Mock).mockResolvedValue([]);
   (prisma.invoice.findMany as Mock).mockResolvedValue([]);
   (prisma.visit.findMany as Mock).mockResolvedValue([]);
+  (prisma.payment.findMany as Mock).mockResolvedValue([]);
   (prisma.$queryRaw as Mock).mockResolvedValue([]);
 }
 
@@ -57,31 +59,44 @@ function stubTask(task: { assignee_ids: string[]; watcher_ids: string[] } | null
   });
 }
 
-const descriptions = (res: request.Response) => res.body.activity.map((e: any) => e.description);
+const descriptions = (res: request.Response) => res.body.data.recent_activity.map((e: any) => e.description);
 
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
   stubEveryDashboardQuery();
+  // The feed shows an event only for a record the person can open: the job the last event is about is one they can.
+  (prisma.job.findMany as Mock).mockImplementation(async (args: any) => (args?.where?.id?.in?.includes(JOB_ID) ? [{ id: JOB_ID }] : []));
   (prisma.timelineEvent.findMany as Mock).mockImplementation(async (args: any) =>
     args?.where?.event_type ? [] : FEED.map((e) => ({ ...e })),
   );
 });
 
 describe('GET /api/dashboard - task file names in the activity feed', () => {
-  it('a dispatcher who is not on the task sees the file activity without the file names', async () => {
+  it('a dispatcher without See all tasks who is not on the task does not see its events at all (PRD 9: a task event follows the task rule)', async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches({ see_all_tasks: false });
     stubTask({ assignee_ids: [TEST_USERS.technician.id], watcher_ids: [] });
 
     const res = await request(app).get('/api/dashboard').set(authHeader('dispatcher'));
 
     expect(res.status).toBe(200);
-    expect(descriptions(res)).toEqual(['File uploaded', 'Attachment updated', 'Attachment deleted', 'File uploaded: door-photo.jpg']);
-    expect(JSON.stringify(res.body.activity)).not.toContain('salary-review');
+    expect(descriptions(res)).toEqual(['File uploaded: door-photo.jpg']);
+    expect(JSON.stringify(res.body.data.recent_activity)).not.toContain('salary-review');
   });
 
-  it('a dispatcher on the task sees the names', async () => {
+  it('a dispatcher holding See all tasks (the Dispatcher preset) sees the names of a task they are not on', async () => {
     mockAuthAs('dispatcher');
+    stubTask({ assignee_ids: [TEST_USERS.technician.id], watcher_ids: [] });
+
+    const res = await request(app).get('/api/dashboard').set(authHeader('dispatcher'));
+
+    expect(descriptions(res)).toEqual(FEED.map((e) => e.description));
+  });
+
+  it('a dispatcher without See all tasks who is on the task sees the names', async () => {
+    mockAuthAs('dispatcher');
+    mockRoleSwitches({ see_all_tasks: false });
     stubTask({ assignee_ids: [], watcher_ids: [DISPATCHER] });
 
     const res = await request(app).get('/api/dashboard').set(authHeader('dispatcher'));
@@ -89,13 +104,14 @@ describe('GET /api/dashboard - task file names in the activity feed', () => {
     expect(descriptions(res)).toEqual(FEED.map((e) => e.description));
   });
 
-  it('a task that no longer exists hides the names from a non-admin', async () => {
+  it('a task that no longer exists hides the names from someone without See all tasks', async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches({ see_all_tasks: false });
     stubTask(null);
 
     const res = await request(app).get('/api/dashboard').set(authHeader('dispatcher'));
 
-    expect(JSON.stringify(res.body.activity)).not.toContain('salary-review');
+    expect(JSON.stringify(res.body.data.recent_activity)).not.toContain('salary-review');
   });
 
   it('an admin sees every name', async () => {

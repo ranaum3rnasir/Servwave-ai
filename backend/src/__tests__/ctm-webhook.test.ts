@@ -41,7 +41,7 @@ const CALL_END_PAYLOAD = {
   duration: 62,
   talk_time: 48,
   unix_time: 1_752_000_000,
-  agent: { id: 9, name: 'Emanuel', email: 'emanuel@example.com' },
+  agent: { id: 9, name: 'Sam', email: 'sam@example.com' },
   audio: 'https://app.calltrackingmetrics.com/recordings/RE123',
   tag_list: ['sales'],
 };
@@ -141,7 +141,7 @@ describe('CTM webhook auth (fail closed)', () => {
   // API secret). CTM signs sub-account webhooks with a different secret, so with
   // the API secret set but no dedicated signing secret, a signed webhook must
   // still pass on the token alone — reusing the API secret 401'd every real
-  // Alpha Doors (596375) webhook on 2026-07-13.
+  // The pilot org (596375) webhook on 2026-07-13.
   it('does NOT verify the signature against CTM_SECRET_KEY — signed webhook passes when signing secret is unset', async () => {
     mockEnv.env.CTM_WEBHOOK_SIGNING_SECRET = undefined; // API secret stays set
     const rawBody = JSON.stringify(CALL_END_PAYLOAD);

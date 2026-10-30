@@ -33,7 +33,6 @@ export type DayRow = {
   inTs: number; // first clock-in of the day
   outTs: number | null; // last clock-out of the day (null if a session is still open)
   sessions: Session[]; // raw sessions for the punch-detail expansion
-  isJobOt: boolean; // has OT AND a job-attributed session that day
 };
 
 export type PayrollRow = {
@@ -44,7 +43,6 @@ export type PayrollRow = {
   ot2Min: number;
   otApprovedMin: number; // OT minutes on days marked approved
   otPendingMin: number; // OT minutes on days still pending (default)
-  jobOtMin: number; // OT minutes on isJobOt days
   totalMin: number;
   days: number;
   lateCount: number;
@@ -124,7 +122,6 @@ export function buildDays(sessions: Session[], timeZone: string): DayRow[] {
     const { regMin, ot1Min, ot2Min } = splitDaily(workedMin);
     const closes = sorted.map((s) => s.outTs).filter((t): t is number => t !== null);
     const hasOpen = sorted.some((s) => s.outTs === null);
-    const isJobOt = ot1Min + ot2Min > 0 && sorted.some((s) => s.zoneKind === 'job');
     rows.push({
       userId: first.userId,
       userName: first.userName,
@@ -138,7 +135,6 @@ export function buildDays(sessions: Session[], timeZone: string): DayRow[] {
       inTs: first.inTs,
       outTs: hasOpen ? null : closes.length ? Math.max(...closes) : null,
       sessions: sorted,
-      isJobOt,
     });
   }
   return rows.sort((a, b) => a.dateTs - b.dateTs);
@@ -193,13 +189,11 @@ export function buildPayroll(days: DayRow[], otReviews: Record<string, ReviewSta
     // is what a manager approves. Rejected OT counts toward neither (unpaid).
     let otApprovedMin = 0;
     let otPendingMin = 0;
-    let jobOtMin = 0;
     for (const w of weeks) {
       if (w.otMin === 0) continue;
       const review = otReviews[w.reviewKey] ?? 'pending';
       if (review === 'approved') otApprovedMin += w.otMin;
       else if (review !== 'rejected') otPendingMin += w.otMin;
-      if (w.isJobOt) jobOtMin += w.otMin;
     }
 
     rows.push({
@@ -210,7 +204,6 @@ export function buildPayroll(days: DayRow[], otReviews: Record<string, ReviewSta
       ot2Min,
       otApprovedMin,
       otPendingMin,
-      jobOtMin,
       totalMin,
       days: list.length,
       lateCount: list.filter((d) => isLate(d.inTs)).length,
@@ -233,7 +226,6 @@ export type WeekRow = {
   workedMin: number;
   regMin: number;
   otMin: number; // weekly minutes over 40h
-  isJobOt: boolean; // OT week with at least one job-attributed day
   days: DayRow[];
 };
 
@@ -259,7 +251,6 @@ export function buildWeeks(days: DayRow[], timeZone: string): WeekRow[] {
     const workedMin = list.reduce((a, d) => a + d.workedMin, 0);
     const otMin = Math.max(0, workedMin - WEEKLY_REGULAR_MIN);
     const regMin = workedMin - otMin;
-    const isJobOt = otMin > 0 && list.some((d) => d.sessions.some((s) => s.zoneKind === 'job'));
     rows.push({
       userId: first.userId,
       userName: first.userName,
@@ -268,7 +259,6 @@ export function buildWeeks(days: DayRow[], timeZone: string): WeekRow[] {
       workedMin,
       regMin,
       otMin,
-      isJobOt,
       days: [...list].sort((a, b) => a.dateTs - b.dateTs),
     });
   }

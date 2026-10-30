@@ -1200,58 +1200,6 @@ describe('automation catalog - the on-the-way trigger vocabulary', () => {
   });
 });
 
-// ── the four address fields read as one family ───────────────────────────────
-//
-// Ran, 2026-09-15: "we need to rephrase the wording there, because it is not understandable."
-//
-// The pair that prompted it was 'Service address' and 'Walkthrough location' - two chips in ONE
-// picker group naming the same kind of thing with no word in common, so nothing on screen told an
-// author which of the two they wanted. Both halves of that are pinned here rather than left to the
-// four separate label assertions above, because the defect was never in any single label: it was
-// in the relationship between them, and a later rename of one field alone would restore it while
-// every per-field test stayed green.
-
-const ADDRESS_FIELDS = [
-  'lead.address',
-  'lead.walkthrough_location',
-  'job.address',
-  'job.visit_location',
-] as const;
-
-describe('catalog - the address fields are named as a family', () => {
-  it('every one of them ends in the noun it actually holds', () => {
-    for (const field of ADDRESS_FIELDS) {
-      const label = MERGE_FIELD_LABELS[field];
-      expect(label, `${field} has no label at all`).toBeTruthy();
-      expect(label.toLowerCase(), `${field} is labelled "${label}" - an author cannot tell it holds an address`)
-        .toMatch(/ address$/);
-    }
-  });
-
-  it('never calls one of them a "location", which names no particular thing', () => {
-    for (const field of ADDRESS_FIELDS) {
-      expect(MERGE_FIELD_LABELS[field].toLowerCase(), `${field} is back to the vague wording`)
-        .not.toContain('location');
-    }
-  });
-
-  it('gives the two that share a picker group different words in front of that noun', () => {
-    // `lead.` fields bucket into "Lead & walkthrough" and `job.` fields into "Job"
-    // (MergeFieldChips.FIELD_GROUPS), so these are the two collisions an author can actually see.
-    expect(MERGE_FIELD_LABELS['lead.address']).not.toBe(MERGE_FIELD_LABELS['lead.walkthrough_location']);
-    expect(MERGE_FIELD_LABELS['job.address']).not.toBe(MERGE_FIELD_LABELS['job.visit_location']);
-  });
-
-  it('keeps the two service addresses distinguishable from the two visit addresses', () => {
-    // The distinction that carries the meaning: one is the address held on the record, the other
-    // is where a particular appointment is happening. The word that says so must be present.
-    expect(MERGE_FIELD_LABELS['lead.address'].toLowerCase()).toContain('service');
-    expect(MERGE_FIELD_LABELS['job.address'].toLowerCase()).toContain('service');
-    expect(MERGE_FIELD_LABELS['lead.walkthrough_location'].toLowerCase()).toContain('visit');
-    expect(MERGE_FIELD_LABELS['job.visit_location'].toLowerCase()).toContain('visit');
-  });
-});
-
 // ── lead.performer_servwave_phones / technician.servwave_phones ──────────────
 //
 // Spec: md_files/specs/scheduling/2026-09-10-visit-location-and-performer-phone.md (D7).
@@ -1362,6 +1310,58 @@ describe('catalog — the organisation’s own number for the person coming', ()
     for (const [field, sample] of Object.entries(SAMPLE_CONTEXT)) {
       expect(sample, `${field}'s sample names a vendor`).not.toMatch(vendor);
     }
+  });
+});
+
+// ── the four address fields read as one family ───────────────────────────────
+//
+// Ran, 2026-09-15: "we need to rephrase the wording there, because it is not understandable."
+//
+// The pair that prompted it was 'Service address' and 'Walkthrough location' - two chips in ONE
+// picker group naming the same kind of thing with no word in common, so nothing on screen told an
+// author which of the two they wanted. Both halves of that are pinned here rather than left to the
+// four separate label assertions above, because the defect was never in any single label: it was
+// in the relationship between them, and a later rename of one field alone would restore it while
+// every per-field test stayed green.
+
+const ADDRESS_FIELDS = [
+  'lead.address',
+  'lead.walkthrough_location',
+  'job.address',
+  'job.visit_location',
+] as const;
+
+describe('catalog - the address fields are named as a family', () => {
+  it('every one of them ends in the noun it actually holds', () => {
+    for (const field of ADDRESS_FIELDS) {
+      const label = MERGE_FIELD_LABELS[field];
+      expect(label, `${field} has no label at all`).toBeTruthy();
+      expect(label.toLowerCase(), `${field} is labelled "${label}" - an author cannot tell it holds an address`)
+        .toMatch(/ address$/);
+    }
+  });
+
+  it('never calls one of them a "location", which names no particular thing', () => {
+    for (const field of ADDRESS_FIELDS) {
+      expect(MERGE_FIELD_LABELS[field].toLowerCase(), `${field} is back to the vague wording`)
+        .not.toContain('location');
+    }
+  });
+
+  it('gives the two that share a picker group different words in front of that noun', () => {
+    // `lead.` fields bucket into "Lead & walkthrough" and `job.` fields into "Job"
+    // (MergeFieldChips.FIELD_GROUPS), so these are the two collisions an author can actually see.
+    expect(MERGE_FIELD_LABELS['lead.address']).not.toBe(MERGE_FIELD_LABELS['lead.walkthrough_location']);
+    expect(MERGE_FIELD_LABELS['job.address']).not.toBe(MERGE_FIELD_LABELS['job.visit_location']);
+  });
+
+  it('keeps the two service addresses distinguishable from the two visit addresses', () => {
+    // The distinction that carries the meaning: one is the address held on the record, the other
+    // is where a particular appointment is happening. The word that says so must be present.
+    expect(MERGE_FIELD_LABELS['lead.address'].toLowerCase()).toContain('service');
+    expect(MERGE_FIELD_LABELS['job.address'].toLowerCase()).toContain('service');
+    expect(MERGE_FIELD_LABELS['lead.walkthrough_location'].toLowerCase()).toContain('visit');
+    expect(MERGE_FIELD_LABELS['job.visit_location'].toLowerCase()).toContain('visit');
   });
 });
 

@@ -50,6 +50,8 @@ function depositInvoice(estimate: unknown, overrides: Record<string, unknown> = 
       deposit_default_percentage: 50,
       deposit_default_fixed_amount: 0,
     },
+    // No bank payment in flight (payments go-live slice 12's payable-now read).
+    payments: [],
     ...overrides,
   };
 }
@@ -154,6 +156,7 @@ describe('the public deposit link while the estimate has moved on', () => {
       customer: { first_name: 'Pat', last_name: 'Q', company_name: null },
       line_items: [],
       job: null,
+      payments: [],
     });
     mockPrisma.organization.findUnique.mockResolvedValue({
       name: 'Test Org', logo_url: null, brand_color: null, phone: null, timezone: null,
@@ -240,6 +243,42 @@ describe('the public deposit link while the estimate has moved on', () => {
     expect(mockExpireSession).toHaveBeenCalledWith('cs_1', expect.anything());
   });
 
+  // Slice 27 (slice 15 review) - a closed estimate closes the deposit link, both at the door and in
+  // the window after the session is minted.
+  it('refuses a deposit whose estimate was declined', async () => {
+    mockPrisma.invoice.findFirst.mockResolvedValue(depositInvoice({ ...currentEstimate(), status: 'DECLINED' }, { status: 'PARTIAL' }));
+
+    const res = await payTheLink();
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('DEPOSIT_VOIDED');
+    expect(mockCreateCheckoutSession).not.toHaveBeenCalled();
+  });
+
+  it('kills a session when the estimate was declined while it was being minted', async () => {
+    mockPrisma.invoice.findFirst
+      .mockResolvedValueOnce(depositInvoice({ ...currentEstimate(), status: 'SENT' }))
+      .mockResolvedValueOnce(depositInvoice({ ...currentEstimate(), status: 'DECLINED' }));
+
+    const res = await payTheLink();
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('DEPOSIT_VOIDED');
+    expect(mockExpireSession).toHaveBeenCalledWith('cs_1', expect.anything());
+  });
+
+  it('answers "already paid" when the deposit was paid by hand while the session was being minted', async () => {
+    mockPrisma.invoice.findFirst
+      .mockResolvedValueOnce(depositInvoice(currentEstimate()))
+      .mockResolvedValueOnce(depositInvoice(currentEstimate(), { status: 'PAID', amount_due: 0 }));
+
+    const res = await payTheLink();
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('DEPOSIT_ALREADY_PAID');
+    expect(mockExpireSession).toHaveBeenCalledWith('cs_1', expect.anything());
+  });
+
   it('hands over the link when nothing moved underneath it', async () => {
     mockPrisma.invoice.findFirst.mockResolvedValue(depositInvoice(currentEstimate()));
 
@@ -281,6 +320,7 @@ describe('the public deposit link while the estimate has moved on', () => {
       customer: { first_name: 'Pat', last_name: 'Q', company_name: null },
       line_items: [],
       job: null,
+      payments: [],
     });
     mockPrisma.organization.findUnique.mockResolvedValue({
       name: 'Test Org', logo_url: null, brand_color: null, phone: null, timezone: null,

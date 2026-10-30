@@ -419,7 +419,12 @@ describe('POST /api/jobs/:id/cancel — LO unwind wiring (E7 / E11)', () => {
 
     mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
       fn({
-        invoice: { update: vi.fn().mockResolvedValue({}) },
+        // #891: the cascade's void is a conditional updateMany (count 1 = voided).
+        // #891: the cascade locks the invoices it voids before voiding them.
+        $executeRaw: vi.fn().mockResolvedValue(1),
+        invoice: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
+        // #891: a cascade-voided invoice releases any deposit credit drawn onto it.
+        depositCreditApplication: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         job: { update: vi.fn().mockResolvedValue({ ...JOB_FIXTURE, status: 'CANCELLED' }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         planVisit: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
@@ -438,7 +443,7 @@ describe('POST /api/jobs/:id/cancel — LO unwind wiring (E7 / E11)', () => {
     const res = await request(app)
       .post(`/api/jobs/${JOB_FIXTURE.id}/cancel`)
       .set(authHeader('admin'))
-      .send({ cancelled_reason: 'Customer cancelled' });
+      .send({ cancel_reason_code: 'OTHER', cancelled_reason: 'Customer cancelled' });
 
     expect(res.status).toBe(200);
     // The LO returned its stock inside the cancel tx.
@@ -516,13 +521,15 @@ describe('POST /api/invoices/:id/void — LO unwind wiring (E9)', () => {
 
     mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
       fn({
-        invoice: { update: vi.fn().mockResolvedValue({ id: INV_ID, status: 'VOIDED', invoice_number: 'I00002' }) },
+        $executeRaw: vi.fn().mockResolvedValue(1), // slice 05: the void locks the invoice and re-checks it
+        invoice: { update: vi.fn().mockResolvedValue({ id: INV_ID, status: 'VOIDED', invoice_number: 'I00002' }), findUniqueOrThrow: vi.fn().mockResolvedValue({ status: 'SENT' }) },
         job: { update: vi.fn().mockResolvedValue({}) },
         invoiceLineItem: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn() },
         // S4 (D19): job cancel cascades onto its live visits inside this same transaction.
         visit: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         depositCreditApplication: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
-        payment: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        // Slice 18: the void re-counts money taken on the invoice under its lock - none here.
+        payment: { updateMany: vi.fn().mockResolvedValue({ count: 0 }), count: vi.fn().mockResolvedValue(0) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         priceBookItem: { findMany: mockPrisma.priceBookItem.findMany },
         stockMovement: { create: mockPrisma.stockMovement.create },

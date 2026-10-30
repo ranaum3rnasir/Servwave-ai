@@ -46,7 +46,7 @@ function renderCompose(sendingEnabled?: boolean) {
       onClose={noop}
       onDiscard={noop}
       onToast={noop}
-      fromAddress="alphadoors@mail.servwave.com"
+      fromAddress="exampledoors@mail.servwave.com"
       {...(sendingEnabled === undefined ? {} : { sendingEnabled })}
     />,
   );
@@ -90,13 +90,16 @@ describe('ComposeWindow - sending disabled', () => {
   it('warns before a word is typed', () => {
     renderCompose(false);
 
-    expect(screen.getByText(new RegExp(SENDING_DISABLED_LABEL, 'i'))).toBeInTheDocument();
+    // The notice (a status region); the disabled Send repeats the same words as its reason, for a screen reader.
+    expect(screen.getByRole('status')).toHaveTextContent(new RegExp(SENDING_DISABLED_LABEL, 'i'));
   });
 
-  it('disables Send', () => {
+  it('disables Send, and says why in the design system\'s disabled-with-reason pattern', () => {
     renderCompose(false);
 
-    expect(screen.getByRole('button', { name: /send/i })).toBeDisabled();
+    const send = screen.getByRole('button', { name: /send/i });
+    expect(send).toBeDisabled();
+    expect(send).toHaveAccessibleDescription(SENDING_DISABLED_LABEL);
   });
 
   it('does not fire onSend even if the disabled button is clicked', async () => {
@@ -113,7 +116,7 @@ describe('ComposeWindow - sending disabled', () => {
   it('still shows the real From address, which is not what the switch turns off', () => {
     renderCompose(false);
 
-    expect(screen.getByText('alphadoors@mail.servwave.com')).toBeInTheDocument();
+    expect(screen.getByText('exampledoors@mail.servwave.com')).toBeInTheDocument();
   });
 });
 

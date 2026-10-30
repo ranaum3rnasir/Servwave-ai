@@ -45,7 +45,7 @@ describe('PaymentFeeBreakdown', () => {
 
     expect(await screen.findByText('Gross')).toBeInTheDocument();
     expect(screen.getByText('$500.00')).toBeInTheDocument();
-    expect(screen.getByText('Stripe fee')).toBeInTheDocument();
+    expect(screen.getByText('Card processing fee')).toBeInTheDocument();
     expect(screen.getByText('-$14.75')).toBeInTheDocument();
     // Fee-line label — spec §6.8 copy appendix, verbatim.
     expect(screen.getByText('ServWave platform fee - 0.5%')).toBeInTheDocument();

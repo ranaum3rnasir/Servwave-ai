@@ -14,7 +14,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
+import { buildAbility } from '@/lib/ability';
+import { renderWithProviders, purchasingAbility } from './helpers';
 import {
   CustomerPanel,
   type DialerSelection,
@@ -100,6 +101,7 @@ beforeEach(() => {
 function renderPanel() {
   return renderWithProviders(
     <CustomerPanel selection={SELECTION} calls={[]} onCall={() => {}} />,
+    { ability: purchasingAbility() },
   );
 }
 
@@ -150,5 +152,19 @@ describe('Dialer CustomerPanel — PO number links (#357)', () => {
     expect(
       await screen.findByText('Copper Pipe, Type L, 3/4 in x 10 ft'),
     ).toBeInTheDocument();
+  });
+});
+
+describe('Dialer CustomerPanel — purchase orders follow View purchase orders (S07.19)', () => {
+  it('asks for no purchase orders, and shows no PO section, for a person who cannot read them', async () => {
+    renderWithProviders(
+      <CustomerPanel selection={SELECTION} calls={[]} onCall={() => {}} />,
+      { ability: buildAbility([{ action: 'read', subject: 'Customer' }]) },
+    );
+
+    expect(await screen.findByText('Hudson Yards Condo Bldg 12B')).toBeInTheDocument();
+    expect(mockApi.get).not.toHaveBeenCalledWith('/api/inventory/purchase-orders', expect.anything());
+    expect(mockApi.get.mock.calls.map((c) => c[0])).not.toContain('/api/inventory/purchase-orders');
+    expect(screen.queryByRole('button', { name: 'PO-2275' })).not.toBeInTheDocument();
   });
 });

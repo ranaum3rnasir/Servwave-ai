@@ -12,6 +12,7 @@ import { toast } from '@/ui-kit/components/ui/sonner';
 import { useConfirm } from '@/hooks/useConfirm';
 import { useIsBelow } from '@/hooks/useIsMobile';
 import { DetailHeader } from '@/components/detail/DetailHeader';
+import { useAppAbility } from '@/contexts/AbilityContext';
 import { deleteWorkflowPrompt } from '@/lib/confirmPrompts';
 import {
   useWorkflow,
@@ -34,6 +35,7 @@ import StepConfigDrawer from './components/stepConfigDrawer';
 import TestWorkflowDialog from './components/testWorkflowDialog';
 import WorkflowActivity from './components/workflowActivity';
 import { ELLIPSIS, EM_DASH, MIDDOT } from './components/glyphs';
+import { WorkflowStatusChip } from './components/workflowVisuals';
 import { useRecordVisit } from '../pageBreadcrumbs';
 
 /**
@@ -67,6 +69,14 @@ import { useRecordVisit } from '../pageBreadcrumbs';
  *
  * Position is array index everywhere: the draft holds an ordered step list and
  * every save renumbers positions from that order (server contract).
+ *
+ * Roles & Permissions S07.21: what the person may do follows the module's switches.
+ * An open automation is changed on Edit automations and a new one is built on Create
+ * automations (the server decides the same requests on the same switches). Without
+ * the one that applies the page is read only: no autosave, nothing to add, reorder
+ * or open for editing, and the status stands where Publish would. Publish, the on/off
+ * switch and Test are changes to a saved automation, so they need Edit automations;
+ * Delete needs Delete automations.
  */
 
 const AUTOSAVE_DELAY_MS = 3000;
@@ -81,6 +91,10 @@ function savedStamp(lastSavedAt: number | null): string {
 export default function AutomationBuilderPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const ability = useAppAbility();
+  const canEdit = ability.can('update', 'Automation');
+  const canDelete = ability.can('delete', 'Automation');
+  const readOnly = !(id ? canEdit : ability.can('create', 'Automation'));
 
   const {
     data: workflow,
@@ -173,7 +187,7 @@ export default function AutomationBuilderPage() {
 
   const flush = useCallback(async () => {
     const s = stateRef.current;
-    if (!s.dirty || savingRef.current) return;
+    if (readOnly || !s.dirty || savingRef.current) return;
     const rev = s.revision;
     const body = draftToInput(s);
     savingRef.current = true;
@@ -202,7 +216,7 @@ export default function AutomationBuilderPage() {
       savingRef.current = false;
       setIsSaving(false);
     }
-  }, [create, patch, markSaved, navigate]);
+  }, [create, patch, markSaved, navigate, readOnly]);
 
   // See the docblock: both effects below reach `flush` through this ref rather
   // than depending on it.
@@ -381,6 +395,7 @@ export default function AutomationBuilderPage() {
                 onChange={(e) => setName(e.target.value)}
                 // The blur flush. One of the four autosave edges; do not drop it.
                 onBlur={() => void flush()}
+                readOnly={readOnly}
                 maxLength={120}
                 placeholder="Name this automation"
                 // Was borderless with no other cue it was a field, so it read as
@@ -399,36 +414,44 @@ export default function AutomationBuilderPage() {
           }
           // Publish is the page's one primary action: full width on a phone, 44 px tall.
           primary={
-            <PublishControl
-              status={state.server.status}
-              hasUnpublishedChanges={state.server.has_unpublished_changes}
-              dirty={state.dirty}
-              issues={
-                // A never-saved empty draft has no server verdict yet, so
-                // synthesize the one issue that matters. Publish is then honestly
-                // disabled rather than enabled-but-silently-doing-nothing.
-                !state.server.id && state.steps.length === 0
-                  ? [{ step_index: -1, path: 'steps', message: 'Add at least one step' }]
-                  : state.server.issues
-              }
-              isEnabled={state.server.is_enabled}
-              onPublish={handlePublish}
-              onToggleEnabled={handleToggle}
-              isPublishing={publish.isPending || isSaving}
-              isToggling={toggle.isPending}
-            />
+            canEdit && !readOnly ? (
+              <PublishControl
+                status={state.server.status}
+                hasUnpublishedChanges={state.server.has_unpublished_changes}
+                dirty={state.dirty}
+                issues={
+                  // A never-saved empty draft has no server verdict yet, so
+                  // synthesize the one issue that matters. Publish is then honestly
+                  // disabled rather than enabled-but-silently-doing-nothing.
+                  !state.server.id && state.steps.length === 0
+                    ? [{ step_index: -1, path: 'steps', message: 'Add at least one step' }]
+                    : state.server.issues
+                }
+                isEnabled={state.server.is_enabled}
+                onPublish={handlePublish}
+                onToggleEnabled={handleToggle}
+                isPublishing={publish.isPending || isSaving}
+                isToggling={toggle.isPending}
+              />
+            ) : (
+              <WorkflowStatusChip status={state.server.status} is_enabled={state.server.is_enabled} />
+            )
           }
           secondary={[
-            {
-              key: 'test',
-              label: 'Test',
-              icon: <FlaskConical aria-hidden />,
-              inline: true,
-              buttonVariant: 'outline',
-              disabled: testDisabled,
-              disabledReason: testDisabled ? 'Save your changes first' : undefined,
-              onSelect: () => setTestOpen(true),
-            },
+            ...(canEdit
+              ? [
+                  {
+                    key: 'test',
+                    label: 'Test',
+                    icon: <FlaskConical aria-hidden />,
+                    inline: true,
+                    buttonVariant: 'outline' as const,
+                    disabled: testDisabled,
+                    disabledReason: testDisabled ? 'Save your changes first' : undefined,
+                    onSelect: () => setTestOpen(true),
+                  },
+                ]
+              : []),
             {
               key: 'activity',
               label: 'Activity',
@@ -437,17 +460,21 @@ export default function AutomationBuilderPage() {
               buttonVariant: 'outline',
               onSelect: () => setActivityOpen(true),
             },
-            {
-              key: 'delete',
-              label: 'Delete',
-              icon: <Trash2 aria-hidden />,
-              inline: true,
-              buttonVariant: 'outline',
-              buttonClassName: 'text-destructive hover:text-destructive',
-              variant: 'destructive',
-              disabled: !state.server.id || remove.isPending,
-              onSelect: () => void handleDelete(),
-            },
+            ...(canDelete
+              ? [
+                  {
+                    key: 'delete',
+                    label: 'Delete',
+                    icon: <Trash2 aria-hidden />,
+                    inline: true,
+                    buttonVariant: 'outline' as const,
+                    buttonClassName: 'text-destructive hover:text-destructive',
+                    variant: 'destructive' as const,
+                    disabled: !state.server.id || remove.isPending,
+                    onSelect: () => void handleDelete(),
+                  },
+                ]
+              : []),
           ]}
         />
       </div>
@@ -479,12 +506,13 @@ export default function AutomationBuilderPage() {
             onAddStep={addStep}
             onMoveStep={moveStep}
             onRemoveStep={removeStep}
+            readOnly={readOnly}
           />
         </div>
       </div>
 
       <StepConfigDrawer
-        open={drawerMode !== null}
+        open={drawerMode !== null && !readOnly}
         onOpenChange={(open) => !open && clearSelection()}
         mode={drawerMode}
         step={selectedStep}

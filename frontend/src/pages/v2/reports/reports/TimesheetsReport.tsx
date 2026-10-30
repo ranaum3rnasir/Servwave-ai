@@ -1,28 +1,23 @@
 import { useMemo, useState } from 'react';
 import {
-  Bar, BarChart, Cell, Legend, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis,
+  Bar, BarChart, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts';
-import { Activity, AlarmClock, Check, Clock, MapPin, Timer, X } from 'lucide-react';
+import { Activity, AlarmClock, Clock, Timer } from 'lucide-react';
 
 import { ChartCard } from '@/components/charts';
 import { token } from '@/design-system';
-import { STATUS_REGISTRY } from '@/design-system/status-registry';
 import { findReport } from '@/lib/reports/report-catalog';
-import { GeofenceSettingsDialog } from '@/components/timeclock/GeofenceSettingsDialog';
 import { EmployeePayrollCard } from '@/components/timeclock/EmployeePayrollCard';
-import { useAuthStore } from '@/stores/auth.store';
-import {
-  useApproveOverride, useOtReviews, usePunches, useRejectOverride, useUpsertOtReview,
-} from '@/lib/api/timeclock';
+import { useAppAbility } from '@/contexts/AbilityContext';
+import { useOtReviews, usePunches, useUpsertOtReview } from '@/lib/api/timeclock';
+import { formatPlace } from '@/lib/timeclock/place';
 import { buildSessions, isLate, type Session } from '@/lib/timeclock/aggregate';
 import { buildDays, buildPayroll, type WeekRow } from '@/lib/timeclock/payroll';
 import type { ReviewState } from '@/lib/timeclock/types';
 import { useOrganization } from '@/lib/api/organization';
 
 import { EmptyState } from '@/ui-kit/components/data/emptyState';
-import { Badge, type BadgeProps } from '@/ui-kit/components/ui/badge';
-import { Button } from '@/ui-kit/components/ui/button';
-import { Card } from '@/ui-kit/components/ui/card';
+import { Badge } from '@/ui-kit/components/ui/badge';
 import { SelectField } from '@/ui-kit/components/form/selectField';
 import { cn } from '@/ui-kit/lib/utils';
 
@@ -33,53 +28,33 @@ import { ReportTable, ReportTableTotals, type ReportColumn } from '../components
 import { TabPanel, TabStrip } from '../../_shared/tabs';
 
 /**
- * Timesheets - hours, attendance, location and job time over the punch log.
+ * Timesheets - hours, attendance and where each clock-in and clock-out happened, over the punch log.
  *
- * THE SCOPE RULE IS THE SECURITY BOUNDARY AND IT IS UNCHANGED. Admins and
- * dispatchers ask for `scope: 'org'`, everyone else asks for `'me'`, and the
- * server enforces the same rule regardless of what is asked for - the client
- * side is a UX nicety, not the gate.
+ * THE SCOPE RULE IS THE SECURITY BOUNDARY. Whoever holds "See everyone's timesheets" asks for `scope: 'org'`,
+ * everyone else asks for `'me'`, and the server enforces the same rule regardless of what is asked for - the
+ * client side is a UX nicety, not the gate.
  *
- * Every timeclock hook and every aggregation is imported: `usePunches`,
- * `useOtReviews`, `useUpsertOtReview`, `useApproveOverride`,
- * `useRejectOverride`, `buildSessions`, `buildDays`, `buildPayroll` and
- * `isLate`. So is the ISO-week bucketing rule - `period_key`s are computed in
- * the ORG timezone, not the viewer's browser zone, so every admin agrees with
- * the backend on a boundary punch.
+ * Every timeclock hook and every aggregation is imported: `usePunches`, `useOtReviews`, `useUpsertOtReview`,
+ * `buildSessions`, `buildDays`, `buildPayroll` and `isLate`. So is the ISO-week bucketing rule - `period_key`s
+ * are computed in the ORG timezone, not the viewer's browser zone, so every admin agrees with the backend on a
+ * boundary punch.
  *
- * `GeofenceSettingsDialog` and `EmployeePayrollCard` are imported unchanged.
- * The kit has no equivalent for either (ledger rows) and both own real
+ * `EmployeePayrollCard` is imported unchanged. The kit has no equivalent (a ledger row) and it owns real
  * behaviour - the payroll card holds the OT approve/reject flow.
  *
- * Two chart colour decisions are data signals and stay: an employee's hours bar
- * is amber when they are into overtime and green when they are not, and the
- * location donut is green for in-zone against amber for override.
- *
- * The punch-log status column keeps reading `STATUS_REGISTRY.timeclockReview`
- * for the review intent - the registry is the single source for that mapping -
- * and only the pill itself became a kit Badge. Its copy is deliberately
- * unchanged: the registry label would turn "Override · none" into
- * "Override · Pending", a real copy change filed as E5.
+ * One chart colour decision is a data signal and stays: an employee's hours bar is amber when they are into
+ * overtime and green when they are not.
  */
 
 const fmtHM = (min: number) => `${Math.floor(min / 60)}:${String(Math.round(min % 60)).padStart(2, '0')}`;
 
-const TABS = ['Hours', 'Attendance', 'Location', 'Job time'] as const;
+const TABS = ['Hours', 'Attendance'] as const;
 type Tab = (typeof TABS)[number];
 
 const hrs = (min: number) => min / 60;
 const fmtHrs = (min: number) => `${hrs(min).toFixed(1)}h`;
 const fmtClock = (ts: number) => new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const fmtDate = (ts: number) => new Date(ts).toLocaleDateString([], { month: 'short', day: 'numeric' });
-
-/** The four status intents, as the kit's soft badge variants. */
-const INTENT_VARIANT: Record<string, NonNullable<BadgeProps['variant']>> = {
-  success: 'softGreen',
-  warning: 'softAmber',
-  danger: 'softRed',
-  info: 'softBlue',
-  neutral: 'softNeutral',
-};
 
 type EmpRow = {
   userId: string;
@@ -94,10 +69,10 @@ type EmpRow = {
 
 export default function TimesheetsReport() {
   const report = findReport('timesheets');
-  // Admins/dispatchers see the whole org; everyone else only their own punches.
+  // Whoever holds "See everyone's timesheets" sees the whole company; everyone else only their own punches.
   // The server enforces the same rule regardless of what we ask for.
-  const role = useAuthStore((s) => s.user?.role);
-  const scope = role === 'ADMIN' || role === 'DISPATCHER' ? 'org' : 'me';
+  const ability = useAppAbility();
+  const scope = ability.can('see_all', 'Timeclock') ? 'org' : 'me';
   // ISO-week period_keys must be bucketed in the ORG timezone (not the viewer's
   // browser zone) so every admin agrees with the backend on boundary punches.
   const { data: org } = useOrganization();
@@ -106,10 +81,6 @@ export default function TimesheetsReport() {
   const { data: punches = [] } = usePunches({ scope });
   const { data: otReviewRows = [] } = useOtReviews({ scope });
   const upsertOtReview = useUpsertOtReview();
-  const approveOverrideM = useApproveOverride();
-  const rejectOverrideM = useRejectOverride();
-  const approveOverride = (id: string) => void approveOverrideM.mutateAsync(id);
-  const rejectOverride = (id: string) => void rejectOverrideM.mutateAsync(id);
 
   // Map the API's per-week reviews -> `Record<reviewKey, ReviewState>` keyed
   // `${user_id}:${period_key}` (matching WeekRow.reviewKey), state lowercased.
@@ -171,32 +142,9 @@ export default function TimesheetsReport() {
 
   const totalMin = employees.reduce((a, r) => a + r.totalMin, 0);
   const otMin = employees.reduce((a, r) => a + r.otMin, 0);
-  const inPunches = punches.filter((p) => p.type === 'IN');
   const onTimeCount = sessions.filter((s) => !isLate(s.inTs)).length;
   const onTimePct = sessions.length ? Math.round((onTimeCount / sessions.length) * 100) : 0;
-  const inZoneCount = inPunches.filter((p) => p.status === 'in_zone').length;
-  const inZonePct = inPunches.length ? Math.round((inZoneCount / inPunches.length) * 100) : 0;
   const activeNow = sessions.filter((s) => s.outTs === null).length;
-
-  const overrideCount = inPunches.filter((p) => p.status === 'override').length;
-  const officeCount = inPunches.filter((p) => p.matchedZoneKind === 'store').length;
-  const jobCount = inPunches.filter((p) => p.matchedZoneKind === 'job').length;
-  const pendingOverrides = punches.filter((p) => p.status === 'override' && p.review === 'pending');
-  const donut = [
-    { name: 'In zone', value: inZoneCount, fill: token('--success') },
-    { name: 'Override', value: overrideCount, fill: token('--warning') },
-  ].filter((d) => d.value > 0);
-
-  const jobTime = useMemo(() => {
-    const m = new Map<string, { jobNumber: string; label: string; minutes: number }>();
-    for (const s of sessions) {
-      if (s.zoneKind !== 'job' || !s.jobNumber) continue;
-      const e = m.get(s.jobNumber) ?? { jobNumber: s.jobNumber, label: s.matchedZoneLabel ?? s.jobNumber, minutes: 0 };
-      e.minutes += s.minutes;
-      m.set(s.jobNumber, e);
-    }
-    return [...m.values()].sort((a, b) => b.minutes - a.minutes);
-  }, [sessions]);
 
   const logRows = useMemo(() => [...punches].sort((a, b) => b.ts - a.ts), [punches]);
 
@@ -217,13 +165,12 @@ export default function TimesheetsReport() {
   if (!report) return null;
 
   return (
-    <ReportShell report={report} actions={<GeofenceSettingsDialog />}>
+    <ReportShell report={report}>
       <ReportKpis
         items={[
           { icon: Clock, label: 'Total hours', value: fmtHrs(totalMin), tone: 'success', emphasize: true },
           { icon: Timer, label: 'Overtime hours', value: fmtHrs(otMin), tone: 'warning' },
           { icon: AlarmClock, label: 'On-time %', value: `${onTimePct}%`, tone: 'primary' },
-          { icon: MapPin, label: '% in-zone', value: `${inZonePct}%`, tone: 'neutral' },
           { icon: Activity, label: 'Active now', value: activeNow, tone: 'neutral' },
         ]}
       />
@@ -312,70 +259,6 @@ export default function TimesheetsReport() {
             />
           </TabPanel>
 
-          <TabPanel value="Location" activeValue={tab}>
-            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-              <ChartCard title="In-zone vs override">
-                <ResponsiveContainer width="100%" height={220}>
-                  <PieChart>
-                    <Pie data={donut} dataKey="value" nameKey="name" outerRadius={80} label isAnimationActive={false}>
-                      {donut.map((d) => (
-                        <Cell key={d.name} fill={d.fill} />
-                      ))}
-                    </Pie>
-                    <Legend wrapperStyle={{ fontSize: 11 }} />
-                    <Tooltip />
-                  </PieChart>
-                </ResponsiveContainer>
-                <p className="text-muted-foreground mt-2 text-xs">
-                  Office punches: {officeCount} · Job-site punches: {jobCount}
-                </p>
-              </ChartCard>
-
-              <Card>
-                <ReportHeading level={2} scale="lg" className="mb-3">Pending overrides</ReportHeading>
-                {pendingOverrides.length === 0 ? (
-                  <p className="text-muted-foreground text-sm">No overrides awaiting review.</p>
-                ) : (
-                  <ul className="space-y-2">
-                    {pendingOverrides.map((p) => (
-                      <li key={p.id} className="flex items-center justify-between rounded-lg border px-3 py-2">
-                        <div className="text-sm">
-                          <div className="font-medium">{p.userName}</div>
-                          <div className="text-muted-foreground text-xs">
-                            {fmtDate(p.ts)} {fmtClock(p.ts)} · {Math.round(p.distanceM)} m out
-                          </div>
-                        </div>
-                        <div className="flex gap-1">
-                          {/* The kit has no success-toned Button either, so the
-                              approve action is a ghost icon button whose glyph
-                              carries the meaning - same pairing as Reject. */}
-                          <Button type="button" variant="ghost" size="icon-sm" aria-label="Approve" onClick={() => approveOverride(p.id)}>
-                            <Check className="text-status-green-emphasis" />
-                          </Button>
-                          <Button type="button" variant="ghost" size="icon-sm" aria-label="Reject" onClick={() => rejectOverride(p.id)}>
-                            <X className="text-status-red-emphasis" />
-                          </Button>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </Card>
-            </div>
-          </TabPanel>
-
-          <TabPanel value="Job time" activeValue={tab}>
-            <ReportTable
-              rows={jobTime}
-              getRowKey={(r) => r.jobNumber}
-              empty={<EmptyState title="No job-attributed time yet." />}
-              columns={[
-                { id: 'job', header: 'Job', width: 240, min: 160, cell: (r) => <span className="font-medium">{r.label}</span>, sortValue: (r) => r.label },
-                { id: 'hours', header: 'Labor hours', width: 130, min: 110, align: 'right', cell: (r) => <span className="tabular-nums">{fmtHrs(r.minutes)}</span>, sortValue: (r) => r.minutes },
-              ]}
-            />
-          </TabPanel>
-
           <div className="space-y-2">
             <ReportHeading level={2} scale="lg">Punch log</ReportHeading>
             <ReportTable
@@ -386,26 +269,7 @@ export default function TimesheetsReport() {
                 { id: 'emp', header: 'Employee', width: 160, min: 130, cell: (p) => <span className="font-medium">{p.userName}</span>, sortValue: (p) => p.userName },
                 { id: 'when', header: 'When', width: 150, min: 120, cell: (p) => <span className="text-muted-foreground tabular-nums">{fmtDate(p.ts)} {fmtClock(p.ts)}</span>, sortValue: (p) => p.ts },
                 { id: 'type', header: 'Type', width: 80, min: 70, cell: (p) => <Badge variant={p.type === 'IN' ? 'softGreen' : 'softNeutral'} size="pill">{p.type}</Badge>, sortValue: (p) => p.type },
-                { id: 'zone', header: 'Location', width: 200, min: 140, cell: (p) => <span>{p.matchedZoneLabel ?? '-'}</span>, sortValue: (p) => p.matchedZoneLabel ?? '' },
-                { id: 'dist', header: 'Distance', width: 100, min: 90, align: 'right', cell: (p) => <span className="text-muted-foreground tabular-nums">{Math.round(p.distanceM)} m</span>, sortValue: (p) => p.distanceM },
-                {
-                  id: 'status', header: 'Status', width: 130, min: 110, sortValue: (p) => p.status,
-                  cell: (p) => {
-                    // Geofence result, NOT a review state - `in_zone` is
-                    // PunchStatus and has no registry domain, so it is
-                    // deliberately outside the timeclockReview lookup below.
-                    if (p.status === 'in_zone') return <Badge variant="softGreen" size="pill">In zone</Badge>;
-                    // `p.review` is ReviewState, a 4/4 mirror of Prisma
-                    // PunchReview, so every value resolves; the `?? 'warning'`
-                    // only preserves the old ternary's else-branch.
-                    const intent = STATUS_REGISTRY.timeclockReview[p.review]?.intent ?? 'warning';
-                    return (
-                      <Badge variant={INTENT_VARIANT[intent] ?? 'softAmber'} size="pill">
-                        Override · {p.review}
-                      </Badge>
-                    );
-                  },
-                },
+                { id: 'where', header: 'Where', width: 200, min: 160, cell: (p) => <span className="text-muted-foreground tabular-nums">{formatPlace(p.lat, p.lng)}</span>, sortValue: (p) => p.lat },
               ]}
             />
           </div>

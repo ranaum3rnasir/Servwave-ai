@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import type { ColumnDef } from '@tanstack/react-table';
 import { Plus } from 'lucide-react';
 
+import { useAppAbility } from '@/contexts/AbilityContext';
 import { useServicePlans, describeRecurrence, type ServicePlan } from '@/lib/api/service-plans';
 
 import { DataTable } from '@/ui-kit/components/data/dataTable/dataTable';
@@ -243,13 +244,15 @@ function HistoryTab({ plans, onOpen }: { plans: ServicePlan[]; onOpen: (id: stri
  * persisted state (frontend/src/pages/v2/_shared/tabs.tsx), so promoting the
  * band does not touch that question.
  *
- * There is no permission gating on this page and there was none before: every
- * control renders for anyone who reaches the route, and enforcement is entirely
- * server-side. Adding a CASL gate here would change who can do what, which is
- * outside a restyle - it is recorded in the gap ledger instead.
+ * Roles & Permissions S07.21: the controls follow the module's switches. New Plan
+ * follows Create service plans; the detail sheet's Activate, Renew, Cancel plan,
+ * default-materials Edit and Schedule visit follow Edit service plans, and its
+ * Delete follows Delete service plans. The server decides the same requests on the
+ * same switches, so hiding a control only stops offering what would be refused.
  */
 export default function ServicePlansPage() {
   useRecordVisit('service-plans');
+  const canCreate = useAppAbility().can('create', 'ServicePlan');
   const { data: plans = [], isLoading } = useServicePlans();
   const [builderOpen, setBuilderOpen] = useState(false);
   const [detailId, setDetailId] = useState<string | null>(null);
@@ -260,10 +263,12 @@ export default function ServicePlansPage() {
       <PageHeader
         title="Service Plans"
         actions={
-          <Button onClick={() => setBuilderOpen(true)}>
-            <Plus />
-            New Plan
-          </Button>
+          canCreate ? (
+            <Button onClick={() => setBuilderOpen(true)}>
+              <Plus />
+              New Plan
+            </Button>
+          ) : undefined
         }
       />
 

@@ -18,9 +18,8 @@ import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
-import { mockAuthAs, authHeader, mockRoleGrantsWithout } from './helpers';
+import { mockAuthAs, authHeader, mockRoleGrantsWithout, mockRoleSwitches } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 
 describe('technician pricebook-read backfill migration', () => {
   const MIGRATION = join(
@@ -63,7 +62,6 @@ describe('behavioral slice — bare technician catalog access after the grant', 
   beforeEach(() => {
     vi.clearAllMocks();
     clearPermissionCache();
-    clearUserOverrideCache();
     mockAuthAs('technician');
     mockRoleGrantsWithout('TECHNICIAN', ['read', 'Pricing']);  // price-blind on purpose: read Pricing is a TECHNICIAN default since the ownership spec
   });
@@ -94,12 +92,16 @@ describe('behavioral slice — bare technician catalog access after the grant', 
     expect(res.body.data[0].unit_price).toBe(4);
   });
 
-  it('GET /api/inventory/items stays 403 — read Inventory is untouched by the PriceBook grant', async () => {
+  // The Technician preset holds View stock since Roles & Permissions S01.9 (the grant is the View stock switch's), so
+  // the catalog grant is shown to leave stock alone for a technician whose View stock is off.
+  it('GET /api/inventory/items stays 403 with View stock off — read Inventory is untouched by the PriceBook grant', async () => {
+    mockRoleSwitches({ view_stock: false });
     const res = await request(app).get('/api/inventory/items').set(authHeader('technician'));
     expect(res.status).toBe(403);
   });
 
-  it('GET /api/inventory/movements stays 403 (QA-802 negative)', async () => {
+  it('GET /api/inventory/movements stays 403 with View stock off (QA-802 negative)', async () => {
+    mockRoleSwitches({ view_stock: false });
     const res = await request(app).get('/api/inventory/movements').set(authHeader('technician'));
     expect(res.status).toBe(403);
   });

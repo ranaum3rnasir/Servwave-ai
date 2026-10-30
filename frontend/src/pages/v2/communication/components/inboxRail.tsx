@@ -1,5 +1,5 @@
 import {
-  Archive, Forward, Inbox as InboxIcon, Mail, PanelLeftClose, PenLine, Send, Settings2, Star,
+  Archive, Forward, Inbox as InboxIcon, Mail, MailWarning, PanelLeftClose, PenLine, Send, Settings2, Star,
   Users,
 } from 'lucide-react';
 
@@ -14,8 +14,9 @@ import { Button } from '@/ui-kit/components/ui/button';
 import { cn } from '@/ui-kit/lib/utils';
 
 import { EM_DASH } from './glyphs';
+import { MailboxList, type MailboxListProps } from './mailboxList';
 
-export type Folder = 'inbox' | 'starred' | 'sent' | 'drafts' | 'archive';
+export type Folder = 'inbox' | 'starred' | 'sent' | 'drafts' | 'archive' | 'review';
 
 export const FOLDERS: {
   id: Folder;
@@ -27,9 +28,13 @@ export const FOLDERS: {
   { id: 'sent', label: 'Sent', icon: Send },
   { id: 'drafts', label: 'Drafts', icon: PenLine },
   { id: 'archive', label: 'Archive', icon: Archive },
+  // Mail the router held instead of delivering (PRD 10, S10.18): its count is how many are waiting, not how many are unread.
+  { id: 'review', label: 'Needs review', icon: MailWarning },
 ];
 
 export interface InboxRailProps {
+  /** The mailbox list at the top of the rail; the folders below it apply inside the mailbox chosen there. */
+  mailboxes: MailboxListProps;
   folder: Folder;
   onFolder: (f: Folder) => void;
   countFor: (f: Folder) => number;
@@ -41,6 +46,8 @@ export interface InboxRailProps {
   onEmailMember: (m: TeamMember) => void;
   onEmailGroup: (g: EmailGroup) => void;
   onCollapse: () => void;
+  /** The rail is the body of a menu overlay (phone width), not a column beside the list: it fills the overlay. */
+  inOverlay?: boolean;
 }
 
 /**
@@ -55,25 +62,35 @@ export interface InboxRailProps {
  * a behaviour change and not this branch's call to make.
  */
 export function InboxRail({
-  folder, onFolder, countFor, members, groups, forwards, memberName, onManage, onEmailMember,
-  onEmailGroup, onCollapse,
+  mailboxes, folder, onFolder, countFor, members, groups, forwards, memberName, onManage, onEmailMember,
+  onEmailGroup, onCollapse, inOverlay = false,
 }: InboxRailProps) {
   return (
-    <div className="bg-kit-card flex w-52 flex-none flex-col overflow-y-auto overscroll-contain border-r p-3">
+    <div
+      className={cn(
+        'bg-kit-card flex flex-col overflow-y-auto overscroll-contain p-3',
+        inOverlay ? 'min-h-0 flex-1' : 'w-52 flex-none border-r',
+      )}
+    >
       <div className="mb-1 flex items-center justify-between">
         <span className="text-muted-foreground px-1 text-[10px] font-semibold uppercase tracking-wider">
           Menu
         </span>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          title="Collapse menu"
-          aria-label="Collapse menu"
-          onClick={onCollapse}
-        >
-          <PanelLeftClose />
-        </Button>
+        {/* In the phone's menu sheet the sheet's own close X sits here: collapsing a column is a desktop idea. */}
+        {!inOverlay && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            title="Collapse menu"
+            aria-label="Collapse menu"
+            onClick={onCollapse}
+          >
+            <PanelLeftClose />
+          </Button>
+        )}
       </div>
+
+      <MailboxList {...mailboxes} />
 
       <ul className="space-y-0.5">
         {FOLDERS.map((f) => {

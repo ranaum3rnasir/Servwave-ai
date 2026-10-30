@@ -79,6 +79,12 @@ describe('AddLineDialog total bar — margin and markup', () => {
     expect(within(pair).queryByText('100%')).not.toBeInTheDocument();
   });
 
+  it('prints no implementation footnote under the total bar', () => {
+    renderEdit({ unit_cost: 90, unit_price: 150 });
+    expect(screen.getByRole('group', { name: /profitability/i })).toBeInTheDocument();
+    expect(screen.queryByText(/not re-derived/i)).not.toBeInTheDocument();
+  });
+
   it('shows nothing at all to a viewer without pricing access', () => {
     renderEdit({ unit_cost: 90, unit_price: 150 }, { canSeePricing: false });
 

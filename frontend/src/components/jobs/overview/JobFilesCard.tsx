@@ -12,6 +12,7 @@ import { useConfirm } from '@/hooks/useConfirm';
 import { deleteAttachmentPrompt } from '@/lib/confirmPrompts';
 import { ACCEPTED_UPLOAD_TYPES } from '@/lib/uploadTypes';
 import { AttachmentRowActions } from '@/components/attachments/AttachmentRowActions';
+import { fileControl, type FileChangeAnswer } from '@/lib/attachments/fileChange';
 import {
   UploadRefusalList,
   UploadSelectionList,
@@ -22,7 +23,7 @@ import { shrinkPhotoForUpload } from '@/lib/attachments/shrinkPhotoForUpload';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
 
-export interface AttachmentItem {
+export interface AttachmentItem extends FileChangeAnswer {
   id: string;
   file_name: string;
   file_url: string;
@@ -36,6 +37,10 @@ interface JobFilesCardProps {
   jobId: string;
   attachments: AttachmentItem[] | null | undefined;
   onViewAll?: () => void;
+  /** The server's per-record answer for Upload attachments. Without it the card lists the files and takes none. */
+  canUpload?: boolean;
+  /** The completed-job lock's reason: a file the lock alone stops the person from deleting or renaming is drawn disabled with it. */
+  lockedReason?: string;
 }
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
@@ -56,12 +61,20 @@ function FileIcon({ fileType }: { fileType: string }) {
  * (instead of two separate, non-interactive previews) with an upload
  * affordance in the header and an empty-state drop zone.
  */
-export function JobFilesCard({ jobId, attachments, onViewAll }: JobFilesCardProps) {
+export function JobFilesCard({ jobId, attachments, onViewAll, canUpload = true, lockedReason }: JobFilesCardProps) {
   const queryClient = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const deleteAttachment = useDeleteJobAttachment(jobId);
   const { confirm, confirmDialog } = useConfirm();
+
+  // How the Delete control is drawn for a file: from the server's per-file answer. A file forwarded from the lead is
+  // the lead's, so the job never offers to delete it.
+  const deleteControl = (att: AttachmentItem) => {
+    if (!isDeletableFromJob(att)) return 'hidden';
+    const state = fileControl(att, 'delete', true);
+    return state === 'locked' && !lockedReason ? 'hidden' : state;
+  };
 
   const handleDelete = async (att: AttachmentItem) => {
     if (await confirm(deleteAttachmentPrompt(att.display_name || att.file_name))) {
@@ -109,7 +122,7 @@ export function JobFilesCard({ jobId, attachments, onViewAll }: JobFilesCardProp
   const uploading = uploads.isUploading;
 
   const handleUpload = (files: FileList | null) => {
-    if (!files || files.length === 0) return;
+    if (!canUpload || !files || files.length === 0) return;
     uploads.enqueue(files);
   };
 
@@ -127,7 +140,7 @@ export function JobFilesCard({ jobId, attachments, onViewAll }: JobFilesCardProp
   const displayDocs = docs.slice(0, 5);
   const hasMore = photos.length > 8 || docs.length > 5;
 
-  const uploadControl = (
+  const uploadControl = canUpload ? (
     <>
       <Input
         ref={fileInputRef}
@@ -149,7 +162,7 @@ export function JobFilesCard({ jobId, attachments, onViewAll }: JobFilesCardProp
         {uploading ? 'Uploading…' : 'Upload'}
       </Button>
     </>
-  );
+  ) : null;
 
   return (
     <SectionCard
@@ -172,7 +185,9 @@ export function JobFilesCard({ jobId, attachments, onViewAll }: JobFilesCardProp
         <UploadRefusalList messages={uploads.refusals} className="mb-3" />
         <UploadSelectionList items={uploads.items} onCancel={uploads.cancel} className="mb-3" />
         <UploadSelectionList items={uploads.failed} onRetry={uploads.retry} rowTestId="upload-failed" className="mb-3" />
-        {all.length === 0 ? (
+        {all.length === 0 && !canUpload ? (
+          <p className="py-8 text-center text-sm text-text-secondary">No files yet</p>
+        ) : all.length === 0 ? (
           // Not converted to FormField: this label is a big clickable dropzone (icon + copy)
           // wired to a hidden file input elsewhere in the tree via htmlFor/id, not a caption
           // sitting above a visible control - outside FormField's label-above-control shape.
@@ -234,10 +249,11 @@ export function JobFilesCard({ jobId, attachments, onViewAll }: JobFilesCardProp
                           entityId={jobId}
                           renamable={photo.source !== 'LEAD'}
                           onRenamed={handleRenamed}
-                          onDelete={isDeletableFromJob(photo) ? () => void handleDelete(photo) : undefined}
+                          onDelete={deleteControl(photo) === 'enabled' ? () => void handleDelete(photo) : undefined}
                           deleteDisabled={deleteAttachment.isPending}
+                          lockedReason={lockedReason}
                         />
-                        {isDeletableFromJob(photo) && (
+                        {deleteControl(photo) !== 'hidden' && (
                           // hover-reveal: visible on touch, hidden until hover only where hover
                           // exists (mobile slice 15).
                           <div className="hover-reveal overflow-hidden rounded-full bg-surface-light/90 shadow ring-1 ring-border">
@@ -246,10 +262,10 @@ export function JobFilesCard({ jobId, attachments, onViewAll }: JobFilesCardProp
                               tone="danger"
                               revealOnHover
                               size="icon"
-                              disabled={deleteAttachment.isPending}
+                              disabled={deleteAttachment.isPending || deleteControl(photo) === 'locked'}
                               onClick={() => void handleDelete(photo)}
                               aria-label={`Delete ${photo.display_name || photo.file_name}`}
-                              title="Delete attachment"
+                              title={deleteControl(photo) === 'locked' ? lockedReason : 'Delete attachment'}
                               className="h-6 w-6"
                             >
                               <Trash2 className="h-3.5 w-3.5" />
@@ -296,20 +312,21 @@ export function JobFilesCard({ jobId, attachments, onViewAll }: JobFilesCardProp
                         entityId={jobId}
                         renamable={doc.source !== 'LEAD'}
                         onRenamed={handleRenamed}
-                        onDelete={isDeletableFromJob(doc) ? () => void handleDelete(doc) : undefined}
+                        onDelete={deleteControl(doc) === 'enabled' ? () => void handleDelete(doc) : undefined}
                         deleteDisabled={deleteAttachment.isPending}
+                        lockedReason={lockedReason}
                       />
-                      {isDeletableFromJob(doc) && (
+                      {deleteControl(doc) !== 'hidden' && (
                         <span className="hover-reveal shrink-0">
                           <Button
                             variant="ghost"
                             tone="danger"
                             revealOnHover
                             size="icon"
-                            disabled={deleteAttachment.isPending}
+                            disabled={deleteAttachment.isPending || deleteControl(doc) === 'locked'}
                             onClick={() => void handleDelete(doc)}
                             aria-label={`Delete ${doc.display_name || doc.file_name}`}
-                            title="Delete attachment"
+                            title={deleteControl(doc) === 'locked' ? lockedReason : 'Delete attachment'}
                             className="h-6 w-6"
                           >
                             <Trash2 className="h-3.5 w-3.5" />

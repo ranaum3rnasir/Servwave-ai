@@ -6,13 +6,13 @@ const ctx = { people: MOCK_PEOPLE, entities: MOCK_ENTITIES, now: MOCK_NOW };
 
 describe('taskAI.parse', () => {
   it('extracts assignee, due date, linked job, and title', () => {
-    const p = taskAI.parse('remind Priya to order glass for the Limon job by Friday', ctx);
-    expect(p.assignee_id).toBe('u_priya');
+    const p = taskAI.parse('remind Drew to order glass for the Limon job by Friday', ctx);
+    expect(p.assignee_id).toBe('u_drew');
     expect(p.linked_entity?.id).toBe('L00021');
     expect(p.due_at).not.toBeNull();
     expect(new Date(p.due_at!).getUTCDay()).toBe(5);
     expect(p.title.toLowerCase()).toContain('order glass');
-    expect(p.title.toLowerCase()).not.toContain('priya');
+    expect(p.title.toLowerCase()).not.toContain('drew');
   });
 
   it('detects urgent priority and "tomorrow"', () => {
@@ -50,8 +50,8 @@ describe('taskAI.suggestTasks', () => {
 
 describe('taskAI.suggestAssignee', () => {
   it('picks the candidate with the fewest open tasks', () => {
-    const r = taskAI.suggestAssignee(MOCK_TASKS, ['u_oved', 'u_ohad']);
-    expect(r.userId).toBe('u_ohad');
+    const r = taskAI.suggestAssignee(MOCK_TASKS, ['u_morgan', 'u_jordan']);
+    expect(r.userId).toBe('u_jordan');
     expect(r.reason).toMatch(/load|open|light/i);
   });
 });

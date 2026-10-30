@@ -30,7 +30,6 @@ import { ReportShell } from './ReportShell';
 import { ReportToolbar, ReportPager } from './_shared';
 import { Delta, Sparkline } from '@/components/reports/ReportIndicators';
 import { DateRangeControl } from './DateRangeControl';
-import { useIsDemoOrg } from '@/lib/useIsDemoOrg';
 import {
   usePaymentsReport, PAYMENT_METHODS, PAYMENT_CATEGORIES, PAYMENT_STATUSES, TECHNICIANS,
   type PaymentCategory, type PaymentStatus, type PaymentTxn,
@@ -63,6 +62,9 @@ const STATUS_STYLE: Record<PaymentStatus, string> = {
   Succeeded: 'bg-success/10 text-success',
   Pending: 'bg-warning/10 text-warning',
   Failed: 'bg-danger/10 text-danger',
+  Voided: 'bg-background-light text-text-secondary',
+  'Charged back': 'bg-danger/10 text-danger',
+  'Partly refunded': 'bg-background-light text-text-secondary',
   Refunded: 'bg-background-light text-text-secondary',
 };
 
@@ -142,8 +144,7 @@ export default function PaymentsReport() {
   const report = findReport(slug) ?? findReport('payments')!;
   // Demo orgs keep the seeded mock; real orgs read live DB payments. The
   // aggregation logic below is identical.
-  const isDemo = useIsDemoOrg();
-  const { rows: ALL, now: NOW } = usePaymentsReport(isDemo);
+  const { rows: ALL, now: NOW } = usePaymentsReport();
 
   const [search, setSearch] = useState('');
   const [methods, setMethods] = useState<string[]>([]);
@@ -258,9 +259,7 @@ export default function PaymentsReport() {
     <ReportShell
       report={report}
       subtitle={
-        isDemo
-          ? 'Sample data - every payment received, by category and method.'
-          : 'Every payment received, by category and method.'
+        'Every payment received, by category and method.'
       }
       actions={<ReportToolbar variant="compact" onExport={exportCsv} />}
     >
@@ -488,7 +487,6 @@ export default function PaymentsReport() {
       </div>
 
       <p className="text-xs text-text-secondary">
-        {isDemo && 'Sample data shown so the layout is reviewable without a backend. '}
         The left dashboard, KPI cards and totals all follow the date range + filters; the
         weekly-trend chart is a fixed 8-week context window.
       </p>

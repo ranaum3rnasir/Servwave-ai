@@ -1,5 +1,6 @@
 import { Prisma } from '@prisma/client';
 import { prisma } from './prisma';
+import { reservePurgedAddresses } from './mailbox/register';
 
 /**
  * Entity-redesign §10 — force-purge cascade.
@@ -161,6 +162,8 @@ async function purgeSubtreeChildren(tx: Tx, orgId: string, ids: SubtreeIds): Pro
       { entity_type: 'INVOICE' as const, entity_id: ID_IN(invoiceIds) },
     ],
   };
+  // Payments go-live P10: the files attached to a dispute's evidence hold their attachments (RESTRICT), so they go first.
+  await tx.disputeEvidenceItem.deleteMany({ where: { organization_id: orgId, dispute: { invoice_id: ID_IN(invoiceIds) } } });
   await tx.attachment.deleteMany({ where: polyWhere as any });
   await tx.note.deleteMany({ where: polyWhere as any });
   await tx.timelineEvent.deleteMany({ where: polyWhere as any });
@@ -169,6 +172,8 @@ async function purgeSubtreeChildren(tx: Tx, orgId: string, ids: SubtreeIds): Pro
   await tx.depositCreditApplication.deleteMany({
     where: { OR: [{ deposit_invoice_id: ID_IN(invoiceIds) }, { target_invoice_id: ID_IN(invoiceIds) }] },
   });
+  // Payments go-live slice 09: a dispute names its invoice and payment (both RESTRICT), so it goes first.
+  await tx.dispute.deleteMany({ where: { invoice_id: ID_IN(invoiceIds), organization_id: orgId } });
   await tx.refund.deleteMany({ where: { invoice_id: ID_IN(invoiceIds) } });
   await tx.credit.deleteMany({ where: { invoice_id: ID_IN(invoiceIds) } });
   await tx.payment.deleteMany({ where: { invoice_id: ID_IN(invoiceIds) } });
@@ -293,6 +298,9 @@ export async function purgeCustomerSubtree(tx: Tx, customerId: string, orgId: st
  * Hard-delete a single Lead and everything it anchors (estimates/jobs/invoices and
  * their children) WITHOUT touching the parent Customer or its owned leaves.
  */
+// Payments go-live F1: this has no route today. Any future route that hard-deletes a lead (and so its
+// invoices and payments) MUST apply the same policy as the customer purge: assessPurge in lib/purge-policy.ts,
+// inside the delete transaction, with the same 409 and the same payment-link expiry.
 export async function purgeLeadSubtree(tx: Tx, leadId: string, orgId: string): Promise<void> {
   const leadIds = [leadId];
 
@@ -334,16 +342,16 @@ const RESTRICT_1027 =
   'Deferred to #1027 - RESTRICT FK to organizations, so purge throws P2003 rather than orphaning. Loud failure, not residual data.';
 
 export const PURGE_EXEMPT: Record<string, string> = {
-  // ── The open question on #869. NOT a decision - the absence of one, made visible.
-  // These two survive a purge today by accident: not retained by policy, not deleted by policy.
-  // audit_logs is documented append-only and deliberately FK-free so history outlives the actor;
-  // terms_acceptances is the org's own contract evidence (disclosed_fee_bps = the rate the admin
-  // was actually shown, authority_attested = the "I can bind this org" checkbox). Deleting that
-  // on request destroys the org's proof of what it agreed to. Costs nothing today - purge has one
-  // caller (teardownTestOrg) and only ever reaches `e2e-qa-` fixture data - but the answer has to
-  // be Ran's before it is written into code, so do not add deletes assuming either one.
+  // ── audit_logs and terms_acceptances survive a purge.
+  // audit_logs is a STATED RULE (payments go-live F1): it is append-only and deliberately FK-free, and a
+  // customer force-purge writes its own `customer.purged` row there, in the purge transaction, so that
+  // who removed what and when outlives the purge. Nothing may delete audit rows on a purge.
+  // terms_acceptances is still the open question on #869: the org's own contract evidence
+  // (disclosed_fee_bps = the rate the admin was actually shown, authority_attested = the "I can bind
+  // this org" checkbox). Deleting that on request destroys the org's proof of what it agreed to, and
+  // the answer has to be Ran's before it is written into code, so do not add deletes assuming either one.
   AuditLog:
-    'PENDING DECISION - see #869 open question. Documented append-only, deliberately FK-free so audit history outlives the actor.',
+    'RETAINED BY RULE - append-only and FK-free so history outlives the actor; a customer force-purge writes its own customer.purged row here in the same transaction. Never swept by a purge.',
   TermsAcceptance:
     'PENDING DECISION - see #869 open question. Holds contract evidence (disclosed_fee_bps, authority_attested) the org may need as proof.',
 
@@ -422,6 +430,10 @@ export async function purgeOrganization(tx: Tx, orgId: string, nameGuard: string
     throw new Error(`Refusing to purge org ${orgId}: name "${org.name}" does not start with guard "${nameGuard}"`);
   }
 
+  // 0. The company's mailbox addresses stay in the register as reservations holding only a keyed hash
+  //    (PRD 10). First, so a missing hash key fails the purge before anything is deleted.
+  await reservePurgedAddresses(tx, orgId);
+
   // 1. Every customer subtree (bill_to/parent self-FKs SetNull at the DB, so order-free).
   const customers = await tx.customer.findMany({ where: { organization_id: orgId }, select: { id: true } });
   for (const c of customers) {
@@ -431,10 +443,12 @@ export async function purgeOrganization(tx: Tx, orgId: string, nameGuard: string
   // 2. Org-level rows. deleteMany on empty tables is a harmless no-op; this also
   //    covers org-scoped timeline/attachments/notes not anchored to a customer.
   await tx.userTablePreference.deleteMany({ where: { user: { organization_id: orgId } } });
+  await tx.userDashboardLayout.deleteMany({ where: { organization_id: orgId } });
   await tx.appSetting.deleteMany({ where: { organization_id: orgId } });
   await tx.rolePermission.deleteMany({ where: { organization_id: orgId } });
   await tx.tagAssignment.deleteMany({ where: { organization_id: orgId } });
   await tx.tag.deleteMany({ where: { organization_id: orgId } });
+  await tx.disputeEvidenceItem.deleteMany({ where: { organization_id: orgId } });
   await tx.attachment.deleteMany({ where: { organization_id: orgId } });
   await tx.note.deleteMany({ where: { organization_id: orgId } });
   await tx.timelineEvent.deleteMany({ where: { organization_id: orgId } });
@@ -481,6 +495,14 @@ export async function purgeOrganization(tx: Tx, orgId: string, nameGuard: string
   // fail and takes the whole purge down with it. Nothing points AT these rows: an estimate
   // stores the decline CODE STRING, not a foreign key, so order is free otherwise.
   await tx.lostReasonOption.deleteMany({ where: { organization_id: orgId } });
+  // The per-org job cancel-reasons list (Roles & Permissions, S06.14): same ON DELETE RESTRICT org FK, same hazard.
+  await tx.jobCancelReasonOption.deleteMany({ where: { organization_id: orgId } });
+  // The checks on an office review's items (Roles & Permissions, S06.10). The org FK cascades, so the final Organization
+  // delete would take them anyway; deleted explicitly so the purge's own record of what it removes stays complete. The
+  // rows hang off job_reviews, which the job delete cascades - order-free.
+  await tx.jobReviewItemCheck.deleteMany({ where: { organization_id: orgId } });
+  // The reviewer's decisions on an office review's customer items (S06.11): same shape, same reason.
+  await tx.jobReviewCustomerDecision.deleteMany({ where: { organization_id: orgId } });
   // Job sub-statuses (a settings list an admin can reorder). The org FK is ON DELETE RESTRICT, so
   // a leftover row fails the final Organization delete and rolls the whole purge back (the mobile
   // gate's reorder spec leaked its throwaway org this way).

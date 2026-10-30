@@ -52,6 +52,25 @@ describe('resolveScheduleView - every combination', () => {
   });
 });
 
+describe('resolveScheduleView - the "No crew" filter (S09.12)', () => {
+  for (const widthClass of WIDTHS) {
+    for (const sessionView of MAYBE) {
+      it(`opens on Week at width=${widthClass} whatever the session chose (${sessionView ?? '-'})`, () => {
+        expect(resolveScheduleView({ widthClass, urlView: null, sessionView, noCrew: true })).toBe('week');
+      });
+    }
+  }
+
+  it('still lets a view the link names win', () => {
+    expect(resolveScheduleView({ widthClass: 'phone', urlView: 'day', sessionView: 'week', noCrew: true })).toBe('day');
+    expect(resolveScheduleView({ widthClass: 'wide', urlView: 'month', sessionView: null, noCrew: true })).toBe('month');
+  });
+
+  it('changes nothing when the filter is off', () => {
+    expect(resolveScheduleView({ widthClass: 'phone', urlView: null, sessionView: null, noCrew: false })).toBe('day');
+  });
+});
+
 describe('parseScheduleView', () => {
   it('accepts the three board views', () => {
     expect(parseScheduleView('day')).toBe('day');
@@ -129,3 +148,15 @@ describe('scheduleEmptyStateCopy - the side panel is only mentioned where it is 
     expect(month.title).toBe('No jobs scheduled this month');
   });
 });
+
+describe('scheduleEmptyStateCopy - the "No crew" filter (S09.12)', () => {
+  it('says there is nothing to staff in every view, and never points at the side panel', () => {
+    for (const view of VIEWS) {
+      const copy = scheduleEmptyStateCopy({ view, panelVisible: true, canDrag: true, noCrew: true });
+      expect(copy.title).toBe('No visits without a crew');
+      expect(PANEL_WORD.test(`${copy.title} ${copy.description ?? ''}`)).toBe(false);
+    }
+  });
+});
+
+const PANEL_WORD = /panel/i;

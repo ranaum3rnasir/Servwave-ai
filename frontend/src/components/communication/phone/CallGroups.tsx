@@ -3,7 +3,7 @@
 // to it, so calls get answered faster (PHONE-SYSTEM-PRD §14.20). Modeled on the
 // owner-supplied reference (Workiz "create group").
 //
-// Faithful cut from Emanuel's CallGroups prototype. Behavior is verbatim; only
+// Faithful cut from the original CallGroups prototype. Behavior is verbatim; only
 // these classes of change were made:
 //   1. Tailwind tokens swapped indigo/slate -> ALPHA design tokens (primary /
 //      text-primary / text-secondary / border / background-light). emerald,

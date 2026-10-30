@@ -127,3 +127,18 @@ describe('registry ↔ catalog parity (no ungated direct-URL reports)', () => {
     expect(orphaned).toEqual([]);
   });
 });
+
+describe('the Call Tracking reports open on the same switch as every other report', () => {
+  // Roles & Permissions S01.14: Access Reports opens reports, the Call Tracking report included. A person with
+  // the Communication section but not Access Reports must not find it, and the reverse.
+  it.each(['call-tracking', 'call-tracking-summary'])('%s is read on the Report subject, not on Communication', (slug) => {
+    expect(findReport(slug)?.subject).toBe('Report');
+  });
+
+  it('shows Call Tracking to a person holding only the report read, and hides it from one holding only Communication', () => {
+    const report = findReport('call-tracking-summary');
+    const base = { isDemoOrg: true, hasFeature: () => true };
+    expect(isReportVisible(report, { ...base, canRead: (s) => s === 'Report' })).toBe(true);
+    expect(isReportVisible(report, { ...base, canRead: (s) => s === 'Communication' })).toBe(false);
+  });
+});

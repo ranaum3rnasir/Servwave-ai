@@ -163,6 +163,9 @@ const axisCurrency = (v: number) => formatCurrency(v);
 
 const moneyOrDash = (v: number | null | undefined) => (v == null ? '-' : formatCurrency(v));
 
+/** The rep-table columns that carry dollars: left out entirely when the server sent no money. */
+const REP_MONEY_COLUMNS: string[] = ['sentValue', 'wonValue', 'lostValue', 'openValue', 'avgTicketWon'];
+
 type RepSortKey = keyof Pick<
   RepRow,
   'repName' | 'sentCount' | 'sentValue' | 'wonCount' | 'wonValue' | 'lostValue' | 'openValue' | 'conversionPct' | 'avgTicketWon'
@@ -179,16 +182,16 @@ const REP_COLUMNS: {
 }[] = [
   { key: 'repName', label: 'Rep', align: 'left', width: 180, min: 150, fmt: (r) => r.repName, sort: (r) => r.repName },
   { key: 'sentCount', label: 'Sent #', align: 'right', width: 110, min: 95, fmt: (r) => String(r.sentCount), sort: (r) => r.sentCount },
-  { key: 'sentValue', label: 'Sent $', align: 'right', width: 130, min: 110, fmt: (r) => formatCurrency(r.sentValue), sort: (r) => r.sentValue },
+  { key: 'sentValue', label: 'Sent $', align: 'right', width: 130, min: 110, fmt: (r) => moneyOrDash(r.sentValue), sort: (r) => r.sentValue },
   { key: 'wonCount', label: 'Won #', align: 'right', width: 110, min: 95, fmt: (r) => String(r.wonCount), sort: (r) => r.wonCount },
-  { key: 'wonValue', label: 'Won $', align: 'right', width: 130, min: 110, fmt: (r) => formatCurrency(r.wonValue), sort: (r) => r.wonValue },
-  { key: 'lostValue', label: 'Lost $', align: 'right', width: 130, min: 110, fmt: (r) => formatCurrency(r.lostValue), sort: (r) => r.lostValue },
-  { key: 'openValue', label: 'Open $', align: 'right', width: 130, min: 110, fmt: (r) => formatCurrency(r.openValue), sort: (r) => r.openValue },
+  { key: 'wonValue', label: 'Won $', align: 'right', width: 130, min: 110, fmt: (r) => moneyOrDash(r.wonValue), sort: (r) => r.wonValue },
+  { key: 'lostValue', label: 'Lost $', align: 'right', width: 130, min: 110, fmt: (r) => moneyOrDash(r.lostValue), sort: (r) => r.lostValue },
+  { key: 'openValue', label: 'Open $', align: 'right', width: 130, min: 110, fmt: (r) => moneyOrDash(r.openValue), sort: (r) => r.openValue },
   { key: 'conversionPct', label: 'Conv. %', align: 'right', width: 110, min: 95, fmt: (r) => `${r.conversionPct}%`, sort: (r) => r.conversionPct },
-  { key: 'avgTicketWon', label: 'Avg ticket won', align: 'right', width: 150, min: 130, fmt: (r) => (r.avgTicketWon == null ? '-' : formatCurrency(r.avgTicketWon)), sort: (r) => r.avgTicketWon },
+  { key: 'avgTicketWon', label: 'Avg ticket won', align: 'right', width: 150, min: 130, fmt: (r) => moneyOrDash(r.avgTicketWon), sort: (r) => r.avgTicketWon },
 ];
 
-function RepTable({ rows, onDrillRep }: { rows: RepRow[]; onDrillRep?: (r: RepRow) => void }) {
+function RepTable({ rows, showMoney, onDrillRep }: { rows: RepRow[]; showMoney: boolean; onDrillRep?: (r: RepRow) => void }) {
   return (
     <div className="space-y-2">
       <div>
@@ -202,7 +205,7 @@ function RepTable({ rows, onDrillRep }: { rows: RepRow[]; onDrillRep?: (r: RepRo
         getRowKey={(r) => r.repId ?? '__unassigned__'}
         onRowClick={onDrillRep}
         empty={<EmptyState title="No rep activity in this range." />}
-        columns={REP_COLUMNS.map((c) => ({
+        columns={REP_COLUMNS.filter((c) => showMoney || !REP_MONEY_COLUMNS.includes(c.key)).map((c) => ({
           id: c.key,
           header: c.label,
           align: c.align,
@@ -304,9 +307,10 @@ const AGING_COLOR: Record<AgingBucketKey, string> = {
 };
 
 function AgingSection({
-  aging, onDrill,
+  aging, showMoney, onDrill,
 }: {
   aging: Record<AgingBucketKey, Bucket>;
+  showMoney: boolean;
   onDrill: (bucket: AgingBucketKey, label: string) => void;
 }) {
   const totalCount = AGING_BUCKETS.reduce((s, b) => s + aging[b.key].count, 0);
@@ -321,7 +325,7 @@ function AgingSection({
           </p>
         </div>
         <span className="text-muted-foreground text-xs tabular-nums">
-          {totalCount} open · {formatCurrency(totalValue)}
+          {totalCount} open{showMoney && ` · ${moneyOrDash(totalValue)}`}
         </span>
       </div>
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -343,7 +347,7 @@ function AgingSection({
                 <span className="text-muted-foreground text-xs font-medium tracking-wide uppercase">{b.label}</span>
               </span>
               <span className="mt-2 text-2xl font-bold tabular-nums">{cell.count}</span>
-              <span className="text-muted-foreground text-xs tabular-nums">{formatCurrency(cell.value)}</span>
+              {showMoney && <span className="text-muted-foreground text-xs tabular-nums">{moneyOrDash(cell.value)}</span>}
             </Button>
           );
         })}
@@ -510,8 +514,8 @@ export default function EstimateConversionReport() {
       (data?.byMonth ?? []).map((m) => ({
         month: m.label,
         key: m.month,
-        sent: Math.round(m.sentValue),
-        won: Math.round(m.wonValue),
+        sent: Math.round(m.sentValue ?? 0),
+        won: Math.round(m.wonValue ?? 0),
         // Partial current month is excluded from the trend line so it doesn't cliff-dive.
         rate: m.partial ? null : m.conversionPct,
         partial: m.partial,
@@ -521,6 +525,9 @@ export default function EstimateConversionReport() {
 
   const tableRows = tableData?.rows ?? [];
   const hasData = (s?.totalCount ?? 0) > 0;
+  // A person without See company figures gets this report's counts and rates and none of its dollar totals: the
+  // server leaves those keys out, and the page then has no tile, column or bar for them (never a $0 or a column of dashes).
+  const showMoney = s?.totalValue !== undefined;
 
   const rangeSubtitle = `${ANCHOR_SUBTITLE[anchor]} · ${format(from, 'MMM d, yyyy')} - ${format(to, 'MMM d, yyyy')}${isDemo ? ' · sample data' : ''}`;
 
@@ -645,16 +652,20 @@ export default function EstimateConversionReport() {
           { icon: CheckCircle2, label: 'Won', value: s?.won.count ?? 0, tone: 'success', onClick: () => openDrill({ outcome: 'won' }, 'Won estimates') },
           { icon: XCircle, label: 'Lost', value: s?.lost.count ?? 0, tone: 'danger', onClick: () => openDrill({ outcome: 'lost' }, 'Lost estimates') },
           { icon: TrendingUp, label: 'Conversion', value: `${conv?.rate ?? 0}%`, tone: 'success', emphasize: true, onClick: () => openDrill({ outcome: 'won' }, 'Won estimates') },
-          { icon: DollarSign, label: 'Quoted Value', value: formatCurrencyWhole(s?.totalValue ?? 0), tone: 'neutral', onClick: () => openDrill({}, 'All estimates') },
-          { icon: DollarSign, label: 'Won Value', value: formatCurrencyWhole(s?.won.value ?? 0), tone: 'success', onClick: () => openDrill({ outcome: 'won' }, 'Won estimates') },
+          ...(showMoney ? [
+            { icon: DollarSign, label: 'Quoted Value', value: formatCurrencyWhole(s?.totalValue ?? 0), tone: 'neutral' as const, onClick: () => openDrill({}, 'All estimates') },
+            { icon: DollarSign, label: 'Won Value', value: formatCurrencyWhole(s?.won.value ?? 0), tone: 'success' as const, onClick: () => openDrill({ outcome: 'won' }, 'Won estimates') },
+          ] : []),
         ]}
       />
 
       <ReportKpis
         loading={isLoading || !data}
         items={[
-          { icon: DollarSign, label: 'Avg ticket (won)', value: moneyOrDash(ctx?.avgTicketWon), tone: 'success' },
-          { icon: DollarSign, label: 'Avg ticket (lost)', value: moneyOrDash(ctx?.avgTicketLost), tone: 'danger' },
+          ...(showMoney ? [
+            { icon: DollarSign, label: 'Avg ticket (won)', value: moneyOrDash(ctx?.avgTicketWon), tone: 'success' as const },
+            { icon: DollarSign, label: 'Avg ticket (lost)', value: moneyOrDash(ctx?.avgTicketLost), tone: 'danger' as const },
+          ] : []),
           { icon: Clock, label: 'Median days to decision', value: ctx?.medianDaysToDecision == null ? '-' : `${ctx.medianDaysToDecision}d`, tone: 'neutral' },
           { icon: Clock, label: 'Median hrs request to sent', value: ctx?.medianHoursRequestToSent == null ? '-' : `${ctx.medianHoursRequestToSent}h`, tone: 'neutral' },
         ]}
@@ -663,6 +674,7 @@ export default function EstimateConversionReport() {
       {hasData && (
         <RepTable
           rows={data?.byRep ?? []}
+          showMoney={showMoney}
           onDrillRep={(r) => openDrill({ repId: r.repId ?? '__unassigned__' }, `${r.repName} · estimates`)}
         />
       )}
@@ -677,8 +689,10 @@ export default function EstimateConversionReport() {
       ) : (
         <>
           <ChartCard
-            title="Sent vs Won by month"
-            subtitle="Quoted $ vs won $ (left axis) and conversion % (right axis). The current partial month is hatched and excluded from the conversion line."
+            title={showMoney ? 'Sent vs Won by month' : 'Conversion by month'}
+            subtitle={showMoney
+              ? 'Quoted $ vs won $ (left axis) and conversion % (right axis). The current partial month is hatched and excluded from the conversion line.'
+              : 'Conversion % by month. The current partial month is left off the line.'}
           >
             <ResponsiveContainer width="100%" height={300}>
               <ComposedChart data={monthly} margin={{ left: 12, right: 12, bottom: 4 }}>
@@ -694,13 +708,15 @@ export default function EstimateConversionReport() {
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke={token('--border-color')} />
                 <XAxis dataKey="month" tick={{ fontSize: 11, fill: token('--text-secondary') }} />
-                <YAxis
-                  yAxisId="left"
-                  tickFormatter={axisCurrency}
-                  width={96}
-                  tick={{ fontSize: 11, fill: token('--text-secondary') }}
-                  label={{ value: 'Quoted / Won ($)', angle: -90, position: 'insideLeft', style: { fontSize: 11, fill: token('--text-soft') } }}
-                />
+                {showMoney && (
+                  <YAxis
+                    yAxisId="left"
+                    tickFormatter={axisCurrency}
+                    width={96}
+                    tick={{ fontSize: 11, fill: token('--text-secondary') }}
+                    label={{ value: 'Quoted / Won ($)', angle: -90, position: 'insideLeft', style: { fontSize: 11, fill: token('--text-soft') } }}
+                  />
+                )}
                 <YAxis
                   yAxisId="right"
                   orientation="right"
@@ -715,18 +731,22 @@ export default function EstimateConversionReport() {
                   }
                 />
                 <Legend wrapperStyle={{ fontSize: 12 }} />
-                <Bar yAxisId="left" dataKey="sent" name="Quoted $" radius={[4, 4, 0, 0]} cursor="pointer"
-                  onClick={(d: ChartClickTarget<MonthlyPoint>) => { const r = d?.payload ?? d; if (r?.key) openDrill({ month: r.key }, `${r.month} · estimates`); }}>
-                  {monthly.map((m) => (
-                    <Cell key={`s-${m.key}`} fill={m.partial ? 'url(#hatchSent)' : token('--border-color')} />
-                  ))}
-                </Bar>
-                <Bar yAxisId="left" dataKey="won" name="Won $" radius={[4, 4, 0, 0]} cursor="pointer"
-                  onClick={(d: ChartClickTarget<MonthlyPoint>) => { const r = d?.payload ?? d; if (r?.key) openDrill({ month: r.key, outcome: 'won' }, `${r.month} · won`); }}>
-                  {monthly.map((m) => (
-                    <Cell key={`w-${m.key}`} fill={m.partial ? 'url(#hatchWon)' : OUTCOME_WON} />
-                  ))}
-                </Bar>
+                {showMoney && (
+                  <Bar yAxisId="left" dataKey="sent" name="Quoted $" radius={[4, 4, 0, 0]} cursor="pointer"
+                    onClick={(d: ChartClickTarget<MonthlyPoint>) => { const r = d?.payload ?? d; if (r?.key) openDrill({ month: r.key }, `${r.month} · estimates`); }}>
+                    {monthly.map((m) => (
+                      <Cell key={`s-${m.key}`} fill={m.partial ? 'url(#hatchSent)' : token('--border-color')} />
+                    ))}
+                  </Bar>
+                )}
+                {showMoney && (
+                  <Bar yAxisId="left" dataKey="won" name="Won $" radius={[4, 4, 0, 0]} cursor="pointer"
+                    onClick={(d: ChartClickTarget<MonthlyPoint>) => { const r = d?.payload ?? d; if (r?.key) openDrill({ month: r.key, outcome: 'won' }, `${r.month} · won`); }}>
+                    {monthly.map((m) => (
+                      <Cell key={`w-${m.key}`} fill={m.partial ? 'url(#hatchWon)' : OUTCOME_WON} />
+                    ))}
+                  </Bar>
+                )}
                 <Line yAxisId="right" type="monotone" dataKey="rate" name="Conversion %" stroke={token('--primary')} strokeWidth={2} dot={{ r: 3 }} connectNulls={false} />
               </ComposedChart>
             </ResponsiveContainer>
@@ -812,6 +832,7 @@ export default function EstimateConversionReport() {
           {data?.aging && (
             <AgingSection
               aging={data.aging}
+              showMoney={showMoney}
               onDrill={(bucket, label) => openDrill({ outcome: 'open', agingBucket: bucket }, label)}
             />
           )}

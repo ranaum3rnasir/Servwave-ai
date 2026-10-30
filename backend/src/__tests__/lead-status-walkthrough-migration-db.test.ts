@@ -18,10 +18,10 @@
 import { describe, it, expect, afterAll } from 'vitest';
 import { randomUUID } from 'crypto';
 import { spawnSync } from 'child_process';
-import { cpSync, mkdtempSync, readdirSync, rmSync, copyFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { rmSync } from 'fs';
 import { dirname, join } from 'path';
 import { PrismaClient } from '@prisma/client';
+import { deployMigrations } from './migration-deploy-support';
 
 const url = process.env.TEST_DATABASE_URL;
 const suite = url ? describe : describe.skip;
@@ -82,20 +82,8 @@ suite('lead status walkthrough values migration (real database)', () => {
     });
   }
 
-  /** The Prisma deploy command with either every migration or only those before MIGRATION. */
-  function deploy(dbUrl: string, which: 'all' | 'before'): string {
-    const dir = mkdtempSync(join(tmpdir(), 'lws01-mig-'));
-    tempDirs.push(dir);
-    copyFileSync(join(PRISMA_DIR, 'schema.prisma'), join(dir, 'schema.prisma'));
-    const source = join(PRISMA_DIR, 'migrations');
-    for (const entry of readdirSync(source)) {
-      if (which === 'before' && entry !== 'migration_lock.toml' && entry >= MIGRATION) continue;
-      cpSync(join(source, entry), join(dir, 'migrations', entry), { recursive: true });
-    }
-    const run = cli(dbUrl, ['migrate', 'deploy', '--schema', join(dir, 'schema.prisma')], dir);
-    if (run.status !== 0) throw new Error(`deploy failed:\n${run.stdout}\n${run.stderr}`);
-    return dir;
-  }
+  /** The Prisma deploy command over only the migrations before this one, or through this one and no later (see migration-deploy-support). */
+  const deploy = (dbUrl: string, which: 'before' | 'through') => deployMigrations(dbUrl, MIGRATION, which, tempDirs);
 
   async function enumRange(db: Db): Promise<string[]> {
     const rows = await db.$queryRawUnsafe<{ label: string }[]>(
@@ -137,22 +125,24 @@ suite('lead status walkthrough values migration (real database)', () => {
 
   it('enum_range is in pipeline order, and ORDER BY status sorts leads in that order', async () => {
     const { dbUrl, client } = await createDatabase();
-    deploy(dbUrl, 'all');
+    deploy(dbUrl, 'through');
 
     expect(await enumRange(client)).toEqual(PIPELINE);
 
     // Insert in a scrambled order; the database must hand them back in pipeline order.
-    const scrambled = ['CANCELLED', 'WALKTHROUGH_COMPLETED', 'NEW', 'ESTIMATED', 'WALKTHROUGH_SCHEDULED', 'LOST', 'CONTACTED', 'WON'];
+    // CANCELLED stays in the Postgres type but no lead can hold it any more (S05.18: the database refuses it), so it is
+    // the one pipeline label this table does not insert.
+    const scrambled = ['WALKTHROUGH_COMPLETED', 'NEW', 'ESTIMATED', 'WALKTHROUGH_SCHEDULED', 'LOST', 'CONTACTED', 'WON'];
     const { org } = await leadsIn(client, scrambled);
     const sorted = await client.$queryRawUnsafe<{ status: string }[]>(
       `SELECT l.status::text AS status FROM leads l WHERE l.organization_id = '${org}' ORDER BY l.status ASC`,
     );
-    expect(sorted.map((r) => r.status)).toEqual(PIPELINE);
+    expect(sorted.map((r) => r.status)).toEqual(PIPELINE.filter((label) => label !== 'CANCELLED'));
   }, 180_000);
 
   it('re-running the migration file is a no-op', async () => {
     const { dbUrl, client } = await createDatabase();
-    const dir = deploy(dbUrl, 'all');
+    const dir = deploy(dbUrl, 'through');
     const before = await enumRange(client);
 
     const again = cli(
@@ -172,7 +162,7 @@ suite('lead status walkthrough values migration (real database)', () => {
     expect(await enumRange(client)).toEqual(['NEW', 'CONTACTED', 'ESTIMATED', 'WON', 'LOST', 'CANCELLED']);
 
     const { org } = await leadsIn(client, ['NEW', 'CONTACTED', 'ESTIMATED', 'WON']);
-    deploy(dbUrl, 'all');
+    deploy(dbUrl, 'through');
 
     expect(await enumRange(client)).toEqual(PIPELINE);
     const rows = await client.$queryRawUnsafe<{ status: string }[]>(

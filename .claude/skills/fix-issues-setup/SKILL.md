@@ -352,4 +352,4 @@ PRs opened: [count] | Reverted: [count] | Aborted: [count]
 
 ---
 
-DONE. The vault-audit cron fires at 2:27 AM and reads fix-agent-state.json + `gh pr list --base staging --state open` to include tonight's PRs in the morning email sent to ran@alphasecurityus.com.
+DONE. The vault-audit cron fires at 2:27 AM and reads fix-agent-state.json + `gh pr list --base staging --state open` to include tonight's PRs in the morning email sent to <owner-email>.

@@ -366,11 +366,6 @@ function LineTotalBar({
         </div>
         <span className="text-sm font-bold text-text-primary">{formatCurrency(lineTotal)}</span>
       </div>
-      {canSeePricing && (
-        <p className="text-[11px] text-text-secondary">
-          <span className="font-medium text-text-primary">Markup is stored on the line</span>, not re-derived.
-        </p>
-      )}
     </div>
   );
 }

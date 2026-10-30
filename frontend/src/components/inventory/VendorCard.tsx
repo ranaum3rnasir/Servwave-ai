@@ -17,25 +17,32 @@ import {
   type VendorSpend,
 } from "@/lib/inventory/vendor-spend";
 
-type Props = {
-  vendor: Vendor;
+/** A vendor's spend as the card draws it. */
+export type VendorCardMoney = {
   spend: VendorSpend;
   shareOfYTD: number;        // 0..1, vendor.ytd / orgTotalYTD
   topShareOfYTD: number;     // 0..1, used to scale the bar
+};
+
+type Props = {
+  vendor: Vendor;
+  /** The spend strip. Null for a person who may not see vendor spend: the card then has no strip at all. */
+  money: VendorCardMoney | null;
+  /** The account number block. False for a person who may not see it: no block, never a dash. */
+  showAccountNumber: boolean;
   onClick: () => void;
 };
 
 export function VendorCard({
   vendor,
-  spend,
-  shareOfYTD,
-  topShareOfYTD,
+  money,
+  showAccountNumber,
   onClick,
 }: Props) {
   const isInactive = vendor.status === "inactive";
   const barWidth =
-    topShareOfYTD > 0
-      ? Math.max(2, Math.min(100, (shareOfYTD / topShareOfYTD) * 100))
+    money && money.topShareOfYTD > 0
+      ? Math.max(2, Math.min(100, (money.shareOfYTD / money.topShareOfYTD) * 100))
       : 0;
 
   return (
@@ -123,49 +130,53 @@ export function VendorCard({
       </div>
 
       {/* Account number */}
-      <div className="mt-1 border-t border-border pt-2 text-[10px]">
-        <span className="block text-[9px] uppercase text-text-secondary">
-          Account #
-        </span>
-        <code className="font-mono text-[11px] font-semibold text-text-secondary">
-          {vendor.accountNumber ?? "-"}
-        </code>
-      </div>
+      {showAccountNumber && (
+        <div className="mt-1 border-t border-border pt-2 text-[10px]">
+          <span className="block text-[9px] uppercase text-text-secondary">
+            Account #
+          </span>
+          <code className="font-mono text-[11px] font-semibold text-text-secondary">
+            {vendor.accountNumber ?? "-"}
+          </code>
+        </div>
+      )}
 
       {/* Spend strip */}
-      <div className="mt-2 rounded-card border border-success/20 bg-success/10 p-2">
-        <div className="flex items-baseline justify-between gap-2">
-          <div>
-            <span className="block text-[9px] font-semibold uppercase tracking-wide text-success">
-              YTD Spend
-            </span>
-            <span className="text-lg font-bold text-text-primary">
-              {fmtMoney(spend.ytd)}
-            </span>
-          </div>
-          <div className="text-right text-[10px] text-text-secondary">
+      {money && (
+        <div className="mt-2 rounded-card border border-success/20 bg-success/10 p-2">
+          <div className="flex items-baseline justify-between gap-2">
             <div>
-              <ShoppingCart className="mr-0.5 inline h-2.5 w-2.5" />
-              {spend.ytdPoCount} POs
+              <span className="block text-[9px] font-semibold uppercase tracking-wide text-success">
+                YTD Spend
+              </span>
+              <span className="text-lg font-bold text-text-primary">
+                {fmtMoney(money.spend.ytd)}
+              </span>
             </div>
-            <div className="text-text-secondary">
-              {spend.lastOrderedAt
-                ? `last ${fmtRelativeDate(spend.lastOrderedAt)}`
-                : "no orders"}
+            <div className="text-right text-[10px] text-text-secondary">
+              <div>
+                <ShoppingCart className="mr-0.5 inline h-2.5 w-2.5" />
+                {money.spend.ytdPoCount} POs
+              </div>
+              <div className="text-text-secondary">
+                {money.spend.lastOrderedAt
+                  ? `last ${fmtRelativeDate(money.spend.lastOrderedAt)}`
+                  : "no orders"}
+              </div>
             </div>
           </div>
+          {/* Share bar */}
+          <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-success/10">
+            <div
+              className="h-full rounded-full bg-success transition-all"
+              style={{ width: `${barWidth}%` }}
+            />
+          </div>
+          <div className="mt-0.5 text-[9px] text-success">
+            {(money.shareOfYTD * 100).toFixed(1)}% of total inventory spend
+          </div>
         </div>
-        {/* Share bar */}
-        <div className="mt-1.5 h-1 w-full overflow-hidden rounded-full bg-success/10">
-          <div
-            className="h-full rounded-full bg-success transition-all"
-            style={{ width: `${barWidth}%` }}
-          />
-        </div>
-        <div className="mt-0.5 text-[9px] text-success">
-          {(shareOfYTD * 100).toFixed(1)}% of total inventory spend
-        </div>
-      </div>
+      )}
 
       {/* Pickup hint */}
       {vendor.pickupAddress && (

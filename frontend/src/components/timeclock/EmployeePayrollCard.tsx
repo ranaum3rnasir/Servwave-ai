@@ -9,7 +9,7 @@
 import { Fragment, useState } from 'react';
 import {
   ArrowLeft, Check, X, ChevronRight,
-  Clock, Timer, AlarmClock, CheckCircle2, Hourglass, Briefcase, Sigma,
+  Clock, Timer, AlarmClock, CheckCircle2, Hourglass, Sigma,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { KpiTile } from '@/components/data/KpiStrip';
@@ -17,6 +17,7 @@ import { Heading } from '@/components/ui/heading';
 import { STATUS_INTENT_CLASSES, STATUS_REGISTRY } from '@/design-system/status-registry';
 import type { DayRow, PayrollRow, WeekRow } from '@/lib/timeclock/payroll';
 import { buildWeeks } from '@/lib/timeclock/payroll';
+import { formatPlace } from '@/lib/timeclock/place';
 import type { ReviewState } from '@/lib/timeclock/types';
 
 const fmtHM = (min: number) => `${Math.floor(min / 60)}:${String(Math.round(min % 60)).padStart(2, '0')}`;
@@ -106,13 +107,12 @@ export function EmployeePayrollCard({
       </div>
 
       {/* Mini KPI strip */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-7">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 xl:grid-cols-6">
         <KpiTile icon={Clock} label="Regular" value={fmtHM(payroll.regMin)} tone="neutral" />
         <KpiTile icon={Timer} label="OT1" value={fmtHM(payroll.ot1Min)} tone="warning" />
         <KpiTile icon={AlarmClock} label="OT2" value={fmtHM(payroll.ot2Min)} tone="warning" />
         <KpiTile icon={CheckCircle2} label="Approved OT" value={fmtHM(payroll.otApprovedMin)} tone="success" />
         <KpiTile icon={Hourglass} label="Pending OT" value={fmtHM(payroll.otPendingMin)} tone="warning" />
-        <KpiTile icon={Briefcase} label="Job OT" value={fmtHM(payroll.jobOtMin)} tone="primary" />
         <KpiTile icon={Sigma} label="Total" value={fmtHM(payroll.totalMin)} tone="success" emphasize />
       </div>
 
@@ -135,11 +135,6 @@ export function EmployeePayrollCard({
                   <div className="ml-auto flex items-center gap-2">
                     <span className="text-xs font-medium text-warning-text">OT {fmtHM(w.otMin)}</span>
                     <OtPill state={review} />
-                    {w.isJobOt && (
-                      <span className="rounded-full bg-primary-subtle px-2 py-0.5 text-xs font-medium text-primary">
-                        job
-                      </span>
-                    )}
                     {(review === 'pending' || review === 'none') && (
                       <span className="flex gap-1">
                         {/* Approve/Reject pair: no ghost/success cell exists on Button, and
@@ -221,15 +216,9 @@ export function EmployeePayrollCard({
                                     >
                                       <span className="tabular-nums text-success-text">IN {fmtClock(s.inTs)}</span>
                                       <span className="tabular-nums text-danger-text">OUT {fmtClock(s.outTs)}</span>
-                                      <span className="text-text-primary">{s.matchedZoneLabel ?? 'No zone'}</span>
-                                      {s.inStatus === 'in_zone' ? (
-                                        <span className="rounded-full bg-success-surface px-2 py-0.5 text-xs font-medium text-success-text">
-                                          In zone
-                                        </span>
-                                      ) : (
-                                        <span className="rounded-full bg-warning-surface px-2 py-0.5 text-xs font-medium text-warning-text">
-                                          Override · {s.inReview}
-                                        </span>
+                                      <span className="text-text-secondary">In at {formatPlace(s.inLat, s.inLng)}</span>
+                                      {s.outTs !== null && (
+                                        <span className="text-text-secondary">Out at {formatPlace(s.outLat, s.outLng)}</span>
                                       )}
                                       <span className="ml-auto tabular-nums text-text-secondary">{fmtHM(s.minutes)}</span>
                                     </div>

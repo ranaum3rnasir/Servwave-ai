@@ -1,6 +1,6 @@
 // Phone module — Training view.
 //
-// Ported from Emanuel's PhonePage monolith (region L4906–6403): the call-training
+// Ported from the original PhonePage monolith (region L4906–6403): the call-training
 // page. A trainee picks a role + scenario; the matching AI trainer bot places a
 // role-play "call" (browser SpeechSynthesis / SpeechRecognition, gracefully
 // degraded) and drills the company script. Also the History sub-tab (who trained,

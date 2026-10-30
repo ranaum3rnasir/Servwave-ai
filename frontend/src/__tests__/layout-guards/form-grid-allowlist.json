@@ -80,9 +80,6 @@
   "components/schedule/ScheduleTimeFields.tsx": {
     "grid-cols-2": 1
   },
-  "components/timeclock/StoreLocationPicker.tsx": {
-    "grid-cols-2": 1
-  },
   "components/workflows/WaitForm.tsx": {
     "grid-cols-2": 2
   },
@@ -135,9 +132,6 @@
   },
   "pages/service-plans/ServicePlansPage.tsx": {
     "grid-cols-2": 3
-  },
-  "pages/settings/UsersTeamsPage.tsx": {
-    "grid-cols-2": 1
   },
   "pages/v2/_shared/planBuilderDialog.tsx": {
     "grid-cols-2": 1

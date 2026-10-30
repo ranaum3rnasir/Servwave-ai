@@ -2,19 +2,24 @@ import { Request, Response } from 'express';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { tenantWhere } from '../lib/tenant';
+import { scopeWhereForReq } from '../lib/permissions/enforce';
+import { resolveSwitchesForPeople } from '../lib/permissions/switches/store';
 import { jobCrewIds } from '../lib/job-crew';
+import { isCompletedOrLater } from '../lib/job-status-order';
 import { resolveJobScheduleWindow, type VisitForScheduleProjection } from '../lib/job-schedule-projection';
 
 // ─── Mock-shape types (the frontend API contract) ──────────
 // These mirror frontend/src/lib/api/_mock/inventory/{techs,jobs}.ts exactly.
 
-type TechRole = 'field_tech' | 'warehouse_lead' | 'counter' | 'subcontractor';
+// The inventory view a person's Inventory view switch names. The answer carries this and never a role name, so a
+// screen places a person in the field roster from the switch alone.
+type InventoryView = 'field' | 'counter';
 
 type Tech = {
   id: string;
   name: string;
   email?: string;
-  role: TechRole;
+  inventoryView: InventoryView;
   branch: string;
   vehicle?: string;
   primaryTrade?: 'locksmith' | 'door' | 'security' | 'hvac' | 'plumbing';
@@ -39,11 +44,10 @@ type InventoryJob = {
 
 // ─── Mappers (snake_case Prisma row → mock camelCase shape) ─
 
-// The Prisma Role enum has no 1:1 mapping to the prototype's field-roster roles.
-// TECHNICIAN → field_tech; everyone else (ADMIN/SALES/DISPATCHER) → counter,
-// which is the closest "non-field" role the prototype models.
-function mapUserRoleToTechRole(role: string): TechRole {
-  return role === 'TECHNICIAN' ? 'field_tech' : 'counter';
+// Field is the field roster (a person out on jobs with their own van), Counter is everyone at the shelves. The
+// switch decides, never the person's role name (Roles & Permissions S01.9, S07.23).
+function inventoryViewFor(inventoryView: unknown): InventoryView {
+  return inventoryView === 'field' ? 'field' : 'counter';
 }
 
 function mapUserToTech(u: {
@@ -51,16 +55,16 @@ function mapUserToTech(u: {
   first_name: string;
   last_name: string;
   email: string;
-  role: string;
   department: { name: string } | null;
-}): Tech {
+}, inventoryView: unknown, withEmail: boolean): Tech {
   return {
     id: u.id,
     name: `${u.first_name} ${u.last_name}`.trim(),
-    // Real inbox from the user directory — the pickup-ticket composer sends here
-    // (replaces the old name-derived fake address).
-    email: u.email,
-    role: mapUserRoleToTechRole(u.role),
+    // Real inbox from the user directory — the pickup-ticket composer sends here (replaces the old name-derived fake
+    // address). Left out for everyone who cannot send that ticket (Edit stock, the check the send route makes): the
+    // roster is a picker, and a picker carries a name and an id.
+    ...(withEmail ? { email: u.email } : {}),
+    inventoryView: inventoryViewFor(inventoryView),
     branch: u.department?.name ?? '',
     // vehicle / primaryTrade / certs have no source columns in the Alpha schema
     // (they live in the prototype seed only). Omit them — all optional in the type.
@@ -76,9 +80,9 @@ function mapUserToTech(u: {
 // widen: 'on_hold' is the closest of this board's four states to cancelled, and there is no
 // board state for "unassigned". Documented here so the next reader does not re-litigate it.
 function mapJobStatus(status: string): InventoryJobStatus {
+  // PRD 6: a job in Office review, Ready to close or Done is finished work too - the board has no state of its own for them.
+  if (isCompletedOrLater(status)) return 'completed';
   switch (status) {
-    case 'COMPLETED':
-      return 'completed';
     case 'IN_PROGRESS':
       return 'in_progress';
     case 'CANCELLED':
@@ -156,10 +160,13 @@ export async function listTechs(req: Request, res: Response) {
     const users = await prisma.user.findMany({
       where: { ...tenantWhere(req), is_active: true },
       orderBy: [{ first_name: 'asc' }, { last_name: 'asc' }],
-      include: { department: { select: { name: true } } },
+      include: { department: { select: { name: true } }, custom_role: { select: { key: true } } },
     });
 
-    const techs = users.map(mapUserToTech);
+    // Each person's own Inventory view (their switches, resolved the way every other check resolves them).
+    const switches = await resolveSwitchesForPeople(users, ['inventory_view']);
+    const withEmail = Boolean(req.ability?.can('update', 'Inventory'));
+    const techs = users.map((u) => mapUserToTech(u, switches.get(u.id)!.inventory_view, withEmail));
 
     res.json({ techs });
   } catch (err) {
@@ -169,10 +176,12 @@ export async function listTechs(req: Request, res: Response) {
 }
 
 // GET /api/inventory/jobs — jobs mapped to the InventoryJob shape.
+// Roles & Permissions (PRD 7): only the jobs the person can open, the Jobs list's own row scope. A
+// person with View jobs off, or a Jobs scope that reaches nothing, gets an empty list.
 export async function listInventoryJobs(req: Request, res: Response) {
   try {
     const rows = await prisma.job.findMany({
-      where: tenantWhere(req),
+      where: { ...tenantWhere(req), ...(await scopeWhereForReq(req, 'Job')) },
       // S8 (RATIFIED, A1's precedent): scheduled_start is DROPPED. Prisma cannot ORDER BY a
       // to-many relation's aggregate, so this orders on first_visit_start (S8 §4, stored and
       // maintained) - the render-side `scheduledFor` still projects the next upcoming live visit
@@ -208,11 +217,12 @@ export async function listInventoryJobs(req: Request, res: Response) {
   }
 }
 
-// GET /api/inventory/jobs/:id — single job in the InventoryJob shape.
+// GET /api/inventory/jobs/:id — single job in the InventoryJob shape. A job outside the person's
+// Jobs scope answers "not found", the same as a job that does not exist.
 export async function getInventoryJob(req: Request, res: Response) {
   try {
     const row = await prisma.job.findFirst({
-      where: { id: req.params.id as string, ...tenantWhere(req) },
+      where: { id: req.params.id as string, ...tenantWhere(req), ...(await scopeWhereForReq(req, 'Job')) },
       include: {
         customer: { select: { company_name: true, first_name: true, last_name: true } },
         visits: {

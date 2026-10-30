@@ -3,7 +3,7 @@ import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { Routes, Route } from 'react-router-dom';
 import api from '@/lib/axios';
 import { useAuthStore } from '@/stores/auth.store';
@@ -22,8 +22,9 @@ const mockApi = vi.mocked(api);
 const ADMIN = buildAbility([{ action: 'manage', subject: 'all' }]);
 const LIVE_ADDRESS = 'ops@realorg.example.com';
 const NO_MAILBOX = 'No mailbox connected';
-// Assembled from parts so the source-scan guards below cannot match this file.
-const SEED_ADDRESS_NEEDLE = ['emanuel', '@', 'alphasecurityus.com'].join('');
+// The placeholder domain the seeded sample address used to live on; no app source may carry it.
+const SEED_ADDRESS_NEEDLE = '@example-company.test';
+// Assembled from parts so the dead-read source scan below cannot match this file.
 const DEAD_READ_NEEDLE = ['acct', '.address'].join('');
 
 const COMPOSE: ComposeState = {
@@ -141,7 +142,7 @@ describe('ComposeWindow From identity', () => {
     );
 
     expect(screen.getByText(NO_MAILBOX)).toBeInTheDocument();
-    expect(container.textContent).not.toMatch(/@alphasecurityus\.com/);
+    expect(container.textContent).not.toContain(SEED_ADDRESS_NEEDLE);
   });
 
   it('renders a live mailbox address verbatim', () => {
@@ -181,12 +182,12 @@ describe('ComposeWindow From identity', () => {
     expect(onChange).toHaveBeenCalled();
     const drafted = (onChange.mock.calls[0]![0] as ComposeState).body;
     expect(drafted).toContain('Test Admin');
-    expect(drafted).not.toContain('Emanuel Dahan');
+    expect(drafted).not.toContain('Sam Rivera');
   });
 });
 
 describe('InlineComposer From identity', () => {
-  it('shows the unconnected state in both the From label and the account chips', () => {
+  it('shows the unconnected state in the "Sending as" line', () => {
     const { container } = renderWithProviders(
       <InlineComposer
         reply={REPLY}
@@ -199,10 +200,9 @@ describe('InlineComposer From identity', () => {
       />,
     );
 
-    // Twice: the header From label and the single honest chip that replaces the
-    // two-item prototype account list.
-    expect(screen.getAllByText(NO_MAILBOX)).toHaveLength(2);
-    expect(container.textContent).not.toMatch(/@alphasecurityus\.com/);
+    // Once: the "Sending as" line is the only place the reply names who it goes out as.
+    expect(screen.getAllByText(NO_MAILBOX)).toHaveLength(1);
+    expect(container.textContent).not.toContain(SEED_ADDRESS_NEEDLE);
     expect(container.textContent).not.toContain('no-reply@servwave.app');
   });
 });
@@ -223,7 +223,7 @@ describe('CustomerDetailPage composer From identity', () => {
     await user.click(screen.getByRole('button', { name: CUSTOMER.email }));
 
     expect(await screen.findByText(NO_MAILBOX)).toBeInTheDocument();
-    expect(container.textContent).not.toMatch(/@alphasecurityus\.com/);
+    expect(container.textContent).not.toContain(SEED_ADDRESS_NEEDLE);
     expect(container.textContent).not.toContain('no-reply@servwave.app');
   });
 });
@@ -237,8 +237,9 @@ describe('source guards', () => {
 
   it('no source file under frontend/src contains the real personal address', () => {
     expect(sourceFiles.length).toBeGreaterThan(0);
-    const offenders = sourceFiles.filter((rel) =>
-      readFileSync(join(srcDir, rel), 'utf8').includes(SEED_ADDRESS_NEEDLE),
+    const thisFile = basename(fileURLToPath(import.meta.url));
+    const offenders = sourceFiles.filter(
+      (rel) => basename(rel) !== thisFile && readFileSync(join(srcDir, rel), 'utf8').includes(SEED_ADDRESS_NEEDLE),
     );
     expect(offenders).toEqual([]);
   });

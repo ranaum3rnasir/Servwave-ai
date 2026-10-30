@@ -2,20 +2,25 @@ import { lazy } from 'react';
 import { Navigate, Route } from 'react-router-dom';
 
 import ProtectedRoute from '@/components/ProtectedRoute';
+import RequireManageRoles from '@/components/RequireManageRoles';
+import RequireUsersTeamsPage from '@/components/RequireUsersTeamsPage';
 
 import V2AppLayout from '../V2AppLayout';
 
 const SettingsLayout = lazy(() => import('../settings/SettingsLayout'));
-const UsersPage = lazy(() => import('../settings/UsersPage'));
 const CompanyProfilePage = lazy(() => import('../settings/CompanyProfilePage'));
 const BrandingPage = lazy(() => import('../settings/BrandingPage'));
 const LocationsPage = lazy(() => import('../settings/LocationsPage'));
 const UsersTeamsPage = lazy(() => import('../settings/UsersTeamsPage'));
 const RolesPage = lazy(() => import('../settings/RolesPage'));
+const PersonPermissionsPage = lazy(() => import('../settings/PersonPermissionsPage'));
 const SecurityPage = lazy(() => import('../settings/SecurityPage'));
-const PaymentsListsPage = lazy(() => import('../settings/PaymentsListsPage'));
+const ServwavePaymentsRedirect = lazy(() => import('../settings/ServwavePaymentsRedirect'));
+const PaymentsListsRoute = lazy(() => import('../settings/PaymentsListsRoute'));
+const PayoutAccountPage = lazy(() => import('../settings/PayoutAccountPage'));
 const JobSubStatusesPage = lazy(() => import('../settings/JobSubStatusesPage'));
 const DeclineReasonsPage = lazy(() => import('../settings/DeclineReasonsPage'));
+const JobCancelReasonsPage = lazy(() => import('../settings/JobCancelReasonsPage'));
 const PhoneSmsPage = lazy(() => import('../settings/PhoneSmsPage'));
 const PhoneNumbersSettingsPage = lazy(() => import('../settings/PhoneNumbersSettingsPage'));
 const InventorySettingsPage = lazy(() => import('../settings/InventorySettingsPage'));
@@ -48,19 +53,21 @@ const EmailSenderPage = lazy(() => import('@/pages/settings/EmailSenderPage'));
  * blocks below is the whole point:
  *
  *   /users              ProtectedRoute(all four roles) - the app-wide gate that
- *                       wraps App.tsx's whole authenticated tree - then a nested
- *                       ProtectedRoute(['ADMIN'], fallback): a non-admin who
- *                       types it gets NotAuthorizedPage, not a redirect. The
- *                       outer wrapper was missing here for a while. It rejects
- *                       nobody on its own (its list is every role there is), but
- *                       leaving it out made this stack differ from its legacy
- *                       twin for no reason, and the rule is that the two match.
- *   /settings/*         NO route-level role guard AT ALL. Every authenticated
- *                       user of any role can deep-link to any settings tab. The
+ *                       wraps App.tsx's whole authenticated tree - then a bare
+ *                       redirect to /settings/users. The admin-only "Users" stub
+ *                       page is gone (PRD 2, S02.5); /settings/users decides,
+ *                       on Show Users & Teams page, who stays and who goes home.
+ *   /settings/*         NO route-level ROLE guard. Every authenticated
+ *                       user of any role can deep-link to any settings tab,
+ *                       EXCEPT the two that follow a switch (PRD 2, S02.5):
+ *                       /settings/users (Show Users & Teams page) and
+ *                       /settings/roles (Manage roles and permissions) send
+ *                       anyone without theirs to the dashboard. Every other
+ *                       tab is open as described next. The
  *                       nav LIST is CASL-filtered inside SettingsLayout, but the
  *                       routes are open, so a technician who types
- *                       /settings/roles mounts the page with no redirect and no
- *                       toast. Adding a guard here would change who can reach a
+ *                       /settings/inventory mounts the page with no redirect and
+ *                       no toast. Adding a guard here would change who can reach a
  *                       page - a behaviour change, not a restyle.
  *
  *                       WHAT THAT USER THEN SEES IS PER-PAGE, and "the API 403s
@@ -98,11 +105,16 @@ export function settingsV2Routes() {
   return (
     <>
       <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN']} />}>
-        <Route element={<V2AppLayout />}>
-          <Route element={<ProtectedRoute allowedRoles={['ADMIN']} fallback />}>
-            <Route path="/users" element={<UsersPage />} />
-          </Route>
-        </Route>
+        {/* The old admin-only "Users" stub is gone. Its address goes to Users & Teams, which sends anyone who
+            cannot see that page to their dashboard. */}
+        <Route path="/users" element={<Navigate to="/settings/users" replace />} />
+      </Route>
+
+      {/* The old Settings > ServWave Payments address (payments go-live P8): the area moved to the Payments page, and
+          this stays as a redirect so email links and bell notifications from before the move still land. It sits
+          outside the Settings shell, which a redirect has no reason to draw. */}
+      <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN']} />}>
+        <Route path="/settings/servwave-payments" element={<ServwavePaymentsRedirect />} />
       </Route>
 
       {/* Organization Settings module - CASL-filtered per menu item (not ADMIN-gated) */}
@@ -113,12 +125,22 @@ export function settingsV2Routes() {
             <Route path="/settings/company" element={<CompanyProfilePage />} />
             <Route path="/settings/branding" element={<BrandingPage />} />
             <Route path="/settings/locations" element={<LocationsPage />} />
-            <Route path="/settings/users" element={<UsersTeamsPage />} />
-            <Route path="/settings/roles" element={<RolesPage />} />
+            {/* Users & Teams follows Show Users & Teams page; Roles & Permissions follows Manage roles and
+                permissions. Anyone else lands on their dashboard (PRD 2, S02.5). */}
+            <Route element={<RequireUsersTeamsPage />}>
+              <Route path="/settings/users" element={<UsersTeamsPage />} />
+            </Route>
+            <Route element={<RequireManageRoles />}>
+              <Route path="/settings/roles" element={<RolesPage />} />
+              {/* A person's own switches: opened from the Permissions action on their Users & Teams row. */}
+              <Route path="/settings/users/:userId/permissions" element={<PersonPermissionsPage />} />
+            </Route>
             <Route path="/settings/security" element={<SecurityPage />} />
-            <Route path="/settings/payments" element={<PaymentsListsPage />} />
+            <Route path="/settings/payments" element={<PaymentsListsRoute />} />
+            <Route path="/settings/payout-account" element={<PayoutAccountPage />} />
             <Route path="/settings/job-sub-statuses" element={<JobSubStatusesPage />} />
             <Route path="/settings/decline-reasons" element={<DeclineReasonsPage />} />
+            <Route path="/settings/job-cancel-reasons" element={<JobCancelReasonsPage />} />
             <Route path="/settings/phone-sms" element={<PhoneSmsPage />} />
             <Route path="/settings/phone-numbers" element={<PhoneNumbersSettingsPage />} />
             <Route path="/settings/inventory" element={<InventorySettingsPage />} />

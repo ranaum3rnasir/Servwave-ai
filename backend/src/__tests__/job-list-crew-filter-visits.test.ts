@@ -66,6 +66,12 @@ function matchesFragment(row: Decoy, frag: Record<string, any>): boolean {
         return row.organization_id === value;
       case 'created_by_id':
         return row.created_by_id === value;
+      // The other people a job is attached to (Sold By, Dispatcher, the Owner of its lead): none of
+      // these decoys has one, so those arms of an Attached scope never match.
+      case 'salesperson_id':
+      case 'dispatcher_id':
+      case 'estimate':
+        return false;
       case 'visits':
         return matchesVisitSome(row, value?.some ?? {});
       case 'OR':

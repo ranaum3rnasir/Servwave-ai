@@ -24,7 +24,6 @@ import {
   JOB_FIXTURE,
 } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 
 const mockPrisma = prisma as unknown as {
   estimate: { findMany: ReturnType<typeof vi.fn>; findUnique: ReturnType<typeof vi.fn> };
@@ -164,6 +163,8 @@ function mockMultiTransaction(jobFixture: unknown, attachedCount?: number) {
       },
       jobAssignee: { createMany: vi.fn().mockResolvedValue({ count: 1 }) },
       timelineEvent: { create: vi.fn().mockResolvedValue({}) },
+      // The lead's own entries are carried onto the job in the same transaction (S05.15); none here.
+      recordContactEntry: { findMany: vi.fn().mockResolvedValue([]) },
       // MV-BOARD-15: a create carrying a scheduled_start now books visit 1 in this same
       // transaction, so the tx fake has to answer the visit + org delegates.
       visit: {
@@ -205,6 +206,8 @@ function mockSingleTransaction(jobFixture: unknown) {
       },
       jobLineItem: { createMany: vi.fn().mockResolvedValue({ count: 0 }) },
       timelineEvent: { create: vi.fn().mockResolvedValue({}) },
+      // The lead's own entries are carried onto the job in the same transaction (S05.15); none here.
+      recordContactEntry: { findMany: vi.fn().mockResolvedValue([]) },
       // MV-BOARD-15: a create carrying a scheduled_start now books visit 1 in this same
       // transaction, so the tx fake has to answer the visit + org delegates.
       visit: {
@@ -226,7 +229,6 @@ function mockSingleTransaction(jobFixture: unknown) {
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache();
   // Deposit gate off by default on BOTH read shapes (single = findFirst, multi = findMany).
   mockPrisma.invoice.findFirst.mockResolvedValue(null);
   mockPrisma.invoice.findMany.mockResolvedValue([]);

@@ -86,7 +86,14 @@ describe('GET /api/dashboard — DEPOSIT invoices are excluded from revenue KPIs
     const res = await request(app).get('/api/dashboard').set(authHeader('admin'));
     expect(res.status).toBe(200);
 
-    const { kpis, pipeline, revenue_chart } = res.body;
+    const data = res.body.data;
+    const kpis = {
+      revenue_mtd: data['kpi.revenue_mtd'],
+      collected_today: data['kpi.collected_today'],
+      avg_ticket: data['kpi.avg_ticket'],
+      deposits_awaiting: data['kpi.deposits'],
+    };
+    const { pipeline, revenue_chart } = { pipeline: data.pipeline, revenue_chart: data.revenue_chart.months };
 
     // Revenue MTD (invoiced + collected)
     expect(kpis.revenue_mtd.invoiced).toBe(0);

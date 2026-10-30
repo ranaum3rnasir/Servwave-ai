@@ -147,8 +147,12 @@ const EXCLUDED_ENUMS: Record<string, string> = {
   IntervalUnit: 'unit of measure (DAY|WEEK|MONTH|YEAR)',
   DiscountType: 'calculation mode (PERCENTAGE|FIXED_AMOUNT)',
   DepositDefaultType: 'calculation mode (PERCENTAGE|FIXED)',
+  DepositPolicy:
+    'org/estimate policy (REQUIRED_BEFORE_APPROVAL|PAY_LATER) for when a deposit is paid (payments go-live slice 19) - a setting chosen in Settings and on one estimate, not a state of anything; nothing renders it as a status chip',
   AutomationSendWindow: 'scheduling window (ANYTIME|BUSINESS_HOURS), not a state',
   PaymentMethod: 'label-only vocabulary, named in the registry inclusion rule',
+  PaymentWallet:
+    'which-wallet discriminator (APPLE_PAY|GOOGLE_PAY|LINK) on a card payment, captured for display - how the customer paid, not a state of anything; a payment with no wallet stores NULL',
   NotificationPriority:
     'INTERRUPT|FEED selects a delivery route (toast vs feed, lib/notifications/useInterruptToasts.ts), not an appearance',
 

@@ -17,7 +17,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderWithProviders, purchasingAbility } from '@/__tests__/helpers';
 
 const hoisted = vi.hoisted(() => {
   function po(n: number, status: 'draft' | 'ordered' | 'received', vendor: string) {
@@ -93,7 +93,7 @@ beforeEach(() => {
 });
 
 async function renderPOs() {
-  renderWithProviders(<PurchaseOrdersPage />, { initialEntries: ['/inventory/purchase-orders'] });
+  renderWithProviders(<PurchaseOrdersPage />, { initialEntries: ['/inventory/purchase-orders'], ability: purchasingAbility() });
   // Open is the default landing tab.
   expect(await screen.findByText('PO-1001')).toBeInTheDocument();
 }

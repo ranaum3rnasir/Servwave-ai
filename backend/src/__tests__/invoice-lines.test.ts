@@ -29,12 +29,14 @@ import {
   CUSTOMER_FIXTURE,
   JOB_FIXTURE,
   INVOICE_FIXTURE,
+  mockRoleSwitches,
 } from './helpers';
-import { setCachedGrants, clearPermissionCache } from '../lib/permissions/permissionCache';
+import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { addScopeSchema, updateLineSchema } from '../controllers/invoice-lines.controller';
 
 // ─── Typed mock accessors ──────────────────────────────────
 const mockPrisma = prisma as unknown as {
+  job: { findMany: ReturnType<typeof vi.fn> };
   invoice: {
     findUnique: ReturnType<typeof vi.fn>;
     findFirst: ReturnType<typeof vi.fn>;
@@ -176,6 +178,8 @@ function setupTransaction() {
     },
     // SERV10X-59 — INVOICE_EDITED write on a material edit to an already-sent invoice.
     timelineEvent: { create: mockPrisma.timelineEvent.create },
+    // S06.20: a job-history write asks which jobs it touches are in Ready to close.
+    job: { findMany: mockPrisma.job.findMany },
     // P1 stock delegates (addLine deduct-on-add / updateLine qty-delta / deleteLine return).
     priceBookItem: { findFirst: mockPrisma.priceBookItem.findFirst },
     stockMovement: { create: mockPrisma.stockMovement.create },
@@ -504,10 +508,8 @@ describe('POST /api/invoices/:id/line-items — RBAC (manage_lines)', () => {
     // Strict model (#253): a technician has NO manage_lines by default — an admin opts them in
     // per-user. Seed that own-scoped grant so this proves the granted + own-scoped path works.
     const OWN_VIA_JOB = { job: { assignees: { some: { user_id: '{{userId}}' } } } };
-    setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', [
-      { action: 'read', subject: 'Invoice', conditions: OWN_VIA_JOB },
-      { action: 'manage_lines', subject: 'Invoice', conditions: OWN_VIA_JOB },
-    ] as any);
+    // A technician holds neither View invoices nor Edit invoice line items by default; both are switches now.
+    mockRoleSwitches({ view_invoices: true, edit_invoice_line_items: true });
     mockPrisma.invoice.findUnique.mockResolvedValue(invoiceRow());
     // canAccessRow(Invoice) → scoped invoice.findFirst resolves truthy for an owned row.
     mockPrisma.invoice.findFirst.mockResolvedValue({ id: INVOICE_ID });
@@ -534,10 +536,8 @@ describe('POST /api/invoices/:id/line-items — RBAC (manage_lines)', () => {
     mockAuthAs('technician');
     // Granted the own-scoped capability, but the invoice isn't theirs → canAccessRow denies it.
     const OWN_VIA_JOB = { job: { assignees: { some: { user_id: '{{userId}}' } } } };
-    setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', [
-      { action: 'read', subject: 'Invoice', conditions: OWN_VIA_JOB },
-      { action: 'manage_lines', subject: 'Invoice', conditions: OWN_VIA_JOB },
-    ] as any);
+    // A technician holds neither View invoices nor Edit invoice line items by default; both are switches now.
+    mockRoleSwitches({ view_invoices: true, edit_invoice_line_items: true });
     mockPrisma.invoice.findUnique.mockResolvedValue(invoiceRow({ techId: '99999999-9999-9999-9999-999999999999' }));
     mockPrisma.invoice.findFirst.mockResolvedValue(null); // canAccessRow → false
     const res = await request(app)
@@ -635,11 +635,10 @@ describe('DELETE /api/invoices/:id/line-items/:lineId — delete (manage_lines)'
   it('TECHNICIAN (granted manage_lines per-user) can delete on OWN job invoice; 403 on foreign (no mutation)', async () => {
     // Strict model (#253): manage_lines is a per-user opt-in for technicians, not a role default.
     const OWN_VIA_JOB = { job: { assignees: { some: { user_id: '{{userId}}' } } } };
-    const grantTech = () =>
-      setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', [
-        { action: 'read', subject: 'Invoice', conditions: OWN_VIA_JOB },
-        { action: 'manage_lines', subject: 'Invoice', conditions: OWN_VIA_JOB },
-      ] as any);
+    const grantTech = () => {
+      // A technician holds neither View invoices nor Edit invoice line items by default; both are switches now.
+      mockRoleSwitches({ view_invoices: true, edit_invoice_line_items: true });
+    };
     // own
     mockAuthAs('technician');
     grantTech();
@@ -836,10 +835,8 @@ describe('PATCH /api/invoices/:id/line-items/:lineId — edit line (update Invoi
     mockAuthAs('dispatcher');
     // Narrow DISPATCHER to an owner-scoped update/read grant (the kind org-settings can persist).
     const OWN_VIA_JOB = { job: { assignees: { some: { user_id: '{{userId}}' } } } };
-    setCachedGrants(ALPHA_ORG_ID, 'DISPATCHER', [
-      { action: 'read', subject: 'Invoice', conditions: OWN_VIA_JOB },
-      { action: 'update', subject: 'Invoice', conditions: OWN_VIA_JOB },
-    ] as any);
+    // Reading invoices comes from the switch catalog: the narrowed reach is the Invoices scope.
+    mockRoleSwitches({ invoices_scope: 'attached' });
     mockPrisma.invoice.findUnique.mockResolvedValue(invoiceRow({ techId: '99999999-9999-9999-9999-999999999999' }));
     mockPrisma.invoice.findFirst.mockResolvedValue(null); // canAccessRow → false
 
@@ -1075,10 +1072,8 @@ describe('POST/PATCH /api/invoices/:id/line-items — pricing leak (unit_cost/ma
   it('POST: a low-privilege submission of unit_cost/markup_percent is silently dropped from the write, and never echoed in the response', async () => {
     mockAuthAs('technician');
     const OWN_VIA_JOB = { job: { assignees: { some: { user_id: '{{userId}}' } } } };
-    setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', [
-      { action: 'manage_lines', subject: 'Invoice', conditions: OWN_VIA_JOB },
-      // deliberately NO `read Invoice` grant — see block comment above.
-    ] as any);
+    // A technician holds neither View invoices nor Edit invoice line items by default; both are switches now.
+    mockRoleSwitches({ view_invoices: true, edit_invoice_line_items: true });
     mockPrisma.invoice.findUnique.mockResolvedValue(invoiceRow());
     mockPrisma.invoice.findFirst.mockResolvedValue({ id: INVOICE_ID }); // forces canAccessRow past its own read-grant gate
     const newLine = {
@@ -1118,10 +1113,8 @@ describe('POST/PATCH /api/invoices/:id/line-items — pricing leak (unit_cost/ma
   it('PATCH: a low-privilege submission of unit_cost/markup_percent is silently dropped from the write, and never echoed in the response', async () => {
     mockAuthAs('technician');
     const OWN_VIA_JOB = { job: { assignees: { some: { user_id: '{{userId}}' } } } };
-    setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', [
-      { action: 'update', subject: 'Invoice', conditions: OWN_VIA_JOB },
-      // deliberately NO `read Invoice` grant.
-    ] as any);
+    // A technician holds neither View invoices nor Edit invoice line items by default; both are switches now.
+    mockRoleSwitches({ view_invoices: true });
     mockPrisma.invoice.findUnique.mockResolvedValue(invoiceRow());
     mockPrisma.invoice.findFirst.mockResolvedValue({ id: INVOICE_ID });
     const updatedLine = { ...existingLines()[0], unit_cost: 220, markup_percent: 35 };
@@ -1147,9 +1140,8 @@ describe('POST/PATCH /api/invoices/:id/line-items — pricing leak (unit_cost/ma
   it('PATCH: a low-privilege edit that never mentions unit_cost/markup_percent leaves the write payload without those keys (pre-existing values untouched)', async () => {
     mockAuthAs('technician');
     const OWN_VIA_JOB = { job: { assignees: { some: { user_id: '{{userId}}' } } } };
-    setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', [
-      { action: 'update', subject: 'Invoice', conditions: OWN_VIA_JOB },
-    ] as any);
+    // A technician holds neither View invoices nor Edit invoice line items by default; both are switches now.
+    mockRoleSwitches({ view_invoices: true });
     mockPrisma.invoice.findUnique.mockResolvedValue(invoiceRow());
     mockPrisma.invoice.findFirst.mockResolvedValue({ id: INVOICE_ID });
     // An admin previously set real unit_cost/markup_percent on this line.
@@ -1172,8 +1164,8 @@ describe('POST/PATCH /api/invoices/:id/line-items — pricing leak (unit_cost/ma
     expect(Number(lineUpdateArg.data.quantity)).toBe(5);
   });
 
-  it('DISPATCHER (read Invoice) sees unit_cost/markup_percent on the add response — contrast case', async () => {
-    mockAuthAs('dispatcher');
+  it('ADMIN (sees costs) sees unit_cost/markup_percent on the add response — contrast case', async () => {
+    mockAuthAs('admin');
     mockPrisma.invoice.findUnique.mockResolvedValue(invoiceRow());
     const newLine = {
       id: 'new-line', invoice_id: INVOICE_ID, sequence: 2, description: 'Compressor',
@@ -1188,7 +1180,7 @@ describe('POST/PATCH /api/invoices/:id/line-items — pricing leak (unit_cost/ma
 
     const res = await request(app)
       .post(`/api/invoices/${INVOICE_ID}/line-items`)
-      .set(authHeader('dispatcher'))
+      .set(authHeader('admin'))
       .send({
         description: 'Compressor', item_type: 'MATERIAL', quantity: 1, unit_price: 300,
         is_taxable: true, unit_cost: 180, markup_percent: 25,
@@ -1366,6 +1358,7 @@ describe('PATCH /api/invoices/:id/line-items/reorder — reorder (update Invoice
 
   it('TECHNICIAN gets 403 at the route guard (has manage_lines, NOT update) — no mutation', async () => {
     mockAuthAs('technician');
+    mockPrisma.invoice.findFirst.mockResolvedValue(null); // not an invoice this person made
     const res = await request(app)
       .patch(`/api/invoices/${INVOICE_ID}/line-items/reorder`)
       .set(authHeader('technician'))
@@ -1376,6 +1369,7 @@ describe('PATCH /api/invoices/:id/line-items/reorder — reorder (update Invoice
 
   it('SALES gets 403 at the route guard (has manage_lines, NOT update) — no mutation', async () => {
     mockAuthAs('sales');
+    mockPrisma.invoice.findFirst.mockResolvedValue(null); // not an invoice this person made
     const res = await request(app)
       .patch(`/api/invoices/${INVOICE_ID}/line-items/reorder`)
       .set(authHeader('sales'))
@@ -1387,10 +1381,8 @@ describe('PATCH /api/invoices/:id/line-items/reorder — reorder (update Invoice
   it('DISPATCHER 403s on a FOREIGN invoice via per-instance canAccessRow (owner-scoped grant)', async () => {
     mockAuthAs('dispatcher');
     const OWN_VIA_JOB = { job: { assignees: { some: { user_id: '{{userId}}' } } } };
-    setCachedGrants(ALPHA_ORG_ID, 'DISPATCHER', [
-      { action: 'read', subject: 'Invoice', conditions: OWN_VIA_JOB },
-      { action: 'update', subject: 'Invoice', conditions: OWN_VIA_JOB },
-    ] as any);
+    // Reading invoices comes from the switch catalog: the narrowed reach is the Invoices scope.
+    mockRoleSwitches({ invoices_scope: 'attached' });
     mockPrisma.invoice.findUnique.mockResolvedValue(invoiceRow({ techId: '99999999-9999-9999-9999-999999999999' }));
     mockPrisma.invoice.findFirst.mockResolvedValue(null); // canAccessRow → false
 
@@ -1497,6 +1489,7 @@ describe('PATCH /api/invoices/:id/billing — tip + discount (update Invoice onl
   it('TECHNICIAN gets 403 at the route guard (no update grant)', async () => {
     mockAuthAs('technician');
     mockPrisma.invoice.findUnique.mockResolvedValue(invoiceRow());
+    mockPrisma.invoice.findFirst.mockResolvedValue(null); // not an invoice this person made
     const res = await request(app)
       .patch(`/api/invoices/${INVOICE_ID}/billing`)
       .set(authHeader('technician'))
@@ -1924,10 +1917,8 @@ describe('POST/PATCH /api/invoices/:id/scopes — pricing leak (internal_cost)',
   it('POST: a low-privilege submission of internal_cost is silently dropped from the write, and never echoed in the response', async () => {
     mockAuthAs('technician');
     const OWN_VIA_JOB = { job: { assignees: { some: { user_id: '{{userId}}' } } } };
-    setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', [
-      { action: 'manage_lines', subject: 'Invoice', conditions: OWN_VIA_JOB },
-      // deliberately NO `read Invoice` grant — see block comment above.
-    ] as any);
+    // A technician holds neither View invoices nor Edit invoice line items by default; both are switches now.
+    mockRoleSwitches({ view_invoices: true, edit_invoice_line_items: true });
     mockPrisma.invoice.findFirst.mockResolvedValue({ id: INVOICE_ID }); // forces canAccessRow past its own read-grant gate
     mockScopeReads([], [scopeFixture({ title: 'Permit fee', flat_price: 300, internal_cost: 150 })]);
     mockPrisma.invoiceLineItem.findMany.mockResolvedValue(existingLines());
@@ -1958,10 +1949,8 @@ describe('POST/PATCH /api/invoices/:id/scopes — pricing leak (internal_cost)',
   it('PATCH: a low-privilege submission of internal_cost is silently dropped from the write, and never echoed in the response', async () => {
     mockAuthAs('technician');
     const OWN_VIA_JOB = { job: { assignees: { some: { user_id: '{{userId}}' } } } };
-    setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', [
-      { action: 'update', subject: 'Invoice', conditions: OWN_VIA_JOB },
-      // deliberately NO `read Invoice` grant — see block comment above.
-    ] as any);
+    // A technician holds neither View invoices nor Edit invoice line items by default; both are switches now.
+    mockRoleSwitches({ view_invoices: true });
     mockPrisma.invoice.findFirst.mockResolvedValue({ id: INVOICE_ID });
     const before = [scopeFixture({ flat_price: 300, internal_cost: null })];
     mockScopeReads(before, [scopeFixture({ flat_price: 500, internal_cost: 150 })]);
@@ -1987,9 +1976,8 @@ describe('POST/PATCH /api/invoices/:id/scopes — pricing leak (internal_cost)',
   it("PATCH: a low-privilege edit to an unrelated field does NOT clobber a pre-existing internal_cost", async () => {
     mockAuthAs('technician');
     const OWN_VIA_JOB = { job: { assignees: { some: { user_id: '{{userId}}' } } } };
-    setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', [
-      { action: 'update', subject: 'Invoice', conditions: OWN_VIA_JOB },
-    ] as any);
+    // A technician holds neither View invoices nor Edit invoice line items by default; both are switches now.
+    mockRoleSwitches({ view_invoices: true });
     mockPrisma.invoice.findFirst.mockResolvedValue({ id: INVOICE_ID });
     // An admin previously set a real internal_cost on this scope.
     const before = [scopeFixture({ title: 'Permit fee', flat_price: 300, internal_cost: 150 })];
@@ -2009,8 +1997,8 @@ describe('POST/PATCH /api/invoices/:id/scopes — pricing leak (internal_cost)',
     expect(scopeUpdateArg.data.scopes[0].title).toBe('Permit fee (updated)');
   });
 
-  it('DISPATCHER (read Invoice) sees internal_cost on the add response — contrast case', async () => {
-    mockAuthAs('dispatcher');
+  it('ADMIN (sees costs) sees internal_cost on the add response — contrast case', async () => {
+    mockAuthAs('admin');
     mockScopeReads([], [scopeFixture({ title: 'Permit fee', flat_price: 300, internal_cost: 150 })]);
     mockPrisma.invoiceLineItem.findMany.mockResolvedValue(existingLines());
     mockPrisma.invoice.update.mockImplementation((args: any) =>
@@ -2021,7 +2009,7 @@ describe('POST/PATCH /api/invoices/:id/scopes — pricing leak (internal_cost)',
 
     const res = await request(app)
       .post(`/api/invoices/${INVOICE_ID}/scopes`)
-      .set(authHeader('dispatcher'))
+      .set(authHeader('admin'))
       .send({ title: 'Permit fee', flat_price: 300, internal_cost: 150 });
 
     expect(res.status).toBe(200);

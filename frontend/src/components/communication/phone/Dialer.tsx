@@ -1,7 +1,7 @@
 // Phone module — Dialer (global header dialer + workspace + active-call /
 // SMS / conference overlays).
 //
-// Originally cut from Emanuel's PhonePage monolith (GlobalDialer + DialerWorkspace
+// Originally cut from the original PhonePage monolith (GlobalDialer + DialerWorkspace
 // + JobHistoryPanel L1144-1602 — the latter reworked into CustomerPanel in slice
 // 2.2; ActiveCallPopup + MessagePanel + ConferencePicker L3029-3375). Changes
 // from the monolith:
@@ -20,7 +20,7 @@
 //      returns tenant customers (with open jobs), jobs, and a phone-identity
 //      resolution. Picking a result loads CustomerPanel (job chips deep-link
 //      to /jobs/:id); a phone-shaped query with no match offers
-//      Create customer / Create lead prefilled with the number.
+//      Create lead / Create job prefilled with the number (S02.27).
 //
 // ActiveCallPopup and ConferencePicker now compose the shared `ui/modal`
 // primitive (overlays consolidation) instead of their former hand-rolled fixed
@@ -30,6 +30,7 @@
 import { useEffect, useRef, useState } from "react";
 import { PhoneInput } from "@/ui-kit/components/form/phoneInput";
 import { useNavigate } from "react-router-dom";
+import { useAppAbility } from "@/contexts/AbilityContext";
 import {
   Briefcase,
   CheckCircle2,
@@ -43,7 +44,6 @@ import {
   Search,
   Send,
   User,
-  UserPlus,
   Users,
   Wrench,
   X,
@@ -72,9 +72,11 @@ import {
   DirIcon,
   shortTime,
 } from "@/components/communication/phone/shared";
+import { useUnknownNumberCreate } from "@/components/communication/phone/useUnknownNumberCreate";
 import { useSettingsGuard } from "@/stores/settingsGuard.store";
 import { type DialerEntityContext } from "@/stores/dialer.store";
 import { Softphone } from "./Softphone";
+import { CustomerPhoneText } from "@/components/contact/ContactText";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
@@ -97,6 +99,11 @@ function displayPhone(raw: string): string {
   if (d.length === 10) return fmtPhone(`+1${d}`);
   if (d.length === 11 && d.startsWith("1")) return fmtPhone(`+${d}`);
   return fmtPhone(raw);
+}
+
+/** A customer's number in the dialer, drawn through the contact display policy. */
+function DialerPhone({ phone }: { phone: string }) {
+  return <CustomerPhoneText phone={phone}>{displayPhone(phone)}</CustomerPhoneText>;
 }
 
 /** SCREAMING_SNAKE job status → human words (capitalized via CSS). */
@@ -445,7 +452,7 @@ export function DialerWorkspace({
                                     {c.name}
                                   </span>
                                   <span className="block truncate text-[11px] text-text-secondary">
-                                    {c.phone ? displayPhone(c.phone) : "No phone"} ·{" "}
+                                    {c.phone ? <DialerPhone phone={c.phone} /> : "No phone"} ·{" "}
                                     {c.openJobs.length} open job
                                     {c.openJobs.length === 1 ? "" : "s"}
                                   </span>
@@ -476,9 +483,14 @@ export function DialerWorkspace({
                                   </span>
                                   <span className="block truncate text-[11px] text-text-secondary">
                                     {j.customer?.name ?? j.location}
-                                    {j.customer?.phone
-                                      ? ` · ${displayPhone(j.customer.phone)}`
-                                      : ""}
+                                    {j.customer?.phone ? (
+                                      <>
+                                        {" · "}
+                                        <DialerPhone phone={j.customer.phone} />
+                                      </>
+                                    ) : (
+                                      ""
+                                    )}
                                   </span>
                                 </span>
                                 <Hash className="h-3 w-3 flex-shrink-0 text-primary" />
@@ -541,37 +553,47 @@ export function DialerWorkspace({
   );
 }
 
-/** Phone-shaped query with no tenant match — offer to save the number as a
- *  new customer or lead ( ?phone= prefills the create forms). */
+/** Phone-shaped query with no tenant match - offer to make a lead or a job of the number ( ?phone= prefills the
+ *  create forms). Which of the two shows follows the person's Create + Show pair (S02.27); with neither, the panel
+ *  is the number and nothing to press. */
 function UnknownNumberPanel({ e164 }: { e164: string }) {
   const navigate = useNavigate();
   const requestLeave = useSettingsGuard((s) => s.requestLeave);
-  const phoneParam = encodeURIComponent(e164);
+  const { leadHref, jobHref } = useUnknownNumberCreate(e164);
+  const offersCreate = leadHref !== null || jobHref !== null;
   return (
     <div className="flex h-full flex-col items-center justify-center rounded-md border border-dashed border-border px-4 py-8 text-center">
       <Phone className="h-6 w-6 text-text-secondary" />
       <p className="mt-2 text-[13px] font-semibold text-text-primary">
-        No match for {fmtPhone(e164)}
+        No match for <CustomerPhoneText phone={e164}>{fmtPhone(e164)}</CustomerPhoneText>
       </p>
-      <p className="mt-1 text-[11px] text-text-secondary">
-        Save this number to reach them later.
-      </p>
-      <div className="mt-3 flex items-center gap-2">
-        <button
-          type="button"
-          onClick={() => requestLeave(() => navigate(`/customers/new?phone=${phoneParam}`))}
-          className="inline-flex items-center gap-1.5 rounded-md bg-success px-3 py-1.5 text-[12px] font-semibold text-on-fill transition hover:bg-success/90"
-        >
-          <UserPlus className="h-3.5 w-3.5" /> Create customer
-        </button>
-        <button
-          type="button"
-          onClick={() => requestLeave(() => navigate(`/leads/new?phone=${phoneParam}`))}
-          className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface-light px-3 py-1.5 text-[12px] font-semibold text-text-primary transition hover:bg-background-light"
-        >
-          <Plus className="h-3.5 w-3.5" /> Create lead
-        </button>
-      </div>
+      {offersCreate && (
+        <>
+          <p className="mt-1 text-[11px] text-text-secondary">
+            Save this number to reach them later.
+          </p>
+          <div className="mt-3 flex items-center gap-2">
+            {leadHref && (
+              <button
+                type="button"
+                onClick={() => requestLeave(() => navigate(leadHref))}
+                className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface-light px-3 py-1.5 text-[12px] font-semibold text-text-primary transition hover:bg-background-light"
+              >
+                <Plus className="h-3.5 w-3.5" /> Create lead
+              </button>
+            )}
+            {jobHref && (
+              <button
+                type="button"
+                onClick={() => requestLeave(() => navigate(jobHref))}
+                className="inline-flex items-center gap-1.5 rounded-md border border-border bg-surface-light px-3 py-1.5 text-[12px] font-semibold text-text-primary transition hover:bg-background-light"
+              >
+                <Plus className="h-3.5 w-3.5" /> Create job
+              </button>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -594,7 +616,10 @@ function CallHistoryRow({
    *  long, and one query subscription per row is a real render cost. */
   tz: string;
 }) {
-  const transcriptQuery = useCallTranscript(call.id, open);
+  // View transcript (Roles & Permissions S08.12) covers the transcript and the call summary: without it the row is the
+  // date and the outcome only, with no summary line, no transcript toggle and no request for the transcript.
+  const mayReadTranscript = useAppAbility().can("view_transcript", "Communication");
+  const transcriptQuery = useCallTranscript(call.id, open && mayReadTranscript);
   const transcript = call.transcriptPreview ?? transcriptQuery.data?.transcript ?? null;
   return (
     <li className="rounded-md border border-border bg-surface-light p-2">
@@ -609,19 +634,21 @@ function CallHistoryRow({
           </span>
         )}
       </div>
-      {call.summary && (
+      {mayReadTranscript && call.summary && (
         <p className="mt-1 text-[11px] leading-snug text-text-secondary">{call.summary}</p>
       )}
-      <button
-        type="button"
-        onClick={onToggle}
-        className="mt-1 inline-flex items-center gap-1 text-[10px] font-semibold text-primary hover:text-primary/90"
-      >
-        <FileText className="h-3 w-3" />
-        {open ? "Hide transcript" : "View transcript"}
-        <ChevronDown className={`h-3 w-3 transition ${open ? "rotate-180" : ""}`} />
-      </button>
-      {open && (
+      {mayReadTranscript && (
+        <button
+          type="button"
+          onClick={onToggle}
+          className="mt-1 inline-flex items-center gap-1 text-[10px] font-semibold text-primary hover:text-primary/90"
+        >
+          <FileText className="h-3 w-3" />
+          {open ? "Hide transcript" : "View transcript"}
+          <ChevronDown className={`h-3 w-3 transition ${open ? "rotate-180" : ""}`} />
+        </button>
+      )}
+      {mayReadTranscript && open && (
         <div className="mt-1 rounded-md bg-background-light p-2">
           {call.hasRecording && (
             <p className="mb-1 flex items-center gap-1 text-[9px] font-semibold uppercase tracking-wide text-text-secondary">
@@ -659,7 +686,8 @@ export function CustomerPanel({
   const { customer, jobs, focusedJobId } = selection;
   const navigate = useNavigate();
   const requestLeave = useSettingsGuard((s) => s.requestLeave);
-  const { data: purchaseOrders = [] } = usePurchaseOrders();
+  // Purchase orders are read only by a person who may read them: the server refuses the list to anyone else.
+  const { data: purchaseOrders = [] } = usePurchaseOrders(useAppAbility().can("read", "PurchaseOrder"));
   const [openPO, setOpenPO] = useState<string | null>(null);
   const [openCall, setOpenCall] = useState<string | null>(null);
 
@@ -687,7 +715,7 @@ export function CustomerPanel({
             <p className="truncate text-[11px] text-text-secondary">{customer.site}</p>
           )}
           <p className="text-[11px] text-text-secondary">
-            {customer.phone ? displayPhone(customer.phone) : "No phone on file"}
+            {customer.phone ? <DialerPhone phone={customer.phone} /> : "No phone on file"}
           </p>
         </div>
         <div className="flex flex-shrink-0 items-center gap-1.5">
@@ -965,9 +993,11 @@ function MessagePanel({
       <div className="flex items-center justify-between border-b border-border bg-background-light px-3 py-2">
         <div className="min-w-0">
           <p className="truncate text-sm font-semibold text-text-primary">
-            {customer?.name ?? fmtPhone(number)}
+            {customer?.name ?? <CustomerPhoneText phone={number}>{fmtPhone(number)}</CustomerPhoneText>}
           </p>
-          <p className="text-[11px] text-text-secondary">{fmtPhone(number)} · SMS</p>
+          <p className="text-[11px] text-text-secondary">
+            <CustomerPhoneText phone={number}>{fmtPhone(number)}</CustomerPhoneText> · SMS
+          </p>
         </div>
         <div className="flex items-center gap-0.5">
           <button
@@ -1079,11 +1109,9 @@ function MessagePanel({
   );
 }
 
-const TECH_ROLE_LABEL: Record<Tech["role"], string> = {
-  field_tech: "Field technician",
-  warehouse_lead: "Warehouse lead",
+const INVENTORY_VIEW_LABEL: Record<Tech["inventoryView"], string> = {
+  field: "Field technician",
   counter: "Counter",
-  subcontractor: "Subcontractor",
 };
 
 /** Conference picker — choose office staff / field techs to add to the call, or
@@ -1118,7 +1146,7 @@ function ConferencePicker({
       people: techs.map((t) => ({
         id: t.id,
         name: t.name,
-        role: TECH_ROLE_LABEL[t.role],
+        role: INVENTORY_VIEW_LABEL[t.inventoryView],
       })),
     },
   ];

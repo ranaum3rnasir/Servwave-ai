@@ -95,7 +95,7 @@ export type CallSession = {
   qaScore?: number;
   /** Confidence-gated review flag — low-confidence extracted field (§4.3.B). */
   reviewFlag?: string;
-  /** Call-flow / routing rule that handled the call (e.g. "Forward to Emanuel"). */
+  /** Call-flow / routing rule that handled the call (e.g. "Forward to Sam"). */
   callFlow?: string;
   /** Free-form labels applied to the call. */
   tags?: string[];

@@ -1,95 +1,56 @@
 import { useEffect, useState } from 'react';
 
-// Every role/permission hook and type is IMPORTED, never re-derived. The view
-// model this page posts is mapped straight onto real `role_permissions` rows by
-// the backend's `viewModelToGrants`, and `MANAGED_KEYS` deletes every managed
-// pair absent from it - so a reshaped payload silently strips grants. See
-// backend/src/lib/permissions/roleViewModel.ts.
-import {
-  useRoles,
-  useRolePermissions,
-  useUpdateRolePermissions,
-  useResetRole,
-  type RoleViewModel,
-  type ScopeValue,
-} from '@/lib/api/roles';
+import { useRoles, type RoleSummary } from '@/lib/api/roles';
+import { allViewsOff, CANT_READ_ROLE_NOTE, changedSwitches, emailPageClosed, useAcceptedPaymentMethods, useRoleSwitches, useSaveRoleSwitches, useSwitchCatalog, type SwitchSet } from '@/lib/api/permissionSwitches';
 import { useSettingsGuard } from '@/stores/settingsGuard.store';
+import { useFeature } from '@/lib/entitlements';
+import SwitchSetEditor from '@/components/permissions/SwitchSetEditor';
 
-import { Button } from '@/ui-kit/components/ui/button';
-import { Switch } from '@/ui-kit/components/ui/switch';
-import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-} from '@/ui-kit/components/ui/table';
-import { cn } from '@/ui-kit/lib/utils';
-
-import { TabStrip, TabPanel } from '../_shared/tabs';
 import { useSettingsBar } from './settingsBar';
-import { Section, FlushCard } from './components/section';
+import { Section } from './components/section';
+import { RoleList } from './components/roleList';
+import { NewRoleDialog } from './components/newRoleDialog';
+import { RoleActions } from './components/roleActions';
+import { ResetRoleAction } from './components/resetRoleAction';
+import { resetTarget } from './components/resetTarget';
+import { RoleChangeLog } from './components/changeLog';
+import { Alert } from '@/components/ui/alert';
+import { TabsContent } from '@/components/ui/tabs';
+import { TabStrip } from '@/components/patterns/TabStrip';
 
-// MUST stay in lockstep with backend roleViewModel.MODULES: role.controller.ts derives
-// MANAGED_KEYS from that list, and a Save deletes every managed key absent from the VM this
-// page posts. A module missing here is therefore not merely unrendered - its CRUD grants get
-// wiped on the next Save. See the parity test in backend/src/__tests__/role-view-model.test.ts.
-const MODULES: Array<[string, string]> = [
-  ['Customer', 'Customers'],
-  ['Lead', 'Leads'],
-  ['Estimate', 'Estimates'],
-  ['Job', 'Jobs'],
-  ['Invoice', 'Invoices'],
-  ['Inventory', 'Inventory'],
-  ['PurchaseOrder', 'Purchase Orders'],
-  ['Vendor', 'Vendors'],
-  ['ServicePlan', 'Service Plans'],
-  ['LogisticOrder', 'Logistic Orders'],
-  // Calendar Entries (Slice 01, spec §4) - user-facing "Events". This is the LIVE Roles screen
-  // (pages/v2/routes/settings.routes.tsx mounts THIS file at /settings/roles); the copy at
-  // pages/settings/RolesPage.tsx is a dead v1 fork reached only by its own tests.
-  ['CalendarEntry', 'Events'],
-];
-const CRUD: Array<['read' | 'create' | 'update' | 'delete', string]> = [
-  ['read', 'View'],
-  ['create', 'Create'],
-  ['update', 'Edit'],
-  ['delete', 'Delete'],
-];
-const SCOPE_REAL = new Set(['Lead', 'Job', 'Estimate', 'Invoice']);
-const SCOPES: ScopeValue[] = ['Owned', 'Team', 'Location', 'All'];
-
-// Multi-visit close-out (Q9, 2026-08-23) - the five Job milestone-verb toggles. Each was
-// previously visible ONLY on the per-user Permissions page (a different capability surface,
-// Users & Teams > Permissions) - this page had no cell for any of them, which is why an admin
-// could not see or grant technician `complete Job` from Roles & Permissions at all. Keep in
-// lockstep with backend TOGGLES (roleViewModel.ts) and RoleToggles (lib/api/roles.ts).
-const JOB_MILESTONE_TOGGLES: Array<[keyof RoleViewModel['toggles'], string]> = [
-  ['enRouteJobs', 'Mark on the way'],
-  ['arriveJobs', 'Mark jobs on-site'],
-  ['startJobs', 'Start jobs'],
-  ['completeJobs', 'Complete jobs'],
-  ['rescheduleJobs', 'Reschedule jobs'],
-];
+/** The line under a custom role's name that says where it started: the role it was copied from, or a blank draft. */
+function madeFromText(set: { type: string; made_from_role_key: string | null; made_from_blank: boolean } | undefined, roles: RoleSummary[]): string | null {
+  if (!set || set.type !== 'custom') return null;
+  const source = set.made_from_role_key ? roles.find((r) => r.role === set.made_from_role_key) : undefined;
+  if (source) return `Made from ${source.label}`;
+  return set.made_from_blank ? 'Made from a blank start' : null;
+}
 
 /**
  * Settings > Roles & Permissions.
  *
- * ROLE DEFAULTS only. The per-user capability grants (`create Job`,
- * `create Invoice`, `record_payment`, `reschedule` and the rest of
- * `USER_CAPABILITIES`) are a different surface entirely - the Permissions
- * button on each row of Users & Teams - and the two are deliberately kept
- * apart, with different vocabulary (binary switches here, a tri-state
- * Inherit/Allow/Deny group there). Nothing here reads or writes a per-user
- * grant.
+ * A role is a named set of switch values. The page lists the company's roles and, for the one picked, draws the whole
+ * switch catalog through the shared switch-set editor, reading and saving the role's set through the Roles API. What
+ * a role holds is a starting point: people already on it keep their own switches, so an edit here reaches only people
+ * given the role from now on.
  */
 export default function RolesPage() {
   const { data: roles = [] } = useRoles();
   const [selected, setSelected] = useState<string>('');
-  const { data: loaded } = useRolePermissions(selected);
-  const updatePerms = useUpdateRolePermissions();
-  const resetRole = useResetRole();
+  // Edits made to the picked role and not saved yet: only the switches that differ from what is saved.
+  const [edits, setEdits] = useState<SwitchSet>({});
+  const [creating, setCreating] = useState(false);
+  // The editor, or the role's change log. The log is read only while its tab is open.
+  const [tab, setTab] = useState('permissions');
   const { registerSaver } = useSettingsBar();
   const requestLeave = useSettingsGuard((s) => s.requestLeave);
 
-  const [draft, setDraft] = useState<RoleViewModel | null>(null);
-  const [activeTab, setActiveTab] = useState('permissions');
+  const current = roles.find((r) => r.role === selected);
+  const fullAccess = !!current?.fullAccess;
+  const { data: catalog, isError: catalogUnavailable } = useSwitchCatalog();
+  const acceptedMethods = useAcceptedPaymentMethods();
+  const { data: loaded, isError: roleUnavailable } = useRoleSwitches(fullAccess ? '' : selected);
+  const saveRole = useSaveRoleSwitches();
 
   useEffect(() => {
     const first = roles[0];
@@ -97,297 +58,126 @@ export default function RolesPage() {
     if (!selected && first) setSelected(first.role);
   }, [roles, selected]);
 
-  useEffect(() => {
-    // eslint-disable-next-line react-hooks/set-state-in-effect -- deliberate mirror idiom: the editable draft is re-cloned from server truth whenever it arrives
-    if (loaded) setDraft(structuredClone(loaded));
-  }, [loaded]);
-
-  const editable = !!draft?.editable;
-  const isDirty = !!draft && !!loaded && JSON.stringify(draft) !== JSON.stringify(loaded);
+  const editable = !!loaded?.editable;
+  const values = loaded ? { ...loaded.values, ...edits } : undefined;
+  const isDirty = editable && Object.keys(edits).length > 0;
 
   useEffect(() => {
     registerSaver({
       save: async () => {
-        if (!draft || !editable) return;
-        const { editable: _omit, ...vm } = draft;
-        void _omit;
-        await updatePerms.mutateAsync({ role: draft.role, vm });
+        if (!loaded || !editable || !isDirty) return;
+        await saveRole.mutateAsync({ role: selected, values: edits });
+        setEdits({});
       },
-      discard: () => loaded && setDraft(structuredClone(loaded)),
-      isDirty: isDirty && editable,
+      discard: () => setEdits({}),
+      isDirty,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isDirty, editable, draft]);
+  }, [isDirty, editable, edits, selected, loaded]);
 
-  const setCell = (subject: string, action: 'read' | 'create' | 'update' | 'delete', v: boolean) =>
-    setDraft((d) => {
-      if (!d) return d;
-      const cur = d.matrix[subject] ?? { read: false, create: false, update: false, delete: false };
-      return { ...d, matrix: { ...d.matrix, [subject]: { ...cur, [action]: v } } };
+  const pickRole = (role: string) =>
+    requestLeave(() => {
+      setSelected(role);
+      setEdits({});
     });
 
-  const setSensitive = (key: keyof RoleViewModel['sensitive'], v: boolean) =>
-    setDraft((d) => (d ? { ...d, sensitive: { ...d.sensitive, [key]: v } } : d));
+  // The archived role is gone from the list: leave it, and drop edits that were never saved. The page falls back to the first role.
+  const onArchived = () => {
+    setSelected('');
+    setEdits({});
+  };
 
-  const setScope = (subject: string, v: ScopeValue) =>
-    setDraft((d) => (d ? { ...d, scope: { ...d.scope, [subject]: v } } : d));
-
-  const setToggle = (key: keyof RoleViewModel['toggles'], v: boolean) =>
-    setDraft((d) => (d ? { ...d, toggles: { ...d.toggles, [key]: v } } : d));
+  // Read from the set as it stands on screen, edits included, so the warning follows the last View being turned off.
+  // A role that closes the Email page to its people gets a note, never a block: the mailbox still receives, and the role
+  // still saves. Read from the same values, so it appears and goes as the switch is flipped.
+  const hasEmail = useFeature('email');
+  const cantReadEmail = hasEmail && !fullAccess && !!values && emailPageClosed(values);
+  const opensNothing = !fullAccess && !!catalog && !!values && allViewsOff(catalog, values);
+  const madeFrom = madeFromText(loaded, roles);
 
   return (
-    // One column below xl (mobile slice 29). Beside the app sidebar and the Settings shell, a
-    // fixed 224px roles list squeezed the detail to 29px at 320px and to about 290px at 1024px,
-    // where the matrix's Module column scrolled out of its box. Below xl the roles are one
-    // wrapping row of buttons above the detail; from xl the list is the side column, as before.
+    // One column below xl, where the roles are a single picker above the detail; from xl the list is the side column.
+    // Either way the list never grows with the number of roles - see RoleList.
     <div className="flex flex-col gap-4 xl:flex-row xl:gap-6">
-      {/* Roles list. Switching role goes through `requestLeave` - an INTRA-page
-          change a router blocker could never see, which is exactly why the
-          unsaved-changes guard lives in a zustand store rather than the router. */}
-      <div
-        role="group"
-        aria-label="Roles"
-        data-roles-list
-        className="flex flex-wrap items-center gap-1 xl:block xl:w-56 xl:shrink-0 xl:space-y-1"
-      >
-        {roles.map((r) => (
-          <Button
-            key={r.role}
-            variant={selected === r.role ? 'secondary' : 'ghost'}
-            size="sm"
-            className="gap-3 xl:w-full xl:justify-between"
-            onClick={() => requestLeave(() => setSelected(r.role))}
-          >
-            <span className="font-medium">{r.label}</span>
-            <span className="text-muted-foreground text-xs">{r.userCount}</span>
-          </Button>
-        ))}
-        <p className="text-muted-foreground px-3 text-xs xl:pt-3">+ New custom role (coming soon)</p>
-      </div>
+      {/* Switching role goes through `requestLeave` - an INTRA-page change a router blocker could never see, which is
+          exactly why the unsaved-changes guard lives in a zustand store rather than the router. */}
+      <RoleList roles={roles} selected={selected} onPick={pickRole} onNew={() => setCreating(true)} />
+      {/* The new role opens selected; picking it goes through the same unsaved-changes guard as any other pick. */}
+      <NewRoleDialog open={creating} onOpenChange={setCreating} roles={roles} onCreated={(role) => { setCreating(false); pickRole(role); }} />
 
-      {/* Detail */}
       <div className="min-w-0 flex-1">
-        {!draft ? (
+        {!current ? (
           <p className="text-muted-foreground text-sm">Select a role.</p>
         ) : (
-          <>
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-start justify-between gap-x-4 gap-y-2">
               <div className="min-w-0">
-                {/* role/aria-level rather than an <h3>: the raw-tag ratchet sits
-                    at its floor for h1-h6. The specs read this by accessible
-                    name (`getByRole('heading', { name: 'Sales' })`). */}
+                {/* role/aria-level rather than an <h3>: the raw-tag ratchet sits at its floor for h1-h6. */}
                 <p role="heading" aria-level={3} className="text-base font-semibold">
-                  {roles.find((r) => r.role === selected)?.label}
+                  {current.label}
                 </p>
-                {!editable && (
-                  <span className="text-status-amber-emphasis text-xs">
-                    Full access - non-reducible
-                  </span>
+                {current.type === 'custom' && current.description && <p className="text-muted-foreground mt-1 text-sm">{current.description}</p>}
+                {madeFrom && <p className="text-muted-foreground mt-1 text-xs">{madeFrom}</p>}
+                {!fullAccess && (
+                  <p className="text-muted-foreground mt-1 text-xs">
+                    Changes apply to people you give this role from now on. People already on it keep their own switches.
+                  </p>
                 )}
               </div>
-              {editable && (
-                <Button variant="outline" size="sm" onClick={() => void resetRole.mutateAsync(selected)}>
-                  Reset to default
-                </Button>
-              )}
+              {/* These act on the role picked, so they are in reach at every width, whatever the list looks like. Built-in
+                  roles are permanent: only a custom role is drawn with Rename and Archive. Reset is for any role with
+                  switches (not Administrator), once its set has loaded and so what it resets to is known. */}
+              <div className="flex shrink-0 flex-wrap gap-2">
+                {editable && loaded && (
+                  <ResetRoleAction role={current} target={resetTarget(loaded, roles)} hasUnsavedEdits={isDirty} onReset={() => setEdits({})} />
+                )}
+                {current.type === 'custom' && <RoleActions role={current} onArchived={onArchived} />}
+              </div>
             </div>
-
             <TabStrip
-              value={activeTab}
-              onValueChange={setActiveTab}
               tabs={[
                 { value: 'permissions', label: 'Permissions' },
-                { value: 'scope', label: 'Data Scope' },
+                { value: 'change-log', label: 'Change log' },
               ]}
-            />
-
-            <TabPanel value="permissions" activeValue={activeTab}>
-              <div className="space-y-4 pt-4">
-                <FlushCard>
-                  <Table scrollBox="settings-roles-permissions">
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Module</TableHead>
-                        {CRUD.map(([, label]) => (
-                          <TableHead key={label} align="center">
-                            {label}
-                          </TableHead>
-                        ))}
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {MODULES.map(([subject, label]) => (
-                        <TableRow key={subject}>
-                          {/* The weight lives on a span, not on TableCell: the
-                              component-api ratchet counts an appearance class
-                              handed to TableCell and sits at its floor. */}
-                          <TableCell><span className="font-medium">{label}</span></TableCell>
-                          {CRUD.map(([action, actionLabel]) => (
-                            <TableCell key={action}>
-                              <div className="flex justify-center">
-                                <Switch
-                                  aria-label={`${actionLabel} ${label}`}
-                                  checked={!!draft.matrix[subject]?.[action]}
-                                  disabled={!editable}
-                                  onCheckedChange={(v) => setCell(subject, action, v)}
-                                />
-                              </div>
-                            </TableCell>
-                          ))}
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </FlushCard>
-
-                <Section title="Sensitive" level={4}>
-                  <SensitiveRow
-                    label="See financial data"
-                    checked={draft.sensitive.seeFinancials}
-                    disabled={!editable}
-                    onChange={(v) => setSensitive('seeFinancials', v)}
+              active={tab}
+              onChange={setTab}
+            >
+              {/* Kept mounted while the log is open, so the editor's folded groups and unsaved edits are as they were left, but
+                  hidden: a forceMount panel is otherwise drawn above the log, which then sits thousands of pixels down. */}
+              <TabsContent value="permissions" forceMount hidden={tab !== 'permissions'} className="space-y-4 pt-2">
+                {opensNothing && (
+                  <Alert tone="warning" role="status">
+                    This role can&rsquo;t open any records. Only its dashboard and its Access pages will show. You can still save it.
+                  </Alert>
+                )}
+                {cantReadEmail && (
+                  <Alert tone="warning" role="status">
+                    {CANT_READ_ROLE_NOTE}
+                  </Alert>
+                )}
+                {fullAccess ? (
+                  <Section title="Full access" description="Administrators can do everything in ServWave. This role cannot be changed." />
+                ) : catalogUnavailable || roleUnavailable ? (
+                  <p className="text-muted-foreground text-sm">This role&rsquo;s permissions can&rsquo;t be shown right now.</p>
+                ) : !catalog || !values ? (
+                  <p className="text-muted-foreground text-sm">Loading...</p>
+                ) : (
+                  <SwitchSetEditor
+                    acceptedMethods={acceptedMethods}
+                    catalog={catalog}
+                    values={values}
+                    editable={editable}
+                    onChange={(next) => setEdits(changedSwitches(loaded!.values, next))}
                   />
-                  {/* SRVW-140 - report visibility is a DIFFERENT thing from cost/price
-                      visibility, and "See financial data" used to be its only control. */}
-                  <SensitiveRow
-                    label="View reports"
-                    checked={draft.sensitive.viewReports}
-                    disabled={!editable}
-                    onChange={(v) => setSensitive('viewReports', v)}
-                  />
-                  <SensitiveRow
-                    label="Record & refund payments"
-                    checked={draft.sensitive.managePayments}
-                    disabled={!editable}
-                    onChange={(v) => setSensitive('managePayments', v)}
-                  />
-                  <SensitiveRow
-                    label="Edit record ID numbers - also rewrites derived estimate and logistic-order numbers"
-                    checked={draft.sensitive.editRecordIds}
-                    disabled={!editable}
-                    onChange={(v) => setSensitive('editRecordIds', v)}
-                  />
-                  {/* Manual Communication Log slice 4 - deliberately HERE and not as a twelfth
-                      MODULES row. Communication is already a backend MODULES subject, so a row
-                      would put its `create` grant on screen as a tickable cell - and that grant
-                      is SHARED_BASELINE: unticking it would take away click-to-call, texts,
-                      WhatsApp and email from the role, which is not what an admin adjusting who
-                      may write history is asking for. */}
-                  <SensitiveRow
-                    label="Log past communications - hand-record calls, texts and emails that happened outside ServWave"
-                    checked={draft.sensitive.logPastCommunications}
-                    disabled={!editable}
-                    onChange={(v) => setSensitive('logPastCommunications', v)}
-                  />
-
-                  {/* #2046 - the org-wide Communication SECTION gate, deliberately HERE and not a
-                      twelfth MODULES row for the same reason as the switch above: the section is
-                      the sidebar group, the `/communication/*` pages and the shell shortcuts, a
-                      different surface from the per-record Communication tab a role keeps on
-                      `read`/`create Communication` alone whether or not this is on. */}
-                  <SensitiveRow
-                    label="Access the Communication section - the org-wide inbox, call log and phone settings"
-                    checked={draft.sensitive.accessCommunicationSection}
-                    disabled={!editable}
-                    onChange={(v) => setSensitive('accessCommunicationSection', v)}
-                  />
-
-                  {/* Scoped assignee pool slice 1 (plan:
-                      md_files/plans/permissions/2026-08-31-assignee-pool/). INERT in this PR by
-                      design - the grant this writes is read by nothing until slice 2 adds the
-                      crew and performer validators. It is here and not as a cell on the Users
-                      row because those four cells are about administering staff records, and an
-                      admin deciding who may name other people on work is not being asked whether
-                      the role may also create and deactivate logins. */}
-                  <SensitiveRow
-                    label="Assign work to other people - put someone other than themselves on a job crew or walkthrough"
-                    checked={draft.sensitive.assignOthers}
-                    disabled={!editable}
-                    onChange={(v) => setSensitive('assignOthers', v)}
-                  />
-                </Section>
-
-                <Section title="Job Milestones" level={4}>
-                  {JOB_MILESTONE_TOGGLES.map(([key, label]) => (
-                    <SensitiveRow
-                      key={key}
-                      label={label}
-                      checked={draft.toggles[key]}
-                      disabled={!editable}
-                      onChange={(v) => setToggle(key, v)}
-                    />
-                  ))}
-                </Section>
-              </div>
-            </TabPanel>
-
-            <TabPanel value="scope" activeValue={activeTab}>
-              <div className="space-y-3 pt-4">
-                <Section>
-                  <div className="space-y-3">
-                    {MODULES.map(([subject, label]) => {
-                      const real = SCOPE_REAL.has(subject);
-                      const value = draft.scope[subject] ?? 'All';
-                      return (
-                        <div key={subject} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-                          <span className="text-sm font-medium">{label}</span>
-                          <div className="flex flex-wrap gap-1">
-                            {SCOPES.map((s) => {
-                              const disabled = !editable || (!real && s !== 'All');
-                              const active = real ? value === s : s === 'All';
-                              return (
-                                <Button
-                                  key={s}
-                                  size="sm"
-                                  variant={active ? 'secondary' : 'outline'}
-                                  aria-pressed={active}
-                                  disabled={disabled}
-                                  disabledReason={
-                                    !real && s !== 'All'
-                                      ? 'No record-ownership field - applies at All'
-                                      : undefined
-                                  }
-                                  onClick={() => setScope(subject, s)}
-                                  className={cn('h-7 px-2.5 text-xs')}
-                                >
-                                  {s}
-                                </Button>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      );
-                    })}
-                    <p className="text-muted-foreground pt-2 text-xs">
-                      Customers &amp; Inventory have no record-ownership field, so scope applies at
-                      the &ldquo;All&rdquo; level.
-                    </p>
-                  </div>
-                </Section>
-              </div>
-            </TabPanel>
-          </>
+                )}
+              </TabsContent>
+              <TabsContent value="change-log" className="pt-2">
+                <RoleChangeLog role={selected} />
+              </TabsContent>
+            </TabStrip>
+          </div>
         )}
       </div>
-    </div>
-  );
-}
-
-function SensitiveRow({
-  label,
-  checked,
-  disabled,
-  onChange,
-}: {
-  label: string;
-  checked: boolean;
-  disabled?: boolean;
-  onChange: (v: boolean) => void;
-}) {
-  return (
-    <div className="flex items-center justify-between gap-3">
-      <span className="min-w-0 text-sm">{label}</span>
-      <Switch aria-label={label} checked={checked} disabled={disabled} onCheckedChange={onChange} />
     </div>
   );
 }

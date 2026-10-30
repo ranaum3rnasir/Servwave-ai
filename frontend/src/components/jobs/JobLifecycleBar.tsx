@@ -1,16 +1,18 @@
-import { Check } from 'lucide-react';
+import { useId } from 'react';
+import { Check, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { computeLifecycle, type Stage, type StageKey } from '@/lib/jobs/lifecycle';
+import { computeLifecycle, type CloseOutMoneyInput, type Stage, type StageKey } from '@/lib/jobs/lifecycle';
 import type { JobFinancials } from '@/lib/api/jobs';
 import { Button } from '@/components/ui/button';
-import { availableActions, type JobVisitRow, type VisitMilestoneAction, type VisitVerb } from '@/lib/visits';
+import { DisabledReasonShell } from '@/ui-kit/components/ui/disabledReason';
+import { availableActions, visitStatusEntry, type JobVisitRow, type VisitMilestoneAction } from '@/lib/visits';
 import { DEFAULT_SCHEDULE_TIMEZONE, formatInstant } from '@/lib/schedule-tz';
-import { STATUS_REGISTRY, STATUS_INTENT_TEXT } from '@/design-system/status-registry';
+import { STATUS_INTENT_TEXT } from '@/design-system/status-registry';
 
 /** Every JOB stage a click can act on. `created` is not actionable - you cannot un-create a job. */
 export type ActionableNodeKey = Exclude<StageKey, 'created' | `visit:${string}`>;
 const ACTIONABLE_NODES: readonly StageKey[] = [
-  'scheduled', 'completed', 'invoice_sent', 'payment_received',
+  'scheduled', 'completed', 'office_review', 'invoice_sent', 'payment_received',
 ];
 /** The two invoice nodes act on money, not status — see the `interactive` note below. */
 const INVOICE_NODES: readonly StageKey[] = ['invoice_sent', 'payment_received'];
@@ -21,8 +23,15 @@ interface JobLifecycleBarProps {
     completed_at?: string | null;
     status: string;
     cancelled_at?: string | null;
+    /** When the job was marked Done: the Done step's date. */
+    closed_at?: string | null;
   };
   financials: JobFinancials | undefined;
+  /**
+   * What the server says about a Done job's money (PRD 6, S06.21): whether money is still owed and whether its total is
+   * zero. The bar calls a money step skipped from these, never from a sum of its own. Null on a job that is not Done.
+   */
+  closeOutMoney?: CloseOutMoneyInput;
   /**
    * S5 (D11): the job's visits. Each one draws its own node, in place of the fixed Scheduled and
    * On Site nodes that were only ever visit one's properties.
@@ -40,11 +49,6 @@ interface JobLifecycleBarProps {
    */
   visitsUnknown?: boolean;
   /**
-   * S5 (D7a): which lifecycle verbs may this principal drive on a visit? One flag PER VERB - the
-   * four per-visit routes are gated on three different abilities. Absent means no.
-   */
-  visitAbilities?: Partial<Record<VisitVerb, boolean>>;
-  /**
    * S5 (D11): a visit control names the ROW it belongs to. Not an index, not `visit_seq` - the id
    * the per-visit route takes. The job-level verbs resolve a visit server-side, so a control
    * wired to those stamps whichever trip the server picks (#1550's class).
@@ -53,10 +57,23 @@ interface JobLifecycleBarProps {
   /** Per-node capability. A node the user cannot act on renders inert — no disabled affordance. */
   can?: {
     scheduled?: boolean; started?: boolean; completed?: boolean;
+    /** The Office review step opens the review panel: the server lists the review for this person on this job. */
+    office_review?: boolean;
     invoice_sent?: boolean; payment_received?: boolean;
   };
+  /**
+   * Why the Payment Received step is greyed (PRD 6, S06.22): the server's words when it does not offer Record payment to this
+   * person. The step is then drawn as a disabled control whose reason a screen reader reads with it and a mouse or keyboard
+   * gets on hover or focus. Absent when the step is offered, when it offers nothing, or when nothing was said.
+   */
+  paymentReceivedReason?: string | null;
   onNodeClick?: (key: ActionableNodeKey) => void;
   onStartClick?: () => void;
+  /**
+   * The server's word that Start here moves the job back out of Office review or Ready to close (S06.18): the person may make that
+   * backward move, so Start is offered although the job holds a completion. The bar never judges the status itself.
+   */
+  startMovesBack?: boolean;
   /** Disables every control while a mutation is in flight. */
   busy?: boolean;
   /** The org's scheduling zone, which milestone dates are read on. Passed in rather than
@@ -80,11 +97,12 @@ function formatAt(at: string | null, tz: string): string | null {
 }
 
 export function JobLifecycleBar({
-  job, financials, visits = [], visitsUnknown = false, visitAbilities = {}, onVisitAction,
-  can, onNodeClick, onStartClick, busy = false,
+  job, financials, closeOutMoney, visits = [], visitsUnknown = false, onVisitAction,
+  can, paymentReceivedReason, onNodeClick, onStartClick, startMovesBack = false, busy = false,
   tz = DEFAULT_SCHEDULE_TIMEZONE,
 }: JobLifecycleBarProps) {
-  const stages = computeLifecycle(job, financials, visits);
+  const paymentReasonId = useId();
+  const stages = computeLifecycle(job, financials, visits, closeOutMoney);
   const isCancelled = !!job.cancelled_at;
 
   // A job with no visits is the most common state on this page, and D11 deleted the fixed
@@ -102,7 +120,7 @@ export function JobLifecycleBar({
         // Labelled 'Scheduled', which is what this node has always been called. Not 'Schedule':
         // the command-center header band already carries that exact word, and two identical
         // labels on one screen is a real ambiguity, not just a test-query one.
-        { key: 'scheduled', label: 'Scheduled', at: null, reached: false, current: false },
+        { key: 'scheduled', label: 'Scheduled', at: null, reached: false, current: false, skipped: false },
         ...stages.slice(1),
       ]
     : stages;
@@ -110,7 +128,8 @@ export function JobLifecycleBar({
   // Start is reachable only while the job is neither started nor past. Because a backward move
   // clears `started_at` and `completed_at`, moving back re-enables it automatically - no separate
   // rule needed.
-  const canStart = !!can?.started && !job.completed_at && job.status !== 'IN_PROGRESS';
+  // A job the office is reviewing holds a completion, and Start there is the backward move the server has said this person may make.
+  const canStart = !!can?.started && (startMovesBack || (!job.completed_at && job.status !== 'IN_PROGRESS'));
 
   return (
     <div className="space-y-2 pt-3 border-t border-border">
@@ -151,17 +170,23 @@ export function JobLifecycleBar({
             // reached, so it stays clickable exactly as before.
             (isInvoiceNode || !stage.reached);
 
+          // The Payment Received step the person may not use is a real disabled control with its reason, not an inert node.
+          const greyed = stage.key === 'payment_received' && !interactive && !!paymentReceivedReason;
+
           // A visit node's circle is display-only: the trip's own control sits under it, so the
           // click carries the row id rather than a stage key the server would have to resolve.
           const visitAction = visit && onVisitAction
-            ? availableActions(visit.status, visitAbilities)[0]
+            ? availableActions(visit.status, visit.status_steps)[0]
             : undefined;
 
           const circle = (
             <div
+              data-testid="lifecycle-circle"
               className={cn(
                 'relative z-10 flex h-8 w-8 items-center justify-center rounded-full transition-colors',
-                stage.current
+                stage.skipped
+                  ? 'border-2 border-skipped bg-skipped-surface text-skipped-text'
+                  : stage.current
                   ? 'border-2 border-primary bg-primary text-on-fill ring-4 ring-primary/15'
                   : stage.reached
                   ? 'bg-success text-on-fill'
@@ -169,7 +194,9 @@ export function JobLifecycleBar({
                 interactive && 'group-hover:ring-4 group-hover:ring-primary/20',
               )}
             >
-              {stage.reached ? (
+              {stage.skipped ? (
+                <X className="h-4 w-4" strokeWidth={2.5} aria-hidden="true" />
+              ) : stage.reached ? (
                 <Check className="h-4 w-4" strokeWidth={2.5} />
               ) : stage.current ? (
                 <div className="h-2.5 w-2.5 rounded-full bg-on-fill" />
@@ -183,13 +210,13 @@ export function JobLifecycleBar({
           // Visits cards render a visit's status through, so a node and its row can never
           // disagree about the word. A cancelled trip greys through the registry's `neutral`
           // intent rather than a hand-picked class (D19: kept, numbered, greyed).
-          const visitStatus = visit ? STATUS_REGISTRY.job[visit.status] : undefined;
+          const visitStatus = visit ? visitStatusEntry(visit.status) : undefined;
 
           const label = (
             <span
               className={cn(
                 'mt-2 text-center text-xs font-semibold leading-tight max-w-[88px]',
-                stage.reached || stage.current ? 'text-text-primary' : 'text-text-secondary font-medium',
+                stage.reached || stage.current ? 'text-foreground' : 'text-muted-foreground font-medium',
               )}
             >
               {stage.label}
@@ -198,8 +225,13 @@ export function JobLifecycleBar({
                   {visitStatus.label}
                 </span>
               )}
+              {/* Skipped is said in words, not only in the colour: the ring and the X are the picture, this is the
+                  text a screen reader and a colour-blind reader get. */}
+              {stage.skipped && (
+                <span className="block text-[11px] font-semibold text-skipped-text mt-0.5">Skipped</span>
+              )}
               {dateStr && (
-                <span className="block text-[11px] font-normal text-text-secondary mt-0.5">{dateStr}</span>
+                <span className="block text-[11px] font-normal text-muted-foreground mt-0.5">{dateStr}</span>
               )}
             </span>
           );
@@ -212,7 +244,10 @@ export function JobLifecycleBar({
               key={stage.key}
               role="group"
               aria-label={stage.label}
-              className="relative flex flex-1 flex-col items-center"
+              // min-w: seven or more steps do not fit a phone, so each keeps a readable width and the rail scrolls inside
+              // the bar rather than squeezing the labels or widening the page.
+              aria-current={stage.current ? 'step' : undefined}
+              className="relative flex min-w-[72px] flex-1 flex-col items-center"
             >
               {/* Connector to the next node — sits behind the circles and spans
                   exactly one cell (this node's centre → the next node's centre),
@@ -227,19 +262,27 @@ export function JobLifecycleBar({
                 />
               )}
 
-              {interactive ? (
+              {interactive || greyed ? (() => {
                 // Left raw: wraps a composite lifecycle node (circle + label), a
                 // heterogeneous click target, not Button-shaped.
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => onNodeClick(stage.key as ActionableNodeKey)}
-                  className="group flex flex-col items-center rounded-control focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-60"
-                >
-                  {circle}
-                  {label}
-                </button>
-              ) : (
+                const nodeButton = (
+                  <button
+                    type="button"
+                    disabled={busy || greyed}
+                    aria-describedby={greyed ? paymentReasonId : undefined}
+                    onClick={interactive ? () => onNodeClick?.(stage.key as ActionableNodeKey) : undefined}
+                    className="group flex flex-col items-center rounded-control focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary disabled:opacity-60"
+                  >
+                    {circle}
+                    {label}
+                  </button>
+                );
+                return greyed ? (
+                  <DisabledReasonShell reason={paymentReceivedReason!} descriptionId={paymentReasonId}>
+                    {nodeButton}
+                  </DisabledReasonShell>
+                ) : nodeButton;
+              })() : (
                 <>
                   {circle}
                   {label}

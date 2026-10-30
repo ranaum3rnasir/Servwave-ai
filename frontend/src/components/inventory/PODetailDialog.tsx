@@ -44,6 +44,8 @@ import {
 } from "@/lib/api/inventory";
 import { useOrganization } from "@/lib/api/organization";
 import { useAppAbility } from "@/contexts/AbilityContext";
+import { canSeePricing } from "@/lib/ability";
+import { switchOn, useMySwitches } from "@/lib/api/mySwitches";
 import { lineHasCost, lineUnitCost, poTotal } from "@/lib/inventory/po-money";
 import type {
   InventoryJob,
@@ -186,6 +188,8 @@ type HeaderDraft = {
 
 type EditLine = {
   key: string;
+  /** The stored line this row was seeded from; absent on a line added in this edit. */
+  id?: string;
   itemSku: string;
   itemName: string;
   uom: string;
@@ -211,6 +215,7 @@ function seedHeader(po: PurchaseOrder): HeaderDraft {
 function seedLines(po: PurchaseOrder): EditLine[] {
   return po.lines.map((l, i) => ({
     key: l.id ?? `seed_${i}`,
+    id: l.id,
     itemSku: l.itemSku,
     itemName: l.itemName,
     uom: l.uom,
@@ -232,6 +237,12 @@ export function PODetailDialog({ open, onClose, po, onReceive, onUpdated, onDele
   const ability = useAppAbility();
   const canUpdatePO = ability.can("update", "PurchaseOrder");
   const canDeletePO = ability.can("delete", "PurchaseOrder");
+  // Amounts are costs (See financial data). Without it the server sends none, and the dialog draws no cost column,
+  // no extended amount and no subtotal or total, rather than a dash or $0 that reads like a value.
+  const showCosts = canSeePricing(ability);
+  // The staging pointer is offered only to a person who may open the Staging page.
+  const mySwitches = useMySwitches()?.values;
+  const canOpenStaging = switchOn(mySwitches, "view_stock") && switchOn(mySwitches, "show_stock_page");
   const [tab, setTab] = useState<Tab>("lines");
   const [showPreview, setShowPreview] = useState(false);
 
@@ -280,7 +291,8 @@ export function PODetailDialog({ open, onClose, po, onReceive, onUpdated, onDele
   const [header, setHeader] = useState<HeaderDraft | null>(null);
   const [lineDraft, setLineDraft] = useState<EditLine[]>([]);
   const [linesDirty, setLinesDirty] = useState(false);
-  const vendorsQuery = useVendors();
+  // Same rule as every other vendor-list reader: no View vendors, no request.
+  const vendorsQuery = useVendors(ability.can("read", "Vendor"));
   const itemsQuery = useInventoryItems();
   const jobsQuery = useInventoryJobs();
 
@@ -551,6 +563,8 @@ export function PODetailDialog({ open, onClose, po, onReceive, onUpdated, onDele
       const qty = Number(l.qtyOrdered);
       if (!Number.isFinite(qty) || qty <= 0) return `Quantity for "${name}" must be greater than 0.`;
       const line: POLine = {
+        // The stored line this row stands for: the server keeps a hidden cost on it by this id.
+        ...(l.id ? { id: l.id } : {}),
         itemSku: l.itemSku,
         itemName: name,
         uom,
@@ -691,6 +705,29 @@ export function PODetailDialog({ open, onClose, po, onReceive, onUpdated, onDele
 
   const busy = updatePO.isPending || markOrdered.isPending || deletePO.isPending;
 
+  // The job comes from the link (jobId / jobNumber), which is always set for an order made from a job; the stored
+  // customer and site text is only a snapshot and can be empty. The job number opens the job for a person who may
+  // open jobs, and reads as plain text for one who may not.
+  const jobLabel = po.jobNumber ?? (po.jobId ? "Linked job" : null);
+  const headerParts: React.ReactNode[] = [];
+  if (jobLabel) {
+    headerParts.push(
+      po.jobId && ability.can("read", "Job") ? (
+        <Link key="job" to={`/jobs/${po.jobId}`} className="text-primary hover:underline">
+          {jobLabel}
+        </Link>
+      ) : (
+        jobLabel
+      ),
+    );
+  }
+  if (po.customer) headerParts.push(po.customer);
+  if (po.site) headerParts.push(po.site);
+  const headerSubtitle: React.ReactNode =
+    headerParts.length === 0
+      ? "No job link"
+      : headerParts.flatMap((part, i) => (i === 0 ? [part] : [" · ", part]));
+
   return (
     <>
       <Modal
@@ -699,11 +736,7 @@ export function PODetailDialog({ open, onClose, po, onReceive, onUpdated, onDele
         onClose={onClose}
         size="xl"
         title={`${po.poNumber} · ${po.vendor}`}
-        subtitle={
-          po.customer
-            ? `${po.jobNumber ? po.jobNumber + " · " : ""}${po.customer}${po.site ? " · " + po.site : ""}`
-            : "No job link"
-        }
+        subtitle={headerSubtitle}
         footer={
           editing ? (
             // ─── Edit mode footer ───
@@ -848,12 +881,14 @@ export function PODetailDialog({ open, onClose, po, onReceive, onUpdated, onDele
                         <primaryAction.icon className="h-3.5 w-3.5" />
                         {primaryAction.label}
                       </Button>
-                      <Link
-                        to="/inventory/staging"
-                        className="text-xs font-semibold text-primary hover:underline"
-                      >
-                        Open Staging →
-                      </Link>
+                      {canOpenStaging && (
+                        <Link
+                          to="/inventory/staging"
+                          className="text-xs font-semibold text-primary hover:underline"
+                        >
+                          Open Staging →
+                        </Link>
+                      )}
                     </span>
                   ) : (
                     <Button size="sm"
@@ -1000,6 +1035,7 @@ export function PODetailDialog({ open, onClose, po, onReceive, onUpdated, onDele
               onRemove={removeLine}
               onAddCatalog={addCatalogLine}
               onAddFreeText={addFreeTextLine}
+              showCosts={showCosts}
             />
           )}
           {tab === "lines" && !(editing && po.status === "draft") && (
@@ -1007,6 +1043,7 @@ export function PODetailDialog({ open, onClose, po, onReceive, onUpdated, onDele
               po={po}
               subtotal={subtotal}
               total={total}
+              showCosts={showCosts}
               receiving={receiving}
               receiveDraft={receiveDraft}
               receiveDestId={receiveDestId}
@@ -1201,6 +1238,7 @@ function LinesEditor({
   onRemove,
   onAddCatalog,
   onAddFreeText,
+  showCosts,
 }: {
   lines: EditLine[];
   items: Item[];
@@ -1208,6 +1246,7 @@ function LinesEditor({
   onRemove: (key: string) => void;
   onAddCatalog: (itemId: string) => void;
   onAddFreeText: () => void;
+  showCosts: boolean;
 }) {
   const catalogOptions = items
     .filter((i) => i.status !== "discontinued" && i.isActive !== false)
@@ -1239,7 +1278,7 @@ function LinesEditor({
           </Button>
         </div>
         <span className="text-[11px] text-text-secondary">
-          Lines save with the PO. Blank unit cost = no cost.
+          {showCosts ? "Lines save with the PO. Blank unit cost = no cost." : "Lines save with the PO."}
         </span>
       </div>
 
@@ -1253,15 +1292,15 @@ function LinesEditor({
               <th className="px-3 py-2">Description</th>
               <th className="px-3 py-2 w-24">UoM</th>
               <th className="px-3 py-2 w-28 text-right">Qty</th>
-              <th className="px-3 py-2 w-32 text-right">Unit $</th>
-              <th className="px-3 py-2 text-right">Ext.</th>
+              {showCosts && <th className="px-3 py-2 w-32 text-right">Unit $</th>}
+              {showCosts && <th className="px-3 py-2 text-right">Ext.</th>}
               <th className="px-3 py-2 w-12"></th>
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
             {lines.length === 0 && (
               <tr>
-                <td colSpan={8} className="px-3 py-6 text-center text-xs text-text-secondary">
+                <td colSpan={showCosts ? 8 : 6} className="px-3 py-6 text-center text-xs text-text-secondary">
                   No lines - add one from the catalog or as free text.
                 </td>
               </tr>
@@ -1301,21 +1340,25 @@ function LinesEditor({
                       className={`${cellInput} text-right`}
                     />
                   </td>
-                  <td className="px-3 py-2">
-                    <Input
-                      aria-label="Unit cost"
-                      kind="money"
-                      min={0}
-                      step="0.01"
-                      value={line.unitCost}
-                      onChange={(e) => onUpdate(line.key, { unitCost: e.target.value })}
-                      placeholder="-"
-                      className={`${cellInput} text-right`}
-                    />
-                  </td>
-                  <td className="px-3 py-2 text-right tabular-nums font-medium text-text-primary">
-                    {cost != null ? fmtMoney(qty * cost) : "-"}
-                  </td>
+                  {showCosts && (
+                    <td className="px-3 py-2">
+                      <Input
+                        aria-label="Unit cost"
+                        kind="money"
+                        min={0}
+                        step="0.01"
+                        value={line.unitCost}
+                        onChange={(e) => onUpdate(line.key, { unitCost: e.target.value })}
+                        placeholder="-"
+                        className={`${cellInput} text-right`}
+                      />
+                    </td>
+                  )}
+                  {showCosts && (
+                    <td className="px-3 py-2 text-right tabular-nums font-medium text-text-primary">
+                      {cost != null ? fmtMoney(qty * cost) : "-"}
+                    </td>
+                  )}
                   <td className="px-2 py-2 text-center">
                     <Button
                       variant="ghost"
@@ -1333,24 +1376,26 @@ function LinesEditor({
               );
             })}
           </tbody>
-          <tfoot className="border-t border-border bg-background-light text-sm">
-            <tr>
-              <td colSpan={6} className="px-3 py-2 text-right text-xs text-text-secondary">
-                Subtotal
-              </td>
-              <td colSpan={2} className="px-3 py-2 text-right tabular-nums text-text-primary">
-                {fmtMoney(subtotal)}
-              </td>
-            </tr>
-            <tr className="border-t border-border">
-              <td colSpan={6} className="px-3 py-2 text-right text-xs font-semibold uppercase tracking-wide text-text-primary">
-                Total
-              </td>
-              <td colSpan={2} className="px-3 py-2 text-right tabular-nums text-base font-bold text-text-primary">
-                {fmtMoney(subtotal)}
-              </td>
-            </tr>
-          </tfoot>
+          {showCosts && (
+            <tfoot className="border-t border-border bg-background-light text-sm">
+              <tr>
+                <td colSpan={6} className="px-3 py-2 text-right text-xs text-text-secondary">
+                  Subtotal
+                </td>
+                <td colSpan={2} className="px-3 py-2 text-right tabular-nums text-text-primary">
+                  {fmtMoney(subtotal)}
+                </td>
+              </tr>
+              <tr className="border-t border-border">
+                <td colSpan={6} className="px-3 py-2 text-right text-xs font-semibold uppercase tracking-wide text-text-primary">
+                  Total
+                </td>
+                <td colSpan={2} className="px-3 py-2 text-right tabular-nums text-base font-bold text-text-primary">
+                  {fmtMoney(subtotal)}
+                </td>
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
     </div>
@@ -1362,6 +1407,7 @@ function LinesTab({
   po,
   subtotal,
   total,
+  showCosts,
   receiving,
   receiveDraft,
   receiveDestId,
@@ -1374,6 +1420,7 @@ function LinesTab({
   po: PurchaseOrder;
   subtotal: number;
   total: number;
+  showCosts: boolean;
   receiving: boolean;
   receiveDraft: Record<string, number>;
   receiveDestId: string;
@@ -1451,8 +1498,8 @@ function LinesTab({
               <th className="px-3 py-2">UoM</th>
               <th className="px-3 py-2 text-right">Ordered</th>
               <th className="px-3 py-2 text-right">Received</th>
-              <th className="px-3 py-2 text-right">Unit $</th>
-              <th className="px-3 py-2 text-right">Ext.</th>
+              {showCosts && <th className="px-3 py-2 text-right">Unit $</th>}
+              {showCosts && <th className="px-3 py-2 text-right">Ext.</th>}
               {receiving && <th className="px-3 py-2"></th>}
             </tr>
           </thead>
@@ -1463,35 +1510,38 @@ function LinesTab({
                 idx={idx}
                 line={line}
                 receiving={receiving}
+                showCosts={showCosts}
                 draftValue={receiveDraft[line.id!] ?? line.qtyReceived}
                 onDraftChange={(v) => onDraftChange(line.id!, v)}
               />
             ))}
           </tbody>
-          <tfoot className="border-t border-border bg-background-light text-sm">
-            <tr>
-              <td
-                colSpan={receiving ? 7 : 6}
-                className="px-3 py-2 text-right text-xs text-text-secondary"
-              >
-                Subtotal
-              </td>
-              <td colSpan={2} className="px-3 py-2 text-right tabular-nums text-text-primary">
-                {fmtMoney(subtotal)}
-              </td>
-            </tr>
-            <tr className="border-t border-border">
-              <td
-                colSpan={receiving ? 7 : 6}
-                className="px-3 py-2 text-right text-xs font-semibold uppercase tracking-wide text-text-primary"
-              >
-                Total
-              </td>
-              <td colSpan={2} className="px-3 py-2 text-right tabular-nums text-base font-bold text-text-primary">
-                {fmtMoney(total)}
-              </td>
-            </tr>
-          </tfoot>
+          {showCosts && (
+            <tfoot className="border-t border-border bg-background-light text-sm">
+              <tr>
+                <td
+                  colSpan={receiving ? 7 : 6}
+                  className="px-3 py-2 text-right text-xs text-text-secondary"
+                >
+                  Subtotal
+                </td>
+                <td colSpan={2} className="px-3 py-2 text-right tabular-nums text-text-primary">
+                  {fmtMoney(subtotal)}
+                </td>
+              </tr>
+              <tr className="border-t border-border">
+                <td
+                  colSpan={receiving ? 7 : 6}
+                  className="px-3 py-2 text-right text-xs font-semibold uppercase tracking-wide text-text-primary"
+                >
+                  Total
+                </td>
+                <td colSpan={2} className="px-3 py-2 text-right tabular-nums text-base font-bold text-text-primary">
+                  {fmtMoney(total)}
+                </td>
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
     </div>
@@ -1502,12 +1552,14 @@ function LineRow({
   idx,
   line,
   receiving,
+  showCosts,
   draftValue,
   onDraftChange,
 }: {
   idx: number;
   line: POLine;
   receiving: boolean;
+  showCosts: boolean;
   draftValue: number;
   onDraftChange: (v: number) => void;
 }) {
@@ -1568,12 +1620,16 @@ function LineRow({
           </>
         )}
       </td>
-      <td className="px-3 py-2 text-right tabular-nums text-text-secondary">
-        {unit != null ? fmtMoney(unit) : "-"}
-      </td>
-      <td className="px-3 py-2 text-right tabular-nums font-medium text-text-primary">
-        {ext != null ? fmtMoney(ext) : "-"}
-      </td>
+      {showCosts && (
+        <td className="px-3 py-2 text-right tabular-nums text-text-secondary">
+          {unit != null ? fmtMoney(unit) : "-"}
+        </td>
+      )}
+      {showCosts && (
+        <td className="px-3 py-2 text-right tabular-nums font-medium text-text-primary">
+          {ext != null ? fmtMoney(ext) : "-"}
+        </td>
+      )}
       {receiving && (
         <td className="px-3 py-2 text-right">
           {draftValue < line.qtyOrdered ? (

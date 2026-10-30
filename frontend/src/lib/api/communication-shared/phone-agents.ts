@@ -4,7 +4,8 @@
 
 export type AgentKind = "human" | "ai";
 
-export type PhoneAgent = {
+/** Who an agent is. The server sends this to everyone who can read the Calls tab: it names who answered a call. */
+export type PhoneAgentIdentity = {
   id: string;
   kind: AgentKind;
   name: string;
@@ -14,18 +15,34 @@ export type PhoneAgent = {
    *  matches an answered call to its answerer (see `agentMatchesId`). */
   userId?: string;
   linkedUser?: { id: string; name: string; email: string };
+};
+
+/** The scorecard metrics. The server sends them only to a person with See call insights. */
+export type PhoneAgentScorecard = {
   calls: number;
   answerRatePct: number; // % of offered calls answered
   bookingRatePct: number; // booked / eligible
   ahtSec: number; // average handle time
   sentimentPct: number; // % positive/neutral
-  revenue: number; // attributed revenue this period
   /** % of monitored calls that followed the approved call script (greeting,
    *  qualifying questions, quote framing, close). Low = coaching needed. */
   scriptAdherencePct: number;
   /** AI-only: % of calls fully handled without human transfer (§4 / R05). */
   containmentPct?: number;
+  /** Attributed revenue this period: a company figure, so the server sends it only to a person with both See call
+   *  insights and See company figures. Absent is "not for you", never zero. */
+  revenue?: number;
 };
+
+/** An agent as the server sends it: identity always, the scorecard only to a person who may see it. */
+export type PhoneAgent = PhoneAgentIdentity & Partial<PhoneAgentScorecard>;
+
+/** An agent that arrived with its scorecard. */
+export type ScoredPhoneAgent = PhoneAgentIdentity & PhoneAgentScorecard;
+
+export function hasScorecard(agent: PhoneAgent): agent is ScoredPhoneAgent {
+  return typeof agent.calls === "number";
+}
 
 /** Script adherence below this needs a manager's attention / coaching. */
 export const SCRIPT_ATTENTION_THRESHOLD = 85;

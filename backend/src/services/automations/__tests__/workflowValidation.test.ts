@@ -479,7 +479,8 @@ describe('validateWorkflowDefinition — rule 4: positions must be 0..n-1 ascend
     expect(issues).toContainEqual({
       step_index: -1,
       path: 'steps',
-      message: 'Steps are out of order — tidy up and try again',
+      message:
+        'The steps are out of order, so this automation can’t be published — reload the page and make your change again',
     });
   });
 
@@ -491,7 +492,8 @@ describe('validateWorkflowDefinition — rule 4: positions must be 0..n-1 ascend
     expect(issues).toContainEqual({
       step_index: -1,
       path: 'steps',
-      message: 'Steps are out of order — tidy up and try again',
+      message:
+        'The steps are out of order, so this automation can’t be published — reload the page and make your change again',
     });
   });
 
@@ -530,7 +532,8 @@ describe('validateWorkflowDefinition — rule 6: every recipient must be legal f
     expect(issues).toContainEqual({
       step_index: 0,
       path: 'config.recipients',
-      message: 'Recipient "dispatcher" is not available for this trigger',
+      message:
+        `Recipient "dispatcher" is not available for this trigger, so this automation can’t be published. Open this step and choose a different recipient`,
     });
   });
 
@@ -577,7 +580,8 @@ describe('validateWorkflowDefinition — rule 6: every recipient must be legal f
     expect(illegal).toContainEqual({
       step_index: 0,
       path: 'config.recipients',
-      message: 'Recipient "removed_user" is not available for this trigger',
+      message:
+        `Recipient "removed_user" is not available for this trigger, so this automation can’t be published. Open this step and choose a different recipient`,
     });
   });
 
@@ -605,7 +609,8 @@ describe('validateWorkflowDefinition — rule 6: every recipient must be legal f
     expect(illegal).toContainEqual({
       step_index: 0,
       path: 'config.recipients',
-      message: 'Recipient "assigned_user" is not available for this trigger',
+      message:
+        `Recipient "assigned_user" is not available for this trigger, so this automation can’t be published. Open this step and choose a different recipient`,
     });
   });
 
@@ -632,7 +637,8 @@ describe('validateWorkflowDefinition — rule 6: every recipient must be legal f
     expect(issues).toContainEqual({
       step_index: 0,
       path: 'config.recipients',
-      message: 'Recipient "dispatcher" is not available for this trigger',
+      message:
+        `Recipient "dispatcher" is not available for this trigger, so this automation can’t be published. Open this step and choose a different recipient`,
     });
     expect(issues.filter((i) => i.message.includes('all_admins'))).toEqual([]);
   });
@@ -768,7 +774,8 @@ describe('validateWorkflowDefinition - Spec C: a text step addressed to staff pu
     expect(issues).toContainEqual({
       step_index: 0,
       path: 'config.recipients',
-      message: 'Recipient "dispatcher" is not available for this trigger',
+      message:
+        `Recipient "dispatcher" is not available for this trigger, so this automation can’t be published. Open this step and choose a different recipient`,
     });
   });
 
@@ -948,7 +955,8 @@ describe('validateWorkflowDefinition — rule 8: merge fields must be legal for 
     expect(issues).toContainEqual({
       step_index: 0,
       path: 'config.body',
-      message: "The field {{estimate.total}} isn't available for this trigger",
+      message:
+        "The field {{estimate.total}} isn’t available for this trigger, so this automation can’t be published. Open this step and remove the field, or pick a replacement from the Insert a field list",
     });
   });
 
@@ -960,7 +968,8 @@ describe('validateWorkflowDefinition — rule 8: merge fields must be legal for 
     expect(issues).toContainEqual({
       step_index: 0,
       path: 'config.body',
-      message: "The field {{invoice.number}} isn't available for this trigger",
+      message:
+        "The field {{invoice.number}} isn’t available for this trigger, so this automation can’t be published. Open this step and remove the field, or pick a replacement from the Insert a field list",
     });
   });
 
@@ -982,7 +991,9 @@ describe('validateWorkflowDefinition — rule 9: STOP_IF condition must be legal
     expect(issues).toContainEqual({
       step_index: 0,
       path: 'config.condition',
-      message: "This stop condition isn't available for this trigger",
+      message:
+        "This stop condition isn’t available for this trigger, so this automation can’t be published. " +
+        'Open this step and pick another condition, or remove the step',
     });
   });
 
@@ -994,7 +1005,9 @@ describe('validateWorkflowDefinition — rule 9: STOP_IF condition must be legal
     expect(issues).toContainEqual({
       step_index: 0,
       path: 'config.condition',
-      message: "This stop condition isn't available for this trigger",
+      message:
+        "This stop condition isn’t available for this trigger, so this automation can’t be published. " +
+        'Open this step and pick another condition, or remove the step',
     });
   });
 
@@ -1044,7 +1057,8 @@ describe('validateWorkflowDefinition — rule 11: anchored wait disallowed under
     expect(issues).toContainEqual({
       step_index: 0,
       path: 'config.mode',
-      message: 'A ‘wait until before/after’ timer needs a trigger with an upcoming date — this trigger fires after the fact',
+      message:
+        'This trigger fires after the fact, so a before/after timer has no upcoming date to wait for and this automation can’t be published. Open this step and switch it to Wait a set time',
     });
   });
 
@@ -1226,7 +1240,8 @@ describe('validateWorkflowDefinition — date-anchored triggers', () => {
     expect(issues).toContainEqual({
       step_index: -1,
       path: 'trigger_config.anchor',
-      message: 'This timing anchor isn’t available for this trigger',
+      message:
+        'This timing anchor isn’t available for this trigger, so this automation can’t be published — open it and pick a date this trigger offers',
     });
   });
 
@@ -1282,7 +1297,8 @@ describe('validateWorkflowDefinition — date-anchored triggers', () => {
     expect(issues).toContainEqual({
       step_index: -1,
       path: 'trigger_config.anchor',
-      message: 'This timing anchor isn’t available for this trigger',
+      message:
+        'This timing anchor isn’t available for this trigger, so this automation can’t be published — open it and pick a date this trigger offers',
     });
   });
 
@@ -1423,7 +1439,8 @@ describe('a step type with no config schema', () => {
     expect(issues).toContainEqual({
       step_index: 1,
       path: 'config.body',
-      message: "The field {{not_a_field}} isn't available for this trigger",
+      message:
+        "The field {{not_a_field}} isn’t available for this trigger, so this automation can’t be published. Open this step and remove the field, or pick a replacement from the Insert a field list",
     });
   });
 });
@@ -1506,7 +1523,8 @@ describe('validateWorkflowDefinition - task workflows', () => {
       {
         step_index: 0,
         path: 'config.recipients',
-        message: 'Recipient "customer" is not available for this trigger',
+        message:
+          `Recipient "customer" is not available for this trigger, so this automation can’t be published. Open this step and choose a different recipient`,
       },
     ]);
   });
@@ -1606,7 +1624,9 @@ describe('validateWorkflowDefinition - TASK_DELETED merge fields', () => {
     });
     expect(issues).toHaveLength(1);
     expect(issues[0].path).toBe('config.body');
-    expect(issues[0].message).toBe(`The field {{${field}}} isn't available for this trigger`);
+    expect(issues[0].message).toBe(
+      `The field {{${field}}} isn’t available for this trigger, so this automation can’t be published. Open this step and remove the field, or pick a replacement from the Insert a field list`,
+    );
   });
 
   it('rejects the same field in the SUBJECT as well as the body', () => {

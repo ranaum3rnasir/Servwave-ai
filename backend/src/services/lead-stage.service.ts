@@ -12,14 +12,15 @@
  *
  * Two rules run through everything below.
  *
- *   FIRST TOUCH WINS. Every clock here except one is set once and never moved. Following a lead up
+ *   FIRST TOUCH WINS. Every clock here except two is set once and never moved. Following a lead up
  *   five times must not keep resetting "when did we first reach out"; a second estimate must not
  *   restart the estimate clock. The rule is enforced by a conditional write — UPDATE ... WHERE the
  *   column IS NULL — which is atomic in Postgres and therefore correct under concurrency, unlike a
  *   read-then-write.
  *
  *   NOTHING IS EVER UN-SET. The single exception, `last_visit_completed_at`, is a deliberate
- *   re-anchoring mirror and is documented as such where it is written. An earlier design had the
+ *   re-anchoring mirror and is documented as such where it is written. The other is `won_at`, the day the
+ *   lead last closed as Won: a lead reopened and won again counts at the new close. An earlier design had the
  *   completion clock CLEAR when a late visit was booked; that would have erased the evidence of a
  *   breach that had already occurred. D3 splits the questions instead, so no destructive write is
  *   needed anywhere. Ratified by the product owner: a recorded breach stands. Booking a later
@@ -47,8 +48,7 @@ export type LeadStageClock =
   | 'contacted_at'
   | 'walkthrough_first_booked_at'
   | 'walkthrough_first_completed_at'
-  | 'first_estimate_sent_at'
-  | 'won_at';
+  | 'first_estimate_sent_at';
 
 /**
  * Set a stage clock if — and only if — it has never been set.
@@ -122,8 +122,8 @@ export function leadClockPatch(event: { visitCompletedAt?: Date }): Prisma.LeadU
   return patch;
 }
 
-/** The three statuses from which a lead never moves on automatically. */
-export const TERMINAL_LEAD_STATUSES: readonly LeadStatus[] = ['WON', 'LOST', 'CANCELLED'] as const;
+/** The two statuses from which a lead never moves on automatically. A lead closes one way, as Won or Lost (S05.18). */
+export const TERMINAL_LEAD_STATUSES: readonly LeadStatus[] = ['WON', 'LOST'] as const;
 
 /**
  * The words a person reads for each lead status (History lines, anything else written for a
@@ -139,7 +139,6 @@ export const LEAD_STATUS_LABEL: Record<LeadStatus, string> = {
   ESTIMATED: 'Estimate Sent',
   WON: 'Won',
   LOST: 'Lost',
-  CANCELLED: 'Cancelled',
 };
 
 export interface LeadTransitionResult {
@@ -165,9 +164,9 @@ export interface LeadTransitionOptions {
   /** The user who caused the transition; null for a webhook or other system path. */
   actorId?: string | null;
   /**
-   * Statuses this transition must refuse to overwrite. Defaults to the three terminal ones, which
+   * Statuses this transition must refuse to overwrite. Defaults to the two terminal ones, which
    * is what all nine of the scattered lead-to-WON writers already hand-rolled as
-   * `status: { notIn: ['WON', 'LOST', 'CANCELLED'] }`. Pass an empty array for a door that has
+   * `status: { notIn: ['WON', 'LOST'] }`. Pass an empty array for a door that has
    * already run its own, stricter check and answered the caller with a 400.
    */
   notFrom?: readonly LeadStatus[];
@@ -255,9 +254,7 @@ export async function transitionLeadStatus(
     where: { id: leadId, organization_id: orgId, ...(Object.keys(guard).length > 0 ? { status: guard } : {}) },
     data: {
       status: to,
-      // First touch wins. `won_at: null` in the WHERE would over-narrow the statement (it would
-      // also block the status write on a re-won lead), so the clock is stamped by its own
-      // conditional write below instead.
+      // `won_at` is stamped by its own write below, on every move into Won.
       ...data,
     },
   });
@@ -266,7 +263,10 @@ export async function transitionLeadStatus(
   // put into a guarded status by a concurrent writer. Nothing happened, so nothing is recorded.
   if (count === 0) return { changed: false };
 
-  if (to === 'WON') await stampLeadClock(tx, leadId, orgId, 'won_at', new Date());
+  // `won_at` is the day the lead LAST closed as Won, so it is written on every real move into Won and not first-touch:
+  // a Won lead that was reopened and wins again counts at the new close (the Close Rate and the Leads page read it).
+  // Only a real transition reaches this line (a re-assertion of Won and a move out of a closed status returned above).
+  if (to === 'WON') await tx.lead.updateMany({ where: { id: leadId, organization_id: orgId }, data: { won_at: new Date() } });
 
   await tx.timelineEvent.create({
     data: {
@@ -288,8 +288,8 @@ export async function transitionLeadStatus(
 }
 
 /**
- * The statuses a visit change is allowed to move a lead between (PRD D3). Estimate Sent, Won, Lost
- * and Cancelled are further along than any walkthrough step, so a visit never moves them.
+ * The statuses a visit change is allowed to move a lead between (PRD D3). Estimate Sent, Won and Lost
+ * are further along than any walkthrough step, so a visit never moves them.
  */
 export const WALKTHROUGH_DRIVEN_FROM_STATUSES: readonly LeadStatus[] = [
   'NEW',
@@ -306,7 +306,7 @@ export const WALKTHROUGH_DRIVEN_FROM_STATUSES: readonly LeadStatus[] = [
  * and "is anything still booked?" and "has anything finished?" are the only two questions that
  * stay true when there is more than one.
  *
- *   - Estimate Sent, Won, Lost, Cancelled: never moved by a visit change (D3).
+ *   - Estimate Sent, Won, Lost: never moved by a visit change (D3).
  *   - any visit still open: Walkthrough Scheduled. That covers the first booking, a further
  *     booking, and a Walkthrough Completed lead that gets another visit (D4, D5).
  *   - nothing open, at least one finished: Walkthrough Completed. "Completed" means the

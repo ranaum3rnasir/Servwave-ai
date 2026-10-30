@@ -12,7 +12,10 @@ export function RankedBarList({
   entries: ScoreboardEntry[];
   onRowClick: (e: ScoreboardEntry) => void;
 }) {
-  const max = Math.max(1, ...entries.map((e) => e.revenue));
+  // A person without See company figures gets no revenue: the board is ranked by, and the bars drawn from, job count.
+  const showsRevenue = entries.every((e) => e.revenue !== undefined);
+  const measure = (e: ScoreboardEntry) => (showsRevenue ? (e.revenue ?? 0) : e.jobs);
+  const max = Math.max(1, ...entries.map(measure));
   return (
     <WidgetCard
       title={`${icon} ${title}`}
@@ -32,9 +35,9 @@ export function RankedBarList({
             <span className="flex-1 h-4 rounded bg-border-soft overflow-hidden">
               <span
                 className="h-full flex items-center justify-end pr-1.5 rounded bg-sage-700 text-[9px] font-bold text-on-fill"
-                style={{ width: `${Math.max(18, (e.revenue / max) * 100)}%` }}
+                style={{ width: `${Math.max(18, (measure(e) / max) * 100)}%` }}
               >
-                {money0(e.revenue)}
+                {showsRevenue ? money0(e.revenue ?? 0) : null}
               </span>
             </span>
             <span className="w-12 shrink-0 text-right text-[10px] text-text-secondary">
@@ -55,7 +58,7 @@ export function LeadSourcesWidget({
   navigate: (to: string) => void;
 }) {
   return (
-    <WidgetCard title="🌐 Top Lead Sources" right={<span className="text-[11px] text-text-secondary">leads · revenue</span>}>
+    <WidgetCard title="🌐 Top Lead Sources" right={<span className="text-[11px] text-text-secondary">{sources.some((s) => s.revenue !== undefined) ? 'leads · revenue' : 'leads'}</span>}>
       <div className="px-5 py-2">
         {sources.map((s) => (
           // Full-width list-row click target (label + lead % + revenue), not a Button-shaped
@@ -63,12 +66,14 @@ export function LeadSourcesWidget({
           <button
             key={s.source}
             type="button"
-            onClick={() => navigate(`/leads?source=${s.source}`)}
+            onClick={() => s.link && navigate(s.link)}
             className="flex items-center gap-2 w-full py-1.5 text-[11px] border-b border-border-soft last:border-0 hover:bg-background-light transition-colors"
           >
             <span className="flex-1 text-left font-semibold text-text-primary">{s.label}</span>
             <span className="text-text-primary tabular-nums">{s.lead_pct}%</span>
-            <span className="text-text-secondary text-[10px] w-24 text-right tabular-nums">· {money0(s.revenue)}</span>
+            {s.revenue !== undefined && (
+              <span className="text-text-secondary text-[10px] w-24 text-right tabular-nums">· {money0(s.revenue)}</span>
+            )}
           </button>
         ))}
       </div>

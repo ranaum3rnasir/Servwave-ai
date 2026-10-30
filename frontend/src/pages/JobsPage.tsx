@@ -388,7 +388,7 @@ export default function JobsPage() {
   }
 
   const bulkStatusMutation = useMutation({
-    mutationFn: async (body: { ids: string[]; action: string; cancelled_reason?: string }) => {
+    mutationFn: async (body: { ids: string[]; action: string; cancel_reason_code?: string; cancelled_reason?: string; void_invoices?: boolean }) => {
       const { data } = await api.post('/api/jobs/bulk-status', body);
       return data as BulkResult;
     },
@@ -435,8 +435,10 @@ export default function JobsPage() {
     bulkStatusMutation.mutate({ ids: selectedJobIds, action });
   };
 
-  const handleCancelConfirm = (reason: string) => {
-    bulkStatusMutation.mutate({ ids: selectedJobIds, action: 'cancel', cancelled_reason: reason });
+  const handleCancelConfirm = (reasonCode: string, note: string, voidInvoices: boolean) => {
+    bulkStatusMutation.mutate({
+      ids: selectedJobIds, action: 'cancel', cancel_reason_code: reasonCode, ...(note ? { cancelled_reason: note } : {}), void_invoices: voidInvoices,
+    });
     setCancelDialogOpen(false);
   };
 
@@ -720,6 +722,7 @@ export default function JobsPage() {
         open={cancelDialogOpen}
         onOpenChange={setCancelDialogOpen}
         count={selectedJobIds.length}
+        jobIds={selectedJobIds}
         isPending={bulkStatusMutation.isPending}
         onConfirm={handleCancelConfirm}
       />

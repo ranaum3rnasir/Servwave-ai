@@ -13,6 +13,7 @@ import type { EntityState } from './context';
 import { LEAD_ANCHOR_SATISFIED_BY, type AnchorKey } from './anchors';
 import { isTerminalTaskStatus, type TerminalTaskStatus } from '../../lib/tasks/status';
 import { isTaskTransitionTrigger } from './taskTransitions';
+import { isCompletedOrLater } from '../../lib/job-status-order';
 
 /**
  * The plain-English reason each FINISHED task status makes an enrollment stale (Spec B slice 6,
@@ -125,7 +126,7 @@ export function terminalStaleReason(
   switch (trigger) {
     case 'BEFORE_JOB_START': {
       if (state.jobStatus === 'CANCELLED') return 'Job was cancelled';
-      if (state.jobStatus === 'COMPLETED') return 'Job was already completed';
+      if (isCompletedOrLater(state.jobStatus)) return 'Job was already completed';
       // B-6 (Spec B1): the cron scan widens to include EN_ROUTE/ON_SITE/IN_PROGRESS so a
       // technician marking themselves en-route/on-site early no longer kills the reminder
       // outright -- but ON_SITE/IN_PROGRESS specifically means the tech is already there or
@@ -150,7 +151,7 @@ export function terminalStaleReason(
       return null;
     }
     case 'AFTER_JOB_COMPLETED': {
-      if (state.jobStatus !== 'COMPLETED') return 'Job is no longer marked completed';
+      if (!isCompletedOrLater(state.jobStatus)) return 'Job is no longer marked completed';
       // Symmetry with BEFORE_JOB_START above. A job can be moved backward off COMPLETED and
       // re-completed (Spec B1's free transitions, and reopen() -> re-complete already today).
       // The new completed_at mints a NEW dedupe key, so a second run enrols -- correct, because
@@ -197,7 +198,7 @@ export function terminalStaleReason(
       // scheduled_start is still in the future, which the already-passed check below would NOT
       // catch. For 'after', COMPLETED is the expected, desired state at send time (that's the
       // whole point of an after-appointment reminder) and must NOT be treated as stale.
-      if (direction === 'before' && state.jobStatus === 'COMPLETED') return 'Job was already completed';
+      if (direction === 'before' && isCompletedOrLater(state.jobStatus)) return 'Job was already completed';
       if (!state.jobScheduledStart) return 'Job is no longer scheduled';
       if (occurrence && state.jobScheduledStart.toISOString() !== occurrence) {
         return 'Job was rescheduled — this run was replaced by an updated reminder';
@@ -221,7 +222,6 @@ export function terminalStaleReason(
       if (satisfiedBy) {
         // Terminal regardless of direction, exactly as below: a dead lead gets no alert.
         if (s === 'LOST') return 'Lead was marked as lost';
-        if (s === 'CANCELLED') return 'Lead was cancelled';
         if (s === 'WON') return 'Lead was won — nothing to chase';
         // "…and it still has not happened", which the candidate sweep cannot express because it
         // selects purely on the anchor date. An owner asking to hear about a lead nobody
@@ -257,16 +257,15 @@ export function terminalStaleReason(
         return null;
       }
 
-      // LOST/CANCELLED are terminal regardless of direction (a dead lead gets
+      // LOST is terminal regardless of direction (a dead lead gets
       // no reminder either way). NOTE: this is NOT redundant with the null-date
-      // check below — a lead lost/cancelled AFTER the walkthrough already
+      // check below — a lead lost AFTER the walkthrough already
       // completed (the realistic case for an 'after' reminder, which by
       // definition fires once time has moved past the walkthrough) keeps its
       // historical walkthrough date untouched, so only an explicit status check
       // catches that case. (Closing a lead cancels its open visits, but the
       // current-visit date above still reads the most recent trip.)
       if (s === 'LOST') return 'Lead was marked as lost';
-      if (s === 'CANCELLED') return 'Lead was cancelled';
       if (!state.leadWalkthroughScheduledAt) return 'Walkthrough is no longer scheduled';
       if (occurrence && state.leadWalkthroughScheduledAt.toISOString() !== occurrence) {
         return 'Walkthrough was rescheduled — this reminder was replaced by an updated one';
@@ -400,12 +399,12 @@ export function terminalStaleReason(
     case 'JOB_SCHEDULED':
     case 'TECH_ASSIGNED': {
       if (state.jobStatus === 'CANCELLED') return 'Job was cancelled';
-      if (state.jobStatus === 'COMPLETED') return 'Job was already completed';
+      if (isCompletedOrLater(state.jobStatus)) return 'Job was already completed';
       return null;
     }
     case 'JOB_RESCHEDULED': {
       if (state.jobStatus === 'CANCELLED') return 'Job was cancelled';
-      if (state.jobStatus === 'COMPLETED') return 'Job was already completed';
+      if (isCompletedOrLater(state.jobStatus)) return 'Job was already completed';
       if (occurrence && state.jobScheduledStart && state.jobScheduledStart.toISOString() !== occurrence) {
         return 'Job was rescheduled again — a newer notice replaced this one';
       }

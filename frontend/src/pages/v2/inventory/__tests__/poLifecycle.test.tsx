@@ -10,7 +10,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderWithProviders, purchasingAbility } from '@/__tests__/helpers';
 import type { PurchaseOrder } from '@/lib/api/inventory';
 
 const hoisted = vi.hoisted(() => {
@@ -90,7 +90,7 @@ beforeEach(() => {
 });
 
 function renderPage(path = '/inventory/purchase-orders') {
-  return renderWithProviders(<PurchaseOrdersPage />, { initialEntries: [path] });
+  return renderWithProviders(<PurchaseOrdersPage />, { initialEntries: [path], ability: purchasingAbility() });
 }
 
 /** The kit StatCard is a button whose name is "<label> <value>"; the grid's sort

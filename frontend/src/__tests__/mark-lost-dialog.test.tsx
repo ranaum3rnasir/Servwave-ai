@@ -19,7 +19,8 @@ describe('MarkLostDialog', () => {
     );
 
     expect(screen.getByText('Mark Lead as Lost')).toBeInTheDocument();
-    expect(screen.getByText(/cannot be undone/)).toBeInTheDocument();
+    expect(screen.getByText(/A lost lead can be reopened by someone allowed to reopen leads/)).toBeInTheDocument();
+    expect(screen.queryByText(/cannot be undone/)).toBeNull();
   });
 
   it('shows reason textarea', () => {

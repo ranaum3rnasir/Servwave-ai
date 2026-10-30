@@ -1,6 +1,7 @@
 import type { APIResponse } from '@playwright/test';
 import type { ApiClient } from '../helpers/api-client';
-import { createCustomerWithLocation, createTech, e2eUserPassword } from '../helpers/workflow-builders';
+import { createTech, e2eUserPassword } from '../helpers/workflow-builders';
+import { gateCustomerWithLocation } from './gate-customer';
 import { BOARD_JOB_SLOT, BOARD_TIMEZONE_FALLBACK, BOARD_WALKTHROUGH_SLOT, bookedAt, jobEnd, type BoardSlot, type Booking } from './schedule-booking';
 import type { GateFixtures } from './routes';
 
@@ -40,14 +41,15 @@ const LINES = [
  * asks for the 'board'.
  */
 export async function sentEstimate(api: ApiClient, techId: string, booking: Booking = 'apart') {
-  const { customerId, locationId } = await createCustomerWithLocation(api);
+  const { customerId, locationId } = await gateCustomerWithLocation(api);
   const lead = (await must('create lead', api.createLead({ customer_id: customerId, service_request: 'Gate check visit', service_location_id: locationId }))).lead;
   await must('contact lead', api.contactLead(lead.id));
   await must('schedule walkthrough', api.scheduleWalkthrough(lead.id, { walkthrough_scheduled_at: (await visitStart(api, booking, BOARD_WALKTHROUGH_SLOT)).toISOString(), performer_ids: [techId] }));
   await must('complete walkthrough', api.completeWalkthrough(lead.id));
   const estimate = (await must('create estimate', api.createEstimate({ lead_id: lead.id, line_items: LINES, tax_rate: 0.0625, scope_notes: 'Gate check estimate' }))).estimate;
-  // mark-sent: the same first-send commit as Send, minus the email (the throwaway org has email
-  // sending off, and the gate must not email anyone).
+  // mark-sent: the same first-send commit as Send, minus the email. The throwaway org has outgoing
+  // email off, but the payment receipt ignores that switch, so the customer is on the provider's
+  // test inbox (gate-customer.ts): whatever mail the org does send is delivered there, never bounced.
   const sent = (await must('mark estimate sent', api.raw('post', `/api/estimates/${estimate.id}/mark-sent`, { deposit_required: false }))).estimate;
   return { customerId, locationId, leadId: lead.id as string, estimateId: estimate.id as string, estimateToken: sent.public_token as string };
 }
@@ -63,13 +65,15 @@ export async function scheduledJob(api: ApiClient, techId: string, booking: Book
 }
 
 /** ...then started, completed and invoiced; the invoice SENT (open) or also paid in cash. */
-async function invoicedJob(api: ApiClient, techId: string, paid: boolean) {
+export async function invoicedJob(api: ApiClient, techId: string, paid: boolean) {
   const j = await scheduledJob(api, techId, 'board');
   await must('start job', api.startJob(j.jobId));
   await must('complete job', api.completeJob(j.jobId, 'Work finished and checked with the customer.'));
   const invoice = (await must('create invoice', api.createInvoice(j.jobId))).invoice;
-  // payment-link: marks the invoice SENT and mints its public link without emailing it.
-  const sent = (await must('get invoice payment link', api.raw('post', `/api/invoices/${invoice.id}/payment-link`, {}))).invoice;
+  // mark-sent: issues the DRAFT and mints its public link without emailing it. (A payment link used to
+  // do this; since the payments W4 change it keeps the invoice a DRAFT, and the Void Invoice and Issue
+  // Credit cases need an issued one. src/__tests__/mobile-gate-seed-invoices.test.ts holds the rule.)
+  const sent = (await must('mark invoice sent', api.raw('post', `/api/invoices/${invoice.id}/mark-sent`, {}))).invoice;
   if (paid) await must('record payment', api.recordPayment(invoice.id, { amount: Number(sent.amount_due), method: 'CASH', notes: 'Paid on site' }));
   return { ...j, invoiceId: invoice.id as string, invoiceToken: sent.public_token as string };
 }

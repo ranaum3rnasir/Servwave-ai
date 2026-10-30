@@ -217,13 +217,6 @@ export class ApiClient {
     return { res, body: await res.json() };
   }
 
-  async cancelLead(id: string, reason: string) {
-    const res = await this.ctx.post(`/api/leads/${id}/cancel`, {
-      data: { cancelled_reason: reason },
-    });
-    return { res, body: await res.json() };
-  }
-
   async getLeadNotes(id: string) {
     const res = await this.ctx.get(`/api/leads/${id}/notes`);
     return (await res.json());
@@ -536,14 +529,14 @@ export class ApiClient {
 
   async completeJob(id: string, notes: string) {
     const res = await this.ctx.post(`/api/jobs/${id}/complete`, {
-      data: { completion_notes: notes },
+      data: { completion_notes: notes, cancel_open_visits: true },
     });
     return { res, body: await res.json() };
   }
 
   async cancelJob(id: string, reason: string) {
     const res = await this.ctx.post(`/api/jobs/${id}/cancel`, {
-      data: { cancelled_reason: reason },
+      data: { cancel_reason_code: 'OTHER', cancelled_reason: reason },
     });
     return { res, body: await res.json() };
   }

@@ -5,7 +5,7 @@
  * - The time units (Minute, Hour, Day) are defined ONCE here. The settings validation, the sweep
  *   and the screen all use them: the screen reads them from the settings endpoint's `options`
  *   rather than keeping its own list. There is no Second.
- * - The five watched statuses are the open lead statuses. Won, Lost and Cancelled are never
+ * - The five watched statuses are the open lead statuses. Won and Lost are never
  *   watched.
  */
 import { z } from 'zod';

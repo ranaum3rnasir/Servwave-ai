@@ -17,7 +17,13 @@ import { Label } from '@/components/ui/label';
 import { Send, Loader2, X } from 'lucide-react';
 import { formatCurrency, extractApiError } from '@/lib/utils';
 import { formatExactDay } from '@/lib/format-date';
-import { StripePaymentsBanner } from '@/components/payments/StripePaymentsBanner';
+import { PaymentsSetupBanner } from '@/components/payments/PaymentsSetupBanner';
+import { SendingAsLine } from '@/components/communication/inbox/ComposeWindow';
+import { useHandSender } from '@/components/communication/useHandSender';
+import {
+  InvoicePaymentOptionsCard,
+  type InvoicePaymentOptionsCardProps,
+} from '@/components/invoices/InvoicePaymentOptionsCard';
 
 interface SendInvoiceDialogProps {
   open: boolean;
@@ -34,6 +40,12 @@ interface SendInvoiceDialogProps {
   lineItems: InvoiceLineItem[];
   onSuccess: () => void;
   isResend?: boolean;
+  /**
+   * Payments go-live slice 21 - this invoice's payment options, shown before sending so the
+   * office can make it bank-only or allow partial payments on the way out. A change saves to the
+   * invoice at once; the send itself takes no options. Omitted = the sheet shows none.
+   */
+  paymentOptions?: Omit<InvoicePaymentOptionsCardProps, 'invoiceId'>;
 }
 
 const DEFAULT_MESSAGE =
@@ -54,6 +66,7 @@ export function SendInvoiceDialog({
   lineItems,
   onSuccess,
   isResend = false,
+  paymentOptions,
 }: SendInvoiceDialogProps) {
   const navigate = useNavigate();
   // #1997 — `undefined` (never `null`, which keeps the pre-existing "genuinely no email on
@@ -74,6 +87,8 @@ export function SendInvoiceDialog({
     setRecipientEmail(savedEmail);
   }
   const recipientValid = emailRedacted || EMAIL_RE.test(recipientEmail.trim());
+  // PRD 10 (S10.12): the invoice goes out from the sender's OWN address; a person with no address of their own cannot send it.
+  const handSender = useHandSender();
 
   const [messageBody, setMessageBody] = useState(DEFAULT_MESSAGE);
 
@@ -167,9 +182,18 @@ export function SendInvoiceDialog({
           <SheetTitle>{isResend ? 'Resend' : 'Send'} Invoice {invoiceNumber}</SheetTitle>
         </SheetHeader>
 
-        <StripePaymentsBanner onSetup={() => navigate('/settings/payments')} />
+        <PaymentsSetupBanner onSetup={() => navigate('/settings/payments')} />
 
         <div className="space-y-4">
+          {handSender.known && (
+            <SendingAsLine
+              address={handSender.sender.fromAddress}
+              name={handSender.sender.fromName}
+              addressNeeded={handSender.sender.addressNeeded}
+              className="border-b-0 px-0 py-0"
+            />
+          )}
+
           {/* To — editable one-off recipient, not saved to the customer. Read-only with a
               neutral placeholder when the requester's Customer scope redacted the saved address
               (#1997): it must not present itself as an empty field the rep is expected to fill,
@@ -266,6 +290,8 @@ export function SendInvoiceDialog({
             />
           </div>
 
+          {paymentOptions && <InvoicePaymentOptionsCard invoiceId={invoiceId} {...paymentOptions} />}
+
           {/* Invoice details */}
           <div className="rounded-lg border border-border bg-background-light p-3 space-y-1.5 text-sm">
             <p className="font-medium">Invoice details</p>
@@ -318,7 +344,8 @@ export function SendInvoiceDialog({
             </Button>
             <Button
               onClick={() => mutation.mutate()}
-              disabled={!recipientValid || mutation.isPending}
+              disabled={!recipientValid || mutation.isPending || handSender.blockedReason !== undefined}
+              disabledReason={handSender.blockedReason}
             >
               {mutation.isPending ? (
                 <>

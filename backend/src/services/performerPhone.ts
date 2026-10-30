@@ -129,7 +129,7 @@ export function formatPerformerPhones(crew: PerformerPhoneRow[], orgPhone: strin
 function mainLineOrTheOffice(orgPhone: string): string {
   // '' when the organisation has no number on file, NOT MAIN_LINE_FALLBACK. Since 2026-09-15 the
   // phrase is the seeded default for all five phone merge fields
-  // (`automations/mergeFieldFallbacks.ts`) and the RENDERER applies it, so that the step's "If
+  // (`automations/mergeFieldFallbacks.ts`) and the renderer applies it, so that the step's "If
   // empty, fill with" box is a control the author can use instead of one this function had
   // already pre-empted. The customer reads the same words. Every caller builds an automation
   // merge field, so nothing lost a phrase in the move.
@@ -146,8 +146,7 @@ function mainLineOrTheOffice(orgPhone: string): string {
  * Same contract as `getOrgTimezone` / `getOrgCurrency`, deliberately: these are called from
  * fire-and-forget post-commit paths, so a missing org, a null column or a database hiccup
  * resolves to "nothing on file" rather than turning a booking that already landed into a 500.
- * '' is the honest answer for all three, and the renderer turns it into the phrase off the step's
- * own fallback map.
+ * '' is the honest answer for all three, and `formatPerformerPhones` turns it into the phrase.
  */
 export async function getOrgMainLine(organizationId: string): Promise<string> {
   try {
@@ -212,7 +211,7 @@ export type ServWaveNumberRow = { e164: string; formatted: string | null };
  * neither is not a contact and is dropped - it would otherwise suppress the fallback while
  * rendering a hole, which is the one outcome D7 forbids outright.
  */
-function formatServWaveNumber(number: ServWaveNumberRow): string {
+export function formatServWaveNumber(number: ServWaveNumberRow): string {
   const shown = number.formatted?.trim();
   if (shown) return shown;
   return formatPhoneDisplay(number.e164).trim();

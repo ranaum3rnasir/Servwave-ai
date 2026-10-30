@@ -60,9 +60,34 @@ describe('projectLegacyWalkthroughFields', () => {
     cancelled_by: null, customer_email_sent_at: null, created_at: new Date('2026-01-01'),
   };
 
+  it('says "to be scheduled" for a live visit with no time, in the list shape as well as the detail', () => {
+    const untimed = { ...base, status: 'SCHEDULED' as const };
+    for (const full of [true, false]) {
+      expect(projectLegacyWalkthroughFields([untimed], { full }).walkthrough_to_be_scheduled, `full ${full}`).toBe(true);
+    }
+  });
+
+  it('does not say "to be scheduled" once the visit has a time, or when it was called off or finished', () => {
+    const timed = { ...base, status: 'SCHEDULED' as const, scheduled_at: new Date('2026-04-01') };
+    const cancelled = { ...base, status: 'CANCELLED' as const, cancelled_at: new Date('2026-04-02') };
+    const completed = { ...base, status: 'COMPLETED' as const, completed_at: new Date('2026-04-03') };
+    for (const visit of [timed, cancelled, completed]) {
+      expect(projectLegacyWalkthroughFields([visit], { full: true }).walkthrough_to_be_scheduled, visit.status).toBe(false);
+    }
+  });
+
+  it('describes the timed trip, not "to be scheduled", when a lead has both a timed and an untimed live visit', () => {
+    const untimed = { ...base, id: 'w-untimed', status: 'SCHEDULED' as const };
+    const timed = { ...base, id: 'w-timed', status: 'SCHEDULED' as const, scheduled_at: new Date('2026-04-01') };
+    const fields = projectLegacyWalkthroughFields([untimed, timed], { full: false });
+    expect(fields.walkthrough_scheduled_at).toEqual(new Date('2026-04-01'));
+    expect(fields.walkthrough_to_be_scheduled).toBe(false);
+  });
+
   it('an empty visit list projects every field to null', () => {
     expect(projectLegacyWalkthroughFields(undefined, { full: true })).toEqual({
       walkthrough_scheduled_at: null,
+      walkthrough_to_be_scheduled: false,
       walkthrough_completed_at: null,
       walkthrough_duration_minutes: null,
       walkthrough_notes: null,

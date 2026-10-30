@@ -11,6 +11,9 @@ import { toWallClock, useScheduleTimezone } from '@/lib/schedule-tz';
 import { EmptyState } from '@/components/ui/empty-state';
 import { DraftRestoredNote } from '@/ui-kit/components/ui/draftRestoredNote';
 import { useFieldDraft } from '@/lib/drafts/useFieldDraft';
+import { NoteDeleteButton } from '@/components/notes/NoteDeleteButton';
+import { useDeleteNote } from '@/lib/notes/useDeleteNote';
+import type { NoteDeleteAnswer } from '@/lib/notes/noteChange';
 import { TextLengthCounter } from '@/components/form';
 import { LONG_TEXT_MAX, tooLongMessage } from '@/lib/textLimits';
 
@@ -21,7 +24,7 @@ interface ActivityPanelProps {
   entityId: string;
 }
 
-interface NoteItem {
+interface NoteItem extends NoteDeleteAnswer {
   id: string;
   content: string;
   created_at: string;
@@ -165,6 +168,9 @@ export function ActivityPanel({ entityType, entityId }: ActivityPanelProps) {
     },
   });
 
+  // The delete control on each note follows the server's per-note answer (S04.25); an invoice's notes carry none.
+  const deleteNote = useDeleteNote(entityType, entityId);
+
   const isLoading = notesLoading || (hasTimeline && timelineLoading);
 
   // Merge and sort reverse-chronologically
@@ -176,6 +182,8 @@ export function ActivityPanel({ entityType, entityId }: ActivityPanelProps) {
   }
   if (timelineData) {
     for (const event of timelineData) {
+      // The note itself is listed above; its history entry is for the office review, not this feed.
+      if (event.event_type === 'JOB_NOTE_ADDED') continue;
       items.push({ type: 'timeline', data: event });
     }
   }
@@ -276,6 +284,16 @@ export function ActivityPanel({ entityType, entityId }: ActivityPanelProps) {
                         <span className="text-[10px] text-text-secondary whitespace-nowrap">
                           {timeAgo}
                         </span>
+                        {noteData && (
+                          <span className="ms-auto">
+                            <NoteDeleteButton
+                              note={noteData}
+                              authorName={name}
+                              pending={deleteNote.isDeleting}
+                              onDelete={() => deleteNote.requestDelete(noteData.id)}
+                            />
+                          </span>
+                        )}
                       </div>
                       <p className="text-xs text-text-secondary mt-0.5 whitespace-pre-wrap break-words">
                         {isNote ? content : humanizeInstants(content, tz)}
@@ -295,6 +313,7 @@ export function ActivityPanel({ entityType, entityId }: ActivityPanelProps) {
           </div>
         )}
       </div>
+      {deleteNote.confirmDialog}
     </div>
   );
 }

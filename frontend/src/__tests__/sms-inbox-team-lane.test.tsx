@@ -18,6 +18,7 @@ import api from '@/lib/axios';
 import { renderWithProviders } from './helpers';
 import { SmsInboxView } from '@/components/communication/phone/SmsInboxView';
 import type { MessageThread, PhoneCustomer } from '@/lib/api/communication';
+import { MY_SWITCHES_URL, VIEWS_CUSTOMERS_ANSWER } from './support/viewsCustomers';
 
 const mockApi = vi.mocked(api);
 
@@ -153,6 +154,7 @@ async function pickLane(user: ReturnType<typeof userEvent.setup>, label: string)
  *  would make the assertion pass for the wrong reason. */
 function mockEnabledOrg() {
   mockApi.get.mockImplementation(async (url: string) => {
+    if (url === MY_SWITCHES_URL) return VIEWS_CUSTOMERS_ANSWER;
     if (url === '/api/organization')
       return { data: { phone_connected: true, ctm_account_id: true, ctm_sms_ready: true } };
     if (url === '/api/communication/numbers') return { data: { numbers: [SMS_NUMBER] } };
@@ -168,6 +170,7 @@ function mockEnabledOrg() {
 beforeEach(() => {
   vi.clearAllMocks();
   mockApi.get.mockImplementation(async (url: string) => {
+    if (url === MY_SWITCHES_URL) return VIEWS_CUSTOMERS_ANSWER;
     if (url === '/api/communication/contacts') return { data: { contacts: CONTACTS_FIXTURE } };
     if (url === '/api/communication/agents') return { data: { agents: [] } };
     if (url === '/api/communication/threads') return { data: { threads: [] } };

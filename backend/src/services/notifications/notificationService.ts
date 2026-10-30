@@ -1,7 +1,7 @@
 /**
  * notificationService.ts — emit() orchestrator
  *
- * Ties together templates, resolveRecipients, roleHolders, and the DB writes
+ * Ties together templates, resolveRecipients, and the DB writes
  * to create a Notification event row + NotificationRecipient rows per resolved
  * recipient. Always resolves — errors are swallowed and logged as warnings so
  * a failed notification never breaks the parent action.
@@ -12,9 +12,24 @@ import { prisma } from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { isKnownVerb, renderTemplate } from './templates';
 import { resolveRecipients } from './resolveRecipients';
-import { loadRoleHolders } from './roleHolders';
 import { publishNotificationsChanged } from './realtimePublish';
 import { filterRecipientsByAccess } from './filterByAccess';
+import { conversationAlertAudience, type ConversationAlert, type ConversationSubject } from './conversationAlertRecipients';
+import { conversationAlertKeys, isFallbackPeople, nobodyFallbackRows, type FallbackPeople } from './conversationAlertFallback';
+
+/** The verb of the missed-call and voicemail alert: a voicemail is the same verb with `call_status: 'voicemail'` in its data. */
+const CALL_MISSED_VERB = 'communication.call_missed';
+/** The verb of the inbound-text alert. The caller names the text in `entity.message_id`; without it the conversation's latest inbound text is meant. */
+const SMS_INBOUND_VERB = 'communication.sms_inbound';
+
+/** The lookup that names the people of a call or text alert, or null for any other verb. */
+function conversationAlertOf(args: EmitArgs): ConversationAlert | null {
+  if (args.verb === CALL_MISSED_VERB) return { kind: 'call', organizationId: args.organizationId, callId: args.object.id };
+  if (args.verb === SMS_INBOUND_VERB) {
+    return { kind: 'text', organizationId: args.organizationId, threadId: args.object.id, messageId: args.entity?.message_id ?? null };
+  }
+  return null;
+}
 
 // ── public interface ──────────────────────────────────────────────────────────
 
@@ -30,6 +45,25 @@ export interface EmitArgs {
   data?: Record<string, any>;
   /** Idempotency key — duplicate emits with the same key are no-ops. */
   dedupKey?: string;
+  /**
+   * The alert is about the people it goes to and no one else (S06.27, "Unassigned from you"): they are named by the caller, and
+   * the row-scope filter is not asked. A person taken off a job can no longer open it, so the filter would drop the one person
+   * the alert exists for. The alert says nothing about the job but its number, which they saw when they were on it.
+   */
+  personal?: boolean;
+  /**
+   * The people named in `entity` have been through the single read of the conversation already, so the row-scope filter is not asked
+   * a second time (a second look at an email conversation costs the same reads again). Only the customer-reply alert
+   * (emailReplyAlerts.ts) sets it, for people it found among those who may read the conversation.
+   */
+  readersChecked?: boolean;
+  /**
+   * The people of a missed-call, voicemail or inbound-text alert, handed over by the never-silent fallback (conversationAlertFallback.ts)
+   * and by nothing else: it makes the token, and `emit` ignores any other. The lookup of the conversation's people and the access filter
+   * inside it are then skipped, because the fallback tells holders of Manage roles and permissions the lookup left out, in an alert
+   * that carries no caller details when they cannot read the conversation.
+   */
+  fallbackPeople?: FallbackPeople;
   /** Optional: run inside the caller's existing transaction. */
   tx?: Prisma.TransactionClient;
 }
@@ -37,10 +71,32 @@ export interface EmitArgs {
 // ── main export ───────────────────────────────────────────────────────────────
 
 /**
+ * The never-silent fallback of a missed call, voicemail or inbound text whose lookup named nobody: up to two alerts to the holders of
+ * Manage roles and permissions, each its own row (see conversationAlertFallback.ts), sent through `emit` again with their people chosen.
+ * Returns everyone told, or [] when the company has no such holder (the fallback logs that).
+ */
+async function sendToFallbackHolders(args: EmitArgs, alert: ConversationAlert, subject: ConversationSubject): Promise<string[]> {
+  const rows = await nobodyFallbackRows(alert, subject, { data: args.data ?? {}, label: args.object.label });
+  const told: string[] = [];
+  for (const row of rows) {
+    told.push(...await emit({
+      ...args,
+      object: { ...args.object, label: row.label },
+      data: row.data,
+      dedupKey: args.dedupKey ? args.dedupKey + row.keySuffix : undefined,
+      fallbackPeople: row.people,
+    }));
+  }
+  return told;
+}
+
+/**
  * Emit a notification for a verb/object pair.
  *
  * Best-effort: never throws. Any downstream failure is caught, logged as a
  * warning, and swallowed so the caller's business action is unaffected.
+ *
+ * The live-update ping to those people is queued, not awaited: emit() returns once the alert rows are written.
  *
  * Returns the recipient ids actually notified — after the row-scope filter and
  * the actor drop — or [] on any skip or failure. A caller that wants to push a
@@ -61,34 +117,54 @@ export async function emit(args: EmitArgs): Promise<string[]> {
     const data = { ...(args.data ?? {}), object_label: args.object.label };
     const tpl = renderTemplate(args.verb, data);
 
-    // Step 5: Dedup — idempotent on dedup_key.
+    // Step 5: Dedup — idempotent on dedup_key. A call or text alert may have been written under the event's own key (told to the people
+    // the lookup named) or under either key of the never-silent fallback (told to the holders of Manage roles and permissions), and a
+    // redelivery is the same event whichever it was.
+    const conversationAlert = conversationAlertOf(args);
     if (args.dedupKey) {
       const existing = await client.notification.findFirst({
-        where: { organization_id: args.organizationId, dedup_key: args.dedupKey },
+        where: {
+          organization_id: args.organizationId,
+          dedup_key: conversationAlert ? { in: conversationAlertKeys(args.dedupKey) } : args.dedupKey,
+        },
       });
       if (existing) return [];
     }
 
-    // Step 6: Load role holders if not pre-supplied.
-    const roleHolders =
-      args.entity?.roleHolders ?? (await loadRoleHolders(args.organizationId, client));
+    // Step 6b: A missed call, a voicemail or an inbound text is told to the people the record, the Communication scope, the company
+    // number (and, for a text, the reply) name, already through the access filter (conversationAlertAudience). The read comes after
+    // the dedup check above, so a webhook retry costs none of it. When it names nobody the fallback tells the holders of Manage roles
+    // and permissions instead (sendToFallbackHolders), and those alerts come back through here with their people already chosen.
+    let entity = args.entity ?? {};
+    if (conversationAlert) {
+      if (isFallbackPeople(args.fallbackPeople)) {
+        entity = { ...entity, recipient_ids: [...args.fallbackPeople.ids] };
+      } else {
+        const audience = await conversationAlertAudience(conversationAlert);
+        if (audience && audience.people.length === 0) return await sendToFallbackHolders(args, conversationAlert, audience.subject);
+        entity = { ...entity, recipient_ids: audience?.people ?? [] };
+      }
+    }
 
     // Step 7: Resolve recipients (pure).
     const specs = resolveRecipients({
       verb: args.verb,
       organizationId: args.organizationId,
       actorId: args.actorId,
-      entity: args.entity ?? {},
-      roleHolders,
+      entity,
     });
 
-    // Step 8: Row-scope filter — drop recipients who cannot access the object row.
-    const allowed = await filterRecipientsByAccess(
-      args.object.type,
-      args.object.id,
-      specs.map((s) => s.userId),
-      args.organizationId,
-    );
+    // Step 8: Row-scope filter — drop recipients who cannot access the object row. A personal alert is about the people it goes to,
+    // and a call or text alert's people have been through the filter already (the fallback's holders are told by design, without
+    // caller details when they cannot read it), as a customer's email reply's people have been through the single read.
+    const allowed = args.personal || args.readersChecked || conversationAlert
+      ? specs.map((s) => s.userId)
+      : await filterRecipientsByAccess(
+          args.object.type,
+          args.object.id,
+          specs.map((s) => s.userId),
+          args.organizationId,
+        );
     const finalSpecs = specs.filter((s) => allowed.includes(s.userId));
 
     // Step 9: Nothing to do if no recipients.
@@ -125,9 +201,10 @@ export async function emit(args: EmitArgs): Promise<string[]> {
       })),
     });
 
-    // Step 12: Fire the realtime ping.
+    // Step 12: Queue the realtime ping. It runs after this returns and is never waited for: the alert rows above are what
+    // a person finds in the bell, and the ping is only a hint to refetch (see realtimePublish.ts).
     const recipientIds = finalSpecs.map((s) => s.userId);
-    await publishNotificationsChanged(recipientIds, args.organizationId);
+    void publishNotificationsChanged(recipientIds, args.organizationId);
     return recipientIds;
   } catch (e) {
     logger.warn('[notificationService] emit failed — swallowing to protect caller', {

@@ -2,6 +2,7 @@ import { Request, Response } from 'express';
 import { z } from 'zod';
 import { InvoiceStatus } from '@prisma/client';
 import { prisma } from '../lib/prisma';
+import { COUNTED_PAYMENT_WHERE } from '../lib/payment-ledger';
 import { logger } from '../lib/logger';
 import { tenantWhere } from '../lib/tenant';
 import { arOutstandingWhere } from '../lib/ar';
@@ -21,8 +22,8 @@ import { resolveJobScheduleWindow } from '../lib/job-schedule-projection';
 import { buildLeadsReport, type LeadInput } from '../services/leads-report';
 import { buildEstimatesReport, type EstimateSourceRow } from '../services/estimates-report';
 import { buildRevenueReport, type RevenueEvent } from '../services/revenue-report';
-import { buildPaymentsReport, type PaymentInput, type DbPaymentMethod, type DbInvoiceKind } from '../services/payments-report';
-import { buildInvoicesReport, type InvoiceReportInput } from '../services/invoices-report';
+import { buildPaymentsReport, type PaymentInput, type DbInvoiceKind } from '../services/payments-report';
+import { buildInvoicesReport, invoiceSellerFor, type InvoiceReportInput } from '../services/invoices-report';
 import { buildActivityReport, type ActivityEventRow } from '../services/activity-report';
 import { buildInventoryUsageReport, type UsageMovementRow } from '../services/inventory-usage-report';
 import {
@@ -31,7 +32,15 @@ import {
   type PaymentExtraRow,
 } from '../services/payment-fees-report';
 import { DEPOSIT_CREDIT_REFERENCE } from './invoice.controller';
-import { canSeePricing } from '../lib/permissions/enforce';
+import { canSeeCosts, canSeeCompanyFigures } from '../lib/permissions/enforce';
+import {
+  redactActivityReportRevenue,
+  redactArAgingReport,
+  redactEstimateConversionReport,
+  redactJobsReportCosts,
+  redactPaymentFeesReport,
+  redactRevenueReport,
+} from '../lib/permissions/companyFigures';
 import { creditsTotalOf } from '../lib/invoice-editable';
 import { inclusiveEndOfDay } from '../lib/dateBounds';
 
@@ -131,7 +140,9 @@ export async function getEstimateConversion(req: Request, res: Response) {
     const now = new Date();
     const filters = resolveFilters(parsed.data, now);
     const rows = await fetchOrgRows(req);
-    res.json(buildReport(rows, filters, now));
+    const report = buildReport(rows, filters, now);
+    // The quoted and won totals, average tickets and per-rep values are company figures; the counts and rates stay.
+    res.json(canSeeCompanyFigures(req) ? report : redactEstimateConversionReport(report));
   } catch (err) {
     logger.error('Estimate conversion report error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -281,12 +292,15 @@ export async function getArAging(req: Request, res: Response) {
     const arBalance = rows.reduce((s, r) => s + r.amountDue, 0);
     const salesInWindow = Number(sales._sum.total_amount ?? 0);
 
-    res.json({
+    const report = {
       accounts,
       dso: computeDso(arBalance, salesInWindow),
       salesInWindow,
       salesWindowDays: DSO_WINDOW_DAYS,
-    });
+    };
+    // Each customer's balances are the invoices themselves and stay for everyone this report opens to; the company-wide
+    // sales window and the days-sales-outstanding figure built from it are company figures.
+    res.json(canSeeCompanyFigures(req) ? report : redactArAgingReport(report));
   } catch (err) {
     logger.error('AR aging report error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -363,7 +377,8 @@ export async function getJobsReport(req: Request, res: Response) {
       })),
       };
     });
-    res.json({ jobs: buildJobsReport(rows) });
+    const report = buildJobsReport(rows);
+    res.json({ jobs: canSeeCosts(req) ? report : redactJobsReportCosts(report) });
   } catch (err) {
     logger.error('Jobs report error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -468,15 +483,18 @@ export async function getRevenueReport(req: Request, res: Response) {
         where: { ...tenantWhere(req), kind: { not: 'DEPOSIT' }, voided_at: null },
         select: { total_amount: true, sent_at: true, created_at: true },
       }),
+      // Slice 05: collected = SUCCEEDED, non-voided payments only.
       prisma.payment.findMany({
-        where: { voided_at: null, invoice: { is: { ...tenantWhere(req), kind: { not: 'DEPOSIT' } } } },
+        where: { ...COUNTED_PAYMENT_WHERE, invoice: { is: { ...tenantWhere(req), kind: { not: 'DEPOSIT' } } } },
         select: { amount: true, paid_at: true },
       }),
     ]);
     const completed: RevenueEvent[] = completedJobs.map((j) => ({ date: j.completed_at, amount: Number(j.amount_invoiced) }));
     const invoiced: RevenueEvent[] = invoices.map((inv) => ({ date: inv.sent_at ?? inv.created_at, amount: Number(inv.total_amount) }));
     const collected: RevenueEvent[] = payments.map((p) => ({ date: p.paid_at, amount: Number(p.amount) }));
-    res.json(buildRevenueReport({ completed, invoiced, collected }));
+    const report = buildRevenueReport({ completed, invoiced, collected });
+    // Nothing on this report is anything but company-wide money.
+    res.json(canSeeCompanyFigures(req) ? report : redactRevenueReport(report));
   } catch (err) {
     logger.error('Revenue report error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -490,9 +508,17 @@ const paymentReportSelect = {
   method: true,
   paid_at: true,
   refunded_at: true,
+  refunded_amount: true,
   voided_at: true,
+  void_category: true,
   reference_number: true,
   tip_amount: true,
+  wallet: true,
+  card_brand: true,
+  card_last4: true,
+  bank_name: true,
+  bank_last4: true,
+  created_by_source: true,
   invoice: {
     select: { kind: true, customer: { select: { email: true, company_name: true, first_name: true, last_name: true } } },
   },
@@ -502,17 +528,21 @@ const paymentReportSelect = {
 // GET /api/reports/payments
 export async function getPaymentsReport(req: Request, res: Response) {
   try {
+    // Slice 05: a PROCESSING bank debit has not been collected and a FAILED one never was, so
+    // neither is a row in this report. Voided payments stay listed (as "Voided").
     const payments = await prisma.payment.findMany({
-      where: { invoice: { ...tenantWhere(req) } },
+      where: { state: 'SUCCEEDED', invoice: { ...tenantWhere(req) } },
       select: paymentReportSelect,
     });
     const rows: PaymentInput[] = payments.map((p) => ({
       id: p.id,
       amount: Number(p.amount),
-      method: p.method as DbPaymentMethod,
+      method: p.method,
       paidAt: p.paid_at,
       refundedAt: p.refunded_at,
+      refundedAmount: p.refunded_amount == null ? null : Number(p.refunded_amount),
       voidedAt: p.voided_at,
+      voidCategory: p.void_category,
       // #498 - a deposit-credit application is the SAME money as the deposit payment it draws
       // from, so summing both double-counts it. Same hazard already guarded by
       // invoice.controller's NON_CREDIT_PAYMENT_FILTER and job.controller's cancelJob total.
@@ -521,7 +551,14 @@ export async function getPaymentsReport(req: Request, res: Response) {
       customerName: customerDisplayName(p.invoice.customer),
       customerEmail: p.invoice.customer.email ?? null,
       collectorName: p.collector ? fullName(p.collector.first_name, p.collector.last_name) || null : null,
+      // CLIENT = the customer paid it themselves (webhook-written payment); nobody keyed or collected it.
+      paidOnline: p.created_by_source === 'CLIENT',
       tipAmount: Number(p.tip_amount ?? 0),
+      wallet: p.wallet,
+      cardBrand: p.card_brand,
+      cardLast4: p.card_last4,
+      bankName: p.bank_name,
+      bankLast4: p.bank_last4,
     }));
     res.json(buildPaymentsReport(rows));
   } catch (err) {
@@ -531,7 +568,8 @@ export async function getPaymentsReport(req: Request, res: Response) {
 }
 
 // ── Invoices list report ─────────────────────────────────────────────────────
-// Salesperson derived from estimate → lead → commission_owner (the seller).
+// Salesperson = whose sale the invoice is (invoiceSellerFor): the job's stored Sold By, a plan's own
+// invoice's "Sold by", else the estimate's lead Owner.
 const INVOICE_REPORT_STATUSES: InvoiceStatus[] = [
   InvoiceStatus.DRAFT,
   InvoiceStatus.SENT,
@@ -556,10 +594,12 @@ const invoicesReportSelect = {
   job: {
     select: {
       job_number: true,
+      salesperson: { select: { first_name: true, last_name: true } },
       // S8 (D6): crew through the trips - the earliest trip's earliest crew row is the lead tech.
       visits: { select: { assignees: { select: { user: { select: { first_name: true, last_name: true } } }, orderBy: { created_at: 'asc' } } }, orderBy: { created_at: 'asc' } },
     },
   },
+  service_plan: { select: { sold_by_user: { select: { first_name: true, last_name: true } } } },
   estimate: {
     select: {
       job_type: true,
@@ -577,7 +617,7 @@ export async function getInvoicesReport(req: Request, res: Response) {
       orderBy: { created_at: 'desc' },
     });
     const rows: InvoiceReportInput[] = invoices.map((inv) => {
-      const owner = inv.estimate?.lead?.commission_owner ?? null;
+      const seller = invoiceSellerFor(inv);
       const tech = inv.job?.visits.flatMap((v) => v.assignees)[0]?.user ?? null;
       return {
         invoiceNumber: inv.invoice_number,
@@ -593,7 +633,7 @@ export async function getInvoicesReport(req: Request, res: Response) {
         customerName: customerDisplayName(inv.customer),
         customerEmail: inv.customer.email ?? '',
         jobNumber: inv.job?.job_number ?? '',
-        salesperson: owner ? fullName(owner.first_name, owner.last_name) || null : null,
+        salesperson: seller ? fullName(seller.first_name, seller.last_name) || null : null,
         technician: tech ? fullName(tech.first_name, tech.last_name) || null : null,
         jobType: inv.estimate?.job_type ?? inv.estimate?.lead?.job_type ?? null,
       };
@@ -626,7 +666,8 @@ export async function getActivityReport(req: Request, res: Response) {
       actorLastName: e.creator?.last_name ?? null,
       actorRole: e.creator?.role ?? null,
     }));
-    res.json({ users: buildActivityReport(rows) });
+    const users = buildActivityReport(rows);
+    res.json({ users: canSeeCompanyFigures(req) ? users : redactActivityReportRevenue(users) });
   } catch (err) {
     logger.error('Activity report error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -684,10 +725,10 @@ export async function getInventoryUsageReport(req: Request, res: Response) {
 
     const report = buildInventoryUsageReport(rows, { from, to });
 
-    // Cost gate (plan §3.5): movement cost data is stripped for non-canSeePricing
-    // viewers. Admin/Dispatcher both hold read Invoice by default, but per-user
+    // Cost gate (plan §3.5): movement cost data is stripped for non-canSeeCosts
+    // viewers. Admin and Sales hold See financial data by default, but per-user
     // overrides make the strip mandatory. delete → key absent, not null.
-    if (!canSeePricing(req)) {
+    if (!canSeeCosts(req)) {
       for (const item of report.items) {
         delete (item as Partial<UsageMovementRow> & { cost?: number; unpricedUnits?: number }).cost;
         delete (item as Partial<UsageMovementRow> & { cost?: number; unpricedUnits?: number }).unpricedUnits;
@@ -748,7 +789,7 @@ export async function getPaymentFeesReport(req: Request, res: Response) {
     const payments = await prisma.payment.findMany({
       where: {
         method: 'CARD',
-        voided_at: null,
+        ...COUNTED_PAYMENT_WHERE,
         refunded_at: null,
         stripe_fee_amount: { not: null },
         platform_fee_amount: { not: null },
@@ -782,7 +823,7 @@ export async function getPaymentFeesReport(req: Request, res: Response) {
     // writes service_fee_amount - the OR below is what restricts the population.
     const extraPayments = await prisma.payment.findMany({
       where: {
-        voided_at: null,
+        ...COUNTED_PAYMENT_WHERE,
         paid_at: { gte: from, lte: to },
         invoice: { is: { ...tenantWhere(req) } },
         OR: [{ service_fee_amount: { not: null } }, { tip_amount: { not: null } }],
@@ -814,7 +855,9 @@ export async function getPaymentFeesReport(req: Request, res: Response) {
       paidAt: p.paid_at,
     }));
 
-    res.json(buildPaymentFeesReport(rows, extraRows, { from, to }));
+    const report = buildPaymentFeesReport(rows, extraRows, { from, to });
+    // The window and the payment counts stay; the fee, tip and net sums are company figures.
+    res.json(canSeeCompanyFigures(req) ? report : redactPaymentFeesReport(report));
   } catch (err) {
     logger.error('Payment fees report error:', err);
     res.status(500).json({ error: 'Internal server error' });

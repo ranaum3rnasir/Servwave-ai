@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import { renderWithProviders } from '@/__tests__/helpers';
 import SubStatusPicker from '../SubStatusPicker';
+import { STATUS_REGISTRY } from '@/design-system/status-registry';
 
 const mockGet = vi.fn();
 vi.mock('@/lib/axios', () => ({
@@ -36,6 +37,17 @@ describe('SubStatusPicker', () => {
     await screen.findByText('Waiting on parts');
     const row = screen.getByText('Pending office review').closest('button')!;
     expect(row).toHaveTextContent('Completed');
+  });
+
+  // PRD 6: the close-out statuses are job statuses an automation can name a sub-status under.
+  it.each(['OFFICE_REVIEW', 'READY_TO_CLOSE', 'DONE'])('captions a sub-status under %s with that status\'s own label', async (parent) => {
+    mockGet.mockResolvedValue({ data: { job_sub_statuses: [{ id: 'sub-x', parent, label: 'Waiting on the customer', sort_order: 0 }] } });
+    renderWithProviders(<SubStatusPicker onPick={vi.fn()} />);
+
+    const row = (await screen.findByText('Waiting on the customer')).closest('button')!;
+    const label = STATUS_REGISTRY.job[parent]!.label;
+    expect(label).not.toBe(parent);
+    expect(row).toHaveTextContent(`Under ${label}`);
   });
 
   it('clicking an option calls onPick with that sub-status id, and only that argument', async () => {

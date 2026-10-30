@@ -59,10 +59,23 @@ export async function captureStripeFees(paymentId: string, paymentIntentId: stri
   }
 }
 
-/** Nightly: backfill Payments that have a PI + account but no captured balance_transaction. */
+/**
+ * Nightly: backfill Payments that have a PI + account but no captured balance_transaction.
+ *
+ * Only SUCCEEDED, unvoided payments (payments go-live slice 37): since the bank lifecycle (slice
+ * 13) an ACH row can end FAILED, which never became a charge or balance transaction yet still
+ * carries a payment intent and account id. Unfiltered, such rows were picked every night forever
+ * (oldest first, 500 cap) and crowded real rows out. A voided payment is no longer money either.
+ */
 export async function sweepUncapturedFees(): Promise<{ swept: number }> {
   const rows = await prisma.payment.findMany({
-    where: { stripe_payment_intent_id: { not: null }, stripe_account_id: { not: null }, stripe_balance_transaction_id: null },
+    where: {
+      stripe_payment_intent_id: { not: null },
+      stripe_account_id: { not: null },
+      stripe_balance_transaction_id: null,
+      state: 'SUCCEEDED',
+      voided_at: null,
+    },
     select: { id: true, stripe_payment_intent_id: true, stripe_account_id: true },
     orderBy: { paid_at: 'asc' },
     take: 500,

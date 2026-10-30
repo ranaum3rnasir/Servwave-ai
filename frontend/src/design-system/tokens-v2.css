@@ -129,6 +129,13 @@
   --status-purple-subtle: 238 233 250;  --status-purple-emphasis: 87 51 153;
   --status-slate-subtle: 238 241 243;   --status-slate-emphasis: 71 85 92;
 
+  /* skipped - a progress-bar step the job moved past without reaching (PRD 6, S06.21). Red-ish, but its own token: it
+     means "this did not happen", not "this failed", so it does not borrow the danger family. Text on the card 7.3:1, text
+     on the tint 6.3:1, the ring 5.0:1 on the card (skipped-token.test.ts keeps all three honest in both themes). */
+  --skipped: 196 64 84;            /* #c44054  ring and icon */
+  --skipped-surface: 251 233 236;  /* #fbe9ec */
+  --skipped-text: 163 36 59;       /* #a3243b */
+
   /* sidebar - no fill of its own; it sits directly on --app */
   --sidebar-foreground: 34 50 58;         /* #22323a */
   --sidebar-muted-foreground: 91 112 120; /* #5b7078 */
@@ -327,6 +334,11 @@
   --status-red-subtle: 220 68 89;
   --status-purple-subtle: 134 89 214;
   --status-slate-subtle: 109 127 136;
+
+  /* skipped, dark theme: text on the card 8.3:1, on the tint 7.1:1, the ring 4.9:1 on the card */
+  --skipped: 226 92 110;           /* #e25c6e */
+  --skipped-surface: 70 26 34;     /* #461a22 */
+  --skipped-text: 255 150 160;     /* #ff96a0 */
 
   --sidebar-foreground: 214 226 230;
   --sidebar-muted-foreground: 142 161 169;

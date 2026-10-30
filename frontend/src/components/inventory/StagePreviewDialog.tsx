@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useAppAbility } from "@/contexts/AbilityContext";
 import { Building2, Camera, CheckCircle2, Clock, Download, FileText, MapPin, Package, Play, Printer, Truck } from "lucide-react";
 import { Modal } from "@/components/ui/modal";
 import { UploadedImage } from "@/components/ui/uploaded-image";
@@ -21,6 +22,7 @@ import { SignatureField } from "@/components/inventory/SignatureField";
 import type { SignatureValue } from "@/lib/inventory/signatures";
 import { formatPhone } from "@/lib/utils";
 import { useOrganization } from "@/lib/api/organization";
+import { useStageLineDisclosure } from "./stageLineDisclosure";
 import { Button } from "@/components/ui/button";
 import {
   STATUS_INTENT_CLASSES,
@@ -96,13 +98,17 @@ export function StagePreviewDialog({
   const { data: branches = [] } = useBranches();
   const { data: allItems = [] } = useInventoryItems();
   const { data: allLocations = [] } = useLocations();
-  const { data: allVendors = [] } = useVendors();
+  // Read only by a person who may read them: the server refuses the list to others, and this dialog is mounted (closed) on pages they open.
+  const ability = useAppAbility();
+  const { data: allVendors = [] } = useVendors(ability.can('read', 'Vendor'));
   const { data: allTechs = [] } = useTechs();
   const { data: org } = useOrganization();
+  // S07.4 - the vendor column and every cost figure follow View vendors / See financial data.
+  const { showCost, showVendor } = useStageLineDisclosure();
   const brand = org?.name ?? "ServWave";
 
   // ─── Current user (ALPHA auth store) ───
-  // Replaces Emanuel's `currentUser` mock; identity for the signature blocks
+  // Replaces the original `currentUser` mock; identity for the signature blocks
   // (tech pickup sign-out + counter manager) comes from the logged-in user.
   const authUser = useAuthStore((s) => s.user);
   const currentUser = useMemo(
@@ -132,18 +138,21 @@ export function StagePreviewDialog({
     if (!stage) return [];
     return stage.items.map((it) => {
       const itm = allItems.find((i) => i.sku === it.itemSku);
-      const unitCost = itm?.unitCost ?? 0;
+      // The line's own cost (from its purchase order) first, then the stock item's. No cost known stays unknown,
+      // never 0.00.
+      const unitCost = it.unitCost ?? itm?.unitCost;
       return {
         ...it,
         unitCost,
-        ext: unitCost * it.qtyOrdered,
+        ext: unitCost != null ? unitCost * it.qtyOrdered : undefined,
         backorder: it.qtyOrdered - it.qtyReceived,
         itemPhoto: itm?.photoUrl,
       };
     });
   }, [stage, allItems]);
 
-  const subtotal = enrichedLines.reduce((s, l) => s + l.ext, 0);
+  const pricedLines = enrichedLines.filter((l) => l.ext != null);
+  const subtotal = pricedLines.reduce((s, l) => s + (l.ext ?? 0), 0);
 
   // Signature state — keyed by stage.id so re-opening the same ticket within
   // a session preserves the signatures. In production these persist on the
@@ -477,11 +486,12 @@ export function StagePreviewDialog({
                 <th className="px-2.5 py-1.5 text-left font-semibold">#</th>
                 <th className="px-2.5 py-1.5 text-left font-semibold">SKU</th>
                 <th className="px-2.5 py-1.5 text-left font-semibold">Description</th>
-                <th className="px-2.5 py-1.5 text-left font-semibold">Vendor · PO</th>
+                <th className="px-2.5 py-1.5 text-left font-semibold">{showVendor ? "Vendor · PO" : "PO"}</th>
                 <th className="px-2.5 py-1.5 text-center font-semibold">UoM</th>
                 <th className="px-2.5 py-1.5 text-right font-semibold">Ordered</th>
                 <th className="px-2.5 py-1.5 text-right font-semibold">Received</th>
                 <th className="px-2.5 py-1.5 text-right font-semibold">Backorder</th>
+                {showCost && <th className="px-2.5 py-1.5 text-right font-semibold">Unit cost</th>}
                 <th className="px-2.5 py-1.5 text-center font-semibold">Status</th>
               </tr>
             </thead>
@@ -509,7 +519,7 @@ export function StagePreviewDialog({
                       )}
                     </td>
                     <td className="px-2.5 py-1.5 text-[11px] text-text-secondary">
-                      <div>{l.vendor}</div>
+                      {showVendor && l.vendor && <div>{l.vendor}</div>}
                       <div className="font-mono text-[10px]">{l.poNumber}</div>
                       {l.expectedDate && !done && (
                         <div className="text-[10px] text-warning">
@@ -529,6 +539,11 @@ export function StagePreviewDialog({
                     <td className="px-2.5 py-1.5 text-right font-mono font-semibold text-warning">
                       {l.backorder > 0 ? l.backorder : "-"}
                     </td>
+                    {showCost && (
+                      <td className="px-2.5 py-1.5 text-right font-mono text-text-primary">
+                        {l.unitCost != null ? fmtMoney(l.unitCost) : "-"}
+                      </td>
+                    )}
                     <td className="px-2.5 py-1.5 text-center">
                       {done ? (
                         <span className="inline-flex items-center gap-0.5 rounded-full bg-success/10 px-1.5 py-0 text-[10px] font-semibold text-success ring-1 ring-success/20">
@@ -574,12 +589,14 @@ export function StagePreviewDialog({
               </span>
             </span>
           </div>
-          <div className="text-[11px] text-text-secondary">
-            Est. value at cost:{" "}
-            <span className="font-mono font-semibold text-text-primary">
-              {fmtMoney(subtotal)}
-            </span>
-          </div>
+          {showCost && pricedLines.length > 0 && (
+            <div className="text-[11px] text-text-secondary">
+              Est. value at cost:{" "}
+              <span className="font-mono font-semibold text-text-primary">
+                {fmtMoney(subtotal)}
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Signature block — DocuSign-style inline typed signatures. The

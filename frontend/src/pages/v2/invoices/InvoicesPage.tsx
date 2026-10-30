@@ -40,6 +40,8 @@ import { toast } from '@/ui-kit/components/ui/sonner';
 import { useDebounce } from '@/ui-kit/hooks/useDebounce';
 
 import { useScheduleTimezone } from '@/lib/schedule-tz';
+import { SendingAsLine } from '@/components/communication/inbox/ComposeWindow';
+import { useHandSender } from '@/components/communication/useHandSender';
 import { v2Path, preferV2Path } from '../uiV2';
 import { useRecordVisit } from '../pageBreadcrumbs';
 // Generic, module-agnostic: it renders one removable chip per active facet and
@@ -103,10 +105,12 @@ export default function InvoicesPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const ability = useAppAbility();
-  // Standalone-invoice creation is ADMIN + DISPATCHER (the `create Invoice`
-  // grant also covers technicians, but they never reach this desktop page;
-  // SALES can only read).
-  const canCreateInvoice = ability.can('create', 'Invoice');
+  // The Export control on the list: the Export invoices switch, for any role.
+  const canExport = ability.can('export', 'Invoice');
+  // The New Invoice button opens the standalone invoice form (no job, no estimate), so it follows
+  // the Standalone invoices switch; Create invoices alone only makes an invoice from a job or an
+  // estimate. The list itself already needed View and Show to open (S02.23).
+  const canCreateInvoice = ability.can('create_standalone', 'Invoice');
 
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
@@ -252,6 +256,8 @@ export default function InvoicesPage() {
   });
 
   const bulkSendOverCap = selectedInvoiceIds.length > 25;
+  // PRD 10 (S10.12): a bulk send is a hand send by the person who clicked, from their own address; with none, nothing is sent.
+  const handSender = useHandSender();
   const handleBulkSend = () => {
     if (selectedInvoiceIds.length === 0 || bulkSendOverCap) return;
     bulkSendMutation.mutate(selectedInvoiceIds);
@@ -486,24 +492,26 @@ export default function InvoicesPage() {
                     resolveMax={resolveMax}
                     statusDomain="invoice"
                   />
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <Button variant="outline" size="sm">
-                        <Download />
-                        Export
-                      </Button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent align="end">
-                      <DropdownMenuLabel>Export as CSV</DropdownMenuLabel>
-                      <DropdownMenuSeparator />
-                      <DropdownMenuItem onClick={handleExportCurrentPage}>
-                        Current page ({rows.length} rows)
-                      </DropdownMenuItem>
-                      <DropdownMenuItem onClick={handleExportAll}>
-                        All ({pagination?.total ?? '...'})
-                      </DropdownMenuItem>
-                    </DropdownMenuContent>
-                  </DropdownMenu>
+                  {canExport && (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <Button variant="outline" size="sm">
+                          <Download />
+                          Export
+                        </Button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end">
+                        <DropdownMenuLabel>Export as CSV</DropdownMenuLabel>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem onClick={handleExportCurrentPage}>
+                          Current page ({rows.length} rows)
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onClick={handleExportAll}>
+                          All ({pagination?.total ?? '...'})
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
                 </>
               }
             />
@@ -513,12 +521,20 @@ export default function InvoicesPage() {
                 onClear={() => setRowSelection({})}
                 noun={['invoice', 'invoices']}
               >
+                {handSender.known && (
+                  <SendingAsLine
+                    address={handSender.sender.fromAddress}
+                    name={handSender.sender.fromName}
+                    addressNeeded={handSender.sender.addressNeeded}
+                    className="border-b-0 px-0 py-0"
+                  />
+                )}
                 <Button
                   variant="outline"
                   size="sm"
                   onClick={handleBulkSend}
-                  disabled={bulkSendMutation.isPending || bulkSendOverCap}
-                  disabledReason={bulkSendOverCap ? 'Select 25 or fewer invoices to send' : undefined}
+                  disabled={bulkSendMutation.isPending || bulkSendOverCap || handSender.blockedReason !== undefined}
+                  disabledReason={handSender.blockedReason ?? (bulkSendOverCap ? 'Select 25 or fewer invoices to send' : undefined)}
                 >
                   {bulkSendMutation.isPending ? 'Sending...' : 'Send'}
                 </Button>
@@ -526,8 +542,8 @@ export default function InvoicesPage() {
                   variant="outline"
                   size="sm"
                   onClick={handleBulkResend}
-                  disabled={bulkResendMutation.isPending || bulkSendOverCap}
-                  disabledReason={bulkSendOverCap ? 'Select 25 or fewer invoices to send a reminder' : undefined}
+                  disabled={bulkResendMutation.isPending || bulkSendOverCap || handSender.blockedReason !== undefined}
+                  disabledReason={handSender.blockedReason ?? (bulkSendOverCap ? 'Select 25 or fewer invoices to send a reminder' : undefined)}
                 >
                   {bulkResendMutation.isPending ? 'Sending...' : 'Send reminder'}
                 </Button>

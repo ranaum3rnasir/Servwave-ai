@@ -1,4 +1,4 @@
-import { AlertTriangle, DollarSign, Phone, Briefcase, Home, Users, MailX, ChevronRight } from 'lucide-react';
+import { AlertTriangle, DollarSign, UserX, Briefcase, Home, Users, MailX, ChevronRight } from 'lucide-react';
 import type { AttentionItem } from '@/lib/api/dashboard';
 import { WidgetCard } from './_shared';
 
@@ -6,11 +6,11 @@ import { WidgetCard } from './_shared';
 // expiry sweep is gone), so there's nothing left to map an icon for.
 const ICON: Record<string, React.ElementType> = {
   overdue_invoice: DollarSign,
-  unassigned_leads: Phone,
+  missing_lead_owner: UserX,
   job_past_start: Briefcase,
   walkthrough_needed: Home,
-  // A visit inside 48 hours with nobody performing it: a crew problem, so the crew icon.
-  job_unstaffed: Users,
+  // Booked visits in the next 7 days with nobody on them: a crew problem, so the crew icon.
+  missing_crew: Users,
   // A visit within 48 hours whose customer the automation ledger never reached.
   customer_not_told: MailX,
 };
@@ -52,7 +52,7 @@ export default function NeedsAttention({
               <button
                 key={item.id}
                 type="button"
-                onClick={() => navigate(item.link)}
+                onClick={() => { if (item.link) navigate(item.link); }}
                 className="flex items-center gap-3 px-5 py-3 w-full text-left hover:bg-background-light transition-colors border-b border-border last:border-0 group"
               >
                 <div className={`h-[32px] w-[32px] rounded-lg flex items-center justify-center shrink-0 ${s.iconBg}`}>

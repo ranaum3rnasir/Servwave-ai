@@ -90,7 +90,7 @@ describe('purgeCustomerSubtree', () => {
       'purchaseOrderLine', 'purchaseOrder', 'jobStageLine', 'jobStageAttachment', 'stageAuditEntry', 'jobStage',
       'stockApprovalModification', 'stockApproval', 'channelIdentity', 'contact', 'leadTag', 'tagAssignment',
       'attachment', 'note', 'timelineEvent',
-      'depositCreditApplication', 'refund', 'credit', 'payment', 'invoiceLineItem', 'invoice',
+      'depositCreditApplication', 'dispute', 'refund', 'credit', 'payment', 'invoiceLineItem', 'invoice',
       'estimateLineItem', 'estimate', 'estimateSendConfig',
       'customerPhone', 'customerEmail', 'serviceLocation',
     ]) {
@@ -148,6 +148,23 @@ describe('purgeCustomerSubtree', () => {
     const payOrder = m.payment.deleteMany.mock.invocationCallOrder[0];
     const invOrder = m.invoice.deleteMany.mock.invocationCallOrder[0];
     expect(payOrder).toBeLessThan(invOrder);
+
+    // Payments go-live slice 09: a dispute holds its payment and invoice (RESTRICT), so it goes first.
+    const disputeOrder = m.dispute.deleteMany.mock.invocationCallOrder[0];
+    expect(disputeOrder).toBeLessThan(payOrder);
+  });
+
+  // Payments go-live P10: a file attached to a dispute cannot be deleted from under it (RESTRICT), so the evidence
+  // items go before the attachments, and only this company's items on this subtree's invoices.
+  it('deletes the dispute evidence items before the attachments they point at, scoped to the org and the invoices', async () => {
+    mockSubtreeIds();
+    m.disputeEvidenceItem.deleteMany.mockResolvedValue({ count: 0 });
+    await purgeCustomerSubtree(txClient() as any, CUSTOMER_ID, ALPHA_ORG_ID);
+    expect(m.disputeEvidenceItem.deleteMany).toHaveBeenCalled();
+    expect(m.disputeEvidenceItem.deleteMany.mock.invocationCallOrder[0]).toBeLessThan(m.attachment.deleteMany.mock.invocationCallOrder[0]);
+    const where = m.disputeEvidenceItem.deleteMany.mock.calls[0][0].where;
+    expect(where.organization_id).toBe(ALPHA_ORG_ID);
+    expect(JSON.stringify(where)).toContain(INVOICE_ID);
   });
 
   it('scopes deleteMany queries to the org where org_id exists', async () => {
@@ -216,7 +233,7 @@ describe('purgeLeadSubtree', () => {
       'purchaseOrderLine', 'purchaseOrder', 'jobStageLine', 'jobStageAttachment', 'stageAuditEntry', 'jobStage',
       'stockApprovalModification', 'stockApproval', 'leadTag', 'tagAssignment',
       'attachment', 'note', 'timelineEvent',
-      'depositCreditApplication', 'refund', 'credit', 'payment', 'invoiceLineItem', 'invoice',
+      'depositCreditApplication', 'dispute', 'refund', 'credit', 'payment', 'invoiceLineItem', 'invoice',
       'estimateLineItem', 'estimate', 'estimateSendConfig', 'lead', 'job',
     ]) {
       m[model].deleteMany.mockResolvedValue({ count: 0 });

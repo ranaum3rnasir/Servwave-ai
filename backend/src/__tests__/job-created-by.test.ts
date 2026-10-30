@@ -24,7 +24,6 @@ import {
   ESTIMATE_APPROVED_FIXTURE,
 } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mockPrisma = prisma as unknown as Record<string, any>;
@@ -52,7 +51,6 @@ let capturedJobCreate: Record<string, any> | null = null;
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache();
   capturedJobCreate = null;
 
   mockPrisma.invoice.findFirst.mockResolvedValue(null);
@@ -89,6 +87,8 @@ beforeEach(() => {
         deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
       },
       timelineEvent: { create: vi.fn().mockResolvedValue({}) },
+      // The lead's own entries are carried onto the job in the same transaction (S05.15); none here.
+      recordContactEntry: { findMany: vi.fn().mockResolvedValue([]) },
     });
   });
 });

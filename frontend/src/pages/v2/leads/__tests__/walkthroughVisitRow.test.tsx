@@ -1,8 +1,8 @@
 // Scheduling-notifications slice 09, the LEAD half: the walkthrough tab's live-visit row adopts
 // the job row's layout. One primary next step for the crew (a walkthrough has exactly one
-// milestone verb, Complete, riding `perform_walkthrough Lead`), and Reschedule / Cancel in a
-// separate, right-aligned office group riding their own routes (`schedule_walkthrough Lead` and
-// `cancel Lead`). Each control is absent, never present-and-failing, for a viewer whose role
+// milestone verb, Finish walkthrough, riding the per-walkthrough finish step), and Reschedule / Cancel in a
+// separate, right-aligned office group riding Book walkthroughs (`schedule_walkthrough Lead`; the
+// cancel moved off the retired lead-cancel grant in S04.19). Each control is absent, never present-and-failing, for a viewer whose role
 // lacks it (PRD stories 20, 21, 26, 27).
 //
 // Component-level, like walkthroughAdditionalVisit.test.tsx: the tab is rendered directly with a
@@ -70,10 +70,10 @@ beforeEach(() => {
 });
 
 describe('the live walkthrough row', () => {
-  it('offers Complete as the primary step, and posts it to the walkthrough complete route', async () => {
+  it('offers Finish walkthrough as the primary step, and posts it to the walkthrough complete route', async () => {
     renderTab();
 
-    const primary = screen.getByRole('button', { name: 'Complete' });
+    const primary = screen.getByRole('button', { name: 'Finish walkthrough' });
     await userEvent.click(primary);
 
     expect(vi.mocked(api.post)).toHaveBeenCalledWith('/api/leads/lead-1/walkthrough/complete');
@@ -85,7 +85,7 @@ describe('the live walkthrough row', () => {
 
     const office = screen.getByRole('group', { name: 'Office actions' });
     expect(within(office).getByRole('button', { name: /Reschedule/ })).toBeInTheDocument();
-    expect(within(office).queryByRole('button', { name: 'Complete' })).toBeNull();
+    expect(within(office).queryByRole('button', { name: 'Finish walkthrough' })).toBeNull();
 
     await userEvent.click(within(office).getByRole('button', { name: 'Cancel' }));
     expect(onCancelWalkthrough).toHaveBeenCalledTimes(1);
@@ -96,7 +96,7 @@ describe('the live walkthrough row', () => {
   it('offers a viewer who may only perform the walkthrough the primary step and no office group', () => {
     renderTab({ canSchedule: false });
 
-    expect(screen.getByRole('button', { name: 'Complete' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Finish walkthrough' })).toBeInTheDocument();
     expect(screen.queryByRole('group', { name: 'Office actions' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull();
   });
@@ -104,7 +104,7 @@ describe('the live walkthrough row', () => {
   it('offers a viewer who may only book the office group and no primary step', () => {
     renderTab({ canPerform: false });
 
-    expect(screen.queryByRole('button', { name: 'Complete' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Finish walkthrough' })).toBeNull();
     const office = screen.getByRole('group', { name: 'Office actions' });
     expect(within(office).getByRole('button', { name: /Reschedule/ })).toBeInTheDocument();
     // No cancel callback from the page means no Cancel on the row.

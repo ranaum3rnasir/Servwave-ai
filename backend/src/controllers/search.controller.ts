@@ -10,6 +10,7 @@ import type { Subject } from '../lib/permissions/catalog';
 import { walkthroughSnapshotSelect, resolveCurrentWalkthrough, LIVE_VISIT_STATUSES, type WalkthroughSnapshotRow } from '../services/walkthrough.service';
 import { hasFeature } from '../middleware/requireFeature';
 import { derivePlanFields, type VisitLike } from '../lib/servicePlans/derive';
+import { withCalendarEntryRule } from '../lib/calendar-entries/visibility';
 
 /**
  * Compose a multi-word "split" search (every word must match) into a `where` that already
@@ -256,6 +257,8 @@ const INVOICE_SELECT = {
   amount_due: true,
   total_amount: true,
   created_at: true,
+  // The invoice's own customer: one a person made for a customer alone has no job to reach it through.
+  customer: { select: { first_name: true, last_name: true, company_name: true } },
   job: {
     select: {
       customer: { select: { first_name: true, last_name: true, company_name: true } },
@@ -508,6 +511,9 @@ export async function search(req: Request, res: Response) {
     const invBaseWhere: Record<string, unknown> = { ...orgWhere, ...invScope };
     addOrFilter(invBaseWhere, [
       { invoice_number: contains(q) },
+      // Searched by the invoice's own customer, not only its job's: an invoice the person created for a
+      // customer alone is theirs to open (the creator rule) and has no job to be found through.
+      { customer: { OR: nameFieldsOr(q) } },
       { job: { customer: { OR: nameFieldsOr(q) } } },
     ]);
 
@@ -519,7 +525,7 @@ export async function search(req: Request, res: Response) {
         ];
     if (isMultiWord && !skipInvoices) {
       const splitWhere: Record<string, unknown> = { ...orgWhere, ...invScope };
-      addAndWords(splitWhere, words.map((w) => ({ job: { customer: { OR: nameFieldsOr(w) } } })));
+      addAndWords(splitWhere, words.map((w) => ({ OR: [{ customer: { OR: nameFieldsOr(w) } }, { job: { customer: { OR: nameFieldsOr(w) } } }] })));
       invQueries.push(
         safeQuery(() => prisma.invoice.findMany({ where: splitWhere, take: LIMIT, orderBy: { created_at: 'desc' }, select: INVOICE_SELECT })),
       );
@@ -555,14 +561,11 @@ export async function search(req: Request, res: Response) {
     // ─── Calendar Entries (Slice 09) ─────────────────────
     // Schedule-scope ONLY — Events are a scheduler concept (slice-09's "out of scope" list
     // explicitly excludes the global header search). Gated the same way ServicePlan is above,
-    // via `req.ability!.can('read', 'CalendarEntry')`, rather than `scopeWhereForReq`: CalendarEntry
-    // visibility is ORG-WIDE by construction (spec §4 — "no private flag"; the default grant,
-    // ADMIN + DISPATCHER, carries no condition), so there is no row-scope to express, and adding
-    // 'CalendarEntry' to the `ScopeResource` union would force an update to every EXHAUSTIVE
-    // Record<ScopeResource, …> keyed on it elsewhere (e.g. notifications/filterByAccess.ts's
-    // delegateMap) for a resource with nothing conditional to add. Still fail-closed: no `read
-    // CalendarEntry` grant → ability.can() is false → the bucket is skipped → `[]`, and the table
-    // is never queried for that caller — never a leak.
+    // via `req.ability!.can('read', 'CalendarEntry')`, rather than `scopeWhereForReq`. Still
+    // fail-closed: no `read CalendarEntry` grant → ability.can() is false → the bucket is
+    // skipped → `[]`, and the table is never queried for that caller — never a leak.
+    // Row scope (S04.8): without "See all calendar entries" only the entries that name the caller as
+    // a user participant come back (withCalendarEntryRule), the same rule as the entries list.
     const skipCalendarEntries = !isScheduleScope || !req.ability!.can('read', 'CalendarEntry' as Subject);
     const entryBaseWhere: Record<string, unknown> = { ...orgWhere, title: contains(q) };
     if (hasDateRange) {
@@ -576,7 +579,7 @@ export async function search(req: Request, res: Response) {
     }
     const entryQueries = skipCalendarEntries
       ? []
-      : [safeQuery(() => prisma.calendarEntry.findMany({ where: entryBaseWhere, take: LIMIT, orderBy: { start: 'asc' }, select: CALENDAR_ENTRY_SEARCH_SELECT }))];
+      : [safeQuery(() => prisma.calendarEntry.findMany({ where: withCalendarEntryRule(req, entryBaseWhere), take: LIMIT, orderBy: { start: 'asc' }, select: CALENDAR_ENTRY_SEARCH_SELECT }))];
 
     // ─── Run all queries in parallel ────────────────────
     const allQueries = [...jobQueries, ...customerQueries, ...leadQueries, ...estQueries, ...invQueries, ...planQueries, ...entryQueries];
@@ -683,7 +686,7 @@ export async function search(req: Request, res: Response) {
         };
       }),
       invoices: (invoices as typeof allResults[0]).map((inv: any) => {
-        const cust = inv.job?.customer;
+        const cust = inv.customer ?? inv.job?.customer;
         const name = cust ? (cust.company_name || `${cust.first_name} ${cust.last_name}`) : '';
         return {
           id: inv.id,

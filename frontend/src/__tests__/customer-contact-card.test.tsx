@@ -1,9 +1,8 @@
-// E2 — Job-page call entry. The Customer & Contact card's Call tile and phone
-// row route into the /phone tab (Task B4 cross-tab handoff) with FULL entity
-// attribution (jobId/jobLabel/customerId/customerName) — but ONLY when the
-// org can use the comms module (useFeature('phone')) AND the user holds
-// create:Communication. Every other combination keeps the native tel: anchor
-// exactly as before (technicians, locked orgs) — a link can never 403.
+// The Customer & Contact card draws the customer through the contact display policy (Roles &
+// Permissions, PRD 5): with the phone service and Contact customers on, Call and the phone row go to
+// the in-app dialer with FULL entity attribution (jobId/jobLabel/customerId/customerName) and Text opens
+// the in-app composer; without the phone service a native link follows Copy customer phone. The
+// policy's own table is in components/contact/__tests__/contactDisplayPolicy.test.ts.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -12,9 +11,17 @@ import { renderWithProviders } from './helpers';
 import { buildAbility } from '@/lib/ability';
 import { requestCall } from '@/lib/communication/phoneTabHandoff';
 import { CustomerContactCard } from '@/components/jobs/overview/CustomerContactCard';
+import { catalogToggle } from './support/backendSwitchCatalog';
+import { CALL_NOT_SET_UP_MESSAGE } from '@/components/contact/contactDisplayPolicy';
 
 const mockApi = vi.mocked(api);
 const mockRequestCall = vi.mocked(requestCall);
+
+const mockNavigate = vi.hoisted(() => vi.fn());
+vi.mock('react-router-dom', async () => ({
+  ...(await vi.importActual<typeof import('react-router-dom')>('react-router-dom')),
+  useNavigate: () => mockNavigate,
+}));
 
 // Org-level comms access — toggled per test (settings-unsaved-guard precedent).
 const commAccess = vi.hoisted(() => ({ value: true }));
@@ -61,36 +68,67 @@ const fullAbility = buildAbility([
 ]);
 const readOnlyAbility = buildAbility([{ action: 'read', subject: 'Communication' }]);
 
+type Switches = { copyPhone: boolean; contact: boolean; view: boolean };
+
+/** The person's "Me" answer for these switches; the recent-communications preview answers an empty list. */
+function signedInWith({ copyPhone, contact, view }: Switches) {
+  mockApi.get.mockImplementation(async (url: string) => {
+    if (url === '/api/permission-switches/me') {
+      return {
+        data: {
+          admin_box: false,
+          values: {
+            [catalogToggle('Copy customer phone').key]: copyPhone,
+            [catalogToggle('Copy customer email').key]: true,
+            [catalogToggle('Contact customers').key]: contact,
+            [catalogToggle('View customers').key]: view,
+          },
+        },
+      };
+    }
+    return { data: { items: [] } };
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  // The shared reader keeps the last answer per person; a case starts without the previous case's.
+  localStorage.clear();
   commAccess.value = true;
   onPhone.value = false;
-  // Recent-communications preview (fires only with read:Communication).
-  mockApi.get.mockResolvedValue({ data: { items: [] } });
+  signedInWith({ copyPhone: true, contact: true, view: true });
 });
 
-describe('CustomerContactCard Text entry gating (s1b)', () => {
-  it('comm access + read ability: the Text tile routes to the in-app Text inbox, not sms:', () => {
-    // Live QA 2026-07-21: the sms: anchor opened the OS Messages app even for
-    // comm-enabled orgs. The tile must deep-link the in-app inbox composer
-    // (?customerId= preselects the thread/customer) exactly like Call does.
+describe('CustomerContactCard Text entry (S05.1)', () => {
+  it('phone service + Contact customers: Text opens the in-app composer for the customer, not an sms: link', async () => {
     renderWithProviders(<CustomerContactCard job={JOB} />, { ability: fullAbility });
 
-    const text = screen.getByRole('link', { name: 'Text' });
-    expect(text).toHaveAttribute(
-      'href',
-      `/communication/text?customerId=${JOB.customer.id}`,
-    );
+    await userEvent.click(await screen.findByRole('button', { name: 'Text' }));
+
+    expect(mockNavigate).toHaveBeenCalledWith(`/communication/text?customerId=${JOB.customer.id}`);
+    expect(document.querySelector('a[href^="sms:"]')).toBeNull();
   });
 
-  it('locked org (no comm access): the Text tile keeps the native sms: anchor', () => {
-    commAccess.value = false;
+  it('phone service but Contact customers off: no Text action at all', async () => {
+    signedInWith({ copyPhone: true, contact: false, view: true });
     renderWithProviders(<CustomerContactCard job={JOB} />, { ability: readOnlyAbility });
 
-    expect(screen.getByRole('link', { name: 'Text' })).toHaveAttribute(
-      'href',
-      'sms:5551234567',
-    );
+    await screen.findByText('(555) 123-4567');
+    expect(screen.queryByRole('button', { name: /^Text/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /^Text/ })).not.toBeInTheDocument();
+  });
+
+  it('no phone service: Text keeps the native sms: anchor while Copy customer phone is on, and is gone with it off', async () => {
+    commAccess.value = false;
+    const { unmount } = renderWithProviders(<CustomerContactCard job={JOB} />, { ability: readOnlyAbility });
+    expect(await screen.findByRole('link', { name: 'Text' })).toHaveAttribute('href', 'sms:5551234567');
+    unmount();
+    localStorage.clear(); // a different person's answer: not the one the first render kept
+
+    signedInWith({ copyPhone: false, contact: true, view: true });
+    renderWithProviders(<CustomerContactCard job={JOB} />, { ability: readOnlyAbility });
+    await screen.findByText('(555) 123-4567');
+    expect(screen.queryByRole('link', { name: /^Text/ })).not.toBeInTheDocument();
   });
 });
 
@@ -117,22 +155,21 @@ describe('CustomerContactCard Map tile (mobile slice 50)', () => {
   });
 });
 
-describe('CustomerContactCard call entry gating (E2)', () => {
-  it('comm access + create ability: the Call tile routes into the /phone tab with full job context', async () => {
+describe('CustomerContactCard call entry (S05.1)', () => {
+  it('phone service + Contact customers: the Call action goes to the dialer with full job context', async () => {
     renderWithProviders(<CustomerContactCard job={JOB} />, { ability: fullAbility });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Call' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Call' }));
 
     expect(mockRequestCall).toHaveBeenCalledWith('5551234567', EXPECTED_CONTEXT);
-    // No tel: fallback remains for the tile.
     expect(screen.queryByRole('link', { name: 'Call' })).not.toBeInTheDocument();
   });
 
-  it('comm access + create ability: tapping the phone row offers Call or Text, and Call dials with the same context', async () => {
+  it('phone service + Contact customers: tapping the phone row offers Call or Text, and Call dials with the same context', async () => {
     // Mobile slice 50: a tapped number never dials by itself.
     renderWithProviders(<CustomerContactCard job={JOB} />, { ability: fullAbility });
 
-    await userEvent.click(screen.getByRole('button', { name: '(555) 123-4567' }));
+    await userEvent.click(await screen.findByRole('button', { name: '(555) 123-4567' }));
     expect(mockRequestCall).not.toHaveBeenCalled();
     expect(await screen.findByRole('menuitem', { name: /Text/ })).toBeInTheDocument();
     await userEvent.click(screen.getByRole('menuitem', { name: /Call/ }));
@@ -140,11 +177,11 @@ describe('CustomerContactCard call entry gating (E2)', () => {
     expect(mockRequestCall).toHaveBeenCalledWith('5551234567', EXPECTED_CONTEXT);
   });
 
-  it('on a phone the Call tile and the number go to the dialer hand-off, which opens the same-tab sheet (slice 63)', async () => {
+  it('on a phone the Call action and the number go to the dialer hand-off, which opens the same-tab sheet (slice 63)', async () => {
     onPhone.value = true;
     renderWithProviders(<CustomerContactCard job={JOB} />, { ability: fullAbility });
 
-    await userEvent.click(screen.getByRole('button', { name: 'Call' }));
+    await userEvent.click(await screen.findByRole('button', { name: 'Call' }));
     expect(mockRequestCall).toHaveBeenCalledWith('5551234567', EXPECTED_CONTEXT);
 
     await userEvent.click(screen.getByRole('button', { name: '(555) 123-4567' }));
@@ -152,34 +189,36 @@ describe('CustomerContactCard call entry gating (E2)', () => {
     expect(mockRequestCall).toHaveBeenCalledTimes(2);
   });
 
-  it('without create:Communication (technician) both stay native tel: anchors', async () => {
+  it('phone service but Contact customers off: the digits show, with nothing to tap and no native link', async () => {
+    signedInWith({ copyPhone: true, contact: false, view: true });
     renderWithProviders(<CustomerContactCard job={JOB} />, { ability: readOnlyAbility });
 
-    expect(screen.getByRole('link', { name: 'Call' })).toHaveAttribute(
-      'href',
-      'tel:5551234567',
-    );
-    expect(screen.getByRole('link', { name: '(555) 123-4567' })).toHaveAttribute(
-      'href',
-      'tel:5551234567',
-    );
-    expect(screen.queryByRole('button', { name: 'Call' })).not.toBeInTheDocument();
+    await screen.findByText('(555) 123-4567');
+    expect(screen.queryByRole('button', { name: /^Call/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '(555) 123-4567' })).not.toBeInTheDocument();
+    expect(document.querySelector('a[href^="tel:"]')).toBeNull();
     expect(mockRequestCall).not.toHaveBeenCalled();
   });
 
-  it('without org comms access both stay native tel: anchors even with the ability', () => {
+  it('no phone service: Call and the number are native tel: anchors while Copy customer phone is on', async () => {
     commAccess.value = false;
     renderWithProviders(<CustomerContactCard job={JOB} />, { ability: fullAbility });
 
-    expect(screen.getByRole('link', { name: 'Call' })).toHaveAttribute(
-      'href',
-      'tel:5551234567',
-    );
-    expect(screen.getByRole('link', { name: '(555) 123-4567' })).toHaveAttribute(
-      'href',
-      'tel:5551234567',
-    );
-    expect(screen.queryByRole('button', { name: 'Call' })).not.toBeInTheDocument();
+    expect(await screen.findByRole('link', { name: 'Call' })).toHaveAttribute('href', 'tel:5551234567');
+    expect(screen.getByRole('link', { name: '(555) 123-4567' })).toHaveAttribute('href', 'tel:5551234567');
+    expect(screen.queryByRole('button', { name: /^Call/ })).not.toBeInTheDocument();
+  });
+
+  it('no phone service and Copy customer phone off: digits only, a disabled Call and the plain support message', async () => {
+    commAccess.value = false;
+    signedInWith({ copyPhone: false, contact: true, view: true });
+    renderWithProviders(<CustomerContactCard job={JOB} />, { ability: fullAbility });
+
+    expect(await screen.findByText('(555) 123-4567')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Call/ })).toBeDisabled();
+    expect(screen.getByText(CALL_NOT_SET_UP_MESSAGE)).toBeInTheDocument();
+    expect(document.querySelector('a[href^="tel:"]')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Copy phone number' })).not.toBeInTheDocument();
   });
 });
 
@@ -244,5 +283,56 @@ describe('CustomerContactCard communication history — hand-entered provenance 
     ).toBeInTheDocument();
     // Exactly one — the platform row must not have picked it up.
     expect(screen.getAllByRole('img', { name: /hand-entered/i })).toHaveLength(1);
+  });
+});
+
+/**
+ * A payment received (S08.10) arrives in the same list as a `portal` row with direction 'in'. It is money on an invoice,
+ * not something the customer said, so the preview words it from its title, with no customer name in front, and shows the
+ * money icon and a "Payment" label rather than the estimate-decision clipboard and "Customer".
+ */
+describe('CustomerContactCard communication history - payment entries (S08.10)', () => {
+  const OFFICE_PAYMENT = {
+    id: 'cccccccc-0000-0000-0000-000000000003',
+    channel: 'portal',
+    direction: 'in',
+    who: 'Daniel Cohen',
+    title: 'Payment received on invoice INV-7',
+    preview: 'Recorded by the office',
+    at: '2026-08-22T15:00:00.000Z',
+    entry: 'payment_received',
+    amount: 250,
+    paidVia: 'office',
+  };
+  const ESTIMATE_APPROVED = {
+    id: 'dddddddd-0000-0000-0000-000000000004',
+    channel: 'portal',
+    direction: 'in',
+    who: 'Daniel Cohen',
+    title: 'Estimate approved',
+    preview: 'Estimate approved',
+    at: '2026-08-21T15:00:00.000Z',
+    entry: 'estimate_approved',
+  };
+
+  it('words a payment from its title and never attributes an office-recorded one to the customer', async () => {
+    mockApi.get.mockResolvedValue({ data: { items: [OFFICE_PAYMENT, ESTIMATE_APPROVED] } });
+    renderWithProviders(<CustomerContactCard job={JOB} />, { ability: readOnlyAbility });
+
+    const line = (await screen.findByText(/Recorded by the office/, { selector: 'p' })).closest('div')!;
+    expect(line).toHaveTextContent('Payment received on invoice INV-7');
+    expect(line).toHaveTextContent('Recorded by the office');
+    expect(line).not.toHaveTextContent(/Daniel/);
+    expect(within(line).getByTitle('Payment')).toBeInTheDocument();
+    expect(within(line).queryByTitle('Customer')).toBeNull();
+  });
+
+  it('leaves an estimate decision worded as the customer\'s own action', async () => {
+    mockApi.get.mockResolvedValue({ data: { items: [OFFICE_PAYMENT, ESTIMATE_APPROVED] } });
+    renderWithProviders(<CustomerContactCard job={JOB} />, { ability: readOnlyAbility });
+
+    const line = (await screen.findByText(/Estimate approved/, { selector: 'p' })).closest('div')!;
+    expect(line).toHaveTextContent('Daniel');
+    expect(within(line).getByTitle('Customer')).toBeInTheDocument();
   });
 });

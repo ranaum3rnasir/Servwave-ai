@@ -1,6 +1,6 @@
 // Phone module — Call flows view.
 //
-// Ported from Emanuel's CallFlows prototype (the "Call flows" tab of the Phone
+// Ported from the original CallFlows prototype (the "Call flows" tab of the Phone
 // module). Owners build the IVR / routing automations that decide how an inbound
 // call is greeted, screened by business hours, and connected to the right
 // person. Two starter structures (Basic, Voice Menu); each node is editable via
@@ -200,10 +200,15 @@ function nodeSubtitle(n: FlowNode): string {
 
 type FlowNumber = { id: string; number: string; flowId: string };
 
+/** What the list and the editor say where the numbers a flow answers would be, for a person whose numbers list carries no call
+ *  flows (no Phone numbers tab). Not knowing is not "none". */
+const ASSIGNMENTS_HIDDEN_HELP = "Shown on the Phone numbers tab, which you don't have.";
+
 export function CallFlowsView({
   flows,
   setFlows,
   numbers,
+  assignmentsHidden = false,
   groupOptions = [],
   onAssignNumbers,
   onToast,
@@ -211,6 +216,8 @@ export function CallFlowsView({
   flows: CallFlow[];
   setFlows: React.Dispatch<React.SetStateAction<CallFlow[]>>;
   numbers: FlowNumber[];
+  /** True when `numbers` came without their call flows, so which flow answers which number is unknown here. */
+  assignmentsHidden?: boolean;
   groupOptions?: { id: string; label: string }[];
   onAssignNumbers: (flowId: string, numberIds: string[]) => void;
   onToast: (m: string) => void;
@@ -245,21 +252,22 @@ export function CallFlowsView({
     const saved: CallFlow = {
       ...flow,
       name: flow.name.trim() || "Untitled flow",
-      status: assignedNumberIds.length ? "active" : "draft",
+      // A flow is active once a number answers to it; with the numbers unknown the status is left as it was.
+      status: assignmentsHidden ? flow.status : assignedNumberIds.length ? "active" : "draft",
       updatedAt: new Date().toISOString(),
     };
     setFlows((prev) => {
       const exists = prev.some((f) => f.id === saved.id);
       return exists ? prev.map((f) => (f.id === saved.id ? saved : f)) : [saved, ...prev];
     });
-    onAssignNumbers(`flow:${saved.id}`, assignedNumberIds);
+    if (!assignmentsHidden) onAssignNumbers(`flow:${saved.id}`, assignedNumberIds);
     onToast(`✓ Saved “${saved.name}”`);
     setEditing(null);
   }
 
   function deleteFlow(id: string) {
     setFlows((prev) => prev.filter((f) => f.id !== id));
-    onAssignNumbers(`flow:${id}`, []); // detach from any numbers
+    if (!assignmentsHidden) onAssignNumbers(`flow:${id}`, []); // detach from any numbers
     onToast("Call flow deleted");
   }
 
@@ -268,6 +276,7 @@ export function CallFlowsView({
       <CallFlowBuilder
         initial={editing}
         numbers={numbers}
+        assignmentsHidden={assignmentsHidden}
         groupOptions={groupOptions}
         people={people}
         canManage={canManage}
@@ -345,7 +354,9 @@ export function CallFlowsView({
                   </TableCell>
                   <TableCell>{flowStructureLabel(f.structure)}</TableCell>
                   <TableCell>
-                    {assigned.length === 0 ? (
+                    {assignmentsHidden ? (
+                      <span className="text-text-secondary/60">{ASSIGNMENTS_HIDDEN_HELP}</span>
+                    ) : assigned.length === 0 ? (
                       <span className="text-text-secondary/60">None</span>
                     ) : (
                       <span className="font-mono text-[12px]">
@@ -500,6 +511,7 @@ function StructureCard({
 function CallFlowBuilder({
   initial,
   numbers,
+  assignmentsHidden,
   groupOptions,
   people,
   canManage,
@@ -508,6 +520,7 @@ function CallFlowBuilder({
 }: {
   initial: CallFlow;
   numbers: FlowNumber[];
+  assignmentsHidden: boolean;
   groupOptions: { id: string; label: string }[];
   people: ForwardTarget[];
   canManage: boolean;
@@ -580,6 +593,7 @@ function CallFlowBuilder({
     <BasicInfoPanel
       flow={draft}
       numbers={numbers}
+      assignmentsHidden={assignmentsHidden}
       assigned={assigned}
       onChange={(patch) => setDraft((d) => ({ ...d, ...patch }))}
       onToggleNumber={(id) =>
@@ -1216,6 +1230,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function BasicInfoPanel({
   flow,
   numbers,
+  assignmentsHidden,
   assigned,
   onChange,
   onToggleNumber,
@@ -1223,6 +1238,7 @@ function BasicInfoPanel({
 }: {
   flow: CallFlow;
   numbers: FlowNumber[];
+  assignmentsHidden: boolean;
   assigned: string[];
   onChange: (patch: Partial<CallFlow>) => void;
   onToggleNumber: (id: string) => void;
@@ -1269,7 +1285,9 @@ function BasicInfoPanel({
         </Field>
 
         <Field label="Assigned numbers">
-          {numbers.length === 0 ? (
+          {assignmentsHidden ? (
+            <p className="text-[12px] text-text-secondary/60">{ASSIGNMENTS_HIDDEN_HELP}</p>
+          ) : numbers.length === 0 ? (
             <p className="text-[12px] text-text-secondary/60">No numbers to assign.</p>
           ) : (
             <div className="space-y-1.5">
@@ -1299,9 +1317,11 @@ function BasicInfoPanel({
               })}
             </div>
           )}
-          <p className="mt-1 text-[11px] text-text-secondary/60">
-            Select the number(s) you want this flow to answer.
-          </p>
+          {!assignmentsHidden && (
+            <p className="mt-1 text-[11px] text-text-secondary/60">
+              Select the number(s) you want this flow to answer.
+            </p>
+          )}
         </Field>
 
         <Field label="Recording">

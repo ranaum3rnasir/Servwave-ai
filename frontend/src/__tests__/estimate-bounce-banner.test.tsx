@@ -91,6 +91,8 @@ const ESTIMATE = {
   updated_at: '2026-08-01T00:00:00.000Z',
   send_config: { id: 'sc-777', deposit_required: false, deposit_percentage: null, deposit_amount: null, payment_methods: [], message_body: null },
   invoices: [],
+  // The server's answer for this estimate: every action the page can offer.
+  actions: ['edit', 'send', 'delete', 'cancel', 'record_payment'],
   lead: {
     id: 'lead-bounce-1',
     status: 'ESTIMATED',

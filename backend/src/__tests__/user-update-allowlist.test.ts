@@ -12,6 +12,9 @@ import { ALPHA_ORG_ID } from './helpers';
 const mockPrisma = prisma as unknown as {
   user: { findFirst: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
   department: { findFirst: ReturnType<typeof vi.fn> };
+  $transaction: ReturnType<typeof vi.fn>;
+  permissionUserSwitch: { findMany: ReturnType<typeof vi.fn> };
+  permissionRoleSwitch: { findMany: ReturnType<typeof vi.fn> };
 };
 
 function mockRes() {
@@ -28,6 +31,10 @@ describe('user.controller update() — explicit field allowlist (authz-4)', () =
     const targetId = 'target-user-id';
     mockPrisma.user.findFirst.mockResolvedValue({ id: targetId, organization_id: ALPHA_ORG_ID, role: 'TECHNICIAN' });
     mockPrisma.user.update.mockResolvedValue({ id: targetId });
+    // A role change fills the person's switches in one transaction with the update (Roles & Permissions M2).
+    mockPrisma.$transaction.mockImplementation((fn: (tx: unknown) => unknown) => fn(mockPrisma));
+    mockPrisma.permissionUserSwitch.findMany.mockResolvedValue([]);
+    mockPrisma.permissionRoleSwitch.findMany.mockResolvedValue([]);
 
     const req = {
       params: { id: targetId },
@@ -71,6 +78,6 @@ describe('user.controller update() — explicit field allowlist (authz-4)', () =
     await update(req, mockRes());
 
     const data = mockPrisma.user.update.mock.calls[0][0].data;
-    expect(data).toEqual({ is_active: false });
+    expect(data).toEqual({ is_active: false, has_login: false, password_hash: '' });
   });
 });

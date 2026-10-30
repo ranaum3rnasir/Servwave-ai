@@ -80,7 +80,7 @@ const AD_SOURCES = [
 // separately below, so they're not in this random pool).
 const CALL_FLOWS = [
   'Main IVR → CSR',
-  'Forward to Emanuel',
+  'Forward to Sam',
   'AI Receptionist',
   'AI Receptionist → On-call',
 ];

@@ -15,6 +15,7 @@ router.use('/usage', authenticate, requireFeature('phone'), attachAbility);
 
 // #2046: the usage meter is a section-only surface (the Phone header inside /communication),
 // so it also requires access_inbox.
-router.get('/usage', canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), controller.getUsage);
+// S08.15: and the Phone usage bar, the screen this read exists for.
+router.get('/usage', canDo('read', 'Communication'), canDo('access_inbox', 'Communication'), canDo('phone_usage_bar', 'Communication'), controller.getUsage);
 
 export default router;

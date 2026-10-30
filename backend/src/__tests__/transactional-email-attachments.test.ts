@@ -32,6 +32,8 @@ vi.mock('../config/env', () => ({
     EMAIL_FROM: 'noreply@test.servwave.com',
     EMAIL_FROM_BUSINESS: 'noreply@mail.test.servwave.com',
     RESEND_API_KEY: 're_test_key',
+    // PRD 10 (S10.12): the domain a sender's own address is built on; a document goes out from it.
+    MAILBOX_DOMAIN: 'mail.test.com',
     FRONTEND_URL: 'http://localhost:5173',
   },
 }));
@@ -56,6 +58,9 @@ import { prisma } from '../lib/prisma';
 import { supabaseAdmin } from '../lib/supabase';
 import { persistTransactionalEmail } from '../lib/comm-persist';
 
+
+// PRD 10 (S10.12): a document is sent by hand, from the sender's own mailbox (the id the suite-wide mailbox stub answers to).
+const HAND_SENDER = { mailboxId: 'main-mailbox-id', userId: 'user-1' };
 type Email = typeof import('../lib/email');
 let email: Email;
 
@@ -104,6 +109,7 @@ const ATTACHING_SENDERS: {
     fileName: 'estimate-E00001.pdf',
     bytes: ESTIMATE_PDF,
     run: (e) => e.sendEstimateEmail({
+      handSender: HAND_SENDER,
       estimateId: 'est-1', org: ORG, to: 'jane@example.com', customerName: 'Jane Doe',
       estimateNumber: 'E00001', total: '$100.00', publicUrl: 'https://x/e', record: RECORD,
     }),
@@ -122,6 +128,7 @@ const ATTACHING_SENDERS: {
     fileName: 'estimate-E00001.pdf',
     bytes: ESTIMATE_PDF,
     run: (e) => e.sendEstimateWithDepositEmail({
+      handSender: HAND_SENDER,
       estimateId: 'est-1', org: ORG, to: 'jane@example.com', customerName: 'Jane Doe',
       estimateNumber: 'E00001', total: '$100.00', depositAmount: '$50.00', depositPercentage: 50,
       publicUrl: 'https://x/e', record: RECORD,
@@ -132,6 +139,7 @@ const ATTACHING_SENDERS: {
     fileName: 'invoice-I00001.pdf',
     bytes: INVOICE_PDF,
     run: (e) => e.sendInvoiceEmail({
+      handSender: HAND_SENDER,
       invoiceId: 'inv-1', organizationId: ORG_ID, to: 'jane@example.com', customerName: 'Jane Doe',
       invoiceNumber: 'I00001', total: 100, amountDue: 100, dueDate: new Date().toISOString(),
       publicUrl: 'https://x/i', record: RECORD,

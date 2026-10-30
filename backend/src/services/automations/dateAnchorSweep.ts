@@ -112,7 +112,7 @@ export async function candidatesForAnchor(
     case 'lead.walkthrough_scheduled_at': {
       // No status filter here: terminalStale's LEAD_DATE_ANCHORED case (Task
       // A5b) re-checks the CURRENT VISIT's status at EXECUTION time instead (Walkthrough-as-
-      // entity redesign, PR-B2: leadVisitStatus, not leadStatus) — LOST/CANCELLED leads
+      // entity redesign, PR-B2: leadVisitStatus, not leadStatus) — LOST leads
       // are dropped regardless of direction; a `before` reminder is additionally dropped once
       // the visit leaves SCHEDULED (including COMPLETED — a before-reminder promises a still-
       // pending walkthrough). An `after` reminder deliberately survives COMPLETED/CANCELLED:
@@ -160,7 +160,7 @@ export async function candidatesForAnchor(
     // get the other wrong. terminalStale's LEAD_DATE_ANCHORED case applies it at EXECUTION time,
     // per direction (see LEAD_ANCHOR_SATISFIED_BY in anchors.ts).
     //
-    // No status filter either, for the same reason: terminalStale drops LOST and CANCELLED leads
+    // No status filter either, for the same reason: terminalStale drops LOST leads
     // at execution time regardless of direction.
     case 'lead.created_at':
     case 'lead.contacted_at':

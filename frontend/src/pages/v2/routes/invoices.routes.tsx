@@ -2,6 +2,7 @@ import { lazy } from 'react';
 import { Route } from 'react-router-dom';
 
 import ProtectedRoute from '@/components/ProtectedRoute';
+import RequirePageAccess from '@/components/RequirePageAccess';
 
 import V2AppLayout from '../V2AppLayout';
 
@@ -14,10 +15,10 @@ const InvoiceDetailPage = lazy(() => import('../invoices/InvoiceDetailPage'));
  *
  * The GUARD stack mirrors App.tsx exactly:
  *  - ProtectedRoute(all four roles) wraps all three pages;
- *  - `/invoices/new` carries a SECOND, nested ProtectedRoute limited to
- *    ADMIN + DISPATCHER with `fallback`, so a SALES or TECHNICIAN user who deep
- *    links there renders NotAuthorizedPage rather than being redirected. That
- *    mirrors the backend, which 403s any other role on the standalone anchor;
+ *  - `/invoices/new` (the standalone New invoice) opens on Standalone invoices
+ *    plus Show Invoices page, never on a role name: a person without both is
+ *    sent to their dashboard. The backend decides the create on Standalone
+ *    invoices (which requires Create invoices);
  *  - `/invoices/new` is declared BEFORE `/invoices/:id`, as it must be.
  *
  * There is NO RequireFeature here, because App.tsx has none for Invoices - no
@@ -31,8 +32,10 @@ export function invoicesV2Routes() {
   return (
     <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN']} />}>
       <Route element={<V2AppLayout />}>
-        <Route path="/invoices" element={<InvoicesPage />} />
-        <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'DISPATCHER']} fallback />}>
+        <Route element={<RequirePageAccess all={['view_invoices', 'show_invoices_page']} />}>
+          <Route path="/invoices" element={<InvoicesPage />} />
+        </Route>
+        <Route element={<RequirePageAccess all={['standalone_invoices', 'show_invoices_page']} />}>
           <Route path="/invoices/new" element={<StandaloneInvoiceFormPage />} />
         </Route>
         <Route path="/invoices/:id" element={<InvoiceDetailPage />} />

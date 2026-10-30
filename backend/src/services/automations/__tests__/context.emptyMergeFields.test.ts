@@ -327,10 +327,14 @@ describe('D7 — the fields that must answer identically', () => {
     expect(lead['org.phone']).toBe(lead['lead.performer_phones']);
     expect(seeded('org.phone', lead).trim()).not.toBe('');
     expect(seeded('org.phone', lead)).toBe(seeded('lead.performer_phones', lead));
+    // The ServWave twin ends on the same rung, so it has to answer the same way or one template
+    // that declines to publish mobiles reads as a different company from the one beside it.
+    expect(seeded('org.phone', lead)).toBe(seeded('lead.performer_servwave_phones', lead));
 
     const job = await jobCtx();
     expect(job['org.phone']).toBe(job['technician.phones']);
     expect(seeded('org.phone', job)).toBe(seeded('technician.phones', job));
+    expect(seeded('org.phone', job)).toBe(seeded('technician.servwave_phones', job));
   });
 
   it('agrees character for character once the values exist', async () => {

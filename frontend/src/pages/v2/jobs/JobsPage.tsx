@@ -7,8 +7,8 @@ import { Download, Plus } from 'lucide-react';
 
 import api from '@/lib/axios';
 import { useAppAbility } from '@/contexts/AbilityContext';
-import { useAuthStore } from '@/stores/auth.store';
 import { useAssignableUsers } from '@/lib/api/users';
+import { useJobReviewQueueAccess } from '@/lib/api/jobs';
 import { useTagFacetOptions } from '@/lib/api/tags';
 import { customerDisplayName } from '@/lib/customer-name';
 import { formatExactInstant } from '@/lib/format-date';
@@ -16,7 +16,7 @@ import { useScheduleTimezone } from '@/lib/schedule-tz';
 import { startOfMonthDay, endOfMonthDay } from '@/lib/date-range';
 import { toCSV, downloadCSV } from '@/lib/inventory/csv';
 import { useFilterState } from '@/lib/filters/useFilterState';
-import { jobsRegistry, MONTHLY_JOB_STATUSES } from '@/lib/filters/registries/jobs';
+import { jobsRegistryFor, MONTHLY_JOB_STATUSES } from '@/lib/filters/registries/jobs';
 import { useScopedRowSelection } from '@/lib/useScopedRowSelection';
 import type { FacetConfig, FacetOption, FilterState } from '@/lib/filters/types';
 
@@ -32,6 +32,7 @@ import {
 } from '@/ui-kit/components/ui/dropdownMenu';
 import { toast } from '@/ui-kit/components/ui/sonner';
 import { useDebounce } from '@/ui-kit/hooks/useDebounce';
+import { cn } from '@/ui-kit/lib/utils';
 
 import { v2Path } from '../uiV2';
 import { useRecordVisit } from '../pageBreadcrumbs';
@@ -39,12 +40,24 @@ import { AppliedFilterBar as JobFilterBar } from '../_shared/appliedFilters';
 import { FilterPopover, facetSelectionCount } from '../_shared/filterPopover';
 import { StatusChip } from './components/statusChip';
 import { BulkBar } from './components/bulkBar';
+import { hasBulkAction } from './bulkActions';
 import { buildJobColumns, formatJobLocation, formatJobScheduledCell, type JobListItem } from './jobsColumns';
 
 /** The Filter's status options wear the job lifecycle chip the Status column shows. */
 function paintJobFilterOption(facet: FacetConfig, option: FacetOption) {
   return facet.key === 'status' ? <StatusChip domain="job" status={option.value} /> : undefined;
 }
+
+/**
+ * The wide-screen grid for the number of tiles drawn: the five status tiles plus one for each switch-owned tile. Eight
+ * tiles go four to a row, because eight across leaves each too narrow to read its label.
+ */
+const TILE_COLUMNS: Record<number, string> = {
+  5: 'xl:grid-cols-5',
+  6: 'xl:grid-cols-6',
+  7: 'xl:grid-cols-7',
+  8: 'xl:grid-cols-4',
+};
 
 interface JobStats {
   unassigned: number;
@@ -53,6 +66,9 @@ interface JobStats {
   completed: number;
   cancelled: number;
   need_invoices: number;
+  /** The office review queue tiles: sent only to the holder of the matching switch. */
+  office_review?: number;
+  ready_to_close?: number;
 }
 
 interface Department {
@@ -87,7 +103,6 @@ const JOBS_ALWAYS_SORTED_COLUMNS = new Set(['job_number', 'scheduled', 'created'
 export default function JobsPage() {
   useRecordVisit('jobs');
   const navigate = useNavigate();
-  const user = useAuthStore((s) => s.user);
   const ability = useAppAbility();
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
@@ -109,6 +124,8 @@ export default function JobsPage() {
   const search = useDebounce(searchInput, 300);
 
   const canManage = ability.can('create', 'Job');
+  // The Export control on the list: the Export jobs switch, for any role.
+  const canExport = ability.can('export', 'Job');
 
   // Generalized filter registry: status, assigned_to, department_id, scheduled
   // (dateRange), created (dateRange), needs_invoice (1-option multi), tags - all
@@ -116,7 +133,16 @@ export default function JobsPage() {
   // `?status=UNSCHEDULED&status=SCHEDULED` or `?needs_invoice=true` (the
   // Customers "Active Jobs" KPI, the Invoices "To Be Invoiced" KPI) are decoded
   // automatically on mount by `useFilterState`.
-  const { value, setValue, listParams: filterParams } = useFilterState(jobsRegistry);
+  //
+  // The Need Invoices tile and the needs_invoice facet belong to a person with View invoices
+  // (`read Invoice`), whatever their role; without it the facet is not in the registry at all.
+  const canViewInvoices = ability.can('read', 'Invoice');
+  //
+  // The two office review queue tiles and their filters follow the same rule, each on its own switch: Office review for
+  // the Office review tile, Close jobs for the Ready to close tile (S06.31).
+  const { officeReview: canReview, readyToClose: canClose } = useJobReviewQueueAccess();
+  const registry = jobsRegistryFor({ invoices: canViewInvoices, officeReview: canReview, readyToClose: canClose });
+  const { value, setValue, listParams: filterParams } = useFilterState(registry);
 
   // #1634: the org zone. Feeds both the Scheduled cell/CSV (below, an org fact -
   // when the crew is going) and the Completed/Cancelled tiles' month bounds
@@ -180,8 +206,8 @@ export default function JobsPage() {
   // keeps after a clear - does not leave a chip row with nothing in it. (The
   // legacy gate was `Object.keys(value).length > 0`, which did leave one.)
   const hasActiveFilters = useMemo(
-    () => jobsRegistry.some((facet) => facetSelectionCount(value[facet.key]) > 0),
-    [value],
+    () => registry.some((facet) => facetSelectionCount(value[facet.key]) > 0),
+    [registry, value],
   );
 
   const sortBy = sorting[0]?.id;
@@ -203,6 +229,9 @@ export default function JobsPage() {
     created_after: undefined as string | undefined,
     created_before: undefined as string | undefined,
     needs_invoice: undefined as string | undefined,
+    completed_this_month: undefined as string | undefined,
+    in_office_review: undefined as string | undefined,
+    ready_to_close: undefined as string | undefined,
     sortBy,
     sortDir: sortBy ? sortDir : undefined,
     // Service-plan visit-jobs are managed in the Service Plans module, not this
@@ -238,13 +267,9 @@ export default function JobsPage() {
   const { rowSelection, setRowSelection, selectedIds: selectedJobIds } =
     useScopedRowSelection(selectionScope);
 
-  // Selection is only offered to a viewer who can act on it: the legacy bulk bar
-  // is entirely ability-gated, so without one of these the checkboxes lead
-  // nowhere.
-  const canBulkAct =
-    ability.can('assign', 'Job') ||
-    ability.can('arrive', 'Job') || ability.can('start', 'Job') ||
-    ability.can('complete', 'Job') || ability.can('cancel', 'Job');
+  // Selection is only offered to a viewer who has a bulk action left (each follows its
+  // single-job twin's switches), so the checkboxes never lead nowhere.
+  const canBulkAct = hasBulkAction(ability);
 
   const handleSearchChange = useCallback((next: string) => {
     setSearchInput(next);
@@ -280,7 +305,9 @@ export default function JobsPage() {
   // Each tile maps 1:1 to its count: filtering shows exactly that many rows, and
   // clicking the active tile clears the filter.
   //   - All-time tiles (Unscheduled/Scheduled/In Progress): status only, no date range.
-  //   - Monthly tiles (Completed/Cancelled): status + the current-month Scheduled range.
+  //   - Cancelled: status + the current-month Scheduled range.
+  //   - Completed counts every finished status (Completed, Office review, Ready to close, Done), so it
+  //     opens the server's named `completed_this_month` filter, the query the count itself runs.
   // A tile is only "active" when NOTHING else narrows the list further than the
   // tile's own count implies.
   const statusValues = value.status?.kind === 'multi' ? value.status.values : [];
@@ -290,6 +317,12 @@ export default function JobsPage() {
   const createdValue = value.created?.kind === 'dateRange' ? value.created : undefined;
   const needsInvoiceValues = value.needs_invoice?.kind === 'multi' ? value.needs_invoice.values : [];
   const needsInvoiceActive = needsInvoiceValues.includes('true');
+  const completedMonthValues = value.completed_this_month?.kind === 'multi' ? value.completed_this_month.values : [];
+  const completedMonthActive = completedMonthValues.includes('true');
+  const officeReviewActive = (value.in_office_review?.kind === 'multi' ? value.in_office_review.values : []).includes('true');
+  const readyToCloseActive = (value.ready_to_close?.kind === 'multi' ? value.ready_to_close.values : []).includes('true');
+  // The named filters of the tiles; a tile is lit only when its own is the one in force.
+  const anotherTileFilterActive = needsInvoiceActive || completedMonthActive || officeReviewActive || readyToCloseActive;
   const tagValues = value.tags?.kind === 'multi' ? value.tags.values : [];
 
   // SRVW-58: this gate ENUMERATES facet keys, so a new facet has to be added here
@@ -306,10 +339,12 @@ export default function JobsPage() {
   const noScheduledRange = !scheduledValue?.from && !scheduledValue?.to;
   const isMonthRange = scheduledValue?.from === monthStart && scheduledValue?.to === monthEnd;
   const soleStatus = statusValues.length === 1 ? statusValues[0] : null;
+  // The status tiles that open a month: Completed is not among them (see above).
+  const monthlyStatusTiles = MONTHLY_JOB_STATUSES.filter((s) => s !== 'COMPLETED');
 
   const activeStatusKpi =
-    soleStatus && !otherFiltersActive && !needsInvoiceActive
-      ? MONTHLY_JOB_STATUSES.includes(soleStatus)
+    soleStatus && !otherFiltersActive && !anotherTileFilterActive
+      ? monthlyStatusTiles.includes(soleStatus)
         ? (isMonthRange ? soleStatus : null)
         : (noScheduledRange ? soleStatus : null)
       : null;
@@ -318,7 +353,7 @@ export default function JobsPage() {
     if (activeStatusKpi === status) { clearAllFilters(); return; }
     setSearchInput('');
     setPage(1);
-    if (MONTHLY_JOB_STATUSES.includes(status)) {
+    if (monthlyStatusTiles.includes(status)) {
       setValue({
         status: { kind: 'multi', values: [status] },
         scheduled: { kind: 'dateRange', from: monthStart, to: monthEnd },
@@ -328,10 +363,23 @@ export default function JobsPage() {
     }
   };
 
+  // Completed tile: the finished jobs with a trip this month. Active only when its filter is the sole filter.
+  const activeCompletedKpi =
+    completedMonthActive && statusValues.length === 0 && noScheduledRange && !needsInvoiceActive
+    && !officeReviewActive && !readyToCloseActive && !otherFiltersActive;
+
+  const handleCompletedKpi = () => {
+    if (activeCompletedKpi) { clearAllFilters(); return; }
+    setValue({ completed_this_month: { kind: 'multi', values: ['true'] } });
+    setSearchInput('');
+    setPage(1);
+  };
+
   // Need Invoices tile: completed-but-unbilled jobs. Active only when
   // needs_invoice is the sole filter.
   const activeNeedInvoicesKpi =
-    needsInvoiceActive && statusValues.length === 0 && noScheduledRange && !otherFiltersActive;
+    needsInvoiceActive && statusValues.length === 0 && noScheduledRange && !completedMonthActive
+    && !officeReviewActive && !readyToCloseActive && !otherFiltersActive;
 
   const handleNeedInvoicesKpi = () => {
     if (activeNeedInvoicesKpi) { clearAllFilters(); return; }
@@ -339,6 +387,29 @@ export default function JobsPage() {
     // JSDoc), so this single call clears status/assigned_to/department_id/
     // scheduled/created/tags in the same stroke.
     setValue({ needs_invoice: { kind: 'multi', values: ['true'] } });
+    setSearchInput('');
+    setPage(1);
+  };
+
+  // Office review and Ready to close tiles (S06.31): the jobs waiting on the office, opened through the named filter
+  // the server counts them with. Each is lit only when its filter is the sole one.
+  const activeOfficeReviewKpi =
+    officeReviewActive && statusValues.length === 0 && noScheduledRange && !needsInvoiceActive && !completedMonthActive
+    && !readyToCloseActive && !otherFiltersActive;
+  const activeReadyToCloseKpi =
+    readyToCloseActive && statusValues.length === 0 && noScheduledRange && !needsInvoiceActive && !completedMonthActive
+    && !officeReviewActive && !otherFiltersActive;
+
+  const handleOfficeReviewKpi = () => {
+    if (activeOfficeReviewKpi) { clearAllFilters(); return; }
+    setValue({ in_office_review: { kind: 'multi', values: ['true'] } });
+    setSearchInput('');
+    setPage(1);
+  };
+
+  const handleReadyToCloseKpi = () => {
+    if (activeReadyToCloseKpi) { clearAllFilters(); return; }
+    setValue({ ready_to_close: { kind: 'multi', values: ['true'] } });
     setSearchInput('');
     setPage(1);
   };
@@ -396,7 +467,7 @@ export default function JobsPage() {
       {/* No `tone`: StatCards carry no colour. The legacy strip tinted five tiles
           a different hue each and none of them meant anything the label did not
           already say; the delta chip is the only colour on a KPI that does. */}
-      <StatCardGroup className="mb-4 xl:grid-cols-6">
+      <StatCardGroup className={cn('mb-4', TILE_COLUMNS[5 + Number(canViewInvoices) + Number(canReview) + Number(canClose)])}>
         <StatCard
           label="Unscheduled" value={stats?.unassigned ?? 0} loading={isLoading}
           active={activeStatusKpi === 'UNSCHEDULED'} onClick={() => handleStatusKpi('UNSCHEDULED')}
@@ -411,16 +482,30 @@ export default function JobsPage() {
         />
         <StatCard
           label="Completed" value={stats?.completed ?? 0} loading={isLoading}
-          active={activeStatusKpi === 'COMPLETED'} onClick={() => handleStatusKpi('COMPLETED')}
+          active={activeCompletedKpi} onClick={handleCompletedKpi}
         />
         <StatCard
           label="Cancelled" value={stats?.cancelled ?? 0} loading={isLoading}
           active={activeStatusKpi === 'CANCELLED'} onClick={() => handleStatusKpi('CANCELLED')}
         />
-        <StatCard
-          label="Need Invoices" value={stats?.need_invoices ?? 0} loading={isLoading}
-          active={activeNeedInvoicesKpi} onClick={handleNeedInvoicesKpi}
-        />
+        {canViewInvoices && (
+          <StatCard
+            label="Need Invoices" value={stats?.need_invoices ?? 0} loading={isLoading}
+            active={activeNeedInvoicesKpi} onClick={handleNeedInvoicesKpi}
+          />
+        )}
+        {canReview && (
+          <StatCard
+            label="Office review" value={stats?.office_review ?? 0} loading={isLoading}
+            active={activeOfficeReviewKpi} onClick={handleOfficeReviewKpi}
+          />
+        )}
+        {canClose && (
+          <StatCard
+            label="Ready to close" value={stats?.ready_to_close ?? 0} loading={isLoading}
+            active={activeReadyToCloseKpi} onClick={handleReadyToCloseKpi}
+          />
+        )}
       </StatCardGroup>
 
       {/* Applied-filter chips only. The Filter TRIGGER lives in the table toolbar
@@ -429,7 +514,7 @@ export default function JobsPage() {
       {hasActiveFilters && (
         <JobFilterBar
           className="mb-3"
-          registry={jobsRegistry}
+          registry={registry}
           value={value}
           onChange={handleFilterChange}
           resolveOptions={resolveOptions}
@@ -474,16 +559,15 @@ export default function JobsPage() {
               actions={
                 <>
                   <FilterPopover
-                    registry={jobsRegistry}
+                    registry={registry}
                     value={value}
                     onChange={handleFilterChange}
                     resolveOptions={resolveOptions}
                     renderOption={paintJobFilterOption}
                     facetTimezones={filterTimezones}
                   />
-                  {/* The only raw ROLE check on this page, carried over
-                      verbatim: SALES sees no export. */}
-                  {user?.role !== 'SALES' && (
+                  {/* Export follows the Export jobs switch (the `export` ability), whatever the role. */}
+                  {canExport && (
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <Button variant="outline" size="sm">
@@ -511,6 +595,7 @@ export default function JobsPage() {
                 selectedJobIds={selectedJobIds}
                 onClear={() => setRowSelection({})}
                 assignees={techs}
+                jobNumbers={Object.fromEntries(rows.map((row) => [row.id, row.job_number]))}
               />
             )}
           </>

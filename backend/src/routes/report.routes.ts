@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { authenticate } from '../middleware/authenticate';
 import { attachAbility } from '../middleware/attachAbility';
-import { canDo } from '../middleware/canGuard';
+import { canDo, canDoAny } from '../middleware/canGuard';
 import { requireFeature } from '../middleware/requireFeature';
 import { expensiveLimiter } from '../middleware/rate-limit';
 import * as reportController from '../controllers/report.controller';
@@ -10,15 +10,17 @@ const router = Router();
 
 router.use(authenticate, attachAbility, expensiveLimiter);
 
-// S1 — Estimate / Quote Conversion report. Reports are gated on the dedicated `read Report`
-// capability (Admin + Dispatcher only). Sales/Technician have no `read Report` grant → 403.
+// S1 — Estimate / Quote Conversion report. Reports are gated on the `read Report` capability, which is what the
+// "Access Reports" switch compiles into: a person without it is refused (403) on every report endpoint here.
 router.get('/estimate-conversion', canDo('read', 'Report'), reportController.getEstimateConversion);
 router.get('/estimate-conversion/estimates', canDo('read', 'Report'), reportController.getEstimateConversionDrilldown);
 
-// F4 — AR Aging & Collections. Same `read Report` gate (Admin + Dispatcher).
-router.get('/ar-aging', canDo('read', 'Report'), reportController.getArAging);
+// F4 — AR Aging & Collections: the shared unpaid-invoices report. Billing (the "Access Billing" switch, `access Billing`)
+// and Reports (`read Report`) both open it, so a Billing-only role and a Reports-only role each keep the data; a person
+// with neither is refused. Every other report endpoint here stays on `read Report` alone.
+router.get('/ar-aging', canDoAny([['access', 'Billing'], ['read', 'Report']]), reportController.getArAging);
 
-// Wave 2 live reports — all on the same `read Report` gate (Admin + Dispatcher).
+// Wave 2 live reports — all on the same `read Report` gate.
 router.get('/jobs', canDo('read', 'Report'), reportController.getJobsReport);
 router.get('/leads', canDo('read', 'Report'), reportController.getLeadsReport);
 router.get('/estimates', canDo('read', 'Report'), reportController.getEstimatesReport);

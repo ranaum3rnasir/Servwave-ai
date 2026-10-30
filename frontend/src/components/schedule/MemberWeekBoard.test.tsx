@@ -68,6 +68,28 @@ function renderBoard(events: SchedulableEvent[], onDropJob = vi.fn(), conflictId
   return onDropJob;
 }
 
+describe('MemberWeekBoard — a week that starts on another weekday (the "No crew" filter, S09.12)', () => {
+  it('shows 7 days from the weekday it is given, not from the Sunday before', () => {
+    renderWithProviders(
+      <MemberWeekBoard
+        weekStart={weekStart}
+        weekStartsOn={3}
+        staff={staff}
+        events={[]}
+        conflictIds={new Set()}
+        isLoading={false}
+        tz={TZ}
+        onSelectEvent={vi.fn()}
+        onDropJob={vi.fn()}
+      />,
+    );
+    // Wed Jun 10 2026 to Tue Jun 16: the first and last days are cells, Sun Jun 7 is not.
+    expect(screen.getByTestId('week-cell-m-alice-2026-06-10')).toBeTruthy();
+    expect(screen.getByTestId('week-cell-m-alice-2026-06-16')).toBeTruthy();
+    expect(screen.queryByTestId('week-cell-m-alice-2026-06-07')).toBeNull();
+  });
+});
+
 describe('MemberWeekBoard — TG7 interactive member×day cells', () => {
   it('a bucket-card drop on a member×day cell calls onDropJob(id, memberId, date, null)', () => {
     const onDropJob = renderBoard([]);

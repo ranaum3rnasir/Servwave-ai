@@ -2,15 +2,15 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { TEST_USERS, mockAuthAs, authHeader, JOB_FIXTURE, mockRoleGrantsWithout } from './helpers';
+import { TEST_USERS, mockAuthAs, authHeader, JOB_FIXTURE, mockRoleSwitches } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 
 // Phase B (§E) — QA-B2 leak follow-up.
 //
 // Leak 2 (MEDIUM): `stripJobPricingForRequester` never touched out.invoices, so each embedded
-//   invoice's total_amount + amount_due leaked even on the "fixed" getById path. Fix: project the
-//   invoices[] array to drop the monetary fields (keep invoice_number/status) when stripping.
+//   invoice's total_amount + amount_due leaked even on the "fixed" getById path. Fix (reworked by S04.26): the
+//   invoices[] array lists only the invoices the person can open - their View invoices rows plus the ones they made
+//   on the job - with the prices of an invoice they can open, and `invoice_count` keeps the whole number.
 //
 // (Leak 1 covered GET /api/jobs/my-today, the technician mobile screen — retired with the
 // /tech/* view in Spec A; its describe block was removed here, not just its endpoint.)
@@ -21,6 +21,8 @@ import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 const mockPrisma = prisma as unknown as {
   job: { findUnique: ReturnType<typeof vi.fn>; findMany: ReturnType<typeof vi.fn>; findFirst: ReturnType<typeof vi.fn> };
   userPermissionOverride: { findMany: ReturnType<typeof vi.fn> };
+  invoice: { findMany: ReturnType<typeof vi.fn> };
+  estimate: { findMany: ReturnType<typeof vi.fn> };
 };
 
 const JOB_ID = JOB_FIXTURE.id;
@@ -64,8 +66,9 @@ const ACCESS_CHECK_OWNED_BY_TECH = {
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache();
   (prisma.tagAssignment.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+  // The invoices the person can open: none unless a case says so.
+  mockPrisma.invoice.findMany.mockResolvedValue([]);
 });
 
 // ─── Leak 2 — getById invoices[] strip ──────────────────────────────────────
@@ -81,22 +84,31 @@ describe('GET /api/jobs/:id — Phase B invoices[] strip (Leak 2)', () => {
     mockPrisma.job.findFirst.mockResolvedValue({ id: JOB_ID });
   });
 
-  it('strict technician gets a non-empty invoices[] with each total_amount/amount_due ABSENT', async () => {
+  it('strict technician gets only the invoice they can open in invoices[], with its prices, and the whole count beside it', async () => {
     mockAuthAs('technician');
-    mockRoleGrantsWithout('TECHNICIAN', ['read', 'Pricing']);  // price-blind on purpose: read Pricing is a TECHNICIAN default since the ownership spec
+    mockRoleSwitches({ view_estimates: false });
+    // The invoice query that decides which of the job's invoices the person opens: they made inv1, not inv2.
+    mockPrisma.invoice.findMany.mockResolvedValue([{ id: 'inv1' }]);
 
     const res = await request(app).get(`/api/jobs/${JOB_ID}`).set(authHeader('technician'));
 
     expect(res.status).toBe(200);
     const job = res.body.job;
-    expect(job.invoices).toHaveLength(2);
-    for (const inv of job.invoices) {
-      expect(inv.total_amount).toBeUndefined();
-      expect(inv.amount_due).toBeUndefined();
-      // Invoice identity preserved so the tech knows an invoice exists.
-      expect(inv.invoice_number).toBeDefined();
-      expect(inv.status).toBeDefined();
-    }
+    expect(job.invoices.map((i: { id: string }) => i.id)).toEqual(['inv1']);
+    expect(job.invoices[0].total_amount).toBe(500);
+    expect(job.invoices[0].amount_due).toBe(100);
+    expect(job.invoice_count).toBe(2);
+  });
+
+  it('strict technician who can open none gets an empty invoices[]', async () => {
+    mockAuthAs('technician');
+    mockRoleSwitches({ view_estimates: false });
+
+    const res = await request(app).get(`/api/jobs/${JOB_ID}`).set(authHeader('technician'));
+
+    expect(res.status).toBe(200);
+    expect(res.body.job.invoices).toEqual([]);
+    expect(res.body.job.invoice_count).toBe(2);
   });
 
   it('DISPATCHER (read Invoice) keeps each invoice total_amount/amount_due on getById', async () => {
@@ -135,9 +147,24 @@ describe('GET /api/jobs/:id - linked_estimates on getById (SRVW-96)', () => {
     expect(mockPrisma.job.findUnique.mock.calls[1][0].select).toHaveProperty('linked_estimates');
   });
 
-  it('strips total_amount from linked_estimates for a price-blind requester', async () => {
+  it('leaves out a linked estimate the requester cannot open (View estimates off)', async () => {
     mockAuthAs('technician');
-    mockRoleGrantsWithout('TECHNICIAN', ['read', 'Pricing']);  // price-blind on purpose: read Pricing is a TECHNICIAN default since the ownership spec
+    mockRoleSwitches({ view_estimates: false });
+    // The reach query finds none of the job's estimates inside this person's estimate scope.
+    mockPrisma.estimate.findMany.mockResolvedValueOnce([]);
+
+    const res = await request(app).get(`/api/jobs/${JOB_ID}`).set(authHeader('technician'));
+
+    expect(res.status).toBe(200);
+    expect(res.body.job.linked_estimates).toEqual([]);
+    expect(JSON.stringify(res.body)).not.toContain('J00001-1');
+  });
+
+  it('strips total_amount from a linked estimate the requester can open but may not price (View estimates off)', async () => {
+    mockAuthAs('technician');
+    mockRoleSwitches({ view_estimates: false });
+    // An estimate they made themselves while attached stays reachable (the creator rule), without its figure.
+    mockPrisma.estimate.findMany.mockResolvedValueOnce([{ id: 'est-link' }]);
 
     const res = await request(app).get(`/api/jobs/${JOB_ID}`).set(authHeader('technician'));
 

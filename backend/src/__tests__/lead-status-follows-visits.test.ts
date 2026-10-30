@@ -336,7 +336,7 @@ describe('regression: an Estimate Sent lead is never pulled back by a visit', ()
 });
 
 describe('visit changes never move a Won, Lost or Cancelled lead', () => {
-  for (const closed of ['WON', 'LOST', 'CANCELLED']) {
+  for (const closed of ['WON', 'LOST']) {
     it(`${closed}: booking, adding, completing, unscheduling and cancelling change nothing`, async () => {
       seed(closed, [visitRow(1, 'SCHEDULED'), visitRow(2, 'SCHEDULED'), visitRow(3, 'SCHEDULED')]);
 
@@ -365,20 +365,6 @@ describe('the lead-exit doors are left alone', () => {
     expect(visits[0].status).toBe('CANCELLED');
     expect(statusMoves()).toHaveLength(1);
     expect(statusMoves()[0].metadata).toMatchObject({ from: 'WALKTHROUGH_SCHEDULED', to: 'LOST' });
-  });
-
-  it('cancelling a Walkthrough Scheduled lead cancels its visits and ends at Cancelled, with one move', async () => {
-    seed('WALKTHROUGH_SCHEDULED', [visitRow(1, 'SCHEDULED')]);
-    const res = await request(app)
-      .post(`/api/leads/${LEAD_ID}/cancel`)
-      .set(authHeader('admin'))
-      .send({ cancelled_reason: 'Duplicate' });
-
-    expect(res.status).toBe(200);
-    expect(leadStatus).toBe('CANCELLED');
-    expect(visits[0].status).toBe('CANCELLED');
-    expect(statusMoves()).toHaveLength(1);
-    expect(statusMoves()[0].metadata).toMatchObject({ from: 'WALKTHROUGH_SCHEDULED', to: 'CANCELLED' });
   });
 
   it('a bare Lost on the PATCH door is refused and writes nothing; the status menu closes the lead through mark-lost, which cancels the visits and leaves Lost', async () => {

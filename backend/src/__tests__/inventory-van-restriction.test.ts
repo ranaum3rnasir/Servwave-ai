@@ -22,6 +22,7 @@ import { prisma } from '../lib/prisma';
 import {
   TEST_USERS,
   mockAuthAs,
+  mockRoleSwitches,
   authHeader,
   JOB_FIXTURE,
   INVOICE_FIXTURE,
@@ -29,7 +30,6 @@ import {
   INVENTORY_LOCATION_FIXTURE,
 } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 
 // ─── Typed mock accessors ──────────────────────────────────
 const mockPrisma = prisma as unknown as {
@@ -58,6 +58,7 @@ const mockPrisma = prisma as unknown as {
     findUnique: ReturnType<typeof vi.fn>;
   };
   organization: { findUnique: ReturnType<typeof vi.fn> };
+  timelineEvent: { create: ReturnType<typeof vi.fn> };
   userPermissionOverride: { findMany: ReturnType<typeof vi.fn> };
   $transaction: ReturnType<typeof vi.fn>;
 };
@@ -214,25 +215,19 @@ function setupTransaction() {
           findUnique: mockPrisma.stockBalance.findUnique,
         },
         organization: { findUnique: mockPrisma.organization.findUnique },
+        // S06.5: line/scope edits write their entry on the job's history in the same transaction.
+        timelineEvent: { create: mockPrisma.timelineEvent.create },
       });
     }
     return Promise.all(arg as Promise<unknown>[]);
   });
 }
 
-// The restricted fixture: role TECHNICIAN + allow-override rows. `update Job` /
-// `manage_lines`+`update Invoice` open the line routes (per-user-granted paths);
-// `location_restricted Inventory` is the (now vestigial) P3 restriction toggle.
-const RESTRICTED_OVERRIDES = [
-  { action: 'update', subject: 'Job', effect: 'allow' },
-  { action: 'manage_lines', subject: 'Invoice', effect: 'allow' },
-  { action: 'update', subject: 'Invoice', effect: 'allow' },
-  { action: 'location_restricted', subject: 'Inventory', effect: 'allow' },
-];
-
-function mockTech(overrides: { action: string; subject: string; effect: string }[]) {
+// A technician who may edit invoice lines: the Edit invoice line items switch opens the invoice line routes (a
+// Technician has it off by default), and View invoices lets them open the invoice they work on.
+function mockTech() {
   mockAuthAs('technician');
-  mockPrisma.userPermissionOverride.findMany.mockResolvedValue(overrides);
+  mockRoleSwitches({ view_invoices: true, edit_invoice_line_items: true });
   // canAccessRow(Job/Invoice) — conditional read scope does a real scoped findFirst.
   mockPrisma.job.findFirst.mockResolvedValue({ id: JOB_ID });
   mockPrisma.invoice.findFirst.mockResolvedValue({ id: INVOICE_ID });
@@ -241,11 +236,10 @@ function mockTech(overrides: { action: string; subject: string; effect: string }
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache();
   techHasVan = true;
   setupTransaction();
   setupLocationLookup();
-  mockTech(RESTRICTED_OVERRIDES);
+  mockTech();
   mockPrisma.job.findUnique.mockResolvedValue(jobRow());
   mockPrisma.invoice.findUnique.mockResolvedValue(invoiceRow());
   mockPrisma.invoice.update.mockResolvedValue(invoiceDetailAfter());
@@ -308,7 +302,7 @@ describe('addLine — restricted tech, van forcing retired', () => {
   });
 
   it('non-restricted tech (no location_restricted row) adds a plain line → 201 NOT_TRACKED', async () => {
-    mockTech(RESTRICTED_OVERRIDES.filter((o) => o.action !== 'location_restricted'));
+    mockTech();
 
     const res = await request(app)
       .post(`/api/jobs/${JOB_ID}/line-items`).set(authHeader('technician'))

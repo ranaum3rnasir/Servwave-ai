@@ -10,6 +10,15 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 const requestCall = vi.hoisted(() => vi.fn());
+// Customer numbers on the Communication screens follow the person's switches (S05.6). This suite renders the
+// screen without a query client, so the person's switches are stubbed: every one on, the screen as it always was.
+vi.mock("@/components/contact/useContactPolicyInput", () => ({
+  useContactPolicyInput: () => ({
+    switches: { copyCustomerPhone: true, copyCustomerEmail: true, contactCustomers: true, viewCustomers: true },
+    phoneService: true,
+  }),
+}));
+
 // These specs render deep phone components without a QueryClientProvider - every
 // data hook is stubbed individually. Times now resolve against the ORG's zone, so
 // the org query joins that list; pinned here so the rendered clock is fixed rather
@@ -63,8 +72,9 @@ vi.mock("@/lib/useIsDemoOrg", () => ({
   useIsDemoOrg: () => false,
 }));
 
+// Call Back is Contact customers (S08.14), which compiles to create on Communication: this person holds that and nothing else.
 vi.mock("@/contexts/AbilityContext", () => ({
-  useAppAbility: () => ({ can: () => false }),
+  useAppAbility: () => ({ can: (action: string, subject: string) => action === "create" && subject === "Communication" }),
 }));
 
 vi.mock("@/lib/communicationAccess", () => ({

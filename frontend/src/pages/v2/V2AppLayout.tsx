@@ -49,6 +49,7 @@ import { useAiCenterStore } from '@/stores/aiCenterStore';
 import { useCopilotStore } from '@/stores/copilotStore';
 import { useOrganization } from '@/lib/api/organization';
 import { useUnreadCounts } from '@/lib/api/communication';
+import { switchOn, useMySwitches } from '@/lib/api/mySwitches';
 import { setOrgFormattingPrefs } from '@/lib/org-format';
 import { useFeature } from '@/lib/entitlements';
 
@@ -185,6 +186,12 @@ export default function V2AppLayout() {
   // INTO the org-wide Communication section (never onto `canAccessComm` itself, which also guards
   // `<GlobalDialer />` — the click-to-call entry point a role without the section gate keeps).
   const canSeeCommsShortcuts = canAccessComm && ability.can('access_inbox', 'Communication');
+  // Roles & Permissions S08.17 - each shortcut also follows the Show switch of the page it opens (Show Text, Show
+  // Email), so a hidden page has no back door in the top bar. Show is display only, so it is read from the person's
+  // own switches; nothing is drawn until they have arrived.
+  const mySwitches = useMySwitches()?.values;
+  const showTextShortcut = canSeeCommsShortcuts && switchOn(mySwitches, 'show_text');
+  const showInboxShortcut = canSeeCommsShortcuts && switchOn(mySwitches, 'show_email');
 
   // Load THIS user's breadcrumb trail out of localStorage, and reload it if the
   // signed-in user changes without a page load. Done here rather than at the
@@ -264,24 +271,27 @@ export default function V2AppLayout() {
   // org-wide section a role can hold the `phone` entitlement without holding.
   // The dialer stays on `canAccessComm` alone - it is click-to-call, not a jump
   // into the section, and Ran kept it for every role that may compose or dial.
+  //
+  // Roles & Permissions S08.17 - Text messages opens the Text page (it used to open the Phone page) and shows only with
+  // Show Text; Inbox shows only with Show Email. The badge on each is the server's count for the person's own scope.
   if (canAccessComm) {
-    if (canSeeCommsShortcuts) {
-      topBarItems.push(
-        {
-          id: 'sms',
-          label: 'Text messages',
-          icon: <MessageSquare />,
-          badge: commBadge(unread.sms),
-          onSelect: () => requestLeave(() => navigate(preferV2Path('/communication/phone'))),
-        },
-        {
-          id: 'inbox',
-          label: 'Inbox',
-          icon: <Mail />,
-          badge: commBadge(unread.email),
-          onSelect: () => requestLeave(() => navigate(preferV2Path('/communication/inbox'))),
-        },
-      );
+    if (showTextShortcut) {
+      topBarItems.push({
+        id: 'sms',
+        label: 'Text messages',
+        icon: <MessageSquare />,
+        badge: commBadge(unread.sms),
+        onSelect: () => requestLeave(() => navigate(preferV2Path('/communication/text'))),
+      });
+    }
+    if (showInboxShortcut) {
+      topBarItems.push({
+        id: 'inbox',
+        label: 'Inbox',
+        icon: <Mail />,
+        badge: commBadge(unread.email),
+        onSelect: () => requestLeave(() => navigate(preferV2Path('/communication/inbox'))),
+      });
     }
     // Click-to-call from any page. Wide, it keeps its own trigger; in the
     // overflow menu it is a row that does what that trigger does.

@@ -86,13 +86,13 @@ describe("checkbox and switch: the hit area grows, the visual does not", () => {
     expectTokens(track!, ["h-5.5", "w-9.5"]);
   });
 
-  it("legacy Switch: the 44x24 track is 44 px tall on touch", () => {
+  it("legacy Switch path is the kit Switch (payments W2: one switch everywhere)", () => {
     render(<LegacySwitch aria-label="Visible" />);
     const root = screen.getByRole("switch", { name: "Visible" });
-    expectTokens(root, ["touch:h-11", "touch:-my-2.5"]);
+    expectTokens(root, ["h-6", "-my-px", "touch:h-11", "touch:-my-[11px]", "touch:w-11", "touch:-mx-[3px]"]);
     const track = root.querySelector('[data-slot="switch-track"]');
     expect(track).not.toBeNull();
-    expectTokens(track!, ["h-6", "w-11"]);
+    expectTokens(track!, ["h-5.5", "w-9.5"]);
   });
 });
 

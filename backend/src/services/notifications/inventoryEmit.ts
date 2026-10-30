@@ -1,8 +1,8 @@
 /**
  * inventoryEmit.ts — thin emit helpers for inventory notification verbs
  *
- * Each function is a fire-and-forget wrapper over `emit` from notificationService.
- * NEVER throws — emit() itself swallows all errors. Callers must NOT wrap these
+ * Each function is a fire-and-forget wrapper that leaves the alert for after the response (noRecordAlerts.ts).
+ * NEVER throws — the sender swallows and logs all errors. Callers must NOT wrap these
  * in try/catch.
  *
  * Verbs:
@@ -14,7 +14,8 @@
  *   inventory.staging_no_area           — stage is complete/ready_for_pickup with no staged_area
  */
 
-import { emit } from './notificationService';
+import { queueNoRecordAlert } from './noRecordAlerts';
+import { queueStagingReadyAlert } from './jobSchedulingAlerts';
 
 // ─── shared ──────────────────────────────────────────────────────────────────
 
@@ -28,7 +29,8 @@ function todayUtc(): string {
 /**
  * inventory.stock_approval_requested
  * Fire after the StockApproval row is persisted.
- * Recipients: Admin INTERRUPT + needs_action (APPROVE_STOCK).
+ * Recipients (S06.29): the holders of Edit stock, else the holders of Manage roles and permissions; INTERRUPT + needs_action
+ * (APPROVE_STOCK). Neither PRD 6 nor PRD 7 has a row for it, so it is told like its nearest sibling (see noRecordAlerts.ts).
  * data.approval_id is needed by the inline action button on the notification.
  */
 export function emitStockApprovalRequested(
@@ -37,12 +39,11 @@ export function emitStockApprovalRequested(
   approvalId: string,
   itemName: string,
 ): void {
-  emit({
+  queueNoRecordAlert({
     verb: 'inventory.stock_approval_requested',
     organizationId,
     actorId,
     object: { type: 'STOCK_APPROVAL', id: approvalId, label: itemName },
-    entity: {},
     data: { item_name: itemName, approval_id: approvalId },
     dedupKey: `inventory.stock_approval_requested:${approvalId}`,
   });
@@ -53,6 +54,9 @@ export function emitStockApprovalRequested(
  * Fire only on a DOWNWARD CROSSING: prevOnHand >= min AND newOnHand < min.
  * actorId is null (system-detected).
  * dedupKey is daily — re-fires each new calendar day (UTC).
+ * Recipients (S06.29): the holders of Create purchase orders, else the holders of Manage roles and permissions; FEED. It is raised from
+ * inside the stock movement's transaction, so it is only queued here and sent once the response is out (and never for a movement that
+ * rolled back); the holders are read once for all the crossings of a request.
  */
 export function emitLowStockIfCrossing(
   organizationId: string,
@@ -72,12 +76,11 @@ export function emitLowStockIfCrossing(
   const crossed = prevOnHand >= min && newOnHand < min;
   if (!crossed) return;
 
-  emit({
+  queueNoRecordAlert({
     verb: 'inventory.low_stock',
     organizationId,
     actorId: null,
     object: { type: 'INVENTORY_ITEM', id: itemId, label: itemName },
-    entity: {},
     data: { item_name: itemName, location_id: locationId, on_hand: newOnHand, min },
     dedupKey: `inventory.low_stock:${itemId}:${locationId}:${todayUtc()}`,
   });
@@ -86,7 +89,7 @@ export function emitLowStockIfCrossing(
 /**
  * inventory.po_partial
  * Fire when the PO status resolves to 'partial' after a receipt.
- * Recipients: Admin + Dispatcher FEED.
+ * Recipients (S06.29): the holders of Create purchase orders, else the holders of Manage roles and permissions; FEED.
  */
 export function emitPoPartial(
   organizationId: string,
@@ -94,12 +97,11 @@ export function emitPoPartial(
   poId: string,
   poNumber: string,
 ): void {
-  emit({
+  queueNoRecordAlert({
     verb: 'inventory.po_partial',
     organizationId,
     actorId,
     object: { type: 'PURCHASE_ORDER', id: poId, label: poNumber },
-    entity: {},
     data: { object_label: poNumber },
     dedupKey: `inventory.po_partial:${poId}`,
   });
@@ -109,7 +111,7 @@ export function emitPoPartial(
  * inventory.backorder
  * Fire when an item's status flips TO 'on_backorder'.
  * On create-with-backorder, prevStatus is undefined/null — also a flip.
- * Recipients: Admin + Dispatcher FEED.
+ * Recipients (S06.29): the holders of Create purchase orders, else the holders of Manage roles and permissions; FEED.
  */
 export function emitBackorderIfFlipped(
   organizationId: string,
@@ -123,12 +125,11 @@ export function emitBackorderIfFlipped(
   const isBackorder = newStatus === 'on_backorder';
   if (!isBackorder || wasBackorder) return;
 
-  emit({
+  queueNoRecordAlert({
     verb: 'inventory.backorder',
     organizationId,
     actorId,
     object: { type: 'INVENTORY_ITEM', id: itemId, label: itemName },
-    entity: {},
     data: { item_name: itemName },
     dedupKey: `inventory.backorder:${itemId}`,
   });
@@ -137,33 +138,18 @@ export function emitBackorderIfFlipped(
 /**
  * inventory.staging_ready
  * Fire after notifyTechReady sets status to ready_for_pickup.
- * Recipients: Admin + Dispatcher FEED, plus the assigned tech INTERRUPT (if any).
+ * Recipients (S06.27): the job's people through M6's two-lane chain (jobSchedulingAlerts.ts), plus the technician the parts are
+ * staged for, who is interrupted. Left for after the response; the stage is read there, so the request gains no statement.
  */
-export function emitStagingReady(
-  organizationId: string,
-  actorId: string,
-  stageId: string,
-  jobNumber: string,
-  assigneeUserId?: string | null,
-): void {
-  emit({
-    verb: 'inventory.staging_ready',
-    organizationId,
-    actorId,
-    object: { type: 'JOB_STAGE', id: stageId, label: jobNumber },
-    // The assigned tech (if any) is added as a recipient in resolveRecipients so
-    // they get the in-app alert too — not just Admin + Dispatcher.
-    entity: assigneeUserId ? { assignee_ids: [assigneeUserId] } : {},
-    data: { object_label: jobNumber },
-    dedupKey: `inventory.staging_ready:${stageId}`,
-  });
+export function emitStagingReady(organizationId: string, actorId: string, stageId: string): void {
+  queueStagingReadyAlert({ organizationId, actorId, stageId });
 }
 
 /**
  * inventory.staging_no_area
  * Fire when a stage write sets status to complete or ready_for_pickup AND staged_area is null.
  * Dismissible; no auto-clear v1.
- * Recipients: Admin + Dispatcher FEED.
+ * Recipients (S06.29): the holders of Edit stock, else the holders of Manage roles and permissions; FEED.
  */
 export function emitStagingNoAreaIfNeeded(
   organizationId: string,
@@ -177,12 +163,11 @@ export function emitStagingNoAreaIfNeeded(
   if (!triggerStatuses.has(status)) return;
   if (stagedArea != null && stagedArea !== '') return;
 
-  emit({
+  queueNoRecordAlert({
     verb: 'inventory.staging_no_area',
     organizationId,
     actorId,
     object: { type: 'JOB_STAGE', id: stageId, label: jobNumber },
-    entity: {},
     data: { object_label: jobNumber },
     dedupKey: `inventory.staging_no_area:${stageId}`,
   });

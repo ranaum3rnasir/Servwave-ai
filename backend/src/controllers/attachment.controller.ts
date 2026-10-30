@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { NextFunction, Request, Response } from 'express';
 import { z } from 'zod';
 import { AttachmentEntity } from '@prisma/client';
@@ -8,7 +9,21 @@ import { logger } from '../lib/logger';
 import { supabaseAdmin } from '../lib/supabase';
 import { tenantWhere } from '../lib/tenant';
 import { canAccessTask } from '../lib/tasks/visibility';
+import { canAccessRow } from '../lib/permissions/enforce';
+import {
+  OWN_UPLOADS_ONLY_MESSAGE,
+  fileChangeAnswer,
+  fileLockBinds,
+  mayChangeAttachment,
+  type AttachmentChange,
+} from '../lib/permissions/attachmentChange';
+import { JOB_LOCKED_CODE, JOB_LOCKED_MESSAGE } from '../lib/permissions/jobLock';
+import { canReadCustomerById } from '../lib/permissions/customerScope';
 import { sniffMatchesDeclared } from '../lib/file-sniff';
+import { ALLOWED_MIME_TYPES, ALLOWED_TYPES_LABEL } from '../lib/attachment-types';
+import { canBeUnusual } from '../lib/job-review-changeset';
+import { returnToReviewOnUnusualChange } from '../lib/job-review-return';
+import { queueReviewAttention } from '../services/notifications/reviewAttentionQueue';
 import {
   ATTACHMENTS_BUCKET as STORAGE_BUCKET,
   buildAccessUrl,
@@ -28,28 +43,9 @@ import { LONG_TEXT_MAX } from '../lib/text-limits';
 
 // ─── Constants ───────────────────────────────────────────
 
-// Exported (email slice 7): the compose-window multipart upload reuses this
-// EXACT list rather than declaring a parallel one that could drift.
-export const ALLOWED_MIME_TYPES = [
-  'image/jpeg', 'image/png', 'image/heic', 'image/heif',
-  'video/mp4', 'video/quicktime',
-  'application/pdf',
-  // Office documents. Field-service paperwork is not only photos and PDFs: evaluations,
-  // install sheets and parts lists arrive as Word/Excel, and rejecting them sent users
-  // back to their old system. Macro-enabled variants (.docm/.xlsm) are deliberately
-  // absent - they are the executable-content shape of these formats.
-  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-  'application/msword',
-  'application/vnd.ms-excel',
-  'application/vnd.ms-powerpoint',
-  'text/csv', 'text/plain',
-];
-
-/** Human-readable form of ALLOWED_MIME_TYPES for the 400 body. Exported alongside the
- *  list itself so the email compose path cannot advertise a different set than it takes. */
-export const ALLOWED_TYPES_LABEL = 'JPG, PNG, HEIC, MP4, PDF, Word, Excel, PowerPoint, CSV, TXT';
+// The type allowlist lives in lib/attachment-types.ts (the compose window and received mail reuse it); re-exported so the
+// importers that already read it from here keep working.
+export { ALLOWED_MIME_TYPES, ALLOWED_TYPES_LABEL };
 
 // Exported alongside the video caps so attachment.routes.ts can build its too-large message
 // from the real caps instead of restating them as literals.
@@ -58,17 +54,22 @@ export const MAX_FILE_SIZE = 25 * 1024 * 1024; // 25MB — images, HEIC/HEIF, PD
 /**
  * The video cap on the DIRECT-TO-STORAGE path (Ran, 2026-09-20).
  *
- * 512MB IS THE STORAGE BUCKET'S OWN `file_size_limit`, which Ran raised on production the
- * same day (the project-level global went to 1GB above it). So the app cap now EQUALS the
- * infrastructure ceiling with ZERO HEADROOM. That is a deliberate choice and it has a cost:
- * if the bucket is ever lowered, a file between the new bucket limit and this number fails
- * at storage with a 413 we neither wrote nor control, rather than at our own 400 with a
- * sentence naming the real limit. Lowering the bucket therefore means lowering this first.
+ * 512MB because that is the storage bucket's own `file_size_limit`, which Ran raised on both
+ * staging and production on 2026-09-20. The number is pinned to the infrastructure ceiling,
+ * not to a competitor: an earlier revision of this comment justified 500MB by the published
+ * market, and that reasoning no longer holds. Sizing still has to absorb a 4K clip whole,
+ * because Ran rejected client-side re-encoding: phone video runs 85-135 MB/min at 4K, and a
+ * two-minute walkthrough is 170-270MB.
+ *
+ * ZERO HEADROOM, AND THAT IS THE COST OF PINNING IT. The app cap now EQUALS the bucket limit
+ * rather than sitting under it. If the bucket is ever lowered, an upload we accept here fails
+ * at storage with a 413 we do not raise and cannot phrase, instead of being refused by our own
+ * 400 with a sentence naming the real limit. Lower the app cap first, or not at all.
  *
  * REACHABLE ONLY BECAUSE THE BYTES DO NOT PASS THROUGH THIS PROCESS. The browser sends them
- * straight at storage in resumable chunks; the app server mints a scoped URL and then
- * verifies the landed object, reading only its head. NEVER REUSE THIS CONSTANT ON A PATH
- * THAT BUFFERS — see MAX_PROXY_VIDEO_FILE_SIZE.
+ * straight at storage in resumable chunks; the app server mints a scoped URL and then verifies
+ * the landed object. Never reuse this constant on a path that buffers — see
+ * MAX_PROXY_VIDEO_FILE_SIZE.
  */
 export const MAX_VIDEO_FILE_SIZE = 512 * 1024 * 1024; // 512MB — video/mp4, video/quicktime
 
@@ -77,28 +78,27 @@ export const MAX_VIDEO_FILE_SIZE = 512 * 1024 * 1024; // 512MB — video/mp4, vi
  *
  * `uploadAttachment` below is reached through `attachment.routes.ts`, whose multer uses
  * `memoryStorage()`: the whole file is held in this process before it is forwarded. The
- * deployment target is documented at 512MB of memory for a single instance, so a 512MB
- * multipart upload would be one request away from taking the process down, and two
- * concurrent ones would guarantee it.
+ * deployment target is documented at 512MB for a single instance (`src/index.ts`), so a 512MB
+ * multipart upload would be one request away from taking the process down, and two concurrent
+ * ones would guarantee it.
  *
- * Unchanged at 50MB, which is what this path enforced before the raise: the change raises
- * what video CAN BE, not what the proxy can carry. No ServWave surface sends video this way
- * any more (`uploadAttachment.ts` routes both video types to the direct path), so this binds
- * only a caller talking to the API directly. It stays enforced rather than deleted because
- * removing it would hand that caller multer's abort in place of a sentence naming a real
- * limit.
+ * Unchanged at 50MB, which is what this path enforced before S4: the slice raises what video
+ * CAN BE, not what the proxy can carry. No ServWave surface sends video this way any more
+ * (`uploadAttachment.ts` routes both video types to the direct path), so this binds only a
+ * caller talking to the API directly. It stays enforced rather than deleted because removing
+ * it would hand that caller multer's abort in place of a sentence naming a real limit.
  */
 export const MAX_PROXY_VIDEO_FILE_SIZE = 50 * 1024 * 1024; // 50MB — proxy path only
 
 /**
- * The per-entity total. 2GB.
+ * The per-entity total (S4 — Ran, 2026-09-18). 2GB.
  *
- * It has to be several times the per-file cap rather than close to it: at the old 200MB the
- * FIRST 512MB upload onto an empty job would be refused by a limit no surface ever showed
- * the user. 2GB lets a job hold a handful of videos.
+ * It has to be several times the per-file cap rather than equal to it: at parity the FIRST
+ * 512MB upload onto an empty job would be refused by a limit no surface ever showed the user.
+ * 2GB lets a job hold a handful of videos.
  *
- * Exported so the caps can be held against each other, and against the copy that quotes
- * them, from the tests rather than by inspection.
+ * Exported so the caps can be held against each other in one place — see
+ * `__tests__/attachment-size-caps.test.ts`.
  */
 export const MAX_ENTITY_SIZE = 2 * 1024 * 1024 * 1024; // 2GB
 
@@ -123,10 +123,10 @@ const DIRECT_UPLOAD_MIME_TYPES = ['video/mp4', 'video/quicktime'];
  * Single owner of the per-entity-total message, so both upload paths quote the same cap.
  *
  * DERIVED, not written out. It used to read "...would exceed 200MB limit" as a hand-typed
- * string beside a constant that was the thing actually enforced: the day the constant moves
- * — as it just did, from 200MB to 2GB — the sentence becomes a confident lie and nothing
- * fails. A message that misstates the limit is worse than no message, because the user
- * believes it and acts on it.
+ * string beside a constant that was the thing actually enforced, which is the defect S1 fixed
+ * at the route sites: the day the constant moves, the sentence becomes a confident lie and
+ * nothing fails. A message that misstates the limit is worse than no message, because the
+ * user believes it and acts on it.
  */
 const ENTITY_TOTAL_EXCEEDED =
   `Total attachments for this entity would exceed ${sizeLimitLabel(MAX_ENTITY_SIZE)} limit`;
@@ -218,20 +218,6 @@ async function checkEntityExists(entityType: AttachmentEntity, entityId: string,
   }
 }
 
-/**
- * Multi-visit S8 (D6): is this user on ANY of the record's visits?
- *
- * One flatten, shared by the three ownership checks below, so the job arm and the two lead arms
- * cannot drift on what "on the crew" means. The relation is one array level deeper than the join
- * tables it replaces, which is why each call site needed a real edit rather than a rename.
- */
-function isOnAnyVisit(
-  record: { visits?: Array<{ assignees?: Array<{ user_id: string }> | null }> | null } | null | undefined,
-  userId: string,
-): boolean {
-  return (record?.visits ?? []).some((v) => (v.assignees ?? []).some((a) => a.user_id === userId));
-}
-
 /** The tenant-scoped task row, carrying exactly the fields the visibility rule reads. */
 function findTaskForAccess(taskId: string, req: Request) {
   return prisma.task.findFirst({
@@ -240,95 +226,46 @@ function findTaskForAccess(taskId: string, req: Request) {
   });
 }
 
+/**
+ * May the caller open the record this file hangs on? The record's own access rule decides, the same one that
+ * lets the person open the job, lead, invoice or customer itself (the access resolver), so a person's Data
+ * Scope and the creator rule apply and no role name does. The Attachments switches then decide what they may
+ * do with the files on it.
+ */
 export async function checkEntityAccess(entityType: AttachmentEntity, entityId: string, req: Request): Promise<boolean> {
-  const { role, id: userId } = req.user!;
-  const orgFilter = tenantWhere(req);
-
-  // TASK first, BEFORE the admin/dispatcher shortcut below: that shortcut is an existence check,
-  // and a dispatcher who is neither on a task nor able to open its linked record must not read
-  // its files. The rule is the task's own (`canAccessTask`), so a task's files are exactly as
-  // private as the task: admin always; assignee or watcher always; anyone else only through the
-  // linked record they can already open.
+  // A task's files are exactly as private as the task (`canAccessTask`): See all tasks; assignee or watcher; anyone
+  // else only through the linked record they can already open. An existence check would let a person in who
+  // may not open the task.
   if (entityType === 'TASK') {
     const task = await findTaskForAccess(entityId, req);
     return !!task && canAccessTask(req, task);
   }
 
-  // For ADMIN/DISPATCHER, still enforce org isolation via existence check
-  if (role === 'ADMIN' || role === 'DISPATCHER') {
-    return checkEntityExists(entityType, entityId, req);
-  }
+  // `canAccessRow` and `canReadCustomerById` are not tenancy checks (they skip the query for a person who
+  // reaches everything), so org isolation is the existence check, here, on every path.
+  if (!(await checkEntityExists(entityType, entityId, req))) return false;
 
-  // Customers are org-shared reference data — any in-org role with an Attachment
-  // grant may attach to a customer. Org isolation is enforced via existence.
-  if (entityType === 'CUSTOMER') {
-    return checkEntityExists(entityType, entityId, req);
+  switch (entityType) {
+    case 'JOB':      return canAccessRow(req, 'Job', prisma.job, entityId);
+    case 'LEAD':     return canAccessRow(req, 'Lead', prisma.lead, entityId);
+    case 'INVOICE':  return canAccessRow(req, 'Invoice', prisma.invoice, entityId);
+    case 'CUSTOMER': return canReadCustomerById(req, entityId);
+    default:         return false;
   }
-
-  if (role === 'SALES') {
-    if (entityType === 'LEAD') {
-      // S8 (D6): a lead's walkthrough crew is reached through its VISITS. `visit_assignees.lead_id`
-      // is dropped, so the direct back-relation no longer exists - and this is an ACCESS decision,
-      // which is why the S3 migration refused to drop that column until this moved.
-      const lead = await prisma.lead.findUnique({ where: { id: entityId, ...orgFilter }, select: { lead_assignees: { select: { user_id: true } }, visits: { select: { assignees: { select: { user_id: true } } } } } });
-      return (lead?.lead_assignees?.some((a) => a.user_id === userId) ?? false) || isOnAnyVisit(lead, userId);
-    }
-    return false;
-  }
-
-  if (role === 'TECHNICIAN') {
-    if (entityType === 'JOB') {
-      // S8 (D6): the job-assignee table is gone; "on this job" means "on one of its trips".
-      // `...orgFilter` stays on the findUnique exactly as before - the relation moved, the
-      // tenancy did not.
-      const job = await prisma.job.findUnique({ where: { id: entityId, ...orgFilter }, select: { visits: { select: { assignees: { select: { user_id: true } } } } } });
-      return isOnAnyVisit(job, userId);
-    }
-    if (entityType === 'LEAD') {
-      const lead = await prisma.lead.findUnique({ where: { id: entityId, ...orgFilter }, select: { visits: { select: { assignees: { select: { user_id: true } } } } } });
-      return isOnAnyVisit(lead, userId);
-    }
-    return false;
-  }
-
-  return false;
 }
 
 // ─── Rename / remove ─────────────────────────────────────
-
-type AttachmentChange = 'update' | 'delete';
 
 function isTaskEntityParam(req: Request): boolean {
   return param(req, 'entityType').toUpperCase() === 'TASK';
 }
 
 /**
- * May the caller rename (`update`) or remove (`delete`) this attachment?
- *
- * The grant decides everywhere, unchanged. On a TASK there is one more way in, and it is NOT a
- * grant (visits-and-task-categories slice 12, conductor ruling: no role grant is widened): the
- * person who uploaded a file may rename or remove it. A technician holds only create/read on
- * Attachment, so without this they could put a photo on a task and never fix its name or take
- * it back. It is enforced here in code, on the loaded row, and only after `checkEntityAccess`
- * has already said the caller can see the task - so it reaches exactly "my own file on a task I
- * can access" and nothing on a job, lead, customer or invoice.
- */
-function mayChangeAttachment(
-  req: Request,
-  action: AttachmentChange,
-  entityType: AttachmentEntity,
-  uploadedBy: string,
-): boolean {
-  if (req.ability?.can(action, 'Attachment')) return true;
-  return entityType === 'TASK' && uploadedBy === req.user!.id;
-}
-
-/**
- * Route guard for PATCH and DELETE. The grant passes as it always has. Without it, only a TASK
- * request goes on to the handler, which holds it to `mayChangeAttachment` once the row is in
- * hand - a route guard runs before the row exists, so it cannot test who uploaded it (the same
- * split `task.routes.ts` uses for a technician deleting their own to-do). Every other entity
- * keeps `canDo`'s exact 401/403 answer.
+ * Route guard for PATCH and DELETE. The grant passes as it always has. Without it, the request goes on to the
+ * handler, which holds it to `mayChangeAttachment` once the row is in hand - a route guard runs before the row
+ * exists, so it cannot test who uploaded it (the same split `task.routes.ts` uses for a technician deleting
+ * their own to-do). That is a TASK request of either kind, and a delete by a person who can see attachments at
+ * all (View attachments); every other request keeps `canDo`'s exact 401/403 answer.
  */
 export function attachmentChangeGuard(action: AttachmentChange) {
   return (req: Request, res: Response, next: NextFunction) => {
@@ -336,7 +273,11 @@ export function attachmentChangeGuard(action: AttachmentChange) {
       res.status(401).json({ error: 'Not authenticated' });
       return;
     }
-    if (!req.ability.can(action, 'Attachment') && !isTaskEntityParam(req)) {
+    const mayReachHandler =
+      req.ability.can(action, 'Attachment')
+      || isTaskEntityParam(req)
+      || (action === 'delete' && req.ability.can('read', 'Attachment'));
+    if (!mayReachHandler) {
       res.status(403).json({ error: 'Insufficient permissions' });
       return;
     }
@@ -383,10 +324,19 @@ export async function listAttachments(req: Request, res: Response) {
     // the originating LEAD's attachments into this job's list.
     const includeLead = req.query.include_lead === 'true' || req.query.include_walkthrough === 'true';
 
+    // The per-file answer (S04.24): what this person may do with each file, so the page draws a rename or delete
+    // control only where the route would let the request in, and draws it disabled with the lock as the reason when
+    // it is the lock alone that stops them.
+    const locked = await fileLockBinds(req, entityType, entityId);
+
     const signed = await Promise.all(
       rows.map(async (row) => {
         const { storage_path, ...rest } = row;
-        return { ...rest, file_url: await buildAccessUrl(storage_path, row.file_url) };
+        return {
+          ...rest,
+          file_url: await buildAccessUrl(storage_path, row.file_url),
+          ...fileChangeAnswer(req, entityType, row.uploader.id, locked),
+        };
       }),
     );
 
@@ -450,7 +400,16 @@ export async function listAttachments(req: Request, res: Response) {
     const leadSigned = await Promise.all(
       leadRows.map(async (row) => {
         const { storage_path, ...rest } = row;
-        return { ...rest, file_url: await buildAccessUrl(storage_path, row.file_url), source: 'LEAD' as const };
+        // The lead's files are the lead's: the job's routes cannot rename or remove them, so the job page offers
+        // neither (locked or not). They follow the lead's ordinary rules on the lead page.
+        return {
+          ...rest,
+          file_url: await buildAccessUrl(storage_path, row.file_url),
+          source: 'LEAD' as const,
+          can_delete: false,
+          can_rename: false,
+          locked_actions: [],
+        };
       }),
     );
 
@@ -645,16 +604,10 @@ export async function uploadAttachment(req: Request, res: Response) {
     const attachment = { ...created, file_url: fileUrl };
 
     // Log timeline event
-    await prisma.timelineEvent.create({
-      data: {
-        organization_id: req.user!.organization_id,
-        entity_type: entityType,
-        entity_id: entityId,
-        event_type: 'ATTACHMENT_UPLOADED',
-        description: `File uploaded: ${displayName.trim()}`,
-        metadata: { attachment_id: attachment.id, file_type: file.mimetype },
-        created_by: req.user!.id,
-      },
+    await logFileEvent(req, entityType as AttachmentEntity, entityId, {
+      event_type: 'ATTACHMENT_UPLOADED',
+      description: `File uploaded: ${displayName.trim()}`,
+      metadata: { attachment_id: attachment.id, file_type: file.mimetype },
     });
 
     res.status(201).json({ attachment });
@@ -662,6 +615,62 @@ export async function uploadAttachment(req: Request, res: Response) {
     logger.error('Upload attachment error:', err);
     res.status(500).json({ error: 'Failed to upload attachment' });
   }
+}
+
+/**
+ * Writes the history entry of a file event (uploaded, renamed, deleted) on the record the file hangs on. A file on a
+ * job's INVOICE also writes a mirror on the JOB's own history, naming the invoice (S06.9): the office review reads the
+ * job's history, and a file deleted from an invoice during the review must show there. The job's Activity lists the
+ * pair once (`hideMirroredInvoiceEvents`).
+ */
+async function logFileEvent(
+  req: Request,
+  entityType: AttachmentEntity,
+  entityId: string,
+  event: { event_type: string; description: string; metadata: Record<string, unknown> },
+): Promise<void> {
+  const orgId = req.user!.organization_id;
+  const base = { organization_id: orgId, created_by: req.user!.id };
+  // S06.20: a deleted file is an unusual change (M8). Landing on a job in Ready to close it sends the job back to Office review,
+  // so the entry and the move are written in one transaction, on its client. Any other file event is just an entry.
+  const writeOnJob = (jobId: string, data: { event_type: string; description: string; metadata: Record<string, unknown> }) =>
+    canBeUnusual(data.event_type)
+      ? prisma.$transaction(async (tx) => {
+          const id = randomUUID();
+          await tx.timelineEvent.create({ data: { id, ...base, entity_type: 'JOB', entity_id: jobId, ...data, metadata: data.metadata as never } });
+          await returnToReviewOnUnusualChange(tx, { orgId, actorId: req.user!.id, jobId, change: { id, ...data } });
+        })
+      : prisma.timelineEvent.create({ data: { ...base, entity_type: 'JOB', entity_id: jobId, ...data, metadata: data.metadata as never } });
+  // S06.24: on a Done job every file delete, a job's or one of its invoices', raises the Office review attention alert (the job stays
+  // Done). Queued, and sent after the response only if the job turns out to be Done; a Done job's invoice is found by the invoice.
+  const fileName = typeof event.metadata.display_name === 'string' ? event.metadata.display_name : 'a file';
+  const queueDoneDelete = (target: { jobId: string } | { invoiceId: string }, title: string) =>
+    event.event_type === 'ATTACHMENT_DELETED' &&
+    queueReviewAttention({
+      orgId, actorId: req.user!.id, ...target, onlyIfDone: true,
+      // A file on an invoice is listed only to the people who can open that invoice (the review panel's own rule).
+      items: [{ reason: 'A file was deleted', title, ...('invoiceId' in target ? { invoiceIds: [target.invoiceId] } : {}) }],
+    });
+  if (entityType === 'JOB') {
+    await writeOnJob(entityId, event);
+    queueDoneDelete({ jobId: entityId }, `File: ${fileName}`);
+    return;
+  }
+  await prisma.timelineEvent.create({
+    data: { ...base, entity_type: entityType, entity_id: entityId, ...event, metadata: event.metadata as never },
+  });
+  if (entityType !== 'INVOICE') return;
+  const invoice = await prisma.invoice.findFirst({
+    where: { id: entityId, ...tenantWhere(req) },
+    select: { job_id: true, invoice_number: true },
+  });
+  if (invoice) queueDoneDelete({ invoiceId: entityId }, `Invoice ${invoice.invoice_number} file: ${fileName}`);
+  if (!invoice?.job_id) return;
+  await writeOnJob(invoice.job_id, {
+    event_type: event.event_type,
+    description: `Invoice ${invoice.invoice_number}: ${event.description}`,
+    metadata: { ...event.metadata, invoice_id: entityId, invoice_number: invoice.invoice_number, invoice_event_type: event.event_type },
+  });
 }
 
 // ─── Direct-to-storage upload (video) ────────────────────
@@ -991,16 +1000,10 @@ export async function completeDirectUpload(req: Request, res: Response) {
 
     const attachment = { ...created, file_url: fileUrl };
 
-    await prisma.timelineEvent.create({
-      data: {
-        organization_id: req.user!.organization_id,
-        entity_type: entityType,
-        entity_id: entityId,
-        event_type: 'ATTACHMENT_UPLOADED',
-        description: `File uploaded: ${displayName.trim()}`,
-        metadata: { attachment_id: attachment.id, file_type: ticket.mime },
-        created_by: req.user!.id,
-      },
+    await logFileEvent(req, entityType as AttachmentEntity, entityId, {
+      event_type: 'ATTACHMENT_UPLOADED',
+      description: `File uploaded: ${displayName.trim()}`,
+      metadata: { attachment_id: attachment.id, file_type: ticket.mime },
     });
 
     res.status(201).json({ attachment });
@@ -1038,7 +1041,12 @@ export async function updateAttachment(req: Request, res: Response) {
       res.status(404).json({ error: 'Attachment not found' });
       return;
     }
-    if (!mayChangeAttachment(req, 'update', entityType, existing.uploaded_by)) {
+    // The completed-job lock wins over the grant and over the own-upload rule.
+    if (await fileLockBinds(req, entityType as AttachmentEntity, entityId)) {
+      res.status(403).json({ error: JOB_LOCKED_MESSAGE, code: JOB_LOCKED_CODE });
+      return;
+    }
+    if (!mayChangeAttachment(req, 'update', entityType as AttachmentEntity, existing.uploaded_by)) {
       res.status(403).json({ error: 'Insufficient permissions' });
       return;
     }
@@ -1064,16 +1072,10 @@ export async function updateAttachment(req: Request, res: Response) {
     });
 
     // Log timeline event
-    await prisma.timelineEvent.create({
-      data: {
-        organization_id: req.user!.organization_id,
-        entity_type: entityType,
-        entity_id: entityId,
-        event_type: 'ATTACHMENT_UPDATED',
-        description: `Attachment updated: ${attachment.display_name}`,
-        metadata: { attachment_id: attachmentId },
-        created_by: req.user!.id,
-      },
+    await logFileEvent(req, entityType as AttachmentEntity, entityId, {
+      event_type: 'ATTACHMENT_UPDATED',
+      description: `Attachment updated: ${attachment.display_name}`,
+      metadata: { attachment_id: attachmentId },
     });
 
     res.json({ attachment });
@@ -1109,8 +1111,18 @@ export async function deleteAttachment(req: Request, res: Response) {
       res.status(404).json({ error: 'Attachment not found' });
       return;
     }
-    if (!mayChangeAttachment(req, 'delete', entityType, existing.uploaded_by)) {
-      res.status(403).json({ error: 'Insufficient permissions' });
+    if (await fileLockBinds(req, entityType as AttachmentEntity, entityId)) {
+      res.status(403).json({ error: JOB_LOCKED_MESSAGE, code: JOB_LOCKED_CODE });
+      return;
+    }
+    if (!mayChangeAttachment(req, 'delete', entityType as AttachmentEntity, existing.uploaded_by)) {
+      res.status(403).json({ error: OWN_UPLOADS_ONLY_MESSAGE });
+      return;
+    }
+    // Payments go-live P10: a file attached to a dispute stays until it is removed from the dispute. The database
+    // refuses the delete too (RESTRICT); this is the friendly answer in front of it, before the stored object is removed.
+    if (await prisma.disputeEvidenceItem.findFirst({ where: { attachment_id: attachmentId, ...tenantWhere(req) }, select: { id: true } })) {
+      res.status(409).json({ error: 'This file is attached to a dispute. Remove it from the dispute first.' });
       return;
     }
 
@@ -1139,16 +1151,28 @@ export async function deleteAttachment(req: Request, res: Response) {
     // every column. The return value is unused here and a count enumerates nothing.
     await prisma.attachment.deleteMany({ where: { id: attachmentId } });
 
+    const personName = (p: { first_name: string; last_name: string }) => `${p.first_name} ${p.last_name}`.trim();
+    const uploader = await prisma.user.findFirst({
+      where: { id: existing.uploaded_by, ...tenantWhere(req) },
+      select: { first_name: true, last_name: true },
+    });
+    const uploaderName = uploader ? personName(uploader) : 'a former team member';
+    const deleterName = personName(req.user!);
+
     // Log timeline event
-    await prisma.timelineEvent.create({
-      data: {
-        organization_id: req.user!.organization_id,
-        entity_type: entityType,
-        entity_id: entityId,
-        event_type: 'ATTACHMENT_DELETED',
-        description: `Attachment deleted: ${existing.display_name}`,
-        metadata: { attachment_id: attachmentId, file_name: existing.file_name },
-        created_by: req.user!.id,
+    await logFileEvent(req, entityType as AttachmentEntity, entityId, {
+      event_type: 'ATTACHMENT_DELETED',
+      // Names both people: whoever removed the file and whoever put it there (PRD 4: nothing disappears unseen).
+      description: `Attachment deleted: ${existing.display_name} (uploaded by ${uploaderName}, deleted by ${deleterName})`,
+      metadata: {
+        attachment_id: attachmentId,
+        file_name: existing.file_name,
+        // The name the file was shown under: the office review lists a deleted file by it.
+        display_name: existing.display_name,
+        uploaded_by: existing.uploaded_by,
+        uploaded_by_name: uploaderName,
+        deleted_by: req.user!.id,
+        deleted_by_name: deleterName,
       },
     });
 

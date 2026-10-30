@@ -46,6 +46,9 @@ vi.mock('@/lib/entitlements', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/entitlements')>()),
   useFeature: vi.fn(),
 }));
+// Roles & Permissions S08.18: the browser phone is the "Office phone in the browser" switch, read from the person's
+// ability; setup() grants it unless a case turns it off.
+vi.mock('@/contexts/AbilityContext', () => ({ useAppAbility: vi.fn() }));
 vi.mock('@/lib/api/phoneNumbers', () => ({
   requestPhoneAccessToken: vi.fn().mockResolvedValue({ token: 'T' }),
 }));
@@ -59,10 +62,15 @@ import {
 } from '@/lib/communication/officeSoftphone';
 import { useFeature } from '@/lib/entitlements';
 import { useAuthStore } from '@/stores/auth.store';
+import { useAppAbility } from '@/contexts/AbilityContext';
+import { buildAbility } from '@/lib/ability';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
-function setup({ role = 'ADMIN', comm = true, flag = true } = {}) {
+function setup({ role = 'ADMIN', comm = true, flag = true, browserPhone = true } = {}) {
+  vi.mocked(useAppAbility).mockReturnValue(
+    buildAbility(browserPhone ? [{ action: 'use_browser_phone', subject: 'Communication' }] : []),
+  );
   vi.mocked(useAuthStore).mockImplementation((sel: any) => sel({ user: { role } }));
   vi.mocked(useFeature).mockReturnValue(comm);
   vi.mocked(isCtmSoftphoneEnabled).mockReturnValue(flag);

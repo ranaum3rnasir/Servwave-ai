@@ -10,8 +10,8 @@
  * sub-select PLUS the presenter call, not the presenter alone (would blank contact for ADMIN too).
  *
  * Mirrors `repro-1997.test.ts` / `estimate-customer-contact-redaction.test.ts`'s
- * `mockDeniedCustomerRead` — a conditioned `read Customer` grant built from real `DEFAULT_GRANTS`,
- * never a bare CASL literal. Uses DISPATCHER (unconditional `read Invoice`, defaultGrants.ts:241)
+ * `mockDeniedCustomerRead` — View customers turned off through the switch catalog (which owns
+ * Customer reach since S01.5), never a bare CASL literal. Uses DISPATCHER (unconditional `read Invoice`, defaultGrants.ts:241)
  * so `canAccessRow` short-circuits without a `findFirst` mock — the subject under test is the
  * Customer-read redaction, not Invoice row-scope (same cheapening `repro-1997.test.ts` case 5
  * uses).
@@ -21,8 +21,7 @@ import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import { generateInvoicePdf } from '../lib/pdf';
-import { mockAuthAs, authHeader } from './helpers';
-import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
+import { mockAuthAs, mockRoleSwitches, authHeader } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -33,13 +32,9 @@ vi.mock('../lib/pdf', () => ({
 }));
 
 /** See repro-1997.test.ts for the full rationale — own local copy, not a shared import. */
-function mockDeniedCustomerRead(role: string, deniedCustomerId: string) {
-  const rows = [
-    ...DEFAULT_GRANTS.filter((g) => !(g.role === role && g.action === 'read' && g.subject === 'Customer')),
-    { role, action: 'read', subject: 'Customer', conditions: { id: 'zz-not-' + deniedCustomerId } },
-  ];
-  mockPrisma.rolePermission.findMany.mockResolvedValue(rows.filter((g) => g.role === role));
-  clearPermissionCache();
+function mockDeniedCustomerRead(_role: string, _deniedCustomerId: string) {
+  // View customers off: the person reaches no customer, so THIS one is denied.
+  mockRoleSwitches({ view_customers: false });
 }
 
 const CUSTOMER_ID = 'c1997000-0000-0000-0000-000000000199';
@@ -116,7 +111,9 @@ describe('GET /api/invoices/:id/pdf — customer redaction (#1997 round 2, findi
   it('RED then fixed — a requester denied Customer read gets a PDF payload with no email/phone', async () => {
     mockAuthAs('dispatcher');
     mockDeniedCustomerRead('DISPATCHER', CUSTOMER_ID);
-    mockPrisma.invoice.findUnique.mockResolvedValue(invoicePdfFixture());
+    // A customer-only invoice: with no job behind it the customer does not come with a record
+    // the requester opened (S01.5), so it is judged on whether they can read the customer.
+    mockPrisma.invoice.findUnique.mockResolvedValue(invoicePdfFixture({ job: null }));
 
     const res = await request(app).get(`/api/invoices/${INVOICE_ID}/pdf`).set(authHeader('dispatcher'));
 
@@ -138,7 +135,9 @@ describe('GET /api/invoices/:id/pdf — customer redaction (#1997 round 2, findi
   it('RED then fixed — a requester denied Customer read gets a PDF payload with no service_locations either', async () => {
     mockAuthAs('dispatcher');
     mockDeniedCustomerRead('DISPATCHER', CUSTOMER_ID);
-    mockPrisma.invoice.findUnique.mockResolvedValue(invoicePdfFixture());
+    // A customer-only invoice: with no job behind it the customer does not come with a record
+    // the requester opened (S01.5), so it is judged on whether they can read the customer.
+    mockPrisma.invoice.findUnique.mockResolvedValue(invoicePdfFixture({ job: null }));
 
     const res = await request(app).get(`/api/invoices/${INVOICE_ID}/pdf`).set(authHeader('dispatcher'));
 

@@ -9,7 +9,7 @@
  */
 import type { Request } from 'express';
 import type { ScopeForTotals } from './invoice-totals';
-import { canSeePricing } from './permissions/enforce';
+import { canSeeCosts } from './permissions/enforce';
 
 export interface ScopeOfWork {
   id: string;
@@ -102,23 +102,24 @@ export function stripScopeCost(scopes: ScopeOfWork[]): Omit<ScopeOfWork, 'intern
   return scopes.map(({ internal_cost: _internalCost, ...rest }) => rest);
 }
 
+/** What an unauthenticated customer may read of a scope block. */
+export type PublicScope = Pick<ScopeOfWork, 'id' | 'title' | 'body' | 'flat_price' | 'is_taxable'>;
+
 /**
- * A copy of each scope with BOTH cost and sell price omitted — for a requester who cannot
- * `read Invoice` (D13, Spec A). Distinct from stripScopeCost, which drops cost only and is
- * called UNCONDITIONALLY by invoice-lines.controller.ts and estimate.controller.ts; widening
- * that function would hide flat_price from every user including admins.
+ * Payments go-live slice 24 (#1073) - the scope blocks a token-gated public page shows. An
+ * ALLOWLIST rather than `stripScopeCost`'s subtraction: the route has no requester to judge, so a
+ * key must be named here to reach the customer, and a key added to the stored block later
+ * (cost, rep state) stays off the public payload by omission. Takes the raw JSONB column.
  */
-export function stripScopeMoney(
-  scopes: ScopeOfWork[],
-): Omit<ScopeOfWork, 'internal_cost' | 'flat_price'>[] {
-  return scopes.map(({ internal_cost: _internalCost, flat_price: _flatPrice, ...rest }) => rest);
+export function toPublicScopes(raw: unknown): PublicScope[] {
+  return asScopeArray(raw).map(({ id, title, body, flat_price, is_taxable }) => ({ id, title, body, flat_price, is_taxable }));
 }
 
 /**
  * Cost/margin strip shared by Invoice and Estimate detail-shaped responses - internal_cost
  * (scope margin), unit_cost/markup_percent (line margin) and the labor_hours/overhead_mode/
  * overhead_value cost model (D2/D8). Strips the KEY, absent rather than null, mirroring
- * stripLinePricing.
+ * stripLineCost.
  *
  * SRVW-140 - one policy for both entities: `stripInvoiceCost` (invoice.controller.ts) and
  * `stripEstimateCost` (estimate.controller.ts) were a token-for-token clone of this body, which
@@ -129,7 +130,7 @@ export function stripDocumentCost<T extends { scopes?: unknown; line_items?: Arr
   doc: T,
   req: Request,
 ): T {
-  if (canSeePricing(req)) return doc;
+  if (canSeeCosts(req)) return doc;
   const out: Record<string, unknown> = {
     ...doc,
     scopes: stripScopeCost(asScopeArray(doc.scopes)),

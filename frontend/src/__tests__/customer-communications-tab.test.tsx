@@ -230,7 +230,7 @@ describe('CustomerCommunicationsTab', () => {
     renderWithProviders(<CustomerCommunicationsTab customerId={CUSTOMER_ID} />, {
       ability: buildAbility([
         { action: 'read', subject: 'Communication' },
-        { action: 'update', subject: 'Communication' },
+        { action: 'attach', subject: 'Communication' },
       ]),
     });
 

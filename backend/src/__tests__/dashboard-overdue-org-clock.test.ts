@@ -113,7 +113,7 @@ describe('GET /api/dashboard — Needs Attention reads the org clock', () => {
     const res = await request(app).get('/api/dashboard').set(authHeader('admin'));
     expect(res.status).toBe(200);
 
-    const items: any[] = res.body.needs_attention ?? [];
+    const items: any[] = res.body.data.needs_attention ?? [];
     // The invariant the two clocks jointly violate. This still catches the bug if someone
     // reverted the query fix but kept the label on the org clock.
     expect(items.some((i) => i.badge === '0d')).toBe(false);
@@ -129,7 +129,7 @@ describe('GET /api/dashboard — Needs Attention reads the org clock', () => {
     const res = await request(app).get('/api/dashboard').set(authHeader('admin'));
     expect(res.status).toBe(200);
 
-    const overdue = (res.body.needs_attention ?? []).filter((i: any) => i.type === 'overdue_invoice');
+    const overdue = (res.body.data.needs_attention ?? []).filter((i: any) => i.type === 'overdue_invoice');
     expect(overdue).toHaveLength(1);
     expect(overdue[0].badge).toBe('1d');
   });

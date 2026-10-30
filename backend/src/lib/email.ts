@@ -1,5 +1,7 @@
 import { Resend, CreateEmailOptions } from 'resend';
 import { env } from '../config/env';
+import { MAIN_ADDRESS_SELECT, mailboxDomain, registeredLocalPart } from './mailbox/register';
+import { MAX_SENDER_NAME_LENGTH, resolveHandSender, type HandSenderRef } from './mailbox/hand-sender';
 import { logger } from './logger';
 import { prisma } from './prisma';
 import { estimateDocumentSelect, toEstimateDocument } from './estimate-document';
@@ -8,6 +10,7 @@ import { invoicePdfSelect, toInvoiceForPdf } from './pdf/invoice-select';
 import { formatDateTimeInZone, formatEndOfWindowInZone, DEFAULT_TIMEZONE } from './timezone';
 import { persistTransactionalEmail, TransactionalEmailAttachment, TransactionalEmailRecord } from './comm-persist';
 import { prepareReplyToken, persistReplyToken, replyAddressFor } from './reply-token';
+import { recordConversationData } from './mailbox/conversations';
 import { isTransactionalSendSuppressed } from './email-suppression';
 import { buildSalesRequestEmail, type SalesTopic } from './sales-request-email';
 
@@ -70,7 +73,7 @@ export type EmailDispatchResult =
        * "notify the customer" can answer honestly rather than silently doing
        * nothing. A policy block like the two above, not a failure.
        */
-      reason: 'org_disabled' | 'no_api_key' | 'suppressed' | 'no_recipient';
+      reason: 'org_disabled' | 'no_api_key' | 'suppressed' | 'no_recipient' | 'address_needed' | 'foreign_mailbox';
     }
   | { status: 'failed'; error: string };
 
@@ -95,7 +98,7 @@ type DistributiveOmit<T, K extends keyof never> = T extends unknown ? Omit<T, K>
 type DispatchPayload = DistributiveOmit<CreateEmailOptions, 'from'>;
 
 /** Long enough for any real company name; short enough to stay a sane header. */
-const MAX_DISPLAY_NAME_LENGTH = 64;
+const MAX_DISPLAY_NAME_LENGTH = MAX_SENDER_NAME_LENGTH;
 
 /** RFC 2047 encoded-word: the only safe way to put non-ASCII in a header. */
 function encodeNonAsciiDisplayName(name: string): string {
@@ -148,8 +151,8 @@ export function formatSenderIdentity(orgName: string | null | undefined, address
 const MAX_SENDER_LOCAL_PART = 40;
 
 /**
- * The org's half of a shared-domain sending address: `Alpha Doors` becomes
- * `alphadoors`, for `alphadoors@mail.servwave.com`.
+ * The org's half of a shared-domain sending address: `Example Doors` becomes
+ * `exampledoors`, for `exampledoors@mail.servwave.com`.
  *
  * Every org on the shared domain used to send as a flat `no-reply@`, so a
  * recipient's inbox showed an address that named nobody and leaned entirely on
@@ -216,6 +219,7 @@ export function effectiveSenderLocalPart(
 export function sharedSenderAddress(
   orgName: string | null | undefined,
   explicitLocalPart?: string | null,
+  domain?: string,
 ): string {
   // The domain half is whatever EMAIL_FROM_BUSINESS carries, so moving the
   // platform to a different shared sending domain stays a config change. A
@@ -229,7 +233,27 @@ export function sharedSenderAddress(
   if (!shared || /[<>\s]/.test(shared)) return shared;
   const at = shared.lastIndexOf('@');
   if (at < 0) return shared;
-  return `${effectiveSenderLocalPart(orgName, explicitLocalPart)}@${shared.slice(at + 1)}`;
+  // `domain` is the environment's mailbox domain for an org-voice send (see mailbox/register.ts); the
+  // platform's own voice passes none and keeps the shared sending domain.
+  return `${effectiveSenderLocalPart(orgName, explicitLocalPart)}@${domain || shared.slice(at + 1)}`;
+}
+
+/**
+ * The address an org's automated mail goes out from: the main address the mailbox address register
+ * issued (which a rename never moves), else - for a company the register has not reached - the part
+ * stored on the organization or derived from its name, on the same mailbox domain. `org` is a read
+ * that selected MAIN_ADDRESS_SELECT alongside name and email_sender_local_part.
+ */
+function orgVoiceAddress(org: {
+  name?: string | null;
+  email_sender_local_part?: string | null;
+  mailboxes?: { addresses: { local_part: string }[] }[];
+} | null): string {
+  return sharedSenderAddress(
+    org?.name ?? null,
+    registeredLocalPart(org) ?? org?.email_sender_local_part ?? null,
+    mailboxDomain(),
+  );
 }
 
 /**
@@ -257,11 +281,11 @@ export async function orgSendingIdentity(organizationId: string): Promise<{
 }> {
   const org = await prisma.organization.findUnique({
     where: { id: organizationId },
-    select: { name: true, email_sending_enabled: true, email_sender_local_part: true },
+    select: { name: true, email_sending_enabled: true, email_sender_local_part: true, ...MAIN_ADDRESS_SELECT },
   });
-  const explicit = org?.email_sender_local_part ?? null;
+  const explicit = registeredLocalPart(org) ?? org?.email_sender_local_part ?? null;
   return {
-    address: sharedSenderAddress(org?.name ?? null, explicit),
+    address: orgVoiceAddress(org),
     name: sanitizeDisplayName(org?.name) || null,
     sendingEnabled: org?.email_sending_enabled !== false,
     // The settings field renders these three rather than splitting `address`
@@ -269,7 +293,8 @@ export async function orgSendingIdentity(organizationId: string): Promise<{
     // needs the halves separately, and `localPartIsCustom` is what tells it
     // whether the value shown is the org's own or still tracking the name.
     localPart: effectiveSenderLocalPart(org?.name ?? null, explicit),
-    localPartIsCustom: Boolean(explicit?.trim()),
+    // Every company's part is frozen now, so "custom" means it differs from what the current name gives.
+    localPartIsCustom: effectiveSenderLocalPart(org?.name ?? null, explicit) !== orgSenderLocalPart(org?.name),
     senderDomain: senderDomainOf(),
   };
 }
@@ -280,10 +305,19 @@ export async function orgSendingIdentity(organizationId: string): Promise<{
  *  is configured as a full identity or is otherwise not a bare address, the
  *  same shapes sharedSenderAddress declines to rewrite. */
 export function senderDomainOf(): string {
+  const mailbox = mailboxDomain();
+  if (mailbox) return mailbox;
   const shared = env.EMAIL_FROM_BUSINESS;
   if (!shared || /[<>\s]/.test(shared)) return '';
   const at = shared.lastIndexOf('@');
   return at < 0 ? '' : shared.slice(at + 1);
+}
+
+/** Waits before each retry of a send the mail service refused for going over its rate limit. */
+const RATE_LIMIT_BACKOFF_MS = [300, 700, 1500, 3000];
+
+function isRateLimited(error: { name?: string; statusCode?: number | null } | null | undefined): boolean {
+  return !!error && (error.statusCode === 429 || error.name === 'rate_limit_exceeded');
 }
 
 /**
@@ -311,11 +345,14 @@ async function dispatchEmail(
     /**
      * Send even when the org has outgoing email switched off.
      *
-     * ONLY for a message addressed to ServWave itself - the "Reach sales"
-     * composer. The kill switch's whole purpose is to stop an org speaking to
-     * ITS OWN CUSTOMERS under its own name; a contractor writing to us is not
-     * that, and gating it silenced exactly the orgs most likely to need sales
-     * (email is off by default, so that is most of them).
+     * Two kinds of message, and only these: one addressed to ServWave itself
+     * (the "Reach sales" composer: a contractor writing to us is not an org
+     * speaking to its customers, and gating it silenced exactly the orgs most
+     * likely to need sales, since email is off by default), and a customer's
+     * own money notices (payment receipts, bank payment processing and failed
+     * notices, refund emails: the customer must always be told where their
+     * money stands, slices 30 and 31). The kill switch exists to stop an org's
+     * marketing-style mail to its customers, not these.
      *
      * Deliberately NOT keyed off `senderIdentity: 'platform'`, which the
      * payments notices also use: those go to the ORG'S OWN PEOPLE and stay
@@ -327,15 +364,31 @@ async function dispatchEmail(
      * licence to mail an address that hard-bounced.
      */
     bypassOrgSendingGate?: boolean;
+    /**
+     * The mailbox a HAND-written email (a person pressed Send) goes out from, with the person who pressed it
+     * (PRD 10, S10.11). The address and the display name come from the register, never from the caller: the person's
+     * own primary address and "<their name> at <company name>". The mailbox must be that person's own (a send from
+     * the main mailbox, a colleague's, a handed-over one or another company's is refused as 'foreign_mailbox'), and a
+     * person with no address is refused as 'address_needed'. Without it the send is automated and goes out from the
+     * company's main address.
+     */
+    handSender?: HandSenderRef;
   },
 ): Promise<EmailDispatchResult> {
   if (!resend) {
     logger.warn('RESEND_API_KEY not set - skipping email send');
     return { status: 'skipped', reason: 'no_api_key' };
   }
+  const handSender = options?.handSender
+    ? await resolveHandSender(prisma, { organizationId, userId: options.handSender.userId })
+    : null;
+  if (handSender) {
+    if (!handSender.ok) return { status: 'skipped', reason: 'address_needed' };
+    if (handSender.sender.mailboxId !== options!.handSender!.mailboxId) return { status: 'skipped', reason: 'foreign_mailbox' };
+  }
   const org = await prisma.organization.findUnique({
     where: { id: organizationId },
-    select: { email_sending_enabled: true, name: true, email_sender_local_part: true },
+    select: { email_sending_enabled: true, name: true, email_sender_local_part: true, ...MAIN_ADDRESS_SELECT },
   });
   if (org?.email_sending_enabled === false && !options?.bypassOrgSendingGate) {
     logger.info(`Email sending disabled for organization ${organizationId} - skipping send`);
@@ -361,14 +414,16 @@ async function dispatchEmail(
   // speaking as the platform, so an org's chosen `service@` must not leak onto
   // a message the org did not send. Both null then resolve to the shared
   // address's own `no-reply` fallback.
-  const fromAddress = sharedSenderAddress(
-    isPlatformVoice ? null : org?.name ?? null,
-    isPlatformVoice ? null : org?.email_sender_local_part ?? null,
-  );
+  //
+  // A hand send speaks as the person (their own address and "<name> at <company>"), resolved above from the register;
+  // every other org-voice send speaks as the company.
+  const hand = handSender?.ok ? handSender.sender : null;
+  const fromAddress = hand ? hand.address : isPlatformVoice ? sharedSenderAddress(null, null) : orgVoiceAddress(org);
   // Null for platform voice: that send deliberately carries no org name, and
   // recording one would misrepresent who spoke.
-  const fromName = isPlatformVoice ? null : sanitizeDisplayName(org?.name) || null;
-  const from = isPlatformVoice ? fromAddress : formatSenderIdentity(org?.name, fromAddress);
+  const voiceName = hand ? hand.displayName : org?.name;
+  const fromName = isPlatformVoice ? null : sanitizeDisplayName(voiceName) || null;
+  const from = isPlatformVoice ? fromAddress : formatSenderIdentity(voiceName, fromAddress);
   // The reply address is a bare routing token as its whole local part (see
   // lib/reply-token.ts), so a client with no display name to render falls back
   // to showing the raw token - the customer's reply header reads as a machine
@@ -383,17 +438,26 @@ async function dispatchEmail(
   // Per ADDRESS, not per header: Resend types replyTo as `string | string[]`,
   // and naming a joined list would collapse it into one pair of angle brackets
   // and stop being a valid address list at all.
-  const nameReplyTo = (address: string) => formatSenderIdentity(org?.name, address);
+  const nameReplyTo = (address: string) => formatSenderIdentity(voiceName, address);
   const replyTo = isPlatformVoice
     ? payload.replyTo
     : Array.isArray(payload.replyTo)
       ? payload.replyTo.map(nameReplyTo)
       : payload.replyTo && nameReplyTo(payload.replyTo);
-  const { data, error } = await resend.emails.send({
+  const message = {
     ...payload,
     from,
     ...(replyTo ? { replyTo } : {}),
-  } as CreateEmailOptions);
+  } as CreateEmailOptions;
+  let { data, error } = await resend.emails.send(message);
+  // The mail service refuses sends over its per-second limit with a 429. That refusal means the
+  // message was NOT accepted, so a short bounded retry is safe and cannot double-send. Every
+  // sender passes through here, so the gap is closed once, for all of them.
+  for (const waitMs of RATE_LIMIT_BACKOFF_MS) {
+    if (!isRateLimited(error)) break;
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+    ({ data, error } = await resend.emails.send(message));
+  }
   if (error) {
     logger.error(`Resend rejected email for organization ${organizationId}:`, error);
     return { status: 'failed', error: error.message ?? 'Email provider rejected the message' };
@@ -419,7 +483,8 @@ async function dispatchEmail(
 export function dispatchFailureStatus(
   result: Exclude<EmailDispatchResult, { status: 'sent' }>,
 ): 409 | 502 {
-  return result.status === 'skipped' && (result.reason === 'org_disabled' || result.reason === 'suppressed')
+  return result.status === 'skipped' &&
+    (result.reason === 'org_disabled' || result.reason === 'suppressed' || result.reason === 'address_needed' || result.reason === 'foreign_mailbox')
     ? 409
     : 502;
 }
@@ -487,6 +552,8 @@ function pdfAttachment(filename: string, content: Buffer): {
 async function prepareTransactionalReply(
   record: TransactionalEmailRecord | undefined,
   to: string | string[],
+  /** The mailbox a hand send goes out from (S10.12); an automated send names none and uses the main mailbox. */
+  fromMailboxId?: string,
 ): Promise<{ token: string; persist: boolean; address: string; threadId: string | null } | null> {
   if (!record?.entityType || !record.entityId) return null;
   // One address per (entity, recipient) pair, so a multi-addressee send anchors
@@ -501,19 +568,17 @@ async function prepareTransactionalReply(
       entity_id: record.entityId,
       customer_id: record.customerId ?? null,
       expected_from: recipient,
+      // Reuse applies per sending mailbox: a record conversation belongs to the mailbox its send went out from, so a
+      // hand send reuses only the conversation of the sender's own mailbox and an automated send only the main mailbox's.
+      mailbox_scope: fromMailboxId ? { mailbox_id: fromMailboxId } : 'main',
     });
-    // The thread only exists once a previous send about this entity created it;
-    // a reused token carries it, a fresh one does not yet.
-    const existing = prepared.persist
-      ? null
-      : await prisma.replyToken.findFirst({
-          where: { token: prepared.token },
-          select: { thread_id: true },
-        });
+    // The thread only exists once a previous send about this entity created it; a reused token carries it (the
+    // lookup that found the token already read it), a fresh one does not yet.
     return {
-      ...prepared,
+      token: prepared.token,
+      persist: prepared.persist,
       address: replyAddressFor(prepared.token),
-      threadId: existing?.thread_id ?? null,
+      threadId: prepared.thread_id,
     };
   } catch (err) {
     // Best-effort, exactly like the compose path's phase 2: a token failure must
@@ -543,6 +608,8 @@ async function finalizeTransactionalSend(args: {
   result: SentDispatch;
   /** #2251 - what the dispatch attached, so the mirrored row can say so. */
   attachments?: TransactionalEmailAttachment[];
+  /** The mailbox a hand send went out from; a conversation it opens sits there. Absent for an automated send (main mailbox). */
+  fromMailboxId?: string;
 }): Promise<void> {
   const { record, reply } = args;
   let threadId = reply?.threadId ?? null;
@@ -551,8 +618,14 @@ async function finalizeTransactionalSend(args: {
       // Deferred to here for the same invariant the Email row keeps: a dispatch
       // that never left leaves no orphan thread behind either.
       if (!threadId) {
+        // A conversation opened by a send to a customer about a record: origin "record", carrying the record it
+        // belongs to, in the mailbox the send went out from (the sender's own for a hand send, else the main
+        // mailbox). `reply` exists only when the record names one.
         threadId = (await prisma.emailThread.create({
-          data: { organization_id: record.organizationId },
+          data: await recordConversationData(prisma, record.organizationId, {
+            type: record.entityType!,
+            id: record.entityId!,
+          }, args.fromMailboxId),
         })).id;
       }
       if (reply.persist) {
@@ -564,6 +637,8 @@ async function finalizeTransactionalSend(args: {
           entity_id: record.entityId ?? null,
           customer_id: record.customerId ?? null,
           expected_from: Array.isArray(args.to) ? args.to[0] : args.to,
+          // The person who pressed Send for a hand-sent document; nobody for an automated send.
+          created_by_user_id: record.sentByUserId ?? null,
         });
       }
     } catch (err) {
@@ -583,6 +658,61 @@ async function finalizeTransactionalSend(args: {
     attachments: args.attachments,
     ...sentTrace(args.result),
   });
+}
+
+/**
+ * The record an estimate's own notices (approved, deposit confirmations, deposit refund) name: the estimate, whatever job or
+ * lead and customer the caller filed the stored copy under. Built here from the estimate's id, never left to the caller, so
+ * no such notice can go out without the reply address that ties a reply to the estimate (PRD 10, S10.13).
+ */
+function estimateRecord(
+  organizationId: string,
+  estimateId: string,
+  filed: TransactionalEmailRecord | undefined,
+): TransactionalEmailRecord {
+  return { organizationId, ...filed, entityType: 'estimate', entityId: estimateId };
+}
+
+/**
+ * An automated send to a CUSTOMER about one record (PRD 10, S10.13): the reply address first, then the send, then the
+ * stored copy. Automated mail keeps the company's main address and display name (no hand sender), so the record's
+ * conversation it opens or reuses sits in the main mailbox with origin "record", and the customer's reply to it joins that
+ * conversation. This is the one path the "estimate approved" email, the deposit confirmations, the refund notices and an
+ * automation email take; the senders that already did this inline (receipts, schedule notices) keep their own copy of the
+ * same three steps. The provider call is never inside a transaction: nothing here opens one.
+ *
+ * Without a record the send still goes (and nothing is stored): the record is what names the conversation, so a caller that
+ * has none has nothing to tie the reply to. Every customer sender passes one.
+ */
+async function sendToCustomerAboutRecord(args: {
+  organizationId: string;
+  record: TransactionalEmailRecord | undefined;
+  to: string;
+  cc?: string[];
+  subject: string;
+  text: string;
+  html: string;
+  /** A rendered PDF (see pdfAttachment): it goes on the message and is listed on the stored copy. */
+  pdf?: ReturnType<typeof pdfAttachment>;
+  options?: Parameters<typeof dispatchEmail>[2];
+}): Promise<EmailDispatchResult> {
+  const reply = await prepareTransactionalReply(args.record, args.to);
+  const result = await dispatchEmail(args.organizationId, {
+    to: args.to,
+    ...(args.cc && args.cc.length > 0 ? { cc: args.cc } : {}),
+    ...(reply ? { replyTo: reply.address } : {}),
+    subject: args.subject,
+    text: args.text,
+    html: args.html,
+    ...(args.pdf ? { attachments: [args.pdf.pdf] } : {}),
+  }, args.options);
+  if (result.status === 'sent' && args.record) {
+    await finalizeTransactionalSend({
+      record: args.record, reply, to: args.to, cc: args.cc, subject: args.subject, text: args.text, result,
+      attachments: args.pdf?.record,
+    });
+  }
+  return result;
 }
 
 /**
@@ -815,6 +945,12 @@ export async function sendComposedEmail(params: {
    * advertise an address resolving to nothing.
    */
   replyTo?: string;
+  /**
+   * The mailbox this goes out from and the person who wrote it. REQUIRED: a hand-written email always speaks as its
+   * writer, so this path has no way to go out as the company, and (like every sender) no way to name an address or a
+   * display name: both are resolved from the register by `dispatchEmail`.
+   */
+  handSender: HandSenderRef;
 }): Promise<EmailDispatchResult> {
   try {
     return await dispatchEmail(params.organizationId, {
@@ -826,7 +962,7 @@ export async function sendComposedEmail(params: {
       ...(params.html ? { html: params.html } : {}),
       ...(params.replyTo ? { replyTo: params.replyTo } : {}),
       ...(params.attachments && params.attachments.length > 0 ? { attachments: params.attachments } : {}),
-    });
+    }, { handSender: params.handSender });
   } catch (err) {
     logger.error(`Failed to send composed email to ${params.to}:`, err);
     return { status: 'failed', error: err instanceof Error ? err.message : 'Unexpected email error' };
@@ -844,7 +980,16 @@ export async function sendEstimateEmail(params: {
   total: string;
   publicUrl: string;
   record?: TransactionalEmailRecord;
+  /**
+   * The person who pressed Send and the mailbox it goes out from: their own (PRD 10, S10.12). REQUIRED, like the compose
+   * path's: a document sent by hand always speaks as its sender, so this sender has no way to go out as the company and none
+   * to name an address or a display name (the dispatch resolves both from the register). It also decides where the record
+   * conversation the send opens or reuses sits (the sender's mailbox) and who is recorded as having sent it.
+   */
+  handSender: HandSenderRef;
 }): Promise<EmailDispatchResult> {
+  // The person who pressed Send is recorded with the send (an automated send records nobody).
+  const handRecord = params.record ? { ...params.record, sentByUserId: params.handSender.userId } : undefined;
   try {
     const pdfBuffer = await renderEstimatePdfBuffer(params.estimateId);
     const attachment = pdfAttachment(`estimate-${params.estimateNumber}.pdf`, pdfBuffer);
@@ -853,7 +998,7 @@ export async function sendEstimateEmail(params: {
     const text = customMessage
       ? `Hi ${params.customerName},\n\n${customMessage}\n\nYour estimate ${params.estimateNumber} for ${params.total} is ready. View it here: ${params.publicUrl}`
       : `Hi ${params.customerName}, your estimate ${params.estimateNumber} for ${params.total} is ready. View it here: ${params.publicUrl}`;
-    const reply = await prepareTransactionalReply(params.record, params.to);
+    const reply = await prepareTransactionalReply(handRecord, params.to, params.handSender.mailboxId);
     const result = await dispatchEmail(params.org.id, {
       to: params.to,
       ...(params.cc && params.cc.length > 0 ? { cc: params.cc } : {}),
@@ -869,12 +1014,12 @@ export async function sendEstimateEmail(params: {
         org: params.org,
       }),
       attachments: [attachment.pdf],
-    });
+    }, { handSender: params.handSender });
     if (result.status === 'sent') {
       logger.info(`Estimate email sent to ${params.to} for ${params.estimateNumber}`);
-      if (params.record) {
+      if (handRecord) {
         await finalizeTransactionalSend({
-          record: params.record, reply, to: params.to, cc: params.cc, subject, text, result,
+          record: handRecord, fromMailboxId: params.handSender.mailboxId, reply, to: params.to, cc: params.cc, subject, text, result,
           attachments: attachment.record,
         });
       }
@@ -967,6 +1112,12 @@ export async function sendStagePickupEmail(params: {
   timezone?: string;
   /** Stamp the send on the job's Communication history (pass jobId/jobLabel). */
   record?: TransactionalEmailRecord;
+  /**
+   * The person who pressed Send and the mailbox it goes out from: their own (PRD 10, S10.12). The pickup ticket is a hand
+   * send like an estimate or an invoice, so it goes from the sender's address and a reply to it reaches that person's
+   * mailbox. REQUIRED: this sender has no way to go out as the company or to name an address or a display name.
+   */
+  handSender: HandSenderRef;
 }): Promise<StagePickupEmailResult> {
   const subject = params.subject?.trim() || `Pickup Ticket ${params.jobNumber} - ${params.customer}`;
   const html = stagePickupEmailHtml(params);
@@ -980,7 +1131,7 @@ export async function sendStagePickupEmail(params: {
       subject,
       text,
       html,
-    });
+    }, { handSender: params.handSender });
     if (result.status === 'sent') {
       logger.info(`Stage pickup email sent to ${params.to} for ${params.jobNumber}`);
       // Also an outside-party send (pickup contacts), and the StageAuditEntry the
@@ -1218,6 +1369,31 @@ export async function sendPasswordResetEmail(params: {
   }
 }
 
+/**
+ * Internal ops alert (payments go-live slice 37: the nightly reconcile's drift report). Goes to
+ * ServWave's own inbox (PAYMENTS_OPS_ALERT_EMAIL), plain text, never to an org or a customer.
+ * Never throws: an alert that cannot be sent is logged and the job carries on. Returns true only
+ * when the mailer accepted it.
+ */
+export async function sendOpsAlertEmail(params: { subject: string; text: string }): Promise<boolean> {
+  if (!resend) {
+    logger.warn(`RESEND_API_KEY not set - ops alert not emailed: ${params.subject}`);
+    return false;
+  }
+  try {
+    await resend.emails.send({
+      from: env.EMAIL_FROM,
+      to: env.PAYMENTS_OPS_ALERT_EMAIL,
+      subject: params.subject,
+      text: params.text,
+    });
+    return true;
+  } catch (err) {
+    logger.error(`Failed to send ops alert email (${params.subject}):`, err);
+    return false;
+  }
+}
+
 export async function sendEstimateApprovedNotification(params: {
   estimateId: string;
   org: OrganizationBrandingSubset;
@@ -1247,7 +1423,10 @@ export async function sendEstimateApprovedNotification(params: {
     const text = `Hi ${params.customerName}, your estimate ${params.estimateNumber} for ${params.total} has been approved.`
       + (optionsText ? ` ${optionsText}` : '')
       + ' Please find the signed estimate attached.';
-    const result = await dispatchEmail(params.org.id, {
+    // The estimate is the record this names, so the customer's reply joins the estimate's conversation (PRD 10, S10.13).
+    const result = await sendToCustomerAboutRecord({
+      organizationId: params.org.id,
+      record: estimateRecord(params.org.id, params.estimateId, params.record),
       to: params.to,
       subject,
       text,
@@ -1270,15 +1449,10 @@ export async function sendEstimateApprovedNotification(params: {
           Our team will be in touch shortly to schedule your service.
         </p>
       `, params.org),
-      attachments: [attachment.pdf],
+      pdf: attachment,
     });
     if (result.status === 'sent') {
       logger.info(`Estimate approved notification sent to ${params.to} for ${params.estimateNumber}`);
-      if (params.record) {
-        await persistTransactionalEmail({
-          ...params.record, to: params.to, subject, text, attachments: attachment.record, ...sentTrace(result),
-        });
-      }
     }
   } catch (err) {
     logger.error(`Failed to send estimate approved notification for ${params.estimateNumber}:`, err);
@@ -1298,6 +1472,8 @@ export async function sendEstimateWithDepositEmail(params: {
   depositPercentage: number;
   publicUrl: string;
   record?: TransactionalEmailRecord;
+  /** The person who pressed Send and the mailbox it goes out from: their own (see sendEstimateEmail). */
+  handSender: HandSenderRef;
 }): Promise<EmailDispatchResult> {
   const html = wrapHtml(h`
     <h2 style="margin:0 0 8px;font-size:22px;color:#111827;">Your Estimate is Ready</h2>
@@ -1323,6 +1499,8 @@ export async function sendEstimateWithDepositEmail(params: {
       You can review and pay your deposit using the link above.
     </p>
   `, params.org);
+  // The person who pressed Send is recorded with the send (an automated send records nobody).
+  const handRecord = params.record ? { ...params.record, sentByUserId: params.handSender.userId } : undefined;
   try {
     const pdfBuffer = await renderEstimatePdfBuffer(params.estimateId);
     const attachment = pdfAttachment(`estimate-${params.estimateNumber}.pdf`, pdfBuffer);
@@ -1331,7 +1509,7 @@ export async function sendEstimateWithDepositEmail(params: {
     const text = customMessage
       ? `Hi ${params.customerName},\n\n${customMessage}\n\nEstimate ${params.estimateNumber} for ${params.total} is ready. A deposit of ${params.depositAmount} (${params.depositPercentage}%) is required. View it here: ${params.publicUrl}`
       : `Hi ${params.customerName}, estimate ${params.estimateNumber} for ${params.total} is ready. A deposit of ${params.depositAmount} (${params.depositPercentage}%) is required. View it here: ${params.publicUrl}`;
-    const reply = await prepareTransactionalReply(params.record, params.to);
+    const reply = await prepareTransactionalReply(handRecord, params.to, params.handSender.mailboxId);
     const result = await dispatchEmail(params.org.id, {
       to: params.to,
       ...(reply ? { replyTo: reply.address } : {}),
@@ -1340,12 +1518,12 @@ export async function sendEstimateWithDepositEmail(params: {
       text,
       html,
       attachments: [attachment.pdf],
-    });
+    }, { handSender: params.handSender });
     if (result.status === 'sent') {
       logger.info(`Estimate with deposit email sent to ${params.to} for ${params.estimateNumber}`);
-      if (params.record) {
+      if (handRecord) {
         await finalizeTransactionalSend({
-          record: params.record, reply, to: params.to, cc: params.cc, subject, text, result,
+          record: handRecord, fromMailboxId: params.handSender.mailboxId, reply, to: params.to, cc: params.cc, subject, text, result,
           attachments: attachment.record,
         });
       }
@@ -1362,6 +1540,8 @@ export async function sendDepositPaymentConfirmation(params: {
   to: string;
   customerName: string;
   estimateNumber: string;
+  /** The record this names (PRD 10, S10.13): the customer's reply to it joins this estimate's conversation. */
+  estimateId: string;
   depositAmount: number;
   totalCharged: number;
   paymentMethod: string;
@@ -1407,7 +1587,9 @@ export async function sendDepositPaymentConfirmation(params: {
   try {
     const subject = `Deposit Receipt - ${params.estimateNumber}`;
     const text = `Hi ${params.customerName}, your deposit of ${formatCurrency(params.totalCharged)} for estimate ${params.estimateNumber} has been received via ${params.paymentMethod}. Thank you for choosing ${params.companyName}.`;
-    const result = await dispatchEmail(params.organizationId, {
+    const result = await sendToCustomerAboutRecord({
+      organizationId: params.organizationId,
+      record: estimateRecord(params.organizationId, params.estimateId, params.record),
       to: params.to,
       subject,
       text,
@@ -1415,9 +1597,6 @@ export async function sendDepositPaymentConfirmation(params: {
     });
     if (result.status === 'sent') {
       logger.info(`Deposit payment confirmation sent to ${params.to} for ${params.estimateNumber}`);
-      if (params.record) {
-        await persistTransactionalEmail({ ...params.record, to: params.to, subject, text, ...sentTrace(result) });
-      }
     }
   } catch (err) {
     logger.error(`Failed to send deposit payment confirmation for ${params.estimateNumber}:`, err);
@@ -1429,6 +1608,8 @@ export async function sendDepositReceivedConfirmation(params: {
   to: string;
   customerName: string;
   estimateNumber: string;
+  /** The record this names (PRD 10, S10.13): the customer's reply to it joins this estimate's conversation. */
+  estimateId: string;
   depositAmount: number;
   paymentMethod: string;
   receivedDate: string;
@@ -1437,7 +1618,7 @@ export async function sendDepositReceivedConfirmation(params: {
 }): Promise<void> {
   const methodLabels: Record<string, string> = {
     CARD: 'Credit/Debit Card',
-    BANK_TRANSFER: 'Bank Transfer (ACH)',
+    BANK_TRANSFER: 'Bank transfer',
     CHECK: 'Check',
     CASH: 'Cash',
     // R5b (2026-07-22) — D3.
@@ -1470,7 +1651,9 @@ export async function sendDepositReceivedConfirmation(params: {
   try {
     const subject = `Deposit Received - ${params.estimateNumber}`;
     const text = `Hi ${params.customerName}, your deposit of ${formatCurrency(params.depositAmount)} for estimate ${params.estimateNumber} has been received via ${methodLabel} on ${params.receivedDate}. Thank you for choosing ${params.companyName}.`;
-    const result = await dispatchEmail(params.organizationId, {
+    const result = await sendToCustomerAboutRecord({
+      organizationId: params.organizationId,
+      record: estimateRecord(params.organizationId, params.estimateId, params.record),
       to: params.to,
       subject,
       text,
@@ -1478,9 +1661,6 @@ export async function sendDepositReceivedConfirmation(params: {
     });
     if (result.status === 'sent') {
       logger.info(`Deposit received confirmation sent to ${params.to} for ${params.estimateNumber}`);
-      if (params.record) {
-        await persistTransactionalEmail({ ...params.record, to: params.to, subject, text, ...sentTrace(result) });
-      }
     }
   } catch (err) {
     logger.error(`Failed to send deposit received confirmation for ${params.estimateNumber}:`, err);
@@ -1492,6 +1672,8 @@ export async function sendRefundNotification(params: {
   to: string;
   customerName: string;
   estimateNumber: string;
+  /** The record this names (PRD 10, S10.13): the customer's reply to it joins this estimate's conversation. */
+  estimateId: string;
   refundAmount: number;
   reason: string;
   companyName: string;
@@ -1521,7 +1703,9 @@ export async function sendRefundNotification(params: {
   try {
     const subject = `Refund Issued - ${params.estimateNumber}`;
     const text = `Hi ${params.customerName}, a refund of ${formatCurrency(params.refundAmount)} has been issued for estimate ${params.estimateNumber}. Reason: ${params.reason}. Please allow 5–10 business days for the refund to appear.`;
-    const result = await dispatchEmail(params.organizationId, {
+    const result = await sendToCustomerAboutRecord({
+      organizationId: params.organizationId,
+      record: estimateRecord(params.organizationId, params.estimateId, params.record),
       to: params.to,
       subject,
       text,
@@ -1529,23 +1713,34 @@ export async function sendRefundNotification(params: {
     });
     if (result.status === 'sent') {
       logger.info(`Refund notification sent to ${params.to} for ${params.estimateNumber}`);
-      if (params.record) {
-        await persistTransactionalEmail({ ...params.record, to: params.to, subject, text, ...sentTrace(result) });
-      }
     }
   } catch (err) {
     logger.error(`Failed to send refund notification for ${params.estimateNumber}:`, err);
   }
 }
 
+/** How the money went back decides what the customer is told about when it arrives. */
+export type RefundTiming = 'card' | 'bank' | 'none';
+
+const REFUND_TIMING_COPY: Record<RefundTiming, string> = {
+  card: 'Refunds to cards usually appear in 5-10 business days.',
+  bank: "Your refund should reach your bank account about 3 business days after the payment clears. It can't be cancelled.",
+  none: '',
+};
+
 export async function sendInvoiceRefundNotification(params: {
   organizationId: string;
   to: string;
   customerName: string;
   invoiceNumber: string;
+  /** The Reply-To anchor: every refund email, from whichever door, replies onto this invoice's thread. */
+  invoiceId: string;
   refundAmount: number;
+  /** Omitted = no timing line: only a refund the processor sent back has a timing to promise. */
+  timing?: RefundTiming;
   record?: TransactionalEmailRecord;
 }): Promise<void> {
+  const timingCopy = REFUND_TIMING_COPY[params.timing ?? 'none'];
   const html = wrapHtml(h`
     <h2 style="margin:0 0 8px;font-size:22px;color:#111827;">Invoice Refund Issued</h2>
     <p style="margin:0 0 24px;font-size:15px;color:#6b7280;">Hi ${params.customerName},</p>
@@ -1558,27 +1753,114 @@ export async function sendInvoiceRefundNotification(params: {
         <p style="margin:0;font-size:24px;font-weight:700;color:#111827;">${formatCurrency(params.refundAmount)}</p>
       </td></tr>
     </table>
-    <p style="margin:0;font-size:15px;color:#374151;">
-      Please allow 5–10 business days for the refund to appear on your statement.
-    </p>
+    ${raw(timingCopy ? h`<p style="margin:0;font-size:15px;color:#374151;">${timingCopy}</p>` : '')}
   `);
   try {
     const subject = `Refund Issued - ${params.invoiceNumber}`;
-    const text = `Hi ${params.customerName}, a refund of ${formatCurrency(params.refundAmount)} has been issued for invoice ${params.invoiceNumber}. Please allow 5–10 business days for the refund to appear.`;
-    const result = await dispatchEmail(params.organizationId, {
+    const text = `Hi ${params.customerName}, a refund of ${formatCurrency(params.refundAmount)} has been issued for invoice ${params.invoiceNumber}.${timingCopy ? ` ${timingCopy}` : ''}`;
+    // Slice 30: a refund notice is a message about the customer's own money, so it is sent whatever
+    // the org's marketing-style email switch says. The hard-bounce list still applies.
+    // Slice 32: the same Reply-To the receipt carries, so a reply lands on the invoice's thread.
+    // S10.13: named by the invoice's id even when the caller filed no record, so no refund notice goes out without it.
+    const result = await sendToCustomerAboutRecord({
+      organizationId: params.organizationId,
+      record: { organizationId: params.organizationId, ...params.record, entityType: 'invoice', entityId: params.invoiceId },
       to: params.to,
       subject,
       text,
       html,
+      options: { bypassOrgSendingGate: true },
     });
     if (result.status === 'sent') {
       logger.info(`Invoice refund notification sent to ${params.to} for ${params.invoiceNumber}`);
-      if (params.record) {
-        await persistTransactionalEmail({ ...params.record, to: params.to, subject, text, ...sentTrace(result) });
-      }
     }
   } catch (err) {
     logger.error(`Failed to send invoice refund notification for ${params.invoiceNumber}:`, err);
+  }
+}
+
+/**
+ * Slice 31: the customer's bank payment has started and takes a few business days to clear. Their
+ * receipt follows when it does (sendPaymentReceivedEmail). Sent whatever the org's outgoing-email
+ * switch says: it is about the customer's own money. The hard-bounce list still applies.
+ */
+export async function sendBankPaymentProcessingEmail(params: {
+  organizationId: string;
+  to: string;
+  customerName: string;
+  invoiceNumber: string;
+  amount: number;
+  record?: TransactionalEmailRecord;
+}): Promise<void> {
+  const html = wrapHtml(h`
+    <h2 style="margin:0 0 8px;font-size:22px;color:#111827;">Bank Payment Processing</h2>
+    <p style="margin:0 0 24px;font-size:15px;color:#6b7280;">Hi ${params.customerName},</p>
+    <p style="margin:0 0 16px;font-size:15px;color:#374151;">
+      Your bank payment of <strong>${formatCurrency(params.amount)}</strong> for invoice <strong>${params.invoiceNumber}</strong> is processing.
+      It usually takes a few business days. We'll send your receipt when it clears.
+    </p>
+  `);
+  await sendCustomerBankNotice(params, `Bank Payment Processing - Invoice ${params.invoiceNumber}`,
+    `Hi ${params.customerName}, your bank payment of ${formatCurrency(params.amount)} for invoice ${params.invoiceNumber} is processing. It usually takes a few business days. We'll send your receipt when it clears.`,
+    html);
+}
+
+/**
+ * Slice 31: the customer's bank payment did not go through. `payUrl` is the same public page they
+ * paid from; omitted when the invoice has no link to send them back to.
+ */
+export async function sendBankPaymentFailedEmail(params: {
+  organizationId: string;
+  to: string;
+  customerName: string;
+  invoiceNumber: string;
+  amount: number;
+  payUrl?: string;
+  record?: TransactionalEmailRecord;
+}): Promise<EmailDispatchResult> {
+  const button = params.payUrl
+    ? h`<table cellpadding="0" cellspacing="0" style="margin:0 0 24px;"><tr><td style="background:#111827;border-radius:6px;">
+        <a href="${params.payUrl}" style="display:inline-block;padding:12px 24px;color:#ffffff;text-decoration:none;font-size:15px;font-weight:600;">Pay Again</a>
+      </td></tr></table>`
+    : '';
+  const html = wrapHtml(h`
+    <h2 style="margin:0 0 8px;font-size:22px;color:#111827;">Bank Payment Failed</h2>
+    <p style="margin:0 0 24px;font-size:15px;color:#6b7280;">Hi ${params.customerName},</p>
+    <p style="margin:0 0 16px;font-size:15px;color:#374151;">
+      Your bank payment of <strong>${formatCurrency(params.amount)}</strong> for invoice <strong>${params.invoiceNumber}</strong> didn't go through.
+    </p>
+    ${raw(button)}
+  `);
+  return sendCustomerBankNotice(params, `Bank Payment Failed - Invoice ${params.invoiceNumber}`,
+    `Hi ${params.customerName}, your bank payment of ${formatCurrency(params.amount)} for invoice ${params.invoiceNumber} didn't go through.${params.payUrl ? ` Pay again here: ${params.payUrl}` : ''}`,
+    html);
+}
+
+async function sendCustomerBankNotice(
+  params: { organizationId: string; to: string; invoiceNumber: string; record?: TransactionalEmailRecord },
+  subject: string,
+  text: string,
+  html: string,
+): Promise<EmailDispatchResult> {
+  try {
+    const reply = await prepareTransactionalReply(params.record, params.to);
+    const result = await dispatchEmail(params.organizationId, {
+      to: params.to,
+      ...(reply ? { replyTo: reply.address } : {}),
+      subject,
+      text,
+      html,
+    }, { bypassOrgSendingGate: true });
+    if (result.status === 'sent') {
+      logger.info(`Bank payment notice "${subject}" sent to ${params.to} for ${params.invoiceNumber}`);
+      if (params.record) {
+        await finalizeTransactionalSend({ record: params.record, reply, to: params.to, subject, text, result });
+      }
+    }
+    return result;
+  } catch (err) {
+    logger.error(`Failed to send bank payment notice for ${params.invoiceNumber}:`, err);
+    return { status: 'failed', error: 'send_failed' };
   }
 }
 
@@ -1683,7 +1965,7 @@ function paymentsActionNeededHtml(params: {
   return wrapHtml(h`
     <h2 style="margin:0 0 8px;font-size:22px;color:#111827;">Action needed to keep payments running</h2>
     <p style="margin:0 0 24px;font-size:15px;color:#374151;">
-      Stripe needs one more thing to keep <strong>${params.orgName}</strong>'s card payments running.
+      ServWave Payments needs one more thing to keep <strong>${params.orgName}</strong>'s card payments running.
       Finish setup below and we'll turn your card payments back on automatically.
     </p>
     <table cellpadding="0" cellspacing="0" style="margin:0 0 24px;">
@@ -1692,14 +1974,14 @@ function paymentsActionNeededHtml(params: {
       </td></tr>
     </table>
     <p style="margin:0;font-size:13px;color:#9ca3af;">
-      This is a ServWave Payments account notice, not a message from Stripe.
+      This is a ServWave Payments account notice.
     </p>
   `);
 }
 
 /**
- * Co-branded action-needed email (Task 1.9). Sent to every active org ADMIN
- * from webhook.controller.ts's handleAccountLifecycle when Stripe's
+ * Co-branded action-needed email (Task 1.9). Sent to the active holders of Company settings (else of
+ * Manage roles and permissions) from lib/payments-notifications.ts (sendAccountNotices) when Stripe's
  * requirements_due gains items or the account becomes disabled/restricted —
  * the "Interrupt + email" half of billing.payments_action_needed /
  * billing.payments_paused (§6.7). Deep-links to Settings → Payments.
@@ -1711,16 +1993,16 @@ export async function sendPaymentsActionNeededEmail(params: {
   fixUrl: string;
 }): Promise<void> {
   try {
-    // §6.8 copy appendix: "Action needed | Status card / email subject | Stripe
-    // needs one more thing to keep your payments running." — subject is the
-    // exact centralized string; the body personalizes with the org name.
+    // §6.8 copy appendix, de-branded (CLAUDE.md: no vendor name in anything a
+    // user can see; the payments service is ServWave's own). The body
+    // personalizes with the org name.
     //
     // The specific Stripe requirement (raw codes like `requirements.past_due` or
     // `individual.ssn_last_4`) is deliberately NOT surfaced here - those machine
     // strings are not user-friendly and the actual to-do always lives on Stripe's
     // own screens behind the "Finish setup" link.
-    const subject = 'Stripe needs one more thing to keep your payments running.';
-    const text = `Stripe needs one more thing to keep ${params.orgName}'s card payments running. Finish setup: ${params.fixUrl}`;
+    const subject = 'ServWave Payments needs one more thing to keep your payments running.';
+    const text = `ServWave Payments needs one more thing to keep ${params.orgName}'s card payments running. Finish setup: ${params.fixUrl}`;
     await dispatchEmail(params.organizationId, {
       to: params.to,
       subject,
@@ -1733,71 +2015,46 @@ export async function sendPaymentsActionNeededEmail(params: {
   }
 }
 
-// ─── ServWave Payments — rate-change notice (Task 4.3 / §3.6) ────────────────
-//
-// Within-ceiling changes to the support-only Organization.platform_fee_bps
-// knob (never exposed in patchOrgSchema or any settings UI) need no
-// re-acceptance, but DO need ≥30-day advance notice. Co-branded like every
-// other sender in this file — this is a ServWave Payments notice, not Stripe.
-
-function paymentsRateChangeNoticeHtml(params: {
-  orgName: string;
-  oldRate: string;
-  newRate: string;
-  effectiveDate: string;
-}): string {
-  return wrapHtml(h`
-    <h2 style="margin:0 0 8px;font-size:22px;color:#111827;">Your ServWave Payments rate is changing</h2>
-    <p style="margin:0 0 16px;font-size:15px;color:#374151;">
-      We're updating the ServWave Payments processing rate for <strong>${params.orgName}</strong>.
-    </p>
-    <table width="100%" cellpadding="0" cellspacing="0" style="background:#f9fafb;border-radius:8px;margin:0 0 24px;">
-      <tr><td style="padding:16px 20px;">
-        <p style="margin:0 0 4px;font-size:13px;color:#6b7280;">Current rate</p>
-        <p style="margin:0 0 16px;font-size:15px;color:#374151;">${params.oldRate}</p>
-        <p style="margin:0 0 4px;font-size:13px;color:#6b7280;">New rate</p>
-        <p style="margin:0 0 16px;font-size:15px;font-weight:600;color:#111827;">${params.newRate}</p>
-        <p style="margin:0 0 4px;font-size:13px;color:#6b7280;">Effective</p>
-        <p style="margin:0;font-size:15px;color:#374151;">${params.effectiveDate}</p>
-      </td></tr>
-    </table>
-    <p style="margin:0;font-size:13px;color:#9ca3af;">
-      No action is needed - this stays within the terms you've already accepted, so no re-acceptance is required.
-    </p>
-  `);
-}
+// ─── ServWave Payments — owner payment notices (slice 32) ────────────────────
 
 /**
- * Within-ceiling rate-change notice (Task 4.3 / §3.6). Sent to every active org
- * ADMIN by notifyPlatformFeeRateChange (lib/platform-fee-rate-notice.ts) when
- * Organization.platform_fee_bps changes within the 2% ceiling. Co-branded,
- * matching sendPaymentsActionNeededEmail's structure.
+ * The email an owner gets for a payment event: a dispute, a failed bank payment, a failed refund,
+ * money that could not be applied. Same words as the in-app notification (the caller passes them),
+ * plus a link to the screen that acts on it. Spoken in the platform's voice and sent past the org's
+ * customer-email switch: it concerns the owner's own money, not a customer. The hard-bounce list
+ * still applies. Never throws.
  */
-export async function sendPaymentsRateChangeNotice(params: {
+export async function sendOwnerPaymentNoticeEmail(params: {
   organizationId: string;
   to: string;
-  orgName: string;
-  oldRate: string;
-  newRate: string;
-  effectiveDate: string;
+  subject: string;
+  heading: string;
+  lines: string[];
+  actionUrl: string;
+  actionLabel: string;
 }): Promise<void> {
   try {
-    const subject = 'Your ServWave Payments rate is changing.';
-    const text = `${params.orgName}'s ServWave Payments processing rate is changing from ${params.oldRate} to ${params.newRate}, effective ${params.effectiveDate}. No action is needed - no re-acceptance is required.`;
-    await dispatchEmail(params.organizationId, {
+    const paragraphs = params.lines.filter(Boolean).map((line) => h`<p style="margin:0 0 16px;font-size:15px;color:#374151;">${line}</p>`);
+    const html = wrapHtml(h`
+      <h2 style="margin:0 0 16px;font-size:22px;color:#111827;">${params.heading}</h2>
+      ${raw(paragraphs.join(''))}
+      <table cellpadding="0" cellspacing="0" style="margin:8px 0 24px;">
+        <tr><td style="background:#242424;border-radius:6px;padding:12px 28px;">
+          <a href="${params.actionUrl}" style="color:#ffffff;text-decoration:none;font-size:15px;font-weight:600;">${params.actionLabel}</a>
+        </td></tr>
+      </table>
+      <p style="margin:0;font-size:13px;color:#9ca3af;">This is a ServWave Payments account notice.</p>
+    `);
+    const text = `${params.heading}\n\n${params.lines.filter(Boolean).join('\n')}\n\n${params.actionLabel}: ${params.actionUrl}`;
+    const result = await dispatchEmail(params.organizationId, {
       to: params.to,
-      subject,
+      subject: params.subject,
       text,
-      html: paymentsRateChangeNoticeHtml({
-        orgName: params.orgName,
-        oldRate: params.oldRate,
-        newRate: params.newRate,
-        effectiveDate: params.effectiveDate,
-      }),
-    }, { senderIdentity: 'platform' });
-    logger.info(`Payments rate-change notice sent to ${params.to} for org ${params.organizationId}`);
+      html,
+    }, { senderIdentity: 'platform', bypassOrgSendingGate: true });
+    if (result.status === 'sent') logger.info(`Owner payment notice "${params.subject}" sent to ${params.to} for org ${params.organizationId}`);
   } catch (err) {
-    logger.error(`Failed to send payments rate-change notice for org ${params.organizationId}:`, err);
+    logger.error(`Failed to send owner payment notice for org ${params.organizationId}:`, err);
   }
 }
 
@@ -2530,7 +2787,6 @@ export async function sendWalkthroughScheduledEmail(params: {
   serviceAddress: string;
   companyName: string;
   timezone: string;
-  replyTo?: string;
   /** SRVW-243 - extra addressees from the compose dialog (max 5, validated at the schema). */
   cc?: string[];
   /** SRVW-243 - the admin's own wording. Replaces the boilerplate intro line;
@@ -2564,7 +2820,6 @@ export async function sendWalkthroughScheduledEmail(params: {
         companyName: params.companyName,
         org: params.org,
       }),
-      ...(params.replyTo ? { replyTo: params.replyTo } : {}),
     });
     if (result.status === 'sent') {
       logger.info(`Walkthrough scheduled email sent to ${params.to}`);
@@ -2593,7 +2848,6 @@ export async function sendWalkthroughRescheduledEmail(params: {
   performerName: string;
   serviceAddress: string;
   timezone: string;
-  replyTo?: string;
   /** SRVW-243 - extra addressees from the compose dialog (max 5, validated at the schema). */
   cc?: string[];
   /** SRVW-243 - the admin's own wording. Replaces the boilerplate intro line;
@@ -2626,7 +2880,6 @@ export async function sendWalkthroughRescheduledEmail(params: {
         serviceAddress: params.serviceAddress,
         org: params.org,
       }),
-      ...(params.replyTo ? { replyTo: params.replyTo } : {}),
     });
     if (result.status === 'sent') {
       logger.info(`Walkthrough rescheduled email sent to ${params.to}`);
@@ -2657,6 +2910,8 @@ export async function sendInvoiceEmail(params: {
   publicUrl: string;
   timezone?: string;
   record?: TransactionalEmailRecord;
+  /** The person who pressed Send and the mailbox it goes out from: their own (see sendEstimateEmail). */
+  handSender: HandSenderRef;
 }): Promise<EmailDispatchResult> {
   const dueFormatted = new Date(params.dueDate).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: params.timezone ?? DEFAULT_TIMEZONE });
   // Optional sender-authored note from the Send/Resend dialog. Escaped (staff-authored, but never trust input into HTML)
@@ -2701,6 +2956,8 @@ export async function sendInvoiceEmail(params: {
       You can view your invoice and make a payment online using the link above.
     </p>
   `);
+  // The person who pressed Send is recorded with the send (an automated send records nobody).
+  const handRecord = params.record ? { ...params.record, sentByUserId: params.handSender.userId } : undefined;
   try {
     // Same document the customer's "View & Pay Invoice" link renders (getPublicPdf) — the
     // customer gets the priced invoice attached, not just a link. A rendering failure here
@@ -2716,7 +2973,7 @@ export async function sendInvoiceEmail(params: {
     const text = customMessage
       ? `Hi ${params.customerName},\n\n${customMessage}\n\nInvoice ${params.invoiceNumber} for ${formatCurrency(params.amountDue)} is due on ${dueFormatted}. Pay here: ${params.publicUrl}`
       : `Hi ${params.customerName}, invoice ${params.invoiceNumber} for ${formatCurrency(params.amountDue)} is due on ${dueFormatted}. Pay here: ${params.publicUrl}`;
-    const reply = await prepareTransactionalReply(params.record, params.to);
+    const reply = await prepareTransactionalReply(handRecord, params.to, params.handSender.mailboxId);
     const result = await dispatchEmail(params.organizationId, {
       to: params.to,
       ...(reply ? { replyTo: reply.address } : {}),
@@ -2725,12 +2982,12 @@ export async function sendInvoiceEmail(params: {
       text,
       html,
       attachments: [attachment.pdf],
-    });
+    }, { handSender: params.handSender });
     if (result.status === 'sent') {
       logger.info(`Invoice email sent to ${params.to} for ${params.invoiceNumber}`);
-      if (params.record) {
+      if (handRecord) {
         await finalizeTransactionalSend({
-          record: params.record, reply, to: params.to, cc: params.cc, subject, text, result,
+          record: handRecord, fromMailboxId: params.handSender.mailboxId, reply, to: params.to, cc: params.cc, subject, text, result,
           attachments: attachment.record,
         });
       }
@@ -2747,15 +3004,35 @@ export async function sendPaymentReceivedEmail(params: {
   to: string;
   customerName: string;
   invoiceNumber: string;
+  /** Applied to the invoice, in dollars. */
   amount: number;
   method: string;
   newBalance: number;
+  /** Customer-paid tip on the same charge (never part of `amount`); omitted or 0 shows no tip line. */
+  tip?: number | null;
+  /** Card service fee on the same charge (legacy payments only). */
+  serviceFee?: number | null;
+  /** How the customer paid, worded for them ("Link", "Visa ending 4242"); defaults to the method's label. */
+  methodDisplay?: string | null;
   record?: TransactionalEmailRecord;
 }): Promise<void> {
-  const methodLabel = methodLabels[params.method] ?? params.method;
+  const methodLabel = params.methodDisplay || (methodLabels[params.method] ?? params.method);
+  const tip = Number(params.tip ?? 0);
+  const serviceFee = Number(params.serviceFee ?? 0);
+  const totalCharged = Math.round((params.amount + tip + serviceFee) * 100) / 100;
   const balanceText = params.newBalance <= 0
     ? '<span style="color:#16a34a;font-weight:600;">Paid in Full</span>'
     : h`<span style="font-size:15px;font-weight:600;color:#111827;">${formatCurrency(params.newBalance)}</span>`;
+  const row = (label: string, value: string, last = false) =>
+    h`<tr><td style="padding:12px 20px;${last ? '' : 'border-bottom:1px solid #e5e7eb;'}font-size:14px;color:#6b7280;">${label}</td><td align="right" style="padding:12px 20px;${last ? '' : 'border-bottom:1px solid #e5e7eb;'}font-size:15px;font-weight:600;color:#111827;">${value}</td></tr>`;
+  const lines = [
+    row('Invoice', params.invoiceNumber),
+    row('Amount applied', formatCurrency(params.amount)),
+    ...(tip > 0 ? [row('Tip', formatCurrency(tip))] : []),
+    ...(serviceFee > 0 ? [row('Card service fee', formatCurrency(serviceFee))] : []),
+    row('Total charged', formatCurrency(totalCharged)),
+    row('Payment method', methodLabel),
+  ];
   const html = wrapHtml(h`
     <h2 style="margin:0 0 8px;font-size:22px;color:#111827;">Payment Received</h2>
     <p style="margin:0 0 24px;font-size:15px;color:#6b7280;">Hi ${params.customerName},</p>
@@ -2763,38 +3040,33 @@ export async function sendPaymentReceivedEmail(params: {
       We've received your payment for invoice <strong>${params.invoiceNumber}</strong>.
     </p>
     <table width="100%" cellpadding="0" cellspacing="0" style="background:#f9fafb;border-radius:8px;margin:0 0 24px;">
+      ${raw(lines.join(''))}
       <tr>
-        <td style="padding:16px 20px;border-bottom:1px solid #e5e7eb;">
-          <span style="font-size:13px;color:#6b7280;">Payment Amount</span><br>
-          <span style="font-size:24px;font-weight:700;color:#111827;">${formatCurrency(params.amount)}</span>
-        </td>
-      </tr>
-      <tr>
-        <td style="padding:16px 20px;border-bottom:1px solid #e5e7eb;">
-          <span style="font-size:13px;color:#6b7280;">Payment Method</span><br>
-          <span style="font-size:15px;font-weight:600;color:#111827;">${methodLabel}</span>
-        </td>
-      </tr>
-      <tr>
-        <td style="padding:16px 20px;">
-          <span style="font-size:13px;color:#6b7280;">Remaining Balance</span><br>
-          ${raw(balanceText)}
-        </td>
+        <td style="padding:12px 20px;font-size:14px;color:#6b7280;">Remaining balance</td>
+        <td align="right" style="padding:12px 20px;">${raw(balanceText)}</td>
       </tr>
     </table>
     <p style="margin:0;font-size:13px;color:#9ca3af;">Thank you for your payment.</p>
   `);
   try {
     const subject = `Payment Received - Invoice ${params.invoiceNumber}`;
-    const text = `Hi ${params.customerName}, we received your payment of ${formatCurrency(params.amount)} via ${methodLabel} for invoice ${params.invoiceNumber}. Remaining balance: ${params.newBalance <= 0 ? 'Paid in Full' : formatCurrency(params.newBalance)}.`;
+    const itemised = [
+      `Amount applied: ${formatCurrency(params.amount)}`,
+      ...(tip > 0 ? [`Tip: ${formatCurrency(tip)}`] : []),
+      ...(serviceFee > 0 ? [`Card service fee: ${formatCurrency(serviceFee)}`] : []),
+      `Total charged: ${formatCurrency(totalCharged)}`,
+    ].join('. ');
+    const text = `Hi ${params.customerName}, we received your payment via ${methodLabel} for invoice ${params.invoiceNumber}. ${itemised}. Remaining balance: ${params.newBalance <= 0 ? 'Paid in Full' : formatCurrency(params.newBalance)}.`;
     const reply = await prepareTransactionalReply(params.record, params.to);
+    // Slice 30: a receipt confirms the customer's own money, so it goes out whatever the org's
+    // outgoing-email switch says (off by default). The hard-bounce list still applies.
     const result = await dispatchEmail(params.organizationId, {
       to: params.to,
       ...(reply ? { replyTo: reply.address } : {}),
       subject,
       text,
       html,
-    });
+    }, { bypassOrgSendingGate: true });
     if (result.status === 'sent') {
       logger.info(`Payment received email sent to ${params.to} for ${params.invoiceNumber}`);
       if (params.record) {
@@ -2805,82 +3077,6 @@ export async function sendPaymentReceivedEmail(params: {
     }
   } catch (err) {
     logger.error(`Failed to send payment received email for ${params.invoiceNumber}:`, err);
-  }
-}
-
-// ─── Timeclock — clock-in override emails ────────────────
-
-/**
- * Notify every approver (admins + users with can_approve_clock_overrides) that a
- * technician requested an out-of-zone clock-in override. One email per recipient.
- * Times render in the org timezone (the backend runs in UTC).
- */
-export async function sendClockOverrideRequestedEmail(params: {
-  org: OrganizationBrandingSubset;
-  to: string[];
-  technicianName: string;
-  requestedAt: Date;
-  distanceM: number;
-  nearestLabel: string;
-  timezone?: string;
-}): Promise<void> {
-  if (params.to.length === 0) return;
-  const when = formatDateTimeInZone(params.requestedAt, params.timezone);
-  const distance = Math.round(params.distanceM);
-  const subject = `Clock-in override requested - ${params.technicianName}`;
-  const html = wrapHtml(h`
-    <h2 style="margin:0 0 8px;font-size:22px;color:#111827;">Clock-in Override Requested</h2>
-    <p style="margin:0 0 16px;font-size:15px;color:#374151;">
-      <strong>${params.technicianName}</strong> clocked in outside the allowed area and requested an override.
-    </p>
-    <table width="100%" cellpadding="0" cellspacing="0" style="background:#f9fafb;border-radius:8px;margin:0 0 24px;">
-      <tr><td style="padding:16px 20px;">
-        <p style="margin:0 0 8px;font-size:13px;color:#6b7280;">Requested At</p>
-        <p style="margin:0 0 16px;font-size:15px;font-weight:600;color:#111827;">${when}</p>
-        <p style="margin:0 0 8px;font-size:13px;color:#6b7280;">Distance From Nearest Zone</p>
-        <p style="margin:0 0 16px;font-size:15px;color:#374151;">${distance} m from ${params.nearestLabel}</p>
-      </td></tr>
-    </table>
-    <p style="margin:0;font-size:13px;color:#9ca3af;">
-      Review and approve or reject this override in ${params.org.name}.
-    </p>
-  `, params.org);
-  const text = `${params.technicianName} requested a clock-in override at ${when}, ${distance} m from ${params.nearestLabel}. Review it in ${params.org.name}.`;
-  for (const to of params.to) {
-    try {
-      await dispatchEmail(params.org.id, { to, subject, text, html });
-      logger.info(`Clock override requested email sent to ${to} for ${params.technicianName}`);
-    } catch (err) {
-      logger.error(`Failed to send clock override requested email to ${to}:`, err);
-    }
-  }
-}
-
-/**
- * Notify the requesting technician that their clock-in override was approved or
- * rejected by an approver.
- */
-export async function sendClockOverrideDecisionEmail(params: {
-  org: OrganizationBrandingSubset;
-  to: string;
-  technicianName: string;
-  decision: 'approved' | 'rejected';
-  decidedByName: string;
-}): Promise<void> {
-  const subject = `Your clock-in override was ${params.decision}`;
-  const html = wrapHtml(h`
-    <h2 style="margin:0 0 8px;font-size:22px;color:#111827;">Clock-in Override ${params.decision === 'approved' ? 'Approved' : 'Rejected'}</h2>
-    <p style="margin:0 0 24px;font-size:15px;color:#6b7280;">Hi ${params.technicianName},</p>
-    <p style="margin:0 0 16px;font-size:15px;color:#374151;">
-      Your out-of-zone clock-in override was <strong>${params.decision}</strong> by <strong>${params.decidedByName}</strong>.
-    </p>
-  `, params.org);
-  const text = `Hi ${params.technicianName}, your clock-in override was ${params.decision} by ${params.decidedByName}.`;
-  try {
-    await dispatchEmail(params.org.id, { to: params.to, subject, text, html });
-    logger.info(`Clock override decision email (${params.decision}) sent to ${params.to}`);
-  } catch (err) {
-    logger.error(`Failed to send clock override decision email to ${params.to}:`, err);
   }
 }
 
@@ -2915,37 +3111,25 @@ export async function sendAutomationEmail(params: {
   org?: OrganizationBrandingSubset;
   record?: TransactionalEmailRecord;
 }): Promise<EmailDispatchResult> {
-  let result: EmailDispatchResult;
   try {
-    result = await dispatchEmail(params.organizationId, {
+    // A send to the customer names its record (the automation engine sets it), so it carries the hidden reply address and
+    // opens or reuses that record's conversation (PRD 10, S10.13). A teammate's copy names none and stays unreplyable.
+    // Mirrored only for a real send - a Communication-tab row for a killed email would show the office a message the
+    // customer never received - and a failure to store the mirror doesn't change the fact that the email itself sent.
+    const result = await sendToCustomerAboutRecord({
+      organizationId: params.organizationId,
+      record: params.record,
       to: params.to,
       subject: params.subject,
       text: params.text,
       html: wrapHtml(params.html, params.org),
     });
+    if (result.status === 'sent') logger.info(`Automation email sent to ${params.to}`);
+    return result;
   } catch (err) {
     logger.error(`Failed to send automation email to ${params.to}:`, err);
     return { status: 'failed', error: err instanceof Error ? err.message : 'Unknown error' };
   }
-  if (result.status !== 'sent') return result;
-  logger.info(`Automation email sent to ${params.to}`);
-  // Mirror only a real send - a Communication-tab row for a killed email
-  // would show the office a message the customer never received. A failure to
-  // persist the mirror doesn't change the fact that the email itself sent.
-  if (params.record) {
-    try {
-      await persistTransactionalEmail({
-        ...params.record,
-        to: params.to,
-        subject: params.subject,
-        text: params.text,
-        ...sentTrace(result),
-      });
-    } catch (err) {
-      logger.error(`Failed to persist Communication-tab mirror for ${params.to}:`, err);
-    }
-  }
-  return result;
 }
 
 // ─── AI Agentic Farm — "book a call" ──────────────────────

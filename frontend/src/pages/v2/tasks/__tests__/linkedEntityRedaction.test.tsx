@@ -93,7 +93,7 @@ const ROW: TaskRow = {
   status: 'TODO',
   priority: 'HIGH',
   assignee_ids: ['u1'],
-  assignees: [{ id: 'u1', name: 'Oved Adani' }],
+  assignees: [{ id: 'u1', name: 'Morgan Diaz' }],
   due_at: new Date().toISOString(),
   linked_entity_type: 'JOB',
   linked_entity_id: 'job-1',

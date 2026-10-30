@@ -17,6 +17,7 @@ import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from './helpers';
 import { AddItemDialog } from '@/components/inventory/AddItemDialog';
 import { toPriceBookBody } from '@/lib/api/inventory';
+import { abilityWithSwitches } from './support/backendSwitchCatalog';
 
 // Fixtures live inside vi.hoisted because the vi.mock factory below is hoisted
 // above every top-level const and would otherwise read them before init.
@@ -87,6 +88,14 @@ vi.mock('@/lib/api/organization', () => ({
   useOrganization: () => ({ data: { default_inventory_location_id: 'loc_1' }, isLoading: false }),
 }));
 
+// A person who may add to and delete from the price book, record starting stock, and add locations and vendors: the
+// "+ Add" and "Manage" entries and the Starting Stock band follow those switches (S07.14).
+const catalogWriter = () =>
+  abilityWithSwitches(
+    'View price book', 'Create price book items', 'Delete price book items',
+    'View stock', 'Create stock', 'Edit stock', 'Create vendors',
+  );
+
 function renderDialog(overrides: Record<string, unknown> = {}) {
   const onSave = vi.fn();
   renderWithProviders(
@@ -101,6 +110,7 @@ function renderDialog(overrides: Record<string, unknown> = {}) {
       brands={BRANDS}
       {...overrides}
     />,
+    { ability: catalogWriter() },
   );
   return { onSave };
 }

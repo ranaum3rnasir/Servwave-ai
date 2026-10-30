@@ -7,7 +7,7 @@
  * taken number is stepped over, never that record creation fails. This turns the resulting
  * unique violation back into a fresh allocation.
  *
- * The detection cases are the substance: in the Alpha Doors outage Prisma reported the
+ * The detection cases are the substance: in the pilot org outage Prisma reported the
  * collision with `meta.target: null` ("Unique constraint failed on the (not available)"), so a
  * guard keyed on the column name alone would have sat out the real thing.
  */

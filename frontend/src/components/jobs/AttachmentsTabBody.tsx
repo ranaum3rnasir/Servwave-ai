@@ -13,6 +13,7 @@ import { useConfirm } from '@/hooks/useConfirm';
 import { deleteAttachmentPrompt } from '@/lib/confirmPrompts';
 import { ACCEPTED_UPLOAD_TYPES } from '@/lib/uploadTypes';
 import { AttachmentRowActions } from '@/components/attachments/AttachmentRowActions';
+import { fileControl, type FileChangeAnswer } from '@/lib/attachments/fileChange';
 import {
   UploadRefusalList,
   UploadSelectionList,
@@ -35,7 +36,7 @@ import {
  * MOVED rather than re-authored anywhere.
  */
 
-interface AttachmentItem {
+interface AttachmentItem extends FileChangeAnswer {
   id: string;
   file_name: string;
   file_url: string;
@@ -55,13 +56,20 @@ function AttachmentTile({
   onDelete,
   deleting,
   onRenamed,
+  lockedReason,
 }: {
   att: AttachmentItem;
   jobId: string;
   onDelete?: (att: AttachmentItem) => void;
   deleting?: boolean;
   onRenamed?: () => void;
+  /** The completed-job lock's reason, drawn beside a control the lock alone withholds. */
+  lockedReason?: string;
 }) {
+  // From the server's per-file answer: enabled where the person may delete the file, disabled with the lock's reason
+  // where only the lock stops them, absent otherwise.
+  const state = onDelete ? fileControl(att, 'delete', true) : 'hidden';
+  const deleteControl = state === 'locked' && !lockedReason ? 'hidden' : state;
   const isImage = att.file_type.startsWith('image/');
   const isVideo = att.file_type.startsWith('video/');
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
@@ -130,10 +138,11 @@ function AttachmentTile({
             entityId={jobId}
             renamable={att.source !== 'LEAD'}
             onRenamed={onRenamed}
-            onDelete={onDelete ? () => onDelete(att) : undefined}
+            onDelete={onDelete && deleteControl === 'enabled' ? () => onDelete(att) : undefined}
             deleteDisabled={deleting}
+            lockedReason={lockedReason}
           />
-          {onDelete && (
+          {onDelete && deleteControl !== 'hidden' && (
             // The pill chrome and the hover-reveal live on this WRAPPER, not in the Button's
             // className: per the layering guard, a primitive's appearance is decided inside the
             // primitive. `hover-reveal`: visible on touch, hidden until hover only where hover
@@ -144,10 +153,10 @@ function AttachmentTile({
                 tone="danger"
                 revealOnHover
                 size="icon"
-                disabled={deleting}
+                disabled={deleting || deleteControl === 'locked'}
                 onClick={() => onDelete(att)}
                 aria-label={`Delete ${att.display_name}`}
-                title="Delete attachment"
+                title={deleteControl === 'locked' ? lockedReason : 'Delete attachment'}
                 className="h-6 w-6"
               >
                 <Trash2 className="h-3.5 w-3.5" />
@@ -174,9 +183,15 @@ function AttachmentTile({
 export function AttachmentsTabBody({
   jobId,
   attachments,
+  canUpload = true,
+  lockedReason,
 }: {
   jobId: string;
   attachments: AttachmentItem[] | undefined;
+  /** The completed-job lock's reason: a file the lock alone stops the person from deleting or renaming is drawn disabled with it. */
+  lockedReason?: string;
+  /** The server's per-record answer for Upload attachments. Without it the tab lists the files and takes none. */
+  canUpload?: boolean;
 }) {
   const queryClient = useQueryClient();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -243,7 +258,7 @@ export function AttachmentsTabBody({
   const uploading = uploads.isUploading;
 
   const handleUpload = (files: FileList | null) => {
-    if (!files || files.length === 0) return;
+    if (!canUpload || !files || files.length === 0) return;
     uploads.enqueue(files);
   };
 
@@ -267,7 +282,7 @@ export function AttachmentsTabBody({
 
   const fromLead = [...leadPhotos, ...leadDocs];
 
-  const uploadControl = (
+  const uploadControl = canUpload ? (
     <>
       <input
         ref={fileInputRef}
@@ -295,7 +310,18 @@ export function AttachmentsTabBody({
         </Button>
       </label>
     </>
-  );
+  ) : null;
+
+  if (all.length === 0 && !canUpload) {
+    return (
+      <SectionCard
+        title="Attachments"
+        icon={<ImageIcon className="h-4 w-4 text-text-secondary" />}
+      >
+        <p className="py-12 text-center text-sm text-text-secondary">No attachments yet</p>
+      </SectionCard>
+    );
+  }
 
   if (all.length === 0) {
     return (
@@ -348,6 +374,9 @@ export function AttachmentsTabBody({
   }
 
   return (
+    // `meta` is the bare Upload button, exactly as in the empty state above, so the band's own
+    // `items-center` lands the title on it and `SectionCard` needs no prop and no change. The
+    // hint is the LAST child of the body below, not a caption under this button.
     <SectionCard
       title="Attachments"
       icon={<ImageIcon className="h-4 w-4 text-text-secondary" />}
@@ -366,7 +395,7 @@ export function AttachmentsTabBody({
             <SectionLabel>Photos ({photos.length})</SectionLabel>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
               {photos.map((a) => (
-                <AttachmentTile key={a.id} att={a} jobId={jobId} onDelete={handleDelete} deleting={deleteAttachment.isPending} onRenamed={handleRenamed} />
+                <AttachmentTile key={a.id} att={a} jobId={jobId} onDelete={handleDelete} deleting={deleteAttachment.isPending} onRenamed={handleRenamed} lockedReason={lockedReason} />
               ))}
             </div>
           </div>
@@ -374,7 +403,7 @@ export function AttachmentsTabBody({
             <SectionLabel>Documents ({docs.length})</SectionLabel>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               {docs.map((a) => (
-                <AttachmentTile key={a.id} att={a} jobId={jobId} onDelete={handleDelete} deleting={deleteAttachment.isPending} onRenamed={handleRenamed} />
+                <AttachmentTile key={a.id} att={a} jobId={jobId} onDelete={handleDelete} deleting={deleteAttachment.isPending} onRenamed={handleRenamed} lockedReason={lockedReason} />
               ))}
             </div>
           </div>
@@ -386,7 +415,7 @@ export function AttachmentsTabBody({
               <SectionLabel>Photos ({photos.length})</SectionLabel>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
                 {photos.map((a) => (
-                  <AttachmentTile key={a.id} att={a} jobId={jobId} onDelete={handleDelete} deleting={deleteAttachment.isPending} onRenamed={handleRenamed} />
+                  <AttachmentTile key={a.id} att={a} jobId={jobId} onDelete={handleDelete} deleting={deleteAttachment.isPending} onRenamed={handleRenamed} lockedReason={lockedReason} />
                 ))}
               </div>
             </div>
@@ -396,7 +425,7 @@ export function AttachmentsTabBody({
               <SectionLabel>Documents ({docs.length})</SectionLabel>
               <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4">
                 {docs.map((a) => (
-                  <AttachmentTile key={a.id} att={a} jobId={jobId} onDelete={handleDelete} deleting={deleteAttachment.isPending} onRenamed={handleRenamed} />
+                  <AttachmentTile key={a.id} att={a} jobId={jobId} onDelete={handleDelete} deleting={deleteAttachment.isPending} onRenamed={handleRenamed} lockedReason={lockedReason} />
                 ))}
               </div>
             </div>
@@ -413,11 +442,12 @@ export function AttachmentsTabBody({
                 could only ever 404 - and if it did work it would strip the file off
                 the lead as well. Deleting happens on the lead. */}
             {fromLead.map((a) => (
-              <AttachmentTile key={a.id} att={a} jobId={jobId} onRenamed={handleRenamed} />
+              <AttachmentTile key={a.id} att={a} jobId={jobId} onRenamed={handleRenamed} lockedReason={lockedReason} />
             ))}
           </div>
         </div>
       )}
+
       {confirmDialog}
     </SectionCard>
   );

@@ -14,7 +14,7 @@
 import { describe, it, expect, beforeEach, beforeAll, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
-import { mockAuthAs, authHeader, JOB_FIXTURE, ALPHA_ORG_ID, TEST_USERS } from './helpers';
+import { mockAuthAs, authHeader, JOB_FIXTURE, ALPHA_ORG_ID, TEST_USERS, stubReopenTransaction } from './helpers';
 import { prisma } from '../lib/prisma';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
@@ -110,6 +110,9 @@ vi.setSystemTime(PINNED_NOW);
 // the clock back to real time mid-file.
 beforeEach(() => {
   vi.setSystemTime(PINNED_NOW);
+  // The job-level complete writes its visit cancels, history, status move and review round in one transaction (S06.1);
+  // the stub runs that callback against the same mocked client.
+  mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => fn(mockPrisma));
 });
 
 afterAll(() => {
@@ -1345,7 +1348,9 @@ describe('POST /api/jobs/:id/complete - completing the JOB is a job-level fact (
     ]);
   });
 
-  it('closes the job without cascading onto its visits in either direction', async () => {
+  it('closes the job without cascading onto its visits in either direction once none is open', async () => {
+    mockPrisma.visit.findMany.mockResolvedValue([visitRow({ id: 'v-done', visit_seq: 1, status: 'COMPLETED' })]);
+
     const res = await request(app)
       .post(`/api/jobs/${JOB_FIXTURE.id}/complete`)
       .set(authHeader('admin'))
@@ -1353,16 +1358,33 @@ describe('POST /api/jobs/:id/complete - completing the JOB is a job-level fact (
 
     expect(res.status).toBe(200);
     const jobData = mockPrisma.job.update.mock.calls[0][0].data;
-    expect(jobData.status).toBe('COMPLETED');
+    // Complete never rests at Completed: it stamps and lands in Office review in the same write (S06.1).
+    expect(jobData.status).toBe('OFFICE_REVIEW');
     expect(jobData.completed_at).toBeInstanceOf(Date);
 
     // D19 gives the cascade to job CANCEL only. D7 is explicit that visit completion and job
-    // completion are separate facts, so a job can be closed with a trip still on the books - and
-    // the symmetric cascade is the natural over-reach while implementing the cancel one. This lock
-    // is written BEFORE that cascade exists, deliberately.
+    // completion are separate facts, so completing the job never finishes a visit and a finished
+    // trip is left as history. A job with a trip still open is a different case (S04.17): the
+    // complete is refused until the request says to cancel it, and the cancel is the only write
+    // it ever makes on a visit (permission-open-visits-complete-db.test.ts, against a real database).
     expect(mockPrisma.visit.update).not.toHaveBeenCalled();
     expect(mockPrisma.visit.updateMany).not.toHaveBeenCalled();
     expect(mockPrisma.visit.create).not.toHaveBeenCalled();
+  });
+
+  it('refuses to close the job over a booked visit without the cancel choice, and writes nothing', async () => {
+    const res = await request(app)
+      .post(`/api/jobs/${JOB_FIXTURE.id}/complete`)
+      .set(authHeader('admin'))
+      .send({});
+
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('JOB_COMPLETE_HAS_OPEN_VISITS');
+    expect(res.body.open_visits).toEqual([expect.objectContaining({ id: 'v-open', visit_seq: 2, status: 'SCHEDULED' })]);
+    expect(mockPrisma.job.update).not.toHaveBeenCalled();
+    expect(mockPrisma.timelineEvent.create).not.toHaveBeenCalled();
+    expect(mockPrisma.visit.update).not.toHaveBeenCalled();
+    expect(mockPrisma.visit.updateMany).not.toHaveBeenCalled();
   });
 });
 
@@ -1437,7 +1459,7 @@ describe('POST /api/jobs/:id/cancel - cancelling the JOB calls off its remaining
     const res = await request(app)
       .post(`/api/jobs/${JOB_FIXTURE.id}/cancel`)
       .set(authHeader('admin'))
-      .send({ cancelled_reason: 'Customer cancelled the contract' });
+      .send({ cancel_reason_code: 'OTHER', cancelled_reason: 'Customer cancelled the contract' });
 
     expect(res.status).toBe(200);
 
@@ -1460,13 +1482,8 @@ describe('POST /api/jobs/:id/reopen - the service-plan slot comes back, the canc
     vi.clearAllMocks();
     clearPermissionCache();
     mockAuthAs('admin');
-    mockPrisma.job.findUnique.mockResolvedValue({
-      id: JOB_FIXTURE.id,
-      status: 'COMPLETED',
-      job_number: 'J00001',
-      source_plan_id: '00000000-0000-0000-0000-0000000000a1',
-      invoices: [],
-    });
+    stubReopenTransaction({ status: 'COMPLETED', job_number: 'J00001', source_plan_id: '00000000-0000-0000-0000-0000000000a1' });
+    mockPrisma.job.findUnique.mockResolvedValue(JOB_FIXTURE);
     mockPrisma.job.update.mockResolvedValue(JOB_FIXTURE);
     mockPrisma.planVisit.updateMany.mockResolvedValue({ count: 1 });
   });

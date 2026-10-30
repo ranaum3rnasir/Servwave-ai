@@ -45,14 +45,13 @@ const LATER_TIMESTAMPS: Record<Milestone, readonly string[]> = {
 };
 
 /**
- * The `data` fragment to spread into a job update for `milestone`. Every milestone also
- * un-cancels: cancellation is not terminal, so moving a cancelled job anywhere revives it.
+ * The `data` fragment to spread into a job update for `milestone`. A milestone move no longer un-cancels: a Cancelled job
+ * leaves only through Reopen (M7, S06.17), and every door that reaches this function refuses a Done or Cancelled job
+ * before it writes, so the cancel record (stamp, reason, reason code) is never this function's to clear.
  */
 export function milestoneClears(milestone: Milestone): Record<string, null> {
   const out: Record<string, null> = {};
   for (const field of LATER_TIMESTAMPS[milestone]) out[field] = null;
-  out.cancelled_at = null;
-  out.cancelled_reason = null;
   return out;
 }
 

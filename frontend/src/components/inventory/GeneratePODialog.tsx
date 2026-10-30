@@ -14,6 +14,7 @@
  * the rest. Success navigates to the Pre-PO tab.
  */
 import { useEffect, useMemo, useState } from 'react';
+import { useAppAbility } from '@/contexts/AbilityContext';
 import { useNavigate } from 'react-router-dom';
 import { Loader2, ShoppingCart } from 'lucide-react';
 import {
@@ -46,7 +47,9 @@ type RowDraft = { checked: boolean; qty: string };
 
 export function GeneratePODialog({ open, onClose, items, locations, scopeLabel }: GeneratePODialogProps) {
   const navigate = useNavigate();
-  const { data: vendors = [] } = useVendors();
+  // Read only by a person who may read them: the server refuses the list to others, and this dialog is mounted (closed) on pages they open.
+  const ability = useAppAbility();
+  const { data: vendors = [] } = useVendors(ability.can('read', 'Vendor'));
   const createPO = useCreatePO();
 
   const groups: VendorGroup[] = useMemo(

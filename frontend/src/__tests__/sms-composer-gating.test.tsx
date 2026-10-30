@@ -3,10 +3,11 @@
 // Contract under test:
 //   • The disabled composer shows ONE muted banner naming the SPECIFIC blocker:
 //     !connected → "connect your phone system"; connected && !smsReady → "A2P
-//     approval pending"; connected + ready but no sms_enabled number → "buy one
-//     in the Numbers tab".
-//   • connected + smsReady + an SMS-capable number → composer enabled, no
-//     banner; drafts over 160 chars show a muted live segment hint
+//     approval pending".
+//   • connected + smsReady → composer enabled, no banner, whatever the scoped
+//     GET /communication/numbers list holds (it is the person's own numbers:
+//     empty or non-texting for someone who sends from the company line; the
+//     server's send route is what answers NO_SMS_NUMBER); drafts over 160 chars show a muted live segment hint
 //     ("{n} segments", ceil(len/160)).
 //   • failed messages surface a danger-token "Failed to send" indicator with a
 //     tooltip (notify rose stays badge-count-only).
@@ -69,7 +70,7 @@ function mockOrg(
 
 const BANNER_CONNECT = 'Text messaging activates when your phone system is connected.';
 const BANNER_A2P =
-  'Texting activates once the A2P campaign is approved - check status in Settings → Phone & SMS.';
+  'Texting activates once carrier approval comes through - check status in Settings → Phone & SMS.';
 const BANNER_NO_NUMBER = 'No SMS-capable number - buy one in the Numbers tab.';
 
 beforeEach(() => {
@@ -115,17 +116,23 @@ describe('SmsInboxView — composer gating', () => {
     expect(screen.getByPlaceholderText('Type an SMS reply…')).toBeDisabled();
   });
 
-  it('shows the buy-a-number banner when connected + ready but no number can text', async () => {
-    mockOrg({ phone_connected: true, ctm_account_id: true, ctm_sms_ready: true }, [
-      { ...SMS_NUMBER, sms_enabled: false },
-    ]);
-    renderWithProviders(
+  // The numbers list is scoped to the person (Linked to me): an empty list, or
+  // one whose numbers cannot text, says nothing about whether the company can.
+  it.each([
+    ['an empty numbers list', []],
+    ['only a non-texting number', [{ ...SMS_NUMBER, sms_enabled: false }]],
+  ])('keeps the composer enabled for %s', async (_label, numbers) => {
+    mockOrg({ phone_connected: true, ctm_account_id: true, ctm_sms_ready: true }, numbers);
+    const { queryClient } = renderWithProviders(
       <SmsInboxView threads={[CUSTOMER_THREAD]} setThreads={vi.fn()} onToast={vi.fn()} />,
     );
 
-    expect(await screen.findByText(BANNER_NO_NUMBER)).toBeInTheDocument();
-    expect(screen.getByPlaceholderText('Type an SMS reply…')).toBeDisabled();
-    expect(screen.getByRole('button', { name: /send/i })).toBeDisabled();
+    const input = await screen.findByPlaceholderText('Type an SMS reply…');
+    await waitFor(() => expect(queryClient.getQueryState(['organization'])?.status).toBe('success'));
+    await waitFor(() => expect(input).toBeEnabled());
+    expect(screen.queryByText(BANNER_NO_NUMBER)).not.toBeInTheDocument();
+    fireEvent.change(input, { target: { value: 'On my way' } });
+    expect(screen.getByRole('button', { name: /send/i })).toBeEnabled();
   });
 
   it('enables the composer with no banner when connected + smsReady + an SMS number', async () => {

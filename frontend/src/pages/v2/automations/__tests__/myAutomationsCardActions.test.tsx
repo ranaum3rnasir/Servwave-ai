@@ -5,7 +5,7 @@ import userEvent from '@testing-library/user-event';
 
 import api from '@/lib/axios';
 import type { WorkflowCatalog } from '@/lib/api/workflows';
-import { renderWithProviders } from '@/__tests__/helpers';
+import { automationsManageAbility, renderWithProviders } from '@/__tests__/helpers';
 
 import AutomationsHomePage from '../AutomationsHomePage';
 
@@ -64,14 +64,14 @@ beforeEach(() => {
 
 describe('the my-automations card actions', () => {
   it('has no Actions menu trigger', async () => {
-    renderWithProviders(<AutomationsHomePage />, { initialEntries: ['/automations'] });
+    renderWithProviders(<AutomationsHomePage />, { initialEntries: ['/automations'], ability: automationsManageAbility() });
     await screen.findByText('Post-job review request');
 
     expect(screen.queryByRole('button', { name: /^actions for/i })).not.toBeInTheDocument();
   });
 
   it('renders direct duplicate and delete icon buttons naming the automation', async () => {
-    renderWithProviders(<AutomationsHomePage />, { initialEntries: ['/automations'] });
+    renderWithProviders(<AutomationsHomePage />, { initialEntries: ['/automations'], ability: automationsManageAbility() });
     await screen.findByText('Post-job review request');
 
     expect(screen.getByRole('button', { name: 'Duplicate Post-job review request' })).toBeInTheDocument();
@@ -80,7 +80,7 @@ describe('the my-automations card actions', () => {
 
   it('duplicating calls create with a copy name, without opening a menu', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<AutomationsHomePage />, { initialEntries: ['/automations'] });
+    renderWithProviders(<AutomationsHomePage />, { initialEntries: ['/automations'], ability: automationsManageAbility() });
     await screen.findByText('Post-job review request');
 
     await user.click(screen.getByRole('button', { name: 'Duplicate Post-job review request' }));
@@ -95,7 +95,7 @@ describe('the my-automations card actions', () => {
 
   it('delete opens the existing confirmation dialog, not a bare click', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<AutomationsHomePage />, { initialEntries: ['/automations'] });
+    renderWithProviders(<AutomationsHomePage />, { initialEntries: ['/automations'], ability: automationsManageAbility() });
     await screen.findByText('Post-job review request');
 
     await user.click(screen.getByRole('button', { name: 'Delete Post-job review request' }));

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { JobStatus } from '@prisma/client';
 import {
   resolveInboundSmsJob,
   SMS_ROUTER_RECENCY_WINDOW_DAYS,
@@ -29,8 +30,11 @@ describe('sms-reply-router constants', () => {
     expect(SMS_ROUTER_RECENCY_WINDOW_DAYS).toBe(30);
   });
 
-  it('treats COMPLETED and CANCELLED as closed', () => {
-    expect(CLOSED_JOB_STATUSES).toEqual(['COMPLETED', 'CANCELLED']);
+  // Read from the job status enum (everything from Completed on), not from the set under test: PRD 6 puts a finished
+  // job through Office review and Ready to close to Done, and all of those are closed to an inbound text.
+  it('treats Completed, every close-out status after it, and Cancelled as closed', () => {
+    const order = Object.values(JobStatus);
+    expect([...CLOSED_JOB_STATUSES].sort()).toEqual(order.slice(order.indexOf('COMPLETED')).sort());
   });
 });
 
@@ -101,6 +105,26 @@ describe('resolveInboundSmsJob — best-effort recency-gated routing', () => {
 
   it.each(cases)('$name', ({ recentJobTexts, expected }) => {
     expect(resolveInboundSmsJob({ now: NOW, recentJobTexts })).toEqual(expected);
+  });
+
+  // PRD 6: a job in Office review, Ready to close or Done is finished work, so a reply never lands on it (the statuses
+  // are read from the enum, not from the set under test).
+  const ORDER = Object.values(JobStatus);
+  const FINISHED = ORDER.slice(ORDER.indexOf('COMPLETED'));
+
+  it.each(FINISHED)('a lone recent candidate in %s goes to the Unrouted tray', (jobStatus) => {
+    expect(resolveInboundSmsJob({ now: NOW, recentJobTexts: [candidate({ jobId: 'job-finished', jobStatus })] })).toBeNull();
+  });
+
+  it.each(FINISHED)('a recent job in %s loses to an older live one', (jobStatus) => {
+    const result = resolveInboundSmsJob({
+      now: NOW,
+      recentJobTexts: [
+        candidate({ jobId: 'job-finished', lastOutboundAt: daysAgo(1), jobStatus }),
+        candidate({ jobId: 'job-live', jobLabel: 'J-1860 · 4 Oak Ln', lastOutboundAt: daysAgo(20), jobStatus: 'IN_PROGRESS' }),
+      ],
+    });
+    expect(result).toEqual({ jobId: 'job-live', jobLabel: 'J-1860 · 4 Oak Ln' });
   });
 
   it('passes a null jobLabel through unchanged on the winning candidate', () => {

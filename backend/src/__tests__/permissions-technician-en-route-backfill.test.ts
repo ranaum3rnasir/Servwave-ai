@@ -53,27 +53,6 @@ describe("a fresh org's TECHNICIAN role holds on-the-way scoped to own job", () 
   });
 });
 
-describe('GET /api/roles/TECHNICIAN/permissions - the roles editor shows the toggle on for a new org', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    clearPermissionCache();
-    mockAuthAs('admin');
-    // The org's live rows, exactly as a FRESH org is seeded from DEFAULT_GRANTS. The editor
-    // derives its toggles from the rows, so this is the admin's view of user story 25 on day one.
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue(
-      DEFAULT_GRANTS.filter((g) => g.role === 'TECHNICIAN'),
-    );
-  });
-
-  it('renders enRouteJobs on, alongside arrive and start', async () => {
-    const res = await request(app).get('/api/roles/TECHNICIAN/permissions').set(authHeader('admin'));
-    expect(res.status).toBe(200);
-    expect(res.body.toggles.enRouteJobs).toBe(true);
-    expect(res.body.toggles.arriveJobs).toBe(true);
-    expect(res.body.toggles.startJobs).toBe(true);
-  });
-});
-
 const MIGRATION = join(
   __dirname,
   '../../prisma/migrations/20260913150000_technician_en_route_grant_backfill/migration.sql',

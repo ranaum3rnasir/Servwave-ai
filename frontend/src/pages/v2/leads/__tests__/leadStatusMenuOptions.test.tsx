@@ -44,7 +44,6 @@ const ALL: Rules = [
   { action: 'read', subject: 'Lead' },
   { action: 'update', subject: 'Lead' },
   { action: 'mark_lost', subject: 'Lead' },
-  { action: 'cancel', subject: 'Lead' },
 ];
 
 const NO_ESTIMATE = 'No estimate has been sent to this lead yet.';
@@ -56,7 +55,6 @@ const STATUS_OPTIONS = [
   { status: 'ESTIMATED', available: false, reason: NO_ESTIMATE },
   { status: 'WON', available: true, reason: null },
   { status: 'LOST', available: true, reason: null },
-  { status: 'CANCELLED', available: true, reason: null },
 ];
 
 let restoreDevice: (() => void) | undefined;
@@ -124,7 +122,6 @@ describe('lead page status menu, from status_options', () => {
       [/walkthrough completed/i, 'The walkthrough is done, and nothing else is booked.'],
       [/^won/i, 'The customer approved doing the job.'],
       [/^lost/i, "This lead didn't turn into a job."],
-      [/^cancelled/i, 'This lead was cancelled.'],
     ];
     for (const [name, text] of meanings) {
       await user.hover(screen.getByRole('menuitem', { name }));
@@ -155,7 +152,7 @@ describe('lead page status menu, from status_options', () => {
     expect(toastError.mock.calls[0]?.[1]).toMatchObject({ description: NO_ESTIMATE });
   });
 
-  it('still hides Lost and Cancelled from a user who may not close the lead', async () => {
+  it('still hides Lost from a user who may not close the lead', async () => {
     serveLead(STATUS_OPTIONS);
     await openMenu([{ action: 'read', subject: 'Lead' }, { action: 'update', subject: 'Lead' }]);
 
@@ -169,8 +166,18 @@ describe('lead page status menu, from status_options', () => {
 
     const items = screen.getAllByRole('menuitem');
     expect(items.map((i) => i.textContent?.trim())).toEqual([
-      'New', 'Contacted', 'Walkthrough Scheduled', 'Walkthrough Completed', 'Estimate Sent', 'Won', 'Lost', 'Cancelled',
+      'New', 'Contacted', 'Walkthrough Scheduled', 'Walkthrough Completed', 'Estimate Sent', 'Won', 'Lost',
     ]);
     items.forEach((i) => expect(i).not.toHaveAttribute('aria-disabled'));
+  });
+
+  // An older server still lists Cancelled in its options while a newer page is open: the page never offers it (S05.17).
+  it('offers no Cancelled even when the server still lists it', async () => {
+    serveLead([...STATUS_OPTIONS, { status: 'CANCELLED', available: true, reason: null }]);
+    await openMenu([...ALL, { action: 'cancel', subject: 'Lead' }]);
+
+    const names = screen.getAllByRole('menuitem').map((i) => i.textContent?.trim());
+    expect(names).not.toContain('Cancelled');
+    expect(names).toContain('Lost');
   });
 });

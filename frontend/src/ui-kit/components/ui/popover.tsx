@@ -16,6 +16,24 @@ const Popover = PopoverPrimitive.Root;
 const PopoverTrigger = PopoverPrimitive.Trigger;
 const PopoverAnchor = PopoverPrimitive.Anchor;
 
+/**
+ * Decides ONCE, when the panel mounts, whether it needs its own scroll shard. Deciding on every render let a lock
+ * that cleared mid-life (a select closing as this opened) swap the wrapper for the bare children, which remounts
+ * everything inside and drops focus.
+ */
+function ScrollShard({ children }: { children: React.ReactNode }) {
+  const [nested] = React.useState(
+    () => typeof document !== "undefined" && document.body.hasAttribute("data-scroll-locked"),
+  );
+  return nested ? (
+    <RemoveScroll removeScrollBar={false} allowPinchZoom>
+      {children}
+    </RemoveScroll>
+  ) : (
+    <>{children}</>
+  );
+}
+
 function PopoverContent({
   className,
   align = "start",
@@ -36,9 +54,6 @@ function PopoverContent({
   // react-remove-scroll-bar's own `body[data-scroll-locked]` marker) so a
   // standalone Popover - the common case - keeps today's "doesn't lock
   // background scroll" behavior untouched.
-  const nestedInsideScrollLock =
-    typeof document !== "undefined" && document.body.hasAttribute("data-scroll-locked");
-
   return (
     <PopoverPrimitive.Portal>
       <PopoverPrimitive.Content
@@ -62,13 +77,7 @@ function PopoverContent({
         // No text field takes focus on its own on touch (mobile slice 24, KB-08).
         onOpenAutoFocus={(event) => touchSafeOpenAutoFocus(event, props.onOpenAutoFocus)}
       >
-        {nestedInsideScrollLock ? (
-          <RemoveScroll removeScrollBar={false} allowPinchZoom>
-            {children}
-          </RemoveScroll>
-        ) : (
-          children
-        )}
+        <ScrollShard>{children}</ScrollShard>
       </PopoverPrimitive.Content>
     </PopoverPrimitive.Portal>
   );

@@ -15,6 +15,8 @@ import { pageWindow } from "./pageWindow";
 export interface DataTablePaginationProps<TData> {
   table: Table<TData>;
   pageSizeOptions?: number[];
+  /** No rows-per-page control: the caller's page size is fixed. */
+  hidePageSize?: boolean;
   /**
    * A page change is in flight. Server-paged callers pass their query's
    * `isFetching` (not `isLoading`) so this fires on every page/size change,
@@ -48,6 +50,7 @@ export interface DataTablePaginationProps<TData> {
 function DataTablePagination<TData>({
   table,
   pageSizeOptions = [10, 25, 50, 100],
+  hidePageSize = false,
   isFetching = false,
   placement = "bottom",
   variant = "default",
@@ -76,7 +79,7 @@ function DataTablePagination<TData>({
       </div>
 
       <div className="ms-auto flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-2">
+        {!hidePageSize && <div className="flex items-center gap-2">
           <span className="text-muted-foreground hidden text-[0.78125rem] font-medium sm:inline">Rows</span>
           {/* Through the kit's one dropdown entry point (DESIGN_SYSTEM.md
               §4.2) rather than the primitives, so the page-size list is
@@ -97,7 +100,7 @@ function DataTablePagination<TData>({
               label: String(size),
             }))}
           />
-        </div>
+        </div>}
 
         {variant === "numbered" ? (
           // Wraps rather than overflows: on touch every page button is 44 px (mobile slice 25),

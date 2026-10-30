@@ -9,9 +9,19 @@ import { update } from '../controllers/user.controller';
 
 vi.mock('../lib/email', () => ({ sendUserInviteEmail: vi.fn().mockResolvedValue(true) }));
 
+// A new user's mailbox is issued in the same transaction as the user (PRD 10, S10.3); the register has its own real-database
+// suites, so here it only has to be called, and the transaction is the mocked client itself.
+vi.mock('../lib/mailbox/register', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/mailbox/register')>()),
+  issueUserMailbox: vi.fn().mockResolvedValue({ mailboxId: 'mailbox-1', status: 'active', localPart: 'new.user.acme', created: true }),
+}));
+
 const mockPrisma = prisma as unknown as {
   user: { findFirst: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
   customRole: { findFirst: ReturnType<typeof vi.fn> };
+  $transaction: ReturnType<typeof vi.fn>;
+  permissionUserSwitch: { findMany: ReturnType<typeof vi.fn> };
+  permissionRoleSwitch: { findMany: ReturnType<typeof vi.fn> };
 };
 const mockSupabaseAdmin = supabaseAdmin as unknown as {
   auth: { admin: { createUser: ReturnType<typeof vi.fn> } };
@@ -24,7 +34,10 @@ function mockRes() {
   return res;
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  (mockPrisma as unknown as { $transaction: ReturnType<typeof vi.fn> }).$transaction.mockImplementation(async (fn: (tx: unknown) => unknown) => fn(mockPrisma));
+});
 
 const OFFICE_MANAGER = { id: '00000000-0000-0000-0000-0000000000c1', organization_id: ALPHA_ORG_ID, key: 'office-manager', base_role: 'ADMIN', archived_at: null };
 
@@ -85,6 +98,10 @@ describe('user.controller update() - custom_role_id consistency', () => {
     mockPrisma.user.findFirst.mockResolvedValue({ id: targetId, organization_id: ALPHA_ORG_ID, role: 'SALES', custom_role_id: null });
     mockPrisma.customRole.findFirst.mockResolvedValue(OFFICE_MANAGER);
     mockPrisma.user.update.mockResolvedValue({ id: targetId });
+    // A role change fills the person's switches in one transaction with the update (Roles & Permissions M2).
+    mockPrisma.$transaction.mockImplementation((fn: (tx: unknown) => unknown) => fn(mockPrisma));
+    mockPrisma.permissionUserSwitch.findMany.mockResolvedValue([]);
+    mockPrisma.permissionRoleSwitch.findMany.mockResolvedValue([]);
 
     const req = {
       params: { id: targetId },
@@ -170,6 +187,6 @@ describe('user.controller update() - custom_role_id consistency', () => {
     await update(req, mockRes());
 
     expect(mockPrisma.customRole.findFirst).not.toHaveBeenCalled();
-    expect(mockPrisma.user.update.mock.calls[0][0].data).toEqual({ is_active: false });
+    expect(mockPrisma.user.update.mock.calls[0][0].data).toEqual({ is_active: false, has_login: false, password_hash: '' });
   });
 });

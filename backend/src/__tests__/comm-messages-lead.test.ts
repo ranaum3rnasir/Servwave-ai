@@ -17,7 +17,7 @@ import app from '../app';
 import { prisma } from '../lib/prisma';
 import { clearTokenCache } from '../middleware/authenticate';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { ALPHA_ORG_ID, ORG_B_ID, mockAuthAs, authHeader, CUSTOMER_FIXTURE } from './helpers';
+import { ALPHA_ORG_ID, ORG_B_ID, mockAuthAs, mockRoleSwitches, authHeader, CUSTOMER_FIXTURE } from './helpers';
 
 const mockPrisma = prisma as any;
 
@@ -61,6 +61,8 @@ function mockMessageThread(overrides: Record<string, unknown> = {}) {
 describe('PATCH /api/communication/sms/:id/lead — manual attach', () => {
   it('sets lead_id from an org-scoped lead', async () => {
     mockAuthAs('dispatcher');
+    // These cases are about attribution, not the Text page's scope: a person on All reads every conversation.
+    mockRoleSwitches({ communication_scope: 'all' });
     mockMessageThread();
     mockPrisma.lead.findUnique.mockResolvedValue(LEAD_ROW);
     mockPrisma.message.updateMany.mockResolvedValue({ count: 1 });
@@ -87,6 +89,8 @@ describe('PATCH /api/communication/sms/:id/lead — manual attach', () => {
 
   it('clears lead_id on null without resolving a lead or the thread', async () => {
     mockAuthAs('dispatcher');
+    // These cases are about attribution, not the Text page's scope: a person on All reads every conversation.
+    mockRoleSwitches({ communication_scope: 'all' });
     mockPrisma.message.updateMany.mockResolvedValue({ count: 1 });
     mockPrisma.message.findMany.mockResolvedValue([{ ...MESSAGE_ROW, lead_id: null }]);
 
@@ -180,8 +184,9 @@ describe('PATCH /api/communication/sms/:id/lead — manual attach', () => {
     expectOrgScoped(mockPrisma.message.updateMany as Mock, ORG_B_ID);
   });
 
-  it('403s for a technician (no update Communication grant)', async () => {
+  it('403s without Attach conversations to jobs and leads, whatever the role', async () => {
     mockAuthAs('technician');
+    mockRoleSwitches({ attach_conversations: false });
 
     const res = await request(app)
       .patch(`/api/communication/sms/${MSG_ID}/lead`)
@@ -192,8 +197,9 @@ describe('PATCH /api/communication/sms/:id/lead — manual attach', () => {
     expect(mockPrisma.message.updateMany).not.toHaveBeenCalled();
   });
 
-  it('403s for SALES (read-only)', async () => {
+  it('403s for SALES when Attach conversations to jobs and leads is off', async () => {
     mockAuthAs('sales');
+    mockRoleSwitches({ attach_conversations: false });
 
     const res = await request(app)
       .patch(`/api/communication/sms/${MSG_ID}/lead`)

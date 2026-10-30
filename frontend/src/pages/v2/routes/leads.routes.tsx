@@ -3,6 +3,7 @@ import { Route } from 'react-router-dom';
 
 import ProtectedRoute from '@/components/ProtectedRoute';
 import RequireFeature from '@/components/RequireFeature';
+import RequirePageAccess from '@/components/RequirePageAccess';
 
 import V2AppLayout from '../V2AppLayout';
 
@@ -26,8 +27,14 @@ export function leadsV2Routes() {
     <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN']} />}>
       <Route element={<V2AppLayout />}>
         <Route element={<RequireFeature feature="leads" />}>
-          <Route path="/leads" element={<LeadsPage />} />
-          <Route path="/leads/new" element={<LeadFormPage />} />
+          <Route element={<RequirePageAccess all={['view_leads', 'show_leads_page']} />}>
+            <Route path="/leads" element={<LeadsPage />} />
+          </Route>
+          {/* The standalone New Lead follows Create leads: a person without it goes to their dashboard, like every other
+              new-record address. The lead form inside other pages never comes through here. */}
+          <Route element={<RequirePageAccess all={['create_leads']} />}>
+            <Route path="/leads/new" element={<LeadFormPage />} />
+          </Route>
           <Route path="/leads/:id/edit" element={<LeadFormPage />} />
           <Route path="/leads/:id" element={<LeadDetailPage />} />
         </Route>

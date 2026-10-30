@@ -13,12 +13,15 @@ import {
   LEAD_FIXTURE,
   TAG_FIXTURE,
   withLeadStatusSync,
+  mockRoleSwitches,
+  attachedLeadWhere,
 } from './helpers';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { allocateNumber } from '../lib/numbering';
 import { leadFacets } from '../lib/query/registries/lead.filters';
 import { logger } from '../lib/logger';
+import { MISSING_LEAD_OWNER_WHERE } from '../lib/missingLeadOwner';
 
 // WALKTHROUGH_SCHEDULED/WALKTHROUGH_PERFORMER_ASSIGNED/_REMOVED now travel through
 // dispatchAutomationEvent rather than a hard-coded sender — mocked here (mirroring
@@ -163,6 +166,12 @@ beforeEach(() => {
   // Lead status options (slice 04) count a lead's open and finished visits on GET and on a hand
   // status change. "No visits" is the right default for the fixture lead.
   (prisma.visit.count as any).mockResolvedValue(0);
+  // The lead detail response lists the walkthrough steps this person may take (S04.19), which reads the lead's
+  // visits: "no walkthrough" is the right default for the fixture lead. Tests that need one override these.
+  (prisma.visit.findMany as any).mockResolvedValue([]);
+  (prisma.visit.findFirst as any).mockResolvedValue(null);
+  // The lead detail reads the lead's own phones and emails (S05.13): none here.
+  (prisma.recordContactEntry.findMany as any).mockResolvedValue([]);
   // attachAbility middleware queries rolePermission for non-ADMIN users;
   // return empty grants so non-ADMIN requests without explicit mock get 403.
   (prisma.rolePermission.findMany as any).mockResolvedValue([]);
@@ -255,7 +264,8 @@ describe('GET /api/leads', () => {
       .set(authHeader('sales'));
 
     const findManyArgs = mockPrisma.lead.findMany.mock.calls[0][0];
-    expect(findManyArgs.where.lead_assignees).toEqual({ some: { user_id: TEST_USERS.sales.id } });
+    // Attached (S01.2): an assignee, the Owner, or crew on one of the lead's walkthroughs.
+    expect(findManyArgs.where.OR).toEqual(attachedLeadWhere(TEST_USERS.sales.id));
   });
 
   it('does not auto-filter for ADMIN', async () => {
@@ -271,16 +281,10 @@ describe('GET /api/leads', () => {
     expect(findManyArgs.where.lead_assignees).toBeUndefined();
   });
 
-  // #106 ENFORCEMENT: list scope is grant-DRIVEN, not a hardcoded SALES-only filter.
-  // TECHNICIAN's Lead read grant is scoped via OWN_WALKTHROUGH, NOT lead_assignees. The
-  // fail-open hand-rolled block skipped every non-SALES role, so a TECHNICIAN list saw the
-  // whole org. scopeWhereForReq must scope it to its OWN walkthroughs — proving the scope
-  // follows the role's grant condition.
-  //
-  // Walkthrough-as-entity redesign, PR-B2: OWN_WALKTHROUGH is now a nested relation through
-  // the walkthroughs -> performers join (defaultGrants.ts), not a direct walkthrough_performers
-  // relation on Lead.
-  it('scopes the list by the role grant condition for TECHNICIAN (walkthrough-owned, not lead_assignees)', async () => {
+  // #106 ENFORCEMENT: list scope is DRIVEN by the person's Leads scope, not a hardcoded SALES-only
+  // filter. The Technician preset holds Attached, which is the same for every role: an assignee, the
+  // Owner, or crew on one of the lead's walkthrough visits.
+  it('scopes the list by Leads scope for TECHNICIAN (Attached: assignee, Owner or walkthrough crew)', async () => {
     mockAuthAs('technician');
     mockPrisma.lead.findMany.mockResolvedValue([]);
     mockPrisma.lead.count.mockResolvedValue(0);
@@ -290,32 +294,27 @@ describe('GET /api/leads', () => {
       .set(authHeader('technician'));
 
     const findManyArgs = mockPrisma.lead.findMany.mock.calls[0][0];
-    // Scoped to the technician's own walkthroughs — NOT the lead-owner field, and NOT unscoped.
-    expect(findManyArgs.where.visits).toEqual({ some: { assignees: { some: { user_id: TEST_USERS.technician.id } } } });
-    expect(findManyArgs.where.lead_assignees).toBeUndefined();
+    expect(findManyArgs.where.OR).toEqual(attachedLeadWhere(TEST_USERS.technician.id));
   });
 
   // #106 ENFORCEMENT (fail-closed): a non-ADMIN role that passes the subject-level route
   // guard but carries NO read grant on Lead must see NOTHING (MATCH_NOTHING), never the
   // whole org. The old hardcoded block was fail-OPEN for any non-SALES role.
-  it('fail-closed: a non-ADMIN role with no Lead read grant lists nothing (MATCH_NOTHING)', async () => {
+  it('fail-closed: a non-ADMIN role with View leads off lists nothing (MATCH_NOTHING), not a 403', async () => {
     mockAuthAs('technician');
-    // Override the default TECHNICIAN grants with an empty grant set: the route-level
-    // canDo guard is stubbed permissive here, but list-scope must still deny via MATCH_NOTHING.
-    (prisma.rolePermission.findMany as any).mockResolvedValue([]);
+    mockRoleSwitches({ view_leads: false, create_leads: false, perform_walkthroughs: false });
     mockPrisma.lead.findMany.mockResolvedValue([]);
     mockPrisma.lead.count.mockResolvedValue(0);
 
-    await request(app)
+    const res = await request(app)
       .get('/api/leads')
       .set(authHeader('technician'));
 
-    // When no findMany ran the route guard denied first (also fail-closed) — accept either,
-    // but if it DID run, the where must be MATCH_NOTHING (id: { in: [] }).
-    if (mockPrisma.lead.findMany.mock.calls.length > 0) {
-      const findManyArgs = mockPrisma.lead.findMany.mock.calls[0][0];
-      expect(findManyArgs.where.id).toEqual({ in: [] });
-    }
+    // The list answers with no rows; the where must be MATCH_NOTHING (id: { in: [] }).
+    expect(res.status).toBe(200);
+    expect(mockPrisma.lead.findMany).toHaveBeenCalled();
+    const findManyArgs = mockPrisma.lead.findMany.mock.calls[0][0];
+    expect(findManyArgs.where.id).toEqual({ in: [] });
   });
 
   it('returns 401 without auth header', async () => {
@@ -411,17 +410,17 @@ describe('GET /api/leads', () => {
     expect(findManyArgs.where.job_type).toBe('Plumbing');
   });
 
-  it('filters by assigned_to=UNASSIGNED', async () => {
+  it('filters by assigned_to=NO_OWNER to the open leads with no Owner', async () => {
     mockAuthAs('admin');
     mockPrisma.lead.findMany.mockResolvedValue([]);
     mockPrisma.lead.count.mockResolvedValue(0);
 
     await request(app)
-      .get('/api/leads?assigned_to=UNASSIGNED')
+      .get('/api/leads?assigned_to=NO_OWNER')
       .set(authHeader('admin'));
 
     const findManyArgs = mockPrisma.lead.findMany.mock.calls[0][0];
-    expect(findManyArgs.where.lead_assignees).toEqual({ none: {} });
+    expect(findManyArgs.where.AND).toContainEqual(MISSING_LEAD_OWNER_WHERE);
   });
 
   // Task 4 (generalized filter engine) — assigned_to becomes multi-select.
@@ -440,11 +439,10 @@ describe('GET /api/leads', () => {
     });
   });
 
-  // SECURITY (most important test in Task 4): scopeWhereForReq already narrows
-  // where.lead_assignees to the SALES rep's own leads. Passing a DIFFERENT
-  // user's id via ?assigned_to must NOT widen or replace that row-scope
-  // restriction — the generalized facet must preserve the exact no-op gate the
-  // hand-rolled code had (`if (scopeWhere.lead_assignees === undefined)`).
+  // SECURITY (most important test in Task 4): scopeWhereForReq already narrows the list to the
+  // leads the SALES rep is attached to. Passing a DIFFERENT user's id via ?assigned_to must NOT widen
+  // or replace that row-scope restriction: the facet is composed beside the scope (they AND), never
+  // into it.
   it('SECURITY: assigned_to query param cannot override a row-scoped role\'s own scope', async () => {
     mockAuthAs('sales');
     mockPrisma.lead.findMany.mockResolvedValue([]);
@@ -457,7 +455,9 @@ describe('GET /api/leads', () => {
     const findManyArgs = mockPrisma.lead.findMany.mock.calls[0][0];
     // Must remain the SALES rep's own scope — not widened/replaced by the
     // (different) user id passed in the query string.
-    expect(findManyArgs.where.lead_assignees).toEqual({ some: { user_id: TEST_USERS.sales.id } });
+    expect(findManyArgs.where.OR).toEqual(attachedLeadWhere(TEST_USERS.sales.id));
+    // The requested assignee is a separate condition that only narrows further.
+    expect(findManyArgs.where.lead_assignees).toEqual({ some: { user_id: TEST_USERS.technician.id } });
   });
 
   // Task 4 — # of Estimates countRange facet, wired through the live endpoint.
@@ -489,17 +489,16 @@ describe('GET /api/leads', () => {
     ]);
   });
 
-  it('unassigned stat counts all crew-empty leads regardless of status', async () => {
+  it('no_owner stat counts the open leads with no Owner, by the shared predicate', async () => {
     mockAuthAs('admin');
     mockPrisma.lead.findMany.mockResolvedValue([]);
     mockPrisma.lead.count.mockResolvedValue(0);
     await request(app).get('/api/leads').set(authHeader('admin'));
     const countWheres = mockPrisma.lead.count.mock.calls.map((c: any) => c[0].where);
-    const unassigned = countWheres.find(
-      (w: any) => JSON.stringify(w.AND) === JSON.stringify([{ lead_assignees: { none: {} } }]),
+    const noOwner = countWheres.find(
+      (w: any) => Array.isArray(w.AND) && w.AND.some((c: unknown) => c === MISSING_LEAD_OWNER_WHERE),
     );
-    expect(unassigned).toBeDefined();
-    expect(unassigned.status).toBeUndefined();
+    expect(noOwner).toBeDefined();
   });
 
   it('ignores invalid status values', async () => {
@@ -538,7 +537,7 @@ describe('GET /api/leads', () => {
 
     await request(app).get('/api/leads').set(authHeader('sales'));
 
-    const salesFilter = { lead_assignees: { some: { user_id: TEST_USERS.sales.id } } };
+    const salesFilter = { OR: attachedLeadWhere(TEST_USERS.sales.id) };
 
     // All count calls for stats must include the SALES crew filter
     const countCalls = mockPrisma.lead.count.mock.calls;
@@ -549,7 +548,7 @@ describe('GET /api/leads', () => {
     }
   });
 
-  it('SALES unassigned stat is scoped AND unassigned (some ∩ none → 0), not clobbered (#281)', async () => {
+  it('SALES no_owner stat keeps the row-scope beside the Missing lead owner predicate (#281)', async () => {
     mockAuthAs('sales');
     mockPrisma.lead.findMany.mockResolvedValue([]);
     mockPrisma.lead.count.mockResolvedValue(0);
@@ -557,12 +556,13 @@ describe('GET /api/leads', () => {
     await request(app).get('/api/leads').set(authHeader('sales'));
 
     const countWheres = mockPrisma.lead.count.mock.calls.map((c: any) => c[0].where);
-    const unassigned = countWheres.find(
-      (w: any) => JSON.stringify(w.AND) === JSON.stringify([{ lead_assignees: { none: {} } }]),
+    const noOwner = countWheres.find(
+      (w: any) => Array.isArray(w.AND) && w.AND.some((c: unknown) => c === MISSING_LEAD_OWNER_WHERE),
     );
-    expect(unassigned).toBeDefined();
-    // Scope `some` must co-exist top-level with the AND'd `none` → empty set → tile reads 0.
-    expect(unassigned).toMatchObject({ lead_assignees: { some: { user_id: TEST_USERS.sales.id } } });
+    expect(noOwner).toBeDefined();
+    // The scope must co-exist top-level with the AND'd `none`: the tile counts only leads the rep is
+    // attached to (as Owner or walkthrough crew, say) that have no assignee row.
+    expect(noOwner).toMatchObject({ OR: attachedLeadWhere(TEST_USERS.sales.id) });
   });
 
   it('includes customer_number in nested customer select', async () => {
@@ -1264,15 +1264,25 @@ describe('POST /api/leads', () => {
     mockPrisma.customer.findUnique.mockResolvedValue(CUSTOMER_FIXTURE);
     let txLeadCreate: ReturnType<typeof vi.fn>;
     let txCustomerUpdate: ReturnType<typeof vi.fn>;
+    let txVisitCreate: ReturnType<typeof vi.fn>;
     mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => {
       txLeadCreate = vi.fn().mockResolvedValue({ ...LEAD_FIXTURE, job_type: 'HVAC Service' });
       txCustomerUpdate = vi.fn().mockResolvedValue({ ...CUSTOMER_FIXTURE, ad_source: 'Google' });
-      const txMock = {
-        visit: { aggregate: mockPrisma.visit.aggregate, create: vi.fn().mockResolvedValue({ id: 'wt-fixture-id' }) },
-        lead: { findFirst: vi.fn().mockResolvedValue(null), create: txLeadCreate },
+      txVisitCreate = vi.fn().mockResolvedValue({ id: 'wt-fixture-id' });
+      // The form's "Schedule walkthrough" time books a real walkthrough visit in the same transaction (S03.18):
+      // its crew, history and status follow the lead page's booking, so the client carries what that needs.
+      const txMock = withLeadStatusSync({
+        visit: { aggregate: mockPrisma.visit.aggregate, create: txVisitCreate },
+        visitAssignee: { findMany: vi.fn().mockResolvedValue([]), createMany: vi.fn(), deleteMany: vi.fn() },
+        timelineEvent: { create: vi.fn().mockResolvedValue({}) },
+        lead: {
+          findFirst: vi.fn().mockResolvedValue(null), create: txLeadCreate,
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+          findUniqueOrThrow: vi.fn().mockResolvedValue({ ...LEAD_FIXTURE, job_type: 'HVAC Service' }),
+        },
         customer: { update: txCustomerUpdate },
         serviceLocation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({ id: 'loc-from-legacy' }) },
-      };
+      });
       return fn(txMock);
     });
 
@@ -1296,6 +1306,11 @@ describe('POST /api/leads', () => {
     expect(leadCreateData.ad_source).toBeUndefined();
     // ad_source must be written to the customer
     expect(txCustomerUpdate!.mock.calls[0][0].data.ad_source).toBe('Google');
+    // ...and the time is a real walkthrough visit on the lead, not only a column on it.
+    expect(txVisitCreate!).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ lead_id: LEAD_FIXTURE.id, purpose: 'WALKTHROUGH', status: 'SCHEDULED' }) }),
+    );
+    expect(txVisitCreate!.mock.calls[0][0].data.scheduled_at.toISOString()).toBe('2026-03-01T09:00:00.000Z');
   });
 
   it('auto-assigns to self for SALES role', async () => {
@@ -1387,6 +1402,8 @@ describe('POST /api/leads', () => {
 
   it('assigns a DISPATCHER owner at creation (#366: all active users owner-eligible)', async () => {
     mockAuthAs('admin');
+    // The Dispatcher preset cannot own leads; the case is about the create route placing an eligible person.
+    mockRoleSwitches({ can_own_leads: true });
     mockPrisma.customer.findUnique.mockResolvedValue(CUSTOMER_FIXTURE);
     // Target TEST_USERS.dispatcher (DISPATCHER, active) — owner-eligible since #366.
     // mockAuthAs's default findUnique resolves it by id.
@@ -1429,8 +1446,8 @@ describe('POST /api/leads', () => {
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
   });
 
-  // A TENANT-CLAUSE probe. TEST_USERS.orgB_admin is ACTIVE and owner-eligible (ADMIN), so
-  // neither the is_active check nor isOwnerEligible can refuse it — the ONLY thing that can
+  // A TENANT-CLAUSE probe. TEST_USERS.orgB_admin is ACTIVE and owner-eligible (the Admin box), so
+  // neither the is_active check nor slot eligibility can refuse it — the ONLY thing that can
   // is the `...tenantWhere(req)` in the create-path eligibility lookup. The sibling test
   // above uses a uuid absent from TEST_USERS, which the default mock resolves to null on the
   // `id` match alone, so it would stay GREEN if someone dropped the tenant clause.
@@ -1511,8 +1528,9 @@ describe('POST /api/leads', () => {
     expect(res.status).toBe(400);
   });
 
-  it('returns 403 for TECHNICIAN role', async () => {
+  it('returns 403 when Create leads is off', async () => {
     mockAuthAs('technician');
+    mockRoleSwitches({ create_leads: false });
 
     const res = await request(app)
       .post('/api/leads')
@@ -1713,7 +1731,8 @@ describe('GET /api/leads/:id', () => {
       .set(authHeader('admin'));
 
     expect(res.status).toBe(200);
-    expect(res.body.lead.estimates[0].invoices).toEqual([{ kind: 'DEPOSIT', status: 'SENT' }]);
+    // Slice 28b adds the deposit's clearing bank money (0 here) for a requester who can see the money.
+    expect(res.body.lead.estimates[0].invoices).toEqual([{ kind: 'DEPOSIT', status: 'SENT', processing_amount: 0 }]);
 
     // The select shape is what actually puts it on the wire (the mocked client ignores `select`,
     // so the assertion above alone would pass on an unfixed projection).
@@ -1805,7 +1824,7 @@ describe('PATCH /api/leads/:id', () => {
     expect(statusChangeEvents()[0].metadata).toMatchObject({ from: 'NEW', to: 'CONTACTED' });
   });
 
-  it('strips status from SALES update', async () => {
+  it('refuses a status change from SALES: Change lead status by hand is off in its preset, so nothing is written', async () => {
     mockAuthAs('sales');
     // LEAD_FIXTURE is owned by sales via the M2M (lead_assignees → TEST_USERS.sales.id).
     mockPrisma.lead.findUnique.mockResolvedValue(LEAD_FIXTURE);
@@ -1813,19 +1832,32 @@ describe('PATCH /api/leads/:id', () => {
     mockPrisma.lead.findFirst.mockResolvedValue({ id: LEAD_FIXTURE.id });
     mockPrisma.lead.update.mockResolvedValue(LEAD_FIXTURE);
 
-    await request(app)
+    const res = await request(app)
       .patch(`/api/leads/${LEAD_FIXTURE.id}`)
       .set(authHeader('sales'))
       .send({ status: 'CONTACTED', service_request: 'Updated' });
 
-    const updateArgs = mockPrisma.lead.update.mock.calls[0][0];
-    expect(updateArgs.data.service_request).toBe('Updated');
-    // Spec #1751 D6 moved the status out of this statement for EVERY caller, so
-    // `update.data.status === undefined` no longer distinguishes a stripped status from an
-    // allowed one. The refusal is now proved where the status actually gets written: no
-    // guarded write, and no ledger entry claiming the lead moved.
+    expect(res.status).toBe(403);
+    // Refused before anything is written: neither the other field nor the status is saved.
+    expect(mockPrisma.lead.update).not.toHaveBeenCalled();
     expect(leadStatusWrites(mockPrisma.lead.updateMany)).toHaveLength(0);
     expect(statusChangeEvents()).toHaveLength(0);
+  });
+
+  it('still saves a SALES edit that leaves the status alone', async () => {
+    mockAuthAs('sales');
+    mockPrisma.lead.findUnique.mockResolvedValue(LEAD_FIXTURE);
+    mockPrisma.lead.findFirst.mockResolvedValue({ id: LEAD_FIXTURE.id });
+    mockPrisma.lead.update.mockResolvedValue(LEAD_FIXTURE);
+
+    const res = await request(app)
+      .patch(`/api/leads/${LEAD_FIXTURE.id}`)
+      .set(authHeader('sales'))
+      .send({ service_request: 'Updated', status: LEAD_FIXTURE.status });
+
+    expect(res.status).toBe(200);
+    expect(mockPrisma.lead.update.mock.calls[0][0].data.service_request).toBe('Updated');
+    expect(leadStatusWrites(mockPrisma.lead.updateMany)).toHaveLength(0);
   });
 
   // PR-D2: walkthrough_needed is deleted entirely (Ran's call - see the "Decision update" note
@@ -2020,6 +2052,8 @@ describe('PATCH/contact with NESTED Team scope (#106 P1 — must not 500)', () =
       id: 'wt-1', status: 'SCHEDULED', scheduled_at: new Date('2026-04-01'), duration_minutes: 60,
       completed_at: null, notes: 'Updated via team', cancelled_at: null, cancelled_reason: null,
       cancelled_by: null, customer_email_sent_at: null, created_at: new Date('2026-03-01'),
+      // Noting a walkthrough needs a place on ITS crew (S04.19).
+      assignees: [{ user_id: TEST_USERS.sales.id }],
     };
     mockPrisma.lead.update.mockResolvedValue({ ...LEAD_FIXTURE, visits: [currentVisit] });
     mockPrisma.visit.findMany.mockResolvedValue([currentVisit]);
@@ -2037,7 +2071,7 @@ describe('PATCH/contact with NESTED Team scope (#106 P1 — must not 500)', () =
 // ═══════════════════════════════════════════════════════
 // GET /api/leads/stats (getStats) — RBAC QA GAP-3
 // ═══════════════════════════════════════════════════════
-// The dedicated stats endpoint built total/new_this_week/unassigned/won_this_month/
+// The dedicated stats endpoint built total/new_this_week/no_owner/won_this_month/
 // lost_this_month from `tenantWhere` ONLY — so a row-scoped SALES rep (own-lead
 // scoped on the list) saw ORG-WIDE lead totals/won/lost. The counts must be scoped
 // with the SAME role-scope the list endpoint uses (scopeWhereForReq):
@@ -2052,7 +2086,7 @@ describe('GET /api/leads/stats — role-scoped aggregates (GAP-3)', () => {
 
     expect(res.status).toBe(200);
 
-    const salesFilter = { lead_assignees: { some: { user_id: TEST_USERS.sales.id } } };
+    const salesFilter = { OR: attachedLeadWhere(TEST_USERS.sales.id) };
     const countCalls = mockPrisma.lead.count.mock.calls;
     // getStats fires exactly 5 counts; every one must carry the SALES own-lead scope.
     expect(countCalls).toHaveLength(5);
@@ -2061,21 +2095,23 @@ describe('GET /api/leads/stats — role-scoped aggregates (GAP-3)', () => {
     }
   });
 
-  it('SALES unassigned count keeps both the own-scope AND the none filter (#281)', async () => {
+  it('SALES no_owner count keeps both the own-scope and the Missing lead owner predicate (#281)', async () => {
     mockAuthAs('sales');
     mockPrisma.lead.count.mockResolvedValue(0);
 
     await request(app).get('/api/leads/stats').set(authHeader('sales'));
 
     const countWheres = mockPrisma.lead.count.mock.calls.map((c: any) => c[0].where);
-    const unassigned = countWheres.find(
-      (w: any) => JSON.stringify(w.AND) === JSON.stringify([{ lead_assignees: { none: {} } }]),
+    const noOwner = countWheres.find(
+      (w: any) => Array.isArray(w.AND) && w.AND.some((c: unknown) => c === MISSING_LEAD_OWNER_WHERE),
     );
-    expect(unassigned).toBeDefined();
-    expect(unassigned).toMatchObject({ lead_assignees: { some: { user_id: TEST_USERS.sales.id } } });
-    // An unassigned lead with a walkthrough booked or done still needs an owner (walkthrough
-    // lead statuses, slice 01), so both walkthrough statuses count.
-    expect(unassigned.status).toEqual({ in: ['NEW', 'CONTACTED', 'WALKTHROUGH_SCHEDULED', 'WALKTHROUGH_COMPLETED'] });
+    expect(noOwner).toBeDefined();
+    expect(noOwner).toMatchObject({ OR: attachedLeadWhere(TEST_USERS.sales.id) });
+    // A lead with a walkthrough booked or done still needs an owner, so the open statuses are the
+    // five before Won, the walkthrough ones and Estimate Sent among them.
+    expect(MISSING_LEAD_OWNER_WHERE.status).toEqual({
+      in: ['NEW', 'CONTACTED', 'WALKTHROUGH_SCHEDULED', 'WALKTHROUGH_COMPLETED', 'ESTIMATED'],
+    });
   });
 
   it('keeps stat counts org-wide for ADMIN (no row-scope condition)', async () => {
@@ -2089,7 +2125,7 @@ describe('GET /api/leads/stats — role-scoped aggregates (GAP-3)', () => {
     const countCalls = mockPrisma.lead.count.mock.calls;
     expect(countCalls).toHaveLength(5);
     // ADMIN scope is {} → no OWN-lead `some` restriction on any count (org-wide).
-    // (The `unassigned` count legitimately carries `lead_assignees: { none: {} }`;
+    // (The `no_owner` count legitimately carries `lead_assignees: { none: {} }` under AND;
     // what must NEVER appear for ADMIN is the requester-scoping `{ some: { user_id } }`.)
     for (const call of countCalls) {
       expect((call[0].where.lead_assignees as { some?: unknown } | undefined)?.some).toBeUndefined();
@@ -2195,6 +2231,7 @@ describe('POST /api/leads/:id/assign', () => {
 
   it('assigns lead to a DISPATCHER (#366: all active users owner-eligible)', async () => {
     mockAuthAs('admin');
+    mockRoleSwitches({ can_own_leads: true });
     mockPrisma.lead.findUnique.mockResolvedValue(LEAD_FIXTURE);
     (prisma.user.findUnique as ReturnType<typeof vi.fn>).mockImplementation(
       (args: { where: { id: string } }) => {
@@ -2220,7 +2257,8 @@ describe('POST /api/leads/:id/assign', () => {
 
   it('rejects assigning to inactive user', async () => {
     mockAuthAs('admin');
-    mockPrisma.lead.findUnique.mockResolvedValue(LEAD_FIXTURE);
+    // Not the lead's current Owner: naming the Owner a lead already has changes nothing, so it is not asked about.
+    mockPrisma.lead.findUnique.mockResolvedValue({ ...LEAD_FIXTURE, commission_owner_id: null });
     (prisma.user.findUnique as ReturnType<typeof vi.fn>).mockImplementation(
       (args: { where: { id: string } }) => {
         if (args.where.id === TEST_USERS.sales.id) {
@@ -2237,7 +2275,7 @@ describe('POST /api/leads/:id/assign', () => {
       .send({ assigned_to: TEST_USERS.sales.id });
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toContain('not found or inactive');
+    expect(res.body.error).toBe('This person is inactive.');
   });
 
   it('rejects when target user not found', async () => {
@@ -2319,14 +2357,12 @@ describe('POST /api/leads/:id/assign', () => {
   // gates the loaded row with canAccessRow; assign relied on the route guard ONLY. The
   // route guard (canDo('assign','Lead')) is a BARE-subject check — it does not bind the
   // row — so a row-scoped principal that holds `assign` could reassign a lead it cannot
-  // access. These tests grant SALES an own-scoped `assign Lead` (+ the OWN_LEAD `read`
-  // canAccessRow keys on) and prove the instance check blocks a foreign lead.
+  // access. These tests give SALES Assign people to leads on its own leads only and prove the
+  // instance check blocks a foreign lead.
   function mockAssignScopedSales() {
     mockAuthAs('sales');
-    (prisma.rolePermission.findMany as any).mockResolvedValue([
-      { role: 'SALES', action: 'read', subject: 'Lead', conditions: { lead_assignees: { some: { user_id: '{{userId}}' } } } },
-      { role: 'SALES', action: 'assign', subject: 'Lead', conditions: { lead_assignees: { some: { user_id: '{{userId}}' } } } },
-    ]);
+    // Assign people to leads on, reaching only the leads the person is attached to.
+    mockRoleSwitches({ assign_people_to_leads: true, leads_scope: 'attached' });
   }
 
   it('blocks a row-scoped user from assigning a lead they cannot access (canAccessRow → 403)', async () => {
@@ -2754,7 +2790,7 @@ describe('GET /api/leads — walkthrough_status=needs_scheduling filter', () => 
   // the scheduler's Unscheduled bucket and the leads list's "Needs Scheduling" filter because it
   // holds no live visit either. The exclusion is composed under AND, never on `where.status`, so an
   // explicit status filter (below) is neither overwritten nor widened.
-  it('expands to a visits relation filter on having NO live visit, excluding closed leads', async () => {
+  it('expands to a visits relation filter on having NO live visit with a time, excluding closed leads', async () => {
     mockAuthAs('admin');
     mockPrisma.lead.findMany.mockResolvedValue([LEAD_FIXTURE]);
     mockPrisma.lead.count.mockResolvedValue(1);
@@ -2766,9 +2802,9 @@ describe('GET /api/leads — walkthrough_status=needs_scheduling filter', () => 
 
     expect(res.status).toBe(200);
     const whereArg = (mockPrisma.lead.findMany as ReturnType<typeof vi.fn>).mock.calls[0][0].where;
-    expect(whereArg.visits).toEqual({ none: { status: { in: ['SCHEDULED', 'EN_ROUTE', 'ON_SITE', 'IN_PROGRESS'] } } });
+    expect(whereArg.visits).toEqual({ none: { status: { in: ['SCHEDULED', 'EN_ROUTE', 'ON_SITE', 'IN_PROGRESS'] }, scheduled_at: { not: null } } });
     expect(whereArg.status).toBeUndefined();
-    expect(whereArg.AND).toContainEqual({ status: { notIn: ['WON', 'LOST', 'CANCELLED'] } });
+    expect(whereArg.AND).toContainEqual({ status: { notIn: ['WON', 'LOST'] } });
   });
 
   it('returns NEW leads that hold no live visit', async () => {
@@ -2784,7 +2820,7 @@ describe('GET /api/leads — walkthrough_status=needs_scheduling filter', () => 
 
     expect(res.status).toBe(200);
     const whereArg = (mockPrisma.lead.findMany as ReturnType<typeof vi.fn>).mock.calls[0][0].where;
-    expect(whereArg.visits).toEqual({ none: { status: { in: ['SCHEDULED', 'EN_ROUTE', 'ON_SITE', 'IN_PROGRESS'] } } });
+    expect(whereArg.visits).toEqual({ none: { status: { in: ['SCHEDULED', 'EN_ROUTE', 'ON_SITE', 'IN_PROGRESS'] }, scheduled_at: { not: null } } });
     expect(res.body.leads).toHaveLength(1);
     expect(res.body.leads[0].status).toBe('NEW');
   });
@@ -2801,9 +2837,9 @@ describe('GET /api/leads — walkthrough_status=needs_scheduling filter', () => 
 
     expect(res.status).toBe(200);
     const whereArg = (mockPrisma.lead.findMany as ReturnType<typeof vi.fn>).mock.calls[0][0].where;
-    expect(whereArg.visits).toEqual({ none: { status: { in: ['SCHEDULED', 'EN_ROUTE', 'ON_SITE', 'IN_PROGRESS'] } } });
+    expect(whereArg.visits).toEqual({ none: { status: { in: ['SCHEDULED', 'EN_ROUTE', 'ON_SITE', 'IN_PROGRESS'] }, scheduled_at: { not: null } } });
     expect(whereArg.status).toBe('CONTACTED');
-    expect(whereArg.AND).toContainEqual({ status: { notIn: ['WON', 'LOST', 'CANCELLED'] } });
+    expect(whereArg.AND).toContainEqual({ status: { notIn: ['WON', 'LOST'] } });
   });
 
   it('adds the closed-lead exclusion beside an AND already on the where, never replacing it', () => {
@@ -2811,7 +2847,7 @@ describe('GET /api/leads — walkthrough_status=needs_scheduling filter', () => 
     const existing = { customer: { is: { id: 'c-1' } } };
     const where: Record<string, unknown> = { AND: [existing] };
     (facet as { apply: (w: Record<string, unknown>, v: string[]) => void }).apply(where, ['needs_scheduling']);
-    expect(where.AND).toEqual([existing, { status: { notIn: ['WON', 'LOST', 'CANCELLED'] } }]);
+    expect(where.AND).toEqual([existing, { status: { notIn: ['WON', 'LOST'] } }]);
   });
 });
 
@@ -2852,27 +2888,21 @@ describe('POST /api/leads/:id/mark-lost', () => {
     expect(res.body.error).toContain('lost');
   });
 
-  // Walkthrough lead-statuses PRD D10 + section 7.1: Lost is pickable from the status menu "always",
-  // Won, Lost and Cancelled leads included, and the menu closes a lead through this door (D11). So a
-  // WON lead can be marked lost with a reason. Only "already lost" is refused (a no-op).
-  it('marks a WON lead as lost (a closed lead stays changeable, PRD D10)', async () => {
+  // S05.19: a Won lead is closed, and Reopen lead is the only way out of Won, so Mark lost refuses it with the status
+  // menu's own sentence (the walkthrough lead-statuses PRD let it, before the closed-lead lock existed).
+  it('refuses to mark a WON lead as lost: a closed lead moves only through Reopen lead (S05.19)', async () => {
     mockAuthAs('admin');
     mockPrisma.lead.findUnique.mockResolvedValue({ ...LEAD_FIXTURE, status: 'WON' });
-    mockPrisma.lead.update.mockResolvedValue({ ...LEAD_FIXTURE, status: 'LOST', lost_reason: 'Some reason' });
 
     const res = await request(app)
       .post(`/api/leads/${LEAD_FIXTURE.id}/mark-lost`)
       .set(authHeader('admin'))
       .send({ lost_reason: 'Some reason' });
 
-    expect(res.status).toBe(200);
-    expect(res.body.lead.status).toBe('LOST');
-    expect(mockPrisma.timelineEvent.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        event_type: 'STATUS_CHANGE',
-        metadata: expect.objectContaining({ from: 'WON', to: 'LOST' }),
-      }),
-    });
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('To change the status, reopen the lead first.');
+    expect(mockPrisma.timelineEvent.create).not.toHaveBeenCalled();
+    expect(mockPrisma.lead.update).not.toHaveBeenCalled();
   });
 
   it('allows marking CONTACTED lead as lost', async () => {
@@ -2983,7 +3013,7 @@ describe('GET /api/leads/stats', () => {
     mockPrisma.lead.count
       .mockResolvedValueOnce(42) // total
       .mockResolvedValueOnce(5)  // new_this_week
-      .mockResolvedValueOnce(3)  // unassigned
+      .mockResolvedValueOnce(3)  // no_owner
       .mockResolvedValueOnce(8)  // won_this_month
       .mockResolvedValueOnce(2); // lost_this_month
 
@@ -2995,7 +3025,7 @@ describe('GET /api/leads/stats', () => {
     expect(res.body).toEqual({
       total: 42,
       new_this_week: 5,
-      unassigned: 3,
+      no_owner: 3,
       won_this_month: 8,
       lost_this_month: 2,
     });
@@ -3192,36 +3222,15 @@ describe('POST /api/leads/:id/notes', () => {
 });
 
 // ═══════════════════════════════════════════════════════
-// Mark Lost — CANCELLED status
-// ═══════════════════════════════════════════════════════
-
-describe('POST /api/leads/:id/mark-lost (CANCELLED lead)', () => {
-  // PRD D10 + 7.1: a Cancelled lead can be moved to Lost from the menu, so this door takes it.
-  it('marks a CANCELLED lead as lost (a closed lead stays changeable, PRD D10)', async () => {
-    mockAuthAs('admin');
-    mockPrisma.lead.findUnique.mockResolvedValue({ ...LEAD_FIXTURE, status: 'CANCELLED' });
-    mockPrisma.lead.update.mockResolvedValue({ ...LEAD_FIXTURE, status: 'LOST', lost_reason: 'Some reason' });
-
-    const res = await request(app)
-      .post(`/api/leads/${LEAD_FIXTURE.id}/mark-lost`)
-      .set(authHeader('admin'))
-      .send({ lost_reason: 'Some reason' });
-
-    expect(res.status).toBe(200);
-    expect(res.body.lead.status).toBe('LOST');
-  });
-});
-
-// ═══════════════════════════════════════════════════════
 // PATCH /api/leads/:id — new statuses
 // ═══════════════════════════════════════════════════════
 
 describe('PATCH /api/leads/:id (new statuses)', () => {
-  // CANCELLED is no longer settable on this door: closing a lead always asks for a reason
-  // (walkthrough lead-statuses PRD D11), so it goes through POST /cancel.
+  // CANCELLED is not a lead status any more (S05.17, S05.18): the request is refused as an unknown value, and a lead closes
+  // one way, as Lost with a reason.
   const newStatuses = ['ESTIMATED'] as const;
 
-  it('refuses ADMIN setting status to CANCELLED with no reason, writing nothing', async () => {
+  it('refuses ADMIN setting status to CANCELLED, with or without a reason, writing nothing', async () => {
     mockAuthAs('admin');
     mockPrisma.lead.findUnique.mockResolvedValue(LEAD_FIXTURE);
 
@@ -3231,7 +3240,50 @@ describe('PATCH /api/leads/:id (new statuses)', () => {
       .send({ status: 'CANCELLED' });
 
     expect(res.status).toBe(400);
-    expect(res.body).toEqual({ error: 'Please give a reason.' });
+    expect(res.body).toEqual({ error: 'A lead cannot be set to Cancelled. Mark it lost instead.' });
+    expect(leadStatusWrites(mockPrisma.lead.updateMany)).toHaveLength(0);
+    expect(mockPrisma.lead.update).not.toHaveBeenCalled();
+
+    const withReason = await request(app)
+      .patch(`/api/leads/${LEAD_FIXTURE.id}`)
+      .set(authHeader('admin'))
+      .send({ status: 'CANCELLED', lost_reason: 'Duplicate of another lead' });
+
+    expect(withReason.status).toBe(400);
+    expect(withReason.body).toEqual({ error: 'A lead cannot be set to Cancelled. Mark it lost instead.' });
+    expect(leadStatusWrites(mockPrisma.lead.updateMany)).toHaveLength(0);
+    expect(mockPrisma.lead.update).not.toHaveBeenCalled();
+  });
+
+  it('gives the same sentence to a Dispatcher, and still names an invented status as a field error', async () => {
+    mockAuthAs('dispatcher');
+    mockPrisma.lead.findUnique.mockResolvedValue(LEAD_FIXTURE);
+
+    const res = await request(app)
+      .patch(`/api/leads/${LEAD_FIXTURE.id}`)
+      .set(authHeader('dispatcher'))
+      .send({ status: 'CANCELLED' });
+    expect(res.status).toBe(400);
+    expect(res.body).toEqual({ error: 'A lead cannot be set to Cancelled. Mark it lost instead.' });
+
+    const invented = await request(app)
+      .patch(`/api/leads/${LEAD_FIXTURE.id}`)
+      .set(authHeader('dispatcher'))
+      .send({ status: 'SOMETHING_ELSE' });
+    expect(invented.status).toBe(400);
+    expect(invented.body.error).toBe('Validation failed');
+  });
+
+  it('answers not found to the retired lead cancel action, writing nothing', async () => {
+    mockAuthAs('admin');
+    mockPrisma.lead.findUnique.mockResolvedValue(LEAD_FIXTURE);
+
+    const res = await request(app)
+      .post(`/api/leads/${LEAD_FIXTURE.id}/cancel`)
+      .set(authHeader('admin'))
+      .send({ cancelled_reason: 'Not needed' });
+
+    expect(res.status).toBe(404);
     expect(leadStatusWrites(mockPrisma.lead.updateMany)).toHaveLength(0);
     expect(mockPrisma.lead.update).not.toHaveBeenCalled();
   });
@@ -3327,14 +3379,17 @@ describe('GET /api/tags', () => {
     expect(res.body.tags[0].name).toBe('Urgent');
   });
 
-  it('returns 403 for TECHNICIAN', async () => {
+  // The tag list is reference data every signed-in person reads (a fixed read, not a switch).
+  it('lists the tags for a TECHNICIAN too', async () => {
     mockAuthAs('technician');
+    mockPrisma.tag.findMany.mockResolvedValue([{ id: TAG_FIXTURE.id, name: 'Urgent', color: '#EF4444' }]);
 
     const res = await request(app)
       .get('/api/tags')
       .set(authHeader('technician'));
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(200);
+    expect(res.body.tags).toHaveLength(1);
   });
 });
 
@@ -3791,7 +3846,7 @@ describe('Lead response payload', () => {
       .mockResolvedValueOnce(0)   // where count
       .mockResolvedValueOnce(10)  // total
       .mockResolvedValueOnce(3)   // new_this_week
-      .mockResolvedValueOnce(1)   // unassigned
+      .mockResolvedValueOnce(1)   // no_owner
       .mockResolvedValueOnce(4)   // won
       .mockResolvedValueOnce(2);  // lost
 
@@ -3803,7 +3858,7 @@ describe('Lead response payload', () => {
     expect(res.body.stats).toBeDefined();
     expect(res.body.stats).toHaveProperty('total');
     expect(res.body.stats).toHaveProperty('new_this_week');
-    expect(res.body.stats).toHaveProperty('unassigned');
+    expect(res.body.stats).toHaveProperty('no_owner');
     expect(res.body.stats).toHaveProperty('won');
     expect(res.body.stats).toHaveProperty('lost');
   });
@@ -4115,8 +4170,10 @@ describe('POST /api/leads/:id/walkthrough/schedule', () => {
   });
 
   it('accepts a DISPATCHER performer (#366: all active users walkthrough-eligible)', async () => {
-    // #366: walkthrough performers = ALL active org users (widened ASSIGNABLE_ROLES).
+    // #366: walkthrough performers = every active org user whose Can be on a crew is on.
     mockAuthAs('admin');
+    // The Dispatcher preset is not crew-eligible; the switch is turned on so the case is about the door.
+    mockRoleSwitches({ can_be_on_crew: true });
     mockPrisma.lead.findUnique.mockResolvedValue({ ...LEAD_FIXTURE, status: 'CONTACTED' });
     const tx = wireScheduleTx({ ...LEAD_FIXTURE, status: 'CONTACTED' });
 
@@ -4237,6 +4294,10 @@ describe('POST /api/leads/:id/walkthrough/complete', () => {
         data: expect.objectContaining({ status: 'COMPLETED' }),
       }),
     );
+    // History says the walkthrough was finished (S04.20); the event type keeps its name.
+    expect(prisma.timelineEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ event_type: 'WALKTHROUGH_COMPLETED', description: 'Walkthrough finished' }),
+    });
   });
 
   it('returns 400 when the lead has no SCHEDULED visit', async () => {
@@ -4250,7 +4311,8 @@ describe('POST /api/leads/:id/walkthrough/complete', () => {
       .send({});
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toContain('scheduled walkthrough');
+    // A walkthrough is finished, never completed (S04.20): the words reach the lead page's error line as written.
+    expect(res.body.error).toBe('Can only finish a scheduled walkthrough');
   });
 
   it('returns 403 for SALES on a lead they do not own', async () => {
@@ -4275,7 +4337,7 @@ describe('POST /api/leads/:id/walkthrough/complete', () => {
     mockAuthAs('sales');
     mockPrisma.lead.findUnique.mockResolvedValue({ ...LEAD_FIXTURE, status: 'CONTACTED' });
     // No scheduled visit either - if this were checked first, the response would be a 400
-    // ("Can only complete a scheduled walkthrough"), leaking that fact about an invisible lead.
+    // ("Can only finish a scheduled walkthrough"), leaking that fact about an invisible lead.
     mockPrisma.visit.findFirst.mockResolvedValue(null);
     // canAccessRow's scoped probe finds nothing → not visible under SALES' OWN_LEAD scope.
     mockPrisma.lead.findFirst.mockResolvedValue(null);
@@ -4291,7 +4353,8 @@ describe('POST /api/leads/:id/walkthrough/complete', () => {
   it('allows a performer (TECHNICIAN) to complete via OWN_WALKTHROUGH', async () => {
     mockAuthAs('technician');
     mockPrisma.lead.findUnique.mockResolvedValue({ ...LEAD_FIXTURE, status: 'CONTACTED' });
-    mockPrisma.visit.findFirst.mockResolvedValue({ id: 'wt-scheduled-1', status: 'SCHEDULED' });
+    // The technician is on the crew of the walkthrough being finished (S04.19).
+    mockPrisma.visit.findFirst.mockResolvedValue({ id: 'wt-scheduled-1', status: 'SCHEDULED', assignees: [{ user_id: TEST_USERS.technician.id }] });
     mockPrisma.lead.update.mockResolvedValue({ ...LEAD_FIXTURE, status: 'CONTACTED' });
     (prisma.timelineEvent.create as any).mockResolvedValue({});
     // canAccessRow's scoped probe (matches — tech is a performer).
@@ -4406,177 +4469,22 @@ describe('POST /api/leads/:id/walkthrough/cancel', () => {
 });
 
 // ═══════════════════════════════════════════════════════
-// POST /api/leads/:id/cancel
+// POST /api/leads/:id/cancel - retired (Roles & Permissions S01.7)
 // ═══════════════════════════════════════════════════════
 
 describe('POST /api/leads/:id/cancel', () => {
-  it('cancels a NEW lead', async () => {
-    mockAuthAs('admin');
+  it.each(['admin', 'dispatcher', 'sales'] as const)('answers not found to %s, and writes nothing', async (who) => {
+    mockAuthAs(who);
     mockPrisma.lead.findUnique.mockResolvedValue({ ...LEAD_FIXTURE, status: 'NEW' });
-    mockPrisma.lead.update.mockResolvedValue({ ...LEAD_FIXTURE, status: 'CANCELLED' });
-    (prisma.timelineEvent.create as any).mockResolvedValue({});
 
     const res = await request(app)
       .post(`/api/leads/${LEAD_FIXTURE.id}/cancel`)
-      .set(authHeader('admin'))
+      .set(authHeader(who))
       .send({ cancelled_reason: 'No longer needed' });
 
-    expect(res.status).toBe(200);
-    expect(res.body.lead.status).toBe('CANCELLED');
-  });
-
-  // Walkthrough lead-statuses PRD D10 + section 7.1: Cancelled is pickable from the status menu
-  // "always", Won, Lost and Cancelled leads included, and the menu closes a lead through this door
-  // (D11). Only "already cancelled" is refused (a no-op).
-  it.each(['WON', 'LOST'])('cancels a %s lead (a closed lead stays changeable, PRD D10)', async (status) => {
-    mockAuthAs('admin');
-    mockPrisma.lead.findUnique.mockResolvedValue({ ...LEAD_FIXTURE, status });
-    mockPrisma.lead.update.mockResolvedValue({ ...LEAD_FIXTURE, status: 'CANCELLED', cancelled_reason: 'Test' });
-
-    const res = await request(app)
-      .post(`/api/leads/${LEAD_FIXTURE.id}/cancel`)
-      .set(authHeader('admin'))
-      .send({ cancelled_reason: 'Test' });
-
-    expect(res.status).toBe(200);
-    expect(res.body.lead.status).toBe('CANCELLED');
-  });
-
-  it('returns 400 for already CANCELLED', async () => {
-    mockAuthAs('admin');
-    mockPrisma.lead.findUnique.mockResolvedValue({ ...LEAD_FIXTURE, status: 'CANCELLED' });
-
-    const res = await request(app)
-      .post(`/api/leads/${LEAD_FIXTURE.id}/cancel`)
-      .set(authHeader('admin'))
-      .send({ cancelled_reason: 'Test' });
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toContain('cancelled');
-  });
-
-  // Walkthrough-as-entity redesign, PR-B2: the trigger is now the Walkthrough row's own
-  // SCHEDULED status (findScheduledWalkthrough), not lead.status. Auto-cancel does NOT rebook
-  // a fresh REQUESTED row (unlike a standalone cancelWalkthrough) — the lead itself is now
-  // CANCELLED and must not reappear in the "needs scheduling" bucket.
-  it('auto-cancels walkthrough when cancelling a lead with a SCHEDULED visit', async () => {
-    mockAuthAs('admin');
-    mockPrisma.lead.findUnique.mockResolvedValue({ ...LEAD_FIXTURE, status: 'CONTACTED' });
-    mockPrisma.lead.update.mockResolvedValue({ ...LEAD_FIXTURE, status: 'CANCELLED' });
-    mockPrisma.visit.findFirst.mockResolvedValue({ id: 'wt-scheduled-1', status: 'SCHEDULED' });
-    mockPrisma.visit.update.mockResolvedValue({});
-    (prisma.timelineEvent.create as any).mockResolvedValue({});
-
-    const res = await request(app)
-      .post(`/api/leads/${LEAD_FIXTURE.id}/cancel`)
-      .set(authHeader('admin'))
-      .send({ cancelled_reason: 'Customer cancelled project' });
-
-    expect(res.status).toBe(200);
-    // The visit rows themselves are cancelled, no rebooking - EVERY live trip of the lead (fix
-    // pass: a lead can hold several), guarded by the live set in the WHERE so a trip another
-    // request completed first keeps its outcome. lead-exit-cancels-walkthroughs.test.ts asserts
-    // which rows change.
-    expect(mockPrisma.visit.updateMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: expect.objectContaining({
-          organization_id: ALPHA_ORG_ID, lead_id: LEAD_FIXTURE.id, status: { in: expect.arrayContaining(['SCHEDULED']) },
-        }),
-        data: expect.objectContaining({ status: 'CANCELLED', cancelled_reason: 'Lead cancelled' }),
-      }),
-    );
-    // PR-D2: the dual-write onto the legacy Lead.walkthrough_* columns is gone - the write only
-    // carries the lead's OWN cancellation fields. Spec #1751 D6 moved that write into
-    // transitionLeadStatus, which puts the status and the columns that travel with it in ONE
-    // statement, and files the from/to ledger entry the hand-rolled event it replaces lacked.
-    const statusWrites = leadStatusWrites(mockPrisma.lead.updateMany);
-    expect(statusWrites).toHaveLength(1);
-    expect(statusWrites[0].data.status).toBe('CANCELLED');
-    expect(statusWrites[0].data.cancelled_at).toBeInstanceOf(Date);
-    expect(statusWrites[0].data.cancelled_reason).toBe('Customer cancelled project');
-    const ledger = statusChangeEvents();
-    expect(ledger).toHaveLength(1);
-    expect(ledger[0].metadata).toMatchObject({ from: 'CONTACTED', to: 'CANCELLED' });
-  });
-
-  it('does not touch the Walkthrough row when cancelling a lead with no SCHEDULED visit', async () => {
-    mockAuthAs('admin');
-    mockPrisma.lead.findUnique.mockResolvedValue({ ...LEAD_FIXTURE, status: 'CONTACTED' });
-    mockPrisma.lead.update.mockResolvedValue({ ...LEAD_FIXTURE, status: 'CANCELLED' });
-    mockPrisma.visit.findFirst.mockResolvedValue(null);
-    // The live-trip sweep finds nothing to cancel.
-    mockPrisma.visit.updateMany.mockResolvedValue({ count: 0 });
-    (prisma.timelineEvent.create as any).mockResolvedValue({});
-
-    const res = await request(app)
-      .post(`/api/leads/${LEAD_FIXTURE.id}/cancel`)
-      .set(authHeader('admin'))
-      .send({ cancelled_reason: 'No longer needed' });
-
-    expect(res.status).toBe(200);
-    // Only the live-set sweep ran, and it changed nothing; the ledger says no trip was called off.
-    for (const [args] of mockPrisma.visit.updateMany.mock.calls) {
-      expect(args.where.status.in).not.toContain('COMPLETED');
-    }
-    expect(statusChangeEvents()[0].metadata).toMatchObject({ walkthrough_auto_cancelled: false });
-    const updateCall = mockPrisma.lead.update.mock.calls[0][0];
-    expect(updateCall.data.walkthrough_scheduled_at).toBeUndefined();
-  });
-
-  it('requires cancelled_reason', async () => {
-    mockAuthAs('admin');
-
-    const res = await request(app)
-      .post(`/api/leads/${LEAD_FIXTURE.id}/cancel`)
-      .set(authHeader('admin'))
-      .send({});
-
-    expect(res.status).toBe(400);
-  });
-
-  it('returns 403 for SALES on another users lead', async () => {
-    mockAuthAs('sales');
-    mockPrisma.lead.findUnique.mockResolvedValue({
-      ...LEAD_FIXTURE,
-      status: 'NEW',
-      assigned_to: TEST_USERS.admin.id,
-      lead_assignees: [{ user_id: TEST_USERS.admin.id }],
-    });
-
-    const res = await request(app)
-      .post(`/api/leads/${LEAD_FIXTURE.id}/cancel`)
-      .set(authHeader('sales'))
-      .send({ cancelled_reason: 'Test' });
-
-    expect(res.status).toBe(403);
-  });
-
-  it('should cancel active estimates and void unpaid kind=DEPOSIT invoices when cancelling lead', async () => {
-    mockAuthAs('admin');
-    mockPrisma.lead.findUnique.mockResolvedValue({ ...LEAD_FIXTURE, status: 'CONTACTED' });
-    mockPrisma.lead.update.mockResolvedValue({ ...LEAD_FIXTURE, status: 'CANCELLED' });
-    (prisma.timelineEvent.create as any).mockResolvedValue({});
-    (prisma.estimate.updateMany as any).mockResolvedValue({ count: 1 });
-    (prisma.estimate.findMany as any).mockResolvedValue([{ id: 'est-uuid-1' }]);
-    (prisma.invoice.findMany as any).mockResolvedValue([{ id: 'dep-inv-1', payments: [] }]);
-    (prisma.invoice.updateMany as any).mockResolvedValue({ count: 1 });
-
-    const res = await request(app)
-      .post(`/api/leads/${LEAD_FIXTURE.id}/cancel`)
-      .set(authHeader('admin'))
-      .send({ cancelled_reason: 'No longer needed' });
-
-    expect(res.status).toBe(200);
-
-    const estimateUpdateCall = (prisma.estimate.updateMany as any).mock.calls[0][0];
-    expect(estimateUpdateCall.where.status).toEqual({ in: ['DRAFT', 'SENT', 'PENDING'] });
-    expect(estimateUpdateCall.data.status).toBe('ARCHIVED');
-    expect(estimateUpdateCall.data.cancelled_reason).toBe('Lead cancelled');
-
-    const depInvFind = (prisma.invoice.findMany as any).mock.calls[0][0];
-    expect(depInvFind.where.kind).toBe('DEPOSIT');
-    const invVoidCall = (prisma.invoice.updateMany as any).mock.calls[0][0];
-    expect(invVoidCall.data.status).toBe('VOIDED');
+    expect(res.status).toBe(404);
+    expect(mockPrisma.lead.update).not.toHaveBeenCalled();
+    expect(leadStatusWrites(mockPrisma.lead.updateMany)).toHaveLength(0);
   });
 });
 
@@ -5322,7 +5230,8 @@ describe('DELETE /api/leads/:id (casual delete)', () => {
       .set(authHeader('admin'));
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toContain('estimates');
+    // The way out is Lost: a lead is never cancelled (S05.18), so the words must not send the person to a Cancel.
+    expect(res.body.error).toBe('Lead has estimates — mark it lost instead');
     expect((prisma.lead.delete as any)).not.toHaveBeenCalled();
   });
 
@@ -5422,38 +5331,26 @@ describe('Lead cancel/lost cascade — deposit invoice void (Phase 4a)', () => {
     expect(invUpdate.data.status).toBe('VOIDED');
   });
 
-  it('cancelLead does NOT void a kind=DEPOSIT invoice that has a non-voided payment', async () => {
+  it('markLost does NOT void a kind=DEPOSIT invoice that has a non-voided payment', async () => {
     mockAuthAs('admin');
     mockPrisma.lead.findUnique.mockResolvedValue({ ...LEAD_FIXTURE, status: 'CONTACTED' });
-    mockPrisma.lead.update.mockResolvedValue({ ...LEAD_FIXTURE, status: 'CANCELLED' });
+    mockPrisma.lead.update.mockResolvedValue({ ...LEAD_FIXTURE, status: 'LOST' });
     (prisma.estimate.findMany as any).mockResolvedValue([{ id: 'est-1' }]);
-    // The deposit invoice carries a real payment — it must be excluded from the void set.
-    (prisma.invoice.findMany as any).mockResolvedValue([{ id: 'dep-inv-paid', payments: [{ id: 'pay-1' }] }]);
+    // Slice 15: the money test is part of the read taken under the deposit's lock (the database
+    // answers it; deposit-void-cascade-db.test.ts drives it for real), so a deposit carrying money
+    // never comes back from that read and nothing is voided.
+    (prisma.invoice.findMany as any).mockResolvedValue([]);
 
     const res = await request(app)
-      .post(`/api/leads/${LEAD_FIXTURE.id}/cancel`)
+      .post(`/api/leads/${LEAD_FIXTURE.id}/mark-lost`)
       .set(authHeader('admin'))
-      .send({ cancelled_reason: 'No longer needed' });
+      .send({ lost_reason: 'No longer needed' });
 
     expect(res.status).toBe(200);
+    expect((prisma.invoice.findMany as any)).toHaveBeenCalledWith(expect.objectContaining({
+      where: expect.objectContaining({ kind: 'DEPOSIT', payments: { none: expect.objectContaining({ voided_at: null }) } }),
+    }));
     expect((prisma.invoice.updateMany as any)).not.toHaveBeenCalled();
-  });
-
-  // A no-op (already CANCELLED) is the one case this door still refuses (PRD D10 lets a Won or Lost
-  // lead be cancelled), and when it does, no cascade runs.
-  it('cancelLead blocked once already CANCELLED — no cascade runs', async () => {
-    mockAuthAs('admin');
-    mockPrisma.lead.findUnique.mockResolvedValue({ ...LEAD_FIXTURE, status: 'CANCELLED' });
-
-    const res = await request(app)
-      .post(`/api/leads/${LEAD_FIXTURE.id}/cancel`)
-      .set(authHeader('admin'))
-      .send({ cancelled_reason: 'Test' });
-
-    expect(res.status).toBe(400);
-    expect(res.body.error).toContain('cancelled');
-    expect((prisma.estimate.updateMany as any)).not.toHaveBeenCalled();
-    expect((prisma.invoice.findMany as any)).not.toHaveBeenCalled();
   });
 });
 
@@ -5686,6 +5583,8 @@ describe('POST /api/leads/:id/walkthrough/performers', () => {
 
   it('accepts a DISPATCHER performer (#366: all active users walkthrough-eligible)', async () => {
     mockAuthAs('admin');
+    // The Dispatcher preset is not crew-eligible; the switch is turned on so the case is about the door.
+    mockRoleSwitches({ can_be_on_crew: true });
     const scheduledLead = { ...LEAD_FIXTURE, status: 'CONTACTED' };
     mockPrisma.lead.findUnique.mockResolvedValue(scheduledLead);
     mockPrisma.visit.findFirst.mockResolvedValue({
@@ -5932,8 +5831,7 @@ describe('GET /api/leads/export', () => {
 
     await request(app).get('/api/leads/export').set(authHeader('sales'));
 
-    expect(mockPrisma.lead.findMany.mock.calls[0][0].where.lead_assignees)
-      .toEqual({ some: { user_id: TEST_USERS.sales.id } });
+    expect(mockPrisma.lead.findMany.mock.calls[0][0].where.OR).toEqual(attachedLeadWhere(TEST_USERS.sales.id));
   });
 
   // LED-B3: tenant isolation — the export where must carry the org scope so cross-org

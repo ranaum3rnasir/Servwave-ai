@@ -23,7 +23,8 @@ type Row = Record<'NEW' | 'CONTACTED' | 'WALKTHROUGH_SCHEDULED' | 'WALKTHROUGH_C
 /**
  * Every combination of open (0, 1, 2), finished (0, 1) and estimate sent (no, yes). Open 2 behaves
  * as open 1 and is covered in its own test. `null` = can be picked, a string = locked with that
- * exact text. Won, Lost and Cancelled are never in the table because they are never locked.
+ * exact text. Won and Lost are never in the table because the data never locks them. (A lead that is itself Won or Lost
+ * locks every other status, whatever its data says: its own tests are at the end of the file.)
  */
 const TABLE: Array<{ open: number; finished: number; estimate: boolean; expect: Row }> = [
   { open: 0, finished: 0, estimate: false, expect: { NEW: null, CONTACTED: null, WALKTHROUGH_SCHEDULED: NO_BOOKING, WALKTHROUGH_COMPLETED: NO_DONE, ESTIMATED: NO_ESTIMATE } },
@@ -37,18 +38,18 @@ const TABLE: Array<{ open: number; finished: number; estimate: boolean; expect: 
   { open: 1, finished: 1, estimate: true, expect: { NEW: ESTIMATE_SENT, CONTACTED: ESTIMATE_SENT, WALKTHROUGH_SCHEDULED: ESTIMATE_SENT, WALKTHROUGH_COMPLETED: ESTIMATE_SENT, ESTIMATED: null } },
 ];
 
-// A closed lead follows the same data rules as any other (D10), so the table runs for every
-// current status. Each status's OWN row is the one exception, tested separately below.
-const CURRENTS: LeadStatus[] = ['NEW', 'CONTACTED', 'WALKTHROUGH_SCHEDULED', 'WALKTHROUGH_COMPLETED', 'ESTIMATED', 'WON', 'LOST', 'CANCELLED'];
+// The data table runs for every open current status. Each status's OWN row is the one exception, tested separately
+// below. A Won or Lost lead is out of it: the closed-lead lock (S05.19) overrides the data rules.
+const CURRENTS: LeadStatus[] = ['NEW', 'CONTACTED', 'WALKTHROUGH_SCHEDULED', 'WALKTHROUGH_COMPLETED', 'ESTIMATED'];
 
 function facts(current: LeadStatus, open: number, finished: number, estimate: boolean): LeadStatusFacts {
   return { current, openVisits: open, finishedVisits: finished, estimateSent: estimate };
 }
 
 describe('leadStatusOptions', () => {
-  it('lists all eight statuses in the PRD section 5 order', () => {
+  it('lists the seven statuses in the PRD section 5 order, with no Cancelled (S05.17)', () => {
     expect(leadStatusOptions(facts('NEW', 0, 0, false)).map((o) => o.status)).toEqual([
-      'NEW', 'CONTACTED', 'WALKTHROUGH_SCHEDULED', 'WALKTHROUGH_COMPLETED', 'ESTIMATED', 'WON', 'LOST', 'CANCELLED',
+      'NEW', 'CONTACTED', 'WALKTHROUGH_SCHEDULED', 'WALKTHROUGH_COMPLETED', 'ESTIMATED', 'WON', 'LOST',
     ]);
   });
 
@@ -66,10 +67,10 @@ describe('leadStatusOptions', () => {
       }
     });
 
-    it('never locks Won, Lost or Cancelled', () => {
+    it('never locks Won or Lost', () => {
       for (const row of TABLE) {
         const options = leadStatusOptions(facts(current, row.open, row.finished, row.estimate));
-        for (const status of ['WON', 'LOST', 'CANCELLED']) {
+        for (const status of ['WON', 'LOST']) {
           expect(options.find((o) => o.status === status)).toEqual({ status, available: true, reason: null });
         }
       }
@@ -114,10 +115,29 @@ describe('leadStatusOptions', () => {
     expect(leadStatusOptions(facts('NEW', 0, 0, false))[5]).toEqual({ status: 'WON', available: true, reason: null });
   });
 
-  it('gives a closed lead with an estimate the estimate text on the earlier steps (D10)', () => {
-    // A Won lead with an approved estimate: Estimate Sent can be picked, Contacted cannot.
-    const options = leadStatusOptions(facts('WON', 0, 0, true));
-    expect(options[4]).toEqual({ status: 'ESTIMATED', available: true, reason: null });
-    expect(options[1]).toEqual({ status: 'CONTACTED', available: false, reason: ESTIMATE_SENT });
+  it('lets Won and Lost be picked on every open lead, whatever its data says', () => {
+    for (const current of CURRENTS) {
+      for (const row of TABLE) {
+        const options = leadStatusOptions(facts(current, row.open, row.finished, row.estimate));
+        for (const status of ['WON', 'LOST']) {
+          if (status !== current) expect(options.find((o) => o.status === status)).toEqual({ status, available: true, reason: null });
+        }
+      }
+    }
+  });
+
+  describe.each(['WON', 'LOST'] as const)('on a %s lead (the closed-lead lock, S05.19)', (current) => {
+    it('locks every other status with the reopen sentence, whatever the lead data says', () => {
+      for (const row of TABLE) {
+        const options = leadStatusOptions(facts(current, row.open, row.finished, row.estimate));
+        for (const option of options) {
+          expect(option, `${option.status} open ${row.open} finished ${row.finished} estimate ${row.estimate}`).toEqual(
+            option.status === current
+              ? { status: current, available: true, reason: null }
+              : { status: option.status, available: false, reason: 'To change the status, reopen the lead first.' },
+          );
+        }
+      }
+    });
   });
 });

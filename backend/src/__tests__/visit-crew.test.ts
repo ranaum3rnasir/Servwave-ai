@@ -25,14 +25,22 @@
 import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
-import { mockAuthAs, authHeader, mockScopedFindFirst, JOB_FIXTURE, ALPHA_ORG_ID, ORG_B_ID, TEST_ORG, TEST_USERS } from './helpers';
+import { mockAuthAs as signInAs, mockRoleSwitches, authHeader, mockScopedFindFirst, JOB_FIXTURE, ALPHA_ORG_ID, ORG_B_ID, TEST_ORG, TEST_USERS } from './helpers';
 import { prisma } from '../lib/prisma';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-
-import { emit } from '../services/notifications/notificationService';
+import { queueJobSchedulingAlert, queueJobUnassignedAlert } from '../services/notifications/jobSchedulingAlerts';
 
 // Captured so the "you were removed from this job" dispatch can be asserted as an observable
 // consequence rather than inferred from the crew rows.
+// The assigned and unassigned alerts are queued for after the response (S06.27); the queue entry points are what the routes call.
+vi.mock('../services/notifications/jobSchedulingAlerts', () => ({
+  queueJobSchedulingAlert: vi.fn(),
+  queueJobUnassignedAlert: vi.fn(),
+  queueStagingReadyAlert: vi.fn(),
+}));
+/** The personal "unassigned" alerts a request queued, and the scheduling ones of a verb. */
+const queuedUnassigned = () => (queueJobUnassignedAlert as any).mock.calls.map((c: any[]) => c[0]);
+const queuedScheduling = (verb: string) => (queueJobSchedulingAlert as any).mock.calls.map((c: any[]) => c[0]).filter((a: any) => a.verb === verb);
 vi.mock('../services/notifications/notificationService', () => ({
   emit: vi.fn().mockResolvedValue(undefined),
 }));
@@ -58,6 +66,17 @@ afterAll(() => {
 });
 
 const mockPrisma = prisma as unknown as Record<string, any>;
+
+/**
+ * TECH_B below is the Dispatcher test user, and the Dispatcher preset has Can be on a crew off. These cases are about
+ * where a visit's crew is written, not about who may be on a crew (permission-job-slot-writes-db.test.ts covers
+ * that), so every sign-in here also turns the switch on.
+ */
+const mockAuthAs: typeof signInAs = (...args) => {
+  const signedIn = signInAs(...args);
+  mockRoleSwitches({ can_be_on_crew: true });
+  return signedIn;
+};
 
 // Crew members drawn from TEST_USERS so validateCrew's per-member `user.findUnique` (which
 // mockAuthAs backs) resolves them as active, assignable, in-org people.
@@ -388,12 +407,8 @@ describe('Job visit routes - setting crew needs `assign Job`, not merely `resche
     vi.clearAllMocks();
     clearPermissionCache();
     mockAuthAs('technician');
-    // A technician who holds `reschedule Job` as a PER-USER capability (its ownCondition is
-    // OWN_JOB) but not `assign Job` on this row: assign is CREATED_BY_ME for TECHNICIAN by
-    // default, and somebody else created this job.
-    mockPrisma.userPermissionOverride.findMany.mockResolvedValue([
-      { action: 'reschedule', subject: 'Job', effect: 'allow' },
-    ]);
+    // A technician who holds Schedule visits (`reschedule Job`) but not Assign people to jobs (`assign Job`).
+    mockRoleSwitches({ schedule_visits: true, assign_people_to_jobs: false });
     // Prisma is mocked, so a blanket findFirst -> {id} would make EVERY per-instance scope check
     // pass and turn the refusal below into a vacuous assertion. This one really evaluates the
     // scope fragment against the row.
@@ -483,12 +498,9 @@ describe('PATCH /api/jobs/:id/visits/:visitId - the assign gate keys on the crew
     vi.clearAllMocks();
     clearPermissionCache();
     mockAuthAs('technician');
-    // Reschedule-only, exactly as the sibling describe above: holds `reschedule Job` but not
-    // `assign Job` on this row (assign is CREATED_BY_ME for TECHNICIAN by default, and someone
-    // else created this job).
-    mockPrisma.userPermissionOverride.findMany.mockResolvedValue([
-      { action: 'reschedule', subject: 'Job', effect: 'allow' },
-    ]);
+    // Reschedule-only, exactly as the sibling describe above: holds Schedule visits (`reschedule Job`) but not
+    // Assign people to jobs (`assign Job`).
+    mockRoleSwitches({ schedule_visits: true, assign_people_to_jobs: false });
     mockScopedFindFirst(mockPrisma.job.findFirst, {
       id: JOB_ID,
       organization_id: ALPHA_ORG_ID,
@@ -539,7 +551,9 @@ describe('PATCH /api/jobs/:id/visits/:visitId - the assign gate keys on the crew
   });
 
   it('4. an assign-holder sending [] succeeds and empties the crew', async () => {
-    mockAuthAs('admin');
+    // The same technician, now also holding Assign people to jobs (the request is signed with their token).
+    mockAuthAs('technician');
+    mockRoleSwitches({ schedule_visits: true, assign_people_to_jobs: true });
     mockPrisma.job.findFirst.mockResolvedValue({ id: JOB_ID });
 
     const res = await move([]);
@@ -552,13 +566,15 @@ describe('PATCH /api/jobs/:id/visits/:visitId - the assign gate keys on the crew
 describe('POST /api/jobs/:id/visits - an ineligible or out-of-org crew member is refused', () => {
   const OTHER_ORG_USER = '00000000-0000-0000-0000-0000000000e1';
   const INACTIVE_USER = '00000000-0000-0000-0000-0000000000e2';
-  const CORRUPT_ROLE_USER = '00000000-0000-0000-0000-0000000000e3';
+  const CANNOT_CREW_USER = '00000000-0000-0000-0000-0000000000e3';
   let tx: ReturnType<typeof wireJobVisitTx>;
 
   beforeEach(() => {
     vi.clearAllMocks();
     clearPermissionCache();
     mockAuthAs('admin');
+    // Back to the presets, where the Dispatcher-role person below cannot be on a crew.
+    mockRoleSwitches({ can_be_on_crew: false });
 
     // mockAuthAs's user.findUnique resolves any TEST_USERS id and IGNORES the tenant clause, so
     // the out-of-org case below would pass against it for the wrong reason. This one honours
@@ -569,7 +585,7 @@ describe('POST /api/jobs/:id/visits - an ineligible or out-of-org crew member is
       ...Object.values(TEST_USERS),
       { id: OTHER_ORG_USER, role: 'TECHNICIAN', is_active: true, email: 'x@orgb.com', first_name: 'Out', last_name: 'OfOrg', organization_id: ORG_B_ID },
       { id: INACTIVE_USER, role: 'TECHNICIAN', is_active: false, email: 'gone@test.com', first_name: 'Left', last_name: 'Company', organization_id: ALPHA_ORG_ID },
-      { id: CORRUPT_ROLE_USER, role: 'VIEWER', is_active: true, email: 'v@test.com', first_name: 'View', last_name: 'Only', organization_id: ALPHA_ORG_ID },
+      { id: CANNOT_CREW_USER, role: 'DISPATCHER', is_active: true, email: 'v@test.com', first_name: 'View', last_name: 'Only', organization_id: ALPHA_ORG_ID },
     ];
     mockPrisma.user.findUnique.mockImplementation(async ({ where }: any) => {
       const match = directory.find((u) => u.id === where.id);
@@ -604,18 +620,17 @@ describe('POST /api/jobs/:id/visits - an ineligible or out-of-org crew member is
   it('400s an inactive in-org user, writing nothing', async () => {
     const res = await book([INACTIVE_USER]);
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe('Cannot assign job to an inactive technician');
+    expect(res.body.error).toBe('This person is inactive.');
     expect(tx.visitCrew.delegate.createMany).not.toHaveBeenCalled();
     expect(mockPrisma.visit.create).not.toHaveBeenCalled();
   });
 
-  it('400s a user whose role is not assignable, writing nothing', async () => {
-    // Every value of the Role enum is assignable today, so this branch is only reachable through a
-    // corrupt/unknown role value - which is exactly what assignableRoles.ts says isAssignable is
-    // still there to reject, and what a future role added to the enum would look like.
-    const res = await book([CORRUPT_ROLE_USER]);
+  it('400s a user whose Can be on a crew is off (the Dispatcher preset), writing nothing', async () => {
+    // Crew eligibility is the person's own Can be on a crew switch, never their role name: the Dispatcher preset
+    // has it off, so a Dispatcher-role user is refused here while a Technician or Sales user is taken.
+    const res = await book([CANNOT_CREW_USER]);
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe('This user is not eligible to be assigned as job crew');
+    expect(res.body.error).toBe("This person can't be on a crew.");
     expect(tx.visitCrew.delegate.createMany).not.toHaveBeenCalled();
     expect(mockPrisma.visit.create).not.toHaveBeenCalled();
   });
@@ -1392,10 +1407,7 @@ describe('POST /api/jobs/:id/assign - nobody kept by the union is told they were
       .filter((d: any) => d?.event_type === 'CREW_MEMBER_REMOVED');
     expect(removedEvents).toHaveLength(0);
 
-    const unassigns = (emit as any).mock.calls
-      .map((c: any[]) => c[0])
-      .filter((e: any) => e?.verb === 'dispatch.job_unassigned');
-    expect(unassigns).toHaveLength(0);
+    expect(queuedUnassigned()).toHaveLength(0);
   });
 });
 
@@ -1494,11 +1506,9 @@ describe('POST /api/jobs/:id/assign - dropping a technician from the only visit 
       .filter((d: any) => d?.event_type === 'CREW_MEMBER_REMOVED');
     expect(removedEvents).toHaveLength(1);
 
-    const unassigns = (emit as any).mock.calls
-      .map((c: any[]) => c[0])
-      .filter((e: any) => e?.verb === 'dispatch.job_unassigned');
+    const unassigns = queuedUnassigned();
     expect(unassigns).toHaveLength(1);
-    expect(unassigns[0].entity.assignee_ids).toEqual([TECH_B]);
+    expect(unassigns[0].removedIds).toEqual([TECH_B]);
   });
 });
 
@@ -1967,8 +1977,6 @@ describe('POST /api/jobs/:id/visits/:visitId/assignees - re-crews the named visi
 
   const crewOf = (visitId: string) =>
     visitCrew.rows.filter((r) => r.visit_id === visitId).map((r) => r.user_id).sort();
-  const emitted = (verb: string) =>
-    (emit as any).mock.calls.map((c: any[]) => c[0]).filter((e: any) => e?.verb === verb);
 
   it('replaces visit 2\'s crew and leaves the current visit\'s crew alone', async () => {
     const res = await request(app)
@@ -1987,8 +1995,8 @@ describe('POST /api/jobs/:id/visits/:visitId/assignees - re-crews the named visi
       .set(authHeader('admin'))
       .send({ assignee_ids: [TECH_C] });
 
-    expect(emitted('dispatch.job_assigned').map((e: any) => e.entity.assignee_ids)).toEqual([[TECH_C]]);
-    expect(emitted('dispatch.job_unassigned').map((e: any) => e.entity.assignee_ids)).toEqual([[TECH_B]]);
+    expect(queuedScheduling('dispatch.job_assigned').map((e: any) => e.namedIds)).toEqual([[TECH_C]]);
+    expect(queuedUnassigned().map((e: any) => e.removedIds)).toEqual([[TECH_B]]);
     const events = timelineCreate.mock.calls.map((c: any[]) => c[0]?.data?.event_type);
     expect(events).toEqual(expect.arrayContaining(['CREW_MEMBER_ADDED', 'CREW_MEMBER_REMOVED']));
     // A crew change is not a move: nothing here may read as the visit being rescheduled.

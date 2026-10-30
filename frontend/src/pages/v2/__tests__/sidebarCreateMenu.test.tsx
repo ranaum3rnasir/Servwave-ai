@@ -7,6 +7,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AbilityProvider } from '@/contexts/AbilityContext';
 import { buildAbility } from '@/lib/ability';
+import api from '@/lib/axios';
+import { quickCreateItems } from '@/components/layout/nav-config';
 import { useSettingsGuard } from '@/stores/settingsGuard.store';
 import { AppShell } from '@/ui-kit/components/layout/appShell';
 
@@ -40,7 +42,15 @@ function LocationProbe() {
   return <div data-testid="pathname">{loc.pathname}</div>;
 }
 
+/** Every item's page is shown to this person: S02.24 draws an item only when its Show switch is on too. */
+function answerEveryPageShown() {
+  const values = Object.fromEntries(quickCreateItems.map((item) => [item.show, true]));
+  vi.mocked(api.get).mockImplementation(async (url: string) =>
+    (url === '/api/permission-switches/me' ? { data: { admin_box: true, values, rules: [] } } : { data: {} }));
+}
+
 function renderMenu(entry = '/') {
+  answerEveryPageShown();
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
@@ -57,8 +67,8 @@ function renderMenu(entry = '/') {
 
 async function openMenuAndPick(label: string) {
   const user = userEvent.setup();
-  await user.click(screen.getByRole('button', { name: 'Create New' }));
-  await user.click(screen.getByRole('menuitem', { name: label }));
+  await user.click(await screen.findByRole('button', { name: 'Create New' }));
+  await user.click(await screen.findByRole('menuitem', { name: label }));
 }
 
 describe('SidebarCreateMenu (SRVW-268)', () => {

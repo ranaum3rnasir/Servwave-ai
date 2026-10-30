@@ -148,7 +148,7 @@ describe('reattributeOrg', () => {
     const f = makeDeps([row], {
       resolutions: {
         'cs-1': {
-          answeredBy: { kind: 'external', user_id: SAGIV_ID, name: 'Sagiv Peker' },
+          answeredBy: { kind: 'external', user_id: SAGIV_ID, name: 'Riley Chen' },
           agentId: SAGIV_ID,
         },
       },
@@ -188,8 +188,8 @@ describe('reattributeOrg', () => {
             kind: 'external',
             receiving_number_id: '3831356',
             user_id: SAGIV_ID,
-            name: 'Sagiv Peker',
-            email: 'sagiv@example.com',
+            name: 'Riley Chen',
+            email: 'riley@example.com',
           },
           agentId: SAGIV_ID,
         },
@@ -206,8 +206,8 @@ describe('reattributeOrg', () => {
           kind: 'external',
           receiving_number_id: '3831356',
           user_id: SAGIV_ID,
-          name: 'Sagiv Peker',
-          email: 'sagiv@example.com',
+          name: 'Riley Chen',
+          email: 'riley@example.com',
         },
       },
     });

@@ -47,6 +47,7 @@ to the leads page could break Schedule. This folder is the fix. Leads is a modul
 | `datePicker.tsx` | `DatePicker` - a typeable MM/DD/YYYY field plus a calendar popover, on `<input type="date">`'s `'YYYY-MM-DD'` string contract. Used by fourteen files across ten modules. |
 | `timeCombobox.tsx` | `TimeCombobox` - a typeable 12-hour time field plus a filtered option list, on `<input type="time">`'s `'HH:MM'` contract. Used by the two schedule surfaces, the job form and the org default start time. |
 | `scheduleTimeFields.tsx` | `ScheduleTimeFields` - start date, start time, end date, end time. The ONE field set every v2 surface that schedules anything renders: the board popover, the drop modal, the job form and the leads walkthrough tab. |
+| `scheduleClashNotice.tsx` | `ScheduleClashNotice` - the "Scheduling conflict" block with "Schedule anyway" a create form shows when the people booked on it are already booked over that slot. Used by the new-lead and new-job forms. |
 
 `loList.tsx` is a promotion for the same reason as the service-plan rows, and it is domain-named too:
 the jobs detail page was still mounting the LEGACY `components/inventory/lo/LOList` on its Logistics

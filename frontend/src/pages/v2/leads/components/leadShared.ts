@@ -75,3 +75,23 @@ export function isWalkthroughActive(
 ): boolean {
   return Boolean(scheduledAt) && !completedAt && !cancelledAt;
 }
+
+/**
+ * The actions the server says this person may take on one lead (the `actions` on the lead detail response). The
+ * lead pages offer no edit control the list leaves out, so the button and the update route ask the same question.
+ */
+export type LeadAction =
+  | 'edit' | 'edit_address' | 'edit_source' | 'edit_schedule' | 'change_status'
+  // Reopen lead on a Won or Lost lead (S05.19): from Reopen leads alone, so a person who cannot edit the lead may have it.
+  | 'reopen'
+  // The walkthrough steps: noting the current walkthrough and finishing the scheduled one, each only for a person on
+  // that walkthrough's crew or holding Update any visit's status.
+  | 'walkthrough_notes' | 'walkthrough_finish';
+
+/**
+ * Does the lead's action list offer this action? A response without the list (an older server) falls back to
+ * what the person's grants say, `fallback`.
+ */
+export function leadOffers(lead: { actions?: LeadAction[] } | null | undefined, action: LeadAction, fallback: boolean): boolean {
+  return Array.isArray(lead?.actions) ? lead.actions.includes(action) : fallback;
+}

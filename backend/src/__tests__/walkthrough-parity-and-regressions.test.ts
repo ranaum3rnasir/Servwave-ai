@@ -62,6 +62,7 @@ import {
   authHeader,
   mockScopedFindFirst,
   mockRoleGrantsWithout,
+  mockRoleSwitches,
   type TestUserKey,
   withLeadStatusSync,
 } from './helpers';
@@ -69,19 +70,25 @@ import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { dispatchAutomationEvent } from '../services/automations/dispatch';
 import { sendWalkthroughScheduledEmail } from '../lib/email';
-import { emit } from '../services/notifications/notificationService';
+import { queueLeadAlert } from '../services/notifications/leadEstimateAlerts';
 
 // The in-app internal notice. Real, it swallows every error by design (notificationService.ts
 // step 2), so against a mocked prisma it neither writes nor complains — unmockable AND
-// unassertable at once. Mocked here it becomes the seam "an internal notice was raised".
+// unassertable at once. Mocked here it becomes the seam "an internal notice was raised". The walkthrough
+// notice goes through M6's chain (S06.26): the route queues it for after its response, so the queue call is the seam
+// (who is told is permission-lead-estimate-alerts-db.test.ts).
 vi.mock('../services/notifications/notificationService', () => ({
   emit: vi.fn().mockResolvedValue([]),
+}));
+vi.mock('../services/notifications/leadEstimateAlerts', () => ({
+  queueLeadAlert: vi.fn(),
+  alertLead: vi.fn().mockResolvedValue(undefined),
 }));
 
 const mockPrisma = prisma as unknown as Record<string, any>;
 const mockDispatch = dispatchAutomationEvent as unknown as ReturnType<typeof vi.fn>;
 const mockCustomerEmail = sendWalkthroughScheduledEmail as unknown as ReturnType<typeof vi.fn>;
-const mockEmit = emit as unknown as ReturnType<typeof vi.fn>;
+const mockQueuedLeadAlert = queueLeadAlert as unknown as ReturnType<typeof vi.fn>;
 
 const REP = TEST_USERS.sales;
 const DISPATCHER = TEST_USERS.dispatcher;
@@ -208,7 +215,7 @@ function wireWorld(leadRow: Record<string, unknown> = repsLead()) {
   // The customer notice reads the org row for its timezone and wordmark. Stubbed identically for
   // every actor, so a difference in the rendered email could only come from the actor.
   mockPrisma.organization.findUnique.mockResolvedValue({
-    name: 'Alpha Doors', logo_url: null, brand_color: null, timezone: 'America/Chicago',
+    name: 'Example Doors', logo_url: null, brand_color: null, timezone: 'America/Chicago',
   });
   wireTx();
 }
@@ -227,7 +234,7 @@ const automations = () =>
   (mockDispatch.mock.calls as unknown[][]).map((c) => c[0] as Record<string, unknown>);
 /** The in-app internal notices raised by the request just made. */
 const notices = () =>
-  (mockEmit.mock.calls as unknown[][]).map((c) => c[0] as Record<string, unknown>);
+  (mockQueuedLeadAlert.mock.calls as unknown[][]).map((c) => c[0] as Record<string, unknown>);
 /** The customer emails sent directly by the request just made. */
 const customerEmails = () =>
   (mockCustomerEmail.mock.calls as unknown[][]).map((c) => c[0] as Record<string, unknown>);
@@ -321,7 +328,7 @@ describe('the customer notification does not depend on who scheduled it (stories
       // The PERFORMER is named to the customer, never the booker. Both runs name the rep
       // because both booked the rep, which is the point: the customer is told who is coming.
       performerName: 'Test Sales',
-      companyName: 'Alpha Doors',
+      companyName: 'Example Doors',
       timezone: 'America/Chicago',
       scheduledDate: BOOKED_AT,
     });
@@ -388,8 +395,8 @@ describe('internal notices fire as they do today (story 34)', () => {
     expect(rep.notices[0]).toMatchObject({
       verb: 'lead.walkthrough_scheduled',
       organizationId: ALPHA_ORG_ID,
-      object: { type: 'LEAD', id: LEAD_FIXTURE.id, label: LEAD_FIXTURE.lead_number },
-      entity: { performer_ids: [REP.id], commission_owner_id: REP.id },
+      leadId: LEAD_FIXTURE.id,
+      performerIds: [REP.id],
       actorId: REP.id,
     });
 
@@ -598,15 +605,18 @@ function stubRoster() {
   );
 }
 
-describe('the job crew picker is unchanged for dispatchers and technicians (stories 19, 33)', () => {
+describe('the job crew picker follows Assign work to other people (stories 19, 33)', () => {
   beforeEach(() => {
     stubRoster();
   });
 
+  // The Dispatcher preset holds Assign work to other people on and the Technician preset holds it off
+  // (Roles & Permissions, PRD 1); the picker reads the switch, never the role.
   it.each([['dispatcher' as TestUserKey], ['technician' as TestUserKey]])(
-    'offers a %s the whole org pool',
+    'offers a %s the whole org pool when they hold Assign work to other people',
     async (who) => {
       signIn(who);
+      mockRoleSwitches({ assign_work_to_others: true });
 
       const res = await request(app).get(`${ROSTER}?purpose=jobCrew`).set(authHeader(who));
 
@@ -618,11 +628,10 @@ describe('the job crew picker is unchanged for dispatchers and technicians (stor
     },
   );
 
-  it('narrows a TECHNICIAN stripped of `assign User` to their own row', async () => {
+  it('narrows a TECHNICIAN to their own row: the Technician preset holds Assign work to other people off', async () => {
     // The control that makes the pair above load-bearing: without it, a handler that ignored the
     // pool entirely would answer the whole roster to everyone and both cases would still pass.
     signIn('technician');
-    mockRoleGrantsWithout('TECHNICIAN', ['assign', 'User']);
 
     const res = await request(app).get(`${ROSTER}?purpose=jobCrew`).set(authHeader('technician'));
 
@@ -631,25 +640,26 @@ describe('the job crew picker is unchanged for dispatchers and technicians (stor
     expect(res.body[0].id).toBe(COLLEAGUE.id);
   });
 
-  it('lets a TECHNICIAN crew a colleague onto a job they created, and really writes them', async () => {
-    // Slice 1's contested decision — TECHNICIAN holds `assign User` by default, because a
-    // technician who created a job can add colleagues to its crew TODAY and omitting them would
-    // be a silent removal. The write is asserted, not just the 200: a door that accepted the
-    // request and dropped the colleague would look identical from the status line.
+  it('lets a TECHNICIAN holding Assign work to other people crew a colleague onto a job they are on, and really writes them', async () => {
+    // The write is asserted, not just the 200: a door that accepted the request and dropped the
+    // colleague would look identical from the status line.
     signIn('technician');
+    // Assign people to jobs says which jobs the person may re-crew (off in the Technician preset); Assign work to
+    // other people says whose names they may put on the crew.
+    mockRoleSwitches({ assign_people_to_jobs: true, assign_work_to_others: true, can_be_on_crew: true });
     const visit = {
       id: 'v0000000-0000-0000-0000-0000000000c1',
       organization_id: ALPHA_ORG_ID, job_id: JOB_FIXTURE.id, lead_id: null, visit_seq: 1,
       status: 'SCHEDULED', scheduled_at: new Date(NOW + DAY), scheduled_end: new Date(NOW + DAY + 60 * MINUTE),
       is_all_day: false, created_at: new Date(NOW - DAY), customer_email_sent_at: null,
-      assignees: [] as { user_id: string }[],
+      assignees: [{ user_id: COLLEAGUE.id }] as { user_id: string }[],
     };
     const job = {
       ...JOB_FIXTURE, organization_id: ALPHA_ORG_ID, status: 'SCHEDULED', created_by_id: COLLEAGUE.id,
       customer: { ...JOB_FIXTURE.customer, email: null }, visits: [visit],
     };
     mockPrisma.job.findUnique.mockResolvedValue(job);
-    // `assign Job` is conditioned CREATED_BY_ME for a technician, so this fragment IS consulted.
+    // `assign Job` is scoped to the technician's Jobs scope (Attached), so this fragment IS consulted.
     mockScopedFindFirst(mockPrisma.job.findFirst, job);
     mockPrisma.job.findMany.mockResolvedValue([]);
     mockPrisma.lead.findMany.mockResolvedValue([]);
@@ -684,13 +694,9 @@ describe('the job crew picker is unchanged for dispatchers and technicians (stor
       .send({ assignee_ids: [COLLEAGUE.id, DISPATCHER.id] });
 
     expect(res.status).toBe(200);
+    // The technician is already on the crew, so the write adds exactly the colleague they named.
     expect(crewWrite.createMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.arrayContaining([
-          expect.objectContaining({ user_id: COLLEAGUE.id }),
-          expect.objectContaining({ user_id: DISPATCHER.id }),
-        ]),
-      }),
+      expect.objectContaining({ data: [expect.objectContaining({ user_id: DISPATCHER.id })] }),
     );
   });
 

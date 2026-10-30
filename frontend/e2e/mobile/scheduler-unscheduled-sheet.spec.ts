@@ -20,7 +20,7 @@
  */
 import { expect, type Locator, type Page } from '@playwright/test';
 import { ApiClient } from '../helpers/api-client';
-import { createCustomerWithLocation } from '../helpers/workflow-builders';
+import { gateCustomerWithLocation } from './gate-customer';
 import { gateDevice } from './devices';
 import { settle } from './measure';
 import { selectStates } from './routes';
@@ -43,7 +43,7 @@ const PHONE_WIDTH = 768;
 async function unscheduledJob(): Promise<{ id: string; number: string; api: ApiClient }> {
   const api = await new ApiClient().init();
   try {
-    const { customerId, locationId } = await createCustomerWithLocation(api);
+    const { customerId, locationId } = await gateCustomerWithLocation(api);
     const created = await api.createJob({ customer_id: customerId, service_location_id: locationId });
     if (!created.res.ok()) throw new Error(`seed: create job failed ${created.res.status()} ${JSON.stringify(created.body).slice(0, 200)}`);
     return { id: created.body.job.id as string, number: created.body.job.job_number as string, api };

@@ -388,6 +388,8 @@ export interface FilterPopoverProps {
   hasExtraConstraint?: boolean;
   /** Replaces Clear all's `onChange({})` when clearing must reach beyond the facet state. */
   onClearAll?: () => void;
+  /** Extra classes for the phone sheet (a page that needs larger tap targets there). The popover is unchanged. */
+  sheetClassName?: string;
 }
 
 /** The Filter button's rectangle and the window it sits in, read when the panel opens or the window resizes. */
@@ -401,7 +403,7 @@ function measurePlacement(trigger: HTMLElement | null): FilterPlacement {
 
 export function FilterPopover({
   registry, value, onChange, resolveOptions, resolveMax, statusDomain, renderOption, renderFacet,
-  facetTimezones, subtitle, extraCount = 0, hasExtraConstraint = false, onClearAll,
+  facetTimezones, subtitle, extraCount = 0, hasExtraConstraint = false, onClearAll, sheetClassName,
 }: FilterPopoverProps) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -576,7 +578,8 @@ export function FilterPopover({
                     aria-selected={active}
                     onClick={() => setSelectedKey(facet.key)}
                     className={cn(
-                      'relative flex h-8 w-full items-center justify-between gap-2 rounded-md px-2.5 text-left text-[13px] font-normal transition-colors',
+                      // shrink-0: the list is a flex column that scrolls, so a tab must never be squashed to fit it.
+                      'relative flex h-8 w-full shrink-0 items-center justify-between gap-2 rounded-md px-2.5 text-left text-[13px] font-normal transition-colors',
                       // The active facet is marked with a left rail, the same
                       // device the sidebar uses for the active page. One
                       // "you are here" language across the app beats a filled
@@ -611,7 +614,7 @@ export function FilterPopover({
           side="bottom"
           data-filter-sheet=""
           style={{ maxHeight: `${placement.maxHeight}px` }}
-          className="max-h-none"
+          className={cn('max-h-none', sheetClassName)}
         >
           <SheetHeader className="flex-row items-center gap-2">
             {drillFacet && (

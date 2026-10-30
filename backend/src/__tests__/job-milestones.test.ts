@@ -9,10 +9,7 @@ describe('milestoneClears', () => {
   // en_route_at/on_site_at (a separate column on a separate table) were never this function's
   // job and are untouched either way.
   it('clears every later job timestamp when moving back to Scheduled', () => {
-    expect(milestoneClears('scheduled')).toEqual({
-      started_at: null, completed_at: null,
-      cancelled_at: null, cancelled_reason: null,
-    });
+    expect(milestoneClears('scheduled')).toEqual({ started_at: null, completed_at: null });
   });
 
   it('never names en_route_at or on_site_at — those columns are gone from `jobs` (S8)', () => {
@@ -23,22 +20,15 @@ describe('milestoneClears', () => {
   });
 
   it('clears start and completion when moving back to On Site', () => {
-    expect(milestoneClears('on_site')).toEqual({
-      started_at: null, completed_at: null,
-      cancelled_at: null, cancelled_reason: null,
-    });
+    expect(milestoneClears('on_site')).toEqual({ started_at: null, completed_at: null });
   });
 
   it('clears only completion when moving back to Start', () => {
-    expect(milestoneClears('started')).toEqual({
-      completed_at: null, cancelled_at: null, cancelled_reason: null,
-    });
+    expect(milestoneClears('started')).toEqual({ completed_at: null });
   });
 
-  it('clears nothing but the cancellation when moving to Completed (the last job stage)', () => {
-    expect(milestoneClears('completed')).toEqual({
-      cancelled_at: null, cancelled_reason: null,
-    });
+  it('clears nothing when moving to Completed (the last job stage)', () => {
+    expect(milestoneClears('completed')).toEqual({});
   });
 
   it('NEVER clears scheduled_start or scheduled_end from any milestone', () => {
@@ -53,10 +43,11 @@ describe('milestoneClears', () => {
     }
   });
 
-  it('always un-cancels — cancellation is not terminal', () => {
+  it('never touches the cancel record: a Cancelled job leaves only through Reopen (S06.17)', () => {
     for (const m of ALL) {
-      expect(milestoneClears(m).cancelled_at).toBeNull();
-      expect(milestoneClears(m).cancelled_reason).toBeNull();
+      expect(milestoneClears(m)).not.toHaveProperty('cancelled_at');
+      expect(milestoneClears(m)).not.toHaveProperty('cancelled_reason');
+      expect(milestoneClears(m)).not.toHaveProperty('cancel_reason_code');
     }
   });
 

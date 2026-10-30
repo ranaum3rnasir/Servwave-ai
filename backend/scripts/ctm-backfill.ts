@@ -73,7 +73,7 @@ export function defaultDeps(): BackfillDeps {
 
 // Texts ride the same /calls list as calls. A text is recognized by a msg_*
 // direction (msg_inbound/msg_outbound) OR an MSG…-prefixed message id.
-function isSmsActivity(a: Record<string, unknown>): boolean {
+export function isSmsActivity(a: Record<string, unknown>): boolean {
   if (String(a.direction ?? '').toLowerCase().startsWith('msg_')) return true;
   return String(a.message_id ?? '').toUpperCase().startsWith('MSG');
 }

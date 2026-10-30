@@ -35,6 +35,8 @@ import { toast } from '@/components/ui/use-toast';
 import { ToastAction } from '@/components/ui/toast';
 import { EmptyState } from '@/components/ui/empty-state';
 import { extractApiError } from '@/lib/utils';
+import { useAppAbility } from '@/contexts/AbilityContext';
+import { switchOn, useMySwitches } from '@/lib/api/mySwitches';
 import { DialogList } from '@/ui-kit/components/ui/dialogList';
 
 export interface CreatePOFromJobDialogProps {
@@ -65,7 +67,13 @@ export function CreatePOFromJobDialog({
 }: CreatePOFromJobDialogProps) {
   const navigate = useNavigate();
   const { data: items = [] } = useInventoryItems();
-  const { data: vendors = [] } = useVendors();
+  // The vendor list is read only by a person who may read vendors; without View vendors the picker has no one to offer.
+  const ability = useAppAbility();
+  const canReadVendors = ability.can('read', 'Vendor');
+  // The toast's link opens the new order (a record page), which a person with View purchase orders may open.
+  const mine = useMySwitches()?.values;
+  const canOpenPurchaseOrders = switchOn(mine, 'view_purchase_orders');
+  const { data: vendors = [] } = useVendors(canReadVendors);
   const createPO = useCreatePO();
 
   const [rows, setRows] = useState<DraftRow[]>([]);
@@ -151,16 +159,16 @@ export function CreatePOFromJobDialog({
       toast({
         title: `${poNumber} created`,
         description: 'Draft purchase order linked to this job.',
-        action: (
+        action: canOpenPurchaseOrders ? (
           <ToastAction
             altText="View purchase order"
             onClick={() =>
-              navigate(`/inventory/purchase-orders?status=draft&q=${encodeURIComponent(poNumber)}`)
+              navigate(`/inventory/purchase-orders/${r.purchaseOrder.id}`)
             }
           >
             View
           </ToastAction>
-        ),
+        ) : undefined,
       });
     } catch (err) {
       toast({ title: extractApiError(err, 'Failed to create purchase order'), variant: 'destructive' });

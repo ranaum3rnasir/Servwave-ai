@@ -50,8 +50,8 @@ describe('Dashboard collected KPIs — deposit double-count (#355)', () => {
 
     // AC #3: the deposit is not double-counted in collectedMtd (nor collected_today).
     expect(res.status).toBe(200);
-    expect(res.body.kpis.revenue_mtd.collected).toBe(5000);
-    expect(res.body.kpis.collected_today.amount).toBe(5000);
+    expect(res.body.data['kpi.revenue_mtd'].collected).toBe(5000);
+    expect(res.body.data['kpi.collected_today'].amount).toBe(5000);
 
     // Structural: every payment aggregation carries both exclusions.
     expect(prisma.payment.aggregate).toHaveBeenCalledWith(

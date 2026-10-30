@@ -12,7 +12,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { renderWithProviders, inventoryWriteAbility } from './helpers';
+import { renderWithProviders, inventoryWriteAbility, seedMySwitches } from './helpers';
 import { PODetailDialog } from '@/components/inventory/PODetailDialog';
 import PurchaseOrdersPage from '@/pages/v2/inventory/PurchaseOrdersPage';
 import api from '@/lib/axios';
@@ -230,6 +230,8 @@ describe('PODetailDialog — over-receive guards (QA-606)', () => {
 describe('PODetailDialog — staged-PO gating (QA-611)', () => {
   it('disables the receive action with the staging hint + link; receive mode is unreachable', async () => {
     const staged: PurchaseOrder = { ...SENT_PO, id: 'po-staged', stagedAsJobStageId: 'stage-1' };
+    // The pointer is for a person who may open the Staging page (View stock and Show Stock page).
+    seedMySwitches({ view_stock: true, show_stock_page: true });
     renderWithProviders(
       <PODetailDialog open onClose={vi.fn()} po={staged} onReceive={vi.fn()} />,
       { ability: inventoryWriteAbility() },

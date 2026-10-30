@@ -2,6 +2,7 @@ import { PrismaClient } from '@prisma/client';
 import { createClient } from '@supabase/supabase-js';
 import { randomBytes } from 'crypto';
 import dotenv from 'dotenv';
+import { issueUserMailbox } from '../src/lib/mailbox/register';
 
 dotenv.config();
 
@@ -64,15 +65,19 @@ async function main() {
     }
 
     // Create the matching Prisma users row.
-    await prisma.user.create({
-      data: {
-        id: supabaseUserId,
-        email: ADMIN_EMAIL,
-        first_name: 'Ran',
-        last_name: 'Roffe',
-        role: 'ADMIN',
-        organization_id: ALPHA_ORG_ID,
-      },
+    // The admin's mailbox is issued in the same transaction, as for a user made through the app.
+    await prisma.$transaction(async (tx) => {
+      await tx.user.create({
+        data: {
+          id: supabaseUserId,
+          email: ADMIN_EMAIL,
+          first_name: 'Ran',
+          last_name: 'Roffe',
+          role: 'ADMIN',
+          organization_id: ALPHA_ORG_ID,
+        },
+      });
+      await issueUserMailbox(tx, { id: supabaseUserId, organization_id: ALPHA_ORG_ID, first_name: 'Ran', last_name: 'Roffe' });
     });
 
     console.log('Admin user created.');

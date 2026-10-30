@@ -7,6 +7,8 @@ import { AssignTeamPopover } from '@/components/crm/AssignTeamPopover';
 interface AssignJobCrewPopoverProps {
   jobId: string;
   currentAssigneeIds?: string[] | null;
+  /** The crew's names, so the popover still shows members the roster no longer lists. */
+  currentAssignees?: { id: string; first_name: string; last_name: string }[] | null;
   trigger: ReactNode;
 }
 
@@ -15,13 +17,15 @@ interface AssignJobCrewPopoverProps {
  * POST /api/jobs/:id/assignees — never touches schedule or status (the Schedule
  * Job / Reschedule modal owns those).
  */
-export function AssignJobCrewPopover({ jobId, currentAssigneeIds, trigger }: AssignJobCrewPopoverProps) {
+export function AssignJobCrewPopover({ jobId, currentAssigneeIds, currentAssignees, trigger }: AssignJobCrewPopoverProps) {
   const queryClient = useQueryClient();
 
   return (
     <AssignTeamPopover
       // job CREW, which the assignee pool does govern.
       purpose="jobCrew"
+      eligibleFor="crew"
+      knownPeople={currentAssignees ?? undefined}
       mode="multi"
       channels={['in_app', 'email']}
       initialSelected={currentAssigneeIds ?? []}

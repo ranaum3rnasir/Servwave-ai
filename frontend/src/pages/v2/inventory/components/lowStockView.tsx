@@ -31,6 +31,7 @@ import { AlertTriangle, ShoppingCart } from 'lucide-react';
 import { useLowStock, useLocations } from '@/lib/api/inventory';
 import type { Item, LowStockRow } from '@/lib/api/inventory';
 import { useAppAbility } from '@/contexts/AbilityContext';
+import { canStartPurchaseOrder } from '@/lib/ability';
 import { GeneratePODialog } from '@/components/inventory/GeneratePODialog';
 import { toProposalItems } from '@/components/inventory/LowStockView';
 
@@ -52,9 +53,11 @@ function fmtQty(n: number): string {
 const SERVER_PAGE_SIZE = 100;
 
 function buildLowStockColumns({
-  canCreatePO, onGeneratePO,
+  canCreatePO, showVendor, onGeneratePO,
 }: {
   canCreatePO: boolean;
+  /** The vendor column shows only with View vendors; without it the column is left out, never shown blank. */
+  showVendor: boolean;
   onGeneratePO: (row: LowStockRow) => void;
 }): ColumnDef<LowStockRow, unknown>[] {
   const columns: ColumnDef<LowStockRow, unknown>[] = [
@@ -117,7 +120,10 @@ function buildLowStockColumns({
         </span>
       ),
     },
-    {
+  ];
+
+  if (showVendor) {
+    columns.push({
       id: 'vendor',
       accessorKey: 'vendorName',
       header: 'Vendor',
@@ -126,8 +132,8 @@ function buildLowStockColumns({
       cell: ({ row }) => (
         <span className="text-muted-foreground">{row.original.vendorName ?? EM_DASH}</span>
       ),
-    },
-  ];
+    });
+  }
 
   if (canCreatePO) {
     columns.push({
@@ -157,7 +163,8 @@ function buildLowStockColumns({
 
 export function LowStockView() {
   const ability = useAppAbility();
-  const canCreatePO = ability.can('create', 'PurchaseOrder');
+  const canCreatePO = canStartPurchaseOrder(ability);
+  const canViewVendors = ability.can('read', 'Vendor');
 
   const [locationId, setLocationId] = useState<string>('all');
   const [page, setPage] = useState(1);
@@ -184,9 +191,9 @@ export function LowStockView() {
   }
 
   const columns = useMemo(
-    () => buildLowStockColumns({ canCreatePO, onGeneratePO: openForItem }),
+    () => buildLowStockColumns({ canCreatePO, showVendor: canViewVendors, onGeneratePO: openForItem }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [canCreatePO, rows],
+    [canCreatePO, canViewVendors, rows],
   );
 
   return (

@@ -33,6 +33,9 @@ const createSchema = z.object({
   service_request: z.string().min(1, 'Service request is required'),
   job_type: z.string().optional(),
   ad_source: z.string().optional(),
+  // Sold By and Dispatcher: unset until a picker is used (S03.16); the form posts them only for a holder of Assign people to jobs.
+  sold_by_id: z.string().optional(),
+  dispatcher_id: z.string().optional(),
   scheduled_date: z.string().optional(),
   scheduled_time: z.string().optional(),
   scheduled_end_date: z.string().optional(),

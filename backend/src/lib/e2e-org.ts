@@ -6,6 +6,7 @@ import { env } from '../config/env';
 import { purgeCustomerSubtree, purgeOrganization } from './purge';
 import { DEFAULT_GRANTS } from './permissions/defaultGrants';
 import { seedStarterTaskCategories } from './tasks/categories';
+import { createCompanyWithMainMailbox, issueUserMailbox } from './mailbox/register';
 
 export const E2E_ORG_NAME_PREFIX = 'e2e-qa-';
 export const E2E_EMAIL_DOMAIN = 'e2e-qa.invalid';
@@ -56,31 +57,30 @@ export async function provisionTestOrg(): Promise<ProvisionedOrg> {
   // A fresh random password per run: no password is ever written into the code.
   const adminPassword = crypto.randomBytes(24).toString('base64url');
 
-  await prisma.organization.create({
-    data: {
-      id: orgId,
-      plan: 'SCALE',
-      name: `${E2E_ORG_NAME_PREFIX}${runId}`,
-      address_line1: '1 Test Way', city: 'Boston', state: 'MA', postal_code: '02108',
-      email: `org-${runId}@${E2E_EMAIL_DOMAIN}`,
-      estimate_terms: 'E2E terms', estimate_notes: 'E2E notes', estimate_payment_terms: 'E2E payment terms',
-      // Webhooks resolve + don't 200-no-op on CARD:
-      stripe_account_id: `acct_e2e_${runId}`,
-      stripe_charges_enabled: true,
-      stripe_details_submitted: true,
-      accepted_payment_methods: ['CARD', 'CASH', 'CHECK', 'BANK_TRANSFER', 'EXTERNAL_CARD'],
-      // Deposit defaults the e2e suite assumes. The schema default is 50, but the specs hardcode a
-      // 30% pinned org deposit (e.g. redesign-14 asserts send_config.deposit_percentage === 30;
-      // redesign-15/17 compute 30% of the tax-inclusive total). A provisioned org MUST set 30
-      // explicitly or every deposit/tax/money total drifts (50 vs 30).
-      deposit_default_type: 'PERCENTAGE',
-      deposit_default_percentage: 30,
-    },
+  // The company part is frozen and the main mailbox issued with the org, as for a real company.
+  await createCompanyWithMainMailbox(prisma, {
+    id: orgId,
+    plan: 'SCALE',
+    name: `${E2E_ORG_NAME_PREFIX}${runId}`,
+    address_line1: '1 Test Way', city: 'Boston', state: 'MA', postal_code: '02108',
+    email: `org-${runId}@${E2E_EMAIL_DOMAIN}`,
+    estimate_terms: 'E2E terms', estimate_notes: 'E2E notes', estimate_payment_terms: 'E2E payment terms',
+    // Webhooks resolve + don't 200-no-op on CARD:
+    stripe_account_id: `acct_e2e_${runId}`,
+    stripe_charges_enabled: true,
+    stripe_details_submitted: true,
+    accepted_payment_methods: ['CARD', 'CASH', 'CHECK', 'BANK_TRANSFER', 'EXTERNAL_CARD'],
+    // Deposit defaults the e2e suite assumes. The schema default is 50, but the specs hardcode a
+    // 30% pinned org deposit (e.g. redesign-14 asserts send_config.deposit_percentage === 30;
+    // redesign-15/17 compute 30% of the tax-inclusive total). A provisioned org MUST set 30
+    // explicitly or every deposit/tax/money total drifts (50 vs 30).
+    deposit_default_type: 'PERCENTAGE',
+    deposit_default_percentage: 30,
   });
 
-  // Seed the org's role grants from DEFAULT_GRANTS so non-admin users (e.g. a SALES
-  // walkthrough performer) have real abilities. A real org gets these on creation; a
-  // provisioned throwaway org must too, or any non-admin permission check sees zero grants.
+  // Seed the org's role-permission rows from DEFAULT_GRANTS, the same as a real org gets on creation. Nothing reads
+  // them for access any more (a person's access comes from their switches, whose presets need no stored rows); they
+  // are kept so the table looks the way a real org's does.
   await prisma.rolePermission.createMany({
     data: DEFAULT_GRANTS.map((g) => {
       const conditions = (g as { conditions?: Record<string, unknown> }).conditions;
@@ -106,11 +106,15 @@ export async function provisionTestOrg(): Promise<ProvisionedOrg> {
   }
 
   const adminUserId = authData.user.id;
-  await prisma.user.create({
-    data: {
-      id: adminUserId, email: adminEmail, first_name: 'E2E', last_name: 'Admin',
-      role: 'ADMIN', is_active: true, has_login: true, organization_id: orgId,
-    },
+  // The admin gets a mailbox in the same transaction, as a user made through the app does.
+  await prisma.$transaction(async (tx) => {
+    await tx.user.create({
+      data: {
+        id: adminUserId, email: adminEmail, first_name: 'E2E', last_name: 'Admin',
+        role: 'ADMIN', is_active: true, has_login: true, organization_id: orgId,
+      },
+    });
+    await issueUserMailbox(tx, { id: adminUserId, organization_id: orgId, first_name: 'E2E', last_name: 'Admin' });
   });
 
   return { organizationId: orgId, adminEmail, adminPassword, adminUserId, runId };

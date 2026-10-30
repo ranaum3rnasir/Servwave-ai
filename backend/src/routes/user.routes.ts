@@ -2,14 +2,17 @@ import { Router } from 'express';
 import multer from 'multer';
 import { authenticate } from '../middleware/authenticate';
 import { attachAbility } from '../middleware/attachAbility';
-import { canDo } from '../middleware/canGuard';
+import { canDo, canSetRoleFields } from '../middleware/canGuard';
 import { validate } from '../middleware/validate';
 import { withOrgContext } from '../middleware/withOrgContext';
+import { requireFeature } from '../middleware/requireFeature';
 import { requireUuidParam } from '../middleware/requireUuidParam';
 import { multerErrorHandler, megabytes } from '../middleware/multerErrors';
 import { passwordChangeLimiter, passwordLinkLimiter, adminPasswordResetLimiter } from '../middleware/rate-limit';
 import * as userController from '../controllers/user.controller';
 import * as passwordResetController from '../controllers/password-reset.controller';
+import * as permissionController from '../controllers/user-permission.controller';
+import * as userMailboxController from '../controllers/user-mailbox.controller';
 import * as avatarController from '../controllers/user-avatar.controller';
 import { MAX_AVATAR_BYTES } from '../controllers/user-avatar.controller';
 
@@ -69,22 +72,33 @@ router.delete('/me/avatar', avatarController.deleteAvatar);
 router.get('/assignable', userController.listAssignable);
 
 router.get('/', canDo('read', 'User'), userController.list);
-router.post('/', canDo('create', 'User'), validate(userController.createUserSchema), userController.create);
-router.post('/invite', canDo('create', 'User'), validate(userController.inviteUserSchema), userController.inviteUser);
-router.post('/:id/invite', canDo('create', 'User'), userController.invite);
+// A direct create needs Create users; an invite and a resend need Invite users (S01.12). Naming a role on a create,
+// an invite or an update needs Manage roles and permissions on top.
+router.post('/', canDo('create', 'User'), canSetRoleFields(), validate(userController.createUserSchema), userController.create);
+router.post('/invite', canDo('invite', 'User'), canSetRoleFields(), validate(userController.inviteUserSchema), userController.inviteUser);
+router.post('/:id/invite', canDo('invite', 'User'), userController.invite);
 router.post('/:id/revoke-login', canDo('update', 'User'), userController.revokeLogin);
 // "Send password reset" (password reset spec §7, slice 07): emails the person the same reset link as
 // "Forgot password?". Edit users; limited per admin on every request; the target is org-scoped.
 // A malformed :id answers the handler's own 404 before Prisma runs (P2023 screen), after canDo so a
 // caller without the grant still gets 403.
 router.post('/:id/password-reset', canDo('update', 'User'), adminPasswordResetLimiter, requireUuidParam('id', 'User not found'), passwordResetController.sendUserPasswordReset);
-// Per-user permission overrides (RBAC Phase 2). Managing a user's permissions is an admin
-// action → both gated on `update User` (read User alone, e.g. a dispatcher, is not enough).
-router.get('/:id/permissions', canDo('update', 'User'), userController.getPermissions);
-router.put('/:id/permissions', canDo('update', 'User'), validate(userController.putPermissionsSchema), userController.putPermissions);
+// A person's switches (S01.20): every read and write needs Manage roles and permissions; nobody writes their own set.
+router.get('/:id/permissions', canDo('manage_roles', 'Role'), permissionController.getPersonSwitches);
+router.put('/:id/permissions', canDo('manage_roles', 'Role'), validate(permissionController.putPersonSwitchesSchema), permissionController.putPersonSwitches);
+router.post('/:id/permissions/reset', canDo('manage_roles', 'Role'), validate(permissionController.resetPersonSwitchesSchema), permissionController.resetPersonSwitchValues);
+router.post('/:id/permissions/save-as-role', canDo('manage_roles', 'Role'), validate(permissionController.saveAsRoleSchema), permissionController.saveSwitchesAsNewRole);
+router.get('/:id/permissions/change-log', canDo('manage_roles', 'Role'), permissionController.getPersonChangeLog);
 router.get('/:id', canDo('read', 'User'), userController.getById);
-router.patch('/:id', canDo('update', 'User'), validate(userController.updateUserSchema), userController.update);
-router.delete('/:id', canDo('delete', 'User'), userController.deactivate);
+router.patch('/:id', canDo('update', 'User'), canSetRoleFields(), validate(userController.updateUserSchema), userController.update);
+// Deactivating is an Edit users action on every path (this one and the is_active field above); Delete users is only
+// the permanent delete and the two-step login reset (S01.12).
+// A user's mailbox address (PRD 10, S10.25): the name part only, under Edit users and the Email plan feature. The
+// sign-in email is a different thing and is never changed here.
+router.put('/:id/mailbox-address', requireFeature('email'), canDo('update', 'User'), validate(userMailboxController.setMailboxAddressSchema), userMailboxController.setMailboxAddress);
+// A leaver's mailbox handed on later, to another person or to the main mailbox (S10.22): Edit users and the Email plan feature.
+router.put('/:id/mailbox-handover', requireFeature('email'), canDo('update', 'User'), validate(userMailboxController.moveMailboxSchema), userMailboxController.moveUserMailbox);
+router.delete('/:id', canDo('update', 'User'), validate(userController.deactivateUserSchema), userController.deactivate);
 router.delete('/:id/permanent', canDo('delete', 'User'), userController.permanentDelete);
 router.post('/:id/mfa/reset', canDo('delete', 'User'), userController.resetMfa);
 router.post('/:id/avatar', canDo('update', 'User'), avatarUpload.single('file'), avatarMulterErrors, withOrgContext, avatarController.setAvatar);

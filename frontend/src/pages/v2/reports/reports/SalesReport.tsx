@@ -50,8 +50,8 @@ const JOB_TYPES = [
   'Commercial', 'Residential',
 ];
 const SOURCES = ['Office', 'Google', 'Account', 'Returning customer', 'Village', 'Google Local Service', 'Reserve with Google', 'Return Customer'];
-const TEAM = ['Emanuel Dahan', 'Dispatch', 'Ohad', 'Rami', 'Logistics', 'Priya', 'Shaked', 'Liran - Dor', 'Ofir Sub'];
-const CREATORS = ['Emanuel Dahan', 'Dispatch', 'Ohad', 'Rami', 'Logistics', 'Priya', 'Robert Bresnick'];
+const TEAM = ['Sam Rivera', 'Dispatch', 'Jordan', 'Reese', 'Logistics', 'Drew', 'Hayden', 'Lee - Dana', 'Oak Sub'];
+const CREATORS = ['Sam Rivera', 'Dispatch', 'Jordan', 'Reese', 'Logistics', 'Drew', 'Jamie Park'];
 const TAGS = ['Followup', 'Callback', 'NEED TO COLLECT', 'NOT ANSWERING', 'Waiting for pictures', 'Need more info', 'Today job'];
 
 const CLIENTS: [string, string][] = [

@@ -14,8 +14,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { TEST_USERS, mockAuthAs, authHeader, ALPHA_ORG_ID, JOB_FIXTURE, mockScopedFindFirst } from './helpers';
-import { setCachedGrants, clearPermissionCache } from '../lib/permissions/permissionCache';
+import { TEST_USERS, mockAuthAs, authHeader, ALPHA_ORG_ID, JOB_FIXTURE, mockScopedFindFirst, mockRoleSwitches } from './helpers';
+import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { addLineSchema as jobAddLineSchema } from '../controllers/job-lines.controller';
 
 // ─── Typed mock accessors ──────────────────────────────────
@@ -23,6 +23,7 @@ const mockPrisma = prisma as unknown as {
   job: {
     findUnique: ReturnType<typeof vi.fn>;
     findFirst: ReturnType<typeof vi.fn>;
+    findMany: ReturnType<typeof vi.fn>;
     update: ReturnType<typeof vi.fn>;
   };
   jobLineItem: {
@@ -47,6 +48,7 @@ const mockPrisma = prisma as unknown as {
     findUnique: ReturnType<typeof vi.fn>;
   };
   organization: { findUnique: ReturnType<typeof vi.fn> };
+  timelineEvent: { create: ReturnType<typeof vi.fn> };
   $transaction: ReturnType<typeof vi.fn>;
 };
 
@@ -136,6 +138,8 @@ function setupTransaction() {
         job: {
           findUnique: mockPrisma.job.findUnique,
           update: mockPrisma.job.update,
+          // S06.20: a job-history write asks which jobs it touches are in Ready to close.
+          findMany: mockPrisma.job.findMany,
         },
         // P1: addLine/updateLine (and later deleteLine) are tx-wrapped for the stock movements —
         // delegating to the same bare mocks keeps every pre-P1 assertion in this file green.
@@ -155,6 +159,8 @@ function setupTransaction() {
           findUnique: mockPrisma.stockBalance.findUnique,
         },
         organization: { findUnique: mockPrisma.organization.findUnique },
+        // S06.5: line/scope edits write their entry on the job's history in the same transaction.
+        timelineEvent: { create: mockPrisma.timelineEvent.create },
       });
     }
     return Promise.all(arg as Promise<unknown>[]);
@@ -432,16 +438,6 @@ describe('POST /api/jobs/:id/line-items — RBAC (update Job)', () => {
   it('TECHNICIAN granted "Edit own jobs" (update Job, OWN_JOB) can add on OWN job', async () => {
     mockAuthAs('technician');
     const OWN_JOB = { assignees: { some: { user_id: '{{userId}}' } } };
-    setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', [
-      { action: 'read', subject: 'Job', conditions: OWN_JOB },
-      { action: 'update', subject: 'Job', conditions: OWN_JOB },
-      // `manage_lines Job` is the gate on the line-item and scope routes since the
-      // technician-ownership split (PR 2). It is granted here alongside `update Job`, under the
-      // same condition, because that is exactly how the real grants pair them - defaultGrants.ts
-      // for new orgs, 20260805130000_job_manage_lines_grant_backfill for existing ones. The seam
-      // itself (one action without the other) is pinned in job-manage-lines-routes.test.ts.
-      { action: 'manage_lines', subject: 'Job', conditions: OWN_JOB },
-    ] as any);
     // canAccessRow(Job) → scoped job.findFirst resolves truthy for an owned row.
     mockPrisma.job.findFirst.mockResolvedValue({ id: JOB_ID });
 
@@ -457,16 +453,6 @@ describe('POST /api/jobs/:id/line-items — RBAC (update Job)', () => {
   it('TECHNICIAN (granted update Job) still gets 403 on a FOREIGN job, never mutates', async () => {
     mockAuthAs('technician');
     const OWN_JOB = { assignees: { some: { user_id: '{{userId}}' } } };
-    setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', [
-      { action: 'read', subject: 'Job', conditions: OWN_JOB },
-      { action: 'update', subject: 'Job', conditions: OWN_JOB },
-      // `manage_lines Job` is the gate on the line-item and scope routes since the
-      // technician-ownership split (PR 2). It is granted here alongside `update Job`, under the
-      // same condition, because that is exactly how the real grants pair them - defaultGrants.ts
-      // for new orgs, 20260805130000_job_manage_lines_grant_backfill for existing ones. The seam
-      // itself (one action without the other) is pinned in job-manage-lines-routes.test.ts.
-      { action: 'manage_lines', subject: 'Job', conditions: OWN_JOB },
-    ] as any);
     mockPrisma.job.findUnique.mockResolvedValue(jobRow({ techId: '99999999-9999-9999-9999-999999999999' }));
     mockPrisma.job.findFirst.mockResolvedValue(null); // canAccessRow → false
 
@@ -661,7 +647,7 @@ describe('PATCH /api/jobs/:id/line-items/:lineId — edit', () => {
   //
   // Both halves of the new rule are asserted here, with a findFirst that actually evaluates the
   // fragment, because the pair is the property - either alone is satisfiable by a broken gate.
-  it('TECHNICIAN with default grants can edit a line on a job they CREATED -> 200', async () => {
+  it('TECHNICIAN with default grants can edit a line on a job they CREATED and are on -> 200', async () => {
     mockAuthAs('technician');
     mockPrisma.job.findUnique.mockResolvedValue({
       ...jobRow({ jobLineItems: [existingLine()] }),
@@ -671,7 +657,7 @@ describe('PATCH /api/jobs/:id/line-items/:lineId — edit', () => {
       id: JOB_ID,
       organization_id: ALPHA_ORG_ID,
       created_by_id: TEST_USERS.technician.id,
-      assignees: [{ user_id: TEST_USERS.technician.id }],
+      visits: [{ assignees: [{ user_id: TEST_USERS.technician.id }] }],
     });
     const res = await request(app)
       .patch(`/api/jobs/${JOB_ID}/line-items/${LINE_ID}`)
@@ -681,8 +667,9 @@ describe('PATCH /api/jobs/:id/line-items/:lineId — edit', () => {
     expect(mockPrisma.jobLineItem.update).toHaveBeenCalled();
   });
 
-  it('TECHNICIAN with default grants CANNOT edit a line on a job they are only assigned to -> 403', async () => {
-    mockAuthAs('technician');
+  // Roles & Permissions S01.8: Edit job line items alone decides, on any job the person can open - it is on in the
+  // Technician preset, so an assignee who did not make the job edits its lines; with it off, nobody does.
+  const assignedOnlyJob = () => {
     mockPrisma.job.findUnique.mockResolvedValue({
       ...jobRow({ jobLineItems: [existingLine()] }),
       created_by_id: TEST_USERS.admin.id,
@@ -691,8 +678,25 @@ describe('PATCH /api/jobs/:id/line-items/:lineId — edit', () => {
       id: JOB_ID,
       organization_id: ALPHA_ORG_ID,
       created_by_id: TEST_USERS.admin.id,
-      assignees: [{ user_id: TEST_USERS.technician.id }],
+      visits: [{ assignees: [{ user_id: TEST_USERS.technician.id }] }],
     });
+  };
+
+  it('TECHNICIAN with the default switches CAN edit a line on a job they are only assigned to -> 200', async () => {
+    mockAuthAs('technician');
+    assignedOnlyJob();
+    const res = await request(app)
+      .patch(`/api/jobs/${JOB_ID}/line-items/${LINE_ID}`)
+      .set(authHeader('technician'))
+      .send({ quantity: 3 });
+    expect(res.status).toBe(200);
+    expect(mockPrisma.jobLineItem.update).toHaveBeenCalled();
+  });
+
+  it('TECHNICIAN with Edit job line items off CANNOT edit a line on a job they are assigned to -> 403', async () => {
+    mockAuthAs('technician');
+    mockRoleSwitches({ edit_job_line_items: false });
+    assignedOnlyJob();
     const res = await request(app)
       .patch(`/api/jobs/${JOB_ID}/line-items/${LINE_ID}`)
       .set(authHeader('technician'))
@@ -704,16 +708,6 @@ describe('PATCH /api/jobs/:id/line-items/:lineId — edit', () => {
   it('TECHNICIAN granted "Edit own jobs" gets 403 on a FOREIGN job — bare technician on someone else\'s job, no mutation', async () => {
     mockAuthAs('technician');
     const OWN_JOB = { assignees: { some: { user_id: '{{userId}}' } } };
-    setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', [
-      { action: 'read', subject: 'Job', conditions: OWN_JOB },
-      { action: 'update', subject: 'Job', conditions: OWN_JOB },
-      // `manage_lines Job` is the gate on the line-item and scope routes since the
-      // technician-ownership split (PR 2). It is granted here alongside `update Job`, under the
-      // same condition, because that is exactly how the real grants pair them - defaultGrants.ts
-      // for new orgs, 20260805130000_job_manage_lines_grant_backfill for existing ones. The seam
-      // itself (one action without the other) is pinned in job-manage-lines-routes.test.ts.
-      { action: 'manage_lines', subject: 'Job', conditions: OWN_JOB },
-    ] as any);
     mockPrisma.job.findUnique.mockResolvedValue(
       jobRow({ techId: '99999999-9999-9999-9999-999999999999', jobLineItems: [existingLine()] }),
     );
@@ -794,16 +788,6 @@ describe('DELETE /api/jobs/:id/line-items/:lineId — delete', () => {
   it('a bare TECHNICIAN on ANOTHER technician\'s job gets 403, never mutates (canAccessRow)', async () => {
     mockAuthAs('technician');
     const OWN_JOB = { assignees: { some: { user_id: '{{userId}}' } } };
-    setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', [
-      { action: 'read', subject: 'Job', conditions: OWN_JOB },
-      { action: 'update', subject: 'Job', conditions: OWN_JOB },
-      // `manage_lines Job` is the gate on the line-item and scope routes since the
-      // technician-ownership split (PR 2). It is granted here alongside `update Job`, under the
-      // same condition, because that is exactly how the real grants pair them - defaultGrants.ts
-      // for new orgs, 20260805130000_job_manage_lines_grant_backfill for existing ones. The seam
-      // itself (one action without the other) is pinned in job-manage-lines-routes.test.ts.
-      { action: 'manage_lines', subject: 'Job', conditions: OWN_JOB },
-    ] as any);
     mockPrisma.job.findUnique.mockResolvedValue(
       jobRow({ techId: '99999999-9999-9999-9999-999999999999', jobLineItems: [existingLine()] }),
     );
@@ -980,16 +964,6 @@ describe('PATCH /api/jobs/:id/line-items/reorder — reorder', () => {
   it('TECHNICIAN granted "Edit own jobs" (update Job, OWN_JOB) can reorder on OWN job', async () => {
     mockAuthAs('technician');
     const OWN_JOB = { assignees: { some: { user_id: '{{userId}}' } } };
-    setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', [
-      { action: 'read', subject: 'Job', conditions: OWN_JOB },
-      { action: 'update', subject: 'Job', conditions: OWN_JOB },
-      // `manage_lines Job` is the gate on the line-item and scope routes since the
-      // technician-ownership split (PR 2). It is granted here alongside `update Job`, under the
-      // same condition, because that is exactly how the real grants pair them - defaultGrants.ts
-      // for new orgs, 20260805130000_job_manage_lines_grant_backfill for existing ones. The seam
-      // itself (one action without the other) is pinned in job-manage-lines-routes.test.ts.
-      { action: 'manage_lines', subject: 'Job', conditions: OWN_JOB },
-    ] as any);
     mockPrisma.job.findFirst.mockResolvedValue({ id: JOB_ID }); // canAccessRow → true
 
     const res = await request(app)
@@ -1008,16 +982,6 @@ describe('PATCH /api/jobs/:id/line-items/reorder — reorder', () => {
   it('a low-privilege requester (update Job, no read Invoice) gets unit_cost/markup_percent stripped from the reorder response', async () => {
     mockAuthAs('technician');
     const OWN_JOB = { assignees: { some: { user_id: '{{userId}}' } } };
-    setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', [
-      { action: 'read', subject: 'Job', conditions: OWN_JOB },
-      { action: 'update', subject: 'Job', conditions: OWN_JOB },
-      // `manage_lines Job` is the gate on the line-item and scope routes since the
-      // technician-ownership split (PR 2). It is granted here alongside `update Job`, under the
-      // same condition, because that is exactly how the real grants pair them - defaultGrants.ts
-      // for new orgs, 20260805130000_job_manage_lines_grant_backfill for existing ones. The seam
-      // itself (one action without the other) is pinned in job-manage-lines-routes.test.ts.
-      { action: 'manage_lines', subject: 'Job', conditions: OWN_JOB },
-    ] as any);
     // Real (non-null) cost data on every line — stripping an already-null field would prove nothing.
     mockPrisma.job.findUnique.mockResolvedValue(
       jobRow({
@@ -1048,16 +1012,6 @@ describe('PATCH /api/jobs/:id/line-items/reorder — reorder', () => {
   it('TECHNICIAN (granted update Job) still gets 403 on a FOREIGN job, never mutates', async () => {
     mockAuthAs('technician');
     const OWN_JOB = { assignees: { some: { user_id: '{{userId}}' } } };
-    setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', [
-      { action: 'read', subject: 'Job', conditions: OWN_JOB },
-      { action: 'update', subject: 'Job', conditions: OWN_JOB },
-      // `manage_lines Job` is the gate on the line-item and scope routes since the
-      // technician-ownership split (PR 2). It is granted here alongside `update Job`, under the
-      // same condition, because that is exactly how the real grants pair them - defaultGrants.ts
-      // for new orgs, 20260805130000_job_manage_lines_grant_backfill for existing ones. The seam
-      // itself (one action without the other) is pinned in job-manage-lines-routes.test.ts.
-      { action: 'manage_lines', subject: 'Job', conditions: OWN_JOB },
-    ] as any);
     mockPrisma.job.findUnique.mockResolvedValue(
       jobRow({ techId: '99999999-9999-9999-9999-999999999999', jobLineItems: threeLines() }),
     );
@@ -1479,16 +1433,6 @@ describe('PATCH /api/jobs/:id/scopes/reorder — reorder', () => {
   it('TECHNICIAN granted "Edit own jobs" (update Job, OWN_JOB) can reorder on OWN job', async () => {
     mockAuthAs('technician');
     const OWN_JOB = { assignees: { some: { user_id: '{{userId}}' } } };
-    setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', [
-      { action: 'read', subject: 'Job', conditions: OWN_JOB },
-      { action: 'update', subject: 'Job', conditions: OWN_JOB },
-      // `manage_lines Job` is the gate on the line-item and scope routes since the
-      // technician-ownership split (PR 2). It is granted here alongside `update Job`, under the
-      // same condition, because that is exactly how the real grants pair them - defaultGrants.ts
-      // for new orgs, 20260805130000_job_manage_lines_grant_backfill for existing ones. The seam
-      // itself (one action without the other) is pinned in job-manage-lines-routes.test.ts.
-      { action: 'manage_lines', subject: 'Job', conditions: OWN_JOB },
-    ] as any);
     mockPrisma.job.findUnique.mockResolvedValue(jobRow({ scopes: threeScopes() }));
     mockPrisma.job.findFirst.mockResolvedValue({ id: JOB_ID }); // canAccessRow → true
 
@@ -1508,16 +1452,6 @@ describe('PATCH /api/jobs/:id/scopes/reorder — reorder', () => {
   it('a low-privilege requester (update Job, no read Invoice) gets internal_cost stripped from the reorder response', async () => {
     mockAuthAs('technician');
     const OWN_JOB = { assignees: { some: { user_id: '{{userId}}' } } };
-    setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', [
-      { action: 'read', subject: 'Job', conditions: OWN_JOB },
-      { action: 'update', subject: 'Job', conditions: OWN_JOB },
-      // `manage_lines Job` is the gate on the line-item and scope routes since the
-      // technician-ownership split (PR 2). It is granted here alongside `update Job`, under the
-      // same condition, because that is exactly how the real grants pair them - defaultGrants.ts
-      // for new orgs, 20260805130000_job_manage_lines_grant_backfill for existing ones. The seam
-      // itself (one action without the other) is pinned in job-manage-lines-routes.test.ts.
-      { action: 'manage_lines', subject: 'Job', conditions: OWN_JOB },
-    ] as any);
     mockPrisma.job.findUnique.mockResolvedValue(
       jobRow({
         scopes: [
@@ -1544,16 +1478,6 @@ describe('PATCH /api/jobs/:id/scopes/reorder — reorder', () => {
   it('TECHNICIAN (granted update Job) still gets 403 on a FOREIGN job, never mutates', async () => {
     mockAuthAs('technician');
     const OWN_JOB = { assignees: { some: { user_id: '{{userId}}' } } };
-    setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', [
-      { action: 'read', subject: 'Job', conditions: OWN_JOB },
-      { action: 'update', subject: 'Job', conditions: OWN_JOB },
-      // `manage_lines Job` is the gate on the line-item and scope routes since the
-      // technician-ownership split (PR 2). It is granted here alongside `update Job`, under the
-      // same condition, because that is exactly how the real grants pair them - defaultGrants.ts
-      // for new orgs, 20260805130000_job_manage_lines_grant_backfill for existing ones. The seam
-      // itself (one action without the other) is pinned in job-manage-lines-routes.test.ts.
-      { action: 'manage_lines', subject: 'Job', conditions: OWN_JOB },
-    ] as any);
     mockPrisma.job.findUnique.mockResolvedValue(
       jobRow({ techId: '99999999-9999-9999-9999-999999999999', scopes: threeScopes() }),
     );

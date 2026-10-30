@@ -3,6 +3,9 @@ import { useNavigate } from 'react-router-dom';
 import { ChevronDown, Plus } from 'lucide-react';
 
 import { NewEstimateDialog } from '@/components/estimates/NewEstimateDialog';
+import { quickCreateItems, quickCreateItemShows, type QuickCreateItem } from '@/components/layout/nav-config';
+import { useAppAbility } from '@/contexts/AbilityContext';
+import { useMySwitches } from '@/lib/api/mySwitches';
 import { Button } from '@/ui-kit/components/ui/button';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -16,13 +19,26 @@ import {
 // Six items, same labels, same order, same destinations as the legacy menu -
 // including `Request Payment`, which goes to the invoice LIST rather than to a
 // payment form, because that is where it goes today.
-const ITEMS: { label: string; to?: string; dialog?: 'estimate' }[] = [
-  { label: 'New Lead', to: '/leads/new' },
-  { label: 'New Estimate', dialog: 'estimate' },
-  { label: 'New Job', to: '/jobs/new' },
-  { label: 'New Task', to: '/tasks?action=new-task' },
-  { label: 'New Invoice', to: '/invoices/new' },
-  { label: 'Request Payment', to: '/invoices' },
+//
+// Each item follows the same Create + Show pair as its Create New item (Roles &
+// Permissions S02.25): the pair is READ from `quickCreateItems` by label, never
+// copied, so the two menus cannot drift apart. Request Payment creates nothing,
+// so it follows Show Invoices page alone.
+type Gate = Pick<QuickCreateItem, 'show'> & Partial<Pick<QuickCreateItem, 'action' | 'subject'>>;
+
+function sameAsCreateNew(label: string): Gate {
+  const item = quickCreateItems.find((candidate) => candidate.label === label);
+  if (!item) throw new Error(`No Create New item labelled "${label}"`);
+  return { action: item.action, subject: item.subject, show: item.show };
+}
+
+const ITEMS: { label: string; to?: string; dialog?: 'estimate'; gate: Gate }[] = [
+  { label: 'New Lead', to: '/leads/new', gate: sameAsCreateNew('New Lead') },
+  { label: 'New Estimate', dialog: 'estimate', gate: sameAsCreateNew('New Estimate') },
+  { label: 'New Job', to: '/jobs/new', gate: sameAsCreateNew('New Job') },
+  { label: 'New Task', to: '/tasks?action=new-task', gate: sameAsCreateNew('New Task') },
+  { label: 'New Invoice', to: '/invoices/new', gate: sameAsCreateNew('New Invoice') },
+  { label: 'Request Payment', to: '/invoices', gate: { show: sameAsCreateNew('New Invoice').show } },
 ];
 
 /**
@@ -35,10 +51,10 @@ const ITEMS: { label: string; to?: string; dialog?: 'estimate' }[] = [
  * e2e suite reads: the trigger is still `role="button"` named `New`, and each
  * item is still `role="menuitem"` with its exact label.
  *
- * NO PERMISSION GATING, deliberately, exactly as before. Every role that can
- * reach the dashboard (ADMIN, DISPATCHER) sees all six; the gate is on the
- * destination route, not here. Adding a CASL check would change who can do
- * what, which is a behaviour change.
+ * Each item shows only when its Create ability and its page's Show switch are
+ * both on (Roles & Permissions S02.25), and the "New" button is not drawn when
+ * no item is left. Show is display only, so it is read from the person's own
+ * switches (`useMySwitches`), and nothing is drawn until they have arrived.
  *
  * Destinations are LEGACY paths, not `v2Path`-prefixed: none of these six
  * targets is a page this module owns, and `preferV2Path` is the layout's job
@@ -48,6 +64,12 @@ const ITEMS: { label: string; to?: string; dialog?: 'estimate' }[] = [
 export function NewMenu() {
   const navigate = useNavigate();
   const [estimateDialogOpen, setEstimateDialogOpen] = useState(false);
+  const ability = useAppAbility();
+  const mySwitches = useMySwitches();
+
+  const items = ITEMS.filter((it) =>
+    quickCreateItemShows(it.gate, (action, subject) => ability.can(action, subject), mySwitches?.values));
+  if (items.length === 0) return null;
 
   return (
     <>
@@ -60,7 +82,7 @@ export function NewMenu() {
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end" className="w-44">
-          {ITEMS.map((it) => (
+          {items.map((it) => (
             <DropdownMenuItem
               key={it.label}
               onSelect={() => {

@@ -88,7 +88,7 @@ describe.skipIf(!enabled)('withNumberCollisionRetry — real-DB hand-typed colli
         estimate_notes: '',
         estimate_payment_terms: '',
         customer_prefix: '',
-        // The series has outgrown the padding — the Alpha Doors shape.
+        // The series has outgrown the padding — the pilot org shape.
         number_padding: 5,
         customer_next_number: FIRST,
       },

@@ -34,6 +34,8 @@ vi.mock('../config/env', () => ({
     EMAIL_FROM_BUSINESS: 'noreply@mail.test.servwave.com',
     EMAIL_REPLY_DOMAIN: 'reply.test.com',
     RESEND_API_KEY: 're_test_key',
+    // PRD 10 (S10.12): the domain a sender's own address is built on; a document goes out from it.
+    MAILBOX_DOMAIN: 'mail.test.com',
     FRONTEND_URL: 'http://localhost:5173',
   },
 }));
@@ -81,6 +83,9 @@ const ESTIMATE_ROW = {
   line_items: [],
 };
 
+// PRD 10 (S10.12): an estimate is sent by hand, from the sender's own mailbox (the shape the suite-wide mailbox stub answers to).
+const HAND_SENDER = { mailboxId: 'main-mailbox-id', userId: 'user-1' };
+
 const RECORD = {
   organizationId: ORG_ID,
   customerId: CUSTOMER_ID,
@@ -98,6 +103,7 @@ function sendEstimate(extra: Record<string, unknown> = {}) {
     total: '$1,200.00',
     publicUrl: 'http://localhost:5173/e/tok',
     record: RECORD,
+    handSender: HAND_SENDER,
     ...extra,
   } as never);
 }

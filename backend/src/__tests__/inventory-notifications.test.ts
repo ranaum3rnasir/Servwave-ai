@@ -26,6 +26,7 @@ import { prisma } from '../lib/prisma';
 import {
   TEST_USERS,
   mockAuthAs,
+  mockRoleSwitches,
   authHeader,
   ALPHA_ORG_ID,
   PRICE_BOOK_ITEM_FIXTURE,
@@ -37,17 +38,28 @@ import {
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { renderTemplate } from '../services/notifications/templates';
-import { resolveRecipients } from '../services/notifications/resolveRecipients';
 
 // ─── Spy on the notification emit function ────────────────────────────────────
 
-vi.mock('../services/notifications/notificationService', () => ({
-  emit: vi.fn().mockResolvedValue(undefined),
+// Who each of these reaches (the holders of the alert's switch, else Manage roles and permissions) is tested through the routes in
+// permission-no-record-alerts-db.test.ts; here the route is checked to leave the right alert for after the response.
+vi.mock('../services/notifications/noRecordAlerts', () => ({
+  queueNoRecordAlert: vi.fn(),
+}));
+
+// Parts staged and ready is queued for after the response (S06.27); the queue entry point is what the route calls, and who it
+// reaches is tested through the route in permission-job-scheduling-alerts-db.test.ts.
+vi.mock('../services/notifications/jobSchedulingAlerts', () => ({
+  queueJobSchedulingAlert: vi.fn(),
+  queueJobUnassignedAlert: vi.fn(),
+  queueStagingReadyAlert: vi.fn(),
 }));
 
 // Import AFTER mock is registered so we get the spy reference.
-import { emit } from '../services/notifications/notificationService';
-const mockEmit = emit as ReturnType<typeof vi.fn>;
+import { queueNoRecordAlert } from '../services/notifications/noRecordAlerts';
+import { queueStagingReadyAlert } from '../services/notifications/jobSchedulingAlerts';
+const mockEmit = queueNoRecordAlert as ReturnType<typeof vi.fn>;
+const mockQueueStagingReady = queueStagingReadyAlert as ReturnType<typeof vi.fn>;
 
 // ─── Prisma typed surface ──────────────────────────────────────────────────────
 
@@ -149,8 +161,6 @@ describe.skip('createStockApproval — inventory.stock_approval_requested', () =
     expect(args.dedupKey).toBe(`inventory.stock_approval_requested:${APPROVAL_ID}`);
     // approval_id must be in data for the APPROVE_STOCK inline action
     expect(args.data?.approval_id).toBe(APPROVAL_ID);
-    // entity should be {} (role-gated, not row-scoped)
-    expect(args.entity).toEqual({});
   });
 });
 
@@ -216,7 +226,6 @@ describe('applyStockMovement (via transferStock) — inventory.low_stock crossin
     expect(args.dedupKey).toMatch(
       new RegExp(`^inventory\\.low_stock:${ITEM_ID}:${LOCATION_ID}:\\d{4}-\\d{2}-\\d{2}$`),
     );
-    expect(args.entity).toEqual({});
   });
 
   it('does NOT emit inventory.low_stock when on_hand was already below min (no new crossing)', async () => {
@@ -368,7 +377,6 @@ describe('receivePurchaseOrder — inventory.po_partial', () => {
     expect(args.object.id).toBe(PO_ID);
     expect(args.object.label).toBe(po.po_number);
     expect(args.dedupKey).toBe(`inventory.po_partial:${PO_ID}`);
-    expect(args.entity).toEqual({});
   });
 
   it('does NOT emit inventory.po_partial when status becomes fully received', async () => {
@@ -472,7 +480,6 @@ describe('price-book item write — inventory.backorder', () => {
     expect(args.object.type).toBe('INVENTORY_ITEM');
     expect(args.object.id).toBe(ITEM_ID);
     expect(args.dedupKey).toBe(`inventory.backorder:${ITEM_ID}`);
-    expect(args.entity).toEqual({});
   });
 
   it('emits inventory.backorder on CREATE when status is on_backorder', async () => {
@@ -578,8 +585,9 @@ describe('price-book item write — inventory.backorder', () => {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('notifyTechReady — inventory.staging_ready', () => {
-  it('emits inventory.staging_ready after stage status set to ready_for_pickup', async () => {
+  it('queues inventory.staging_ready after stage status set to ready_for_pickup', async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches({ edit_stock: true }); // the Dispatcher preset does not hold Edit stock (S01.9); staging writes need it
 
     const stageRow = {
       ...JOB_STAGE_FIXTURE,
@@ -598,16 +606,9 @@ describe('notifyTechReady — inventory.staging_ready', () => {
 
     expect(res.status).toBe(200);
 
-    const call = mockEmit.mock.calls.find((c: any[]) => c[0].verb === 'inventory.staging_ready');
-    expect(call).toBeDefined();
-    const args = call![0];
-    expect(args.organizationId).toBe(ALPHA_ORG_ID);
-    expect(args.actorId).toBe(TEST_USERS.dispatcher.id);
-    expect(args.object.type).toBe('JOB_STAGE');
-    expect(args.object.id).toBe(STAGE_ID);
-    expect(args.object.label).toBe(stageRow.job_number);
-    expect(args.dedupKey).toBe(`inventory.staging_ready:${STAGE_ID}`);
-    expect(args.entity).toEqual({});
+    // One alert, about the stage; the job's people and the technician are read when it is sent, after the response.
+    expect(mockQueueStagingReady).toHaveBeenCalledTimes(1);
+    expect(mockQueueStagingReady).toHaveBeenCalledWith({ organizationId: ALPHA_ORG_ID, actorId: TEST_USERS.dispatcher.id, stageId: STAGE_ID });
   });
 });
 
@@ -618,6 +619,7 @@ describe('notifyTechReady — inventory.staging_ready', () => {
 describe('notifyTechReady — inventory.staging_no_area when staged_area is null', () => {
   it('emits inventory.staging_no_area when stage is ready_for_pickup AND staged_area is null', async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches({ edit_stock: true }); // the Dispatcher preset does not hold Edit stock (S01.9); staging writes need it
 
     const stageRow = {
       ...JOB_STAGE_FIXTURE,
@@ -636,8 +638,7 @@ describe('notifyTechReady — inventory.staging_no_area when staged_area is null
 
     expect(res.status).toBe(200);
 
-    const readyCall = mockEmit.mock.calls.find((c: any[]) => c[0].verb === 'inventory.staging_ready');
-    expect(readyCall).toBeDefined();
+    expect(mockQueueStagingReady).toHaveBeenCalledTimes(1);
 
     const noAreaCall = mockEmit.mock.calls.find((c: any[]) => c[0].verb === 'inventory.staging_no_area');
     expect(noAreaCall).toBeDefined();
@@ -647,11 +648,11 @@ describe('notifyTechReady — inventory.staging_no_area when staged_area is null
     expect(args.object.type).toBe('JOB_STAGE');
     expect(args.object.id).toBe(STAGE_ID);
     expect(args.dedupKey).toBe(`inventory.staging_no_area:${STAGE_ID}`);
-    expect(args.entity).toEqual({});
   });
 
   it('does NOT emit inventory.staging_no_area when staged_area is set', async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches({ edit_stock: true }); // the Dispatcher preset does not hold Edit stock (S01.9); staging writes need it
 
     const stageRow = {
       ...JOB_STAGE_FIXTURE,
@@ -682,6 +683,7 @@ describe('notifyTechReady — inventory.staging_no_area when staged_area is null
 describe('updateJobStage — inventory.staging_no_area', () => {
   it('emits inventory.staging_no_area when status=complete AND staged_area is null', async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches({ edit_stock: true }); // the Dispatcher preset does not hold Edit stock (S01.9); staging writes need it
 
     const existing = {
       ...JOB_STAGE_FIXTURE,
@@ -717,6 +719,7 @@ describe('updateJobStage — inventory.staging_no_area', () => {
 
   it('emits inventory.staging_no_area when status=ready_for_pickup AND staged_area is null via updateJobStage', async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches({ edit_stock: true }); // the Dispatcher preset does not hold Edit stock (S01.9); staging writes need it
 
     const existing = {
       ...JOB_STAGE_FIXTURE,
@@ -749,6 +752,7 @@ describe('updateJobStage — inventory.staging_no_area', () => {
 
   it('does NOT emit inventory.staging_no_area when staged_area is set on update', async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches({ edit_stock: true }); // the Dispatcher preset does not hold Edit stock (S01.9); staging writes need it
 
     const existing = {
       ...JOB_STAGE_FIXTURE,
@@ -810,27 +814,4 @@ describe('inventory.low_stock template body (P5 §4)', () => {
     expect(renderTemplate('inventory.low_stock', { item_name: 'X', on_hand: 3 }).body).toBeUndefined();
     expect(renderTemplate('inventory.low_stock', { item_name: 'X', min: 4 }).body).toBeUndefined();
   });
-});
-
-describe('inventory FEED verbs → Admin + Dispatcher FEED, Technician/Sales excluded (QA-701)', () => {
-  const roleHolders = {
-    ADMIN: ['admin-1'],
-    DISPATCHER: ['disp-1'],
-    SALES: ['sales-1'],
-    TECHNICIAN: ['tech-1'],
-  };
-
-  for (const verb of ['inventory.low_stock', 'inventory.backorder', 'inventory.po_partial'] as const) {
-    it(`${verb} routes to Admin + Dispatcher as FEED only`, () => {
-      const recipients = resolveRecipients({
-        verb,
-        organizationId: ALPHA_ORG_ID,
-        actorId: null,
-        entity: {},
-        roleHolders,
-      });
-      expect(recipients.map((r) => r.userId).sort()).toEqual(['admin-1', 'disp-1']);
-      expect(recipients.every((r) => r.priority === 'FEED' && r.needs_action === false)).toBe(true);
-    });
-  }
 });

@@ -5,7 +5,7 @@ import { logger } from '../lib/logger';
 import { tenantWhere } from '../lib/tenant';
 import { allocateNumber } from '../lib/numbering';
 import { withNumberCollisionRetry } from '../lib/number-collision-retry';
-import { taskVisibilityWhere, canAccessTask, canAccessLinkedEntity } from '../lib/tasks/visibility';
+import { taskVisibilityWhere, canAccessTask, canAccessLinkedEntity, seesAllTasks } from '../lib/tasks/visibility';
 import {
   isPagedTaskQuery, taskPageQuerySchema, buildTaskPageWhere, taskOrderBy, linkedRecordSearch, categoryCounts,
 } from '../lib/tasks/listPage';
@@ -234,7 +234,7 @@ export async function list(req: Request, res: Response) {
     const { linked_entity_type, linked_entity_id } = req.query as Record<string, string | undefined>;
 
     // #245 — listing an entity's tasks requires access to that entity (SQL row check).
-    if (linked_entity_type && linked_entity_id && req.user!.role !== 'ADMIN') {
+    if (linked_entity_type && linked_entity_id && !seesAllTasks(req)) {
       if (!(await canAccessLinkedEntity(req, linked_entity_type, linked_entity_id))) {
         res.status(403).json({ error: 'Insufficient permissions' });
         return;
@@ -1105,7 +1105,7 @@ export async function summary(req: Request, res: Response) {
       return;
     }
     // #245 — a summary of an entity's tasks requires access to that entity (SQL row check).
-    if (req.user!.role !== 'ADMIN') {
+    if (!seesAllTasks(req)) {
       if (!(await canAccessLinkedEntity(req, linked_entity_type, linked_entity_id))) {
         res.status(403).json({ error: 'Insufficient permissions' });
         return;

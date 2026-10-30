@@ -7,7 +7,7 @@
  * `defaultEnd` / `defaultIsAllDay` / `mode`. Reschedule therefore opened four empty pickers
  * and silently discarded the existing slot unless the user retyped all of it.
  *
- * Reported against prod job 698776 (Alpha Doors), whose row was correct the whole time.
+ * Reported against prod job 698776 (the pilot org), whose row was correct the whole time.
  *
  * The org zone is Asia/Manila deliberately: it differs from every plausible runner zone, so
  * these assertions fail on browser-local behaviour rather than passing by coincidence.
@@ -18,7 +18,7 @@ import userEvent from '@testing-library/user-event';
 
 import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderWithProviders, ALL_JOB_ACTIONS } from '@/__tests__/helpers';
 
 import JobDetailPage from '../JobDetailPage';
 
@@ -95,6 +95,7 @@ const BASE_JOB = {
   invoices: [],
   tags: [],
   source_plan_id: null,
+  actions: ALL_JOB_ACTIONS,
   source_plan: null,
 };
 

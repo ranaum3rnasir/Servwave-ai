@@ -92,18 +92,18 @@ describe('resolveAppUser', () => {
   });
 
   it('matches the email fallback case-insensitively (provider lowercases what we stored mixed-case)', async () => {
-    // Prisma row stored 'Sagiv@acme.com'; the provider hands us 'sagiv@acme.com'.
+    // Prisma row stored 'Riley@acme.com'; the provider hands us 'riley@acme.com'.
     // resolveAppUser must use a case-insensitive query so the two still reconcile.
     mockPrisma.user.findUnique.mockResolvedValue(null);
     mockPrisma.user.findFirst.mockImplementation((args: { where: { email?: { equals?: string; mode?: string } } }) =>
       Promise.resolve(args.where.email?.mode === 'insensitive' ? ROW : null),
     );
 
-    const result = await resolveAppUser({ id: 'different-supa-id', email: 'sagiv@acme.com', email_confirmed_at: '2026-01-01' });
+    const result = await resolveAppUser({ id: 'different-supa-id', email: 'riley@acme.com', email_confirmed_at: '2026-01-01' });
 
     expect(result).toEqual(APP_USER);
     expect(mockPrisma.user.findFirst).toHaveBeenCalledWith(
-      expect.objectContaining({ where: { email: { equals: 'sagiv@acme.com', mode: 'insensitive' } } }),
+      expect.objectContaining({ where: { email: { equals: 'riley@acme.com', mode: 'insensitive' } } }),
     );
   });
 

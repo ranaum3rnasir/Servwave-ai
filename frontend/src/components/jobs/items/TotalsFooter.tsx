@@ -32,6 +32,7 @@ import type { InvoiceLineItem } from '@/lib/api/jobs';
 import type { StateTaxRate } from '@/lib/api/invoices';
 import { matchTaxRateState } from '@/lib/tax/matchTaxRateState';
 import { AddTaxRateDialog } from '@/components/tax/AddTaxRateDialog';
+import { useAppAbility } from '@/contexts/AbilityContext';
 
 export interface TotalsFooterProps {
   lines: InvoiceLineItem[];
@@ -140,6 +141,9 @@ export function TotalsFooter({
     taxRateVal === 0 ? NO_TAX : matchedState ? matchedState.state_code : CUSTOM_RATE;
 
   const [addRateOpen, setAddRateOpen] = useState(false);
+  // Adding a rate is tax setup, so the row is Company settings' (the rule the add route enforces). The rates
+  // themselves are reference data every form reads.
+  const canAddTaxRate = useAppAbility().can('update', 'Organization');
 
   const handleTaxChange = (v: string) => {
     if (v === NO_TAX) return onTaxRateChange?.(0);
@@ -242,7 +246,7 @@ export function TotalsFooter({
                     onValueChange={handleTaxChange}
                     placeholder="Select state…"
                     options={taxOptions}
-                    action={{ label: '+ Add tax rate', onSelect: () => setAddRateOpen(true) }}
+                    action={canAddTaxRate ? { label: '+ Add tax rate', onSelect: () => setAddRateOpen(true) } : undefined}
                   />
                 )}
               </FormField>

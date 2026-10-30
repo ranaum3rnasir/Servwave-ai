@@ -225,10 +225,10 @@ describe('unscheduling and completing from the card editor', () => {
     await expectCustomerPageStale(qc);
   });
 
-  it('"Mark Complete" marks the customer page stale', async () => {
+  it('"Complete job" marks the customer page stale', async () => {
     const qc = await mountBoard({ jobs: [SINGLE_VISIT_JOB] }, /J00042/);
     await openEditor(/J00042/);
-    fireEvent.click(await screen.findByRole('button', { name: /Mark Complete/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /Complete job/i }));
 
     await waitFor(() => expect(mockApi.post).toHaveBeenCalledWith('/api/jobs/job-2/complete'));
     await expectCustomerPageStale(qc);

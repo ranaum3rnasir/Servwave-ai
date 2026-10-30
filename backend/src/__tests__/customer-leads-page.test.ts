@@ -14,7 +14,6 @@ import app from '../app';
 import { prisma } from '../lib/prisma';
 import { TEST_USERS, mockAuthAs, authHeader } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mockPrisma = prisma as unknown as Record<string, any>;
@@ -24,7 +23,6 @@ const CUSTOMER_ID = 'c0000000-0000-0000-0000-000000000006';
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache();
   mockPrisma.lead.findMany.mockResolvedValue([]);
   mockPrisma.lead.count.mockResolvedValue(0);
 });

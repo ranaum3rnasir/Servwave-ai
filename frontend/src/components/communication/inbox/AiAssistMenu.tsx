@@ -1,6 +1,6 @@
 // Inbox module — "✨ AI" assist menu for the email composers.
 //
-// Extracted from Emanuel's InboxPage monolith (AI-assist helpers L1452-1540 +
+// Extracted from the original InboxPage monolith (AI-assist helpers L1452-1540 +
 // AiAssistMenu L1544-1620). Used by both ComposeWindow and the inline reply
 // composer to draft a message from scratch or reshape what's been written
 // (Gemini-style tone controls).

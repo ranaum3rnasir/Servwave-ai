@@ -90,9 +90,9 @@ const JOB_FIELDS = [
   // for many organisations is a personal mobile, and declining to publish that must not cost them
   // the capability. Both are offered; the template carries the decision by naming one.
   'technician.servwave_phones',
-  // The person who sold the job (SRVW-303), for the sign-off line. Resolved job → estimate →
-  // lead owner, since `job.salesperson_id` has no writer yet. A first-name half because the
-  // whole point is a signature: "Dana" reads better than "Dana Whitfield" at the end of an email.
+  // The person who sold the job (SRVW-303), for the sign-off line: the job's stored Sold By, empty
+  // when it has none (S03.9). A first-name half because the whole point is a signature: "Dana"
+  // reads better than "Dana Whitfield" at the end of an email.
   'job.owner_name',
   'job.owner_first_name',
 ];

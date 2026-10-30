@@ -1,3 +1,4 @@
+import { ProcessingBadge } from '@/components/invoices/ProcessingBadge';
 import { useState, type ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -67,7 +68,8 @@ export interface LeadSummary {
   status: string;
   service_request: string;
   created_at: string;
-  lead_assignees?: { user: { id: string; first_name: string; last_name: string } }[];
+  /** The lead's single Owner, as `GET /api/leads` answers it. */
+  commission_owner?: { id: string; first_name: string; last_name: string } | null;
   estimates?: LeadEstimateSummary[];
   /**
    * The walkthrough the Leads tab shows (visits slice 05), resolved on the server: the next
@@ -113,6 +115,8 @@ export interface CustomerInvoice {
   created_at: string;
   job_number: string | null;
   job_id: string | null;
+  /** Bank money still clearing on this invoice (slice 28 D1). Optional: an older backend omits it. */
+  processing_amount?: number | string;
   payments: Array<{
     id: string;
     amount: number | string;
@@ -195,6 +199,11 @@ function assigneeNames(assignees: { user: { first_name: string; last_name: strin
   return assignees && assignees.length > 0
     ? assignees.map((a) => `${a.user.first_name} ${a.user.last_name}`).join(', ')
     : UNASSIGNED;
+}
+
+/** A lead's Owner by name, or a dash: the Leads list reads an empty Owner the same way (PRD 3). */
+function leadOwnerName(owner: LeadSummary['commission_owner']): ReactNode {
+  return owner ? `${owner.first_name} ${owner.last_name}` : '—';
 }
 
 /** A paged list has rows but none on screen yet: its first page, or the page a delete stepped back to. */
@@ -283,7 +292,7 @@ export function LeadsTab({ view, timeZone, onNavigate }: {
                 { label: 'Walkthrough', value: <div data-testid="lead-walkthrough"><WalkthroughCell lead={lead} timeZone={timeZone} /></div> },
                 { label: 'Estimates', value: estCount > 0 ? <Badge variant="softBlue" size="pill">{estCount}</Badge> : DASH },
                 { label: 'Est. Value', value: <Muted>{estValue > 0 ? formatCurrency(estValue) : '-'}</Muted> },
-                { label: 'Assigned To', value: <Muted>{assigneeNames(lead.lead_assignees)}</Muted> },
+                { label: 'Owner', value: <Muted>{leadOwnerName(lead.commission_owner)}</Muted> },
                 { label: 'Date', value: <Muted>{formatDate(lead.created_at)}</Muted> },
               ],
             };
@@ -305,7 +314,7 @@ export function LeadsTab({ view, timeZone, onNavigate }: {
             <TableHead>Walkthrough</TableHead>
             <TableHead>Estimates</TableHead>
             <TableHead>Est. Value</TableHead>
-            <TableHead>Assigned To</TableHead>
+            <TableHead>Owner</TableHead>
             <TableHead>Date</TableHead>
           </TableRow>
         </TableHeader>
@@ -329,7 +338,7 @@ export function LeadsTab({ view, timeZone, onNavigate }: {
                   <Muted>{estValue > 0 ? formatCurrency(estValue) : '-'}</Muted>
                 </TableCell>
                 <TableCell>
-                  <Muted>{assigneeNames(lead.lead_assignees)}</Muted>
+                  <Muted>{leadOwnerName(lead.commission_owner)}</Muted>
                 </TableCell>
                 <TableCell><Muted>{formatDate(lead.created_at)}</Muted></TableCell>
               </TableRow>
@@ -564,11 +573,18 @@ export function InvoicesTab({ invoices }: { invoices: CustomerInvoice[] }) {
             !!inv.due_date &&
             (inv.status === 'SENT' || inv.status === 'PARTIAL') &&
             orgDayDiff(inv.due_date, timeZone) < 0;
-          const due = parseFloat(String(inv.amount_due));
+          // Voiding keeps the stored amount_due as history; nothing is owed on a voided invoice.
+          const isVoided = inv.status === 'VOIDED';
+          const due = isVoided ? 0 : parseFloat(String(inv.amount_due));
           return {
             key: inv.id,
             title: inv.invoice_number,
-            aside: <StatusChip domain="invoice" status={inv.status} />,
+            aside: (
+              <span className="flex items-center gap-1.5">
+                <StatusChip domain="invoice" status={inv.status} />
+                <ProcessingBadge amount={inv.processing_amount} />
+              </span>
+            ),
             // The card is the invoice's one link (the table's number cell is the link there).
             to: preferV2Path(`/invoices/${inv.id}`),
             fields: [
@@ -576,7 +592,7 @@ export function InvoicesTab({ invoices }: { invoices: CustomerInvoice[] }) {
               { label: 'Total', value: <MutedMoney>{formatCurrency(inv.total_amount)}</MutedMoney> },
               {
                 label: 'Amount Due',
-                value: due > 0
+                value: isVoided ? DASH : due > 0
                   ? <Badge variant="softRed" size="pill">{formatCurrency(inv.amount_due)}</Badge>
                   : <Badge variant="softGreen" size="pill">Paid</Badge>,
               },
@@ -620,7 +636,9 @@ export function InvoicesTab({ invoices }: { invoices: CustomerInvoice[] }) {
             !!inv.due_date &&
             (inv.status === 'SENT' || inv.status === 'PARTIAL') &&
             orgDayDiff(inv.due_date, timeZone) < 0;
-          const due = parseFloat(String(inv.amount_due));
+          // Voiding keeps the stored amount_due as history; nothing is owed on a voided invoice.
+          const isVoided = inv.status === 'VOIDED';
+          const due = isVoided ? 0 : parseFloat(String(inv.amount_due));
           return (
             // Rows are NOT clickable here - the invoice number is the link, as
             // it is on the legacy tab.
@@ -633,12 +651,17 @@ export function InvoicesTab({ invoices }: { invoices: CustomerInvoice[] }) {
                 </Button>
               </TableCell>
               <TableCell><MutedMono>{inv.job_number ?? '-'}</MutedMono></TableCell>
-              <TableCell><StatusChip domain="invoice" status={inv.status} /></TableCell>
+              <TableCell>
+                <span className="flex items-center gap-1.5">
+                  <StatusChip domain="invoice" status={inv.status} />
+                  <ProcessingBadge amount={inv.processing_amount} />
+                </span>
+              </TableCell>
               <TableCell><MutedMoney>{formatCurrency(inv.total_amount)}</MutedMoney></TableCell>
               <TableCell>
                 {/* "Paid" vs an outstanding balance is a STATE, so it is a badge
                     rather than a coloured string on the call site. */}
-                {due > 0
+                {isVoided ? DASH : due > 0
                   ? <Badge variant="softRed" size="pill">{formatCurrency(inv.amount_due)}</Badge>
                   : <Badge variant="softGreen" size="pill">Paid</Badge>}
               </TableCell>

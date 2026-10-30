@@ -22,6 +22,7 @@ import {
 import { extractApiError } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { canAutoFocus } from "@/ui-kit/lib/autoFocus";
+import { useAppAbility } from "@/contexts/AbilityContext";
 
 const PHOTO_ACCEPT = "image/jpeg,image/png,image/heic,image/heif";
 
@@ -36,6 +37,9 @@ export function AssetDialog({ open, onClose, editAsset, onSaved }: Props) {
   const createAsset = useCreateAsset();
   const updateAsset = useUpdateAsset();
   const uploadPhoto = useUploadAssetPhoto();
+  // The photo upload route requires Edit stock (S07.1), so a Create-stock-only
+  // person adding an asset gets no photo field to fill in and then be refused.
+  const canUploadPhoto = useAppAbility().can("update", "Inventory");
   // Full list (no status filter) so the dup-serial check also sees retired
   // tools' serials. Case-insensitive trim match, excluding the asset edited.
   const allAssetsQuery = useAssets({}, 1);
@@ -274,49 +278,51 @@ export function AssetDialog({ open, onClose, editAsset, onSaved }: Props) {
           />
         </FormField>
 
-        <FormField label="Photo" gap={1}>
-          {(fieldProps) => (
-            <div className="flex items-center gap-3">
-              {previewUrl || editAsset?.photo_url ? (
-                <UploadedImage
-                  src={previewUrl ?? editAsset?.photo_url ?? ""}
-                  alt="Asset preview"
-                  radius="md"
-                  edge="ring"
-                  className="h-14 w-14"
-                />
-              ) : (
-                <div className="flex h-14 w-14 items-center justify-center rounded-md bg-background-light ring-1 ring-border">
-                  <ImageIcon className="h-6 w-6 text-text-secondary" />
-                </div>
-              )}
-              <div className="flex flex-col items-start gap-1">
-                <input
-                  {...fieldProps}
-                  ref={fileInputRef}
-                  type="file"
-                  accept={PHOTO_ACCEPT}
-                  onChange={(e) => setPhotoFile(e.target.files?.[0] ?? null)}
-                  className="text-xs text-text-secondary file:mr-2 file:rounded-md file:border file:border-border file:bg-surface-light file:px-2.5 file:py-1 file:text-xs file:font-medium file:text-text-primary hover:file:bg-background-light"
-                  aria-label="Asset photo"
-                />
-                {photoFile && (
-                  <Button
-                    onClick={() => {
-                      setPhotoFile(null);
-                      if (fileInputRef.current) fileInputRef.current.value = "";
-                    }}
-                    variant="ghost"
-                    tone="subtle"
-                    size={null}
-                  >
-                    Remove selected photo
-                  </Button>
+        {canUploadPhoto && (
+          <FormField label="Photo" gap={1}>
+            {(fieldProps) => (
+              <div className="flex items-center gap-3">
+                {previewUrl || editAsset?.photo_url ? (
+                  <UploadedImage
+                    src={previewUrl ?? editAsset?.photo_url ?? ""}
+                    alt="Asset preview"
+                    radius="md"
+                    edge="ring"
+                    className="h-14 w-14"
+                  />
+                ) : (
+                  <div className="flex h-14 w-14 items-center justify-center rounded-md bg-background-light ring-1 ring-border">
+                    <ImageIcon className="h-6 w-6 text-text-secondary" />
+                  </div>
                 )}
+                <div className="flex flex-col items-start gap-1">
+                  <input
+                    {...fieldProps}
+                    ref={fileInputRef}
+                    type="file"
+                    accept={PHOTO_ACCEPT}
+                    onChange={(e) => setPhotoFile(e.target.files?.[0] ?? null)}
+                    className="text-xs text-text-secondary file:mr-2 file:rounded-md file:border file:border-border file:bg-surface-light file:px-2.5 file:py-1 file:text-xs file:font-medium file:text-text-primary hover:file:bg-background-light"
+                    aria-label="Asset photo"
+                  />
+                  {photoFile && (
+                    <Button
+                      onClick={() => {
+                        setPhotoFile(null);
+                        if (fileInputRef.current) fileInputRef.current.value = "";
+                      }}
+                      variant="ghost"
+                      tone="subtle"
+                      size={null}
+                    >
+                      Remove selected photo
+                    </Button>
+                  )}
+                </div>
               </div>
-            </div>
-          )}
-        </FormField>
+            )}
+          </FormField>
+        )}
       </div>
     </Modal>
   );

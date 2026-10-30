@@ -31,11 +31,17 @@ export function parseScheduleView(value: string | null | undefined): ScheduleVie
   return (VIEWS as readonly string[]).includes(value ?? '') ? (value as ScheduleView) : null;
 }
 
+/**
+ * `noCrew` is the "No crew" filter (S09.12), which is about the next 7 days: a link to it opens on Week at every
+ * width, ahead of a view picked earlier in the session (but behind a view the link itself names).
+ */
 export function resolveScheduleView(input: {
   widthClass: ScheduleWidthClass;
   urlView: ScheduleView | null;
   sessionView: ScheduleView | null;
+  noCrew?: boolean;
 }): ScheduleView {
+  if (input.noCrew) return input.urlView ?? 'week';
   return input.urlView ?? input.sessionView ?? (input.widthClass === 'phone' ? 'day' : 'week');
 }
 
@@ -71,7 +77,12 @@ export function scheduleEmptyStateCopy(input: {
   view: ScheduleView;
   panelVisible: boolean;
   canDrag: boolean;
+  /** The "No crew" filter is on: an empty board is good news, not a quiet week. */
+  noCrew?: boolean;
 }): { title: string; description?: string } {
+  if (input.noCrew) {
+    return { title: 'No visits without a crew', description: 'Every booked visit you can see in the next 7 days has someone on it.' };
+  }
   const title = EMPTY_TITLE[input.view];
   return input.panelVisible && input.canDrag
     ? { title, description: 'Drag a job from the panel on the left to assign it' }

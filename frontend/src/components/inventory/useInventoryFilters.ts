@@ -54,7 +54,7 @@ export function useInventoryFilters({ allItems, search, activeLoc, filters, fini
           i.sku.toLowerCase().includes(q) ||
           i.name.toLowerCase().includes(q) ||
           i.category.toLowerCase().includes(q) ||
-          i.vendor.toLowerCase().includes(q) ||
+          (i.vendor ?? "").toLowerCase().includes(q) ||
           (i.mpn || "").toLowerCase().includes(q) ||
           (i.modelNumber || "").toLowerCase().includes(q) ||
           (i.upc || "").toLowerCase().includes(q) ||
@@ -88,7 +88,7 @@ export function useInventoryFilters({ allItems, search, activeLoc, filters, fini
       // Vendor filter
       .filter(
         (i) =>
-          filters.vendors.length === 0 || filters.vendors.includes(i.vendor),
+          filters.vendors.length === 0 || filters.vendors.includes(i.vendor ?? ""),
       )
       // Category filter — driven by the new CategorySelector pill in the
       // "Showing" row (rev 2026-05-26). Matches against Item.category by name.

@@ -11,6 +11,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/ui-kit/components/ui/
 import { Checkbox } from '@/ui-kit/components/ui/checkbox';
 
 import { StatusChip } from '../_shared/statusChip';
+import { ProcessingBadge } from '@/components/invoices/ProcessingBadge';
 
 export interface InvoiceListItem {
   id: string;
@@ -40,6 +41,8 @@ export interface InvoiceListItem {
     job_number: string;
   } | null;
   tags?: TagChip[];
+  /** Payments go-live slice 28 - bank money still clearing; absent on older payloads. */
+  processing_amount?: number | string;
 }
 
 /**
@@ -292,11 +295,14 @@ export function buildInvoiceColumns(
       id: 'status',
       accessorKey: 'status',
       header: sortable('status', 'Status'),
-      size: 110,
-      minSize: 90,
+      size: 150,
+      minSize: 110,
       meta: { label: 'Status', fixed: true },
       cell: ({ row }) => (
-        <StatusChip domain="invoice" status={isOverdue(row.original, timeZone) ? 'OVERDUE' : row.original.status} />
+        <div className="flex flex-col items-start gap-1">
+          <StatusChip domain="invoice" status={isOverdue(row.original, timeZone) ? 'OVERDUE' : row.original.status} />
+          <ProcessingBadge amount={row.original.processing_amount} />
+        </div>
       ),
     },
     {
@@ -352,6 +358,8 @@ export function buildInvoiceColumns(
       minSize: 100,
       meta: { label: 'Amount Due', fixed: true },
       cell: ({ row }) => {
+        // Voiding keeps the stored amount_due as history; nothing is owed on a voided invoice.
+        if (row.original.status === 'VOIDED') return <span className="block text-right text-muted-foreground">{'-'}</span>;
         const val = Number(row.original.amount_due);
         return <Money value={val} weight={val > 0 ? 'bold' : undefined} />;
       },

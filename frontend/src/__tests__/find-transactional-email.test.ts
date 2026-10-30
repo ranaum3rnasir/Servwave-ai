@@ -35,6 +35,28 @@ describe('findTransactionalEmail', () => {
     expect(findTransactionalEmail([call], 'Estimate E00042')).toBeUndefined();
   });
 
+  // Slice 6 - a HAND-LOGGED email can now exist, and this function's answer is used to render a
+  // delivery status and a bounce banner on the Estimate and Invoice pages. Those are claims about
+  // what ServWave's own mail transport did; a record somebody typed up about an email they sent
+  // from Outlook has no such provenance. The title format a logged entry actually carries
+  // ("Outbound email · <subject>") would not match this prefix anyway - which is precisely why
+  // the guard is on provenance and not on the title.
+  it('ignores a hand-logged email, whatever its title (it is not a platform send)', () => {
+    const logged = item({ manuallyLogged: true, title: 'Estimate E00042 from ServWave' });
+    expect(findTransactionalEmail([logged], 'Estimate E00042')).toBeUndefined();
+  });
+
+  // ORDER MATTERS HERE, and getting it wrong makes this test a placebo. The function returns the
+  // LAST match, so with the hand-logged entry FIRST it answers `platform` whether or not the
+  // provenance guard exists - which is what this test used to do, and it stayed green through a
+  // mutation that deleted the guard outright. The hand-logged one therefore goes LAST: an
+  // unguarded implementation returns it, a guarded one skips past it to the platform send.
+  it('still finds the platform send when a hand-logged one is the most recent row', () => {
+    const platform = item({ id: 'platform' });
+    const logged = item({ id: 'logged', manuallyLogged: true });
+    expect(findTransactionalEmail([platform, logged], 'Estimate E00042')).toBe(platform);
+  });
+
   it('ignores inbound email (only an outbound send is a delivery fact worth surfacing)', () => {
     const inbound = item({ direction: 'in' });
     expect(findTransactionalEmail([inbound], 'Estimate E00042')).toBeUndefined();

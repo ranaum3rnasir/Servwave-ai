@@ -2,6 +2,7 @@ import { lazy } from 'react';
 import { Route } from 'react-router-dom';
 
 import ProtectedRoute from '@/components/ProtectedRoute';
+import RequirePageAccess from '@/components/RequirePageAccess';
 
 import V2AppLayout from '../V2AppLayout';
 
@@ -36,7 +37,9 @@ export function jobsV2Routes() {
   return (
     <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN']} />}>
       <Route element={<V2AppLayout />}>
-        <Route path="/jobs" element={<JobsPage />} />
+        <Route element={<RequirePageAccess all={['view_jobs', 'show_jobs_page']} />}>
+          <Route path="/jobs" element={<JobsPage />} />
+        </Route>
         <Route path="/jobs/new" element={<JobFormPage />} />
         <Route path="/jobs/:id" element={<JobDetailPage />} />
         <Route path="/jobs/:jobId/statement" element={<StatementPage />} />

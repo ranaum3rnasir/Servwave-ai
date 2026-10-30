@@ -2,12 +2,12 @@ import { Calendar } from 'lucide-react';
 
 import type { TechSchedule } from '@/lib/api/dashboard';
 import { IN_FLIGHT_STATUSES } from '@/components/schedule/scheduleModel';
+import { isCompletedOrLaterJobStatus } from '@/lib/jobs/closeOut';
 import { getInitials } from '@/lib/utils';
 import { Button } from '@/ui-kit/components/ui/button';
 import { EmptyState } from '@/ui-kit/components/data/emptyState';
 
 import { WidgetCard } from '../components/widgetCard';
-import { preferV2Path } from '../../uiV2';
 
 // On-brand avatar gradients (ocean / sage / lavender family) - decorative
 // per-tech identity, kept within the Calm Intelligence palette. Not a status
@@ -57,24 +57,28 @@ function pillStyle(status: string, entity?: string) {
   if (entity === 'walkthrough' && status === 'WALKTHROUGH_COMPLETED') return { bg: 'bg-sage-50', border: 'border-sage-200 border-l-sage-500', tag: 'bg-sage-200 text-text-primary', label: 'Walkthrough' };
   if (entity === 'walkthrough') return { bg: 'bg-primary-subtle', border: 'border-ocean-700/30 border-l-ocean-700', tag: 'bg-ocean-800/10 text-ocean-800', label: 'Walkthrough' };
   if (IN_FLIGHT_STATUSES.has(status)) return { bg: 'bg-info/10', border: 'border-info/30 border-l-info', tag: 'bg-info/15 text-info', label: 'In Progress' };
-  if (status === 'COMPLETED') return { bg: 'bg-sage-50', border: 'border-sage-200 border-l-sage-500', tag: 'bg-sage-200 text-text-primary', label: 'Done' };
+  // Completed, Office review and Ready to close all read "Completed" (PRD 6, Completion words); only the Done status says "Done".
+  if (isCompletedOrLaterJobStatus(status)) return { bg: 'bg-sage-50', border: 'border-sage-200 border-l-sage-500', tag: 'bg-sage-200 text-text-primary', label: status === 'DONE' ? 'Done' : 'Completed' };
   return { bg: 'bg-background-light', border: 'border-border border-l-text-soft', tag: 'bg-border-soft text-text-secondary', label: 'Scheduled' };
 }
 
 /**
  * Per-technician lanes for today.
  *
- * The server always emits the Unassigned lane last and it is the only lane
+ * The server always emits the "No crew" lane last and it is the only lane
  * with a null `user_id`; that is what selects the flat chip and the `-`
- * initials here. Entry clicks route by ENTITY, not by status - a walkthrough
- * belongs to a lead, everything else to a job.
+ * initials here. An entry opens the record the server sent with it - a
+ * walkthrough's lead, or the job - never an address worked out here.
  */
 export default function TodaySchedule({
   data,
+  calendarLink,
   navigate,
   isLoading,
 }: {
   data: TechSchedule[];
+  /** The Schedule's address, sent only to a person who may open it; without it there is no "Full calendar". */
+  calendarLink?: string | null;
   navigate: (to: string) => void;
   isLoading?: boolean;
 }) {
@@ -83,9 +87,11 @@ export default function TodaySchedule({
       title="Today's Schedule"
       icon={<Calendar className="h-4 w-4 text-muted-foreground" />}
       right={
-        <Button type="button" variant="link" size={null} className="text-xs" onClick={() => navigate(preferV2Path('/schedule'))}>
-          Full calendar
-        </Button>
+        calendarLink ? (
+          <Button type="button" variant="link" size={null} className="text-xs" onClick={() => navigate(calendarLink)}>
+            Full calendar
+          </Button>
+        ) : undefined
       }
       loading={isLoading}
     >
@@ -104,7 +110,7 @@ export default function TodaySchedule({
           data.map((tech, idx) => {
             const ini = tech.user_id ? getInitials(`${tech.first_name} ${tech.last_name}`) : '-';
             return (
-              <div key={tech.user_id ?? 'unassigned'}>
+              <div key={tech.user_id ?? 'no-crew'}>
                 {idx > 0 && <div className="border-t" />}
                 <div className="flex items-center gap-2 px-5 py-2.5">
                   <div className={`flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-full text-[10px] font-bold text-on-fill ${tech.user_id ? `bg-gradient-to-br ${gradient(tech.user_id)}` : 'bg-border'}`}>{ini}</div>
@@ -124,7 +130,7 @@ export default function TodaySchedule({
                         type="button"
                         variant={null}
                         size={null}
-                        onClick={() => navigate(job.entity === 'walkthrough' ? `/leads/${job.id}` : `/jobs/${job.id}`)}
+                        onClick={() => navigate(job.link)}
                         className={`h-auto w-full justify-start gap-2 whitespace-normal rounded-lg border-l-[3px] border px-3 py-2 text-left font-normal hover:brightness-95 ${st.bg} ${st.border}`}
                       >
                         <span className="min-w-0 flex-1">

@@ -6,6 +6,7 @@ import {
 } from 'lucide-react';
 
 import { useAppAbility } from '@/contexts/AbilityContext';
+import type { AppAction } from '@/lib/ability';
 import { useIsDemoOrg } from '@/lib/useIsDemoOrg';
 import { useIsCommunicationPilotOrg } from '@/lib/useIsCommunicationPilotOrg';
 
@@ -20,7 +21,7 @@ import type {
 
 import {
   callNeedsAttention, computeRange, countCallsOnDay, DateRangeControl, DEMO_NOW,
-  describeSearchScope,
+  describeSearchScope, NEEDS_ATTENTION_WITHOUT_INSIGHTS_HELP,
 } from '@/components/communication/phone/shared';
 import type { CallsFocus, RangePreset, Tab } from '@/components/communication/phone/shared';
 
@@ -74,6 +75,17 @@ const MODULE_TABS: {
 
 const MODULE_SECTION_KEYS = MODULE_TABS.map((t) => t.key);
 
+/** The switch (as the action it compiles into) a person needs to see each section. Calls has none: it shows whenever Show
+ *  Phone is on. The org gates below sit on top of these, never instead of them. */
+const SECTION_SWITCH: Record<Exclude<ModuleSection, 'calls'>, AppAction> = {
+  numbers: 'phone_numbers_tab',
+  flows: 'call_flows_tab',
+  masking: 'call_masking_tab',
+  groups: 'call_groups_tab',
+  training: 'training_tab',
+  blocked: 'blocked_callers_tab',
+};
+
 // Prototype-only surface (mock-fed, no backend): visible ONLY for demo orgs.
 const DEMO_ONLY_SECTIONS: ModuleSection[] = ['masking'];
 
@@ -122,6 +134,8 @@ export default function PhonePage() {
   const navigate = useNavigate();
   const ability = useAppAbility();
   const canRead = ability.can('read', 'Communication');
+  // See call insights (S08.13): the Performance & QA sub-tab, and the sentiment and review flag Needs Attention counts.
+  const mayInsights = ability.can('see_call_insights', 'Communication');
   const isDemo = useIsDemoOrg();
   const isPilot = useIsCommunicationPilotOrg();
   // ServWave's User has no per-branch field; the sales-email decoration uses
@@ -138,10 +152,13 @@ export default function PhonePage() {
   // A section is hidden when the org may not see it. Hidden sections are
   // dropped from the nav AND deep links to them fall back to Calls.
   const isSectionHidden = (s: ModuleSection): boolean =>
+    (s !== 'calls' && !ability.can(SECTION_SWITCH[s], 'Communication')) ||
     (!isDemo && DEMO_ONLY_SECTIONS.includes(s)) ||
     (!isDemo && !isPilot && PILOT_AND_DEMO_SECTIONS.includes(s));
   const section: ModuleSection = isSectionHidden(requestedSection) ? 'calls' : requestedSection;
   const moduleTabs = MODULE_TABS.filter((t) => !isSectionHidden(t.key));
+  // The Phone usage bar follows its own switch.
+  const mayUsageBar = ability.can('phone_usage_bar', 'Communication');
 
   // Within-Calls sub-tab + KPI focus stay local (a sub-nav, no remount needed).
   const [tab, setTab] = useState<Tab>('calls');
@@ -150,9 +167,11 @@ export default function PhonePage() {
 
   const { data: seedCalls = [] } = useCalls();
   const { data: seedThreads = [] } = useMessageThreads();
-  const { data: seedFlows = [] } = useCallFlows();
-  const { data: seedGroups = [] } = useCallGroups();
-  const { data: blockedNumbers = [] } = useBlockedNumbers();
+  // A tab's data is asked for only by a person who sees the tab (its switch, and the org gate on top): the server refuses
+  // the rest, and a request bound to fail is not made.
+  const { data: seedFlows = [] } = useCallFlows(!isSectionHidden('flows'));
+  const { data: seedGroups = [] } = useCallGroups(!isSectionHidden('groups'));
+  const { data: blockedNumbers = [] } = useBlockedNumbers(!isSectionHidden('blocked'));
   const { data: seedNumbers = [], isLoading: numbersLoading } = useNumbers();
   // Fired, not read - exactly as the legacy shell fires it, which binds its
   // result to a variable nothing consumes. Kept because the request itself is
@@ -279,7 +298,7 @@ export default function PhonePage() {
 
   const missed = calls.filter((c) => c.status === 'missed' || c.status === 'voicemail');
   const unreadCount = threads.reduce((s, t) => s + t.unread, 0);
-  const needsAttention = calls.filter(callNeedsAttention);
+  const needsAttention = calls.filter((c) => callNeedsAttention(c, mayInsights));
   // "Calls today" = calls on the calendar day of the page anchor (DEMO_NOW for
   // demo orgs, real now otherwise), not the all-time count.
   const callsToday = useMemo(
@@ -307,7 +326,7 @@ export default function PhonePage() {
             {/* Every org, not just demo - see the legacy page for why. The meter
                 reads the org's own real usage now, so a demo-only gate would
                 hide it from exactly the orgs it is for. */}
-            <PlanUsage onToast={onToast} branch={branch} />
+            {mayUsageBar && <PlanUsage onToast={onToast} branch={branch} />}
             <Button
               onClick={() => openPhoneTab()}
               aria-label="Open dialer"
@@ -320,16 +339,19 @@ export default function PhonePage() {
         }
       />
 
-      {/* Primary module nav: one row that scrolls inside itself (the strip owns that) */}
-      <TabStrip
-        className="shrink-0"
-        value={section}
-        onValueChange={(next) => goToTab(next as ModuleSection)}
-        tabs={moduleTabs.map((t) => ({
-          value: t.key,
-          label: <SectionTabLabel icon={t.icon} label={t.label} />,
-        }))}
-      />
+      {/* Primary module nav: one row that scrolls inside itself (the strip owns that). With only Calls left there is
+          nothing to choose between, so no strip of one. */}
+      {moduleTabs.length > 1 && (
+        <TabStrip
+          className="shrink-0"
+          value={section}
+          onValueChange={(next) => goToTab(next as ModuleSection)}
+          tabs={moduleTabs.map((t) => ({
+            value: t.key,
+            label: <SectionTabLabel icon={t.icon} label={t.label} />,
+          }))}
+        />
+      )}
 
       <ModuleTabPanel value="training" activeValue={section} className="overflow-y-auto overscroll-contain">
         <TrainingView onToast={onToast} />
@@ -340,6 +362,7 @@ export default function PhonePage() {
           numbers={numbers}
           setNumbers={setNumbers}
           callFlows={callFlows}
+          flowsHidden={isSectionHidden('flows')}
           loading={numbersLoading}
           onToast={onToast}
         />
@@ -347,6 +370,7 @@ export default function PhonePage() {
 
       <ModuleTabPanel value="flows" activeValue={section} className="overflow-hidden">
         <CallFlowsView
+          assignmentsHidden={!ability.can(SECTION_SWITCH.numbers, 'Communication')}
           flows={callFlows}
           setFlows={setCallFlows}
           numbers={numbers}
@@ -411,6 +435,7 @@ export default function PhonePage() {
               label="Needs Attention"
               value={String(needsAttention.length)}
               tone="red"
+              title={mayInsights ? undefined : NEEDS_ATTENTION_WITHOUT_INSIGHTS_HELP}
               active={activeKpi === 'attention'}
               onClick={() => {
                 setActiveKpi('attention');
@@ -436,10 +461,13 @@ export default function PhonePage() {
                       label: <SubTabLabel icon={PhoneCall} label="Dispatch & Calls" count={calls.length} />,
                     }]
                   : []),
-                {
-                  value: 'performance',
-                  label: <SubTabLabel icon={BarChart3} label="Performance & QA" count={phoneAgents.length} />,
-                },
+                // The scorecards are call insights: no sub-tab without See call insights.
+                ...(mayInsights
+                  ? [{
+                      value: 'performance',
+                      label: <SubTabLabel icon={BarChart3} label="Performance & QA" count={phoneAgents.length} />,
+                    }]
+                  : []),
               ]}
             />
             {tab === 'calls' && (
@@ -482,7 +510,7 @@ export default function PhonePage() {
             {tab === 'dispatch' && isDemo && (
               <DispatchView calls={calls} setCalls={setCalls} onToast={onToast} />
             )}
-            {tab === 'performance' && <PerformanceView calls={calls} onToast={onToast} />}
+            {tab === 'performance' && mayInsights && <PerformanceView calls={calls} onToast={onToast} />}
           </div>
         </div>
       )}

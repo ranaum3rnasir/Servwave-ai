@@ -90,7 +90,7 @@ test('the job page Call and Text tiles are explicit, skip the choice and are 44 
     await open(page, `/jobs/${jobId}`);
     // The tiles may sit behind the page's own structure on a phone; the Call tile is a button here.
     const call = page.locator('main').getByRole('button', { name: 'Call', exact: true }).first();
-    const text = page.locator('main').getByRole('link', { name: 'Text', exact: true }).first();
+    const text = page.locator('main').getByRole('button', { name: 'Text', exact: true }).first();
     await call.scrollIntoViewIfNeeded().catch(() => undefined);
     await expect(call).toBeVisible();
     await expect(text).toBeVisible();

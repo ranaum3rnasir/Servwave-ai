@@ -202,7 +202,7 @@ export default function Header() {
           )}
         </div>
 
-        {/* Global dialer — click-to-call from any page (Emanuel's GlobalDialer).
+        {/* Global dialer — click-to-call from any page (the original GlobalDialer).
             Demo orgs only; hidden for real orgs until telephony is live. */}
         {canAccessComm && <GlobalDialer />}
 

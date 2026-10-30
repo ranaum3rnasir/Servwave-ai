@@ -3,7 +3,7 @@
 //
 // LocationBreakdown filtered its rows with `s.onHand > 0`, so an item assigned to a
 // van but sitting at 0 rendered a bare dash - visually identical to "not assigned
-// to any location at all". The Alpha Doors Zoho import surfaced this: 66 item/location
+// to any location at all". The pilot org Zoho import surfaced this: 66 item/location
 // memberships legitimately carry 0 on hand, and every one of them looked unassigned.
 //
 // The filter is gone, so those rows render again and the cases below pin them there: a
@@ -98,7 +98,7 @@ vi.mock('@/lib/api/inventory', async (importOriginal) => {
     ]),
     useLocations: stable([
       { id: h.LOC_WH, name: 'Alpha HQ', type: 'warehouse', branch: 'HQ' },
-      { id: h.LOC_VAN, name: 'Efrain Van', type: 'truck', branch: 'HQ' },
+      { id: h.LOC_VAN, name: 'Kai Van', type: 'truck', branch: 'HQ' },
       { id: h.LOC_VAN2, name: 'Marcus Van', type: 'truck', branch: 'HQ' },
       { id: h.LOC_VAN3, name: 'Priya Van', type: 'truck', branch: 'HQ' },
     ]),
@@ -136,7 +136,7 @@ describe('Items grid - Locations column', () => {
     const cell = await locationsCell('ZERO-1');
 
     // The whole point: the van is a real assignment and must be visible.
-    expect(cell.getByTitle(/Efrain Van: 0 on hand/i)).toBeInTheDocument();
+    expect(cell.getByTitle(/Kai Van: 0 on hand/i)).toBeInTheDocument();
     // The positive location keeps rendering alongside it.
     expect(cell.getByTitle(/Alpha HQ: 4 on hand/i)).toBeInTheDocument();
   });
@@ -163,7 +163,7 @@ describe('Items grid - Locations column', () => {
 
     // The first two assignments still render as their own chips.
     expect(cell.getByTitle(/Alpha HQ: 4 on hand/i)).toBeInTheDocument();
-    expect(cell.getByTitle(/Efrain Van: 0 on hand/i)).toBeInTheDocument();
+    expect(cell.getByTitle(/Kai Van: 0 on hand/i)).toBeInTheDocument();
     // The remaining two do NOT stack: four assignments render three elements,
     // the two chips plus the single collapsed pill.
     const pill = cell.getByText('+2');

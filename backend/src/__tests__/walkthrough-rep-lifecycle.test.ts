@@ -70,6 +70,7 @@ import {
   authHeader,
   mockScopedFindFirst,
   mockRoleGrantsWithout,
+  mockRoleSwitches,
   withLeadStatusSync,
 } from './helpers';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
@@ -523,30 +524,31 @@ describe('the rep unschedules and cancels on their own lead (story 12)', () => {
     expectNothingWritten();
   });
 
-  it('CANCEL SITS BEHIND A DIFFERENT GRANT than schedule — revoking `cancel Lead` splits them', async () => {
-    // Found by reading the routes, pinned here so nobody has to read them again:
-    //   POST /walkthrough/unschedule -> canDo('schedule_walkthrough', 'Lead')
-    //   POST /walkthrough/cancel     -> canDo('cancel', 'Lead')   <-- the LEAD cancel grant
-    // SALES holds both, each conditioned OWN_LEAD, so the lifecycle is whole by default. But an
-    // org that takes "cancel a lead" off a sales role ALSO takes away cancelling a walkthrough,
-    // and the two verbs stop moving together. That coupling is real behaviour, not a typo, and
-    // this test is what makes changing it a decision.
+  // POST /walkthrough/unschedule and POST /walkthrough/cancel both check `schedule_walkthrough Lead`,
+  // which the Book walkthroughs switch compiles into. The lead cancel grant used to sit behind the
+  // cancel door; it left the catalog with the lead cancel endpoint (S01.7).
+  it('CANCEL NO LONGER NEEDS the retired lead-cancel grant: taking it off a stored role changes nothing', async () => {
     mockRoleGrantsWithout('SALES', ['cancel', 'Lead']);
 
     const cx = await cancelWalkthrough('Customer went with another vendor');
-    expect(cx.status).toBe(403);
-    expect(cx.body.error).toBe(ROW_REFUSAL);
-    expect(txVisitUpdateMany).not.toHaveBeenCalled();
-
-    const un = await unschedule();
-    expect(un.status).toBe(200);
+    expect(cx.status).toBe(200);
     expect(txVisitUpdateMany).toHaveBeenCalled();
+  });
+
+  it('CANCEL SITS BEHIND THE SAME SWITCH as schedule: with Book walkthroughs off, both are refused', async () => {
+    mockRoleSwitches({ book_walkthroughs: false });
+
+    const cx = await cancelWalkthrough('Customer went with another vendor');
+    expect(cx.status).toBe(403);
+    const un = await unschedule();
+    expect(un.status).toBe(403);
+    expect(txVisitUpdateMany).not.toHaveBeenCalled();
   });
 });
 
 // ─── 4. Authority survives the lead closing ─────────────────────────────────────────────────
 
-describe.each(['WON', 'LOST', 'CANCELLED'])(
+describe.each(['WON', 'LOST'])(
   'the rep keeps booking on a %s lead (story 8 — Ran: authority survives the lead closing)',
   (closedStatus) => {
     beforeEach(() => {

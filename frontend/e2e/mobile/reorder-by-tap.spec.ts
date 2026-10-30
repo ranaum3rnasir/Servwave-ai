@@ -234,13 +234,26 @@ test('home: widgets reorder by tap in edit mode, the catalog is a sheet below md
   const tap = (loc: Locator) => press(device.touch, loc, { timeout: 15_000 });
   const hides = () => page.locator('button[aria-label^="Hide "]');
   const titles = async () => (await hides().evaluateAll((els) => els.map((e) => e.getAttribute('aria-label') ?? ''))).map((l) => l.replace(/^Hide /, ''));
-  /** The visible widget ids, in order, as the page saved them. */
-  const saved = () =>
-    page.evaluate(() => {
-      const key = Object.keys(localStorage).find((k) => k.startsWith('alpha:dashboard-layout:v1:'));
-      if (!key) return null;
-      return (JSON.parse(localStorage.getItem(key) ?? '[]') as Array<{ id: string; visible: boolean }>).filter((i) => i.visible).map((i) => i.id);
-    });
+  /**
+   * The visible widget ids, in order, as the SERVER holds them: the layout is saved on the server, so this is the last
+   * layout the page sent (a save) or was sent (a read, after a reload).
+   */
+  let serverLayout: Array<{ id: string; visible: boolean }> | null = null;
+  let saves = 0;
+  page.on('response', async (res) => {
+    if (!res.url().endsWith('/api/dashboard/layout')) return;
+    try {
+      if (res.request().method() === 'PUT') {
+        saves += 1;
+        serverLayout = (JSON.parse(res.request().postData() ?? '{}') as { layout: typeof serverLayout }).layout;
+      } else {
+        serverLayout = ((await res.json()) as { layout: typeof serverLayout }).layout;
+      }
+    } catch {
+      /* a response that is not the layout answer is not a layout */
+    }
+  });
+  const saved = async () => (saves === 0 && serverLayout === null ? null : (serverLayout ?? []).filter((i) => i.visible).map((i) => i.id));
   async function openEdit() {
     await page.goto('/', { waitUntil: 'domcontentloaded', timeout: 45_000 });
     await settle(page, notes);
@@ -293,10 +306,10 @@ test('home: widgets reorder by tap in edit mode, the catalog is a sheet below md
     if (device.touch) {
       // ---- tap Move down: the first two widgets swap and the layout is saved ----
       // (Nothing is saved until the first change, so the saved layout is read after it.)
-      expect(await saved(), 'nothing saved before the first change').toBeNull();
+      expect(saves, 'nothing saved before the first change').toBe(0);
       await tap(moveDown(page).first());
       await expect.poll(async () => (await titles()).slice(0, 2), { timeout: 10_000 }).toEqual([start[1], start[0]]);
-      await expect.poll(async () => await saved(), { timeout: 10_000 }).not.toBeNull();
+      await expect.poll(() => saves, { timeout: 10_000 }).toBeGreaterThan(0);
       moved = (await saved())!;
 
       // ---- it persists across a reload ----
@@ -332,7 +345,9 @@ test('home: widgets reorder by tap in edit mode, the catalog is a sheet below md
     await tap(add);
     if (phone) await tap(sheet.getByRole('button', { name: 'Close' }));
     await expect.poll(async () => (await titles()).length, { timeout: 15_000 }).toBe(countWith);
-    expect((await saved())!.length, 'the re-added widget is in the saved layout').toBeGreaterThanOrEqual(countWith);
+    // The layout is saved a moment after the page shows the widget (a debounced write), and on a wide screen there is
+    // no sheet to close in between, so the saved copy is read until it holds the widget, not once.
+    await expect.poll(async () => (await saved())?.length ?? 0, { timeout: 10_000, message: 'the re-added widget is in the saved layout' }).toBeGreaterThanOrEqual(countWith);
     void moved;
 
     // ---- drag still works with a mouse ----

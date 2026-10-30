@@ -266,7 +266,7 @@ function buildMovementColumns({
   return columns;
 }
 
-export function ActionLogView() {
+export function ActionLogView({ canExport = false }: { canExport?: boolean }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const logisticOrderId = searchParams.get('lo') ?? undefined;
 
@@ -377,15 +377,18 @@ export function ActionLogView() {
       <PageHeader
         title="Activity"
         actions={
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void handleExport()}
-            disabled={exporting || rows.length === 0}
-          >
-            <Download />
-            Export CSV
-          </Button>
+          // S07.15 - the client-built download follows Export stock, not See inventory activity.
+          canExport ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void handleExport()}
+              disabled={exporting || rows.length === 0}
+            >
+              <Download />
+              Export CSV
+            </Button>
+          ) : undefined
         }
       />
 

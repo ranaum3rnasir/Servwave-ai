@@ -15,6 +15,7 @@ import { describe, it, expect, vi, beforeAll, afterAll, beforeEach } from 'vites
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
+import { buildAbility } from '@/lib/ability';
 import { renderWithProviders } from '@/__tests__/helpers';
 import LeadsPage from '../LeadsPage';
 
@@ -90,6 +91,9 @@ const LEAD_ROW = {
   estimates: [],
 };
 
+// The Export control follows the Export leads switch (S02.30), so every case here holds it.
+const exportLeads = buildAbility([{ action: 'export', subject: 'Lead' }]);
+
 const mockApi = vi.mocked(api);
 
 beforeEach(() => {
@@ -107,7 +111,7 @@ beforeEach(() => {
         data: {
           leads: [LEAD_ROW],
           pagination: { page: 1, limit: 25, total: 1, totalPages: 1 },
-          stats: { total: 1, new_this_week: 0, unassigned: 0, won: 0, lost: 0 },
+          stats: { total: 1, new_this_week: 0, no_owner: 0, won: 0, lost: 0 },
         },
       };
     }
@@ -119,7 +123,7 @@ beforeEach(() => {
 describe('LeadsPage CSV export - created_at (#1634 deliberate holdout)', () => {
   it('renders Created on the browser clock, not the org clock', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<LeadsPage />);
+    renderWithProviders(<LeadsPage />, { ability: exportLeads });
 
     await screen.findByText('AC not cooling');
 
@@ -152,14 +156,14 @@ describe('LeadsPage CSV export - Status column (walkthrough lead statuses)', () 
           data: {
             leads: [{ ...LEAD_ROW, status }],
             pagination: { page: 1, limit: 25, total: 1, totalPages: 1 },
-            stats: { total: 1, new_this_week: 0, unassigned: 0, won: 0, lost: 0 },
+            stats: { total: 1, new_this_week: 0, no_owner: 0, won: 0, lost: 0 },
           },
         };
       }
       if (url.includes('/api/users')) return { data: { users: [] } };
       return { data: {} };
     });
-    renderWithProviders(<LeadsPage />);
+    renderWithProviders(<LeadsPage />, { ability: exportLeads });
     await screen.findByText('AC not cooling');
 
     await user.click(screen.getByRole('button', { name: /^export$/i }));

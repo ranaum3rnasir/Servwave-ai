@@ -3,6 +3,7 @@ import { authenticate } from '../middleware/authenticate';
 import { attachAbility } from '../middleware/attachAbility';
 import { requireFeature } from '../middleware/requireFeature';
 import { canDo } from '../middleware/canGuard';
+import { requireUuidParam } from '../middleware/requireUuidParam';
 import { validate } from '../middleware/validate';
 import * as commNumbersController from '../controllers/comm-numbers.controller';
 import * as commMyNumberController from '../controllers/comm-my-number.controller';
@@ -10,6 +11,9 @@ import * as commMyNumberController from '../controllers/comm-my-number.controlle
 const router = Router();
 
 router.use(authenticate, requireFeature('phone'), attachAbility);
+
+// A malformed :id (non-uuid) answers the same 404 as a missing number, before Prisma runs (P2023 screen).
+const numberId = requireUuidParam('id', 'Number not found');
 
 // "My outbound number" (master plan Task B1): the /phone tab's caller-ID
 // resolver for the current user. Gated on canDo('create','Communication') —
@@ -46,8 +50,10 @@ router.post('/numbers/register-byo', canDo('update', 'Organization'), validate(c
 router.post('/numbers/refresh', canDo('update', 'Organization'), commNumbersController.refreshNumbers);
 // Release - ends a paid subscription and is irreversible at the provider, so
 // it carries the ADMIN idiom rather than a plain Communication grant.
-router.delete('/numbers/:id', canDo('update', 'Organization'), commNumbersController.releaseNumberById);
+router.delete('/numbers/:id', canDo('update', 'Organization'), numberId, commNumbersController.releaseNumberById);
 // Flow + forwarding destination.
-router.patch('/numbers/:id', canDo('update', 'Communication'), canDo('access_inbox', 'Communication'), validate(commNumbersController.updateNumberSchema), commNumbersController.updateNumber);
+// Needs the Phone numbers tab as well as Edit communication records (S08.15); the list below answers without the tab,
+// leaving the routing and call-flow fields out.
+router.patch('/numbers/:id', canDo('update', 'Communication'), canDo('access_inbox', 'Communication'), canDo('phone_numbers_tab', 'Communication'), numberId, validate(commNumbersController.updateNumberSchema), commNumbersController.updateNumber);
 
 export default router;

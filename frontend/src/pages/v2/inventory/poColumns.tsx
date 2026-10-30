@@ -74,14 +74,28 @@ function JobCell({ po }: { po: PurchaseOrder }) {
   );
 }
 
+const TOTAL_COLUMN: ColumnDef<PurchaseOrder, unknown> = {
+  id: 'total',
+  // There is no `total` field; it is the summed line cost the cell prints.
+  accessorFn: (po) => poTotal(po),
+  header: ({ column }) => <ClientSortHeader column={column} align="right" title="Total" />,
+  size: 120,
+  meta: { label: 'Total', fixed: true },
+  cell: ({ row }) => (
+    <span className="block text-right tabular-nums">{formatCurrency(poTotal(row.original))}</span>
+  ),
+};
+
 export function buildOpenPOColumns({
-  isLate, isArrivingThisWeek, onPreview, onReceive, selectable = false,
+  isLate, isArrivingThisWeek, onPreview, onReceive, selectable = false, showTotal,
 }: {
   isLate: (po: PurchaseOrder) => boolean;
   isArrivingThisWeek: (po: PurchaseOrder) => boolean;
   onPreview: (po: PurchaseOrder) => void;
   onReceive: (po: PurchaseOrder) => void;
   selectable?: boolean;
+  /** The Total column exists only for a person who may see costs (See financial data): no column, never a $0. */
+  showTotal: boolean;
 }): ColumnDef<PurchaseOrder, unknown>[] {
   const columns: ColumnDef<PurchaseOrder, unknown>[] = [
     {
@@ -163,17 +177,7 @@ export function buildOpenPOColumns({
       meta: { label: 'Lines', fixed: true },
       cell: ({ row }) => <span className="text-muted-foreground">{row.original.lines.length}</span>,
     },
-    {
-      id: 'total',
-      // There is no `total` field; it is the summed line cost the cell prints.
-      accessorFn: (po) => poTotal(po),
-      header: ({ column }) => <ClientSortHeader column={column} align="right" title="Total" />,
-      size: 120,
-      meta: { label: 'Total', fixed: true },
-      cell: ({ row }) => (
-        <span className="block text-right tabular-nums">{formatCurrency(poTotal(row.original))}</span>
-      ),
-    },
+    ...(showTotal ? [TOTAL_COLUMN] : []),
     {
       id: 'received',
       // By the fraction the progress bar draws, so a half-received PO sorts
@@ -255,10 +259,12 @@ function poSelectColumn() {
 }
 
 export function buildHistoryPOColumns({
-  onPreview, selectable = false,
+  onPreview, selectable = false, showTotal,
 }: {
   onPreview: (po: PurchaseOrder) => void;
   selectable?: boolean;
+  /** See buildOpenPOColumns. */
+  showTotal: boolean;
 }): ColumnDef<PurchaseOrder, unknown>[] {
   const columns: ColumnDef<PurchaseOrder, unknown>[] = [
     {
@@ -343,17 +349,7 @@ export function buildHistoryPOColumns({
         </span>
       ),
     },
-    {
-      id: 'total',
-      // There is no `total` field; it is the summed line cost the cell prints.
-      accessorFn: (po) => poTotal(po),
-      header: ({ column }) => <ClientSortHeader column={column} align="right" title="Total" />,
-      size: 120,
-      meta: { label: 'Total', fixed: true },
-      cell: ({ row }) => (
-        <span className="block text-right tabular-nums">{formatCurrency(poTotal(row.original))}</span>
-      ),
-    },
+    ...(showTotal ? [TOTAL_COLUMN] : []),
   ];
 
   return selectable ? [poSelectColumn(), ...columns] : columns;

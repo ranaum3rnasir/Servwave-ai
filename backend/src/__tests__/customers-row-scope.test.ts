@@ -13,7 +13,6 @@ import app from '../app';
 import { prisma } from '../lib/prisma';
 import { TEST_USERS, mockAuthAs, authHeader, mockRoleGrantsWithout, CUSTOMER_FIXTURE } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 import { logger } from '../lib/logger';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -24,7 +23,6 @@ const SALES_ID = TEST_USERS.sales.id;
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache();
   mockPrisma.customer.findMany.mockResolvedValue([]);
   mockPrisma.customer.count.mockResolvedValue(0);
 });

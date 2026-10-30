@@ -13,7 +13,6 @@ export const LEAD_STATUS_MEANING: Record<string, string> = {
   ESTIMATED: "We've sent this lead an estimate.",
   WON: 'The customer approved doing the job.',
   LOST: "This lead didn't turn into a job.",
-  CANCELLED: 'This lead was cancelled.',
 };
 
 /** The shape the server returns for each status on `GET /api/leads/:id` (`status_options`). */

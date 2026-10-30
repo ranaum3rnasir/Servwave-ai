@@ -6,7 +6,10 @@ import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { EmptyState } from '@/components/ui/empty-state';
-import { useAssignableUsers, type AssignableUser, type AssigneePurpose } from '@/lib/api/users';
+import { RosterError } from './RosterStatus';
+import { Skeleton } from '@/components/ui/skeleton';
+import { useAssignableUsers, type AssignableUser, type AssigneePurpose, type PickerSlot } from '@/lib/api/users';
+
 import { cn, extractApiError, getInitials } from '@/lib/utils';
 import { canAutoFocus } from '@/ui-kit/lib/autoFocus';
 import { PickerFullscreen, pickerListClass, usePickerFullscreen } from '@/ui-kit/components/ui/pickerFullscreen';
@@ -16,7 +19,11 @@ function titleCase(str?: string | null): string {
   return str.charAt(0).toUpperCase() + str.slice(1).toLowerCase();
 }
 
-function subtitleOf(user: AssignableUser): string {
+/** A row in the list: a rostered person, or a current holder known only by name. */
+type PopoverPerson = Pick<AssignableUser, 'id' | 'first_name' | 'last_name'> &
+  Partial<Pick<AssignableUser, 'role' | 'department' | 'avatar_url'>>;
+
+function subtitleOf(user: PopoverPerson): string {
   return [user.department?.name, titleCase(user.role)].filter(Boolean).join(' ');
 }
 
@@ -29,7 +36,7 @@ interface AssignTeamPopoverProps {
   mode: 'single' | 'multi';
   /** Selection seeded each time the popover opens. */
   initialSelected: string[];
-  /** Which notify toggles to offer (all default-checked). SMS is always shown disabled. */
+  /** Which notify toggles to offer (all default-checked). SMS is always shown disabled. None at all hides the section. */
   channels: NotifyChannel[];
   onAssign: (ids: string[], notify: { in_app: boolean; email?: boolean }) => Promise<void>;
   /**
@@ -42,6 +49,14 @@ interface AssignTeamPopoverProps {
    * narrows, and the API goes on accepting people the picker stopped offering.
    */
   purpose: AssigneePurpose;
+  /** The slot this popover fills: the roster lists only active people whose switch allows it. */
+  eligibleFor: PickerSlot;
+  /**
+   * Names for the people already in `initialSelected`. The roster lists who may be chosen now; a person
+   * who holds the slot but is no longer listed (deactivated, or their switch turned off) is still shown
+   * here, selected, so the field never looks empty when it isn't. Adds nobody else to the list.
+   */
+  knownPeople?: readonly Pick<AssignableUser, 'id' | 'first_name' | 'last_name'>[];
   /** The anchor button — the panel drops down anchored to it (no overlay). */
   trigger: ReactNode;
   disabled?: boolean;
@@ -57,10 +72,10 @@ const CHANNEL_LABELS: Record<NotifyChannel, string> = {
 
 /**
  * Workiz-style anchored team-member dropdown (#361): search + avatar rows +
- * notify-channel toggles. Deliberately NO eligibleFor param and NO client-side
- * role filtering — the server pool (GET /api/users/assignable, widened to all
- * active users by #366) is the single source of truth; server eligibility
- * (validateCrew / isOwnerEligible) stays the enforcement point.
+ * notify-channel toggles. The caller names the slot it fills (`eligibleFor`) and there is NO
+ * client-side role filtering: the server roster (GET /api/users/assignable) lists the active
+ * people whose switch allows the slot, and is the single source of truth.
+ * The current holders are kept in the list even when the roster no longer has them.
  */
 export function AssignTeamPopover({
   mode,
@@ -68,6 +83,8 @@ export function AssignTeamPopover({
   channels,
   onAssign,
   purpose,
+  eligibleFor,
+  knownPeople,
   trigger,
   disabled,
   open: controlledOpen,
@@ -81,7 +98,20 @@ export function AssignTeamPopover({
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const { data: users = [] } = useAssignableUsers({ purpose, enabled: open });
+  const rosterQuery = useAssignableUsers({ purpose, eligibleFor, enabled: open });
+  const roster = useMemo(() => rosterQuery.data ?? [], [rosterQuery.data]);
+  // A roster that has not arrived is not an empty one: it loads, or it failed and can be asked again.
+  const rosterLoading = rosterQuery.isLoading;
+  const rosterFailed = rosterQuery.isError && !rosterQuery.data;
+
+  // The roster, plus whoever already holds the slot and is not on it any more.
+  const holderKey = initialSelected.join(',');
+  const users = useMemo<PopoverPerson[]>(() => {
+    const listed = new Set(roster.map((u) => u.id));
+    const held = new Set(holderKey ? holderKey.split(',') : []);
+    const gone = (knownPeople ?? []).filter((p) => held.has(p.id) && !listed.has(p.id));
+    return [...gone, ...roster];
+  }, [roster, knownPeople, holderKey]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -147,61 +177,70 @@ export function AssignTeamPopover({
   const peopleList = (
     <>
       <div className={pickerListClass(fullscreen, 'max-h-64 overflow-y-auto overscroll-contain -mx-1 px-1')} role="listbox" aria-multiselectable={mode === 'multi'}>
-        {filtered.length === 0 ? (
+        {filtered.map((u) => {
+          const fullName = [u.first_name, u.last_name].filter(Boolean).join(' ');
+          const isSelected = selected.includes(u.id);
+          return (
+            // Listbox option row (role="option"), not Button-shaped - left raw.
+            <button
+              key={u.id}
+              type="button"
+              role="option"
+              aria-selected={isSelected}
+              onClick={() => toggle(u.id)}
+              className={cn(
+                'flex w-full items-center gap-3 rounded-md px-2 py-2 text-left hover:bg-primary-subtle/60',
+                isSelected && 'bg-primary-subtle/40',
+              )}
+            >
+              {mode === 'multi' && (
+                <Checkbox
+                  checked={isSelected}
+                  tabIndex={-1}
+                  aria-hidden="true"
+                  className="pointer-events-none shrink-0"
+                />
+              )}
+              <Avatar className="h-8 w-8 shrink-0">
+                {u.avatar_url && (
+                  <AvatarImage src={u.avatar_url} alt={fullName} loading="lazy" decoding="async" className="object-cover" />
+                )}
+                <AvatarFallback tone="solid" className="text-[10px] font-semibold">
+                  {getInitials(fullName)}
+                </AvatarFallback>
+              </Avatar>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-sm font-medium text-text-primary">{fullName}</span>
+                {subtitleOf(u) && (
+                  <span className="block truncate text-xs text-text-secondary">{subtitleOf(u)}</span>
+                )}
+              </span>
+              {mode === 'single' && isSelected && (
+                <Check className="h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
+              )}
+            </button>
+          );
+        })}
+        {/* The people not listed yet are on their way, or could not be had: never "No team members found". */}
+        {rosterLoading ? (
+          <div role="status" aria-label="Loading team members" className="space-y-2 py-1">
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+            <Skeleton className="h-10 w-full" />
+          </div>
+        ) : rosterFailed ? (
+          <RosterError onRetry={() => void rosterQuery.refetch()} className="justify-center py-3" />
+        ) : filtered.length === 0 ? (
           <EmptyState density="compact" title="No team members found" />
-        ) : (
-          filtered.map((u) => {
-            const fullName = [u.first_name, u.last_name].filter(Boolean).join(' ');
-            const isSelected = selected.includes(u.id);
-            return (
-              // Listbox option row (role="option"), not Button-shaped - left raw.
-              <button
-                key={u.id}
-                type="button"
-                role="option"
-                aria-selected={isSelected}
-                onClick={() => toggle(u.id)}
-                className={cn(
-                  'flex w-full items-center gap-3 rounded-md px-2 py-2 text-left hover:bg-primary-subtle/60',
-                  isSelected && 'bg-primary-subtle/40',
-                )}
-              >
-                {mode === 'multi' && (
-                  <Checkbox
-                    checked={isSelected}
-                    tabIndex={-1}
-                    aria-hidden="true"
-                    className="pointer-events-none shrink-0"
-                  />
-                )}
-                <Avatar className="h-8 w-8 shrink-0">
-                  {u.avatar_url && (
-                    <AvatarImage src={u.avatar_url} alt={fullName} loading="lazy" decoding="async" className="object-cover" />
-                  )}
-                  <AvatarFallback tone="solid" className="text-[10px] font-semibold">
-                    {getInitials(fullName)}
-                  </AvatarFallback>
-                </Avatar>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-sm font-medium text-text-primary">{fullName}</span>
-                  {subtitleOf(u) && (
-                    <span className="block truncate text-xs text-text-secondary">{subtitleOf(u)}</span>
-                  )}
-                </span>
-                {mode === 'single' && isSelected && (
-                  <Check className="h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
-                )}
-              </button>
-            );
-          })
-        )}
+        ) : null}
       </div>
 
     </>
   );
   const notifyAndAssign = (
     <>
-      {/* Notify channels */}
+      {/* Notify channels: a slot nobody is told about offers none (and no SMS row either). */}
+      {channels.length > 0 && (
       <div className="border-t border-border pt-3">
         <p className="text-[10px] font-semibold uppercase tracking-widest text-text-secondary mb-2">Notify</p>
         {/* Not converted to FormField: each label WRAPS a Checkbox + its own text (and the
@@ -226,6 +265,7 @@ export function AssignTeamPopover({
           </label>
         </div>
       </div>
+      )}
 
       {error && <p className="text-sm text-danger">{error}</p>}
 

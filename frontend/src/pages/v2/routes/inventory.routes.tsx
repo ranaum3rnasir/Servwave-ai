@@ -3,6 +3,7 @@ import { Navigate, Route } from 'react-router-dom';
 
 import ProtectedRoute from '@/components/ProtectedRoute';
 import RequireFeature from '@/components/RequireFeature';
+import RequirePageAccess from '@/components/RequirePageAccess';
 
 import V2AppLayout from '../V2AppLayout';
 import { v2Path } from '../uiV2';
@@ -11,6 +12,8 @@ const InventoryPage = lazy(() => import('../inventory/InventoryPage'));
 const InventoryPriceBookPage = lazy(() => import('../inventory/PriceBookPage'));
 const PurchaseOrdersPage = lazy(() => import('../inventory/PurchaseOrdersPage'));
 const VendorsPage = lazy(() => import('../inventory/VendorsPage'));
+const PurchaseOrderRecordPage = lazy(() => import('../inventory/PurchaseOrderRecordPage'));
+const LogisticOrderRecordPage = lazy(() => import('../inventory/LogisticOrderRecordPage'));
 
 /**
  * Module 10 - Inventory.
@@ -52,19 +55,37 @@ export function inventoryV2Routes() {
     <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN']} />}>
       <Route element={<V2AppLayout />}>
         <Route element={<RequireFeature feature="inventory" />}>
-          <Route path="/inventory" element={<InventoryPage />} />
-          <Route path="/inventory/staging" element={<InventoryPage />} />
-          <Route path="/inventory/assets" element={<InventoryPage />} />
-          <Route path="/inventory/low-stock" element={<InventoryPage />} />
-          <Route path="/inventory/activity" element={<InventoryPage />} />
-          <Route path="/inventory/logistic-orders" element={<InventoryPage />} />
+          {/* The Stock page and its tabs follow View stock and Show Stock page; the Logistic Orders tab, Price Book,
+              Purchase Orders and Vendors each follow their own pair. A person refused goes to their dashboard. */}
+          <Route element={<RequirePageAccess all={['view_stock', 'show_stock_page']} />}>
+            <Route path="/inventory" element={<InventoryPage />} />
+            <Route path="/inventory/staging" element={<InventoryPage />} />
+            <Route path="/inventory/assets" element={<InventoryPage />} />
+            <Route path="/inventory/low-stock" element={<InventoryPage />} />
+            <Route path="/inventory/activity" element={<InventoryPage />} />
+          </Route>
+          <Route element={<RequirePageAccess all={['view_logistic_orders', 'show_logistic_orders_page']} />}>
+            <Route path="/inventory/logistic-orders" element={<InventoryPage />} />
+          </Route>
+          {/* One logistic order, opened from its alert or a job: a record route, so it sits outside the list guard above
+              (Show Logistic Orders page hides the list and the menu entry, not the order). The page asks the server. */}
+          <Route path="/inventory/logistic-orders/:orderId" element={<LogisticOrderRecordPage />} />
           <Route
             path="/inventory/approvals"
             element={<Navigate to={v2Path('/inventory')} replace />}
           />
-          <Route path="/inventory/price-book" element={<InventoryPriceBookPage />} />
-          <Route path="/inventory/purchase-orders" element={<PurchaseOrdersPage />} />
-          <Route path="/inventory/vendors" element={<VendorsPage />} />
+          <Route element={<RequirePageAccess all={['view_price_book', 'show_price_book_page']} />}>
+            <Route path="/inventory/price-book" element={<InventoryPriceBookPage />} />
+          </Route>
+          <Route element={<RequirePageAccess all={['view_purchase_orders', 'show_purchase_orders_page']} />}>
+            <Route path="/inventory/purchase-orders" element={<PurchaseOrdersPage />} />
+          </Route>
+          {/* One purchase order, opened from a job: a record route, so it sits outside the list guard above (Show
+              Purchase Orders page hides the list and the menu entry, not the order). The page asks the server. */}
+          <Route path="/inventory/purchase-orders/:poId" element={<PurchaseOrderRecordPage />} />
+          <Route element={<RequirePageAccess all={['view_vendors', 'show_vendors_page']} />}>
+            <Route path="/inventory/vendors" element={<VendorsPage />} />
+          </Route>
         </Route>
       </Route>
     </Route>

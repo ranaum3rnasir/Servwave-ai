@@ -6,18 +6,23 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
-import { Checkbox } from '@/components/ui/checkbox';
 import { SelectField } from '@/components/form/SelectField';
 import { formatCurrency, extractApiError } from '@/lib/utils';
 import { refundInvoice } from '@/lib/api/invoices';
 import type { RefundCategory, PaymentMethod, Refund } from '@/types/entities';
 import { PAYMENT_METHOD_LABELS, PAYMENT_METHOD_ORDER } from '@/lib/payment-methods';
+import { describePayment, refundReasonLabel, refundStateLabel } from '@/lib/payment-display';
+import { AlertTriangle } from 'lucide-react';
+import {
+  BANK_DUAL_CREDIT_WARNING, BANK_REFUND_WINDOW_MESSAGE, refundDoorState, refundDrawnPayments,
+} from '@/lib/refund-rules';
 
 interface RefundPaymentOption {
   id: string;
   amount: number | string;
   method: string;
   paid_at: string;
+  paid_through_processor?: boolean;
 }
 
 interface RefundInvoiceDialogProps {
@@ -61,7 +66,6 @@ export function RefundInvoiceDialog({
   const [amount, setAmount] = useState('');
   const [method, setMethod] = useState<PaymentMethod | ''>('');
   const [paymentId, setPaymentId] = useState('');
-  const [nonTaxableConcession, setNonTaxableConcession] = useState(false);
   const [reasonCategory, setReasonCategory] = useState<RefundCategory | ''>('');
   const [reason, setReason] = useState('');
 
@@ -69,11 +73,25 @@ export function RefundInvoiceDialog({
   const amountInvalid =
     parsedAmount !== undefined && (Number.isNaN(parsedAmount) || parsedAmount <= 0 || parsedAmount > netPaid);
 
+  // Payments go-live slice 29 (D17): the payment the refund comes from, as the server picks it, and
+  // the bank rules that follow from it. A bank refund warns about a second credit through a bank
+  // dispute; past 180 days a bank payment cannot be refunded through ServWave, so only a refund
+  // handed back another way (a hand method picked) can be recorded (conductor ruling 2026-10-08).
+  const drawn = refundDrawnPayments({
+    payments,
+    refunds: refunds ?? [],
+    amount: parsedAmount !== undefined && !Number.isNaN(parsedAmount) ? parsedAmount : netPaid,
+    selectedPaymentId: paymentId || undefined,
+  });
+  // Slice 28b: a hand method is only for a refund recorded by hand. One that goes back through the
+  // processor records the payment's own method, so the picker is not offered (and a choice made
+  // before the source changed is never sent).
+  const { showMethodPicker, method: sentMethod, bankRefund, pastBankWindow } = refundDoorState(drawn, method);
+
   const reset = () => {
     setAmount('');
     setMethod('');
     setPaymentId('');
-    setNonTaxableConcession(false);
     setReasonCategory('');
     setReason('');
   };
@@ -83,8 +101,7 @@ export function RefundInvoiceDialog({
       return refundInvoice(invoiceId, {
         amount: parsedAmount,
         payment_id: paymentId || undefined,
-        method: method || undefined,
-        non_taxable_concession: nonTaxableConcession || undefined,
+        method: (sentMethod || undefined) as PaymentMethod | undefined,
         reason_category: reasonCategory as RefundCategory,
         reason,
       });
@@ -105,7 +122,6 @@ export function RefundInvoiceDialog({
       open={open}
       onClose={() => onOpenChange(false)}
       title="Refund Invoice"
-      subtitle="Issue a partial or full refund. Leave the amount blank to refund the full net-paid balance."
       width="sm"
       data-testid="refund-invoice-dialog"
       footer={
@@ -117,7 +133,7 @@ export function RefundInvoiceDialog({
             variant="solid" tone="danger"
             data-testid="refund-invoice-submit"
             onClick={() => mutation.mutate()}
-            disabled={!reasonCategory || !reason.trim() || amountInvalid || mutation.isPending}
+            disabled={!reasonCategory || !reason.trim() || amountInvalid || pastBankWindow || mutation.isPending}
           >
             {mutation.isPending ? 'Processing...' : 'Issue Refund'}
           </Button>
@@ -141,17 +157,24 @@ export function RefundInvoiceDialog({
               key: 'amount',
               label: 'Amount',
               numeric: true,
-              render: (r) => (
-                <span className="text-danger-text">{MINUS}{formatCurrency(Number(r.amount))}</span>
-              ),
+              render: (r) => {
+                // Slice 28: a refund still on its way, or one that gave nothing back, says so.
+                const state = refundStateLabel(r.state);
+                return (
+                  <>
+                    <span className={state ? 'text-text-secondary' : 'text-danger-text'}>{MINUS}{formatCurrency(Number(r.amount))}</span>
+                    {state && <span className="ml-1 text-[10px] font-medium uppercase tracking-wide text-text-secondary">{state}</span>}
+                  </>
+                );
+              },
             },
-            { key: 'method', label: 'Method', render: (r) => (r.method || EMPTY).replace('_', ' ') },
+            { key: 'method', label: 'Method', render: (r) => (r.method ? describePayment({ method: r.method }) : EMPTY) },
             {
               key: 'reason',
               label: 'Reason',
               render: (r) => (
                 <>
-                  {r.reason_category || EMPTY}
+                  {refundReasonLabel(r.reason_category) || EMPTY}
                   {r.non_taxable_concession && <span className="text-text-secondary"> · non-tax</span>}
                 </>
               ),
@@ -164,9 +187,25 @@ export function RefundInvoiceDialog({
             Net paid: <span className="font-semibold text-text-primary">{formatCurrency(netPaid)}</span>
           </p>
           <p className="text-xs text-text-secondary">
-            Card refunds are processed automatically via Stripe; manual methods record the give-back.
+            Card refunds go back to the card. Bank refunds take a few days to arrive.
           </p>
         </div>
+
+        {pastBankWindow ? (
+          <p className="text-sm text-danger" data-testid="refund-bank-window">
+            {BANK_REFUND_WINDOW_MESSAGE}
+          </p>
+        ) : (
+          bankRefund && (
+            <div
+              className="flex gap-2 rounded-lg border border-warning-border bg-warning-surface p-3 text-sm text-warning-text"
+              data-testid="refund-bank-warning"
+            >
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+              <span>{BANK_DUAL_CREDIT_WARNING}</span>
+            </div>
+          )
+        )}
 
         <div>
           <Label>Amount</Label>
@@ -185,19 +224,21 @@ export function RefundInvoiceDialog({
           )}
         </div>
 
-        <div>
-          <Label>Refund method</Label>
-          <SelectField
-            aria-label="Refund method"
-            value={method || 'NONE'}
-            onValueChange={(v) => setMethod(v === 'NONE' ? '' : (v as PaymentMethod))}
-            className="w-full h-9"
-            options={[
-              { value: 'NONE', label: 'Auto (match original payment)' },
-              ...PAYMENT_METHODS.map((m) => ({ value: m.value, label: m.label })),
-            ]}
-          />
-        </div>
+        {showMethodPicker && (
+          <div>
+            <Label>Refund method</Label>
+            <SelectField
+              aria-label="Refund method"
+              value={method || 'NONE'}
+              onValueChange={(v) => setMethod(v === 'NONE' ? '' : (v as PaymentMethod))}
+              className="w-full h-9"
+              options={[
+                { value: 'NONE', label: 'Auto (match original payment)' },
+                ...PAYMENT_METHODS.map((m) => ({ value: m.value, label: m.label })),
+              ]}
+            />
+          </div>
+        )}
 
         {payments.length > 0 && (
           <div>
@@ -211,23 +252,12 @@ export function RefundInvoiceDialog({
                 { value: 'NONE', label: 'Auto / oldest' },
                 ...payments.map((p) => ({
                   value: p.id,
-                  label: `${formatCurrency(Number(p.amount))} · ${p.method.replace('_', ' ')} · ${new Date(p.paid_at).toLocaleDateString('en-US')}`,
+                  label: `${formatCurrency(Number(p.amount))} · ${describePayment({ method: p.method })} · ${new Date(p.paid_at).toLocaleDateString('en-US')}`,
                 })),
               ]}
             />
           </div>
         )}
-
-        <div className="flex items-center gap-2">
-          <Checkbox
-            id="refund-non-taxable"
-            checked={nonTaxableConcession}
-            onCheckedChange={(checked) => setNonTaxableConcession(Boolean(checked))}
-          />
-          <Label htmlFor="refund-non-taxable" className="cursor-pointer">
-            Non-taxable concession (do not reverse tax)
-          </Label>
-        </div>
 
         <div>
           <Label>Reason category *</Label>

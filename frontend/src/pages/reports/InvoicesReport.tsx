@@ -4,7 +4,7 @@
 // Export the filtered set to hand a rep/tech their follow-up list.
 //  • demo org → deterministic MOCK data.
 //  • real org → GET /api/reports/invoices (live, org-scoped). Salesperson is the
-//    estimate→lead→commission_owner (the seller); technician is the first job
+//    job's Sold By (a service plan's invoice shows the plan's Sold by); technician is the first job
 //    assignee. See invoices-data.ts.
 // ───────────────────────────────────────────────────────────────────────────
 import { useEffect, useMemo, useState } from 'react';
@@ -398,8 +398,8 @@ export default function InvoicesReport() {
       <p className="text-xs text-text-secondary">
         {isDemo && 'Sample data shown so the layout is reviewable without a backend. '}
         Filter by salesperson or technician (plus status/date/job type), then Export CSV to hand them
-        their follow-up list. Technician maps to the job assignee; salesperson maps to the estimate's
-        seller (lead commission owner).
+        their follow-up list. Technician maps to the job assignee; salesperson maps to the job's Sold By
+        (a service plan's invoice shows the plan's Sold by).
       </p>
     </ReportShell>
   );

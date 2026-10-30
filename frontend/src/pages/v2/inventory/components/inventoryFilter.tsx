@@ -92,17 +92,19 @@ export interface InventoryFilterPopoverProps {
   filters: Filters;
   onChange: Dispatch<SetStateAction<Filters>>;
   vendors: Vendor[];
+  /** False for a person without View vendors (S07.18): the Vendor section is left out, whatever list it was handed. */
+  showVendor?: boolean;
   resultCount: number;
   totalCount: number;
 }
 
 export function InventoryFilterPopover({
-  filters, onChange, vendors, resultCount, totalCount,
+  filters, onChange, vendors, showVendor = true, resultCount, totalCount,
 }: InventoryFilterPopoverProps) {
   // A Vendor facet with no vendors would be an empty pane, so it is left out until there are some.
   const registry = useMemo(
-    () => FACET_KEYS.filter((key) => key !== 'vendors' || vendors.length > 0).map((key) => FILTER_FACETS[key]),
-    [vendors.length],
+    () => FACET_KEYS.filter((key) => key !== 'vendors' || (showVendor && vendors.length > 0)).map((key) => FILTER_FACETS[key]),
+    [showVendor, vendors.length],
   );
   const value = useMemo(() => toFilterState(filters), [filters]);
   // Vendors are matched on NAME, not id - the legacy filter chain compares `item.vendor` (a string)

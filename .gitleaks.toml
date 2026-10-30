@@ -61,4 +61,8 @@ regexes = [
   # though the values were removed one commit later.
   '''ci-placeholder-invite-secret-0123456789''',
   '''ci-placeholder-mfa-enc-key-0123456789''',
+  # Made-up reply-address token in the Needs review polish test (commit
+  # d918214bf, since renamed to a low-entropy value). gitleaks scans every
+  # commit's patch, so the introducing commit still trips generic-api-key.
+  '''XxdmPwRjzyMQOxO2lHIkRA''',
 ]

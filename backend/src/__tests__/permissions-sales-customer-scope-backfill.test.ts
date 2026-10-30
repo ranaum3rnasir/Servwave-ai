@@ -127,7 +127,7 @@ describe('backfill migration — every existing org AND every custom role, idemp
 
   it('never names a real org, only organization_id values (R5 / CLAUDE.md)', () => {
     const bannedNames = [
-      'Alpha Doors', 'B&G Cabinet', 'Neon Services', 'Talon Septic', 'Bernhardt Moving', 'Servwave Demo',
+      ['Alpha', 'Doors'].join(' '), 'B&G Cabinet', 'Neon Services', 'Talon Septic', 'Bernhardt Moving', 'Servwave Demo',
     ];
     for (const name of bannedNames) {
       expect(sql, `migration header names a real org: ${name}`).not.toContain(name);

@@ -257,9 +257,8 @@ function scan(): { native: NativeHit[]; blocks: BlockHit[]; panels: PanelHit[] }
 // graph from App.tsx -> pages/v2/V2Routes.tsx -> pages/v2/routes/*.routes.tsx
 // (auto-discovered via import.meta.glob): 892 files are reachable and none of
 // the ten is among them. Several ARE imported - by other v1 modules that
-// are themselves unreachable (StaffFormDialog <- StaffSection, StopIfForm <-
-// StepConfigDrawer, DateModePanel <- TriggerForm), which is why a plain grep
-// for importers is not the check.
+// are themselves unreachable (StopIfForm <- StepConfigDrawer, DateModePanel <-
+// TriggerForm), which is why a plain grep for importers is not the check.
 
 interface AllowlistEntry {
   file: string; // relative to frontend/src
@@ -291,10 +290,6 @@ const MAPPED_ALLOWLIST: AllowlistEntry[] = [
   // them: converting dead code costs review budget and makes the deletion diff
   // harder to read.
   {
-    file: 'components/settings/StaffFormDialog.tsx',
-    reason: 'dead v1 - unreachable from the route table (imported only by the equally unreachable StaffSection.tsx); awaiting the dead-code pass',
-  },
-  {
     file: 'components/workflows/StopIfForm.tsx',
     reason: 'dead v1 - unreachable from the route table (imported only by the equally unreachable StepConfigDrawer.tsx); awaiting the dead-code pass',
   },
@@ -321,10 +316,6 @@ const MAPPED_ALLOWLIST: AllowlistEntry[] = [
   {
     file: 'pages/settings/InventorySettingsPage.tsx',
     reason: 'dead v1 - settings.routes.tsx lazy-imports pages/v2/settings/InventorySettingsPage, not this one. Awaiting the dead-code pass',
-  },
-  {
-    file: 'pages/settings/RolesPage.tsx',
-    reason: 'dead v1 - /settings/roles routes to the v2 fork; this page is unrouted. Awaiting the dead-code pass',
   },
   {
     file: 'ui-kit/components/form/statusSelect.tsx',

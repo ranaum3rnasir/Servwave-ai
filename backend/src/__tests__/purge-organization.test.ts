@@ -6,6 +6,7 @@ import { purgeOrganization } from '../lib/purge';
 
 const ORG = 'org1';
 
+
 /**
  * The workflow + copilot models added for #869, plus calendarEntry (Slice 02, same defect
  * class). All of these carry `organization_id` but have NO relation to Organization, so
@@ -38,12 +39,17 @@ function fakeTx(orgName: string) {
       findUnique: vi.fn(async () => ({ id: ORG, name: orgName })),
       delete: del('organization.delete'),
     },
+    mailboxAddress: { findMany: vi.fn(async () => []) },
     customer: { findMany: vi.fn(async () => []), deleteMany: del('customer') },
     userTablePreference: { deleteMany: del('userTablePreference') },
+    // Roles & Permissions S09.4 - each person's saved home-page layout.
+    userDashboardLayout: { deleteMany: del('userDashboardLayout') },
     appSetting: { deleteMany: del('appSetting') },
     rolePermission: { deleteMany: del('rolePermission') },
     tagAssignment: { deleteMany: del('tagAssignment') },
     tag: { deleteMany: del('tag') },
+    // Payments go-live P10 - files attached to a dispute's evidence hold their attachments (RESTRICT).
+    disputeEvidenceItem: { deleteMany: del('disputeEvidenceItem') },
     attachment: { deleteMany: del('attachment') },
     note: { deleteMany: del('note') },
     timelineEvent: { deleteMany: del('timelineEvent') },
@@ -64,6 +70,12 @@ function fakeTx(orgName: string) {
     webFormIntegration: { deleteMany: del('webFormIntegration') },
     // Decline-reasons slice B - org FK is ON DELETE RESTRICT, same hazard.
     lostReasonOption: { deleteMany: del('lostReasonOption') },
+    // Roles & Permissions S06.14 - the job cancel-reasons list, same RESTRICT hazard.
+    jobCancelReasonOption: { deleteMany: del('jobCancelReasonOption') },
+    // Roles & Permissions S06.10 - the checks on an office review's items (org FK cascades, deleted explicitly).
+    jobReviewItemCheck: { deleteMany: del('jobReviewItemCheck') },
+    // Roles & Permissions S06.11 - the reviewer's decisions on the review's customer items (org FK cascades, deleted explicitly).
+    jobReviewCustomerDecision: { deleteMany: del('jobReviewCustomerDecision') },
     // Mobile gate slice 48 - org FK is ON DELETE RESTRICT (a reorder spec leaves rows behind).
     jobSubStatus: { deleteMany: del('jobSubStatus') },
     // Task categories (visits-and-task-categories slice 08) - org FK cascades, deleted explicitly.
@@ -106,6 +118,15 @@ describe('purgeOrganization', () => {
     await purgeOrganization(tx, ORG, 'e2e-qa-');
     expect(calls).toContain('replyToken');
     expect(calls.indexOf('replyToken')).toBeLessThan(calls.indexOf('organization.delete'));
+  });
+
+  it('deletes every saved dashboard layout of the company, before the people and the organization row (S09.4)', async () => {
+    const { tx, calls, args } = fakeTx('e2e-qa-abc123');
+    await purgeOrganization(tx, ORG, 'e2e-qa-');
+    expect(calls).toContain('userDashboardLayout');
+    expect(args.get('userDashboardLayout')).toEqual({ where: { organization_id: ORG } });
+    expect(calls.indexOf('userDashboardLayout')).toBeLessThan(calls.indexOf('user'));
+    expect(calls.indexOf('userDashboardLayout')).toBeLessThan(calls.indexOf('organization.delete'));
   });
 
   it('deletes job sub-statuses before the organization row', async () => {

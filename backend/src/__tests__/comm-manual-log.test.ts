@@ -16,8 +16,7 @@ import app from '../app';
 import { prisma } from '../lib/prisma';
 import { clearTokenCache } from '../middleware/authenticate';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { mockAuthAs, authHeader, ALPHA_ORG_ID, ORG_B_ID, LEAD_FIXTURE, TEST_USERS } from './helpers';
-import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
+import { mockAuthAs, mockRoleSwitches, authHeader, ALPHA_ORG_ID, ORG_B_ID, LEAD_FIXTURE, TEST_USERS } from './helpers';
 import { orgDayOf } from '../lib/orgDayRange';
 import { formatInTimeZone } from 'date-fns-tz';
 import { matchesWhere } from './whereMatcher';
@@ -840,18 +839,11 @@ describe('the performer is chosen; the logger is always the caller', () => {
 });
 
 /**
- * A non-admin role that HOLDS the ability — the shape the Roles UI's sensitive switch writes.
- *
- * Built here rather than inherited, because `log_past` is deliberately absent from every role's
- * DEFAULT_GRANTS: the capability is off by default for every existing organisation, and turning
- * it on is an admin's deliberate act. One row, org-wide, exactly as `viewModelToGrants` emits it.
+ * A non-admin role that HOLDS the ability: the Log past communications switch turned on for it, the way the Roles
+ * screen writes it. (Roles & Permissions S01.10: the switch decides, so this no longer adds a stored grant row.)
  */
-function grantLogPastTo(role: 'SALES' | 'DISPATCHER' | 'TECHNICIAN') {
-  mockPrisma.rolePermission.findMany.mockResolvedValue([
-    ...DEFAULT_GRANTS.filter((g) => g.role === role),
-    { role, action: 'log_past', subject: 'Communication', conditions: null },
-  ]);
-  clearPermissionCache();
+function grantLogPastTo(_role: 'SALES' | 'DISPATCHER' | 'TECHNICIAN') {
+  mockRoleSwitches({ log_past_communications: true });
 }
 
 describe('the new ability guards the endpoint', () => {
@@ -875,6 +867,7 @@ describe('the new ability guards the endpoint', () => {
   for (const role of ['sales', 'dispatcher', 'technician'] as const) {
     it(`refuses ${role}, who holds create Communication but not the new ability`, async () => {
       mockAuthAs(role);
+      mockRoleSwitches({ log_past_communications: false });
       orgTimezone('America/New_York');
       mockPrisma.lead.findFirst.mockResolvedValue({ id: LEAD_ID });
       stubCreate();

@@ -189,13 +189,14 @@ describe('rename and remove on a task follow the server rule', () => {
     expect(screen.getAllByRole('button', { name: 'Delete attachment' })).toHaveLength(2);
   });
 
-  it('does not extend the uploader exception off a task', async () => {
-    givenFiles('/api/attachments/lead/t1', [MINE]);
+  it('does not extend the rename exception off a task, but a person can always remove their own file', async () => {
+    givenFiles('/api/attachments/lead/t1', [MINE, THEIRS]);
     renderSection('lead');
     await screen.findByText('Gate photo');
 
     expect(await menuItems('Gate photo')).not.toContain('Rename');
-    expect(screen.queryByRole('button', { name: 'Delete attachment' })).not.toBeInTheDocument();
+    // Without Delete attachments a person deletes only their own, on any record they can open (S01.11).
+    expect(screen.getAllByRole('button', { name: 'Delete attachment' })).toHaveLength(1);
   });
 });
 

@@ -18,6 +18,16 @@ export function deleteAttachmentPrompt(name?: string | null): ConfirmOptions {
   };
 }
 
+/** Note delete - a job's or a lead's note, from every surface that lists them. The record's activity keeps its text. */
+export function deleteNotePrompt(): ConfirmOptions {
+  return {
+    title: 'Delete this note?',
+    description: 'This cannot be undone. The record\'s activity keeps a line saying it was deleted, with its text.',
+    confirmLabel: 'Delete',
+    tone: 'danger',
+  };
+}
+
 /**
  * Line item delete - shared by the Job, Estimate and Invoice line-items editors (all three route
  * through the same `<LineItemsTable>`/`<LineItemRow>`, so one prompt covers all three call sites),

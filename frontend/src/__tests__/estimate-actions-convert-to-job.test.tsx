@@ -194,3 +194,32 @@ describe('EstimateWorkspacePage Actions - "Convert to job" item (#2048)', () => 
     expect(api.post).toHaveBeenCalledWith('/api/jobs', { estimate_id: ESTIMATE_ID });
   });
 });
+
+// Payments go-live slice W3: Actions menu copy.
+describe('EstimateWorkspacePage Actions - menu copy (W3)', () => {
+  it('shows a disabled "Convert to job" without a grey second line, the reason staying in the title', async () => {
+    setupMocks({ ...WON_ESTIMATE, job_id: 'job-anchor-1', job: null });
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+
+    await openActionsMenu(user);
+    const item = await screen.findByRole('menuitem', { name: /convert to job/i });
+    expect(item).toHaveAttribute('data-disabled');
+    expect(item.textContent).toBe('Convert to job');
+  });
+
+  it('offers "Approve" (not "Approve (Verbal)") and confirms with a short dialog', async () => {
+    setupMocks({ ...WON_ESTIMATE, status: ESTIMATE_STATUS.SENT, approved_at: null });
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    renderWithProviders(<EstimateWorkspacePage />, { ability: adminAbility });
+
+    await openActionsMenu(user);
+    expect(screen.queryByText(/verbal/i)).not.toBeInTheDocument();
+    await user.click(await screen.findByRole('menuitem', { name: 'Approve' }));
+
+    expect(await screen.findByText('Approve L00006-1?')).toBeInTheDocument();
+    expect(screen.getByText('No signature will be captured.')).toBeInTheDocument();
+    expect(screen.queryByText(/verbal or off-platform/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeInTheDocument();
+  });
+});

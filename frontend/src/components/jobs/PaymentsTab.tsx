@@ -6,13 +6,16 @@ import { SectionCard } from '@/components/jobs/overview/SectionCard';
 import { PaymentFeeBreakdown } from '@/components/crm/PaymentFeeBreakdown';
 import { EmptyState } from '@/components/ui/empty-state';
 import { formatCurrency } from '@/lib/utils';
-import { PAYMENT_METHOD_LABELS } from '@/lib/payment-methods';
-import type { PaymentMethod } from '@/lib/api/organization';
+import { describePayment, paymentStateLabel } from '@/lib/payment-display';
+import { paymentCounts } from '@/lib/payment-ledger';
+import { ProcessingBadge } from '@/components/invoices/ProcessingBadge';
 import type { JobFinancials } from '@/lib/api/jobs';
 
 interface PaymentsTabProps {
   financials: JobFinancials | undefined;
   jobId: string;
+  /** Record payments: Record Payment and Collect deposit are drawn only for a person who holds it. */
+  canRecordPayment: boolean;
 }
 
 /** Kind badge — "Deposit" for DEPOSIT invoices, "Final" for defined non-DEPOSIT, "—" for null/undefined. */
@@ -34,17 +37,7 @@ function KindBadge({ kind }: { kind?: string | null }) {
   );
 }
 
-/**
- * Human label for a payment method, from the shared map. The local map this replaced was keyed on
- * names that are not PaymentMethod enum values (a stray 'ACH', no EXTERNAL_CARD/BANK_TRANSFER), so
- * real payments in those methods fell through and rendered the raw enum - "BANK_TRANSFER" - in the
- * Method column. An unrecognised value still falls through to itself, by design.
- */
-function formatMethod(method: string): string {
-  return PAYMENT_METHOD_LABELS[method as PaymentMethod] ?? method;
-}
-
-export function PaymentsTab({ financials, jobId: _jobId }: PaymentsTabProps) {
+export function PaymentsTab({ financials, jobId: _jobId, canRecordPayment }: PaymentsTabProps) {
   const inv = financials?.final_invoice ?? null;
   const payments = financials?.payments ?? [];
 
@@ -54,30 +47,37 @@ export function PaymentsTab({ financials, jobId: _jobId }: PaymentsTabProps) {
   // estimate-anchored conversion produces) showed "No invoice yet" while its paid deposit sat
   // visible in the Payment history table directly below.
   const invoices = (financials?.invoices ?? []).filter((i) => i.status !== 'VOIDED');
+  // `inv` is the job's final invoice, which may be one this person cannot open: only a listed invoice takes a payment.
+  const listedFinal = inv != null && invoices.some((i) => i.id === inv.id) ? inv : null;
 
   // Deposit drawdown — tied to a real DEPOSIT-kind invoice (not just a payment).
   const depositInvoice = financials?.invoices?.find((i) => i.kind === 'DEPOSIT') ?? null;
-  const depositPaid = payments
+  // Payments go-live slice 05: only SUCCEEDED payments are money paid; a processing or failed
+  // bank payment stays listed in the history below but never enters a total.
+  const landed = payments.filter(paymentCounts);
+  const depositPaid = landed
     .filter((p) => p.invoice_kind === 'DEPOSIT')
     .reduce((s, p) => s + Number(p.amount), 0);
   // #948 — exclude the synthetic DEPOSIT-CREDIT mirror payment a deposit's drawdown writes on
   // the STANDARD invoice: it's the same cash as the deposit's own payment, not new money.
   // Same non-cash-credit filter InvoiceDetailPage's buildLedgerEvents uses.
-  const totalPaid = payments
+  const totalPaid = landed
     .filter((p) => p.reference_number !== 'DEPOSIT-CREDIT')
     .reduce((s, p) => s + Number(p.amount), 0);
   const depositBalance = depositInvoice ? Number(depositInvoice.amount_due) : 0;
   const showCollectDeposit =
+    canRecordPayment &&
     depositInvoice != null &&
     !['PAID', 'VOIDED'].includes(depositInvoice.status) &&
     depositBalance > 0;
   const contractTotal = inv ? Number(inv.total_amount) : 0;
+  // The share collected is measured on what the whole job has paid, not on the payments this person can list.
   const pctCollected =
-    contractTotal > 0 ? Math.min(Math.round((totalPaid / contractTotal) * 100), 100) : 0;
+    contractTotal > 0 ? Math.min(Math.round(((financials?.totals?.paid ?? totalPaid) / contractTotal) * 100), 100) : 0;
 
-  // Show Record Payment only when the final invoice exists and still has a balance.
+  // Show Record Payment only to a person who may record payments, when the final invoice is one they can open and still has a balance.
   const showRecordPayment =
-    inv != null && !['PAID', 'VOIDED'].includes(inv.status) && Number(inv.amount_due) > 0;
+    canRecordPayment && listedFinal != null && !['PAID', 'VOIDED'].includes(listedFinal.status) && Number(listedFinal.amount_due) > 0;
 
   const collectDepositButton = depositInvoice ? (
     <Link to={`/invoices/${depositInvoice.id}`}>
@@ -119,6 +119,7 @@ export function PaymentsTab({ financials, jobId: _jobId }: PaymentsTabProps) {
                     </Link>
                     <KindBadge kind={i.kind} />
                     <StatusBadge domain="invoice" status={i.status} />
+                    <ProcessingBadge amount={i.processing_amount} />
                     <span className="text-sm text-text-secondary">
                       Total:{' '}
                       <span className="font-semibold tabular-nums text-text-primary">
@@ -221,7 +222,12 @@ export function PaymentsTab({ financials, jobId: _jobId }: PaymentsTabProps) {
                     <td className="whitespace-nowrap px-5 py-3 tabular-nums text-text-primary">
                       {new Date(p.paid_at).toLocaleDateString('en-US')}
                     </td>
-                    <td className="px-5 py-3 text-text-secondary">{formatMethod(p.method)}</td>
+                    <td className="px-5 py-3 text-text-secondary">
+                      {describePayment(p)}
+                      {paymentStateLabel(p.state) && (
+                        <span className="ml-2 text-[10px] font-medium uppercase tracking-wide">{paymentStateLabel(p.state)}</span>
+                      )}
+                    </td>
                     <td className="px-5 py-3 text-right font-semibold tabular-nums text-text-primary">
                       <div className="flex flex-col items-end gap-0.5">
                         <span>{formatCurrency(Number(p.amount))}</span>

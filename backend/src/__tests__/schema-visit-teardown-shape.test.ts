@@ -20,7 +20,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { diffGrants } from '../scripts/check-role-permission-drift';
+import { diffGrants } from '../lib/permissions/legacyGrantDiff';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 
 const MIGRATION = join(

@@ -4,7 +4,10 @@
 // transactional system sender - and no per-org mailbox to resolve at runtime,
 // so every compose surface shows an explicit unconnected state.
 
-export type AccountId = "system";
+// What emails.account holds: "system" for mail the app sent by itself, "user"
+// for everything else (mail a person sent, mail received in a mailbox). Only
+// "system" is a sending identity listed in ACCOUNTS.
+export type AccountId = "system" | "user";
 
 export type Account = {
   id: AccountId;
@@ -95,6 +98,10 @@ export type Attachment = {
   size: string;
   sizeBytes?: number;
   mimeType?: string;
+  /** The file's position among the message's stored files, as the server counted it. It is what
+   *  GET /emails/:id/attachments/:index takes to sign a link, so only a file the server stored has one;
+   *  one added in this compose session, or an old display-only entry, has none and cannot be opened. */
+  index?: number;
   /** The real File behind this chip - present only for an attachment added
    *  during the current compose session. See the type doc above. */
   file?: File;
@@ -219,6 +226,9 @@ export function senderAddress(from: EmailSender | null | undefined): string {
  */
 export type EmailSender = { name?: string | null; email?: string | null };
 
+/** The job or lead a record conversation belongs to, as the server names it for the Email page. */
+export type RecordTie = { kind: 'job' | 'lead'; id: string; label: string };
+
 export type Email = {
   id: string;
   account: AccountId;
@@ -254,6 +264,10 @@ export type Email = {
   jobId?: string;
   /** Denormalized human job number (e.g. "J-1850") for badge rendering. */
   jobLabel?: string;
+  /** The job or lead a record conversation is about (PRD 10, S10.9): the number the Inbox row shows and the record to link
+   *  to, sent by the server from the conversation's record. Absent for any other conversation, and for a job or lead the
+   *  person cannot open. */
+  recordTie?: RecordTie;
   /** The customer this message is anchored to, when any (mapEmail's
    *  `customerId`). Threaded onto a reply/forward's ComposeOrigin so
    *  "Attach from this record" and job/customer attribution survive a
@@ -296,6 +310,13 @@ export type Email = {
    *  "NO_POLICY" or "UNAVAILABLE" matched on an unverified string compare and
    *  must not be badged like a verified one. */
   inboundAuth?: "PASS" | "FAIL" | "NO_POLICY" | "UNAVAILABLE";
+  /** PRD 10, S10.20 - set on a received message that is linked to a customer by its sender's address although the sender's
+   *  domain could not prove who sent it (inboundAuth NO_POLICY or UNAVAILABLE): the screens mark it "Unverified sender".
+   *  Absent otherwise, never `false`. */
+  unverifiedSender?: boolean;
+  /** PRD 10, S10.20 - set on a received message waiting for a customer whose sender's address several customers have: no
+   *  customer was linked, and a person with the attach switch picks one. Absent otherwise, never `false`. */
+  matchesSeveralCustomers?: boolean;
   /** Email slice 8b - the CONVERSATION's assignee (EmailThread.assigned_to_
    *  user_id), flattened onto every message in it, same as threadId/
    *  threadArchived/threadSnoozedUntil below. Already reflects auto-unassign

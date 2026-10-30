@@ -12,7 +12,7 @@ import { mockAuthAs, authHeader, CUSTOMER_FIXTURE } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import type { ZodTypeAny } from 'zod';
 import {
-  createLeadSchema, updateLeadSchema, walkthroughSchema, markLostSchema, contactLeadSchema,
+  createLeadSchema, updateLeadSchema, walkthroughSchema, markLostSchema, reopenLeadSchema, contactLeadSchema,
   cancelWalkthroughSchema, createLeadNoteSchema, scheduleWalkthroughSchema,
 } from '../controllers/lead.controller';
 import { cancelJobSchema } from '../controllers/job.controller';
@@ -27,6 +27,7 @@ import {
 } from '../controllers/estimate.controller';
 import { createPurchaseOrderSchema, updateRfqSchema } from '../controllers/inv-po.controller';
 import { updateCustomerSchema } from '../controllers/customer.controller';
+import { addContactEntrySchema, changeContactEntrySchema } from '../lib/record-contact-entries';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -142,6 +143,18 @@ describe('an email longer than the column is a 400, not a database 500 (spec sec
       'Email is too long (maximum 254 characters)',
     ]);
   });
+
+  it('job and lead contact-entry email, on add and on change', () => {
+    expect(messagesAt(addContactEntrySchema, { kind: 'EMAIL', value: email(242) }, ['value'])).toEqual([]);
+    expect(messagesAt(addContactEntrySchema, { kind: 'EMAIL', value: email(245) }, ['value'])).toEqual([
+      'Email is too long (maximum 254 characters)',
+    ]);
+    const change = (value: string) => ({ kind: 'EMAIL', replaces: 'old@example.com', value });
+    expect(messagesAt(changeContactEntrySchema, change(email(242)), ['value'])).toEqual([]);
+    expect(messagesAt(changeContactEntrySchema, change(email(245)), ['value'])).toEqual([
+      'Email is too long (maximum 254 characters)',
+    ]);
+  });
 });
 
 describe('existing caps raised to the shared tiers (spec section 3)', () => {
@@ -155,8 +168,10 @@ describe('existing caps raised to the shared tiers (spec section 3)', () => {
     expectCap(createLeadSchema, (v) => ({ customer_id: CUSTOMER_FIXTURE.id, service_request: 's', notes: v }), ['notes'], 20_000);
     expectCap(updateLeadSchema, (v) => ({ service_request: v }), ['service_request'], 20_000);
     expectCap(updateLeadSchema, (v) => ({ notes: v }), ['notes'], 20_000);
+    expectCap(updateLeadSchema, (v) => ({ lost_reason: v }), ['lost_reason'], 20_000);
     expectCap(walkthroughSchema, (v) => ({ walkthrough_notes: v }), ['walkthrough_notes'], 20_000);
     expectCap(markLostSchema, (v) => ({ lost_reason: v }), ['lost_reason'], 20_000);
+    expectCap(reopenLeadSchema, (v) => ({ reason: v }), ['reason'], 20_000);
     expectCap(contactLeadSchema, (v) => ({ contacted_note: v }), ['contacted_note'], 20_000);
     expectCap(cancelWalkthroughSchema, (v) => ({ cancelled_reason: v }), ['cancelled_reason'], 20_000);
     expectCap(createLeadNoteSchema, (v) => ({ content: v }), ['content'], 20_000);

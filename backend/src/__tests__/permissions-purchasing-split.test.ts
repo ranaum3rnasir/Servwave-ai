@@ -109,7 +109,7 @@ describe('derivation migration — 20260717040000_split_inventory_purchasing_sub
   });
 
   it('does NOT re-grant via a DEFAULT_GRANTS-style role-tuple cross-join', () => {
-    // A cross-join of role tuples (the emanuel-backfill shape) would re-grant PO/Vendor to
+    // A cross-join of role tuples (the module-backfill shape) would re-grant PO/Vendor to
     // orgs whose admins deliberately removed dispatcher Inventory access. Derivation only.
     const sql = loadSql();
     expect(sql).not.toContain("('DISPATCHER','read','PurchaseOrder'");

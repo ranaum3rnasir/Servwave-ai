@@ -189,6 +189,12 @@ function stubDb(
     whatsAppMessage: { findMany: filteringFindMany(rows.whatsapps ?? []) },
     // Fifth source (manual communication log), wired into BOTH aggregations here as of slice 5.
     manualCommunicationLog: { findMany: manualFindMany(rows.manuals ?? []) },
+    // The customer's estimate decisions (S08.9) are read only with the per-source visibility form; these specs hand in none.
+    estimate: { findMany: vi.fn().mockResolvedValue([]) },
+    timelineEvent: { findMany: vi.fn().mockResolvedValue([]) },
+    lostReasonOption: { findMany: vi.fn().mockResolvedValue([]) },
+    // The payments received (S08.10) are read only with the per-source visibility form as well.
+    payment: { findMany: vi.fn().mockResolvedValue([]) },
   };
 }
 
@@ -358,6 +364,11 @@ describe('getJobCommunications (lib)', () => {
       email: { findMany: vi.fn().mockResolvedValue([]) },
       whatsAppMessage: { findMany: vi.fn().mockResolvedValue([]) },
       manualCommunicationLog: { findMany: vi.fn().mockResolvedValue([]) },
+      estimate: { findMany: vi.fn().mockResolvedValue([]) },
+      timelineEvent: { findMany: vi.fn().mockResolvedValue([]) },
+      lostReasonOption: { findMany: vi.fn().mockResolvedValue([]) },
+      // The payments received (S08.10) are read only with the per-source visibility form as well.
+      payment: { findMany: vi.fn().mockResolvedValue([]) },
     };
     const [item] = await getJobCommunications(direct, { jobId: JOB_ID, organizationId: ALPHA_ORG_ID });
 

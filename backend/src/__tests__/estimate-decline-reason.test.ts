@@ -40,8 +40,13 @@ import { ESTIMATE_SENT_FIXTURE, ALPHA_ORG_ID } from './helpers';
 vi.mock('../services/notifications/notificationService', () => ({
   emit: vi.fn().mockResolvedValue(undefined),
 }));
-import { emit } from '../services/notifications/notificationService';
-const mockEmit = emit as ReturnType<typeof vi.fn>;
+// The estimate alerts go through M6's chain (S06.26): the public route queues the alert, so what it asks for is the seam.
+vi.mock('../services/notifications/leadEstimateAlerts', () => ({
+  queueEstimateAlert: vi.fn(),
+  alertEstimate: vi.fn().mockResolvedValue(undefined),
+}));
+import { queueEstimateAlert } from '../services/notifications/leadEstimateAlerts';
+const mockEmit = queueEstimateAlert as ReturnType<typeof vi.fn>;
 
 const mockPrisma = prisma as unknown as {
   estimate: { findFirst: ReturnType<typeof vi.fn>; findUnique: ReturnType<typeof vi.fn> };
@@ -86,7 +91,12 @@ function armDecline(voidedCount = 1): CapturedWrites {
           return Promise.resolve({ id: ESTIMATE_ID, status: 'DECLINED' });
         }),
       },
+      // Slice 15: the deposit void locks the deposits, reads the unpaid ones, then voids those.
+      $executeRaw: vi.fn().mockResolvedValue(0),
       invoice: {
+        findMany: vi.fn().mockResolvedValue(
+          Array.from({ length: voidedCount }, (_, i) => ({ id: `dep-${i}`, invoice_number: `D-${i}`, status: 'SENT' })),
+        ),
         updateMany: vi.fn().mockImplementation(() => {
           captured.depositVoided = voidedCount > 0;
           return Promise.resolve({ count: voidedCount });
@@ -207,7 +217,7 @@ describe('POST /api/estimates/:id/decline — skipping costs nothing', () => {
     const call = mockEmit.mock.calls.find((c) => c[0].verb === 'estimate.declined');
     expect(call).toBeDefined();
     expect(call![0].actorId).toBeNull();
-    expect(call![0].object.id).toBe(ESTIMATE_ID);
+    expect(call![0].estimateId).toBe(ESTIMATE_ID);
     expect(call![0].data.lost_reason).toBeNull();
   });
 
@@ -349,7 +359,9 @@ describe('POST /api/estimates/:id/decline — the public response stays as thin 
             return Promise.resolve({ id: ESTIMATE_ID, status: 'DECLINED' });
           }),
         },
-        invoice: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        // Slice 15: the deposit void locks the deposits, then reads the unpaid ones (none here).
+        $executeRaw: vi.fn().mockResolvedValue(0),
+        invoice: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
       }),
     );

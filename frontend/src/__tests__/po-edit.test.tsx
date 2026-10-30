@@ -9,7 +9,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { renderWithProviders, inventoryWriteAbility } from './helpers';
+import { renderWithProviders, purchasingAbility } from './helpers';
 import { PODetailDialog } from '@/components/inventory/PODetailDialog';
 import api from '@/lib/axios';
 import type { PurchaseOrder } from '@/lib/api/inventory';
@@ -89,7 +89,7 @@ const mockApi = vi.mocked(api);
 function renderDialog(p: PurchaseOrder) {
   const onUpdated = vi.fn();
   const onClose = vi.fn();
-  renderWithProviders(<PODetailDialog open onClose={onClose} po={p} onReceive={vi.fn()} onUpdated={onUpdated} onDeleted={vi.fn()} />, { ability: inventoryWriteAbility() });
+  renderWithProviders(<PODetailDialog open onClose={onClose} po={p} onReceive={vi.fn()} onUpdated={onUpdated} onDeleted={vi.fn()} />, { ability: purchasingAbility() });
   return { onUpdated, onClose };
 }
 
@@ -223,8 +223,8 @@ describe('PODetailDialog — Edit: lines on a draft (S3.3)', () => {
     await waitFor(() =>
       expect(mockApi.patch).toHaveBeenCalledWith('/api/inventory/purchase-orders/po-draft-1', {
         lines: [
-          { itemSku: 'A', itemName: 'Item A', uom: 'EA', qtyOrdered: 5, qtyReceived: 0, unitCost: 12.25 },
-          { itemSku: 'B', itemName: 'Item B', uom: 'EA', qtyOrdered: 3, qtyReceived: 0, unitCost: 4 },
+          { id: 'l1', itemSku: 'A', itemName: 'Item A', uom: 'EA', qtyOrdered: 5, qtyReceived: 0, unitCost: 12.25 },
+          { id: 'l2', itemSku: 'B', itemName: 'Item B', uom: 'EA', qtyOrdered: 3, qtyReceived: 0, unitCost: 4 },
           { itemSku: 'C-1', itemName: 'Cat6 Cable', uom: 'FT', qtyOrdered: 2, qtyReceived: 0, unitCost: 1.5, priceBookItemId: 'item-c' },
         ],
       }),
@@ -259,8 +259,35 @@ describe('PODetailDialog — Edit: lines on a draft (S3.3)', () => {
     await waitFor(() =>
       expect(mockApi.patch).toHaveBeenCalledWith('/api/inventory/purchase-orders/po-draft-1', {
         lines: [
-          { itemSku: 'A', itemName: 'Item A', uom: 'EA', qtyOrdered: 5, qtyReceived: 0, unitCost: 10 },
+          { id: 'l1', itemSku: 'A', itemName: 'Item A', uom: 'EA', qtyOrdered: 5, qtyReceived: 0, unitCost: 10 },
           { itemSku: '', itemName: 'Shop rag bundle', uom: 'PK', qtyOrdered: 4, qtyReceived: 0 },
+        ],
+      }),
+    );
+  });
+
+  it('sends each stored line with its own id, and a renamed line keeps that id (the server keeps a hidden cost by it)', async () => {
+    // A person who cannot see costs is shown lines with no cost; the save must still name each stored line.
+    const draft = po({
+      status: 'draft',
+      lines: [
+        { id: 'l1', itemSku: '', itemName: 'Item A', uom: 'EA', qtyOrdered: 5, qtyReceived: 0 },
+        { id: 'l2', itemSku: '', itemName: 'Item B', uom: 'EA', qtyOrdered: 3, qtyReceived: 0 },
+      ],
+    });
+    mockApi.patch.mockResolvedValue({ data: { purchaseOrder: draft } });
+    renderDialog(draft);
+    await enterEdit();
+    const rowA = within(screen.getByRole('table')).getAllByRole('row').find((r) => within(r).queryByDisplayValue('Item A'))!;
+    const name = within(rowA).getByRole('textbox', { name: 'Description' });
+    await userEvent.clear(name);
+    await userEvent.type(name, 'Item A renamed');
+    await userEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await waitFor(() =>
+      expect(mockApi.patch).toHaveBeenCalledWith('/api/inventory/purchase-orders/po-draft-1', {
+        lines: [
+          { id: 'l1', itemSku: '', itemName: 'Item A renamed', uom: 'EA', qtyOrdered: 5, qtyReceived: 0 },
+          { id: 'l2', itemSku: '', itemName: 'Item B', uom: 'EA', qtyOrdered: 3, qtyReceived: 0 },
         ],
       }),
     );

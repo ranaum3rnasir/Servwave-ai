@@ -12,7 +12,7 @@
 // Composite score = 60% price · 25% lead time · 15% reliability. The vendor
 // with the highest composite is flagged as `recommended: true`.
 //
-// ALPHA port note: Emanuel imported the `items`/`vendors` seed arrays directly
+// ALPHA port note: the original code imported the `items`/`vendors` seed arrays directly
 // at module scope. To honor data-seam discipline (no runtime _mock imports
 // outside the seam), the catalog + vendor lists are now PARAMETERS — callers
 // pass the live query data (useInventoryItems()/useVendors()) the same way

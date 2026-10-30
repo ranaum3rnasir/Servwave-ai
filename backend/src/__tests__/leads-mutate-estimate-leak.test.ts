@@ -9,7 +9,6 @@ import {
   LEAD_FIXTURE,
 } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 
 // ════════════════════════════════════════════════════════════════════════
 // Issue #233 (audit F-012) — WRITE-PATH leak (same class as the getById /
@@ -86,7 +85,6 @@ function existingForTechnician() {
 beforeEach(() => {
   vi.resetAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache(); // overrides are keyed by user_id and cached separately from role grants
   (prisma.tagAssignment.findMany as any).mockResolvedValue([]);
   (prisma.rolePermission.findMany as any).mockResolvedValue([]);
   // Default: no per-user overrides (resetAllMocks cleared the setup default); tests opt in.
@@ -109,6 +107,11 @@ describe('POST /api/leads/:id/walkthrough — estimate monetary leak (#233 / F-0
     mockPrisma.lead.findFirst.mockResolvedValue({ id: LEAD_FIXTURE.id });
     // the updated row returned in the response carries an estimate with money.
     mockPrisma.lead.update.mockResolvedValue(leadWithEstimate([TEST_USERS.technician.id]));
+    // Noting a walkthrough needs a place on the crew of the current walkthrough (S04.19).
+    (prisma.visit.findMany as any).mockResolvedValue([{
+      id: 'wt-1', status: 'SCHEDULED', scheduled_at: new Date('2026-04-01'), created_at: new Date('2026-03-01'),
+      completed_at: null, cancelled_at: null, assignees: [{ user_id: TEST_USERS.technician.id }],
+    }]);
 
     const res = await request(app)
       .post(`/api/leads/${LEAD_FIXTURE.id}/walkthrough`)
@@ -155,7 +158,6 @@ describe('PATCH /api/leads/:id — estimate monetary leak (#233 / F-012, write p
     mockPrisma.userPermissionOverride.findMany.mockResolvedValue([
       { action: 'update', subject: 'Lead', effect: 'allow' },
     ]);
-    clearUserOverrideCache(); // a prior test cached this user's (empty) overrides — drop it.
     mockPrisma.lead.findUnique.mockResolvedValue(existingForTechnician());
     mockPrisma.lead.findFirst.mockResolvedValue({ id: LEAD_FIXTURE.id });
     mockPrisma.lead.update.mockResolvedValue(leadWithEstimate([TEST_USERS.technician.id]));

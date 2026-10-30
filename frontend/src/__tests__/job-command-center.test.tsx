@@ -2,9 +2,10 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
+import { renderWithProviders, ALL_JOB_ACTIONS } from './helpers';
 import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
 import { buildAbility } from '@/lib/ability';
+import { catalogToggle } from './support/backendSwitchCatalog';
 
 // floating-ui (under Radix dropdown) does `new ResizeObserver(...)`
 class ResizeObserverStub {
@@ -62,6 +63,7 @@ const BASE_JOB = {
   }>,
   tags: [] as Array<{ id: string; name: string; color: string }>,
   source_plan_id: null,
+  actions: ALL_JOB_ACTIONS,
   source_plan: null,
 };
 
@@ -74,6 +76,10 @@ const FINANCIALS = {
 function mockJobAndFinancials(jobOverrides: Partial<typeof BASE_JOB> = {}) {
   const job = { ...BASE_JOB, ...jobOverrides };
   mockApi.get.mockImplementation(async (url: string) => {
+    // The person may contact customers (S05.3: the Team card's Call and Text follow that switch).
+    if (url === '/api/permission-switches/me') {
+      return { data: { admin_box: false, values: { [catalogToggle('Contact customers').key]: true } } };
+    }
     if (url.includes('/financials')) {
       return { data: FINANCIALS };
     }
@@ -213,7 +219,7 @@ describe('JobDetailPage — Command Center header', () => {
 });
 
 describe('JobDetailPage — R2 header action-cluster changes', () => {
-  // R2 consolidated every action into the Actions menu. Mark Complete came back OUT of it:
+  // R2 consolidated every action into the Actions menu. Complete job came back OUT of it:
   // a technician in the field could not find the one control the whole visit ends with, and
   // reported the job as impossible to close. Duplicate and the rest stay in the menu.
   //
@@ -221,7 +227,7 @@ describe('JobDetailPage — R2 header action-cluster changes', () => {
   // `pages/JobDetailPage.tsx`, which App.tsx does not route, so it never reached a
   // user. Repointing this file at the routed page is what surfaced that, and the
   // header button has been restored there. This assertion is what holds it.
-  it('omits Status card, View Statement, and Start Job; surfaces Mark Complete, Actions menu holds Duplicate', async () => {
+  it('omits Status card, View Statement, and Start Job; surfaces Complete job, Actions menu holds Duplicate', async () => {
     // Admin role so canManage = true → canDuplicate, canComplete (active status), canCreate Invoice, etc.
     const ability = buildAbility([
       { action: 'manage', subject: 'Job' },
@@ -237,8 +243,8 @@ describe('JobDetailPage — R2 header action-cluster changes', () => {
     expect(screen.queryByText('View Statement')).toBeNull();
     // Start Job must be gone
     expect(screen.queryByRole('button', { name: /start job/i })).toBeNull();
-    // Mark Complete is a first-class header button, not a menu item.
-    expect(screen.getByRole('button', { name: /mark complete/i })).toBeInTheDocument();
+    // Complete job is a first-class header button, not a menu item.
+    expect(screen.getByRole('button', { name: /complete job/i })).toBeInTheDocument();
     // Status summary card label must be gone (the card is removed; StatusBadge text stays but the "Status" uppercase label card is gone)
     // There should be NO element with exactly "Status" text used as a summary-card label
     const summaryStatusLabels = screen
@@ -249,9 +255,9 @@ describe('JobDetailPage — R2 header action-cluster changes', () => {
     // Open the consolidated Actions menu
     await userEvent.click(screen.getByRole('button', { name: /actions/i }));
 
-    // Duplicate Job stays a menu item; Mark Complete is not duplicated into the menu.
+    // Duplicate Job stays a menu item; Complete job is not duplicated into the menu.
     expect(await screen.findByText(/duplicate job/i)).toBeInTheDocument();
-    expect(screen.queryByRole('menuitem', { name: /mark complete/i })).toBeNull();
+    expect(screen.queryByRole('menuitem', { name: /complete job/i })).toBeNull();
     // Unschedule must NOT be in the menu
     expect(screen.queryByText(/unschedule/i)).toBeNull();
   });
@@ -259,7 +265,7 @@ describe('JobDetailPage — R2 header action-cluster changes', () => {
 
 describe('JobDetailPage — note composer follows the API permission', () => {
   // The composer used to render for anyone who could OPEN the job, while POST /notes is
-  // gated on `update Job`. A read-only viewer typed a note, got a 12px "Failed to add note",
+  // gated on Add notes (the server lists `add_note`). A read-only viewer typed a note, got a 12px "Failed to add note",
   // and reported that notes do not save. Offer the composer only when the write will land.
   //
   // The GATE holds on the live page and is asserted below. The EXPLANATION does
@@ -271,9 +277,9 @@ describe('JobDetailPage — note composer follows the API permission', () => {
   // that, or told what to ask for. Whether to bring the sentence back is a
   // separate call; the assertion is dropped rather than softened so it is not
   // mistaken for coverage that still exists.
-  it('hides the composer when the user cannot update the job', async () => {
+  it('hides the composer when the server lists no add_note for the user', async () => {
     const ability = buildAbility([{ action: 'read', subject: 'Job' }]);
-    mockJobAndFinancials();
+    mockJobAndFinancials({ actions: [] });
 
     renderWithProviders(<JobDetailPage />, { ability });
     await screen.findByRole('heading', { name: /J00001/ });
@@ -283,9 +289,9 @@ describe('JobDetailPage — note composer follows the API permission', () => {
     expect(screen.queryByRole('button', { name: /add note/i })).toBeNull();
   });
 
-  it('renders the composer when the user can update the job', async () => {
+  it('renders the composer when the server lists add_note for the user', async () => {
     const ability = buildAbility([{ action: 'manage', subject: 'Job' }]);
-    mockJobAndFinancials();
+    mockJobAndFinancials({ actions: ['add_note'] });
 
     renderWithProviders(<JobDetailPage />, { ability });
     await screen.findByRole('heading', { name: /J00001/ });

@@ -280,4 +280,12 @@ describe('tabs of one page', () => {
 
     expect(paths()).toEqual(['/inventory', '/inventory/vendors', '/inventory/price-book']);
   });
+
+  it('keeps one logistic order, opened from its alert, as a crumb of its own rather than renaming the tab', () => {
+    visit('/inventory', 'Inventory');
+    visit('/inventory/logistic-orders/lo-1', 'LO00001');
+
+    expect(paths()).toEqual(['/inventory', '/inventory/logistic-orders/lo-1']);
+    expect(useNavHistory.getState().visits.map((v) => v.label)).toEqual(['Inventory', 'LO00001']);
+  });
 });

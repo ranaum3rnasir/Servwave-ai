@@ -272,7 +272,9 @@ export function CategorySelector({
       rows={rows}
       emptyState={
         <p className="px-3 py-3 text-[11px] italic text-text-secondary">
-          No categories configured yet. Use the button below to add one.
+          {canAdd
+            ? "No categories configured yet. Use the button below to add one."
+            : "No categories configured yet."}
         </p>
       }
       /* Pinned "Add category" footer. Raw by design: a brand-tinted

@@ -120,7 +120,7 @@ export function PaymentFeeBreakdown({
             <FeeRow label="Service fee (customer)" value={`+${formatCurrency(serviceFee)}`} />
           )}
           {tip > 0 && <FeeRow label="Tip (customer)" value={`+${formatCurrency(tip)}`} />}
-          <FeeRow label="Stripe fee" value={formatCurrency(-stripeFee)} />
+          <FeeRow label="Card processing fee" value={formatCurrency(-stripeFee)} />
           <FeeRow label={platformFeeLabel} value={formatCurrency(-platformFee)} />
           <FeeRow label="Net" value={formatCurrency(net)} bold />
         </div>

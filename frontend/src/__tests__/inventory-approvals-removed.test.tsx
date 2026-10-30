@@ -13,7 +13,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { screen } from '@testing-library/react';
 import { Routes, Route, Navigate } from 'react-router-dom';
-import { renderWithProviders, inventoryWriteAbility } from './helpers';
+import { renderWithProviders, inventoryWriteAbility, seedMySwitches } from './helpers';
 import InventoryPage from '@/pages/v2/inventory/InventoryPage';
 
 vi.mock('@/lib/api/inventory', async (importOriginal) => {
@@ -73,7 +73,8 @@ function InventoryRoutes() {
 
 describe('v2 InventoryPage - approvals surface removed (QA-901)', () => {
   it('renders Items + Staging tabs and NO Approvals tab or stat tile', () => {
-    renderWithProviders(<InventoryRoutes />, { initialEntries: ['/inventory'] });
+    seedMySwitches({ show_stock_page: true });
+    renderWithProviders(<InventoryRoutes />, { initialEntries: ['/inventory'], ability: inventoryWriteAbility() });
 
     expect(screen.getByRole('tab', { name: /Items/ })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /Staging/ })).toBeInTheDocument();

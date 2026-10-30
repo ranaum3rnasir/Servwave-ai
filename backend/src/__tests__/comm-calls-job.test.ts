@@ -5,7 +5,7 @@ import app from '../app';
 import { prisma } from '../lib/prisma';
 import { clearTokenCache } from '../middleware/authenticate';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { ALPHA_ORG_ID, ORG_B_ID, mockAuthAs, authHeader, CUSTOMER_FIXTURE } from './helpers';
+import { ALPHA_ORG_ID, ORG_B_ID, mockAuthAs, mockRoleSwitches, authHeader, CUSTOMER_FIXTURE } from './helpers';
 
 const mockPrisma = prisma as any;
 
@@ -54,6 +54,7 @@ function expectOrgScoped(mockFn: Mock, orgId: string) {
 describe('POST /api/communication/calls — job stamping', () => {
   it('stamps job_id + job_label when job_id is provided', async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches({ communication_scope: 'all' }); // the attach reads under Communication scope
     mockPrisma.job.findUnique.mockResolvedValue(JOB_ROW);
     mockPrisma.callSession.create.mockImplementation((a: any) =>
       Promise.resolve({ id: CALL_ID, ...a.data }));
@@ -70,6 +71,7 @@ describe('POST /api/communication/calls — job stamping', () => {
 
   it('404s on a cross-org/unknown job_id and creates nothing', async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches({ communication_scope: 'all' }); // the attach reads under Communication scope
     mockPrisma.job.findUnique.mockResolvedValue(null);
     const res = await request(app).post('/api/communication/calls').set(authHeader('dispatcher'))
       .send({ direction: 'in', from_number: '5551234567', to_number: '5550001111', status: 'completed', job_id: JOB_ID });
@@ -83,6 +85,7 @@ describe('POST /api/communication/calls — job stamping', () => {
 describe('PATCH /api/communication/calls/:id/job — manual attach', () => {
   it('sets job_id + job_label from an org-scoped job', async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches({ communication_scope: 'all' }); // the attach reads under Communication scope
     mockPrisma.callSession.findMany
       .mockResolvedValueOnce([CALL_ROW]) // pre-read (same-customer constraint)
       .mockResolvedValueOnce([{ ...CALL_ROW, job_id: JOB_ID, job_label: 'J00077' }]); // refetch
@@ -103,6 +106,7 @@ describe('PATCH /api/communication/calls/:id/job — manual attach', () => {
 
   it('clears job_id + job_label on null', async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches({ communication_scope: 'all' }); // the attach reads under Communication scope
     mockPrisma.callSession.updateMany.mockResolvedValue({ count: 1 });
     mockPrisma.callSession.findMany.mockResolvedValue([{ ...CALL_ROW, job_id: null, job_label: null }]);
     const res = await request(app).patch(`/api/communication/calls/${CALL_ID}/job`).set(authHeader('dispatcher'))
@@ -144,6 +148,7 @@ describe('PATCH /api/communication/calls/:id/job — manual attach', () => {
 
   it('404s on a cross-org job_id without touching the call', async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches({ communication_scope: 'all' }); // the attach reads under Communication scope
     mockPrisma.callSession.findMany.mockResolvedValue([CALL_ROW]);
     mockPrisma.job.findUnique.mockResolvedValue(null);
     const res = await request(app).patch(`/api/communication/calls/${CALL_ID}/job`).set(authHeader('dispatcher'))
@@ -160,6 +165,7 @@ describe('PATCH /api/communication/calls/:id/job — manual attach', () => {
   // keeps the customer ingest resolved, and job_id is whatever was picked.
   it("accepts another customer's job and leaves customer_id alone", async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches({ communication_scope: 'all' }); // the attach reads under Communication scope
     mockPrisma.callSession.findMany
       .mockResolvedValueOnce([CALL_ROW]) // customer-linked call
       .mockResolvedValueOnce([{ ...CALL_ROW, job_id: JOB_ID, job_label: 'J00077' }]);
@@ -178,6 +184,7 @@ describe('PATCH /api/communication/calls/:id/job — manual attach', () => {
 
   it('accepts any org job for an unknown-caller call (no customer_id)', async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches({ communication_scope: 'all' }); // the attach reads under Communication scope
     mockPrisma.callSession.findMany
       .mockResolvedValueOnce([{ ...CALL_ROW, customer_id: null }])
       .mockResolvedValueOnce([{ ...CALL_ROW, customer_id: null, job_id: JOB_ID, job_label: 'J00077' }]);
@@ -190,8 +197,9 @@ describe('PATCH /api/communication/calls/:id/job — manual attach', () => {
     expect(res.body.call.jobLabel).toBe('J00077');
   });
 
-  it('403s for SALES (read-only Communication)', async () => {
+  it('403s without Attach conversations to jobs and leads, whatever the role', async () => {
     mockAuthAs('sales');
+    mockRoleSwitches({ attach_conversations: false });
     const res = await request(app).patch(`/api/communication/calls/${CALL_ID}/job`).set(authHeader('sales'))
       .send({ job_id: null });
     expect(res.status).toBe(403);
@@ -208,6 +216,7 @@ describe('PATCH /api/communication/calls/:id/job — manual attach', () => {
 describe('PATCH /api/communication/calls/:id/job — companion lead + customer', () => {
   it("stamps the job's lead alongside the job", async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches({ communication_scope: 'all' }); // the attach reads under Communication scope
     mockPrisma.callSession.findMany
       .mockResolvedValueOnce([CALL_ROW])
       .mockResolvedValueOnce([{ ...CALL_ROW, job_id: JOB_ID, job_label: 'J00077', lead_id: LEAD_ID }]);
@@ -232,6 +241,7 @@ describe('PATCH /api/communication/calls/:id/job — companion lead + customer',
   // mis-attach becomes uncorrectable. The anchor is job/lead only.
   it('leaves an unknown caller unknown - an attach never writes customer_id', async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches({ communication_scope: 'all' }); // the attach reads under Communication scope
     mockPrisma.callSession.findMany
       .mockResolvedValueOnce([{ ...CALL_ROW, customer_id: null }])
       .mockResolvedValueOnce([{ ...CALL_ROW, customer_id: null, job_id: JOB_ID, job_label: 'J00077' }]);
@@ -251,6 +261,7 @@ describe('PATCH /api/communication/calls/:id/job — companion lead + customer',
 
   it('never overwrites a customer_id the phone match already resolved', async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches({ communication_scope: 'all' }); // the attach reads under Communication scope
     mockPrisma.callSession.findMany
       .mockResolvedValueOnce([CALL_ROW]) // customer-linked already
       .mockResolvedValueOnce([{ ...CALL_ROW, job_id: JOB_ID, job_label: 'J00077' }]);

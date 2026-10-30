@@ -17,9 +17,9 @@
 //   - loList.tsx (Logistic Orders) is already correctly gated — out of
 //     scope, not exercised here.
 //
-// Every surface below is asserted read-only (SALES-shaped ability: `read`
-// only, on `Inventory` / `PurchaseOrder` / `Vendor`, no write verb) AND
-// write-capable (an "ADMIN" ability holding every write verb on those three
+// Every surface below is asserted read-only (the View stock, View purchase orders and View vendors switches on and
+// no Create, Edit or Delete switch: `read` only, on `Inventory` / `PurchaseOrder` / `Vendor`) AND
+// write-capable (every Create, Edit and Delete switch of those three on, one write verb each on those three
 // subjects), so a fix that over-corrects and hides controls from a real
 // writer fails here too.
 //
@@ -199,7 +199,7 @@ beforeEach(() => {
   mockApi.post.mockResolvedValue({ data: { success: true } });
 });
 
-// SALES-shaped, per Pass A's `GET /api/auth/me` capture: unconditional reads
+// The three View switches only (View stock, View purchase orders, View vendors): reads
 // only, no create/update/delete/manage on any of the three subjects.
 const readOnlyAbility = () =>
   buildAbility([
@@ -505,11 +505,12 @@ describe('#2043 — VendorDetailDialog (wrong subject)', () => {
     expect(screen.queryByRole('button', { name: /^Delete$/ })).not.toBeInTheDocument();
   });
 
-  it('hides Edit / Archive / Delete for an ability with create Vendor (the upsert route gate) but no manage Inventory (must show them)', async () => {
-    // Lead premise amendment: POST /api/inventory/vendors is an upsert gated create Vendor; edit/archive ride it.
+  it('shows Edit / Archive / Delete for an ability with update and delete Vendor but no manage Inventory (must show them)', async () => {
+    // S07.19: POST /api/inventory/vendors with an id is an update gated Edit vendors (update Vendor); edit and
+    // archive ride it. Create vendors no longer opens them.
     const vendorWriteOnly = buildAbility([
       { action: 'read', subject: 'Vendor' },
-      { action: 'create', subject: 'Vendor' },
+      { action: 'update', subject: 'Vendor' },
       { action: 'delete', subject: 'Vendor' },
     ]);
     await openVendorDetail(vendorWriteOnly);
@@ -517,6 +518,16 @@ describe('#2043 — VendorDetailDialog (wrong subject)', () => {
     expect(screen.getByRole('button', { name: 'Edit' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Archive/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^Delete$/ })).toBeInTheDocument();
+  });
+
+  it('hides Edit and Archive for an ability with create Vendor but not update Vendor (Create vendors does not open an edit)', async () => {
+    await openVendorDetail(buildAbility([
+      { action: 'read', subject: 'Vendor' },
+      { action: 'create', subject: 'Vendor' },
+    ]));
+
+    expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Archive/i })).not.toBeInTheDocument();
   });
 
   it('keeps Edit / Archive / Delete for the full write ability (must stay green)', async () => {
@@ -534,12 +545,13 @@ describe('#2043 — nav registry, Inventory group children (wrong subject)', () 
     return sections.flatMap((s) => s.items.flatMap((item) => [item, ...(item.children ?? [])]));
   }
 
-  function build(ability: ReturnType<typeof readOnlyAbility>) {
+  function build(ability: ReturnType<typeof readOnlyAbility>, values: Record<string, unknown> = {}) {
     return buildNavSections({
       keys: DEFAULT_LAYOUT_KEYS,
       sections: NAV_SECTIONS,
       getDestination,
       can: ability.can.bind(ability),
+      values,
       isLocked: () => false,
       isFeatureLocked: () => false,
     });
@@ -547,7 +559,8 @@ describe('#2043 — nav registry, Inventory group children (wrong subject)', () 
 
   it('shows Purchase Orders / Vendors nav rows to an ability with read Inventory but neither read PurchaseOrder nor read Vendor (must NOT — the child is keyed on the wrong subject)', () => {
     const inventoryOnly = buildAbility([{ action: 'read', subject: 'Inventory' }]);
-    const labels = rowsFor(build(inventoryOnly)).map((r) => r.dest.label);
+    // Roles & Permissions S02.20: the rows follow the person's switches, so this person holds only Stock's pair.
+    const labels = rowsFor(build(inventoryOnly, { view_stock: true, show_stock_page: true })).map((r) => r.dest.label);
 
     expect(labels).not.toContain('Purchase Orders');
     expect(labels).not.toContain('Vendors');
@@ -559,7 +572,11 @@ describe('#2043 — nav registry, Inventory group children (wrong subject)', () 
       { action: 'read', subject: 'PurchaseOrder' },
       { action: 'read', subject: 'Vendor' },
     ]);
-    const labels = rowsFor(build(fullRead)).map((r) => r.dest.label);
+    const labels = rowsFor(build(fullRead, {
+      view_stock: true, show_stock_page: true,
+      view_purchase_orders: true, show_purchase_orders_page: true,
+      view_vendors: true, show_vendors_page: true,
+    })).map((r) => r.dest.label);
 
     expect(labels).toContain('Purchase Orders');
     expect(labels).toContain('Vendors');

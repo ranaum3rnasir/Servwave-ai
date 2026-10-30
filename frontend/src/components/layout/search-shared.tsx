@@ -4,7 +4,7 @@ import { STATUS_REGISTRY, STATUS_INTENT_FILL, type StatusDomain } from '@/design
 
 export interface SearchResult {
   id: string;
-  entity_type: 'job' | 'customer' | 'lead' | 'estimate' | 'service-plan' | 'calendar-entry';
+  entity_type: 'job' | 'customer' | 'lead' | 'estimate' | 'invoice' | 'service-plan' | 'calendar-entry';
   title: string;
   subtitle?: string | null;
   date?: string | null;
@@ -44,6 +44,7 @@ const RESULT_DOMAIN: Record<SearchResult['entity_type'], StatusDomain | null> = 
   customer:         null,
   lead:             'lead',
   estimate:         'estimate',
+  invoice:          'invoice',
   'service-plan':   'servicePlan',
   // An Event carries no status (spec §3) - `result.status` is never set for this entity_type,
   // so statusDotClass/statusLabel are never called with it in practice. Present anyway so this
@@ -63,7 +64,7 @@ export function statusDotClass(entityType: SearchResult['entity_type'], status: 
 }
 
 /**
- * Label for a search row's status. Registry-resolved for `job` and `lead`; every
+ * Label for a search row's status. Registry-resolved for `job`, `lead` and `invoice`; every
  * other entity type keeps the humaniser, which is also the fallback for any status
  * value the registry does not carry.
  *
@@ -114,7 +115,7 @@ export function statusLabel(entityType: SearchResult['entity_type'], status: str
   if (status === 'UNSCHEDULED') return 'Unscheduled';
   const domain = RESULT_DOMAIN[entityType];
   const label =
-    domain === 'job' || domain === 'lead' ? STATUS_REGISTRY[domain][status]?.label : undefined;
+    domain === 'job' || domain === 'lead' || domain === 'invoice' ? STATUS_REGISTRY[domain][status]?.label : undefined;
   return label ?? status.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 

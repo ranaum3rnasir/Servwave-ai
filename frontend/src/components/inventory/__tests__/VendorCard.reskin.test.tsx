@@ -26,9 +26,8 @@ function renderCard() {
   return render(
     <VendorCard
       vendor={vendor}
-      spend={spend}
-      shareOfYTD={0.4}
-      topShareOfYTD={1}
+      money={{ spend, shareOfYTD: 0.4, topShareOfYTD: 1 }}
+      showAccountNumber
       onClick={() => {}}
     />,
   );

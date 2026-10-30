@@ -148,7 +148,7 @@ describe('Job line item: the inline Quantity and Selling price patch (mobile sli
 describe('Payments & Lists: the default deposit saved on the org (mobile slice 37)', () => {
   const ORG = {
     id: 'o1',
-    stripe_account_id: null,
+    stripe_connected: false,
     accepted_payment_methods: ['CASH'],
     source_options: [],
     job_type_options: [],

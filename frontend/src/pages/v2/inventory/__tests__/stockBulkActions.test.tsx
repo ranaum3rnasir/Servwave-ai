@@ -92,6 +92,8 @@ function admin() {
   return buildAbility([
     { action: 'update', subject: 'Inventory' },
     { action: 'read', subject: 'Inventory' },
+    // Export stock compiles into this; the Export buttons are not drawn without it (S07.15).
+    { action: 'export', subject: 'Inventory' },
   ]);
 }
 
@@ -167,7 +169,7 @@ describe('stock bulk restock', () => {
   });
 
   it('hides Restock without `update Inventory`, and keeps Export selected', async () => {
-    await renderStock(buildAbility([{ action: 'read', subject: 'Inventory' }]));
+    await renderStock(buildAbility([{ action: 'read', subject: 'Inventory' }, { action: 'export', subject: 'Inventory' }]));
 
     await userEvent.click(screen.getByRole('checkbox', { name: 'Select CAP-01' }));
 

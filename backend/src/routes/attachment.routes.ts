@@ -10,20 +10,32 @@ import * as attachmentController from '../controllers/attachment.controller';
 import { MAX_FILE_SIZE, MAX_PROXY_VIDEO_FILE_SIZE } from '../controllers/attachment.controller';
 
 const router = Router();
-// The 60MB route limit is a generous ceiling ABOVE the handler's real per-kind
-// caps (25MB non-video, 50MB video on THIS path — mirrors estimate.routes.ts's
-// photoUpload pattern) so an oversized file 400s with the handler's precise message
-// instead of multer's own LIMIT_FILE_SIZE error surfacing as a raw 500.
-// That reasoning only ever held BELOW 60MB. Past the ceiling multer aborts the
-// stream and the handler never runs, so `uploadMulterErrors` below answers for it.
-//
-// DELIBERATELY NOT RAISED alongside the 512MB direct-to-storage video cap. `memoryStorage()`
-// means whatever number sits here can be buffered whole in this process, against a single
-// instance documented at 512MB of memory. Video no longer arrives here at all, so raising it
-// would buy nothing any user can reach while putting the process one request from an OOM.
+
+/**
+ * This route's multer ceiling. DELIBERATELY UNCHANGED BY S4.
+ *
+ * It is a generous ceiling ABOVE the handler's real per-kind caps (25MB non-video, 50MB video
+ * on this path — mirrors estimate.routes.ts's photoUpload pattern) so an oversized file 400s
+ * with the handler's precise message instead of multer's own LIMIT_FILE_SIZE error surfacing
+ * as a raw 500. That reasoning only ever held BELOW the ceiling: past it multer aborts the
+ * stream and the handler never runs, so `uploadMulterErrors` below answers for it.
+ *
+ * WHY S4 DID NOT RAISE IT. `memoryStorage()` means whatever number sits here can be buffered
+ * whole in the Node process, and the deployment target is documented at 512MB for a single
+ * instance (`src/index.ts`). S4 raised the cap for VIDEO, and video no longer arrives here at
+ * all — `uploadAttachment.ts` sends both video types down the direct path. Raising this would
+ * therefore buy nothing any user can reach, while putting the process one request away from an
+ * OOM and two concurrent requests away from a certain one. The proxy's binding constraint is
+ * its transport, and this number is that transport's honest size.
+ *
+ * Exported so the relationship between the ceiling and the handler's caps is checkable instead
+ * of being a literal invisible from the controller — see `attachment-size-caps.test.ts`.
+ */
+export const PROXY_ROUTE_CEILING_BYTES = 60 * 1024 * 1024; // 60MB
+
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 60 * 1024 * 1024 },
+  limits: { fileSize: PROXY_ROUTE_CEILING_BYTES },
 });
 
 // Built from the controller's own constants so the sentence cannot drift from the caps

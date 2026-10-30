@@ -6,8 +6,8 @@ import { z } from 'zod';
  * Trims and lowercases every email at the validation boundary so casing can
  * never fork an identity. Supabase Auth and OAuth providers normalize emails
  * to lowercase, but our `users.email` column is `text` and matched
- * case-sensitively — so a mixed-case row (e.g. `Sagiv@…`) stored from an invite
- * form would never reconcile with the `sagiv@…` a provider hands back, locking
+ * case-sensitively — so a mixed-case row (e.g. `Riley@…`) stored from an invite
+ * form would never reconcile with the `riley@…` a provider hands back, locking
  * the user out. Reuse this for every email field that reaches the DB.
  */
 export const emailSchema = z.string().trim().toLowerCase().email();

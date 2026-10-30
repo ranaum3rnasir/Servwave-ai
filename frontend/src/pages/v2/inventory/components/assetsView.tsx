@@ -70,12 +70,30 @@ type EditorState = null | { asset: Asset | null }; // null asset = create
 type ActionState = null | { mode: AssetActionMode; asset: Asset };
 
 interface RowActions {
+  /** Without See all assets every row is the viewer's own, so an Assignee column would only repeat their name. */
+  showAssignee: boolean;
   onAction: (mode: AssetActionMode, asset: Asset) => void;
   onEdit: (asset: Asset) => void;
   onDelete: (asset: Asset) => void;
   canUpdate: boolean;
   canDelete: boolean;
 }
+
+const ASSIGNEE_COLUMN: ColumnDef<Asset, unknown> = {
+  id: 'assignee',
+  accessorKey: 'assigned_user',
+  header: 'Assignee',
+  size: 170,
+  meta: { label: 'Assignee' },
+  cell: ({ row }) => {
+    const user = row.original.assigned_user;
+    return user ? (
+      <span>{user.first_name} {user.last_name}</span>
+    ) : (
+      <span className="text-muted-foreground">Unassigned</span>
+    );
+  },
+};
 
 function buildAssetColumns(actions: RowActions): ColumnDef<Asset, unknown>[] {
   return [
@@ -126,21 +144,7 @@ function buildAssetColumns(actions: RowActions): ColumnDef<Asset, unknown>[] {
       meta: { label: 'Status', fixed: true },
       cell: ({ row }) => <StatusChip domain="asset" status={row.original.status} />,
     },
-    {
-      id: 'assignee',
-      accessorKey: 'assigned_user',
-      header: 'Assignee',
-      size: 170,
-      meta: { label: 'Assignee' },
-      cell: ({ row }) => {
-        const user = row.original.assigned_user;
-        return user ? (
-          <span>{user.first_name} {user.last_name}</span>
-        ) : (
-          <span className="text-muted-foreground">Unassigned</span>
-        );
-      },
-    },
+    ...(actions.showAssignee ? [ASSIGNEE_COLUMN] : []),
     {
       id: 'updated',
       accessorKey: 'updated_at',
@@ -246,6 +250,9 @@ export function AssetsView({ onToast }: { onToast: (msg: string) => void }) {
   const canCreateInventory = ability.can('create', 'Inventory');
   const canUpdateInventory = ability.can('update', 'Inventory');
   const canDeleteInventory = ability.can('delete', 'Inventory');
+  // The server returns only the assets the person holds without See all assets; the holder filter and the
+  // Assignee column are then pointless, so they go.
+  const canSeeAllAssets = ability.can('see_all_assets', 'Inventory');
 
   useEffect(() => {
     const t = setTimeout(() => setDebouncedSearch(search), 300);
@@ -300,6 +307,7 @@ export function AssetsView({ onToast }: { onToast: (msg: string) => void }) {
   const columns = useMemo(
     () =>
       buildAssetColumns({
+        showAssignee: canSeeAllAssets,
         onAction: (mode, asset) => setAction({ mode, asset }),
         onEdit: (asset) => setEditor({ asset }),
         onDelete: (asset) => { void handleDelete(asset); },
@@ -307,7 +315,7 @@ export function AssetsView({ onToast }: { onToast: (msg: string) => void }) {
         canDelete: canDeleteInventory,
       }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [selectedId, canUpdateInventory, canDeleteInventory],
+    [selectedId, canUpdateInventory, canDeleteInventory, canSeeAllAssets],
   );
 
   return (
@@ -350,7 +358,11 @@ export function AssetsView({ onToast }: { onToast: (msg: string) => void }) {
               ) : (
                 <EmptyState
                   icon={<Wrench />}
-                  title="No assets yet - track company tools and who holds them."
+                  title={
+                    canSeeAllAssets
+                      ? 'No assets yet - track company tools and who holds them.'
+                      : 'No assets assigned to you'
+                  }
                   action={
                     canCreateInventory ? (
                       <Button size="sm" onClick={() => setEditor({ asset: null })}>
@@ -367,19 +379,21 @@ export function AssetsView({ onToast }: { onToast: (msg: string) => void }) {
                 <div className="min-w-[12rem] max-w-md flex-1">
                   <SearchInput value={search} onValueChange={setSearch} placeholder="Search assets…" />
                 </div>
-                <SelectField
-                  value={assigneeId}
-                  onValueChange={setAssigneeId}
-                  size="sm"
-                  aria-label="Filter by assignee"
-                  className="w-44"
-                  options={[
-                    { value: 'all', label: 'Anyone' },
-                    ...users
-                      .filter((u) => u.is_active)
-                      .map((u) => ({ value: u.id, label: `${u.first_name} ${u.last_name}` })),
-                  ]}
-                />
+                {canSeeAllAssets && (
+                  <SelectField
+                    value={assigneeId}
+                    onValueChange={setAssigneeId}
+                    size="sm"
+                    aria-label="Filter by assignee"
+                    className="w-44"
+                    options={[
+                      { value: 'all', label: 'Anyone' },
+                      ...users
+                        .filter((u) => u.is_active)
+                        .map((u) => ({ value: u.id, label: `${u.first_name} ${u.last_name}` })),
+                    ]}
+                  />
+                )}
                 <span className="flex items-center gap-2">
                   <Checkbox
                     id={retiredCheckboxId}

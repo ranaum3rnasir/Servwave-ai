@@ -2,20 +2,18 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { mockAuthAs, authHeader, ALPHA_ORG_ID } from './helpers';
+import { mockAuthAs, mockRoleSwitches, authHeader, ALPHA_ORG_ID } from './helpers';
 import { CURRENT_PAYMENTS_TERMS_VERSION } from '../lib/legal';
 import {
   createConnectedAccount,
   createAccountSession,
   createAccountLink,
-  updateAccountStatementDescriptor,
 } from '../lib/stripe';
 import {
   acceptPaymentsTermsSchema,
   assertPaymentsTermsAccepted,
   PaymentsTermsError,
   toStatementDescriptor,
-  updateDescriptorSchema,
 } from '../controllers/organization-stripe.controller';
 
 const mockPrisma = prisma as unknown as {
@@ -34,15 +32,14 @@ const mockPrisma = prisma as unknown as {
 const mockCreateConnectedAccount = vi.mocked(createConnectedAccount);
 const mockCreateAccountSession = vi.mocked(createAccountSession);
 const mockCreateAccountLink = vi.mocked(createAccountLink);
-const mockUpdateAccountStatementDescriptor = vi.mocked(updateAccountStatementDescriptor);
 
 // Full org select shape connectStripe reads to build the ConnectedAccountPrefill.
 const ORG_PREFILL_FIXTURE = {
   id: ALPHA_ORG_ID,
-  name: 'Alpha Doors & Security',
-  email: 'owner@alphadoors.com',
-  website: 'https://alphadoors.com',
-  support_email: 'support@alphadoors.com',
+  name: 'Example Doors & Security',
+  email: 'owner@example-company.test',
+  website: 'https://example-company.test',
+  support_email: 'support@example-company.test',
   industry: ['HVAC'],
   stripe_account_id: null as string | null,
   phone: '8045551234',
@@ -80,8 +77,11 @@ describe('POST /api/organization/stripe/accept-terms', () => {
     expect(mockPrisma.termsAcceptance.create).not.toHaveBeenCalled();
   });
 
-  it('records an org-level payments_onboarding row (version + fee snapshot + attestation)', async () => {
-    mockPrisma.organization.findUnique.mockResolvedValue({ platform_fee_bps: 50 });
+  // Payments go-live slice 03 (D9/D12): the terms the admin accepts now say ServWave charges no
+  // payment fee, so the acceptance records the 2026-10-06 terms and a disclosed fee of 0 - even
+  // though the org row still carries the retired platform_fee_bps (50 = the old 0.5%).
+  it('records the 2026-10-06 payments terms with a disclosed fee of 0, even when the org row still carries a platform fee', async () => {
+    mockPrisma.organization.findUnique.mockResolvedValue({ id: ALPHA_ORG_ID, platform_fee_bps: 50 });
     mockPrisma.termsAcceptance.create.mockResolvedValue({ id: 't1' });
 
     const res = await request(app)
@@ -90,18 +90,33 @@ describe('POST /api/organization/stripe/accept-terms', () => {
       .send({ accepted: true, authority_attested: true });
 
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ accepted: true, terms_version: CURRENT_PAYMENTS_TERMS_VERSION });
+    expect(res.body).toMatchObject({ accepted: true, terms_version: '2026-10-06' });
     expect(mockPrisma.termsAcceptance.create).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           organization_id: ALPHA_ORG_ID,
           context: 'payments_onboarding',
-          terms_version: CURRENT_PAYMENTS_TERMS_VERSION,
-          disclosed_fee_bps: 50,
+          terms_version: '2026-10-06',
+          disclosed_fee_bps: 0,
           authority_attested: true,
         }),
       }),
     );
+    // The audit trail carries the same disclosed fee as the acceptance row.
+    await vi.waitFor(() => expect(mockPrisma.auditLog.create).toHaveBeenCalled());
+    expect(JSON.stringify(mockPrisma.auditLog.create.mock.calls[0][0])).toContain('"disclosed_fee_bps":0');
+  });
+
+  it('still 404s when the organization does not exist (no acceptance row written)', async () => {
+    mockPrisma.organization.findUnique.mockResolvedValue(null);
+
+    const res = await request(app)
+      .post('/api/organization/stripe/accept-terms')
+      .set(authHeader('admin'))
+      .send({ accepted: true, authority_attested: true });
+
+    expect(res.status).toBe(404);
+    expect(mockPrisma.termsAcceptance.create).not.toHaveBeenCalled();
   });
 
   it('is idempotent: a P2002 from the partial unique index still resolves 200 (no re-throw)', async () => {
@@ -200,7 +215,7 @@ describe('assertPaymentsTermsAccepted — version-aware gate (NOT existence-only
 
 describe('toStatementDescriptor', () => {
   it('trims and collapses internal whitespace', () => {
-    expect(toStatementDescriptor('  Alpha   Doors  ')).toBe('Alpha Doors');
+    expect(toStatementDescriptor('  Example   Doors  ')).toBe('Example Doors');
   });
 
   it('strips disallowed characters < > / \' " *', () => {
@@ -208,7 +223,7 @@ describe('toStatementDescriptor', () => {
   });
 
   it('truncates to at most 22 characters', () => {
-    const longName = 'Alpha Doors And Security Services LLC';
+    const longName = 'Example Doors And Security Services LLC';
     expect(toStatementDescriptor(longName)).toBe(longName.slice(0, 22));
     expect(toStatementDescriptor(longName)!.length).toBe(22);
   });
@@ -219,28 +234,6 @@ describe('toStatementDescriptor', () => {
 
   it('returns null when the cleaned name has no letters', () => {
     expect(toStatementDescriptor('12345')).toBeNull();
-  });
-});
-
-describe('updateDescriptorSchema', () => {
-  it('accepts a 5-22 char descriptor with a letter and no disallowed chars', () => {
-    expect(updateDescriptorSchema.safeParse({ statement_descriptor: 'ALPHA DOORS' }).success).toBe(true);
-  });
-
-  it('rejects under 5 characters', () => {
-    expect(updateDescriptorSchema.safeParse({ statement_descriptor: 'AB' }).success).toBe(false);
-  });
-
-  it('rejects over 22 characters', () => {
-    expect(updateDescriptorSchema.safeParse({ statement_descriptor: 'A'.repeat(23) }).success).toBe(false);
-  });
-
-  it('rejects disallowed characters', () => {
-    expect(updateDescriptorSchema.safeParse({ statement_descriptor: "Bob's Shop" }).success).toBe(false);
-  });
-
-  it('rejects a descriptor with no letters', () => {
-    expect(updateDescriptorSchema.safeParse({ statement_descriptor: '12345' }).success).toBe(false);
   });
 });
 
@@ -256,7 +249,7 @@ describe('POST /api/organization/stripe/connect', () => {
     mockPrisma.organization.findUnique.mockResolvedValue({ ...ORG_PREFILL_FIXTURE, stripe_account_id: 'acct_existing' });
     const res = await request(app).post('/api/organization/stripe/connect').set(authHeader('admin')).send({});
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ stripe_account_id: 'acct_existing' });
+    expect(res.body).toEqual({ connected: true });
     expect(mockCreateConnectedAccount).not.toHaveBeenCalled();
   });
 
@@ -268,14 +261,14 @@ describe('POST /api/organization/stripe/connect', () => {
     const res = await request(app).post('/api/organization/stripe/connect').set(authHeader('admin')).send({});
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ stripe_account_id: 'acct_new_1' });
+    expect(res.body).toEqual({ connected: true });
     expect(mockCreateConnectedAccount).toHaveBeenCalledWith(expect.objectContaining({
       orgId: ALPHA_ORG_ID,
-      email: 'owner@alphadoors.com',
-      businessName: 'Alpha Doors & Security',
+      email: 'owner@example-company.test',
+      businessName: 'Example Doors & Security',
       mcc: '1711', // industry: ['HVAC'] → mccForIndustry
-      url: 'https://alphadoors.com',
-      supportEmail: 'support@alphadoors.com',
+      url: 'https://example-company.test',
+      supportEmail: 'support@example-company.test',
       supportPhone: '8045551234',
       brandColorHex: '#0C2D3A',
       businessType: 'company',
@@ -297,7 +290,7 @@ describe('POST /api/organization/stripe/connect', () => {
     const res = await request(app).post('/api/organization/stripe/connect').set(authHeader('admin')).send({});
 
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ stripe_account_id: 'acct_winner' });
+    expect(res.body).toEqual({ connected: true });
     expect(mockCreateConnectedAccount).toHaveBeenCalledTimes(1);
   });
 
@@ -366,35 +359,102 @@ describe('POST /api/organization/stripe/account-session', () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ client_secret: 'cs_secret_abc' });
-    expect(mockCreateAccountSession).toHaveBeenCalledWith('acct_1');
+    expect(mockCreateAccountSession).toHaveBeenCalledWith('acct_1', 'owner');
   });
 });
 
 describe('GET /api/organization/stripe/status', () => {
+  const connectedRow = {
+    stripe_account_id: 'acct_1', stripe_charges_enabled: true, stripe_payouts_enabled: true,
+    stripe_details_submitted: true, stripe_requirements_due: [], stripe_disabled_reason: null,
+  };
+
+  // The company read every signed-in person holds is NOT a way into the payments status (connected, charges and
+  // payouts enabled, requirements due, disabled reason): only the three switches below open it. A person's access
+  // is built from switches alone; the stored role grants are no longer read.
+  const asSalesWith = (switches: Record<string, boolean>) => {
+    mockAuthAs('sales');
+    mockRoleSwitches(switches);
+    mockPrisma.organization.findUnique.mockResolvedValue(connectedRow);
+    mockPrisma.termsAcceptance.findFirst.mockResolvedValue({ id: 't1' });
+  };
+  const getStatusAsSales = () => request(app).get('/api/organization/stripe/status').set(authHeader('sales'));
+
+  it('answers a user holding only View payments and payouts, with no account identifier', async () => {
+    asSalesWith({ view_payments: true });
+    const res = await getStatusAsSales();
+    expect(res.status).toBe(200);
+    expect(res.body.connected).toBe(true);
+    expect(JSON.stringify(res.body)).not.toContain('acct_');
+  });
+
+  it('answers a user holding only Manage payout account, with no account identifier', async () => {
+    asSalesWith({ manage_payout_account: true });
+    const res = await getStatusAsSales();
+    expect(res.status).toBe(200);
+    expect(res.body.connected).toBe(true);
+    expect(JSON.stringify(res.body)).not.toContain('acct_');
+  });
+
+  it('answers a user holding only Company settings (the switch that carries update Organization)', async () => {
+    asSalesWith({ company_settings: true });
+    const res = await getStatusAsSales();
+    expect(res.status).toBe(200);
+    expect(JSON.stringify(res.body)).not.toContain('acct_');
+  });
+
+  it('refuses a user with every payments switch off, who holds only the reads everyone has', async () => {
+    asSalesWith({ view_payments: false, manage_payout_account: false, company_settings: false });
+    const res = await getStatusAsSales();
+    expect(res.status).toBe(403);
+    expect(mockPrisma.organization.findUnique).not.toHaveBeenCalled();
+  });
+
   it('404s when the organization row is missing', async () => {
     mockPrisma.organization.findUnique.mockResolvedValue(null);
     const res = await request(app).get('/api/organization/stripe/status').set(authHeader('admin'));
     expect(res.status).toBe(404);
   });
 
+  // Payments go-live slice 03: the retired org platform fee is no longer shown anywhere, so the
+  // status the settings card reads never asks for it and never returns it.
+  it('never reads or returns the retired platform fee', async () => {
+    mockPrisma.organization.findUnique.mockImplementation(
+      async (args: { select: Record<string, boolean> }) => {
+        // Answer exactly what was selected, the way the real client does.
+        const row: Record<string, unknown> = {
+          stripe_account_id: 'acct_1', stripe_charges_enabled: true, stripe_payouts_enabled: true,
+          stripe_details_submitted: true, stripe_requirements_due: [], stripe_disabled_reason: null,
+          platform_fee_bps: 50,
+        };
+        return Object.fromEntries(Object.keys(args.select).map((k) => [k, row[k]]));
+      },
+    );
+
+    const res = await request(app).get('/api/organization/stripe/status').set(authHeader('admin'));
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ connected: true, stripe_charges_enabled: true });
+    expect(res.body).not.toHaveProperty('platform_fee_bps');
+  });
+
   it('reflects stripe_charges_enabled (not stripe_account_id presence) and skips the payout-nudge query once payouts are enabled', async () => {
     mockPrisma.organization.findUnique.mockResolvedValue({
       stripe_account_id: 'acct_1', stripe_charges_enabled: true, stripe_payouts_enabled: true,
       stripe_details_submitted: true, stripe_requirements_due: [], stripe_disabled_reason: null,
-      platform_fee_bps: 50,
     });
 
     const res = await request(app).get('/api/organization/stripe/status').set(authHeader('admin'));
 
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({
-      stripe_account_id: 'acct_1', stripe_charges_enabled: true, stripe_payouts_enabled: true,
-      platform_fee_bps: 50, collected_awaiting_payout: 0,
+      connected: true, stripe_charges_enabled: true, stripe_payouts_enabled: true,
+      collected_awaiting_payout: 0,
     });
     expect(mockPrisma.payment.aggregate).not.toHaveBeenCalled();
   });
 
-  it('sums CARD payments awaiting payout only while charges are enabled and payouts are not', async () => {
+  it('sums CARD and online bank payments awaiting payout only while charges are enabled and payouts are not', async () => {
     mockPrisma.organization.findUnique.mockResolvedValue({
       stripe_account_id: 'acct_1', stripe_charges_enabled: true, stripe_payouts_enabled: false,
       stripe_details_submitted: true, stripe_requirements_due: [], stripe_disabled_reason: null,
@@ -407,7 +467,12 @@ describe('GET /api/organization/stripe/status', () => {
     expect(res.status).toBe(200);
     expect(res.body.collected_awaiting_payout).toBe(432.1);
     expect(mockPrisma.payment.aggregate).toHaveBeenCalledWith(expect.objectContaining({
-      where: { invoice: { organization_id: ALPHA_ORG_ID }, method: 'CARD', voided_at: null },
+      where: {
+        invoice: { organization_id: ALPHA_ORG_ID },
+        // Cleared online bank debits are collected money too (slice 35); a hand-recorded bank transfer is not, it has no processor payment.
+        OR: [{ method: 'CARD' }, { method: 'ACH', stripe_payment_intent_id: { not: null } }],
+        voided_at: null, state: 'SUCCEEDED',
+      },
     }));
   });
 
@@ -442,7 +507,9 @@ describe('POST /api/organization/stripe/account-link', () => {
     expect(mockCreateAccountLink).not.toHaveBeenCalled();
   });
 
-  it('returns the hosted onboarding url, refresh/return both pointed at settings/payments', async () => {
+  // Payments go-live slice 06: the return lands with ?onboarding=return so the settings page
+  // re-reads the account status (fail closed) instead of trusting the stored flags.
+  it('returns the hosted onboarding url; refresh goes back to settings/payments, return marks the onboarding return', async () => {
     mockPrisma.termsAcceptance.findFirst.mockResolvedValue({ id: 't1' });
     mockPrisma.organization.findUnique.mockResolvedValue({ stripe_account_id: 'acct_1' });
     mockCreateAccountLink.mockResolvedValue('https://connect.stripe.com/setup/e/acct_1/xyz');
@@ -454,44 +521,8 @@ describe('POST /api/organization/stripe/account-link', () => {
     expect(mockCreateAccountLink).toHaveBeenCalledWith(
       'acct_1',
       'http://localhost:5173/settings/payments',
-      'http://localhost:5173/settings/payments',
+      'http://localhost:5173/settings/payments?onboarding=return',
     );
-  });
-});
-
-describe('PATCH /api/organization/stripe/statement-descriptor', () => {
-  it('400s on an invalid descriptor before touching Stripe', async () => {
-    const res = await request(app)
-      .patch('/api/organization/stripe/statement-descriptor')
-      .set(authHeader('admin'))
-      .send({ statement_descriptor: 'AB' });
-
-    expect(res.status).toBe(400);
-    expect(mockUpdateAccountStatementDescriptor).not.toHaveBeenCalled();
-  });
-
-  it('409s when ServWave Payments is not connected', async () => {
-    mockPrisma.organization.findUnique.mockResolvedValue({ stripe_account_id: null });
-    const res = await request(app)
-      .patch('/api/organization/stripe/statement-descriptor')
-      .set(authHeader('admin'))
-      .send({ statement_descriptor: 'ALPHA DOORS' });
-
-    expect(res.status).toBe(409);
-    expect(mockUpdateAccountStatementDescriptor).not.toHaveBeenCalled();
-  });
-
-  it('updates the descriptor on the connected account (no platform prefix)', async () => {
-    mockPrisma.organization.findUnique.mockResolvedValue({ stripe_account_id: 'acct_1' });
-
-    const res = await request(app)
-      .patch('/api/organization/stripe/statement-descriptor')
-      .set(authHeader('admin'))
-      .send({ statement_descriptor: 'ALPHA DOORS' });
-
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ statement_descriptor: 'ALPHA DOORS' });
-    expect(mockUpdateAccountStatementDescriptor).toHaveBeenCalledWith('acct_1', 'ALPHA DOORS');
   });
 });
 
@@ -511,24 +542,44 @@ describe('ServWave Payments routes — behavioral 403 (non-ADMIN lacks update-Or
     expect(mockCreateAccountSession).not.toHaveBeenCalled();
   });
 
-  it('403s DISPATCHER on PATCH /stripe/statement-descriptor', async () => {
+  it('403s DISPATCHER on GET /stripe/status: the company read everyone holds does not open the payments status', async () => {
     mockAuthAs('dispatcher');
-    const res = await request(app)
-      .patch('/api/organization/stripe/statement-descriptor')
-      .set(authHeader('dispatcher'))
-      .send({ statement_descriptor: 'ALPHA DOORS' });
+    const res = await request(app).get('/api/organization/stripe/status').set(authHeader('dispatcher'));
     expect(res.status).toBe(403);
-    expect(mockUpdateAccountStatementDescriptor).not.toHaveBeenCalled();
+    expect(mockPrisma.organization.findUnique).not.toHaveBeenCalled();
+  });
+});
+
+// Each payments switch opens its own doors and no others: holding one never opens the other's.
+describe('ServWave Payments routes: View payments and Manage payout account are separate doors', () => {
+  it('refuses the VIEWER account session to a person holding only Manage payout account', async () => {
+    mockAuthAs('sales');
+    mockRoleSwitches({ manage_payout_account: true, view_payments: false });
+    const res = await request(app).post('/api/organization/stripe/account-session').set(authHeader('sales')).send({ surface: 'viewer' });
+    expect(res.status).toBe(403);
+    expect(mockCreateAccountSession).not.toHaveBeenCalled();
   });
 
-  it('does NOT 403 a non-admin role on GET /stripe/status (read-Organization is broadly granted)', async () => {
-    mockAuthAs('dispatcher');
-    mockPrisma.organization.findUnique.mockResolvedValue({
-      stripe_account_id: null, stripe_charges_enabled: false, stripe_payouts_enabled: false,
-      stripe_details_submitted: false, stripe_requirements_due: [], stripe_disabled_reason: null,
-      platform_fee_bps: 50,
-    });
-    const res = await request(app).get('/api/organization/stripe/status').set(authHeader('dispatcher'));
-    expect(res.status).toBe(200);
+  it('refuses the OWNER account session to a person holding only View payments and payouts', async () => {
+    mockAuthAs('sales');
+    mockRoleSwitches({ view_payments: true, manage_payout_account: false });
+    const res = await request(app).post('/api/organization/stripe/account-session').set(authHeader('sales')).send({ surface: 'owner' });
+    expect(res.status).toBe(403);
+    expect(mockCreateAccountSession).not.toHaveBeenCalled();
+  });
+
+  it('refuses connect, account-link and accept-terms to a person holding only View payments and payouts', async () => {
+    mockAuthAs('sales');
+    mockRoleSwitches({ view_payments: true, manage_payout_account: false });
+    const connect = await request(app).post('/api/organization/stripe/connect').set(authHeader('sales')).send({});
+    const link = await request(app).post('/api/organization/stripe/account-link').set(authHeader('sales')).send({});
+    const terms = await request(app)
+      .post('/api/organization/stripe/accept-terms')
+      .set(authHeader('sales'))
+      .send({ accepted: true, authority_attested: true });
+    expect([connect.status, link.status, terms.status]).toEqual([403, 403, 403]);
+    expect(mockCreateConnectedAccount).not.toHaveBeenCalled();
+    expect(mockCreateAccountLink).not.toHaveBeenCalled();
+    expect(mockPrisma.termsAcceptance.create).not.toHaveBeenCalled();
   });
 });

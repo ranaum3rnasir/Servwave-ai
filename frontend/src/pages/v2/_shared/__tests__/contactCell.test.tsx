@@ -13,13 +13,18 @@
  * itself with an ellipsis, the copy control does not take the width from the
  * value, and the full value stays reachable on `title`. Whether the ellipsis
  * lands in the right place is a browser check.
+ *
+ * The cell draws through the contact display policy (Roles & Permissions S05.5); these cases run as a person who holds
+ * both copy switches and Contact customers, so the containment is checked on the fullest version of the cell. What
+ * each switch takes away is in __tests__/list-contact-cell-policy.test.tsx.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-import { renderWithProviders } from '@/__tests__/helpers';
-import { buildAbility } from '@/lib/ability';
+import api from '@/lib/axios';
+import { renderWithProviders, seedMySwitches } from '@/__tests__/helpers';
+import { catalogToggle } from '@/__tests__/support/backendSwitchCatalog';
 import { requestCall } from '@/lib/communication/phoneTabHandoff';
 
 import { buildCustomerColumns } from '../../customers/customersColumns';
@@ -28,9 +33,39 @@ import { ContactCell } from '../contactCell';
 
 vi.mock('@/lib/communication/phoneTabHandoff', () => ({ requestCall: vi.fn() }));
 
+// Whether the company has the phone service, toggled per test.
+const phoneService = vi.hoisted(() => ({ value: true }));
+vi.mock('@/lib/entitlements', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/entitlements')>();
+  return {
+    ...actual,
+    useFeature: (feature: Parameters<typeof actual.useFeature>[0]) =>
+      feature === 'phone' ? phoneService.value : actual.useFeature(feature),
+  };
+});
+
 const LONG_EMAIL = 'accounts.receivable.department@really-long-company-domain.example.com';
 
+/** A person who holds both copy switches and Contact customers. */
+const EVERYTHING_ON = {
+  [catalogToggle('Copy customer phone').key]: true,
+  [catalogToggle('Copy customer email').key]: true,
+  [catalogToggle('Contact customers').key]: true,
+  [catalogToggle('View customers').key]: true,
+};
+
+function renderCell(ui: React.ReactElement) {
+  seedMySwitches(EVERYTHING_ON);
+  vi.mocked(api.get).mockImplementation(async (url: string) =>
+    url === '/api/permission-switches/me' ? { data: { admin_box: false, values: EVERYTHING_ON } } : { data: {} },
+  );
+  return renderWithProviders(ui);
+}
+
 beforeEach(() => {
+  localStorage.clear();
+  phoneService.value = true;
+  vi.mocked(requestCall).mockClear();
   // Not implemented in jsdom, and the copy control reaches for it on click.
   Object.defineProperty(navigator, 'clipboard', {
     value: { writeText: vi.fn().mockResolvedValue(undefined) },
@@ -41,12 +76,12 @@ beforeEach(() => {
 
 /** The control that carries the value itself, not the copy button beside it. */
 function valueControl(label: string): HTMLElement {
-  return screen.getByRole('button', { name: label });
+  return screen.getByRole('link', { name: label });
 }
 
 describe('ContactCell containment', () => {
   it('clips the value with an ellipsis instead of letting it leave the cell', () => {
-    render(<ContactCell type="email" value={LONG_EMAIL} />);
+    renderCell(<ContactCell type="email" value={LONG_EMAIL} />);
 
     const clipped = valueControl(LONG_EMAIL).querySelector('.truncate');
     expect(clipped).not.toBeNull();
@@ -54,7 +89,7 @@ describe('ContactCell containment', () => {
   });
 
   it('lets every level of the flex chain shrink, or the truncation cannot happen', () => {
-    const { container } = render(<ContactCell type="email" value={LONG_EMAIL} />);
+    const { container } = renderCell(<ContactCell type="email" value={LONG_EMAIL} />);
 
     // The wrapper is clamped to the cell's content box AND allowed to shrink
     // below its content; the value control zeroes the automatic minimum size
@@ -62,42 +97,43 @@ describe('ContactCell containment', () => {
     const wrapper = container.firstElementChild;
     expect(wrapper).toHaveClass('min-w-0');
     expect(wrapper).toHaveClass('max-w-full');
+    expect(wrapper?.firstElementChild).toHaveClass('min-w-0');
+    expect(wrapper?.firstElementChild).toHaveClass('max-w-full');
     expect(valueControl(LONG_EMAIL)).toHaveClass('min-w-0');
   });
 
   it('makes the value yield the width, not the copy control', () => {
-    render(<ContactCell type="email" value={LONG_EMAIL} />);
+    renderCell(<ContactCell type="email" value={LONG_EMAIL} />);
 
     expect(screen.getByRole('button', { name: 'Copy email address' })).toHaveClass('shrink-0');
   });
 
   it('keeps the full value reachable on title once it is clipped', () => {
-    render(<ContactCell type="email" value={LONG_EMAIL} />);
+    renderCell(<ContactCell type="email" value={LONG_EMAIL} />);
 
     expect(valueControl(LONG_EMAIL)).toHaveAttribute('title', LONG_EMAIL);
   });
 
   it('titles a phone with the formatted value it displays, not the raw store', () => {
-    render(<ContactCell type="phone" value="5551234567" />);
+    renderCell(<ContactCell type="phone" value="5551234567" />);
 
     expect(screen.getByText('(555) 123-4567')).toHaveAttribute('title', '(555) 123-4567');
   });
 });
 
 /**
- * Mobile slice 50: a phone number in a table is the shared contact action. Tapping it offers Call or
- * Text (never a bare dial), attributed to the row's record, and a tap never reaches the row's own
+ * The phone in a table is the contact display policy's: with the phone service and Contact customers a tap offers
+ * Call or Text in the app (never a bare dial), attributed to the row's record, and a tap never reaches the row's own
  * click handler.
  */
-describe('ContactCell phone: the shared contact action', () => {
+describe('ContactCell phone: tap action', () => {
   it('offers Call and Text, and Call opens the dialer attributed to the row', async () => {
     const onRow = vi.fn();
     const user = userEvent.setup();
-    renderWithProviders(
+    renderCell(
       <div onClick={onRow}>
         <ContactCell type="phone" value="5551234567" context={{ customerId: 'cust-1', customerName: 'Dana Reyes' }} />
       </div>,
-      { ability: buildAbility([{ action: 'create', subject: 'Communication' }]) },
     );
 
     await user.click(screen.getByRole('button', { name: '(555) 123-4567' }));
@@ -108,8 +144,9 @@ describe('ContactCell phone: the shared contact action', () => {
     expect(onRow).not.toHaveBeenCalled();
   });
 
-  it('an org without the phone service gets a plain device call link', () => {
-    render(<ContactCell type="phone" value="5551234567" />);
+  it('an org without the phone service gets a native call link when the person may copy the number', () => {
+    phoneService.value = false;
+    renderCell(<ContactCell type="phone" value="5551234567" />);
 
     expect(screen.getByRole('link', { name: '(555) 123-4567' })).toHaveAttribute('href', 'tel:5551234567');
   });

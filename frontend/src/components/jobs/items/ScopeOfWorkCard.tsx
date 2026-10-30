@@ -99,6 +99,8 @@ export interface ScopeOfWorkCardProps {
    * two grants separately instead of ANDing them into one flag.
    */
   canAddDelete?: boolean;
+  /** When the add is closed to this person, the "+ Add scope of work" button shows disabled with this reason instead of vanishing. */
+  lockedReason?: string;
   /** Show the staff-only internal_cost field. Mirrors the backend's canSeePricing gate. */
   canSeePricing: boolean;
   /**
@@ -816,6 +818,7 @@ export function ScopeOfWorkCard({
   scopes,
   canEdit,
   canAddDelete = canEdit,
+  lockedReason,
   canSeePricing,
   canSeeSellPrice = true,
   locked = false,
@@ -878,11 +881,15 @@ export function ScopeOfWorkCard({
     onReorder(next);
   };
 
-  const addButton = interactiveAddDelete && !adding && (
+  const addButton = interactiveAddDelete && !adding ? (
     <Button type="button" variant="solid" tone="business" size="sm" onClick={() => setAdding(true)}>
       <Plus className="h-4 w-4" aria-hidden /> Add scope of work
     </Button>
-  );
+  ) : !canAddDelete && lockedReason ? (
+    <Button type="button" variant="solid" tone="business" size="sm" disabled disabledReason={lockedReason}>
+      <Plus className="h-4 w-4" aria-hidden /> Add scope of work
+    </Button>
+  ) : undefined;
 
   // "Use preset" — same add-equivalent grant as "+ Add scope of work" (it ultimately calls
   // onAdd too), and only rendered once a parent supplies the handler (see prop doc).

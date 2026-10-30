@@ -79,6 +79,11 @@ export interface EstimateReceiptCardEstimate {
   } | null;
   line_items?: EstimateLineItem[];
   scopes?: Scope[];
+  /** The deposit invoice (kind DEPOSIT) is read for what is left on it after a part payment. */
+  invoices?: {
+    kind?: string; status?: string; amount_due?: number | string | null;
+    payments?: { amount?: number | string; state?: string; voided_at?: string | null }[] | null;
+  }[] | null;
   /**
    * #985 - the state the backend derived tax_rate from, so the tax select can name the right
    * jurisdiction when several share the rate. Mirrors `deriveTaxRateFromLead`'s own precedence:
@@ -212,6 +217,16 @@ export function EstimateReceiptCard({ estimate, canEditNow }: EstimateReceiptCar
   // ANDed with the page's own lock/terminal policy. Frozen figures always display percent-style,
   // matching send_config's own shape (deposit_percentage/deposit_amount, no mode flag).
   const depositEditable = canEditNow && deposit.editable;
+  // Slice 27 (slice 15 acceptance 4): after part of the deposit was recorded, the box says what is
+  // LEFT, read off the deposit invoice's amount due.
+  const partPaidDeposit = estimate.invoices?.find((inv) => inv.kind === 'DEPOSIT' && inv.status === 'PARTIAL');
+  const depositLeftToPay = partPaidDeposit ? toNum(partPaidDeposit.amount_due) : null;
+  // Slice 28b: bank money still clearing on the deposit (live PROCESSING payments), shown beside it.
+  const depositProcessing = (estimate.invoices ?? [])
+    .filter((inv) => inv.kind === 'DEPOSIT')
+    .flatMap((inv) => inv.payments ?? [])
+    .filter((p) => p.state === 'PROCESSING' && !p.voided_at)
+    .reduce((sum, p) => sum + toNum(p.amount ?? 0), 0);
   const displayDepositMode: 'PERCENTAGE' | 'FIXED' = deposit.issued ? 'PERCENTAGE' : deposit.type;
 
   // E3 (job-owns-tax-discount) retired the job-anchored tax lock: a job-anchored estimate is a
@@ -239,6 +254,8 @@ export function EstimateReceiptCard({ estimate, canEditNow }: EstimateReceiptCar
       depositDueAmount={depositDueAmount}
       balanceOnCompletion={balanceOnCompletion}
       depositMismatch={depositMismatch}
+      depositLeftToPay={depositLeftToPay}
+      depositProcessingAmount={depositProcessing}
       depositPercentOptions={depositPercentOptions}
       depositMode={displayDepositMode}
       onDepositPercentChange={

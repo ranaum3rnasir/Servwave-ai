@@ -13,6 +13,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AbilityProvider } from '@/contexts/AbilityContext';
 import { buildAbility } from '@/lib/ability';
 import { useAuthStore } from '@/stores/auth.store';
+import { seedEveryMenuSwitch } from '@/__tests__/helpers';
 
 import V2AppLayout from '../V2AppLayout';
 
@@ -80,6 +81,7 @@ const trigger = () => within(topBar()).getByRole('button', { name: 'Open navigat
 beforeEach(() => {
   localStorage.clear();
   logout.mockReset();
+  seedEveryMenuSwitch('00000000-0000-0000-0000-000000000001');
   mutateAsync.mockClear();
   clock.isClockedIn = false;
   clock.sinceTs = null;

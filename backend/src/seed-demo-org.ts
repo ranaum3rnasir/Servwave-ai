@@ -7,7 +7,7 @@
  * rich, time-distributed door/security CRM dataset so the ServWave demo Dashboard,
  * Schedule, Reports, and all DB-backed list/detail screens look excellent.
  *
- * SAFETY (mirrors seed-emanuel-demo.ts):
+ * SAFETY (mirrors the earlier demo seed):
  *   - refuses unless SEED_DEMO_ALPHA === 'true'
  *   - refuses the prod Supabase project ref (dtumfibsalttuiukxtoy)
  *   - only ever writes to the demo org id (…0001); refuses the B&G org (…bcab0001)
@@ -29,6 +29,7 @@ import { PrismaClient, Prisma } from '@prisma/client';
 import dotenv from 'dotenv';
 import { randomUUID } from 'crypto';
 import { demoVisitsForLeadStatus } from './lib/demo-walkthrough-visits';
+import { demoLeadDispatcherId, demoPeopleForSlot } from './lib/demo-people-on-records';
 
 dotenv.config();
 
@@ -227,6 +228,13 @@ async function main() {
     }
     // Lead owners = SALES + ADMIN (fall back to admins if no SALES).
     const leadOwners = (sales.length ? sales : admins).concat(admins);
+    // The people slots (Roles & Permissions, PRD 3) are filled only from people whose role's switch allows
+    // them: a lead's Owner and a job's Sold By need "Can own leads", a Dispatcher needs "Can be a dispatcher".
+    const ownerPool = demoPeopleForSlot(leadOwners, 'owner');
+    const dispatcherPool = demoPeopleForSlot(dispatchers, 'dispatcher').map((u) => u.id);
+    if (ownerPool.length === 0) {
+      throw new Error('Expected someone who can own leads on the Alpha org; aborting.');
+    }
     const anyUser = admins[0] ?? users[0];
     const creatorId = anyUser.id;
 
@@ -237,6 +245,8 @@ async function main() {
     console.log('Wiping previous Alpha-org CRM rows (FK-safe order)…');
     const orgWhere = { organization_id: orgId };
     const invByOrg = { invoice: { organization_id: orgId } };
+    // A dispute names its invoice and payment (both RESTRICT), so it goes before the payments.
+    await prisma.dispute.deleteMany({ where: orgWhere });
     await prisma.refund.deleteMany({ where: orgWhere });
     await prisma.depositCreditApplication.deleteMany({ where: orgWhere });
     await prisma.credit.deleteMany({ where: orgWhere });
@@ -475,7 +485,8 @@ async function main() {
       id: string;
       custId: string;
       locId: string;
-      ownerId: string;
+      // Empty for a lead the seed leaves without an Owner (see addLead's `assign`).
+      ownerId: string | null;
       source: string;
       jobType: string;
       status: string;
@@ -496,17 +507,18 @@ async function main() {
       lostAt?: Date | null;
     }): LeadInfo {
       const id = randomUUID();
-      const ownerUser = pick(leadOwners);
+      const ownerUser = pick(ownerPool);
       const source = pick(LEAD_SOURCES);
       const jobType = pick(JOB_TYPES);
       const sr = pick(SERVICE_REQUESTS);
       const createdAt = opts.createdAt;
       const updatedAt = opts.updatedAt ?? createdAt;
       const assign = opts.assign ?? true;
+      const ordinal = leadNum++;
 
       leadRows.push({
         id,
-        lead_number: fmt(org.lead_prefix, leadNum++),
+        lead_number: fmt(org.lead_prefix, ordinal),
         customer_id: opts.custId,
         service_location_id: opts.locId, // NOT NULL in staging — always supply
         status: opts.status as any,
@@ -516,9 +528,11 @@ async function main() {
         contacted_at: opts.contacted === false ? null : (opts.contacted ? daysAgo(randInt(0, 3)) : new Date(createdAt.getTime() + 3600 * 1000)),
         lost_reason: opts.lostReason ?? null,
         lost_at: opts.lostAt ?? null,
-        // The Owner is mirrored into lead_assignees below, so an unassigned lead has no Owner either:
-        // on main a lead's people are its lead_assignees (staging c49381b03 makes the same change).
+        // An unassigned lead has NO Owner: the stored Owner and its mirrored assignee row go together,
+        // as the product writes them, so the demo's "No owner" count is real.
         commission_owner_id: assign ? ownerUser.id : null,
+        // Who books the walkthrough; empty ("No dispatcher") on leads nobody has had a reason to book.
+        dispatcher_id: demoLeadDispatcherId(opts.status, ordinal, dispatcherPool),
         organization_id: orgId,
         created_at: createdAt,
         updated_at: updatedAt,
@@ -552,7 +566,7 @@ async function main() {
         });
         walkPerformerRows.push({ id: randomUUID(), visit_id: walkthroughId, user_id: pick(techs).id, organization_id: orgId });
       });
-      return { id, custId: opts.custId, locId: opts.locId, ownerId: ownerUser.id, source, jobType, status: opts.status, createdAt, serviceRequest: sr };
+      return { id, custId: opts.custId, locId: opts.locId, ownerId: assign ? ownerUser.id : null, source, jobType, status: opts.status, createdAt, serviceRequest: sr };
     }
 
     const custCycle = () => customers[randInt(0, customers.length - 1)];
@@ -715,6 +729,7 @@ async function main() {
     };
     const jobs: JobBuild[] = [];
     const usedEstimateIds = new Set<string>();
+    const multiEstimateLinks: Array<{ jobId: string; estimateIds: string[] }> = [];
 
     function crewPick(): string[] {
       const size = randInt(1, 3);
@@ -733,6 +748,8 @@ async function main() {
       assignCrew?: boolean;
       total?: number;
       items?: Array<[string, number, number, boolean]>;
+      /** Direct lead reference, for a job built from several estimates (no single anchor estimate). */
+      leadRef?: boolean;
     }): JobBuild {
       const id = randomUUID();
       const est = opts.estimate ?? null;
@@ -757,6 +774,7 @@ async function main() {
         customer_id: opts.lead.custId,
         service_location_id: opts.lead.locId,
         estimate_id: estimateId,
+        lead_id: opts.leadRef ? opts.lead.id : null,
         status: opts.status as any,
         // S8 (RATIFIED, A5): scheduled_start/scheduled_end DROPPED as job columns - Prisma.
         // JobCreateManyInput no longer carries them. The visit booked below (now unconditional on
@@ -766,6 +784,9 @@ async function main() {
         completed_at: opts.completedAt ?? (completed ? (start ?? opts.createdAt) : null),
         amount_invoiced: amountInvoiced,
         dispatcher_id: dispatcher.id,
+        // The stored Sold By, as conversion copies it: the Owner of the lead the job came from (empty
+        // when that lead has none).
+        salesperson_id: opts.lead.ownerId,
         organization_id: orgId,
         created_at: opts.createdAt,
         updated_at: opts.completedAt ?? start ?? opts.createdAt,
@@ -884,6 +905,29 @@ async function main() {
       const start = atTime(day, randInt(8, 16));
       const assignCrew = i % 25 !== 0; // ~5 unassigned (no crew)
       addJob({ lead, estimate: est, status: 'COMPLETED', scheduledStart: start, completedAt: new Date(start.getTime() + 2 * 3600000), createdAt: daysAgo(baseDay + randInt(3, 20)), assignCrew });
+    }
+
+    // -- ONE MULTI-ESTIMATE JOB: a job built from two approved estimates of the same lead has no single
+    //    anchor estimate, only its own lead reference (Job.lead_id), and its Sold By is that lead's Owner.
+    //    It stays SCHEDULED so it adds no invoice or completed-job figure to the money widgets, and its two
+    //    estimates are dated from the lead's own creation so no "approved this month" figure moves. The
+    //    estimates point at the job after the jobs are inserted (estimates go in first; the link is an FK).
+    const multiEstimateLead = wonLeads.find((l) => l.ownerId && l.createdAt < daysAgo(60));
+    if (multiEstimateLead) {
+      const sentFirst = new Date(multiEstimateLead.createdAt.getTime() + 5 * 86400000);
+      const sentSecond = new Date(multiEstimateLead.createdAt.getTime() + 6 * 86400000);
+      const parts = [sentFirst, sentSecond].map((sentAt) => {
+        const approvedAt = new Date(sentAt.getTime() + 2 * 86400000);
+        return addEstimate(multiEstimateLead, 'WON', {
+          approvedAt, sentAt, validUntil: new Date(approvedAt.getTime() + 30 * 86400000), createdAt: sentAt,
+        });
+      });
+      const multiJob = addJob({
+        lead: multiEstimateLead, estimate: null, status: 'SCHEDULED', leadRef: true,
+        scheduledStart: atTime(daysFromNow(3), 9), createdAt: daysAgo(2),
+        items: parts.flatMap((e) => e.items), total: round2(parts.reduce((sum, e) => sum + e.total, 0)),
+      });
+      multiEstimateLinks.push({ jobId: multiJob.id, estimateIds: parts.map((e) => e.id) });
     }
 
     // 3e. INVOICES (~130) + PAYMENTS (~110).
@@ -1087,6 +1131,7 @@ async function main() {
       const startDate = daysAgo(randInt(30, 180));
       const endDate = daysFromNow(365 - randInt(0, 60));
       const annualPrice = round2(randInt(1200, 6000));
+      const planSoldBy = pick(ownerPool).id;
       planRows.push({
         id: planId,
         service_plan_number: fmt(org.service_plan_prefix, spNum++),
@@ -1098,7 +1143,7 @@ async function main() {
         start_date: startDate,
         end_date: endDate,
         contract_price: annualPrice,
-        sold_by: pick(leadOwners).id,
+        sold_by: planSoldBy,
         organization_id: orgId,
         created_at: startDate,
         updated_at: startDate,
@@ -1133,12 +1178,48 @@ async function main() {
       }
       // upcoming visits
       for (let v = 1; v <= 2; v++) {
+        const scheduledDate = daysFromNow(v * visitGapDays - randInt(0, 5));
+        // The first three plans have their next visit scheduled: scheduling a visit makes a plan visit job,
+        // which takes the plan's "Sold by" as its Sold By and starts with no Dispatcher and no lead.
+        const visitJobId = v === 1 && i < 3 ? randomUUID() : null;
+        if (visitJobId) {
+          const start = atTime(scheduledDate, 9);
+          jobRows.push({
+            id: visitJobId,
+            job_number: fmt(org.job_prefix, jobNum++),
+            customer_id: cust.id,
+            service_location_id: cust.primaryLocationId,
+            source_plan_id: planId,
+            salesperson_id: planSoldBy,
+            status: 'SCHEDULED',
+            scope_notes: PLAN_NAMES[i % PLAN_NAMES.length],
+            organization_id: orgId,
+            created_at: daysAgo(1),
+            updated_at: daysAgo(1),
+            created_by_source: 'SYSTEM' as const,
+          });
+          const tripId = randomUUID();
+          jobVisitRows.push({
+            id: tripId,
+            organization_id: orgId,
+            job_id: visitJobId,
+            purpose: 'WORK',
+            visit_seq: 1,
+            status: 'SCHEDULED',
+            scheduled_at: start,
+            scheduled_end: new Date(start.getTime() + 3600000),
+            created_at: daysAgo(1),
+            updated_at: daysAgo(1),
+          });
+          jobVisitCrewRows.push({ id: randomUUID(), visit_id: tripId, user_id: techs[i % techs.length].id, organization_id: orgId });
+        }
         planVisitRows.push({
           id: randomUUID(),
           organization_id: orgId,
           service_plan_id: planId,
+          job_id: visitJobId,
           visit_number: vn++,
-          scheduled_date: daysFromNow(v * visitGapDays - randInt(0, 5)),
+          scheduled_date: scheduledDate,
           status: 'SCHEDULED',
         });
       }
@@ -1254,6 +1335,10 @@ async function main() {
     await insertChunked('service_plans', planRows, (d) => prisma.servicePlan.createMany({ data: d }));
     await insertChunked('service_plan_line_items', planLineRows, (d) => prisma.servicePlanLineItem.createMany({ data: d }));
     await insertChunked('jobs', jobRows, (d) => prisma.job.createMany({ data: d }));
+    // The estimates a multi-estimate job was built from point at it (estimates went in before jobs).
+    for (const link of multiEstimateLinks) {
+      await prisma.estimate.updateMany({ where: { id: { in: link.estimateIds }, organization_id: orgId }, data: { job_id: link.jobId } });
+    }
     // S8 (D6): AFTER jobs - a visit's job_id is an FK.
     await insertChunked('job visits', jobVisitRows, (d) => prisma.visit.createMany({ data: d }));
     await insertChunked('job visit crew', jobVisitCrewRows, (d) => prisma.visitAssignee.createMany({ data: d }));

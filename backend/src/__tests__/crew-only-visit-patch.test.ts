@@ -31,7 +31,7 @@ const mockPrisma = prisma as unknown as Record<string, any>;
 
 const VISIT_ID = 'v0000000-0000-0000-0000-000000000001';
 const TECH_A = TEST_USERS.technician.id;
-const TECH_B = TEST_USERS.dispatcher.id;
+const TECH_B = TEST_USERS.sales.id;
 
 /** The visit this whole file PATCHes: crewed by TECH_A, scheduled 1:00-3:30pm on 2026-09-05. */
 function visitRow(over: Record<string, unknown> = {}) {

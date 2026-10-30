@@ -30,6 +30,7 @@ import { screen, waitFor, within, fireEvent } from '@testing-library/react';
 import { renderWithProviders } from '@/__tests__/helpers';
 import { answerTasksRequest, type ListRequestConfig } from '@/__tests__/support/taskListServer';
 import api from '@/lib/axios';
+import { buildAbility } from '@/lib/ability';
 import { mapRowToTask, type TaskRow } from '@/lib/api/tasks';
 import { useTaskViewStore } from '@/stores/taskViewStore';
 import { useTasksStore } from '@/stores/tasksStore';
@@ -106,7 +107,11 @@ describe('v2 Tasks hub', () => {
   });
 
   it('opens the create dialog once for ?action=new-task and strips the param', async () => {
-    renderWithProviders(<TasksHubPage />, { initialEntries: ['/tasks?action=new-task'] });
+    // Only a person with the Create tasks switch gets the dialog (S02.25); the rule list is that switch compiled.
+    renderWithProviders(<TasksHubPage />, {
+      initialEntries: ['/tasks?action=new-task'],
+      ability: buildAbility([{ action: 'create', subject: 'Task' }]),
+    });
 
     await waitFor(() => {
       expect(screen.getByRole('heading', { name: 'New Task' })).toBeInTheDocument();

@@ -23,7 +23,6 @@ import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import { mockAuthAs, authHeader } from './helpers';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 const mockPrisma = prisma as unknown as {
@@ -35,7 +34,6 @@ const mockPrisma = prisma as unknown as {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  clearUserOverrideCache();
 });
 
 const CATEGORY = { id: 'ca000000-0000-0000-0000-000000000009', name: 'HVAC Services' };
@@ -198,7 +196,7 @@ describe('GET /api/price-book/items — the raw columns still travel', () => {
     });
   });
 
-  it('hands a reader without read Invoice exactly these keys and nothing else', async () => {
+  it('hands a reader without See financial data exactly these keys and nothing else', async () => {
     // EXHAUSTIVE `toEqual` on purpose — do NOT relax it to `toMatchObject`, and do not
     // reduce it to a handful of `toBeUndefined()` checks on the field names we happen to
     // know about today. Naming the fields that must be ABSENT can only ever catch the
@@ -206,7 +204,7 @@ describe('GET /api/price-book/items — the raw columns still travel', () => {
     // field it has never heard of reaches a technician under a name no negative assertion
     // mentions. That bypass was demonstrated live while `unitCost` was being added. The
     // whole-payload form is what makes a new field on this projection impossible to ship
-    // silently — a future `listPrice` fails HERE rather than in production.
+    // silently — a future cost field fails HERE rather than in production.
     mockAuthAs('technician');
     // TECHNICIAN holds role-default `read PriceBook` but not `read Invoice` — the same
     // grant shape price-book.test.ts's §D7 block uses.
@@ -234,12 +232,13 @@ describe('GET /api/price-book/items — the raw columns still travel', () => {
       sort_order: 0,
       created_at: '2026-01-01T00:00:00.000Z',
       updated_at: '2026-01-01T00:00:00.000Z',
-      // Customer-facing selling price, raw and resolved — never stripped.
+      // Prices - raw and resolved, the price book's list price among them - are never stripped.
       unit_price: null,
       sell_price: 500,
+      list_price: 900,
       sellPrice: 500,
       photoUrl: null,
-      // `unit_cost`, `unitCost` and `list_price` are absent, and so is anything else.
+      // `unit_cost` and `unitCost` are absent, and so is anything else.
     });
   });
 });
@@ -428,7 +427,7 @@ describe('GET /api/price-book/items/search — the projection carries both fallb
       unit_price: 125,
       sell_price: 500,
       sellPrice: 500,
-      // `unit_cost`, `unitCost` and `list_price` are absent, and so is anything else.
+      // `unit_cost` and `unitCost` are absent, and so is anything else.
     });
     // `list_price` never even enters the projection, so the strip is the second line of
     // defence here rather than the only one.

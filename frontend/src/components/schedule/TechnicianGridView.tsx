@@ -5,7 +5,7 @@ import { cn, getInitials } from '@/lib/utils';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { EmptyState } from '@/components/ui/empty-state';
 import {
-  isOnBoardFor, eventDangerState,
+  isOnBoardFor, eventDangerState, rescheduleGate,
   type BoardEvent, type ScheduledBoardEvent, type EventDangerState,
 } from './scheduleModel';
 import {
@@ -146,7 +146,8 @@ function JobCard({ event, fromMemberId, dangerState, onClick, onContextMenu, top
       }}
       // The card's identity on the board (multi-visit S6): one per VISIT, never per job.
       data-board-id={event.boardId}
-      draggable
+      // A Done or Cancelled job, or an invoiced one, is not a drag source: the drop refuses it too (rescheduleGate).
+      draggable={event.isGhost || rescheduleGate(event).ok}
       onDragStart={(e) => {
         // Same payload keys as MemberWeekBoard's BoardCard — incl. the from-member lane
         // marker so a cross-lane drop can swap (TG10). Codec constants only.

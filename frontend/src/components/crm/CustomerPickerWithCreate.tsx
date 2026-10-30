@@ -14,7 +14,7 @@ import { useToast } from '@/components/ui/use-toast';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import {
   PickOrAccreteLocation, ADD_NEW_LOCATION,
-  type PickOrAccreteLocationValue, type NewAddressFields,
+  type PickOrAccreteLocationValue, type NewAddressFields, type ServiceLocationOption,
 } from '@/components/crm/PickOrAccreteLocation';
 import { getDuplicateCustomer, computeMatchedCustomerFields } from '@/components/crm/PickOrCreateCustomer';
 import {
@@ -32,6 +32,11 @@ export interface CustomerLite {
   company_name: string | null;
   email: string | null;
   customer_number: string;
+}
+
+/** What a create returns when it is saved with its address: the new customer plus the location(s) made with it. */
+export interface CreatedCustomer extends CustomerLite {
+  service_locations?: ServiceLocationOption[];
 }
 
 /** Collapsed one-line label for the trigger. The dropdown rows show more — see `customerRow`. */
@@ -63,6 +68,21 @@ const EMPTY_ADDRESS: NewAddressFields = { address_line1: '', address_line2: '', 
 const addressComplete = (a: NewAddressFields) =>
   a.address_line1.trim() !== '' && a.city.trim() !== '' && a.state.trim().length === 2 && a.zip.trim().length >= 5;
 
+/**
+ * Which create the picker's "Create new customer" row is, and so who is offered it.
+ * - `customer` (default): the standalone customer create, offered with Create customers.
+ * - `service-plan`: the service plan builder's quick create, offered with Create service plans
+ *   whatever Create customers and Show Customers page say, and saved through the plan route, which
+ *   the server accepts on Create service plans (the way a lead's new customer is accepted on
+ *   Create leads). Same handler behind it, so the same duplicate-customer check.
+ */
+export type CustomerCreateAs = 'customer' | 'service-plan';
+
+const CREATE_AS: Record<CustomerCreateAs, { subject: 'Customer' | 'ServicePlan'; path: string }> = {
+  customer: { subject: 'Customer', path: '/api/customers' },
+  'service-plan': { subject: 'ServicePlan', path: '/api/service-plans/customers' },
+};
+
 export interface CustomerPickerWithCreateProps {
   value: string;
   /**
@@ -70,7 +90,8 @@ export interface CustomerPickerWithCreateProps {
    * silently render a placeholder-looking label for a real selection.
    */
   valueLabel: string;
-  onChange: (id: string, label: string) => void;
+  /** `created` is set only when the pick is a customer the picker just made, with the address it was made with. */
+  onChange: (id: string, label: string, created?: CreatedCustomer) => void;
   /**
    * Show the "Create new customer" row (and let a search term drop into the create form).
    * Defaults to `true` so every existing caller keeps today's behaviour byte-identical.
@@ -78,11 +99,14 @@ export interface CustomerPickerWithCreateProps {
    * dialog's participants field, where the product owner asked for no inline create.
    */
   allowCreate?: boolean;
+  /** Which create this is; see `CustomerCreateAs`. Defaults to the standalone customer create. */
+  createAs?: CustomerCreateAs;
 }
 
-export function CustomerPickerWithCreate({ value, valueLabel, onChange, allowCreate = true }: CustomerPickerWithCreateProps) {
+export function CustomerPickerWithCreate({ value, valueLabel, onChange, allowCreate = true, createAs = 'customer' }: CustomerPickerWithCreateProps) {
   const ability = useAppAbility();
-  const canCreate = allowCreate && ability.can('create', 'Customer');
+  const createRoute = CREATE_AS[createAs];
+  const canCreate = allowCreate && ability.can('create', createRoute.subject);
   const { toast } = useToast();
   const qc = useQueryClient();
 
@@ -189,7 +213,7 @@ export function CustomerPickerWithCreate({ value, valueLabel, onChange, allowCre
     setSaving(true);
     const a = loc.address;
     try {
-      const { data } = await api.post(override ? '/api/customers?override=true' : '/api/customers', {
+      const { data } = await api.post(override ? `${createRoute.path}?override=true` : createRoute.path, {
         first_name: firstName.trim() || undefined,
         last_name: lastName.trim() || undefined,
         company_name: companyName.trim() || undefined,
@@ -201,12 +225,12 @@ export function CustomerPickerWithCreate({ value, valueLabel, onChange, allowCre
           city: a.city.trim(), state: a.state.trim(), zip: a.zip.trim(), is_primary: true,
         }],
       });
-      const created = data.customer as CustomerLite;
+      const created = data.customer as CreatedCustomer;
       qc.invalidateQueries({ queryKey: ['customers'] });
       // …and this picker's own search cache, or the customer just created stays missing
       // from its results for `staleTime` (30s).
       qc.invalidateQueries({ queryKey: ['customer-picker-search'] });
-      onChange(created.id, customerLabel(created));
+      onChange(created.id, customerLabel(created), created);
       close();
     } catch (err) {
       const d = getDuplicateCustomer(err);

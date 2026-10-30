@@ -14,6 +14,7 @@ import crypto from 'crypto';
 import { Prisma } from '@prisma/client';
 import { prisma } from '../src/lib/prisma';
 import { runUnscoped } from '../src/lib/tenant-context';
+import { createCompanyWithMainMailbox } from '../src/lib/mailbox/register';
 import { DEFAULT_GRANTS } from '../src/lib/permissions/defaultGrants';
 import { seedStarterTaskCategories, STARTER_TASK_CATEGORIES } from '../src/lib/tasks/categories';
 import { orgFeatures, effectivePlan } from '../src/lib/entitlements/resolve';
@@ -71,21 +72,20 @@ async function main() {
   // runUnscoped: with DB_TENANT_GUARD=on a standalone script has no request
   // context, so RLS policies match no rows and every write fails closed.
   await runUnscoped(async () => {
-    await prisma.organization.create({
-      data: {
-        id: orgId,
-        name,
-        email,
-        state,
-        address_line1: 'TBD',
-        city: 'TBD',
-        postal_code: '00000',
-        estimate_terms: '',
-        estimate_notes: '',
-        estimate_payment_terms: '',
-        plan,
-        trial_ends_at,
-      },
+    // The company part is frozen and the main mailbox issued in the same transaction as the org.
+    await createCompanyWithMainMailbox(prisma, {
+      id: orgId,
+      name,
+      email,
+      state,
+      address_line1: 'TBD',
+      city: 'TBD',
+      postal_code: '00000',
+      estimate_terms: '',
+      estimate_notes: '',
+      estimate_payment_terms: '',
+      plan,
+      trial_ends_at,
     });
 
     // Conditions carry the row-scope templates (OWN_LEAD, OWN_JOB, …). Dropping

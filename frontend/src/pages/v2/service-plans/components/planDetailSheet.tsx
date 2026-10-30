@@ -4,6 +4,7 @@ import {
   useServicePlan, useUpdateServicePlan, useActivateServicePlan, useRenewServicePlan,
   useCancelServicePlan, useDeleteServicePlan, useScheduleVisit, describeRecurrence,
 } from '@/lib/api/service-plans';
+import { useAppAbility } from '@/contexts/AbilityContext';
 import { useUsers } from '@/lib/api/users';
 import { extractApiError } from '@/lib/utils';
 
@@ -41,6 +42,10 @@ import { customerName, date, money, property, type MaterialDraftLine } from '../
  * logged in the gap ledger rather than fixed inside a restyle.
  */
 function PlanDetailSheet({ id, onClose }: { id: string | null; onClose: () => void }) {
+  // S07.21: lifecycle, materials and scheduling follow Edit service plans, Delete follows Delete service plans.
+  const ability = useAppAbility();
+  const canEdit = ability.can('update', 'ServicePlan');
+  const canDelete = ability.can('delete', 'ServicePlan');
   const { data: plan } = useServicePlan(id ?? undefined);
   const activate = useActivateServicePlan();
   const renew = useRenewServicePlan();
@@ -79,6 +84,9 @@ function PlanDetailSheet({ id, onClose }: { id: string | null; onClose: () => vo
       toast.error('Could not save materials', { description: extractApiError(err, 'Please try again.') });
     }
   };
+
+  // The action row only draws when this plan's status leaves the person something to press.
+  const lifecycle = plan?.status === 'DRAFT' ? canEdit || canDelete : plan?.status === 'ACTIVE' && canEdit;
 
   const open = !!id;
   return (
@@ -127,7 +135,7 @@ function PlanDetailSheet({ id, onClose }: { id: string | null; onClose: () => vo
                 <div>
                   <div className="mb-1 flex items-center justify-between">
                     <p className="font-semibold">Default materials</p>
-                    {!editingMaterials && (
+                    {canEdit && !editingMaterials && (
                       <Button size="sm" variant="outline" onClick={startEditingMaterials}>Edit</Button>
                     )}
                   </div>
@@ -152,7 +160,7 @@ function PlanDetailSheet({ id, onClose }: { id: string | null; onClose: () => vo
                     )
                   )}
 
-                  {editingMaterials && (
+                  {canEdit && editingMaterials && (
                     <div className="flex flex-col gap-2">
                       <MaterialLines lines={materialsDraft} onChange={setMaterialsDraft} />
                       <div className="flex justify-end gap-2 pt-1">
@@ -184,41 +192,47 @@ function PlanDetailSheet({ id, onClose }: { id: string | null; onClose: () => vo
 
                 {/* Lifecycle actions. Branches on the raw status, not the
                     effective one - see the header comment. */}
-                <div className="flex flex-wrap gap-2 border-t pt-2">
-                  {plan.status === 'DRAFT' && (
-                    <>
-                      <Button size="sm" disabled={activate.isPending} onClick={() => activate.mutate(plan.id)}>
-                        Activate
-                      </Button>
-                      {/* `destructive` rather than the legacy `outline`: this is
-                          a one-click hard delete with no confirmation step, and
-                          the kit expresses that through the variant rather than
-                          a colour class at the call site. Same action, same
-                          guard, same payload. */}
-                      <Button
-                        size="sm" variant="destructive" disabled={del.isPending}
-                        onClick={() => del.mutate(plan.id, { onSuccess: onClose })}
-                      >
-                        Delete
-                      </Button>
-                    </>
-                  )}
-                  {plan.status === 'ACTIVE' && (
-                    <>
-                      {/* Renew rolls the term forward - only meaningful for a fixed-term plan. */}
-                      {plan.end_date && (
-                        <Button size="sm" disabled={renew.isPending} onClick={() => renew.mutate(plan.id)}>
-                          Renew
+                {lifecycle && (
+                  <div className="flex flex-wrap gap-2 border-t pt-2">
+                    {plan.status === 'DRAFT' && (
+                      <>
+                        {canEdit && (
+                          <Button size="sm" disabled={activate.isPending} onClick={() => activate.mutate(plan.id)}>
+                            Activate
+                          </Button>
+                        )}
+                        {/* `destructive` rather than the legacy `outline`: this is
+                            a one-click hard delete with no confirmation step, and
+                            the kit expresses that through the variant rather than
+                            a colour class at the call site. Same action, same
+                            guard, same payload. */}
+                        {canDelete && (
+                          <Button
+                            size="sm" variant="destructive" disabled={del.isPending}
+                            onClick={() => del.mutate(plan.id, { onSuccess: onClose })}
+                          >
+                            Delete
+                          </Button>
+                        )}
+                      </>
+                    )}
+                    {plan.status === 'ACTIVE' && canEdit && (
+                      <>
+                        {/* Renew rolls the term forward - only meaningful for a fixed-term plan. */}
+                        {plan.end_date && (
+                          <Button size="sm" disabled={renew.isPending} onClick={() => renew.mutate(plan.id)}>
+                            Renew
+                          </Button>
+                        )}
+                        <Button size="sm" variant="outline" disabled={cancel.isPending} onClick={() => cancel.mutate(plan.id)}>
+                          Cancel plan
                         </Button>
-                      )}
-                      <Button size="sm" variant="outline" disabled={cancel.isPending} onClick={() => cancel.mutate(plan.id)}>
-                        Cancel plan
-                      </Button>
-                    </>
-                  )}
-                </div>
+                      </>
+                    )}
+                  </div>
+                )}
 
-                {plan.status === 'ACTIVE' && (plan.visits_remaining === null || plan.visits_remaining > 0) && (
+                {canEdit && plan.status === 'ACTIVE' && (plan.visits_remaining === null || plan.visits_remaining > 0) && (
                   <div className="flex flex-col gap-2 border-t pt-2">
                     <p className="font-semibold">Schedule next visit</p>
                     <Label htmlFor="v2-plan-visit-date" className="sr-only">Visit date and time</Label>

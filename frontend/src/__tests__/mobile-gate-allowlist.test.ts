@@ -107,8 +107,9 @@ describe('mobile gate allow-list (slice 75)', () => {
     expect(ALWAYS_ENFORCED).toContain('vendorConsole');
     expect(REPORT_ONLY as readonly string[]).not.toContain('vendorConsole');
     const accepted = (parsed.acceptedExceptions ?? {}) as Record<string, { owner?: string; reason?: string }>;
-    // Two accepted exceptions exist: this one, and the Schedule's double-booked cards (asserted above).
-    expect(Object.keys(accepted).sort()).toEqual(['scheduleDoubleBooked', 'vendorConsole']);
+    // Three accepted exceptions exist: this one, the Schedule's double-booked cards (asserted above) and the
+    // gate's own test-inbox address in the copy check (mobile-gate-test-inbox-exception.test.ts).
+    expect(Object.keys(accepted).sort()).toEqual(['gateTestInbox', 'scheduleDoubleBooked', 'vendorConsole']);
     expect(accepted.vendorConsole?.owner).toBe('Ran');
     expect(accepted.vendorConsole?.reason).toMatch(/2026-10-08/);
     expect(accepted.vendorConsole?.reason).toMatch(/embedded frames/);

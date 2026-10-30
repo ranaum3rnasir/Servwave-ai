@@ -330,6 +330,22 @@ export const UNSUPPORTED_STEP_MESSAGE =
   'This step is no longer supported. Remove it and choose a different action.';
 
 /**
+ * One sentence, TWO emission sites — the trigger's own anchor (rule 1) and an
+ * anchored WAIT step's anchor (rule 5). Named rather than written twice because
+ * the two are the same complaint arriving by different routes and they must not
+ * drift, the same rule the retirement notice below follows.
+ *
+ * The remedy is worded to be true on BOTH surfaces. The trigger offers a row of
+ * date chips to choose from; a WAIT step offers only the trigger entity's own
+ * date, re-seeded by re-picking its before/after mode. "Pick a date this trigger
+ * offers" is honest either way, where "pick another from the list" would be a
+ * list the WAIT step does not have.
+ */
+export const ANCHOR_UNAVAILABLE_MESSAGE =
+  'This timing anchor isn’t available for this trigger, so this automation can’t be published — ' +
+  'open it and pick a date this trigger offers';
+
+/**
  * The retired in-app step gets its OWN rejection, deliberately different from the
  * generic copy above.
  *
@@ -518,7 +534,7 @@ export function validateWorkflowDefinition(def: {
       issues.push({
         step_index: -1,
         path: 'trigger_config.anchor',
-        message: 'This timing anchor isn’t available for this trigger',
+        message: ANCHOR_UNAVAILABLE_MESSAGE,
       });
     } else if (parsed.data.direction === 'before' && LEAD_STAGE_CLOCK_ANCHORS.has(parsed.data.anchor)) {
       // A lead stage clock records a moment AS IT HAPPENS, so "two hours BEFORE the lead arrives"
@@ -571,7 +587,12 @@ export function validateWorkflowDefinition(def: {
   // 4 — positions must be exactly 0..n-1, in ascending array order
   const inOrder = def.steps.every((step, index) => step.position === index);
   if (!inOrder) {
-    issues.push({ step_index: -1, path: 'steps', message: 'Steps are out of order — tidy up and try again' });
+    issues.push({
+      step_index: -1,
+      path: 'steps',
+      message:
+        'The steps are out of order, so this automation can’t be published — reload the page and make your change again',
+    });
   }
 
   // 5-9 — per-step config + cross-field invariants
@@ -651,7 +672,7 @@ function validateStep(
       issues.push({
         step_index: index,
         path: 'config.anchor',
-        message: 'This timing anchor isn’t available for this trigger',
+        message: ANCHOR_UNAVAILABLE_MESSAGE,
       });
     }
     if (cfg.mode === 'anchored' && TERMINAL_TRIGGERS.has(triggerType)) {
@@ -659,7 +680,8 @@ function validateStep(
         step_index: index,
         path: 'config.mode',
         message:
-          'A ‘wait until before/after’ timer needs a trigger with an upcoming date — this trigger fires after the fact',
+          'This trigger fires after the fact, so a before/after timer has no upcoming date to wait for and this ' +
+          'automation can’t be published. Open this step and switch it to Wait a set time',
       });
     }
     return;
@@ -680,7 +702,9 @@ function validateStep(
         issues.push({
           step_index: index,
           path: 'config.recipients',
-          message: `Recipient "${key}" is not available for this trigger`,
+          message:
+            `Recipient "${key}" is not available for this trigger, so this automation can’t be published. ` +
+            'Open this step and choose a different recipient',
         });
       }
     }
@@ -724,7 +748,9 @@ function validateStep(
         issues.push({
           step_index: index,
           path: 'config.body',
-          message: `The field {{${field}}} isn't available for this trigger`,
+          message:
+            `The field {{${field}}} isn’t available for this trigger, so this automation can’t be published. ` +
+            'Open this step and remove the field, or pick a replacement from the Insert a field list',
         });
       }
     }
@@ -739,7 +765,9 @@ function validateStep(
       issues.push({
         step_index: index,
         path: 'config.condition',
-        message: "This stop condition isn't available for this trigger",
+        message:
+          "This stop condition isn’t available for this trigger, so this automation can’t be published. " +
+          'Open this step and pick another condition, or remove the step',
       });
     }
   }

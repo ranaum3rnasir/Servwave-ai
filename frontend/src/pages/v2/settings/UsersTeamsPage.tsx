@@ -1,4 +1,5 @@
 import { useEffect, useId, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import {
   useUsers,
@@ -6,6 +7,7 @@ import {
   useSendInvite,
   useUpdateUser,
   useDeactivateUser,
+  useMoveMailbox,
   useDeleteUser,
   useRevokeLogin,
   useSendPasswordReset,
@@ -18,8 +20,11 @@ import {
   useDepartments, useCreateDepartment, useUpdateDepartment, useDeleteDepartment,
   type Department,
 } from '@/lib/api/departments';
-import { useUpdateUserTimeclockSettings } from '@/lib/api/timeclock';
+import { useRoles, resolveRoleAssignment, type RoleSummary } from '@/lib/api/roles';
+import { useAuthStore } from '@/stores/auth.store';
+import { changeCountLabel } from '@/lib/permissionChangeCount';
 import { useAppAbility } from '@/contexts/AbilityContext';
+import { useFeature } from '@/lib/entitlements';
 import { extractApiError, formatPhone } from '@/lib/utils';
 import { isUsableUserPhone, userPhoneForSubmit, USER_PHONE_INVALID_MESSAGE } from '@/lib/user-phone';
 
@@ -40,12 +45,17 @@ import {
 import { TabStrip, TabPanel } from '../_shared/tabs';
 import { useSettingsBar } from './settingsBar';
 import { FlushCard } from './components/section';
+import { PersonRolePicker } from './components/personRolePicker';
+import { MailboxCell } from './components/mailboxCell';
+import { MailboxAddressDialog } from './components/mailboxAddressDialog';
+import { DeactivateUserDialog } from './components/deactivateUserDialog';
+import { MoveMailboxDialog } from './components/moveMailboxDialog';
 import { SelectField } from '@/ui-kit/components/form/selectField';
-import UserPermissionsDialog from './components/userPermissionsDialog';
 import { canAutoFocus } from '@/ui-kit/lib/autoFocus';
 import { useMediaQuery } from '@/ui-kit/hooks/useMediaQuery';
 
-const ROLES: UserRole[] = ['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN'];
+// The names a screen says before the roles list has loaded: the raw role code is never shown.
+const BUILT_IN_NAMES: Record<UserRole, string> = { ADMIN: 'Admin', SALES: 'Sales', DISPATCHER: 'Dispatcher', TECHNICIAN: 'Technician' };
 const CREATE_TEAM = '__create__';
 
 /** Spec C - a user with no number on file cannot be reached by a text step.
@@ -53,10 +63,24 @@ const CREATE_TEAM = '__create__';
  *  trims rather than testing truthiness. */
 const hasPhone = (u: Pick<UserRow, 'phone'>) => Boolean(u.phone?.trim());
 
+/** What a role change replaces, in the words the confirmation uses. Moving to Admin is full access and no switches. */
+function roleChangeMessage(person: UserRow, fromName: string, to: RoleSummary): string {
+  const name = `${person.first_name} ${person.last_name}`;
+  const changes = person.change_count ?? 0;
+  if (to.fullAccess) {
+    return changes > 0
+      ? `${name} has ${changeCountLabel(changes)} from ${fromName}. Giving them the ${to.label} role gives them full access and no switches.`
+      : `Give ${name} the ${to.label} role? They will have full access and no switches.`;
+  }
+  return changes > 0
+    ? `${name} has ${changeCountLabel(changes)} from ${fromName}. Giving them the ${to.label} role replaces all their switches with the values of that role.`
+    : `Give ${name} the ${to.label} role? Their switches will be set to the values of that role.`;
+}
+
 /**
  * Settings > Users & Teams. The module's largest surface: a users table with
- * inline role/team/timeclock edits, a Teams tab, six local dialogs and the
- * imported per-user permissions dialog.
+ * inline role/team edits, a Teams tab and six local dialogs. A person's
+ * switches live on their own Permissions page, reached from the row.
  *
  * The kit `DataTable` is deliberately NOT used here. The users table is not a
  * sorted/selectable/column-configurable list - it is a form laid out as rows,
@@ -70,19 +94,21 @@ const hasPhone = (u: Pick<UserRow, 'phone'>) => Boolean(u.phone?.trim());
 export default function UsersTeamsPage() {
   const { data: users = [] } = useUsers();
   const { data: departments = [] } = useDepartments();
+  const myId = useAuthStore((s) => s.user?.id);
   const inviteUser = useInviteUser();
   const sendInvite = useSendInvite();
   const updateUser = useUpdateUser();
   const deactivate = useDeactivateUser();
+  const moveMailbox = useMoveMailbox();
   const deleteUser = useDeleteUser();
   const revokeLogin = useRevokeLogin();
   const sendPasswordReset = useSendPasswordReset();
   const createDept = useCreateDepartment();
   const updateDept = useUpdateDepartment();
   const deleteDept = useDeleteDepartment();
-  const updateTimeclock = useUpdateUserTimeclockSettings();
   const { registerSaver } = useSettingsBar();
   const [activeTab, setActiveTab] = useState('users');
+  const navigate = useNavigate();
   // Below md the users table (eight columns of live controls) becomes a card list.
   const isPhone = useMediaQuery('(max-width: 767.98px)');
 
@@ -92,10 +118,20 @@ export default function UsersTeamsPage() {
   // 403s every write; this aligns the FE so it never offers an action that would fail.
   // ADMIN = `manage all` -> every flag below is true, so admin behaviour is unchanged.
   const ability = useAppAbility();
-  const canCreateUser = ability.can('create', 'User');
   const canUpdateUser = ability.can('update', 'User');
   const canDeleteUser = ability.can('delete', 'User');
-  const canUpdateTimeclock = ability.can('update', 'Timeclock');
+  const canManageRoles = ability.can('manage_roles', 'Role');
+  // The roles route answers only a holder of Manage roles and permissions, so no one else asks it: they read each
+  // person's role name from the users list.
+  const { data: rolesData } = useRoles(canManageRoles);
+  // Every active role, built-in and custom. A screen that has not heard from the roles route yet shows the role as text.
+  const roles: RoleSummary[] = Array.isArray(rolesData) ? rolesData : [];
+  // Every invite sets the new person's role, which is a Manage roles and permissions write, so the Invite button, the
+  // invite card and each row's Send invite show only with Invite users AND Manage roles and permissions: no control
+  // the person could not finish. Create users and Edit users offer no invite.
+  const canInvite = ability.can('invite', 'User') && canManageRoles;
+  // The Email column and its actions are part of the Email plan feature (the server omits the addresses without it).
+  const hasEmail = useFeature('email');
   const canCreateTeam = ability.can('create', 'Department');
   const canUpdateTeam = ability.can('update', 'Department');
   const canDeleteTeam = ability.can('delete', 'Department');
@@ -114,7 +150,8 @@ export default function UsersTeamsPage() {
   // As an orthogonal switch it composes: Active + Missing phone is the useful view.
   const [missingPhoneOnly, setMissingPhoneOnly] = useState(false);
   const missingPhoneId = useId();
-  const [invite, setInvite] = useState<null | { first_name: string; last_name: string; email: string; role: UserRole; phone: string; phone_ext: string; department_id: string | null }>(null);
+  // `role` is the key of the picked role: a built-in role's name or a custom role's key.
+  const [invite, setInvite] = useState<null | { first_name: string; last_name: string; email: string; role: string; phone: string; phone_ext: string; department_id: string | null }>(null);
   // #607 - server-side invite failure (e.g. email already tied to an account),
   // shown inline under the email field so the admin can correct it in place.
   const [inviteError, setInviteError] = useState<string | null>(null);
@@ -132,14 +169,20 @@ export default function UsersTeamsPage() {
   const [teamToRename, setTeamToRename] = useState<Department | null>(null);
   const [renameTeamName, setRenameTeamName] = useState('');
   const [userToDelete, setUserToDelete] = useState<UserRow | null>(null);
+  // The server's plain refusal of a permanent delete (the person has history), shown in the dialog that asked.
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   // Edit contact details (name/phone/ext); role + team stay inline in the table.
   // `opened_with` is the phone pair the dialog was seeded with, so the save can
   // tell an untouched legacy number from one the admin actually edited.
   const [editUser, setEditUser] = useState<null | { id: string; first_name: string; last_name: string; phone: string; phone_ext: string; opened_with: { phone: string; phone_ext: string } }>(null);
-  // Per-user permission overrides (RBAC Phase 2) - opens a tri-state dialog (admins excluded).
-  const [permsUser, setPermsUser] = useState<null | { id: string; name: string }>(null);
   // Deactivation now also revokes login (deletes the Supabase account) -> confirm first.
   const [deactivateFor, setDeactivateFor] = useState<UserRow | null>(null);
+  // The deactivated person whose mailbox is being handed on later.
+  const [moveFor, setMoveFor] = useState<UserRow | null>(null);
+  // Every role change asks first: who, and the role they were picked onto.
+  const [roleChange, setRoleChange] = useState<null | { user: UserRow; to: RoleSummary }>(null);
+  // Set or change a person's mailbox address: who, and which of the two (a person with no address gets "set").
+  const [mailboxFor, setMailboxFor] = useState<null | { user: UserRow; mode: 'set' | 'change' }>(null);
 
   const filtered = users.filter((u) => {
     const matchesStatus =
@@ -154,7 +197,7 @@ export default function UsersTeamsPage() {
       first_name: invite.first_name,
       last_name: invite.last_name,
       email: invite.email,
-      role: invite.role,
+      ...resolveRoleAssignment(roles, invite.role) as Pick<InviteUserPayload, 'role' | 'custom_role_id'>,
       // E.164, not the masked display form the box shows - see lib/user-phone.ts.
       phone: userPhoneForSubmit(invite.phone),
       phone_ext: invite.phone_ext.trim() || null,
@@ -216,11 +259,49 @@ export default function UsersTeamsPage() {
     editUser.phone !== editUser.opened_with.phone &&
     !isUsableUserPhone(editUser.phone);
 
+  // The key of the role a person holds (a custom role's key, else the built-in role's name) and the name they see for it.
+  const roleKeyOf = (u: UserRow) => u.custom_role?.key ?? u.role;
+  const roleNameOf = (u: UserRow) =>
+    roles.find((r) => r.role === roleKeyOf(u))?.label ?? u.role_label ?? u.custom_role?.label ?? BUILT_IN_NAMES[u.role];
+
+  const pickRole = (u: UserRow, roleKey: string) => {
+    const to = roles.find((r) => r.role === roleKey);
+    if (to && roleKey !== roleKeyOf(u)) setRoleChange({ user: u, to });
+  };
+
+  // The server fills the person's switches from the new role; a refusal (the last active admin, say) reaches the person
+  // through the update hook's own message, and the picker stays on the old role because it reads the saved one.
+  const confirmRoleChange = async () => {
+    if (!roleChange) return;
+    const { role, custom_role_id } = resolveRoleAssignment(roles, roleChange.to.role);
+    try {
+      await updateUser.mutateAsync({ id: roleChange.user.id, payload: { role: role as UserRole, custom_role_id } });
+    } catch {
+      // Reported by the hook.
+    }
+    setRoleChange(null);
+  };
+
+  const confirmMove = async (handoverTo: string) => {
+    if (!moveFor) return;
+    try {
+      await moveMailbox.mutateAsync({ id: moveFor.id, handoverTo });
+      setMoveFor(null);
+    } catch {
+      // Reported by the hook; the dialog stays open so the pick can be changed.
+    }
+  };
+
   // Deactivation also revokes login - confirm first, then deactivate.
-  const confirmDeactivate = async () => {
+  const confirmDeactivate = async (handoverTo: string | undefined) => {
     if (!deactivateFor) return;
-    await deactivate.mutateAsync(deactivateFor.id);
+    await deactivate.mutateAsync({ id: deactivateFor.id, handoverTo });
     setDeactivateFor(null);
+  };
+
+  const closeDeleteUser = () => {
+    setUserToDelete(null);
+    setDeleteError(null);
   };
 
   // Team dropdown in the Users table: pick a team, clear it, or create a new one.
@@ -270,7 +351,7 @@ export default function UsersTeamsPage() {
   // One set of cells per user, laid out as a table row from md and as a card below it
   // (mobile slice 29). Only one layout is ever mounted (useMediaQuery, not CSS), so every
   // control keeps exactly one accessible name in the DOM.
-  const userCells = (u: UserRow) => ({
+  const userCells = (u: UserRow, wrapMailbox = false) => ({
     name: (
       <>
         <span className="font-medium">
@@ -284,6 +365,14 @@ export default function UsersTeamsPage() {
       </>
     ),
     email: <span className="text-muted-foreground">{u.email}</span>,
+    // The address customers write to, never the sign-in email above (PRD 10).
+    mailbox: (
+      <MailboxCell
+        user={u}
+        wrap={wrapMailbox}
+        onEdit={canUpdateUser ? (mode) => setMailboxFor({ user: u, mode }) : undefined}
+      />
+    ),
     phone: (
       <>
         {hasPhone(u) ? (
@@ -301,16 +390,24 @@ export default function UsersTeamsPage() {
     ),
     role: (
       <>
-        {canUpdateUser ? (
-          <SelectField
-            aria-label={`Role for ${u.first_name} ${u.last_name}`}
-            className="h-8 text-xs"
-            value={u.role}
-            onValueChange={(v) => void updateUser.mutateAsync({ id: u.id, payload: { role: v as UserRole } })}
-            options={ROLES.map((r) => ({ value: r, label: r }))}
-          />
+        {/* The picker is for a holder of Manage roles and permissions, who also edits users (the server asks for both),
+            and never on the viewer's own row. Anyone else reads the role as text. */}
+        {canUpdateUser && canManageRoles && u.id !== myId && roles.length > 0 ? (
+          <div className="space-y-1">
+            <PersonRolePicker
+              aria-label={`Role for ${u.first_name} ${u.last_name}`}
+              className="h-8 text-xs"
+              roles={roles}
+              value={roleKeyOf(u)}
+              onValueChange={(v) => pickRole(u, v)}
+            />
+            {(u.change_count ?? 0) > 0 && <p className="text-muted-foreground text-xs">· {changeCountLabel(u.change_count!)}</p>}
+          </div>
         ) : (
-          <span className="text-muted-foreground text-xs">{u.role}</span>
+          <span className="text-muted-foreground text-xs">
+            {roleNameOf(u)}
+            {(u.change_count ?? 0) > 0 && ` · ${changeCountLabel(u.change_count!)}`}
+          </span>
         )}
       </>
     ),
@@ -332,39 +429,6 @@ export default function UsersTeamsPage() {
           <span className="text-muted-foreground text-xs">
             {departments.find((d) => d.id === u.department_id)?.name ?? '-'}
           </span>
-        )}
-      </>
-    ),
-    timeclock: (
-      <>
-        {canUpdateTimeclock ? (
-          <div className="flex flex-col gap-1.5">
-            <Label className="text-muted-foreground flex items-center gap-2 text-xs font-normal">
-              <Switch
-                checked={u.enforce_clock_in_location}
-                onCheckedChange={(checked) =>
-                  void updateTimeclock.mutateAsync({ id: u.id, enforce_clock_in_location: checked })
-                }
-                aria-label="Enforce clock-in location"
-              />
-              Enforce location
-            </Label>
-            <Label className="text-muted-foreground flex items-center gap-2 text-xs font-normal">
-              <Switch
-                checked={u.can_approve_clock_overrides}
-                onCheckedChange={(checked) =>
-                  void updateTimeclock.mutateAsync({ id: u.id, can_approve_clock_overrides: checked })
-                }
-                aria-label="Can approve clock overrides"
-              />
-              Can approve overrides
-            </Label>
-          </div>
-        ) : (
-          <div className="text-muted-foreground flex flex-col gap-1.5 text-xs">
-            <span>Location: {u.enforce_clock_in_location ? 'Enforced' : 'Off'}</span>
-            <span>Overrides: {u.can_approve_clock_overrides ? 'Allowed' : 'No'}</span>
-          </div>
         )}
       </>
     ),
@@ -395,18 +459,15 @@ export default function UsersTeamsPage() {
             Edit
           </Button>
         )}
-        {/* Admin exclusion, first of two: an ADMIN row never offers
-            the per-user override dialog (the backend 400s the PUT). */}
-        {canUpdateUser && u.role !== 'ADMIN' && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setPermsUser({ id: u.id, name: `${u.first_name} ${u.last_name}` })}
-          >
+        {/* The person's Permissions page follows Manage roles and permissions, not Edit users, and an Admin row
+            never offers it: an admin shows one Full access box and has no switches to change. That is the server's
+            Admin box, not the base role: a role copied from Admin has switches. */}
+        {canManageRoles && !u.admin_box && (
+          <Button variant="ghost" size="sm" onClick={() => navigate(`/settings/users/${u.id}/permissions`)}>
             Permissions
           </Button>
         )}
-        {canUpdateUser && u.is_active && !u.has_login && (
+        {canInvite && u.is_active && !u.has_login && (
           <Button
             variant="ghost"
             size="sm"
@@ -439,7 +500,8 @@ export default function UsersTeamsPage() {
                 Send password reset
               </Button>
             )}
-            {canUpdateUser && (
+            {/* Nobody deactivates their own account: the server refuses it, so the row does not offer it. */}
+            {canUpdateUser && u.id !== myId && (
               <Button variant="ghost" size="sm" onClick={() => setDeactivateFor(u)}>
                 Deactivate
               </Button>
@@ -447,6 +509,11 @@ export default function UsersTeamsPage() {
           </>
         ) : (
           <>
+            {canUpdateUser && hasEmail && u.mailbox_handover && (
+              <Button variant="ghost" size="sm" onClick={() => setMoveFor(u)}>
+                Move mailbox
+              </Button>
+            )}
             {canUpdateUser && (
               <Button
                 variant="ghost"
@@ -517,7 +584,7 @@ export default function UsersTeamsPage() {
                 </Label>
               </span>
             </div>
-            {canCreateUser && (
+            {canInvite && (
               <Button
                 size="sm"
                 onClick={() => {
@@ -530,7 +597,7 @@ export default function UsersTeamsPage() {
             )}
           </div>
 
-          {canCreateUser && invite && (
+          {canInvite && invite && (
             <Card>
               <div className="grid grid-cols-1 gap-3 p-4 sm:grid-cols-2">
                 <Input kind="given-name" personalAutofill={false} placeholder="First name *" value={invite.first_name} onChange={(e) => setInvite({ ...invite, first_name: e.target.value })} />
@@ -552,11 +619,11 @@ export default function UsersTeamsPage() {
                   )}
                 </div>
                 <Input kind="phone-extension" personalAutofill={false} placeholder="Extension" value={invite.phone_ext} onChange={(e) => setInvite({ ...invite, phone_ext: e.target.value })} />
-                <SelectField
+                <PersonRolePicker
                   aria-label="Role"
+                  roles={roles}
                   value={invite.role}
-                  onValueChange={(v) => setInvite({ ...invite, role: v as UserRole })}
-                  options={ROLES.map((r) => ({ value: r, label: r }))}
+                  onValueChange={(v) => setInvite({ ...invite, role: v })}
                 />
                 {/* #109 - optional Department; backend supports department_id on create */}
                 <SelectField
@@ -589,10 +656,16 @@ export default function UsersTeamsPage() {
             </Card>
           )}
 
+          {hasEmail && (
+            <p className="text-muted-foreground text-xs">
+              Email is the address customers write to. Sign-in email is the one a person logs in with; changing an address here never changes it.
+            </p>
+          )}
+
           {isPhone ? (
             <ul aria-label="Users" className="space-y-3">
               {filtered.map((u) => {
-                const c = userCells(u);
+                const c = userCells(u, true);
                 return (
                   <li key={u.id}>
                     <Card>
@@ -600,6 +673,14 @@ export default function UsersTeamsPage() {
                         <div className="flex flex-wrap items-start justify-between gap-2">
                           <div className="min-w-0 space-y-0.5 text-sm">
                             <div>{c.name}</div>
+                            {/* The address and its marks wrap under the name. */}
+                            {hasEmail && (
+                              <div data-mailbox-line className="space-y-0.5">
+                                <p className="text-muted-foreground text-xs">Email (customers write here)</p>
+                                {c.mailbox}
+                              </div>
+                            )}
+                            <p className="text-muted-foreground text-xs">Sign-in email</p>
                             <div className="break-all">{c.email}</div>
                             <div>{c.phone}</div>
                           </div>
@@ -613,10 +694,6 @@ export default function UsersTeamsPage() {
                           <div className="space-y-1">
                             <p className="text-muted-foreground text-xs">Team</p>
                             {c.team}
-                          </div>
-                          <div className="space-y-1">
-                            <p className="text-muted-foreground text-xs">Time clock</p>
-                            {c.timeclock}
                           </div>
                         </div>
                         <div className="border-border -mx-1 flex flex-wrap items-center gap-1 border-t pt-2">
@@ -634,11 +711,11 @@ export default function UsersTeamsPage() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Name</TableHead>
-                  <TableHead>Email</TableHead>
+                  {hasEmail && <TableHead>Email</TableHead>}
+                  <TableHead>Sign-in email</TableHead>
                   <TableHead>Phone</TableHead>
                   <TableHead>Role</TableHead>
                   <TableHead>Team</TableHead>
-                  <TableHead>Time clock</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="w-72" />
                 </TableRow>
@@ -649,11 +726,11 @@ export default function UsersTeamsPage() {
                   return (
                     <TableRow key={u.id}>
                       <TableCell>{c.name}</TableCell>
+                      {hasEmail && <TableCell>{c.mailbox}</TableCell>}
                       <TableCell>{c.email}</TableCell>
                       <TableCell>{c.phone}</TableCell>
                       <TableCell>{c.role}</TableCell>
                       <TableCell>{c.team}</TableCell>
-                      <TableCell>{c.timeclock}</TableCell>
                       <TableCell>{c.status}</TableCell>
                       <TableCell>
                         <div className="flex items-center gap-1">{c.actions}</div>
@@ -728,7 +805,7 @@ export default function UsersTeamsPage() {
                         <li key={m.id} className="flex items-center justify-between text-sm">
                           <span>
                             {m.first_name} {m.last_name}{' '}
-                            <span className="text-muted-foreground text-xs">- {m.role}</span>
+                            <span className="text-muted-foreground text-xs">- {roleNameOf(m)}</span>
                           </span>
                           {canUpdateUser && (
                             <Button
@@ -839,7 +916,7 @@ export default function UsersTeamsPage() {
       </Dialog>
 
       {/* Permanent-delete confirmation */}
-      <Dialog open={userToDelete !== null} onOpenChange={(o) => !o && setUserToDelete(null)}>
+      <Dialog open={userToDelete !== null} onOpenChange={(o) => !o && closeDeleteUser()}>
         <DialogContent intent="choice">
           <DialogHeader>
             <DialogTitle>
@@ -850,8 +927,13 @@ export default function UsersTeamsPage() {
               estimates, payments, or other history, deletion is blocked - keep them deactivated instead.
             </DialogDescription>
           </DialogHeader>
+          {deleteError && (
+            <p role="alert" className="text-destructive text-sm">
+              {deleteError}
+            </p>
+          )}
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setUserToDelete(null)}>
+            <Button variant="ghost" onClick={closeDeleteUser}>
               Cancel
             </Button>
             <Button
@@ -859,7 +941,11 @@ export default function UsersTeamsPage() {
               disabled={deleteUser.isPending}
               onClick={() => {
                 if (!userToDelete) return;
-                deleteUser.mutate(userToDelete.id, { onSuccess: () => setUserToDelete(null) });
+                setDeleteError(null);
+                deleteUser.mutate(userToDelete.id, {
+                  onSuccess: closeDeleteUser,
+                  onError: (err) => setDeleteError(extractApiError(err, 'Could not delete user')),
+                });
               }}
             >
               Delete user
@@ -948,33 +1034,56 @@ export default function UsersTeamsPage() {
         </DialogContent>
       </Dialog>
 
-      {/* Per-user permission overrides (RBAC Phase 2) */}
-      <UserPermissionsDialog
-        userId={permsUser?.id ?? null}
-        userName={permsUser?.name ?? ''}
-        onClose={() => setPermsUser(null)}
-      />
+      {/* Set or change a mailbox address: only the name part is typed; the company part and domain are fixed. */}
+      {mailboxFor?.user.mailbox?.address_suffix && (
+        <MailboxAddressDialog
+          open
+          onOpenChange={(o) => !o && setMailboxFor(null)}
+          person={{ id: mailboxFor.user.id, name: `${mailboxFor.user.first_name} ${mailboxFor.user.last_name}` }}
+          mode={mailboxFor.mode}
+          currentAddress={mailboxFor.user.mailbox.address}
+          suffix={mailboxFor.user.mailbox.address_suffix}
+        />
+      )}
 
-      {/* Deactivate confirmation - deactivation also revokes login */}
-      <Dialog open={deactivateFor !== null} onOpenChange={(o) => !o && setDeactivateFor(null)}>
+      {/* Role-change confirmation - asked every time, whether or not the person has changes of their own */}
+      <Dialog open={roleChange !== null} onOpenChange={(o) => !o && setRoleChange(null)}>
         <DialogContent intent="choice">
           <DialogHeader>
-            <DialogTitle>Deactivate {deactivateFor?.first_name} {deactivateFor?.last_name}?</DialogTitle>
+            <DialogTitle>Change role for {roleChange?.user.first_name} {roleChange?.user.last_name}?</DialogTitle>
             <DialogDescription>
-              They&rsquo;ll be signed out and their login removed - reactivating later won&rsquo;t restore it, you&rsquo;ll need to
-              re-invite them. Their account and history are kept, and they&rsquo;re removed from new assignments.
+              {roleChange && roleChangeMessage(roleChange.user, roleNameOf(roleChange.user), roleChange.to)}
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setDeactivateFor(null)}>
+            <Button variant="ghost" onClick={() => setRoleChange(null)}>
               Cancel
             </Button>
-            <Button variant="destructive" onClick={() => void confirmDeactivate()} disabled={deactivate.isPending}>
-              Deactivate
+            <Button onClick={() => void confirmRoleChange()} disabled={updateUser.isPending}>
+              Change role
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Deactivate confirmation - deactivation also revokes login, and hands the person's mailbox to the main mailbox or a colleague */}
+      <DeactivateUserDialog
+        person={deactivateFor}
+        people={users}
+        showMailboxChoice={hasEmail}
+        pending={deactivate.isPending}
+        onCancel={() => setDeactivateFor(null)}
+        onConfirm={(handoverTo) => void confirmDeactivate(handoverTo)}
+      />
+
+      {/* Hand a leaver's mailbox on later - to another person or to the main mailbox */}
+      <MoveMailboxDialog
+        person={moveFor}
+        people={users}
+        pending={moveMailbox.isPending}
+        onCancel={() => setMoveFor(null)}
+        onConfirm={(handoverTo) => void confirmMove(handoverTo)}
+      />
 
       {/* Delete-team confirmation */}
       <Dialog open={teamToDelete !== null} onOpenChange={(o) => !o && setTeamToDelete(null)}>

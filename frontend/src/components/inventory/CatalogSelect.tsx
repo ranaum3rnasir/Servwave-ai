@@ -46,8 +46,9 @@ export function CatalogSelect({
   value: string;
   /** Fired with the picked value, or "" when the none entry is chosen. */
   onChange: (value: string) => void;
-  /** Fired when the add-new entry is picked. Open the creator dialog here. */
-  onAddNew: () => void;
+  /** Fired when the add-new entry is picked. Open the creator dialog here. Omit it where the
+   *  person may not create the row (the entry is then not offered at all). */
+  onAddNew?: () => void;
   /**
    * Fired when "Manage …" is picked. Omit where rows cannot be deleted -
    * vendors and locations have no delete endpoint, so the entry would open a
@@ -93,7 +94,7 @@ export function CatalogSelect({
       disabled={disabled}
       onValueChange={(next) => {
         if (next === ADD_NEW) {
-          onAddNew();
+          onAddNew?.();
           return;
         }
         if (next === MANAGE) {
@@ -109,8 +110,8 @@ export function CatalogSelect({
         ...(noneLabel ? [{ value: NONE, label: noneLabel }] : []),
         ...options,
         ...orphan,
-        { value: SEPARATOR, label: "──────────", disabled: true },
-        { value: ADD_NEW, label: `+ ${addVerb} ${noun}…` },
+        ...(onAddNew || onManage ? [{ value: SEPARATOR, label: "──────────", disabled: true }] : []),
+        ...(onAddNew ? [{ value: ADD_NEW, label: `+ ${addVerb} ${noun}…` }] : []),
         ...(onManage ? [{ value: MANAGE, label: `Manage ${managePlural ?? `${noun}s`}…` }] : []),
       ]}
     />

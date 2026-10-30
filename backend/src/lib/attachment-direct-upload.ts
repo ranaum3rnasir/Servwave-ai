@@ -152,7 +152,7 @@ export async function statStoredObject(storagePath: string): Promise<{ size: num
  *
  * Fails CLOSED. If storage ignores the Range header and answers 200 with the whole object, this
  * refuses the body rather than buffering it — the entire point of the direct path is that a
- * 512MB video never lands in this process's heap, and a silent full read would give that back
+ * 200MB video never lands in this process's heap, and a silent full read would give that back
  * while still looking like it worked.
  *
  * `null` means OUR side failed, never "the file is wrong": no read URL, fetch threw, a non-OK

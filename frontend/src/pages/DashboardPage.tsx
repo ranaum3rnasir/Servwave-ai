@@ -54,7 +54,7 @@ export default function DashboardPage() {
       if (!def) return null;
       const size = item.size ?? def.defaultSize;
       const range: TimeRange = item.range ?? def.defaultRange ?? '30d';
-      const el = def.render({ data, range, navigate });
+      const el = def.render({ data: data?.data, range, navigate });
       if (!el) return null;
       return { item, def, size, range, el };
     })
@@ -133,7 +133,7 @@ export default function DashboardPage() {
           ))}
         </div>
 
-        <CatalogDrawer open={edit && catalogOpen} layout={layout} onAdd={add} onClose={() => setCatalogOpen(false)} />
+        <CatalogDrawer open={edit && catalogOpen} layout={layout} tiles={data?.tiles ?? []} categories={data?.categories ?? []} onAdd={add} onClose={() => setCatalogOpen(false)} />
       </div>
     </div>
   );

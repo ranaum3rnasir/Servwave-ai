@@ -24,6 +24,26 @@ vi.mock('../services/notifications/notificationService', () => ({
 import { emit } from '../services/notifications/notificationService';
 const mockEmit = emit as ReturnType<typeof vi.fn>;
 
+// The job completed alert is raised through M6's two lanes (S06.23); its recipients are covered in
+// permission-job-completed-alert-db.test.ts, here the bulk action is only counted raising it once per job.
+vi.mock('../services/notifications/jobCompletedAlert', () => ({
+  alertJobCompleted: vi.fn().mockResolvedValue(undefined),
+}));
+import { alertJobCompleted } from '../services/notifications/jobCompletedAlert';
+const mockAlertJobCompleted = alertJobCompleted as ReturnType<typeof vi.fn>;
+
+// Started and cancelled jobs are alerted through M6's two lanes after the response (S06.25); who is reached is covered in
+// permission-job-lifecycle-alerts-db.test.ts, here the bulk action is only counted queueing one alert per job.
+vi.mock('../services/notifications/reviewAttentionQueue', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../services/notifications/reviewAttentionQueue')>()),
+  queueReviewAttention: vi.fn(),
+}));
+import { queueReviewAttention } from '../services/notifications/reviewAttentionQueue';
+const mockQueue = queueReviewAttention as ReturnType<typeof vi.fn>;
+function queuedAlerts(verb: string) {
+  return mockQueue.mock.calls.map((c: any[]) => c[0]).filter((p: any) => p.lifecycle?.verb === verb);
+}
+
 // dispatchAutomationEvent is already globally mocked in setup.ts (fire-and-forget, real would
 // leak across tests) - imported directly here for assertions, same as jobs.test.ts.
 import { dispatchAutomationEvent } from '../services/automations/dispatch';
@@ -109,7 +129,12 @@ function wireSetAssigneesTx() {
 function wireCancelTx() {
   mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
     fn({
-      invoice: { update: mockPrisma.invoice.update },
+      // #891: the cascade's void is a conditional updateMany (count 1 = voided).
+      // #891: the cascade locks the invoices it voids before voiding them.
+      $executeRaw: vi.fn().mockResolvedValue(1),
+      invoice: { updateMany: mockPrisma.invoice.updateMany },
+      // #891: a cascade-voided invoice releases any deposit credit drawn onto it.
+      depositCreditApplication: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
       invoiceLineItem: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn() },
       // S4 (D19): job cancel cascades onto its live visits inside this same transaction.
       visit: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
@@ -125,6 +150,9 @@ function wireCancelTx() {
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
+  // The job-level complete writes its visit cancels, history, status move and review round in one transaction (S06.1);
+  // the stub runs that callback against the same mocked client.
+  mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => fn(mockPrisma));
   mockPrisma.rolePermission.findMany.mockImplementation(
     (args: { where: { organization_id: string; role: string } }) =>
       Promise.resolve(DEFAULT_GRANTS.filter((g) => g.role === args.where.role)),
@@ -164,11 +192,14 @@ describe('POST /api/jobs/bulk-status', () => {
       expect(call[0].data.status).toBe('IN_PROGRESS');
       expect(call[0].data.started_at).toBeInstanceOf(Date);
       expect(call[0].data.completed_at).toBeNull();
-      expect(call[0].data.cancelled_at).toBeNull();
-      expect(call[0].data.cancelled_reason).toBeNull();
+      // S06.17: a start never touches the cancel record; a Cancelled job is refused before it gets here.
+      expect(call[0].data).not.toHaveProperty('cancelled_at');
+      expect(call[0].data).not.toHaveProperty('cancelled_reason');
     }
 
-    expect(emitCalls('job.started')).toHaveLength(2);
+    // One alert per job, queued for after the response, and none through the role-list emit.
+    expect(queuedAlerts('job.started').map((p: any) => p.jobId)).toEqual([ID_A, ID_B]);
+    expect(emitCalls('job.started')).toHaveLength(0);
   });
 
   it('spreads tenantWhere on every read and every write, and actually performs them', async () => {
@@ -242,7 +273,7 @@ describe('POST /api/jobs/bulk-status', () => {
     const res = await request(app)
       .post('/api/jobs/bulk-status')
       .set(authHeader('technician'))
-      .send({ ids: [ID_A, ID_B], action: 'cancel', cancelled_reason: 'no longer needed' });
+      .send({ ids: [ID_A, ID_B], action: 'cancel', cancel_reason_code: 'OTHER', cancelled_reason: 'no longer needed' });
 
     expect(res.status).toBe(403);
     expect(mockPrisma.job.update).not.toHaveBeenCalled();
@@ -279,16 +310,16 @@ describe('POST /api/jobs/bulk-status', () => {
       .mockResolvedValueOnce(jobRow(ID_A, { invoices: [invoiceA] }))
       .mockResolvedValueOnce(jobRow(ID_B, { invoices: [invoiceB] }));
     mockPrisma.job.update.mockResolvedValue(jobRow(ID_A));
-    mockPrisma.invoice.update.mockResolvedValue({});
+    mockPrisma.invoice.updateMany.mockResolvedValue({ count: 1 });
 
     const res = await request(app)
       .post('/api/jobs/bulk-status')
       .set(authHeader('admin'))
-      .send({ ids: [ID_A, ID_B], action: 'cancel', cancelled_reason: 'customer cancelled' });
+      .send({ ids: [ID_A, ID_B], action: 'cancel', cancel_reason_code: 'OTHER', cancelled_reason: 'customer cancelled' });
 
     expect(res.status).toBe(200);
-    expect(mockPrisma.invoice.update).toHaveBeenCalledTimes(2);
-    for (const call of mockPrisma.invoice.update.mock.calls) {
+    expect(mockPrisma.invoice.updateMany).toHaveBeenCalledTimes(2);
+    for (const call of mockPrisma.invoice.updateMany.mock.calls) {
       expect(call[0].data.status).toBe('VOIDED');
       expect(call[0].data.amount_due).toBe(0);
     }
@@ -305,6 +336,9 @@ describe('POST /api/jobs/bulk-status', () => {
     }
     expect(res.body.voided_invoice_ids).toEqual(expect.arrayContaining(['inv-a', 'inv-b']));
     expect(res.body.voided_invoice_ids).toHaveLength(2);
+    // One alert per job, queued for after the response, and none through the role-list emit.
+    expect(queuedAlerts('job.cancelled').map((p: any) => p.jobId)).toEqual([ID_A, ID_B]);
+    expect(emitCalls('job.cancelled')).toHaveLength(0);
   });
 
   it('fires the customer-visible automation dispatch exactly once per id, never more', async () => {
@@ -325,7 +359,7 @@ describe('POST /api/jobs/bulk-status', () => {
     expect(completedDispatches).toHaveLength(3);
     const distinctIds = new Set(completedDispatches.map((d: any) => d.entity.id));
     expect(distinctIds.size).toBe(3);
-    expect(emitCalls('job.completed')).toHaveLength(3);
+    expect(mockAlertJobCompleted).toHaveBeenCalledTimes(3);
 
     vi.clearAllMocks();
     mockAuthAs('admin');
@@ -338,7 +372,7 @@ describe('POST /api/jobs/bulk-status', () => {
     const cancelRes = await request(app)
       .post('/api/jobs/bulk-status')
       .set(authHeader('admin'))
-      .send({ ids: [ID_A, ID_B], action: 'cancel', cancelled_reason: 'dup fires check' });
+      .send({ ids: [ID_A, ID_B], action: 'cancel', cancel_reason_code: 'OTHER', cancelled_reason: 'dup fires check' });
 
     expect(cancelRes.status).toBe(200);
     expect(dispatchCalls('JOB_CANCELLED')).toHaveLength(2);
@@ -465,8 +499,8 @@ describe('POST /api/jobs/bulk-assign', () => {
     expect(res.status).toBe(200);
     expect(res.body.updated).toEqual([]);
     expect(res.body.failed).toEqual([
-      { id: ID_A, error: 'Cannot assign job to an inactive technician' },
-      { id: ID_B, error: 'Cannot assign job to an inactive technician' },
+      { id: ID_A, error: 'This person is inactive.' },
+      { id: ID_B, error: 'This person is inactive.' },
     ]);
     expect(mockPrisma.jobAssignee.createMany).not.toHaveBeenCalled();
 

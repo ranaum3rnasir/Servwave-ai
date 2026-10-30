@@ -23,7 +23,7 @@ export const jobs: Job[] = [
   { id: "5",  number: "J00221", reference: "d00128", customer: "QA-Job-Co-0715b",      location: "1 Test St, Austin",         status: "Unscheduled", assignees: [], scheduledAt: null, createdAt: "2026-07-15" },
   { id: "6",  number: "J00220", reference: "d00124", customer: "QA-Job-Co-0715a",      location: "1 Test Street, El Paso",    status: "Unscheduled", assignees: [], scheduledAt: null, createdAt: "2026-07-15" },
   { id: "7",  number: "J00219", reference: "d00124", customer: "QA-Job-Co-0715a",      location: "1 Test Street, El Paso",    status: "Unscheduled", assignees: [], scheduledAt: null, createdAt: "2026-07-15" },
-  { id: "8",  number: "J00218", reference: "d00117", customer: "Emanuel Test",         location: "1001 Willow Ave, Hoboken",  status: "Unscheduled", assignees: [], scheduledAt: null, createdAt: "2026-07-13" },
+  { id: "8",  number: "J00218", reference: "d00117", customer: "Sam Test",         location: "1001 Willow Ave, Hoboken",  status: "Unscheduled", assignees: [], scheduledAt: null, createdAt: "2026-07-13" },
   { id: "9",  number: "J00217", reference: "d00115", customer: "Dome Test",            location: "1001 Willow Ave, Hoboken",  status: "Unscheduled", assignees: [], scheduledAt: null, createdAt: "2026-07-13" },
   { id: "10", number: "J00212", reference: "d00096", customer: "test",                 location: "1001 Willow Ave, Hoboken",  status: "Scheduled",   assignees: ["Lena Ortiz"], scheduledAt: "2026-07-12", createdAt: "2026-07-11" },
   { id: "11", number: "J00211", reference: "d00104", customer: "ZZ TEST JobAudit Alpha", location: "77 ZZ Test Ave, Hoboken", status: "Scheduled",   assignees: ["Test Technician"], scheduledAt: "2026-07-20", createdAt: "2026-07-10" },

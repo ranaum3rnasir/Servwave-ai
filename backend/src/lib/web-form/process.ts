@@ -8,6 +8,7 @@ import { withRequiredCustomerFields } from '../customer-create';
 import { withNumberCollisionRetry } from '../number-collision-retry';
 import { allocateNumber } from '../numbering';
 import { CREATED_BY_CLIENT } from '../created-by';
+import { alertLead } from '../../services/notifications/leadEstimateAlerts';
 import type { WebFormSubmissionEvent } from './types';
 import { LONG_TEXT_MAX } from '../text-limits';
 
@@ -148,7 +149,7 @@ async function openLead(
   key: string,
 ): Promise<void> {
   try {
-    await withNumberCollisionRetry(
+    const opened = await withNumberCollisionRetry(
       () =>
         db.$transaction(async (tx) => {
           let customerId = await matchCustomer(tx, orgId, e);
@@ -190,9 +191,18 @@ async function openLead(
               data: { lead_id: lead.id, customer_id: customerId },
             });
           }
+
+          return { id: lead.id, lead_number: leadNumber };
         }),
       { label: 'web-form.submission' },
     );
+
+    // A form lead has no creator and no Owner, so it always sends "New lead with no owner". Sent
+    // AFTER the commit, outside the retried unit of work: a notification is not a database write
+    // and must not fire twice or hold the lead hostage. This is the receiver's own work after it
+    // has already answered (no request left to queue behind), so the alert is awaited here, on the
+    // global client and outside any transaction; its failures are logged and never undo the lead.
+    await alertLead({ verb: 'lead.unassigned_created', organizationId: orgId, actorId: null, leadId: opened.id });
   } catch (err) {
     // Never the phone number, the email address or the submitted name: the key
     // is what a human needs to find the stored payload, and it is a hash or a

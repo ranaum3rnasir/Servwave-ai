@@ -59,7 +59,8 @@ export type Item = {
   /** Hybrid delete (Task 1/3): false once an item is archived rather than
    *  hard-deleted (still referenced by history). Absent under USE_MOCK. */
   isActive?: boolean;
-  vendor: string;
+  /** The vendor's name. Absent when the person lacks View vendors: the server leaves the key out (S07.18). */
+  vendor?: string;
   stock: StockAtLocation[];
   serials?: string[];
   photoUrl?: string;
@@ -80,6 +81,13 @@ export type Item = {
   /** SRVW-90: apply sales tax on estimates and invoices. Server default true. */
   taxable?: boolean;
 };
+
+/**
+ * An item as the Price Book reads return it: the catalog fields and prices, never the stock side
+ * (quantities, locations, serial numbers). The vendor name travels only to a caller who may read
+ * vendors, so it is optional here. An `Item` fits wherever a `CatalogItem` is wanted.
+ */
+export type CatalogItem = Omit<Item, 'stock' | 'serials' | 'vendor'> & { vendor?: string };
 
 /** Per-org catalog entity, mirroring Brand. The item points at it by id. */
 export type Finish = {
@@ -229,9 +237,10 @@ export type LowStockRow = {
   /** Deactivated items stay visible on stock surfaces (QA-105) — badge them. */
   isActive: boolean;
   trackInventory: boolean;
-  vendorId: string | null;
+  /** Absent when the person lacks View vendors: the server leaves both vendor keys out (S07.18). */
+  vendorId?: string | null;
   /** Vendor NAME — what the P2 proposal builder groups on. */
-  vendorName: string | null;
+  vendorName?: string | null;
   locationId: string;
   locationName: string;
   locationType?: string;
@@ -384,7 +393,7 @@ export type {
 // Re-export the pure value helpers/labels as plain values (NOT hooks).
 export {
   tradeColor, defaultVisibilityForKind, approvalTypeLabel, approvalTypeTint,
-  TECH_ROLE_LABEL,
+  INVENTORY_VIEW_LABEL, inFieldRoster,
 } from '@/lib/api/_mock/inventory';
 
 // Stock helpers, retyped against the live Item shape. `reserved`-based
@@ -430,45 +439,79 @@ async function fetchAllItems(includeArchived: boolean): Promise<Item[]> {
   return all;
 }
 
-export function useInventoryItems(includeArchived = false) {
+/** The Price Book twin of `fetchAllItems`: same envelope walk, over the catalog read that View price book opens. */
+async function fetchAllCatalogItems(includeArchived: boolean): Promise<CatalogItem[]> {
+  const archived = includeArchived ? '&include_archived=true' : '';
+  const getPage = (page: number) =>
+    api.get(`/api/price-book/catalog-items?limit=${ITEMS_PAGE_SIZE}&page=${page}${archived}`);
+
+  const first = await getPage(1);
+  const all: CatalogItem[] = [...(first.data.data ?? [])];
+  const totalPages = Math.min(Number(first.data.meta?.totalPages) || 1, ITEMS_MAX_PAGES);
+
+  for (let page = 2; page <= totalPages; page += 1) {
+    const { data } = await getPage(page);
+    all.push(...(data.data ?? []));
+  }
+
+  return all;
+}
+
+export function useInventoryItems(includeArchived = false, enabled = true) {
   return useQuery<Item[]>({
+    enabled,
     queryKey: ['inventory', 'items', { includeArchived }],
     queryFn: USE_MOCK
       ? () => Promise.resolve(mock.items)
       : () => fetchAllItems(includeArchived),
   });
 }
-export function useVendors() {
-  return useQuery<Vendor[]>({ queryKey: ['inventory', 'vendors'], queryFn: USE_MOCK ? () => Promise.resolve(mock.vendors) : () => api.get('/api/inventory/vendors').then((r) => r.data.vendors) });
+/**
+ * The Price Book page's item list (S07.16): the catalog read, which View price book alone opens. The
+ * page used to read items through the stock endpoint, which also needs View stock.
+ */
+export function usePriceBookItems(includeArchived = false) {
+  return useQuery<CatalogItem[]>({
+    // Under the ['inventory', 'items'] prefix so every item write refreshes it too.
+    queryKey: [...KEYS.items, 'price-book', { includeArchived }],
+    queryFn: () => fetchAllCatalogItems(includeArchived),
+  });
 }
-export function useBrands() {
-  return useQuery<Brand[]>({ queryKey: ['inventory', 'brands'], queryFn: USE_MOCK ? () => Promise.resolve(mock.brands) : () => api.get('/api/inventory/brands').then((r) => r.data.brands) });
+/** `enabled` is false for a caller who may not read vendors, so the page never asks for a list it would be refused. */
+export function useVendors(enabled = true) {
+  return useQuery<Vendor[]>({ queryKey: ['inventory', 'vendors'], queryFn: USE_MOCK ? () => Promise.resolve(mock.vendors) : () => api.get('/api/inventory/vendors').then((r) => r.data.vendors), enabled });
+}
+export function useBrands(enabled = true) {
+  return useQuery<Brand[]>({ queryKey: ['inventory', 'brands'], queryFn: USE_MOCK ? () => Promise.resolve(mock.brands) : () => api.get('/api/inventory/brands').then((r) => r.data.brands), enabled });
 }
 // Finish and UomOption post-date the mock seed layer, so they have no
 // `mock.*` fallback - USE_MOCK is false module-wide and these are server-only.
-export function useFinishes() {
-  return useQuery<Finish[]>({ queryKey: ['inventory', 'finishes'], queryFn: () => api.get('/api/inventory/finishes').then((r) => r.data.finishes) });
+export function useFinishes(enabled = true) {
+  return useQuery<Finish[]>({ queryKey: ['inventory', 'finishes'], queryFn: () => api.get('/api/inventory/finishes').then((r) => r.data.finishes), enabled });
 }
 export function useUomOptions() {
   return useQuery<UomOption[]>({ queryKey: ['inventory', 'uom-options'], queryFn: () => api.get('/api/inventory/uom-options').then((r) => r.data.uomOptions) });
 }
-export function useCategories() {
-  return useQuery<Category[]>({ queryKey: ['inventory', 'categories'], queryFn: USE_MOCK ? () => Promise.resolve(mock.categories) : () => api.get('/api/inventory/categories').then((r) => r.data.categories) });
+export function useCategories(enabled = true) {
+  return useQuery<Category[]>({ queryKey: ['inventory', 'categories'], queryFn: USE_MOCK ? () => Promise.resolve(mock.categories) : () => api.get('/api/inventory/categories').then((r) => r.data.categories), enabled });
 }
 export function useItemGroups() {
   return useQuery<ItemGroup[]>({ queryKey: ['inventory', 'item-groups'], queryFn: USE_MOCK ? () => Promise.resolve(mock.itemGroups) : () => api.get('/api/inventory/item-groups').then((r) => r.data.itemGroups) });
 }
-export function useLocations() {
-  return useQuery<Location[]>({ queryKey: ['inventory', 'locations'], queryFn: USE_MOCK ? () => Promise.resolve(mock.locations) : () => api.get('/api/inventory/locations').then((r) => r.data.locations) });
+/** `enabled` is false for a caller who may not read stock (locations are stock data), so no refused read is made. */
+export function useLocations(enabled = true) {
+  return useQuery<Location[]>({ queryKey: ['inventory', 'locations'], queryFn: USE_MOCK ? () => Promise.resolve(mock.locations) : () => api.get('/api/inventory/locations').then((r) => r.data.locations), enabled });
 }
-export function useBranches() {
-  return useQuery<Branch[]>({ queryKey: ['inventory', 'branches'], queryFn: USE_MOCK ? () => Promise.resolve(mock.branches) : () => api.get('/api/inventory/branches').then((r) => r.data.branches) });
+export function useBranches(enabled = true) {
+  return useQuery<Branch[]>({ queryKey: ['inventory', 'branches'], queryFn: USE_MOCK ? () => Promise.resolve(mock.branches) : () => api.get('/api/inventory/branches').then((r) => r.data.branches), enabled });
 }
 /** P5 Action log: `{data,meta}` envelope with server-side filters + joins.
  *  Filters are camelCase here and mapped to the endpoint's snake_case params;
- *  undefined values drop out of the querystring (axios skips them). */
-export function useMovements(filters: MovementFilters = {}) {
+ *  undefined values drop out of the querystring (axios skips them).
+ *  `enabled` is false for a caller without See inventory activity, so no refused read is made. */
+export function useMovements(filters: MovementFilters = {}, enabled = true) {
   return useQuery({
+    enabled,
     queryKey: ['inventory', 'movements', filters],
     queryFn: () =>
       api
@@ -494,8 +537,9 @@ export function useMovements(filters: MovementFilters = {}) {
  *  client-side header/KPI detection stays capped at the 100-item window).
  *  Lives under the ['inventory'] key prefix so every stock mutation's
  *  invalidation refreshes it for free. */
-export function useLowStock(params: { locationId?: string; page?: number; limit?: number } = {}) {
+export function useLowStock(params: { locationId?: string; page?: number; limit?: number } = {}, enabled = true) {
   return useQuery({
+    enabled,
     queryKey: ['inventory', 'low-stock', params],
     queryFn: () =>
       api
@@ -516,11 +560,23 @@ export function useLowStock(params: { locationId?: string; page?: number; limit?
 // /inventory/* routes, which <RequireFeature feature="inventory"> already guards.
 // Orgs that DO have inventory are unaffected; orgs that do not skip a call that
 // could only ever 402.
-export function usePurchaseOrders() {
+/** `enabled` is false for a caller who may not read purchase orders, so the page never asks for a list it would be refused. */
+export function usePurchaseOrders(enabled = true) {
   const hasInventory = useFeature('inventory');
   // No mock branch: the prototype seed predates the PR 2 lifecycle shape (orderedBy,
   // receivedAt, signature…) and is not a PurchaseOrder any more.
-  return useQuery<PurchaseOrder[]>({ queryKey: ['inventory', 'purchase-orders'], queryFn: USE_MOCK ? () => Promise.resolve([] as PurchaseOrder[]) : () => api.get('/api/inventory/purchase-orders').then((r) => r.data.purchaseOrders), enabled: USE_MOCK || hasInventory });
+  return useQuery<PurchaseOrder[]>({ queryKey: ['inventory', 'purchase-orders'], queryFn: USE_MOCK ? () => Promise.resolve([] as PurchaseOrder[]) : () => api.get('/api/inventory/purchase-orders').then((r) => r.data.purchaseOrders), enabled: enabled && (USE_MOCK || hasInventory) });
+}
+
+/** One purchase order by id, for the single-order page a link from a job opens. `enabled` is false without View purchase orders. */
+export function usePurchaseOrder(poId: string | undefined, enabled = true) {
+  const hasInventory = useFeature('inventory');
+  return useQuery<PurchaseOrder>({
+    queryKey: ['inventory', 'purchase-orders', 'one', poId],
+    queryFn: () => api.get(`/api/inventory/purchase-orders/${poId}`).then((r) => r.data.purchaseOrder),
+    enabled: enabled && !!poId && hasInventory,
+    retry: false,
+  });
 }
 
 /** One entry in a PO's real activity timeline (D7) — merged server-side from the
@@ -548,8 +604,8 @@ export function usePOActivity(poId: string | null | undefined) {
 // useRFQs was removed with the RFQ feature-parking (P0 §C) — the endpoint 404s.
 // useEstimateReservations was removed with the Pre-PO queue (Purchasing Audit Verdict PR 2,
 // R10) — every /estimate-reservations verb 404s.
-export function useJobStages() {
-  return useQuery<JobStage[]>({ queryKey: ['inventory', 'job-stages'], queryFn: USE_MOCK ? () => Promise.resolve(mock.jobStages) : () => api.get('/api/inventory/job-stages').then((r) => r.data.jobStages) });
+export function useJobStages(enabled = true) {
+  return useQuery<JobStage[]>({ queryKey: ['inventory', 'job-stages'], queryFn: USE_MOCK ? () => Promise.resolve(mock.jobStages) : () => api.get('/api/inventory/job-stages').then((r) => r.data.jobStages), enabled });
 }
 // Dormant (stock-approvals endpoint is feature-parked, P0 §C): kept for the
 // unrouted ApprovalsView/approval dialogs — must have ZERO mounted callers.
@@ -568,8 +624,8 @@ export function useTechs() {
 // ─── My-van (Inventory P3 — the requester's own truck stock) ────────────────
 // GET /api/inventory/my-van is own-scope by construction (primary_tech_id = requester)
 // and cost-stripped by projection — `unit_price` is the customer-facing selling price.
-// `restricted` is the server-computed D10/D13 lock signal (role TECHNICIAN + the
-// `location_restricted` override) — the FE never re-derives it.
+// `restricted` is the server-computed D10/D13 lock signal (the person's Restrict stock to own
+// van switch, whatever their role) — the FE never re-derives it.
 
 export interface MyVan {
   location: { id: string; name: string; type: string; vehicle?: string };
@@ -743,8 +799,9 @@ export type AssetActionInput = {
   note?: string;
 };
 
-export function useAssets(filters: AssetFilters, page = 1) {
+export function useAssets(filters: AssetFilters, page = 1, enabled = true) {
   return useQuery<{ data: Asset[]; meta: { total: number } }>({
+    enabled,
     queryKey: ['inventory', 'assets', filters, page],
     queryFn: () =>
       api
@@ -1237,7 +1294,7 @@ export function useReceivePO() {
  *  ['inventory'] key prefix ON PURPOSE: every PO receive / sync / return
  *  mutation already invalidates ['inventory'], so the row refreshes for free. */
 export function useJobMaterialCost(jobId: string | undefined, enabled: boolean) {
-  return useQuery<{ jobId: string; materialCost: number; lineCount: number }>({
+  return useQuery<{ jobId: string; materialCost?: number; lineCount: number }>({
     queryKey: ['inventory', 'job-material-cost', jobId],
     queryFn: () => api.get(`/api/inventory/jobs/${jobId}/material-cost`).then((r) => r.data),
     enabled: !!jobId && enabled,
@@ -1250,6 +1307,36 @@ export function useJobMaterialCost(jobId: string | undefined, enabled: boolean) 
 export const useCreateStage       = () => useInventoryMutation<unknown>('/api/inventory/job-stages', KEYS.jobStages);
 export const useReceiveStageLine  = () => useInventoryMutation<unknown>('/api/inventory/job-stages/receive', KEYS.jobStages);
 export const useNotifyTechReady   = () => useInventoryMutation<unknown>('/api/inventory/job-stages/notify', KEYS.jobStages);
+/** Saving a stage pickup: the server returns the stage as it now stands. Real API only, like every write that has no
+ *  mock-era twin. The job page keeps its own copy of a job's stages. */
+function useStagePickupMutation<TVars>(post: (vars: TVars) => Promise<JobStage>) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: post,
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: KEYS.jobStages });
+      void qc.invalidateQueries({ queryKey: ['job-stages'] });
+    },
+  });
+}
+/** "Taken by me" on a stage: the server saves the taker and the time. */
+export const useTakeStage = () =>
+  useStagePickupMutation((stageId: string) =>
+    api.post(`/api/inventory/job-stages/${stageId}/taken-by-me`).then((r) => r.data.jobStage as JobStage));
+/** "Taken by..." on a stage: the server saves the chosen person as the taker and the caller as the recorder. */
+export const useTakeStageForOther = () =>
+  useStagePickupMutation((vars: { stageId: string; takenById: string }) =>
+    api.post(`/api/inventory/job-stages/${vars.stageId}/taken-by`, { takenById: vars.takenById }).then((r) => r.data.jobStage as JobStage));
+
+/** The picker of "Taken by...": the company's active people, the stage's assigned person first. */
+export interface PickupPerson { id: string; name: string; assigned: boolean }
+export function useStagePickupPeople(stageId: string, enabled: boolean) {
+  return useQuery({
+    queryKey: [...KEYS.jobStages, stageId, 'pickup-people'],
+    queryFn: () => api.get(`/api/inventory/job-stages/${stageId}/pickup-people`).then((r) => r.data.people as PickupPerson[]),
+    enabled,
+  });
+}
 export const useEmailStagePickup  = () => useInventoryMutation<{ stageId: string; to: string[]; cc?: string[]; subject: string; message?: string }>('/api/inventory/job-stages/email', KEYS.jobStages);
 
 // P5 §5 — staging attachments persist to Supabase Storage. The caller builds

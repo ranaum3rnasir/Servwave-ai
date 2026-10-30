@@ -16,9 +16,11 @@ import userEvent from '@testing-library/user-event';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { MemoryRouter } from 'react-router-dom';
 
-const { createSpy, post, myNumbers } = vi.hoisted(() => ({
+const { createSpy, post, myNumbers, abilityRules } = vi.hoisted(() => ({
   createSpy: vi.fn(),
   post: vi.fn(),
+  // The caller's ability rules, set per case: the person holds the "Office phone in the browser" switch by default.
+  abilityRules: { current: [] as Array<{ action: string; subject: string }> },
   // The caller's allow-listed numbers (the "Calling from" picker). None by default.
   myNumbers: { current: undefined as unknown },
 }));
@@ -49,6 +51,21 @@ vi.mock('@/stores/auth.store', async () => {
     error: null,
   }));
   return { useAuthStore, userDisplayName: () => '' };
+});
+// Roles & Permissions S08.18: the browser phone is the "Office phone in the browser" switch, read from the person's
+// ability. Most cases are about the device and the surface, so the person holds the switch; the case that does not
+// sets `abilityRules.current` to an empty list.
+vi.mock('@/contexts/AbilityContext', async (importOriginal) => {
+  const { buildAbility } = await import('@/lib/ability');
+  let built: { rules: unknown; ability: ReturnType<typeof buildAbility> } | null = null;
+  const useAppAbility = () => {
+    // One ability object per rule set, so a re-render does not hand the page a new one.
+    if (!built || built.rules !== abilityRules.current) {
+      built = { rules: abilityRules.current, ability: buildAbility(abilityRules.current as never) };
+    }
+    return built.ability;
+  };
+  return { ...(await importOriginal<typeof import('@/contexts/AbilityContext')>()), useAppAbility };
 });
 vi.mock('@/lib/entitlements', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/entitlements')>()),
@@ -113,6 +130,7 @@ beforeEach(() => {
   post.mockResolvedValue({ data: {} });
   localStorage.clear();
   myNumbers.current = undefined;
+  abilityRules.current = [{ action: 'use_browser_phone', subject: 'Communication' }];
 });
 
 afterEach(() => {
@@ -236,5 +254,33 @@ describe('/phone tab on a computer (unchanged)', () => {
     expect(createSpy).toHaveBeenCalledTimes(1);
     expect(document.querySelector('ctm-phone-embed')).not.toBeNull();
     expect(screen.getByText('Connecting…')).toBeInTheDocument();
+  });
+});
+
+// Roles & Permissions S08.18: the switch, not the device, decides. Without "Office phone in the browser" a computer
+// places the same bridge call a phone does (it rings the person's own phone first), and no browser phone is ever created.
+describe('/phone tab on a computer without the "Office phone in the browser" switch', () => {
+  it('Call places the bridge call and never creates the browser phone', async () => {
+    abilityRules.current = [];
+    restoreDevice = emulateDevice(DESKTOP);
+    renderPhoneTab();
+    await settle();
+
+    expect(createSpy).not.toHaveBeenCalled();
+    expect(document.querySelector('ctm-phone-embed')).toBeNull();
+
+    fireEvent.change(screen.getByPlaceholderText('Enter a number'), {
+      target: { value: '+15555550123' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Call' }));
+
+    await waitFor(() =>
+      expect(post).toHaveBeenCalledWith(
+        '/api/communication/calls',
+        expect.objectContaining({ direction: 'out', to_number: '+15555550123' }),
+      ),
+    );
+    expect(await screen.findByText('Your phone will ring first - answer to connect.')).toBeInTheDocument();
+    expect(createSpy).not.toHaveBeenCalled();
   });
 });

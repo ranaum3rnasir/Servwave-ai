@@ -64,9 +64,13 @@ const ADMIN = buildAbility([{ action: 'manage', subject: 'all' }]);
 // Reads everything (so the board renders normally) but explicitly withholds `update` on
 // `CalendarEntry` — the exact SALES shape the acceptance criteria name: "a SALES user (no
 // CalendarEntry grant) cannot drag an entry".
+// It holds the switches that give an EDITABLE board with lanes (Assign work to other people, Schedule visits) but
+// not Edit events, so the page is not read-only and only the entry's own gate can stop the drop.
 const NO_CALENDAR_ENTRY_GRANT = buildAbility([
   { action: 'read', subject: 'all' },
   { action: 'create', subject: 'Job' },
+  { action: 'assign', subject: 'User' },
+  { action: 'reschedule', subject: 'Job' },
 ]);
 
 const mockApi = vi.mocked(api);

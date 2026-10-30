@@ -12,7 +12,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { renderWithProviders } from './helpers';
+import { renderWithProviders, seedMySwitches } from './helpers';
 import {
   LoErrorView,
   LoShortagePanel,
@@ -42,7 +42,12 @@ const SHORTAGE: LoShortageDetail[] = [
 ];
 
 describe('LoShortagePanel (409)', () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
   it('renders a row per short line plus the restock link', () => {
+    seedMySwitches({ view_stock: true, show_stock_page: true });
     renderWithProviders(<LoShortagePanel details={SHORTAGE} />);
     expect(
       screen.getByText('Not enough stock to process - nothing was deducted.'),
@@ -53,6 +58,13 @@ describe('LoShortagePanel (409)', () => {
     expect(screen.getByText('Coil')).toBeInTheDocument();
     expect(screen.getByText('0 on hand, 5 needed.')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /inventory page/i })).toHaveAttribute('href', '/inventory');
+  });
+
+  it('offers no link to the Inventory page to a person who cannot open it, and still says what to do', () => {
+    seedMySwitches({ view_stock: true, show_stock_page: false });
+    renderWithProviders(<LoShortagePanel details={SHORTAGE} />);
+    expect(screen.queryByRole('link', { name: /inventory page/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/lower the quantity and try again/i)).toBeInTheDocument();
   });
 
   it('falls back to "this location" when a line has no location name', () => {

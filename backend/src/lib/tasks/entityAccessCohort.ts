@@ -1,9 +1,9 @@
 import { logger } from '../logger';
 import type { PermissionUser } from '../permissions/enforce';
-import { grantRoleKey, isSuperUser } from '../permissions/effectiveRole';
-import { loadUserOverridesMany } from '../permissions/loadUserOverrides';
-import type { PermissionOverride } from '../permissions/defineAbility';
-import { entityAccessScope, ENTITY_DELEGATES, type EntityRef } from './entityAccess';
+import { isSuperUser } from '../permissions/effectiveRole';
+import { resolveSwitchesForPeople } from '../permissions/switches/store';
+import type { ResolvedSwitches } from '../permissions/switches/cache';
+import { entityAccessScope, ALERT_RECORD_DELEGATES, type EntityRef } from './entityAccess';
 
 /**
  * THE TRANSPOSE of entityAccess.ts (#05).
@@ -16,9 +16,8 @@ import { entityAccessScope, ENTITY_DELEGATES, type EntityRef } from './entityAcc
  * Two facts collapse it:
  *
  *   1. The scope fragment is identical for everyone sharing a permission PROFILE (super-user-ness,
- *      grant role key, base role, department, location, override set), so it is derived once per
- *      profile with `{{userId}}` left as a placeholder. Overrides for the whole cohort load in one
- *      query. Grants are already cached per role.
+ *      department, location, switch values), so it is derived once per profile with `{{userId}}` left as a
+ *      placeholder. Each person's switch values are already cached.
  *
  *   2. Profile alone does NOT settle the answer, and assuming it does is the trap here: an
  *      own-scoped grant (`visits.some.assignees.some.user_id = {{userId}}`) gives two technicians
@@ -55,7 +54,6 @@ type ProbeDelegate = {
 
 interface Profile {
   members: PermissionUser[];
-  overrides: PermissionOverride[];
 }
 
 /** Readers who resolved to one byte-identical scope fragment, and therefore share one probe. */
@@ -79,22 +77,22 @@ export async function readersWithEntityAccess(
 ): Promise<CohortEntityAccess> {
   const withAccess = new Set<string>();
   const counter: Counter = { probes: 0, fallbacks: 0 };
-  const delegate = ENTITY_DELEGATES[ref.type] as unknown as ProbeDelegate | undefined;
+  const delegate = ALERT_RECORD_DELEGATES[ref.type] as unknown as ProbeDelegate | undefined;
   if (!readers.length || !delegate) return { withAccess, ...counter };
 
-  const overridesByUser = await loadUserOverridesMany(
-    readers.filter((r) => !isSuperUser(r)).map((r) => r.id),
-  );
+  const people = readers.filter((r) => !isSuperUser(r));
+  // Two people on one role can hold different switch values (a person's own set is theirs to tailor), and
+  // the grants a scope is derived from come from those values, so the values are part of the profile.
+  const switchesByUser = await resolveSwitchesForPeople(people);
 
   // Step 1 bounds how often the scope is DERIVED: once per permission profile, in memory, off
   // already-cached grants.
   const profiles = new Map<string, Profile>();
   for (const reader of readers) {
-    const overrides = isSuperUser(reader) ? [] : overridesByUser.get(reader.id) ?? [];
-    const key = profileKey(reader, overrides);
+    const key = profileKey(reader, switchesByUser.get(reader.id) ?? null);
     const existing = profiles.get(key);
     if (existing) existing.members.push(reader);
-    else profiles.set(key, { members: [reader], overrides });
+    else profiles.set(key, { members: [reader] });
   }
 
   // Step 2 bounds how often the entity is PROBED, and it is a DIFFERENT key. Profile identity has
@@ -108,7 +106,7 @@ export async function readersWithEntityAccess(
   await Promise.all(
     [...profiles.values()].map(async (profile) => {
       const scope = await entityAccessScope(profile.members[0], ref.type, {
-        profile: { userIdPlaceholder: COHORT_USER, overrides: profile.overrides },
+        profile: { userIdPlaceholder: COHORT_USER },
       });
       if (!scope) return; // unknown type, or a subject grant this profile does not hold: no probe
       const key = JSON.stringify(scope.where);
@@ -129,27 +127,26 @@ export async function readersWithEntityAccess(
 }
 
 /**
- * The profile identity: everything `scopeTemplateForProfile` reads, plus the override set (per-USER,
- * so it cannot be assumed uniform across a role) and the tenant.
+ * The profile identity: everything `scopeTemplateForProfile` reads (the person's switch values, which are theirs to
+ * tailor, so they cannot be assumed uniform across a role) and the tenant.
  *
  * `organization_id` is in the key even though every caller today sources its candidates from one
  * `tenantWhere(req)`. This is an exported helper taking a plain array: without it, two readers from
- * different orgs sharing a role and department would share a profile, and the whole group would be
- * answered under the REPRESENTATIVE's tenant and grant cache. Keying on it makes a mixed-tenant list
+ * different orgs sharing switch values and a department would share a profile, and the whole group would be
+ * answered under the REPRESENTATIVE's tenant. Keying on it makes a mixed-tenant list
  * merely wasteful instead of wrong.
  *
  * Deliberately conservative - it only decides what may share a DERIVATION. Probes are grouped by the
  * resolved fragment instead, so an attribute no grant condition mentions costs nothing.
  */
-function profileKey(user: PermissionUser, overrides: PermissionOverride[]): string {
+function profileKey(user: PermissionUser, switches: ResolvedSwitches | null): string {
   return JSON.stringify([
     user.organization_id,
     isSuperUser(user),
-    grantRoleKey(user),
-    user.role,
     user.department_id ?? null,
     user.location_id ?? null,
-    overrides.map((o) => `${o.action}:${o.subject}:${o.effect}`).sort(),
+    // Resolved in catalog order, so equal sets serialise equally.
+    switches,
   ]);
 }
 
@@ -170,12 +167,59 @@ async function resolveCohort(
   }
 
   const granted = new Set<string>();
-  for (const arm of splitArms(where)) {
+  const arms = splitArms(where);
+  // The creator rule's arms read "made by me AND attached to it": the candidate occurs twice, which no
+  // mirror can follow. They are answered together, below, from the one person who made the entity.
+  const creatorBound = arms.filter((arm) => creatorColumnOf(arm));
+  for (const arm of arms.filter((a) => !creatorBound.includes(a))) {
     if (granted.size === ids.length) break;
     const matched = await resolveArm(delegate, ref, arm, ids, counter);
     matched.forEach((id) => granted.add(id));
   }
+  if (creatorBound.length && granted.size < ids.length) {
+    const matched = await resolveCreatorBoundArms(delegate, ref, creatorBound, ids, counter);
+    matched.forEach((id) => granted.add(id));
+  }
   return [...granted];
+}
+
+/** The columns that name who made a record. */
+const CREATOR_COLUMNS = ['created_by', 'created_by_id'];
+
+/**
+ * The creator column an arm pins to the candidate AND combines with another condition on the candidate
+ * (`created_by = me` and attached to the record), or null for any other arm. A bare `created_by = me`
+ * arm has one placeholder and is mirrored like every other.
+ */
+function creatorColumnOf(arm: Record<string, unknown>): string | null {
+  const column = CREATOR_COLUMNS.find((c) => arm[c] === COHORT_USER);
+  if (!column) return null;
+  return Object.keys(arm).some((k) => k !== column && containsPlaceholder(arm[k])) ? column : null;
+}
+
+/**
+ * Arms that pin the candidate as the maker of the entity, resolved for the whole cohort in two probes
+ * however many readers it holds: only the one person who made it can satisfy them, so read who that is,
+ * and if they are in the cohort ask the arms about them alone.
+ */
+async function resolveCreatorBoundArms(
+  delegate: ProbeDelegate,
+  ref: EntityRef,
+  arms: Record<string, unknown>[],
+  ids: string[],
+  counter: Counter,
+): Promise<string[]> {
+  const column = creatorColumnOf(arms[0])!;
+  counter.probes += 1;
+  const row = await delegate.findFirst({ where: { id: ref.id }, select: { [column]: true } });
+  const maker = row?.[column];
+  if (typeof maker !== 'string' || !ids.includes(maker)) return [];
+  counter.probes += 1;
+  const hit = await delegate.findFirst({
+    where: { id: ref.id, OR: arms.map((arm) => substitutePlaceholder(arm, maker)) },
+    select: { id: true },
+  });
+  return hit ? [maker] : [];
 }
 
 /**
@@ -280,10 +324,29 @@ function substitutePlaceholder(v: unknown, ids: string[] | string): unknown {
  */
 function splitArms(where: Record<string, unknown>): Record<string, unknown>[] {
   const { OR, ...rest } = where as { OR?: unknown };
-  if (!Array.isArray(OR)) return [where];
+  if (!Array.isArray(OR)) return distributeHops(where);
   return OR.flatMap((branch) =>
     isPlainObject(branch) ? splitArms(conjoin(rest as Record<string, unknown>, branch)) : [],
   );
+}
+
+/**
+ * A to-one relation hop whose condition is itself a union (`lead: { OR: [a, b] }`, how an estimate is
+ * attached through its lead) is the same as one hop per branch (`lead: a`, `lead: b`). Distributing it
+ * gives the mirror arms it can follow, instead of an `OR` it cannot express.
+ */
+function distributeHops(arm: Record<string, unknown>): Record<string, unknown>[] {
+  for (const [key, value] of Object.entries(arm)) {
+    if (key === 'AND' || key === 'OR' || key === 'NOT') continue;
+    if (!isPlainObject(value) || !Array.isArray(value.OR)) continue;
+    const { OR, ...rest } = value as { OR: unknown[] };
+    return OR.flatMap((branch) =>
+      isPlainObject(branch)
+        ? distributeHops({ ...arm, [key]: conjoin(rest as Record<string, unknown>, branch) })
+        : [],
+    );
+  }
+  return [arm];
 }
 
 /** AND two condition objects, using Prisma's `AND` only when a key would otherwise be clobbered. */

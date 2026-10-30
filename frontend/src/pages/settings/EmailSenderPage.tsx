@@ -2,43 +2,41 @@ import { useState } from 'react';
 import { Mail } from 'lucide-react';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import { useFeature } from '@/lib/entitlements';
-import { useSendingIdentity } from '@/lib/api/communication';
-import { useUpdateEmailSender, emailSenderErrorMessage } from '@/lib/api/emailSender';
+import { useEmailSender, useUpdateEmailSender, useCheckEmailSender, emailSenderErrorMessage } from '@/lib/api/emailSender';
+import NotAuthorizedPage from '@/components/NotAuthorizedPage';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { ConfirmDialog } from '@/components/ui/confirm-dialog';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Alert } from '@/components/ui/alert';
 import { Heading } from '@/components/ui/heading';
 import { Skeleton } from '@/components/ui/skeleton';
+import { MainMailboxReaders } from '@/pages/settings/MainMailboxReaders';
 import { toast } from '@/components/ui/use-toast';
 
 /**
  * Settings -> Sender Address.
  *
- * Replaces the guided custom-domain page. Sending is IN-HOUSE: every org sends
- * from the one shared platform domain, whose DNS is configured centrally and
- * once, so no org ever publishes a record or verifies anything. The page that
- * used to live here offered the opposite model - "add your own domain" - which
- * still worked and therefore contradicted the decision rather than merely
- * describing it wrongly.
+ * Sending is IN-HOUSE: every company sends from the one shared domain, whose DNS is configured centrally and once, so
+ * no company ever publishes a record or verifies anything. What a company CAN choose is the company part: the string
+ * before the `@` in its main address, and the last piece of everyone's own address (first.last.<company part>). The
+ * domain renders as a fixed, non-editable suffix, and the backend refuses a value containing `@` for the same reason.
  *
- * What an org CAN choose is the local part: the string before the `@`. The
- * domain renders as a fixed, non-editable suffix, and the backend refuses a
- * value containing `@` for the same reason.
+ * Changing the part gives everyone a new address while every old one keeps receiving forever and is never given to
+ * anyone else, so Save asks first. The server decides whether the part is free (never saying whose it is); its answer
+ * is shown under the field.
  *
- * Default is DERIVED from the company name and stored as NULL, so an org that
- * never touches this keeps behaving exactly as it did before the setting
- * existed, including following a company rename. Clearing the field returns it
- * to that state rather than blanking the address.
+ * The default is DERIVED from the company name. Clearing the field returns to that rather than blanking the address.
  *
- * Admin-only, gated the same AND way the old page was: CASL `update
- * Organization` plus the `email` entitlement, repeated here so a direct URL hit
- * renders nothing and never fetches.
+ * Gated like the Settings nav row: CASL `update Organization` (Company settings) plus the `email` entitlement, repeated
+ * here so a direct URL hit never fetches and draws the same "no access" page as the other settings pages.
+ *
+ * Save asks the server first (a dry run of the change) and only a part it would accept reaches the warning, so a reserved
+ * or taken part is refused under the field and the warning never promises an address that cannot exist.
  */
 
-/** Mirrors the backend's own rule (organization.controller.ts): letters and
- *  digits only, capped, so the field can reject before a round trip. */
+/** Mirrors the backend's own rule (organization.controller.ts): letters and digits only, capped, so the field can
+ *  reject before a round trip. */
 const LOCAL_PART_RE = /^[a-z0-9]*$/;
 const MAX_LOCAL_PART = 40;
 
@@ -46,22 +44,22 @@ export default function EmailSenderPage() {
   const ability = useAppAbility();
   const canManage = ability.can('update', 'Organization');
   const canEmail = useFeature('email');
-  // useFeature fails open by design, so the CASL half is what actually protects
-  // a non-admin here.
+  // useFeature fails open by design, so the CASL half is what actually protects a person without Company settings here.
   const gated = canManage && canEmail;
 
-  const { data: identity, isLoading, isError } = useSendingIdentity();
+  const { data: sender, isLoading, isError } = useEmailSender(gated);
   const update = useUpdateEmailSender();
+  const check = useCheckEmailSender();
 
-  // The server value is NOT mirrored into state. `draft` is null until the
-  // admin types, and the field simply reads through to the server value until
-  // then - so there is nothing to re-sync when the query resolves or refetches
-  // (the mutation invalidates this very query), and nothing that can overwrite
-  // what is being typed. An effect that seeded state from `identity` would do
-  // the same job with a cascading render and a stale window on first paint.
+  // The server value is NOT mirrored into state. `draft` is null until the person types, and the field reads through to
+  // the server value until then - so there is nothing to re-sync when the query resolves or refetches (the save
+  // invalidates this very query), and nothing that can overwrite what is being typed.
   const [draft, setDraft] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  // The server's refusal of the last save, shown under the field until the person edits it.
+  const [refusal, setRefusal] = useState<string | null>(null);
 
-  if (!gated) return null;
+  if (!gated) return <NotAuthorizedPage />;
 
   if (isLoading) {
     return (
@@ -73,124 +71,162 @@ export default function EmailSenderPage() {
     );
   }
 
-  if (isError || !identity) {
+  if (isError || !sender) {
     return (
       <Card>
-        <p className="text-sm text-text-secondary">
-          Could not load your sending address. Refresh to try again.
-        </p>
+        <p className="text-sm text-text-secondary">Could not load your sender address. Refresh to try again.</p>
       </Card>
     );
   }
 
-  // Reads through to the server until the admin has typed something.
-  const value = draft ?? identity.localPart;
+  // Reads through to the server until the person has typed something.
+  const value = draft ?? sender.local_part;
   const trimmed = value.trim().toLowerCase();
   const invalidChars = !LOCAL_PART_RE.test(trimmed);
   const tooLong = trimmed.length > MAX_LOCAL_PART;
-  // Empty is legal - it means "go back to the company-name default" - so it is
-  // never an error, only a different kind of save.
+  // Empty is legal - it means "go back to the company-name default" - so it is never an error, only a different save.
   const localError = invalidChars
     ? 'Use letters and numbers only, with no spaces, dots or @'
     : tooLong
       ? `Use at most ${MAX_LOCAL_PART} characters`
       : null;
+  const shownError = localError ?? refusal;
 
-  const unchanged = trimmed === identity.localPart;
-  const canSave = !localError && !unchanged && !update.isPending;
+  const unchanged = trimmed === sender.local_part;
+  const canSave = !localError && !unchanged && !update.isPending && !check.isPending;
+  const goingBackToName = trimmed === '';
+
+  // The server judges the part before anything is said about changing everyone's address: a refusal is shown under the
+  // field in the server's words and the warning never opens.
+  function askToSave() {
+    setRefusal(null);
+    check.mutate(trimmed, {
+      onSuccess: () => setConfirming(true),
+      onError: (err) => setRefusal(emailSenderErrorMessage(err)),
+    });
+  }
 
   function save() {
     update.mutate(trimmed, {
       onSuccess: (res) => {
-        // Drop back to reading through to the server, which the invalidated
-        // query is about to refetch with exactly what was just saved.
+        // Drop back to reading through to the server, which the invalidated query is about to refetch with exactly
+        // what was just saved.
         setDraft(null);
-        toast({
-          description: res.local_part_is_custom
-            ? `Now sending from ${res.local_part}@${res.sender_domain}`
-            : `Back to the default, ${res.local_part}@${res.sender_domain}`,
-        });
+        setConfirming(false);
+        toast({ description: `Addresses changed. Your main address is now ${res.local_part}@${res.sender_domain}.` });
       },
       onError: (err) => {
-        toast({ description: emailSenderErrorMessage(err), variant: 'destructive' });
+        setConfirming(false);
+        setRefusal(emailSenderErrorMessage(err));
       },
     });
   }
 
-  const preview = `${trimmed || identity.localPart}@${identity.senderDomain}`;
+  const preview = `${trimmed || sender.local_part}@${sender.sender_domain}`;
 
   return (
-    <Card className="space-y-4">
-      <div className="flex items-start gap-3">
-        <Mail className="mt-0.5 h-4 w-4 flex-none text-text-secondary" aria-hidden="true" />
+    <div className="space-y-4">
+      <Card className="space-y-4">
+        <div className="flex items-start gap-3">
+          <Mail className="mt-0.5 h-4 w-4 flex-none text-text-secondary" aria-hidden="true" />
+          <div className="min-w-0 space-y-1">
+            <Heading level={3}>Sender address</Heading>
+            <p className="text-sm text-text-secondary">
+              Your main address is used for automated email. Email a person writes and sends by hand goes from their own
+              address.
+            </p>
+            <p className="text-sm text-text-secondary">
+              Everyone at your company has their own address on the same domain, made from their name and the company part
+              below.
+            </p>
+          </div>
+        </div>
+
         <div className="space-y-1">
-          <Heading level={3}>Sender address</Heading>
-          <p className="text-sm text-text-secondary">
-            The address your customers see on estimates, invoices and receipts. The domain is
-            managed by ServWave and is the same for every account - you choose the part before
-            the @.
+          <span id="email-sender-main-label" className="text-sm font-medium text-text-primary">Main address</span>
+          <p aria-labelledby="email-sender-main-label" className="break-all text-sm text-text-primary">
+            {sender.address}
           </p>
         </div>
-      </div>
 
-      <div className="space-y-1.5">
-        <Label htmlFor="email-sender-local-part">Address</Label>
-        <div className="flex items-center gap-2">
-          <Input
-            id="email-sender-local-part"
-            value={value}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder={identity.localPart}
-            aria-describedby="email-sender-help"
-            aria-invalid={Boolean(localError)}
-            maxLength={MAX_LOCAL_PART + 10}
-          />
-          {/* Fixed suffix, deliberately NOT an input: the domain is not the
-              org's to choose, and rendering it as editable would re-offer the
-              custom-domain model this page exists to retire.
+        <div className="space-y-1.5">
+          <Label htmlFor="email-sender-local-part">Company part</Label>
+          <div className="flex flex-wrap items-center gap-2">
+            <Input
+              id="email-sender-local-part"
+              className="min-w-0 flex-1"
+              value={value}
+              onChange={(e) => {
+                setDraft(e.target.value);
+                setRefusal(null);
+              }}
+              placeholder={sender.local_part}
+              aria-describedby="email-sender-help"
+              aria-invalid={Boolean(shownError)}
+              maxLength={MAX_LOCAL_PART + 10}
+            />
+            {/* Fixed suffix, deliberately NOT an input: the domain is not the company's to choose, and rendering it as
+                editable would re-offer the custom-domain model this page exists to retire.
 
-              It sits BESIDE the field rather than welded to it. Squaring the
-              two inner corners would mean passing `rounded-r-none` into
-              <Input>, and appearance belongs to the primitive, not the call
-              site (design-system/__tests__/layering-guard.test.ts). A gap says
-              the same thing: the domain is plainly not part of what you type. */}
-          <span className="flex-none whitespace-nowrap text-sm text-text-secondary">
-            @{identity.senderDomain}
-          </span>
+                It sits BESIDE the field rather than welded to it. Squaring the two inner corners would mean passing
+                `rounded-r-none` into <Input>, and appearance belongs to the primitive, not the call site
+                (design-system/__tests__/layering-guard.test.ts). A gap says the same thing: the domain is plainly not part
+                of what you type. */}
+            <span className="max-w-full break-all text-sm text-text-secondary">@{sender.sender_domain}</span>
+          </div>
+          <p id="email-sender-help" className="text-[12px] text-text-secondary">
+            {shownError ? (
+              <span className="text-danger-text">{shownError}</span>
+            ) : sender.local_part_is_custom ? (
+              <>Your main address is <span className="break-all font-medium text-text-primary">{preview}</span>. Clear the field to go back to your company name.</>
+            ) : (
+              <>Currently follows your company name. Your main address is <span className="break-all font-medium text-text-primary">{preview}</span>.</>
+            )}
+          </p>
         </div>
-        <p id="email-sender-help" className="text-[12px] text-text-secondary">
-          {localError ? (
-            <span className="text-danger-text">{localError}</span>
-          ) : identity.localPartIsCustom ? (
-            <>Sending as <span className="font-medium text-text-primary">{preview}</span>. Clear the field to go back to your company name.</>
-          ) : (
-            <>Currently follows your company name. Sending as <span className="font-medium text-text-primary">{preview}</span>.</>
-          )}
-        </p>
-      </div>
 
-      {/* Not a cosmetic setting: reply THREADING is safe either way (replies
-          route on a per-thread token, never on this address), but anyone who
-          saved the old address or filters mail on it is silently affected. */}
-      <Alert tone="warning" role="status">
-        Changing this changes the address on every future email. Customers who saved the old one,
-        or filter mail by it, will not match the new address.
-      </Alert>
-
-      <div className="flex items-center gap-2">
-        <Button onClick={save} disabled={!canSave}>
-          {update.isPending ? 'Saving...' : 'Save'}
-        </Button>
-        {!unchanged && (
-          <Button
-            variant="ghost"
-            onClick={() => setDraft(null)}
-            disabled={update.isPending}
-          >
-            Cancel
+        <div className="flex items-center gap-2">
+          <Button onClick={askToSave} disabled={!canSave}>
+            Save
           </Button>
-        )}
-      </div>
-    </Card>
+          {!unchanged && (
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setDraft(null);
+                setRefusal(null);
+              }}
+              disabled={update.isPending}
+            >
+              Cancel
+            </Button>
+          )}
+        </div>
+
+        <ConfirmDialog
+          open={confirming}
+          onOpenChange={setConfirming}
+          title="Change everyone's email address?"
+          description={
+            <>
+              Everyone at your company gets a new address. Every old address keeps receiving email forever and is never given
+              to anyone else.
+            </>
+          }
+          confirmLabel="Change addresses"
+          isLoading={update.isPending}
+          onConfirm={save}
+        >
+          <p className="break-all text-sm text-text-secondary">
+            {goingBackToName ? (
+              'Your main address will follow your company name.'
+            ) : (
+              <>Your main address will be <span className="font-medium text-text-primary">{preview}</span>.</>
+            )}
+          </p>
+        </ConfirmDialog>
+      </Card>
+      <MainMailboxReaders />
+    </div>
   );
 }

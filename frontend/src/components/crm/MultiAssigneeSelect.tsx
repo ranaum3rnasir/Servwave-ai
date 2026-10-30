@@ -2,9 +2,10 @@ import { useMemo, useState } from 'react';
 import { AlertTriangle, X } from 'lucide-react';
 import { Combobox } from '@/components/ui/combobox';
 import type { SelectFieldOption } from '@/components/form/SelectField';
-import { useAssignableUsers, type AssignableUser, type AssigneePurpose } from '@/lib/api/users';
+import { useAssignableUsers, type AssignableUser, type AssigneePurpose, type EligibleFor } from '@/lib/api/users';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import { namesById, type KnownPerson } from './knownPeople';
+import { RosterError, RosterLoading } from './RosterStatus';
 
 export type { KnownPerson };
 
@@ -51,7 +52,7 @@ interface MultiAssigneeSelectProps {
   placeholder?: string;
   disabled?: boolean;
   enabled?: boolean;
-  eligibleFor?: 'owner' | 'task';
+  eligibleFor?: EligibleFor;
   /**
    * Names for people ALREADY on the record, straight off the record's own payload.
    *
@@ -129,7 +130,11 @@ export function MultiAssigneeSelect({
   flagNote,
   flagBadge = 'No access',
 }: MultiAssigneeSelectProps) {
-  const { data: users = [] } = useAssignableUsers({ purpose, enabled, eligibleFor });
+  // A crew or walkthrough-crew picker fills the crew slot, so the roster lists the people who can be on a
+  // crew. Any other picker names its own slot, or none.
+  const slot = eligibleFor ?? (purpose === 'jobCrew' || purpose === 'walkthroughPerformer' ? 'crew' : undefined);
+  const roster = useAssignableUsers({ purpose, enabled, eligibleFor: slot });
+  const users = useMemo(() => roster.data ?? [], [roster.data]);
   const ability = useAppAbility();
 
   /**
@@ -282,29 +287,36 @@ export function MultiAssigneeSelect({
         </div>
       )}
 
-      <Combobox
-        id={id}
-        // Always empty: this is an "add one" picker, so the trigger keeps showing the placeholder
-        // and re-picking the same user fires onValueChange again.
-        value=""
-        onValueChange={addMember}
-        options={options}
-        placeholder={emptyPlaceholder ?? placeholder}
-        // Only OBSERVES the open state, for `showNote` above.
-        onOpenChange={setMenuOpen}
-        disabled={disabled || available.length === 0}
-        renderOptionSuffix={(option) =>
-          flagged.has(option.value) && (
-            <span
-              className="ml-1.5 inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap rounded-full bg-warning-surface px-1.5 py-0.5 text-[11px] font-medium text-warning-text"
-              title={flagNote ?? undefined}
-            >
-              <AlertTriangle aria-hidden="true" className="h-3 w-3" />
-              {flagBadge}
-            </span>
-          )
-        }
-      />
+      {/* A roster still on its way is not an empty one: say it is loading, and say so when it failed. */}
+      {!disabled && roster.isLoading ? (
+        <RosterLoading />
+      ) : !disabled && roster.isError && !roster.data ? (
+        <RosterError onRetry={() => void roster.refetch()} />
+      ) : (
+        <Combobox
+          id={id}
+          // Always empty: this is an "add one" picker, so the trigger keeps showing the placeholder
+          // and re-picking the same user fires onValueChange again.
+          value=""
+          onValueChange={addMember}
+          options={options}
+          placeholder={emptyPlaceholder ?? placeholder}
+          // Only OBSERVES the open state, for `showNote` above.
+          onOpenChange={setMenuOpen}
+          disabled={disabled || available.length === 0}
+          renderOptionSuffix={(option) =>
+            flagged.has(option.value) && (
+              <span
+                className="ml-1.5 inline-flex shrink-0 items-center gap-0.5 whitespace-nowrap rounded-full bg-warning-surface px-1.5 py-0.5 text-[11px] font-medium text-warning-text"
+                title={flagNote ?? undefined}
+              >
+                <AlertTriangle aria-hidden="true" className="h-3 w-3" />
+                {flagBadge}
+              </span>
+            )
+          }
+        />
+      )}
 
       {showNote && (
         <p className="flex items-start gap-1 text-xs text-warning-text">

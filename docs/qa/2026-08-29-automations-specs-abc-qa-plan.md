@@ -2213,7 +2213,7 @@ the obvious way there is green against a page nobody opens; the new suites impor
 | A single-admin organization stops emailing that admin when they acted | A/2, release note |
 
 **Why:** the QA login reaches **only** the demo org, which is on plan `SCALE` with no feature
-overrides, is entitled, and has 46 tasks. **Do not QA against Alpha Doors & Security** - it mirrors
+overrides, is entitled, and has 46 tasks. **Do not QA against the pilot org** - it mirrors
 real production data, has `ctm_sms_ready = true`, and 3 of its 8 active users carry a real phone
 number. **Covered by** the backend suites.
 

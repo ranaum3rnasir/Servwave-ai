@@ -4,7 +4,7 @@ import { screen, within } from '@testing-library/react';
 
 import api from '@/lib/axios';
 import type { AutomationTemplate, WorkflowCatalog } from '@/lib/api/workflows';
-import { renderWithProviders } from '@/__tests__/helpers';
+import { automationsManageAbility, renderWithProviders } from '@/__tests__/helpers';
 
 import AutomationsHomePage from '../AutomationsHomePage';
 
@@ -75,7 +75,7 @@ beforeEach(() => {
 
 describe('the my-automations card step trail', () => {
   it('does not render the step-icon trail on the my-automations card', async () => {
-    renderWithProviders(<AutomationsHomePage />, { initialEntries: ['/automations'] });
+    renderWithProviders(<AutomationsHomePage />, { initialEntries: ['/automations'], ability: automationsManageAbility() });
     const nameEl = await screen.findByText('Post-job review request');
 
     const card = nameEl.closest('.rounded-lg') as HTMLElement;
@@ -89,7 +89,7 @@ describe('the my-automations card step trail', () => {
   });
 
   it('still renders the step-icon trail on template cards below', async () => {
-    renderWithProviders(<AutomationsHomePage />, { initialEntries: ['/automations'] });
+    renderWithProviders(<AutomationsHomePage />, { initialEntries: ['/automations'], ability: automationsManageAbility() });
     const templateName = await screen.findByText('Thank you email');
 
     const templateCard = templateName.closest('.rounded-lg') as HTMLElement;

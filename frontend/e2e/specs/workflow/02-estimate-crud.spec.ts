@@ -114,13 +114,6 @@ test.describe('2.1 Estimate Creation', () => {
     expect(res.status()).toBe(400);
   });
 
-  test('E-08: Create estimate for CANCELLED lead → 400', async () => {
-    const { lead } = await createNewLead(api);
-    await api.cancelLead(lead.id, 'Cancelled by customer');
-    const { res } = await api.createEstimate({
-      lead_id: lead.id,
-      line_items: [{ description: 'Should fail', quantity: 1, unit_price: 100, is_taxable: true }],
-    });
     expect(res.status()).toBe(400);
   });
 

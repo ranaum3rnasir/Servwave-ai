@@ -124,7 +124,9 @@ function armStaff(): Captured {
       },
       lead: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
       timelineEvent: { create: vi.fn().mockResolvedValue({}) },
-      invoice: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      // Slice 15: the deposit void locks the deposits, then reads the unpaid ones (none here).
+      $executeRaw: vi.fn().mockResolvedValue(0),
+      invoice: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
       estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
     }),
   );
@@ -153,7 +155,9 @@ function armPublic(): Captured {
           return Promise.resolve({ id: ESTIMATE_ID, status: 'DECLINED' });
         }),
       },
-      invoice: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      // Slice 15: the deposit void locks the deposits, then reads the unpaid ones (none here).
+      $executeRaw: vi.fn().mockResolvedValue(0),
+      invoice: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
       timelineEvent: { create: vi.fn().mockResolvedValue({}) },
     }),
   );
@@ -287,5 +291,19 @@ describe('POST /api/estimates/:id/decline — the public route drops instead of 
     // Absent, not null: the rejected value must not be laundered into an explicit null write
     // either, or a skipped decline and a rejected one stop being distinguishable.
     expect(captured.data).not.toHaveProperty('lost_reason');
+  });
+
+  it('drops the unknown code without taking the customer\'s comment down with it', async () => {
+    // The two fields are independent in both directions. This is the combination a real stale
+    // page produces: a retired code plus a sentence the customer genuinely typed.
+    const captured = armPublic();
+
+    const res = await request(app)
+      .post(PUBLIC_URL)
+      .send({ lost_reason: 'DESIGNER', lost_reason_note: 'We picked a different designer.' });
+
+    expect(res.status).toBe(200);
+    expect(captured.data).not.toHaveProperty('lost_reason');
+    expect(captured.data?.lost_reason_note).toBe('We picked a different designer.');
   });
 });

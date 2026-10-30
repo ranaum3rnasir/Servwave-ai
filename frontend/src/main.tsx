@@ -19,14 +19,13 @@ import './index.css';
 import '@/lib/attachments/resumeRecordStore';
 import { registerServiceWorker } from '@/lib/platform/registerServiceWorker';
 import { hasStoredSession, preloadLandingRoute } from '@/lib/platform/preloadLandingRoute';
-import { useAuthStore } from '@/stores/auth.store';
 
 // The staff entry owns the offline-cache service worker. public.html loads public-main.tsx
 // instead, which never registers one (mobile slice 47).
 registerServiceWorker();
 
 // Start the landing page's chunk downloading beside the sign-in check, not after it (mobile slice 61).
-preloadLandingRoute({ pathname: window.location.pathname, ability: useAuthStore.getState().ability, signedIn: hasStoredSession() });
+preloadLandingRoute({ pathname: window.location.pathname, signedIn: hasStoredSession() });
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

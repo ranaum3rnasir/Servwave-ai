@@ -78,7 +78,7 @@ describe('matchByPhone', () => {
     expect(prisma.lead.findFirst).toHaveBeenCalledWith({
       where: {
         organization_id: ORG,
-        status: { notIn: ['WON', 'LOST', 'CANCELLED'] },
+        status: { notIn: ['WON', 'LOST'] },
         // The lead's identity is its customer's phone — match all three
         // storage places there too.
         customer: {

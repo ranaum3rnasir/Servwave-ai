@@ -145,10 +145,10 @@ describe('the Tasks Filter — member and department selects from real APIs', ()
   it('does NOT render legacy mock person names anywhere in the document', () => {
     renderWithProviders(<TaskFilterTrigger view="list" />);
     // These are MOCK_PEOPLE names that should be gone
-    expect(screen.queryByText('Priya')).not.toBeInTheDocument();
-    expect(screen.queryByText('Oved Adani')).not.toBeInTheDocument();
-    expect(screen.queryByText('Sagiv Peker')).not.toBeInTheDocument();
-    expect(screen.queryByText('Emanuel Dahan')).not.toBeInTheDocument();
+    expect(screen.queryByText('Drew')).not.toBeInTheDocument();
+    expect(screen.queryByText('Morgan Diaz')).not.toBeInTheDocument();
+    expect(screen.queryByText('Riley Chen')).not.toBeInTheDocument();
+    expect(screen.queryByText('Sam Rivera')).not.toBeInTheDocument();
   });
 
   it('does NOT render legacy mock department names anywhere in the document', () => {

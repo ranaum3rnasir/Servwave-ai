@@ -34,6 +34,28 @@ describe('buildScoreboard', () => {
   });
 });
 
+describe('buildScoreboard ranked by job count (the board a person without See company figures gets)', () => {
+  const rows = [
+    { user_id: 'a', name: 'Ann', revenue: 9000, jobs: 1 },
+    { user_id: 'b', name: 'Bob', revenue: 100, jobs: 5 },
+    { user_id: 'c', name: 'Cay', revenue: 200, jobs: 3 },
+    { user_id: 'd', name: 'Dee', revenue: 50, jobs: 0 },
+  ];
+
+  it('ranks by job count descending, not by the revenue beside it, and caps at the limit', () => {
+    expect(buildScoreboard(rows, 2, 'jobs').map((e) => e.name)).toEqual(['Bob', 'Cay']);
+  });
+
+  it('drops contributors with no jobs', () => {
+    expect(buildScoreboard(rows, 5, 'jobs').map((e) => e.name)).toEqual(['Bob', 'Cay', 'Ann']);
+  });
+
+  it('still ranks by revenue when asked to, and by default', () => {
+    expect(buildScoreboard(rows, 2, 'revenue').map((e) => e.name)).toEqual(['Ann', 'Cay']);
+    expect(buildScoreboard(rows, 2).map((e) => e.name)).toEqual(['Ann', 'Cay']);
+  });
+});
+
 describe('buildJobsByStatus', () => {
   it('maps counts to labelled slices in canonical status order, skipping zeros', () => {
     const out = buildJobsByStatus([
@@ -47,6 +69,13 @@ describe('buildJobsByStatus', () => {
       { key: 'in_progress', label: 'In progress', count: 2 },
       { key: 'completed', label: 'Completed', count: 4 },
     ]);
+  });
+});
+
+describe('buildJobsByStatus wording (S09.14)', () => {
+  it('labels the Unscheduled status "Unscheduled", never "Unassigned"', () => {
+    const out = buildJobsByStatus([{ status: 'UNSCHEDULED', count: 3 }]);
+    expect(out).toEqual([{ key: 'unscheduled', label: 'Unscheduled', count: 3 }]);
   });
 });
 
@@ -201,15 +230,15 @@ describe('buildScheduleLanes', () => {
     expect(out[0].jobs[0].entity).toBe('walkthrough');
   });
 
-  it('puts a performer-less walkthrough in the Unassigned lane, which stays last', () => {
+  it('puts a performer-less walkthrough in the "No crew" lane, which stays last', () => {
     const out = buildScheduleLanes(
       [makeJob()],
       [makeWalkthrough({ performers: [] })],
     );
     expect(out.map((l) => l.user_id)).toEqual(['u-ann', null]);
-    const unassigned = out[out.length - 1];
-    expect(unassigned.first_name).toBe('Unassigned');
-    expect(unassigned.jobs[0].entity).toBe('walkthrough');
+    const noCrew = out[out.length - 1];
+    expect(noCrew.first_name).toBe('No crew');
+    expect(noCrew.jobs[0].entity).toBe('walkthrough');
   });
 
   it('interleaves jobs and walkthroughs within a lane sorted by scheduled_start ascending', () => {
@@ -221,7 +250,7 @@ describe('buildScheduleLanes', () => {
     expect(out[0].jobs.map((e) => e.entity)).toEqual(['walkthrough', 'job']);
   });
 
-  it('reproduces the jobs-only output exactly (crew fan-out, unassigned last, stable same-timestamp order)', () => {
+  it('reproduces the jobs-only output exactly (crew fan-out, no-crew lane last, stable same-timestamp order)', () => {
     // Two same-timestamp jobs in one lane: the per-lane sort must be a stable no-op
     // over Prisma's pre-sorted rows (Array.prototype.sort is stable on Node 20),
     // so extraction changes nothing for jobs-only payloads — a guarded invariant.
@@ -266,7 +295,7 @@ describe('buildScheduleLanes', () => {
       },
       {
         user_id: null,
-        first_name: 'Unassigned',
+        first_name: 'No crew',
         last_name: '',
         avatar_path: null,
         jobs: [
@@ -320,7 +349,7 @@ describe('buildPipeline', () => {
       { key: 'estimates', label: 'Estimates', kind: 'amount', value: 1_200_000, link: '/estimates' },
       { key: 'approved', label: 'Approved', kind: 'amount', value: 540_000, link: '/estimates?status=approved' },
       { key: 'deposit', label: 'Deposit', kind: 'amount', value: 310_000, link: '/estimates' },
-      { key: 'job', label: 'Job done', kind: 'amount', value: 290_000, link: '/jobs' },
+      { key: 'job', label: 'Job completed', kind: 'amount', value: 290_000, link: '/jobs' },
       { key: 'invoiced', label: 'Invoiced', kind: 'amount', value: 260_000, link: '/invoices' },
       { key: 'paid', label: 'Paid', kind: 'amount', value: 222_000, link: '/invoices?status=paid' },
     ]);

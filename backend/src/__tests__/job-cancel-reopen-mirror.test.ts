@@ -29,7 +29,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { mockAuthAs, authHeader, JOB_FIXTURE } from './helpers';
+import { mockAuthAs, authHeader, JOB_FIXTURE, stubReopenTransaction } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 const mockPrisma = prisma as unknown as Record<string, any>;
@@ -90,7 +90,7 @@ describe('POST /api/jobs/:id/cancel re-syncs the schedule mirror', () => {
     const res = await request(app)
       .post(`/api/jobs/${JOB_FIXTURE.id}/cancel`)
       .set(authHeader('admin'))
-      .send({ cancelled_reason: 'Customer cancelled' });
+      .send({ cancel_reason_code: 'OTHER', cancelled_reason: 'Customer cancelled' });
 
     expect(res.status).toBe(200);
     const data = txJobUpdate.mock.calls[0][0].data;
@@ -123,6 +123,7 @@ describe('POST /api/jobs/:id/reopen', () => {
 
   it('clears the cancellation record it is undoing', async () => {
     mockAuthAs('admin');
+    stubReopenTransaction({ status: 'CANCELLED' });
     mockPrisma.job.findUnique.mockResolvedValue(cancelledJob);
 
     const res = await request(app)
@@ -138,10 +139,13 @@ describe('POST /api/jobs/:id/reopen', () => {
     // cancellation record, and any report keyed on cancelled_at counts it as cancelled.
     expect(data!.cancelled_at).toBeNull();
     expect(data!.cancelled_reason).toBeNull();
+    // S06.16: so does the reason picked from the org's list.
+    expect(data!.cancel_reason_code).toBeNull();
   });
 
   it('does not leave the mirror pointing at a cancelled trip', async () => {
     mockAuthAs('admin');
+    stubReopenTransaction({ status: 'CANCELLED' });
     mockPrisma.job.findUnique.mockResolvedValue(cancelledJob);
     // J00260's shape: the job comes back, but its only trip stays CANCELLED - the
     // job-level cancel deliberately does not revive them (D19).
@@ -152,12 +156,11 @@ describe('POST /api/jobs/:id/reopen', () => {
       created_at: new Date('2026-08-01T00:00:00.000Z'), assignees: [],
     };
     mockPrisma.visit.findMany.mockResolvedValue([cancelledVisit]);
-    // S8 (RATIFIED, A5): reopen()'s own `job.update` (the one `presentJobDetail` is built from)
-    // has to carry the SAME visit set for this test to mean anything - jobDetailSelect's real
-    // `select` would return exactly this shape on a real DB. `syncJobFromVisits`'s OWN
-    // `job.update` call re-derives status/span off the mocked `visit.findMany` above, but that
-    // is NOT the row this response is built from (reopen() never re-reads after the sync call).
-    mockPrisma.job.update.mockResolvedValue({ ...JOB_FIXTURE, status: 'IN_PROGRESS', visits: [cancelledVisit] });
+    // S8 (RATIFIED, A5): the row the response is built from (reopen()'s read after its transaction) has to carry the SAME
+    // visit set for this test to mean anything - jobDetailSelect's real `select` would return exactly this shape on a real
+    // DB. `syncJobFromVisits`'s `job.update` re-derives the span off the mocked `visit.findMany` above.
+    mockPrisma.job.findUnique.mockResolvedValue({ ...JOB_FIXTURE, status: 'IN_PROGRESS', visits: [cancelledVisit] });
+    mockPrisma.job.update.mockResolvedValue({ ...JOB_FIXTURE, status: 'IN_PROGRESS' });
 
     const res = await request(app)
       .post(`/api/jobs/${JOB_FIXTURE.id}/reopen`)

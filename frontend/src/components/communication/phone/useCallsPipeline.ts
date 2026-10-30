@@ -212,6 +212,9 @@ export interface CallsPipelineArgs {
   query: string;
   sort: SortState | null;
   dismissed: Set<string>;
+  /** Whether the person holds See call insights. Without it the "attention" focus counts only the outcome-based calls
+   *  (S08.13). Defaults to true, the behaviour before the switch existed. */
+  withInsights?: boolean;
 }
 
 export interface UseCallsPipelineReturn {
@@ -236,6 +239,7 @@ export function useCallsPipeline({
   query,
   sort,
   dismissed,
+  withInsights = true,
 }: CallsPipelineArgs): UseCallsPipelineReturn {
   const visible = useMemo(
     () => calls.filter((c) => !dismissed.has(c.id)),
@@ -259,9 +263,9 @@ export function useCallsPipeline({
       return ranged.filter(
         (c) => c.status === "missed" || c.status === "voicemail",
       );
-    if (focus === "attention") return ranged.filter(callNeedsAttention);
+    if (focus === "attention") return ranged.filter((c) => callNeedsAttention(c, withInsights));
     return ranged;
-  }, [ranged, focus]);
+  }, [ranged, focus, withInsights]);
 
   // Faceted "Filter results" — drives the stats + table together.
   const dated = useMemo(

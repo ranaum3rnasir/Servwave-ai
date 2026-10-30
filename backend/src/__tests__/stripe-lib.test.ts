@@ -33,15 +33,12 @@ import {
   getStripeForOrg,
   constructWebhookEvent,
   createConnectedAccount,
+  updateAccountBranding,
   createCheckoutSession,
   createRefund,
-  CARD_SERVICE_FEE_BPS,
-  computeServiceFee,
-  estimateStripeFee,
-  deriveServiceFeeApplicationFee,
-  resolveCheckoutFees,
   CARD_TIP_PRESET_BPS,
 } from '../lib/stripe';
+import { priceCheckout, type PricedCheckout } from '../lib/checkout-pricing';
 import { prisma } from '../lib/prisma';
 import { resolveOrgFromEvent } from '../controllers/webhook.controller';
 
@@ -199,17 +196,18 @@ describe('createConnectedAccount', () => {
     await createConnectedAccount({
       orgId: 'org_1',
       email: 'owner@example.com',
-      businessName: 'Alpha Doors',
+      businessName: 'Test Doors Co',
       mcc: '1731',
     });
 
     expect(spy).toHaveBeenCalledTimes(1);
     const [params, options] = spy.mock.calls[0] as unknown as [any, any];
 
+    // D13 (payments go-live, 2026-10-05): the no-dashboard ("fully embedded") model. The contractor
+    // never gets a processor login; it still pays the processor and the processor carries losses
+    // and collects requirements. The account type is fixed at creation, so this block is pinned.
     expect(params.controller).toEqual({
-      // Full (Standard-equivalent) dashboard is REQUIRED with losses.payments:'stripe' — Stripe
-      // rejects express+losses:stripe ("platform must be liable"). See the 2026-07-22 decision doc.
-      stripe_dashboard: { type: 'full' },
+      stripe_dashboard: { type: 'none' },
       fees: { payer: 'account' },
       losses: { payments: 'stripe' },
       requirement_collection: 'stripe',
@@ -241,7 +239,7 @@ describe('createConnectedAccount', () => {
   // onboarding component has no capability-driven requirements to walk the contractor
   // through, so "Add information" renders but never advances, and even a fully-KYC'd
   // account could never actually process a card charge or receive a payout.
-  it('requests card_payments and transfers capabilities so the account can charge and pay out', async () => {
+  it('requests card_payments, transfers and ACH bank debit capabilities so the account can charge, debit a bank and pay out', async () => {
     const { stripe } = getStripeForOrg({ stripe_account_id: null });
     const spy = vi.spyOn(stripe.accounts, 'create').mockResolvedValue({ id: 'acct_caps_1' } as any);
 
@@ -256,6 +254,7 @@ describe('createConnectedAccount', () => {
     expect(params.capabilities).toEqual({
       card_payments: { requested: true },
       transfers: { requested: true },
+      us_bank_account_ach_payments: { requested: true },
     });
   });
 
@@ -380,248 +379,9 @@ describe('createRefund — reverseApplicationFee (Task 3.2, in-app door)', () =>
   });
 });
 
-// --- Card service fee (Slice 1) -------------------------------------------------------------
-// Plan: md_files/plans/payments/2026-08-03-card-service-fee-workiz-parity.md
-// The customer funds the whole card-fee stack so the org lands on face value. All three
-// functions are pure so the money math is testable without touching Stripe.
-
-describe('CARD_SERVICE_FEE_BPS', () => {
-  // D4: a platform constant, deliberately not a column and not org-settable. Pinned because a
-  // silent change here re-prices every card payment in the product.
-  it('is 350 bps (3.5%)', () => {
-    expect(CARD_SERVICE_FEE_BPS).toBe(350);
-  });
-});
-
-describe('computeServiceFee', () => {
-  it('is 3.5% of the base, rounded to the nearest cent', () => {
-    expect(computeServiceFee(100000, CARD_SERVICE_FEE_BPS)).toBe(3500);  // $1,000.00 → $35.00
-    expect(computeServiceFee(200000, CARD_SERVICE_FEE_BPS)).toBe(7000);  // $2,000.00 → $70.00
-    expect(computeServiceFee(4500, CARD_SERVICE_FEE_BPS)).toBe(158);     // $45.00 → $1.58 (rounds up from 157.5)
-  });
-
-  // Arithmetic fixture taken from the Workiz totals panel Ran supplied 2026-08-03. Their basis
-  // included a tip and ours does not (D7 amendment), so this pins the rounding, NOT parity.
-  it('matches the reference figure at cent-boundary rounding', () => {
-    expect(computeServiceFee(517653, CARD_SERVICE_FEE_BPS)).toBe(18118); // 18117.855 → 18118
-  });
-
-  it('is zero at zero bps and zero base', () => {
-    expect(computeServiceFee(100000, 0)).toBe(0);
-    expect(computeServiceFee(0, CARD_SERVICE_FEE_BPS)).toBe(0);
-  });
-});
-
-describe('estimateStripeFee', () => {
-  // 2.9% + $0.30 on the GROSS the customer is charged (base + service fee), which is what
-  // Stripe actually takes its percentage of.
-  it('is 2.9% of gross plus 30 cents', () => {
-    expect(estimateStripeFee(103500)).toBe(3032);  // $1,035.00 → $30.32
-    expect(estimateStripeFee(207000)).toBe(6033);  // $2,070.00 → $60.33
-    expect(estimateStripeFee(4658)).toBe(165);     // $46.58 → $1.65
-  });
-
-  it('still charges the fixed 30 cents on a zero-amount gross', () => {
-    expect(estimateStripeFee(0)).toBe(30);
-  });
-});
-
-describe('deriveServiceFeeApplicationFee', () => {
-  // D2: the service fee REPLACES the platform fee on card payments. ServWave keeps whatever is
-  // left after Stripe, so the org receives face value. These are the worked rows from the plan.
-  it('leaves the org whole and hands ServWave the remainder', () => {
-    expect(deriveServiceFeeApplicationFee(100000)).toBe(468);  // $1,000 job → ServWave $4.68
-    expect(deriveServiceFeeApplicationFee(200000)).toBe(967);  // $2,000 deposit → ServWave $9.67
-    expect(deriveServiceFeeApplicationFee(120000)).toBe(568);  // $1,200 balance → ServWave $5.68
-  });
-
-  // D2 consequence 1. Below a base of ~$60.18 Stripe's fixed 30c outruns the 3.5%, so the
-  // derived fee goes negative. Stripe rejects a negative application fee, and we must never
-  // bill the org for the gap, so it clamps to zero and ServWave simply earns nothing.
-  it('clamps to zero below the break-even base instead of going negative', () => {
-    expect(deriveServiceFeeApplicationFee(4500)).toBe(0);   // $45.00: raw would be -7
-    expect(deriveServiceFeeApplicationFee(1000)).toBe(0);   // $10.00
-    expect(deriveServiceFeeApplicationFee(0)).toBe(0);
-  });
-
-  it('is zero at the break-even base and positive just above it', () => {
-    expect(deriveServiceFeeApplicationFee(6018)).toBe(0);   // $60.18, the documented break-even
-    expect(deriveServiceFeeApplicationFee(6100)).toBeGreaterThan(0);
-  });
-
-  // The fee is computed on what is being paid NOW, so a customer settling half an invoice is
-  // charged 3.5% of that half. Guards against anyone re-pointing this at Invoice.total_amount.
-  it('scales with the amount passed, not with any invoice total', () => {
-    expect(deriveServiceFeeApplicationFee(120000)).toBeLessThan(deriveServiceFeeApplicationFee(200000));
-  });
-});
-
-// Task 3.1 — the double guard: application_fee_amount must be a positive integer AND the
-// session must be running against a connected account (ctx.stripeAccount set). Getting this
-// wrong in either direction either 400s every legacy platform-account checkout or silently
-// drops ServWave's fee on connected-account checkouts, so all three combinations are pinned here.
-describe('createCheckoutSession — platform fee double guard', () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it('omits application_fee_amount on a platform-account session (ctx.stripeAccount undefined) even when a fee is passed', async () => {
-    const ctx = getStripeForOrg({ stripe_account_id: null });
-    const spy = vi
-      .spyOn(ctx.stripe.checkout.sessions, 'create')
-      .mockResolvedValue({ id: 'cs_platform_1', url: 'https://checkout.stripe.com/platform' } as any);
-
-    await createCheckoutSession({
-      depositAmount: 100,
-      description: 'Platform-account checkout',
-      successUrl: 'https://example.com/success',
-      cancelUrl: 'https://example.com/cancel',
-      metadata: {},
-      applicationFeeAmount: 2500,
-    }, ctx);
-
-    const [params, options] = spy.mock.calls[0] as unknown as [any, any];
-    // Face-value charge to the homeowner is untouched — the fee is a separate field, not
-    // folded into what the customer pays.
-    expect(params.line_items[0].price_data.unit_amount).toBe(10000);
-    expect(params).not.toHaveProperty('payment_intent_data');
-    expect(options).toBeUndefined();
-  });
-
-  it('includes application_fee_amount only when positive AND stripeAccount is set (connected account)', async () => {
-    const ctx = getStripeForOrg({ stripe_account_id: 'acct_connected_1' });
-    const spy = vi
-      .spyOn(ctx.stripe.checkout.sessions, 'create')
-      .mockResolvedValue({ id: 'cs_connected_1', url: 'https://checkout.stripe.com/connected' } as any);
-
-    await createCheckoutSession({
-      depositAmount: 100,
-      description: 'Connected-account checkout',
-      successUrl: 'https://example.com/success',
-      cancelUrl: 'https://example.com/cancel',
-      metadata: {},
-      applicationFeeAmount: 2500,
-    }, ctx);
-
-    const [params, options] = spy.mock.calls[0] as unknown as [any, any];
-    expect(params.line_items[0].price_data.unit_amount).toBe(10000); // homeowner still pays face value
-    expect(params.payment_intent_data).toEqual({ application_fee_amount: 2500 });
-    expect(options).toEqual({ stripeAccount: 'acct_connected_1' });
-  });
-
-  it('omits application_fee_amount when stripeAccount is set but the fee is zero (bps=0)', async () => {
-    const ctx = getStripeForOrg({ stripe_account_id: 'acct_connected_2' });
-    const spy = vi
-      .spyOn(ctx.stripe.checkout.sessions, 'create')
-      .mockResolvedValue({ id: 'cs_connected_2', url: 'https://checkout.stripe.com/connected2' } as any);
-
-    await createCheckoutSession({
-      depositAmount: 100,
-      description: 'Zero-fee connected-account checkout',
-      successUrl: 'https://example.com/success',
-      cancelUrl: 'https://example.com/cancel',
-      metadata: {},
-      applicationFeeAmount: 0,
-    }, ctx);
-
-    const [params] = spy.mock.calls[0] as unknown as [any, any];
-    expect(params).not.toHaveProperty('payment_intent_data');
-  });
-});
-
-// Slice 2 (checkout wiring) — md_files/plans/payments/2026-08-03-card-service-fee-workiz-parity.md
-describe('createCheckoutSession — service fee line item', () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
-  it('adds a second "Service fee" line item and carries serviceFeeCents in metadata when serviceFeeAmount is positive', async () => {
-    const ctx = getStripeForOrg({ stripe_account_id: 'acct_connected_fee' });
-    const spy = vi
-      .spyOn(ctx.stripe.checkout.sessions, 'create')
-      .mockResolvedValue({ id: 'cs_fee_1', url: 'https://checkout.stripe.com/fee' } as any);
-
-    await createCheckoutSession({
-      depositAmount: 1000,
-      description: 'Payment for Invoice I00001',
-      successUrl: 'https://example.com/success',
-      cancelUrl: 'https://example.com/cancel',
-      metadata: { invoiceId: 'inv_1' },
-      applicationFeeAmount: 468,
-      serviceFeeAmount: 3500,
-    }, ctx);
-
-    const [params] = spy.mock.calls[0] as unknown as [any, any];
-    expect(params.line_items).toHaveLength(2);
-    expect(params.line_items[0].price_data.unit_amount).toBe(100000);
-    expect(params.line_items[1]).toEqual({
-      price_data: {
-        currency: 'usd',
-        unit_amount: 3500,
-        product_data: { name: 'Service fee' },
-      },
-      quantity: 1,
-    });
-    expect(params.metadata).toEqual({ invoiceId: 'inv_1', serviceFeeCents: '3500' });
-  });
-
-  it('emits a single line item and no serviceFeeCents metadata when serviceFeeAmount is absent', async () => {
-    const ctx = getStripeForOrg({ stripe_account_id: 'acct_connected_no_fee' });
-    const spy = vi
-      .spyOn(ctx.stripe.checkout.sessions, 'create')
-      .mockResolvedValue({ id: 'cs_no_fee', url: 'https://checkout.stripe.com/no-fee' } as any);
-
-    await createCheckoutSession({
-      depositAmount: 1000,
-      description: 'Payment for Invoice I00001',
-      successUrl: 'https://example.com/success',
-      cancelUrl: 'https://example.com/cancel',
-      metadata: { invoiceId: 'inv_1' },
-    }, ctx);
-
-    const [params] = spy.mock.calls[0] as unknown as [any, any];
-    expect(params.line_items).toHaveLength(1);
-    expect(params.metadata).toEqual({ invoiceId: 'inv_1' });
-  });
-
-  it('emits a single line item and no serviceFeeCents metadata when serviceFeeAmount is zero', async () => {
-    const ctx = getStripeForOrg({ stripe_account_id: 'acct_connected_zero_fee' });
-    const spy = vi
-      .spyOn(ctx.stripe.checkout.sessions, 'create')
-      .mockResolvedValue({ id: 'cs_zero_fee', url: 'https://checkout.stripe.com/zero-fee' } as any);
-
-    await createCheckoutSession({
-      depositAmount: 1000,
-      description: 'Payment for Invoice I00001',
-      successUrl: 'https://example.com/success',
-      cancelUrl: 'https://example.com/cancel',
-      metadata: { invoiceId: 'inv_1' },
-      serviceFeeAmount: 0,
-    }, ctx);
-
-    const [params] = spy.mock.calls[0] as unknown as [any, any];
-    expect(params.line_items).toHaveLength(1);
-    expect(params.metadata).toEqual({ invoiceId: 'inv_1' });
-  });
-});
-
-// D2 — the service fee REPLACES the platform fee on card payments; it does not stack. It is
-// UNCONDITIONAL: a card payment always carries it, so there is no org input to this at all.
-describe('resolveCheckoutFees', () => {
-  it('returns the derived service fee + application fee for any card checkout', () => {
-    expect(resolveCheckoutFees(100000)).toEqual({ serviceFeeAmount: 3500, applicationFeeAmount: 468 });
-  });
-
-  it('takes the amount alone - no org argument, so no org can opt out', () => {
-    expect(resolveCheckoutFees.length).toBe(1);
-  });
-
-  // Below the ~$60.18 break-even Stripe's fixed 30c outruns the 3.5%: the customer still pays the
-  // fee, ServWave just earns nothing on it. The fee itself is never suppressed.
-  it('still charges the service fee on a small ticket where our application fee clamps to zero', () => {
-    expect(resolveCheckoutFees(1000)).toEqual({ serviceFeeAmount: 35, applicationFeeAmount: 0 });
-  });
-});
+// --- Checkout session builder ---------------------------------------------------------------
+// Payments go-live slice 02: the builder charges exactly the lines the pricing module priced and
+// never sends an application fee (D9). The route-level twin is checkout-pricing-routes.test.ts.
 
 // Slice 7 (customer-facing tipping, D10/D11) — md_files/plans/payments/2026-08-03-card-service-fee-workiz-parity.md
 describe('CARD_TIP_PRESET_BPS', () => {
@@ -630,79 +390,144 @@ describe('CARD_TIP_PRESET_BPS', () => {
   });
 });
 
-describe('createCheckoutSession — tip line item (Slice 7)', () => {
+describe('createCheckoutSession — charges the priced lines, never an application fee', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
-  it('adds a third "Tip" line item and carries tipCents in metadata when tipAmount is positive', async () => {
-    const ctx = getStripeForOrg({ stripe_account_id: 'acct_connected_tip' });
+  function priced(tipCents: number): PricedCheckout {
+    const result = priceCheckout({ invoiceTotalCents: 100000, amountDueCents: 100000, tipCents, method: 'card', description: 'Payment for Invoice I00001' });
+    if (!result.ok) throw new Error(`unexpected pricing refusal: ${result.error}`);
+    return result;
+  }
+
+  it('sends one line per priced line, in order, on the connected account, with no application fee', async () => {
+    const ctx = getStripeForOrg({ stripe_account_id: 'acct_connected_1' });
     const spy = vi
       .spyOn(ctx.stripe.checkout.sessions, 'create')
-      .mockResolvedValue({ id: 'cs_tip_1', url: 'https://checkout.stripe.com/tip' } as any);
+      .mockResolvedValue({ id: 'cs_connected_1', url: 'https://checkout.stripe.com/connected' } as any);
 
     await createCheckoutSession({
-      depositAmount: 1000,
-      description: 'Payment for Invoice I00001',
+      pricing: priced(15000),
+      method: 'card',
       successUrl: 'https://example.com/success',
       cancelUrl: 'https://example.com/cancel',
-      metadata: { invoiceId: 'inv_1' },
-      applicationFeeAmount: 468,
-      serviceFeeAmount: 3500,
-      tipAmount: 15000,
+      document: { organizationId: 'org_1', invoiceId: 'inv_1', kind: 'invoice' },
     }, ctx);
 
-    const [params] = spy.mock.calls[0] as unknown as [any, any];
-    expect(params.line_items).toHaveLength(3);
-    expect(params.line_items[2]).toEqual({
-      price_data: {
-        currency: 'usd',
-        unit_amount: 15000,
-        product_data: { name: 'Tip' },
-      },
-      quantity: 1,
-    });
-    expect(params.metadata).toEqual({ invoiceId: 'inv_1', serviceFeeCents: '3500', tipCents: '15000' });
+    const [params, options] = spy.mock.calls[0] as unknown as [any, any];
+    expect(params.line_items).toEqual([
+      { price_data: { currency: 'usd', unit_amount: 100000, product_data: { name: 'Payment for Invoice I00001' } }, quantity: 1 },
+      { price_data: { currency: 'usd', unit_amount: 15000, product_data: { name: 'Tip' } }, quantity: 1 },
+    ]);
+    expect(params).not.toHaveProperty('payment_intent_data');
+    expect(params.metadata).toEqual({ organizationId: 'org_1', invoiceId: 'inv_1', kind: 'invoice', payableNowCents: '100000', tipCents: '15000' });
+    expect(options).toEqual({ stripeAccount: 'acct_connected_1' });
   });
 
-  it('emits no third line item and no tipCents metadata when tipAmount is absent or zero', async () => {
-    const ctx = getStripeForOrg({ stripe_account_id: 'acct_connected_no_tip' });
+  it('carries no tipCents metadata when there is no tip, and no request options on a platform-account session', async () => {
+    const ctx = getStripeForOrg({ stripe_account_id: null });
     const spy = vi
       .spyOn(ctx.stripe.checkout.sessions, 'create')
-      .mockResolvedValue({ id: 'cs_no_tip', url: 'https://checkout.stripe.com/no-tip' } as any);
+      .mockResolvedValue({ id: 'cs_platform_1', url: 'https://checkout.stripe.com/platform' } as any);
 
     await createCheckoutSession({
-      depositAmount: 1000,
-      description: 'Payment for Invoice I00001',
+      pricing: priced(0),
+      method: 'card',
       successUrl: 'https://example.com/success',
       cancelUrl: 'https://example.com/cancel',
-      metadata: { invoiceId: 'inv_1' },
-      tipAmount: 0,
+      document: { organizationId: 'org_1', invoiceId: 'inv_1', kind: 'invoice' },
     }, ctx);
 
-    const [params] = spy.mock.calls[0] as unknown as [any, any];
+    const [params, options] = spy.mock.calls[0] as unknown as [any, any];
     expect(params.line_items).toHaveLength(1);
-    expect(params.metadata).toEqual({ invoiceId: 'inv_1' });
+    expect(params).not.toHaveProperty('payment_intent_data');
+    expect(params.metadata).toEqual({ organizationId: 'org_1', invoiceId: 'inv_1', kind: 'invoice', payableNowCents: '100000' });
+    expect(options).toBeUndefined();
+  });
+});
+
+
+// Payments go-live slice 36: the contractor's name, colour and logo live on the connected account's
+// branding settings; the hosted checkout reads them from there.
+describe('updateAccountBranding', () => {
+  it('writes the colour to the account branding settings only, and uploads no file when there is no logo', async () => {
+    const { stripe } = getStripeForOrg({ stripe_account_id: null });
+    const create = vi.spyOn(stripe.files, 'create');
+    const update = vi.spyOn(stripe.accounts, 'update').mockResolvedValue({ id: 'acct_b1' } as any);
+
+    await updateAccountBranding('acct_b1', { primaryColor: '#0C2D3A' });
+
+    expect(create).not.toHaveBeenCalled();
+    expect(update).toHaveBeenCalledWith('acct_b1', { settings: { branding: { primary_color: '#0C2D3A' } } });
   });
 
-  it('can carry a tip with no service fee (org disabled, tip still allowed)', async () => {
-    const ctx = getStripeForOrg({ stripe_account_id: 'acct_connected_tip_only' });
-    const spy = vi
-      .spyOn(ctx.stripe.checkout.sessions, 'create')
-      .mockResolvedValue({ id: 'cs_tip_only', url: 'https://checkout.stripe.com/tip-only' } as any);
+  it('uploads the logo as a business logo and points the account at the file', async () => {
+    const { stripe } = getStripeForOrg({ stripe_account_id: null });
+    const create = vi.spyOn(stripe.files, 'create').mockResolvedValue({ id: 'file_logo_1' } as any);
+    const update = vi.spyOn(stripe.accounts, 'update').mockResolvedValue({ id: 'acct_b2' } as any);
+    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
 
-    await createCheckoutSession({
-      depositAmount: 1000,
-      description: 'Payment for Invoice I00001',
-      successUrl: 'https://example.com/success',
-      cancelUrl: 'https://example.com/cancel',
-      metadata: { invoiceId: 'inv_1' },
-      tipAmount: 10000,
-    }, ctx);
+    await updateAccountBranding('acct_b2', { primaryColor: '#0C2D3A', logo: { data: png, mime: 'image/png' } });
 
-    const [params] = spy.mock.calls[0] as unknown as [any, any];
-    expect(params.line_items).toHaveLength(2);
-    expect(params.line_items[1].price_data.product_data.name).toBe('Tip');
-    expect(params.metadata).toEqual({ invoiceId: 'inv_1', tipCents: '10000' });
+    const [fileParams] = create.mock.calls[0] as unknown as [any];
+    expect(fileParams.purpose).toBe('business_logo');
+    expect(fileParams.file.data).toBe(png);
+    expect(update).toHaveBeenCalledWith('acct_b2', {
+      settings: { branding: { primary_color: '#0C2D3A', logo: 'file_logo_1' } },
+    });
+  });
+
+  it('sends only what it was given', async () => {
+    const { stripe } = getStripeForOrg({ stripe_account_id: null });
+    const update = vi.spyOn(stripe.accounts, 'update').mockResolvedValue({ id: 'acct_b3' } as any);
+
+    await updateAccountBranding('acct_b3', { primaryColor: '#112233' });
+
+    expect(update).toHaveBeenCalledWith('acct_b3', { settings: { branding: { primary_color: '#112233' } } });
+  });
+});
+
+// D1 (staging acceptance): on a platform-controlled account the processor refuses business_profile, so the
+// whole update failed and nothing was applied. The branding call carries settings.branding and nothing else.
+describe('updateAccountBranding on a platform-controlled account', () => {
+  it('never sends business_profile or any top-level parameter besides settings, even if handed a name', async () => {
+    const { stripe } = getStripeForOrg({ stripe_account_id: null });
+    vi.spyOn(stripe.files, 'create').mockResolvedValue({ id: 'file_logo_9' } as any);
+    const update = vi.spyOn(stripe.accounts, 'update').mockResolvedValue({ id: 'acct_b9' } as any);
+    update.mockClear();
+
+    await updateAccountBranding('acct_b9', {
+      name: 'Harbor Locksmiths', primaryColor: '#0C2D3A', logo: { data: Buffer.from([1]), mime: 'image/png' },
+    } as any);
+
+    const [, params] = update.mock.calls[0] as unknown as [string, any];
+    expect(Object.keys(params)).toEqual(['settings']);
+    expect(Object.keys(params.settings)).toEqual(['branding']);
+    expect(params).not.toHaveProperty('business_profile');
+  });
+
+  it('applies colour and logo on an account that refuses business_profile', async () => {
+    const { stripe } = getStripeForOrg({ stripe_account_id: null });
+    vi.spyOn(stripe.files, 'create').mockResolvedValue({ id: 'file_logo_8' } as any);
+    const applied: any[] = [];
+    vi.spyOn(stripe.accounts, 'update').mockImplementation((async (_id: string, params: any) => {
+      if ('business_profile' in params) throw new Error("This application does not have the required permissions for the parameter 'business_profile'");
+      applied.push(params);
+      return { id: 'acct_b8' };
+    }) as any);
+
+    await updateAccountBranding('acct_b8', {
+      name: 'Harbor Locksmiths', primaryColor: '#1E8449', logo: { data: Buffer.from([1]), mime: 'image/png' },
+    } as any);
+
+    expect(applied).toEqual([{ settings: { branding: { primary_color: '#1E8449', logo: 'file_logo_8' } } }]);
+  });
+});
+
+describe('hosted checkout branding', () => {
+  it('is never set per session: the account settings carry it', async () => {
+    const src = (await import('fs')).readFileSync((await import('path')).join(__dirname, '../lib/stripe.ts'), 'utf8');
+    expect(src).not.toMatch(/branding_settings/);
   });
 });

@@ -22,6 +22,7 @@ import { Link } from 'react-router-dom';
 import { AlertTriangle, Ban, RefreshCw } from 'lucide-react';
 import { toast } from '@/components/ui/use-toast';
 import { Button } from '@/components/ui/button';
+import { switchOn, useMySwitches } from '@/lib/api/mySwitches';
 import type {
   LoApiError,
   LoShortageDetail,
@@ -62,6 +63,9 @@ function LoErrorBanner({
 
 /** 409 aggregate SHORTAGE — one row per short line, nothing was deducted. */
 export function LoShortagePanel({ details }: { details: LoShortageDetail[] }) {
+  // The Inventory page is offered only to a person who may open it (View stock and Show Stock page).
+  const mine = useMySwitches()?.values;
+  const canOpenInventory = switchOn(mine, 'view_stock') && switchOn(mine, 'show_stock_page');
   return (
     <LoErrorBanner tone="warning" icon={AlertTriangle} title="Not enough stock to process - nothing was deducted.">
       <ul className="space-y-1 pl-6 text-xs">
@@ -76,11 +80,17 @@ export function LoShortagePanel({ details }: { details: LoShortageDetail[] }) {
         ))}
       </ul>
       <p className="pl-6 text-xs">
-        Restock or transfer from the{' '}
-        <Link to="/inventory" className="underline">
-          Inventory page
-        </Link>
-        , or lower the quantity and try again.
+        {canOpenInventory ? (
+          <>
+            Restock or transfer from the{' '}
+            <Link to="/inventory" className="underline">
+              Inventory page
+            </Link>
+            , or lower the quantity and try again.
+          </>
+        ) : (
+          'Ask someone who manages stock to restock or transfer, or lower the quantity and try again.'
+        )}
       </p>
     </LoErrorBanner>
   );

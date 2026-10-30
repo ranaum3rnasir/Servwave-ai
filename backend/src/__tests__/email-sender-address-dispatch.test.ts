@@ -37,7 +37,7 @@ const ORG_ID = 'org-1';
 
 /** The org row dispatchEmail reads, with whatever override is under test. */
 function orgRow(email_sender_local_part: string | null) {
-  return { email_sending_enabled: true, name: 'Alpha Doors & Security', email_sender_local_part };
+  return { email_sending_enabled: true, name: 'Example Doors & Security', email_sender_local_part };
 }
 
 beforeEach(() => {
@@ -51,7 +51,7 @@ describe('dispatchEmail - org sender local part', () => {
 
     const res = await dispatchEmail(ORG_ID, PAYLOAD);
 
-    expect(res).toMatchObject({ fromAddress: 'alphadoorssecurity@mail.test.com' });
+    expect(res).toMatchObject({ fromAddress: 'exampledoorssecurity@mail.test.com' });
   });
 
   it('sends from the org own local part when one is set', async () => {
@@ -60,7 +60,7 @@ describe('dispatchEmail - org sender local part', () => {
     const res = await dispatchEmail(ORG_ID, PAYLOAD);
 
     expect(res).toMatchObject({ fromAddress: 'service@mail.test.com' });
-    expect(resendSend.mock.calls[0]![0].from).toBe('"Alpha Doors & Security" <service@mail.test.com>');
+    expect(resendSend.mock.calls[0]![0].from).toBe('"Example Doors & Security" <service@mail.test.com>');
   });
 
   it('keeps the shared domain - the override is the local part only', async () => {
@@ -79,7 +79,7 @@ describe('dispatchEmail - org sender local part', () => {
 
     const res = await dispatchEmail(ORG_ID, PAYLOAD);
 
-    expect(res).toMatchObject({ fromName: 'Alpha Doors & Security' });
+    expect(res).toMatchObject({ fromName: 'Example Doors & Security' });
   });
 
   it('names the Reply-To with the company name, not the local part', async () => {
@@ -88,7 +88,7 @@ describe('dispatchEmail - org sender local part', () => {
 
     await dispatchEmail(ORG_ID, { ...(PAYLOAD as object), replyTo: 'tok@reply.test.com' } as never);
 
-    expect(resendSend.mock.calls[0]![0].replyTo).toBe('"Alpha Doors & Security" <tok@reply.test.com>');
+    expect(resendSend.mock.calls[0]![0].replyTo).toBe('"Example Doors & Security" <tok@reply.test.com>');
   });
 
   it('ignores the override on a platform-voice send, which is not the org speaking', async () => {

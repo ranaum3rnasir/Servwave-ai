@@ -3,6 +3,9 @@
 // assembly) is unit-testable in isolation — the controller feeds these the raw
 // query results. Mirrors the frontend DashboardResponse contract shapes.
 
+import type { JobStatus } from '@prisma/client';
+import { isCompletedOrLater } from '../lib/job-status-order';
+
 export interface ScoreboardEntry {
   user_id: string | null;
   name: string;
@@ -11,8 +14,21 @@ export interface ScoreboardEntry {
 }
 
 /** Rank a scoreboard by revenue (desc) and cap to `limit` rows. Contributors
- *  with neither revenue nor jobs are dropped so the board shows real activity. */
-export function buildScoreboard(rows: ScoreboardEntry[], limit: number): ScoreboardEntry[] {
+ *  with neither revenue nor jobs are dropped so the board shows real activity.
+ *  `rankBy: 'jobs'` is the board for a person without See company figures: ranked by job
+ *  count, so the order itself does not give the revenue away (the revenue is left off the
+ *  response afterwards, by the company-figures redaction). */
+export function buildScoreboard(
+  rows: ScoreboardEntry[],
+  limit: number,
+  rankBy: 'revenue' | 'jobs' = 'revenue',
+): ScoreboardEntry[] {
+  if (rankBy === 'jobs') {
+    return rows
+      .filter((r) => r.jobs > 0)
+      .sort((a, b) => b.jobs - a.jobs)
+      .slice(0, limit);
+  }
   return rows
     .filter((r) => r.revenue > 0 || r.jobs > 0)
     .sort((a, b) => b.revenue - a.revenue)
@@ -30,7 +46,7 @@ const JOB_STATUS_ORDER = [
   'UNSCHEDULED', 'SCHEDULED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED',
 ];
 const JOB_STATUS_LABEL: Record<string, string> = {
-  UNSCHEDULED: 'Unassigned',
+  UNSCHEDULED: 'Unscheduled',
   SCHEDULED: 'Scheduled',
   IN_PROGRESS: 'In progress',
   COMPLETED: 'Completed',
@@ -38,9 +54,15 @@ const JOB_STATUS_LABEL: Record<string, string> = {
 };
 
 /** Map `job.groupBy(status)` counts into labelled slices in canonical job-status
- *  order, dropping statuses with no jobs. */
+ *  order, dropping statuses with no jobs. The chart has no slice for the close-out statuses
+ *  (Office review, Ready to close, Done): a job in one of them is finished work and is counted
+ *  in the Completed slice with the rest of the completed-or-later set. */
 export function buildJobsByStatus(groups: { status: string; count: number }[]): StatusSlice[] {
-  const counts = new Map(groups.map((g) => [g.status, g.count]));
+  const counts = new Map<string, number>();
+  for (const g of groups) {
+    const slice = isCompletedOrLater(g.status as JobStatus) ? 'COMPLETED' : g.status;
+    counts.set(slice, (counts.get(slice) ?? 0) + g.count);
+  }
   return JOB_STATUS_ORDER.filter((s) => (counts.get(s) ?? 0) > 0).map((s) => ({
     key: s.toLowerCase(),
     label: JOB_STATUS_LABEL[s] ?? s,
@@ -112,7 +134,7 @@ export function buildPipeline(input: PipelineInputs): PipelineStage[] {
     { key: 'estimates', label: 'Estimates', kind: 'amount', value: input.estimatesAmount, link: '/estimates' },
     { key: 'approved', label: 'Approved', kind: 'amount', value: input.approvedAmount, link: '/estimates?status=approved' },
     { key: 'deposit', label: 'Deposit', kind: 'amount', value: input.depositAmount, link: '/estimates' },
-    { key: 'job', label: 'Job done', kind: 'amount', value: input.jobAmount, link: '/jobs' },
+    { key: 'job', label: 'Job completed', kind: 'amount', value: input.jobAmount, link: '/jobs' },
     { key: 'invoiced', label: 'Invoiced', kind: 'amount', value: input.invoicedAmount, link: '/invoices' },
     { key: 'paid', label: 'Paid', kind: 'amount', value: input.paidAmount, link: '/invoices?status=paid' },
   ];
@@ -265,7 +287,7 @@ function scheduleAddress(loc: ScheduleLocation | null): string | null {
 
 /** Group the day's jobs and scheduled walkthroughs into per-tech lanes for the
  *  Today's Schedule widget. Jobs fan out per crew assignee, walkthroughs per
- *  performer; entries with no people land in the Unassigned lane (always last).
+ *  performer; entries with no people land in the "No crew" lane (always last).
  *  Completed walkthroughs stay visible (status WALKTHROUGH_COMPLETED, keyed off
  *  walkthrough_completed_at — the lead may already be ESTIMATED/WON) for exact
  *  parity with the /schedule calendar. Each lane is sorted by scheduled_start
@@ -280,7 +302,7 @@ export function buildScheduleLanes(
   const push = (people: SchedulePerson[], entry: ScheduleEntry) => {
     if (people.length === 0) {
       if (!techMap.has(null)) {
-        techMap.set(null, { user_id: null, first_name: 'Unassigned', last_name: '', avatar_path: null, jobs: [] });
+        techMap.set(null, { user_id: null, first_name: 'No crew', last_name: '', avatar_path: null, jobs: [] });
       }
       techMap.get(null)!.jobs.push(entry);
     } else {
@@ -295,7 +317,7 @@ export function buildScheduleLanes(
 
   for (const job of jobs) {
     // Crew fan-out: a multi-tech job lands in every assignee's lane (consistent
-    // with the dispatch board). An empty crew falls into the Unassigned lane.
+    // with the dispatch board). An empty crew falls into the "No crew" lane.
     // S8 (D6): the union across the job's trips, deduped so a person on two trips does not get
     // the same card twice in their lane.
     const crew = [...new Map(job.visits.flatMap((v) => v.assignees).map((a) => [a.user.id, a.user])).values()];
@@ -334,7 +356,7 @@ export function buildScheduleLanes(
     lane.jobs.sort((a, b) => (a.scheduled_start ?? '').localeCompare(b.scheduled_start ?? ''));
   }
 
-  // Assigned techs first, unassigned last
+  // People first, the "No crew" lane last
   const lanes: ScheduleLane[] = [];
   for (const [key, lane] of techMap.entries()) {
     if (key !== null) lanes.push(lane);

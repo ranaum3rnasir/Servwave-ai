@@ -239,7 +239,7 @@ describe('runEstimateContainerBackfillForOrg', () => {
 //
 // The first pass matches an estimate's number against the CURRENT parent numbers, so it cannot
 // reach a row whose container has since been renamed — the very rows a container rename left
-// behind. Measured on prod 2026-08-27: 10 of Alpha Doors' 56 orphans, `699063-2` (lead now
+// behind. Measured on prod 2026-08-27: 10 of the pilot org's 56 orphans, `699063-2` (lead now
 // `01287`) among them.
 describe('resolveRenamedContainers', () => {
   const fks = { lead_id: null, customer_id: null, job_id: null };

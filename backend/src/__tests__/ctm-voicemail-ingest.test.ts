@@ -2,7 +2,7 @@
  * ctm-voicemail-ingest.test.ts — Phone master plan Phase C, Task C4.
  *
  * RESEARCH NOTE (Supabase MCP, project knriiqdqxgfoecsfarlx, 2026-07-16): the
- * live `ctm_events` table holds 15 stored `end` events for Alpha Doors
+ * live `ctm_events` table holds 15 stored `end` events for the pilot org
  * (596375) and NONE of them are a voicemail — every one is either
  * agent-answered (`agent` present, dial_status "answered") or forwarded to an
  * external phone (`agent` null, dial_status "answered"/"completed",
@@ -30,7 +30,7 @@ const p = prisma as any;
 
 const ORG_ID = 'org-1';
 
-// Real-shape base (from the live Alpha Doors rows above) — inbound, no
+// Real-shape base (from the live pilot org rows above) — inbound, no
 // agent, answered by CTM's IVR rather than a human.
 const BASE_END = {
   sid: 'CA9101',
@@ -81,7 +81,7 @@ const ANSWERED_END = {
   call_status: 'answered',
   duration: 24,
   talk_time: 16,
-  agent: { id: 'USR1', name: 'Emanuel Dahan', email: 'emanuel@alphasecurityus.com' },
+  agent: { id: 'USR1', name: 'Sam Rivera', email: 'agent@example.test' },
   call_path: [
     {
       route_id: 'COR1819B95F1F30B8D29D6074F01BE71F04D8CBF51A96',

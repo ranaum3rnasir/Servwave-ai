@@ -18,8 +18,10 @@ describe('emit — brief representative tests', () => {
       { id: 'admin1', role: 'ADMIN' }, { id: 'disp1', role: 'DISPATCHER' }, { id: 'sales1', role: 'SALES' },
     ]);
     (prisma.notification.create as any).mockResolvedValue({ id: 'n1' });
+    // The caller (leadEstimateAlerts) walked the lanes: the record's people, who must act, and the copies.
     await emit({ verb: 'estimate.approved', organizationId: 'org1', actorId: 'sales1',
-      object: { type: 'ESTIMATE', id: 'e1', label: 'E0042' }, entity: { commission_owner_id: 'sales1' },
+      object: { type: 'ESTIMATE', id: 'e1', label: 'E0042' },
+      entity: { commission_owner_id: 'sales1', lane_one_ids: ['sales1', 'admin1'], lane_two_ids: ['disp1'], copy_ids: [] },
       data: { customer_name: 'Acme' } });
     expect(prisma.notification.create).toHaveBeenCalledOnce();
     // sales1 is the actor → excluded; disp1 + admin1 remain
@@ -34,7 +36,7 @@ describe('emit — brief representative tests', () => {
 
   it('never throws on a downstream failure', async () => {
     (prisma.notification.create as any).mockRejectedValue(new Error('db down'));
-    await expect(emit({ verb: 'job.completed', organizationId: 'org1', actorId: null,
+    await expect(emit({ verb: 'job.started', organizationId: 'org1', actorId: null,
       object: { type: 'JOB', id: 'j1' }, entity: { assignee_ids: [] } })).resolves.toEqual([]);
   });
 
@@ -67,7 +69,8 @@ describe('emit — returns the notified recipients', () => {
     (prisma.notification.create as any).mockResolvedValue({ id: 'n1' });
 
     const notified = await emit({ verb: 'estimate.approved', organizationId: 'org1', actorId: 'sales1',
-      object: { type: 'ESTIMATE', id: 'e1', label: 'E0042' }, entity: { commission_owner_id: 'sales1' },
+      object: { type: 'ESTIMATE', id: 'e1', label: 'E0042' },
+      entity: { commission_owner_id: 'sales1', lane_one_ids: ['sales1', 'admin1'], lane_two_ids: ['disp1'], copy_ids: [] },
       data: { customer_name: 'Acme' } });
 
     expect([...notified].sort()).toEqual(['admin1', 'disp1']);
@@ -75,7 +78,7 @@ describe('emit — returns the notified recipients', () => {
 
   it('returns [] when there are no recipients', async () => {
     (prisma.user.findMany as any).mockResolvedValue([]);
-    const notified = await emit({ verb: 'job.completed', organizationId: 'org1', actorId: null,
+    const notified = await emit({ verb: 'job.started', organizationId: 'org1', actorId: null,
       object: { type: 'JOB', id: 'j1' }, entity: { assignee_ids: [] } });
     expect(notified).toEqual([]);
   });
@@ -94,5 +97,50 @@ describe('emit — returns the notified recipients', () => {
     const notified = await emit({ verb: 'task.overdue', organizationId: 'org1', actorId: null,
       object: { type: 'TASK', id: 't1' }, entity: {} });
     expect(notified).toEqual([]);
+  });
+});
+
+// S06.27, S06.29, S10.10: no verb is handed the company's role list any more, and a personal alert is not filtered by who can open the
+// record.
+describe('emit — verbs that no longer read a role list', () => {
+  it('does not read the company\'s people to build a role list for any verb, the inbound email alert included', async () => {
+    (prisma.notification.create as any).mockResolvedValue({ id: 'n1' });
+    (prisma.user.findMany as any).mockResolvedValue([{ id: 'admin1', role: 'ADMIN' }]);
+
+    await emit({ verb: 'dispatch.job_rescheduled', organizationId: 'org1', actorId: null,
+      object: { type: 'JOB', id: 'j1', label: 'J1' }, entity: { lane_one_ids: ['sales1'] } });
+    expect(prisma.user.findMany).not.toHaveBeenCalled();
+    expect(prisma.notificationRecipient.createMany).toHaveBeenCalledOnce();
+
+    // A customer's email reply (S10.10), an alert that moved off its role list (low stock) and the logistic order alert (the chain names
+    // its approvers) read none either. The email alert's people are the chain's, already through the single read of the conversation.
+    for (const [verb, object, entity] of [
+      ['communication.email_inbound', { type: 'EMAIL_THREAD', id: 'm1' }, { lane_one_ids: ['holder1'] }],
+      ['inventory.low_stock', { type: 'INVENTORY_ITEM', id: 'i1', label: 'Item' }, { lane_two_ids: ['holder1'] }],
+      ['lo.submitted', { type: 'INVENTORY_ITEM', id: 'i1', label: 'Item' }, { lane_two_ids: ['holder1'] }],
+    ] as const) {
+      vi.clearAllMocks();
+      (prisma.notification.findFirst as any).mockResolvedValue(undefined);
+      (prisma.notification.create as any).mockResolvedValue({ id: 'n3' });
+      await emit({ verb, organizationId: 'org1', actorId: null, object, entity, ...(verb === 'communication.email_inbound' ? { readersChecked: true } : {}) });
+      expect(prisma.user.findMany, verb).not.toHaveBeenCalled();
+    }
+  });
+
+  it('a personal alert reaches the people it names without asking whether they can open the record', async () => {
+    const { filterRecipientsByAccess } = await import('../filterByAccess.js');
+    (filterRecipientsByAccess as any).mockResolvedValue([]); // nobody can open it
+    (prisma.notification.create as any).mockResolvedValue({ id: 'n1' });
+
+    const notified = await emit({ verb: 'dispatch.job_unassigned', organizationId: 'org1', actorId: 'boss1', personal: true,
+      object: { type: 'JOB', id: 'j1', label: 'J1' }, entity: { assignee_ids: ['tech1'] } });
+    expect(notified).toEqual(['tech1']);
+
+    // Without `personal` the same alert is held back by the filter, as every other alert is.
+    vi.clearAllMocks();
+    (prisma.notification.findFirst as any).mockResolvedValue(undefined);
+    (filterRecipientsByAccess as any).mockResolvedValue([]);
+    expect(await emit({ verb: 'dispatch.job_unassigned', organizationId: 'org1', actorId: 'boss1',
+      object: { type: 'JOB', id: 'j1', label: 'J1' }, entity: { assignee_ids: ['tech1'] } })).toEqual([]);
   });
 });

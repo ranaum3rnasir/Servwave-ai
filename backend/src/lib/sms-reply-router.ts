@@ -18,11 +18,17 @@
  * list, which keeps the decision deterministic and unit-testable.
  */
 
+import type { JobStatus } from '@prisma/client';
+import { COMPLETED_OR_LATER_JOB_STATUSES } from './job-status-order';
+
 /** Only auto-route to a job texted-from within this many days of `now`. */
 export const SMS_ROUTER_RECENCY_WINDOW_DAYS = 30;
 
-/** JobStatus values considered closed — never auto-route to these. */
-export const CLOSED_JOB_STATUSES = ['COMPLETED', 'CANCELLED'] as const;
+/**
+ * JobStatus values considered closed — never auto-route to these: every finished status (Completed, and PRD 6's Office
+ * review, Ready to close and Done after it) and Cancelled.
+ */
+export const CLOSED_JOB_STATUSES: readonly JobStatus[] = [...COMPLETED_OR_LATER_JOB_STATUSES, 'CANCELLED'];
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 

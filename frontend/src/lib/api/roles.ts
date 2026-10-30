@@ -2,6 +2,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/axios';
 import { toast } from '@/components/ui/use-toast';
 import { extractApiError } from '@/lib/utils';
+import { allPersonSwitchesKey, type RoleSwitchSet } from '@/lib/api/permissionSwitches';
+import { resetChangeLogs } from '@/lib/api/permissionChangeLog';
 
 export interface RoleSummary {
   role: string;
@@ -16,6 +18,10 @@ export interface RoleSummary {
   id?: string;
   description?: string;
   base_role?: string;
+  // Present only on type:'custom' entries: the role it was made from (a built-in role's key or another custom role's
+  // key), and whether it started from a blank draft with every switch off.
+  made_from_role_key?: string | null;
+  made_from_blank?: boolean;
 }
 
 export type ScopeValue = 'All' | 'Owned' | 'Team' | 'Location';
@@ -61,6 +67,9 @@ export interface RoleViewModel {
   sensitive: {
     seeFinancials: boolean;
     managePayments: boolean;
+    // Payments go-live slice 22 - "Refund payments" writes `refund Invoice` and ONLY that, apart
+    // from recording payments (managePayments). Keep in lockstep with backend SENSITIVE.
+    refundPayments: boolean;
     viewReports: boolean;
     editRecordIds: boolean;
     logPastCommunications: boolean;
@@ -78,9 +87,12 @@ export interface RoleViewModel {
 
 export interface CreateRolePayload {
   label: string;
-  base_role: 'ADMIN' | 'SALES' | 'DISPATCHER' | 'TECHNICIAN';
+  base_role?: 'ADMIN' | 'SALES' | 'DISPATCHER' | 'TECHNICIAN';
   description?: string;
+  // Start from another role's switches: a built-in role's key or a custom role's key.
   clone_grants_from?: string;
+  // Start with every switch off.
+  blank?: true;
 }
 
 // SRVW-138/139 - a role picker (StaffFormDialog, UsersTeamsPage) needs ONE flat list of
@@ -105,17 +117,26 @@ export function resolveRoleAssignment(
   return { role: value, custom_role_id: null };
 }
 
-export function useRoles() {
+/** `enabled` is false for a screen whose viewer may not read the list (it needs Manage roles and permissions). */
+export function useRoles(enabled = true) {
   return useQuery<RoleSummary[]>({
     queryKey: ['roles'],
     queryFn: () => api.get('/api/roles').then((r) => r.data),
+    enabled,
   });
 }
 
 export function useRolePermissions(role: string) {
   return useQuery<RoleViewModel>({
     queryKey: ['roles', role, 'permissions'],
-    queryFn: () => api.get(`/api/roles/${role}/permissions`).then((r) => r.data),
+    queryFn: () =>
+      api.get(`/api/roles/${role}/permissions`).then((r) => {
+        // The endpoint now answers with a role's switches, not this matrix. Until the switch editor replaces the
+        // screens that read it, treat that answer as "can't be shown" (the same as the retired 404), so those
+        // screens keep their notice and never offer a Save or Reset that would write the old shape.
+        if (!r.data?.matrix) throw new Error('Role permissions are not available in this shape');
+        return r.data as RoleViewModel;
+      }),
     enabled: !!role,
   });
 }
@@ -138,14 +159,15 @@ export function useUpdateRolePermissions() {
 export function useResetRole() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (role: string) => api.post(`/api/roles/${role}/reset`).then((r) => r.data),
-    onSuccess: (_d, role) => qc.invalidateQueries({ queryKey: ['roles', role] }),
-    onError: (err) =>
-      toast({
-        title: 'Reset failed',
-        description: extractApiError(err, 'Could not reset role'),
-        variant: 'destructive',
-      }),
+    mutationFn: (role: string) => api.post(`/api/roles/${role}/reset`).then((r) => r.data as RoleSwitchSet),
+    // The reset answers with the role's whole set: show it now. People on the role are not touched, but what they differ
+    // by is measured against the role, so their cached sets are read again. A refusal is shown by the caller, inside the
+    // confirm that asked.
+    onSuccess: (reset, role) => {
+      qc.setQueryData(['roles', role, 'switches'], reset);
+      resetChangeLogs(qc);
+      void qc.invalidateQueries({ queryKey: allPersonSwitchesKey });
+    },
   });
 }
 
@@ -153,13 +175,9 @@ export function useCreateRole() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (payload: CreateRolePayload) => api.post('/api/roles', payload).then((r) => r.data as RoleSummary),
+    // Returned, so the new role is on the list by the time the caller selects it. A refusal is shown by the caller,
+    // next to the name that caused it.
     onSuccess: () => qc.invalidateQueries({ queryKey: ['roles'] }),
-    onError: (err) =>
-      toast({
-        title: 'Could not create role',
-        description: extractApiError(err, 'Failed to create role'),
-        variant: 'destructive',
-      }),
   });
 }
 
@@ -168,13 +186,9 @@ export function useRenameRole() {
   return useMutation({
     mutationFn: ({ role, label, description }: { role: string; label?: string; description?: string }) =>
       api.patch(`/api/roles/${role}`, { label, description }).then((r) => r.data as RoleSummary),
+    // Returned, so the list carries the new name by the time the caller closes its dialog. A refusal is shown by the
+    // caller, inside the dialog that asked.
     onSuccess: () => qc.invalidateQueries({ queryKey: ['roles'] }),
-    onError: (err) =>
-      toast({
-        title: 'Could not update role',
-        description: extractApiError(err, 'Failed to update role'),
-        variant: 'destructive',
-      }),
   });
 }
 
@@ -182,12 +196,12 @@ export function useArchiveRole() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (role: string) => api.post(`/api/roles/${role}/archive`).then((r) => r.data),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['roles'] }),
-    onError: (err) =>
-      toast({
-        title: 'Could not archive role',
-        description: extractApiError(err, 'Failed to archive role'),
-        variant: 'destructive',
-      }),
+    // Returned, so the role is off the list by the time the caller leaves it. A refusal is shown by the caller, inside
+    // the dialog that asked. The archived role's own reads are marked old but not refetched: the server answers a read
+    // of it with a 404, and nothing on screen needs it any more.
+    onSuccess: (_data, role) => {
+      void qc.invalidateQueries({ queryKey: ['roles', role], refetchType: 'none' });
+      return qc.invalidateQueries({ queryKey: ['roles'], predicate: (q) => q.queryKey[1] !== role });
+    },
   });
 }

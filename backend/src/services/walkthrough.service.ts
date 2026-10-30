@@ -21,7 +21,7 @@ import type { Request } from 'express';
 import { Prisma, VisitStatus, JobStatus, type LeadStatus } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { tenantWhere } from '../lib/tenant';
-import { isAssignable } from '../lib/permissions/assignableRoles';
+import { whyNotSlot } from '../lib/permissions/slotEligibility';
 import { resolveAssigneePoolForRequest, isAssigneeSetPermitted, assigneeSetChanged } from '../lib/permissions/assigneePool';
 import { deriveJobStatus } from '../lib/job-status';
 import { replaceVisitCrew } from './visitCrew';
@@ -391,6 +391,9 @@ export function projectLegacyWalkthroughFields(
   const current = resolveCurrentWalkthrough(list);
   const base = {
     walkthrough_scheduled_at: current?.scheduled_at ?? null,
+    // "To be scheduled": the current trip is live and has people on it but no time yet, so the lead has a walkthrough
+    // that no date describes. The readers that show a date say this instead of "Needs Sched.".
+    walkthrough_to_be_scheduled: current != null && isLiveVisit(current) && current.scheduled_at == null,
     walkthrough_completed_at: current?.status === 'COMPLETED' ? current.completed_at : null,
     walkthrough_duration_minutes: current?.duration_minutes ?? null,
     // Where the current trip is, ALREADY RESOLVED (slice 6) - see `locationLabelOf`. In `base`
@@ -521,8 +524,9 @@ const PERFORMER_SELF_ONLY = 'You can only put yourself on a walkthrough.';
 
 /**
  * Two questions, in this order: WHOSE NAMES may this requester put on a walkthrough, and is each
- * of those names an ACTIVE in-org user whose role `isAssignable`. Returns the resolved performers
- * on success, or a {status, error} the three lead doors forward verbatim.
+ * of those names an in-org user slot eligibility lets onto a crew (active, Can be on a crew on - never
+ * a role name). Returns the resolved performers on success, or a {status, error} the three lead doors
+ * forward verbatim.
  *
  * ── THE POOL CHECK IS FIRST, AND IT IS A 403 ────────────────────────────────────────────────
  *
@@ -555,9 +559,11 @@ const PERFORMER_SELF_ONLY = 'You can only put yourself on a walkthrough.';
  * OMITTING IT IS THE STRICT PATH, on purpose. A create-shaped door has no current set and must
  * get the full check; a door that simply forgets to pass one is refused rather than opened. Any
  * change - adding a name, removing one, or wiping the list - is a change and is checked, because
- * the rule is about the RESULTING set. The escape covers the pool rule only: the per-member
- * eligibility loop still runs on an unchanged restatement, so "unchanged" is never a way to
- * re-persist somebody who has since been deactivated.
+ * the rule is about the RESULTING set. The escape covers the pool rule, and the same list also
+ * exempts a member from slot eligibility: a performer already on the walkthrough is restated, not
+ * placed, so a roster that still holds someone whose switch was turned off, or who has since been
+ * deactivated, is accepted for that member. Only a newly named person is asked about. An id that
+ * names nobody in the company is still refused, restated or not.
  */
 export async function validatePerformers(
   req: Req,
@@ -577,11 +583,16 @@ export async function validatePerformers(
   for (const userId of performerIds) {
     const u = await prisma.user.findUnique({
       where: { id: userId, ...tenantWhere(req) },
-      select: { id: true, role: true, is_active: true, email: true, first_name: true, last_name: true, phone: true },
+      select: {
+        id: true, organization_id: true, role: true, custom_role_id: true, custom_role: { select: { key: true } },
+        is_active: true, email: true, first_name: true, last_name: true, phone: true,
+      },
     });
-    if (!u) return { ok: false, status: 400, error: 'Performer not found or inactive' };
-    if (!u.is_active) return { ok: false, status: 400, error: 'Performer not found or inactive' };
-    if (!isAssignable(u.role)) return { ok: false, status: 400, error: 'This user is not eligible to perform walkthroughs' };
+    if (!u) return { ok: false, status: 400, error: 'Performer not found' };
+    if (!currentPerformerIds?.includes(userId)) {
+      const refusal = await whyNotSlot(u, 'crew');
+      if (refusal) return { ok: false, status: 400, error: refusal };
+    }
     users.push({ id: u.id, email: u.email, first_name: u.first_name, last_name: u.last_name, phone: u.phone });
   }
   return { ok: true, users };
@@ -601,7 +612,7 @@ export type WalkthroughConflict =
  */
 export async function detectPerformerConflicts(
   req: Req,
-  opts: { leadId: string; userIds: string[]; schedStart: Date; schedEnd: Date },
+  opts: { leadId: string | null; userIds: string[]; schedStart: Date; schedEnd: Date },
 ): Promise<WalkthroughConflict[]> {
   if (opts.userIds.length === 0) return [];
   const { schedStart, schedEnd } = opts;
@@ -655,7 +666,8 @@ export async function detectPerformerConflicts(
         // twin and dashboard.controller.ts carry. The two detectors were written as twins and must
         // stay twins.
         lead_id: { not: null },
-        NOT: { lead_id: opts.leadId },
+        // A lead that does not exist yet (the new-lead form's booking) has no visits of its own to leave out.
+        ...(opts.leadId ? { NOT: { lead_id: opts.leadId } } : {}),
         assignees: { some: { user_id: { in: opts.userIds } } },
         status: 'SCHEDULED',
         scheduled_at: { not: null },
@@ -791,6 +803,8 @@ export const NO_LIVE_VISIT_WHERE = {
 export async function findCurrentWalkthroughForLead(req: Req, leadId: string) {
   const visits = await prisma.visit.findMany({
     where: { ...tenantWhere(req), lead_id: leadId },
+    // The crew rides along: the notes door checks the person against the walkthrough it is about to change.
+    include: { assignees: { select: { user_id: true } } },
   });
   return resolveCurrentWalkthrough(visits);
 }
@@ -843,6 +857,28 @@ export async function createLeadVisit(
       ...(opts.notes !== undefined ? { notes: opts.notes } : {}),
       ...(opts.stampCustomerEmailSentAt ? { customer_email_sent_at: new Date() } : {}),
       ...(opts.locationData ?? {}),
+    },
+  });
+}
+
+/**
+ * A walkthrough visit with people on it and no time yet: "To be scheduled". It is a real, live visit (the
+ * visit's time is optional in the data), so the lead has a walkthrough and the crew has it on their list; the
+ * performer arranges the time with the customer, and setting it later is a booking (`scheduleActiveWalkthrough`
+ * reuses this row). No start and no end are written, and no email stamp, so nothing keyed on a time (the
+ * schedule, the customer reminders, Missing crew) can see it until it has one.
+ */
+export async function createUntimedLeadVisit(
+  tx: Prisma.TransactionClient,
+  opts: { leadId: string; orgId: string; visitSeq: number },
+) {
+  return tx.visit.create({
+    data: {
+      organization_id: opts.orgId,
+      lead_id: opts.leadId,
+      purpose: 'WALKTHROUGH',
+      visit_seq: opts.visitSeq,
+      status: 'SCHEDULED',
     },
   });
 }
@@ -1024,17 +1060,17 @@ export async function cancelWalkthroughRow(
 
 /**
  * What a cancelled trip records as its reason when the LEAD itself left the pipeline. One wording
- * per exit, shared by the two doors that reach it: the dedicated mark-lost and cancel endpoints
- * (the lead status menu closes a lead through those same endpoints).
+ * per exit, shared by the two doors that reach it: the dedicated mark-lost endpoint and the lead status
+ * menu, which closes a lead through the same helper. (The retired Cancel lead action wrote "Lead cancelled"; trips it
+ * cancelled keep that reason as written.)
  */
 export const LEAD_EXIT_WALKTHROUGH_REASON = {
   LOST: 'Lead marked as lost',
-  CANCELLED: 'Lead cancelled',
 } as const satisfies Partial<Record<LeadStatus, string>>;
 
 /**
  * Cancel EVERY live walkthrough visit of a lead as a side effect of the lead itself leaving the
- * pipeline (LOST / CANCELLED) - whether through mark-lost or cancel. Returns how many trips it cancelled.
+ * pipeline (LOST) - whether through mark-lost or the status menu. Returns how many trips it cancelled.
  *
  * Every live trip, not the earliest one: since slice 03 a lead can hold several booked trips, and
  * a trip left booked for a lost lead stays on the board and on the crew's day. Finished and
@@ -1292,6 +1328,27 @@ export function resolveCurrentJobVisit<
     if (a !== b) return a > b ? v : latest;
     return v.created_at.getTime() > latest.created_at.getTime() ? v : latest;
   });
+}
+
+/**
+ * S04.5: is this person on the crew of the job's CURRENT visit - the one the job-level On my way, Arrived and
+ * Start steps stamp? Resolved by the same rules as stampCurrentJobVisitMilestone (live trips only,
+ * resolveCurrentJobVisit), so the person who is allowed to press a step is the person of the trip it lands on.
+ * Being on some other trip of the job does not count; a job with no live trip has no current visit, so nobody is
+ * on its crew.
+ */
+export function isOnCurrentJobVisitCrew<
+  T extends {
+    status: VisitStatus;
+    scheduled_at: Date | null;
+    scheduled_end?: Date | null;
+    created_at: Date;
+    assignees?: Array<{ user_id: string }> | null;
+  },
+>(visits: T[] | null | undefined, userId: string, now: Date = new Date()): boolean {
+  const live = (visits ?? []).filter((v) => (LIVE_VISIT_STATUSES as readonly VisitStatus[]).includes(v.status));
+  const current = resolveCurrentJobVisit(live, now);
+  return (current?.assignees ?? []).some((a) => a.user_id === userId);
 }
 
 /**

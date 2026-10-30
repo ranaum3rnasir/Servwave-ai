@@ -13,6 +13,13 @@ import type { VisitStatus } from '@prisma/client';
  */
 export const LIVE_VISIT_STATUSES = ['SCHEDULED', 'EN_ROUTE', 'ON_SITE', 'IN_PROGRESS'] as const;
 
+/**
+ * The visit status that means the crew finished the visit. The stored word is COMPLETED and the person is shown
+ * "Finished": a finished visit never completes its job (the job's own Completed status is a separate step), so the
+ * dashboard's visit counts read this one value and never the job's status.
+ */
+export const FINISHED_VISIT_STATUS = 'COMPLETED' as const;
+
 export function isLiveVisit(v: { status: VisitStatus }): boolean {
   return (LIVE_VISIT_STATUSES as readonly string[]).includes(v.status);
 }

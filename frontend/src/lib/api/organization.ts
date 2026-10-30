@@ -7,6 +7,9 @@ import { extractApiError } from '@/lib/utils';
 import type { PaymentMethod } from '@/types/entities';
 export type { PaymentMethod };
 
+/** When an estimate's deposit is paid (backend enum DepositPolicy, payments go-live slice 19). */
+export type DepositPolicy = 'REQUIRED_BEFORE_APPROVAL' | 'PAY_LATER';
+
 export interface Organization {
   id: string;
   name: string;
@@ -31,13 +34,13 @@ export interface Organization {
   invoice_terms: string | null;
   invoice_notes: string | null;
   invoice_payment_terms: string | null;
-  stripe_account_id: string | null;
+  // Whether a payout account exists. The processor's own id never reaches the browser.
+  stripe_connected: boolean;
   stripe_charges_enabled: boolean;
   stripe_payouts_enabled: boolean;
   stripe_details_submitted: boolean;
   stripe_requirements_due: string[];
   stripe_disabled_reason: string | null;
-  platform_fee_bps: number;
   accepted_payment_methods: PaymentMethod[];
   source_options: string[];
   job_type_options: string[];
@@ -103,6 +106,16 @@ export interface Organization {
   deposit_default_fixed_amount: number;
   // Estimate workspace redesign (§A3a) — org-wide lock-on-send policy, default OFF.
   lock_on_send: boolean;
+  // Payments go-live slice 19/20 — the org payment defaults (Settings > Payments). CARD and ACH in
+  // accepted_payment_methods are server-owned capability facts; the owner's default offer of each
+  // online method is these two booleans. Optional only because an old backend does not send them.
+  card_offered_by_default?: boolean;
+  bank_offered_by_default?: boolean;
+  tips_enabled?: boolean;
+  /** Three whole percentages (1-50) of the pre-tax amount being paid. */
+  tip_presets?: number[];
+  deposit_policy?: DepositPolicy;
+  bank_transfer_instructions?: string | null;
   // R3 (2026-07-21) cost model (D2/D8) — staff-only, present ONLY for a requester who can see
   // pricing (backend gates these behind canSeePricing, separate from the always-safe base
   // select). Optional here because every other role's GET /api/organization simply omits them.
@@ -145,13 +158,12 @@ export type OrgFormValues = Omit<
   Organization,
   | 'id'
   | 'logo_url'
-  | 'stripe_account_id'
+  | 'stripe_connected'
   | 'stripe_charges_enabled'
   | 'stripe_payouts_enabled'
   | 'stripe_details_submitted'
   | 'stripe_requirements_due'
   | 'stripe_disabled_reason'
-  | 'platform_fee_bps'
   | 'lead_first_issued_at'
   | 'estimate_first_issued_at'
   | 'job_first_issued_at'
@@ -213,13 +225,15 @@ export function useUploadLogo() {
 }
 
 export interface StripeStatus {
-  stripe_account_id: string | null;
+  /** Whether the org has a payout account. The processor's id is never sent to the browser. */
+  connected: boolean;
+  /** Whether the current payments terms are accepted (the account session is requested only after). */
+  terms_accepted: boolean;
   stripe_charges_enabled: boolean;
   stripe_payouts_enabled: boolean;
   stripe_details_submitted: boolean;
   stripe_requirements_due: string[];
   stripe_disabled_reason: string | null;
-  platform_fee_bps: number;
   collected_awaiting_payout: number; // §6.6 deferred-bank nudge $X (0 unless charges live + payouts pending)
 }
 
@@ -231,11 +245,42 @@ export function useStripeStatus() {
   });
 }
 
+/**
+ * Re-read the payments account status (the return from onboarding). The backend fails closed:
+ * any error on its side reports "can take cards" false. The fresh status replaces the cached one.
+ */
+export function useRefreshStripeStatus() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () =>
+      api.post('/api/organization/stripe/refresh-status').then((r) => r.data as StripeStatus),
+    // Cancel a status read already in flight first: it may have been read before the refresh
+    // wrote, and landing after this would put the stale flags back on screen.
+    onSuccess: async (status) => {
+      await qc.cancelQueries({ queryKey: ['organization', 'stripe-status'] });
+      qc.setQueryData(['organization', 'stripe-status'], status);
+      // The organization row carries the same "can take cards" flag (the accepted-methods
+      // row on Settings > Payments reads it there), so re-read it too. `exact` keeps this
+      // from re-fetching the status just stored above.
+      await qc.invalidateQueries({ queryKey: ['organization'], exact: true });
+    },
+  });
+}
+
+/** What customers see on their card statement (the account's descriptor, or the one the org name gives). */
+export function useStatementDescriptor(enabled = true) {
+  return useQuery<{ statement_descriptor: string | null }>({
+    queryKey: ['organization', 'statement-descriptor'],
+    queryFn: () => api.get('/api/organization/stripe/statement-descriptor').then((r) => r.data),
+    enabled,
+  });
+}
+
 export function useConnectStripe() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: () =>
-      api.post('/api/organization/stripe/connect').then((r) => r.data as { stripe_account_id: string }),
+      api.post('/api/organization/stripe/connect').then((r) => r.data as { connected: boolean }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['organization'] }),
     onError: (err) =>
       toast({
@@ -246,11 +291,14 @@ export function useConnectStripe() {
   });
 }
 
-export function useStripeAccountSession() {
+/** Which embedded surface a session is minted for. The server only enables that surface's components. */
+export type AccountSessionSurface = 'owner' | 'viewer';
+
+export function useStripeAccountSession(surface: AccountSessionSurface = 'owner') {
   // Returns { client_secret } OR throws with code PAYMENTS_TERMS_ACCEPTANCE_REQUIRED (403).
   return useMutation({
     mutationFn: () =>
-      api.post('/api/organization/stripe/account-session').then((r) => r.data as { client_secret: string }),
+      api.post('/api/organization/stripe/account-session', { surface }).then((r) => r.data as { client_secret: string }),
   });
 }
 

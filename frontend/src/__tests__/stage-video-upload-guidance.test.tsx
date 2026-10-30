@@ -219,7 +219,7 @@ describe('StageDetailDialog — video upload guidance', () => {
     fireEvent.change(videoInput(), { target: { files: [videoFile(150, 'huge.mp4')] } });
 
     expect(
-      await screen.findByText(/"huge\.mp4" is 150 MB — over the 100 MB limit/)
+      await screen.findByText(/"huge\.mp4" is 150MB — over the 100MB limit/)
     ).toBeInTheDocument();
     expect(screen.queryByText(LARGE_FILE_NUDGE)).not.toBeInTheDocument();
     await new Promise((r) => setTimeout(r, 0));

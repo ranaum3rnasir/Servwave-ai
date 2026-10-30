@@ -41,10 +41,11 @@ export type LocationInput = Omit<Location, 'id' | 'manager' | '_count' | 'is_act
 /** A location an office can still book a visit into. Absent `is_active` is a pre-slice-2 row. */
 export const isBookableLocation = (loc: Pick<Location, 'is_active'>): boolean => loc.is_active !== false;
 
-export function useLocations() {
+export function useLocations(enabled = true) {
   return useQuery<Location[]>({
     queryKey: ['locations'],
     queryFn: () => api.get('/api/locations').then((r) => r.data),
+    enabled,
   });
 }
 

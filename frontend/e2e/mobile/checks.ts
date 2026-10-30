@@ -79,6 +79,12 @@ export interface CheckResult {
    * when the caller asked for the exception.
    */
   exempt?: string[];
+  /**
+   * `vendorTerms` only: the gate's own test-inbox addresses the accepted exception `gateTestInbox` ignored
+   * (allowlist.json; vendor-terms.ts). Not offenders; the gate prints them as EXEMPT. Set by measure(), only
+   * when the caller asked for the exception.
+   */
+  gateTestInbox?: string[];
 }
 
 /**
@@ -87,7 +93,7 @@ export interface CheckResult {
  * Clear, Send and pagination. On touch projects they must be at least 44x44 px.
  *
  * `[data-touch-primary]` is the opt-in marker: a slice that adds a primary action the selectors
- * below cannot recognise (for example a detail page's Mark Complete) puts it on that control.
+ * below cannot recognise (for example a detail page's Complete job) puts it on that control.
  */
 export const PRIMARY_TOUCH_SELECTORS = [
   '[data-touch-primary]',
@@ -428,9 +434,12 @@ export async function overlaysCheck(): Promise<CheckResult> {
     if (r.left < -1 || r.top < -1 || r.right > vw + 1 || r.bottom > vh + 1) {
       offenders.push(`${sig(o)} outside the viewport: [${Math.round(r.left)},${Math.round(r.top)} .. ${Math.round(r.right)},${Math.round(r.bottom)}] in ${vw}x${vh}`);
     }
-    const scroller = [o, ...o.querySelectorAll('*')].find((e) => /(auto|scroll)/.test(getComputedStyle(e).overflowY) && e.scrollHeight > e.clientHeight + 1);
-    const before = scroller ? scroller.scrollTop : 0;
-    if (scroller) { scroller.scrollTop = scroller.scrollHeight; await frame(); }
+    // Every vertical scroller in the overlay goes to its end, as a person scrolls whichever list they are in (a facet
+    // list beside a value pane has two). Scrolling only the first one found called the other list's last item unreachable.
+    const scrollers = [o, ...o.querySelectorAll('*')].filter((e) => /(auto|scroll)/.test(getComputedStyle(e).overflowY) && e.scrollHeight > e.clientHeight + 1);
+    const before = scrollers.map((s) => s.scrollTop);
+    for (const s of scrollers) s.scrollTop = s.scrollHeight;
+    if (scrollers.length) await frame();
     const candidates = [...o.querySelectorAll(items)].filter((e) => {
       const b = e.getBoundingClientRect();
       const cs = getComputedStyle(e);
@@ -449,7 +458,7 @@ export async function overlaysCheck(): Promise<CheckResult> {
         offenders.push(`${sig(o)} last item "${lname}" not reachable${inView ? '' : ` (at ${Math.round(b.top)}..${Math.round(b.bottom)})`}${hit && !inView ? '' : hit && !(hit === last || last.contains(hit)) ? ` (covered by ${hit.tagName.toLowerCase()})` : ''}`);
       }
     }
-    if (scroller) scroller.scrollTop = before;
+    scrollers.forEach((s, i) => { s.scrollTop = before[i]; });
   }
   return { offenders, info: { openOverlays: overlays.map(sig) } };
 }

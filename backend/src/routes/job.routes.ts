@@ -1,15 +1,20 @@
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 import { authenticate } from '../middleware/authenticate';
 import { attachAbility } from '../middleware/attachAbility';
 import { attachCustomerScope } from '../lib/permissions/customerScope';
-import { canDo } from '../middleware/canGuard';
+import { canDo, canDoAny } from '../middleware/canGuard';
 import { validate } from '../middleware/validate';
 import { requireUuidParam } from '../middleware/requireUuidParam';
+import { refuseNewVisitOnClosedJob, refuseWhenJobLocked, type ReviewEdit } from '../lib/permissions/jobLock';
+import { refuseJobEditMoveOnClosedJob, refuseStatusDoorOnClosedJob, refuseVisitMoveOnClosedJob } from '../lib/permissions/jobStatusDoor';
 import { featureDisabled } from '../middleware/featureDisabled';
 import { expensiveLimiter } from '../middleware/rate-limit';
 import * as jobController from '../controllers/job.controller';
+import * as jobReviewController from '../controllers/job-review.controller';
 import * as jobCommunicationsController from '../controllers/job-communications.controller';
 import * as jobLinesController from '../controllers/job-lines.controller';
+import * as contactEntriesController from '../controllers/record-contact-entries.controller';
+import * as recordNotesController from '../controllers/record-notes.controller';
 import * as estimateController from '../controllers/estimate.controller';
 import * as tagController from '../controllers/tag.controller';
 
@@ -19,12 +24,18 @@ router.use(authenticate, attachAbility, attachCustomerScope);
 
 // Stats (before :id to avoid route conflict)
 router.get('/stats', canDo('read', 'Job'), jobController.getStats);
+// S06.31: the Jobs menu's office review queue count. Any signed-in person may ask; the answer names only the queues they hold.
+router.get('/review-queue', jobController.reviewQueue);
 
-// Filter-aware "export all" — gated `read` (no `export` action for Job); reuses list row-scope.
-router.get('/export', expensiveLimiter, canDo('read', 'Job'), jobController.exportAll);
+// Filter-aware "export all" — gated by the module's Export switch (`export Job`), not View; reuses list row-scope.
+router.get('/export', expensiveLimiter, canDo('export', 'Job'), jobController.exportAll);
 
 // CRUD
-router.get('/', canDo('read', 'Job'), jobController.list);
+// No `read` guard on the list: a person with View jobs off gets an empty list, not a 403. The list's
+// row scope (scopeWhereForReq) reaches nothing without the read grant, so it is the one thing that decides.
+router.get('/', jobController.list);
+// The new-job form's pre-filled Sold By and Dispatcher: the creator rule's answer for the person asking.
+router.get('/creator-prefill', canDo('create', 'Job'), jobController.getCreatorPrefill);
 router.post('/', canDo('create', 'Job'), validate(jobController.createJobSchema), jobController.create);
 // SRVW-104 - list-level bulk actions. bulk-status is route-gated `read Job` (coarse) because the
 // authoritative verb gate varies per request body and is applied in the controller; a fixed route
@@ -33,33 +44,56 @@ router.post('/', canDo('create', 'Job'), validate(jobController.createJobSchema)
 // single bulk-cancel is 500+ sequential queries plus 100 transactions in one HTTP request.
 router.post('/bulk-status', expensiveLimiter, canDo('read', 'Job'), validate(jobController.bulkStatusJobsSchema), jobController.bulkStatus);
 router.post('/bulk-assign', expensiveLimiter, canDo('assign', 'Job'), validate(jobController.bulkAssignJobsSchema), jobController.bulkAssign);
+// #891 - the invoices carrying money that a bulk cancel will keep, for the bulk dialog to list
+// before the user confirms. Gated like the cancel itself; before /:id to avoid the route clash.
+router.get('/cancel-preview', canDo('cancel', 'Job'), jobController.cancelPreview);
 router.get('/:id', canDo('read', 'Job'), jobController.getById);
-router.patch('/:id', canDo('update', 'Job'), validate(jobController.updateJobSchema), jobController.update);
-router.delete('/:id', canDo('delete', 'Job'), jobController.remove);
+// S06.8: the office review panel's content (job summary and change list); the Office review switch decides.
+router.get('/:id/review', canDo('office_review', 'Job'), requireUuidParam('id', 'Job not found'), jobReviewController.getReview);
+// S06.10: the review's item checks, and Mark all checked. The review's own writes, so the job lock is not asked.
+router.post('/:id/review/checks', canDo('office_review', 'Job'), requireUuidParam('id', 'Job not found'), validate(jobReviewController.checkItemSchema), jobReviewController.checkItem);
+router.post('/:id/review/checks/all', canDo('office_review', 'Job'), requireUuidParam('id', 'Job not found'), validate(jobReviewController.checkAllSchema), jobReviewController.checkAll);
+// S06.11: a decision on a customer item of the review. Office review only (never Edit customers); recorded now, applied when the review is finished.
+router.post('/:id/review/decisions', canDo('office_review', 'Job'), requireUuidParam('id', 'Job not found'), validate(jobReviewController.decisionSchema), jobReviewController.decideCustomerItem);
+// S06.12: Finish review (Office review to Ready to close, applying the decisions). Office review only; Close jobs and Edit customers play no part.
+router.post('/:id/review/finish', canDo('office_review', 'Job'), requireUuidParam('id', 'Job not found'), validate(jobReviewController.finishSchema), jobReviewController.finish);
+// The office review may still change the job's discount while the job is in Office review (S06.9), and nothing else on this
+// route: a body that carries any other field is an edit of the job's details and stays locked.
+const DISCOUNT_FIELDS = ['discount_type', 'discount_value'];
+const reviewEditOfJobPatch = (req: Request): ReviewEdit | undefined => {
+  const keys = Object.keys((req.body ?? {}) as Record<string, unknown>);
+  return keys.length > 0 && keys.every((k) => DISCOUNT_FIELDS.includes(k)) ? 'discount' : undefined;
+};
+router.patch('/:id', canDo('update', 'Job'), refuseJobEditMoveOnClosedJob(), refuseWhenJobLocked(reviewEditOfJobPatch), validate(jobController.updateJobSchema), jobController.update);
+router.delete('/:id', canDo('delete', 'Job'), refuseWhenJobLocked(), jobController.remove);
 
 // Editable record IDs (plan decision #7) - preview is read-only (no lock); rename is the real
 // write, gated identically. Both route-gated `renumber Job` (DISPATCHER by default, ADMIN via
 // manage-all); the controller adds the per-instance canActOnRow check on top.
 router.post('/:id/number/preview', canDo('renumber', 'Job'), validate(jobController.jobNumberSchema), jobController.previewNumber);
-router.patch('/:id/number', canDo('renumber', 'Job'), validate(jobController.jobNumberSchema), jobController.renumber);
+router.patch('/:id/number', canDo('renumber', 'Job'), refuseWhenJobLocked(), validate(jobController.jobNumberSchema), jobController.renumber);
 
 // Status actions
-router.post('/:id/assign', canDo('assign', 'Job'), validate(jobController.assignJobSchema), jobController.assign);
+router.post('/:id/assign', canDo('assign', 'Job'), refuseStatusDoorOnClosedJob({ door: 'schedule', onlyWhenWindowMoves: true }), refuseWhenJobLocked(), validate(jobController.assignJobSchema), jobController.assign);
 // Crew-only REPLACE (no schedule/status side effects)
-router.post('/:id/assignees', canDo('assign', 'Job'), validate(jobController.setAssigneesSchema), jobController.setAssignees);
+router.post('/:id/assignees', canDo('assign', 'Job'), refuseWhenJobLocked(), validate(jobController.setAssigneesSchema), jobController.setAssignees);
 // Dispatcher set/clear (#291 — JCC Team card); same 'assign' Job gate as the crew routes.
-router.post('/:id/dispatcher', canDo('assign', 'Job'), validate(jobController.setDispatcherSchema), jobController.setDispatcher);
+router.post('/:id/dispatcher', canDo('assign', 'Job'), refuseWhenJobLocked(), validate(jobController.setDispatcherSchema), jobController.setDispatcher);
+// Sold By set/change/clear (S03.11 - JCC Team card); the same 'assign' Job gate as the Dispatcher.
+router.post('/:id/sold-by', canDo('assign', 'Job'), refuseWhenJobLocked(), validate(jobController.setSoldBySchema), jobController.setSoldBy);
 // SRVW-112 - set/clear the org-defined sub-status. Gated `update Job`, matching the
 // POST /:id/notes precedent below; the controller adds the per-instance canAccessRow check.
-router.post('/:id/sub-status', canDo('update', 'Job'), validate(jobController.setSubStatusSchema), jobController.setSubStatus);
+router.post('/:id/sub-status', canDo('update', 'Job'), refuseWhenJobLocked(), validate(jobController.setSubStatusSchema), jobController.setSubStatus);
 // S7: validated now that the body carries the D23 notify object. The schema is all-optional, so
 // the bodyless callers this route has always had are unaffected - but a malformed recipient or
 // an over-long message is rejected here rather than at the provider.
-router.post('/:id/unassign', canDo('unassign', 'Job'), validate(jobController.unassignJobSchema), jobController.unassign);
-router.post('/:id/en-route', canDo('en_route', 'Job'), jobController.enRoute);
-router.post('/:id/arrive', canDo('arrive', 'Job'), jobController.arrive);
-router.post('/:id/start', canDo('start', 'Job'), jobController.start);
+router.post('/:id/unassign', canDo('unassign', 'Job'), refuseStatusDoorOnClosedJob({ door: 'unschedule' }), refuseWhenJobLocked(), validate(jobController.unassignJobSchema), jobController.unassign);
+router.post('/:id/en-route', canDo('en_route', 'Job'), refuseWhenJobLocked(), jobController.enRoute);
+router.post('/:id/arrive', canDo('arrive', 'Job'), refuseStatusDoorOnClosedJob({ door: 'arrive' }), refuseWhenJobLocked(), jobController.arrive);
+router.post('/:id/start', canDo('start', 'Job'), refuseStatusDoorOnClosedJob({ door: 'start' }), refuseWhenJobLocked(), jobController.start);
 router.post('/:id/complete', canDo('complete', 'Job'), validate(jobController.completeJobSchema), jobController.complete);
+// S06.13: Mark Done (Ready to close to Done). Close jobs is the route's switch; money owed also needs Close jobs with money owed, which the move itself asks.
+router.post('/:id/mark-done', canDo('close', 'Job'), requireUuidParam('id', 'Job not found'), validate(jobController.markDoneSchema), jobController.markDone);
 router.post('/:id/cancel', canDo('cancel', 'Job'), validate(jobController.cancelJobSchema), jobController.cancel);
 router.post('/:id/reopen', canDo('reopen', 'Job'), jobController.reopen);
 // SRVW-87 - one door for "set this job's status", dispatching into the verb handlers above.
@@ -68,7 +102,7 @@ router.post('/:id/reopen', canDo('reopen', 'Job'), jobController.reopen);
 // would falsely 403 a holder of a verb without update. The REAL authorization is the per-verb
 // can() inside setStatus, so this is not a way around the sibling routes' guards.
 router.post('/:id/status', canDo('read', 'Job'), validate(jobController.setStatusSchema), jobController.setStatus);
-router.post('/:id/duplicate', canDo('create', 'Job'), jobController.duplicate);
+router.post('/:id/duplicate', canDo('duplicate', 'Job'), jobController.duplicate);
 
 // Visits (multi-visit S2) - the nested collection, alongside the status actions above.
 // Gated `reschedule Job` (DISPATCHER-only by default), matching what PATCH /:id already enforces
@@ -76,28 +110,28 @@ router.post('/:id/duplicate', canDo('create', 'Job'), jobController.duplicate);
 // every technician. Note the deliberate asymmetry with POST /:id/assign, which first-books under
 // `assign Job` - stricter is the safe direction and /assign is untouched by S2.
 router.get('/:id/visits', canDo('read', 'Job'), jobController.listVisits);
-router.post('/:id/visits', canDo('reschedule', 'Job'), validate(jobController.createJobVisitSchema), jobController.createVisit);
-router.patch('/:id/visits/:visitId', canDo('reschedule', 'Job'), validate(jobController.rescheduleJobVisitSchema), jobController.rescheduleVisit);
+router.post('/:id/visits', canDo('reschedule', 'Job'), refuseNewVisitOnClosedJob(), validate(jobController.createJobVisitSchema), jobController.createVisit);
+router.patch('/:id/visits/:visitId', canDo('reschedule', 'Job'), refuseVisitMoveOnClosedJob(), refuseWhenJobLocked(), validate(jobController.rescheduleJobVisitSchema), jobController.rescheduleVisit);
 // Crew-only REPLACE on ONE trip (visits-and-task-categories slice 02) - the per-visit twin of
 // POST /:id/assignees, served by the same handler. Gated `assign Job` like that door, NOT
 // `reschedule Job` like its siblings here: naming crew is an `assign` fact, and routing the board's
 // crew swap through PATCH above would have refused every `assign`-only holder (a technician on a
 // job they created, a salesperson on one from their estimate) who can re-crew through /assignees
 // today - and would have sent the customer a "rescheduled" notice for a trip that did not move.
-router.post('/:id/visits/:visitId/assignees', canDo('assign', 'Job'), requireUuidParam('visitId', 'Visit not found'), validate(jobController.setAssigneesSchema), jobController.setAssignees);
+router.post('/:id/visits/:visitId/assignees', canDo('assign', 'Job'), requireUuidParam('visitId', 'Visit not found'), refuseWhenJobLocked(), validate(jobController.setAssigneesSchema), jobController.setAssignees);
 
 // Visit lifecycle (multi-visit S4, D7/D7a). Gated the same subject-level `start Job` the job-level
 // /:id/start route uses - technicians hold it by default and keep it under D15 - with the finer
 // "is this principal crew on THIS visit" check inside the handler, because canDo is subject-level
 // and the stored OWN_JOB row scope, though it now points at the visits path (S8), is a JOB-level
 // question - "are you on any of this job's trips" - not the per-visit one these four routes ask.
-router.post('/:id/visits/:visitId/start', canDo('start', 'Job'), jobController.startVisit);
-router.post('/:id/visits/:visitId/en-route', canDo('en_route', 'Job'), jobController.enRouteVisit);
-router.post('/:id/visits/:visitId/arrive', canDo('arrive', 'Job'), jobController.arriveVisit);
-router.post('/:id/visits/:visitId/complete', canDo('start', 'Job'), jobController.completeVisit);
+router.post('/:id/visits/:visitId/start', canDo('start', 'Job'), refuseWhenJobLocked(), jobController.startVisit);
+router.post('/:id/visits/:visitId/en-route', canDo('en_route', 'Job'), refuseWhenJobLocked(), jobController.enRouteVisit);
+router.post('/:id/visits/:visitId/arrive', canDo('arrive', 'Job'), refuseWhenJobLocked(), jobController.arriveVisit);
+router.post('/:id/visits/:visitId/complete', canDo('start', 'Job'), refuseWhenJobLocked(), jobController.completeVisit);
 // Cancelling a booking is dispatch work, so this one rides `reschedule Job` like its sibling
 // visits routes rather than the crew gate the three milestone verbs use.
-router.post('/:id/visits/:visitId/cancel', canDo('reschedule', 'Job'), validate(jobController.cancelVisitSchema), jobController.cancelVisit);
+router.post('/:id/visits/:visitId/cancel', canDo('reschedule', 'Job'), refuseWhenJobLocked(), validate(jobController.cancelVisitSchema), jobController.cancelVisit);
 
 // Charges — REMOVED (entity-redesign §5 / Phase D). The invoice owns its lines (InvoiceLineItem);
 // the JobCharge model is dropped. No /:id/charges routes remain.
@@ -113,7 +147,7 @@ router.post('/:id/visits/:visitId/cancel', canDo('reschedule', 'Job'), validate(
 // principal holding `update Job` was granted `manage_lines Job` under the same condition
 // (defaultGrants.ts for new orgs, 20260805130000_job_manage_lines_grant_backfill for existing).
 router.get('/:id/line-items', canDo('read', 'Job'), jobLinesController.list);
-router.post('/:id/line-items', canDo('manage_lines', 'Job'), validate(jobLinesController.addLineSchema), jobLinesController.addLine);
+router.post('/:id/line-items', canDo('manage_lines', 'Job'), refuseWhenJobLocked('lines'), validate(jobLinesController.addLineSchema), jobLinesController.addLine);
 // Sync-with-inventory (Inventory P1 §3.2 / D1): PARKED (LO-4). Logistic Orders now own all stock
 // deduction, so these routes answer 404 FEATURE_DISABLED. The handlers stay dormant in the
 // controller (bulkSyncStock/syncStockLine) so un-parking is a one-line revert. Auth still runs
@@ -124,9 +158,9 @@ router.post('/:id/line-items/:lineId/sync-stock', featureDisabled('line_stock_sy
 // MUST come BEFORE the ":lineId" PATCH route below — Express matches routes in registration
 // order, and ":lineId" is just a param placeholder that would otherwise capture the literal
 // path segment "reorder" (routing to updateLine with lineId="reorder" instead of reorderLines).
-router.patch('/:id/line-items/reorder', canDo('manage_lines', 'Job'), validate(jobLinesController.reorderSchema), jobLinesController.reorderLines);
-router.patch('/:id/line-items/:lineId', canDo('manage_lines', 'Job'), validate(jobLinesController.updateLineSchema), jobLinesController.updateLine);
-router.delete('/:id/line-items/:lineId', canDo('manage_lines', 'Job'), jobLinesController.deleteLine);
+router.patch('/:id/line-items/reorder', canDo('manage_lines', 'Job'), refuseWhenJobLocked('lines'), validate(jobLinesController.reorderSchema), jobLinesController.reorderLines);
+router.patch('/:id/line-items/:lineId', canDo('manage_lines', 'Job'), refuseWhenJobLocked('lines'), validate(jobLinesController.updateLineSchema), jobLinesController.updateLine);
+router.delete('/:id/line-items/:lineId', canDo('manage_lines', 'Job'), refuseWhenJobLocked('lines'), jobLinesController.deleteLine);
 
 // Scopes of work (Stage 5/6 — flat-priced, non-line-item blocks stored on Job.scopes,
 // scopes.ts). jobDetailSelect doesn't embed them either (same reason line-items gets its own
@@ -139,12 +173,12 @@ router.delete('/:id/line-items/:lineId', canDo('manage_lines', 'Job'), jobLinesC
 // no such asymmetric role, so all four job-scope writes take the same gate - a scope's flat_price
 // is money whichever verb writes it.
 router.get('/:id/scopes', canDo('read', 'Job'), jobLinesController.listScopes);
-router.post('/:id/scopes', canDo('manage_lines', 'Job'), validate(jobLinesController.addScopeSchema), jobLinesController.addScope);
+router.post('/:id/scopes', canDo('manage_lines', 'Job'), refuseWhenJobLocked('lines'), validate(jobLinesController.addScopeSchema), jobLinesController.addScope);
 // MUST come BEFORE the ":idx" PATCH route below — same Express route-order gotcha as
 // line-items/reorder above (":idx" would otherwise capture the literal path segment "reorder").
-router.patch('/:id/scopes/reorder', canDo('manage_lines', 'Job'), validate(jobLinesController.reorderScopeSchema), jobLinesController.reorderScopes);
-router.patch('/:id/scopes/:idx', canDo('manage_lines', 'Job'), validate(jobLinesController.updateScopeSchema), jobLinesController.updateScope);
-router.delete('/:id/scopes/:idx', canDo('manage_lines', 'Job'), jobLinesController.deleteScope);
+router.patch('/:id/scopes/reorder', canDo('manage_lines', 'Job'), refuseWhenJobLocked('lines'), validate(jobLinesController.reorderScopeSchema), jobLinesController.reorderScopes);
+router.patch('/:id/scopes/:idx', canDo('manage_lines', 'Job'), refuseWhenJobLocked('lines'), validate(jobLinesController.updateScopeSchema), jobLinesController.updateScope);
+router.delete('/:id/scopes/:idx', canDo('manage_lines', 'Job'), refuseWhenJobLocked('lines'), jobLinesController.deleteScope);
 
 // Explicit "Create Invoice" from a job's owned items (SERV10X-38 Task 5) — flat draw or
 // itemized, multiple invoices per job allowed and over-billing allowed (Spec B1 removed both
@@ -161,9 +195,26 @@ router.post('/:id/invoices', canDo('create', 'Invoice'), validate(jobController.
 // enforced inside the controller, mirroring estimate.controller.create()'s job-anchor branch.
 router.post('/:id/estimates', canDo('create', 'Estimate'), validate(estimateController.createFromJobItemsSchema), estimateController.createFromJobItems);
 
+// A job's own phone or email, added with the pencil (PRD 5, S05.7). Either Edit job and lead contact details or Edit jobs lets
+// a person in; the handler then asks whether the job opens for them. The customer record is never written.
+router.post('/:id/contact-entries', canDoAny([['edit_contact_details', 'Job'], ['update', 'Job']]), requireUuidParam('id', 'Job not found'), refuseWhenJobLocked('contact_details'), validate(contactEntriesController.addContactEntrySchema), contactEntriesController.jobEntries.addEntry);
+// Replacing one of the customer's phones or emails for this job only (S05.8): the same gate as adding.
+router.post('/:id/contact-entries/change', canDoAny([['edit_contact_details', 'Job'], ['update', 'Job']]), requireUuidParam('id', 'Job not found'), refuseWhenJobLocked('contact_details'), validate(contactEntriesController.changeContactEntrySchema), contactEntriesController.jobEntries.changeEntry);
+// Changing the customer's first name, last name or company name for this job only (S05.10): Edit jobs alone. Edit job and lead
+// contact details covers phones and emails, not names.
+router.post('/:id/contact-entries/name', canDo('update', 'Job'), requireUuidParam('id', 'Job not found'), refuseWhenJobLocked('customer_name'), validate(contactEntriesController.changeNameSchema), contactEntriesController.jobEntries.changeName);
+// Correcting or removing an entry (S05.9): the same two switches, whoever added the entry. The handler asks the entry's kind
+// too, since a name entry needs Edit jobs.
+router.patch('/:id/contact-entries/:entryId', canDoAny([['edit_contact_details', 'Job'], ['update', 'Job']]), requireUuidParam('id', 'Job not found'), requireUuidParam('entryId', 'Contact detail not found'), refuseWhenJobLocked('contact_details'), validate(contactEntriesController.correctContactEntrySchema), contactEntriesController.jobEntries.correctEntry);
+router.delete('/:id/contact-entries/:entryId', canDoAny([['edit_contact_details', 'Job'], ['update', 'Job']]), requireUuidParam('id', 'Job not found'), requireUuidParam('entryId', 'Contact detail not found'), refuseWhenJobLocked('contact_details'), contactEntriesController.jobEntries.removeEntry);
+
 // Notes
 router.get('/:id/notes', canDo('read', 'Job'), jobController.getNotes);
-router.post('/:id/notes', canDo('update', 'Job'), validate(jobController.noteSchema), jobController.addNote);
+// Adding a note checks Add notes, not Edit jobs (S01.11); the controller adds the per-instance canAccessRow check.
+router.post('/:id/notes', canDo('add_note', 'Job'), validate(jobController.noteSchema), jobController.addNote);
+// Deleting a note (S04.25): the author's own, or anyone's with Delete other people's notes. No switch is asked here; the
+// controller asks the completed-job lock and whose note it is, once it has the note.
+router.delete('/:id/notes/:noteId', canDo('read', 'Job'), requireUuidParam('id', 'Job not found'), requireUuidParam('noteId', 'Note not found'), recordNotesController.deleteJobNote);
 
 // Job-level walkthrough route REMOVED (scheduler redesign §5.8) — walkthroughs live on the lead.
 
@@ -183,7 +234,7 @@ router.get('/:id/communications', canDo('read', 'Communication'), jobCommunicati
 // canDo so a caller without the grant still gets 403 rather than learning whether the
 // id was well-formed, and they return the SAME 404 text the handler gives for a row
 // that genuinely is not there.
-router.post('/:id/tags', canDo('update', 'Job'), requireUuidParam('id', 'job not found'), validate(tagController.addTagToEntitySchema), tagController.addTagToJob);
-router.delete('/:id/tags/:tagId', canDo('update', 'Job'), requireUuidParam('id', 'job not found'), requireUuidParam('tagId', 'Tag not attached to this job'), tagController.removeTagFromJob);
+router.post('/:id/tags', canDo('update', 'Job'), requireUuidParam('id', 'job not found'), refuseWhenJobLocked(), validate(tagController.addTagToEntitySchema), tagController.addTagToJob);
+router.delete('/:id/tags/:tagId', canDo('update', 'Job'), requireUuidParam('id', 'job not found'), requireUuidParam('tagId', 'Tag not attached to this job'), refuseWhenJobLocked(), tagController.removeTagFromJob);
 
 export default router;

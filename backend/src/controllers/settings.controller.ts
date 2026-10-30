@@ -8,10 +8,31 @@ export const updateSettingSchema = z.object({
   value: z.string().min(1, 'Value is required'),
 });
 
+/**
+ * Payments go-live slice 19 - bank-transfer instructions live on the organization row (saved with
+ * the payment settings, read by both public pages). The old per-org settings row of the same key is
+ * no longer read, so this route reads the org column and refuses writes: one copy, never two.
+ */
+const BANK_TRANSFER_INSTRUCTIONS_KEY = 'bank_transfer_instructions';
+
 export async function getByKey(req: Request, res: Response) {
   try {
     const key = req.params.key as string;
     const orgId = req.user!.organization_id;
+
+    if (key === BANK_TRANSFER_INSTRUCTIONS_KEY) {
+      const org = await prisma.organization.findUnique({
+        where: { id: orgId },
+        select: { bank_transfer_instructions: true },
+      });
+      if (!org?.bank_transfer_instructions) {
+        res.status(404).json({ error: 'Setting not found' });
+        return;
+      }
+      res.json({ data: { key, value: org.bank_transfer_instructions } });
+      return;
+    }
+
     const setting = await prisma.appSetting.findUnique({
       where: { organization_id_key: { organization_id: orgId, key } },
     });
@@ -33,6 +54,11 @@ export async function updateByKey(req: Request, res: Response) {
     const key = req.params.key as string;
     const value = req.body.value as string;
     const orgId = req.user!.organization_id;
+
+    if (key === BANK_TRANSFER_INSTRUCTIONS_KEY) {
+      res.status(400).json({ error: 'Bank-transfer instructions are saved with the payment settings' });
+      return;
+    }
 
     if (key === 'deposit_percentage') {
       const n = Number(value);

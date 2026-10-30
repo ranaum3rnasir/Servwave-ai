@@ -6,7 +6,8 @@ import { format } from 'date-fns';
 import { CalendarX2, CheckCircle2 } from 'lucide-react';
 
 import { MultiAssigneeSelect } from '@/components/crm/MultiAssigneeSelect';
-import { ContactCallButton, ContactTextButton } from '@/components/contact/ContactAction';
+import { PhoneContactActions } from '@/components/contact/PhoneContactActions';
+import type { PhoneKind } from '@/components/contact/contactDisplayPolicy';
 import type { DialerEntityContext } from '@/stores/dialer.store';
 import { FLOATING_LAYER_SELECTOR, useListOpenAtPointerDown } from '@/ui-kit/hooks/useListClosesFirst';
 import type { KnownPerson } from '@/components/crm/knownPeople';
@@ -37,6 +38,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/ui-kit/components/ui/select';
 import { cn } from '@/ui-kit/lib/utils';
+import { cardCanMissCrew } from '@/lib/missingCrew';
 
 import { jobAddress, walkthroughAddress } from '../creation/entityAddress';
 import { ScheduleTimeFields } from '../../_shared/scheduleTimeFields';
@@ -64,18 +66,21 @@ export function detailUrlOf(event: SchedulableEvent): string {
 /**
  * Inline call / text affordances; renders nothing when there is no phone.
  *
- * These are the shared contact action's explicit Call and Text buttons (mobile slice 50), so they
- * skip the Call-or-Text choice a tapped number offers. With the ServWave phone service Call opens
- * the dialer pre-filled and attributed and Text opens the conversation; without it they are the
- * device's own call and text links. Each is 44 px on touch (the kit's icon-sm button), where the
- * old pair was a 24 px square. They still match `INTERACTIVE_SELECTOR` below (`button`, `a`), so the
- * whole-popup click guard keeps treating them as controls rather than as dead space that navigates.
+ * Drawn through the contact display policy (Roles & Permissions, PRD 5): the person's switches and the
+ * company's phone service decide whether Call opens the ServWave dialer pre-filled and attributed to the
+ * record, whether Text opens the ServWave conversation, whether the device's own links are used, and whether
+ * the number is shown as digits alone. A crew phone is not customer data, so it never follows the copy
+ * switches. Each button is 44 px on touch (the kit's icon-sm button) and still matches `INTERACTIVE_SELECTOR`
+ * below (`button`, `a`), so the whole-popup click guard keeps treating them as controls rather than as dead
+ * space that navigates.
  */
 function ContactLinks({
+  kind,
   phone,
   label,
   context,
 }: {
+  kind: PhoneKind;
   phone?: string | null;
   label: string;
   /** The record the number belongs to, so a call from here is attributed to it. */
@@ -83,9 +88,8 @@ function ContactLinks({
 }) {
   if (!phone?.trim()) return null;
   return (
-    <span className="inline-flex shrink-0 items-center gap-1.5">
-      <ContactCallButton phone={phone} name={label} context={context} />
-      <ContactTextButton phone={phone} name={label} context={context} />
+    <span data-phone-contact className="inline-flex shrink-0 items-center gap-1.5">
+      <PhoneContactActions kind={kind} phone={phone} name={label} context={context} />
     </span>
   );
 }
@@ -118,6 +122,11 @@ function crewContactRowsOf(event: SchedulableEvent, members: AssignableUser[]) {
 const INTERACTIVE_SELECTOR =
   'button, a, input, select, textarea, label, [role="combobox"], [role="listbox"]';
 
+// A phone drawn as plain digits (no action left for the policy to offer) is text to select and copy by
+// hand, so a click on it, or on any spot of a selection being made, is never a click on dead space.
+const PHONE_CONTACT_SELECTOR = '[data-phone-contact]';
+const hasTextSelection = () => (window.getSelection()?.toString() ?? '') !== '';
+
 // A click inside a floating list (its search row, padding, "No results" line) bubbles here through
 // React even though the list is portalled to <body>, and it is a click on the list, never on the
 // popup. The selector and the open check are shared with the overlay primitives' own
@@ -131,6 +140,18 @@ export interface EventEditorProps {
   /** Role-gating consumes this: crew as text, no save buttons, no unschedule. */
   readOnly?: boolean;
   /**
+   * The Crew field is editable (default true). ORTHOGONAL to `readOnly`: a viewer may change a card's time
+   * without holding the switch that changes its crew, and the server refuses a crew change they cannot make,
+   * so the field reads as plain text for them instead of offering a Save crew that answers 403.
+   */
+  canEditCrew?: boolean;
+  /**
+   * The Schedule fields and Move to Unscheduled are editable (default true). ORTHOGONAL to `readOnly`, for the
+   * same reason as `canEditCrew`: a viewer who may change a card's crew but not its time sees the time as text
+   * and no Save time or Move to Unscheduled.
+   */
+  canEditTime?: boolean;
+  /**
    * `assign User` - whether this viewer may put somebody OTHER than themselves on the crew.
    *
    * REQUIRED, and passed in rather than read off the ability here, for the same reason
@@ -139,9 +160,9 @@ export interface EventEditorProps {
    * different answer from the one the rest of the page acted on. No default - a call site that
    * does not think about it fails to compile rather than shipping an unlocked field.
    *
-   * ORTHOGONAL to `readOnly`, which is the ROLE gate (`boardCapabilitiesFor`): a SALES rep gets
-   * `readOnly: false`, so before this prop existed the editable branch below rendered for
-   * exactly the viewer this gate is about. `readOnly` short-circuits first and is untouched by
+   * ORTHOGONAL to `readOnly`, which is the SWITCH gate (`boardCapabilitiesFor`): a rep with only
+   * Book walkthroughs gets `readOnly: false` on a walkthrough, so before this prop existed the
+   * editable branch below rendered for exactly the viewer this gate is about. `readOnly` short-circuits first and is untouched by
    * this - a read-only viewer sees crew as plain text and no controls at all.
    */
   canAssignOthers: boolean;
@@ -162,7 +183,7 @@ export interface EventEditorProps {
   canUnschedule: boolean;
   /** Why, when canUnschedule=false (timed events only). */
   unscheduleDisabledReason?: string;
-  /** Job in an active status + caller may manage it - enables "Mark Complete". */
+  /** Job in an active status + caller holds Complete jobs - enables "Complete job". */
   canComplete?: boolean;
   onSaveCrew: (crew: string[]) => void;
   onSaveTime: (start: WallClock, durationMin: number, allDay: boolean) => void;
@@ -189,6 +210,8 @@ export function EventEditor({
   event,
   members,
   readOnly = false,
+  canEditCrew = true,
+  canEditTime = true,
   canAssignOthers,
   actorKnownPeople,
   canUnschedule,
@@ -224,6 +247,7 @@ export function EventEditor({
         onClick={(e) => {
           const target = e.target as HTMLElement;
           if (target.closest(INTERACTIVE_SELECTOR) || target.closest(FLOATING_LAYER_SELECTOR)) return;
+          if (target.closest(PHONE_CONTACT_SELECTOR) || hasTextSelection()) return;
           if (listAtPointerDown.wasOpen.current) return;
           guard.requestDismiss('navigation', () => navigate(detailUrlOf(event)));
         }}
@@ -235,6 +259,8 @@ export function EventEditor({
           event={event}
           members={members}
           readOnly={readOnly}
+          canEditCrew={canEditCrew}
+          canEditTime={canEditTime}
           canAssignOthers={canAssignOthers}
           actorKnownPeople={actorKnownPeople}
           canUnschedule={canUnschedule}
@@ -257,6 +283,8 @@ function EditorBody({
   event,
   members,
   readOnly,
+  canEditCrew = true,
+  canEditTime = true,
   canAssignOthers,
   actorKnownPeople = [],
   canUnschedule,
@@ -321,7 +349,9 @@ function EditorBody({
       draftTime.endTime !== originalTime.endTime);
 
   // Report unsaved edits up to the dialog's guard; a read-only viewer has none to lose.
-  const hasUnsavedEdits = !readOnly && (crewDirty || timeDirty);
+  const crewLocked = readOnly || !canEditCrew;
+  const timeLocked = readOnly || !canEditTime;
+  const hasUnsavedEdits = (!crewLocked && crewDirty) || (!timeLocked && timeDirty);
   useEffect(() => {
     onDirtyChange(hasUnsavedEdits);
     return () => onDirtyChange(false);
@@ -330,7 +360,7 @@ function EditorBody({
   const detailUrl = detailUrlOf(event);
   // SAVED crew, not the draft: the flag reports what the board is about to run with, so
   // it must not clear the moment someone picks a name they have not saved yet.
-  const needsCrew = event.crew.length === 0;
+  const needsCrew = event.crew.length === 0 && cardCanMissCrew(event);
   // The JOB's own service location, or the LEAD's - never resolved through the customer
   // record. A customer can have several sites, so the customer's address answers a
   // different question than "where is this one going". Blank when the record has none;
@@ -339,10 +369,10 @@ function EditorBody({
   const customerRaw = event.raw.customer as { id?: string | null; phone?: string | null } | undefined;
   const customerPhone = customerRaw?.phone;
   // What a call from the header is attributed to: the visit's job or walkthrough lead, and the customer.
+  const recordContext: DialerEntityContext =
+    event.type === 'walkthrough' ? { leadId: event.raw.id as string } : { jobId: event.parentId };
   const customerContext: DialerEntityContext = {
-    ...(event.type === 'walkthrough'
-      ? { leadId: event.raw.id as string }
-      : { jobId: event.parentId }),
+    ...recordContext,
     ...(customerRaw?.id ? { customerId: customerRaw.id } : {}),
     customerName: event.customer,
   };
@@ -396,7 +426,7 @@ function EditorBody({
               row appears only when it would hold something. */}
           {(customerPhone?.trim() || needsCrew) && (
             <div className="mt-1.5 flex items-center gap-2">
-              <ContactLinks phone={customerPhone} label={event.customer} context={customerContext} />
+              <ContactLinks kind="customer_phone" phone={customerPhone} label={event.customer} context={customerContext} />
               {needsCrew && (
                 <span className="bg-status-red-subtle text-status-red-emphasis rounded-full px-2 py-1 text-[10px] font-bold uppercase tracking-wide">
                   Needs crew
@@ -424,7 +454,7 @@ function EditorBody({
         {/* Crew - THE per-person edit path. Explicit save; drags never do this. */}
         <div className="flex flex-col gap-1.5">
           <Label>Crew</Label>
-          {readOnly ? (
+          {crewLocked ? (
             crewRows.length === 0 ? (
               <EmptyState title="No crew" />
             ) : (
@@ -432,7 +462,7 @@ function EditorBody({
                 {crewRows.map((r) => (
                   <p key={r.id} className="flex items-center gap-2 text-[13px] text-muted-foreground">
                     {r.name}
-                    <ContactLinks phone={r.phone} label={r.name} />
+                    <ContactLinks kind="crew_phone" phone={r.phone} label={r.name} context={recordContext} />
                   </p>
                 ))}
               </div>
@@ -519,7 +549,7 @@ function EditorBody({
                   {crewRows.filter((r) => r.phone).map((r) => (
                     <p key={r.id} className="flex items-center gap-2 text-xs text-muted-foreground">
                       {r.name}
-                      <ContactLinks phone={r.phone} label={r.name} />
+                      <ContactLinks kind="crew_phone" phone={r.phone} label={r.name} context={recordContext} />
                     </p>
                   ))}
                 </div>
@@ -532,7 +562,7 @@ function EditorBody({
         {event.start && draftTime ? (
           <div className="flex flex-col gap-1.5">
             <Label>Schedule</Label>
-            {readOnly ? (
+            {timeLocked ? (
               <p className="text-[13px] text-muted-foreground">
                 {format(event.start, 'EEE, MMM d · h:mm a')}
                 {event.end ? ` ${EN} ${format(event.end, 'h:mm a')}` : ''}
@@ -561,12 +591,14 @@ function EditorBody({
           <p className="text-[13px] italic text-muted-foreground">Unscheduled {EM} {stateMeta.hint}</p>
         )}
 
-        {/* Mark Complete - close out an active job directly from the board (jobs only). */}
-        {event.type === 'job' && canComplete && !readOnly && onComplete && (
+        {/* Complete job - close out an active job directly from the board (jobs only). It follows the
+            Complete jobs switch alone (the page's `canComplete`), not the board's read-only state: a
+            viewer who may complete a job but not move one still gets the button. */}
+        {event.type === 'job' && canComplete && onComplete && (
           <>
             <Separator />
             <Button size="sm" className="w-full" onClick={onComplete}>
-              <CheckCircle2 /> Mark Complete
+              <CheckCircle2 /> Complete job
             </Button>
           </>
         )}
@@ -576,7 +608,7 @@ function EditorBody({
         {/* Footer: unschedule (timed only - clears TIME, keeps crew) + detail nav */}
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            {event.start && !readOnly && (
+            {event.start && !timeLocked && (
               <>
                 <Button
                   size="sm"

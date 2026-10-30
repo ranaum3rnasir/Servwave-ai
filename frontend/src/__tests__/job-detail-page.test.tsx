@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
+import { renderWithProviders, ALL_JOB_ACTIONS } from './helpers';
 import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
 import { buildAbility } from '@/lib/ability';
 
@@ -77,6 +77,7 @@ const BASE_JOB = {
   linked_estimates: [] as Array<{ id: string; estimate_number: string; total_amount: number | string; status: string }>,
   tags: [] as Array<{ id: string; name: string; color: string }>,
   source_plan_id: null,
+  actions: ALL_JOB_ACTIONS,
   source_plan: null,
 };
 
@@ -311,46 +312,42 @@ describe('JobDetailPage — Items tab: Scope of Work + Internal Costs (Batch 3)'
     expect(mockApi.get).toHaveBeenCalledWith(`/api/jobs/${BASE_JOB.id}/scopes`);
   });
 
-  // ── creation confers control, wired end to end (technician-ownership spec, Part C) ──────────
+  // ── the server's list decides, wired end to end (Roles & Permissions S04.14) ──────────────────
   //
-  // canOnJob has its own unit tests, but nothing asserted that the PAGE actually asks it. Reverting
-  // all three JobDetailPage call sites to the old subject-level `ability.can('manage_lines','Job')`
-  // left every existing suite green, because the components used to fall back to that same
-  // expression when the prop was absent. The prop is required now and these two cases pin the
-  // wiring: same ability, same page, opposite answers driven only by the job's `created_by_id`.
-  describe('the Items tab follows CREATION, not assignment', () => {
+  // Edit job line items alone decides who edits a job's lines and scopes, on any job the person can open:
+  // creating or selling the job grants nothing. The page reads `edit_line_items` from the list the server sends on
+  // the job, never the browser-side ability or `created_by_id`. These two cases hold the ability and the page the
+  // same and flip only the list and who created the job, so the answer can only be following the list.
+  describe('the Items tab follows the server list, not who created the job', () => {
     const TECH_ID = '00000000-0000-0000-0000-000000000001'; // the mocked auth-store user
-    const OWN_JOB_COND = { assignees: { some: { user_id: TECH_ID } } };
-    const CREATED_BY_ME_COND = { created_by_id: TECH_ID };
+    const OTHER_ID = '99999999-9999-9999-9999-999999999999';
 
-    // The exact rules the server ships for a technician after PR 3.
+    // A browser-side ability that would have allowed line editing only on a job the technician created.
     const technicianAbility = buildAbility([
-      { action: 'read', subject: 'Job', conditions: { OR: [OWN_JOB_COND, CREATED_BY_ME_COND] } },
-      { action: 'update', subject: 'Job', conditions: OWN_JOB_COND },
-      { action: 'manage_lines', subject: 'Job', conditions: CREATED_BY_ME_COND },
+      { action: 'read', subject: 'Job' },
+      { action: 'manage_lines', subject: 'Job', conditions: { created_by_id: TECH_ID } },
       { action: 'read', subject: 'Pricing' },
     ] as never);
 
-    async function openItemsTab(created_by_id: string) {
-      mockJobWithItems({ created_by_id } as never);
+    async function openItemsTab(created_by_id: string, actions: string[]) {
+      mockJobWithItems({ created_by_id, actions } as never);
       renderWithProviders(<JobDetailPage />, { ability: technicianAbility });
       await userEvent.setup().click(await screen.findByRole('tab', { name: /Items/i }));
       await screen.findByText('Compressor swap');
     }
 
-    it('offers the line-item and scope editors on a job the technician CREATED', async () => {
-      await openItemsTab(TECH_ID);
+    it('offers the line-item and scope editors on a job the technician did NOT create when the list has edit_line_items', async () => {
+      await openItemsTab(OTHER_ID, ['edit_line_items']);
       expect(screen.getByRole('button', { name: /add item/i })).toBeInTheDocument();
       expect(screen.getByRole('button', { name: /remove compressor swap/i })).toBeInTheDocument();
     });
 
-    it('offers neither on a job the technician is only assigned to - the API would refuse', async () => {
-      await openItemsTab('99999999-9999-9999-9999-999999999999');
+    it('offers neither on a job the technician created when the list has no edit_line_items - the API would refuse', async () => {
+      await openItemsTab(TECH_ID, []);
       // Absent, not disabled - house convention.
       expect(screen.queryByRole('button', { name: /add item/i })).toBeNull();
       expect(screen.queryByRole('button', { name: /remove compressor swap/i })).toBeNull();
-      // Still READABLE: `read Job` covers assigned-or-created, and `read Pricing` is a role default
-      // now, so the line and its money are on screen. Only the WRITE affordances are gone.
+      // Still READABLE: the line and its money are on screen. Only the WRITE affordances are gone.
       expect(screen.getByText('Compressor swap')).toBeInTheDocument();
     });
   });
@@ -517,9 +514,9 @@ describe('JobDetailPage — inventory stock semantics (Inventory P1)', () => {
     renderWithProviders(<JobDetailPage />, { ability: adminAbility });
 
     const user = userEvent.setup();
-    // #718 consolidated the header actions into the Actions menu; Mark Complete was pulled
+    // #718 consolidated the header actions into the Actions menu; Complete job was pulled
     // back out to the header afterwards - the field could not find it inside the menu.
-    await user.click(await screen.findByRole('button', { name: /Mark Complete/ }));
+    await user.click(await screen.findByRole('button', { name: /Complete job/ }));
 
     // Never a gate: the completion POST fires regardless of any line's stock state.
     await waitFor(() => {
@@ -637,8 +634,11 @@ describe('JobDetailPage — Payment Received node disables once fully paid off (
         first_sent_at: '2026-02-05T12:00:00.000Z',
         total_invoiced: 1000,
         total_paid: 600,
-        invoices: [],
+        // The final invoice is one this person can open, so the server lists it.
+        invoices: [{ id: 'inv-1', invoice_number: 'I00001', status: 'SENT', kind: 'STANDARD', total_amount: 1000, amount_due: 400 }],
         payments: [],
+        // The server offers Record payment to this person on this invoice (S06.22).
+        payment_received: { offered: true, reason: null },
       },
     );
 
@@ -650,6 +650,43 @@ describe('JobDetailPage — Payment Received node disables once fully paid off (
     // The page also has its own standing "Record Payment" button in the money block, so scope
     // to the dialog's heading rather than any "Record Payment" text on the page.
     expect(await screen.findByRole('heading', { name: 'Record Payment' })).toBeInTheDocument();
+  });
+
+  // Roles & Permissions S02.32 - the dialog the Payment Received step opens is the invoice record-payment dialog,
+  // so it lists only the methods in the company's accepted list that the person may also record.
+  it('opens a Record Payment dialog that offers only the methods this person may record', async () => {
+    const job = { ...BASE_JOB, status: 'COMPLETED', completed_at: '2026-02-10T16:00:00.000Z' };
+    const financials = {
+      final_invoice: {
+        id: 'inv-1', invoice_number: 'I00001', status: 'SENT',
+        total_amount: 1000, amount_due: 400,
+        sent_at: '2026-02-05T12:00:00.000Z', paid_at: null,
+      },
+      first_sent_at: '2026-02-05T12:00:00.000Z',
+      total_invoiced: 1000,
+      total_paid: 600,
+      invoices: [{ id: 'inv-1', invoice_number: 'I00001', status: 'SENT', kind: 'STANDARD', total_amount: 1000, amount_due: 400 }],
+      payments: [],
+      payment_received: { offered: true, reason: null },
+    };
+    mockApi.get.mockImplementation(async (url: string) => {
+      if (url === '/api/permission-switches/accepted-payment-methods') {
+        return { data: { every_method: false, methods: ['CHECK', 'CASH', 'ZELLE'] } };
+      }
+      if (url === '/api/permission-switches/me') {
+        return { data: { admin_box: false, values: { allowed_payment_methods: ['ZELLE', 'VENMO', 'CHECK'] }, rules: [] } };
+      }
+      if (url.endsWith('/financials')) return { data: financials };
+      if (url.includes('/api/jobs/')) return { data: { job } };
+      return { data: {} };
+    });
+
+    renderWithProviders(<JobDetailPage />, { ability: adminAbility });
+
+    await userEvent.click(await screen.findByRole('button', { name: /payment received/i }));
+    await userEvent.click(await screen.findByRole('combobox', { name: /payment method/i }));
+    const offered = (await screen.findAllByRole('option')).map((o) => o.textContent);
+    expect(offered).toEqual(['Check', 'Zelle']);
   });
 });
 
@@ -732,7 +769,7 @@ describe('JobDetailPage - masthead absorbs a linked estimate deposit exactly onc
 });
 
 // Editable record IDs (2026-08-19 plan) - RecordNumberEditor wired into the header's
-// job-number render, gated on ability.can('renumber', 'Job').
+// job-number render, gated on the server's `renumber` action.
 describe('JobDetailPage - record number editor gating', () => {
   it('shows the edit affordance for a user with the renumber grant', async () => {
     mockJob({ status: 'UNSCHEDULED' });
@@ -741,8 +778,8 @@ describe('JobDetailPage - record number editor gating', () => {
     expect(await screen.findByRole('button', { name: /edit id/i })).toBeInTheDocument();
   });
 
-  it('hides the edit affordance for a user without the renumber grant', async () => {
-    mockJob({ status: 'UNSCHEDULED' });
+  it('hides the edit affordance when the server lists no renumber for the user', async () => {
+    mockJob({ status: 'UNSCHEDULED', actions: [] });
     renderWithProviders(<JobDetailPage />);
 
     await screen.findAllByText('J00001');

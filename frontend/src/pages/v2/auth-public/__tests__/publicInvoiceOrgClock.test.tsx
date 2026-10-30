@@ -34,7 +34,7 @@ import { formatInstant, ORG_DAY_FORMAT } from '@/lib/schedule-tz';
 
 import PublicInvoicePage from '../PublicInvoicePage';
 
-const NY = 'America/New_York';   // ServWave Test, Alpha Doors
+const NY = 'America/New_York';   // ServWave Test, the pilot org
 const DENVER = 'America/Denver'; // Talon Septic
 const MANILA = 'Asia/Manila';    // the VIEWER - opposite-offset discriminator
 

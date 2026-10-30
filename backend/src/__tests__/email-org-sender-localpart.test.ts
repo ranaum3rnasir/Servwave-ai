@@ -1,7 +1,7 @@
 // The shared sending address used to be a flat `no-reply@mail.servwave.com`
 // for every org on the platform, so a recipient's inbox showed the display name
 // doing all the work and an address that named nobody. The local part now
-// carries the org, giving `alphadoors@mail.servwave.com`.
+// carries the org, giving `exampledoors@mail.servwave.com`.
 //
 // Only the LOCAL PART changes, and only on the shared domain. An org with its
 // own verified domain already has its identity in the domain itself, so it
@@ -24,11 +24,11 @@ beforeAll(async () => {
 
 describe('orgSenderLocalPart', () => {
   it('slugs an ordinary company name', () => {
-    expect(orgSenderLocalPart('Alpha Doors')).toBe('alphadoors');
+    expect(orgSenderLocalPart('Example Doors')).toBe('exampledoors');
   });
 
   it('drops punctuation an address cannot carry', () => {
-    expect(orgSenderLocalPart('Alpha Doors & Security, Inc.')).toBe('alphadoorssecurityinc');
+    expect(orgSenderLocalPart('Example Doors & Security, Inc.')).toBe('exampledoorssecurityinc');
   });
 
   it('keeps digits, which are legal and often part of the name', () => {

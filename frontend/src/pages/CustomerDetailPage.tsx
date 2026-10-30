@@ -25,7 +25,7 @@ import { CustomerCommunicationsTab } from '@/components/communication/CustomerCo
 import { requestCall } from '@/lib/communication/phoneTabHandoff';
 import { useFeature, useModuleAccess } from '@/lib/entitlements';
 import { ComposeWindow, UNDO_SEND_WINDOW_MS, useUndoSend } from '@/components/communication/inbox/ComposeWindow';
-import { useSendEmail, useSendingIdentity, PRIMARY_ACCOUNT, type ComposeState } from '@/lib/api/communication';
+import { useSendEmail, useSendingIdentity, composeSenderProps, PRIMARY_ACCOUNT, type ComposeState } from '@/lib/api/communication';
 import { useToast } from '@/components/ui/use-toast';
 import { ToastAction } from '@/components/ui/toast';
 import { ExtraInfoPanel } from '@/components/custom-fields/ExtraInfoPanel';
@@ -1707,8 +1707,7 @@ export default function CustomerDetailPage() {
           onClose={() => setCompose(null)}
           onDiscard={() => setCompose(null)}
           onToast={(m) => toast({ description: m })}
-          fromAddress={sendingIdentity?.address}
-          sendingEnabled={sendingIdentity?.sendingEnabled ?? true}
+          {...composeSenderProps(sendingIdentity)}
         />
       )}
 

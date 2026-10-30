@@ -31,10 +31,18 @@ const stageUploadMulterErrors = multerErrorHandler({
 router.use(authenticate, requireFeature('inventory'), attachAbility);
 
 // ─── Job Stages ─────────────────────────────────────────
-router.get('/job-stages', canDo('read', 'Inventory'), invStagesController.listJobStages);
+// The reads are open to a person attached to the job: the handlers apply the staging reach (one job's stages need
+// no View stock; the company-wide list does).
+router.get('/job-stages', invStagesController.listJobStages);
 router.post('/job-stages', canDo('create', 'Inventory'), validate(invStagesController.createStageSchema), invStagesController.createJobStage);
-router.get('/job-stages/:id', canDo('read', 'Inventory'), invStagesController.getJobStage);
+router.get('/job-stages/:id', invStagesController.getJobStage);
 router.patch('/job-stages/:id', canDo('update', 'Inventory'), validate(invStagesController.updateStageSchema), invStagesController.updateJobStage);
+// "Taken by me" needs Pick up staged items and reach to the stage, and no Edit stock (the handler applies the reach).
+router.post('/job-stages/:id/taken-by-me', canDo('pick_up_staged', 'Inventory'), invStagesController.takenByMe);
+// "Taken by..." (someone else took the parts) needs Record pickup for someone else and the same reach, and neither
+// Edit stock nor Pick up staged items. Its picker lists the company's active people for a stage the person reaches.
+router.get('/job-stages/:id/pickup-people', canDo('record_pickup_for_other', 'Inventory'), invStagesController.listPickupPeople);
+router.post('/job-stages/:id/taken-by', canDo('record_pickup_for_other', 'Inventory'), validate(invStagesController.takenBySchema), invStagesController.takenBy);
 router.post('/job-stages/receive', canDo('update', 'Inventory'), validate(invStagesController.receiveStageSchema), invStagesController.receiveStageLine);
 router.post('/job-stages/notify', canDo('update', 'Inventory'), validate(invStagesController.notifyStageSchema), invStagesController.notifyTechReady);
 router.post('/job-stages/email', canDo('update', 'Inventory'), validate(invStagesController.emailStageSchema), invStagesController.emailJobStage);

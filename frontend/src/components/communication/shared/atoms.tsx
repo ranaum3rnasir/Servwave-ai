@@ -8,9 +8,12 @@
  * - "no job" = muted background.
  * - StateChip = SAGE, reserved for genuine business state (Approved / Paid).
  */
-import { type LucideIcon, Mail, MessageCircle, MessageSquare, PencilLine, Phone } from 'lucide-react';
+import type { RecordTie } from '@/lib/api/communication';
+import { Badge } from '@/ui-kit/components/ui/badge';
+import { Banknote, ClipboardCheck, type LucideIcon, Mail, MessageCircle, MessageSquare, PencilLine, Phone } from 'lucide-react';
 
-export type CommChannel = 'call' | 'email' | 'sms' | 'whatsapp';
+/** `portal` is not a conversation: it marks an entry for something the customer did on their own link (an estimate decision). */
+export type CommChannel = 'call' | 'email' | 'sms' | 'whatsapp' | 'portal';
 
 /**
  * Job badge — "badge it, don't hide it". Ocean (interactive anchor), NOT sage:
@@ -53,11 +56,35 @@ export function LeadBadge({ lead, className = '' }: { lead?: string | null; clas
   );
 }
 
+/**
+ * The job or lead a record conversation belongs to (PRD 10, S10.9), as the badge for it: the job badge for a job, the lead
+ * badge for a lead. The server names it, so what is shown is a record the person can open.
+ */
+export function RecordTieBadge({ tie, className = '' }: { tie?: RecordTie | null; className?: string }) {
+  if (!tie) return null;
+  return tie.kind === 'job' ? <JobBadge job={tie.label} className={className} /> : <LeadBadge lead={tie.label} className={className} />;
+}
+
+/**
+ * "Unverified sender" (PRD 10, S10.20): a received email that was linked to its customer by the sender's address, although the
+ * sender's domain could not prove who sent it. The link is made anyway; this is how a forged sender shows for what it is, on the
+ * Email page and on the customer's Communication tab. Nothing renders for a verified sender, and none for sent mail.
+ */
+export function UnverifiedSenderMark({ show, className }: { show?: boolean; className?: string }) {
+  if (!show) return null;
+  return (
+    <Badge variant="softAmber" size="sm" title="The sender's domain could not confirm who sent this message." className={className}>
+      Unverified sender
+    </Badge>
+  );
+}
+
 const CH: Record<CommChannel, { Icon: LucideIcon; tint: string; label: string }> = {
   call: { Icon: Phone, tint: 'text-success-text', label: 'Call' },
   email: { Icon: Mail, tint: 'text-info', label: 'Email' },
   sms: { Icon: MessageSquare, tint: 'text-primary', label: 'Text' },
   whatsapp: { Icon: MessageCircle, tint: 'text-success-text', label: 'WhatsApp' },
+  portal: { Icon: ClipboardCheck, tint: 'text-primary', label: 'Customer' },
 };
 
 /**
@@ -73,6 +100,8 @@ const HAND_ENTERED_LABEL: Record<CommChannel, string> = {
   // Not writable — the manual log's API offers three channels — but the table is total so a
   // future fourth cannot silently fall through to the call wording.
   whatsapp: 'Hand-entered, not a platform message',
+  // A customer's own action is never hand-entered; the table is total so it cannot fall through.
+  portal: 'Hand-entered, not a platform entry',
 };
 
 /**
@@ -89,13 +118,16 @@ const HAND_ENTERED_LABEL: Record<CommChannel, string> = {
 export function ChannelIcon({
   channel,
   handEntered = false,
+  payment = false,
   className = '',
 }: {
   channel: CommChannel;
   handEntered?: boolean;
+  /** A payment received is a `portal` entry too, but money, not an estimate decision (S08.10). */
+  payment?: boolean;
   className?: string;
 }) {
-  const { Icon, tint } = CH[channel];
+  const { Icon, tint } = payment ? { Icon: Banknote, tint: CH.portal.tint } : CH[channel];
   const icon = <Icon className={`h-4 w-4 ${tint} ${className}`} />;
   if (!handEntered) return icon;
   const label = HAND_ENTERED_LABEL[channel];
@@ -115,8 +147,8 @@ export function ChannelIcon({
   );
 }
 
-export function channelLabel(channel: CommChannel) {
-  return CH[channel].label;
+export function channelLabel(channel: CommChannel, payment = false) {
+  return payment ? 'Payment' : CH[channel].label;
 }
 
 /** Business-state chip (sage) — the one legitimate sage use here: approved / paid. */

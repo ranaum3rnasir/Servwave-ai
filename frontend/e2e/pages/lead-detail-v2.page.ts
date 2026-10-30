@@ -55,8 +55,8 @@ export class LeadDetailV2Page extends BasePage {
     this.performerSelect = page.locator('[role="combobox"]').or(page.locator('select')).first();
     this.walkthroughNotes = page.getByPlaceholder(/walkthrough|notes/i).first();
     this.scheduleButton = page.getByRole('button', { name: /Schedule Walkthrough/ });
-    this.completeButton = page.getByRole('button', { name: /Complete Walkthrough/ });
-    this.completedBanner = page.locator('div').filter({ hasText: /Completed on/ }).first();
+    this.completeButton = page.getByRole('button', { name: /Finish walkthrough/i });
+    this.completedBanner = page.locator('div').filter({ hasText: /Finished on/ }).first();
     this.walkthroughNotRequired = page.getByText(/not required|No walkthrough/i);
   }
 

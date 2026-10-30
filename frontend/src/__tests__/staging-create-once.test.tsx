@@ -64,7 +64,7 @@ function fillAndSubmitNewPickup() {
     target: { value: 'J-1870' },
   });
   fireEvent.change(screen.getByPlaceholderText('Rolex 5th Ave'), {
-    target: { value: 'LVD' },
+    target: { value: 'Sample Customer A' },
   });
   // The single starter line needs a quantity and a PO number to pass validation.
   fireEvent.change(screen.getByPlaceholderText('0'), { target: { value: '1' } });
@@ -103,7 +103,7 @@ describe('routed StagingView - a new pickup is persisted exactly once (S4.4)', (
 
     await vi.waitFor(() => expect(STAGE_POSTS()).toHaveLength(1));
     const [, payload] = STAGE_POSTS()[0]!;
-    expect(payload).toMatchObject({ jobNumber: 'J-1870', customer: 'LVD', stagedLocationId: 'loc_wh' });
+    expect(payload).toMatchObject({ jobNumber: 'J-1870', customer: 'Sample Customer A', stagedLocationId: 'loc_wh' });
     // No job picked and no PO linked in this flow, so both links are absent
     // rather than wrong - but the keys must exist on the payload builder, which
     // distinguishes the dialog's `stagePayload` from the bare view-shape stage

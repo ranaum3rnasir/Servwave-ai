@@ -7,7 +7,7 @@
 //   onSuccess: invalidating(qc, ['inventory'])
 //
 // so the deleted row left the screen only once GET /api/inventory/<catalog>
-// came back with a new array. Observed in production 2026-08-19 (Alpha Doors &
+// came back with a new array. Observed in production 2026-08-19 (the pilot org)
 // Security): the audit log records pricebook.brand_deleted at 18:27:16Z and no
 // such row survives in the table, yet the Manage Brands list still showed it.
 // The user clicked Delete again and got "Brand not found" in red for an action

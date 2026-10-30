@@ -5,7 +5,7 @@ import app from '../app';
 import { prisma } from '../lib/prisma';
 import { clearTokenCache } from '../middleware/authenticate';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { ALPHA_ORG_ID, ORG_B_ID, mockAuthAs, authHeader, CUSTOMER_FIXTURE } from './helpers';
+import { ALPHA_ORG_ID, ORG_B_ID, mockAuthAs, mockRoleSwitches, authHeader, CUSTOMER_FIXTURE } from './helpers';
 
 const mockPrisma = prisma as any;
 
@@ -39,6 +39,13 @@ beforeEach(() => {
   clearTokenCache();
   clearPermissionCache();
 });
+
+/**
+ * The auto-route lookups among the message queries the request made: the text scope's reply attribution (S08.6) reads
+ * the person's conversations through the same model, so the lookup is told apart by the job tie it asks for.
+ */
+const autoRouteLookups = () =>
+  (mockPrisma.message.findMany as Mock).mock.calls.map((c) => c[0]).filter((q) => q?.where?.job_id !== undefined);
 
 function expectOrgScoped(mockFn: Mock, orgId: string) {
   expect(mockFn).toHaveBeenCalledWith(
@@ -152,7 +159,7 @@ describe('POST /api/communication/sms — inbound auto-route', () => {
     expect(data.job_id).toBe(JOB_ID);
     expect(data.job_label).toBe('J00077');
     expectOrgScoped(mockPrisma.message.findMany as Mock, ALPHA_ORG_ID);
-    const call = mockPrisma.message.findMany.mock.calls[0][0];
+    const call = autoRouteLookups()[0];
     expect(call.where.thread_id).toBe(THREAD_ID);
     expect(call.where.direction).toBe('out');
     expect(call.where.job_id).toEqual({ not: null });
@@ -179,7 +186,7 @@ describe('POST /api/communication/sms — inbound auto-route', () => {
     expect(data.job_id).toBe(JOB_ID);
     expect(data.job_label).toBe('J00077');
     // Candidate query stays scoped to this thread.
-    expect(mockPrisma.message.findMany.mock.calls[0][0].where.thread_id).toBe(THREAD_ID);
+    expect(autoRouteLookups()[0].where.thread_id).toBe(THREAD_ID);
   });
 
   it('creates with job_id null when all candidates are closed or stale (Unrouted tray)', async () => {
@@ -208,7 +215,7 @@ describe('POST /api/communication/sms — inbound auto-route', () => {
     const res = await request(app).post('/api/communication/sms').set(authHeader('dispatcher'))
       .send({ threadId: THREAD_ID, body: 'internal note', direction: 'in' });
     expect(res.status).toBe(201);
-    expect(mockPrisma.message.findMany).not.toHaveBeenCalled();
+    expect(autoRouteLookups()).toEqual([]);
     const data = mockPrisma.message.create.mock.calls[0][0].data;
     expect(data.job_id).toBeUndefined();
     expect(data.job_label).toBeUndefined();
@@ -221,7 +228,7 @@ describe('POST /api/communication/sms — inbound auto-route', () => {
     const res = await request(app).post('/api/communication/sms').set(authHeader('dispatcher'))
       .send({ threadId: THREAD_ID, body: 'group note', direction: 'in' });
     expect(res.status).toBe(201);
-    expect(mockPrisma.message.findMany).not.toHaveBeenCalled();
+    expect(autoRouteLookups()).toEqual([]);
     const data = mockPrisma.message.create.mock.calls[0][0].data;
     expect(data.job_id).toBeUndefined();
     expect(data.job_label).toBeUndefined();
@@ -232,6 +239,8 @@ describe('POST /api/communication/sms — inbound auto-route', () => {
 describe('PATCH /api/communication/sms/:id/job — one-click reassign', () => {
   it('sets job_id + job_label from an org-scoped job', async () => {
     mockAuthAs('dispatcher');
+    // These cases are about attribution, not the Text page's scope: a person on All reads every conversation.
+    mockRoleSwitches({ communication_scope: 'all' });
     mockCustomerThread();
     mockPrisma.job.findUnique.mockResolvedValue(JOB_ROW);
     mockPrisma.message.updateMany.mockResolvedValue({ count: 1 });
@@ -259,6 +268,8 @@ describe('PATCH /api/communication/sms/:id/job — one-click reassign', () => {
 
   it('clears job_id + job_label on null (back to the Unrouted tray)', async () => {
     mockAuthAs('dispatcher');
+    // These cases are about attribution, not the Text page's scope: a person on All reads every conversation.
+    mockRoleSwitches({ communication_scope: 'all' });
     mockPrisma.message.updateMany.mockResolvedValue({ count: 1 });
     mockPrisma.message.findMany.mockResolvedValue([
       { id: MSG_ID, direction: 'in', body: 'x', ts: new Date(), status: 'received', automated: false, job_id: null, job_label: null },
@@ -338,8 +349,9 @@ describe('PATCH /api/communication/sms/:id/job — one-click reassign', () => {
     expect(res.body.message.jobLabel).toBe('J00077');
   });
 
-  it('403s for SALES (read-only)', async () => {
+  it('403s without Attach conversations to jobs and leads, whatever the role', async () => {
     mockAuthAs('sales');
+    mockRoleSwitches({ attach_conversations: false });
     const res = await request(app).patch(`/api/communication/sms/${MSG_ID}/job`).set(authHeader('sales'))
       .send({ job_id: null });
     expect(res.status).toBe(403);
@@ -446,6 +458,8 @@ describe('POST /api/communication/emails — attach-by-origin', () => {
 describe('PATCH /api/communication/emails/:id/job - one-click reassign', () => {
   it('sets job_id + job_label from an org-scoped job', async () => {
     mockAuthAs('dispatcher');
+    // These cases are about attribution, not the Email page's scope: a person on All reads every conversation.
+    mockRoleSwitches({ communication_scope: 'all' });
     mockPrisma.email.findFirst
       .mockResolvedValueOnce({ id: EMAIL_ID, customer_id: CUSTOMER_FIXTURE.id })
       .mockResolvedValueOnce({ ...EMAIL_ROW, job_id: JOB_ID, job_label: 'J00077' });
@@ -472,6 +486,7 @@ describe('PATCH /api/communication/emails/:id/job - one-click reassign', () => {
 
   it('clears job_id + job_label on null', async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches({ communication_scope: 'all' });
     mockPrisma.email.updateMany.mockResolvedValue({ count: 1 });
     mockPrisma.email.findFirst.mockResolvedValue({ ...EMAIL_ROW, job_id: null, job_label: null });
     const res = await request(app).patch(`/api/communication/emails/${EMAIL_ID}/job`).set(authHeader('dispatcher'))
@@ -545,8 +560,9 @@ describe('PATCH /api/communication/emails/:id/job - one-click reassign', () => {
     expect(res.body.email.jobLabel).toBe('J00077');
   });
 
-  it('403s for SALES (read-only)', async () => {
+  it('403s without Attach conversations to jobs and leads, whatever the role', async () => {
     mockAuthAs('sales');
+    mockRoleSwitches({ attach_conversations: false });
     const res = await request(app).patch(`/api/communication/emails/${EMAIL_ID}/job`).set(authHeader('sales'))
       .send({ job_id: null });
     expect(res.status).toBe(403);

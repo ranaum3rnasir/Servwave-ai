@@ -5,8 +5,9 @@
 // entirely. This suite drives the correction and the removal.
 //
 // The extra rule this slice adds on top of the `log_past` ability is a ROW-LEVEL one: the
-// requester must be the entry's LOGGER, or an organisation ADMIN. One person cannot quietly
-// rewrite another's account of a conversation; an admin can clean up after a departed colleague.
+// requester must be the entry's LOGGER, or hold Edit other people's logged communications (the Admin box among
+// them). One person cannot quietly rewrite another's account of a conversation; a holder can clean up after a
+// departed colleague.
 //
 // Pattern follows comm-manual-log.test.ts: supertest against the real Express app with a fully
 // mocked Prisma, the shared auth helper, and two organisation fixtures for the tenancy assertions.
@@ -16,7 +17,7 @@ import app from '../app';
 import { prisma } from '../lib/prisma';
 import { clearTokenCache } from '../middleware/authenticate';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { mockAuthAs, authHeader, ALPHA_ORG_ID, ORG_B_ID, LEAD_FIXTURE, TEST_USERS } from './helpers';
+import { mockAuthAs, mockRoleSwitches, authHeader, ALPHA_ORG_ID, ORG_B_ID, LEAD_FIXTURE, TEST_USERS } from './helpers';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 import { orgDayOf } from '../lib/orgDayRange';
 import { formatInTimeZone } from 'date-fns-tz';
@@ -310,67 +311,53 @@ describe('a correction may not date the entry in the future', () => {
 });
 
 /**
- * A non-admin role that HOLDS the ability — the third party in the rule this slice adds.
+ * A non-admin role that HOLDS the ability - the third party in the rule this slice adds.
  *
- * Built here rather than inherited, because `log_past` is deliberately absent from every role's
- * default grants (the roles UI that turns it on is slice 4). Without this the "another user
- * holding the ability" case cannot be reached at all: the request would be refused at the route
- * guard, 403 for the wrong reason, and the row-level rule would never run. Same shape as a row
- * the roles editor writes.
+ * The Log past communications switch turned on for the role, the way the Roles screen writes it. Without this the
+ * "another user holding the ability" case cannot be reached at all: the request would be refused at the route
+ * guard, 403 for the wrong reason, and the row-level rule would never run. (Roles & Permissions S01.10: the grant
+ * comes from the switch, so this no longer adds a stored grant row.)
  */
-function grantLogPastTo(role: 'SALES' | 'DISPATCHER' | 'TECHNICIAN') {
-  mockPrisma.rolePermission.findMany.mockResolvedValue([
-    ...DEFAULT_GRANTS.filter((g) => g.role === role),
-    { role, action: 'log_past', subject: 'Communication', conditions: null },
-  ]);
-  clearPermissionCache();
+function grantLogPastTo(_role: 'SALES' | 'DISPATCHER' | 'TECHNICIAN') {
+  mockRoleSwitches({ log_past_communications: true });
 }
 
 /**
- * AN ADMIN-DERIVED CUSTOM ROLE — SRVW-138's "full access minus payroll" shape: `users.role` stays
- * ADMIN (the BASE role) while `custom_role_id` points at a row whose own grant set is what the
+ * AN ADMIN-DERIVED CUSTOM ROLE - SRVW-138's "full access minus payroll" shape: `users.role` stays
+ * ADMIN (the BASE role) while `custom_role_id` points at a row whose own switch values are what the
  * user actually holds.
  *
- * `mayModifyEntry` reads `req.user.role === 'ADMIN'` and NOT `isSuperUser`, deliberately —
- * effectiveRole.ts reserves `.role` for "what kind of user is this", and such a role is still the
- * organisation's admin, still the person expected to clean up after a departed colleague. That
- * was reasoned from the module's header and never exercised against a real principal. If it were
- * wrong, an admin would silently lose the ability the admin branch exists for.
- *
- * The principal built here is genuinely NOT a superuser: `custom_role_id` is set, so `isSuperUser`
- * is false and CASL resolves through the stored grants instead of the manage-all short-circuit.
- * That is why the grants have to carry `log_past` explicitly — and why `withoutLogPast` below can
- * refuse the very same user, which is the control that proves the short-circuit is not in play.
+ * Roles & Permissions S01.10: editing someone else's entry is the "Edit other people's logged communications"
+ * switch, not the ADMIN base role, so what such a role may do here is whatever its switches say. The principal
+ * built here is genuinely NOT a superuser (`custom_role_id` is set), so it resolves through its switches; the
+ * `switches` argument turns individual ones off on top of the Admin preset the role starts from.
  */
 const CUSTOM_ROLE_KEY = 'ops-lead';
-function mockAuthAsAdminDerivedCustomRole({ withLogPast = true } = {}) {
+function mockAuthAsAdminDerivedCustomRole(switches: Record<string, boolean | string> = {}) {
   mockAuthAs('admin');
   mockPrisma.user.findUnique.mockResolvedValue({
     ...TEST_USERS.admin,
     custom_role_id: 'cc000000-0000-0000-0000-0000000000c1',
-    // MUST be selected alongside custom_role_id — grantRoleKey throws without it (a 500), rather
+    // MUST be selected alongside custom_role_id - grantRoleKey throws without it (a 500), rather
     // than silently falling back to the wider base role.
     custom_role: { key: CUSTOM_ROLE_KEY },
     organization: { is_demo: false, plan: 'SCALE', trial_ends_at: null, feature_overrides: {} },
   });
-  mockPrisma.rolePermission.findMany.mockResolvedValue([
-    // A narrowed set, keyed on the CUSTOM role — not ADMIN's, which does not exist as rows at all.
-    ...DEFAULT_GRANTS.filter((g) => g.role === 'SALES').map((g) => ({ ...g, role: CUSTOM_ROLE_KEY })),
-    ...(withLogPast
-      ? [{ role: CUSTOM_ROLE_KEY, action: 'log_past', subject: 'Communication', conditions: null }]
-      : []),
-  ]);
+  mockPrisma.rolePermission.findMany.mockResolvedValue(
+    // A narrowed set, keyed on the CUSTOM role - not ADMIN's, which does not exist as rows at all.
+    DEFAULT_GRANTS.filter((g) => g.role === 'SALES').map((g) => ({ ...g, role: CUSTOM_ROLE_KEY })),
+  );
+  mockRoleSwitches(switches);
   clearTokenCache();
   clearPermissionCache();
 }
 
-describe('an ADMIN-derived custom role is still the organisation\u2019s admin', () => {
-  // THE CONTROL, and it is what makes the two tests below mean anything: strip `log_past` from the
-  // same principal and it is refused. A manage-all short-circuit would have let it through, so
-  // this pins that the role is resolving through its grants — i.e. that it is genuinely not a
-  // superuser and the admin branch below is doing real work.
-  it('is NOT a superuser: without the ability in its own grants, it is refused', async () => {
-    mockAuthAsAdminDerivedCustomRole({ withLogPast: false });
+describe('an ADMIN-derived custom role holds only the switches it is given', () => {
+  // THE CONTROL, and it is what makes the tests below mean anything: turn the switch off for the same principal
+  // and it is refused. A manage-all short-circuit would have let it through, so this pins that the role is
+  // resolving through its switches, i.e. that it is genuinely not a superuser.
+  it('is NOT a superuser: with Log past communications off, it is refused', async () => {
+    mockAuthAsAdminDerivedCustomRole({ log_past_communications: false, edit_others_logged_communications: false });
     orgTimezone('America/New_York');
     stubStored(storedEntry({ logged_by: TEST_USERS.sales.id, performed_by: TEST_USERS.sales.id }));
     stubUpdate();
@@ -384,7 +371,27 @@ describe('an ADMIN-derived custom role is still the organisation\u2019s admin', 
     expect(mockPrisma.manualCommunicationLog.update).not.toHaveBeenCalled();
   });
 
-  it('corrects an entry somebody else logged', async () => {
+  it("is not let into somebody else's entry by its Admin base when Edit other people's logged communications is off", async () => {
+    mockAuthAsAdminDerivedCustomRole({ edit_others_logged_communications: false });
+    orgTimezone('America/New_York');
+    stubStored(storedEntry({ logged_by: TEST_USERS.sales.id, performed_by: TEST_USERS.sales.id }));
+    mockPrisma.lead.findFirst.mockResolvedValue({ id: LEAD_ID });
+    mockPrisma.user.findFirst.mockResolvedValue({ id: TEST_USERS.sales.id });
+    stubUpdate();
+
+    const edit = await request(app)
+      .put(ENDPOINT)
+      .set(authHeader('admin'))
+      .send({ ...EDIT_BODY, performed_by: TEST_USERS.sales.id });
+    expect(edit.status).toBe(403);
+    expect(mockPrisma.manualCommunicationLog.update).not.toHaveBeenCalled();
+
+    const remove = await request(app).delete(ENDPOINT).set(authHeader('admin'));
+    expect(remove.status).toBe(403);
+    expect(mockPrisma.manualCommunicationLog.delete).not.toHaveBeenCalled();
+  });
+
+  it('corrects an entry somebody else logged, with Edit other people\'s logged communications on', async () => {
     mockAuthAsAdminDerivedCustomRole();
     orgTimezone('America/New_York');
     stubStored(storedEntry({ logged_by: TEST_USERS.sales.id, performed_by: TEST_USERS.sales.id }));
@@ -401,7 +408,7 @@ describe('an ADMIN-derived custom role is still the organisation\u2019s admin', 
     expect(res.body.entry.notes).toBe(EDIT_BODY.notes);
   });
 
-  it('removes an entry somebody else logged', async () => {
+  it('removes an entry somebody else logged, with Edit other people\'s logged communications on', async () => {
     mockAuthAsAdminDerivedCustomRole();
     stubStored(storedEntry({ logged_by: TEST_USERS.sales.id, performed_by: TEST_USERS.sales.id }));
     mockPrisma.manualCommunicationLog.delete.mockResolvedValue(storedEntry());
@@ -413,7 +420,7 @@ describe('an ADMIN-derived custom role is still the organisation\u2019s admin', 
   });
 });
 
-describe('who may change an entry: the logger, or an organisation admin', () => {
+describe('who may change an entry: the logger, or a holder of Edit other people\'s logged communications', () => {
   it('lets an organisation ADMIN correct an entry somebody else logged', async () => {
     mockAuthAs('admin');
     orgTimezone('America/New_York');
@@ -432,7 +439,7 @@ describe('who may change an entry: the logger, or an organisation admin', () => 
     expect(res.body.entry.notes).toBe(EDIT_BODY.notes);
   });
 
-  it('refuses another user who holds the ability but neither logged it nor is an admin', async () => {
+  it('refuses another user who holds the ability but neither logged it nor holds Edit other people\'s logged communications', async () => {
     mockAuthAs('sales');
     grantLogPastTo('SALES');
     orgTimezone('America/New_York');
@@ -1069,7 +1076,7 @@ describe('DELETE /api/communication/manual-log/:id', () => {
     expect(res.status).toBe(204);
   });
 
-  it('refuses another user who holds the ability but neither logged it nor is an admin', async () => {
+  it('refuses another user who holds the ability but neither logged it nor holds Edit other people\'s logged communications', async () => {
     mockAuthAs('sales');
     grantLogPastTo('SALES');
     stubStored(storedEntry({ logged_by: TEST_USERS.admin.id }));

@@ -27,6 +27,7 @@ import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 // ─── Typed mock accessors ──────────────────────────────────
 const mockPrisma = prisma as unknown as {
+  job: { findMany: ReturnType<typeof vi.fn> };
   invoice: { findUnique: ReturnType<typeof vi.fn>; findFirst: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
   invoiceLineItem: {
     findMany: ReturnType<typeof vi.fn>;
@@ -44,6 +45,7 @@ const mockPrisma = prisma as unknown as {
     findUnique: ReturnType<typeof vi.fn>;
   };
   organization: { findUnique: ReturnType<typeof vi.fn> };
+  timelineEvent: { create: ReturnType<typeof vi.fn> };
   $transaction: ReturnType<typeof vi.fn>;
 };
 
@@ -150,6 +152,10 @@ function setupTransaction() {
       findUnique: mockPrisma.stockBalance.findUnique,
     },
     organization: { findUnique: mockPrisma.organization.findUnique },
+    // S06.6: a job-linked invoice's line edit also writes an entry on the job's timeline.
+    timelineEvent: { create: mockPrisma.timelineEvent.create },
+    // S06.20: a job-history write asks which jobs it touches are in Ready to close.
+    job: { findMany: mockPrisma.job.findMany },
   } as any));
 }
 

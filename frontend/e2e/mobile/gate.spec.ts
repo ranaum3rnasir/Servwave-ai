@@ -12,6 +12,7 @@ import { decide, loadAllowlist, loadKnownBroken, RECORDS_DIR, type Verdict } fro
 import { measure, settle } from './measure';
 import { openOverlay } from './openers';
 import { exemptLine } from './schedule-double-booked';
+import { gateTestInboxLine } from './vendor-terms';
 import { selectStates, type GateFixtures } from './routes';
 import { FIXTURES_FILE } from './paths';
 import { keepSession, signIn, test } from './session';
@@ -25,6 +26,9 @@ const knownBroken = loadKnownBroken();
 // The Schedule's accepted exception (schedule-double-booked.ts) applies on the Schedule page and its overlays,
 // and only while allowlist.json records it (acceptedExceptions.scheduleDoubleBooked).
 const scheduleDoubleBookedAccepted = !!allowlist.acceptedExceptions?.scheduleDoubleBooked;
+// The gate's test-inbox exception (vendor-terms.ts) applies to the copy check on every page, and only while
+// allowlist.json records it (acceptedExceptions.gateTestInbox).
+const gateTestInboxAccepted = !!allowlist.acceptedExceptions?.gateTestInbox;
 const isSchedule = (id: string) => id === 'schedule' || id.startsWith('schedule~');
 
 for (const state of selectStates()) {
@@ -79,7 +83,7 @@ for (const state of selectStates()) {
         notes.push(`opened ${opened.label}`);
       }
 
-      const m = await measure(p, { touch: device.touch, onlyInOverlays: !!state.overlay, consoleLines: consoleRecord.lines, withMeasuredOnly: !state.overlay, scheduleDoubleBooked: scheduleDoubleBookedAccepted && isSchedule(state.id) });
+      const m = await measure(p, { touch: device.touch, onlyInOverlays: !!state.overlay, consoleLines: consoleRecord.lines, withMeasuredOnly: !state.overlay, scheduleDoubleBooked: scheduleDoubleBookedAccepted && isSchedule(state.id), gateTestInbox: gateTestInboxAccepted });
 
       const verdicts: Record<string, Verdict> = {};
       for (const check of CHECKS) verdicts[check] = decide(allowlist, state.id, check, device.id, m[check].offenders);
@@ -108,6 +112,8 @@ for (const state of selectStates()) {
         const exempt = m[check].exempt;
         if (exempt?.length) lines.push(exemptLine(check, exempt));
       }
+      const inbox = m.vendorTerms.gateTestInbox;
+      if (inbox?.length) lines.push(gateTestInboxLine(inbox));
       if (consoleRecord.frameLines.length) {
         const origins = [...new Set(consoleRecord.frameLines.map((l) => l.origin))].join(', ');
         lines.push(`  EXEMPT vendorConsole: ${consoleRecord.frameLines.length} line(s) from embedded vendor frame(s) [${origins}] - accepted exception (allowlist.json acceptedExceptions)`);

@@ -5,6 +5,7 @@ import { prisma } from '../lib/prisma';
 import {
   TEST_USERS,
   mockAuthAs,
+  mockRoleSwitches,
   authHeader,
   CUSTOMER_FIXTURE,
   LOCATION_FIXTURE,
@@ -12,21 +13,19 @@ import {
   JOB_FIXTURE,
 } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 
 // Phase B — technician redesign. Invoice CREATE ownership (#235 / F-013).
 //
 // The route already gates `canDo('create','Invoice')`. The controller must verify the requester
 // may invoice THIS job — role-agnostically:
-//   • a per-user OWN-scoped `create Invoice` grantee → only a job they're ASSIGNED to.
+//   • a person with Create invoices on and an Attached Jobs scope → only a job they can open (are attached to).
 //   • an unconditional create grant (dispatcher / admin) → any job.
 //   • nobody without the grant (strict tech / SALES) reaches the controller at all (route blocks).
 // No `role === 'SALES'` / `role === 'TECHNICIAN'` literal may remain that defeats the per-user grant.
 
 const mockPrisma = prisma as unknown as {
-  job: { findUnique: ReturnType<typeof vi.fn> };
+  job: { findUnique: ReturnType<typeof vi.fn>; findFirst: ReturnType<typeof vi.fn> };
   invoice: { findFirst: ReturnType<typeof vi.fn>; create: ReturnType<typeof vi.fn> };
-  userPermissionOverride: { findMany: ReturnType<typeof vi.fn> };
   $transaction: ReturnType<typeof vi.fn>;
 };
 
@@ -68,22 +67,21 @@ function jobNotOwnedByTech() {
 }
 
 function grantTechCreateInvoice() {
-  // Per-user OWN-scoped allow override (DB row is bare; defineAbility looks up the own-condition).
-  mockPrisma.userPermissionOverride.findMany.mockResolvedValue([
-    { action: 'create', subject: 'Invoice', effect: 'allow' },
-  ]);
+  // Create invoices is off in the Technician preset. Turned on, it reaches the jobs the technician can open (View jobs, Attached).
+  mockRoleSwitches({ create_invoices: true, view_invoices: true });
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache();
   // No ACTIVE invoice yet (clears the 409 dup guard at invoice.controller.ts:349).
   mockPrisma.invoice.findFirst.mockResolvedValue(null);
   // Full tx surface for the create path (deposit lookup → create → job.update → timeline).
   // The ownership 403 fires BEFORE the tx, so this only matters for the 201 paths.
   mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => unknown) =>
     fn({
+      // Slice 18: the deposit lookup locks the estimate's deposit invoices before reading credit.
+      $executeRaw: vi.fn().mockResolvedValue(0),
       invoice: {
         // SRVW-85: the deposit lookup is invoice.findMany now (the multi-deposit union). An empty
         // list short-circuits before remainingDepositCredit, so no payment/refund aggregates needed.
@@ -104,6 +102,8 @@ describe('POST /api/invoices — Phase B ownership (granted OWN-scoped technicia
     mockAuthAs('technician');
     grantTechCreateInvoice();
     mockPrisma.job.findUnique.mockResolvedValue(jobOwnedByTech());
+    // The job-scope probe (Create invoices reaches a job the person can open) finds the job.
+    mockPrisma.job.findFirst.mockResolvedValue({ id: JOB_FIXTURE.id });
 
     const res = await request(app)
       .post('/api/invoices')
@@ -119,6 +119,8 @@ describe('POST /api/invoices — Phase B ownership (granted OWN-scoped technicia
     mockAuthAs('technician');
     grantTechCreateInvoice();
     mockPrisma.job.findUnique.mockResolvedValue(jobNotOwnedByTech());
+    // The job-scope probe finds nothing: the job is not one this person can open.
+    mockPrisma.job.findFirst.mockResolvedValue(null);
 
     const res = await request(app)
       .post('/api/invoices')
@@ -129,7 +131,7 @@ describe('POST /api/invoices — Phase B ownership (granted OWN-scoped technicia
   });
 
   it('strict (un-granted) tech is blocked at the route guard (403), never reaching create', async () => {
-    mockAuthAs('technician'); // no override → strict default has no create Invoice
+    mockAuthAs('technician'); // the Technician preset has Create invoices off
     mockPrisma.job.findUnique.mockResolvedValue(jobOwnedByTech());
 
     const res = await request(app)

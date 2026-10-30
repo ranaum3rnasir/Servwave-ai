@@ -3,16 +3,29 @@
 //   • a customer result loads the customer panel with open-job chips that
 //     deep-link to /jobs/:id (real UUIDs) + Call/Text actions,
 //   • a job result loads its customer's panel with that job focused first,
-//   • a phone-shaped query with no match offers Create customer / Create lead
-//     prefilled with ?phone=<e164>,
+//   • a phone-shaped query with no match offers Create lead / Create job
+//     prefilled with ?phone=<e164>, each only with its Create + Show pair
+//     (S02.27), and never Create customer,
 //   • a resolved phone identity renders a "Recognized" banner that selects
 //     the customer.
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { cleanup, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router-dom";
+import api from "@/lib/axios";
+import { renderWithProviders } from "@/__tests__/helpers";
+import type { AbilityRule } from "@/lib/ability";
+import { JOB_PAIR, LEAD_PAIR, personCopiedFrom, personHolding } from "@/__tests__/support/unknownNumberPerson";
 
 const mockNavigate = vi.fn();
+// Customer numbers on the Communication screens follow the person's switches (S05.6). This suite renders the
+// screen without a query client, so the person's switches are stubbed: every one on, the screen as it always was.
+vi.mock("@/components/contact/useContactPolicyInput", () => ({
+  useContactPolicyInput: () => ({
+    switches: { copyCustomerPhone: true, copyCustomerEmail: true, contactCustomers: true, viewCustomers: true },
+    phoneService: true,
+  }),
+}));
+
 // These specs render deep phone components without a QueryClientProvider - every
 // data hook is stubbed individually. Times now resolve against the ORG's zone, so
 // the org query joins that list; pinned here so the rendered clock is fixed rather
@@ -132,12 +145,19 @@ const IDENTITY_RESULT = {
   },
 };
 
-function setup() {
-  render(
-    <MemoryRouter>
-      <DialerWorkspace calls={[]} onToast={() => {}} />
-    </MemoryRouter>,
+const mockApi = vi.mocked(api);
+
+/** Rules every person here holds for the screen itself; the lead / job offers come from the switches under test. */
+const SCREEN_RULES: AbilityRule[] = [{ action: "manage", subject: "all" }];
+
+function setup(person: ReturnType<typeof personHolding> = personHolding([], SCREEN_RULES)) {
+  person.seed();
+  mockApi.get.mockImplementation(async (url: string) =>
+    url === "/api/permission-switches/me"
+      ? { data: { admin_box: false, values: person.values, rules: [] } }
+      : { data: {} },
   );
+  renderWithProviders(<DialerWorkspace calls={[]} onToast={() => {}} />, { ability: person.ability });
   return screen.getByPlaceholderText("Search a job #, customer, or phone…");
 }
 
@@ -196,22 +216,76 @@ describe("Dialer real search (slice 2.2)", () => {
     expect(screen.getByText("2 Oak Ave, Jersey City")).toBeInTheDocument();
   });
 
-  it("offers Create customer / Create lead for a phone-shaped query with no match", async () => {
+  async function typeUnknownNumber(person: ReturnType<typeof personHolding>) {
     seam.result = NO_MATCH_PHONE;
-    const input = setup();
+    const input = setup(person);
     await userEvent.type(input, "6095550000");
-
     expect(await screen.findByText(/No match for/)).toBeInTheDocument();
+  }
 
-    await userEvent.click(screen.getByRole("button", { name: /Create customer/ }));
-    expect(mockNavigate).toHaveBeenCalledWith(
-      `/customers/new?phone=${encodeURIComponent("+16095550000")}`,
-    );
+  const createButtons = () => ({
+    customer: screen.queryByRole("button", { name: /Create customer/ }),
+    lead: screen.queryByRole("button", { name: /Create lead/ }),
+    job: screen.queryByRole("button", { name: /Create job/ }),
+  });
 
-    await userEvent.click(screen.getByRole("button", { name: /Create lead/ }));
-    expect(mockNavigate).toHaveBeenCalledWith(
-      `/leads/new?phone=${encodeURIComponent("+16095550000")}`,
-    );
+  it("offers Create lead with Create leads + Show Leads page, opening /leads/new?phone=<e164>", async () => {
+    await typeUnknownNumber(personHolding(LEAD_PAIR));
+
+    await userEvent.click(await screen.findByRole("button", { name: /Create lead/ }));
+    expect(mockNavigate).toHaveBeenCalledWith(`/leads/new?phone=${encodeURIComponent("+16095550000")}`);
+  });
+
+  it("offers Create job with Create jobs + Show Jobs page, opening /jobs/new?phone=<e164>", async () => {
+    await typeUnknownNumber(personHolding(JOB_PAIR));
+
+    await userEvent.click(await screen.findByRole("button", { name: /Create job/ }));
+    expect(mockNavigate).toHaveBeenCalledWith(`/jobs/new?phone=${encodeURIComponent("+16095550000")}`);
+  });
+
+  it("never offers Create customer, whatever the person holds", async () => {
+    await typeUnknownNumber(personHolding([...LEAD_PAIR, ...JOB_PAIR, "Create customers", "Show Customers page"], SCREEN_RULES));
+
+    await screen.findByRole("button", { name: /Create lead/ });
+    expect(createButtons().customer).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["Create leads without Show Leads page", ["Create leads"]],
+    ["Show Leads page without Create leads", ["Show Leads page"]],
+    ["Create jobs without Show Jobs page", ["Create jobs"]],
+    ["Show Jobs page without Create jobs", ["Show Jobs page"]],
+  ])("offers nothing for %s", async (_name, held) => {
+    await typeUnknownNumber(personHolding(held));
+
+    expect(createButtons()).toEqual({ customer: null, lead: null, job: null });
+  });
+
+  it("shows Create lead only for the Sales preset's values", async () => {
+    await typeUnknownNumber(personCopiedFrom("SALES"));
+
+    await screen.findByRole("button", { name: /Create lead/ });
+    const { customer, job } = createButtons();
+    expect(job).not.toBeInTheDocument();
+    expect(customer).not.toBeInTheDocument();
+  });
+
+  it("shows both buttons for the Admin, Dispatcher and Technician presets", async () => {
+    for (const role of ["ADMIN", "DISPATCHER", "TECHNICIAN"] as const) {
+      cleanup();
+      localStorage.clear();
+      await typeUnknownNumber(personCopiedFrom(role));
+      expect(await screen.findByRole("button", { name: /Create lead/ })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /Create job/ })).toBeInTheDocument();
+    }
+  });
+
+  it("shows the number, no button and no save line for a person who holds neither pair", async () => {
+    await typeUnknownNumber(personHolding([]));
+
+    expect(screen.getByText(/No match for/)).toHaveTextContent("6095550000");
+    expect(createButtons()).toEqual({ customer: null, lead: null, job: null });
+    expect(screen.queryByText("Save this number to reach them later.")).not.toBeInTheDocument();
   });
 
   it("attributes a hub call to the picked customer (E2): panel Call → place call posts customer_id", async () => {

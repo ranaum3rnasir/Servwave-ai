@@ -19,13 +19,22 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
+import { withCheckoutLedger } from './helpers';
 
 vi.mock('../services/notifications/notificationService', () => ({
   emit: vi.fn().mockResolvedValue(undefined),
   notificationAlreadyExists: vi.fn().mockResolvedValue(false),
 }));
 
-import { emit } from '../services/notifications/notificationService';
+// The alert goes out through the billing alerts' two-lane chain (S06.28); who it reaches is permission-billing-alerts-db.test.ts. Here
+// the route is asked for the alert, with the words and the key the processor's retries are held to.
+vi.mock('../services/notifications/invoiceBillingAlerts', async (original) => ({
+  ...(await original<typeof import('../services/notifications/invoiceBillingAlerts')>()),
+  alertInvoice: vi.fn().mockResolvedValue([]),
+}));
+
+import { alertInvoice as emit } from '../services/notifications/invoiceBillingAlerts';
+import { renderTemplate } from '../services/notifications/templates';
 
 const mockEmit = emit as unknown as ReturnType<typeof vi.fn>;
 const mockPrisma = prisma as unknown as Record<string, any>;
@@ -91,6 +100,9 @@ function postWebhook(body: object) {
     .send(Buffer.from(JSON.stringify({ id: 'evt_unapplied_1', type: 'checkout.session.completed', data: { object: body } })));
 }
 
+/** Payments booked inside the webhook's transaction. */
+let paymentCreate: ReturnType<typeof vi.fn>;
+
 function timelineRows() {
   return mockPrisma.timelineEvent.create.mock.calls.map((c: any[]) => c[0].data);
 }
@@ -105,7 +117,20 @@ beforeEach(() => {
   mockPrisma.stripeEvent.create.mockResolvedValue({});
   mockPrisma.timelineEvent.create.mockResolvedValue({});
   mockPrisma.auditLog.create.mockResolvedValue({});
+  // Slice 08: the event record and the capture (or the payment) are written in one transaction;
+  // here it writes history through the same mocked client the assertions read.
+  paymentCreate = vi.fn().mockResolvedValue({ id: 'pay_1' });
+  mockPrisma.$transaction.mockImplementation(async (fn: any) => fn(withCheckoutLedger(
+    { timelineEvent: mockPrisma.timelineEvent, stripeEvent: mockPrisma.stripeEvent, payment: { create: paymentCreate } },
+    await servedInvoice(),
+  )));
 });
+
+/** The invoice the test serves from invoice.findUnique: the reconciler reads it before its transaction. */
+async function servedInvoice(): Promise<Record<string, any>> {
+  const results = mockPrisma.invoice.findUnique.mock.results;
+  return results.length ? ((await results[results.length - 1].value) ?? {}) : {};
+}
 
 describe('a card capture the webhook will not apply', () => {
   it('leaves a findable record on the invoice when the figures do not reconcile', async () => {
@@ -115,7 +140,7 @@ describe('a card capture the webhook will not apply', () => {
 
     expect(res.status).toBe(200);
     // Still no Payment — the figures do not reconcile and guessing is worse.
-    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+    expect(paymentCreate).not.toHaveBeenCalled();
 
     const row = timelineRows().find((d: any) => d.event_type === 'PAYMENT_UNRECORDED');
     expect(row).toBeDefined();
@@ -145,6 +170,24 @@ describe('a card capture the webhook will not apply', () => {
     expect(emitted.dedupKey).toContain('evt_unapplied_1');
   });
 
+  it('a payment made for another kind of document is told as that, not as an amount that does not match', async () => {
+    mockPrisma.invoice.findUnique.mockResolvedValue(depositInvoice());
+
+    // A session built to pay an invoice, naming this deposit.
+    await postWebhook(session({ metadata: { invoiceId: depositInvoice().id, kind: 'invoice' } }));
+
+    const row = timelineRows().find((d: any) => d.event_type === 'PAYMENT_UNRECORDED');
+    expect(row.metadata).toMatchObject({ reason: 'DOCUMENT_MISMATCH' });
+    expect(row.description).toMatch(/different document/);
+
+    expect(mockEmit).toHaveBeenCalledTimes(1);
+    const { verb, data } = mockEmit.mock.calls[0][0];
+    const alert = renderTemplate(verb, data);
+    expect(alert.body).toMatch(/different document/);
+    expect(alert.body).not.toMatch(/amount does not match/);
+    expect(`${alert.title} ${alert.body}`).not.toMatch(/stripe/i);
+  });
+
   it('files it on the audit trail too', async () => {
     mockPrisma.invoice.findUnique.mockResolvedValue(depositInvoice());
 
@@ -158,23 +201,40 @@ describe('a card capture the webhook will not apply', () => {
 
   it('records nothing of the sort when the payment applies normally', async () => {
     mockPrisma.invoice.findUnique.mockResolvedValue(depositInvoice());
-    mockPrisma.$transaction.mockImplementation(async (fn: any) => {
-      const tx = {
-        invoice: { update: vi.fn().mockResolvedValue({}) },
-        estimate: { update: vi.fn().mockResolvedValue({}) },
-        lead: { updateMany: vi.fn().mockResolvedValue({}) },
-        timelineEvent: { create: vi.fn().mockResolvedValue({}) },
-        stripeEvent: { create: vi.fn().mockResolvedValue({}) },
-        payment: { create: vi.fn().mockResolvedValue({ id: 'pay_1' }) },
-      };
-      await fn(tx);
-      return tx;
-    });
 
     await postWebhook(session());
 
     expect(timelineRows().find((d: any) => d.event_type === 'PAYMENT_UNRECORDED')).toBeUndefined();
     expect(auditRows().find((d: any) => d.action === 'billing.payment_unrecorded')).toBeUndefined();
+  });
+});
+
+describe('an invoice that stops being payable while the checkout completes (#891)', () => {
+  // The pre-check read SENT, but by the time the transaction holds the invoice row a job cancel
+  // has voided it. The card has been charged; booking it would turn VOIDED back into PAID.
+  it('books no payment and leaves the unapplied-capture record instead', async () => {
+    mockPrisma.invoice.findUnique.mockResolvedValue(depositInvoice({ kind: 'STANDARD', estimate: null }));
+    const invoiceUpdate = vi.fn().mockResolvedValue({});
+    mockPrisma.$transaction.mockImplementation(async (fn: any) => fn(withCheckoutLedger({
+      invoice: { findUnique: vi.fn().mockResolvedValue({ status: 'VOIDED' }), update: invoiceUpdate },
+      timelineEvent: mockPrisma.timelineEvent,
+      stripeEvent: mockPrisma.stripeEvent,
+      payment: { create: paymentCreate },
+    }, await servedInvoice())));
+
+    const res = await postWebhook(session());
+
+    expect(res.status).toBe(200);
+    expect(paymentCreate).not.toHaveBeenCalled();
+    expect(invoiceUpdate).not.toHaveBeenCalled();
+    const row = timelineRows().find((d: any) => d.event_type === 'PAYMENT_UNRECORDED');
+    expect(row).toBeDefined();
+    expect(row.metadata).toMatchObject({ reason: 'INVOICE_NOT_PAYABLE', charged_cents: 50000, payment_intent: 'pi_test_abc' });
+    expect(row.description).not.toMatch(/stripe/i);
+    // Handled: recorded (with the capture, in one transaction) so the processor does not re-deliver it.
+    expect(mockPrisma.stripeEvent.create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ stripe_event_id: 'evt_unapplied_1' }),
+    }));
   });
 });
 
@@ -189,7 +249,7 @@ describe('a deposit whose estimate moved on before the webhook arrived', () => {
     const res = await postWebhook(session());
 
     expect(res.status).toBe(200);
-    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+    expect(paymentCreate).not.toHaveBeenCalled();
     const row = timelineRows().find((d: any) => d.event_type === 'PAYMENT_UNRECORDED');
     expect(row).toBeDefined();
     expect(row.metadata).toMatchObject({ reason: 'DEPOSIT_SUPERSEDED' });
@@ -207,38 +267,32 @@ describe('a deposit whose estimate moved on before the webhook arrived', () => {
         deposit_value: 500,
       },
     }));
-    mockPrisma.$transaction.mockImplementation(async (fn: any) => {
-      const tx = {
-        invoice: { update: vi.fn().mockResolvedValue({}) },
-        estimate: { update: vi.fn().mockResolvedValue({}) },
-        lead: { updateMany: vi.fn().mockResolvedValue({}) },
-        timelineEvent: { create: vi.fn().mockResolvedValue({}) },
-        stripeEvent: { create: vi.fn().mockResolvedValue({}) },
-        payment: { create: vi.fn().mockResolvedValue({ id: 'pay_1' }) },
-      };
-      await fn(tx);
-      return tx;
-    });
 
     await postWebhook(session());
 
-    expect(mockPrisma.$transaction).toHaveBeenCalled();
+    expect(paymentCreate).toHaveBeenCalledOnce();
     expect(timelineRows().find((d: any) => d.event_type === 'PAYMENT_UNRECORDED')).toBeUndefined();
   });
 
   // Under a mocked Prisma the row is whatever the double returns, so the gate proves nothing
-  // unless the handler actually asks the database for what it compares.
-  it('selects what the comparison needs on the webhook lookup', async () => {
+  // unless the handler actually asks the database for what it compares. Since slice 09 the money
+  // query runs under the invoice lock, inside the owning org; before the lock only the invoice's
+  // org is read, so another org's customer, estimate and branding are never loaded.
+  it('selects what the comparison needs under the lock, and only the org before it', async () => {
     mockPrisma.invoice.findUnique.mockResolvedValue(depositInvoice());
+    const lockedRead = vi.fn().mockResolvedValue(depositInvoice());
+    mockPrisma.$transaction.mockImplementation(async (fn: any) => fn(withCheckoutLedger(
+      { timelineEvent: mockPrisma.timelineEvent, stripeEvent: mockPrisma.stripeEvent, payment: { create: paymentCreate }, invoice: { findFirstOrThrow: lockedRead } },
+      await servedInvoice(),
+    )));
 
     await postWebhook(session());
 
-    // The first lookup is resolveOrgFromEvent's own; the money query is the one that reads the
-    // amount.
-    const args = mockPrisma.invoice.findUnique.mock.calls
-      .map((c: any[]) => c[0])
-      .find((a: any) => a?.select?.amount_due === true);
-    expect(args).toBeDefined();
+    const preRead = mockPrisma.invoice.findUnique.mock.calls.map((c: any[]) => c[0]).at(-1);
+    expect(preRead.select).toEqual({ id: true, organization_id: true });
+    const args = lockedRead.mock.calls[0][0];
+    expect(args.where).toMatchObject({ organization_id: expect.any(String) });
+    expect(args.select.amount_due).toBe(true);
     expect(args.select.estimate.select.modified_after_send).toBe(true);
     expect(args.select.estimate.select.deposit_type).toBe(true);
     expect(args.select.estimate.select.deposit_value).toBe(true);

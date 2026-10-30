@@ -41,11 +41,11 @@ describe('RecordPaymentDialog', () => {
     renderDialog();
     // Radix Select only mounts its listbox once opened — open it before querying options.
     await userEvent.click(await screen.findByRole('combobox'));
-    // getByText would throw here — "Credit Card" and "External Credit Card Processor" both
+    // getByText would throw here — "Credit Card" and "Card (outside ServWave)" both
     // match /card/i. Query by option role and exact name instead.
     for (const label of [
-      'Cash', 'Check', 'Credit Card', 'External Credit Card Processor',
-      'Bank Transfer (ACH)', 'Zelle', 'Venmo', 'Cash App', 'Other',
+      'Cash', 'Check', 'Credit Card', 'Card (outside ServWave)',
+      'Bank transfer', 'Zelle', 'Venmo', 'Cash App', 'Other',
     ]) {
       expect(await screen.findByRole('option', { name: label })).toBeInTheDocument();
     }
@@ -148,7 +148,7 @@ describe('RecordPaymentDialog', () => {
       expect(await screen.findByText(/add a tip\?/i)).toBeInTheDocument();
 
       await userEvent.click(screen.getByRole('combobox'));
-      await userEvent.click(await screen.findByRole('option', { name: 'Bank Transfer (ACH)' }));
+      await userEvent.click(await screen.findByRole('option', { name: 'Bank transfer' }));
       expect(screen.getByText(/add a tip\?/i)).toBeInTheDocument();
 
       await userEvent.click(screen.getByRole('combobox'));
@@ -273,7 +273,8 @@ describe('RecordPaymentDialog', () => {
       renderDialog();
       await screen.findByLabelText(/amount/i);
       const submit = screen.getByRole('button', { name: /record payment/i });
-      expect(submit).toBeEnabled();
+      // The submit waits for the lists of payment methods to be read, then opens.
+      await waitFor(() => expect(submit).toBeEnabled());
 
       // Every button inside the date row (calendar / time-list openers) leaves the submit
       // enabled: nothing reachable there can empty a required field behind the user's back.

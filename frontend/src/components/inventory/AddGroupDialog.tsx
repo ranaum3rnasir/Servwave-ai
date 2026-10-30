@@ -27,7 +27,7 @@ import {
   formatProfitabilityPercent,
   type Profitability,
 } from "@/lib/profitability";
-import type { Item, ItemGroup, ItemGroupLine } from "@/lib/api/inventory";
+import type { CatalogItem, ItemGroup, ItemGroupLine } from "@/lib/api/inventory";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -47,7 +47,7 @@ type Props = {
   editGroup?: ItemGroup | null;
   onUpdate?: (group: ItemGroup) => void;
   /** Full Item list — used for the line-item picker. */
-  items: Item[];
+  items: CatalogItem[];
 };
 
 /**
@@ -152,7 +152,7 @@ export function AddGroupDialog({
       .slice(0, 8);
   }, [items, pickerQuery]);
 
-  function addRealItemLine(it: Item) {
+  function addRealItemLine(it: CatalogItem) {
     const newLine: ItemGroupLine = {
       id: `ln_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
       itemId: it.id,
@@ -170,7 +170,8 @@ export function AddGroupDialog({
       name: "",
       quantity: 1,
       priceOverride: 0,
-      costOverride: 0,
+      // A person who cannot see costs has no cost field; "costs nothing" is a claim only a cost column can make.
+      costOverride: canSeePricing ? 0 : undefined,
     };
     setForm((f) => ({ ...f, lines: [...f.lines, newLine] }));
     setPickerOpen(false);
@@ -575,8 +576,8 @@ export function AddGroupDialog({
                   <th className="px-2 py-1.5">Item</th>
                   <th className="px-2 py-1.5 w-20 text-right">Qty</th>
                   <th className="px-2 py-1.5 w-24 text-right">Price</th>
-                  <th className="px-2 py-1.5 w-24 text-right">Cost</th>
-                  <th className="px-2 py-1.5 w-28 text-right">Profitability</th>
+                  {canSeePricing && <th className="px-2 py-1.5 w-24 text-right">Cost</th>}
+                  {canSeePricing && <th className="px-2 py-1.5 w-28 text-right">Profitability</th>}
                   <th className="px-2 py-1.5 w-20 text-right">Amount</th>
                   <th className="px-2 py-1.5 w-8"></th>
                 </tr>
@@ -585,7 +586,7 @@ export function AddGroupDialog({
                 {form.lines.length === 0 && (
                   <tr>
                     <td
-                      colSpan={7}
+                      colSpan={canSeePricing ? 7 : 5}
                       className="px-3 py-8 text-center text-xs text-text-secondary"
                     >
                       <EmptyState title='No lines yet - search above to add Price Book items, or click "Free-form line" for one-off charges.' />
@@ -598,15 +599,10 @@ export function AddGroupDialog({
                     ? items.find((x) => x.id === line.itemId)
                     : undefined;
                   const profitability = lineProfitability(line);
-                  // Only ONE of the notes is an invitation into the cost
-                  // field, and a viewer without "See financial data" must not
-                  // be invited to fill one they are not allowed to read. Same
-                  // gate the sibling line-item editors use (lib/ability.ts,
-                  // SRVW-140). An em dash on its own is fine for them.
-                  const profitabilityNote =
-                    profitability.state === "uncosted" && !canSeePricing
-                      ? null
-                      : PROFITABILITY_NOTE[profitability.state];
+                  // The cost and profitability cells are drawn only for a
+                  // viewer with "See financial data" (S07.17), so the note may
+                  // invite them into the cost field.
+                  const profitabilityNote = PROFITABILITY_NOTE[profitability.state];
                   return (
                     <tr key={line.id} className="align-top">
                       <td className="px-2 py-1.5">
@@ -690,57 +686,61 @@ export function AddGroupDialog({
                           }
                         />
                       </td>
-                      <td className="px-2 py-1.5">
-                        <Input
-                          kind="money"
-                          step="0.01"
-                          min="0"
-                          value={
-                            line.costOverride != null
-                              ? line.costOverride
-                              : lineCost(line) || ""
-                          }
-                          onChange={(e) => {
-                            const v = e.target.value;
-                            updateLine(line.id, {
-                              costOverride: v === "" ? undefined : Number(v),
-                            });
-                          }}
-                          placeholder={
-                            !isFreeForm && referencedItem
-                              ? `${(referencedItem.unitCost ?? 0).toFixed(2)}`
-                              : "0.00"
-                          }
-                          className="px-1.5 py-1 text-right"
-                        />
-                      </td>
-                      {/* Margin and markup side by side, each under its full
-                          word. A line with no cost shows an em dash, never a
-                          confident 100% invented out of missing data, and
-                          nothing here is capped. */}
-                      <td className="px-2 py-1.5">
-                        <div
-                          role="group"
-                          aria-label={`Profitability for ${line.name || "line"}`}
-                          title={profitabilityNote ?? undefined}
-                        >
-                          <dl className="flex justify-end gap-3">
-                            {[
-                              { word: "Margin", value: profitability.marginPercent },
-                              { word: "Markup", value: profitability.markupPercent },
-                            ].map(({ word, value }) => (
-                              <div key={word} className="flex flex-col items-end gap-0.5">
-                                <dt className="text-[9px] font-semibold uppercase tracking-wide text-text-secondary">
-                                  {word}
-                                </dt>
-                                <dd className="text-xs tabular-nums text-text-secondary">
-                                  {formatProfitabilityPercent(value)}
-                                </dd>
-                              </div>
-                            ))}
-                          </dl>
-                        </div>
-                      </td>
+                      {canSeePricing && (
+                        <>
+                          <td className="px-2 py-1.5">
+                            <Input
+                              kind="money"
+                              step="0.01"
+                              min="0"
+                              value={
+                                line.costOverride != null
+                                  ? line.costOverride
+                                  : lineCost(line) || ""
+                              }
+                              onChange={(e) => {
+                                const v = e.target.value;
+                                updateLine(line.id, {
+                                  costOverride: v === "" ? undefined : Number(v),
+                                });
+                              }}
+                              placeholder={
+                                !isFreeForm && referencedItem
+                                  ? `${(referencedItem.unitCost ?? 0).toFixed(2)}`
+                                  : "0.00"
+                              }
+                              className="px-1.5 py-1 text-right"
+                            />
+                          </td>
+                          {/* Margin and markup side by side, each under its full
+                              word. A line with no cost shows an em dash, never a
+                              confident 100% invented out of missing data, and
+                              nothing here is capped. */}
+                          <td className="px-2 py-1.5">
+                            <div
+                              role="group"
+                              aria-label={`Profitability for ${line.name || "line"}`}
+                              title={profitabilityNote ?? undefined}
+                            >
+                              <dl className="flex justify-end gap-3">
+                                {[
+                                  { word: "Margin", value: profitability.marginPercent },
+                                  { word: "Markup", value: profitability.markupPercent },
+                                ].map(({ word, value }) => (
+                                  <div key={word} className="flex flex-col items-end gap-0.5">
+                                    <dt className="text-[9px] font-semibold uppercase tracking-wide text-text-secondary">
+                                      {word}
+                                    </dt>
+                                    <dd className="text-xs tabular-nums text-text-secondary">
+                                      {formatProfitabilityPercent(value)}
+                                    </dd>
+                                  </div>
+                                ))}
+                              </dl>
+                            </div>
+                          </td>
+                        </>
+                      )}
                       <td className="px-2 py-1.5 text-right text-sm tabular-nums font-medium text-text-primary">
                         ${lineAmount(line).toFixed(2)}
                       </td>

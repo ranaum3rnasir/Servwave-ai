@@ -8,7 +8,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { renderWithProviders } from './helpers';
+import { renderWithProviders, purchasingAbility } from './helpers';
 import { formatCurrency } from '@/lib/utils';
 
 const hoisted = vi.hoisted(() => {
@@ -95,7 +95,7 @@ const po = hoisted.po as unknown as import('@/lib/api/inventory').PurchaseOrder;
 
 describe('one money rule (S3.2) - grid, CSV, detail and preview agree', () => {
   it('the Open grid row and its CSV export price catalog-linked lines by catalog cost', async () => {
-    renderWithProviders(<PurchaseOrdersPage />, { initialEntries: ['/inventory/purchase-orders'] });
+    renderWithProviders(<PurchaseOrdersPage />, { initialEntries: ['/inventory/purchase-orders'], ability: purchasingAbility() });
     const row = (await screen.findByText('PO-3201')).closest('tr')!;
     expect(within(row).getByText(formatCurrency(EXPECTED_TOTAL))).toBeInTheDocument();
 
@@ -106,7 +106,7 @@ describe('one money rule (S3.2) - grid, CSV, detail and preview agree', () => {
   });
 
   it('the detail dialog shows the catalog cost per line and the same total', () => {
-    renderWithProviders(<PODetailDialog open onClose={vi.fn()} po={po} onReceive={vi.fn()} />);
+    renderWithProviders(<PODetailDialog open onClose={vi.fn()} po={po} onReceive={vi.fn()} />, { ability: purchasingAbility() });
     // Subtotal + Total both print the rule's answer.
     expect(screen.getAllByText(formatCurrency(EXPECTED_TOTAL)).length).toBeGreaterThanOrEqual(2);
     // The catalog-priced line shows its effective unit cost and extension...
@@ -123,7 +123,7 @@ describe('one money rule (S3.2) - grid, CSV, detail and preview agree', () => {
   });
 
   it('the print preview prices the same way', () => {
-    renderWithProviders(<POPreviewDialog open onClose={vi.fn()} po={po} />);
+    renderWithProviders(<POPreviewDialog open onClose={vi.fn()} po={po} />, { ability: purchasingAbility() });
     expect(screen.getAllByText(formatCurrency(EXPECTED_TOTAL)).length).toBeGreaterThanOrEqual(2);
     const capRow = screen.getByText('Run Capacitor').closest('tr')!;
     expect(within(capRow).getByText(formatCurrency(12.5))).toBeInTheDocument();

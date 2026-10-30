@@ -162,8 +162,9 @@ describe('no telephone URL outside the contact action', () => {
     }
     expect(
       offenders,
-      'A telephone or text URL was built outside components/contact/. Use PhoneNumberAction, ' +
-        'ContactCallButton or ContactTextButton so the call goes through the dialer and is attributed.',
+      'A telephone or text URL was built outside components/contact/. Draw a customer or crew phone through ' +
+        'the contact display policy (PhoneValue, PhoneContactActions), or a vendor number with PhoneNumberAction, ' +
+        'so the call goes through the dialer and is attributed.',
     ).toEqual([]);
   });
 });
@@ -184,4 +185,25 @@ describe('the screens left alone are really dead', () => {
       expect(unexpected, `now imported by live code: migrate ${dead} to the contact action`).toEqual([]);
     });
   }
+});
+
+/**
+ * Roles & Permissions S05.5: ONE way a customer phone is drawn and acted on - through the contact display policy
+ * (components/contact/contactDisplayPolicy.ts). The older shared contact action decides from the `create Communication`
+ * ability alone and ignores the copy switches, so it is left to numbers that are not customer data. Today that is the
+ * vendor card and the vendor detail dialog (a vendor's phone is not a customer's); a screen that draws a customer's
+ * phone must not come back to it.
+ */
+describe('the older contact action serves only numbers that are not a customer\'s', () => {
+  const VENDOR_SCREENS = ['components/inventory/VendorCard.tsx', 'components/inventory/VendorDetailDialog.tsx'];
+
+  it('is imported by the vendor screens and nothing else', () => {
+    const importers: string[] = [];
+    for (const file of sourceFiles(SRC)) {
+      for (const spec of importSpecifiers(readFileSync(file, 'utf8'), file)) {
+        if (resolveSpecifier(spec, file) === 'components/contact/ContactAction.tsx') importers.push(rel(file));
+      }
+    }
+    expect(importers.sort()).toEqual(VENDOR_SCREENS);
+  });
 });

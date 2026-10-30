@@ -13,6 +13,7 @@ import { useConfirm } from '@/hooks/useConfirm';
 import { deleteAttachmentPrompt } from '@/lib/confirmPrompts';
 import { ACCEPTED_UPLOAD_TYPES, oversizeRefusalMessage } from '@/lib/uploadTypes';
 import { AttachmentRowActions } from '@/components/attachments/AttachmentRowActions';
+import { fileControl, type FileChangeAnswer } from '@/lib/attachments/fileChange';
 import {
   UploadNudge,
   UploadProgress,
@@ -33,7 +34,7 @@ interface AttachmentSectionProps {
   onCountChange?: (count: number) => void;
 }
 
-interface Attachment {
+interface Attachment extends FileChangeAnswer {
   id: string;
   file_name: string;
   file_url: string;
@@ -126,6 +127,9 @@ export function AttachmentSection({
       queryClient.invalidateQueries({ queryKey: ['attachments', entityType, entityId] });
     },
   });
+
+  // The server's per-file answer decides; the browser's own grant is the fallback for a row that carries none.
+  const mayDelete = (att: Attachment) => fileControl(att, 'delete', mayChange('delete', att.uploader?.id)) === 'enabled';
 
   // One confirm-then-delete, shared by the tile's Delete control and its row menu's Delete.
   const deleteWithConfirm = async (att: Attachment) => {
@@ -289,13 +293,6 @@ export function AttachmentSection({
         <p className="text-sm text-text-secondary">
           Drag & drop files here, or <span className="text-primary font-medium">Browse</span>
         </p>
-        {/* No format/size subtitle (Ran, 2026-09-20). It listed formats and caps that are
-            neither complete nor stable — the accepted list is longer than the four it named
-            and the video cap has moved twice — so it read as a rule while being wrong, and
-            it charged every user for a constraint almost none of them meet. A file that does
-            not fit is refused with a sentence naming its real size, the real limit and a next
-            step (`oversizeRefusalMessage`), which is the honest place to spend that attention.
-            `upload-dropzone-no-size-hint.test.tsx` is the guard. */}
         <Input
           ref={fileInputRef}
           type="file"
@@ -470,13 +467,13 @@ export function AttachmentSection({
                   onRenamed={() =>
                     queryClient.invalidateQueries({ queryKey: ['attachments', entityType, entityId] })
                   }
-                  onDelete={mayChange('delete', att.uploader?.id) ? () => void deleteWithConfirm(att) : undefined}
+                  onDelete={mayDelete(att) ? () => void deleteWithConfirm(att) : undefined}
                 />
                 {/* Delete button - tiny thumbnail-overlay affordance, not Button-shaped - left
                     raw. hover-reveal: visible on touch, hidden until hover only where hover
                     exists (mobile slice 15). Offered only where the server would allow it: the
                     delete grant, or (on a task) a file the user uploaded. */}
-                {mayChange('delete', att.uploader?.id) && (
+                {mayDelete(att) && (
                 <button
                   type="button"
                   aria-label="Delete attachment"

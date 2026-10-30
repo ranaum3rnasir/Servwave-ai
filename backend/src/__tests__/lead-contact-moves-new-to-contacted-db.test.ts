@@ -202,7 +202,7 @@ suite('an outbound contact moves a New lead to Contacted (real database)', () =>
 
   describe('a lead already past New stays where it is', () => {
     it.each<LeadStatus>([
-      'CONTACTED', 'WALKTHROUGH_SCHEDULED', 'WALKTHROUGH_COMPLETED', 'ESTIMATED', 'WON', 'LOST', 'CANCELLED',
+      'CONTACTED', 'WALKTHROUGH_SCHEDULED', 'WALKTHROUGH_COMPLETED', 'ESTIMATED', 'WON', 'LOST',
     ])('%s: status unchanged and no History row; the clock still stamps as before', async (status) => {
       const f = await fixture({ status });
       await recordLeadOutboundContact({ client: prisma }, {

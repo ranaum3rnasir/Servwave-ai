@@ -1,34 +1,32 @@
-import { Fixtures } from '../fixtures';
+import type { SuiteContext } from '../context';
+import { acaciaEvent } from '../events';
 import { postWebhook } from '../sign';
+import { assert, removeFixtures } from '../harness';
+import { prisma } from '../../../src/lib/prisma';
 
-function assert(cond: any, msg: string): void {
-  if (!cond) throw new Error(`Assertion failed: ${msg}`);
-}
-
-// Fires checkout.session.completed with no depositId or invoiceId in metadata.
-// The handler should break early without updating any DB state, but return 200.
-export async function run(_f: Fixtures, _opts: { verbose: boolean }): Promise<number> {
+// A completed checkout with no invoice named in its metadata touches nothing and answers 200, so
+// the processor stops retrying it. The event is still recorded once.
+export async function run(_ctx: SuiteContext, _opts: { verbose: boolean }): Promise<number> {
   let count = 0;
-
-  const event = {
-    id: `evt_no_meta_${Date.now()}`,
-    type: 'checkout.session.completed',
-    data: {
-      object: {
-        id: 'cs_no_meta_1',
-        payment_intent: `pi_no_meta_${Date.now()}`,
-        amount_total: 50000,
-        metadata: {}, // no depositId, no invoiceId
-      },
-    },
-  };
-
-  const res = await postWebhook(event);
-  assert(res.status === 200, `missing-metadata should return 200 (got ${res.status})`);
-  count++;
-  // The event is still recorded (handler falls through to the !eventRecorded path)
-  assert(!res.body.error, `no error in response (got ${res.body.error})`);
-  count++;
-
+  const event = acaciaEvent('checkout.session.completed', {
+    id: 'cs_qa39_nometa', object: 'checkout.session', payment_intent: `pi_qa39_nometa_${Date.now()}`, amount_total: 50000, metadata: {},
+  });
+  try {
+    const res = await postWebhook(event);
+    assert(res.status === 200, `missing-metadata should return 200 (got ${res.status})`);
+    count++;
+    assert(!res.body.error, `no error in response (got ${res.body.error})`);
+    count++;
+    const payments = await prisma.payment.count({ where: { stripe_checkout_session_id: 'cs_qa39_nometa' } });
+    assert(payments === 0, `no payment was booked off an event that names no invoice (got ${payments})`);
+    count++;
+    const again = await postWebhook(event);
+    assert(again.status === 200 && again.body.duplicate === true, `the same event again is a duplicate (got ${again.status} ${JSON.stringify(again.body)})`);
+    count++;
+  } finally {
+    await removeFixtures(`stripe_events row ${event.id}`, async () => {
+      await prisma.stripeEvent.deleteMany({ where: { stripe_event_id: event.id } });
+    });
+  }
   return count;
 }

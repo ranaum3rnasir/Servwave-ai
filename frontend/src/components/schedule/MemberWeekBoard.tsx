@@ -5,7 +5,7 @@ import { cn, getInitials } from '@/lib/utils';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { EmptyState } from '@/components/ui/empty-state';
 import {
-  isOnBoardFor, eventDangerState,
+  isOnBoardFor, eventDangerState, rescheduleGate,
   type BoardEvent, type ScheduledBoardEvent, type EventDangerState,
 } from './scheduleModel';
 import {
@@ -31,6 +31,8 @@ export interface StaffUser {
 
 interface MemberWeekBoardProps {
   weekStart: WallClock;
+  /** The weekday the week starts on (0 = Sunday, the default); the "No crew" filter's 7 days start on today's. */
+  weekStartsOn?: 0 | 1 | 2 | 3 | 4 | 5 | 6;
   staff: StaffUser[];
   events: BoardEvent[];
   conflictIds: Set<string>;
@@ -88,7 +90,8 @@ function BoardCard({ event, fromMemberId, dangerState, onClick, onContextMenu }:
       style={scheduleCardOpacityStyle(visual)}
       // The card's identity on the board (multi-visit S6): one per VISIT, never per job.
       data-board-id={event.boardId}
-      draggable
+      // A Done or Cancelled job, or an invoiced one, is not a drag source: the drop refuses it too (rescheduleGate).
+      draggable={event.isGhost || rescheduleGate(event).ok}
       onDragStart={(e) => {
         // Same payload keys as the grid view's JobCard, plus the from-member lane marker.
         // Day granularity — moving a card never exposes a resize affordance here (B-8).
@@ -275,6 +278,7 @@ function laneEventsFor(events: BoardEvent[], memberId: string, day: WallClock): 
 
 export function MemberWeekBoard({
   weekStart,
+  weekStartsOn = 0,
   staff,
   events,
   conflictIds,
@@ -290,9 +294,9 @@ export function MemberWeekBoard({
   const weekDays = useMemo(() => {
     // startOfWeek/addDays always return a plain Date, even given a WallClock input —
     // re-assert the brand on values that were already wall-clock space (weekStart is).
-    const ws = asWallClock(startOfWeek(weekStart, { weekStartsOn: 0 }));
+    const ws = asWallClock(startOfWeek(weekStart, { weekStartsOn }));
     return Array.from({ length: 7 }, (_, i) => asWallClock(addDays(ws, i)));
-  }, [weekStart]);
+  }, [weekStart, weekStartsOn]);
 
   const activeStaff = staff.filter((s) => s.is_active);
 

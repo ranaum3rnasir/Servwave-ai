@@ -11,6 +11,8 @@ vi.mock('../config/env', () => ({
     NODE_ENV: 'test',
     EMAIL_FROM: 'Alpha <noreply@test.com>',
     RESEND_API_KEY: 're_test_key',
+    // PRD 10 (S10.12): the domain a sender's own address is built on; a document goes out from it.
+    MAILBOX_DOMAIN: 'mail.test.com',
     FRONTEND_URL: 'http://localhost:5173',
   },
 }));
@@ -34,9 +36,12 @@ vi.mock('../lib/pdf', () => ({
 import { prisma } from '../lib/prisma';
 import { persistTransactionalEmail } from '../lib/comm-persist';
 
+
+// PRD 10 (S10.12): a document is sent by hand, from the sender's own mailbox (the id the suite-wide mailbox stub answers to).
+const HAND_SENDER = { mailboxId: 'main-mailbox-id', userId: 'user-1' };
 // setup.ts mocks '../lib/email' globally; pull the REAL module here.
 let sendInvoiceEmail: typeof import('../lib/email')['sendInvoiceEmail'];
-let sendClockOverrideDecisionEmail: typeof import('../lib/email')['sendClockOverrideDecisionEmail'];
+let sendStagePickupEmail: typeof import('../lib/email')['sendStagePickupEmail'];
 let sendMfaCodeEmail: typeof import('../lib/email')['sendMfaCodeEmail'];
 let sendUserInviteEmail: typeof import('../lib/email')['sendUserInviteEmail'];
 let sendAutomationEmail: typeof import('../lib/email')['sendAutomationEmail'];
@@ -45,7 +50,7 @@ let sendSalesContactEmail: typeof import('../lib/email')['sendSalesContactEmail'
 beforeAll(async () => {
   const real = await vi.importActual<typeof import('../lib/email')>('../lib/email');
   sendInvoiceEmail = real.sendInvoiceEmail;
-  sendClockOverrideDecisionEmail = real.sendClockOverrideDecisionEmail;
+  sendStagePickupEmail = real.sendStagePickupEmail;
   sendMfaCodeEmail = real.sendMfaCodeEmail;
   sendUserInviteEmail = real.sendUserInviteEmail;
   sendAutomationEmail = real.sendAutomationEmail;
@@ -68,6 +73,7 @@ describe('Org-level email_sending_enabled toggle', () => {
     (prisma.organization.findUnique as Mock).mockResolvedValue({ email_sending_enabled: false });
 
     await sendInvoiceEmail({
+      handSender: HAND_SENDER,
       invoiceId: 'inv-1',
       organizationId: ORG_ID,
       to: 'cust@example.com',
@@ -86,6 +92,7 @@ describe('Org-level email_sending_enabled toggle', () => {
     (prisma.organization.findUnique as Mock).mockResolvedValue({ email_sending_enabled: true });
 
     await sendInvoiceEmail({
+      handSender: HAND_SENDER,
       invoiceId: 'inv-1',
       organizationId: ORG_ID,
       to: 'cust@example.com',
@@ -109,6 +116,7 @@ describe('Org-level email_sending_enabled toggle', () => {
       .mockResolvedValueOnce(undefined);
 
     await sendInvoiceEmail({
+      handSender: HAND_SENDER,
       invoiceId: 'inv-1',
       organizationId: ORG_ID,
       to: 'cust@example.com',
@@ -126,12 +134,15 @@ describe('Org-level email_sending_enabled toggle', () => {
   it('respects the toggle for senders that take org branding (org.id), not just a bare organizationId', async () => {
     (prisma.organization.findUnique as Mock).mockResolvedValue({ email_sending_enabled: false });
 
-    await sendClockOverrideDecisionEmail({
+    await sendStagePickupEmail({
+      handSender: HAND_SENDER,
+      organizationId: ORG_ID,
       org: { id: ORG_ID, name: 'Acme', logo_url: null, brand_color: '#0C2D3A' },
       to: 'tech@example.com',
-      technicianName: 'Tech',
-      decision: 'approved',
-      decidedByName: 'Boss',
+      jobNumber: 'J00001',
+      customer: 'Cust',
+      site: '1 Test Way',
+      lines: [],
     });
 
     expect(resendSend).not.toHaveBeenCalled();

@@ -92,6 +92,8 @@ function mockSingleTransaction() {
       estimate: { update: vi.fn().mockResolvedValue({}) },
       jobLineItem: { createMany: vi.fn().mockResolvedValue({ count: 0 }) },
       timelineEvent: { create: vi.fn().mockResolvedValue({}) },
+      // The lead's own entries are carried onto the job in the same transaction (S05.15); none here.
+      recordContactEntry: { findMany: vi.fn().mockResolvedValue([]) },
     }),
   );
 }
@@ -281,6 +283,8 @@ describe('POST /api/jobs - a lead may hold more than one job (#2188)', () => {
         lead: { update: leadUpdate },
         jobLineItem: { createMany: vi.fn().mockResolvedValue({ count: 0 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
+        // The lead's own entries are carried onto the job in the same transaction (S05.15); none here.
+        recordContactEntry: { findMany: vi.fn().mockResolvedValue([]) },
       }),
     );
     // A findFirst that actually FILTERS, rather than answering the same row to every query: the

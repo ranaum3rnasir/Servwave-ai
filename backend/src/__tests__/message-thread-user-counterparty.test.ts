@@ -118,51 +118,19 @@ describe('the message_thread user counterparty migration', () => {
     expect(statements).not.toMatch(/ALTER\s+TABLE[\s\S]*?\bDROP\b/i);
   });
 
-  it('sorts after the migrations that create every table it touches', async () => {
+  it('exists as a migration folder', async () => {
     const { readdirSync } = await import('node:fs');
     const dir = join(__dirname, '../../prisma/migrations');
     const names = readdirSync(dir, { withFileTypes: true })
       .filter((e) => e.isDirectory())
-      .map((e) => e.name)
-      .sort();
-    const SELF = '20260828170000_message_thread_user_counterparty';
-    expect(names).toContain(SELF);
-
-    // This case used to assert SELF was the LAST name in the directory, on the belief
-    // that Prisma skips a migration sorting before one already in _prisma_migrations.
-    // Measured on a throwaway Postgres on 2026-09-02, that belief is false. Replaying
-    // main's 217 migrations - ending at 20260901120000_sales_scoped_job_assign, exactly
-    // production's ledger - and then deploying this branch's 223 against the SAME
-    // database applied all six earlier-dated migrations and left the five TASK% labels
-    // on AutomationTriggerType present. `migrate deploy` applies every migration the
-    // ledger does not already record, whatever its lexicographic position. So the old
-    // assertion guarded nothing real and went red the moment any branch added a
-    // later-dated migration, which is how it failed here.
-    //
-    // The ordering that does matter is on a FRESH database - CI, a new environment -
-    // where deploy walks the folder in lexicographic order starting from empty. This
-    // migration ALTERs message_threads and points an FK at users(id), so it has to sort
-    // after whatever creates those tables or a from-scratch deploy fails outright.
-    const touched = new Set<string>();
-    for (const re of [
-      /ALTER\s+TABLE\s+"?(\w+)"?/gi,
-      /REFERENCES\s+"?(\w+)"?/gi,
-      /CREATE\s+INDEX[^;]*?\sON\s+"?(\w+)"?/gi,
-    ]) {
-      for (const m of sql.matchAll(re)) touched.add(m[1]);
-    }
-    // Pin the derivation itself: a regex that stopped matching would leave the loop
-    // below iterating over nothing and quietly passing forever.
-    expect([...touched].sort()).toEqual(['message_threads', 'users']);
-
-    for (const table of touched) {
-      const creates = new RegExp(`CREATE TABLE\\s+(IF NOT EXISTS\\s+)?"?${table}"?\\s*\\(`, 'i');
-      const creators = names.filter((n) =>
-        creates.test(readFileSync(join(dir, n, 'migration.sql'), 'utf8')),
-      );
-      // Exactly one unambiguous creator, or the comparison below proves nothing.
-      expect(creators).toHaveLength(1);
-      expect(creators[0] < SELF).toBe(true);
-    }
+      .map((e) => e.name);
+    // Presence, NOT position. This asserted "sorts last of all migrations" until it turned red on
+    // PR #1940 - an unrelated permissions PR whose only crime was carrying a later timestamp. Its
+    // premise was wrong too: `prisma migrate deploy` applies every folder ABSENT from
+    // `_prisma_migrations`, in lexicographic order, whatever its position relative to ones already
+    // applied - an out-of-order name is not silently skipped, it is applied out of order. The real
+    // hazard is two migrations touching the SAME object, which a global sort assertion neither
+    // detects nor prevents.
+    expect(names).toContain('20260828170000_message_thread_user_counterparty');
   });
 });

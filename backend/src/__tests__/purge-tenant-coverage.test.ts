@@ -66,7 +66,8 @@ async function modelsWrittenByPurge(): Promise<Set<string>> {
               if (op === 'findUnique' || op === 'findFirst') {
                 return async () => ({ id: 'org-guard', name: 'e2e-qa-guard' });
               }
-              if (op === 'findMany') return async () => [{ id: 'stub-id' }];
+              // local_part: the stub row also stands in for a mailbox address, which the purge hashes.
+              if (op === 'findMany') return async () => [{ id: 'stub-id', local_part: 'stub-address' }];
               if (op === 'count') return async () => 0;
               return async () => null;
             },
@@ -146,11 +147,12 @@ describe('purge tenant-coverage drift guard (#869)', () => {
     expect(redundant, `Now covered by purge - remove from PURGE_EXEMPT: ${redundant.join(', ')}`).toEqual([]);
   });
 
-  it('holds audit_logs and terms_acceptances as an explicit PENDING DECISION, not an accident', () => {
-    // These two are the open question on #869: delete on purge (erasure) or retain (contract
-    // evidence / append-only history). Today they survive by accident with no decision recorded
-    // either way. Exempting them makes the non-decision visible instead of invisible.
-    expect(PURGE_EXEMPT.AuditLog).toMatch(/PENDING DECISION/);
+  it('holds audit_logs as a stated retention rule and terms_acceptances as an explicit PENDING DECISION', () => {
+    // audit_logs: decided (payments go-live F1) - it outlives every purge and a customer force-purge writes
+    // its own row there. terms_acceptances is still the open question on #869: delete on purge (erasure) or
+    // retain (contract evidence). Exempting it makes the non-decision visible instead of invisible.
+    expect(PURGE_EXEMPT.AuditLog).toMatch(/RETAINED BY RULE/);
+    expect(PURGE_EXEMPT.AuditLog).not.toMatch(/PENDING DECISION/);
     expect(PURGE_EXEMPT.TermsAcceptance).toMatch(/PENDING DECISION/);
   });
 

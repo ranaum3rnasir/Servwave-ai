@@ -12,11 +12,11 @@ import { CheckCircle2, CircleSlash, AlertCircle, OctagonPause, ArrowRight, Clock
  * map. Nothing here falls back to a shared cross-domain default - that
  * fallback is exactly the collision hazard this registry replaces.
  *
- * INCLUSION RULE (applied to all 61 Prisma enums; 47 are deliberately absent,
- * leaving 14 enums across 13 domains in scope). Those three counts are not
+ * INCLUSION RULE (applied to all 70 Prisma enums; 54 are deliberately absent,
+ * leaving 16 enums across 15 domains in scope). Those three counts are not
  * decorative and nothing asserts them, so they are stated with their source:
- * `grep -cE '^enum ' backend/prisma/schema.prisma` = 61, and EXCLUDED_ENUMS in
- * design-system/__tests__/status-registry-schema-guard.test.ts = 47, each with a
+ * `grep -cE '^enum ' backend/prisma/schema.prisma` = 70, and EXCLUDED_ENUMS in
+ * design-system/__tests__/status-registry-schema-guard.test.ts = 54, each with a
  * written reason. Re-run both before editing this sentence.
  * A domain belongs here iff ALL THREE hold:
  *   (a) its values are a lifecycle-state or graded-severity vocabulary for one entity,
@@ -131,7 +131,7 @@ export const STATUS_INTENT_HOVER: Partial<Record<StatusIntent, string>> = {
   success: 'hover:bg-success/15',
 };
 
-// Prisma LeadStatus, 8/8, in pipeline order. Walkthrough Scheduled and Walkthrough Completed are
+// Prisma LeadStatus, 7/7, in pipeline order. A lead closes one way, as Lost: there is no Cancelled lead status (S05.18). Walkthrough Scheduled and Walkthrough Completed are
 // real lead statuses: a lead moves onto them when a visit is booked / finished (see
 // services/lead-stage.service.ts). Both are open, in-progress states, so both are `info`.
 // status-registry-schema-guard.test.ts asserts this list stays a bijection with the live enum, so
@@ -144,7 +144,6 @@ const LEAD_STATUS: Record<string, StatusEntry> = {
   ESTIMATED: { label: 'Estimate Sent', intent: 'warning' },
   WON: { label: 'Won', intent: 'success' },
   LOST: { label: 'Lost', intent: 'danger' },
-  CANCELLED: { label: 'Cancelled', intent: 'neutral' },
 };
 
 // Prisma EstimateStatus, 8/8.
@@ -170,7 +169,7 @@ const ESTIMATE_STATUS: Record<string, StatusEntry> = {
   SUPERSEDED: { label: 'Superseded', intent: 'neutral' },
 };
 
-// Prisma JobStatus (5/5 after multi-visit S4's D17 narrowing) PLUS the two values that retired
+// Prisma JobStatus (8/8 after PRD 6's close-out statuses) PLUS the two values that retired
 // from it into VisitStatus. EN_ROUTE and ON_SITE stay here deliberately: this block is what the
 // Visits cards render a visit's status through, and dropping them would leave a crew on site
 // showing a raw enum name.
@@ -182,6 +181,10 @@ const JOB_STATUS: Record<string, StatusEntry> = {
   ON_SITE: { label: 'On Site', intent: 'warning' },
   IN_PROGRESS: { label: 'In Progress', intent: 'warning' },
   COMPLETED: { label: 'Completed', intent: 'success' },
+  // Close-out (PRD 6): a completed job goes to Office review, then Ready to close, then Done. "Done" names only the last.
+  OFFICE_REVIEW: { label: 'Office review', intent: 'warning' },
+  READY_TO_CLOSE: { label: 'Ready to close', intent: 'info' },
+  DONE: { label: 'Done', intent: 'success' },
   CANCELLED: { label: 'Cancelled', intent: 'neutral' },
 };
 
@@ -410,6 +413,68 @@ const INBOUND_SENDER_STATUS: Record<string, StatusEntry> = {
   UNAVAILABLE: { label: 'Unverified - no sender check available', intent: 'neutral' },
 };
 
+// Prisma PaymentState, 3/3 (payments go-live slice 04). Where a payment's money is. Only
+// SUCCEEDED counts toward what an invoice has been paid; a bank debit sits in PROCESSING for
+// days before it clears or fails. There is deliberately NO invoice status for this: an invoice
+// holding a PROCESSING payment stays SENT/PARTIAL and wears a "Processing" badge from here.
+const PAYMENT_STATE: Record<string, StatusEntry> = {
+  PROCESSING: { label: 'Processing', intent: 'info' },
+  SUCCEEDED: { label: 'Succeeded', intent: 'success' },
+  FAILED: { label: 'Failed', intent: 'danger' },
+};
+
+// Payments page display statuses (payments go-live P6). LABEL-ONLY: no Prisma enum behind them. The
+// API (services/payments-page.ts paymentDisplayStatus) folds a payment's state, refunds, dispute and void
+// into one of these words; the keys are those words exactly.
+const PAYMENT_DISPLAY_STATUS: Record<string, StatusEntry> = {
+  'Succeeded': { label: 'Succeeded', intent: 'success' },
+  'Pending': { label: 'Pending', intent: 'warning' },
+  'Failed': { label: 'Failed', intent: 'danger' },
+  'Refunded': { label: 'Refunded', intent: 'neutral' },
+  'Partially refunded': { label: 'Partially refunded', intent: 'warning' },
+  'Disputed': { label: 'Disputed', intent: 'danger' },
+  'Charged back': { label: 'Charged back', intent: 'danger' },
+  'Voided': { label: 'Voided', intent: 'neutral' },
+};
+
+// Payout statuses on the Payments page (payments go-live P8). LABEL-ONLY: payouts keep a text status column, so
+// no Prisma enum backs these. The keys are the payouts API's `status` values exactly; PENDING reads "Scheduled".
+const PAYOUT_STATUS: Record<string, StatusEntry> = {
+  PAID: { label: 'Paid', intent: 'success' },
+  IN_TRANSIT: { label: 'In transit', intent: 'info' },
+  PENDING: { label: 'Scheduled', intent: 'neutral' },
+  FAILED: { label: 'Failed', intent: 'danger' },
+  CANCELED: { label: 'Canceled', intent: 'neutral' },
+};
+
+// Prisma RefundState, 3/3 (payments go-live slice 04). A card refund is SUCCEEDED when it is
+// made; a bank refund stays PENDING until the processor confirms it. FAILED gave no money back.
+const REFUND_STATE: Record<string, StatusEntry> = {
+  PENDING: { label: 'Pending', intent: 'info' },
+  SUCCEEDED: { label: 'Succeeded', intent: 'success' },
+  FAILED: { label: 'Failed', intent: 'danger' },
+};
+
+// Prisma DisputeStatus, 5/5 (payments go-live slice 09). A customer's dispute of an online payment:
+// NEEDS_RESPONSE and UNDER_REVIEW are open; WON, LOST and CLOSED are final. CLOSED is an inquiry that
+// closed without becoming a chargeback (no money was taken). The money screens render it (slice 35).
+const DISPUTE_STATUS: Record<string, StatusEntry> = {
+  NEEDS_RESPONSE: { label: 'Needs response', intent: 'danger' },
+  UNDER_REVIEW: { label: 'Under review', intent: 'warning' },
+  WON: { label: 'Won', intent: 'success' },
+  LOST: { label: 'Lost', intent: 'danger' },
+  CLOSED: { label: 'Closed', intent: 'neutral' },
+};
+
+// Prisma UnappliedCaptureStatus, 3/3 (payments go-live slice 11). Money ServWave took but could not
+// apply to an invoice, listed under Settings > Payments as "Payments needing attention": OPEN until a
+// person sends it back (REFUNDED) or settles it another way (RESOLVED).
+const UNAPPLIED_CAPTURE_STATUS: Record<string, StatusEntry> = {
+  OPEN: { label: 'Needs attention', intent: 'warning' },
+  REFUNDED: { label: 'Refunded', intent: 'success' },
+  RESOLVED: { label: 'Resolved', intent: 'neutral' },
+};
+
 // Timeclock review state. Lowercase to match the client vocabulary `ReviewState`
 // (lib/timeclock/types.ts), which is a 4/4 mirror of Prisma PunchReview
 // (NONE|PENDING|APPROVED|REJECTED) lowercased on the wire by timeclock.controller.ts.
@@ -470,6 +535,12 @@ export const STATUS_REGISTRY = {
   timeclockReview: TIMECLOCK_REVIEW_STATUS,
   messageDelivery: MESSAGE_DELIVERY_STATUS,
   inboundSender: INBOUND_SENDER_STATUS,
+  payment: PAYMENT_STATE,
+  paymentDisplay: PAYMENT_DISPLAY_STATUS,
+  payout: PAYOUT_STATUS,
+  refund: REFUND_STATE,
+  dispute: DISPUTE_STATUS,
+  unappliedCapture: UNAPPLIED_CAPTURE_STATUS,
 } as const;
 
 export type StatusDomain = keyof typeof STATUS_REGISTRY;

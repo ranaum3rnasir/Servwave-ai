@@ -18,17 +18,7 @@ const mockPrisma = prisma as any;
 describe('visitMergeFields - crewless visit', () => {
   const VISIT = { scheduled_at: new Date('2026-08-01T15:00:00.000Z') };
   const TZ = 'America/New_York';
-  /**
-   * Where this trip is, already formatted by the caller (visit-location spec, slice 4). A
-   * REQUIRED fourth argument, so a dispatch site cannot quietly leave the per-visit occurrence
-   * rendering the job's next-upcoming-visit location instead of this trip's.
-   */
   const WHERE = 'North Yard, 9 Depot Rd, Raleigh, NC';
-  /**
-   * The organisation's main line - a REQUIRED fifth argument for the same reason (slice 5): it is
-   * what {{technician.phones}} falls back to, and a defaulted '' would render "Questions? Call ."
-   * What this file asserts is still the crew NAMES; the phone half is performer-phone.test.ts's.
-   */
   const MAIN_LINE = '(555) 204-7788';
   /**
    * The organisation's own number for this trip - a REQUIRED sixth argument (slice 7), for the
@@ -63,14 +53,9 @@ describe('visitMergeFields - crewless visit', () => {
     expect(fields['technician.names']).toBe('Mike Torres, Dre Patel');
   });
 
-  // Visit-location slice 4. The date already overrides per visit (D18); the location has to
-  // travel the same channel or an occurrence enrolled by visit 3 renders visit 3's date beside
-  // the job-level resolution's address - which, for a job whose trips are in different places, is
-  // a customer sent somewhere they were not asked to go.
   it("carries the trip's own location through as 'job.visit_location'", () => {
     const fields = visitMergeFields(VISIT, [], TZ, WHERE, MAIN_LINE, SERVWAVE);
     expect(fields['job.visit_location']).toBe(WHERE);
-    // ...and it travels BESIDE the date it has to agree with, in the one override object.
     expect(fields['job.scheduled_date']).toBeTruthy();
   });
 });

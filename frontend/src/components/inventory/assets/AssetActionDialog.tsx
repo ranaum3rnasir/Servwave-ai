@@ -193,7 +193,7 @@ export function AssetActionDialog({ open, mode, asset, onClose, onDone }: Props)
               className={inputCls}
               options={pickableUsers.map((u) => ({
                 value: u.id,
-                label: `${u.first_name} ${u.last_name} - ${u.role}`,
+                label: `${u.first_name} ${u.last_name}`,
               }))}
             />
           </Field>

@@ -162,8 +162,6 @@ suite('Spider sweep (real database)', () => {
       data: {
         id, organization_id: c.org, customer_id: c.customer, lead_number: `L-${id.slice(0, 8)}`, service_request: 'Fix the door',
         status: opts.status ?? 'NEW', created_at: opts.createdAt ?? at(-30 * DAY), commission_owner_id: opts.owner ?? null,
-        // The owner is mirrored into lead_assignees, as every lead write does on this branch.
-        ...(opts.owner ? { lead_assignees: { create: { user_id: opts.owner, organization_id: c.org } } } : {}),
       },
     });
     return id;
@@ -331,10 +329,10 @@ suite('Spider sweep (real database)', () => {
       expect(await spiderNotices(id)).toHaveLength(1);
     });
 
-    it('never alerts Won, Lost or Cancelled leads, or a status that is switched off', async () => {
+    it('never alerts Won or Lost leads, or a status that is switched off', async () => {
       const c = await company();
       await configure(c, { limits: { NEW: { enabled: true, value: 1, unit: 'MINUTE' }, CONTACTED: { enabled: false, value: 1, unit: 'MINUTE' } } });
-      const closed = await Promise.all((['WON', 'LOST', 'CANCELLED'] as const).map((status) => lead(c, { status })));
+      const closed = await Promise.all((['WON', 'LOST'] as const).map((status) => lead(c, { status })));
       const contacted = await lead(c, { status: 'CONTACTED' });
       await runSpiderSweep(T0);
       for (const id of [...closed, contacted]) expect(await alertsFor(id)).toEqual([]);
@@ -599,14 +597,13 @@ suite('Spider sweep (real database)', () => {
       expect(untouched?.read_at).toBeNull();
     });
 
-    it('ends the alert when the lead is won, lost or cancelled', async () => {
+    it('ends the alert when the lead is won or lost', async () => {
       const c = await company();
       await configure(c);
-      const ids = [await lead(c), await lead(c), await lead(c)];
+      const ids = [await lead(c), await lead(c)];
       await runSpiderSweep(T0);
       await move(c, ids[0], 'NEW', 'WON', at(MIN));
       await move(c, ids[1], 'NEW', 'LOST', at(MIN));
-      await move(c, ids[2], 'NEW', 'CANCELLED', at(MIN));
       await runSpiderSweep(at(2 * MIN));
       for (const id of ids) expect((await spiderNotices(id))[0].read_at).not.toBeNull();
     });

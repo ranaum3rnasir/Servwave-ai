@@ -37,6 +37,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 
 import { AbilityProvider } from '@/contexts/AbilityContext';
 import { buildAbility } from '@/lib/ability';
+import { seedMySwitches } from '@/__tests__/helpers';
 import { useAuthStore } from '@/stores/auth.store';
 
 import V2AppLayout from '@/pages/v2/V2AppLayout';
@@ -118,6 +119,8 @@ function mockAuthUser(user: Record<string, unknown>) {
 // wraps the routes in ProtectedRoute/RequireFeature guards this suite does
 // not need to exercise.
 function renderShell(entry: string) {
+  // Show Stock page is a display switch: the tabs read it from the person's own switches, not from a rule.
+  seedMySwitches({ show_stock_page: true, show_logistic_orders_page: true });
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>

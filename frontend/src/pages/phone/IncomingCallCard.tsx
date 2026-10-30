@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Mic, MicOff, Phone, PhoneOff, User } from "lucide-react";
 import { fmtPhone, matchByNumber, usePhoneCustomers } from "@/lib/api/communication";
 import type { IncomingCallInfo } from "@/lib/communication/useCtmSoftphone";
+import { CustomerNameText, CustomerPhoneText } from "@/components/contact/ContactText";
 
 /**
  * Task C2 — the `/phone` tab's real incoming-call UI. Mounted by
@@ -91,7 +92,7 @@ export function IncomingCallCard({ info, onAnswer, onDecline, onMute }: Incoming
             {match ? (
               <>
                 <p className="truncate text-sm font-semibold text-text-primary">
-                  {match.customer.name}
+                  <CustomerNameText customerId={match.customer.id} name={match.customer.name} />
                 </p>
                 <p className="truncate text-[11px] text-text-secondary">
                   {match.contact.name}
@@ -102,7 +103,7 @@ export function IncomingCallCard({ info, onAnswer, onDecline, onMute }: Incoming
               <p className="truncate text-sm font-semibold text-text-primary">Unknown caller</p>
             )}
             <p className="truncate font-mono text-[11px] text-text-secondary">
-              {callerNumber ? fmtPhone(callerNumber) : "Unknown number"}
+              {callerNumber ? <CustomerPhoneText phone={callerNumber}>{fmtPhone(callerNumber)}</CustomerPhoneText> : "Unknown number"}
             </p>
           </div>
         </div>

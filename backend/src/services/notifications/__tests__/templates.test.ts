@@ -61,7 +61,7 @@ describe('isKnownVerb', () => {
     expect(isKnownVerb('dispatch.job_assigned')).toBe(true);
     expect(isKnownVerb('job.started')).toBe(true);
     expect(isKnownVerb('billing.payment_received')).toBe(true);
-    expect(isKnownVerb('team.ot_override_requested')).toBe(true);
+    expect(isKnownVerb('team.invite_accepted')).toBe(true);
     expect(isKnownVerb('inventory.stock_approval_requested')).toBe(true);
     expect(isKnownVerb('security.new_signin')).toBe(true);
   });
@@ -144,8 +144,8 @@ describe('VERB_RULES', () => {
       'billing.payouts_activated',
       'billing.payments_action_needed',
       'billing.payments_paused',
+      'billing.payments_disconnected',
       'billing.payouts_pending_first_payment',
-      'billing.platform_fee_rate_changed',
       'inventory.low_stock',
       'communication.call_missed',
       'communication.sms_inbound',
@@ -189,6 +189,34 @@ describe('renderTemplate — LEAD category', () => {
   it('lead.unassigned_created → LEAD, FEED', () => {
     const t = renderTemplate('lead.unassigned_created', { object_label: 'L0002', customer_name: 'Jones' });
     expect(t).toMatchObject({ category: 'LEAD', object_type: 'LEAD', priority: 'FEED', action_type: null, needs_action: false });
+  });
+
+  it('lead.unassigned_created is named "New lead with no owner" and never says "unassigned" or "assigned to"', () => {
+    const named = renderTemplate('lead.unassigned_created', { object_label: 'L0002', customer_name: 'Jones' });
+    const bare = renderTemplate('lead.unassigned_created', {});
+    for (const t of [named, bare]) {
+      expect(t.title.startsWith('New lead with no owner')).toBe(true);
+      expect(`${t.title} ${t.body ?? ''}`).not.toMatch(/unassigned|assigned to/i);
+    }
+  });
+
+  // S06.26: the people covering for a missing Dispatcher are told why, as the alert's body, on every verb the chain moved.
+  it.each([
+    ['lead.unassigned_created', {}],
+    ['lead.walkthrough_scheduled', {}],
+    ['estimate.declined', {}],
+    ['estimate.cancelled', {}],
+    ['estimate.deposit_waived', {}],
+    ['estimate.approval_voided', {}],
+    ['estimate.status_corrected', {}],
+    ['estimate.approved', { options_chosen: 'Gate opener' }],
+    ['estimate.deposit_paid', { amount: '500' }],
+  ])('%s carries the why line as its body when there is one, and no body when there is none', (verb, extra) => {
+    const withLine = renderTemplate(verb, { object_label: 'X0001', ...extra, fallback_reason: 'This lead has no Dispatcher.' });
+    expect((withLine.body ?? '').split('\n')).toContain('This lead has no Dispatcher.');
+    const without = renderTemplate(verb, { object_label: 'X0001', fallback_reason: '' });
+    expect(without.body ?? '').not.toContain('Dispatcher');
+    if (!Object.keys(extra).length) expect(without.body).toBeUndefined();
   });
 
   it('lead.reassigned_away → LEAD, FEED', () => {
@@ -237,6 +265,26 @@ describe('renderTemplate — DISPATCH category', () => {
     expect(t.title).toContain('J0050');
   });
 
+  // S06.27: one event, two wordings. The person named reads "assigned to you"; everyone else the chain reaches reads who it was.
+  it('dispatch.job_assigned names who was assigned when the alert is for someone else', () => {
+    expect(renderTemplate('dispatch.job_assigned', { object_label: 'J0050', assigned_names: ['Dana Reyes'] }).title)
+      .toBe('Dana Reyes was assigned to J0050');
+    expect(renderTemplate('dispatch.job_assigned', { object_label: 'J0050', assigned_names: ['Dana Reyes', 'Sam Lee'] }).title)
+      .toBe('Dana Reyes and Sam Lee were assigned to J0050');
+    expect(renderTemplate('dispatch.job_assigned', { object_label: 'J0050', assigned_names: ['Dana', 'Sam', 'Lee'] }).title)
+      .toBe('Dana, Sam and Lee were assigned to J0050');
+    // ...and the "you" wording is what an alert that names nobody says.
+    expect(renderTemplate('dispatch.job_assigned', { object_label: 'J0050', assigned_names: [] }).title).toBe('J0050 assigned to you');
+  });
+
+  it('the scheduling and parts alerts carry the why line as their body, and nothing else', () => {
+    for (const verb of ['dispatch.job_assigned', 'dispatch.job_rescheduled', 'dispatch.job_created', 'inventory.staging_ready']) {
+      expect(renderTemplate(verb, { object_label: 'J0050', fallback_reason: 'This job has no Dispatcher.' }).body, verb)
+        .toBe('This job has no Dispatcher.');
+      expect(renderTemplate(verb, { object_label: 'J0050', fallback_reason: '' }).body, verb).toBeUndefined();
+    }
+  });
+
   it('dispatch.job_unassigned → DISPATCH, INTERRUPT', () => {
     const t = renderTemplate('dispatch.job_unassigned', { object_label: 'J0051' });
     expect(t).toMatchObject({ category: 'DISPATCH', object_type: 'JOB', priority: 'INTERRUPT', action_type: null, needs_action: false });
@@ -257,22 +305,107 @@ describe('renderTemplate — JOB category', () => {
   it('job.started → JOB, FEED, no action_type', () => {
     const t = renderTemplate('job.started', { object_label: 'J0100' });
     expect(t).toMatchObject({ category: 'JOB', object_type: 'JOB', priority: 'FEED', action_type: null, needs_action: false });
-    expect(t.title).toContain('J0100');
+    expect(t.title).toBe('J0100 started');
+    expect(t.body).toBeUndefined();
   });
 
-  it('job.completed → JOB, FEED', () => {
+  it('job.completed → JOB, FEED, says the job is ready for office review', () => {
     const t = renderTemplate('job.completed', { object_label: 'J0101' });
     expect(t).toMatchObject({ category: 'JOB', object_type: 'JOB', priority: 'FEED', action_type: null, needs_action: false });
+    expect(t.title).toBe('Job completed: J0101 is ready for office review');
+    expect(t.body).toBeUndefined();
+  });
+
+  it('job.completed carries the why line only when one is given', () => {
+    expect(renderTemplate('job.completed', { object_label: 'J0101', fallback_reason: 'This job has no Dispatcher.' }).body)
+      .toBe('This job has no Dispatcher.');
+    expect(renderTemplate('job.completed', { object_label: 'J0101', fallback_reason: '' }).body).toBeUndefined();
+  });
+
+  it('job.ready_to_close → "<job> is ready to close", FEED, asks someone to act; the why line only when one is given', () => {
+    const t = renderTemplate('job.ready_to_close', { object_label: 'J0101' });
+    expect(t).toMatchObject({ category: 'JOB', object_type: 'JOB', priority: 'FEED', action_type: null, needs_action: true });
+    expect(t.title).toBe('J0101 is ready to close');
+    expect(t.body).toBeUndefined();
+    expect(renderTemplate('job.ready_to_close', { object_label: 'J0101', fallback_reason: 'Nobody who can close jobs can open this job.' }).body)
+      .toBe('Nobody who can close jobs can open this job.');
+  });
+
+  it('job.review_attention → HIGH priority, the items one per line, then the why line', () => {
+    const t = renderTemplate('job.review_attention', { object_label: 'J0101', items_text: 'A price was lowered: Line: Door\nA file was deleted: File: Front.png', fallback_reason: 'This job has no Dispatcher.' });
+    expect(t).toMatchObject({ category: 'JOB', object_type: 'JOB', priority: 'INTERRUPT', action_type: null, needs_action: false });
+    expect(t.title).toBe('J0101 needs your attention');
+    expect(t.body).toBe('A price was lowered: Line: Door\nA file was deleted: File: Front.png\nThis job has no Dispatcher.');
+    expect(renderTemplate('job.review_attention', { object_label: 'J0101', items_text: 'A note was deleted: Note' }).body).toBe('A note was deleted: Note');
   });
 
   it('job.cancelled → JOB, INTERRUPT (tech gets INTERRUPT)', () => {
     const t = renderTemplate('job.cancelled', { object_label: 'J0102' });
     expect(t).toMatchObject({ category: 'JOB', object_type: 'JOB', priority: 'INTERRUPT', action_type: null, needs_action: false });
+    // A job is only ever cancelled, never lost.
+    expect(t.title).toBe('J0102 cancelled');
+    expect(t.title).not.toMatch(/lost/i);
   });
 
   it('job.reopened → JOB, FEED', () => {
     const t = renderTemplate('job.reopened', { object_label: 'J0103' });
     expect(t).toMatchObject({ category: 'JOB', object_type: 'JOB', priority: 'FEED', action_type: null, needs_action: false });
+    expect(t.title).toBe('J0103 reopened');
+  });
+
+  it.each(['job.started', 'job.cancelled', 'job.reopened'])('%s carries the why line only when one is given', (verb) => {
+    expect(renderTemplate(verb, { object_label: 'J0104', fallback_reason: 'This job has no Dispatcher.' }).body).toBe('This job has no Dispatcher.');
+    expect(renderTemplate(verb, { object_label: 'J0104', fallback_reason: '' }).body).toBeUndefined();
+  });
+
+  it('there is no Job lost alert', () => {
+    expect(isKnownVerb('job.lost')).toBe(false);
+  });
+});
+
+describe('renderTemplate - mailbox.address_needed (S10.3)', () => {
+  it('tells the new user, in the PRD\'s words, that they have no email address yet', () => {
+    const t = renderTemplate('mailbox.address_needed', {});
+    expect(t).toMatchObject({ category: 'TEAM', object_type: 'USER', priority: 'FEED', needs_action: false });
+    expect(t.title).toBe("You don't have an email address yet. An admin needs to set one before you can send email.");
+  });
+
+  it('tells the people who edit users which person has none', () => {
+    const t = renderTemplate('mailbox.address_needed_admin', { user_name: 'Jane Smith' });
+    expect(t).toMatchObject({ category: 'TEAM', object_type: 'USER', priority: 'FEED' });
+    expect(t.title).toBe('Jane Smith has no email address yet');
+    expect(t.body).toContain('Users page');
+  });
+
+  it('does not print "undefined" when the name is missing, and names no provider', () => {
+    const t = renderTemplate('mailbox.address_needed_admin', {});
+    expect(t.title).not.toContain('undefined');
+    for (const verb of ['mailbox.address_needed', 'mailbox.address_needed_admin'] as const) {
+      const text = JSON.stringify(renderTemplate(verb, { user_name: 'Jane Smith' }));
+      expect(text).not.toMatch(/resend|ctm|supabase|render|stripe|twilio/i);
+    }
+  });
+});
+
+describe('renderTemplate - job.visit_finished', () => {
+  const data = { object_label: 'J00142', visit_seq: '2', actor_name: 'Dana' };
+
+  it('names the visit, the job and the person who finished it', () => {
+    const t = renderTemplate('job.visit_finished', data);
+    expect(t).toMatchObject({ category: 'JOB', object_type: 'JOB', title: 'Visit 2 finished on J00142, by Dana', needs_action: false });
+    expect(t.body).toBeUndefined();
+  });
+
+  it('says why a fallback person got it', () => {
+    expect(renderTemplate('job.visit_finished', { ...data, fallback_reason: 'This job has no Dispatcher.' }).body)
+      .toBe('This job has no Dispatcher.');
+  });
+
+  it('reads "All visits finished: ready to complete" and needs action when no live visit is left', () => {
+    const t = renderTemplate('job.visit_finished', { ...data, all_finished: true, fallback_reason: 'This job has no Dispatcher.' });
+    expect(t.title).toBe('All visits finished: ready to complete');
+    expect(t.needs_action).toBe(true);
+    expect(t.body).toBe('Visit 2 finished on J00142, by Dana. This job has no Dispatcher.');
   });
 });
 
@@ -334,21 +467,27 @@ describe('renderTemplate — BILLING category (payments-account lifecycle, Task 
   it('billing.payouts_activated → BILLING, FEED, ORGANIZATION', () => {
     const t = renderTemplate('billing.payouts_activated', { object_label: 'Acme' });
     expect(t).toMatchObject({ category: 'BILLING', object_type: 'ORGANIZATION', priority: 'FEED', action_type: null, needs_action: false });
-    expect(t.title).toBe('Payouts enabled — your bank is connected.');
+    expect(t.title).toBe('Payouts enabled — your bank account is ready.');
   });
 
-  it('billing.payments_action_needed → INTERRUPT, needs_action, VIEW; body carries requirements when supplied', () => {
-    const t = renderTemplate('billing.payments_action_needed', { requirements: 'individual.verification.document' });
+  it('billing.payments_action_needed → INTERRUPT, needs_action, VIEW; body carries what to do when supplied', () => {
+    const t = renderTemplate('billing.payments_action_needed', { what_to_do: 'Upload the identity document.' });
     expect(t).toMatchObject({ category: 'BILLING', object_type: 'ORGANIZATION', priority: 'INTERRUPT', action_type: 'VIEW', needs_action: true });
-    expect(t.title).toBe('Stripe needs one more thing to keep your payments running.');
-    expect(t.body).toBe('individual.verification.document');
+    expect(t.title).toBe('ServWave Payments needs one more thing to keep your payments running.');
+    expect(t.body).toBe('Upload the identity document.');
   });
 
   it('billing.payments_paused → INTERRUPT, needs_action, VIEW; body carries reason when supplied', () => {
     const t = renderTemplate('billing.payments_paused', { reason: 'requirements.past_due' });
     expect(t).toMatchObject({ category: 'BILLING', object_type: 'ORGANIZATION', priority: 'INTERRUPT', action_type: 'VIEW', needs_action: true });
-    expect(t.title).toBe('Card payments are paused — Stripe needs more information.');
+    expect(t.title).toBe('Card payments are paused — ServWave Payments needs more information.');
     expect(t.body).toBe('requirements.past_due');
+  });
+
+  it('billing.payments_disconnected → INTERRUPT, needs_action, VIEW; names no processor', () => {
+    const t = renderTemplate('billing.payments_disconnected', { object_label: 'Acme' });
+    expect(t).toMatchObject({ category: 'BILLING', object_type: 'ORGANIZATION', priority: 'INTERRUPT', action_type: 'VIEW', needs_action: true });
+    expect(t.title).toBe('ServWave Payments is turned off — online payments are off until it is set up again.');
   });
 
   it('billing.payments_action_needed / billing.payments_paused omit body when no requirements/reason supplied (matches the actual Task 1.6 emitPaymentsNotif call shape — no extra `data` is passed)', () => {
@@ -360,37 +499,18 @@ describe('renderTemplate — BILLING category (payments-account lifecycle, Task 
   it('billing.payouts_pending_first_payment → BILLING, FEED, ORGANIZATION; title + body carry the collected amount', () => {
     const t = renderTemplate('billing.payouts_pending_first_payment', { amount: '$500.00' });
     expect(t).toMatchObject({ category: 'BILLING', object_type: 'ORGANIZATION', priority: 'FEED', action_type: null, needs_action: false });
-    expect(t.title).toBe("You've collected $500.00. Connect your bank to get paid out.");
+    expect(t.title).toBe("You've collected $500.00. Add your bank account to get paid out.");
     expect(t.body).toBe('$500.00');
   });
 
   it('billing.payouts_pending_first_payment falls back to generic wording when no amount is supplied', () => {
     const t = renderTemplate('billing.payouts_pending_first_payment', { object_label: 'Acme' });
-    expect(t.title).toBe("You've collected a payment. Connect your bank to get paid out.");
-    expect(t.body).toBeUndefined();
-  });
-
-  // ── within-ceiling rate-change notice (Task 4.3, §3.6) ──
-  it('billing.platform_fee_rate_changed → BILLING, FEED, ORGANIZATION; title + body carry the new rate + effective date', () => {
-    const t = renderTemplate('billing.platform_fee_rate_changed', { new_rate: '0.75%', effective_date: 'August 20, 2026' });
-    expect(t).toMatchObject({ category: 'BILLING', object_type: 'ORGANIZATION', priority: 'FEED', action_type: null, needs_action: false });
-    expect(t.title).toBe('Your ServWave Payments rate is changing to 0.75%.');
-    expect(t.body).toBe('Effective August 20, 2026. No action is needed.');
-  });
-
-  it('billing.platform_fee_rate_changed falls back to generic wording when no new_rate/effective_date is supplied', () => {
-    const t = renderTemplate('billing.platform_fee_rate_changed', { object_label: 'Acme' });
-    expect(t.title).toBe('Your ServWave Payments rate is changing to a new rate.');
+    expect(t.title).toBe("You've collected a payment. Add your bank account to get paid out.");
     expect(t.body).toBeUndefined();
   });
 });
 
 describe('renderTemplate — TEAM category', () => {
-  it('team.ot_override_requested → TEAM, INTERRUPT, APPROVE_OT, object_type TIME_ENTRY, needs_action', () => {
-    const t = renderTemplate('team.ot_override_requested', { object_label: 'T0001', actor_name: 'Bob' });
-    expect(t).toMatchObject({ category: 'TEAM', object_type: 'TIME_ENTRY', priority: 'INTERRUPT', action_type: 'APPROVE_OT', needs_action: true });
-  });
-
   it('team.invite_accepted → TEAM, FEED, object_type USER', () => {
     const t = renderTemplate('team.invite_accepted', { actor_name: 'Jane Doe' });
     expect(t).toMatchObject({ category: 'TEAM', object_type: 'USER', priority: 'FEED', action_type: null, needs_action: false });
@@ -510,7 +630,92 @@ describe('renderTemplate — communication.email_inbound', () => {
     expect(t.body).toBeUndefined();
   });
 
+  it('says why a person covering for a record with nobody to take the reply was told', () => {
+    const reason = 'This job has no Dispatcher or Sold By who can take this reply';
+    const t = renderTemplate('communication.email_inbound', { customer_name: 'Dana Ops', subject: 'Re: Quote', fallback_reason: reason });
+    expect(t.body).toBe(`Re: Quote\n${reason}`);
+    // The reason stands alone for a reply with no subject.
+    expect(renderTemplate('communication.email_inbound', { customer_name: 'Dana Ops', fallback_reason: reason }).body).toBe(reason);
+  });
+
+  it("tells a reply from an address we didn't send to in PRD 10's words, still previewing the subject", () => {
+    const t = renderTemplate('communication.email_inbound', {
+      customer_name: 'Dana Ops', subject: 'Re: Quote', unmatched_reply: true, link_path: '/communication/inbox?review=abc',
+    });
+    expect(t.title).toBe("A reply from an address we didn't send to - check and link it");
+    expect(t.body).toBe('Re: Quote');
+    expect(t.object_type).toBe('EMAIL_THREAD');
+  });
+
   it('is a known verb', () => {
     expect(isKnownVerb('communication.email_inbound')).toBe(true);
+  });
+});
+
+// S06.29: the alerts that have no record reach the Manage roles and permissions holders when nobody holds their switch, and say why.
+describe('the why line on the alerts that have no record', () => {
+  const verbs = [
+    'billing.payments_activated', 'billing.payouts_activated', 'billing.payments_action_needed', 'billing.payments_paused',
+    'billing.payments_disconnected', 'billing.payouts_pending_first_payment', 'team.invite_accepted',
+    'inventory.stock_approval_requested', 'inventory.low_stock', 'inventory.backorder', 'inventory.staging_no_area', 'inventory.po_partial',
+  ];
+
+  it.each(verbs)('%s shows the why line under its title, and none when the person was told as a holder', (verb) => {
+    const line = 'Nobody can edit stock.';
+    expect(renderTemplate(verb, { object_label: 'X', fallback_reason: line }).body).toContain(line);
+    expect(renderTemplate(verb, { object_label: 'X', fallback_reason: '' }).body ?? '').not.toContain(line);
+  });
+
+  it('keeps the words the alert already had above the why line', () => {
+    const body = renderTemplate('inventory.low_stock', { item_name: 'Hinge', on_hand: 2, min: 4, fallback_reason: 'Nobody can create purchase orders.' }).body;
+    expect(body).toBe('2 on hand (min 4)\nNobody can create purchase orders.');
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────────
+// S08.24: the never-silent fallback of the call and text alerts
+// ──────────────────────────────────────────────────────────────────────────────
+
+describe('renderTemplate — the never-silent fallback of a call or text alert', () => {
+  const reason = 'Nobody is linked to this number and nobody sees every call and text.';
+  const facts = { fallback_reason: reason, company_number: '(555) 555-0142', occurred_at: 'October 12, 2026 at 7:05 PM' };
+
+  it('names the company number in the title and the time in the body of a missed call told without caller details, then the reason', () => {
+    const t = renderTemplate('communication.call_missed', { ...facts, call_status: 'missed', redacted: true, object_label: 'Pat Payer' });
+    expect(t.title).toBe('Missed call on (555) 555-0142');
+    expect(t.body).toBe(`October 12, 2026 at 7:05 PM\n${reason}`);
+    expect(t).toMatchObject({ priority: 'INTERRUPT', needs_action: true, action_type: 'VIEW' });
+    // Whatever the caller's data held, the title and body do not use it.
+    expect(`${t.title} ${t.body}`).not.toContain('Pat Payer');
+  });
+
+  it('says Voicemail for a voicemail, and a text for a text', () => {
+    expect(renderTemplate('communication.call_missed', { ...facts, call_status: 'voicemail', redacted: true }).title).toBe('Voicemail on (555) 555-0142');
+    const text = renderTemplate('communication.sms_inbound', { ...facts, redacted: true, preview: 'Gate code 9931', customer_name: 'Pat Payer' });
+    expect(text.title).toBe('New text on (555) 555-0142');
+    expect(text.body).toBe(`October 12, 2026 at 7:05 PM\n${reason}`);
+    expect(text).toMatchObject({ priority: 'FEED', needs_action: false });
+    expect(`${text.title} ${text.body}`).not.toMatch(/9931|Pat Payer/);
+  });
+
+  it('keeps the ordinary title and the preview for a holder who can read it, with where and when and the reason below', () => {
+    const call = renderTemplate('communication.call_missed', { ...facts, call_status: 'missed', customer_name: 'Pat Payer' });
+    expect(call.title).toBe('Missed call — Pat Payer');
+    expect(call.body).toBe(`On (555) 555-0142, October 12, 2026 at 7:05 PM\n${reason}`);
+    const text = renderTemplate('communication.sms_inbound', { ...facts, customer_name: 'Pat Payer', preview: 'Gate code 9931' });
+    expect(text.title).toBe('New text — Pat Payer');
+    expect(text.body).toBe(`Gate code 9931\nOn (555) 555-0142, October 12, 2026 at 7:05 PM\n${reason}`);
+  });
+
+  it('says "a company number" when the number is not one of the company\'s own, and never prints undefined', () => {
+    const t = renderTemplate('communication.sms_inbound', { fallback_reason: reason, occurred_at: 'October 12, 2026 at 7:05 PM', redacted: true });
+    expect(t.title).toBe('New text on a company number');
+    expect(`${t.title} ${t.body}`).not.toContain('undefined');
+  });
+
+  it('leaves the ordinary alerts as they were: no body for a call, the preview alone for a text', () => {
+    expect(renderTemplate('communication.call_missed', { customer_name: 'Pat Payer' }).body).toBeUndefined();
+    expect(renderTemplate('communication.sms_inbound', { customer_name: 'Pat Payer', preview: 'hello' }).body).toBe('hello');
+    expect(renderTemplate('communication.sms_inbound', { customer_name: 'Pat Payer' }).body).toBeUndefined();
   });
 });

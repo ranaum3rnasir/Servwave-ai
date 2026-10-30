@@ -2,8 +2,8 @@ import { useEffect, useState } from 'react';
 import { useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
-  AlertTriangle, Ban, Briefcase, Calendar, CheckCircle2, ChevronDown, Clock,
-  FileText, Mail, MapPin, Paperclip, Pencil, Phone, Trash2, User,
+  AlertTriangle, Briefcase, Calendar, CheckCircle2, Clock,
+  FileText, MapPin, Paperclip, Pencil, RotateCcw, Trash2, User,
 } from 'lucide-react';
 
 import api from '@/lib/axios';
@@ -14,14 +14,16 @@ import { customerDisplayName } from '@/lib/customer-name';
 import {
   isConvertibleEstimate, leadConvertBlockedReason,
 } from '@/features/estimate-workspace/lib/convertToJob';
-import { PhoneNumberAction } from '@/components/contact/ContactAction';
-import { LEAD_STATUSES } from '@/lib/filters/registries/leads';
+import { CustomerContactBlock } from '@/components/contact/CustomerContactBlock';
+import type { RecordContactEntry } from '@/lib/api/recordContactEntries';
+import { LEAD_STATUSES, isTerminalLeadStatus } from '@/lib/filters/registries/leads';
 import { useSpiderAvailable } from '@/lib/spider/gate';
 import { buildSpiderFollowUp, cameFromSpiderAlert } from '@/lib/spider/followUp';
-import { extractApiError, formatCurrency, formatPhone } from '@/lib/utils';
+import { extractApiError, formatCurrency } from '@/lib/utils';
 import { AttachmentSection } from '@/components/crm/AttachmentSection';
 import { IconRail } from '@/components/crm/IconRail';
 import { AssignLeadPopover } from '@/components/leads/AssignLeadPopover';
+import { LeadPeopleBlock } from '@/components/leads/LeadPeopleBlock';
 import { TagInput } from '@/components/leads/TagInput';
 import { DetailHeader, type DetailHeaderAction } from '@/components/detail/DetailHeader';
 import { JobLeadTasksTab } from '@/components/tasks/JobLeadTasksTab';
@@ -40,15 +42,17 @@ import {
 import { preferV2Path, v2Path } from '../uiV2';
 import { CreateJobFromLeadDialog } from './components/createJobFromLeadDialog';
 import {
-  CancelLeadDialog, CancelWalkthroughDialog, DeleteLeadDialog, MarkLostDialog,
+  CancelWalkthroughDialog, DeleteLeadDialog, MarkLostDialog, ReopenLeadDialog,
 } from './components/leadDialogs';
 import { useScheduleTimezone } from '@/lib/schedule-tz';
-import { formatDate, formatDateTime, isWalkthroughActive, type UserSummary } from './components/leadShared';
+import { formatDate, formatDateTime, isWalkthroughActive, leadOffers, type UserSummary } from './components/leadShared';
 import { LoadError } from '../_shared/loadError';
-import { isNotFoundError } from '../_shared/loadErrorState';
+import NotAuthorizedPage from '@/components/NotAuthorizedPage';
+import { isForbiddenError, isNotFoundError, retryUnlessRefused } from '../_shared/loadErrorState';
 import { RecordCards } from '../_shared/recordCards';
 import { useRecordCards } from '../_shared/useRecordCards';
 import { StatusChip } from '../_shared/statusChip';
+import { ProcessingBadge } from '@/components/invoices/ProcessingBadge';
 import { StatusMenu, type StatusMenuOption } from '../_shared/statusMenu';
 import { LEAD_STATUS_MEANING, type LeadStatusOptionFromServer } from './leadStatusMeaning';
 import { TabPanel, TabStrip } from '../_shared/tabs';
@@ -72,16 +76,18 @@ const SETTABLE_LEAD_STATUSES = LEAD_STATUSES;
  * fields. The guard ORDER is load-bearing - see `isWalkthroughActive`.
  */
 function WalkthroughDot({
-  scheduledAt, completedAt, cancelledAt,
+  scheduledAt, completedAt, cancelledAt, toBeScheduled = false,
 }: {
   scheduledAt: string | null;
   completedAt: string | null;
   cancelledAt: string | null;
+  /** A live walkthrough with performers and no time: in progress, so the same blue as a booked one. */
+  toBeScheduled?: boolean;
 }) {
   if (completedAt) {
     return <span data-testid="walkthrough-dot" className="bg-status-green inline-block size-2 rounded-full" />;
   }
-  if (isWalkthroughActive(scheduledAt, completedAt, cancelledAt)) {
+  if (isWalkthroughActive(scheduledAt, completedAt, cancelledAt) || toBeScheduled) {
     return <span data-testid="walkthrough-dot" className="bg-status-blue inline-block size-2 rounded-full" />;
   }
   return <span data-testid="walkthrough-dot" className="bg-muted inline-block size-2 rounded-full" />;
@@ -109,7 +115,7 @@ export default function LeadDetailPage() {
   const phone = useRecordCards();
 
   const [lostOpen, setLostOpen] = useState(false);
-  const [cancelOpen, setCancelOpen] = useState(false);
+  const [reopenOpen, setReopenOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [cancelWtOpen, setCancelWtOpen] = useState(false);
   const [assignOpen, setAssignOpen] = useState(false);
@@ -148,18 +154,6 @@ export default function LeadDetailPage() {
     setSearchParams(next, { replace: true });
   }, [searchParams, setSearchParams]);
 
-  const { data: leadAttachments } = useQuery({
-    queryKey: ['attachments', 'LEAD', id],
-    queryFn: async () => {
-      const { data } = await api.get(`/api/attachments/lead/${id}`);
-      return (data.attachments ?? []) as unknown[];
-    },
-    enabled: Boolean(id),
-  });
-  // Every attachment on the lead: its Attachments tab is the lead's ONE list, so the count
-  // must match what that list renders.
-  const attachmentCount = (leadAttachments ?? []).length;
-
   const { data: lead, isLoading, isError, error, refetch, isFetching } = useQuery({
     queryKey: ['lead', id],
     queryFn: async () => {
@@ -167,9 +161,23 @@ export default function LeadDetailPage() {
       return data.lead;
     },
     enabled: Boolean(id),
+    retry: retryUnlessRefused,
   });
 
   useRecordVisit('leads', lead?.lead_number as string | undefined);
+
+  const { data: leadAttachments } = useQuery({
+    queryKey: ['attachments', 'LEAD', id],
+    queryFn: async () => {
+      const { data } = await api.get(`/api/attachments/lead/${id}`);
+      return (data.attachments ?? []) as unknown[];
+    },
+    // After the lead's own answer, so a lead the person may not open costs one refused request and not two.
+    enabled: Boolean(id) && Boolean(lead),
+  });
+  // Every attachment on the lead: its Attachments tab is the lead's ONE list, so the count
+  // must match what that list renders.
+  const attachmentCount = (leadAttachments ?? []).length;
 
   const statusMutation = useMutation({
     mutationFn: async (status: string) => { await api.patch(`/api/leads/${id}`, { status }); },
@@ -191,14 +199,24 @@ export default function LeadDetailPage() {
     mutationFn: async (estimateIds: string[]) => {
       const body = estimateIds.length === 1 ? { estimate_id: estimateIds[0] } : { estimate_ids: estimateIds };
       const { data } = await api.post('/api/jobs', body);
-      return data.job;
+      // The server also says whether the new job opens for this person (S04.21). An older answer without it opens.
+      return { job: data.job, openable: data.job_openable !== false };
     },
-    onSuccess: (job) => {
+    onSuccess: ({ job, openable }) => {
       // A new job on the lead's customer.
       refreshAfterVisitWrite(queryClient, { jobId: job.id });
       // The converted estimate(s) stop being offered as convertible - refetch the lead.
       queryClient.invalidateQueries({ queryKey: ['lead', id] });
-      navigate(preferV2Path(`/jobs/${job.id}`));
+      if (openable) {
+        navigate(preferV2Path(`/jobs/${job.id}`));
+        return;
+      }
+      // The person is not on the new job (a walkthrough crew is not carried to it), so its page would refuse
+      // them. They stay on the lead and are told the job exists.
+      setCreateJobOpen(false);
+      toast.success(`Job ${job.job_number} was created`, {
+        description: 'You are not on it, so it does not open for you. You stay on this lead.',
+      });
     },
     onError: (err: unknown) => {
       // The Create-Job modal stays open on error; surface the failure (e.g.
@@ -212,17 +230,26 @@ export default function LeadDetailPage() {
   // Action visibility is gated on CASL ability (not role literals) so the UI
   // tracks the grant catalog + per-user overrides. Each flag maps to the exact
   // (action, subject) its backend route enforces.
-  const canEdit = ability.can('update', 'Lead');
+  // The server's per-record list says whether this person edits THIS lead (Edit leads, or the lead's creator while
+  // they are still on it) and whether they may set its status by hand.
+  const mayEditLeads = ability.can('update', 'Lead');
+  const canEdit = leadOffers(lead, 'edit', mayEditLeads);
   // Walkthrough capabilities are split from `update Lead` to mirror the backend
   // routes: a strict TECHNICIAN holds `perform_walkthrough` but NOT
   // `update`/`schedule`, so gating these on `update Lead` would lock a tech out.
-  const canPerformWalkthrough = ability.can('perform_walkthrough', 'Lead');
+  // Noting and finishing are per walkthrough: the server lists the step only for a person on the crew of the
+  // walkthrough the step would change (or holding Update any visit's status), so the lead's Owner who is not on that
+  // crew is not offered a step the route would refuse.
+  const mayPerformWalkthroughs = ability.can('perform_walkthrough', 'Lead');
+  const canPerformWalkthrough = leadOffers(lead, 'walkthrough_notes', mayPerformWalkthroughs);
+  const canFinishWalkthrough = leadOffers(lead, 'walkthrough_finish', mayPerformWalkthroughs);
+  // Book walkthroughs: book, move, re-crew and cancel a walkthrough.
   const canScheduleWalkthrough = ability.can('schedule_walkthrough', 'Lead');
-  const canChangeStatus = ability.can('update', 'Lead');
-  // Setting Lost or Cancelled here does what "Mark lost" and "Cancel lead" do, and the server asks
-  // for the same ability on it, so a user without that ability is not offered the choice.
-  const mayPickStatus = (s: string) =>
-    (s !== 'LOST' || ability.can('mark_lost', 'Lead')) && (s !== 'CANCELLED' || ability.can('cancel', 'Lead'));
+  const canChangeStatus = leadOffers(lead, 'change_status', mayEditLeads);
+  // Setting Lost here does what "Mark lost" does, and the server asks for the same ability on it, so a user
+  // without that ability is not offered the choice. A status the lead pipeline does not have (an older server still
+  // listing a retired one) is never offered.
+  const mayPickStatus = (s: string) => LEAD_STATUSES.includes(s) && (s !== 'LOST' || ability.can('mark_lost', 'Lead'));
   // The server says which statuses can be picked and why a locked one is locked (`status_options`),
   // and the menu renders that without holding any rule. Without it (an older response) the menu is
   // the plain list it always was.
@@ -239,21 +266,25 @@ export default function LeadDetailPage() {
     : SETTABLE_LEAD_STATUSES.filter(mayPickStatus);
   const canAssign = ability.can('assign', 'Lead');
   const canReadComms = ability.can('read', 'Communication');
-  const isNotTerminal = lead && lead.status !== 'WON' && lead.status !== 'LOST' && lead.status !== 'CANCELLED';
+  const isNotTerminal = lead && !isTerminalLeadStatus(lead.status);
   const canMarkLost = isNotTerminal && ability.can('mark_lost', 'Lead');
-  // Cancel is the administrative-void counterpart to mark-lost; same terminal guard.
-  const canCancel = isNotTerminal && ability.can('cancel', 'Lead');
-  const isTerminal = lead && ['WON', 'LOST', 'CANCELLED'].includes(lead.status);
+  const isTerminal = lead && isTerminalLeadStatus(lead.status);
+  // Reopen lead (S05.19): on a Won or Lost lead only, for a person the server lists it for (Reopen leads, and the lead
+  // opens for them). An older answer with no action list falls back to what the person holds.
+  const canReopen = Boolean(isTerminal) && leadOffers(lead, 'reopen', ability.can('reopen', 'Lead'));
   const canCreateEstimate = ability.can('create', 'Estimate') && !isTerminal;
   const isWalkthroughScheduled = isWalkthroughActive(
     lead?.walkthrough_scheduled_at,
     lead?.walkthrough_completed_at,
     lead?.walkthrough_cancelled_at,
   );
+  // Performers on a live walkthrough with no time yet: the lead has a walkthrough that no date describes.
+  const isWalkthroughToBeScheduled = !isWalkthroughScheduled && lead?.walkthrough_to_be_scheduled === true;
 
   const estimates = (lead?.estimates ?? []) as Array<{
     id: string; estimate_number: string; status: string;
-    total_amount: string; created_at: string;
+    // Left out of the lead answer for a person who may not see this lead's estimate money.
+    total_amount?: string; created_at: string;
     creator?: { id: string; first_name: string; last_name: string };
     deposit?: { id: string; status: string; amount: number | string } | null;
     job?: { id: string; job_number: string; status: string } | null;
@@ -262,8 +293,31 @@ export default function LeadDetailPage() {
     // #2188 slice 16 - the kind=DEPOSIT invoice, status only. The convert dialog reads it to
     // apply the same deposit gate POST /api/jobs enforces; declared here because this cast is
     // where the lead payload's estimate shape is stated.
-    invoices?: Array<{ kind: string; status: string }> | null;
+    invoices?: Array<{ kind: string; status: string; processing_amount?: number | string }> | null;
   }>;
+  // Slice 28b: the estimate's deposit, read off the kind=DEPOSIT invoice the payload carries (the
+  // payload has no separate `deposit` object), with the bank money still clearing on it.
+  const depositOf = (est: (typeof estimates)[number]) => {
+    const invoice = est.invoices?.find((inv) => inv.kind === 'DEPOSIT');
+    return invoice
+      ? { status: invoice.status, processing: invoice.processing_amount }
+      : est.deposit
+        ? { status: est.deposit.status, processing: undefined }
+        : null;
+  };
+  const renderDeposit = (est: (typeof estimates)[number]) => {
+    const deposit = depositOf(est);
+    return deposit
+      ? (
+        <span className="inline-flex flex-wrap items-center gap-1.5">
+          <StatusChip domain="deposit" status={deposit.status} />
+          <ProcessingBadge amount={deposit.processing} />
+        </span>
+      )
+      : <span className="text-muted-foreground">{'-'}</span>;
+  };
+  // With the estimate money left out of the answer the page draws no total, in the tile or in the estimates list.
+  const showEstimateMoney = estimates.every((e) => e.total_amount != null);
   const estimateTotal = estimates.reduce((sum, e) => sum + parseFloat(String(e.total_amount || '0')), 0);
   const estimateCount = estimates.length;
   const canConvertToJob = ability.can('create', 'Job');
@@ -304,14 +358,17 @@ export default function LeadDetailPage() {
     ...(canConvertToJob
       ? [{ key: 'convert', label: 'Convert to job', icon: <Briefcase />, onSelect: () => setCreateJobOpen(true) }]
       : []),
-    ...(isWalkthroughScheduled && canEdit
+    ...((isWalkthroughScheduled || isWalkthroughToBeScheduled) && canScheduleWalkthrough
       ? [{ key: 'cancel-walkthrough', label: 'Cancel Walkthrough', variant: 'destructive' as const, onSelect: () => setCancelWtOpen(true) }]
+      : []),
+    ...(canReopen
+      ? [{
+          key: 'reopen', label: 'Reopen lead', icon: <RotateCcw />, onSelect: () => setReopenOpen(true),
+          inline: true, buttonVariant: 'outline' as const, buttonSize: 'sm' as const,
+        }]
       : []),
     ...(canMarkLost
       ? [{ key: 'mark-lost', label: 'Mark Lost', icon: <AlertTriangle />, variant: 'destructive' as const, onSelect: () => setLostOpen(true) }]
-      : []),
-    ...(canCancel
-      ? [{ key: 'cancel', label: 'Cancel Lead', icon: <Ban />, variant: 'destructive' as const, onSelect: () => setCancelOpen(true) }]
       : []),
     ...(canDelete
       ? [{ key: 'delete', label: 'Delete', icon: <Trash2 />, variant: 'destructive' as const, onSelect: () => setDeleteOpen(true) }]
@@ -325,6 +382,9 @@ export default function LeadDetailPage() {
       </div>
     );
   }
+
+  // The server refused the lead: the person may not open it (the page never decides that itself).
+  if (!lead && isForbiddenError(error)) return <NotAuthorizedPage />;
 
   // A failed request is an error with a Retry (mobile slice 68): only a real 404, or a response
   // with no lead in it, is "not found". A dropped connection says nothing about the lead.
@@ -349,14 +409,17 @@ export default function LeadDetailPage() {
 
   const customer = lead.customer as {
     id: string; first_name: string; last_name: string;
-    company_name?: string; email?: string; phone: string; phone_ext?: string;
+    company_name: string | null; email: string | null; phone: string | null;
+    // The full contact set the lead detail answers: every phone and every email on file.
+    phones?: { phone: string; label: string | null; extension: string | null; is_primary: boolean }[];
+    emails?: { email: string; label: string | null; is_primary: boolean }[];
     service_locations?: Array<{
       id: string; address_line1: string; address_line2?: string | null;
       city: string; state: string; zip: string; is_primary: boolean;
     }>;
   };
 
-  // Lead owner = the SINGLE commission_owner.
+  // Lead Owner = the SINGLE commission_owner; the Dispatcher is the lead's own slot (PRD 3).
   const assignedUser = lead.commission_owner as UserSummary | null;
   const walkthroughPerformersList = (lead.walkthrough_performers as { user: UserSummary }[] | undefined) ?? [];
   const walkthroughPerformerLabel = walkthroughPerformersList.length > 0
@@ -481,12 +544,11 @@ export default function LeadDetailPage() {
                       value={lead.status as string}
                       options={statusOptions}
                       onValueChange={(s) => {
-                        // Closing a lead always asks why: Lost and Cancelled open the same dialogs
-                        // as the Mark Lost and Cancel Lead buttons instead of sending a bare PATCH.
+                        // Closing a lead always asks why: Lost opens the same dialog as the Mark Lost
+                        // button instead of sending a bare PATCH.
                         // Picking the status the lead already has changes nothing, so it asks nothing.
                         if (s === lead.status) return;
                         if (s === 'LOST') setLostOpen(true);
-                        else if (s === 'CANCELLED') setCancelOpen(true);
                         else statusMutation.mutate(s);
                       }}
                       disabled={!canChangeStatus || statusMutation.isPending}
@@ -496,7 +558,7 @@ export default function LeadDetailPage() {
                       <span>Created {formatDate(lead.created_at, tz)}</span>
                     </div>
                   </div>
-                  <TagInput leadId={id!} tags={tags} />
+                  <TagInput leadId={id!} tags={tags} readOnly={!canEdit} />
                 </div>
               }
               primary={
@@ -538,6 +600,7 @@ export default function LeadDetailPage() {
               <AssignLeadPopover
                 leadId={id!}
                 currentAssignedTo={(lead.commission_owner as { id: string } | null)?.id ?? null}
+                currentAssignedPerson={assignedUser}
                 open={assignOpen}
                 onOpenChange={setAssignOpen}
                 // A zero-size anchor at the card's top right corner, where the kebab sits wide.
@@ -550,11 +613,15 @@ export default function LeadDetailPage() {
           {/* KPI strip */}
           {/* Two to a row below sm (four across never fit 320 px); one row from sm up. */}
           <div className="grid grid-cols-2 border-t sm:flex">
-            <div className="min-w-0 flex-1 px-5 py-4">
-              <p className="text-muted-foreground text-[10px] font-semibold uppercase tracking-widest">Estimated Value</p>
-              <p className="mt-0.5 text-xl font-bold">{estimateTotal > 0 ? formatCurrency(estimateTotal) : '-'}</p>
-            </div>
-            <Separator orientation="vertical" className="hidden h-auto sm:block" />
+            {showEstimateMoney && (
+              <>
+                <div className="min-w-0 flex-1 px-5 py-4">
+                  <p className="text-muted-foreground text-[10px] font-semibold uppercase tracking-widest">Estimated Value</p>
+                  <p className="mt-0.5 text-xl font-bold">{estimateTotal > 0 ? formatCurrency(estimateTotal) : '-'}</p>
+                </div>
+                <Separator orientation="vertical" className="hidden h-auto sm:block" />
+              </>
+            )}
             <div className="min-w-0 flex-1 px-5 py-4">
               <p className="text-muted-foreground text-[10px] font-semibold uppercase tracking-widest">Estimates</p>
               <p className="mt-0.5 text-xl font-bold">{estimateCount}</p>
@@ -588,6 +655,7 @@ export default function LeadDetailPage() {
                       scheduledAt={lead.walkthrough_scheduled_at as string | null}
                       completedAt={lead.walkthrough_completed_at as string | null}
                       cancelledAt={lead.walkthrough_cancelled_at as string | null}
+                      toBeScheduled={isWalkthroughToBeScheduled}
                     />
                     Walkthrough
                   </span>
@@ -664,10 +732,11 @@ export default function LeadDetailPage() {
                     </div>
                   )}
 
-                  {(lead.status as string) === 'LOST' && (lead.lost_reason as string) && (
+                  {(lead.status as string) === 'LOST' && (
                     <div className="bg-status-red-subtle mt-3 rounded-lg border p-3">
                       <p className="text-destructive text-xs font-semibold">Lost Reason</p>
-                      <p className="mt-1 text-sm">{lead.lost_reason as string}</p>
+                      {/* A lead that was Cancelled from the old status menu became Lost with no reason (S05.18). */}
+                      <p className="mt-1 text-sm">{(lead.lost_reason as string) || 'No reason recorded'}</p>
                       {(lead.lost_at as string) && (
                         <p className="text-muted-foreground mt-1 text-xs">
                           Lost on {formatDate(lead.lost_at as string, tz)}
@@ -700,12 +769,22 @@ export default function LeadDetailPage() {
                           )}
                         </span>
                       </>
+                    ) : isWalkthroughToBeScheduled ? (
+                      <>
+                        <Clock className="text-status-blue" />
+                        <span className="flex flex-col items-start">
+                          <span className="text-sm font-medium">To be scheduled</span>
+                          {walkthroughPerformerLabel && (
+                            <span className="text-muted-foreground text-xs">with {walkthroughPerformerLabel}</span>
+                          )}
+                        </span>
+                      </>
                     ) : lead.walkthrough_completed_at ? (
                       <>
                         <CheckCircle2 className="text-status-green" />
                         <span className="flex flex-col items-start">
                           <span className="text-sm font-medium">
-                            Completed {formatDateTime(lead.walkthrough_completed_at as string, tz)}
+                            Finished {formatDateTime(lead.walkthrough_completed_at as string, tz)}
                           </span>
                           {walkthroughPerformerLabel && (
                             <span className="text-muted-foreground text-xs">by {walkthroughPerformerLabel}</span>
@@ -716,7 +795,7 @@ export default function LeadDetailPage() {
                       <>
                         <Calendar />
                         <span className="text-muted-foreground text-sm">
-                          No walkthrough scheduled yet - click to schedule
+                          {canScheduleWalkthrough ? 'No walkthrough scheduled yet - click to schedule' : 'No walkthrough scheduled yet'}
                         </span>
                       </>
                     )}
@@ -728,61 +807,23 @@ export default function LeadDetailPage() {
               <div className="min-w-0 flex-[35] border-t lg:border-l lg:border-t-0">
                 <div className="flex flex-col gap-2 p-5">
                   <p className="text-muted-foreground mb-2 text-[10px] font-semibold uppercase tracking-widest">Customer</p>
-                  <Button
-                    variant="link"
-                    className="h-auto justify-start px-0 font-semibold"
-                    onClick={() => navTo(`/customers/${customer.id}`)}
-                  >
-                    {customer.first_name} {customer.last_name}
-                  </Button>
-                  {customer.company_name && <p className="text-muted-foreground text-xs">{customer.company_name}</p>}
-                  <p className="flex items-center gap-2 text-sm">
-                    <Phone className="text-muted-foreground size-3.5 shrink-0" />
-                    <PhoneNumberAction
-                      phone={customer.phone}
-                      name={customerLabel}
-                      context={{
-                        leadId: id!,
-                        leadLabel: lead.lead_number as string,
-                        customerId: customer.id,
-                        customerName: customerLabel,
-                      }}
-                    >
-                      {formatPhone(customer.phone)}{customer.phone_ext ? ` ext. ${customer.phone_ext}` : ''}
-                    </PhoneNumberAction>
-                  </p>
-                  {customer.email && (
-                    <p className="flex items-center gap-2 text-sm">
-                      <Mail className="text-muted-foreground size-3.5 shrink-0" />
-                      <Button
-                        variant="link"
-                        size="sm"
-                        className="h-auto truncate px-0 font-normal"
-                        onClick={() => { window.location.href = `mailto:${customer.email}`; }}
-                      >
-                        {customer.email}
-                      </Button>
-                    </p>
-                  )}
+                  {/* Name, company, every phone and every email, drawn through the contact display policy (PRD 5), with the lead's own entries and the pencil (S05.13). */}
+                  <CustomerContactBlock
+                    customer={customer}
+                    context={{ leadId: id!, leadLabel: lead.lead_number as string }}
+                    record={{ kind: 'lead', id: id!, mayEdit: canEdit, closed: Boolean(isTerminal), onReopen: canReopen ? () => setReopenOpen(true) : undefined }}
+                    entries={lead.contact_entries as RecordContactEntry[] | undefined}
+                    editCustomer
+                  />
                 </div>
 
                 <div className="border-t p-5">
-                  <p className="text-muted-foreground mb-3 text-[10px] font-semibold uppercase tracking-widest">Assigned To</p>
-                  <div className="flex items-center justify-between">
-                    <p className="flex items-center gap-2 text-sm">
-                      <User className="text-muted-foreground size-4" />
-                      <span className="font-medium">
-                        {assignedUser ? `${assignedUser.first_name} ${assignedUser.last_name}` : 'Unassigned'}
-                      </span>
-                    </p>
-                    {canAssign && (
-                      <AssignLeadPopover
-                        leadId={id!}
-                        currentAssignedTo={(lead.commission_owner as { id: string } | null)?.id ?? null}
-                        trigger={<Button variant="outline" size="sm">Reassign</Button>}
-                      />
-                    )}
-                  </div>
+                  <LeadPeopleBlock
+                    leadId={id!}
+                    owner={assignedUser}
+                    dispatcher={(lead.dispatcher as UserSummary | null | undefined) ?? null}
+                    canAssign={canAssign}
+                  />
                 </div>
 
                 {/*
@@ -864,11 +905,12 @@ export default function LeadDetailPage() {
               lead={lead}
               leadId={id!}
               canPerformWalkthrough={canPerformWalkthrough}
+              canFinishWalkthrough={canFinishWalkthrough}
               canScheduleWalkthrough={canScheduleWalkthrough}
               // Slice 09: the row's Cancel opens the SAME dialog the header menu opens, gated on
-              // `cancel Lead` - what POST /walkthrough/cancel rides - so it is absent, never
+              // Book walkthroughs - what POST /walkthrough/cancel rides - so it is absent, never
               // present-and-failing, for a viewer without it.
-              onCancelWalkthrough={ability.can('cancel', 'Lead') ? () => setCancelWtOpen(true) : undefined}
+              onCancelWalkthrough={canScheduleWalkthrough ? () => setCancelWtOpen(true) : undefined}
             />
           </TabPanel>
 
@@ -892,7 +934,7 @@ export default function LeadDetailPage() {
               </div>
 
               {estimates.length === 0 ? (
-                <EmptyState icon={<FileText />} title="No estimates yet." description="Create one to get started." />
+                <EmptyState icon={<FileText />} title="No estimates yet." description={canCreateEstimate ? 'Create one to get started.' : undefined} />
               ) : phone ? (
                 <RecordCards
                   label="Estimates"
@@ -904,13 +946,11 @@ export default function LeadDetailPage() {
                     fields: [
                       {
                         label: 'Deposit',
-                        value: est.deposit
-                          ? <StatusChip domain="deposit" status={est.deposit.status} />
-                          : <span className="text-muted-foreground">{'-'}</span>,
+                        value: renderDeposit(est),
                       },
                       { label: 'Created By', value: est.creator ? `${est.creator.first_name} ${est.creator.last_name}` : '-' },
                       { label: 'Date', value: formatDateTime(est.created_at, tz) },
-                      { label: 'Total', value: formatCurrency(est.total_amount) },
+                      ...(showEstimateMoney ? [{ label: 'Total', value: formatCurrency(est.total_amount!) }] : []),
                     ],
                   }))}
                 />
@@ -923,7 +963,7 @@ export default function LeadDetailPage() {
                       <TableHead>Deposit</TableHead>
                       <TableHead>Created By</TableHead>
                       <TableHead>Date</TableHead>
-                      <TableHead>Total</TableHead>
+                      {showEstimateMoney && <TableHead>Total</TableHead>}
                       <TableHead />
                     </TableRow>
                   </TableHeader>
@@ -937,15 +977,13 @@ export default function LeadDetailPage() {
                         <TableCell>{est.estimate_number}</TableCell>
                         <TableCell><StatusChip domain="estimate" status={est.status} /></TableCell>
                         <TableCell>
-                          {est.deposit
-                            ? <StatusChip domain="deposit" status={est.deposit.status} />
-                            : <span className="text-muted-foreground">{'-'}</span>}
+                          {renderDeposit(est)}
                         </TableCell>
                         <TableCell>
                           {est.creator ? `${est.creator.first_name} ${est.creator.last_name}` : '-'}
                         </TableCell>
                         <TableCell>{formatDateTime(est.created_at, tz)}</TableCell>
-                        <TableCell>{formatCurrency(est.total_amount)}</TableCell>
+                        {showEstimateMoney && <TableCell>{formatCurrency(est.total_amount!)}</TableCell>}
                         <TableCell>
                           <Pencil className="text-muted-foreground size-3.5 opacity-0 group-hover:opacity-100" />
                         </TableCell>
@@ -972,7 +1010,7 @@ export default function LeadDetailPage() {
                   leadLabel={lead.lead_number as string}
                   customerId={customer.id}
                   customerName={customerLabel}
-                  customerPhone={customer.phone}
+                  customerPhone={customer.phone ?? undefined}
                   initialMessage={
                     offerSpiderFollowUp
                       ? buildSpiderFollowUp({
@@ -990,7 +1028,7 @@ export default function LeadDetailPage() {
 
         {/* Dialogs */}
         <MarkLostDialog open={lostOpen} onOpenChange={setLostOpen} leadId={id!} />
-        <CancelLeadDialog open={cancelOpen} onOpenChange={setCancelOpen} leadId={id!} />
+        <ReopenLeadDialog open={reopenOpen} onOpenChange={setReopenOpen} leadId={id!} />
         <DeleteLeadDialog
           open={deleteOpen}
           onOpenChange={setDeleteOpen}

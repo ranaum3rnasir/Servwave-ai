@@ -2,73 +2,91 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { Request } from 'express';
 import { abilityForUser, scopeWhereForReq, scopeWhereForUser, type PermissionUser } from '../enforce';
 import { clearPermissionCache } from '../permissionCache';
-import { clearUserOverrideCache } from '../userOverrideCache';
+import { clearAllSwitchCaches } from '../switches/cache';
 import { prisma } from '../../prisma';
 
 /**
- * The contract `attachAbility` used to spell out inline and now delegates to `abilityForUser`.
+ * The contract `attachAbility` delegates to `abilityForUser`.
  *
  * Every authenticated request in the app builds its ability here, so each rule below is pinned
- * against the extraction silently relaxing it: the unrestricted-ADMIN short-circuit with NO DB
- * read, the ADMIN-DERIVED custom role that must NOT short-circuit, the grant lookup keyed on the
- * CUSTOM role, the per-org-per-role cache, the per-user override layer, and the loud failure when
- * `custom_role_id` is set but the relation was never selected.
+ * against it silently relaxing: the Admin box short-circuit with NO DB read, the ADMIN-DERIVED custom role that
+ * must NOT short-circuit (it is an ordinary switch set), the switch lookup keyed on the CUSTOM role, the fixed reads
+ * every signed-in person holds, the per-person cache, the role-permission and override tables no longer being read,
+ * and the loud failure when `custom_role_id` is set but the relation was never selected.
  */
 
 const roleFind = () => prisma.rolePermission.findMany as ReturnType<typeof vi.fn>;
 const overrideFind = () => prisma.userPermissionOverride.findMany as ReturnType<typeof vi.fn>;
+const roleSwitchFind = () => prisma.permissionRoleSwitch.findMany as ReturnType<typeof vi.fn>;
+const userSwitchFind = () => prisma.permissionUserSwitch.findMany as ReturnType<typeof vi.fn>;
+const userFind = () => prisma.user.findUnique as ReturnType<typeof vi.fn>;
 
 const ORG = 'org-1';
 
 beforeEach(() => {
   clearPermissionCache();
-  clearUserOverrideCache();
   roleFind().mockReset();
   roleFind().mockResolvedValue([]);
   overrideFind().mockReset();
   overrideFind().mockResolvedValue([]);
+  // No stored switch values: every switch comes from the built-in preset of the person's role.
+  roleSwitchFind().mockReset();
+  roleSwitchFind().mockResolvedValue([]);
+  userSwitchFind().mockReset();
+  userSwitchFind().mockResolvedValue([]);
+  userFind().mockReset();
+  clearAllSwitchCaches();
 });
 
 describe('abilityForUser - the ability attachAbility attaches', () => {
   const admin: PermissionUser = { id: 'u-admin', role: 'ADMIN', organization_id: ORG };
 
-  it('an unrestricted ADMIN is manage-all and costs NO database read', async () => {
+  it('the Admin box is manage-all and costs NO database read', async () => {
     const ability = await abilityForUser(admin);
     expect(ability.can('delete', 'Job')).toBe(true);
     expect(roleFind()).not.toHaveBeenCalled();
     expect(overrideFind()).not.toHaveBeenCalled();
+    expect(roleSwitchFind()).not.toHaveBeenCalled();
+    expect(userSwitchFind()).not.toHaveBeenCalled();
   });
 
-  it('an ADMIN-DERIVED custom role does NOT short-circuit: it loads and applies its grants', async () => {
-    roleFind().mockResolvedValue([{ action: 'read', subject: 'Job', conditions: null }]);
+  it('an ADMIN-DERIVED custom role does NOT short-circuit: it is an ordinary switch set, looked up under its own key', async () => {
+    // The Admin preset has Delete customers on; this role has it switched off.
+    roleSwitchFind().mockResolvedValue([{ switch_key: 'delete_customers', value: false }]);
     const ability = await abilityForUser({
       id: 'u2', role: 'ADMIN', organization_id: ORG,
       custom_role_id: 'cr1', custom_role: { key: 'ops-lead' },
     });
-    expect(ability.can('read', 'Job')).toBe(true);
-    expect(ability.can('delete', 'Job')).toBe(false); // not manage-all
-    expect(roleFind()).toHaveBeenCalledTimes(1);
-    expect(roleFind().mock.calls[0][0].where).toEqual({ organization_id: ORG, role: 'ops-lead' });
+    expect(ability.can('delete', 'Customer')).toBe(false);
+    expect(ability.can('update', 'Customer')).toBe(true); // everything else still on, from the Admin preset
+    expect(roleSwitchFind().mock.calls[0][0].where).toEqual({ organization_id: ORG, role_key: 'ops-lead' });
   });
 
-  it('looks grants up under the BASE role when there is no custom role', async () => {
-    await abilityForUser({ id: 'u3', role: 'TECHNICIAN', organization_id: ORG });
-    expect(roleFind().mock.calls[0][0].where).toEqual({ organization_id: ORG, role: 'TECHNICIAN' });
+  it('every signed-in person holds the fixed reads, whatever their switches say', async () => {
+    roleSwitchFind().mockResolvedValue([{ switch_key: 'view_customers', value: false }]);
+    const ability = await abilityForUser({ id: 'u3', role: 'TECHNICIAN', organization_id: ORG });
+    expect(ability.can('read', 'Tag')).toBe(true);
+    expect(ability.can('read', 'Notification')).toBe(true);
+    expect(ability.can('read', 'Organization')).toBe(true);
+    // ...and nothing beyond them that no switch carries.
+    expect(ability.can('update', 'Organization')).toBe(false);
   });
 
-  it('caches per org+role: a second build issues no second grant read', async () => {
-    await abilityForUser({ id: 'u3', role: 'SALES', organization_id: ORG });
-    await abilityForUser({ id: 'u4', role: 'SALES', organization_id: ORG });
-    expect(roleFind()).toHaveBeenCalledTimes(1);
-    // Overrides are per-USER and must NOT ride the role cache.
-    expect(overrideFind()).toHaveBeenCalledTimes(2);
+  it('never reads role-permission rows or per-person override rows', async () => {
+    roleFind().mockResolvedValue([{ action: 'delete', subject: 'Customer', conditions: null }]);
+    overrideFind().mockResolvedValue([{ action: 'delete', subject: 'Customer', effect: 'allow' }]);
+    const ability = await abilityForUser({ id: 'u4', role: 'TECHNICIAN', organization_id: ORG });
+    expect(ability.can('delete', 'Customer')).toBe(false);
+    expect(roleFind()).not.toHaveBeenCalled();
+    expect(overrideFind()).not.toHaveBeenCalled();
   });
 
-  it('layers per-user overrides on top of the role grant', async () => {
-    roleFind().mockResolvedValue([{ action: 'read', subject: 'Job', conditions: null }]);
-    overrideFind().mockResolvedValue([{ action: 'read', subject: 'Job', effect: 'deny' }]);
-    const ability = await abilityForUser({ id: 'u5', role: 'SALES', organization_id: ORG });
-    expect(ability.can('read', 'Job')).toBe(false);
+  it('caches a person\'s resolved switches: a second build issues no second switch read', async () => {
+    userFind().mockResolvedValue({ role: 'SALES', based_on_role_key: null, custom_role_id: null, custom_role: null });
+    await abilityForUser({ id: 'u5', role: 'SALES', organization_id: ORG });
+    await abilityForUser({ id: 'u5', role: 'SALES', organization_id: ORG });
+    expect(roleSwitchFind()).toHaveBeenCalledTimes(1);
+    expect(userSwitchFind()).toHaveBeenCalledTimes(1);
   });
 
   // The loud failure is the point: falling back to the base role would silently OVER-grant
@@ -87,13 +105,11 @@ describe('scopeWhereForUser / scopeWhereForReq agree', () => {
   };
 
   it('the request wrapper returns exactly what the user-level form returns', async () => {
-    roleFind().mockResolvedValue([
-      { action: 'read', subject: 'Job', conditions: { assignees: { some: { user_id: '{{userId}}' } } } },
-    ]);
-    const viaReq = await scopeWhereForReq({ user } as unknown as Request, 'Job');
-    const viaUser = await scopeWhereForUser(user, 'Job');
+    // The Sales preset reaches the purchase orders of the jobs that come from a lead the person is an assignee of.
+    const viaReq = await scopeWhereForReq({ user } as unknown as Request, 'PurchaseOrder');
+    const viaUser = await scopeWhereForUser(user, 'PurchaseOrder');
     expect(viaReq).toEqual(viaUser);
-    expect(viaUser).toEqual({ assignees: { some: { user_id: 'u1' } } });
+    expect(viaUser).toEqual({ job: { estimate: { lead: { lead_assignees: { some: { user_id: 'u1' } } } } } });
   });
 
   it('an unrestricted ADMIN is unscoped through both entry points', async () => {
@@ -104,8 +120,10 @@ describe('scopeWhereForUser / scopeWhereForReq agree', () => {
   });
 
   it('no read grant fails closed through both entry points', async () => {
-    expect(await scopeWhereForUser(user, 'Job')).toEqual({ id: { in: [] } });
-    expect(await scopeWhereForReq({ user } as unknown as Request, 'Job')).toEqual({ id: { in: [] } });
+    // View purchase orders is the switch that stands for the read grant.
+    roleSwitchFind().mockResolvedValue([{ switch_key: 'view_purchase_orders', value: false }]);
+    expect(await scopeWhereForUser(user, 'PurchaseOrder')).toEqual({ id: { in: [] } });
+    expect(await scopeWhereForReq({ user } as unknown as Request, 'PurchaseOrder')).toEqual({ id: { in: [] } });
   });
 
   it('no user at all fails closed', async () => {

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -8,12 +8,18 @@ import { Lock } from 'lucide-react';
 import api from '@/lib/axios';
 import { useOrganization, useUpdateOrganization } from '@/lib/api/organization';
 import { useAssignableUsers } from '@/lib/api/users';
+import { useLeadCreatorPrefill } from '@/lib/api/leads';
+import { MultiAssigneeSelect } from '@/components/crm/MultiAssigneeSelect';
+import { useAssignUserPermission } from '@/lib/users/useAssignUserPermission';
+import type { ScheduleConflictItem } from '@/pages/v2/_shared/scheduleConflict';
+import { useAuthStore } from '@/stores/auth.store';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import type { AppAbility } from '@/lib/ability';
 import { extractApiError, formatPhone } from '@/lib/utils';
 import { phoneFieldValue } from '@/ui-kit/lib/phoneField';
+import { phoneParamDigits } from '@/lib/phonePrefill';
 import {
-  createLeadFormSchema, editLeadFormSchema,
+  createLeadFormSchema, editLeadFormSchema, editLeadDetailsFormSchema,
   type CreateLeadFormData as CreateFormData, type EditLeadFormData as EditFormData,
 } from '@/lib/lead-form-schemas';
 import {
@@ -28,6 +34,7 @@ import { ServiceLocationMap } from '@/components/crm/service-location-map';
 import { PageHeader } from '@/ui-kit/components/layout/pageHeader';
 import { Button } from '@/ui-kit/components/ui/button';
 import { Card, CardContent } from '@/ui-kit/components/ui/card';
+import { Checkbox } from '@/ui-kit/components/ui/checkbox';
 import { Input } from '@/ui-kit/components/ui/input';
 import { Label } from '@/ui-kit/components/ui/label';
 import { SelectField } from '@/ui-kit/components/form/selectField';
@@ -46,12 +53,16 @@ import { LoadError } from '../_shared/loadError';
 import { isNotFoundError } from '../_shared/loadErrorState';
 import { DateField } from '@/ui-kit/components/form/dateField';
 import { PickCustomerFields } from '../_shared/pickCustomer';
+import { PersonSlotField } from '../_shared/personSlotField';
+import { ScheduleClashNotice } from '../_shared/scheduleClashNotice';
 import { PickLocation } from '../_shared/pickLocation';
 import { TimeField } from '@/ui-kit/components/form/timeField';
 import { useRecordVisit } from '../pageBreadcrumbs';
 import { canAutoFocus } from '@/ui-kit/lib/autoFocus';
 import { useFormFlow } from '@/ui-kit/lib/formFlow';
 import { useLeaveGuard } from '@/hooks/useLeaveGuard';
+import { dayAndTimeToIso, useScheduleTimezone } from '@/lib/schedule-tz';
+import { leadOffers, type LeadAction } from './components/leadShared';
 
 type SearchCustomer = PickCustomer;
 type ServiceLocation = ServiceLocationOption;
@@ -70,12 +81,6 @@ function extractDate(iso?: string | null): string {
 function extractTime(iso?: string | null): string {
   if (!iso) return '';
   return iso.slice(11, 16);
-}
-
-/** ?phone= arrives E.164 from the dialer's create-prefill - strip a US country code. */
-function phoneParamDigits(raw: string): string {
-  const d = raw.replace(/\D/g, '');
-  return d.length === 11 && d.startsWith('1') ? d.slice(1) : d;
 }
 
 /**
@@ -159,16 +164,40 @@ function CreateLeadForm({
   const { data: org } = useOrganization();
   // Owner picker (#389) - owner-eligible users only; the backend eligible_for
   // filter mirrors the create-time eligibility guard.
-  // `directory`, not `jobCrew`: the lead OWNER is not job crew. `POST/PATCH /api/leads` checks
-  // `isOwnerEligible`, never `isAssigneeSetPermitted`, so `assign User` governs nothing here -
+  // `directory`, not `jobCrew`: the lead OWNER is not job crew. `POST/PATCH /api/leads` asks
+  // slot eligibility for the Owner, never `isAssigneeSetPermitted`, so `assign User` governs nothing here -
   // and scoping by it collapsed this dropdown to one row for a custom role holding
   // `read User` + `create Lead` while the API still accepted anybody.
-  const { data: assignableOwners = [] } = useAssignableUsers({ purpose: 'directory', eligibleFor: 'owner' });
+  // Only a person with Assign people to leads gets pickers (S03.15); anyone else sees the creator rule's
+  // result as fixed text, and the server applies it, so neither roster is asked for.
+  const mayNamePeople = ability.can('assign', 'Lead');
+  const ownerRoster = useAssignableUsers({ purpose: 'directory', eligibleFor: 'owner', enabled: mayNamePeople });
+  const dispatcherRoster = useAssignableUsers({ purpose: 'directory', eligibleFor: 'dispatcher', enabled: mayNamePeople });
+  const assignableOwners = ownerRoster.data ?? [];
+  const assignableDispatchers = dispatcherRoster.data ?? [];
+  // The creator rule's pre-fill (Owner or Dispatcher, never both): the form shows it, the create route applies it.
+  const { data: prefill, isPending: prefillPending, isError: prefillFailed } = useLeadCreatorPrefill();
+  const me = useAuthStore((s) => s.user);
   const updateOrg = useUpdateOrganization();
   const [addingJobType, setAddingJobType] = useState<string | null>(null);
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
   const [selectedCustomer, setSelectedCustomer] = useState<SearchCustomer | null>(null);
   const [showSchedule, setShowSchedule] = useState(false);
+  // Who does the walkthrough the time books. A person with Book walkthroughs picks the Performers (empty to
+  // start with); anyone else has the "I'll do this walkthrough" checkbox, checked by default, which puts
+  // only them on it. The server books the time as a real walkthrough visit with these people on it.
+  const mayBookWalkthroughs = ability.can('schedule_walkthrough', 'Lead');
+  const { actorId, actorKnownPeople } = useAssignUserPermission();
+  const [performerIds, setPerformerIds] = useState<string[]>([]);
+  const [doItMyself, setDoItMyself] = useState(true);
+  // A performer already booked over that slot: the server's verdict on the last try, and the form it refused,
+  // so "Schedule anyway" can send the same lead again with `walkthrough_force`.
+  const [clash, setClash] = useState<{ data: CreateFormData; when: string; conflicts: ScheduleConflictItem[] } | null>(null);
+  // "Schedule anyway" stays chosen if the duplicate-customer guard sends the same lead again afterwards.
+  const forceWalkthrough = useRef(false);
+  // The walkthrough is booked at the organisation's clock, as booking from the lead page is.
+  const timezone = useScheduleTimezone();
+  const scheduleKey = (d: CreateFormData) => [d.scheduled_date, d.scheduled_time, d.scheduled_end_date, d.scheduled_end_time].join('|');
 
   // Duplicate-customer guard: the existing record from a 409, the form data to
   // resubmit with override, and which field(s) collided.
@@ -194,10 +223,16 @@ function CreateLeadForm({
       email: '',
       service_location_id: '',
       service_address_line1: '', service_address_line2: '', service_city: '', service_state: '', service_zip: '',
-      service_request: '', notes: '', job_type: '', ad_source: '', assigned_to: '',
+      service_request: '', notes: '', job_type: '', ad_source: '',
       scheduled_date: '', scheduled_time: '', scheduled_end_date: '', scheduled_end_time: '',
     },
   });
+
+  // What the two people fields hold: whatever the person picked, else the pre-fill. The fields stay unset until a
+  // picker is used, so the pre-fill is not their work (an untouched form never asks before leaving), and a picker
+  // mounts with its value already in hand (see PersonSlotField's key).
+  const ownerId = form.watch('assigned_to') ?? prefill?.owner_id ?? '';
+  const dispatcherId = form.watch('dispatcher_id') ?? prefill?.dispatcher_id ?? '';
 
   // Leaving a half-filled form asks first (mobile slice 66). What the link prefilled (a dialer
   // phone, a customer chosen before the page opened) is not work; typing, or choosing a different
@@ -290,13 +325,24 @@ function CreateLeadForm({
 
   const mutation = useMutation({
     mutationFn: async ({ data, override }: { data: CreateFormData; override?: boolean }) => {
+      const walkthroughStart = showSchedule ? dayAndTimeToIso(data.scheduled_date, data.scheduled_time, timezone) : undefined;
+      const walkthroughPerformers = mayBookWalkthroughs
+        ? performerIds
+        : doItMyself && prefill?.can_be_on_crew && actorId ? [actorId] : [];
       const baseLeadFields = {
         service_request: data.service_request,
         notes: data.notes || undefined,
         job_type: data.job_type || undefined,
-        assigned_to: data.assigned_to || undefined,
-        scheduled_start: showSchedule ? combineDatetime(data.scheduled_date, data.scheduled_time) : undefined,
-        scheduled_end: showSchedule ? combineDatetime(data.scheduled_end_date, data.scheduled_end_time) : undefined,
+        // A holder saves what the pickers hold (kept, changed or cleared); anyone else sends no people and the
+        // server applies the creator rule, so what the form showed is what is saved.
+        ...(mayNamePeople ? { assigned_to: ownerId || null, dispatcher_id: dispatcherId || null } : {}),
+        scheduled_start: walkthroughStart,
+        scheduled_end: showSchedule ? dayAndTimeToIso(data.scheduled_end_date, data.scheduled_end_time, timezone) : undefined,
+        // The people on the walkthrough: the Performers picked by a person with Book walkthroughs, or only the creator
+        // for anyone else who left "I'll do this walkthrough" checked. With a time, none is a walkthrough with nobody
+        // on it; with no time, people make a "To be scheduled" walkthrough and nobody makes none.
+        ...(walkthroughStart || walkthroughPerformers.length > 0 ? { walkthrough_performer_ids: walkthroughPerformers } : {}),
+        ...(forceWalkthrough.current ? { walkthrough_force: true } : {}),
       };
 
       const newLocationPayload = {
@@ -350,6 +396,7 @@ function CreateLeadForm({
       setDupExisting(null);
       setPendingData(null);
       setDupMatched({ email: false, phone: false });
+      setClash(null);
       queryClient.invalidateQueries({ queryKey: ['leads'] });
       queryClient.invalidateQueries({ queryKey: ['customers'] });
       if (!selectedCustomerId) {
@@ -372,6 +419,8 @@ function CreateLeadForm({
       }
     },
     onError: (err, { data }) => {
+      const refused = (err as { response?: { status?: number; data?: { conflicts?: ScheduleConflictItem[] } } }).response;
+      if (refused?.status === 409 && Array.isArray(refused.data?.conflicts)) setClash({ data, when: scheduleKey(data), conflicts: refused.data.conflicts });
       const dup = getDuplicate(err);
       if (dup) {
         setDupExisting(dup);
@@ -445,6 +494,12 @@ function CreateLeadForm({
     requestAnimationFrame(() => document.getElementById(field)?.focus());
   };
 
+  // A clash describes the time and the people that produced it; changing either retires it.
+  const resetClash = () => {
+    forceWalkthrough.current = false;
+    setClash(null);
+  };
+
   const handleCreateAnyway = () => {
     if (!pendingData) return;
     mutation.mutate({ data: pendingData, override: true });
@@ -457,7 +512,8 @@ function CreateLeadForm({
   const errors = form.formState.errors;
   // The duplicate case is handled by the dialog - do not also surface the raw
   // "duplicate" string in the inline error line.
-  const inlineError = getDuplicate(mutation.error) ? null : mutation.error;
+  // ...and a clash with a performer's other work has its own block below.
+  const inlineError = getDuplicate(mutation.error) || clash ? null : mutation.error;
 
   const jobTypeOptions = (() => {
     const base = org?.job_type_options ?? [];
@@ -482,7 +538,7 @@ function CreateLeadForm({
           the fields read as boxed-in. The form keeps the card's horizontal
           rhythm through px-1 and gets its separation from spacing instead. */}
       <div className="px-1 pt-2">
-          <form noValidate {...flow.formProps} onSubmit={form.handleSubmit((d) => mutation.mutate({ data: d }), flow.focusFirstInvalid)} className="flex flex-col gap-7">
+          <form noValidate {...flow.formProps} onSubmit={form.handleSubmit((d) => { forceWalkthrough.current = false; mutation.mutate({ data: d }); }, flow.focusFirstInvalid)} className="flex flex-col gap-7">
             <div className="grid grid-cols-1 gap-x-10 gap-y-8 lg:grid-cols-2">
               {/* Left: who + where */}
               <div className="flex flex-col gap-5">
@@ -645,41 +701,100 @@ function CreateLeadForm({
                       }
                     />
                   </div>
-                  {/* Owner picker - hidden for SALES, who auto-self-assign and lack the assign ability. */}
-                  {ability.can('assign', 'Lead') && (
-                    <div className="flex flex-col gap-1.5">
-                      <Label>Assign to</Label>
-                      <SelectField
-                        aria-label="Assign to"
-                        value={form.watch('assigned_to') || ''}
-                        onValueChange={(v) => form.setValue('assigned_to', v, { shouldDirty: true })}
-                        placeholder="Unassigned"
-                        options={assignableOwners.map((u) => ({
-                          value: u.id, label: `${u.first_name} ${u.last_name}`,
-                        }))}
-                      />
-                    </div>
-                  )}
+                  {/* Owner and Dispatcher hold the creator rule's pre-fill: pickers with Assign people to leads, fixed text otherwise. */}
+                  <PersonSlotField
+                    label="Owner"
+                    empty="No owner"
+                    picker={mayNamePeople}
+                    value={ownerId}
+                    ready={!prefillPending}
+                    onChange={(v) => form.setValue('assigned_to', v, { shouldDirty: true })}
+                    roster={assignableOwners}
+                    me={me}
+                    loading={ownerRoster.isLoading}
+                    failed={ownerRoster.isError && !ownerRoster.data}
+                    onRetry={() => void ownerRoster.refetch()}
+                  />
+                  <PersonSlotField
+                    label="Dispatcher"
+                    empty="No dispatcher"
+                    picker={mayNamePeople}
+                    value={dispatcherId}
+                    ready={!prefillPending}
+                    onChange={(v) => form.setValue('dispatcher_id', v, { shouldDirty: true })}
+                    roster={assignableDispatchers}
+                    me={me}
+                    loading={dispatcherRoster.isLoading}
+                    failed={dispatcherRoster.isError && !dispatcherRoster.data}
+                    onRetry={() => void dispatcherRoster.refetch()}
+                  />
                 </div>
 
                 <Separator />
                 <div className="flex items-center justify-between">
-                  <p className="text-muted-foreground text-xs font-semibold uppercase">Schedule</p>
-                  <Switch checked={showSchedule} onCheckedChange={setShowSchedule} aria-label="Schedule" />
+                  <p className="text-muted-foreground text-xs font-semibold uppercase">Schedule walkthrough</p>
+                  <Switch checked={showSchedule} onCheckedChange={setShowSchedule} aria-label="Schedule walkthrough" />
                 </div>
 
                 {showSchedule && <ScheduleFields form={form} />}
+                {/* Who does it sits beside the time, not inside it, so performers can be saved without a time (the
+                    walkthrough then shows as "To be scheduled"): a Performers picker for a person with Book
+                    walkthroughs, the "I'll do this walkthrough" checkbox for anyone else who can be on a crew. */}
+                {mayBookWalkthroughs && (
+                  <div className="flex flex-col gap-1.5">
+                    <Label htmlFor="v2-lead-performers">Performers</Label>
+                    <MultiAssigneeSelect
+                      id="v2-lead-performers"
+                      value={performerIds}
+                      onChange={(ids) => { setPerformerIds(ids); resetClash(); }}
+                      purpose="walkthroughPerformer"
+                      placeholder="Add performer..."
+                      knownPeople={actorKnownPeople}
+                    />
+                    {!showSchedule && (
+                      <p className="text-muted-foreground text-xs">Without a time, the walkthrough shows as To be scheduled.</p>
+                    )}
+                  </div>
+                )}
+                {!mayBookWalkthroughs && prefill?.can_be_on_crew && (
+                  <div className="flex flex-col gap-1.5">
+                    <div className="flex items-center gap-2">
+                      <Checkbox
+                        id="v2-lead-do-it-myself"
+                        checked={doItMyself}
+                        onCheckedChange={(v) => { setDoItMyself(v === true); resetClash(); }}
+                      />
+                      <Label htmlFor="v2-lead-do-it-myself" className="cursor-pointer">I'll do this walkthrough</Label>
+                    </div>
+                    {!showSchedule && doItMyself && (
+                      <p className="text-muted-foreground text-xs">Without a time, the walkthrough shows as To be scheduled.</p>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
 
+            {clash && clash.when === scheduleKey(form.getValues()) && (
+              <ScheduleClashNotice
+                conflicts={clash.conflicts}
+                timezone={timezone}
+                message="A performer is already booked over this slot."
+                pending={mutation.isPending}
+                onScheduleAnyway={() => { forceWalkthrough.current = true; mutation.mutate({ data: clash.data }); }}
+              />
+            )}
             {inlineError && (
               <p className="text-destructive text-sm">{extractApiError(inlineError, 'Something went wrong')}</p>
+            )}
+            {/* Without the pre-fill the form cannot say who the lead will hold, so it does not save blind. */}
+            {prefillFailed && (
+              <p className="text-destructive text-sm">Couldn't load the Owner and Dispatcher. Reload the page to try again.</p>
             )}
 
             <Separator />
             <div className="flex flex-wrap justify-end gap-3">
               <Button type="button" variant="outline" onClick={leave.leaveBack}>Cancel</Button>
-              <Button type="submit" disabled={mutation.isPending}>
+              <Button type="submit" disabled={mutation.isPending || prefillFailed || ((mayNamePeople || !mayBookWalkthroughs) && prefillPending)}>
                 {mutation.isPending ? 'Creating...' : 'Create Lead'}
               </Button>
             </div>
@@ -773,6 +888,14 @@ function EditLeadForm({
   const customerLocations = customer?.service_locations ?? [];
   // Location freezes once any estimate exists (backend returns 400 otherwise).
   const hasEstimates = ((lead.estimates as unknown[] | undefined)?.length ?? 0) > 0;
+  // What the server says this person may change on THIS lead. The lead's creator without Edit leads gets the plain
+  // details only: the address, the source and the walkthrough times stay with whoever holds Edit leads, so those
+  // controls are not shown and their fields are not sent.
+  const actions = lead as { actions?: LeadAction[] };
+  const mayEditAddress = leadOffers(actions, 'edit_address', true);
+  const mayEditSource = leadOffers(actions, 'edit_source', true);
+  const mayEditSchedule = leadOffers(actions, 'edit_schedule', true);
+  const locationLocked = hasEstimates || !mayEditAddress;
 
   /*
    * The lead's location is its ANCHOR (`service_location`); the deprecated inline `service_*`
@@ -816,7 +939,7 @@ function EditLeadForm({
     || customerLocations[0];
 
   const form = useForm<EditFormData>({
-    resolver: zodResolver(editLeadFormSchema),
+    resolver: zodResolver(mayEditAddress ? editLeadFormSchema : editLeadDetailsFormSchema),
     defaultValues: {
       service_request: lead.service_request as string,
       notes: (lead.notes as string) || '',
@@ -849,13 +972,13 @@ function EditLeadForm({
   const serviceLocationId = form.watch('service_location_id');
   const newState = (form.watch('service_state') || '').toUpperCase();
   // A state change (and the location actually changed) triggers the tax warning.
-  const isStateChange = !hasEstimates && Boolean(newState) && newState !== leadState;
+  const isStateChange = !locationLocked && Boolean(newState) && newState !== leadState;
 
   const mutation = useMutation({
     mutationFn: async (data: EditFormData) => {
       const pickedExisting = data.service_location_id && data.service_location_id !== '__add_new__';
-      const locationFields = hasEstimates
-        // Location is frozen - do not send any location-change inputs.
+      const locationFields = locationLocked
+        // Location is frozen, or not this person's to change - do not send any location-change inputs.
         ? {}
         : pickedExisting
           ? { service_location_id: data.service_location_id }
@@ -872,9 +995,13 @@ function EditLeadForm({
         service_request: data.service_request,
         notes: data.notes || null,
         job_type: data.job_type || null,
-        ad_source: data.ad_source || null,
-        scheduled_start: showSchedule ? (combineDatetime(data.scheduled_date, data.scheduled_time) || null) : null,
-        scheduled_end: showSchedule ? (combineDatetime(data.scheduled_end_date, data.scheduled_end_time) || null) : null,
+        ...(mayEditSource ? { ad_source: data.ad_source || null } : {}),
+        ...(mayEditSchedule
+          ? {
+              scheduled_start: showSchedule ? (combineDatetime(data.scheduled_date, data.scheduled_time) || null) : null,
+              scheduled_end: showSchedule ? (combineDatetime(data.scheduled_end_date, data.scheduled_end_time) || null) : null,
+            }
+          : {}),
         ...locationFields,
       };
       const { data: res } = await api.patch(`/api/leads/${leadId}`, payload);
@@ -983,27 +1110,29 @@ function EditLeadForm({
                       </div>
                     )}
                   </div>
-                  <div className="flex flex-col gap-1.5">
-                    <Label>Source</Label>
-                    <SelectField
-                      aria-label="Source"
-                      value={form.watch('ad_source') || ''}
-                      onValueChange={(v) => form.setValue('ad_source', v)}
-                      placeholder="Select source..."
-                      options={
-                        sourceOptions.length > 0
-                          ? sourceOptions.map((s) => ({ value: s, label: s }))
-                          : [{ value: '__none__', label: 'No options - add in Settings', disabled: true }]
-                      }
-                    />
-                  </div>
+                  {mayEditSource && (
+                    <div className="flex flex-col gap-1.5">
+                      <Label>Source</Label>
+                      <SelectField
+                        aria-label="Source"
+                        value={form.watch('ad_source') || ''}
+                        onValueChange={(v) => form.setValue('ad_source', v)}
+                        placeholder="Select source..."
+                        options={
+                          sourceOptions.length > 0
+                            ? sourceOptions.map((s) => ({ value: s, label: s }))
+                            : [{ value: '__none__', label: 'No options - add in Settings', disabled: true }]
+                        }
+                      />
+                    </div>
+                  )}
                 </div>
               </div>
 
               <div className="flex flex-col gap-5">
                 <p className="text-muted-foreground text-xs font-semibold uppercase">Service Location</p>
 
-                {hasEstimates ? (
+                {locationLocked ? (
                   <div className="flex flex-col gap-1.5 rounded-lg border px-3 py-2.5">
                     <p className="flex items-center gap-2 text-sm font-medium">
                       <Lock className="text-muted-foreground size-3.5" />
@@ -1013,7 +1142,9 @@ function EditLeadForm({
                       {[leadCity, leadState, leadZip].filter(Boolean).join(', ')}
                     </p>
                     <p className="text-muted-foreground text-xs">
-                      Locked - revise or duplicate the estimate to change the service location.
+                      {hasEstimates
+                        ? 'Locked - revise or duplicate the estimate to change the service location.'
+                        : 'Locked - only people who can edit leads can change the service location.'}
                     </p>
                   </div>
                 ) : (
@@ -1049,13 +1180,17 @@ function EditLeadForm({
                   />
                 )}
 
-                <Separator />
-                <div className="flex items-center justify-between">
-                  <p className="text-muted-foreground text-xs font-semibold uppercase">Schedule</p>
-                  <Switch checked={showSchedule} onCheckedChange={setShowSchedule} aria-label="Schedule" />
-                </div>
+                {mayEditSchedule && (
+                  <>
+                    <Separator />
+                    <div className="flex items-center justify-between">
+                      <p className="text-muted-foreground text-xs font-semibold uppercase">Schedule walkthrough</p>
+                      <Switch checked={showSchedule} onCheckedChange={setShowSchedule} aria-label="Schedule walkthrough" />
+                    </div>
 
-                {showSchedule && <ScheduleFields form={form} />}
+                    {showSchedule && <ScheduleFields form={form} />}
+                  </>
+                )}
               </div>
             </div>
 

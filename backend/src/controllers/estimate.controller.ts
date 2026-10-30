@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { z } from 'zod';
-import { Prisma, PaymentMethod, LeadStatus } from '@prisma/client';
+import { Prisma, PaymentMethod, LeadStatus, DepositPolicy } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { prisma } from '../lib/prisma';
 // Creator tracking (audit only) - stamped at every create, never read for authorization here.
@@ -12,9 +12,12 @@ import { ESTIMATE_SORT_FIELDS } from '../lib/sortFields';
 import { applyFilters } from '../lib/query/filterEngine';
 import { estimateFacets } from '../lib/query/registries/estimate.filters';
 import { env } from '../config/env';
+import { ADDRESS_NEEDED_REFUSAL, handSenderOrRefusal, type HandSender } from '../lib/mailbox/hand-sender';
 import { sendEstimateEmail, sendEstimateWithDepositEmail, sendEstimateApprovedNotification, sendDepositReceivedConfirmation, sendDepositPaidAlert, sendPaymentMethodSelectedAlert } from '../lib/email';
 import type { EmailDispatchResult } from '../lib/email';
-import { createCheckoutSession, getStripeForOrg, isStripeConfigured, resolveCheckoutFees, computeServiceFee, CARD_SERVICE_FEE_BPS } from '../lib/stripe';
+import { createCheckoutSession, getStripeForOrg, isStripeConfigured, expireOpenCheckoutSessionsForInvoice } from '../lib/stripe';
+import { exceedsPayableNow, payableNowCents, priceCheckout, processingBlocksHandPaymentMessage, type CheckoutMethod } from '../lib/checkout-pricing';
+import { PROCESSING_PAYMENT_WHERE, paidCents, toCents } from '../lib/payment-ledger';
 import { tenantWhere } from '../lib/tenant';
 import {
   LOST_REASON_CODE_MAX,
@@ -24,10 +27,14 @@ import {
 import { loadTagsByEntity, loadTagsForEntity } from '../lib/tags';
 import { allocateNumber, allocateContainerEstimateNumber } from '../lib/numbering';
 import { withNumberCollisionRetry } from '../lib/number-collision-retry';
-import { scopeWhereForReq, canAccessRow, canSeePricing } from '../lib/permissions/enforce';
-import { presentEstimateDetail, presentInvoiceDetail, redactCustomerRowUnless } from '../lib/permissions/customerContact';
+import { scopeWhereForReq, canAccessRow, canSeeCosts, canSeeCompanyFigures } from '../lib/permissions/enforce';
+import { changesDiscount, changesLineDiscounts, refusedForDiscount } from '../lib/permissions/discountWrite';
+import { refusedForStandalone } from '../lib/permissions/standaloneCreate';
+import { estimateActionsFor } from '../lib/permissions/documentActions';
+import { estimateEmailTie } from '../lib/communication/recordTie';
+import { presentEstimateDetail, presentInvoiceDetail, redactCustomerRowUnless, isCustomerReadable } from '../lib/permissions/customerContact';
 import { isCustomerReadableRow, CUSTOMER_PROOF_SELECT } from '../lib/permissions/customerScope';
-import { emit } from '../services/notifications/notificationService';
+import { queueEstimateAlert, type EstimateAlertVerb } from '../services/notifications/leadEstimateAlerts';
 import { dispatchAutomationEvent } from '../services/automations/dispatch';
 import { addOrFilter } from '../lib/permissions/whereCompose';
 import { logAudit } from '../lib/audit';
@@ -63,22 +70,29 @@ import { areSelectionsLocked, changesSelectionFlagsInList, optionsLockedBody, OP
 import { ESTIMATE_STATUS, type EstimateStatusValue } from '../constants/estimateStatus';
 import { TARGETABLE_ESTIMATE_STATUSES, buildStatusChangeData, blockedByMoneyTrail, clearsSendConfig, suspendsDepositLink } from '../lib/estimates/status-transitions';
 import { expireDepositCheckoutsOnMaterialEdit, expireDepositCheckoutsAfterReprice, expireDepositCheckoutsOnRecall } from '../lib/estimates/deposit-checkout-guard';
+import { closeOpenCheckoutLinks, closeVoidedDepositCheckoutLinks } from '../lib/invoice-checkout-expiry';
+import { voidUnpaidDeposits, type VoidedDeposit } from '../lib/estimates/void-unpaid-deposits';
 import { round2, resolveDepositAmount, depositFigureWouldMove, type DepositOrgDefaults } from '../lib/estimates/deposit-amount';
 import { REVOKE_PUBLIC_LINK, customerVisibleDocumentChanged, type CustomerVisibleLine } from '../lib/estimates/public-link';
 import { resolveTaxRateForState } from '../lib/tax/resolveTaxRate';
-import { remainingDepositCredit, applyDepositCredit } from '../lib/deposit-credit';
+import { remainingDepositCredit, applyDepositCredit, lockDepositInvoicesForEstimates } from '../lib/deposit-credit';
 import { LINE_DESCRIPTION_MAX } from '../lib/line-items';
 // Copy-to-invoice (R5e) reuses invoice.controller.ts's exact conventions verbatim rather than
-// redefining them: the standalone-invoice permission gate's message, the detail select, the
-// deposit-credit reference tag, and the payment-terms due-date resolver.
-import { invoiceDetailSelect, DEPOSIT_CREDIT_REFERENCE, calculateDueDate, resolveAvailablePaymentMethods } from './invoice.controller';
+// redefining them: the detail select, the deposit-credit reference tag, and the payment-terms
+// due-date resolver.
+import { invoiceDetailSelect, stripInvoiceCost, DEPOSIT_CREDIT_REFERENCE, calculateDueDate, depositCheckoutRefusal, depositHoldReason, depositEstimateClosed } from './invoice.controller';
+import { publicPayState } from '../lib/public-pay-state';
+import { paymentOptionsFor } from '../lib/payment-options';
+import { ORG_PLAN_SELECT, onlinePaymentsInPlan, onlinePaymentsUnavailableRefusal } from '../lib/online-payments-plan';
 import { walkthroughSnapshotSelect, projectLeadWalkthroughFields, projectLeadVisitCrew, walkthroughCompletionSnapshot } from '../services/walkthrough.service';
 import type { WalkthroughCompletionSnapshot } from '../services/walkthrough.service';
-import { transitionLeadStatus, stampLeadClock, WALKTHROUGH_DRIVEN_FROM_STATUSES, LEAD_STATUS_LABEL } from '../services/lead-stage.service';
+import { transitionLeadStatus, stampLeadClock, WALKTHROUGH_DRIVEN_FROM_STATUSES, LEAD_STATUS_LABEL, TERMINAL_LEAD_STATUSES } from '../services/lead-stage.service';
 import { isOnJobCrew } from '../lib/job-crew';
 // The single owner of the 400 validation body shape, so a handler-level refusal is
 // indistinguishable from the Zod one the same schema raises (#2010).
 import { validationFailure, checkStructure, TOO_COMPLEX_MESSAGE } from '../middleware/validate';
+import { manualPaymentMethodSchema } from '../lib/payment-methods';
+import { refuseDisallowedPaymentMethod } from '../lib/permissions/paymentMethods';
 
 // ─── Select Objects ────────────────────────────────────
 
@@ -124,6 +138,8 @@ const estimateListSelect = {
 export const estimateDetailSelect = {
   id: true,
   lead_id: true,
+  // Payments go-live slice 19: this estimate's deposit-policy override (null = the org's).
+  deposit_policy: true,
   // SERV10X-61 - scalar anchors alongside lead_id. customer_id (R6, NOT-NULL) lets a lead-less
   // detail resolve its customer directly; job_id tells the workspace the estimate is job-anchored
   // (drives the tax-lock UI) without walking the `job` relation.
@@ -338,7 +354,7 @@ export const estimateDetailSelect = {
     select: {
       id: true, invoice_number: true, status: true, kind: true, total_amount: true, amount_due: true,
       total_refunded: true, refunded_at: true,
-      payments: { select: { id: true, amount: true, method: true, paid_at: true, stripe_payment_intent_id: true, reference_number: true } },
+      payments: { select: { id: true, amount: true, method: true, paid_at: true, stripe_payment_intent_id: true, reference_number: true, state: true, voided_at: true } },
     },
   },
   send_config: {
@@ -393,6 +409,8 @@ export const estimatePublicSelect = {
   },
   terms_accepted: true,        // #21
   terms_accepted_at: true,     // #21
+  // Payments go-live slice 19: the deposit-policy override the public page's options resolve from.
+  deposit_policy: true,
   // signature_ip intentionally excluded — internal only
   sent_at: true,
   approved_at: true,
@@ -453,6 +471,17 @@ async function presentPublicEstimate<T extends { lead?: unknown; scopes?: unknow
 // null) from every estimateDetailSelect-shaped response — getById, create, update, duplicate,
 // revise — and is reused by estimate-lines.controller.ts for the new granular endpoints.
 export const stripEstimateCost = stripDocumentCost;
+
+// The lifecycle actions (send, mark-sent, approve, cancel...) re-read the estimate inside their
+// transaction, and that read is typed nullable. Same strip, with a null passed straight through.
+type LifecycleEstimate = { lead?: unknown; scopes?: unknown; line_items?: Array<Record<string, unknown>> } | null;
+
+function stripEstimateCostIfFound<T extends { scopes?: unknown; line_items?: Array<Record<string, unknown>> } | null>(
+  estimate: T,
+  req: Request,
+): T {
+  return estimate ? stripEstimateCost(estimate, req) : estimate;
+}
 
 /**
  * Freeze-at-send, clone half. duplicate() and revise() both mint a NEW DRAFT, which has not been
@@ -767,6 +796,9 @@ export const createEstimateSchema = z.object({
   discount_type: z.enum(['PERCENTAGE', 'FIXED_AMOUNT']).nullable().optional(),
   discount_value: z.number().min(0).nullable().optional(),
   discount_name: z.string().max(200).nullable().optional(),
+  // Payments go-live slice 21 - the deposit-policy override can be chosen at creation too (the
+  // same field update takes); omitted or null = the org's policy.
+  deposit_policy: z.nativeEnum(DepositPolicy).nullable().optional(),
 }).superRefine(discountPctGuard).superRefine(singleAnchorGuard);
 
 export const updateEstimateSchema = z.object({
@@ -785,6 +817,10 @@ export const updateEstimateSchema = z.object({
   labor_hours: z.number().min(0).max(99999).nullable().optional(),
   overhead_mode: z.enum(['PERCENTAGE', 'FIXED']).nullable().optional(),
   overhead_value: z.number().min(0).nullable().optional(),
+  // Payments go-live slice 19 (PRD Module 6) - this estimate's deposit policy; null = the org's.
+  // A staff choice about when the deposit is collected, not part of what was quoted, so it does
+  // not retire the customer's link (it is not in isMaterialChange's diff).
+  deposit_policy: z.nativeEnum(DepositPolicy).nullable().optional(),
 }).superRefine(discountPctGuard).superRefine(depositPctGuard);
 
 export const cancelEstimateSchema = z.object({
@@ -806,7 +842,7 @@ export const sendEstimateSchema = z.object({
 export const recordEstimatePaymentSchema = z.object({
   amount: z.number().positive(),
   deposit_percentage: z.number().positive().max(100).optional(),
-  payment_method: z.nativeEnum(PaymentMethod),
+  payment_method: manualPaymentMethodSchema,
   paid_at: z.string().datetime().optional(),
   reference_number: z.string().max(100).optional(),
   notes: z.string().max(LONG_TEXT_MAX).optional(),
@@ -996,27 +1032,18 @@ async function deriveTaxRateFromLead(
   return resolveTaxRateForState(client, orgId, state);
 }
 
-async function canAccessEstimate(
-  estimate: { lead: { lead_assignees?: { user_id: string }[] } | null; created_by: string } | null,
-  req: Request,
-): Promise<boolean> {
+/**
+ * May the requester open this estimate? Answered by the same scope that powers the list (Estimates
+ * scope, through `scopeWhereForReq`), so list and detail cannot disagree: an estimate is reachable
+ * through its lead or its job under Attached, Team, Location and "Through own leads", and every row
+ * under All, plus the estimates the person made (the creator rule: while attached, or for good when for a
+ * customer alone), which `scopeWhereForReq` adds for every role.
+ */
+async function canAccessEstimate(estimate: object | null, req: Request): Promise<boolean> {
   if (!estimate) return false;
-  // F-004 — role-agnostic own-scope, fully grant-driven (no role literals). Owning the parent lead
-  // always grants access. Otherwise any ROW-SCOPED reader — SALES (default OWN_LEAD-conditioned
-  // read grant), a granted tech via a conditional override, or any future conditioned reader — is
-  // own-only and rejected here; only an UNCONDITIONAL reader (ADMIN/DISPATCHER) sees an estimate
-  // they don't own. The scope engine, not a hardcoded role, decides.
-  if (estimate.lead) {
-    const ownsLead = estimate.lead.lead_assignees?.some((a) => a.user_id === req.user?.id) ?? false;
-    if (ownsLead) return true;
-  } else if (estimate.created_by === req.user?.id) {
-    // R6/D19 — a lead-less estimate has no assignee by design; the creator is the own-scope
-    // signal instead (mirrors the lead-assignee check above, one level up the anchor chain).
-    return true;
-  }
-  const scope = await scopeWhereForReq(req, 'Estimate');
-  if (Object.keys(scope).length > 0) return false; // any conditional read grant ⇒ own-only
-  return true;
+  // Every caller loaded the estimate by the route's :id; a select that leaves `id` out reads it from there.
+  const id = (estimate as { id?: string }).id ?? param(req, 'id');
+  return canAccessRow(req, 'Estimate', prisma.estimate, id);
 }
 
 // ─── Handlers ──────────────────────────────────────────
@@ -1122,7 +1149,7 @@ export async function list(req: Request, res: Response) {
         where: {
           ...tenantWhere(req),
           kind: 'DEPOSIT',
-          status: { in: ['DRAFT', 'SENT'] },
+          status: { in: ['SENT', 'PARTIAL'] },
           // Scope the deposit KPI through the estimate exactly as the list is scoped: a conditional
           // Estimate reader (SALES/own-scoped) sees only deposits on estimates they can read; an
           // unconditional reader (ADMIN/DISPATCHER) sees all. Grant-driven via readScope.
@@ -1195,18 +1222,15 @@ export async function exportAll(req: Request, res: Response) {
 
 export async function create(req: Request, res: Response) {
   try {
-    const { lead_id, customer_id, job_id, scope_notes, tax_rate, line_items, discount_type, discount_value, discount_name } = req.body;
+    const { lead_id, customer_id, job_id, scope_notes, tax_rate, line_items, discount_type, discount_value, discount_name, deposit_policy } = req.body;
+
+    // Apply discounts: a new estimate carrying a discount (its own or on a line) sets one.
+    if (refusedForDiscount(req, res, 'Estimate', changesDiscount(req.body, null) || changesLineDiscounts(line_items ?? [], []))) return;
 
     const orgId = req.user!.organization_id;
 
-    // F-004 — row-scoped create parent-ownership. A row-scoped Estimate reader may only create on a
-    // parent they OWN: SALES (default OWN_LEAD-conditioned read grant) OR a per-user OWN-scoped
-    // `create Estimate` grantee (whose paired conditional `read Estimate` makes scopeWhereForReq
-    // non-empty) - both surface as a non-empty estimate read-scope. Unconditional readers (ADMIN,
-    // who bypasses CASL) skip the check. Fully grant-driven - no role literal. Applied per-anchor
-    // below (the customer anchor is exempt per §8 - any create grant may create there).
-    const estCreateScope = await scopeWhereForReq(req, 'Estimate');
-    const isRowScopedEstimateCreator = Object.keys(estCreateScope).length > 0;
+    // Create estimates reaches the lead or job the estimate goes on only when the person can open it (checked per anchor
+    // below); an estimate with no lead and no job needs Standalone estimates instead.
 
     // SERV10X-61 §5.1 - a NEW estimate is anchored to EXACTLY ONE of a lead, a customer, or a job
     // (the schema's singleAnchorGuard guarantees exactly one field is set). Resolve the estimate's
@@ -1228,7 +1252,7 @@ export async function create(req: Request, res: Response) {
       const lead = await prisma.lead.findUnique({
         where: { id: lead_id, ...tenantWhere(req) },
         select: {
-          id: true, status: true, lead_assignees: { select: { user_id: true } },
+          id: true, status: true,
           // R6 (2026-07-22) - denormalized onto the new estimate below, mirroring Job's own
           // customer_id/service_location_id shape.
           customer_id: true, service_location_id: true,
@@ -1237,15 +1261,15 @@ export async function create(req: Request, res: Response) {
       });
       if (!lead) { res.status(404).json({ error: 'Lead not found' }); return; }
 
-      const terminalStatuses = ['WON', 'LOST', 'CANCELLED'];
-      if (terminalStatuses.includes(lead.status)) {
+      if (TERMINAL_LEAD_STATUSES.includes(lead.status)) {
         res.status(400).json({ error: `Cannot create estimate for a ${lead.status.toLowerCase()} lead` });
         return;
       }
       // Bug #39 - never block estimate CREATION on the walkthrough: a DRAFT must always persist so
       // in-progress work is never lost. D8/D9 (PR-B2): send() no longer gates on a walkthrough
       // requirement at all - it only records silent instrumentation (see send()).
-      if (isRowScopedEstimateCreator && !lead.lead_assignees.some((a) => a.user_id === req.user!.id)) {
+      // Create estimates reaches a lead the person can open (Attached covers its assignees, Owner, Dispatcher and walkthrough crew).
+      if (!(await canAccessRow(req, 'Lead', prisma.lead, lead_id))) {
         res.status(403).json({ error: 'Insufficient permissions' });
         return;
       }
@@ -1264,7 +1288,9 @@ export async function create(req: Request, res: Response) {
         : await deriveTaxRateFromLead(prisma, lead_id, orgId);
     } else if (customer_id) {
       // ── Customer anchor (SERV10X-61 §5.2) ───────────────────────────────────────────────
-      // §8 - ANY `create Estimate` grant may create a customer-anchored estimate; NO row-scope 403.
+      // An estimate with no lead and no job needs Standalone estimates; no row-scope 403 (there is no row).
+      if (refusedForStandalone(req, res, 'Estimate')) return;
+      // §8 - the customer is reachable by any picker-visible id, tenancy being the only existence gate.
       // #2041 decision 8 (was #1996's read-gated refusal here): the create Estimate grant the
       // route already enforced is the authority for a picker-visible customer the requester is
       // not otherwise associated with — tenancy is still the only existence gate. Nothing on this
@@ -1298,14 +1324,13 @@ export async function create(req: Request, res: Response) {
         where: { id: job_id, ...tenantWhere(req) },
         select: {
           id: true, customer_id: true, service_location_id: true,
-          visits: { select: { assignees: { select: { user_id: true } } } },
           service_location: { select: { state: true } },
           customer: { select: { tax_exempt: true } },
         },
       });
       if (!job) { res.status(404).json({ error: 'Job not found' }); return; }
-      // F-004 - a row-scoped creator may only create on a job they are ASSIGNED to.
-      if (isRowScopedEstimateCreator && !isOnJobCrew(job, req.user!.id)) {
+      // Create estimates reaches a job the person can open (Attached covers its crew, Sold By and Dispatcher).
+      if (!(await canAccessRow(req, 'Job', prisma.job, job_id))) {
         res.status(403).json({ error: 'Insufficient permissions' });
         return;
       }
@@ -1381,6 +1406,7 @@ export async function create(req: Request, res: Response) {
           discount_value: discount_value ?? null,
           discount_name: discount_name || null,
           discount_amount: estimateDiscountAmount,
+          deposit_policy: deposit_policy ?? null,
           created_by: req.user!.id,
           line_items: {
             create: line_items.map((item: z.infer<typeof lineItemSchema>, idx: number) => ({
@@ -1758,7 +1784,10 @@ export async function getById(req: Request, res: Response) {
     // persisted subtotal/total_amount, which were already computed selection-aware at write time.
     const estimateWithScopeDefaults = { ...estimate, scopes: withOptionalDefaults(asScopeArray(estimate.scopes)) };
     const presented = stripEstimateCost(projectEstimateLeadWalkthrough(await resolveEstimatePhotoUrls(estimateWithScopeDefaults)), req);
-    res.json({ estimate: presentEstimateDetail(req, { ...presented, tags }) });
+    // What this person may do on this estimate, asked of the record as it stands: the estimate page draws a button only
+    // for a listed action (M3), and the routes behind the buttons ask the same switches and the creator rule.
+    const actions = await estimateActionsFor(req, estimate.id);
+    res.json({ estimate: { ...presentEstimateDetail(req, { ...presented, tags }), actions } });
   } catch (err) {
     logger.error('Get estimate error:', err);
     res.status(500).json({ error: 'Failed to get estimate' });
@@ -1833,6 +1862,14 @@ export async function update(req: Request, res: Response) {
       return;
     }
 
+    // Apply discounts: the estimate's own discount, or the discounts on the replacement list of lines.
+    // Judged against what is stored, so a save that leaves every discount as it was passes.
+    if (refusedForDiscount(
+      req, res, 'Estimate',
+      changesDiscount(req.body, existing)
+        || (req.body.line_items !== undefined && changesLineDiscounts(req.body.line_items, (existing as { line_items?: { discount_type: 'PERCENTAGE' | 'FIXED_AMOUNT' | null; discount_value: unknown }[] }).line_items ?? [])),
+    )) return;
+
     // #2090 (slice 3a) - THE selection lock, refused BEFORE the two generic guards below so the
     // customer-facing reason survives (a WON estimate is already a 400 there).
     // The whole-document PATCH replaces every line in one write with no id to pair them by, so
@@ -1860,18 +1897,18 @@ export async function update(req: Request, res: Response) {
       return;
     }
 
-    const { name, scope_name, scope_notes, tax_rate, line_items, discount_type, discount_value, discount_name, deposit_type, deposit_value, labor_hours, overhead_mode, overhead_value } = req.body;
+    const { name, scope_name, scope_notes, tax_rate, line_items, discount_type, discount_value, discount_name, deposit_type, deposit_value, labor_hours, overhead_mode, overhead_value, deposit_policy } = req.body;
 
     // E3 (job-owns-tax-discount) retires the job-anchored tax LOCK: a job-anchored estimate is a
     // quote, the job is the work, and they may legitimately differ. An inbound tax_rate now saves
     // normally, same as any other anchor.
 
     // R3 (2026-07-21) — labor_hours/overhead_mode/overhead_value are staff-only cost-model inputs
-    // (D2/D8). A requester who can't see pricing (canSeePricing gates read Invoice) must not be
+    // (D2/D8). A requester without See financial data (canSeeCosts) must not be
     // able to blindly set them either — mirrors the read-side strip in stripEstimateCost.
     if (
       (labor_hours !== undefined || overhead_mode !== undefined || overhead_value !== undefined)
-      && !canSeePricing(req)
+      && !canSeeCosts(req)
     ) {
       res.status(403).json({ error: 'Insufficient permissions to edit cost fields' });
       return;
@@ -2058,6 +2095,7 @@ export async function update(req: Request, res: Response) {
             labor_hours: labor_hours !== undefined ? (labor_hours ?? null) : undefined,
             overhead_mode: overhead_mode !== undefined ? (overhead_mode || null) : undefined,
             overhead_value: overhead_value !== undefined ? (overhead_value ?? null) : undefined,
+            deposit_policy: deposit_policy !== undefined ? deposit_policy : undefined,
             ...guardrailData,
             ...pendingRevertData,
             line_items: {
@@ -2188,6 +2226,7 @@ export async function update(req: Request, res: Response) {
           labor_hours: labor_hours !== undefined ? (labor_hours ?? null) : undefined,
           overhead_mode: overhead_mode !== undefined ? (overhead_mode || null) : undefined,
           overhead_value: overhead_value !== undefined ? (overhead_value ?? null) : undefined,
+          deposit_policy: deposit_policy !== undefined ? deposit_policy : undefined,
           ...guardrailData,
           ...pendingRevertData,
           ...recalcData,
@@ -2968,11 +3007,15 @@ async function commitFirstSend(
 // extraction the IIFE is scheduled here, before the wrapper below responds - behaviourally
 // equivalent (still fire-and-forget, still after the awaited commit), just re-ordered relative to
 // the HTTP response boundary.
+//
+// PRD 10 (S10.12): the estimate goes out from the SENDER'S OWN mailbox. The caller resolves that mailbox (a bulk send resolves
+// it once for the whole batch) and refuses a person with no address before anything is looked up or written.
 async function sendEstimateInternal(
   req: Request,
   id: string,
   body: z.infer<typeof sendEstimateSchema>,
-): Promise<{ ok: true; estimate: unknown } | { ok: false; status: number; error: string }> {
+  sender: HandSender,
+): Promise<{ ok: true; estimate: unknown } | { ok: false; status: number; error: string; code?: string }> {
   const existing = await prisma.estimate.findUnique({
     where: { id, ...tenantWhere(req) },
     select: {
@@ -3177,6 +3220,16 @@ async function sendEstimateInternal(
   const fmt = (n: number) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(n);
   const publicUrl = `${env.FRONTEND_URL}/p/estimates/${existing.id}?token=${publicToken}`;
 
+  // Attach-by-origin: the email is saved on the estimate's job when it has one, else on its lead (PRD 10, S10.5).
+  const estimateEmailRecord = {
+    organizationId: req.user!.organization_id, customerId: customer.id, ...estimateEmailTie(existing),
+    // The reply anchor: every send about THIS estimate, and the customer's
+    // reply to any of them, resolve to one address and one conversation.
+    entityType: 'estimate', entityId: existing.id,
+  };
+  // Sent by hand: from the sender's own mailbox, and the person who pressed Send is recorded with the send.
+  const handSender = { mailboxId: sender.mailboxId, userId: req.user!.id };
+
   const emailResult: EmailDispatchResult = (isFirstSend && body.deposit_required)
     ? await sendEstimateWithDepositEmail({
         estimateId: existing.id,
@@ -3190,13 +3243,8 @@ async function sendEstimateInternal(
         depositAmount: fmt(depositAmount),
         depositPercentage: dType === 'FIXED' ? 0 : depositPercent,
         publicUrl,
-        // Attach-by-origin: estimate-time sends have no job yet — customer/lead only.
-        record: {
-          organizationId: req.user!.organization_id, customerId: customer.id, leadId: existing.lead_id,
-          // The reply anchor: every send about THIS estimate, and the customer's
-          // reply to any of them, resolve to one address and one conversation.
-          entityType: 'estimate', entityId: existing.id,
-        },
+        record: estimateEmailRecord,
+        handSender,
       })
     : await sendEstimateEmail({
         estimateId: existing.id,
@@ -3208,12 +3256,8 @@ async function sendEstimateInternal(
         estimateNumber: existing.estimate_number,
         total: fmt(documentTotal),
         publicUrl,
-        record: {
-          organizationId: req.user!.organization_id, customerId: customer.id, leadId: existing.lead_id,
-          // The reply anchor: every send about THIS estimate, and the customer's
-          // reply to any of them, resolve to one address and one conversation.
-          entityType: 'estimate', entityId: existing.id,
-        },
+        record: estimateEmailRecord,
+        handSender,
       });
 
   if (emailResult.status !== 'sent') {
@@ -3221,8 +3265,8 @@ async function sendEstimateInternal(
     // before the dispatch at all; without it a bounced re-send would leave the customer's live
     // link opening on a document they were never sent.
     await dispatch.rollback();
-    const { code, message } = mapEmailFailure(emailResult);
-    return { ok: false, status: code, error: message };
+    const { code, message, errorCode } = mapEmailFailure(emailResult);
+    return { ok: false, status: code, error: message, ...(errorCode ? { code: errorCode } : {}) };
   }
 
   // ── COMMIT (phase 3): email confirmed sent — flip the status + write the ledger ──────
@@ -3399,12 +3443,18 @@ async function sendEstimateInternal(
 export async function send(req: Request, res: Response) {
   try {
     const body = req.body as z.infer<typeof sendEstimateSchema>;
-    const result = await sendEstimateInternal(req, param(req, 'id'), body);
-    if (!result.ok) {
-      res.status(result.status).json({ error: result.error });
+    // PRD 10 (S10.12): sent from the sender's own mailbox; a person with no address is refused before anything is read.
+    const sender = await handSenderOrRefusal(prisma, req);
+    if (!sender.ok) {
+      res.status(sender.refusal.status).json({ error: sender.refusal.error, code: sender.refusal.code });
       return;
     }
-    res.json({ estimate: presentEstimateDetail(req, projectEstimateLeadWalkthrough(result.estimate as { lead?: unknown } | null)) });
+    const result = await sendEstimateInternal(req, param(req, 'id'), body, sender.sender);
+    if (!result.ok) {
+      res.status(result.status).json({ error: result.error, ...(result.code ? { code: result.code } : {}) });
+      return;
+    }
+    res.json({ estimate: presentEstimateDetail(req, stripEstimateCostIfFound(projectEstimateLeadWalkthrough(result.estimate as LifecycleEstimate), req)) });
   } catch (err) {
     logger.error('Send estimate error:', err);
     res.status(500).json({ error: 'Failed to send estimate' });
@@ -3419,6 +3469,13 @@ export async function send(req: Request, res: Response) {
 export async function bulkSendReminders(req: Request, res: Response) {
   try {
     const { ids, message_body } = req.body as z.infer<typeof bulkSendEstimateRemindersSchema>;
+    // PRD 10 (S10.12): a bulk send is a hand send by the person who clicked, from their own mailbox, resolved ONCE for the
+    // batch. A person with no address is refused as a whole, before any estimate is read or sent.
+    const sender = await handSenderOrRefusal(prisma, req);
+    if (!sender.ok) {
+      res.status(sender.refusal.status).json({ error: sender.refusal.error, code: sender.refusal.code });
+      return;
+    }
     const sent: string[] = [];
     const failed: { id: string; error: string }[] = [];
 
@@ -3461,7 +3518,7 @@ export async function bulkSendReminders(req: Request, res: Response) {
           deposit_required: false,
           payment_methods: [],
           ...(message_body !== undefined ? { message_body } : {}),
-        });
+        }, sender.sender);
 
         if (result.ok) {
           sent.push(id);
@@ -3485,15 +3542,32 @@ export async function bulkSendReminders(req: Request, res: Response) {
 // refuses to mark an estimate SENT. Pure — no side effects. org_disabled is a deliberate admin
 // kill-switch (409 conflict, not an error); a missing API key or a provider rejection is an
 // upstream/infra failure (502 bad gateway). In every case the estimate is LEFT unchanged.
-function mapEmailFailure(result: EmailDispatchResult): { code: number; message: string } {
+function mapEmailFailure(result: EmailDispatchResult): { code: number; message: string; errorCode?: string } {
   if (result.status === 'skipped' && result.reason === 'org_disabled') {
     return { code: 409, message: 'Email sending is disabled for your organization. The estimate was not marked as sent.' };
+  }
+  // The sender lost their address between the check at the door and the dispatch: refused like any other address-needed send.
+  if (result.status === 'skipped' && (result.reason === 'address_needed' || result.reason === 'foreign_mailbox')) {
+    return { code: ADDRESS_NEEDED_REFUSAL.status, message: ADDRESS_NEEDED_REFUSAL.error, errorCode: ADDRESS_NEEDED_REFUSAL.code };
   }
   if (result.status === 'skipped') { // no_api_key
     return { code: 502, message: 'Email is not configured, so the estimate was not sent.' };
   }
   return { code: 502, message: 'The estimate could not be emailed to the customer, so it was not marked as sent. Please try again.' };
 }
+
+// Slice 18: thrown inside recordEstimatePayment's transaction when the deposit invoice, read under
+// its row lock, can no longer take a payment (voided, paid or refunded by another door).
+class DepositNotPayableError extends Error {}
+// Slice 27: a WON estimate with no deposit invoice to pay has nothing left to record a payment on.
+class EstimateAlreadyApprovedError extends Error {}
+// Conductor ruling 1: bank money still clearing on the deposit is not payable a second time by hand.
+class DepositProcessingError extends Error {
+  constructor(readonly processingCents: number) { super('deposit bank payment processing'); }
+}
+const DEPOSIT_NOT_PAYABLE_STATUSES: readonly string[] = ['PAID', 'VOIDED', 'REFUNDED', 'PARTIALLY_REFUNDED', 'DISPUTED'];
+const DEPOSIT_NOT_PAYABLE_MESSAGE =
+  "This estimate's deposit invoice can't take a payment: it was voided or already paid. Reload to see where it stands.";
 
 // ─── Record Payment (admin/dispatcher) ────────────────
 // Captures a deposit payment directly on an estimate, skipping the public-page signature
@@ -3536,13 +3610,15 @@ export async function recordEstimatePayment(req: Request, res: Response) {
       return;
     }
 
-    // Only non-terminal, not-yet-paid estimates can have a payment recorded.
-    if (!['DRAFT', 'SENT', 'PENDING'].includes(existing.status)) {
-      res.status(400).json({
-        error: existing.status === ESTIMATE_STATUS.WON
-          ? 'Estimate is already approved/paid'
-          : `Cannot record payment on a ${existing.status.toLowerCase()} estimate`,
-      });
+    // The method must be one the company accepts and one of the person's Allowed payment methods.
+    if (await refuseDisallowedPaymentMethod(req, res, req.body.payment_method)) return;
+
+    // Only non-terminal, not-yet-paid estimates can have a payment recorded. Slice 27: a WON
+    // estimate is the exception while its deposit is still open (pay later signs first and pays
+    // after), checked under the deposit's lock below.
+    const alreadyWon = existing.status === ESTIMATE_STATUS.WON;
+    if (!alreadyWon && !['DRAFT', 'SENT', 'PENDING'].includes(existing.status)) {
+      res.status(400).json({ error: `Cannot record payment on a ${existing.status.toLowerCase()} estimate` });
       return;
     }
 
@@ -3567,6 +3643,8 @@ export async function recordEstimatePayment(req: Request, res: Response) {
     // The deposit invoice reached PAID → dispatch INVOICE_PAID post-commit, for
     // door-parity with the invoice-controller + Stripe deposit doors.
     let paidDepositInvoice: { id: string; number: string } | null = null;
+    // Slice 14: the deposit invoice the payment landed on, whose open checkout links close post-commit.
+    let depositInvoiceId: string | null = null;
 
     const estimate = await withNumberCollisionRetry(() => prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       // Retry-safety: both of these are written inside the transaction and read by the
@@ -3575,15 +3653,38 @@ export async function recordEstimatePayment(req: Request, res: Response) {
       // branch, so a stale value would dispatch INVOICE_PAID for a payment that never landed.
       isFullyPaid = false;
       paidDepositInvoice = null;
+      depositInvoiceId = null;
 
       // 1. Find-or-create the kind=DEPOSIT Invoice (the SOLE deposit document). A never-sent DRAFT
       // estimate has no deposit invoice yet (it is created at send()), so lazily create it here using
       // body.amount as the recorded deposit. Then record the Payment on it and mark it PAID or
       // PARTIAL depending on balance coverage.
+      //
+      // Payments go-live slice 18: lock the estimate's deposit invoice first and read it under the
+      // lock, the way every other payment door does. Without the lock a void (or another payment)
+      // committing at the same moment is written over: a VOIDED deposit invoice marked PAID, or a
+      // balance computed from an amount_due another payment has already lowered.
+      await tx.$executeRaw`SELECT id FROM invoices WHERE estimate_id = ${existing.id}::uuid AND kind = 'DEPOSIT' AND organization_id = ${req.user!.organization_id}::uuid ORDER BY id FOR UPDATE`;
       let depInv = await tx.invoice.findFirst({
         where: { estimate_id: existing.id, kind: 'DEPOSIT', ...tenantWhere(req) },
-        select: { id: true, amount_due: true, total_amount: true, invoice_number: true },
+        select: {
+          id: true, status: true, amount_due: true, total_amount: true, invoice_number: true,
+          payments: { where: PROCESSING_PAYMENT_WHERE, select: { amount: true } },
+        },
       });
+      // A WON estimate takes a payment only onto its own open deposit; there is nothing to create.
+      if (alreadyWon && !depInv) throw new EstimateAlreadyApprovedError();
+      if (depInv && DEPOSIT_NOT_PAYABLE_STATUSES.includes(depInv.status)) {
+        throw new DepositNotPayableError();
+      }
+      // Work from payable-now (amount due less bank payments still PROCESSING, the rule the public
+      // page uses): a debit in flight must not be recorded again by hand and paid twice on clearing.
+      if (depInv) {
+        const processingCents = paidCents(depInv.payments ?? []);
+        if (processingCents > 0 && exceedsPayableNow(toCents(depInv.amount_due), processingCents, toCents(body.amount))) {
+          throw new DepositProcessingError(processingCents);
+        }
+      }
       // When freshly created, the deposit invoice is opened with amount_due = body.amount, so the
       // payment fully covers it; track this so coverage math doesn't depend on the create() echo.
       let depInvDue: number;
@@ -3622,7 +3723,10 @@ export async function recordEstimatePayment(req: Request, res: Response) {
             // Audit: the user recording the deposit payment opened this invoice as part of doing so.
             ...createdByUser(req),
           },
-          select: { id: true, amount_due: true, total_amount: true, invoice_number: true },
+          select: {
+            id: true, status: true, amount_due: true, total_amount: true, invoice_number: true,
+            payments: { where: PROCESSING_PAYMENT_WHERE, select: { amount: true } },
+          },
         });
         // Newly opened deposit invoice: amount_due == body.amount by construction.
         depInvDue = body.amount;
@@ -3661,9 +3765,11 @@ export async function recordEstimatePayment(req: Request, res: Response) {
       if (isFullyPaid) {
         paidDepositInvoice = { id: depInv.id, number: depInv.invoice_number };
       }
+      depositInvoiceId = depInv.id;
 
       // 2. Estimate → WON only when fully paid. Generate public_token if missing (archival).
-      if (isFullyPaid) {
+      // An estimate that was already WON (pay later) keeps its signing: no new approval date.
+      if (isFullyPaid && !alreadyWon) {
         await tx.estimate.update({
           where: { id: existing.id },
           data: {
@@ -3695,7 +3801,7 @@ export async function recordEstimatePayment(req: Request, res: Response) {
       // 4. Lead → WON only when fully paid (idempotent — skip terminal states).
       // Spec #1751 D6: through the one status writer, which also stamps won_at and records the
       // from/to ledger entry. The `notIn` guard this replaces is the helper's own default.
-      if (isFullyPaid && existing.lead_id) {
+      if (isFullyPaid && !alreadyWon && existing.lead_id) {
         await transitionLeadStatus(tx, {
           leadId: existing.lead_id,
           orgId: req.user!.organization_id,
@@ -3728,8 +3834,8 @@ export async function recordEstimatePayment(req: Request, res: Response) {
         },
       });
 
-      // APPROVED event only fires on full payment.
-      if (isFullyPaid) {
+      // APPROVED event only fires on full payment, and not for an estimate the customer already approved.
+      if (isFullyPaid && !alreadyWon) {
         await tx.timelineEvent.create({
           data: {
             organization_id: req.user!.organization_id,
@@ -3745,27 +3851,29 @@ export async function recordEstimatePayment(req: Request, res: Response) {
       return tx.estimate.findUnique({ where: { id: existing.id }, select: estimateDetailSelect });
     }), { label: 'estimate.record_payment' });
 
+    // Slice 14: a deposit link opened before this payment asks for the old balance. Post-commit and
+    // fire-and-forget: a processor outage never fails the payment.
+    if (depositInvoiceId) void closeOpenCheckoutLinks(req.user!.organization_id, [{ id: depositInvoiceId }], 'manual_payment');
+
     // ── Notifications — POST-COMMIT (must NOT run inside the txn; see #271) ──────
     // deposit_paid: always fire — real money was recorded regardless of partial/full.
-    await emit({
+    queueEstimateAlert({
       verb: 'estimate.deposit_paid',
       organizationId: req.user!.organization_id,
       actorId: req.user?.id ?? null,
-      object: { type: 'ESTIMATE', id: existing.id, label: existing.estimate_number },
-      entity: { commission_owner_id: existing.lead?.commission_owner_id ?? null },
-      data: { object_label: existing.estimate_number, lead_id: existing.lead_id },
+      estimateId: existing.id,
+      data: { lead_id: existing.lead_id },
       dedupKey: `estimate.deposit_paid:${existing.id}`,
     });
     // approved: only on full payment; same dedupKey as paths A (approvePublic) + C (webhook).
-    if (isFullyPaid) {
-      await emit({
+    if (isFullyPaid && !alreadyWon) {
+      queueEstimateAlert({
         verb: 'estimate.approved',
         organizationId: req.user!.organization_id,
         actorId: req.user?.id ?? null,
-        object: { type: 'ESTIMATE', id: existing.id, label: existing.estimate_number },
-        entity: { commission_owner_id: existing.lead?.commission_owner_id ?? null },
+        estimateId: existing.id,
         // #2090 - the chosen and declined add-ons, named as the document names them.
-        data: { object_label: existing.estimate_number, lead_id: existing.lead_id, ...optionSummaryData(await loadOptionSummary(existing.id)) },
+        data: { lead_id: existing.lead_id, ...optionSummaryData(await loadOptionSummary(existing.id)) },
         dedupKey: `estimate.approved:${existing.id}`,
       });
       // Automation Center — dedupe key collapses the 3 approval paths downstream.
@@ -3775,23 +3883,36 @@ export async function recordEstimatePayment(req: Request, res: Response) {
         entity: { type: 'estimate', id: existing.id, label: existing.estimate_number },
         actorId: req.user?.id ?? null,
       });
-      // The deposit invoice reached PAID here too — dispatch INVOICE_PAID for
-      // parity with the invoice-controller + Stripe deposit doors. The `as` widens
-      // past TS's CFA, which narrows this closure-assigned `let` to `null`/`never`.
-      const paidInvoice = paidDepositInvoice as { id: string; number: string } | null;
-      if (paidInvoice) {
-        dispatchAutomationEvent({
-          type: 'INVOICE_PAID',
-          organizationId: req.user!.organization_id,
-          entity: { type: 'invoice', id: paidInvoice.id, label: paidInvoice.number },
-          actorId: req.user?.id ?? null,
-        });
-      }
+    }
+    // The deposit invoice reached PAID here too — dispatch INVOICE_PAID for
+    // parity with the invoice-controller + Stripe deposit doors, whether or not this payment
+    // also approved the estimate. The `as` widens past TS's CFA, which narrows this
+    // closure-assigned `let` to `null`/`never`.
+    const paidInvoice = paidDepositInvoice as { id: string; number: string } | null;
+    if (paidInvoice) {
+      dispatchAutomationEvent({
+        type: 'INVOICE_PAID',
+        organizationId: req.user!.organization_id,
+        entity: { type: 'invoice', id: paidInvoice.id, label: paidInvoice.number },
+        actorId: req.user?.id ?? null,
+      });
     }
 
     void logAudit({ req, action: 'estimate.deposit_paid', resourceType: 'Estimate', resourceId: existing.id, metadata: { amount: body.amount, fully_paid: isFullyPaid } });
-    res.json({ estimate: presentEstimateDetail(req, projectEstimateLeadWalkthrough(estimate)) });
+    res.json({ estimate: presentEstimateDetail(req, stripEstimateCostIfFound(projectEstimateLeadWalkthrough(estimate), req)) });
   } catch (err) {
+    if (err instanceof DepositNotPayableError) {
+      res.status(409).json({ error: DEPOSIT_NOT_PAYABLE_MESSAGE });
+      return;
+    }
+    if (err instanceof DepositProcessingError) {
+      res.status(409).json({ error: processingBlocksHandPaymentMessage(err.processingCents, 'deposit') });
+      return;
+    }
+    if (err instanceof EstimateAlreadyApprovedError) {
+      res.status(400).json({ error: 'Estimate is already approved/paid' });
+      return;
+    }
     logger.error('Record estimate payment error:', err);
     res.status(500).json({ error: 'Failed to record payment' });
   }
@@ -3826,6 +3947,9 @@ export async function cancel(req: Request, res: Response) {
     }
 
     const estimate = await prisma.$transaction(async (tx) => {
+      // Slice 27 (slice 15 review 3): the deposit lock comes BEFORE the estimate write - the checkout
+      // webhook locks the deposit and then wins the estimate, so the opposite order could deadlock.
+      await lockDepositInvoicesForEstimates(tx, [existing.id], req.user!.organization_id);
       const est = await tx.estimate.update({
         where: { id: existing.id },
         data: {
@@ -3848,26 +3972,24 @@ export async function cancel(req: Request, res: Response) {
         },
       });
 
-      // Void any UNPAID kind=DEPOSIT Invoice (DRAFT/SENT) on this estimate — a paid one stays.
-      await tx.invoice.updateMany({
-        where: { estimate_id: existing.id, kind: 'DEPOSIT', status: { in: ['DRAFT', 'SENT'] } },
-        data: { status: 'VOIDED', voided_at: new Date(), voided_reason: 'Estimate cancelled' },
-      });
+      // Void any UNPAID kind=DEPOSIT Invoice (DRAFT/SENT, no money on it) on this estimate — a
+      // paid one stays. Slice 15: judged under the deposit's lock, a clearing bank payment counts.
+      await voidUnpaidDeposits(tx, { organizationId: req.user!.organization_id, estimateIds: [existing.id], reason: 'Estimate cancelled' });
 
       return est;
     });
+    // Slice 14: an old link must not take money for the deposit just voided. Fire-and-forget.
+    void closeVoidedDepositCheckoutLinks(req.user!.organization_id, existing.id);
 
     // ── Notification: estimate.cancelled — POST-COMMIT (#271) ─────────────────
-    await emit({
+    queueEstimateAlert({
       verb: 'estimate.cancelled',
       organizationId: req.user!.organization_id,
       actorId: req.user?.id ?? null,
-      object: { type: 'ESTIMATE', id: existing.id, label: existing.estimate_number },
-      entity: { commission_owner_id: existing.lead?.commission_owner_id ?? null },
-      data: { object_label: existing.estimate_number },
+      estimateId: existing.id,
     });
 
-    res.json({ estimate: presentEstimateDetail(req, projectEstimateLeadWalkthrough(estimate)) });
+    res.json({ estimate: presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(estimate), req)) });
   } catch (err) {
     logger.error('Cancel estimate error:', err);
     res.status(500).json({ error: 'Failed to cancel estimate' });
@@ -4017,7 +4139,7 @@ export async function markSent(req: Request, res: Response) {
       actorId: req.user?.id ?? null,
     });
 
-    res.json({ estimate: presentEstimateDetail(req, projectEstimateLeadWalkthrough(estimate)) });
+    res.json({ estimate: presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(estimate), req)) });
   } catch (err) {
     logger.error('Mark estimate sent error:', err);
     res.status(500).json({ error: 'Failed to mark estimate as sent' });
@@ -4159,7 +4281,7 @@ async function setStatusInternal(
     });
 
     // Entering WON propagates the win to the lead, idempotently — same rule as approveInternal:
-    // a lead already WON/LOST/CANCELLED is left alone.
+    // a lead already WON/LOST is left alone.
     if (target === ESTIMATE_STATUS.WON && existing.lead_id) {
       await transitionLeadStatus(tx, {
         leadId: existing.lead_id,
@@ -4233,20 +4355,19 @@ async function setStatusInternal(
   // notification feed would report which control the user happened to press: an estimate declined
   // from the status pill would surface as a bland "status corrected" while the identical decline
   // from the Actions menu raised `estimate.declined`. Everything else is a plain correction.
-  const VERB_BY_TARGET: Partial<Record<EstimateStatusValue, string>> = {
+  const VERB_BY_TARGET: Partial<Record<EstimateStatusValue, EstimateAlertVerb>> = {
     [ESTIMATE_STATUS.WON]: 'estimate.approved',
     [ESTIMATE_STATUS.DECLINED]: 'estimate.declined',
     [ESTIMATE_STATUS.ARCHIVED]: 'estimate.cancelled',
   };
   const verb = VERB_BY_TARGET[target] ?? 'estimate.status_corrected';
 
-  await emit({
+  queueEstimateAlert({
     verb,
     organizationId: req.user!.organization_id,
     actorId: req.user?.id ?? null,
-    object: { type: 'ESTIMATE', id: existing.id, label: existing.estimate_number },
-    entity: { commission_owner_id: existing.lead?.commission_owner_id ?? null },
-    data: { object_label: existing.estimate_number, from: existing.status, to: target, transition: legacyTransition, transition_label: label },
+    estimateId: existing.id,
+    data: { from: existing.status, to: target, transition: legacyTransition, transition_label: label },
     ...(target === ESTIMATE_STATUS.WON ? { dedupKey: `estimate.approved:${existing.id}` } : {}),
   });
 
@@ -4291,7 +4412,7 @@ export async function setStatus(req: Request, res: Response) {
       res.status(result.status).json({ error: result.error });
       return;
     }
-    res.json({ estimate: presentEstimateDetail(req, projectEstimateLeadWalkthrough(result.estimate as { lead?: unknown } | null)) });
+    res.json({ estimate: presentEstimateDetail(req, stripEstimateCostIfFound(projectEstimateLeadWalkthrough(result.estimate as LifecycleEstimate), req)) });
   } catch (err) {
     logger.error('Set estimate status error:', err);
     res.status(500).json({ error: 'Failed to update estimate status' });
@@ -4392,14 +4513,13 @@ export async function approveInternal(req: Request, res: Response) {
       return est;
     });
 
-    await emit({
+    queueEstimateAlert({
       verb: 'estimate.approved',
       organizationId: req.user!.organization_id,
       actorId: req.user?.id ?? null,
-      object: { type: 'ESTIMATE', id: existing.id, label: existing.estimate_number },
-      entity: { commission_owner_id: existing.lead?.commission_owner_id ?? null },
+      estimateId: existing.id,
       // #2090 - the chosen and declined add-ons, named as the document names them.
-      data: { object_label: existing.estimate_number, lead_id: existing.lead_id, ...optionSummaryData(await loadOptionSummary(existing.id)) },
+      data: { lead_id: existing.lead_id, ...optionSummaryData(await loadOptionSummary(existing.id)) },
       dedupKey: `estimate.approved:${existing.id}`,
     });
 
@@ -4414,7 +4534,7 @@ export async function approveInternal(req: Request, res: Response) {
     // above (identical business event), but the audit/history label must not read "by customer"
     // for a staff-recorded verbal win.
     void logAudit({ req, action: 'estimate.approved_internal', resourceType: 'Estimate', resourceId: existing.id });
-    res.json({ estimate: presentEstimateDetail(req, projectEstimateLeadWalkthrough(estimate)) });
+    res.json({ estimate: presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(estimate), req)) });
   } catch (err) {
     logger.error('Approve estimate internally error:', err);
     res.status(500).json({ error: 'Failed to approve estimate' });
@@ -4466,7 +4586,11 @@ export async function declineInternal(req: Request, res: Response) {
       return;
     }
 
+    let voidedDeposit = false;
     const estimate = await prisma.$transaction(async (tx) => {
+      // Slice 27 (slice 15 review 3): the deposit lock comes BEFORE the estimate write - the checkout
+      // webhook locks the deposit and then wins the estimate, so the opposite order could deadlock.
+      await lockDepositInvoicesForEstimates(tx, [existing.id], req.user!.organization_id);
       const est = await tx.estimate.update({
         where: { id: existing.id },
         data: { status: 'DECLINED', declined_at: new Date(), lost_reason },
@@ -4485,12 +4609,11 @@ export async function declineInternal(req: Request, res: Response) {
         },
       });
 
-      // Void any UNPAID kind=DEPOSIT Invoice (DRAFT/SENT) — mirrors declinePublic.
-      const voided = await tx.invoice.updateMany({
-        where: { estimate_id: existing.id, kind: 'DEPOSIT', status: { in: ['DRAFT', 'SENT'] } },
-        data: { status: 'VOIDED', voided_at: new Date(), voided_reason: 'Estimate declined' },
-      });
-      if (voided.count > 0) {
+      // Void any UNPAID kind=DEPOSIT Invoice (DRAFT/SENT, no money on it) — mirrors declinePublic.
+      // Slice 15: judged under the deposit's lock, a clearing bank payment counts.
+      const voided = await voidUnpaidDeposits(tx, { organizationId: req.user!.organization_id, estimateIds: [existing.id], reason: 'Estimate declined' });
+      voidedDeposit = voided.length > 0;
+      if (voided.length > 0) {
         await tx.timelineEvent.create({
           data: {
             organization_id: req.user!.organization_id,
@@ -4505,14 +4628,15 @@ export async function declineInternal(req: Request, res: Response) {
 
       return est;
     });
+    // Slice 14: an old link must not take money for the deposit just voided. Fire-and-forget.
+    if (voidedDeposit) void closeVoidedDepositCheckoutLinks(req.user!.organization_id, existing.id);
 
-    await emit({
+    queueEstimateAlert({
       verb: 'estimate.declined',
       organizationId: req.user!.organization_id,
       actorId: req.user?.id ?? null,
-      object: { type: 'ESTIMATE', id: existing.id, label: existing.estimate_number },
-      entity: { commission_owner_id: existing.lead?.commission_owner_id ?? null },
-      data: { object_label: existing.estimate_number, lost_reason },
+      estimateId: existing.id,
+      data: { lost_reason },
     });
 
     dispatchAutomationEvent({
@@ -4525,7 +4649,7 @@ export async function declineInternal(req: Request, res: Response) {
     // Distinct audit action from the public route's 'estimate.declined' — see the matching
     // comment in approveInternal above.
     void logAudit({ req, action: 'estimate.declined_internal', resourceType: 'Estimate', resourceId: existing.id, metadata: { lost_reason } });
-    res.json({ estimate: presentEstimateDetail(req, projectEstimateLeadWalkthrough(estimate)) });
+    res.json({ estimate: presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(estimate), req)) });
   } catch (err) {
     logger.error('Decline estimate internally error:', err);
     res.status(500).json({ error: 'Failed to decline estimate' });
@@ -4654,17 +4778,15 @@ export async function voidApproval(req: Request, res: Response) {
       return est;
     });
 
-    await emit({
+    queueEstimateAlert({
       verb: 'estimate.approval_voided',
       organizationId: req.user!.organization_id,
       actorId: req.user?.id ?? null,
-      object: { type: 'ESTIMATE', id: existing.id, label: existing.estimate_number },
-      entity: { commission_owner_id: existing.lead?.commission_owner_id ?? null },
-      data: { object_label: existing.estimate_number },
+      estimateId: existing.id,
     });
 
     void logAudit({ req, action: 'estimate.approval_voided', resourceType: 'Estimate', resourceId: existing.id });
-    res.json({ estimate: presentEstimateDetail(req, projectEstimateLeadWalkthrough(estimate)) });
+    res.json({ estimate: presentEstimateDetail(req, stripEstimateCost(projectEstimateLeadWalkthrough(estimate), req)) });
   } catch (err) {
     logger.error('Void estimate approval error:', err);
     res.status(500).json({ error: 'Failed to void approval' });
@@ -4723,6 +4845,9 @@ export async function duplicate(req: Request, res: Response) {
     const targetLeadIdInput: string | undefined = req.body?.target_lead_id;
     const targetLeadId = targetLeadIdInput ?? existing.lead_id;
     const isCrossLead = !!targetLeadIdInput && targetLeadIdInput !== existing.lead_id;
+
+    // A duplicate never copies the job, so one that lands on no lead is an estimate with no lead and no job.
+    if (!targetLeadId && refusedForStandalone(req, res, 'Estimate')) return;
 
     let effectiveTaxRate = Number(existing.tax_rate);
     let duplicateCustomerIsExempt = Boolean(existing.customer?.tax_exempt);
@@ -4859,7 +4984,7 @@ export async function revise(req: Request, res: Response) {
         customer_id: true, service_location_id: true, created_by: true,
         name: true, scope_name: true, scope_notes: true, scopes: true, tax_rate: true,
         discount_type: true, discount_value: true, discount_name: true, discount_amount: true,
-        deposit_type: true, deposit_value: true,
+        deposit_type: true, deposit_value: true, deposit_policy: true,
         subtotal: true, tax_amount: true, total_amount: true,
         line_items: {
           select: {
@@ -4924,6 +5049,8 @@ export async function revise(req: Request, res: Response) {
           discount_amount: existing.discount_amount,
           deposit_type: existing.deposit_type,
           deposit_value: existing.deposit_value,
+          // Slice 27 - the per-estimate policy (null = follow the org) travels with the clone.
+          deposit_policy: existing.deposit_policy,
           subtotal: existing.subtotal,
           tax_amount: existing.tax_amount,
           total_amount: existing.total_amount,
@@ -5116,11 +5243,10 @@ export async function getHistory(req: Request, res: Response) {
 // STANDARD invoice already exists for it (one active copy per estimate — prevents duplicate
 // double-billing from repeated clicks).
 //
-// Permission model DELIBERATELY mirrors createStandaloneInvoice's exact two-layer gate — NOT the
-// job-anchored create()'s grant-driven per-instance ownership check — because this is a
-// standalone document with no job/lead ownership to verify: route-level canDo('create','Invoice')
-// (this router's `estimate.routes.ts` mount), plus the identical hardcoded ADMIN/DISPATCHER-only
-// check below (same condition, same message as createStandaloneInvoice).
+// Permission model: route-level canDo('create','Invoice') (the "Create invoices" switch; this
+// router's `estimate.routes.ts` mount), plus the per-instance check below that the estimate is one
+// the requester can open. It needs no "Standalone invoices": the copy is of an estimate, not a bare
+// invoice for a customer.
 //
 // Total fidelity (the new invoice's totals must equal the estimate's own): line items copy their
 // discount_type/discount_value/discount_amount/markup_percent 1:1 (unlike the job-anchored
@@ -5148,12 +5274,6 @@ function jobAttachedCopyError(jobNumber?: string | null): string {
 }
 
 export async function copyToInvoice(req: Request, res: Response) {
-  const role = req.user?.role;
-  if (role !== 'ADMIN' && role !== 'DISPATCHER') {
-    res.status(403).json({ error: 'Not authorized to create a standalone invoice' });
-    return;
-  }
-
   try {
     const estimate = await prisma.estimate.findUnique({
       where: { id: param(req, 'id'), ...tenantWhere(req) },
@@ -5208,6 +5328,11 @@ export async function copyToInvoice(req: Request, res: Response) {
 
     if (!estimate) {
       res.status(404).json({ error: 'Estimate not found' });
+      return;
+    }
+
+    if (!(await canAccessEstimate(estimate, req))) {
+      res.status(403).json({ error: 'Insufficient permissions' });
       return;
     }
 
@@ -5309,6 +5434,9 @@ export async function copyToInvoice(req: Request, res: Response) {
       // this estimate, credit min(remaining, total) as a POST-TAX Payment (never a discount line).
       let depositCredit = 0;
       let depInvId: string | null = null;
+      // Slice 18: read the deposit under its row lock, so a refund or void-payment in flight on it
+      // finishes first and its credit is never drawn while it is being taken back.
+      await lockDepositInvoicesForEstimates(tx, [estimate.id], req.user!.organization_id);
       const depInv = await tx.invoice.findFirst({
         where: { estimate_id: estimate.id, kind: 'DEPOSIT', status: 'PAID', ...tenantWhere(req) },
         select: { id: true },
@@ -5450,7 +5578,7 @@ export async function copyToInvoice(req: Request, res: Response) {
       trigger: 'COPY_TO_INVOICE',
     });
 
-    res.status(201).json({ invoice: presentInvoiceDetail(req, invoice) });
+    res.status(201).json({ invoice: presentInvoiceDetail(req, stripInvoiceCost(invoice, req)) });
   } catch (err) {
     if (err instanceof CopyToInvoiceConflictError) {
       res.status(409).json({ error: err.message });
@@ -5462,25 +5590,6 @@ export async function copyToInvoice(req: Request, res: Response) {
 }
 
 // ─── Public Handlers (No Auth) ─────────────────────────
-
-/**
- * #904/#927 - is CARD actually chargeable for this org right now?
- *
- * Two independent ways it can be false, and the endpoint must defend against both:
- *  - `stripe_charges_enabled` is the mirrored-from-Stripe truth and can flip false between the
- *    estimate being sent and the customer submitting it (mid-onboarding, deauthorized, restricted).
- *  - an `available_payment_methods` AppSetting override can exclude CARD even while charges are
- *    genuinely enabled.
- *
- * Delegates to invoice.controller's resolver rather than re-deriving the chain, so the estimate
- * and invoice public flows can never disagree about what is payable.
- */
-function cardIsPayable(
-  methodsSettingValue: string | null | undefined,
-  org: { accepted_payment_methods: unknown; stripe_charges_enabled: boolean } | null | undefined,
-): boolean {
-  return resolveAvailablePaymentMethods(methodsSettingValue, org).includes('CARD');
-}
 
 export async function getPublic(req: Request, res: Response) {
   try {
@@ -5502,26 +5611,30 @@ export async function getPublic(req: Request, res: Response) {
 
     // Fetch settings and org in parallel (use estimate's own org_id — public route has no req.user)
     const estOrgId = (estimate as any).organization_id as string;
-    const [termsSetting, bankTransferSetting, checkSetting, cashSetting, methodsSetting, org] = await Promise.all([
+    const [termsSetting, checkSetting, cashSetting, org] = await Promise.all([
       prisma.appSetting.findUnique({ where: { organization_id_key: { organization_id: estOrgId, key: 'estimate_terms' } } }),
-      prisma.appSetting.findUnique({ where: { organization_id_key: { organization_id: estOrgId, key: 'bank_transfer_instructions' } } }),
       prisma.appSetting.findUnique({ where: { organization_id_key: { organization_id: estOrgId, key: 'check_instructions' } } }),
       prisma.appSetting.findUnique({ where: { organization_id_key: { organization_id: estOrgId, key: 'cash_instructions' } } }),
-      prisma.appSetting.findUnique({ where: { organization_id_key: { organization_id: estOrgId, key: 'available_payment_methods' } } }),
       prisma.organization.findUnique({ where: { id: estOrgId } }),
     ]);
 
     // #904/#927 - the page must not offer a CARD button that cannot be charged. send_config
     // records what the sender OFFERED at send time; whether CARD is actually payable NOW is the
-    // org's resolved accepted-methods list (charges enabled + not excluded by an AppSetting
-    // override), which can change after the estimate goes out. Only CARD is filtered: the other
+    // org's resolved accepted-methods list (charges enabled + CARD accepted), which can change
+    // after the estimate goes out. Only CARD is filtered: the other
     // methods are manual and stay valid whatever Stripe is doing. approvePublic re-runs this
     // exact resolution, so what the page shows and what the endpoint accepts cannot diverge.
-    if (!cardIsPayable(methodsSetting?.value, org)) {
-      const sendConfig = (estimate as any).send_config;
-      if (sendConfig?.payment_methods) {
-        sendConfig.payment_methods = (sendConfig.payment_methods as string[]).filter((m) => m !== 'CARD');
-      }
+    //
+    // Payments go-live slice 19 - the same rule, now through the payment options resolver, which
+    // gates ACH on the account's ACH capability the same way. The methods the estimate was sent
+    // with are the document's list; the deposit-policy override rides beside them.
+    const sendConfig = (estimate as any).send_config;
+    const options = paymentOptionsFor(org, {
+      methods: Array.isArray(sendConfig?.payment_methods) ? (sendConfig.payment_methods as PaymentMethod[]) : null,
+      deposit_policy: (estimate as any).deposit_policy ?? null,
+    });
+    if (sendConfig?.payment_methods) {
+      sendConfig.payment_methods = options.methods;
     }
 
     const organization = org ? {
@@ -5544,15 +5657,31 @@ export async function getPublic(req: Request, res: Response) {
 
     const expired = estimate.valid_until ? new Date(estimate.valid_until) < new Date() : false;
 
-    // Slice 4 — display-only preview so the public page can render the Service Fee row before
-    // redirect (D8). Only meaningful when a deposit is actually required — no deposit means no
-    // Stripe checkout, and therefore no fee (D6: computed only in the two checkout-creation paths).
-    const depositInvoice = (estimate as any).invoices?.[0];
-    const depositRequired = !!((estimate as any).send_config?.deposit_required && depositInvoice);
-    const depositBasisCents = depositRequired ? Math.round(Number(depositInvoice.total_amount) * 100) : 0;
-    // The only condition left is "is there a deposit to charge" - never who the org is.
-    const serviceFeeBps = depositRequired ? CARD_SERVICE_FEE_BPS : 0;
-    const serviceFeePreview = depositRequired ? computeServiceFee(depositBasisCents, CARD_SERVICE_FEE_BPS) / 100 : 0;
+    // Payments go-live slice 27 - the deposit's own state, from the same predicates the deposit link
+    // and its checkout door answer with, so this page never promises what a door refuses. The
+    // estimate's status is NOT part of "payable": a WON estimate (pay later, or a bank debit that
+    // failed after approval) keeps an open deposit the customer can still pay from here.
+    const depositDoc = await prisma.invoice.findFirst({
+      where: { estimate_id: estimate.id, organization_id: estOrgId, kind: 'DEPOSIT' },
+      select: {
+        status: true, kind: true, total_amount: true, amount_due: true,
+        payments: { where: PROCESSING_PAYMENT_WHERE, select: { amount: true } },
+        estimate: { select: { status: true, modified_after_send: true, deposit_type: true, deposit_value: true, total_amount: true } },
+      },
+    });
+    let deposit: { pay_state: string; hold_reason: string | null; payable_now: number; processing_amount: number } | null = null;
+    if (depositDoc) {
+      const holdReason = depositHoldReason(depositDoc, org);
+      const amountDueCents = toCents(depositDoc.amount_due);
+      const processingCents = paidCents(depositDoc.payments);
+      const payState = publicPayState({ status: depositDoc.status, amountDueCents, processingCents, held: holdReason !== null, estimateClosed: depositEstimateClosed(depositDoc), deposit: true });
+      deposit = {
+        pay_state: payState,
+        hold_reason: holdReason,
+        payable_now: payState === 'PAYABLE' ? payableNowCents(amountDueCents, processingCents) / 100 : 0,
+        processing_amount: processingCents / 100,
+      };
+    }
 
     res.json({
       // #1997 — a fail-closed BACKSTOP, not the protection itself. This route is unauthenticated,
@@ -5564,14 +5693,15 @@ export async function getPublic(req: Request, res: Response) {
       estimate: presentEstimateDetail(req, await presentPublicEstimate(estimate)),
       organization,
       terms: termsSetting?.value ?? null,
+      payment_options: options,
+      deposit,
       payment_instructions: {
-        bank_transfer: bankTransferSetting?.value ?? null,
+        // Slice 19 - the org's instructions, and only while bank transfer is offered here.
+        bank_transfer: options.bank_transfer_instructions,
         check: checkSetting?.value ?? null,
         cash: cashSetting?.value ?? null,
       },
       expired,
-      service_fee_bps: serviceFeeBps,
-      service_fee_preview: serviceFeePreview,
     });
   } catch (err) {
     logger.error('Get public estimate error:', err);
@@ -5994,14 +6124,19 @@ export async function approvePublic(req: Request, res: Response) {
         organization_id: true,
         total_amount: true, valid_until: true, signature_data: true,
         snapshot_terms: true,   // #21 — authoritative "did THIS estimate present terms"
+        // Slice 15 - the deposit hold asks whether the deposit figure still agrees with the estimate.
+        modified_after_send: true, deposit_type: true, deposit_value: true,
+        // Slice 27 - the estimate's own deposit-policy override (null = follow the org default).
+        deposit_policy: true,
         // The kind=DEPOSIT Invoice is the SOLE deposit document (legacy Deposit gone).
         invoices: {
           where: { kind: 'DEPOSIT' as const },
-          select: { id: true, status: true, total_amount: true, amount_due: true },
+          // Slice 15 - the bank payments still processing on the deposit come off what is asked for.
+          select: { id: true, status: true, total_amount: true, amount_due: true, payments: { where: PROCESSING_PAYMENT_WHERE, select: { amount: true } } },
           take: 1,
         },
         send_config: { select: { deposit_required: true, payment_methods: true } },
-        organization: { select: { id: true, stripe_account_id: true, accepted_payment_methods: true, stripe_charges_enabled: true } },
+        organization: { select: { id: true, stripe_account_id: true, accepted_payment_methods: true, stripe_charges_enabled: true, card_offered_by_default: true, bank_offered_by_default: true, deposit_policy: true, deposit_default_type: true, deposit_default_percentage: true, deposit_default_fixed_amount: true, ...ORG_PLAN_SELECT } },
         // Notification: commission_owner_id needed for entity routing.
         lead: { select: { commission_owner_id: true, status: true } },
       },
@@ -6086,7 +6221,15 @@ export async function approvePublic(req: Request, res: Response) {
     // rider's refusal (404, or 400 NOT_OPTIONAL, or 409 OPTIONS_LOCKED) and now gets the payment
     // refusal instead. Telling the customer what is wrong with the method they picked beats
     // telling them about a rider their browser never sent.
-    const depositRequired = !!existing.invoices?.[0] && existing.send_config?.deposit_required === true;
+    // Payments go-live slice 27 - a deposit gates the approval only under "required before approval".
+    // Under "pay later" the signature approves (Branch 1 below) and the deposit invoice is left
+    // open and payable from its own link. The policy is the estimate's override, else the org's.
+    const depositPolicy = paymentOptionsFor(existing.organization, {
+      deposit_policy: existing.deposit_policy ?? null,
+    }).deposit_policy;
+    const depositRequired = !!existing.invoices?.[0]
+      && existing.send_config?.deposit_required === true
+      && depositPolicy === 'REQUIRED_BEFORE_APPROVAL';
 
     // If deposit is required, payment_method must be provided
     if (depositRequired && !payment_method) {
@@ -6111,14 +6254,32 @@ export async function approvePublic(req: Request, res: Response) {
     // so a customer using the page cannot reach here - this is the backstop for direct API
     // calls. The 400 shape matches invoice.controller's createPublicCheckout, which the public
     // estimate page already maps to friendly homeowner copy.
-    if (depositRequired && payment_method === 'CARD') {
-      const methodsSetting = await prisma.appSetting.findUnique({
-        where: { organization_id_key: { organization_id: existing.organization_id, key: 'available_payment_methods' } },
+    //
+    // Payments go-live slice 19 - both online methods ask the payment options resolver, the same
+    // one getPublic renders from: ACH is refused while the account cannot take bank payments,
+    // exactly as CARD is while it cannot take cards.
+    // Payments go-live slice 16 - no deposit checkout opens for an org whose plan lacks online
+    // payments. A manual method (check, cash) still approves: only the online checkout is gated.
+    if (depositRequired && (payment_method === 'CARD' || payment_method === 'ACH') && !onlinePaymentsInPlan(existing.organization)) {
+      res.status(403).json(onlinePaymentsUnavailableRefusal('estimate'));
+      return;
+    }
+    if (depositRequired && (payment_method === 'CARD' || payment_method === 'ACH')) {
+      const options = paymentOptionsFor(existing.organization, {
+        methods: (existing.send_config!.payment_methods as PaymentMethod[]) || [],
       });
-      if (!cardIsPayable(methodsSetting?.value, existing.organization)) {
-        res.status(400).json({ error: 'Card payments are not enabled for this organization' });
+      if (!options.online_methods.includes(payment_method)) {
+        res.status(400).json({
+          error: payment_method === 'CARD'
+            ? 'Card payments are not enabled for this organization'
+            : 'Bank payments are not enabled for this organization',
+        });
         return;
       }
+    }
+    // Payments go-live slice 12 - ACH, like CARD, reaches the processor branch (Branch 2) and opens
+    // a bank-only checkout; it never falls through to the manual branch.
+    if (depositRequired && (payment_method === 'CARD' || payment_method === 'ACH')) {
       // Hoisted out of Branch 2 to join the other refusals: the processor being unconfigured is
       // a refusal like any other, and it used to fire AFTER the rider had already moved the
       // total. Same condition it had there (Branch 2 is reached only when a deposit is required
@@ -6127,11 +6288,32 @@ export async function approvePublic(req: Request, res: Response) {
       // pinned directly by estimate-approve-refused-leaves-total-alone.test.ts, which has to
       // stub the processor as unconfigured because the shared test setup reports it configured.
       if (!isStripeConfigured()) {
-        res.status(400).json({ error: 'Card payment is not available' });
+        res.status(400).json({ error: payment_method === 'CARD' ? 'Card payment is not available' : 'Bank payment is not available' });
+        return;
+      }
+      // Payments go-live slice 15 - the deposit checkout opens only while the deposit is open (SENT,
+      // or PARTIAL after part of it was recorded by hand) and not on hold. The refusal carries a
+      // code the public page can explain, and the same predicate answers the deposit link's own
+      // checkout. Read off the rows as they stand before the selections rider, which re-prices
+      // only an untouched deposit and never opens a closed one.
+      const deposit = existing.invoices[0];
+      const refusal = depositCheckoutRefusal({
+        kind: 'DEPOSIT',
+        status: deposit.status,
+        total_amount: deposit.total_amount,
+        estimate: {
+          status: existing.status,
+          modified_after_send: existing.modified_after_send,
+          deposit_type: existing.deposit_type,
+          deposit_value: existing.deposit_value,
+          total_amount: existing.total_amount,
+        },
+      }, existing.organization);
+      if (refusal) {
+        res.status(400).json(refusal);
         return;
       }
     }
-
     // #2090 slice 3b - the customer's selections are applied and the document recomputed HERE,
     // once the approval is known to be going through, and BEFORE the deposit is read a line
     // below and before any of the three branches writes a status. That second half of the order
@@ -6200,15 +6382,14 @@ export async function approvePublic(req: Request, res: Response) {
 
       // ── Notification: estimate.approved (Path A — no deposit) — POST-COMMIT (#271) ──
       // actorId null: customer-facing public route. dedupKey shared with paths B+C.
-      await emit({
+      queueEstimateAlert({
         verb: 'estimate.approved',
         organizationId: existing.organization_id,
         actorId: null,
-        object: { type: 'ESTIMATE', id: existing.id, label: existing.estimate_number },
-        entity: { commission_owner_id: existing.lead?.commission_owner_id ?? null },
+        estimateId: existing.id,
         // #2090 - the chosen and declined add-ons, named as the document names them. Read AFTER
         // the transaction above, so a selection the customer sent with this very approval is in it.
-        data: { object_label: existing.estimate_number, lead_id: existing.lead_id, ...optionSummaryData(optionSummary) },
+        data: { lead_id: existing.lead_id, ...optionSummaryData(optionSummary) },
         dedupKey: `estimate.approved:${existing.id}`,
       });
 
@@ -6232,6 +6413,7 @@ export async function approvePublic(req: Request, res: Response) {
           // customer its signed PDF; falls back through the lead for lead-anchored rows.
           customer: true,
           lead: { include: { customer: true } },
+          job_link: { select: { job_number: true } },
         },
       }).then((updated) => {
         if (!updated?.organization) return;
@@ -6252,17 +6434,13 @@ export async function approvePublic(req: Request, res: Response) {
           total: new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Number(updated.total_amount)),
           // #2090 - the same two lists the notification names.
           options: optionSummary,
-          record: {
-            organizationId: updated.organization_id,
-            customerId: cust.id,
-            leadId: updated.lead_id,
-          },
+          record: { organizationId: updated.organization_id, customerId: cust.id, ...estimateEmailTie(updated) },
         });
       }).catch((err) => logger.error('Failed to send approval notification:', err));
       return;
     }
 
-    // ── Branch 2: Deposit required + CARD ──
+    // ── Branch 2: Deposit required + CARD or ACH (one processor checkout per method) ──
     // #904 - this is deliberately an unguarded CARD check. Payability (charges enabled AND CARD
     // in the resolved accepted-methods list) AND a configured processor were both proved above,
     // and a CARD request that fails either 400s rather than reaching here. Re-testing them here
@@ -6270,7 +6448,8 @@ export async function approvePublic(req: Request, res: Response) {
     // the condition would land in Branch 3 and return success without charging anything.
     // EXTERNAL_CARD is not CARD and still falls through to the manual non-Stripe branch below,
     // as intended.
-    if (payment_method === 'CARD') {
+    if (payment_method === 'CARD' || payment_method === 'ACH') {
+      const checkoutMethod: CheckoutMethod = payment_method === 'ACH' ? 'bank' : 'card';
       // D6 (2026-07-21): save the signature AND move to PENDING. PENDING means "customer
       // approved + signed, deposit not yet processed" — which is exactly this state, regardless
       // of how the deposit will arrive. Previously this branch left the row at SENT, so a
@@ -6292,29 +6471,52 @@ export async function approvePublic(req: Request, res: Response) {
         },
       });
 
-      // The kind=DEPOSIT Invoice is the deposit document, charged at face value.
-      // The webhook resolves this checkout via metadata.invoiceId and flows through the standard
-      // invoiceId branch, which (for kind=DEPOSIT) also approves the estimate + wins the lead.
-      const depositAmount = Number(depositInvoice!.total_amount);
+      // The kind=DEPOSIT Invoice is the deposit document. The webhook resolves this checkout via
+      // metadata.invoiceId and flows through the standard invoiceId branch, which (for
+      // kind=DEPOSIT) also approves the estimate + wins the lead.
+      //
+      // Payments go-live slice 15 - the checkout asks for what is LEFT on the deposit: its amount
+      // due less the bank payments still processing on it (payable now), never its total. Staff
+      // may have recorded part of it by hand; charging the total again was an overcharge. The
+      // figures are the deposit as it stands after the selections rider, so a re-priced deposit is
+      // charged at its new figure (the rider moves no payment, so the processing ones are as read).
+      const amountDueCents = toCents(depositInvoice!.amount_due as Prisma.Decimal);
+      const processingCents = paidCents(existing.invoices[0]?.payments ?? []);
+
+      // Payments go-live slice 02 — the pricing module decides every line the customer is charged.
+      // No fee line, no platform fee (D9).
+      const pricing = priceCheckout({
+        // The deposit document's total is the tip cap (no tip is taken here).
+        invoiceTotalCents: toCents(depositInvoice!.total_amount as Prisma.Decimal),
+        amountDueCents,
+        payableNowCents: payableNowCents(amountDueCents, processingCents),
+        method: checkoutMethod,
+        description: `Deposit for Estimate ${existing.estimate_number}`,
+      });
+      if (!pricing.ok) {
+        return res.status(400).json({
+          error: pricing.error === 'NOTHING_PAYABLE_NOW'
+            ? 'A payment for this deposit is already processing'
+            : 'This deposit cannot be paid online',
+        });
+      }
 
       const ctx = getStripeForOrg(existing.organization);
-      // Double guard, layer 1 (defensive at the caller): only compute a fee at all when this
-      // checkout is actually running against a connected account. Layer 2 lives inside
-      // createCheckoutSession itself, which re-checks ctx.stripeAccount before including the field.
-      // D2 — resolveCheckoutFees owns the fee math so this call site and the invoice-payment one
-      // (invoice.controller.ts) can never drift on it.
-      const fees = ctx.stripeAccount
-        ? resolveCheckoutFees(Math.round(depositAmount * 100))
-        : undefined;
       const session = await createCheckoutSession({
-        depositAmount,
-        description: `Deposit for Estimate ${existing.estimate_number}`,
-        successUrl: `${env.FRONTEND_URL}/p/estimates/${existing.id}?token=${token}&payment=success`,
+        pricing,
+        method: checkoutMethod,
+        successUrl: `${env.FRONTEND_URL}/p/estimates/${existing.id}?token=${token}&payment=success&method=${checkoutMethod}`,
         cancelUrl: `${env.FRONTEND_URL}/p/estimates/${existing.id}?token=${token}&payment=cancelled`,
-        metadata: { invoiceId: depositInvoice!.id, estimateId: existing.id },
-        applicationFeeAmount: fees?.applicationFeeAmount,
-        serviceFeeAmount: fees?.serviceFeeAmount,
+        document: {
+          organizationId: existing.organization_id,
+          invoiceId: depositInvoice!.id,
+          kind: 'deposit',
+          estimateId: existing.id,
+        },
       }, ctx);
+      // Slice 27 (slice 15 acceptance 3) - the older sessions of this deposit are closed now that
+      // this one is handed out. Fail-soft.
+      await expireOpenCheckoutSessionsForInvoice(depositInvoice!.id, ctx, { exceptSessionId: session.id, createdBefore: session.created });
 
       const estimate = await prisma.estimate.findFirst({
         where: { id: existing.id },
@@ -6396,6 +6598,7 @@ export async function approvePublic(req: Request, res: Response) {
         // customer its signed PDF; falls back through the lead for lead-anchored rows.
         customer: true,
         lead: { include: { customer: true } },
+        job_link: { select: { job_number: true } },
       },
     }).then((updated) => {
       if (!updated?.organization) return;
@@ -6416,11 +6619,7 @@ export async function approvePublic(req: Request, res: Response) {
         total: new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(Number(updated.total_amount)),
         // #2090 - the same two lists the notification names.
         options: optionSummary,
-        record: {
-          organizationId: updated.organization_id,
-          customerId: cust.id,
-          leadId: updated.lead_id,
-        },
+        record: { organizationId: updated.organization_id, customerId: cust.id, ...estimateEmailTie(updated) },
       });
     }).catch((err) => logger.error('Failed to send approval notification:', err));
   } catch (err) {
@@ -6566,7 +6765,11 @@ export async function declinePublic(req: Request, res: Response) {
     // dropped unknown reason never takes the comment down with it.
     const lost_reason_note = normalizeLostReasonNote(req.body?.lost_reason_note);
 
+    let voidedDeposit = false;
     const estimate = await prisma.$transaction(async (tx) => {
+      // Slice 27 (slice 15 review 3): the deposit lock comes BEFORE the estimate write - the checkout
+      // webhook locks the deposit and then wins the estimate, so the opposite order could deadlock.
+      await lockDepositInvoicesForEstimates(tx, [existing.id], existing.organization_id);
       const est = await tx.estimate.update({
         where: { id: existing.id },
         data: {
@@ -6594,12 +6797,11 @@ export async function declinePublic(req: Request, res: Response) {
         },
       });
 
-      // Void any UNPAID kind=DEPOSIT Invoice (DRAFT/SENT) on this estimate.
-      const voided = await tx.invoice.updateMany({
-        where: { estimate_id: existing.id, kind: 'DEPOSIT', status: { in: ['DRAFT', 'SENT'] } },
-        data: { status: 'VOIDED', voided_at: new Date(), voided_reason: 'Estimate declined' },
-      });
-      if (voided.count > 0) {
+      // Void any UNPAID kind=DEPOSIT Invoice (DRAFT/SENT, no money on it) on this estimate.
+      // Slice 15: judged under the deposit's lock, a clearing bank payment counts.
+      const voided = await voidUnpaidDeposits(tx, { organizationId: existing.organization_id, estimateIds: [existing.id], reason: 'Estimate declined' });
+      voidedDeposit = voided.length > 0;
+      if (voided.length > 0) {
         await tx.timelineEvent.create({
           data: {
             organization_id: existing.organization_id,
@@ -6613,16 +6815,17 @@ export async function declinePublic(req: Request, res: Response) {
 
       return est;
     });
+    // Slice 14: an old link must not take money for the deposit just voided. Fire-and-forget.
+    if (voidedDeposit) void closeVoidedDepositCheckoutLinks(existing.organization_id, existing.id);
 
     // ── Notification: estimate.declined — POST-COMMIT (#271) ──────────────────
     // actorId null: customer-facing public route.
-    await emit({
+    queueEstimateAlert({
       verb: 'estimate.declined',
       organizationId: existing.organization_id,
       actorId: null,
-      object: { type: 'ESTIMATE', id: existing.id, label: existing.estimate_number },
-      entity: { commission_owner_id: existing.lead?.commission_owner_id ?? null },
-      data: { object_label: existing.estimate_number, lost_reason: lost_reason ?? null },
+      estimateId: existing.id,
+      data: { lost_reason: lost_reason ?? null },
     });
 
     // Automation Center event — post-commit, fire-and-forget.
@@ -6648,6 +6851,10 @@ export async function declinePublic(req: Request, res: Response) {
 export const waiveDepositSchema = z.object({
   action: z.enum(['waive', 'cancel']).default('waive'),
 });
+
+/** Slice 15: the deposit has a payment on it or one still clearing; it goes back by refund. */
+class DepositHoldsMoneyError extends Error {}
+const DEPOSIT_HOLDS_MONEY_MESSAGE = 'This deposit has a payment on it or one still clearing, so it cannot be waived. Refund the payment instead.';
 
 // Phase 2a (entity-redesign seam 2): DUAL-WRITE the void onto the kind=DEPOSIT Invoice in
 // addition to the legacy Deposit row. Best-effort — estimates that predate Phase 2a have no
@@ -6685,31 +6892,45 @@ export async function waiveDeposit(req: Request, res: Response) {
       return;
     }
 
-    if (!['SENT', 'PENDING'].includes(existing.status)) {
+    const action = req.body.action || 'waive';
+
+    // Slice 27 - under "pay later" the estimate is WON at signing with its deposit still open, and
+    // that deposit may still be waived. Cancelling is not offered on an approved estimate.
+    if (existing.status === ESTIMATE_STATUS.WON && action === 'cancel') {
+      res.status(400).json({ error: 'Cannot cancel an approved estimate' });
+      return;
+    }
+    if (!['SENT', 'PENDING', ESTIMATE_STATUS.WON].includes(existing.status)) {
       res.status(400).json({ error: `Cannot waive deposit on a ${existing.status.toLowerCase()} estimate` });
       return;
     }
 
     const depositInvoice = existing.invoices?.[0];
+    // Slice 27 (slice 15 acceptance) - a deposit with a payment on it goes back by refund, and says so.
+    if (depositInvoice?.status === 'PARTIAL') {
+      res.status(409).json({ error: DEPOSIT_HOLDS_MONEY_MESSAGE });
+      return;
+    }
     if (!depositInvoice || !['DRAFT', 'SENT'].includes(depositInvoice.status)) {
       res.status(400).json({ error: 'No active deposit to waive' });
       return;
     }
 
-    const action = req.body.action || 'waive';
-
     const now = new Date();
+    // Slice 27 - already WON (approved at signing, "pay later"): the approval was announced then.
+    const alreadyApproved = existing.status === ESTIMATE_STATUS.WON;
 
+    let voided: VoidedDeposit[] = [];
     const estimate = await prisma.$transaction(async (tx) => {
-      // Void the kind=DEPOSIT Invoice (the SOLE deposit document).
-      await tx.invoice.update({
-        where: { id: depositInvoice.id },
-        data: {
-          status: 'VOIDED',
-          voided_at: now,
-          voided_reason: action === 'waive' ? 'Deposit waived' : 'Estimate cancelled',
-        },
+      // Void the kind=DEPOSIT Invoice (the SOLE deposit document). Slice 15: judged under the
+      // deposit's lock; a deposit with money on it or on its way (a clearing bank payment) is not
+      // voided, and then nothing here changes.
+      voided = await voidUnpaidDeposits(tx, {
+        organizationId: req.user!.organization_id,
+        estimateIds: [existing.id],
+        reason: action === 'waive' ? 'Deposit waived' : 'Estimate cancelled',
       });
+      if (voided.length === 0) throw new DepositHoldsMoneyError();
 
       await tx.timelineEvent.create({
         data: {
@@ -6727,11 +6948,15 @@ export async function waiveDeposit(req: Request, res: Response) {
       if (action === 'waive') {
         await tx.estimate.update({
           where: { id: existing.id },
-          data: { status: ESTIMATE_STATUS.WON, approved_at: now },
+          // An estimate already approved at signing keeps its own approval date.
+          data: existing.status === ESTIMATE_STATUS.WON
+            ? { status: ESTIMATE_STATUS.WON }
+            : { status: ESTIMATE_STATUS.WON, approved_at: now },
         });
 
-        // Lead → WON (idempotent) — only when a lead exists.
-        if (existing.lead_id) {
+        // Lead → WON (idempotent) — only when a lead exists, and not again for an estimate that
+        // was already approved at signing.
+        if (existing.lead_id && !alreadyApproved) {
           await transitionLeadStatus(tx, {
             leadId: existing.lead_id,
             orgId: req.user!.organization_id,
@@ -6763,34 +6988,43 @@ export async function waiveDeposit(req: Request, res: Response) {
 
       return tx.estimate.findUnique({ where: { id }, select: estimateDetailSelect });
     });
+    // Slice 14: a sent deposit has a payable link; it must not take money for the voided deposit.
+    const sentVoided = voided.filter((d) => d.status === 'SENT');
+    if (sentVoided.length > 0) {
+      void closeOpenCheckoutLinks(req.user!.organization_id, sentVoided, 'invoice_voided');
+    }
 
     // ── Notification: estimate.deposit_waived — POST-COMMIT (#271) ────────────
     if (action === 'waive') {
-      await emit({
+      queueEstimateAlert({
         verb: 'estimate.deposit_waived',
         organizationId: req.user!.organization_id,
         actorId: req.user?.id ?? null,
-        object: { type: 'ESTIMATE', id: existing.id, label: existing.estimate_number },
-        entity: { commission_owner_id: existing.lead?.commission_owner_id ?? null },
-        data: { object_label: existing.estimate_number },
+        estimateId: existing.id,
       });
     }
 
-    const response: Record<string, unknown> = { estimate: presentEstimateDetail(req, estimate) };
+    const response: Record<string, unknown> = { estimate: presentEstimateDetail(req, stripEstimateCostIfFound(estimate, req)) };
 
     if (action === 'waive') {
-      // Waiving the deposit approves the estimate — same automation event as
-      // the other approval doors (dedupe collapses repeats).
-      dispatchAutomationEvent({
-        type: 'ESTIMATE_APPROVED',
-        organizationId: req.user!.organization_id,
-        entity: { type: 'estimate', id: existing.id, label: existing.estimate_number },
-        actorId: req.user?.id ?? null,
-      });
+      // Waiving the deposit approves the estimate — same automation event as the other approval
+      // doors (dedupe collapses repeats). Not for an estimate already approved at signing.
+      if (!alreadyApproved) {
+        dispatchAutomationEvent({
+          type: 'ESTIMATE_APPROVED',
+          organizationId: req.user!.organization_id,
+          entity: { type: 'estimate', id: existing.id, label: existing.estimate_number },
+          actorId: req.user?.id ?? null,
+        });
+      }
       void logAudit({ req, action: 'estimate.deposit_waived', resourceType: 'Estimate', resourceId: existing.id });
     }
     res.json(response);
   } catch (err) {
+    if (err instanceof DepositHoldsMoneyError) {
+      res.status(409).json({ error: DEPOSIT_HOLDS_MONEY_MESSAGE });
+      return;
+    }
     logger.error('Waive deposit error:', err);
     res.status(500).json({ error: 'Failed to waive deposit' });
   }
@@ -6906,7 +7140,8 @@ export async function getStats(req: Request, res: Response) {
     // sum estimates it can actually see (authz-1; closes the list↔stats divergence). Fully
     // grant-driven: readScope covers ADMIN/{} + SALES (OWN_LEAD-conditioned read) + any custom
     // Owned/Team/Location read grant + no-grant→MATCH_NOTHING. No role literal.
-    const statsWhere: Record<string, unknown> = { ...orgWhere, ...(await scopeWhereForReq(req, 'Estimate')) };
+    const estimateScope = await scopeWhereForReq(req, 'Estimate');
+    const statsWhere: Record<string, unknown> = { ...orgWhere, ...estimateScope };
     const [
       draftCount, sentCount, pendingCount, wonCount, declinedCount, archivedCount,
       draftValue, sentValue, pendingValue, wonValue, declinedValue, archivedValue,
@@ -6925,9 +7160,19 @@ export async function getStats(req: Request, res: Response) {
       prisma.estimate.aggregate({ where: { ...statsWhere, status: 'DECLINED' }, _sum: { total_amount: true } }),
       prisma.estimate.aggregate({ where: { ...statsWhere, status: ESTIMATE_STATUS.ARCHIVED }, _sum: { total_amount: true } }),
       // Pending deposits — the kind=DEPOSIT Invoice is the SOLE source (legacy Deposit gone).
-      // Left org-wide by design: scoping the deposit KPI to a role needs the Invoice
-      // read-scope (OWN_INVOICE_VIA_LEAD), a separate product decision (see re-audit authz-1).
-      prisma.invoice.aggregate({ where: { ...orgWhere, kind: 'DEPOSIT', status: { in: ['DRAFT', 'SENT'] } }, _count: true, _sum: { amount_due: true } }),
+      // The company's whole pending deposit money is a company figure: with See company figures it is
+      // org-wide; without it, only the deposits on estimates the person can open (the same answer list()
+      // gives for this tile), so it never carries money from a record they cannot reach.
+      prisma.invoice.aggregate({
+        where: {
+          ...orgWhere,
+          kind: 'DEPOSIT',
+          status: { in: ['SENT', 'PARTIAL'] },
+          ...(!canSeeCompanyFigures(req) && Object.keys(estimateScope).length > 0 ? { estimate: estimateScope } : {}),
+        },
+        _count: true,
+        _sum: { amount_due: true },
+      }),
     ]);
 
     res.json({
@@ -7053,9 +7298,10 @@ export async function getVersion(req: Request, res: Response) {
     // LIVE row (`isCustomerReadableRow` needs an `id`, which the document projection never froze,
     // and a scope granted since the send must be honoured); only the strip lands on the copy.
     // A document with no resolvable anchor is left alone — there is nothing to judge, so nothing
-    // to strip, the same rule `redactCustomerContactFor` follows.
+    // to strip, the same rule `redactCustomerContactFor` follows. A customer with a lead or job the
+    // requester can open comes with that record (S01.5), whatever Customers View says.
     const anchor = estimate.customer ?? estimate.lead?.customer ?? null;
-    const anchorReadable = anchor ? isCustomerReadableRow(req, anchor) : true;
+    const anchorReadable = anchor ? isCustomerReadable(req, anchor) : true;
     const redacted = document.customer
       ? { ...document, customer: redactCustomerRowUnless(document.customer, anchorReadable) }
       : document;

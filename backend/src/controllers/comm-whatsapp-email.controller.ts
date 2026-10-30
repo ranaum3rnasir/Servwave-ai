@@ -15,14 +15,30 @@ import {
   commVisibilityWhere,
   commParentVisibilityWhere,
 } from '../lib/permissions/anchorVisibility';
-import { addOrFilter } from '../lib/permissions/whereCompose';
+import {
+  textsInSectionScopeForReq,
+  emailsInSectionWhereForReq,
+  emailReadWhereForReq,
+  emailThreadReadWhereForReq,
+  emailThreadReachWhereForReq,
+} from '../lib/communication/communicationScope';
+import { needsReviewItemWhereForReq, needsReviewListWhereForReq } from '../lib/communication/needsReview';
+import { unreadInboxWhere } from '../lib/communication/mailboxList';
+import { recordLabelsFor } from '../lib/communication/recordConversations';
+import {
+  addressesIn, awaitingSeveralCustomers, awaitsCustomer, customerIdsWithAddress, customerOfRecipients, isUnverifiedSenderLink,
+  senderAddressOfRow,
+} from '../lib/communication/customerByAddress';
+import { addAndClause, addOrFilter } from '../lib/permissions/whereCompose';
 // #2049 - reused so the sms half of getUnreadCounts below computes THREADS
 // unread the same way listThreads/getThread do, never a second derivation.
 // Aliased: this module already has its own attachCallerUnread (the email
 // per-row mirror, further down) - same name, different channel, no relation.
 import { attachCallerUnread as attachCallerUnreadSms } from './comm-threads.controller';
 import { sendComposedEmail, dispatchFailureStatus, orgSendingIdentity, EmailDispatchResult } from '../lib/email';
-import { prepareReplyToken, persistReplyToken, replyAddressFor, resolveReplyToken } from '../lib/reply-token';
+import { parseReplyAddress, prepareReplyToken, persistReplyToken, replyAddressFor, resolveReplyToken } from '../lib/reply-token';
+import { startedConversationData, takeConversationOnFirstReply } from '../lib/mailbox/conversations';
+import { ADDRESS_NEEDED_MESSAGE, NOT_YOUR_ADDRESS_MESSAGE, resolveHandSender } from '../lib/mailbox/hand-sender';
 import { formatSizeLabel, sanitizeEmailHtml } from '../lib/email-html';
 import { sniffMatchesDeclared } from '../lib/file-sniff';
 import {
@@ -95,6 +111,10 @@ export const sendEmailSchema = z.object({
   // Markup roughly quadruples the text, so the html allowance is four times the plain body's.
   body_html: z.string().max(VERY_LONG_TEXT_MAX * 4).optional(),
   thread_id: z.string().nullable().optional(),
+  // PRD 10 (S10.11): there is NO From choice. A hand-written email goes out from the sender's own mailbox, always; this
+  // field selects nothing. It exists only so a request that NAMES another mailbox (the main mailbox, a colleague's, a
+  // handed-over one, another company's) is refused rather than quietly sent from somewhere else.
+  from_mailbox_id: z.string().max(100).optional(),
   // Reply threading: the stored row being replied to. Accepted but NOT acted on
   // today - there is no thread (In-Reply-To/References) to build yet. A later
   // slice is what makes this field mean something.
@@ -150,6 +170,10 @@ const EMAIL_THREAD_INCLUDE = {
     archived: true,
     snoozed_until: true,
     assigned_to: { select: { id: true, is_active: true } },
+    // The record a record conversation is about, which names the job or lead on the Inbox row (S10.9).
+    origin: true,
+    record_type: true,
+    record_id: true,
   },
 };
 
@@ -316,6 +340,12 @@ function mapEmail(e: any) {
     // compare and must not be badged the same as a DMARC-verified one.
     ...(e.inbound_match != null ? { inboundMatch: e.inbound_match } : {}),
     ...(e.inbound_auth != null ? { inboundAuth: e.inbound_auth } : {}),
+    // Why the message is held in a Needs review list (S10.18); absent on every message that was delivered.
+    // PRD 10, S10.20: a customer link made on a sender the domain could not vouch for, and a sender several customers share.
+    ...(isUnverifiedSenderLink(e) ? { unverifiedSender: true } : {}),
+    ...(e.matchesSeveralCustomers === true ? { matchesSeveralCustomers: true } : {}),
+    ...(e.review_reason != null ? { reviewReason: e.review_reason } : {}),
+    ...(e.review_mailbox_id != null ? { reviewMailboxId: e.review_mailbox_id } : {}),
     ...(e.cc != null ? { cc: e.cc } : {}),
     ...(e.bcc != null ? { bcc: e.bcc } : {}),
     ...(e.body_html != null ? { bodyHtml: e.body_html } : {}),
@@ -324,6 +354,8 @@ function mapEmail(e: any) {
     // Email slice 8b: who sent it (immutable, stamped at send). Absent on
     // inbound/system rows, which have no ServWave sender.
     ...(e.sent_by_user_id != null ? { sentByUserId: e.sent_by_user_id } : {}),
+    // The job or lead a record conversation is about (S10.9), when the person can open it.
+    ...(e.recordTie != null ? { recordTie: e.recordTie } : {}),
     ...(e.customer != null && {
       linkedCustomer: { id: e.customer.id, name: e.customer.company_name ?? [e.customer.first_name, e.customer.last_name].filter(Boolean).join(' ') },
     }),
@@ -661,29 +693,54 @@ async function attachCallerUnread(req: Request, emails: any[]): Promise<any[]> {
 }
 
 /**
+ * The job or lead a record conversation is about, on each row that sits in one (S10.9): `recordTie` carries the number to
+ * show and the record to link to. ONE call for the whole page (`recordLabelsFor`), and only for a person's own reach: a job
+ * or lead they cannot open is not named.
+ */
+async function attachRecordTie(req: Request, emails: any[]): Promise<any[]> {
+  const threads = emails.map((e) => e.thread).filter((t) => t && t.origin === 'record');
+  if (threads.length === 0) return emails;
+  const [job, lead] = await Promise.all([scopeWhereForReq(req, 'Job'), scopeWhereForReq(req, 'Lead')]);
+  const labels = await recordLabelsFor(prisma, { organizationId: req.user!.organization_id, threads, reach: { job, lead } });
+  return emails.map((e) => (e.thread && labels.has(e.thread.id) ? { ...e, recordTie: labels.get(e.thread.id) } : e));
+}
+
+/**
+ * "Matches several customers" (PRD 10, S10.20) on each received message that is waiting for a customer and comes from an address
+ * several customers share: the flag a screen reads to offer the picker. ONE read for the whole page (`awaitingSeveralCustomers`),
+ * and none when no message on the page is waiting for one.
+ */
+async function attachSeveralMatches(req: Request, emails: any[]): Promise<any[]> {
+  const several = await awaitingSeveralCustomers(prisma, req.user!.organization_id, emails);
+  return several.size === 0 ? emails : emails.map((e) => (several.has(e.id) ? { ...e, matchesSeveralCustomers: true } : e));
+}
+
+/**
  * Email slice 8b - Unassigned / Mine / All views. Assignment NEVER narrows
  * anchor-inherited visibility (Missive rule: "assigned to one, visible to
- * all") - this is an ADDITIONAL filter layered on top of `commVisibilityWhere`,
- * never a replacement for it, and it rides the SAME `thread` relation every
- * read path already includes rather than a second, competing scope.
+ * all") - this is an ADDITIONAL filter layered on top of the Email page's
+ * Communication scope filter, never a replacement for it, and it rides the SAME
+ * `thread` relation every read path already includes rather than a second,
+ * competing scope.
  *
  * 'unassigned' folds in auto-unassign at query time (no reconciliation job):
  * a row with no thread at all, a thread with no assignee, and a thread whose
  * assignee has since gone `is_active: false` all count as Unassigned.
  *
  * MUTATES `where` in place rather than returning a fragment to spread: the
- * 'unassigned' branch is itself an `OR`, and `commVisibilityWhere` is ALSO an
- * `OR` for any row-scoped caller (e.g. a technician). Two top-level `OR` keys
- * on the same plain-object spread collide - the second silently overwrites
- * the first - which would let `?assignment=unassigned` replace anchor-scoped
- * visibility instead of narrowing it. `addOrFilter` (whereCompose.ts) demotes
- * both disjunctions to peers under `AND` instead, exactly the anti-leak
- * pattern `commVisibilityWhere`'s own doc-comment calls for. 'mine' is a
- * plain `thread` key and never collides, so it can merge unguarded.
+ * 'unassigned' branch is itself an `OR`, and a section filter can be an `OR`
+ * too. Two top-level `OR` keys on the same plain-object spread collide - the
+ * second silently overwrites the first - which would let
+ * `?assignment=unassigned` replace the Communication scope instead of
+ * narrowing it. `addOrFilter` (whereCompose.ts) demotes both disjunctions to
+ * peers under `AND` instead, the anti-leak pattern `addOrFilter` exists for.
+ * 'mine' filters on `thread`, a key the section filter owns, so it goes under
+ * AND as well.
  */
 function applyAssignmentFilter(where: Record<string, unknown>, req: Request, view: unknown): void {
   if (view === 'mine') {
-    where.thread = { assigned_to_user_id: req.user!.id };
+    // Under AND, not `where.thread = ...`: the section filter already owns the `thread` key.
+    addAndClause(where, { thread: { assigned_to_user_id: req.user!.id } });
     return;
   }
   if (view === 'unassigned') {
@@ -697,12 +754,14 @@ function applyAssignmentFilter(where: Record<string, unknown>, req: Request, vie
 
 export async function listEmails(req: Request, res: Response) {
   try {
-    // Anchor-inherited row scope (slice 8a). Email carries job_id, lead_id,
-    // customer_id and vendor_id all DIRECTLY, so the shared fragment applies to
-    // the row with no nesting.
+    // The Email page follows Communication scope (M11): "All" lists every email conversation, "Linked to me" the
+    // ones in a mailbox the person holds. A job, lead or customer tie plays no part here; it only decides whether
+    // a single message opens (getEmail).
     const where: any = {
       ...tenantWhere(req),
-      ...(await commVisibilityWhere(req)),
+      ...(await emailsInSectionWhereForReq(req, req.query.mailbox)),
+      // A message held in a Needs review list (S10.18) is not mail of the inbox: it has its own list (listUnmatchedEmails).
+      review_reason: null,
     };
     applyAssignmentFilter(where, req, req.query.assignment);
 
@@ -725,7 +784,7 @@ export async function listEmails(req: Request, res: Response) {
       },
     });
 
-    const withUnread = await attachCallerUnread(req, emails);
+    const withUnread = await attachSeveralMatches(req, await attachRecordTie(req, await attachCallerUnread(req, emails)));
     res.json({ emails: withUnread.map(mapEmail) });
   } catch (err) {
     logger.error('Failed to list emails:', err);
@@ -733,92 +792,149 @@ export async function listEmails(req: Request, res: Response) {
   }
 }
 
+/** The Needs review list's page size: a page at a time, so a long list costs one bounded read. */
+const REVIEW_PAGE_SIZE = 50;
+const REVIEW_MAX_PAGE_SIZE = 100;
+
 /**
- * Email slice 6 - the unmatched queue: inbound mail we deliberately refused to
- * attach to a thread.
+ * The Needs review list (PRD 10, S10.18; the unmatched queue of email slice 6, grown into a per-mailbox list): inbound mail the
+ * router held instead of delivering. It is an OPERATOR WORKLIST rather than a slice of the inbox: a held message carries no
+ * conversation, so it belongs to no conversation view, and mixing it into the inbox is exactly how a forged message gets read as
+ * a genuine one.
  *
- * Separate endpoint rather than a `?inbound_match=` filter on listEmails,
- * because these rows are an OPERATOR WORKLIST rather than a slice of the inbox.
- * They carry no thread, so they do not belong to any conversation view, and
- * leaving them mixed into the main list is exactly how a forged reply gets read
- * as a genuine one.
+ * `?mailbox=` picks the list (mine, a mailbox id, or on All, all); what the person sees follows the mailboxes they can see, and a
+ * held reply to a record follows who can reach that record (lib/communication/needsReview.ts). Each item carries `linkTo`, the
+ * conversation it was a reply to when the person can reach that conversation: the one-click answer to "Link to a conversation".
  */
 export async function listUnmatchedEmails(req: Request, res: Response) {
   try {
-    const emails = await prisma.email.findMany({
-      where: {
-        ...tenantWhere(req),
-        ...(await commVisibilityWhere(req)),
-        inbound_match: { in: ['UNMATCHED_SENDER', 'UNMATCHED_NO_TOKEN'] },
-      },
-      orderBy: { ts: 'desc' },
-      include: {
-        customer: { select: { id: true, first_name: true, last_name: true, company_name: true } },
-        lead: { select: { id: true, lead_number: true } },
-        vendor: { select: { id: true, name: true } },
-        email_attachments: EMAIL_ATTACHMENTS_INCLUDE,
-        thread: EMAIL_THREAD_INCLUDE,
-      },
-    });
+    const limit = Math.min(Math.max(Math.trunc(Number(req.query.limit)) || REVIEW_PAGE_SIZE, 1), REVIEW_MAX_PAGE_SIZE);
+    const offset = Math.max(Math.trunc(Number(req.query.offset)) || 0, 0);
+    const { where, selection } = await needsReviewListWhereForReq(req, req.query.mailbox);
 
-    const withUnread = await attachCallerUnread(req, emails);
-    res.json({ emails: withUnread.map(mapEmail) });
+    const [emails, total] = await Promise.all([
+      prisma.email.findMany({
+        where,
+        orderBy: [{ ts: 'desc' }, { id: 'asc' }],
+        skip: offset,
+        take: limit,
+        include: { email_attachments: EMAIL_ATTACHMENTS_INCLUDE },
+      }),
+      prisma.email.count({ where }),
+    ]);
+
+    const held = await withHeldContext(req, emails);
+
+    res.json({
+      emails: held.map(mapHeldEmail),
+      total,
+      limit,
+      offset,
+      selected: selection.kind === 'mailbox' ? selection.id : selection.kind,
+    });
   } catch (err) {
     logger.error('Failed to list unmatched emails:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 }
 
+/** What a held message's list row and its item both carry: the job or lead its conversation is about, and the conversation to link to. */
+async function withHeldContext(req: Request, emails: any[]): Promise<any[]> {
+  // The conversation each reply belongs to, for the ones the person can link to: one read of the page's conversations.
+  const threadIds = [...new Set(emails.flatMap((e) => (e.review_thread_id ? [e.review_thread_id] : [])))];
+  if (threadIds.length === 0) return emails.map((e) => ({ ...e, linkTo: null }));
+  const reach = await emailThreadReachWhereForReq(req, threadIds);
+  const threads = await prisma.emailThread.findMany({
+    where: { AND: [{ id: { in: threadIds } }, tenantWhere(req), reach] },
+    select: {
+      id: true, origin: true, record_type: true, record_id: true,
+      emails: { orderBy: { ts: 'desc' }, take: 1, select: { subject: true } },
+    },
+  });
+  const byId = new Map(threads.map((t) => [t.id, t]));
+  // The job or lead the conversation is about, named for a person who can open it (the same call the Email list makes).
+  const [job, lead] = await Promise.all([scopeWhereForReq(req, 'Job'), scopeWhereForReq(req, 'Lead')]);
+  const labels = await recordLabelsFor(prisma, { organizationId: req.user!.organization_id, threads, reach: { job, lead } });
+  return emails.map((e) => {
+    const thread = e.review_thread_id ? byId.get(e.review_thread_id) : undefined;
+    return {
+      ...e,
+      ...(thread && labels.has(thread.id) ? { recordTie: labels.get(thread.id) } : {}),
+      linkTo: thread ? { threadId: thread.id, subject: thread.emails[0]?.subject ?? null } : null,
+    };
+  });
+}
+
+// A held reply was sent to one of our reply addresses, whose local part is a random token: the flag lets the screen say what the
+// address is rather than print noise. The token itself is never needed by the screen.
+const mapHeldEmail = (e: any) => ({
+  ...mapEmail(e),
+  ...(parseReplyAddress(e.to ?? '') !== null ? { toReplyAddress: true } : {}),
+  linkTo: e.linkTo,
+});
+
+/**
+ * One held message by id: the Needs review item a bell opens (PRD 10, S10.19). Anyone who can see it in a list sees it here, and a
+ * reply from an address we did not send to also opens for anyone who can reach the conversation it replied to, whichever mailbox it
+ * is filed under (lib/communication/needsReview.ts). Anyone else gets a 404, as for a message that is not there.
+ */
+export async function getUnmatchedEmail(req: Request, res: Response) {
+  try {
+    const email = await prisma.email.findFirst({
+      where: await needsReviewItemWhereForReq(req, req.params.id as string),
+      include: { email_attachments: EMAIL_ATTACHMENTS_INCLUDE },
+    });
+    if (!email) {
+      res.status(404).json({ error: 'Email not found' });
+      return;
+    }
+    const [item] = await withHeldContext(req, [email]);
+    res.json({ email: mapHeldEmail(item) });
+  } catch (err) {
+    logger.error('Failed to get unmatched email:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
 export const linkInboundEmailSchema = z.object({
-  // Optional: omitted means "the thread this message's own reply token points
-  // at", which is the one-click case the retained token exists to serve.
+  // Optional: omitted means "the conversation this message was a reply to", which is the one-click case the retained reply
+  // address exists to serve.
   thread_id: z.string().uuid('thread_id must be a valid id').optional(),
 });
 
 /**
- * Email slice 6 - attach an unmatched inbound message to a thread by hand.
+ * Link a held message to a conversation by hand (email slice 6; PRD 10, S10.18).
  *
- * This is a HUMAN DECISION to trust a sender the automatic check would not, so
- * it is scoped like any other write and never inferred. Two things it
- * deliberately does not do:
+ * This is a HUMAN DECISION to trust a message the automatic checks would not, so it is scoped like any other write and never
+ * inferred. It keeps PRD 8's filing rule (the route needs Edit communication records) and needs the person to see the held
+ * message AND to reach the conversation they link it to: a conversation they cannot open is not theirs to file mail into.
+ * Two things it deliberately does not do:
  *
- *  - It does not clear `inbound_auth`. An operator linking a message does not
- *    retroactively make DMARC pass, and the thread must still be able to show
- *    what was and was not proven about the sender.
- *  - It does not widen `expected_from` on the reply token. Linking this message
- *    says nothing about the next one from the same address, and quietly
- *    enrolling a new sender would turn one judgement call into a standing rule.
+ *  - It does not clear `inbound_auth`. A person linking a message does not retroactively make a sender check pass, and the
+ *    conversation must still be able to show what was and was not proven about the sender.
+ *  - It does not widen `expected_from` on the reply address. Linking this message says nothing about the next one from the same
+ *    address, and quietly enrolling a new sender would turn one judgement call into a standing rule.
  */
 export async function linkInboundEmail(req: Request, res: Response) {
   try {
-    const visibility = await commVisibilityWhere(req);
     const email = await prisma.email.findFirst({
-      where: { id: req.params.id as string, ...tenantWhere(req), ...visibility },
-      select: { id: true, reply_token: true },
+      where: await needsReviewItemWhereForReq(req, req.params.id as string),
+      select: { id: true, reply_token: true, review_thread_id: true },
     });
     if (!email) {
       res.status(404).json({ error: 'Email not found' });
       return;
     }
 
-    let threadId: string;
+    let targetId: string;
     if (req.body.thread_id) {
-      // Resolved inside the tenant, never trusted from the body: linking a
-      // customer's reply into another org's conversation would be both a
-      // cross-tenant write and a disclosure of the message body to that org.
-      const thread = await prisma.emailThread.findFirst({
-        where: { id: req.body.thread_id, ...tenantWhere(req) },
-        select: { id: true },
-      });
-      if (!thread) {
-        res.status(404).json({ error: 'Thread not found' });
-        return;
-      }
-      threadId = thread.id;
+      targetId = req.body.thread_id;
+    } else if (email.review_thread_id) {
+      targetId = email.review_thread_id;
     } else {
       if (!email.reply_token) {
         res.status(400).json({
-          error: 'This message carries no reply token - choose a conversation to link it to.',
+          error: 'This message was not a reply to one of your emails - choose a conversation to link it to.',
           code: 'NO_REPLY_TOKEN',
         });
         return;
@@ -826,21 +942,41 @@ export async function linkInboundEmail(req: Request, res: Response) {
       const token = await resolveReplyToken(prisma, email.reply_token);
       if (!token?.thread_id) {
         res.status(400).json({
-          error: 'That reply address no longer points at a conversation - choose one to link it to.',
+          error: 'The conversation this was a reply to is gone - choose one to link it to.',
           code: 'TOKEN_THREAD_GONE',
         });
         return;
       }
-      threadId = token.thread_id;
+      targetId = token.thread_id;
     }
 
-    await prisma.email.update({
-      where: { id: email.id },
-      data: { thread_id: threadId, inbound_match: 'MATCHED' },
+    // Resolved inside the tenant AND under the person's reach, never trusted from the body: linking a reply into another
+    // company's conversation would be a cross-tenant write and a disclosure of the message, and into a conversation the person
+    // cannot open a way to read it through the back door.
+    const thread = await prisma.emailThread.findFirst({
+      where: { AND: [{ id: targetId }, tenantWhere(req), await emailThreadReachWhereForReq(req, [targetId])] },
+      select: { id: true },
     });
+    if (!thread) {
+      res.status(404).json({ error: 'Conversation not found' });
+      return;
+    }
+
+    // Still held when this write lands, or somebody linked it first.
+    const linked = await prisma.email.updateMany({
+      where: { id: email.id, ...tenantWhere(req), review_reason: { not: null } },
+      data: {
+        thread_id: thread.id, inbound_match: 'MATCHED', folder: 'inbox',
+        review_reason: null, review_mailbox_id: null, review_thread_id: null,
+      },
+    });
+    if (linked.count === 0) {
+      res.status(409).json({ error: 'This message has already been linked.', code: 'ALREADY_LINKED' });
+      return;
+    }
 
     const refetched = await prisma.email.findFirst({
-      where: { id: email.id, ...tenantWhere(req), ...visibility },
+      where: { id: email.id, ...tenantWhere(req) },
       include: {
         customer: { select: { id: true, first_name: true, last_name: true, company_name: true } },
         lead: { select: { id: true, lead_number: true } },
@@ -864,7 +1000,7 @@ export async function linkInboundEmail(req: Request, res: Response) {
 export async function getEmail(req: Request, res: Response) {
   try {
     const email = await prisma.email.findFirst({
-      where: { id: req.params.id as string, ...tenantWhere(req), ...(await commVisibilityWhere(req)) },
+      where: { id: req.params.id as string, ...tenantWhere(req), ...(await emailReadWhereForReq(req, { emailId: req.params.id as string })) },
       include: {
         customer: { select: { id: true, first_name: true, last_name: true, company_name: true } },
         lead: { select: { id: true, lead_number: true } },
@@ -879,7 +1015,7 @@ export async function getEmail(req: Request, res: Response) {
       return;
     }
 
-    const [withUnread] = await attachCallerUnread(req, [email]);
+    const [withUnread] = await attachSeveralMatches(req, await attachRecordTie(req, await attachCallerUnread(req, [email])));
     res.json({ email: mapEmail(withUnread) });
   } catch (err) {
     logger.error('Failed to get email:', err);
@@ -897,6 +1033,12 @@ function mapComposeEmailFailure(
   const status = dispatchFailureStatus(result);
   if (result.status === 'skipped' && result.reason === 'org_disabled') {
     return { status, error: 'Email sending is turned off for this organization.', code: 'EMAIL_SENDING_DISABLED' };
+  }
+  if (result.status === 'skipped' && result.reason === 'address_needed') {
+    return { status, error: ADDRESS_NEEDED_MESSAGE, code: 'ADDRESS_NEEDED' };
+  }
+  if (result.status === 'skipped' && result.reason === 'foreign_mailbox') {
+    return { status, error: NOT_YOUR_ADDRESS_MESSAGE, code: 'MAILBOX_NOT_YOURS' };
   }
   if (result.status === 'skipped') {
     return { status, error: 'Email is not configured for this organization.', code: 'EMAIL_SEND_NOT_CONFIGURED' };
@@ -929,7 +1071,7 @@ async function resolveVisibleThreadId(req: Request, claimedThreadId: string): Pr
   if (!UUID_RE.test(claimedThreadId)) return null;
 
   const visible = await prisma.email.findFirst({
-    where: { thread_id: claimedThreadId, ...tenantWhere(req), ...(await commVisibilityWhere(req)) },
+    where: { thread_id: claimedThreadId, ...tenantWhere(req), ...(await emailReadWhereForReq(req, { threadId: claimedThreadId })) },
     select: { thread_id: true },
   });
   return visible?.thread_id ?? null;
@@ -951,15 +1093,18 @@ async function resolveVisibleThreadId(req: Request, claimedThreadId: string): Pr
  */
 async function threadChangedSince(req: Request, threadId: string, composingSince: string): Promise<any[] | null> {
   const since = new Date(composingSince);
+  // Only the messages the caller can read count: a conversation reached through a record is read message by message, so
+  // a newer message on a record they cannot open neither trips the guard nor comes back in the 409.
+  const readable = { thread_id: threadId, ...tenantWhere(req), ...(await emailReadWhereForReq(req, { threadId })) };
   const latest = await prisma.email.findFirst({
-    where: { thread_id: threadId, ...tenantWhere(req) },
+    where: readable,
     orderBy: { created_at: 'desc' },
     select: { created_at: true },
   });
   if (!latest || latest.created_at <= since) return null;
 
   return prisma.email.findMany({
-    where: { thread_id: threadId, ...tenantWhere(req), created_at: { gt: since } },
+    where: { ...readable, created_at: { gt: since } },
     orderBy: { created_at: 'asc' },
     include: {
       customer: { select: { id: true, first_name: true, last_name: true, company_name: true } },
@@ -975,19 +1120,45 @@ export async function sendEmail(req: Request, res: Response) {
     const orgId = req.user!.organization_id;
     const now = new Date();
 
+    // PRD 10 (S10.7): composing and replying on the Email page are mailbox actions, so they need Access Communication like
+    // the list does. The route cannot say so (it also serves the job, lead and customer tabs' compose, which need no
+    // section), so the line is drawn here: a reply, or a send that names no job, lead or customer, is the Email page's.
+    const fromARecordTab = Boolean(req.body.job_id || req.body.lead_id || req.body.customer_id);
+    if ((req.body.thread_id || !fromARecordTab) && !req.ability?.can('access_inbox', 'Communication')) {
+      res.status(403).json({ error: 'Insufficient permissions' });
+      return;
+    }
+
+    // PRD 10 (S10.11): a hand-written email goes out from the SENDER'S OWN mailbox, found by who they are and never by
+    // anything the request says. A request that names another mailbox as the one to send from is refused (the main
+    // mailbox, a colleague's, a handed-over one and another company's all alike, for a person on All too), and a person
+    // with no address of their own yet is refused with the address-needed message. Both before anything is looked up.
+    const sender = await resolveHandSender(prisma, { organizationId: orgId, userId: req.user!.id });
+    if (req.body.from_mailbox_id && (!sender.ok || sender.sender.mailboxId !== req.body.from_mailbox_id)) {
+      res.status(403).json({ error: NOT_YOUR_ADDRESS_MESSAGE, code: 'MAILBOX_NOT_YOURS' });
+      return;
+    }
+    if (!sender.ok) {
+      res.status(409).json({ error: ADDRESS_NEEDED_MESSAGE, code: 'ADDRESS_NEEDED' });
+      return;
+    }
+
     // Communication ↔ Jobs (spec §7): stamp job attribution at origin, under the
     // caller's own Job scope (see sendWhatsApp for the reasoning).
     let jobStamp: { job_id: string; job_label: string | null } | null = null;
+    // The customer of the job or lead the email is written on (see `customerId` below).
+    let recordCustomerId: string | null = null;
     if (req.body.job_id) {
       const job = await prisma.job.findUnique({
         where: { id: req.body.job_id, ...tenantWhere(req), ...(await scopeWhereForReq(req, 'Job')) },
-        select: { id: true, job_number: true },
+        select: { id: true, job_number: true, customer_id: true },
       });
       if (!job) {
         res.status(404).json({ error: 'Job not found' });
         return;
       }
       jobStamp = { job_id: job.id, job_label: job.job_number };
+      recordCustomerId = job.customer_id;
     }
 
     // Attach-by-origin: a send composed from a customer page stamps that customer.
@@ -1021,14 +1192,24 @@ export async function sendEmail(req: Request, res: Response) {
     if (req.body.lead_id) {
       const lead = await prisma.lead.findUnique({
         where: { id: req.body.lead_id, ...tenantWhere(req), ...(await scopeWhereForReq(req, 'Lead')) },
-        select: { id: true },
+        select: { id: true, customer_id: true },
       });
       if (!lead) {
         res.status(404).json({ error: 'Lead not found' });
         return;
       }
       leadStamp = lead.id;
+      recordCustomerId ??= lead.customer_id;
     }
+
+    // A job's or lead's email belongs to its customer, so it shows on that customer's Communication tab the way the
+    // record's system emails do (persistTransactionalEmail stamps all three). The composer posts only the id of the
+    // tab it was opened on, so the customer is read off the record here; a customer the composer did post wins.
+    //
+    // With neither, a hand-written email still belongs to the customer its recipient is (PRD 10, S10.20): linked on the recipient's
+    // address when exactly one customer has it, so the customer's tab lists it with no linking by hand. Never a job or a lead.
+    // A reply that none of these places takes the customer its conversation is already linked to (below, once the conversation is resolved).
+    const placedCustomerId: string | null = req.body.customer_id ?? recordCustomerId ?? await customerOfRecipients(prisma, orgId, req.body.to);
 
     // Multipart attachments (multer.array('files', ...), comm-email.routes.ts).
     // Sniffed BEFORE the send so a bad file 400s without ever calling Resend or
@@ -1071,6 +1252,16 @@ export async function sendEmail(req: Request, res: Response) {
       ? await resolveVisibleThreadId(req, req.body.thread_id)
       : null;
 
+    // The conversation's customer is the one customer its messages name (none, or several, decide nothing). The thread was resolved
+    // under the caller's own reach just above, so this reads nothing the caller could not already open.
+    const threadCustomers = placedCustomerId || !resolvedThreadId ? [] : await prisma.email.findMany({
+      where: { thread_id: resolvedThreadId, ...tenantWhere(req), customer_id: { not: null } },
+      select: { customer_id: true },
+      distinct: ['customer_id'],
+      take: 2,
+    });
+    const customerId: string | null = placedCustomerId ?? (threadCustomers.length === 1 ? threadCustomers[0]!.customer_id : null);
+
     if (resolvedThreadId && req.body.composing_since) {
       const newerMessages = await threadChangedSince(req, resolvedThreadId, req.body.composing_since);
       if (newerMessages) {
@@ -1096,7 +1287,7 @@ export async function sendEmail(req: Request, res: Response) {
     const replyToken = await prepareReplyToken(prisma, {
       organization_id: orgId,
       thread_id: resolvedThreadId,
-      customer_id: req.body.customer_id ?? null,
+      customer_id: customerId,
       expected_from: req.body.to,
       created_by_user_id: req.user!.id,
     });
@@ -1110,6 +1301,7 @@ export async function sendEmail(req: Request, res: Response) {
       text,
       html: bodyHtml,
       replyTo: replyAddressFor(replyToken.token),
+      handSender: { mailboxId: sender.sender.mailboxId, userId: req.user!.id },
       attachments: files.map((file) => ({
         filename: file.originalname,
         content: file.buffer,
@@ -1130,10 +1322,11 @@ export async function sendEmail(req: Request, res: Response) {
     // deferred until AFTER a successful dispatch, so a send that never left
     // never leaves an orphan EmailThread behind either (same invariant as the
     // Email row itself, just above). Missive/Front-style default: you sent it,
-    // you own it until reassigned - a fresh thread starts assigned to the sender.
+    // you own it until reassigned - a fresh thread starts assigned to the sender, in the sender's own mailbox
+    // (the mailbox the message went out from, S10.11).
     const threadId = resolvedThreadId
       ?? (await prisma.emailThread.create({
-        data: { assigned_to_user_id: req.user!.id, organization_id: orgId },
+        data: await startedConversationData(prisma, orgId, req.user!.id, sender.sender.mailboxId),
       })).id;
 
     // Email slice 6: PHASE 2 - the send left, so the address we advertised in
@@ -1154,7 +1347,7 @@ export async function sendEmail(req: Request, res: Response) {
           token: replyToken.token,
           organization_id: orgId,
           thread_id: threadId,
-          customer_id: req.body.customer_id ?? null,
+          customer_id: customerId,
           expected_from: req.body.to,
           created_by_user_id: req.user!.id,
         });
@@ -1206,11 +1399,22 @@ export async function sendEmail(req: Request, res: Response) {
         // neither can be read by accident of which one happened to run.
         automated: false,
         ...(jobStamp != null && { job_id: jobStamp.job_id, job_label: jobStamp.job_label }),
-        ...(req.body.customer_id != null && { customer_id: req.body.customer_id }),
+        ...(customerId != null && { customer_id: customerId }),
         ...(leadStamp != null && { lead_id: leadStamp }),
         organization_id: orgId,
       },
     });
+
+    // PRD 10 (S10.11): the first person to reply in a main-mailbox conversation with no assignee takes it. One
+    // conditional write after the reply is stored, so two people replying at once cannot both win and the loser's
+    // reply is still sent and stored. Best-effort like the bookkeeping below: the reply has already reached the customer.
+    if (resolvedThreadId) {
+      try {
+        await takeConversationOnFirstReply(prisma, { organizationId: orgId, threadId: resolvedThreadId, userId: req.user!.id });
+      } catch (err) {
+        logger.error(`Failed to assign thread ${resolvedThreadId} to its first replier:`, err);
+      }
+    }
 
     // Spec #1751 D5: a human-written outbound email to a lead marks it contacted. Read off the
     // ROW, so the filter tests what was persisted rather than re-deriving it from the request.
@@ -1290,7 +1494,7 @@ export async function sendEmail(req: Request, res: Response) {
 export async function getEmailAttachmentUrl(req: Request, res: Response) {
   try {
     const email = await prisma.email.findFirst({
-      where: { id: req.params.id as string, ...tenantWhere(req), ...(await commVisibilityWhere(req)) },
+      where: { id: req.params.id as string, ...tenantWhere(req), ...(await emailReadWhereForReq(req, { emailId: req.params.id as string })) },
       select: { id: true },
     });
     if (!email) {
@@ -1393,11 +1597,167 @@ export async function listAttachSources(req: Request, res: Response) {
   }
 }
 
+// ─── Picking the customer of a message that matches several (PRD 10, S10.20) ─────────────────────────────────────────────
+
+const CUSTOMER_MATCHES_PAGE = 50;
+const CUSTOMER_MATCHES_MAX_PAGE = 100;
+
+/** The columns the picker needs of a message: whether it is waiting for a customer, where it came from, and where it sits. */
+const WAITING_SELECT = {
+  id: true, from: true, direction: true, customer_id: true, reply_token: true, review_reason: true, job_id: true, lead_id: true,
+  vendor_id: true, thread_id: true,
+} as const;
+
+/** The message a picker call is about: one the person can read, in their company, that is waiting for a customer; or the answer to send. */
+async function waitingEmailFor(req: Request, res: Response) {
+  const id = req.params.id as string;
+  if (!UUID_RE.test(id)) {
+    res.status(404).json({ error: 'Email not found' });
+    return null;
+  }
+  const email = await prisma.email.findFirst({
+    where: { id, ...tenantWhere(req), ...(await emailReadWhereForReq(req, { emailId: id })) },
+    select: WAITING_SELECT,
+  });
+  if (!email) {
+    res.status(404).json({ error: 'Email not found' });
+    return null;
+  }
+  if (!awaitsCustomer(email)) {
+    res.status(409).json({ error: 'This message is not waiting for a customer.', code: 'NOT_WAITING_FOR_CUSTOMER' });
+    return null;
+  }
+  return { email, address: senderAddressOfRow(email) };
+}
+
+const customerNameOf = (c: { company_name: string | null; first_name: string | null; last_name: string | null }) =>
+  c.company_name ?? [c.first_name, c.last_name].filter(Boolean).join(' ');
+
+/**
+ * GET /emails/:id/customer-candidates - the customers a received message could belong to: those that have its sender's address,
+ * limited to the ones the person can open, a page at a time and searchable by name or number (an address can be shared by a
+ * whole franchise). Needs the attach switch like the pick itself: it is the first half of it.
+ */
+export async function listCustomerMatches(req: Request, res: Response) {
+  try {
+    const waiting = await waitingEmailFor(req, res);
+    if (!waiting) return;
+    const limit = Math.min(Math.max(Math.trunc(Number(req.query.limit)) || CUSTOMER_MATCHES_PAGE, 1), CUSTOMER_MATCHES_MAX_PAGE);
+    const words = (typeof req.query.search === 'string' ? req.query.search : '').trim().split(/\s+/).filter(Boolean).slice(0, 5);
+    const ids = waiting.address ? await customerIdsWithAddress(prisma, req.user!.organization_id, waiting.address) : [];
+    const where = {
+      id: { in: ids }, ...tenantWhere(req), ...(await scopeWhereForReq(req, 'Customer')),
+      AND: words.map((w) => ({
+        OR: ['first_name', 'last_name', 'company_name', 'customer_number'].map((f) => ({ [f]: { contains: w, mode: 'insensitive' as const } })),
+      })),
+    };
+    const [customers, total] = await Promise.all([
+      prisma.customer.findMany({
+        where, orderBy: [{ created_at: 'desc' }, { id: 'asc' }], take: limit,
+        select: { id: true, customer_number: true, first_name: true, last_name: true, company_name: true },
+      }),
+      prisma.customer.count({ where }),
+    ]);
+    res.json({ customers: customers.map((c) => ({ id: c.id, name: customerNameOf(c), number: c.customer_number })), total });
+  } catch (err) {
+    logger.error('Failed to list customer matches for an email:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+export const pickEmailCustomerSchema = z.object({
+  customer_id: z.string().uuid('customer_id must be a valid id'),
+});
+
+/**
+ * PATCH /emails/:id/customer - a person picks which of the customers that share a sender's address a message belongs to. It keeps
+ * PRD 8's attach rule (the route needs the attach switch) and needs the person to read the message and to open the customer they
+ * pick, who must be one of the matches: a pick is a choice among the offered, never a way to link mail to any customer.
+ *
+ * The conversation's own replies follow: what the person sent back to that address, and any other message from it, that still
+ * name no customer. Linking is to the CUSTOMER only; it never attaches the message to a job or a lead.
+ */
+export async function pickEmailCustomer(req: Request, res: Response) {
+  try {
+    const waiting = await waitingEmailFor(req, res);
+    if (!waiting) return;
+    const orgId = req.user!.organization_id;
+    const ids = waiting.address ? await customerIdsWithAddress(prisma, orgId, waiting.address) : [];
+    const customer = ids.includes(req.body.customer_id)
+      ? await prisma.customer.findFirst({
+          where: { id: req.body.customer_id, ...tenantWhere(req), ...(await scopeWhereForReq(req, 'Customer')) },
+          select: { id: true },
+        })
+      : null;
+    if (!customer) {
+      res.status(404).json({ error: 'Customer not found' });
+      return;
+    }
+
+    // The message itself, still waiting when this write lands (somebody may have picked first), then its conversation's replies.
+    const linked = await prisma.email.updateMany({
+      where: { id: waiting.email.id, ...tenantWhere(req), customer_id: null, job_id: null, lead_id: null, vendor_id: null },
+      data: { customer_id: customer.id },
+    });
+    if (linked.count === 0) {
+      res.status(409).json({ error: 'This message already has a customer.', code: 'NOT_WAITING_FOR_CUSTOMER' });
+      return;
+    }
+    if (waiting.email.thread_id) {
+      // The reply address made for the picked address before the pick carries the customer too, so the customer's answer to a
+      // reply sent earlier lands on the same customer's tab.
+      await prisma.replyToken.updateMany({
+        where: { thread_id: waiting.email.thread_id, organization_id: orgId, expected_from: waiting.address!, customer_id: null },
+        data: { customer_id: customer.id },
+      });
+      const siblings = await prisma.email.findMany({
+        where: {
+          thread_id: waiting.email.thread_id, ...tenantWhere(req), customer_id: null, job_id: null, lead_id: null, vendor_id: null,
+          review_reason: null, reply_token: null,
+        },
+        select: { id: true, from: true, to: true, direction: true },
+      });
+      const same = siblings.filter((e) => (e.direction === 'out' ? addressesIn(e.to).includes(waiting.address!) : senderAddressOfRow(e) === waiting.address));
+      if (same.length > 0) {
+        await prisma.email.updateMany({ where: { id: { in: same.map((e) => e.id) }, ...tenantWhere(req), customer_id: null }, data: { customer_id: customer.id } });
+      }
+    }
+
+    const refetched = await prisma.email.findFirst({
+      where: { id: waiting.email.id, ...tenantWhere(req) },
+      include: {
+        customer: { select: { id: true, first_name: true, last_name: true, company_name: true } },
+        lead: { select: { id: true, lead_number: true } },
+        vendor: { select: { id: true, name: true } },
+        email_attachments: EMAIL_ATTACHMENTS_INCLUDE,
+        thread: EMAIL_THREAD_INCLUDE,
+      },
+    });
+    if (!refetched) {
+      res.status(404).json({ error: 'Email not found' });
+      return;
+    }
+    const [withUnread] = await attachCallerUnread(req, [refetched]);
+    res.json({ email: mapEmail(withUnread) });
+  } catch (err) {
+    logger.error('Failed to pick the customer of an email:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
 // One-click reassign of an email's job attribution - the email mirror of
 // comm-threads.controller's reassignMessageJob (job_id: null clears). Without
 // it an email could only ever be attributed at send time, so a miss (or a
 // transactional send that guessed wrong) was uncorrectable from the UI, while
 // the SMS beside it in the same roll-up was one click away.
+// What a reassigned email is read back with.
+const REASSIGNED_EMAIL_INCLUDE = {
+  customer: { select: { id: true, first_name: true, last_name: true, company_name: true } },
+  lead: { select: { id: true, lead_number: true } },
+  vendor: { select: { id: true, name: true } },
+  email_attachments: EMAIL_ATTACHMENTS_INCLUDE,
+} as const;
+
 export const reassignEmailJobSchema = z.object({
   job_id: z.string().uuid('job_id must be a valid id').nullable(),
 });
@@ -1410,7 +1770,7 @@ export async function reassignEmailJob(req: Request, res: Response) {
     // through mapEmail, which carries `body`/`bodyHtml`, so an unscoped one hands
     // over the message content rather than merely confirming a row exists - and
     // the clear path (`job_id: null`) reaches it with no pre-check at all.
-    const visibility = await commVisibilityWhere(req);
+    const visibility = await emailReadWhereForReq(req, { emailId: req.params.id as string });
     let data: { job_id: string | null; job_label: string | null };
     if (req.body.job_id != null) {
       // Emails carry no MessageThread, so there is no internal-lane (kind)
@@ -1460,22 +1820,88 @@ export async function reassignEmailJob(req: Request, res: Response) {
       return;
     }
 
-    // Same filter as the update. Sound only because the target job above is
-    // resolved under the caller's own Job scope, so the row they just wrote is
-    // still visible to them and this can never come back empty.
+    // Same filter as the update. An attach or a move cannot empty it: the target job above is resolved under the
+    // caller's own Job scope, so the row they just wrote is still reachable through it. A detach can: an email that
+    // was readable only through the record it was taken off is no longer theirs to read. The change is done, so the
+    // answer is a success that says the row left, not a 404 or a crash.
     const updated = await prisma.email.findFirst({
       where: { id: req.params.id as string, ...tenantWhere(req), ...visibility },
-      include: {
-        customer: { select: { id: true, first_name: true, last_name: true, company_name: true } },
-        lead: { select: { id: true, lead_number: true } },
-        vendor: { select: { id: true, name: true } },
-        email_attachments: EMAIL_ATTACHMENTS_INCLUDE,
-      },
+      include: REASSIGNED_EMAIL_INCLUDE,
     });
+    if (!updated) {
+      res.json({ email: null, left: true });
+      return;
+    }
 
     res.json({ email: mapEmail(updated) });
   } catch (err) {
     logger.error('Failed to reassign email job:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// The lead mirror of reassignEmailJob (lead_id: null clears), the email counterpart of reassignMessageLead. A job and
+// a lead stay independent on an email, as they do on a text.
+export const reassignEmailLeadSchema = z.object({
+  lead_id: z.string().uuid('lead_id must be a valid id').nullable(),
+});
+
+export async function reassignEmailLead(req: Request, res: Response) {
+  try {
+    // One filter for the pre-read, the update and the refetch, as reassignEmailJob does.
+    const visibility = await emailReadWhereForReq(req, { emailId: req.params.id as string });
+    let data: { lead_id: string | null };
+    if (req.body.lead_id != null) {
+      const email = await prisma.email.findFirst({
+        where: { id: req.params.id as string, ...tenantWhere(req), ...visibility },
+        select: { id: true, customer_id: true },
+      });
+      if (!email) {
+        res.status(404).json({ error: 'Email not found' });
+        return;
+      }
+      // Under the caller's OWN Lead row-scope, not tenancy alone: a caller must not attribute an email to a lead they
+      // cannot open. It also keeps the refetch below non-empty, since the row stays reachable through that lead.
+      const lead = await prisma.lead.findUnique({
+        where: { id: req.body.lead_id, ...tenantWhere(req), ...(await scopeWhereForReq(req, 'Lead')) },
+        select: { id: true, customer_id: true },
+      });
+      if (!lead) {
+        res.status(404).json({ error: 'Lead not found' });
+        return;
+      }
+      // Same-customer constraint (mirrors reassignEmailJob): another customer's lead is indistinguishable from a
+      // nonexistent one. Customer-less emails keep org-scope-only validation.
+      if (email.customer_id && lead.customer_id !== email.customer_id) {
+        res.status(404).json({ error: 'Lead not found' });
+        return;
+      }
+      data = { lead_id: lead.id };
+    } else {
+      data = { lead_id: null };
+    }
+
+    const result = await prisma.email.updateMany({
+      where: { id: req.params.id as string, ...tenantWhere(req), ...visibility },
+      data,
+    });
+    if (result.count === 0) {
+      res.status(404).json({ error: 'Email not found' });
+      return;
+    }
+
+    const updated = await prisma.email.findFirst({
+      where: { id: req.params.id as string, ...tenantWhere(req), ...visibility },
+      include: REASSIGNED_EMAIL_INCLUDE,
+    });
+    if (!updated) {
+      res.json({ email: null, left: true });
+      return;
+    }
+
+    res.json({ email: mapEmail(updated) });
+  } catch (err) {
+    logger.error('Failed to reassign email lead:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 }
@@ -1488,10 +1914,11 @@ export async function reassignEmailJob(req: Request, res: Response) {
  * one EmailReadState row per (email, req.user!.id) - every OTHER user's read
  * state is untouched, because there is no other user's state to touch here.
  *
- * Row-scoped too (slice 8a, unchanged): the set of rows this can mark read is
- * still `commVisibilityWhere`-filtered, so a row-scoped caller cannot use this
- * as a write-side visibility bypass to learn about (or affect) rows they
- * cannot otherwise see.
+ * Row-scoped too: the set of rows this can mark read is the set the caller can
+ * read (`emailReadWhereForReq`: their mailboxes' conversations, and the rows
+ * they reach through a record they can open), so a caller cannot use this as a
+ * write-side visibility bypass to learn about (or affect) rows they cannot
+ * otherwise see.
  *
  * `createMany({ skipDuplicates: true })` rather than N per-row upserts: one
  * write for the whole thread, and a message the caller already read is simply
@@ -1514,7 +1941,7 @@ export async function markThreadRead(req: Request, res: Response) {
     const visibleEmails = await prisma.email.findMany({
       where: {
         ...tenantWhere(req),
-        ...(await commVisibilityWhere(req)),
+        ...(await emailReadWhereForReq(req, { threadId: req.body.thread_id })),
         thread_id: req.body.thread_id,
       },
       select: { id: true },
@@ -1560,7 +1987,7 @@ export async function markThreadUnread(req: Request, res: Response) {
     const visibleEmails = await prisma.email.findMany({
       where: {
         ...tenantWhere(req),
-        ...(await commVisibilityWhere(req)),
+        ...(await emailReadWhereForReq(req, { threadId: req.body.thread_id })),
         thread_id: req.body.thread_id,
       },
       select: { id: true },
@@ -1588,10 +2015,10 @@ export async function markThreadUnread(req: Request, res: Response) {
 /**
  * Email slice 8b - conversation assignment + archive/snooze. All three share
  * the exact same scoping shape: EmailThread carries no job_id/lead_id/
- * customer_id of its own, so visibility rides `commParentVisibilityWhere(req,
- * 'emails')` - the SAME to-many "at least one child email is visible" helper
- * MessageThread/WhatsAppChat already use as parents, not a second, competing
- * gate (anchorVisibility.ts's own warning). `updateMany` + refetch (rather
+ * customer_id of its own, so visibility rides `emailThreadReadWhereForReq` -
+ * the to-many "at least one child email is readable" filter built from the
+ * same Communication scope rule as every other email read (communicationScope.ts),
+ * not a second, competing gate. `updateMany` + refetch (rather
  * than a bare `.update`) mirrors reassignEmailJob just above: atomic, and the
  * refetch can never be broader than the write that preceded it.
  */
@@ -1607,7 +2034,7 @@ async function updateEmailThread(req: Request, res: Response, data: any): Promis
     return;
   }
 
-  const scope = { ...tenantWhere(req), ...(await commParentVisibilityWhere(req, 'emails')) };
+  const scope = { ...tenantWhere(req), ...(await emailThreadReadWhereForReq(req, req.params.id as string)) };
   const result = await prisma.emailThread.updateMany({
     where: { id: req.params.id as string, ...scope },
     data,
@@ -1699,7 +2126,8 @@ export async function getUnreadCounts(req: Request, res: Response) {
     // Header badges are a read path like any other - an unscoped count leaks the
     // VOLUME of conversations a caller cannot open. SMS and WhatsApp (#2049)
     // both count per-user unread CONVERSATIONS now (see below), so both take
-    // the parent AND row filter; email counts rows, so it takes the row filter.
+    // the parent AND row filter. WhatsApp keeps the anchor filter below; texts
+    // and email follow Communication scope instead (see the two further down).
     const [rowScope, parentScope] = await Promise.all([
       commVisibilityWhere(req),
       commParentVisibilityWhere(req, 'messages'),
@@ -1708,6 +2136,10 @@ export async function getUnreadCounts(req: Request, res: Response) {
     const wantsSms = hasFeature(req, 'phone');
     const wantsWhatsApp = hasFeature(req, 'phone') && req.user?.org_is_demo === true;
     const wantsEmail = hasFeature(req, 'email');
+    // Email unread follows Communication scope like the Email page it badges, so it counts what that page lists.
+    const emailScope = wantsEmail ? await emailsInSectionWhereForReq(req) : {};
+    // The same goes for texts: the Text page's unread count is the conversations holding an unread message of the person's.
+    const smsScope = wantsSms ? await textsInSectionScopeForReq(req) : { messages: {}, thread: {} };
 
     const [smsThreads, waChats, emailCount] = await Promise.all([
       // #2049: PER-USER, not the shared `messageThread.unread` column any
@@ -1717,8 +2149,8 @@ export async function getUnreadCounts(req: Request, res: Response) {
       // sms - call this out in the PR body, per the spec.
       wantsSms
         ? prisma.messageThread.findMany({
-            where: { ...where, ...parentScope },
-            select: { id: true, messages: { where: rowScope, select: { direction: true, ts: true } } },
+            where: { ...where, ...smsScope.thread },
+            select: { id: true, messages: { where: smsScope.messages, select: { direction: true, ts: true } } },
           })
         : null,
       // #2049 slice 2: the same move for WhatsApp - counts CHATS unread for
@@ -1738,9 +2170,8 @@ export async function getUnreadCounts(req: Request, res: Response) {
         ? prisma.email.count({
             where: {
               ...where,
-              ...rowScope,
-              folder: 'inbox',
-              email_read_states: { none: { user_id: req.user!.id } },
+              ...emailScope,
+              ...unreadInboxWhere(req.user!.id),
             },
           })
         : null,
@@ -1765,18 +2196,27 @@ export async function getUnreadCounts(req: Request, res: Response) {
 }
 
 /**
- * The From identity this org's sends actually carry, so a compose surface can
- * name it instead of guessing.
+ * The identity a hand-written email from the signed-in person would carry, so a compose surface can name it instead of
+ * guessing (PRD 10, S10.11): their own address and display name, from the same register lookup the dispatch resolves the
+ * From header with, or "address needed" with neither when they have no address yet. `sendingEnabled` is the company's
+ * "Send emails to customers and staff" switch: an address that exists is still no use while it is off.
  *
- * Org comes from the token, never the request - the address is a property of
- * who is asking, and accepting one would let a caller preview another tenant's
- * sending setup. Read-only and derived, so it needs no capability beyond the
- * `read Communication` the compose surfaces already hold.
+ * Person and org come from the token, never the request - accepting either would let a caller preview someone else's
+ * sending setup. Read-only and derived, so it needs no capability beyond the `read Communication` the compose surfaces
+ * already hold (including the job, lead and customer tabs, which have no Email page access of their own).
  */
 export async function getSendingIdentity(req: Request, res: Response) {
   try {
-    const identity = await orgSendingIdentity(req.user!.organization_id);
-    res.json(identity);
+    const [company, sender] = await Promise.all([
+      orgSendingIdentity(req.user!.organization_id),
+      resolveHandSender(prisma, { organizationId: req.user!.organization_id, userId: req.user!.id }),
+    ]);
+    res.json({
+      status: sender.ok ? 'active' : 'address_needed',
+      address: sender.ok ? sender.sender.address : null,
+      name: sender.ok ? sender.sender.displayName || null : null,
+      sendingEnabled: company.sendingEnabled,
+    });
   } catch (err) {
     logger.error('Failed to resolve sending identity:', err);
     res.status(500).json({ error: 'Internal server error' });

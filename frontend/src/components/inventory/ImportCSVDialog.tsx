@@ -36,6 +36,11 @@ type Props = {
    * authority. Optional so a caller that has not loaded them yet still renders.
    */
   existingCategories?: string[];
+  /**
+   * False at a mount whose person may not read vendors (S07.18): the Vendor column is left out of the
+   * expected columns, the mapping step, the template and the notes, and any vendor in the file is not sent.
+   */
+  showVendor?: boolean;
 };
 
 type Mapping = {
@@ -67,6 +72,11 @@ type Mapping = {
 const SAMPLE_CSV = `SKU,Name,Category,Kind,UoM,Unit Cost,Sell Price,Vendor
 LCK-NEW-001,Schlage B60 Deadbolt,Locksets,material,EA,42.00,108.00,ASA / Mul-T-Lock NA
 HVC-CAP-30-5,Run Capacitor 30/5 MFD,Capacitors,material,EA,9.50,32.00,Ferguson HVAC`;
+
+/** The template without its Vendor column (the last one) - what a person without View vendors downloads. */
+const SAMPLE_CSV_WITHOUT_VENDOR = SAMPLE_CSV.split("\n")
+  .map((line) => line.slice(0, line.lastIndexOf(",")))
+  .join("\n");
 
 const REQUIRED_FIELDS: (keyof Mapping)[] = ["name"];
 
@@ -124,7 +134,11 @@ function IssueList({
   );
 }
 
-export function ImportCSVDialog({ open, onClose, onImport, existingCategories }: Props) {
+export function ImportCSVDialog({ open, onClose, onImport, existingCategories, showVendor = true }: Props) {
+  const fieldLabels = (
+    showVendor ? FIELD_LABELS : Object.fromEntries(Object.entries(FIELD_LABELS).filter(([k]) => k !== "vendor"))
+  ) as Partial<Record<keyof Mapping, string>>;
+  const sampleCsv = showVendor ? SAMPLE_CSV : SAMPLE_CSV_WITHOUT_VENDOR;
   const [parsed, setParsed] = useState<ParsedCSV | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [mapping, setMapping] = useState<Mapping | null>(null);
@@ -207,7 +221,7 @@ export function ImportCSVDialog({ open, onClose, onImport, existingCategories }:
       const get = (k: keyof Mapping) =>
         mapping[k] ? r[mapping[k] as string] ?? "" : "";
       // Blank across every column we actually read.
-      if (Object.keys(FIELD_LABELS).every((k) => get(k as keyof Mapping).trim() === "")) return;
+      if (Object.keys(fieldLabels).every((k) => get(k as keyof Mapping).trim() === "")) return;
       const kind = get("kind").toLowerCase();
       const serializedRaw = get("serialized").toLowerCase();
       const hazmatRaw = get("hazmat").toLowerCase();
@@ -250,7 +264,7 @@ export function ImportCSVDialog({ open, onClose, onImport, existingCategories }:
         hazmat: ["y", "yes", "true", "1"].includes(hazmatRaw),
         // CSV import never opts an item into stock tracking (Inventory P1 D8 default).
         trackInventory: false,
-        vendor: get("vendor").trim(),
+        vendor: showVendor ? get("vendor").trim() : "",
         startingStock: [],
       };
       built.push({
@@ -499,7 +513,7 @@ export function ImportCSVDialog({ open, onClose, onImport, existingCategories }:
               Expected columns (any reasonable header - we'll auto-map)
             </p>
             <div className="mt-1.5 flex flex-wrap gap-1">
-              {Object.entries(FIELD_LABELS).map(([k, label]) => (
+              {Object.entries(fieldLabels).map(([k, label]) => (
                 <span
                   key={k}
                   className={[
@@ -530,7 +544,7 @@ export function ImportCSVDialog({ open, onClose, onImport, existingCategories }:
               <Button
                 variant="outline"
                 size="sm"
-                onClick={() => downloadCSV(SAMPLE_CSV, "servwave-catalog-import-template.csv")}
+                onClick={() => downloadCSV(sampleCsv, "servwave-catalog-import-template.csv")}
               >
                 <Download className="mr-1.5 h-3.5 w-3.5" />
                 Download sample CSV
@@ -541,7 +555,7 @@ export function ImportCSVDialog({ open, onClose, onImport, existingCategories }:
                 Or preview it here
               </summary>
               <pre className="mt-2 overflow-x-auto rounded bg-background-dark p-2 text-[10px] text-on-fill/90">
-{SAMPLE_CSV}
+{sampleCsv}
               </pre>
             </details>
           </div>
@@ -582,7 +596,7 @@ export function ImportCSVDialog({ open, onClose, onImport, existingCategories }:
               </span>
             </h3>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-2 rounded-md border border-border bg-background-light/40 p-3">
-              {Object.entries(FIELD_LABELS).map(([k, label]) => {
+              {Object.entries(fieldLabels).map(([k, label]) => {
                 const field = k as keyof Mapping;
                 const required = REQUIRED_FIELDS.includes(field);
                 const value = mapping?.[field];
@@ -671,9 +685,18 @@ export function ImportCSVDialog({ open, onClose, onImport, existingCategories }:
               categories it is about to create. */}
           <div className="rounded-md border border-primary/20 bg-primary-subtle/60 px-3 py-2 text-xs text-text-primary">
             <p>
-              <strong>Category and Vendor are matched by name</strong> against what you already
-              have - case and spacing do not matter. A vendor that is not found is reported after
-              the import and that item arrives with no vendor; vendors are never created here.
+              {showVendor ? (
+                <>
+                  <strong>Category and Vendor are matched by name</strong> against what you already
+                  have - case and spacing do not matter. A vendor that is not found is reported after
+                  the import and that item arrives with no vendor; vendors are never created here.
+                </>
+              ) : (
+                <>
+                  <strong>Category is matched by name</strong> against what you already have - case
+                  and spacing do not matter.
+                </>
+              )}
             </p>
             {newCategories.length > 0 && (
               <p className="mt-1.5 border-t border-primary/20 pt-1.5">

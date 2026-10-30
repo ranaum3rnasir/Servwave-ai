@@ -96,7 +96,7 @@ gitleaks-report.json
 examples/
 
 # ─── Customer / client PII — NEVER commit real customer data ─────────────────
-# Onboarding & migration work (ServiceCore, B&G, Alpha Doors, Talon, …) produces
+# Onboarding & migration work (ServiceCore, B&G, Talon, …) produces
 # raw vendor exports and ETL "staged" files full of names / addresses / phones /
 # emails. Ignore by file TYPE so PII is caught no matter which folder it lands in.
 # Source code never uses these extensions, so this hides nothing legitimate:

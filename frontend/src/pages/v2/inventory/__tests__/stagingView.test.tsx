@@ -284,7 +284,7 @@ describe('v2 StagingView - receive one unit', () => {
   });
 });
 
-describe('v2 StagingView - mark ready / mark delivered', () => {
+describe('v2 StagingView - mark ready', () => {
   it('a complete stage notifies the tech and toasts the ready-for-pickup line', async () => {
     h.stages = [stage({ status: 'complete', items: [item({ qtyReceived: 2 })] })];
     const { onToast } = renderStaging();
@@ -295,13 +295,12 @@ describe('v2 StagingView - mark ready / mark delivered', () => {
     expect(onToast).toHaveBeenCalledWith('✓ J-1850 marked ready for pickup · tech notified');
   });
 
-  it('a ready-for-pickup stage marks delivered and toasts that instead', async () => {
+  it('a ready-for-pickup stage has no unsaved "Mark Delivered" control: taking the parts is "Taken by me" (S07.6)', () => {
     h.stages = [stage({ status: 'ready_for_pickup', items: [item({ qtyReceived: 2 })] })];
-    const { onToast } = renderStaging();
+    renderStaging();
 
-    await userEvent.click(screen.getByRole('button', { name: /Mark Delivered to Tech/ }));
-
-    expect(onToast).toHaveBeenCalledWith('✓ J-1850 marked delivered');
+    expect(screen.queryByRole('button', { name: /Mark Delivered/ })).toBeNull();
+    expect(h.notifyTechReady).not.toHaveBeenCalled();
   });
 });
 

@@ -35,6 +35,17 @@ describe('buildJobAgentTiles — job-aware suggestions', () => {
     expect(carlosScheduled).not.toEqual(carlosCompleted);
   });
 
+  // PRD 6: a completed job rests in Office review, Ready to close or Done, and all of those are past the work.
+  it.each(['OFFICE_REVIEW', 'READY_TO_CLOSE', 'DONE'])('shifts the quality-audit copy to invoice-prep for a job in %s too', (status) => {
+    const tiles = buildJobAgentTiles({ jobNumber: 'J00051', customerName: 'Linda Allen', status });
+    expect(tiles.find((t) => t.id === 'carlos')!.prompt).toContain('before you invoice Linda Allen');
+  });
+
+  it('keeps the pre-check copy for a cancelled job', () => {
+    const tiles = buildJobAgentTiles({ jobNumber: 'J00051', status: 'CANCELLED' });
+    expect(tiles.find((t) => t.id === 'carlos')!.prompt).toContain('invoice-ready');
+  });
+
   it('falls back to safe generic copy when context is missing', () => {
     const tiles = buildJobAgentTiles({});
     const byId = Object.fromEntries(tiles.map((t) => [t.id, t.prompt]));

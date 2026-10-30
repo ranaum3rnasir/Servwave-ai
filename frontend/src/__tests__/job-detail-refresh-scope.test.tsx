@@ -18,7 +18,7 @@ import { buildAbility } from '@/lib/ability';
 import { jobVisitsQueryKey } from '@/lib/useJobVisits';
 import { refreshAfterVisitWrite } from '@/lib/refreshAfterVisitWrite';
 import { QueryClient } from '@tanstack/react-query';
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderWithProviders, ALL_JOB_ACTIONS } from '@/__tests__/helpers';
 import { expectCustomerPageStale, seedCustomerPage } from '@/__tests__/support/customerPageCache';
 import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
 
@@ -44,7 +44,7 @@ const get = vi.mocked(api.get);
 const JOB = {
   id: JOB_ID, job_number: 'J00001', status: 'UNSCHEDULED',
   customer: { id: 'cust-1', first_name: 'Pat', last_name: 'Sample', company_name: null },
-  assignees: [], invoices: [], linked_estimates: [], tags: [],
+  assignees: [], invoices: [], linked_estimates: [], tags: [], actions: ALL_JOB_ACTIONS,
   created_at: '2026-09-01T00:00:00.000Z', updated_at: '2026-09-01T00:00:00.000Z',
 };
 

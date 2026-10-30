@@ -7,7 +7,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderWithProviders, purchasingAbility } from '@/__tests__/helpers';
 
 const hoisted = vi.hoisted(() => {
   const ACME_ID = 'e0000001-0000-0000-0000-000000000001';
@@ -82,7 +82,7 @@ beforeEach(() => {
 
 describe('vendor spend - one money rule, keyed on id (S3.2)', () => {
   it('a renamed vendor keeps its spend, a draft-only vendor ranks at $0, and the YTD tile is the sum', async () => {
-    renderWithProviders(<VendorsPage />, { initialEntries: ['/inventory/vendors'] });
+    renderWithProviders(<VendorsPage />, { initialEntries: ['/inventory/vendors'], ability: purchasingAbility() });
     await userEvent.click(await screen.findByRole('tab', { name: /Spend Analytics/ }));
 
     const acmeRow = (await screen.findByText('ACME Industrial')).closest('tr')!;
@@ -97,7 +97,7 @@ describe('vendor spend - one money rule, keyed on id (S3.2)', () => {
   });
 
   it('the directory cards read the same index: the renamed vendor at $120, the draft-only vendor at $0 with no orders', async () => {
-    renderWithProviders(<VendorsPage />, { initialEntries: ['/inventory/vendors'] });
+    renderWithProviders(<VendorsPage />, { initialEntries: ['/inventory/vendors'], ability: purchasingAbility() });
     // VendorCard's root is a whole-card <button>; its spend strip prints fmtMoney(spend.ytd).
     const acmeCard = (await screen.findByText('ACME Industrial')).closest('button')!;
     expect(within(acmeCard).getByText('$120')).toBeInTheDocument();

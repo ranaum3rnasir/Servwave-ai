@@ -265,3 +265,13 @@ describe('DEFAULT_AUTOMATIONS - the on-the-way vocabulary', () => {
     }
   });
 });
+
+// S04.20: a walkthrough is finished, so the customer's follow-up reads "Site Visit Finished". The company copies are
+// moved by the data migration in walkthrough-follow-up-subject-migration-db.test.ts; this is what a new company gets.
+describe('DEFAULT_AUTOMATIONS - the walkthrough follow-up email', () => {
+  it('has the subject "Site Visit Finished", to the customer and the lead owner', () => {
+    const entry = DEFAULT_AUTOMATIONS.find((a) => a.builtin_key === 'default-walkthrough-completed');
+    expect(entry?.subject).toBe('Site Visit Finished');
+    expect(entry?.recipients).toEqual(['customer', 'salesperson']);
+  });
+});

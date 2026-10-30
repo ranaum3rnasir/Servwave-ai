@@ -45,6 +45,10 @@ import {
   orgBlocksNegativeStock,
 } from './inv-stock.controller';
 import { emit } from '../services/notifications/notificationService';
+import { queueLogisticOrderSubmitted } from '../services/notifications/logisticOrderAlerts';
+import { logisticOrderActionsFor } from '../lib/permissions/logisticOrderActions';
+import { callerOf, personName, pickupComment, type PickupPerson } from '../lib/pickup';
+import { getClientIp } from '../lib/audit';
 import { LONG_TEXT_MAX } from '../lib/text-limits';
 
 // ─── Schemas ──────────────────────────────────────────────────────────────────
@@ -127,7 +131,8 @@ const loDetailInclude = {
     orderBy: { sequence: 'asc' as const },
     select: { ...loLineSelect, from_location: { select: { id: true, name: true } } },
   },
-  job: { select: { id: true, job_number: true } },
+  // The job's status rides along for the action list (an order on a cancelled job moves no further); it is not in the answer.
+  job: { select: { id: true, job_number: true, status: true } },
   invoice: { select: { id: true, invoice_number: true } },
   estimate: { select: { id: true, estimate_number: true } },
   lead: { select: { id: true, lead_number: true } },
@@ -209,9 +214,19 @@ function mapLoDetail(lo: any) {
     processedAt: lo.processed_at ?? null,
     cancelledAt: lo.cancelled_at ?? null,
     cancelledReason: lo.cancelled_reason ?? null,
+    // The pickup mark (S07.11): the names are the ones saved with it, so the record reads the same after a rename.
+    takenBy: lo.taken_by_id ? { id: lo.taken_by_id, name: lo.taken_by_name ?? 'Unknown' } : null,
+    recordedBy: lo.recorded_by_id ? { id: lo.recorded_by_id, name: lo.recorded_by_name ?? 'Unknown' } : null,
+    takenAt: lo.taken_at ?? null,
     createdAt: lo.created_at,
     updatedAt: lo.updated_at,
   };
+}
+
+/** The order's detail with what this person may do to it now (see logisticOrderActions). */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function detailAnswer(req: Request, lo: any) {
+  return { ...mapLoDetail(lo), actions: await logisticOrderActionsFor(req, lo) };
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -370,51 +385,15 @@ function jobCancelled(res: Response, verb: string): void {
 
 // ─── Notifications (fire AFTER the write, never inside a tx; process NEVER emits) ──
 //
-// Fired via the generic `emit()` (which swallows its own errors) so this stream stays decoupled
-// from the concurrently-built inventoryEmit LO helpers. The `lo.submitted` / `lo.approved`
-// templates + resolveRecipients cases supply the copy and the recipient sets (approve-grant
-// holders ∪ ADMINs / creator). LOGISTIC_ORDER is absent from filterByAccess's SCOPE_TYPE_MAP, so
-// recipients are NOT row-scope-filtered downstream — the approver query's `is_active` filter IS
-// the gate. Suppression on the fast-forward /process path is structural: process never calls these.
+// lo.submitted is sent by services/notifications/logisticOrderAlerts: the route only QUEUES it, and it goes out once the
+// response has been sent (the Approve logistic orders holders who can reach the order, else the Manage roles and
+// permissions holders). lo.approved goes to the creator through the generic `emit()` (which swallows its own errors).
+// LOGISTIC_ORDER is absent from filterByAccess's SCOPE_TYPE_MAP, so recipients are NOT row-scope-filtered downstream:
+// the submitted alert's own reach test IS the gate. Suppression on the fast-forward /process path is structural:
+// process never calls these.
 
 function actorDisplayName(req: Request): string {
   return `${req.user!.first_name ?? ''} ${req.user!.last_name ?? ''}`.trim() || 'Unknown';
-}
-
-/**
- * lo.submitted → approve-grant holders ∪ ADMINs. The approver lookup is the only throwing step, so
- * the whole helper is wrapped and called fire-and-forget: a notification failure must never turn a
- * committed submit into a 500. A per-submit dedupKey keeps a re-submit after rejection notifiable.
- */
-async function notifyLoSubmitted(req: Request, lo: { id: string; number: string }): Promise<void> {
-  try {
-    const orgId = req.user!.organization_id;
-    const rows = await prisma.userPermissionOverride.findMany({
-      where: {
-        organization_id: orgId,
-        subject: 'LogisticOrder',
-        action: 'approve',
-        effect: 'allow',
-        user: { is_active: true },
-      },
-      select: { user_id: true },
-    });
-    await emit({
-      verb: 'lo.submitted',
-      organizationId: orgId,
-      actorId: req.user!.id,
-      object: { type: 'LOGISTIC_ORDER', id: lo.id, label: lo.number },
-      entity: { approver_ids: rows.map((r) => r.user_id) },
-      data: {
-        logistic_order_id: lo.id,
-        object_label: lo.number,
-        actor_name: actorDisplayName(req),
-      },
-      dedupKey: `lo.submitted:${lo.id}:${Date.now()}`,
-    });
-  } catch (err) {
-    logger.warn('notifyLoSubmitted failed', err);
-  }
 }
 
 /** lo.approved → the creator. Self-approval drops the actor downstream → no row, no error. */
@@ -505,7 +484,7 @@ export const getLogisticOrder = async (req: Request, res: Response): Promise<voi
       loNotFoundResponse(res);
       return;
     }
-    res.status(200).json(mapLoDetail(lo));
+    res.status(200).json(await detailAnswer(req, lo));
   } catch (err) {
     logger.error('getLogisticOrder error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -617,7 +596,7 @@ export const createLogisticOrder = async (req: Request, res: Response): Promise<
       });
     }), { label: 'logistic_order.create' });
 
-    res.status(201).json(mapLoDetail(created));
+    res.status(201).json(await detailAnswer(req, created));
   } catch (err) {
     if (logisticOrderErrorResponse(res, err)) return;
     logger.error('createLogisticOrder error:', err);
@@ -811,7 +790,7 @@ export const updateLogisticOrder = async (req: Request, res: Response): Promise<
       where: { id: lo.id, ...tenantWhere(req) },
       include: loDetailInclude,
     });
-    res.status(200).json(mapLoDetail(updated));
+    res.status(200).json(await detailAnswer(req, updated));
   } catch (err) {
     if (err instanceof ShortageError) {
       shortageResponse(res, err);
@@ -859,14 +838,20 @@ export const submitLogisticOrder = async (req: Request, res: Response): Promise<
       return;
     }
 
-    // Notify approve-grant holders ∪ ADMINs. Fire-and-forget, AFTER the write (never in a tx).
-    void notifyLoSubmitted(req, { id: lo.id, number: lo.number });
+    // Notify the Approve logistic orders holders who can reach the order, once the response has gone out (never in a tx).
+    queueLogisticOrderSubmitted({
+      organizationId: req.user!.organization_id,
+      actorId: req.user!.id,
+      actorName: actorDisplayName(req),
+      order: { id: lo.id, number: lo.number },
+      dedupKey: `lo.submitted:${lo.id}:${Date.now()}`,
+    });
 
     const updated = await prisma.logisticOrder.findFirst({
       where: { id, ...tenantWhere(req) },
       include: loDetailInclude,
     });
-    res.status(200).json(mapLoDetail(updated));
+    res.status(200).json(await detailAnswer(req, updated));
   } catch (err) {
     logger.error('submitLogisticOrder error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -876,6 +861,13 @@ export const submitLogisticOrder = async (req: Request, res: Response): Promise<
 export const approveLogisticOrder = async (req: Request, res: Response): Promise<void> => {
   try {
     const id = req.params.id as string;
+    // Approval acts on any order the person can reach (orders on jobs and leads they can open); an order outside
+    // that reach is "not found", the same as a missing one. `canActOnRow` is not a tenancy gate, so the findFirst
+    // below keeps its own `tenantWhere(req)`.
+    if (!(await canActOnRow(req, 'LogisticOrder', prisma.logisticOrder, id, 'approve'))) {
+      loNotFoundResponse(res);
+      return;
+    }
     const lo = await prisma.logisticOrder.findFirst({
       where: { id, ...tenantWhere(req) },
       select: { id: true, number: true, status: true, created_by: true, job: { select: { status: true } } },
@@ -905,22 +897,11 @@ export const approveLogisticOrder = async (req: Request, res: Response): Promise
     // Notify the creator. Suppressed automatically if the approver IS the creator (actor drop).
     notifyLoApproved(req, { id: lo.id, number: lo.number, created_by: lo.created_by });
 
-    // #2042 security round 2 (A) — the WRITE above is deliberately org-wide: approval is an
-    // org-wide authority (`approve LogisticOrder` declares no ownCondition — "an approver reviews
-    // other people's requests"). The 200 BODY is a different question. It is `mapLoDetail` over
-    // `loDetailInclude`: the customer's name and number, the job number, and every line's sku /
-    // qty / source location — for a row whose GET 404s for this same caller one handler earlier,
-    // now that #2042 made SALES a row-scoped LO reader. The ids are discovered legitimately (the
-    // `lo.submitted` notification carries id + number to every approve-override holder, and
-    // LOGISTIC_ORDER has no `SCOPE_TYPE_MAP` entry in filterByAccess), so the response body was a
-    // read channel around the new scope.
-    //
-    // Build it through the caller's OWN read scope instead, the way getLogisticOrder does (R8:
-    // spread the fragment into the same findFirst rather than add a guard that can drift). A
-    // caller who can read the row — DISPATCHER, ADMIN, an approver acting on their own job — is
-    // byte-identical to before. A caller who cannot gets a slim acknowledgement: the id they put
-    // in the URL, the number their own notification already gave them, and the status they just
-    // set. Enough to confirm the click, nothing they could not already see.
+    // #2042 security round 2 (A) — the 200 BODY is built through the caller's OWN read scope, the way
+    // getLogisticOrder does it (R8: spread the fragment into the same findFirst rather than add a guard that
+    // can drift). Approval is bounded to the orders the person can reach (S01.9, checked above), so the
+    // read matches for the caller; the slim acknowledgement below only answers a row that moved out of reach
+    // between the write and the re-read.
     const updated = await prisma.logisticOrder.findFirst({
       where: {
         id,
@@ -933,7 +914,7 @@ export const approveLogisticOrder = async (req: Request, res: Response): Promise
       res.status(200).json({ id: lo.id, number: lo.number, status: 'APPROVED' });
       return;
     }
-    res.status(200).json(mapLoDetail(updated));
+    res.status(200).json(await detailAnswer(req, updated));
   } catch (err) {
     logger.error('approveLogisticOrder error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -943,6 +924,14 @@ export const approveLogisticOrder = async (req: Request, res: Response): Promise
 export const processLogisticOrder = async (req: Request, res: Response): Promise<void> => {
   try {
     const id = req.params.id as string;
+
+    // Processing acts on an order the person can reach (orders on jobs and leads they can open); outside it
+    // the order is "not found", the same as a missing one. `canActOnRow` is not a tenancy gate, so the
+    // findFirst below keeps its own `tenantWhere(req)`.
+    if (!(await canActOnRow(req, 'LogisticOrder', prisma.logisticOrder, id, 'process'))) {
+      loNotFoundResponse(res);
+      return;
+    }
 
     // L3/E12 — the engine does not know the job's status; guard the transition here.
     const guard = await prisma.logisticOrder.findFirst({
@@ -985,6 +974,11 @@ export const cancelLogisticOrder = async (req: Request, res: Response): Promise<
   try {
     const id = req.params.id as string;
     const body = req.body as z.infer<typeof cancelLogisticOrderSchema>;
+    // Cancelling acts on an order the person can reach; outside it the order is "not found".
+    if (!(await canActOnRow(req, 'LogisticOrder', prisma.logisticOrder, id, 'cancel'))) {
+      loNotFoundResponse(res);
+      return;
+    }
     const lo = await prisma.logisticOrder.findFirst({
       where: { id, ...tenantWhere(req) },
       select: { id: true, status: true, job: { select: { status: true } } },
@@ -1020,7 +1014,7 @@ export const cancelLogisticOrder = async (req: Request, res: Response): Promise<
       where: { id, ...tenantWhere(req) },
       include: loDetailInclude,
     });
-    res.status(200).json(mapLoDetail(updated));
+    res.status(200).json(await detailAnswer(req, updated));
   } catch (err) {
     logger.error('cancelLogisticOrder error:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -1094,6 +1088,153 @@ export const deleteLogisticOrder = async (req: Request, res: Response): Promise<
     }
     if (logisticOrderErrorResponse(res, err)) return;
     logger.error('deleteLogisticOrder error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+// ─── Pickup (Roles & Permissions S07.11) ────────────────────────────────────────────────────────────────────────
+
+/** The order, only if the caller can read it: tenant first, then their read reach (View logistic orders and the jobs and leads they can open). */
+async function readableOrder(req: Request, id: string) {
+  return prisma.logisticOrder.findFirst({
+    where: { id, ...tenantWhere(req), ...(await scopeWhereForReq(req, 'LogisticOrder')) },
+    select: { id: true, number: true, status: true, taken_at: true, created_by: true },
+  });
+}
+
+/**
+ * Mark a Processed order as taken: the parts left the shelf. Saves who took them, who recorded it and when, and writes
+ * the pickup into the order's history, in one transaction on its own client. Moves no stock (processing already did), raises
+ * no alert, and leaves the order Processed, so it can still be returned. A pickup is recorded once: a second one finds the
+ * order already taken and changes nothing. `takenById` is the caller for "Taken by me", or the chosen colleague (an active
+ * person of the company) for "Taken by...".
+ */
+async function recordOrderPickup(req: Request, res: Response, takenById: string): Promise<void> {
+  const id = req.params.id as string;
+  const orgId = req.user!.organization_id;
+  const existing = await readableOrder(req, id);
+  if (!existing) {
+    loNotFoundResponse(res);
+    return;
+  }
+  if (existing.status !== 'PROCESSED') {
+    staleStatus(res, 'Only a processed logistic order can be marked as taken', ['PROCESSED']);
+    return;
+  }
+  if (existing.taken_at) {
+    alreadyTaken(res);
+    return;
+  }
+
+  const recordedBy = callerOf(req);
+  let takenBy: PickupPerson = recordedBy;
+  if (takenById !== recordedBy.id) {
+    const chosen = await prisma.user.findFirst({
+      where: { id: takenById, ...tenantWhere(req), is_active: true },
+      select: { id: true, first_name: true, last_name: true },
+    });
+    if (!chosen) {
+      res.status(400).json({ error: 'Pick an active person from your team.' });
+      return;
+    }
+    takenBy = { id: chosen.id, name: personName(chosen) };
+  }
+
+  const now = new Date();
+  const saved = await prisma.$transaction(async (tx) => {
+    // The claim names status and taken_at in its filter, so two people marking one order at once cannot overwrite each other.
+    const claim = await tx.logisticOrder.updateMany({
+      where: { id: existing.id, ...tenantWhere(req), status: 'PROCESSED', taken_at: null },
+      data: {
+        taken_by_id: takenBy.id,
+        taken_by_name: takenBy.name,
+        recorded_by_id: recordedBy.id,
+        recorded_by_name: recordedBy.name,
+        taken_at: now,
+      },
+    });
+    if (claim.count === 0) return false;
+    await tx.auditLog.create({
+      data: {
+        org_id: orgId,
+        actor_id: recordedBy.id,
+        actor_email: req.user!.email ?? null,
+        action: 'inventory.logistic_order_picked_up',
+        resource_type: 'LogisticOrder',
+        resource_id: existing.id,
+        metadata: {
+          number: existing.number,
+          comment: pickupComment(takenBy, recordedBy),
+          taken_by: takenBy.id,
+          taken_by_name: takenBy.name,
+          recorded_by: recordedBy.id,
+          recorded_by_name: recordedBy.name,
+        },
+        ip_address: getClientIp(req),
+        user_agent: req.headers['user-agent'] ?? null,
+      },
+    });
+    return true;
+  });
+  if (!saved) {
+    alreadyTaken(res);
+    return;
+  }
+
+  const updated = await prisma.logisticOrder.findFirst({
+    where: { id: existing.id, ...tenantWhere(req), ...(await scopeWhereForReq(req, 'LogisticOrder')) },
+    include: loDetailInclude,
+  });
+  res.status(200).json(await detailAnswer(req, updated));
+}
+
+function alreadyTaken(res: Response): void {
+  res.status(409).json({ error: 'ALREADY_TAKEN', message: 'These parts are already marked as taken.' });
+}
+
+// POST /api/logistic-orders/:id/taken-by-me - the caller took the parts. Needs Pick up staged items (the route), View
+// logistic orders and reach to the order; none of the order write switches plays a part.
+export const takenByMe = async (req: Request, res: Response): Promise<void> => {
+  try {
+    await recordOrderPickup(req, res, req.user!.id);
+  } catch (err) {
+    logger.error('takenByMe (logistic order) error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+export const takenBySchema = z.object({ takenById: z.string().uuid() });
+
+// POST /api/logistic-orders/:id/taken-by - someone else took the parts and the caller records it. Needs Record pickup for
+// someone else (the route) and the same reach; Pick up staged items plays no part.
+export const takenBy = async (req: Request, res: Response): Promise<void> => {
+  try {
+    await recordOrderPickup(req, res, (req.body as z.infer<typeof takenBySchema>).takenById);
+  } catch (err) {
+    logger.error('takenBy (logistic order) error:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
+// GET /api/logistic-orders/:id/pickup-people - the picker of "Taken by...": the company's active people, the order's
+// requester (whoever created it) first, then by name. A name and an id each, nothing else (no email or phone).
+export const listPickupPeople = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const order = await readableOrder(req, req.params.id as string);
+    if (!order) {
+      loNotFoundResponse(res);
+      return;
+    }
+    const users = await prisma.user.findMany({
+      where: { ...tenantWhere(req), is_active: true },
+      select: { id: true, first_name: true, last_name: true },
+    });
+    const people = users
+      .map((u) => ({ id: u.id, name: personName(u), requester: u.id === order.created_by }))
+      .sort((a, b) => Number(b.requester) - Number(a.requester) || a.name.localeCompare(b.name));
+    res.status(200).json({ people });
+  } catch (err) {
+    logger.error('listPickupPeople (logistic order) error:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 };

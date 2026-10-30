@@ -10,6 +10,8 @@ import { useAppAbility } from '@/contexts/AbilityContext';
 import { useAuthStore } from '@/stores/auth.store';
 import { useSettingsGuard } from '@/stores/settingsGuard.store';
 import { useIsDemoOrg } from '@/lib/useIsDemoOrg';
+import { useMySwitches } from '@/lib/api/mySwitches';
+import { useJobReviewQueue } from '@/lib/api/jobs';
 import {
   PLAN_LABELS, requiredPlanFor, useEntitlementsReady, useOrgFeatures,
 } from '@/lib/entitlements';
@@ -22,6 +24,12 @@ import { useNavLayout } from '@/components/layout/useNavLayout';
 import { buildNavSections, type NavItem } from './buildNavSections';
 import { NAV_SECTIONS } from './navSections';
 import { preferV2Path } from './uiV2';
+
+/** The Jobs entry's queue count as the row wants it: absent at zero rather than a "0", capped like the comms badges. */
+function queueCount(total: number | undefined): string | undefined {
+  if (!total) return undefined;
+  return total > 99 ? '99+' : String(total);
+}
 
 /**
  * The v2 sidebar's destination list.
@@ -57,6 +65,8 @@ export function V2SidebarNav() {
   const orgFeatures = useOrgFeatures();
   const entitlementsReady = useEntitlementsReady();
   const isDemoOrg = useIsDemoOrg();
+  const switches = useMySwitches()?.values;
+  const reviewQueue = useJobReviewQueue();
   const { keys } = useNavLayout();
   const { isRail } = useSidebar();
 
@@ -92,6 +102,7 @@ export function V2SidebarNav() {
     orgFeatures,
     entitlementsReady,
     isDemoOrg,
+    switches,
   };
 
   /** Locked on either axis: an entitlement the org lacks, or a demo-only
@@ -114,6 +125,7 @@ export function V2SidebarNav() {
     sections: NAV_SECTIONS,
     getDestination,
     can: (action, subject) => ability.can(action, subject),
+    values: switches,
     isLocked: (dest) => lockOf(dest) !== null,
     // Entitlement only, no demo axis - see the prop's doc comment. This is what
     // keeps a phone-gated child out of an email-only org's Communication group
@@ -158,6 +170,7 @@ export function V2SidebarNav() {
         active={active}
         icon={<Icon />}
         label={dest.label}
+        count={key === 'jobs' ? queueCount(reviewQueue?.total) : undefined}
       >
         {/* Every destination in the registry is now a real route in this shell,
             so the href is the registry's own path. `preferV2Path` around it is a

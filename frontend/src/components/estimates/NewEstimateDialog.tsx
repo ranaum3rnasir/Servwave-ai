@@ -11,8 +11,9 @@ import { DialogList } from '@/ui-kit/components/ui/dialogList';
 import { Input } from '@/components/ui/input';
 import { Button } from '@/components/ui/button';
 import { StatusBadge } from '@/components/data/status-badge';
-import { formatPhone } from '@/lib/utils';
+import { cn, formatPhone } from '@/lib/utils';
 import { useFeature } from '@/lib/entitlements';
+import { useNewEstimateEntries } from '@/lib/estimates/newEstimateEntries';
 import { FileText, Search, ChevronRight, ChevronDown, Plus, Loader2, UserPlus } from 'lucide-react';
 import { canAutoFocus } from '@/ui-kit/lib/autoFocus';
 
@@ -40,10 +41,10 @@ interface Lead {
 }
 
 // Non-terminal lead statuses — the exact set the server's estimate-create gate accepts
-// (estimate.controller.ts:665-668 rejects only WON/LOST/CANCELLED; create is never gated
+// (estimate.controller.ts:665-668 rejects only WON/LOST; create is never gated
 // on the walkthrough — Bug #39). Mirrors LeadsPage.tsx:63 ACTIVE_STATUSES. Load-bearing:
 // GET /api/leads here passes no status param, so the API returns terminal leads too — this
-// filter is what keeps WON/LOST/CANCELLED out of the picker. A lead with a walkthrough booked or
+// filter is what keeps WON/LOST out of the picker. A lead with a walkthrough booked or
 // done is still open and still needs its estimate, so both walkthrough statuses are listed.
 const ACTIVE_STATUSES = ['NEW', 'CONTACTED', 'WALKTHROUGH_SCHEDULED', 'WALKTHROUGH_COMPLETED', 'ESTIMATED'];
 
@@ -58,6 +59,7 @@ const ACTIVE_STATUSES = ['NEW', 'CONTACTED', 'WALKTHROUGH_SCHEDULED', 'WALKTHROU
  */
 function LeadsPanel({
   customerId, leadsLoading, actionableLeads, onLeadSelect, onCreateLead, onCreateEstimateNoLead,
+  canCreateLead, canEstimateWithoutLead,
 }: {
   customerId: string;
   leadsLoading: boolean;
@@ -65,6 +67,8 @@ function LeadsPanel({
   onLeadSelect: (leadId: string) => void;
   onCreateLead: (customerId: string) => void;
   onCreateEstimateNoLead: (customerId: string) => void;
+  canCreateLead: boolean;
+  canEstimateWithoutLead: boolean;
 }) {
   if (leadsLoading) {
     return (
@@ -102,40 +106,50 @@ function LeadsPanel({
           ))}
         </div>
       )}
-      {/* Separates the footer from the lead list, so the two rows below never read as one more
-          lead. */}
-      <div className="border-t" />
-      <div className="flex flex-col items-start px-3 py-3">
-        {/* link/brand matches the raw's text-primary + hover:underline exactly. Two disclosed,
-            not-restored deltas on both buttons below: the raw's text-xs font-medium becomes the
-            primitive's base text-sm font-semibold (bigger, bolder). */}
-        <Button
-          type="button"
-          variant="link"
-          size={null}
-          onClick={() => onCreateLead(customerId)}
-          className="flex items-center gap-1.5"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          Create new lead
-        </Button>
-        <Button
-          type="button"
-          variant="link"
-          size={null}
-          onClick={() => onCreateEstimateNoLead(customerId)}
-          className="flex items-center gap-1.5 mt-2"
-        >
-          <FileText className="h-3.5 w-3.5" />
-          Create estimate without a lead
-        </Button>
-      </div>
+      {/* Each link follows its own switch (S02.26): Create leads, and Standalone estimates, which the server also
+          checks. */}
+      {(canCreateLead || canEstimateWithoutLead) && (
+        <>
+          {/* Separates the footer from the lead list, so the rows below never read as one more lead. */}
+          <div className="border-t" />
+          <div className="flex flex-col items-start px-3 py-3">
+            {/* link/brand matches the raw's text-primary + hover:underline exactly. Two disclosed,
+                not-restored deltas on both buttons below: the raw's text-xs font-medium becomes the
+                primitive's base text-sm font-semibold (bigger, bolder). */}
+            {canCreateLead && (
+              <Button
+                type="button"
+                variant="link"
+                size={null}
+                onClick={() => onCreateLead(customerId)}
+                className="flex items-center gap-1.5"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Create new lead
+              </Button>
+            )}
+            {canEstimateWithoutLead && (
+              <Button
+                type="button"
+                variant="link"
+                size={null}
+                onClick={() => onCreateEstimateNoLead(customerId)}
+                className={cn('flex items-center gap-1.5', canCreateLead && 'mt-2')}
+              >
+                <FileText className="h-3.5 w-3.5" />
+                Create estimate without a lead
+              </Button>
+            )}
+          </div>
+        </>
+      )}
     </div>
   );
 }
 
 export function NewEstimateDialog({ open, onOpenChange, preSelectedCustomerId, onPreSelectConsumed }: NewEstimateDialogProps) {
   const navigate = useNavigate();
+  const entries = useNewEstimateEntries();
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [expandedCustomerId, setExpandedCustomerId] = useState<string | null>(null);
@@ -237,6 +251,8 @@ export function NewEstimateDialog({ open, onOpenChange, preSelectedCustomerId, o
     onLeadSelect: handleLeadSelect,
     onCreateLead: handleCreateLead,
     onCreateEstimateNoLead: handleCreateEstimateNoLead,
+    canCreateLead: entries.createLead,
+    canEstimateWithoutLead: entries.estimateWithoutLead,
   };
 
   function customerDisplayName(c: Customer) {
@@ -350,24 +366,29 @@ export function NewEstimateDialog({ open, onOpenChange, preSelectedCustomerId, o
 
         {/* Divider + Add new client */}
         <div className="shrink-0 px-6 pb-[max(1.5rem,var(--safe-bottom,0px))] pt-2">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="flex-1 border-t" />
-            <span className="text-xs text-text-secondary">OR</span>
-            <div className="flex-1 border-t" />
-          </div>
-          {/* link/brand matches the raw's text-primary + hover:underline exactly (raw was
-              already text-sm, unlike the sites above). One disclosed, not-restored delta:
-              the raw's font-medium becomes the primitive's base font-semibold (bolder). */}
-          <Button
-            type="button"
-            variant="link"
-            size={null}
-            onClick={handleAddNewClient}
-            className="flex items-center justify-center w-full"
-          >
-            <UserPlus className="h-4 w-4" />
-            Add new client
-          </Button>
+          {/* The standalone New Customer: only with Create customers + Show Customers page (S02.26). */}
+          {entries.addNewClient && (
+            <>
+              <div className="flex items-center gap-3 mb-4">
+                <div className="flex-1 border-t" />
+                <span className="text-xs text-text-secondary">OR</span>
+                <div className="flex-1 border-t" />
+              </div>
+              {/* link/brand matches the raw's text-primary + hover:underline exactly (raw was
+                  already text-sm, unlike the sites above). One disclosed, not-restored delta:
+                  the raw's font-medium becomes the primitive's base font-semibold (bolder). */}
+              <Button
+                type="button"
+                variant="link"
+                size={null}
+                onClick={handleAddNewClient}
+                className="flex items-center justify-center w-full"
+              >
+                <UserPlus className="h-4 w-4" />
+                Add new client
+              </Button>
+            </>
+          )}
         </div>
       </DialogContent>
     </Dialog>

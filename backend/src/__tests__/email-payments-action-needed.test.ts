@@ -50,21 +50,21 @@ const BASE_PARAMS = {
 };
 
 describe('sendPaymentsActionNeededEmail (Task 1.9 — co-branded action-needed email)', () => {
-  it('sends with the §6.8 subject, a "Finish setup" CTA deep-linking to fixUrl, and ServWave (not raw Stripe) header branding', async () => {
+  it('sends a subject and body that name ServWave Payments, never the processor, with a "Finish setup" CTA deep-linking to fixUrl', async () => {
     await sendPaymentsActionNeededEmail({ ...BASE_PARAMS });
 
     expect(resendSend).toHaveBeenCalledTimes(1);
     const payload = resendSend.mock.calls[0][0];
     expect(payload.to).toBe('admin@acme.com');
-    // §6.8: "Action needed | Status card / email subject | Stripe needs one more thing to keep your payments running."
-    expect(payload.subject).toBe('Stripe needs one more thing to keep your payments running.');
-    // Personalized body copy (brief Step 3): "Stripe needs one more thing to keep {orgName}'s card payments running."
-    expect(payload.text).toContain("Stripe needs one more thing to keep Acme Plumbing's card payments running.");
+    // CLAUDE.md: no vendor name in anything a user can see. The payments service is ServWave's own.
+    expect(payload.subject).toBe('ServWave Payments needs one more thing to keep your payments running.');
+    expect(payload.text).toContain("ServWave Payments needs one more thing to keep Acme Plumbing's card payments running.");
     expect(payload.text).toContain(BASE_PARAMS.fixUrl);
-    expect(payload.html).toContain("Stripe needs one more thing to keep <strong>Acme Plumbing</strong>'s card payments running.");
+    expect(payload.html).toContain("ServWave Payments needs one more thing to keep <strong>Acme Plumbing</strong>'s card payments running.");
+    for (const copy of [payload.subject, payload.text, payload.html]) expect(copy).not.toMatch(/stripe/i);
     expect(payload.html).toContain(`href="${BASE_PARAMS.fixUrl}"`);
     expect(payload.html).toContain('Finish setup');
-    // Co-branding: the ServWave wordmark header (wrapHtml's default), not a raw Stripe identity.
+    // The ServWave wordmark header (wrapHtml's default).
     expect(payload.html).toContain('ServWave');
     // Raw Stripe requirement codes must NEVER reach the contractor-facing copy -
     // the specific to-do always lives on Stripe's own screens behind the CTA.

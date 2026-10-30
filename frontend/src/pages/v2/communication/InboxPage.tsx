@@ -4,13 +4,14 @@ import { useQueryClient } from '@tanstack/react-query';
 import { Mail, PanelLeft, Paperclip, PenLine, Star } from 'lucide-react';
 
 import { ComposeWindow } from '@/components/communication/inbox/ComposeWindow';
+import { MyMailboxAddress } from '@/components/communication/MyMailboxAddress';
 import { ManageDirectoryModal } from '@/components/communication/inbox/InboxDirectory';
-import { JobBadge } from '@/components/communication/shared/atoms';
+import { JobBadge, RecordTieBadge } from '@/components/communication/shared/atoms';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import { useMediaQuery } from '@/hooks/useIsMobile';
 import { useAuthStore, userDisplayName } from '@/stores/auth.store';
 import {
-  emailSendErrorMessage, useEmailGroups, useEmails, senderLabel, senderAddress,
+  emailSendErrorMessage, useEmailGroups, useEmails, useMailboxList, senderLabel, senderAddress, composeSenderProps,
   useForwardRules, useMarkEmailThreadRead, useMarkEmailThreadUnread, useSendEmail, useSendingIdentity, useTeamMembers,
 } from '@/lib/api/communication';
 import type {
@@ -23,14 +24,20 @@ import { PageHeader } from '@/ui-kit/components/layout/pageHeader';
 import { Avatar } from '@/ui-kit/components/ui/avatar';
 import { Badge } from '@/ui-kit/components/ui/badge';
 import { Button } from '@/ui-kit/components/ui/button';
+import { Skeleton } from '@/ui-kit/components/ui/skeleton';
 import { Dialog, DialogContent } from '@/ui-kit/components/ui/dialog';
+import { Sheet, SheetContent, SheetTitle } from '@/ui-kit/components/ui/sheet';
 import { MEDIA } from '@/ui-kit/lib/breakpoints';
 import { SCROLL_BOX_FOCUS_CLASS } from '@/ui-kit/lib/intendedScrollers';
 import { cn } from '@/ui-kit/lib/utils';
 
 import { ConnectionChip, type ConnectionState } from './components/connectionChip';
 import { EM_DASH } from './components/glyphs';
-import { InboxRail, type Folder } from './components/inboxRail';
+import { FOLDERS, InboxRail, type Folder } from './components/inboxRail';
+import { MINE } from './components/mailboxList';
+import { linkTargetsOf } from './components/linkTargets';
+import { NeedsReviewView } from './components/needsReview';
+import { READER_FULLSCREEN } from './components/readerOverlay';
 import { ReadingPane } from './components/readingPane';
 import { useRecordVisit } from '../pageBreadcrumbs';
 
@@ -61,14 +68,6 @@ import { useRecordVisit } from '../pageBreadcrumbs';
  *   a real leak, logged in the ledger, not closed here.
  */
 
-/**
- * The reader overlay below lg, full-screen at every width there. `intent="content"` already does
- * this below md; between md and lg a content overlay is the centred card, so these classes take
- * the whole screen back from it (tailwind-merge drops the card's own positioning and sizing).
- */
-const READER_FULLSCREEN =
-  'inset-0 h-dvh w-full max-h-none max-w-none translate-x-0 translate-y-0 overflow-hidden rounded-none border-0 shadow-none';
-
 /** The conversation key for an email. Messages with the same key form a thread. */
 function threadKey(e: Email): string {
   return e.threadId ?? e.id;
@@ -90,6 +89,9 @@ function localId(prefix: 'e' | 't'): string {
   return `${prefix}_${Date.now()}`;
 }
 
+/** The rows of a mailbox that has none yet: one array, so a render that holds no rows never mints a new one. */
+const NO_ROWS: Email[] = [];
+
 export default function InboxPage() {
   useRecordVisit('comm-email', 'Inbox');
   // Coarse Communication gate + signed-in user identity. 0 functional gates in
@@ -100,9 +102,28 @@ export default function InboxPage() {
   const canRead = ability.can('read', 'Communication');
   const ownerName = userDisplayName(user);
 
+  // The mailbox the page shows lives in the page address (`?mailbox=`), so a reload and a shared link keep it (PRD 10,
+  // S10.7). The server answers which mailbox that really is: one the person may not open reads as their own.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedMailbox = searchParams.get('mailbox') || MINE;
+  const { data: answer, isPlaceholderData, isFetching: lookingUpMailbox } = useMailboxList({ selected: requestedMailbox });
+  // While the answer for a newly picked mailbox loads, the list still holds the PREVIOUS answer. That is the rail's, not
+  // the server's word on this mailbox: reading it here would send the person back to their own.
+  const mailboxList = isPlaceholderData ? undefined : answer;
+  const mailbox = requestedMailbox === MINE ? MINE : mailboxList?.selected;
+  useEffect(() => {
+    if (mailboxList && mailboxList.selected !== requestedMailbox && requestedMailbox !== MINE) {
+      setSearchParams((prev) => {
+        const next = new URLSearchParams(prev);
+        if (mailboxList.selected === MINE) next.delete('mailbox');
+        else next.set('mailbox', mailboxList.selected);
+        return next;
+      }, { replace: true });
+    }
+  }, [mailboxList, requestedMailbox, setSearchParams]);
   // NO `= []` DEFAULT on a value a seed effect keys on - see the seed effects
   // below and the same note on `InventoryPage` / `PriceBookPage`.
-  const { data: emailSeed } = useEmails();
+  const { data: emailSeed, isLoading: loadingEmails, isFetching: fetchingEmails } = useEmails('all', mailbox ?? null);
   const { data: groupSeed } = useEmailGroups();
   const { data: forwardSeed } = useForwardRules();
   const { data: members = [] } = useTeamMembers();
@@ -117,13 +138,11 @@ export default function InboxPage() {
   // endpoint - the compose surfaces fall back to their honest "no mailbox"
   // placeholder for exactly that gap rather than rendering a guess.
   const { data: sendingIdentity } = useSendingIdentity();
-  const fromAddress = sendingIdentity?.address;
-  // `?? true` while the query is in flight - see ComposeWindow's sendingEnabled
-  // doc. Defaulting to false would flash a "sending is off" warning at every
-  // user on every open, which is worse than showing it a beat late.
-  const sendingEnabled = sendingIdentity?.sendingEnabled ?? true;
-  // "Live" now means: there is an address to send from.
-  const isLive = Boolean(fromAddress);
+  // PRD 10 (S10.11): the identity is the PERSON's own (their address and "<name> at <company>"), the same lookup the send
+  // resolves its From header with, and there is no choice of another. `sendingEnabled` defaults to true while the query is
+  // in flight - see ComposeWindow's sendingEnabled doc - and a person with no address yet cannot send by hand.
+  const senderProps = composeSenderProps(sendingIdentity);
+  const { fromAddress, sendingEnabled } = senderProps;
   const mailboxState: ConnectionState = !fromAddress
     ? 'disconnected'
     : sendingEnabled
@@ -133,14 +152,26 @@ export default function InboxPage() {
   const markThreadRead = useMarkEmailThreadRead();
   const markThreadUnread = useMarkEmailThreadUnread();
   const queryClient = useQueryClient();
-  const [searchParams, setSearchParams] = useSearchParams();
 
   const memberById = (id: string) => members.find((m) => m.id === id);
+  // PRD 10 (S10.11): in the main mailbox the first person to reply takes a conversation, and it stays listed for the
+  // other readers marked with who has it.
+  const inMainMailbox = Boolean(mailboxList?.main && mailbox === mailboxList.main.id);
+  const assigneeLabel = (id: string) => (id === user?.id ? 'you' : memberById(id)?.name ?? 'a colleague');
 
   // `?? []` here runs ONCE, in the initialiser, so already-cached data seeds the
   // first render exactly as it used to. What must never come back is a `= []`
   // default on the query itself - see the effects below.
-  const [emails, setEmails] = useState<Email[]>((emailSeed as Email[]) ?? []);
+  // The rows are the mailbox's they were read for (`rowsMailbox`, null until a first answer is in), never another's: a mailbox
+  // picked a moment ago has no rows yet, and the last mailbox's must not stand in for them under the new name.
+  const [rows, setEmails] = useState<Email[]>((emailSeed as Email[]) ?? []);
+  const [rowsMailbox, setRowsMailbox] = useState<string | null>(emailSeed && mailbox ? mailbox : null);
+  const rowsAreSeeded = mailbox !== undefined && rowsMailbox === mailbox;
+  const emails = rowsMailbox === null || rowsAreSeeded ? rows : NO_ROWS;
+  // True from the pick until that mailbox's answer is in the list: the server's answer for the page address's mailbox, then
+  // the mail itself (or a cached answer a render before it is seeded). A query that cannot run, or failed, is not a wait.
+  const waitingForMailbox = requestedMailbox !== MINE && !mailboxList && lookingUpMailbox;
+  const loadingMail = canRead && !rowsAreSeeded && (waitingForMailbox || loadingEmails || emailSeed !== undefined);
   const [groups, setGroups] = useState<EmailGroup[]>(groupSeed ?? []);
   const [forwards, setForwards] = useState<ForwardRule[]>(forwardSeed ?? []);
 
@@ -156,16 +187,69 @@ export default function InboxPage() {
   // the URL changes and the sidebar highlight moves, but the next page never
   // appears. The Communication queries return undefined whenever the module is
   // unreachable, so this was the steady state of the page, not an edge case.
+  // A different mailbox is a different list: the rows only count for the mailbox they were seeded for (`rowsMailbox`).
   // eslint-disable-next-line react-hooks/set-state-in-effect -- `emails` is not a copy of the query, it is mutated in place by send, star, archive, read and trash before any refetch confirms them; reading the query directly would drop every optimistic row
-  useEffect(() => { if (emailSeed) setEmails(emailSeed as Email[]); }, [emailSeed]);
+  useEffect(() => { if (emailSeed && mailbox) { setEmails(emailSeed as Email[]); setRowsMailbox(mailbox); } }, [emailSeed, mailbox]);
   // eslint-disable-next-line react-hooks/set-state-in-effect -- ManageDirectoryModal edits `groups` through its own setGroups, so the mirror holds unsaved group membership the query does not have yet
   useEffect(() => { if (groupSeed) setGroups(groupSeed); }, [groupSeed]);
   // eslint-disable-next-line react-hooks/set-state-in-effect -- same as groups: the forwarding-rules tab writes into `forwards` locally, so it cannot be replaced by the query value
   useEffect(() => { if (forwardSeed) setForwards(forwardSeed); }, [forwardSeed]);
 
-  const [folder, setFolder] = useState<Folder>('inbox');
+  // A bell for a reply from an address we didn't send to opens the page on that message in the Needs review folder (`?review=`).
+  const reviewId = searchParams.get('review');
+  const [folder, setFolder] = useState<Folder>(reviewId ? 'review' : 'inbox');
   const [query, setQuery] = useState('');
   const [openId, setOpenId] = useState<string | null>(null);
+  // A bell opened while the page is already showing asks for the folder again.
+  const [askedForReview, setAskedForReview] = useState(reviewId);
+  if (reviewId !== askedForReview) {
+    setAskedForReview(reviewId);
+    if (reviewId !== null) {
+      setFolder('review');
+      setOpenId(null);
+    }
+  }
+  // A bell for a received email names the conversation (`?thread=`), and the mailbox it sits in when the person can open it.
+  // It opens in the reader once the mailbox's mail is in, then the ask leaves the address so a reload does not open it again.
+  const askedThread = searchParams.get('thread');
+  useEffect(() => {
+    if (!askedThread || !emailSeed || emails !== emailSeed || fetchingEmails) return;
+    // The latest message of the conversation that is in the inbox, else its latest message wherever it was filed.
+    const latestFirst = emails.filter((e) => threadKey(e) === askedThread).sort((a, b) => b.ts - a.ts);
+    const target = latestFirst.find((e) => e.folder === 'inbox') ?? latestFirst[0];
+    if (target) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- opening a message is the page's own click handler (it marks the conversation read); it runs once, when the rows are the server's answer for the picked mailbox
+      if (FOLDERS.some((f) => f.id === target.folder)) setFolder(target.folder as Folder);
+      openEmail(target.id);
+    }
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete('thread');
+      return next;
+    }, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `openEmail` and `setSearchParams` are recreated every render; the ask is read once, when the rows are in
+  }, [askedThread, emailSeed, emails, fetchingEmails]);
+  function forgetReviewAsk() {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete('review');
+      return next;
+    }, { replace: true });
+  }
+
+  function selectMailbox(value: string) {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (value === MINE) next.delete('mailbox');
+      else next.set('mailbox', value);
+      // Picking a mailbox is moving on from the message a bell asked for.
+      next.delete('review');
+      next.delete('thread');
+      return next;
+    });
+    setOpenId(null);
+    closeRailOnPhone();
+  }
   const [toast, setToast] = useState<string | null>(null);
   const [compose, setCompose] = useState<ComposeState | null>(null);
   const [reply, setReply] = useState<ReplyDraft | null>(null);
@@ -174,6 +258,8 @@ export default function InboxPage() {
   // dialog further down); at >=lg all three panes fit side by side. The query
   // is the kit's one `belowLg` string, which Tailwind's `lg:` shares.
   const isNarrow = useMediaQuery(MEDIA.belowLg);
+  // A phone gives the page header as little of the screen as it can (the address strip takes one line).
+  const isPhone = useMediaQuery(MEDIA.belowMd);
   // The rail is closed by default below `lg` (mobile slice 46): open, it takes
   // 208 px of a 393 px screen and squeezes the list to a sliver. At >=lg it is
   // open. It also auto-collapses when a message is opened below `lg`, but never
@@ -184,6 +270,11 @@ export default function InboxPage() {
   // The list row that opened the reader, so closing the reader can give focus back to it.
   const listRef = useRef<HTMLDivElement>(null);
   const openedRowId = useRef<string | null>(null);
+
+  // Below `lg` the rail is a menu overlay over the list; whatever is picked in it closes it, so the pick is what is on screen.
+  function closeRailOnPhone() {
+    if (isNarrow) setRailOpen(false);
+  }
 
   function flash(msg: string) {
     setToast(msg);
@@ -256,7 +347,9 @@ export default function InboxPage() {
     ? emails.filter((e) => threadKey(e) === threadKey(open)).sort((a, b) => a.ts - b.ts)
     : [];
 
+  // The Needs review folder shows how many are waiting, whichever mailbox is picked, from the same filter as its list.
   function countFor(f: Folder): number {
+    if (f === 'review') return mailboxList?.needs_review?.selected ?? 0;
     const set = emails.filter((e) => (f === 'starred' ? e.starred : e.folder === f));
     if (f === 'inbox') return set.filter((e) => e.unread).length;
     return set.length;
@@ -268,7 +361,7 @@ export default function InboxPage() {
     setReply(null);
     // Narrow viewports only - see the railOpen declaration (#1343).
     if (isNarrow) setRailOpen(false);
-    // Live mode: persist read-state server-side for the whole conversation, so
+    // Persist read-state server-side for the whole conversation, so
     // the top-bar Mail badge stays truthful across devices and reloads. Gated on
     // `read Communication` (#2049 L1) - the backend route itself is gated on
     // `read`, not `update` (slice 1), because persisting one's OWN read marker
@@ -276,7 +369,7 @@ export default function InboxPage() {
     // without `update` must still have opening an email move the badge, not
     // just the local React state.
     const clicked = emails.find((e) => e.id === id);
-    if (clicked && isLive && canRead) {
+    if (clicked && canRead) {
       const k = threadKey(clicked);
       if (emails.some((e) => threadKey(e) === k && e.unread)) markThreadRead.mutate(k);
     }
@@ -299,7 +392,7 @@ export default function InboxPage() {
   // mirroring `openEmail`'s read-side persistence above: it used to be
   // React-state-only, so a reload or the next poll silently restored it read.
   function updateEmail(id: string, patch: Partial<Email>) {
-    if (patch.unread === true && isLive) {
+    if (patch.unread === true) {
       const target = emails.find((e) => e.id === id);
       if (target) markThreadUnread.mutate(threadKey(target));
     }
@@ -321,10 +414,12 @@ export default function InboxPage() {
 
   // Email a teammate directly, or a whole group (comma-joined recipients).
   function emailMember(m: TeamMember) {
+    closeRailOnPhone();
     setCompose({ mode: 'new', account: defaultAccount, to: m.email, subject: '', body: '' });
     flash(`✉️ New email to ${m.name}`);
   }
   function emailGroup(g: EmailGroup) {
+    closeRailOnPhone();
     const to = g.memberIds
       .map((id) => memberById(id)?.email)
       .filter(Boolean)
@@ -411,7 +506,7 @@ export default function InboxPage() {
         body: bodyToParas(fullText),
         thread_id: sent.threadId,
         // Live replies thread through Gmail (In-Reply-To/References + threadId).
-        ...(isLive && reply.mode === 'reply' && orig ? { reply_to_email_id: orig.id } : {}),
+        ...(reply.mode === 'reply' && orig ? { reply_to_email_id: orig.id } : {}),
       },
       {
         onError: (err) => {
@@ -508,7 +603,7 @@ export default function InboxPage() {
         body: bodyToParas(compose.body),
         thread_id: sent.threadId,
         // A popped-out reply keeps its Gmail threading.
-        ...(isLive && compose.replyToEmailId ? { reply_to_email_id: compose.replyToEmailId } : {}),
+        ...(compose.replyToEmailId ? { reply_to_email_id: compose.replyToEmailId } : {}),
       },
       {
         onError: (err) => {
@@ -573,7 +668,9 @@ export default function InboxPage() {
         onForward: () => startForward(open),
         onUpdateEmail: updateEmail,
         onToast: flash,
-        fromAddress,
+        // The attach switch decides who may pick the customer of a message that matches several (PRD 10, S10.20).
+        canPickCustomer: ability.can('attach', 'Communication'),
+        ...senderProps,
         onTrash: () => {
           setEmails((prev) => prev.filter((e) => e.id !== open.id));
           setOpenId(null);
@@ -583,16 +680,44 @@ export default function InboxPage() {
       }
     : null;
 
+  // The rail, built once for both places it can sit: beside the list at `lg` and up, over it below (see the overlay below).
+  const rail = (
+    <InboxRail
+      mailboxes={{ list: mailboxList, selected: mailbox ?? requestedMailbox, onSelect: selectMailbox }}
+      folder={folder}
+      onFolder={(f) => {
+        setFolder(f);
+        setOpenId(null);
+        if (reviewId !== null) forgetReviewAsk();
+        closeRailOnPhone();
+      }}
+      countFor={countFor}
+      members={members}
+      groups={groups}
+      forwards={forwards}
+      memberName={(id) => memberById(id)?.name}
+      onManage={(tab) => {
+        closeRailOnPhone();
+        setManageTab(tab);
+      }}
+      onEmailMember={emailMember}
+      onEmailGroup={emailGroup}
+      onCollapse={() => setRailOpen(false)}
+      inOverlay={isNarrow}
+    />
+  );
+
   return (
     <div className="flex h-full min-h-0 flex-col">
       <PageHeader
         className="mb-3 shrink-0"
         title={
-          <span className="flex items-center gap-2">
+          <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <span className="bg-primary text-primary-foreground flex size-7 items-center justify-center rounded-lg">
               <Mail className="size-4" />
             </span>
-            Inbox
+            {/* Held mail is not in the inbox, so the title follows the Needs review folder; every other folder is mail of the inbox. */}
+            {folder === 'review' ? 'Needs review' : 'Inbox'}
             {/* The mailbox's state belongs to the heading, not to the action
                 row it used to share with Compose. `degraded` is a real third
                 state here: the account exists but Google needs re-consent, so
@@ -621,25 +746,13 @@ export default function InboxPage() {
         }
       />
 
+      {/* The person's own address, or the sentence that says they have none yet (PRD 10, S10.3). */}
+      <MyMailboxAddress variant="banner" compact={isPhone} />
+
       {/* Three-pane: folders · list · reader */}
       <div className="flex min-h-0 flex-1 overflow-hidden rounded-lg border">
-        {railOpen ? (
-          <InboxRail
-            folder={folder}
-            onFolder={(f) => {
-              setFolder(f);
-              setOpenId(null);
-            }}
-            countFor={countFor}
-            members={members}
-            groups={groups}
-            forwards={forwards}
-            memberName={(id) => memberById(id)?.name}
-            onManage={setManageTab}
-            onEmailMember={emailMember}
-            onEmailGroup={emailGroup}
-            onCollapse={() => setRailOpen(false)}
-          />
+        {railOpen && !isNarrow ? (
+          rail
         ) : (
           <div className="bg-kit-card flex w-11 flex-none flex-col items-center border-r py-3">
             <Button
@@ -654,6 +767,19 @@ export default function InboxPage() {
           </div>
         )}
 
+        {/* Needs review: the folder of held mail, in the place of the message list and the reading pane. */}
+        {folder === 'review' ? (
+          <NeedsReviewView
+            mailbox={mailbox ?? null}
+            targets={linkTargetsOf(emails)}
+            canLink={ability.can('update', 'Communication')}
+            narrow={isNarrow}
+            onToast={flash}
+            focusId={reviewId}
+            onFocusDone={forgetReviewAsk}
+          />
+        ) : (
+        <>
         {/* Email list */}
         <div
           className={cn(
@@ -677,6 +803,10 @@ export default function InboxPage() {
           >
             {!canRead ? (
               <EmptyState title="You don't have access to the inbox." />
+            ) : loadingMail ? (
+              <div role="status" aria-label="Loading mail" className="space-y-3 p-3">
+                {[0, 1, 2, 3, 4].map((i) => <Skeleton key={i} className="h-16 w-full" />)}
+              </div>
             ) : visible.length === 0 ? (
               <EmptyState title="Nothing here." />
             ) : (
@@ -745,7 +875,14 @@ export default function InboxPage() {
                             dense LIST rows stay tagged-only, so there is no
                             "no job" noise. The unconditional badge lives on the
                             reading pane's per-message headers. */}
-                        {e.jobLabel && <JobBadge job={e.jobLabel} />}
+                        {e.jobLabel && e.jobLabel !== e.recordTie?.label && <JobBadge job={e.jobLabel} />}
+                        {inMainMailbox && e.threadAssignedToUserId && (
+                          <Badge variant="softNeutral" size="sm">
+                            Assigned to {assigneeLabel(e.threadAssignedToUserId)}
+                          </Badge>
+                        )}
+                        {/* A record conversation names the job or lead it belongs to (PRD 10, S10.9). */}
+                        <RecordTieBadge tie={e.recordTie} />
                       </span>
                     </span>
                     {/* A role-carrying span, not a nested <button>: this control
@@ -790,7 +927,17 @@ export default function InboxPage() {
             <ReadingPane {...readingPaneProps} />
           </div>
         )}
+        </>
+        )}
       </div>
+
+      {/* Below lg the rail opens OVER the list as a menu overlay: beside it, its 208 px left the list about 120 px on a phone. */}
+      <Sheet open={isNarrow && railOpen} onOpenChange={setRailOpen}>
+        <SheetContent side="left" aria-describedby={undefined} className="max-w-[min(20rem,100vw)]">
+          <SheetTitle className="sr-only">Menu</SheetTitle>
+          {rail}
+        </SheetContent>
+      </Sheet>
 
       {/* Below lg the reader is a content overlay: a modal dialog that fills the screen, traps
           focus, closes on Escape and gives focus back to the message it was opened from.
@@ -829,8 +976,7 @@ export default function InboxPage() {
           onSend={sendCompose}
           onClose={closeCompose}
           onToast={flash}
-          fromAddress={fromAddress}
-          sendingEnabled={sendingEnabled}
+          {...senderProps}
           onDiscard={() => {
             setCompose(null);
             flash('Draft discarded');

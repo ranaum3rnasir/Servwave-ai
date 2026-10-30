@@ -7,7 +7,7 @@ import { tenantWhere } from '../lib/tenant';
 import { logAudit } from '../lib/audit';
 import { parsePagination, buildPaginationMeta, parseSortParams, respondInvalidSort } from '../lib/pagination';
 import { INV_CATALOG_ITEM_SORT_FIELDS } from '../lib/sortFields';
-import { canSeePricing } from '../lib/permissions/enforce';
+import { canSeeCosts, canSeeVendors } from '../lib/permissions/enforce';
 import { applyStockMovement, ShortageError, shortageResponse, orgBlocksNegativeStock } from './inv-stock.controller';
 import { resolveItemImage, resolveItemSellPrice, valueOrNull } from '../lib/catalog/item-resolution';
 import { LONG_TEXT_MAX } from '../lib/text-limits';
@@ -103,6 +103,17 @@ function mapItem(row: any) {
   };
 }
 
+/**
+ * The catalog-side view of an item for the Price Book reads: mapItem without the stock side. Quantities,
+ * locations and serial numbers belong to View stock, so none of them travels here. The vendor's name is
+ * the supplier side of the row and goes only to a caller who may read vendors.
+ */
+export function mapCatalogItem(row: any, req: Request) {
+  const { stock: _stock, serials: _serials, vendor, ...catalog } = mapItem(row);
+  const withVendor = canSeeVendors(req) ? { ...catalog, vendor } : catalog;
+  return stripMappedItemCost(withVendor, req);
+}
+
 function mapCategory(row: any) {
   return {
     id: row.id as string,
@@ -115,8 +126,11 @@ function mapCategory(row: any) {
 
 // Exported: price-book.controller reuses these for the moved brand/item-group
 // write handlers (P0 §D2) — the read side (list*) stays here.
-export function mapBrand(row: any) {
-  return {
+// The default markup is margin data: it rides on the answer only for a requester who can see costs
+// (canSeeCosts, "See financial data"), and is left out otherwise - the key absent, never 0 or null.
+// The default vendor id follows View vendors the same way.
+export function mapBrand(row: any, req: Request) {
+  const brand = {
     id: row.id as string,
     name: row.name as string,
     logoUrl: row.logo_url ?? undefined,
@@ -126,6 +140,12 @@ export function mapBrand(row: any) {
     defaultVendorId: row.default_vendor_id ?? undefined,
     isActive: row.is_active ?? undefined,
   };
+  // The default vendor is supplier data: it rides on the answer only with View vendors (canSeeVendors).
+  const { defaultVendorId: _defaultVendorId, ...withoutVendor } = brand;
+  const shown = canSeeVendors(req) ? brand : withoutVendor;
+  if (canSeeCosts(req)) return shown;
+  const { defaultMarkupPct: _defaultMarkupPct, ...withoutMarkup } = shown;
+  return withoutMarkup;
 }
 
 export function mapFinish(row: any) {
@@ -146,8 +166,10 @@ export function mapUomOption(row: any) {
   };
 }
 
-function mapItemGroupLine(row: any) {
-  return {
+// A line's cost is cost data like an item's: it rides on the answer only with See financial data
+// (canSeeCosts), and the key is left out otherwise. priceOverride is a price and is never stripped.
+function mapItemGroupLine(row: any, req: Request) {
+  const line = {
     id: row.id as string,
     itemId: row.item_id ?? undefined,
     name: row.name as string,
@@ -156,9 +178,12 @@ function mapItemGroupLine(row: any) {
     costOverride: decOrUndef(row.cost_override),
     notes: row.notes ?? undefined,
   };
+  if (canSeeCosts(req)) return line;
+  const { costOverride: _costOverride, ...withoutCost } = line;
+  return withoutCost;
 }
 
-export function mapItemGroup(row: any) {
+export function mapItemGroup(row: any, req: Request) {
   return {
     id: row.id as string,
     name: row.name as string,
@@ -167,19 +192,26 @@ export function mapItemGroup(row: any) {
     groupType: row.group_type as string,
     flatRatePriceOverride: decOrUndef(row.flat_rate_price_override),
     isActive: !!row.is_active,
-    lines: (row.lines ?? []).map(mapItemGroupLine),
+    lines: (row.lines ?? []).map((line: any) => mapItemGroupLine(line, req)),
   };
 }
 
-// ─── Cost stripping (P0 §D7) ────────────────────────────
-// unitCost/listPrice are internal cost/margin data — visible only to a requester
-// who can `read Invoice` (same canSeePricing predicate as job-lines). sellPrice
-// is the customer-facing selling price and is NEVER stripped.
+// ─── Cost stripping (P0 §D7, S01.15) ────────────────────
+// unitCost is internal cost/margin data — visible only to a requester who can see costs
+// (canSeeCosts, "See financial data"). sellPrice and listPrice are prices and are NEVER stripped.
 function stripMappedItemCost<T extends Record<string, unknown>>(item: T, req: Request): T {
-  if (canSeePricing(req)) return item;
+  if (canSeeCosts(req)) return item;
   const out: Record<string, unknown> = { ...item };
   delete out.unitCost;
-  delete out.listPrice;
+  return out as T;
+}
+
+// The vendor's name is supplier data: it rides on a stock item only for a requester who holds View vendors
+// (canSeeVendors). Without it the key is gone, never an empty string.
+function stripMappedItemVendor<T extends Record<string, unknown>>(item: T, req: Request): T {
+  if (canSeeVendors(req)) return item;
+  const out: Record<string, unknown> = { ...item };
+  delete out.vendor;
   return out as T;
 }
 
@@ -210,7 +242,7 @@ export async function listItems(req: Request, res: Response) {
         orderBy,
         include: {
           category: { select: { id: true, name: true } },
-          vendor: { select: { id: true, name: true } },
+          ...(canSeeVendors(req) ? { vendor: { select: { id: true, name: true } } } : {}),
           stock_balances: true,
         },
       }),
@@ -218,7 +250,7 @@ export async function listItems(req: Request, res: Response) {
     ]);
 
     res.json({
-      data: items.map((i) => stripMappedItemCost(mapItem(i), req)),
+      data: items.map((i) => stripMappedItemVendor(stripMappedItemCost(mapItem(i), req), req)),
       meta: buildPaginationMeta(total, { page, limit, skip }),
     });
   } catch (err) {
@@ -233,7 +265,7 @@ export async function getItem(req: Request, res: Response) {
       where: { id: req.params.id as string, ...tenantWhere(req) },
       include: {
         category: { select: { id: true, name: true } },
-        vendor: { select: { id: true, name: true } },
+        ...(canSeeVendors(req) ? { vendor: { select: { id: true, name: true } } } : {}),
         stock_balances: true,
       },
     });
@@ -243,7 +275,7 @@ export async function getItem(req: Request, res: Response) {
       return;
     }
 
-    res.json({ item: stripMappedItemCost(mapItem(item), req) });
+    res.json({ item: stripMappedItemVendor(stripMappedItemCost(mapItem(item), req), req) });
   } catch (err) {
     logger.error('Failed to get inventory item:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -275,7 +307,7 @@ export async function listBrands(req: Request, res: Response) {
       orderBy: { name: 'asc' },
     });
 
-    res.json({ brands: brands.map(mapBrand) });
+    res.json({ brands: brands.map((b) => mapBrand(b, req)) });
   } catch (err) {
     logger.error('Failed to list brands:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -324,7 +356,7 @@ export async function listItemGroups(req: Request, res: Response) {
       },
     });
 
-    res.json({ itemGroups: groups.map(mapItemGroup) });
+    res.json({ itemGroups: groups.map((g) => mapItemGroup(g, req)) });
   } catch (err) {
     logger.error('Failed to list item groups:', err);
     res.status(500).json({ error: 'Internal server error' });

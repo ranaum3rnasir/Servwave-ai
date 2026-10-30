@@ -147,6 +147,28 @@ export function orgTodayStart(timeZone: string, at: Date = new Date()): Date {
 }
 
 /**
+ * The current calendar MONTH on the org's clock, as a half-open instant window
+ * `[first day 00:00 org, first day of next month 00:00 org)`.
+ *
+ * Was `new Date(now.getFullYear(), now.getMonth(), 1)` - the server's own month, which is
+ * UTC in production. That put the tile counts on a different clock from both the Scheduled
+ * column and (now) the "Completed"/"Cancelled" tiles' own click-through filter, which sends
+ * org-zone month-day strings. The tile and the list it opened disagreed by the UTC offset
+ * plus the month's last day. Half-open for the same DST reason as `orgDayRange`.
+ */
+export function orgMonthWindow(timeZone: string, at: Date = new Date()): { gte: Date; lt: Date } {
+  const today = at.toLocaleDateString('en-CA', { timeZone }); // en-CA renders ISO 'YYYY-MM-DD'
+  const firstOfMonth = `${today.slice(0, 7)}-01`;
+  // Step a full 31 days off the 1st and snap back to that month's 1st: lands on the next
+  // month for every month length without any month-arithmetic special cases.
+  const firstOfNextMonth = `${addOrgDays(firstOfMonth, 31).slice(0, 7)}-01`;
+  return {
+    gte: orgDayStart(firstOfMonth, timeZone),
+    lt: orgDayStart(firstOfNextMonth, timeZone),
+  };
+}
+
+/**
  * Whole CALENDAR days from `from` to `to`, both reduced to the org's calendar day first.
  *
  * This is the only correct way to answer "how many days late is this?". Dividing the raw

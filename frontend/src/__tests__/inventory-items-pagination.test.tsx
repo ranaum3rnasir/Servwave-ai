@@ -39,7 +39,7 @@ describe('useInventoryItems - full catalog paging', () => {
   beforeEach(() => get.mockReset());
 
   it('pages past the 100-item server cap and returns every item', async () => {
-    // 598 items - the Alpha Doors Zoho import - across 6 pages of 100.
+    // 598 items - the pilot org Zoho import - across 6 pages of 100.
     const total = 598;
     get.mockImplementation((url: string) => {
       const p = Number(new URL(url, 'http://x').searchParams.get('page') ?? '1');

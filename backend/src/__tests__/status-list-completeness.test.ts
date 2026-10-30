@@ -5,12 +5,13 @@ import { STATUS_LABEL } from '../services/jobs-report';
 const ALL_STATUSES = Object.values(JobStatus);
 
 describe('every JobStatus is handled', () => {
-  it('has five values - a new one means every list in this file needs review', () => {
+  it('has eight values - a new one means every list in this file needs review', () => {
     // Multi-visit S4 (D12/D17) narrowed this from seven. EN_ROUTE and ON_SITE are properties of a
     // TRIP, not of a job, and moved to VisitStatus; UNSCHEDULED / SCHEDULED / IN_PROGRESS are
-    // DERIVED from the visit set and COMPLETED / CANCELLED are human-set.
+    // DERIVED from the visit set and COMPLETED / CANCELLED are human-set. PRD 6 (S06.1) added the
+    // human-set close-out statuses OFFICE_REVIEW, READY_TO_CLOSE and DONE.
     expect(ALL_STATUSES.sort()).toEqual(
-      ['CANCELLED', 'COMPLETED', 'IN_PROGRESS', 'SCHEDULED', 'UNSCHEDULED'],
+      ['CANCELLED', 'COMPLETED', 'DONE', 'IN_PROGRESS', 'OFFICE_REVIEW', 'READY_TO_CLOSE', 'SCHEDULED', 'UNSCHEDULED'],
     );
   });
 

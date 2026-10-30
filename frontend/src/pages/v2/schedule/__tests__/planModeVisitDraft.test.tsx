@@ -124,12 +124,12 @@ function mockBoard() {
   });
 }
 
-async function confirmAll(count: number) {
+async function confirmAll(count: number, ability = ADMIN) {
   renderWithProviders(
     <TooltipProvider>
       <SchedulePage />
     </TooltipProvider>,
-    { ability: ADMIN },
+    { ability },
   );
   await screen.findAllByText(/J00177/);
   fireEvent.click(await screen.findByRole('button', { name: /^Confirm All$/ }));
@@ -180,5 +180,28 @@ describe('confirming a Plan Mode draft (D1)', () => {
       }),
     );
     expect(mockApi.patch).not.toHaveBeenCalled();
+  });
+
+  // Plan Mode is offered with Schedule visits and Assign work to other people. Naming a crew is Assign people to jobs, which
+  // the crew door asks for: without it the draft books the job's visit and names nobody (scenario pass 2, S04.11).
+  it('a bare-job draft from a person without Assign people to jobs books the visit with no crew, not through /assign', async () => {
+    const draft = boardCardDraft(jobToBucketEvent(BUCKET_JOB, TZ), FRIDAY, FRIDAY_END, TZ);
+    seedDrafts([{ ...draft, crew: [T2.id], id: 'g-bucket' }]);
+    const planner = buildAbility([
+      { action: 'read', subject: 'all' },
+      { action: 'reschedule', subject: 'Job' },
+      { action: 'assign', subject: 'User' },
+    ]);
+
+    await confirmAll(1, planner);
+
+    await waitFor(() =>
+      expect(mockApi.post).toHaveBeenCalledWith('/api/jobs/job-9/visits', {
+        scheduled_start: draft.start,
+        scheduled_end: draft.end,
+        assignee_ids: [],
+      }),
+    );
+    expect(mockApi.post).not.toHaveBeenCalledWith('/api/jobs/job-9/assign', expect.anything());
   });
 });

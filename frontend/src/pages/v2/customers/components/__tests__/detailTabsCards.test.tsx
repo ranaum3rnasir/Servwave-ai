@@ -59,7 +59,7 @@ function view<T>(rows: T[]): CustomerListView<T> {
 const LEAD: LeadSummary = {
   id: 'lead-1', lead_number: 'L00012', status: 'CONTACTED', service_request: 'Front door rekey',
   created_at: '2026-09-01T12:00:00.000Z',
-  lead_assignees: [{ user: { id: 'u1', first_name: 'Ana', last_name: 'Lee' } }],
+  commission_owner: { id: 'u1', first_name: 'Ana', last_name: 'Lee' },
   estimates: [{ id: 'e1', total_amount: 250 }],
   next_walkthrough: null,
 };
@@ -93,7 +93,7 @@ describe('customer tabs - cards (below lg)', () => {
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
     const open = screen.getByRole('button', { name: 'Front door rekey' });
     const card = open.closest('li')!;
-    expect(within(card).getByText('Assigned To')).toBeInTheDocument();
+    expect(within(card).getByText('Owner')).toBeInTheDocument();
     expect(within(card).getByText('Ana Lee')).toBeInTheDocument();
     expect(within(card).getByText('Est. Value')).toBeInTheDocument();
     fireEvent.click(open);

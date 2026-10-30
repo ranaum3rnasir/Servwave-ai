@@ -9,7 +9,7 @@
  * `isAllDayEvent` rather than `occupiesAllDayStrip`, so a timed multi-day job was rendered
  * into a zero-height container and simply vanished from the week.
  *
- * Reported against prod job 698776 (Alpha Doors): Aug 17 9:00 AM -> Aug 21 9:00 AM,
+ * Reported against prod job 698776 (the pilot org): Aug 17 9:00 AM -> Aug 21 9:00 AM,
  * is_all_day false, status SCHEDULED. It was in the DOM the whole time, zero pixels tall.
  *
  * The class is asserted rather than a pixel height because jsdom applies no stylesheet -

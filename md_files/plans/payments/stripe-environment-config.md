@@ -273,3 +273,21 @@ Until 9C2: all calls go through the platform account. No customer action require
 | Refund returns 400 "No stripe_payment_intent_id" | Invoice was paid via CASH/CHECK (no Stripe PI) | Expected — refund button only shows for CARD payments |
 | Refund returns 400 "multiple CARD payments" | Invoice has >1 CARD payment record | Manual intervention needed — refund via Stripe dashboard directly |
 | `charge.refunded` does nothing | Webhook event's `payment_intent` not found in DB | Payment may belong to a different environment (test PI in production or vice versa) |
+
+## Section 11 — Bank (ACH) refund rules: sandbox outcome (payments go-live slice 29, D17)
+
+Measured on the ServWave sandbox on 2026-10-08 (platform account, test keys, `2025-02-24.acacia`):
+
+| Check | Result | What ServWave ships |
+|---|---|---|
+| Partial refund of a cleared ACH payment | **Accepted.** `refunds.create({ payment_intent, amount })` on a succeeded `us_bank_account` PaymentIntent returned `pending`, then `succeeded` (probe refund `pyr_1UOHS7FpxRiHraun5qqhWiCX`, $25 of $100; verification flow refund `pyr_1UOJL5FpxRiHraun7tSx2zpr`, $50 of $200). | Partial bank refunds stay on (D17). The full-only fallback is **not** needed. |
+| Cancel an ACH PaymentIntent in `processing` | **Accepted.** `paymentIntents.cancel` on a processing debit (`pi_3UOHReFpxRiHraun0QedsIBa`) returned `canceled`. | A processing bank payment shows **Cancel payment** (POST `/api/invoices/:id/cancel-bank-payment`), never Refund. If the processor refuses (`payment_intent_unexpected_state`), the user is told it can be refunded once it clears. |
+
+Rules enforced server-side (`backend/src/lib/refund-rules.ts`), with the copy users see:
+
+- Past 180 days from the bank payment, the refund is refused before the processor is asked.
+- A refund the payout balance cannot cover (`balance_insufficient` / `insufficient_funds`) is answered with the ServWave Payments balance message; nothing is recorded.
+- A bank refund is PENDING until the processor confirms it (`refund.updated` → SUCCEEDED); only then does it count as refunded.
+- The refund dialog warns that a customer who also disputes with their bank within 60 days could be credited twice.
+
+Re-run: `npm run verify:stripe -- --only=flow-H-partial-ach-refund --verbose` (the backend under test running, `VERIFY_STRIPE_API_URL` and `DATABASE_URL` pointing at it and its database). Before going live, Ran repeats the partial bank refund on a live connected account (slice 40).

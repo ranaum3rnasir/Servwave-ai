@@ -14,8 +14,8 @@
  *     viewport;
  *   - below 1024 px the page picker replaces the side nav (both cannot fit beside the app
  *     sidebar there); from 1024 px the side nav is shown, as before;
- *   - Roles: the permission matrix box is a usable width (at least 240 px) and, scrolled to its
- *     far end, every Module cell still starts inside it; every role in the roles list is on screen;
+ *   - Roles: the switch editor does not make the page scroll sideways; every role in the roles list
+ *     is on screen;
  *   - Users: below md (768 px) the users render as cards with no table; from md the table, as
  *     before.
  *
@@ -72,7 +72,7 @@ async function shellChecks(page: Page, viewportWidth: number) {
   }
 }
 
-test('settings roles: the permission matrix is usable and Save is reachable', async ({ page, session }, testInfo) => {
+test('settings roles: the switch editor fits the screen and the roles list is reachable', async ({ page, session }, testInfo) => {
   test.skip(!selected.has('settings-roles'), 'MOBILE_GATE_ROUTES does not select settings-roles');
   const device = gateDevice(testInfo.project.name);
   const notes: string[] = [];
@@ -80,31 +80,36 @@ test('settings roles: the permission matrix is usable and Save is reachable', as
   try {
     await page.goto('/settings/roles', { waitUntil: 'domcontentloaded', timeout: 45_000 });
     await settle(page, notes);
-    const box = page.locator('[data-mobile-scroll-x="settings-roles-permissions"]');
-    await expect(box).toBeVisible({ timeout: 20_000 });
+    // From xl the roles are a side column of buttons; below it they are one picker.
+    const list = page.locator('[data-roles-list]');
+    const picker = page.getByRole('combobox', { name: 'Role' });
+    await expect(list.or(picker)).toBeVisible({ timeout: 20_000 });
     await page.evaluate(() => document.fonts.ready);
+    const asColumn = await list.isVisible();
+    // Pick the second role, which draws the switch editor (the first is the Administrator's full-access box).
+    if (asColumn) {
+      await list.locator('button').nth(1).click();
+    } else {
+      await picker.click();
+      await page.getByRole('option').nth(1).click();
+    }
+    await expect(page.getByRole('region', { name: 'Data Scope' })).toBeVisible({ timeout: 20_000 });
 
-    const m = await page.evaluate(() => {
-      const el = document.querySelector('[data-mobile-scroll-x="settings-roles-permissions"]') as HTMLElement;
-      const before = el.scrollLeft;
-      el.scrollLeft = el.scrollWidth;
-      const b = el.getBoundingClientRect();
-      const out = [...el.querySelectorAll('tr')]
-        .map((tr) => tr.firstElementChild as HTMLElement)
-        .filter(Boolean)
-        .filter((c) => { const r = c.getBoundingClientRect(); return r.left < b.left - 1 || r.right <= b.left + 1; })
-        .map((c) => (c.innerText || '').trim().slice(0, 30));
-      el.scrollLeft = before;
+    const m = await page.evaluate((column) => {
       const vw = document.documentElement.clientWidth;
-      const roleButtonsOff = [...document.querySelectorAll('[data-roles-list] button')]
+      const roleControls = column ? '[data-roles-list] button' : '[role="combobox"][aria-label="Role"]';
+      const roleButtonsOff = [...document.querySelectorAll(roleControls)]
         .filter((x) => { const r = x.getBoundingClientRect(); return r.left < -1 || r.right > vw + 1; })
         .map((x) => (x as HTMLElement).innerText.trim());
-      return { boxWidth: b.width, out, roleButtonsOff, roleButtons: document.querySelectorAll('[data-roles-list] button').length };
-    });
-    await testInfo.attach('roles-matrix.json', { body: JSON.stringify({ device: device.id, ...m, notes }, null, 1), contentType: 'application/json' });
+      return {
+        pageScrollsSideways: document.documentElement.scrollWidth > vw + 1,
+        roleButtonsOff,
+        roleButtons: document.querySelectorAll(roleControls).length,
+      };
+    }, asColumn);
+    await testInfo.attach('roles-editor.json', { body: JSON.stringify({ device: device.id, asColumn, ...m, notes }, null, 1), contentType: 'application/json' });
 
-    expect(m.boxWidth, 'the permission matrix box is a usable width').toBeGreaterThanOrEqual(240);
-    expect(m.out, 'Module cells that scrolled out of the box at its far end').toEqual([]);
+    expect(m.pageScrollsSideways, 'the switch editor makes the page scroll sideways').toBe(false);
     expect(m.roleButtons, 'the roles list is rendered').toBeGreaterThan(0);
     expect(m.roleButtonsOff, 'roles in the roles list that are off screen').toEqual([]);
     await shellChecks(page, (page.viewportSize()?.width ?? 0));

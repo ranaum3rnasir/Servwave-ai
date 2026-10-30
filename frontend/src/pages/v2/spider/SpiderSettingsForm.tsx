@@ -171,8 +171,7 @@ export function SpiderSettingsForm({ onUnsavedChange }: { onUnsavedChange?: (uns
                 <span className="w-48 text-sm font-medium text-text-primary">{status.label}</span>
                 <span className="text-sm text-text-secondary">alert after</span>
                 <Input
-                  type="text"
-                  inputMode="numeric"
+                  kind="count"
                   min={1}
                   step={1}
                   className="w-20"
@@ -374,7 +373,7 @@ function LeadsCard({
     <Card>
       <CardHeader>
         <CardTitle level={2}>Which leads</CardTitle>
-        <CardDescription>Won, Lost and Cancelled leads are never watched.</CardDescription>
+        <CardDescription>Won and Lost leads are never watched.</CardDescription>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         <div className="flex items-center gap-3">

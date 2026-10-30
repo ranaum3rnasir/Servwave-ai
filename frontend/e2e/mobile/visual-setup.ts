@@ -5,6 +5,7 @@ import { ApiClient } from '../helpers/api-client';
 import { e2eUserPassword } from '../helpers/workflow-builders';
 import { AUTH_DIR, ORG_FILE, SESSIONS_DIR, VISUAL_FIXTURES_FILE, gateBackend } from './paths';
 import { teardownLeftoverOrg } from './mobile-teardown';
+import { gateCustomerEmail } from './gate-customer';
 import type { VisualFixtures } from './visual-states';
 
 const BASE = gateBackend();
@@ -23,9 +24,9 @@ async function must(label: string, call: Promise<{ res: APIResponse; body: any }
  * run (the first estimate is E00001, the first invoice I00001, and so on). Neutral made-up people.
  */
 const PEOPLE = {
-  dana: { first_name: 'Dana', last_name: 'Whitfield', company_name: 'Whitfield Property Group', email: 'dana.whitfield@e2e-qa.invalid', phone: '6175550142' },
-  priya: { first_name: 'Priya', last_name: 'Nair', email: 'priya.nair@e2e-qa.invalid', phone: '6175550187' },
-  tomas: { first_name: 'Tomas', last_name: 'Eklund', email: 'tomas.eklund@e2e-qa.invalid', phone: '6175550163' },
+  dana: { first_name: 'Dana', last_name: 'Whitfield', company_name: 'Whitfield Property Group', email: gateCustomerEmail('dana'), phone: '6175550142' },
+  priya: { first_name: 'Priya', last_name: 'Nair', email: gateCustomerEmail('priya'), phone: '6175550187' },
+  tomas: { first_name: 'Tomas', last_name: 'Eklund', email: gateCustomerEmail('tomas'), phone: '6175550163' },
 };
 const SITES = {
   dana: { address_line1: '77 Beacon Street', city: 'Boston', state: 'MA', zip: '02108', is_primary: true },
@@ -51,8 +52,8 @@ async function sentEstimateFor(api: ApiClient, who: keyof typeof PEOPLE, request
   const lead = (await must('create lead', api.createLead({ customer_id: customerId, service_request: request_, service_location_id: locationId }))).lead;
   await must('contact lead', api.contactLead(lead.id));
   const estimate = (await must('create estimate', api.createEstimate({ lead_id: lead.id, line_items: LINES, tax_rate: 0.0625, scope_notes: 'Remove and dispose of the failed rooftop condenser, set the replacement on the existing curb, braze new line set connections, pressure test and recharge.' }))).estimate;
-  // mark-sent: the same first-send commit as Send, minus the email (the throwaway org has email
-  // sending off, and a baseline run must not email anyone).
+  // mark-sent: the same first-send commit as Send, minus the email. The payment receipt ignores the
+  // org's outgoing-email switch, so these people are on the provider's test inbox (gate-customer.ts).
   const sent = (await must('mark estimate sent', api.raw('post', `/api/estimates/${estimate.id}/mark-sent`, { deposit_required: false }))).estimate;
   return { customerId, locationId, leadId: lead.id as string, estimateId: estimate.id as string, estimateToken: sent.public_token as string };
 }
@@ -93,8 +94,8 @@ setup('provision a throwaway org and seed the fixed baseline records', async () 
     await must('start job', api.startJob(job.id));
     await must('complete job', api.completeJob(job.id, 'Replaced the rooftop condenser with an equivalent 3 ton unit. Recovered the old charge, pressure tested the new line set at 400 psi, and recharged to 4 lb 6 oz per the plate.'));
     const invoice = (await must('create invoice', api.createInvoice(job.id))).invoice;
-    // payment-link: marks the invoice SENT and mints its public link without emailing it.
-    const sentInvoice = (await must('get invoice payment link', api.raw('post', `/api/invoices/${invoice.id}/payment-link`, {}))).invoice;
+    // mark-sent: issues the DRAFT and mints its public link without emailing it (a payment link no longer does).
+    const sentInvoice = (await must('mark invoice sent', api.raw('post', `/api/invoices/${invoice.id}/mark-sent`, {}))).invoice;
     await must('record payment', api.recordPayment(invoice.id, { amount: 1500, method: 'CHECK', notes: 'Check 4471, deposited same day.' }));
 
     // 2. Priya: a SENT estimate nobody has answered (the public estimate with Approve and Decline).

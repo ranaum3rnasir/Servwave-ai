@@ -9,6 +9,15 @@ import { MemoryRouter } from "react-router-dom";
 
 const useCallTranscript = vi.hoisted(() => vi.fn());
 
+// Customer numbers on the Communication screens follow the person's switches (S05.6). This suite renders the
+// screen without a query client, so the person's switches are stubbed: every one on, the screen as it always was.
+vi.mock("@/components/contact/useContactPolicyInput", () => ({
+  useContactPolicyInput: () => ({
+    switches: { copyCustomerPhone: true, copyCustomerEmail: true, contactCustomers: true, viewCustomers: true },
+    phoneService: true,
+  }),
+}));
+
 // These specs render deep phone components without a QueryClientProvider - every
 // data hook is stubbed individually. Times now resolve against the ORG's zone, so
 // the org query joins that list; pinned here so the rendered clock is fixed rather
@@ -46,6 +55,15 @@ vi.mock("@/lib/communication/phoneTabHandoff", () => ({
 
 import { CallDetailDrawer } from "../CallsView";
 import type { CallSession } from "@/lib/api/communication";
+import { AbilityProvider } from "@/contexts/AbilityContext";
+import { buildAbility } from "@/lib/ability";
+
+// A person who may hear recordings (Play recording, S08.11; without it the drawer says nothing about a recording) and
+// read transcripts (View transcript, S08.12; without it the drawer shows no transcript or summary at all).
+const canPlay = buildAbility([
+  { action: "play_recording", subject: "Communication" },
+  { action: "view_transcript", subject: "Communication" },
+]);
 
 const NO_RECORDING_CALL: CallSession = {
   id: "cd000000-0000-0000-0000-000000000002",
@@ -62,7 +80,9 @@ const NO_RECORDING_CALL: CallSession = {
 function renderDrawer(call: CallSession = NO_RECORDING_CALL) {
   return render(
     <MemoryRouter>
-      <CallDetailDrawer call={call} onClose={vi.fn()} onToast={vi.fn()} />
+      <AbilityProvider ability={canPlay}>
+        <CallDetailDrawer call={call} onClose={vi.fn()} onToast={vi.fn()} />
+      </AbilityProvider>
     </MemoryRouter>,
   );
 }

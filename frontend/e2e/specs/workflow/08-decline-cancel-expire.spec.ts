@@ -339,14 +339,14 @@ test.describe('10.2 Expiration — Lead revert logic', () => {
     expect(leadAfter.status).toBe('WON');
   });
 
-  test('EX-07: Expired estimate but lead is CANCELLED → lead stays CANCELLED', async () => {
-    // Create lead, send estimate, cancel the lead manually, then expire the estimate
+  test('EX-07: Expired estimate but lead is LOST → lead stays LOST', async () => {
+    // Create lead, send estimate, mark the lead lost, then expire the estimate
     const ctx = await leadToSentEstimate(api);
 
-    // Cancel the lead
-    await api.cancelLead(ctx.leadId, 'Testing expiration with cancelled lead');
-    const leadCancelled = await api.getLead(ctx.leadId);
-    expect(leadCancelled.status).toBe('CANCELLED');
+    // Mark the lead lost
+    await api.markLeadLost(ctx.leadId, 'Testing expiration with a lost lead');
+    const leadLost = await api.getLead(ctx.leadId);
+    expect(leadLost.status).toBe('LOST');
 
     // Backdate and expire the estimate
     await api.backdateEstimate(ctx.estimateId, 2);
@@ -355,8 +355,8 @@ test.describe('10.2 Expiration — Lead revert logic', () => {
     const estimate = await api.getEstimate(ctx.estimateId);
     expect(estimate.status).toBe('ARCHIVED');
 
-    // Lead must stay CANCELLED — not reverted
+    // Lead must stay LOST — not reverted
     const leadAfter = await api.getLead(ctx.leadId);
-    expect(leadAfter.status).toBe('CANCELLED');
+    expect(leadAfter.status).toBe('LOST');
   });
 });

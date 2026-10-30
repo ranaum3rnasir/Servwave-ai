@@ -33,7 +33,7 @@ const LAYOUTS = new Set(['AppLayout', 'V2AppLayout']);
  * files quote route JSX inside their docstrings, and a scanner that read those
  * would invent routes that do not exist.
  */
-function stripComments(src: string): string {
+export function stripComments(src: string): string {
   let out = '';
   let i = 0;
 
@@ -102,7 +102,7 @@ function elementExpression(attrs: string): string {
  * meaningful axes are a role SET and a boolean: `allowedRoles` order carries no
  * meaning, so it is sorted, while `fallback` decides between the in-place "no
  * access" screen and a redirect to "/" and is therefore part of the identity.
- * `RequireFeature` is keyed by its entitlement. Anything else compares by name,
+ * `RequireFeature` is keyed by its entitlement and `RequirePageAccess` by the switches it reads. Anything else compares by name,
  * which is enough for `DemoOnlyRoute` and `RequireCommunicationCreate` - they
  * take no props that change who gets in.
  */
@@ -117,6 +117,14 @@ function guardOf(expression: string): string | null {
   }
   if (name === 'RequireFeature') {
     return `RequireFeature(${expression.match(/feature="([^"]+)"/)?.[1] ?? '?'})`;
+  }
+
+  if (name === 'RequirePageAccess') {
+    // Keyed by the switches it reads: `all` must ALL be on, `any` needs at least one.
+    const list = (prop: string) => expression.match(new RegExp(`\\b${prop}=\\{\\[([^\\]]*)\\]\\}`))?.[1]
+      ?.split(',').map((k) => k.trim().replace(/^'|'$/g, '')).filter(Boolean).join('+');
+    const parts = [list('all') && `all=${list('all')}`, list('any') && `any=${list('any')}`].filter(Boolean);
+    return `RequirePageAccess(${parts.join(' ')})`;
   }
 
   return name;

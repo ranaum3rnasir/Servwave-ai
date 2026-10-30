@@ -5,17 +5,21 @@ import { logger } from '../lib/logger';
 import { supabaseAdmin } from '../lib/supabase';
 import { tenantWhere } from '../lib/tenant';
 import { logAudit } from '../lib/audit';
+import { canSeeCosts } from '../lib/permissions/enforce';
+import { canStageOnJob, stageReachWhere } from '../lib/permissions/stageScope';
 import { sniffMatchesDeclared } from '../lib/file-sniff';
 import { applyStockMovement } from './inv-stock.controller';
 import { recomputePoStatus } from './inv-po.controller';
 import { emitStagingReady, emitStagingNoAreaIfNeeded, emitPoPartial } from '../services/notifications/inventoryEmit';
 import { sendStagePickupEmail, dispatchFailureStatus } from '../lib/email';
+import { ADDRESS_NEEDED_REFUSAL, handSenderOrRefusal } from '../lib/mailbox/hand-sender';
 import { getOrgTimezone } from '../lib/timezone';
+import { callerOf, personName, pickupComment, type PickupPerson } from '../lib/pickup';
 import { LONG_TEXT_MAX, VERY_LONG_TEXT_MAX } from '../lib/text-limits';
 
 // ─── Stage attachments → Supabase Storage (P5 §5) ───────────────────────────
 // Reuses the existing `attachments` bucket (RLS policies already in place).
-// storage_path is canonical for new rows (data_url:''); legacy emanuel-era rows
+// storage_path is canonical for new rows (data_url:''); legacy rows from the original inventory build
 // keep their base64 data-URI in data_url and flow through the read path unchanged.
 
 const STORAGE_BUCKET = 'attachments';
@@ -114,7 +118,16 @@ async function resolveReceiveLocationId(req: Request): Promise<string | null> {
 
 // ─── Mappers (snake_case Prisma row → camelCase mock contract) ──────────
 
-function mapLine(line: any) {
+// What a stage line may disclose to the person asking (Roles & Permissions, PRD 7). unitCost is a PO-derived
+// item cost: it rides on the response only for a person who holds See financial data (canSeeCosts). The vendor
+// name rides on it only for a person who holds View vendors. Without either the key is gone, never zero or blank.
+type LineDisclosure = { withCost: boolean; withVendor: boolean };
+
+function lineDisclosure(req: Request): LineDisclosure {
+  return { withCost: canSeeCosts(req), withVendor: !!req.ability?.can('read', 'Vendor') };
+}
+
+function mapLine(line: any, disclose: LineDisclosure) {
   return {
     id: line.id,
     itemSku: line.item_sku,
@@ -122,8 +135,8 @@ function mapLine(line: any) {
     uom: line.uom,
     qtyOrdered: Number(line.qty_ordered),
     qtyReceived: Number(line.qty_received),
-    unitCost: line.unit_cost != null ? Number(line.unit_cost) : undefined,
-    vendor: line.vendor,
+    ...(disclose.withCost ? { unitCost: line.unit_cost != null ? Number(line.unit_cost) : undefined } : {}),
+    ...(disclose.withVendor ? { vendor: line.vendor } : {}),
     poNumber: line.po_number ?? '',
     expectedDate: line.expected_date ? line.expected_date.toISOString() : undefined,
     serialized: line.serialized,
@@ -165,7 +178,7 @@ function mapAuditEntry(entry: any) {
   };
 }
 
-function mapJobStage(stage: any, signed?: Map<string, string>) {
+function mapJobStage(stage: any, signed: Map<string, string> | undefined, disclose: LineDisclosure) {
   return {
     id: stage.id,
     jobNumber: stage.job_number,
@@ -180,11 +193,16 @@ function mapJobStage(stage: any, signed?: Map<string, string>) {
     pickupAddress: stage.pickup_address ?? undefined,
     stagedLocationId: stage.staged_location_id ?? undefined,
     stagedArea: stage.staged_area ?? undefined,
-    items: (stage.items ?? []).map(mapLine),
+    items: (stage.items ?? []).map((line: any) => mapLine(line, disclose)),
     photos: stage.photos && stage.photos.length > 0 ? stage.photos.map((p: any) => mapAttachment(p, signed)) : undefined,
     notes: stage.notes ?? undefined,
     createdAt: stage.created_at.toISOString(),
     updatedAt: stage.updated_at ? stage.updated_at.toISOString() : undefined,
+    takenById: stage.taken_by_id ?? undefined,
+    takenByName: stage.taken_by_name ?? undefined,
+    recordedById: stage.recorded_by_id ?? undefined,
+    recordedByName: stage.recorded_by_name ?? undefined,
+    takenAt: stage.taken_at ? stage.taken_at.toISOString() : undefined,
     auditLog: stage.audit_log && stage.audit_log.length > 0 ? stage.audit_log.map(mapAuditEntry) : undefined,
   };
 }
@@ -274,17 +292,25 @@ export async function listJobStages(req: Request, res: Response) {
       }
     }
 
+    // The company-wide list is the Inventory page's Staging tab and needs View stock; one job's stages (the job
+    // page's section) are open to everyone attached to the job. Both list only the stages in the person's reach.
+    if (!job_id && !req.ability?.can('read', 'Inventory')) {
+      res.status(403).json({ error: 'Insufficient permissions' });
+      return;
+    }
+
     const stages = await prisma.jobStage.findMany({
       where: {
         ...tenantWhere(req),
         ...(job_id ? { job_id } : {}),
+        ...(await stageReachWhere(req.user!)),
       },
       orderBy: { created_at: 'desc' },
       include: stageInclude,
     });
 
     const signed = await signStagePhotoUrls(stages);
-    res.json({ jobStages: stages.map((s) => mapJobStage(s, signed)) });
+    res.json({ jobStages: stages.map((s) => mapJobStage(s, signed, lineDisclosure(req))) });
   } catch (err) {
     logger.error('Failed to list job stages:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -294,7 +320,7 @@ export async function listJobStages(req: Request, res: Response) {
 export async function getJobStage(req: Request, res: Response) {
   try {
     const stage = await prisma.jobStage.findFirst({
-      where: { id: req.params.id as string, ...tenantWhere(req) },
+      where: { id: req.params.id as string, ...tenantWhere(req), ...(await stageReachWhere(req.user!)) },
       include: stageInclude,
     });
 
@@ -303,7 +329,7 @@ export async function getJobStage(req: Request, res: Response) {
       return;
     }
 
-    res.json({ jobStage: mapJobStage(stage, await signStagePhotoUrls([stage])) });
+    res.json({ jobStage: mapJobStage(stage, await signStagePhotoUrls([stage]), lineDisclosure(req)) });
   } catch (err) {
     logger.error('Failed to get job stage:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -321,6 +347,13 @@ export async function createJobStage(req: Request, res: Response) {
     const fkError = await validateJobAndCustomer(req, body.jobId, body.customerId);
     if (fkError) { res.status(400).json({ error: fkError }); return; }
 
+    // A stage is made on a job the person reaches (a stage on no job needs View jobs and Jobs scope All).
+    // Staging a PO lands on the PO's own job when the body names none, which is checked once the PO is loaded.
+    if (!body.stagedFromPurchaseOrderId && !(await canStageOnJob(req, body.jobId))) {
+      res.status(403).json({ error: 'Insufficient permissions' });
+      return;
+    }
+
     // ─── P2 4c: stage-from-PO — server-side linkage + atomic claim ────────────
     if (body.stagedFromPurchaseOrderId) {
       const po = await prisma.purchaseOrder.findFirst({
@@ -328,6 +361,10 @@ export async function createJobStage(req: Request, res: Response) {
         include: { lines: { orderBy: { created_at: 'asc' } } },
       });
       if (!po) { res.status(400).json({ error: 'Invalid purchase_order_id' }); return; }
+      if (!(await canStageOnJob(req, body.jobId ?? po.job_id))) {
+        res.status(403).json({ error: 'Insufficient permissions' });
+        return;
+      }
       if (po.staged_as_job_stage_id != null) {
         res.status(409).json({ error: 'PO_ALREADY_STAGED' });
         return;
@@ -406,7 +443,7 @@ export async function createJobStage(req: Request, res: Response) {
       });
 
       // Fresh creates carry no photos — signStagePhotoUrls short-circuits to an empty map.
-      res.status(201).json({ jobStage: mapJobStage(stage, await signStagePhotoUrls([stage])) });
+      res.status(201).json({ jobStage: mapJobStage(stage, await signStagePhotoUrls([stage]), lineDisclosure(req)) });
       return;
     }
 
@@ -500,7 +537,7 @@ export async function createJobStage(req: Request, res: Response) {
       },
     });
 
-    res.status(201).json({ jobStage: mapJobStage(stage, await signStagePhotoUrls([stage])) });
+    res.status(201).json({ jobStage: mapJobStage(stage, await signStagePhotoUrls([stage]), lineDisclosure(req)) });
   } catch (err) {
     logger.error('Failed to create job stage:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -510,7 +547,7 @@ export async function createJobStage(req: Request, res: Response) {
 export async function updateJobStage(req: Request, res: Response) {
   try {
     const existing = await prisma.jobStage.findFirst({
-      where: { id: req.params.id as string, ...tenantWhere(req) },
+      where: { id: req.params.id as string, ...tenantWhere(req), ...(await stageReachWhere(req.user!)) },
     });
     if (!existing) {
       res.status(404).json({ error: 'Job stage not found' });
@@ -521,6 +558,12 @@ export async function updateJobStage(req: Request, res: Response) {
 
     const fkError = await validateJobAndCustomer(req, body.jobId, body.customerId);
     if (fkError) { res.status(400).json({ error: fkError }); return; }
+
+    // Moving a stage onto another job (or off its job) needs reach to the place it lands, as creating one does.
+    if (body.jobId !== undefined && (body.jobId ?? null) !== existing.job_id && !(await canStageOnJob(req, body.jobId))) {
+      res.status(403).json({ error: 'Insufficient permissions' });
+      return;
+    }
 
     const data: Record<string, unknown> = {};
     if (body.jobId !== undefined) data.job_id = body.jobId ?? null;
@@ -574,7 +617,7 @@ export async function updateJobStage(req: Request, res: Response) {
       metadata: { fields: Object.keys(req.body) },
     });
 
-    res.json({ jobStage: mapJobStage(stage, await signStagePhotoUrls([stage])) });
+    res.json({ jobStage: mapJobStage(stage, await signStagePhotoUrls([stage]), lineDisclosure(req)) });
   } catch (err) {
     logger.error('Failed to update job stage:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -594,7 +637,7 @@ export async function receiveStageLine(req: Request, res: Response) {
     const orgId = req.user!.organization_id;
     const body = req.body as z.infer<typeof receiveStageSchema>;
     const stage = await prisma.jobStage.findFirst({
-      where: { id: body.stageId, ...tenantWhere(req) },
+      where: { id: body.stageId, ...tenantWhere(req), ...(await stageReachWhere(req.user!)) },
       include: { items: true },
     });
     if (!stage) { res.status(404).json({ error: 'Job stage not found' }); return; }
@@ -715,7 +758,7 @@ export async function receiveStageLine(req: Request, res: Response) {
       metadata: { stage_line_id: body.itemId, qty: body.qty ?? 1 },
     });
 
-    res.json({ jobStage: mapJobStage(updated, await signStagePhotoUrls([updated])) });
+    res.json({ jobStage: mapJobStage(updated, await signStagePhotoUrls([updated]), lineDisclosure(req)) });
   } catch (err) {
     logger.error('Failed to receive stage line:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -729,16 +772,16 @@ export async function notifyTechReady(req: Request, res: Response) {
     const orgId = req.user!.organization_id;
     const body = req.body as z.infer<typeof notifyStageSchema>;
     const result = await prisma.jobStage.updateMany({
-      where: { id: body.stageId, ...tenantWhere(req) },
+      where: { id: body.stageId, ...tenantWhere(req), ...(await stageReachWhere(req.user!)) },
       data: { status: 'ready_for_pickup' },
     });
     if (result.count === 0) { res.status(404).json({ error: 'Job stage not found' }); return; }
     const stage = await prisma.jobStage.findFirst({ where: { id: body.stageId, ...tenantWhere(req) }, include: stageInclude });
     logger.info(`Job stage ${body.stageId} marked ready_for_pickup (org ${orgId})`);
 
-    // inventory.staging_ready — fire after status set to ready_for_pickup; fire-and-forget.
-    // Pass the assigned tech so they get the in-app alert too (not just Admin/Dispatcher).
-    emitStagingReady(orgId, req.user!.id, body.stageId, stage?.job_number ?? body.stageId, stage?.assigned_tech_id ?? null);
+    // inventory.staging_ready — fire after status set to ready_for_pickup; left for after the response (S06.27). The alert reads the
+    // stage's job and technician itself, so the request holds nothing for it.
+    emitStagingReady(orgId, req.user!.id, body.stageId);
 
     // inventory.staging_no_area — fire if ready_for_pickup AND staged_area is null.
     emitStagingNoAreaIfNeeded(
@@ -758,9 +801,139 @@ export async function notifyTechReady(req: Request, res: Response) {
       metadata: { job_number: stage?.job_number ?? null },
     });
 
-    res.json({ jobStage: mapJobStage(stage, await signStagePhotoUrls([stage])) });
+    res.json({ jobStage: mapJobStage(stage, await signStagePhotoUrls([stage]), lineDisclosure(req)) });
   } catch (err) {
     logger.error('Failed to notify tech ready:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+/**
+ * Mark a stage as taken (Roles & Permissions S07.6, S07.7): the parts left the shelf. Saves who took them, who recorded it
+ * and when, moves the stage to Delivered to tech and writes the pickup into the stage's history. Raises no alert: the
+ * technician was told when the stage went ready for pickup, and a pickup is not news to anyone else.
+ *
+ * `takenById` is the recorder themself for "Taken by me", or the chosen colleague for "Taken by..."; a colleague must be an
+ * active person of the company. The write names `taken_at: null` in its filter, so two people marking one stage at once
+ * cannot overwrite each other: the loser finds it already taken. Returns null for a stage outside the caller's reach (or
+ * another company's), checked before the chosen person so a stage out of reach says nothing else.
+ */
+async function recordStagePickup(
+  req: Request,
+  stageId: string,
+  pickup: { takenById: string; recordedBy: PickupPerson },
+): Promise<{ stage: any } | { taken: true } | { noSuchPerson: true } | null> {
+  const orgId = req.user!.organization_id;
+  const existing = await prisma.jobStage.findFirst({
+    where: { id: stageId, ...tenantWhere(req), ...(await stageReachWhere(req.user!)) },
+    select: { id: true, status: true, taken_at: true },
+  });
+  if (!existing) return null;
+  if (existing.taken_at) return { taken: true };
+
+  let takenBy: PickupPerson = pickup.recordedBy;
+  if (pickup.takenById !== pickup.recordedBy.id) {
+    const chosen = await prisma.user.findFirst({
+      where: { id: pickup.takenById, ...tenantWhere(req), is_active: true },
+      select: { id: true, first_name: true, last_name: true },
+    });
+    if (!chosen) return { noSuchPerson: true };
+    takenBy = { id: chosen.id, name: personName(chosen) };
+  }
+  const recordedBy = pickup.recordedBy;
+
+  const now = new Date();
+  const saved = await prisma.$transaction(async (tx) => {
+    const result = await tx.jobStage.updateMany({
+      where: { id: existing.id, ...tenantWhere(req), taken_at: null },
+      data: {
+        status: 'delivered',
+        taken_by_id: takenBy.id,
+        taken_by_name: takenBy.name,
+        recorded_by_id: recordedBy.id,
+        recorded_by_name: recordedBy.name,
+        taken_at: now,
+      },
+    });
+    if (result.count === 0) return false;
+    await tx.stageAuditEntry.create({
+      data: {
+        job_stage_id: existing.id,
+        organization_id: orgId,
+        at: now,
+        actor_name: recordedBy.name,
+        field: 'status',
+        old_value: existing.status,
+        new_value: 'delivered',
+        comment: pickupComment(takenBy, recordedBy),
+      },
+    });
+    return true;
+  });
+  if (!saved) return { taken: true };
+
+  void logAudit({
+    req,
+    action: 'inventory.stage_picked_up',
+    resourceType: 'JobStage',
+    resourceId: existing.id,
+    metadata: { taken_by: takenBy.id, recorded_by: recordedBy.id },
+  });
+
+  return { stage: await prisma.jobStage.findFirst({ where: { id: existing.id, ...tenantWhere(req) }, include: stageInclude }) };
+}
+
+async function respondToPickup(req: Request, res: Response, takenById: string) {
+  const result = await recordStagePickup(req, req.params.id as string, { takenById, recordedBy: callerOf(req) });
+  if (!result) { res.status(404).json({ error: 'Job stage not found' }); return; }
+  if ('noSuchPerson' in result) { res.status(400).json({ error: 'Pick an active person from your team.' }); return; }
+  if ('taken' in result) { res.status(409).json({ error: 'These parts are already marked as taken.' }); return; }
+  res.json({ jobStage: mapJobStage(result.stage, await signStagePhotoUrls([result.stage]), lineDisclosure(req)) });
+}
+
+// POST /api/inventory/job-stages/:id/taken-by-me — the caller took the parts. Needs Pick up staged items (the route) and
+// reach to the stage; Edit stock plays no part.
+export async function takenByMe(req: Request, res: Response) {
+  try {
+    await respondToPickup(req, res, req.user!.id);
+  } catch (err) {
+    logger.error('Failed to record a stage pickup:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+export const takenBySchema = z.object({ takenById: z.string().uuid() });
+
+// POST /api/inventory/job-stages/:id/taken-by — someone else took the parts and the caller records it. Needs Record pickup
+// for someone else (the route) and reach to the stage; neither Edit stock nor Pick up staged items plays a part.
+export async function takenBy(req: Request, res: Response) {
+  try {
+    await respondToPickup(req, res, (req.body as z.infer<typeof takenBySchema>).takenById);
+  } catch (err) {
+    logger.error('Failed to record a stage pickup for someone else:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+}
+
+// GET /api/inventory/job-stages/:id/pickup-people — the picker of "Taken by...": the company's active people, the stage's
+// assigned person first, then by name. A name and an id each, nothing else (no email or phone); the stage must be in reach.
+export async function listPickupPeople(req: Request, res: Response) {
+  try {
+    const stage = await prisma.jobStage.findFirst({
+      where: { id: req.params.id as string, ...tenantWhere(req), ...(await stageReachWhere(req.user!)) },
+      select: { assigned_tech_id: true },
+    });
+    if (!stage) { res.status(404).json({ error: 'Job stage not found' }); return; }
+    const users = await prisma.user.findMany({
+      where: { ...tenantWhere(req), is_active: true },
+      select: { id: true, first_name: true, last_name: true },
+    });
+    const people = users
+      .map((u) => ({ id: u.id, name: personName(u), assigned: u.id === stage.assigned_tech_id }))
+      .sort((a, b) => Number(b.assigned) - Number(a.assigned) || a.name.localeCompare(b.name));
+    res.json({ people });
+  } catch (err) {
+    logger.error('Failed to list the people for a stage pickup:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 }
@@ -782,10 +955,16 @@ export async function emailJobStage(req: Request, res: Response) {
     const body = req.body as z.infer<typeof emailStageSchema>;
 
     const stage = await prisma.jobStage.findFirst({
-      where: { id: body.stageId, ...tenantWhere(req) },
+      where: { id: body.stageId, ...tenantWhere(req), ...(await stageReachWhere(req.user!)) },
       include: stageInclude,
     });
     if (!stage) { res.status(404).json({ error: 'Job stage not found' }); return; }
+
+    // PRD 10 (S10.12): the pickup ticket is sent by hand, from the sender's own mailbox. A person with no address of their
+    // own is refused before anything is sent or written, but after the reach check: a stage outside their reach is not
+    // there for them, whatever their address says.
+    const sender = await handSenderOrRefusal(prisma, req);
+    if (!sender.ok) { res.status(sender.refusal.status).json({ error: sender.refusal.error, code: sender.refusal.code }); return; }
 
     const org = await prisma.organization.findUnique({
       where: { id: orgId },
@@ -827,6 +1006,7 @@ export async function emailJobStage(req: Request, res: Response) {
         jobId: stage.job_id,
         jobLabel: stage.job_number,
       },
+      handSender: { mailboxId: sender.sender.mailboxId, userId: req.user!.id },
     });
 
     if (result.status !== 'sent') {
@@ -834,6 +1014,11 @@ export async function emailJobStage(req: Request, res: Response) {
       // answered 502 for it, telling the user to retry something that cannot
       // succeed until they turn email back on. The 409-vs-502 classification is
       // shared with the PO sender; only the wording is local.
+      // The sender lost their address between the check at the door and the dispatch.
+      if (result.status === 'skipped' && (result.reason === 'address_needed' || result.reason === 'foreign_mailbox')) {
+        res.status(ADDRESS_NEEDED_REFUSAL.status).json({ error: ADDRESS_NEEDED_REFUSAL.error, code: ADDRESS_NEEDED_REFUSAL.code });
+        return;
+      }
       const message =
         result.status === 'failed'
           ? result.error
@@ -888,7 +1073,7 @@ export async function uploadStageAttachment(req: Request, res: Response) {
 
     // 1. Tenancy: the stage must exist in the requester's org.
     const stage = await prisma.jobStage.findFirst({
-      where: { id: req.params.id as string, ...tenantWhere(req) },
+      where: { id: req.params.id as string, ...tenantWhere(req), ...(await stageReachWhere(req.user!)) },
       select: { id: true },
     });
     if (!stage) {
@@ -998,6 +1183,7 @@ export async function deleteStageAttachment(req: Request, res: Response) {
         id: req.params.attachmentId as string,
         job_stage_id: req.params.id as string,
         ...tenantWhere(req),
+        job_stage: await stageReachWhere(req.user!),
       },
     });
     if (!existing) {

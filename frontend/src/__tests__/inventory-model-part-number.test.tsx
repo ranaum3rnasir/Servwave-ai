@@ -112,6 +112,8 @@ vi.mock('@/lib/api/inventory', async (importOriginal) => {
   return {
     ...actual,
     useInventoryItems: stable(items),
+    // The Price Book page reads its items through the catalog read (S07.16), the Stock page through the stock read.
+    usePriceBookItems: stable(items),
     // Finish is a foreign key, so unlike mpn/modelNumber the display surfaces
     // have to resolve an id to a name - hence a populated list here, not EMPTY.
     useFinishes: stable([

@@ -1,6 +1,6 @@
 // Inbox module — Gmail-style compose surfaces.
 //
-// Extracted from Emanuel's InboxPage monolith:
+// Extracted from the original InboxPage monolith:
 //   • ComposeWindow      (L1203) — docked bottom-right window (new / reply / forward)
 //   • ComposerToolbar    (L1376) — formatting / attach / emoji / link / image / template bar
 //   • InlineComposer     (L1980) — inline reply/forward at the bottom of a thread
@@ -11,7 +11,7 @@
 //   • IconBtn            (L2147) — square icon button (also used by the reader)
 //
 // Faithful cut — every prop signature and behaviour preserved verbatim. The
-// compose overlays are hand-rolled (Emanuel never used a Modal abstraction in
+// compose overlays are hand-rolled (the original build never used a Modal abstraction in
 // comms), so they stay as fixed-position cards; only tokens were swapped:
 //   1. Tailwind tokens indigo/slate -> ALPHA design tokens. The slate-800 title
 //      bar and slate-100 quote chip are intentionally kept (compose chrome).
@@ -54,6 +54,7 @@ import {
   X,
 } from "lucide-react";
 import { AiAssistMenu } from "@/components/communication/inbox/AiAssistMenu";
+import { ADDRESS_NEEDED_MESSAGE } from "@/components/communication/MyMailboxAddress";
 import { Alert } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -163,6 +164,62 @@ export function SendingDisabledNotice({ sendingEnabled }: { sendingEnabled: bool
       {SENDING_DISABLED_LABEL}. Ask an admin to turn it back on before sending.
     </Alert>
   );
+}
+
+/**
+ * The "Sending as" line every compose surface carries (PRD 10, S10.11): the person's OWN address and the name the
+ * recipient will see, from the same register lookup the send resolves its From header with. There is no From choice, so
+ * there is nothing to pick here. A person with no address yet reads the address-needed sentence in its place (and Send is
+ * disabled: see `sendBlockedReason`). With nothing to show it says so honestly, as it always has.
+ */
+export function SendingAsLine({
+  address,
+  name,
+  addressNeeded = false,
+  className,
+}: {
+  address?: string;
+  name?: string;
+  addressNeeded?: boolean;
+  className?: string;
+}) {
+  return (
+    <div className={cn("flex items-center gap-2 border-b border-border px-4 py-2", className)}>
+      <span className="w-14 flex-none text-[12px] text-text-secondary">Sending as</span>
+      {addressNeeded ? (
+        <span role="status" className="text-[13px] text-text-secondary">
+          {ADDRESS_NEEDED_MESSAGE}
+        </span>
+      ) : (
+        <span className="inline-flex min-w-0 flex-wrap items-center gap-x-1.5 text-[13px] text-text-secondary">
+          <span className={`h-1.5 w-1.5 flex-none rounded-full ${address ? PRIMARY_ACCOUNT.dot : "bg-neutral-strong"}`} />
+          {address ? (
+            <>
+              {name ? <span className="text-text-primary">{name}</span> : null}
+              <span className="break-all">{name ? `<${address}>` : address}</span>
+            </>
+          ) : (
+            NO_MAILBOX_LABEL
+          )}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Why Send is disabled on a compose surface, or undefined when it is not: the person has no address of their own yet, or the
+ * company has outgoing email switched off. Single source, so the line, the button's reason and the notice cannot disagree.
+ */
+export function sendBlockedReason({
+  sendingEnabled,
+  addressNeeded,
+}: {
+  sendingEnabled: boolean;
+  addressNeeded: boolean;
+}): string | undefined {
+  if (addressNeeded) return ADDRESS_NEEDED_MESSAGE;
+  return sendingEnabled ? undefined : SENDING_DISABLED_LABEL;
 }
 
 /** Chips showing attached files, each removable. Renders nothing when empty. */
@@ -494,6 +551,8 @@ export function ComposeWindow({
   onDiscard,
   onToast,
   fromAddress,
+  fromName,
+  addressNeeded = false,
   sendingEnabled = true,
 }: {
   state: ComposeState;
@@ -502,11 +561,12 @@ export function ComposeWindow({
   onClose: () => void;
   onDiscard: () => void;
   onToast: (m: string) => void;
-  /** The org sending identity to show in the From row. UNSET today: the
-   *  Gmail connect that used to supply it is deleted and the Resend slice has
-   *  not landed, so every caller leaves this undefined and the surface falls
-   *  back to NO_MAILBOX_LABEL. Kept as the seam that slice plugs into. */
+  /** The sender's own address for the "Sending as" line (PRD 10, S10.11); undefined while it loads. */
   fromAddress?: string;
+  /** The display name the recipient sees ("<name> at <company>"), shown beside the address. */
+  fromName?: string;
+  /** True for a person with no address of their own yet: the line reads the address-needed sentence and Send is disabled. */
+  addressNeeded?: boolean;
   /** The org's `email_sending_enabled`. Defaults to TRUE, deliberately: the
    *  identity query is undefined while in flight, and defaulting to false
    *  would flash a "sending is off" warning at every user on every open. A
@@ -522,6 +582,7 @@ export function ComposeWindow({
         : "New message";
   const [ccBccOpen, setCcBccOpen] = useState(Boolean(state.cc || state.bcc));
   const attachments = state.attachments ?? [];
+  const blockedReason = sendBlockedReason({ sendingEnabled, addressNeeded });
   // Mobile slice 46: below md (and on a landscape phone) the compose window is a full-screen form
   // overlay instead of a docked card, so the title bar, the fields (the only scroller) and the
   // Send footer share the whole screen. At md and up it is the docked card it always was.
@@ -561,17 +622,8 @@ export function ComposeWindow({
         )}
       >
 
-      {/* From account - the org's single sending identity, or an honest
-          unconnected state while there is none. */}
-      <div className="flex items-center gap-2 border-b border-border px-4 py-2">
-        <span className="w-14 flex-none text-[12px] text-text-secondary">From</span>
-        <span className="inline-flex items-center gap-1.5 text-[13px] text-text-secondary">
-          <span
-            className={`h-1.5 w-1.5 rounded-full ${fromAddress ? PRIMARY_ACCOUNT.dot : "bg-neutral-strong"}`}
-          />
-          {fromAddress || NO_MAILBOX_LABEL}
-        </span>
-      </div>
+      {/* Sending as - the sender's OWN address and name (no From choice), or the address-needed sentence. */}
+      <SendingAsLine address={fromAddress} name={fromName} addressNeeded={addressNeeded} />
 
       <SendingDisabledNotice sendingEnabled={sendingEnabled} />
 
@@ -674,18 +726,17 @@ export function ComposeWindow({
         data-slot="compose-footer"
       >
         <div className={cn("flex items-center gap-1.5", fullscreen && "flex-wrap gap-y-1")}>
-          <button
+          <Button
             type="button"
+            variant="solid"
+            tone="brand"
             onClick={onSend}
-            disabled={!sendingEnabled}
-            title={sendingEnabled ? undefined : SENDING_DISABLED_LABEL}
-            className={cn(
-              "inline-flex items-center gap-2 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-on-fill shadow-sm transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-primary",
-              fullscreen && "min-h-11",
-            )}
+            disabled={blockedReason !== undefined}
+            disabledReason={blockedReason}
+            className={cn(fullscreen && "min-h-11")}
           >
             <Send className="h-4 w-4" /> Send
-          </button>
+          </Button>
           <AiAssistMenu
             body={state.body}
             original={null}
@@ -761,6 +812,8 @@ export function InlineComposer({
   onPopOut,
   onToast,
   fromAddress,
+  fromName,
+  addressNeeded = false,
   sendingEnabled = true,
 }: {
   reply: ReplyDraft;
@@ -770,19 +823,20 @@ export function InlineComposer({
   onDiscard: () => void;
   onPopOut: () => void;
   onToast: (m: string) => void;
-  /** The org sending identity to show in the From row. UNSET today: the
-   *  Gmail connect that used to supply it is deleted and the Resend slice has
-   *  not landed, so every caller leaves this undefined and the surface falls
-   *  back to NO_MAILBOX_LABEL. Kept as the seam that slice plugs into. */
+  /** The sender's own address for the "Sending as" line (PRD 10, S10.11); undefined while it loads. */
   fromAddress?: string;
+  /** The display name the recipient sees ("<name> at <company>"), shown beside the address. */
+  fromName?: string;
+  /** True for a person with no address of their own yet: the line reads the address-needed sentence and Send is disabled. */
+  addressNeeded?: boolean;
   /** See ComposeWindow's own `sendingEnabled` doc - identical role, and it
    *  defaults to true for the same "never flash a wrong banner" reason. */
   sendingEnabled?: boolean;
 }) {
   const [showQuote, setShowQuote] = useState(false);
   const [ccBccOpen, setCcBccOpen] = useState(Boolean(reply.cc || reply.bcc));
-  const fromLabel = fromAddress || NO_MAILBOX_LABEL;
   const attachments = reply.attachments ?? [];
+  const blockedReason = sendBlockedReason({ sendingEnabled, addressNeeded });
   return (
     <div className="mt-6 rounded-2xl border border-border bg-surface-light shadow-sm">
       {/* Header: who you're replying as / to */}
@@ -791,13 +845,6 @@ export function InlineComposer({
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-1.5 gap-y-1 text-[13px] text-text-secondary">
           <span className="font-semibold text-text-primary">
             {reply.mode === "forward" ? "Forward" : "Reply"}
-          </span>
-          <span className="text-text-secondary">from</span>
-          <span className="inline-flex items-center gap-1 font-medium text-text-primary">
-            <span
-              className={`h-1.5 w-1.5 rounded-full ${fromAddress ? PRIMARY_ACCOUNT.dot : "bg-neutral-strong"}`}
-            />
-            {fromLabel}
           </span>
         </div>
         <button
@@ -811,24 +858,9 @@ export function InlineComposer({
         </button>
       </div>
 
-      {/* From account - there is exactly one identity to send from, so the
-          prototype's account switch collapses to a single chip: the org's
-          connected mailbox, or an honest unconnected state. */}
-      <div className="flex items-center gap-2 border-b border-border px-4 py-2">
-        <span className="w-12 flex-none text-[12px] text-text-secondary">From</span>
-        <div className="flex flex-wrap gap-1.5">
-          {fromAddress ? (
-            <AccountChip
-              label={fromAddress}
-              dot={PRIMARY_ACCOUNT.dot}
-              active
-              onClick={() => onChange({ ...reply, account: PRIMARY_ACCOUNT.id })}
-            />
-          ) : (
-            <NoMailboxChip />
-          )}
-        </div>
-      </div>
+      {/* Sending as - the sender's OWN address and name in every conversation, a handed-over or shared mailbox's
+          included (no From choice), or the address-needed sentence. */}
+      <SendingAsLine address={fromAddress} name={fromName} addressNeeded={addressNeeded} className="px-4" />
 
       <SendingDisabledNotice sendingEnabled={sendingEnabled} />
 
@@ -945,15 +977,16 @@ export function InlineComposer({
       {/* Footer */}
       <div className="flex items-center justify-between border-t border-border px-3 py-2.5">
         <div className="flex items-center gap-1.5">
-          <button
+          <Button
             type="button"
+            variant="solid"
+            tone="brand"
             onClick={onSend}
-            disabled={!sendingEnabled}
-            title={sendingEnabled ? undefined : SENDING_DISABLED_LABEL}
-            className="inline-flex items-center gap-2 rounded-lg bg-primary px-5 py-2 text-sm font-semibold text-on-fill shadow-sm transition hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:bg-primary"
+            disabled={blockedReason !== undefined}
+            disabledReason={blockedReason}
           >
             <Send className="h-4 w-4" /> Send
-          </button>
+          </Button>
           <AiAssistMenu
             body={reply.body}
             original={original}

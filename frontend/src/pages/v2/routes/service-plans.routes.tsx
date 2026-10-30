@@ -3,6 +3,7 @@ import { Route } from 'react-router-dom';
 
 import ProtectedRoute from '@/components/ProtectedRoute';
 import RequireFeature from '@/components/RequireFeature';
+import RequirePageAccess from '@/components/RequirePageAccess';
 
 import V2AppLayout from '../V2AppLayout';
 
@@ -29,7 +30,9 @@ export function servicePlansV2Routes() {
     <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN']} />}>
       <Route element={<V2AppLayout />}>
         <Route element={<RequireFeature feature="service_plans" />}>
-          <Route path="/service-plans" element={<ServicePlansPage />} />
+          <Route element={<RequirePageAccess all={['view_service_plans', 'show_service_plans_page']} />}>
+            <Route path="/service-plans" element={<ServicePlansPage />} />
+          </Route>
         </Route>
       </Route>
     </Route>

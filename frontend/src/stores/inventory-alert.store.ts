@@ -1,13 +1,13 @@
 import { create } from 'zustand';
 import type { InventoryAlert } from '@/lib/inventory/inventory-alerts';
 
-// Zustand replacement for Emanuel's module-level pub/sub `alert-bus.ts`.
+// Zustand replacement for the original module-level pub/sub `alert-bus.ts`.
 //
 // The TopBar bell (NotificationsDropdown) calls `emit(alert)` to fan out a
 // "navigate to this alert" intent; InventoryPage reads `pending`/`nonce` and
 // decides which view/filter/dialog the intent maps to, then calls `clear()`.
 // `nonce` bumps on every emit so a repeat-emit of the same alert still
-// triggers the consumer's effect (replaces Emanuel's `nonce`-remount hack).
+// triggers the consumer's effect (replaces the original `nonce`-remount hack).
 
 interface InventoryAlertState {
   pending: InventoryAlert | null;

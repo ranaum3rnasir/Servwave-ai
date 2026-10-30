@@ -163,3 +163,25 @@ export function projectJobScheduleFields<T extends Record<string, unknown>>(job:
   const visits = job.visits as VisitForScheduleProjection[] | null | undefined;
   return { ...job, ...resolveJobScheduleWindow(visits) };
 }
+
+/** The schedule half of a request body BEFORE validation: whatever the caller sent under the three window keys. */
+export type RawStatedWindow = { scheduled_start?: unknown; scheduled_end?: unknown; is_all_day?: unknown };
+
+/**
+ * Would a write that states these window keys leave the window DIFFERENT from `current`? The effective window is the
+ * body's value where it states one and the stored value where it does not (the "omitted = unchanged" rule of the visit
+ * door), so a body that names only the end, only the all-day flag or only the start is judged like a full one, and
+ * restating what is stored is not a move. Unlike `jobWindowMoved` it does not need a start: a closed-job door asks
+ * this before the schema has run, and a body that moves the end alone still moves the visit. A value that is not a
+ * date (or not a flag) is no move: validation answers it afterwards.
+ */
+export function statedWindowMoves(current: JobScheduleWindow, stated: RawStatedWindow): boolean {
+  const moves = (value: unknown, stored: Date | null): boolean => {
+    if (value === undefined) return false;
+    if (value === null) return stored !== null;
+    if (typeof value !== 'string' || Number.isNaN(Date.parse(value))) return false;
+    return !sameScheduleMinute(stored, new Date(value));
+  };
+  if (moves(stated.scheduled_start, current.scheduled_start) || moves(stated.scheduled_end, current.scheduled_end)) return true;
+  return typeof stated.is_all_day === 'boolean' && Boolean(current.is_all_day) !== stated.is_all_day;
+}

@@ -10,11 +10,13 @@
 import request from 'supertest';
 import { randomUUID } from 'crypto';
 import { vi } from 'vitest';
-import type { PrismaClient, Role } from '@prisma/client';
+import type { JobStatus, PrismaClient, Role } from '@prisma/client';
 import { supabaseAdmin } from '../lib/supabase';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
+import { clearSwitchCacheForOrg, clearSwitchCacheForUser } from '../lib/permissions/switches/cache';
+import type { SwitchValue } from '../lib/permissions/switches/catalog';
+import { validateSwitchSet } from '../lib/permissions/switches/validate';
 
 export type Person = { id: string; email: string };
 
@@ -37,7 +39,11 @@ export function switchFixture(db: PrismaClient, loadApp: () => Promise<Parameter
       post: (path: string, body: object = {}) => request(server).post(path).set('Authorization', bearer).send(body),
       put: (path: string, body: object = {}) => request(server).put(path).set('Authorization', bearer).send(body),
       patch: (path: string, body: object = {}) => request(server).patch(path).set('Authorization', bearer).send(body),
-      delete: (path: string) => request(server).delete(path).set('Authorization', bearer),
+      // A DELETE may carry a body (the deactivation names who gets the person's email).
+      delete: (path: string, body?: object) => {
+        const call = request(server).delete(path).set('Authorization', bearer);
+        return body === undefined ? call : call.send(body);
+      },
     };
   }
 
@@ -79,12 +85,28 @@ export function switchFixture(db: PrismaClient, loadApp: () => Promise<Parameter
       data: {
         id: person.id, organization_id: org, email: person.email, first_name: name, last_name: 'Tester', role,
         custom_role_id: opts.customRoleId ?? null,
+        based_on_role_key: opts.basedOnRoleKey ?? null,
         department_id: opts.departmentId ?? null,
         location_id: opts.locationId ?? null,
       },
     });
-    clearUserOverrideCache(person.id);
+    clearSwitchCacheForUser(person.id);
     return person;
+  }
+
+  /**
+   * The person's own mailbox with a primary address, so a send by hand (an estimate, an invoice, the pickup ticket) has an
+   * address to go out from; without one the route answers 409 "address needed" (PRD 10, S10.12).
+   */
+  async function addUserMailbox(org: string, person: Person) {
+    const id = randomUUID();
+    await db.mailbox.create({
+      data: { id, organization_id: org, kind: 'user', user_id: person.id, holder_user_id: person.id, status: 'active' },
+    });
+    await db.mailboxAddress.create({
+      data: { local_part: person.email.split('@')[0]!.toLowerCase(), organization_id: org, mailbox_id: id, is_primary: true },
+    });
+    return id;
   }
 
   /**
@@ -99,24 +121,41 @@ export function switchFixture(db: PrismaClient, loadApp: () => Promise<Parameter
   ) {
     const row = await db.customRole.create({
       data: {
-        organization_id: org, key, label: key, base_role: baseRole,
+        organization_id: org, key, label: key, base_role: baseRole, made_from_blank: opts.madeFromBlank ?? false,
       },
     });
-    if (opts.copyGrants !== false) {
-      for (const g of DEFAULT_GRANTS.filter((x) => x.role === baseRole)) {
-        await db.rolePermission.create({
-          data: {
-            organization_id: org, role: key, action: g.action, subject: g.subject,
-            conditions: (g.conditions ?? undefined) as never,
-          },
-        });
-      }
-    }
-    for (const g of opts.extraGrants ?? []) {
-      await db.rolePermission.create({ data: { organization_id: org, role: key, action: g.action, subject: g.subject } });
-    }
+    // One insert for the whole copy: a role copies the dozens of grants of its base, and a row at a time is a round trip each.
+    const copied = opts.copyGrants === false ? [] : DEFAULT_GRANTS.filter((x) => x.role === baseRole);
+    const grants = [
+      ...copied.map((g) => ({ organization_id: org, role: key, action: g.action, subject: g.subject, conditions: (g.conditions ?? undefined) as never })),
+      ...(opts.extraGrants ?? []).map((g) => ({ organization_id: org, role: key, action: g.action, subject: g.subject })),
+    ];
+    if (grants.length) await db.rolePermission.createMany({ data: grants });
     clearPermissionCache(org);
     return row;
+  }
+
+  /**
+   * Give a custom role exactly these switch values, in two statements. The writer the Roles screen uses
+   * (setRoleSwitchValues) upserts a switch at a time and logs each change, a round trip per switch that a fixture with
+   * 200 switches pays for every person it builds. The set still has to pass the catalog's validator, and is refused the same
+   * way when it does not, so a fixture never holds a combination the product refuses. Pass every switch the case is
+   * about (a switch with no stored row falls back to the preset of the role's base); a suite that tests the writer itself
+   * calls setRoleSwitchValues.
+   */
+  async function setRoleSwitches(org: string, key: string, values: Record<string, SwitchValue>) {
+    const violations = validateSwitchSet(values);
+    if (violations.length) {
+      const { InvalidSwitchSetError } = await import('../lib/permissions/switches/store.js');
+      throw new InvalidSwitchSetError(violations);
+    }
+    // Replace the stored rows of these switches (what an upsert each does), so a case can change a role it built before.
+    const switchKeys = Object.keys(values);
+    await db.permissionRoleSwitch.deleteMany({ where: { organization_id: org, role_key: key, switch_key: { in: switchKeys } } });
+    await db.permissionRoleSwitch.createMany({
+      data: switchKeys.map((switch_key) => ({ organization_id: org, role_key: key, switch_key, value: values[switch_key]! })),
+    });
+    clearSwitchCacheForOrg(org);
   }
 
   /** A draft estimate on the customer with one $100 line, optionally already carrying a discount. */
@@ -210,7 +249,7 @@ export function switchFixture(db: PrismaClient, loadApp: () => Promise<Parameter
     await db.lead.create({
       data: {
         id, organization_id: org, customer_id: customer, lead_number: `L-${id.slice(0, 8)}`, service_request: 'Fix the door',
-        commission_owner_id: opts.owner ?? null, created_by_id: opts.createdBy ?? null,
+        commission_owner_id: opts.owner ?? null, dispatcher_id: opts.dispatcher ?? null, created_by_id: opts.createdBy ?? null,
       },
     });
     for (const user of opts.assignees ?? []) {
@@ -254,7 +293,7 @@ export function switchFixture(db: PrismaClient, loadApp: () => Promise<Parameter
     customer: string,
     opts: {
       crew?: string[]; pastVisit?: boolean; soldBy?: string; dispatcher?: string; createdBy?: string;
-      fromLead?: string; sourcePlan?: string; status?: 'UNSCHEDULED' | 'SCHEDULED' | 'IN_PROGRESS';
+      fromLead?: string; sourcePlan?: string; status?: JobStatus;
     } = {},
   ) {
     const id = randomUUID();
@@ -276,7 +315,7 @@ export function switchFixture(db: PrismaClient, loadApp: () => Promise<Parameter
       data: {
         id, organization_id: org, customer_id: customer, service_location_id: location, job_number: `J-${id.slice(0, 8)}`,
         status: opts.status ?? 'SCHEDULED', estimate_id: estimateId ?? null, lead_id: opts.fromLead ?? null,
-        salesperson_id: opts.soldBy ?? null, source_plan_id: opts.sourcePlan ?? null, created_by_id: opts.createdBy ?? null,
+        salesperson_id: opts.soldBy ?? null, source_plan_id: opts.sourcePlan ?? null, dispatcher_id: opts.dispatcher ?? null, created_by_id: opts.createdBy ?? null,
       },
     });
     let visitId: string | undefined;
@@ -291,11 +330,14 @@ export function switchFixture(db: PrismaClient, loadApp: () => Promise<Parameter
 
   async function cleanup() {
     const quietly = (p: Promise<unknown>) => p.catch(() => undefined);
-    for (const org of orgs) {
-      await quietly(db.$executeRawUnsafe(`DELETE FROM estimate_line_items WHERE estimate_id IN (SELECT id FROM estimates WHERE organization_id = '${org}')`));
-      await quietly(db.$executeRawUnsafe(`DELETE FROM invoice_line_items WHERE invoice_id IN (SELECT id FROM invoices WHERE organization_id = '${org}')`));
-      await quietly(db.$executeRawUnsafe(`DELETE FROM refunds WHERE organization_id = '${org}'`));
-      await quietly(db.$executeRawUnsafe(`DELETE FROM payments WHERE invoice_id IN (SELECT id FROM invoices WHERE organization_id = '${org}')`));
+    // Every org at once: a statement per org per table is thousands of round trips for a suite that builds an org per case,
+    // and this hook has the suite's hook time limit to finish in. The order of the tables is what the foreign keys need.
+    const inOrgs = orgs.map((org) => `'${org}'`).join(', ');
+    if (orgs.length) {
+      await quietly(db.$executeRawUnsafe(`DELETE FROM estimate_line_items WHERE estimate_id IN (SELECT id FROM estimates WHERE organization_id IN (${inOrgs}))`));
+      await quietly(db.$executeRawUnsafe(`DELETE FROM invoice_line_items WHERE invoice_id IN (SELECT id FROM invoices WHERE organization_id IN (${inOrgs}))`));
+      await quietly(db.$executeRawUnsafe(`DELETE FROM refunds WHERE organization_id IN (${inOrgs})`));
+      await quietly(db.$executeRawUnsafe(`DELETE FROM payments WHERE invoice_id IN (SELECT id FROM invoices WHERE organization_id IN (${inOrgs}))`));
       for (const table of [
         'permission_change_log', 'permission_user_switches', 'permission_role_switches',
         'user_permission_overrides', 'role_permissions',
@@ -303,19 +345,22 @@ export function switchFixture(db: PrismaClient, loadApp: () => Promise<Parameter
         'service_plans',
         'estimates', 'leads',
       ]) {
-        await quietly(db.$executeRawUnsafe(`DELETE FROM ${table} WHERE organization_id = '${org}'`));
+        await quietly(db.$executeRawUnsafe(`DELETE FROM ${table} WHERE organization_id IN (${inOrgs})`));
       }
-      await quietly(db.$executeRawUnsafe(`DELETE FROM audit_logs WHERE org_id = '${org}'`));
+      await quietly(db.$executeRawUnsafe(`DELETE FROM audit_logs WHERE org_id IN (${inOrgs})`));
+      for (const table of ['mailbox_addresses', 'mailboxes']) {
+        await quietly(db.$executeRawUnsafe(`DELETE FROM ${table} WHERE organization_id IN (${inOrgs})`));
+      }
       for (const table of ['customers', 'users', 'custom_roles', 'departments', 'locations']) {
-        await quietly(db.$executeRawUnsafe(`DELETE FROM ${table} WHERE organization_id = '${org}'`));
+        await quietly(db.$executeRawUnsafe(`DELETE FROM ${table} WHERE organization_id IN (${inOrgs})`));
       }
-      await quietly(db.organization.deleteMany({ where: { id: org } }));
+      await quietly(db.organization.deleteMany({ where: { id: { in: orgs } } }));
     }
     await db.$disconnect();
   }
 
   return {
-    signedInAs, newOrg, addUser, addCustomRole, addEstimate, addInvoice, addServicePlan,
+    signedInAs, newOrg, addUser, addUserMailbox, addCustomRole, setRoleSwitches, addEstimate, addInvoice, addServicePlan,
     addDepartment, addLocation, addLead, addVisit, addJob, removeCrew, cleanup,
   };
 }

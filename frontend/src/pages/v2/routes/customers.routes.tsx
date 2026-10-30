@@ -2,6 +2,7 @@ import { lazy } from 'react';
 import { Route } from 'react-router-dom';
 
 import ProtectedRoute from '@/components/ProtectedRoute';
+import RequirePageAccess from '@/components/RequirePageAccess';
 
 import V2AppLayout from '../V2AppLayout';
 
@@ -27,8 +28,14 @@ export function customersV2Routes() {
   return (
     <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN']} />}>
       <Route element={<V2AppLayout />}>
-        <Route path="/customers" element={<CustomersPage />} />
-        <Route path="/customers/new" element={<CustomerFormPage />} />
+        <Route element={<RequirePageAccess all={['view_customers', 'show_customers_page']} />}>
+          <Route path="/customers" element={<CustomersPage />} />
+        </Route>
+        {/* The standalone New Customer follows Create customers and Show Customers page (S02.26); the customer
+            inside the lead and job forms never comes through here. A person without the pair goes to their dashboard. */}
+        <Route element={<RequirePageAccess all={['create_customers', 'show_customers_page']} />}>
+          <Route path="/customers/new" element={<CustomerFormPage />} />
+        </Route>
         <Route path="/customers/:id/edit" element={<CustomerFormPage />} />
         <Route path="/customers/:id" element={<CustomerDetailPage />} />
         <Route path="/customers/:customerId/statement" element={<StatementPage />} />

@@ -167,7 +167,7 @@ describe('CustomerPickerWithCreate — create', () => {
         locations: [expect.objectContaining({ address_line1: '1 Main St', city: 'Austin', state: 'TX', zip: '78701', is_primary: true })],
       }),
     ));
-    expect(onChange).toHaveBeenCalledWith('new1', 'Zed');
+    expect(onChange).toHaveBeenCalledWith('new1', 'Zed', expect.objectContaining({ id: 'new1' }));
   });
 
   it('seeds the name (not the phone) from a company-ish query that contains digits', async () => {
@@ -214,7 +214,7 @@ describe('CustomerPickerWithCreate — create', () => {
     fireEvent.click(screen.getByRole('button', { name: /create & select/i }));
 
     fireEvent.click(await screen.findByRole('button', { name: /create anyway/i }));
-    await waitFor(() => expect(onChange).toHaveBeenCalledWith('forced', 'Dup'));
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith('forced', 'Dup', expect.objectContaining({ id: 'forced' })));
     expect(api.post).toHaveBeenLastCalledWith('/api/customers?override=true', expect.any(Object));
   });
 

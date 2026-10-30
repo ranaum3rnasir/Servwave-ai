@@ -45,6 +45,11 @@ beforeEach(() => {
   db.estimate.updateMany.mockResolvedValue({ count: 0 });
   db.visit.count.mockResolvedValue(0);
   db.visit.updateMany.mockResolvedValue({ count: 1 });
+  // The detail response lists the walkthrough steps this person may take (S04.19): the lead has no visits to step.
+  db.visit.findMany.mockResolvedValue([]);
+  db.visit.findFirst.mockResolvedValue(null);
+  // The lead detail reads the lead's own phones and emails (S05.13): none here.
+  db.recordContactEntry.findMany.mockResolvedValue([]);
   db.lead.updateMany.mockResolvedValue({ count: 1 });
   db.timelineEvent.create.mockResolvedValue({});
   db.rolePermission.findMany.mockResolvedValue([]);
@@ -52,7 +57,7 @@ beforeEach(() => {
 });
 
 describe('GET /api/leads/:id status_options', () => {
-  it('returns all eight statuses in pipeline order, built from the lead\'s visits and estimates', async () => {
+  it('returns the seven statuses in pipeline order, with no Cancelled, built from the lead\'s visits and estimates', async () => {
     mockAuthAs('admin');
     leadWith('CONTACTED', { open: 1 });
 
@@ -67,7 +72,6 @@ describe('GET /api/leads/:id status_options', () => {
       { status: 'ESTIMATED', available: false, reason: 'No estimate has been sent to this lead yet.' },
       { status: 'WON', available: true, reason: null },
       { status: 'LOST', available: true, reason: null },
-      { status: 'CANCELLED', available: true, reason: null },
     ]);
   });
 
@@ -133,20 +137,15 @@ describe('PATCH /api/leads/:id { status } is checked against the lead\'s data', 
     expect(statusWrites()).toHaveLength(0);
   });
 
-  it('moves a Won lead with an approved estimate to Estimate Sent (200), and refuses Contacted with the estimate text', async () => {
+  it('refuses moving a Won lead with an approved estimate to any status, with the reopen sentence (S05.19)', async () => {
     mockAuthAs('admin');
     leadWith('WON', { estimatesSent: 1 });
 
-    const ok = await request(app).patch(`/api/leads/${LEAD_FIXTURE.id}`).set(authHeader('admin')).send({ status: 'ESTIMATED' });
-    expect(ok.status).toBe(200);
-    expect(statusWrites()).toHaveLength(1);
-    expect(historyRows()[0].metadata).toMatchObject({ from: 'WON', to: 'ESTIMATED' });
-
-    db.lead.updateMany.mockClear();
-    db.timelineEvent.create.mockClear();
-    const refused = await request(app).patch(`/api/leads/${LEAD_FIXTURE.id}`).set(authHeader('admin')).send({ status: 'CONTACTED' });
-    expect(refused.status).toBe(409);
-    expect(refused.body).toEqual({ error: ESTIMATE_SENT });
+    for (const status of ['ESTIMATED', 'CONTACTED']) {
+      const refused = await request(app).patch(`/api/leads/${LEAD_FIXTURE.id}`).set(authHeader('admin')).send({ status });
+      expect(refused.status).toBe(409);
+      expect(refused.body).toEqual({ error: 'To change the status, reopen the lead first.' });
+    }
     expect(statusWrites()).toHaveLength(0);
     expect(historyRows()).toHaveLength(0);
   });
@@ -163,14 +162,15 @@ describe('PATCH /api/leads/:id { status } is checked against the lead\'s data', 
     expect(wonStamp).toBeTruthy();
   });
 
-  it('applies the same rules to a closed lead (no closed-lead lock)', async () => {
+  it('locks a closed lead whatever its data supports: a Lost lead with a finished walkthrough still cannot move by hand (S05.19)', async () => {
     mockAuthAs('admin');
     leadWith('LOST', { finished: 1 });
 
     const res = await request(app).patch(`/api/leads/${LEAD_FIXTURE.id}`).set(authHeader('admin')).send({ status: 'WALKTHROUGH_COMPLETED' });
 
-    expect(res.status).toBe(200);
-    expect(statusWrites()[0].data.status).toBe('WALKTHROUGH_COMPLETED');
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({ error: 'To change the status, reopen the lead first.' });
+    expect(statusWrites()).toHaveLength(0);
   });
 
   it('never refuses the lead\'s own status, even when its rule would lock it', async () => {
@@ -192,11 +192,11 @@ describe('PATCH /api/leads/:id { status } is checked against the lead\'s data', 
     expect(db.visit.count).not.toHaveBeenCalled();
   });
 
-  it('keeps Lost and Cancelled available: the availability check never blocks closing a lead', async () => {
+  it('keeps Lost available: the availability check never blocks closing a lead', async () => {
     mockAuthAs('admin');
     leadWith('NEW', { estimatesSent: 1, open: 1 });
 
-    const res = await request(app).patch(`/api/leads/${LEAD_FIXTURE.id}`).set(authHeader('admin')).send({ status: 'CANCELLED' });
+    const res = await request(app).patch(`/api/leads/${LEAD_FIXTURE.id}`).set(authHeader('admin')).send({ status: 'LOST' });
 
     expect(res.status).not.toBe(409);
   });

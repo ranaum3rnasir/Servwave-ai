@@ -81,14 +81,14 @@ describe('allocateNumber — editable/custom-number skip path (in-scope entities
     expect(logger.warn).toHaveBeenCalledTimes(1);
   });
 
-  // The defect that took Alpha Doors' job creation down in production: the number the
+  // The defect that took the pilot org's job creation down in production: the number the
   // allocator CHECKS and the number it RETURNS were rendered by two different formatters
   // (JS padStart vs SQL lpad, which truncates past the padding width) and silently disagreed
   // for any org whose series had outgrown number_padding. Assert they are the same string —
   // this holds for every padding/prefix shape, not just the one that broke.
   it('probes the exact string it returns, even when the number is wider than the padding', async () => {
     (prisma.$queryRaw as Mock)
-      // Alpha Doors' shape: empty prefix, padding 5, six-digit series.
+      // The pilot org's shape: empty prefix, padding 5, six-digit series.
       .mockResolvedValueOnce([{ next_value: 698855, prefix: '', padding: 5 }])
       .mockResolvedValueOnce([{ taken: false }]);
 

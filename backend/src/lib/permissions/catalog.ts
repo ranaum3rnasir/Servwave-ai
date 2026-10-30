@@ -6,6 +6,13 @@ export type Subject =
   // built. It is what `canSeePricing` keys on - cost, margin and money visibility - and it is
   // deliberately NOT 'Report', which gates only /api/reports and the Reports/Billing nav.
   | 'Report' | 'Pricing' | 'Organization' | 'StateTaxRate' | 'AppSetting'
+  // S01.14 - the pages that are not one record type, each opened by its own "Access" switch (Access Schedule,
+  // Access Billing). Never role grants written by the Roles editor, so deliberately absent from PERMISSION_CATALOG below.
+  | 'Schedule' | 'Billing'
+  // S01.16 - company-wide money (dashboard money tiles, chart amounts, scoreboard revenue, dollar amounts in the activity
+  // feed, report totals), held by the "See company figures" switch. Never a role grant written by the Roles editor, so
+  // deliberately absent from PERMISSION_CATALOG below.
+  | 'CompanyFigures'
   | 'Attachment' | 'Walkthrough' | 'Inventory' | 'PurchaseOrder' | 'Vendor' | 'LogisticOrder' | 'Communication'
   | 'Location' | 'Role' | 'ServicePlan' | 'Task' | 'Notification' | 'Timeclock'
   | 'Automation'
@@ -24,6 +31,9 @@ export type Action =
   | 'send' | 'cancel' | 'duplicate' | 'revise'
   | 'record_payment' | 'waive_deposit' | 'manage_lines'
   | 'void' | 'refund' | 'credit' | 'void_payment'
+  // S01.17 - creating a payable link for an invoice (the "Send payment links" switch), apart from sending the invoice.
+  // Never a role grant written by the Roles editor, so deliberately absent from PERMISSION_CATALOG below.
+  | 'send_payment_link'
   | 'assign' | 'unassign' | 'en_route' | 'arrive' | 'start' | 'complete' | 'reopen' | 'reschedule'
   | 'export' | 'mark_lost' | 'contact' | 'schedule_walkthrough' | 'perform_walkthrough'
   // entity-redesign §10 lifecycle (Phase 3 minimal — broad CASL stays Phase 5)
@@ -62,10 +72,114 @@ export type Action =
   // rather than a new `Inbox` subject, because CASL keys off the (action, subject) pair and a new
   // subject would need its own plumbing across MODULES/ScopeResource/AppSubject for an entity
   // with no table and no rows to scope. A sensitive-bundle toggle, never an eleventh CRUD cell.
-  | 'access_inbox';
+  | 'access_inbox'
+  // S01.14 - opening a page that is not one record type (the "Access Schedule" and "Access Billing" switches, on the
+  // Schedule and Billing subjects), checked on its own instead of the record reads the page happens to ride on.
+  | 'access'
+  // S08.18 - taking a phone token for the office phone in the browser, checked on its own (the "Office phone in the
+  // browser" switch) instead of the technician role name.
+  | 'use_browser_phone'
+  // S08.11 - minting the playback link for a call recording (the "Play recording" switch).
+  | 'play_recording'
+  // S08.11 - minting the link marked as a file download (the "Download recording" switch). A person may hold either
+  // this or Play recording without the other.
+  | 'download_recording'
+  // S08.12 - reading a call's transcript and its call summary (the "View transcript" switch). Without it no call
+  // response carries either, and the transcript endpoint refuses.
+  | 'view_transcript'
+  // S08.13 - call insights (the "See call insights" switch): the sentiment and the "needs review" flag on a call, and the
+  // scorecard metrics of a phone agent. Without it no call response carries the first and no agents response the second.
+  | 'see_call_insights'
+  // S08.15 - the Phone page's tabs and usage bar, one action per switch (Phone numbers tab, Call flows tab, Call masking tab,
+  // Call groups tab, Training tab, Blocked callers tab, Phone usage bar). The page draws a tab only for the holder of its
+  // action, and the server checks every one that owns data (a number's routing change, the usage read, call flows, call groups,
+  // training, the blocked list); Call masking is a prototype with no server data, so its action is display only.
+  | 'phone_numbers_tab'
+  | 'call_flows_tab'
+  | 'call_masking_tab'
+  | 'call_groups_tab'
+  | 'training_tab'
+  | 'blocked_callers_tab'
+  | 'phone_usage_bar'
+  // Roles & Permissions S01.1 - what the "Apply discounts" switch compiles into (switches/catalog.ts):
+  // setting or changing a discount on an estimate or an invoice. Never a role grant written by the
+  // Roles editor, so it is deliberately absent from PERMISSION_CATALOG below.
+  | 'apply_discount'
+  // S01.18 - making an estimate with no lead and no job, or an invoice with no job (the "Standalone estimates" and
+  // "Standalone invoices" switches), checked on its own instead of the admin and dispatcher role names. Never a role
+  // grant written by the Roles editor, so deliberately absent from PERMISSION_CATALOG below.
+  | 'create_standalone'
+  // S01.5 - backdating a customer's created date, checked on its own instead of the admin role.
+  | 'change_created_date'
+  // S01.7 - setting a lead's status from its status menu, checked on its own instead of the sales role.
+  | 'change_status'
+  // S01.8 - stepping a visit or job's status (on my way, arrived, start, finish) on one the person is not crew on,
+  // checked on its own instead of the dispatcher role.
+  | 'update_any_visit_status'
+  // S04.22 - changing anything about a locked job (Completed or later, or Cancelled), checked on its own (the "Change
+  // locked jobs" switch). It lifts the lock only; the ordinary switch for the action is still asked.
+  | 'change_locked'
+  // S06.8 - seeing and working a job's office review (the "Office review" switch): the review panel and its change list.
+  // Checked on its own, never a role grant written by the Roles editor, so deliberately absent from PERMISSION_CATALOG below.
+  | 'office_review'
+  // S06.13 - marking a Ready to close job Done (the "Close jobs" switch), and marking it Done while money is still owed
+  // (the "Close jobs with money owed" switch). Each is checked on its own; neither is a role grant written by the Roles
+  // editor, so both are deliberately absent from PERMISSION_CATALOG below.
+  | 'close'
+  | 'close_with_money_owed'
+  // S01.10 - attaching or re-pointing a call, text or email to a job or lead, checked on its own instead of
+  // Edit communication records (the "Attach conversations to jobs and leads" switch).
+  | 'attach'
+  // S01.10 - editing or deleting a hand-logged entry someone else wrote, checked on its own instead of the admin
+  // role (the "Edit other people's logged communications" switch).
+  | 'edit_others_log'
+  // S01.11 - seeing and opening every task in the company, not only those the person is assignee or watcher on
+  // (the "See all tasks" switch), checked on its own instead of the base role being Admin. S01.13 - the same action on
+  // the Timeclock subject is seeing every person's timesheet (the "See everyone's timesheets" switch).
+  | 'see_all'
+  // S01.11 - adding a note to a job or lead, checked on its own instead of Edit jobs / Edit leads (the "Add notes"
+  // switch).
+  | 'add_note'
+  // S04.25 - deleting a note someone else wrote on a job or lead (the "Delete other people's notes" switch), checked on
+  // its own. Everyone may delete their own note; this grant is only for other people's.
+  | 'delete_others_note'
+  // S05.7 - adding or changing a job-only or lead-only phone or email with the pencil (the "Edit job and lead contact
+  // details" switch), checked on its own, so a person without Edit jobs or Edit leads can still hold the pencil.
+  | 'edit_contact_details'
+  // S01.12 - sending or resending an invitation to join the company (the "Invite users" switch), apart from creating a
+  // user directly (Create users), and setting which role a user is on or changing roles and permissions (the "Manage roles
+  // and permissions" switch, on the Role subject). Never role grants written by the Roles editor, so deliberately absent
+  // from PERMISSION_CATALOG below.
+  | 'invite' | 'manage_roles'
+  // S07.1 - seeing every asset, not only the ones the person holds (the "See all assets" switch). Checked on the asset
+  // routes instead of any role.
+  | 'see_all_assets'
+  // S07.12 - reading the stock movement history: the Activity tab, its count, an item's movement history and the movement
+  // detail (the "See inventory activity" switch), on top of View stock. Reading only; movements written as a side effect
+  // of other work are not gated by it.
+  | 'see_inventory_activity'
+  // S07.6 - marking a stage as taken by the person (the "Pick up staged items" switch), checked on its own instead of
+  // Edit stock.
+  | 'pick_up_staged'
+  // S07.7 - recording that someone else took a stage's parts (the "Record pickup for someone else" switch), checked on
+  // its own instead of Edit stock or Pick up staged items.
+  | 'record_pickup_for_other'
+  // Payments go-live slice 34 - the "Manage payout account" switch: accepting the payments terms, starting or
+  // finishing payout-account setup, and minting the embedded account sessions. The owner is whoever holds it
+  // (ADMIN by preset); no code checks for a role named owner.
+  | 'manage_payout_account'
+  // Payments go-live slice 35 - the "View payments and payouts" switch: the ServWave Payments area (payments, payouts,
+  // tax documents, disputes) and the viewer account session behind it. Separate from the owner's switch on purpose.
+  | 'view_payments';
 
+// ─── LEGACY (S01.19): the registry of the pairs the old Roles editor could write ───────────────
+// Role-permission rows and per-person override rows are no longer a source of access: a person's access is their
+// switches (`switches/catalog.ts`) plus the fixed reads (`fixedGrants.ts`). The tables are kept read-only for rollback
+// and for the preset migration (S01.22) to translate, and the Roles editor's write path below was removed with the
+// roles and person-switch APIs (S01.20, S01.21). The paragraphs below describe the retired path; they are history.
+//
 // ─── THE GATE on the role-permission write path (read before trusting a comment here) ─────────
-// There is exactly ONE write path into role_permissions from user input:
+// There was exactly ONE write path into role_permissions from user input:
 //   role.controller.ts putRolePermissions → viewModelToGrants(vm)  (roleViewModel.ts)
 //
 // PRIMARY gate — structural. putRolePermissions persists only what `viewModelToGrants` emits, and
@@ -114,10 +228,12 @@ export const PERMISSION_CATALOG: CatalogEntry[] = [
   { action: 'assign',            subject: 'Lead',         description: 'Assign leads to reps',                              category: 'Leads'         },
   { action: 'contact',           subject: 'Lead',         description: 'Log contact on a lead',                             category: 'Leads'         },
   { action: 'mark_lost',         subject: 'Lead',         description: 'Mark a lead as lost',                               category: 'Leads'         },
+  { action: 'reopen',            subject: 'Lead',         description: 'Reopen a Won or Lost lead',                         category: 'Leads'         },
   { action: 'cancel',            subject: 'Lead',         description: 'Cancel a lead',                                     category: 'Leads'         },
   { action: 'schedule_walkthrough', subject: 'Lead',      description: 'Schedule a walkthrough on a lead',                  category: 'Leads'         },
   { action: 'perform_walkthrough',  subject: 'Lead',      description: 'Record & complete an assigned walkthrough',         category: 'Leads'         },
   { action: 'renumber',          subject: 'Lead',         description: 'Edit the lead id number',                           category: 'Leads'         },
+  { action: 'export',            subject: 'Lead',         description: 'Export lead list',                                  category: 'Leads'         },
   // Estimate
   { action: 'create',            subject: 'Estimate',     description: 'Create estimates',                                  category: 'Estimates'     },
   { action: 'read',              subject: 'Estimate',     description: 'View estimates',                                    category: 'Estimates'     },
@@ -141,6 +257,7 @@ export const PERMISSION_CATALOG: CatalogEntry[] = [
   { action: 'approve',           subject: 'Estimate',     description: 'Approve an estimate internally (verbal/off-platform win)', category: 'Estimates' },
   { action: 'decline',           subject: 'Estimate',     description: 'Decline an estimate internally (verbal/off-platform loss)', category: 'Estimates' },
   { action: 'renumber',          subject: 'Estimate',     description: 'Edit the estimate id number',                       category: 'Estimates'     },
+  { action: 'export',            subject: 'Estimate',     description: 'Export estimate list',                              category: 'Estimates'     },
   // refund_deposit + reactivate_deposit folded into the unified Invoice refund (Phase 5):
   // the deposit refund is now POST /api/invoices/:id/refund on the kind=DEPOSIT invoice.
   // Job
@@ -172,6 +289,7 @@ export const PERMISSION_CATALOG: CatalogEntry[] = [
   // table - so a label here would not have surfaced it either.
   { action: 'manage_lines',      subject: 'Job',          description: 'Add/remove job line items and scopes',              category: 'Jobs'          },
   { action: 'renumber',          subject: 'Job',          description: 'Edit the job id number',                            category: 'Jobs'          },
+  { action: 'export',            subject: 'Job',          description: 'Export job list',                                   category: 'Jobs'          },
   // Invoice
   { action: 'create',            subject: 'Invoice',      description: 'Create invoices',                                   category: 'Invoices'      },
   { action: 'read',              subject: 'Invoice',      description: 'View invoices',                                     category: 'Invoices'      },
@@ -179,12 +297,13 @@ export const PERMISSION_CATALOG: CatalogEntry[] = [
   { action: 'delete',            subject: 'Invoice',      description: 'Delete invoices',                                   category: 'Invoices'      },
   { action: 'send',              subject: 'Invoice',      description: 'Send invoices to customers',                        category: 'Invoices'      },
   { action: 'void',              subject: 'Invoice',      description: 'Void invoices (admin-only)',                         category: 'Invoices'      },
-  { action: 'refund',            subject: 'Invoice',      description: 'Refund invoice via Stripe (admin-only)',             category: 'Invoices'      },
+  { action: 'refund',            subject: 'Invoice',      description: 'Refund payments - send money back to a customer',    category: 'Invoices'      },
   { action: 'credit',            subject: 'Invoice',      description: 'Apply a credit / give-back (admin-only)',            category: 'Invoices'      },
   { action: 'void_payment',      subject: 'Invoice',      description: 'Void a manual payment (admin-only)',                 category: 'Invoices'      },
   { action: 'record_payment',    subject: 'Invoice',      description: 'Record payment on invoice',                         category: 'Invoices'      },
   { action: 'manage_lines',      subject: 'Invoice',      description: 'Add/remove invoice line items',                      category: 'Invoices'      },
   { action: 'renumber',          subject: 'Invoice',      description: 'Edit the invoice id number',                        category: 'Invoices'      },
+  { action: 'export',            subject: 'Invoice',      description: 'Export invoice list',                               category: 'Invoices'      },
   // PriceBook
   { action: 'read',              subject: 'PriceBook',    description: 'View price book categories and items',              category: 'Price Book'    },
   { action: 'create',            subject: 'PriceBook',    description: 'Create price book items/categories',                category: 'Price Book'    },
@@ -286,8 +405,6 @@ export const PERMISSION_CATALOG: CatalogEntry[] = [
   { action: 'delete',            subject: 'Location',      description: 'Delete locations',                                  category: 'Settings'      },
   { action: 'read',              subject: 'Role',          description: 'View roles & permissions',                          category: 'Settings'      },
   { action: 'update',            subject: 'Role',          description: 'Edit role permissions',                             category: 'Settings'      },
-  { action: 'read',              subject: 'Timeclock',     description: 'View timeclock configuration & stores',             category: 'Settings'      },
-  { action: 'update',            subject: 'Timeclock',     description: 'Configure timeclock: geofence stores, config, per-user settings', category: 'Settings' },
   // Service Plans
   { action: 'read',              subject: 'ServicePlan',   description: 'View service plans',                                category: 'Service Plans' },
   { action: 'create',            subject: 'ServicePlan',   description: 'Create service plans',                              category: 'Service Plans' },

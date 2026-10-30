@@ -69,10 +69,8 @@ function referencesRequiredToken(o: unknown, token: string): boolean {
 
 /**
  * The Prisma `where` fragment for a user's row-scope on a resource, derived by UNIONing ALL
- * `read` grants for the resource (role grants PLUS the own-scoped reads synthesized from a user's
- * per-user ALLOW overrides — appended by `scopeWhereForReq`) so the SQL scope agrees with the CASL
- * ability (which materializes the same paired own-scoped read for an allow override). Pure — grants
- * are injected. Resolved through substituteConditions.
+ * `read` grants for the resource (the grants the person's switches compile into) so the SQL scope
+ * agrees with the CASL ability. Pure — grants are injected. Resolved through substituteConditions.
  *   ADMIN / ANY unconditional read → {} (no restriction)
  *   no read grant                  → MATCH_NOTHING
  *   one conditional read           → that substituted condition
@@ -90,7 +88,9 @@ function referencesRequiredToken(o: unknown, token: string): boolean {
  */
 export function scopeWhereFor(
   user: ScopeUser,
-  resource: ScopeResource,
+  // 'JobStage' is not a scoped resource of its own (no ability grant reads it); the staging reach (stageScope.ts)
+  // borrows this union with its own arms as the grants.
+  resource: ScopeResource | 'JobStage',
   grants: Grant[],
   action: string = 'read',
 ): Record<string, unknown> {

@@ -24,12 +24,11 @@ import { logger } from '../lib/logger';
  * company logo the 2MB cap had just refused. So each route supplies its own true sentence
  * through `multerErrorHandler(...)`, mounted immediately after its multer middleware.
  *
- * THE 512MB VIDEO CAP WIDENED THAT SPREAD RATHER THAN CLOSING IT. Attachment video now goes
- * direct to storage at 512MB against a 2GB per-entity total, while every route listed above
- * still buffers the file in this process and keeps the ceiling it had — including the
- * attachment proxy route, which still answers 50MB for video. The caps a user can meet
- * therefore run from 2MB to 2GB, and the argument against a single global sentence is
- * stronger than when it was written, not weaker.
+ * S4 WIDENED THAT SPREAD RATHER THAN CLOSING IT. Attachment video now goes direct to storage
+ * at 512MB against a 2GB per-entity total, while every route listed above still buffers the
+ * file in this process and keeps the ceiling it had. The caps a user can meet therefore run
+ * from 2MB to 2GB, and the argument against a single global sentence is stronger than when it
+ * was written, not weaker.
  *
  * `globalMulterErrorHandler` is the safety net for any multipart route that is added later
  * and forgets to mount one. It deliberately names NO size at all: a route-accurate message
@@ -43,12 +42,6 @@ import { logger } from '../lib/logger';
  * through here. That is the whole point: a literal in the copy would silently become a lie
  * the day someone retunes the constant, and a message that lies about the limit is worse
  * than the 500 this middleware replaced, because the user believes it.
- *
- * SEVEN route files call it: user, organization, comm-email, inv-stages, inv-assets,
- * price-book and estimate. (The 512MB PR's description said six — it was miscounted, and
- * the number is recorded here rather than in prose because `grep -rn megabytes
- * backend/src/routes` is the only thing that can keep it honest.) `attachment.routes.ts`
- * is deliberately NOT among them: it goes through `sizeLimitLabel` instead.
  */
 export function megabytes(bytes: number): string {
   return `${bytes / 1024 / 1024}MB`;
@@ -57,21 +50,14 @@ export function megabytes(bytes: number): string {
 /**
  * The same job as `megabytes`, for a cap large enough that megabytes stop reading as a limit.
  *
- * The per-entity total is 2GB. `megabytes()` renders that as '2048MB', which is accurate and
+ * S4's per-entity total is 2GB. `megabytes()` renders that as '2048MB', which is accurate and
  * which nobody reads as "two gigabytes" — a limit the user cannot hold in their head is only
  * marginally better than an unexplained refusal. Whole gigabytes are rendered as such and
  * everything else falls through to `megabytes`, so every existing caller's copy is unchanged
- * to the byte (512MB included).
+ * to the byte.
  *
  * Derivation, not formatting, is the point it inherits: the argument is always the constant
  * the check enforces, never a number typed beside it.
- *
- * KNOWN LIMITATION, left in place deliberately. Only WHOLE gigabytes take the GB form, so a
- * cap of 1.5GB renders as '1536MB' — the exact unreadability this function was added to
- * avoid, arrived at from the other side. No caller is anywhere near that today (the largest
- * is MAX_ENTITY_SIZE at exactly 2GB), so the behaviour is not reachable and changing it now
- * would move existing copy for no user. It is written down so the next person who sets a
- * fractional-gigabyte cap finds it here rather than in a screenshot from production.
  */
 export function sizeLimitLabel(bytes: number): string {
   const gigabytes = bytes / 1024 / 1024 / 1024;

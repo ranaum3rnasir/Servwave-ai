@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/axios';
+import { useAppAbility } from '@/contexts/AbilityContext';
 import { Plus, Tag as TagIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -28,6 +29,7 @@ export function BulkTagPopover({ customerIds, onDone }: BulkTagPopoverProps) {
   const [search, setSearch] = useState('');
   const queryClient = useQueryClient();
   const { data: tags } = useTags();
+  const canCreateTag = useAppAbility().can('create', 'Tag');
 
   // Bulk-tagging N customers changes the same caches one tag write changes, so it
   // drops the same set TagInput does - derived from the shared entity map rather
@@ -80,7 +82,8 @@ export function BulkTagPopover({ customerIds, onDone }: BulkTagPopoverProps) {
 
   const suggestions = (tags ?? []).filter((t) => !search || t.name.toLowerCase().includes(search.toLowerCase()));
   const exactMatch = (tags ?? []).some((t) => t.name.toLowerCase() === search.trim().toLowerCase());
-  const showCreate = search.trim().length > 0 && !exactMatch;
+  // The create row follows Create tags: the server refuses a new tag from anyone without it.
+  const showCreate = canCreateTag && search.trim().length > 0 && !exactMatch;
 
   return (
     <Popover

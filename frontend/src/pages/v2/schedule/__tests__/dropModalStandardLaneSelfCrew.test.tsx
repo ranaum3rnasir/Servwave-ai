@@ -19,9 +19,9 @@
  * `currentCrewIds` when the job has no live visit, which is the strict path. The modal's own
  * `restoreDraftOnNon409` then put the user back in front of the same unfixable field.
  *
- * WHY THE FIXTURE'S ROLE IS ADMIN WHILE THE ABILITY IS SELF-ONLY: the same reason its twin gives -
- * `boardCapabilitiesFor` switches on `user.role`, and an ADMIN with `assign User` withheld by a
- * per-user override is a real, supported configuration.
+ * THE ABILITY IS SELF-ONLY: it holds Schedule visits (the switch behind the unscheduled jobs bucket and
+ * a visit's drag) and lacks `assign User`, so the board has one lane and the standard calendar is the
+ * only board there is (Roles & Permissions S04.11).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent, within } from '@testing-library/react';
@@ -83,12 +83,16 @@ const TECH = { id: 'u-tech', first_name: 'Terry', last_name: 'Tech' };
 const SELF_ONLY = buildAbility([
   { action: 'read', subject: 'all' },
   { action: 'update', subject: 'Job' },
+  { action: 'reschedule', subject: 'Job' },
+  { action: 'assign', subject: 'Job' },
   { action: 'create', subject: 'Job' },
 ]);
 /** The same viewer plus the one grant. Nothing else differs. */
 const GRANT_HOLDER = buildAbility([
   { action: 'read', subject: 'all' },
   { action: 'update', subject: 'Job' },
+  { action: 'reschedule', subject: 'Job' },
+  { action: 'assign', subject: 'Job' },
   { action: 'create', subject: 'Job' },
   { action: 'assign', subject: 'User' },
 ]);

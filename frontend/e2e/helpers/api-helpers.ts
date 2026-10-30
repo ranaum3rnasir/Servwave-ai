@@ -166,7 +166,7 @@ export async function completeJob(token: string, jobId: string, notes?: string):
     extraHTTPHeaders: { Authorization: `Bearer ${token}` },
   });
   await ctx.post(`/api/jobs/${jobId}/complete`, {
-    data: { completion_notes: notes || 'E2E audit completion' },
+    data: { completion_notes: notes || 'E2E audit completion', cancel_open_visits: true },
   });
   await ctx.dispose();
 }

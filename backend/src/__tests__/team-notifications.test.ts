@@ -2,8 +2,8 @@
  * team-notifications.test.ts — Task 3.6
  *
  * TDD for emitting notifications on:
- *   1. team.ot_override_requested — timeclock OVERRIDE punch
- *   2. team.invite_accepted       — acceptInvite + googleFinalize
+ *   1. team.invite_accepted       — acceptInvite + googleFinalize
+ * and for the clock-in that raises none (S01.13: no clock-in location checks, so no out-of-zone alert).
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
@@ -19,13 +19,19 @@ import { clearTokenCache } from '../middleware/authenticate';
 
 // ─── Spy on emit ─────────────────────────────────────────────────────────────
 
+vi.mock('../services/notifications/noRecordAlerts', () => ({
+  queueNoRecordAlert: vi.fn(),
+}));
+// The auth routes and the clock-in route still send other alerts through the writer; none of them is the subject here.
 vi.mock('../services/notifications/notificationService', () => ({
   emit: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Import AFTER mock is registered so we get the spy reference.
 import { emit } from '../services/notifications/notificationService';
-const mockEmit = emit as ReturnType<typeof vi.fn>;
+import { queueNoRecordAlert } from '../services/notifications/noRecordAlerts';
+const mockEmit = queueNoRecordAlert as ReturnType<typeof vi.fn>;
+const mockWriterEmit = emit as ReturnType<typeof vi.fn>;
 
 // ─── Prisma typed surface ─────────────────────────────────────────────────────
 
@@ -126,47 +132,24 @@ beforeEach(() => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// team.ot_override_requested
+// clock-in: no out-of-zone alert
 // ═══════════════════════════════════════════════════════════════════════════════
 
-describe('team.ot_override_requested', () => {
-  it('emits on an OVERRIDE punch with correct verb, object.type, object.id, entity.user_id, and data.punch_id', async () => {
+describe('a clock-in raises no alert', () => {
+  it('does NOT emit for an IN punch far from every work zone', async () => {
     mockAuthAs('technician');
     setClockUser('technician');
-    // Wire approver list for notifyApprovers email path
     mockPrisma.user.findMany.mockResolvedValue([{ email: 'admin@test.com' }]);
     stampCreate();
 
     const res = await request(app)
       .post('/api/timeclock/punches')
       .set(authHeader('technician'))
-      .send({ type: 'IN', lat: FAR_AWAY.lat, lng: FAR_AWAY.lng, override: true });
-
-    expect(res.status).toBe(201);
-
-    expect(mockEmit).toHaveBeenCalledTimes(1);
-    const call = mockEmit.mock.calls[0][0];
-    expect(call.verb).toBe('team.ot_override_requested');
-    expect(call.object.type).toBe('TIME_ENTRY');
-    expect(call.object.id).toBe(PUNCH_ID);
-    expect(call.entity.user_id).toBe(TEST_USERS.technician.id);
-    expect(call.data.punch_id).toBe(PUNCH_ID);
-    expect(call.organizationId).toBe(ALPHA_ORG_ID);
-    expect(call.actorId).toBe(TEST_USERS.technician.id);
-  });
-
-  it('does NOT emit for a normal in-zone IN punch', async () => {
-    mockAuthAs('technician');
-    setClockUser('technician');
-    stampCreate();
-
-    const res = await request(app)
-      .post('/api/timeclock/punches')
-      .set(authHeader('technician'))
-      .send({ type: 'IN', lat: AUSTIN.lat, lng: AUSTIN.lng });
+      .send({ type: 'IN', lat: FAR_AWAY.lat, lng: FAR_AWAY.lng });
 
     expect(res.status).toBe(201);
     expect(mockEmit).not.toHaveBeenCalled();
+    expect(mockWriterEmit).not.toHaveBeenCalled();
   });
 });
 
@@ -229,6 +212,8 @@ describe('team.invite_accepted via googleFinalize', () => {
     });
     mockPrisma.rolePermission.findMany.mockResolvedValue([]);
     mockPrisma.userPermissionOverride.findMany.mockResolvedValue([]);
+    mockPrisma.permissionUserSwitch.findMany.mockResolvedValue([]);
+    mockPrisma.permissionRoleSwitch.findMany.mockResolvedValue([]);
 
     const res = await request(app)
       .post('/api/auth/google/finalize')
@@ -261,6 +246,8 @@ describe('team.invite_accepted via googleFinalize', () => {
     });
     mockPrisma.rolePermission.findMany.mockResolvedValue([]);
     mockPrisma.userPermissionOverride.findMany.mockResolvedValue([]);
+    mockPrisma.permissionUserSwitch.findMany.mockResolvedValue([]);
+    mockPrisma.permissionRoleSwitch.findMany.mockResolvedValue([]);
 
     const res = await request(app)
       .post('/api/auth/google/finalize')

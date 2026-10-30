@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import api from '@/lib/axios';
 import { useOrganization } from '@/lib/api/organization';
-import { useAuthStore } from '@/stores/auth.store';
+import { useAppAbility } from '@/contexts/AbilityContext';
 import { cn, extractApiError, formatPhoneInput } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Heading } from '@/components/ui/heading';
@@ -227,8 +227,8 @@ export default function CustomerFormPage() {
   const queryClient = useQueryClient();
   const isEdit = Boolean(id);
   const returnTo = (location.state as { returnTo?: string } | null)?.returnTo;
-  const authUser = useAuthStore((s) => s.user);
-  const isAdmin = authUser?.role === 'ADMIN';
+  // Backdating the created date is the "Change customer created date" switch, not the admin role.
+  const canBackdate = useAppAbility().can('change_created_date', 'Customer');
 
   const { data: customer, isLoading } = useQuery({
     queryKey: ['customer-form', id],
@@ -474,7 +474,7 @@ export default function CustomerFormPage() {
   };
 
   // Build the customer payload (shared by create + edit).
-  const buildPayload = (data: CustomerFormData, adminOverride?: boolean) => {
+  const buildPayload = (data: CustomerFormData, canBackdateCreated?: boolean) => {
     const {
       address_line1,
       address_line2,
@@ -558,8 +558,8 @@ export default function CustomerFormPage() {
           extension: p.extension || undefined,
           is_primary: p.is_primary ?? false,
         })),
-      // Admin-only: include created_at only when admin and value is non-empty.
-      ...(adminOverride && created_at ? { created_at } : {}),
+      // Include created_at only for someone who may backdate it, and only when the value is non-empty.
+      ...(canBackdateCreated && created_at ? { created_at } : {}),
     };
 
     return { payload, hasLocation, address_line1, address_line2, city, state, zip };
@@ -568,7 +568,7 @@ export default function CustomerFormPage() {
   // Save (create or edit) → returns the customer id. `override` bypasses the
   // duplicate-customer guard on the create path (spec §5.2).
   const save = async (data: CustomerFormData, override = false): Promise<string> => {
-    const { payload, hasLocation, address_line1, address_line2, city, state, zip } = buildPayload(data, isAdmin);
+    const { payload, hasLocation, address_line1, address_line2, city, state, zip } = buildPayload(data, canBackdate);
 
     if (isEdit && id) {
       const { data: res } = await api.patch(`/api/customers/${id}`, payload);
@@ -1000,8 +1000,8 @@ export default function CustomerFormPage() {
                     {errors.source && <p className="mt-1 text-xs text-danger">{errors.source.message}</p>}
                   </div>
 
-                  {/* Admin-only: backdate "Customer since" for imported records */}
-                  {isEdit && isAdmin && (
+                  {/* Backdate "Customer since" for imported records: the Change customer created date switch */}
+                  {isEdit && canBackdate && (
                     <div>
                       <FieldLabel htmlFor="created_at">Customer Since</FieldLabel>
                       <DateField

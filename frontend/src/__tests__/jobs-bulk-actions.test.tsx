@@ -53,7 +53,12 @@ class ResizeObserverStub {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockApi.get.mockResolvedValue({ data: JOB_LIST_FIXTURE });
+  // The company's cancel reasons are read from their own route (S06.15); every other read gets the jobs list.
+  mockApi.get.mockImplementation(async (url: string) => (
+    url === '/api/job-cancel-reasons'
+      ? { data: { job_cancel_reasons: [{ code: 'PRICE', label: 'Price', is_active: true, sort_order: 0, is_builtin: true }] } }
+      : { data: JOB_LIST_FIXTURE }
+  ));
   global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
   if (!Element.prototype.hasPointerCapture) {
     Element.prototype.hasPointerCapture = () => false;
@@ -163,7 +168,7 @@ describe('JobsPage - bulk actions (SRVW-104)', () => {
     });
   });
 
-  it('cancel goes through the reason dialog, sends one cancelled_reason, and reports the voided invoices back', async () => {
+  it('cancel goes through the reason dialog, sends the reason plus the invoice choice, and reports the voided invoices back', async () => {
     mockApi.post.mockResolvedValueOnce({
       data: { updated: ['j0000000-0000-0000-0000-000000000001'], voided_invoice_ids: ['i1', 'i2', 'i3'], failed: [] },
     });
@@ -174,20 +179,30 @@ describe('JobsPage - bulk actions (SRVW-104)', () => {
 
     await userEvent.click(await screen.findByRole('menuitem', { name: 'Cancelled' }));
 
-    const confirmButton = await screen.findByRole('button', { name: /cancel job/i });
-    expect(confirmButton).toBeDisabled();
+    // The button is drawn again when its reason goes, so it is looked up each time.
+    await screen.findByRole('button', { name: /cancel job/i });
+    const confirmButton = () => screen.getByRole('button', { name: /cancel job/i });
+    expect(confirmButton()).toBeDisabled();
 
-    const textarea = screen.getByPlaceholderText(/why/i);
-    fireEvent.change(textarea, { target: { value: 'customer no longer needs it' } });
-    expect(confirmButton).not.toBeDisabled();
+    // S06.15: the reason is picked from the company's list; a note beside it is optional.
+    await userEvent.click(screen.getByRole('combobox', { name: /Reason/ }));
+    await userEvent.click(await screen.findByRole('option', { name: 'Price' }));
+    fireEvent.change(screen.getByLabelText('Note (optional)'), { target: { value: 'customer no longer needs it' } });
+    // #891: a reason alone is not enough - the open-invoice choice is required too.
+    expect(confirmButton()).toBeDisabled();
 
-    fireEvent.click(confirmButton);
+    fireEvent.click(screen.getByRole('radio', { name: /Void the unpaid invoices/ }));
+    expect(confirmButton()).not.toBeDisabled();
+
+    fireEvent.click(confirmButton());
 
     await waitFor(() => {
       expect(mockApi.post).toHaveBeenCalledWith('/api/jobs/bulk-status', {
         ids: ['j0000000-0000-0000-0000-000000000001'],
         action: 'cancel',
+        cancel_reason_code: 'PRICE',
         cancelled_reason: 'customer no longer needs it',
+        void_invoices: true,
       });
     });
 

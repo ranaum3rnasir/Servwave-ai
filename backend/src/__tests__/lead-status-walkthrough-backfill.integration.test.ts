@@ -44,7 +44,7 @@ const ORG_B = '00000000-0000-0000-0000-0000000003b1';
 const USER_A = '00000000-0000-0000-0000-0000000003a2';
 const USER_B = '00000000-0000-0000-0000-0000000003b2';
 
-type LeadStatus = 'NEW' | 'CONTACTED' | 'WALKTHROUGH_SCHEDULED' | 'WALKTHROUGH_COMPLETED' | 'ESTIMATED' | 'WON' | 'LOST' | 'CANCELLED';
+type LeadStatus = 'NEW' | 'CONTACTED' | 'WALKTHROUGH_SCHEDULED' | 'WALKTHROUGH_COMPLETED' | 'ESTIMATED' | 'WON' | 'LOST';
 type VisitStatus = 'SCHEDULED' | 'EN_ROUTE' | 'ON_SITE' | 'IN_PROGRESS' | 'COMPLETED' | 'CANCELLED';
 type EstimateStatus = 'DRAFT' | 'SENT' | 'PENDING' | 'WON' | 'DECLINED' | 'EXPIRED' | 'ARCHIVED' | 'SUPERSEDED';
 
@@ -105,8 +105,6 @@ const FIXTURES: Fixture[] = [
   { key: 'won-finished', org: 'A', status: 'WON', visits: ['COMPLETED'], expect: 'WON' },
   { key: 'lost-open', org: 'A', status: 'LOST', visits: ['SCHEDULED'], expect: 'LOST' },
   { key: 'lost-finished', org: 'A', status: 'LOST', visits: ['COMPLETED'], expect: 'LOST' },
-  { key: 'cancelled-open', org: 'A', status: 'CANCELLED', visits: ['SCHEDULED'], expect: 'CANCELLED' },
-  { key: 'cancelled-finished', org: 'A', status: 'CANCELLED', visits: ['COMPLETED'], expect: 'CANCELLED' },
   // already in a walkthrough status (e.g. the migration ran, or slice 02 moved it): left alone
   { key: 'already-scheduled', org: 'A', status: 'WALKTHROUGH_SCHEDULED', visits: ['SCHEDULED'], expect: 'WALKTHROUGH_SCHEDULED' },
   { key: 'already-completed', org: 'A', status: 'WALKTHROUGH_COMPLETED', visits: ['COMPLETED'], expect: 'WALKTHROUGH_COMPLETED' },

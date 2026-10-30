@@ -10,11 +10,12 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
+import { FINISHED_JOB_STATUSES } from './finished-job-statuses';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import { clearTokenCache } from '../middleware/authenticate';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { ALPHA_ORG_ID, TEST_USERS, mockAuthAs, authHeader } from './helpers';
+import { ALPHA_ORG_ID, TEST_USERS, mockAuthAs, authHeader, attachedJobWhere } from './helpers';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const p = prisma as any;
@@ -100,8 +101,8 @@ describe('GET /api/communication/dialer-search', () => {
     const args = p.customer.findMany.mock.calls[0][0];
     expect(args.where.organization_id).toBe(ALPHA_ORG_ID);
     expect(args.take).toBe(5);
-    // Open jobs are embedded and exclude terminal statuses.
-    expect(args.select.jobs.where.status).toEqual({ notIn: ['COMPLETED', 'CANCELLED'] });
+    // Open jobs are embedded and exclude every finished status (PRD 6) and Cancelled.
+    expect(args.select.jobs.where.status).toEqual({ notIn: [...FINISHED_JOB_STATUSES, 'CANCELLED'] });
     expect(args.select.jobs.take).toBe(5);
 
     expect(res.body.customers).toEqual([
@@ -196,7 +197,7 @@ describe('GET /api/communication/dialer-search', () => {
  * scopeWhereForReq(req,'Job') into the same object literal it puts its search terms in. While a
  * technician's fragment was `{ assignees: { some: … } }` those were different keys and the spread
  * survived; the technician-ownership spec (Part C) widened `read Job` to
- * `{ OR: [assigned, created] }`, and the LAST `OR:` in an object literal wins - which silently
+ * an OR of the people attached to it, and the LAST `OR:` in an object literal wins - which silently
  * deleted the scope and returned EVERY job in the org (number, status, customer name and phone,
  * service address) to any technician in a phone-enabled org.
  *
@@ -219,13 +220,9 @@ describe('GET /api/communication/dialer-search - the job group keeps its row sco
     const clauses = flatten(where);
 
     // The scope survives: one of the composed clauses is the technician's own read fragment.
-    const scopeClause = clauses.find((c) => JSON.stringify(c.OR ?? '').includes('created_by_id'));
+    const scopeClause = clauses.find((c) => JSON.stringify(c.OR ?? '').includes('dispatcher_id'));
     expect(scopeClause, `row scope missing from ${JSON.stringify(where)}`).toBeDefined();
-    expect(scopeClause!.OR).toEqual([
-      // S8 (D6): the own-arm is the visits path now.
-      { visits: { some: { assignees: { some: { user_id: TEST_USERS.technician.id } } } } },
-      { created_by_id: TEST_USERS.technician.id },
-    ]);
+    expect(scopeClause!.OR).toEqual(attachedJobWhere(TEST_USERS.technician.id));
 
     // ...and so do the search terms, as a SEPARATE required clause.
     const searchClause = clauses.find((c) => JSON.stringify(c.OR ?? '').includes('job_number'));

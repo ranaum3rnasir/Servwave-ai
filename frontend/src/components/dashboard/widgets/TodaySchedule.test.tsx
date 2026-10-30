@@ -15,17 +15,17 @@ const lane: TechSchedule = {
     {
       id: 'job-1', job_number: 'J00001', status: 'SCHEDULED', scope_notes: 'Fix door',
       scheduled_start: '2026-07-02T09:00:00.000Z', scheduled_end: '2026-07-02T11:00:00.000Z',
-      customer_name: 'Acme Doors', address: null, entity: 'job',
+      customer_name: 'Acme Doors', address: null, entity: 'job', link: '/jobs/job-1',
     },
     {
       id: 'lead-1', job_number: 'L00001', status: 'WALKTHROUGH', scope_notes: 'New gate operator',
       scheduled_start: '2026-07-02T12:00:00.000Z', scheduled_end: '2026-07-02T13:00:00.000Z',
-      customer_name: 'Eric Bizzak', address: null, entity: 'walkthrough',
+      customer_name: 'Eric Bizzak', address: null, entity: 'walkthrough', link: '/leads/lead-1',
     },
     {
       id: 'lead-2', job_number: 'L00002', status: 'WALKTHROUGH_COMPLETED', scope_notes: 'Turnstile survey',
       scheduled_start: '2026-07-02T14:00:00.000Z', scheduled_end: '2026-07-02T15:00:00.000Z',
-      customer_name: 'Gregory Ave HOA', address: null, entity: 'walkthrough',
+      customer_name: 'Gregory Ave HOA', address: null, entity: 'walkthrough', link: '/leads/lead-2',
     },
   ],
 };

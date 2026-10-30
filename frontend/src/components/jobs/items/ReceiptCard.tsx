@@ -64,6 +64,8 @@ import { toNum } from './money';
 import type { StateTaxRate } from '@/lib/api/invoices';
 import { matchTaxRateState } from '@/lib/tax/matchTaxRateState';
 import { AddTaxRateDialog } from '@/components/tax/AddTaxRateDialog';
+import { useAppAbility } from '@/contexts/AbilityContext';
+import { ProcessingBadge } from '@/components/invoices/ProcessingBadge';
 
 export type ReceiptCardVariant = 'invoice' | 'estimate' | 'job';
 
@@ -138,6 +140,10 @@ export interface ReceiptCardProps {
    * caller reads this from the shared deposit resolver; this card never infers it from arithmetic.
    */
   depositMismatch?: { depositAmount: number; total: number } | null;
+  /** What is still owed on a deposit that has taken a part payment; null/absent while nothing has been paid. */
+  depositLeftToPay?: number | null;
+  /** Bank money still clearing on the deposit; shown as a "Processing $X" badge, never subtracted. */
+  depositProcessingAmount?: number | null;
   depositPercentOptions?: number[];
   onDepositPercentChange?: (pct: number) => void;
   /**
@@ -456,6 +462,8 @@ export function ReceiptCard({
   depositDueAmount,
   balanceOnCompletion,
   depositMismatch,
+  depositLeftToPay,
+  depositProcessingAmount,
   depositPercentOptions = [],
   onDepositPercentChange,
   depositMode,
@@ -503,6 +511,9 @@ export function ReceiptCard({
 
   const taxInteractive = !!onTaxRateChange && taxRateOptions.length > 0;
   const [addRateOpen, setAddRateOpen] = useState(false);
+  // Adding a rate is tax setup, so the row is Company settings' (the rule the add route enforces). The rates
+  // themselves are reference data every form reads.
+  const canAddTaxRate = useAppAbility().can('update', 'Organization');
   // #985 - shared matcher: rate match, tie-broken by the service-location state. Was a bare
   // rate-only find(), which labelled an Austin TX job "Illinois (6.25%)".
   const matchedState = matchTaxRateState(taxRateOptions, taxRateVal, taxStateCode);
@@ -612,7 +623,7 @@ export function ReceiptCard({
                     aria-label="Tax jurisdiction"
                     placeholder="Select…"
                     options={taxOptions}
-                    action={{ label: '+ Add tax rate', onSelect: () => setAddRateOpen(true) }}
+                    action={canAddTaxRate ? { label: '+ Add tax rate', onSelect: () => setAddRateOpen(true) } : undefined}
                   />
                 ) : matchedState ? (
                   // Read-only, but still NAME the jurisdiction - the interactive select shows
@@ -705,6 +716,10 @@ export function ReceiptCard({
           {showDepositBox && (
             <div className="mt-2.5 rounded-card border border-sage-200 bg-sage-50 p-3">
               <div className="flex items-baseline justify-between gap-3">
+                {depositLeftToPay != null ? (
+                  // Part of the deposit is paid: one figure, what is left. The full deposit is context.
+                  <span className="text-xs font-bold text-sage-700">Left to pay</span>
+                ) : (
                 <span className="inline-flex items-center gap-1.5 text-xs font-bold text-sage-700">
                   Deposit due now
                   {depositModeToggleActive && (
@@ -738,10 +753,19 @@ export function ReceiptCard({
                     <span className="font-semibold">{depositDuePercent}%</span>
                   )}
                 </span>
+                )}
                 <span className="text-lg font-extrabold tabular-nums text-sage-700">
-                  {formatCurrency(toNum(depositDueAmount))}
+                  {formatCurrency(depositLeftToPay ?? toNum(depositDueAmount))}
                 </span>
               </div>
+              {depositLeftToPay != null && (
+                <p className="mt-0.5 text-xs text-text-secondary">Of the {formatCurrency(toNum(depositDueAmount))} deposit</p>
+              )}
+              {Number(depositProcessingAmount ?? 0) > 0 && (
+                <div className="mt-1.5">
+                  <ProcessingBadge amount={depositProcessingAmount} />
+                </div>
+              )}
               {depositMismatch ? (
                 <p role="status" className="mt-1 text-xs font-medium text-warning-text">
                   {depositMismatch.depositAmount > depositMismatch.total

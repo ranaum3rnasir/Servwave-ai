@@ -21,7 +21,7 @@ import { trailOf, useNavHistory } from './navHistory.store';
  * create or an edit. Pages that have nothing to add do not need to call it at
  * all - the layout's fallback names them from the nav registry.
  */
-export function useRecordVisit(navKey: string, label?: string): void {
+export function useRecordVisit(navKey: string, label?: string, enabled = true): void {
   const { pathname } = useLocation();
   const dest = getDestination(navKey);
   const current = label ?? dest?.label ?? navKey;
@@ -32,8 +32,8 @@ export function useRecordVisit(navKey: string, label?: string): void {
   // this and renames the crumb in place - the store returns the same state for
   // a repeat of the same visit, so no re-render feeds back into the effect.
   useEffect(() => {
-    visit(pathname, current);
-  }, [visit, pathname, current]);
+    if (enabled) visit(pathname, current);
+  }, [visit, pathname, current, enabled]);
 }
 
 /**

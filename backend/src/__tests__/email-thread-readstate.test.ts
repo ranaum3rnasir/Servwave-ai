@@ -21,9 +21,12 @@ import app from '../app';
 import { prisma } from '../lib/prisma';
 import { clearTokenCache } from '../middleware/authenticate';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { mockAuthAs, authHeader, ALPHA_ORG_ID, TEST_USERS } from './helpers';
+import { mockAuthAs, mockRoleSwitches, authHeader, ALPHA_ORG_ID, TEST_USERS } from './helpers';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 import { matchesWhere, type Row } from './whereMatcher';
+
+/** The conversation a stored message sits in when it was started here: not a record conversation, nobody's assignee. */
+const ORDINARY_THREAD = { mailbox_id: 'b1000000-0000-4000-8000-0000000000aa', origin: 'started', record_type: null, assigned_to_user_id: null, emails: [] };
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const p = prisma as any;
@@ -38,11 +41,13 @@ const TECH_ID = TEST_USERS.technician.id;
 const MY_JOB = { id: 'ab000000-0000-0000-0000-00000000000a', visits: [{ assignees: [{ user_id: TECH_ID }] }] };
 const OTHER_JOB = { id: 'ab000000-0000-0000-0000-00000000000b', visits: [{ assignees: [{ user_id: 'someone-else' }] }] };
 
-/** Grant a TECHNICIAN `update Communication` on top of their default OWN-job
+/** Turn on Edit communication records for a TECHNICIAN on top of their default OWN-job
  *  grants, so the assign/archive/snooze visibility scoping is exercised by a
- *  row-scoped role rather than vacuously by an org-wide admin/dispatcher. */
+ *  row-scoped role rather than vacuously by an org-wide admin/dispatcher.
+ *  (The grant comes from the switch since Roles & Permissions S01.10.) */
 function mockRowScopedEditor() {
   mockAuthAs('technician');
+  mockRoleSwitches({ edit_communication_records: true });
   const grants = DEFAULT_GRANTS.filter((g) => g.role === 'TECHNICIAN').map(
     ({ role: _role, ...g }) => g,
   );
@@ -85,6 +90,8 @@ beforeEach(async () => {
     fromAddress: 'no-reply@mail.test.com',
     fromName: null,
   });
+  // The customer a reply's conversation is already linked to: none.
+  p.email.findMany.mockResolvedValue([]);
   p.emailThread.create.mockImplementation((args: any) =>
     Promise.resolve({
       id: 'new-thread-1',
@@ -212,8 +219,8 @@ describe('POST /api/communication/emails - a reply reuses the existing thread', 
     const call = p.email.findFirst.mock.calls.find((c: any) => !c[0].orderBy);
     expect(call).toBeTruthy();
     const where = call[0].where;
-    expect(matchesWhere({ id: 'x', organization_id: ALPHA_ORG_ID, thread_id: 'b0000000-0000-4000-8000-000000000001', job_id: MY_JOB.id, job: MY_JOB, lead_id: null, lead: null, customer_id: null, vendor_id: null }, where)).toBe(true);
-    expect(matchesWhere({ id: 'x', organization_id: ALPHA_ORG_ID, thread_id: 'b0000000-0000-4000-8000-000000000001', job_id: OTHER_JOB.id, job: OTHER_JOB, lead_id: null, lead: null, customer_id: null, vendor_id: null }, where)).toBe(false);
+    expect(matchesWhere({ id: 'x', organization_id: ALPHA_ORG_ID, thread_id: 'b0000000-0000-4000-8000-000000000001', thread: ORDINARY_THREAD, job_id: MY_JOB.id, job: MY_JOB, lead_id: null, lead: null, customer_id: null, vendor_id: null }, where)).toBe(true);
+    expect(matchesWhere({ id: 'x', organization_id: ALPHA_ORG_ID, thread_id: 'b0000000-0000-4000-8000-000000000001', thread: ORDINARY_THREAD, job_id: OTHER_JOB.id, job: OTHER_JOB, lead_id: null, lead: null, customer_id: null, vendor_id: null }, where)).toBe(false);
   });
 });
 
@@ -490,7 +497,9 @@ describe('GET /api/communication/emails?assignment=... filtering', () => {
   it('assignment=mine filters to threads assigned to the caller', async () => {
     await request(app).get('/api/communication/emails?assignment=mine').set(authHeader('admin'));
     const where = p.email.findMany.mock.calls[0][0].where;
-    expect(where.thread).toEqual({ assigned_to_user_id: ADMIN_ID });
+    const assignedTo = (userId: string): Row => ({ id: 'e', organization_id: ALPHA_ORG_ID, thread_id: 't', thread: { assigned_to_user_id: userId } });
+    expect(matchesWhere(assignedTo(ADMIN_ID), where)).toBe(true);
+    expect(matchesWhere(assignedTo('someone-else'), where)).toBe(false);
   });
 
   it('assignment=unassigned folds in auto-unassign (no thread, no assignee, OR inactive assignee)', async () => {
@@ -525,32 +534,46 @@ describe('GET /api/communication/emails?assignment=... filtering', () => {
     expect(where2.OR).toBeUndefined();
   });
 
-  // Regression: `commVisibilityWhere` ALSO emits a top-level `OR` for any
-  // row-scoped caller. Naively spreading assignmentFilter's own `OR` on top
-  // (a plain object spread) makes the second `OR` key silently clobber the
-  // first, replacing anchor-inherited visibility instead of narrowing it -
-  // the admin-only test above can never catch this, since an admin's
-  // `commVisibilityWhere` resolves to `{}` (no `OR` key to collide with).
-  it('a row-scoped caller\'s assignment=unassigned NARROWS visibility, never replaces it', async () => {
+  // Regression: the section filter ALSO restricts a "Linked to me" caller, and the assignment views add a filter of
+  // their own on the same `thread` relation. Merging them with a plain object spread makes the second silently
+  // clobber the first, replacing the mailbox scope instead of narrowing it - the admin-only tests above can never
+  // catch this, since an admin's section filter is empty (nothing to collide with).
+  it('a "Linked to me" caller\'s assignment views NARROW the mailbox scope, never replace it', async () => {
     mockRowScopedEditor();
+    mockRoleSwitches({ edit_communication_records: true, communication_scope: 'linked_to_me' });
+    const MY_BOX = 'b1000000-0000-4000-8000-000000000001';
+    const COLLEAGUE_BOX = 'b1000000-0000-4000-8000-000000000002';
+    p.mailbox.findMany.mockResolvedValue([{ id: MY_BOX }]);
+
+    const base = { organization_id: ALPHA_ORG_ID, job_id: null, lead_id: null, customer_id: null, vendor_id: null };
+    const row = (id: string, mailbox: string, assignee: Record<string, unknown>): Row => ({
+      ...base, id, thread_id: `t-${id}`, thread: { ...ORDINARY_THREAD, mailbox_id: mailbox, ...assignee },
+    });
+    const myBoxUnassigned = row('e1', MY_BOX, { assigned_to_user_id: null });
+    const colleagueBoxUnassigned = row('e2', COLLEAGUE_BOX, { assigned_to_user_id: null });
+    const myBoxAssignedActive = row('e3', MY_BOX, { assigned_to_user_id: 'someone-else', assigned_to: { is_active: true } });
+    const myBoxMine = row('e4', MY_BOX, { assigned_to_user_id: TECH_ID });
+
     await request(app).get('/api/communication/emails?assignment=unassigned').set(authHeader('technician'));
-    const where = p.email.findMany.mock.calls[0][0].where;
+    const unassigned = p.email.findMany.mock.calls[0][0].where;
+    // In my mailbox AND unassigned -> shows.
+    expect(matchesWhere(myBoxUnassigned, unassigned)).toBe(true);
+    // Unassigned, but in a mailbox the caller does not hold -> the scope must still exclude it. This is the exact
+    // case a clobbering merge would get wrong.
+    expect(matchesWhere(colleagueBoxUnassigned, unassigned)).toBe(false);
+    // In my mailbox, but assigned (and active) -> the assignment view excludes it.
+    expect(matchesWhere(myBoxAssignedActive, unassigned)).toBe(false);
 
-    const base = { organization_id: ALPHA_ORG_ID, lead_id: null, lead: null, customer_id: null, vendor_id: null };
-    const myJobUnassigned: Row = { ...base, id: 'e1', thread_id: 't1', job_id: MY_JOB.id, job: MY_JOB, thread: { assigned_to_user_id: null } };
-    const otherJobUnassigned: Row = { ...base, id: 'e2', thread_id: 't2', job_id: OTHER_JOB.id, job: OTHER_JOB, thread: { assigned_to_user_id: null } };
-    const myJobAssignedActive: Row = {
-      ...base, id: 'e3', thread_id: 't3', job_id: MY_JOB.id, job: MY_JOB,
-      thread: { assigned_to_user_id: 'someone-else', assigned_to: { is_active: true } },
-    };
-
-    // Visible (own job) AND unassigned -> shows.
-    expect(matchesWhere(myJobUnassigned, where)).toBe(true);
-    // Unassigned, but on a job this technician cannot see -> visibility must
-    // still exclude it. This is the exact case the OR-collision bug got wrong.
-    expect(matchesWhere(otherJobUnassigned, where)).toBe(false);
-    // Visible, but assigned (and active) -> the assignment filter excludes it.
-    expect(matchesWhere(myJobAssignedActive, where)).toBe(false);
+    p.email.findMany.mockClear();
+    await request(app).get('/api/communication/emails?assignment=mine').set(authHeader('technician'));
+    const mine = p.email.findMany.mock.calls[0][0].where;
+    expect(matchesWhere(myBoxMine, mine)).toBe(true);
+    // Assigned to the caller, so it is theirs to work even in a colleague's mailbox (PRD 10, S10.7) ...
+    expect(matchesWhere({ ...myBoxMine, thread: { ...ORDINARY_THREAD, mailbox_id: COLLEAGUE_BOX, assigned_to_user_id: TECH_ID } }, mine)).toBe(true);
+    // ... and a colleague's conversation assigned to someone else is not.
+    expect(matchesWhere({ ...myBoxMine, thread: { ...ORDINARY_THREAD, mailbox_id: COLLEAGUE_BOX, assigned_to_user_id: 'someone-else' } }, mine)).toBe(false);
+    expect(matchesWhere(myBoxAssignedActive, mine)).toBe(false);
+    p.mailbox.findMany.mockResolvedValue([]);
   });
 });
 
@@ -560,7 +583,7 @@ describe('auto-unassign: a deactivated assignee reads as Unassigned on the mappe
   it('GET /emails/:id reports threadAssignedToUserId: null for an inactive assignee', async () => {
     mockAuthAs('admin');
     p.email.findFirst.mockResolvedValue({
-      id: 'e1', account: 'user', from: {}, to: 'x', subject: 's', snippet: 's', body: ['s'],
+      id: 'e1000000-0000-4000-8000-000000000001', account: 'user', from: {}, to: 'x', subject: 's', snippet: 's', body: ['s'],
       at: '1:00', ts: 1n, unread: true, starred: false, folder: 'inbox',
       thread_id: 't1',
       thread: {
@@ -570,7 +593,7 @@ describe('auto-unassign: a deactivated assignee reads as Unassigned on the mappe
     });
     p.emailReadState.findMany.mockResolvedValue([]);
 
-    const res = await request(app).get('/api/communication/emails/e1').set(authHeader('admin'));
+    const res = await request(app).get('/api/communication/emails/e1000000-0000-4000-8000-000000000001').set(authHeader('admin'));
 
     expect(res.status).toBe(200);
     expect(res.body.email.threadAssignedToUserId).toBeNull();
@@ -617,26 +640,26 @@ describe('markThreadRead affects ONLY the calling user - two users, "same" threa
 
     expect(res.status).toBe(200);
     const findWhere = p.email.findMany.mock.calls[0][0].where;
-    expect(matchesWhere({ id: 'on-other-job', organization_id: ALPHA_ORG_ID, thread_id: 'a1111111-1111-4111-8111-111111111111', job_id: OTHER_JOB.id, job: OTHER_JOB, lead_id: null, lead: null, customer_id: null, vendor_id: null }, findWhere)).toBe(false);
-    expect(matchesWhere({ id: 'on-my-job', organization_id: ALPHA_ORG_ID, thread_id: 'a1111111-1111-4111-8111-111111111111', job_id: MY_JOB.id, job: MY_JOB, lead_id: null, lead: null, customer_id: null, vendor_id: null }, findWhere)).toBe(true);
+    expect(matchesWhere({ id: 'on-other-job', organization_id: ALPHA_ORG_ID, thread_id: 'a1111111-1111-4111-8111-111111111111', thread: ORDINARY_THREAD, job_id: OTHER_JOB.id, job: OTHER_JOB, lead_id: null, lead: null, customer_id: null, vendor_id: null }, findWhere)).toBe(false);
+    expect(matchesWhere({ id: 'on-my-job', organization_id: ALPHA_ORG_ID, thread_id: 'a1111111-1111-4111-8111-111111111111', thread: ORDINARY_THREAD, job_id: MY_JOB.id, job: MY_JOB, lead_id: null, lead: null, customer_id: null, vendor_id: null }, findWhere)).toBe(true);
   });
 
   it('two users reading the "same" message have independent unread state on GET /emails/:id', async () => {
     const emailRow = {
-      id: 'e1', account: 'in', from: { name: 'Cust', email: 'c@x.com' }, to: 'me@x.com',
+      id: 'e1000000-0000-4000-8000-000000000001', account: 'in', from: { name: 'Cust', email: 'c@x.com' }, to: 'me@x.com',
       subject: 's', snippet: 's', body: ['s'], at: '1:00', ts: 1n, unread: true, starred: false, folder: 'inbox',
     };
     p.email.findFirst.mockResolvedValue(emailRow);
     // Only the admin has read it; the dispatcher has not.
     p.emailReadState.findMany.mockImplementation((args: any) =>
-      Promise.resolve(args.where.user_id === ADMIN_ID ? [{ email_id: 'e1' }] : []));
+      Promise.resolve(args.where.user_id === ADMIN_ID ? [{ email_id: 'e1000000-0000-4000-8000-000000000001' }] : []));
 
     mockAuthAs('admin');
-    const asAdmin = await request(app).get('/api/communication/emails/e1').set(authHeader('admin'));
+    const asAdmin = await request(app).get('/api/communication/emails/e1000000-0000-4000-8000-000000000001').set(authHeader('admin'));
     expect(asAdmin.body.email.unread).toBe(false);
 
     mockAuthAs('dispatcher');
-    const asDispatcher = await request(app).get('/api/communication/emails/e1').set(authHeader('dispatcher'));
+    const asDispatcher = await request(app).get('/api/communication/emails/e1000000-0000-4000-8000-000000000001').set(authHeader('dispatcher'));
     expect(asDispatcher.body.email.unread).toBe(true);
   });
 });

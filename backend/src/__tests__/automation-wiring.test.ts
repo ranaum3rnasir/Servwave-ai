@@ -23,7 +23,9 @@ import {
   ESTIMATE_SENT_FIXTURE,
   LEAD_FIXTURE,
   ALPHA_ORG_ID,
+  mockRoleSwitches,
   withLeadStatusSync,
+  withLedgerReads,
 } from './helpers';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
@@ -49,6 +51,14 @@ vi.mock('../services/notifications/notificationService', () => ({
   emit: vi.fn().mockResolvedValue(undefined),
 }));
 
+// The in-app job alerts are queued for after the response and read their own people (S06.27); this file is about the automation
+// events, and who the alerts reach is tested in permission-job-scheduling-alerts-db.test.ts.
+vi.mock('../services/notifications/jobSchedulingAlerts', () => ({
+  queueJobSchedulingAlert: vi.fn(),
+  queueJobUnassignedAlert: vi.fn(),
+  queueStagingReadyAlert: vi.fn(),
+}));
+
 const mockPrisma = prisma as any;
 
 const TECH_USER = TEST_USERS.technician;
@@ -60,6 +70,9 @@ function dispatched(type: string) {
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
+  // The job-level complete writes its visit cancels, history, status move and review round in one transaction (S06.1);
+  // the stub runs that callback against the same mocked client.
+  mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => fn(mockPrisma));
   mockPrisma.invoice.findFirst.mockResolvedValue(null);
   mockPrisma.rolePermission.findMany.mockImplementation(
     (args: { where: { organization_id: string; role: string } }) =>
@@ -647,7 +660,7 @@ describe('job lifecycle — automation events', () => {
     const res = await request(app)
       .post(`/api/jobs/${JOB_FIXTURE.id}/cancel`)
       .set(authHeader('admin'))
-      .send({ cancelled_reason: 'Customer asked' });
+      .send({ cancel_reason_code: 'OTHER', cancelled_reason: 'Customer asked' });
     expect(res.status).toBe(200);
     const events = dispatched('JOB_CANCELLED');
     expect(events).toHaveLength(1);
@@ -783,6 +796,7 @@ describe('estimate lifecycle — automation events', () => {
         lead: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: record-payment locks the deposit invoice
       }),
     );
 
@@ -825,6 +839,7 @@ describe('estimate lifecycle — automation events', () => {
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         invoice: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: record-payment locks the deposit invoice
       }),
     );
     mockPrisma.estimate.findUnique.mockResolvedValue(null); // fire-and-forget email path
@@ -875,7 +890,8 @@ describe('invoice lifecycle — automation events', () => {
     mockAuthAs('admin');
     mockPrisma.invoice.findUnique.mockResolvedValue(buildInvoice());
     mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
-      fn({
+      fn(withLedgerReads({
+        $executeRaw: vi.fn().mockResolvedValue(1), // recordPayment locks the invoice row
         invoice: {
           findUniqueOrThrow: vi.fn().mockResolvedValue({ amount_due: 1268, status: 'SENT' }),
           update: vi.fn().mockResolvedValue({ id: INVOICE_ID, invoice_number: 'I00073' }),
@@ -888,7 +904,7 @@ describe('invoice lifecycle — automation events', () => {
         },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         job: { update: vi.fn().mockResolvedValue({}) },
-      }),
+      })),
     );
 
     const res = await request(app)
@@ -912,7 +928,8 @@ describe('invoice lifecycle — automation events', () => {
       }),
     );
     mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
-      fn({
+      fn(withLedgerReads({
+        $executeRaw: vi.fn().mockResolvedValue(1), // recordPayment locks the invoice row
         invoice: {
           findUniqueOrThrow: vi.fn().mockResolvedValue({ amount_due: 1268, status: 'SENT' }),
           update: vi.fn().mockResolvedValue({ id: INVOICE_ID, invoice_number: 'I00073' }),
@@ -927,7 +944,7 @@ describe('invoice lifecycle — automation events', () => {
         lead: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         job: { update: vi.fn().mockResolvedValue({}) },
-      }),
+      })),
     );
 
     const res = await request(app)
@@ -946,7 +963,8 @@ describe('invoice lifecycle — automation events', () => {
     mockAuthAs('admin');
     mockPrisma.invoice.findUnique.mockResolvedValue(buildInvoice());
     mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
-      fn({
+      fn(withLedgerReads({
+        $executeRaw: vi.fn().mockResolvedValue(1), // recordPayment locks the invoice row
         invoice: {
           findUniqueOrThrow: vi.fn().mockResolvedValue({ amount_due: 1268, status: 'SENT' }),
           update: vi.fn().mockResolvedValue({ id: INVOICE_ID, invoice_number: 'I00073' }),
@@ -959,7 +977,7 @@ describe('invoice lifecycle — automation events', () => {
         },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         job: { update: vi.fn().mockResolvedValue({}) },
-      }),
+      })),
     );
 
     const res = await request(app)
@@ -1381,6 +1399,8 @@ function wireLeadAssignTx(updatedLead: any) {
 describe('POST /api/leads/:id/assign — automation events', () => {
   it('assigning an owner → LEAD_ASSIGNED (occurrence = the assigned user id)', async () => {
     mockAuthAs('admin');
+    // The Dispatcher preset cannot own leads; the case is about the event, so the switch is turned on.
+    mockRoleSwitches({ can_own_leads: true });
     mockPrisma.lead.findUnique.mockResolvedValue({ ...LEAD_FIXTURE, commission_owner_id: null });
     wireLeadAssignTx({ ...LEAD_FIXTURE, commission_owner_id: TEST_USERS.dispatcher.id });
 

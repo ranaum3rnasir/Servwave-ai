@@ -2,6 +2,7 @@ import { lazy } from 'react';
 import { Route } from 'react-router-dom';
 
 import ProtectedRoute from '@/components/ProtectedRoute';
+import RequirePageAccess from '@/components/RequirePageAccess';
 
 import V2AppLayout from '../V2AppLayout';
 
@@ -21,17 +22,16 @@ const TasksHubPage = lazy(() => import('../tasks/TasksHubPage'));
  * Guards decide who may enter, the layout only decides what frames the page, so
  * swapping the second changes no permission.
  *
- * Landing-page note: `/` renders `V2HomeRoute`, which redirects a user without
- * `read Dashboard` to the first reachable entry of `DEFAULT_LAYOUT_KEYS`. That
- * is shared logic in `nav-registry` pointed at `/tasks`, which used to mean a
- * different page from this one and now means this one, so such a user lands here
- * without the registry being touched.
+ * List switches: the Tasks list opens on View tasks and Show Tasks page. A person without them is sent to their
+ * dashboard, which is everyone's home page (Roles & Permissions, PRD 2).
  */
 export function tasksV2Routes() {
   return (
     <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN']} />}>
       <Route element={<V2AppLayout />}>
-        <Route path="/tasks" element={<TasksHubPage />} />
+        <Route element={<RequirePageAccess all={['view_tasks', 'show_tasks_page']} />}>
+          <Route path="/tasks" element={<TasksHubPage />} />
+        </Route>
       </Route>
     </Route>
   );

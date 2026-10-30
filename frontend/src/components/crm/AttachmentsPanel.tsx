@@ -16,6 +16,7 @@ import { deleteAttachmentPrompt } from '@/lib/confirmPrompts';
 import { EmptyState } from '@/components/ui/empty-state';
 import { useToast } from '@/components/ui/use-toast';
 import { AttachmentRowActions } from '@/components/attachments/AttachmentRowActions';
+import { fileControl, type FileChangeAnswer } from '@/lib/attachments/fileChange';
 import {
   UploadRefusalList,
   UploadSelectionList,
@@ -32,7 +33,7 @@ interface AttachmentsPanelProps {
   entityId: string;
 }
 
-interface Attachment {
+interface Attachment extends FileChangeAnswer {
   id: string;
   file_name: string;
   file_url: string;
@@ -200,6 +201,9 @@ export function AttachmentsPanel({ entityType, entityId }: AttachmentsPanelProps
 
   const items = attachments ?? [];
   const totalCount = items.length;
+  // From the server's per-file answer. On a locked job's invoice nothing is drawn: no delete, no rename (the panel
+  // passes no lock reason to the row menu, so a locked control is left out rather than shown disabled).
+  const mayDelete = (att: Attachment) => fileControl(att, 'delete', true) === 'enabled';
 
   return (
     <div className="p-3">
@@ -320,21 +324,23 @@ export function AttachmentsPanel({ entityType, entityId }: AttachmentsPanelProps
                   onRenamed={() =>
                     queryClient.invalidateQueries({ queryKey: ['attachments', entityType, entityId] })
                   }
-                  onDelete={() => void confirmDelete(att)}
+                  onDelete={mayDelete(att) ? () => void confirmDelete(att) : undefined}
                 />
 
                 {/* Delete button - small row-action icon, not Button-shaped - left raw.
                     hover-reveal: visible on touch, hidden until hover only where hover
-                    exists (mobile slice 15). */}
-                <button
-                  type="button"
-                  aria-label="Delete attachment"
-                  className="hover-reveal shrink-0 flex items-center justify-center h-6 w-6 rounded text-text-secondary hover:text-danger hover:bg-danger/10 transition-colors"
-                  onClick={() => void confirmDelete(att)}
-                  title="Delete attachment"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
+                    exists (mobile slice 15). Drawn only on a file the person may delete. */}
+                {mayDelete(att) && (
+                  <button
+                    type="button"
+                    aria-label="Delete attachment"
+                    className="hover-reveal shrink-0 flex items-center justify-center h-6 w-6 rounded text-text-secondary hover:text-danger hover:bg-danger/10 transition-colors"
+                    onClick={() => void confirmDelete(att)}
+                    title="Delete attachment"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -391,7 +397,7 @@ export function AttachmentsPanel({ entityType, entityId }: AttachmentsPanelProps
         }
         uploadedAt={lightboxAttachment?.created_at}
         onDelete={
-          lightboxAttachment
+          lightboxAttachment && mayDelete(lightboxAttachment)
             ? () => void confirmDelete(lightboxAttachment, () => setLightboxAttachment(null))
             : undefined
         }

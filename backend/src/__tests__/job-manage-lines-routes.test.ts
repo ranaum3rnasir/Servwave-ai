@@ -14,13 +14,17 @@
  *
  * Harness mirrors job-lines.test.ts: supertest against `app`, prisma mocked by setup.ts, grants
  * injected with setCachedGrants.
+ *
+ * Roles & Permissions S01.8: `manage_lines Job` is now the Edit job line items switch, and the switch alone
+ * decides (no creator exception), so a principal's `manage_lines` comes from `mockRoleSwitches`, not from a
+ * stored grant. The Technician preset holds the switch on.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { TEST_USERS, mockAuthAs, authHeader, ALPHA_ORG_ID, JOB_FIXTURE, TAG_FIXTURE, mockScopedFindFirst } from './helpers';
-import { setCachedGrants, clearPermissionCache } from '../lib/permissions/permissionCache';
+import { TEST_USERS, mockAuthAs, authHeader, ALPHA_ORG_ID, JOB_FIXTURE, TAG_FIXTURE, mockScopedFindFirst, mockRoleSwitches } from './helpers';
+import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 const mockPrisma = prisma as unknown as Record<string, any>;
 
@@ -28,7 +32,7 @@ const JOB_ID = JOB_FIXTURE.id;
 const LINE_ID = 'aa000000-0000-0000-0000-000000000001';
 const SCOPE_ID = 'cc000000-0000-0000-0000-000000000001';
 
-const OWN_JOB = { assignees: { some: { user_id: '{{userId}}' } } };
+const OWN_JOB = { visits: { some: { assignees: { some: { user_id: '{{userId}}' } } } } };
 
 function jobRow(over: Record<string, unknown> = {}) {
   return {
@@ -42,7 +46,8 @@ function jobRow(over: Record<string, unknown> = {}) {
     discount_value: null,
     discount_amount: 0,
     customer: { tax_exempt: false },
-    assignees: [{ user_id: TEST_USERS.technician.id }],
+    // The technician is on the crew of the job's one visit (Attached: crew, Sold By or Dispatcher).
+    visits: [{ assignees: [{ user_id: TEST_USERS.technician.id }] }],
     estimate: null,
     job_line_items: [],
     invoices: [],
@@ -67,12 +72,14 @@ const MOVED_TO_MANAGE_LINES = [
   { name: 'DELETE /:id/scopes/:idx',           method: 'delete', path: `/api/jobs/${JOB_ID}/scopes/0`,                    body: undefined },
 ] as const;
 
+// Edit jobs (S01.11): `update Job` is that switch. A job's notes left it for Add notes, so they are not in this list.
 const STAYS_ON_UPDATE = [
-  { name: 'POST   /:id/notes',       method: 'post',   path: `/api/jobs/${JOB_ID}/notes`,                     body: { content: 'called the customer' } },
   { name: 'POST   /:id/tags',        method: 'post',   path: `/api/jobs/${JOB_ID}/tags`,                      body: { tag_id: TAG_FIXTURE.id } },
   { name: 'DELETE /:id/tags/:tagId', method: 'delete', path: `/api/jobs/${JOB_ID}/tags/${TAG_FIXTURE.id}`,    body: undefined },
   { name: 'POST   /:id/sub-status',  method: 'post',   path: `/api/jobs/${JOB_ID}/sub-status`,                body: { sub_status_id: null } },
 ] as const;
+
+const NOTE_ROUTE = { name: 'POST   /:id/notes', method: 'post', path: `/api/jobs/${JOB_ID}/notes`, body: { content: 'called the customer' } };
 
 function send(route: { method: string; path: string; body?: Record<string, unknown> }, user: 'admin' | 'dispatcher' | 'technician') {
   const req = (request(app) as any)[route.method](route.path).set(authHeader(user));
@@ -97,10 +104,8 @@ beforeEach(() => {
 describe('a principal with `update Job` but NOT `manage_lines Job`', () => {
   beforeEach(() => {
     mockAuthAs('technician');
-    setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', [
-      { action: 'read', subject: 'Job', conditions: OWN_JOB },
-      { action: 'update', subject: 'Job', conditions: OWN_JOB },
-    ] as never);
+    // `update Job` is the Edit jobs switch (S01.11), not a stored grant.
+    mockRoleSwitches({ edit_jobs: true, edit_job_line_items: false });
   });
 
   it.each(MOVED_TO_MANAGE_LINES)('is refused on $name', async (route) => {
@@ -121,10 +126,7 @@ describe('a principal with `update Job` but NOT `manage_lines Job`', () => {
 describe('a principal with `manage_lines Job` but NOT `update Job`', () => {
   beforeEach(() => {
     mockAuthAs('technician');
-    setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', [
-      { action: 'read', subject: 'Job', conditions: OWN_JOB },
-      { action: 'manage_lines', subject: 'Job', conditions: OWN_JOB },
-    ] as never);
+    mockRoleSwitches({ edit_jobs: false, edit_job_line_items: true });
   });
 
   it.each(MOVED_TO_MANAGE_LINES)('passes the guard on $name', async (route) => {
@@ -134,6 +136,21 @@ describe('a principal with `manage_lines Job` but NOT `update Job`', () => {
 
   it.each(STAYS_ON_UPDATE)('is refused on $name', async (route) => {
     const res = await send(route, 'technician');
+    expect(res.status).toBe(403);
+  });
+
+  // Notes left Edit jobs for their own switch (S01.11): this person, off Edit jobs, still adds one.
+  it('adds a note on POST /:id/notes: Add notes decides, not Edit jobs', async () => {
+    const res = await send(NOTE_ROUTE, 'technician');
+    expect(res.status).not.toBe(403);
+  });
+});
+
+describe('a principal with `update Job` but Add notes turned off', () => {
+  it('is refused on POST /:id/notes', async () => {
+    mockAuthAs('technician');
+    mockRoleSwitches({ edit_jobs: true, add_notes: false });
+    const res = await send(NOTE_ROUTE, 'technician');
     expect(res.status).toBe(403);
   });
 });
@@ -158,11 +175,9 @@ describe('PATCH /api/jobs/:id - the money fields are field-level gated on manage
   ];
 
   function grant(actions: string[]) {
-    setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', [
-      { action: 'read', subject: 'Job', conditions: OWN_JOB },
-      { action: 'read', subject: 'Pricing' },
-      ...actions.map((action) => ({ action, subject: 'Job', conditions: OWN_JOB })),
-    ] as never);
+    // `update Job` is the Edit jobs switch (S01.11) and `manage_lines Job` the Edit job line items switch (S01.8):
+    // neither is a stored grant.
+    mockRoleSwitches({ edit_jobs: actions.includes('update'), edit_job_line_items: actions.includes('manage_lines') });
   }
 
   beforeEach(() => {
@@ -227,7 +242,7 @@ describe('who keeps line-item access after the split', () => {
       ...jobRow(),
       organization_id: ALPHA_ORG_ID,
       created_by_id: TEST_USERS.admin.id,
-      assignees: [],
+      visits: [],
     });
     for (const route of MOVED_TO_MANAGE_LINES) {
       const res = await send(route, user);
@@ -235,7 +250,7 @@ describe('who keeps line-item access after the split', () => {
     }
   });
 
-  it('TECHNICIAN keeps every moved route on a job they CREATED', async () => {
+  it('TECHNICIAN keeps every moved route on a job they CREATED and are on', async () => {
     mockAuthAs('technician');
     mockScopedFindFirst(mockPrisma.job.findFirst, {
       ...jobRow(),
@@ -248,14 +263,30 @@ describe('who keeps line-item access after the split', () => {
     }
   });
 
-  // The deliberate loss, and the whole point of PR 3: money follows CREATION, not assignment.
-  it('TECHNICIAN LOSES every moved route on a job they are only assigned to', async () => {
+  // S01.8 undid PR 3's deliberate loss: money follows the Edit job line items switch, not creation or
+  // assignment. The Technician preset holds it on, so an assignee who did not make the job keeps every route...
+  it('TECHNICIAN keeps every moved route on a job they are only assigned to: Edit job line items is on in their preset', async () => {
     mockAuthAs('technician');
     mockScopedFindFirst(mockPrisma.job.findFirst, {
       ...jobRow(),
       organization_id: ALPHA_ORG_ID,
       created_by_id: TEST_USERS.admin.id,
-      assignees: [{ user_id: TEST_USERS.technician.id }],
+      visits: [{ assignees: [{ user_id: TEST_USERS.technician.id }] }],
+    });
+    for (const route of MOVED_TO_MANAGE_LINES) {
+      const res = await send(route, 'technician');
+      expect(res.status, `${route.name} for technician`).not.toBe(403);
+    }
+  });
+
+  // ...and with the switch off loses them all, even on a job they made and are on.
+  it('TECHNICIAN LOSES every moved route with Edit job line items off, on a job they created and are on', async () => {
+    mockAuthAs('technician');
+    mockRoleSwitches({ edit_job_line_items: false });
+    mockScopedFindFirst(mockPrisma.job.findFirst, {
+      ...jobRow(),
+      organization_id: ALPHA_ORG_ID,
+      created_by_id: TEST_USERS.technician.id,
     });
     for (const route of MOVED_TO_MANAGE_LINES) {
       const res = await send(route, 'technician');

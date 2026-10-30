@@ -4,8 +4,11 @@ import { logger } from '../lib/logger';
 import { tenantWhere } from '../lib/tenant';
 import { canAccessRow } from '../lib/permissions/enforce';
 import { canReadCustomerById } from '../lib/permissions/customerScope';
-import { commVisibilityWhere } from '../lib/permissions/anchorVisibility';
+import { mayReadTranscript } from './comm-calls.controller';
+import { heldMailboxesFor, recordTabVisibilityForReq } from '../lib/communication/communicationScope';
+import { recordOpenersForReq, tiedRecordConversations } from '../lib/communication/recordConversations';
 import {
+  emailHiddenFrom,
   getJobCommunications as aggregateJobCommunications,
   getCustomerCommunications as aggregateCustomerCommunications,
   getLeadCommunications as aggregateLeadCommunications,
@@ -35,10 +38,18 @@ export async function getJobCommunications(req: Request, res: Response) {
       return;
     }
 
+    const organizationId = req.user!.organization_id;
+    const visibility = await recordTabVisibilityForReq(req);
     const items = await aggregateJobCommunications(prisma, {
       jobId: id,
-      organizationId: req.user!.organization_id,
-      visibility: await commVisibilityWhere(req),
+      organizationId,
+      visibility,
+      withCallSummary: mayReadTranscript(req),
+      // The record conversations tied to this job (its lead's too), for the estimates and invoices the person can open. None
+      // are read while the tab shows no email.
+      tied: emailHiddenFrom(visibility)
+        ? undefined
+        : await tiedRecordConversations(prisma, { organizationId, anchor: { kind: 'job', id }, openers: await recordOpenersForReq(req) }),
     });
 
     res.json({ items });
@@ -76,10 +87,18 @@ export async function getLeadCommunications(req: Request, res: Response) {
     // The lead gate above is NOT sufficient on its own: a row can carry this
     // lead's lead_id AND a job the requester cannot see, and `job > lead`
     // precedence says the job decides. The row filter is what enforces that.
+    const organizationId = req.user!.organization_id;
+    const visibility = await recordTabVisibilityForReq(req);
     const items = await aggregateLeadCommunications(prisma, {
       leadId: id,
-      organizationId: req.user!.organization_id,
-      visibility: await commVisibilityWhere(req),
+      organizationId,
+      visibility,
+      withCallSummary: mayReadTranscript(req),
+      // The record conversations tied to this lead (its jobs' too), for the estimates and invoices the person can open. None
+      // are read while the tab shows no email.
+      tied: emailHiddenFrom(visibility)
+        ? undefined
+        : await tiedRecordConversations(prisma, { organizationId, anchor: { kind: 'lead', id }, openers: await recordOpenersForReq(req) }),
     });
 
     res.json({ items });
@@ -122,10 +141,13 @@ export async function getCustomerCommunications(req: Request, res: Response) {
     // also carry a job or lead the requester cannot see. persistTransactionalEmail
     // stamps customer_id, lead_id AND job_id on the same row, so that overlap is
     // the common case, not the exotic one.
+    const mailboxes = await heldMailboxesFor(req);
     const items = await aggregateCustomerCommunications(prisma, {
       customerId: id,
       organizationId: req.user!.organization_id,
-      visibility: await commVisibilityWhere(req),
+      readMailboxIds: [...mailboxes.held, ...(mailboxes.main ? [mailboxes.main] : [])],
+      visibility: await recordTabVisibilityForReq(req),
+      withCallSummary: mayReadTranscript(req),
     });
 
     res.json({ items });

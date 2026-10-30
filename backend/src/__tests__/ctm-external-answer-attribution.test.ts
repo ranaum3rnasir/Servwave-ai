@@ -1,7 +1,7 @@
 /**
  * ctm-external-answer-attribution.test.ts - name whoever picked up a forwarded call.
  *
- * Alpha Doors runs campaign numbers that forward to staff mobiles and to the
+ * The pilot org runs campaign numbers that forward to staff mobiles and to the
  * office, so most answered inbound calls carry NO CTM agent object. Ingest
  * classified those as `{ kind: 'external', receiving_number_id }` and stopped
  * there: the row knew a human had answered and could not say which one, and
@@ -46,7 +46,7 @@ const SAGIV_ID = 'b0000000-0000-0000-0000-00000000000b';
 
 // filter_id -> number, in the endpoint's real record shape.
 const ROSTER = [
-  { id: 'RPN-A', filter_id: 3831356, name: 'Sagiv Peker', number: '+16465550111' },
+  { id: 'RPN-A', filter_id: 3831356, name: 'Riley Chen', number: '+16465550111' },
   { id: 'RPN-B', filter_id: 3833870, name: 'Dome OFFICE', number: '+16465550222' },
   { id: 'RPN-C', filter_id: 3902576, name: null, number: '+16465550333' },
 ];
@@ -98,7 +98,7 @@ describe('ingestCall - who answered a forwarded call', () => {
   it('sets agent_id when the receiving number is a ServWave user phone', async () => {
     // Stored bare, exactly as the live rows are.
     p.user.findMany.mockResolvedValue([
-      { id: SAGIV_ID, first_name: 'Sagiv', last_name: 'Peker', email: 'sagiv@example.com', phone: '6465550111' },
+      { id: SAGIV_ID, first_name: 'Riley', last_name: 'Chen', email: 'riley@example.com', phone: '6465550111' },
     ]);
 
     await ingestCall(prisma, ORG_ID, forwardedCall(3831356), 'end', { ctmAccountId: ACCOUNT_ID });
@@ -109,7 +109,7 @@ describe('ingestCall - who answered a forwarded call', () => {
 
   it('names the answerer on answered_by, preferring the ServWave user over CTM', async () => {
     p.user.findMany.mockResolvedValue([
-      { id: SAGIV_ID, first_name: 'Sagiv', last_name: 'Peker', email: 'sagiv@example.com', phone: '6465550111' },
+      { id: SAGIV_ID, first_name: 'Riley', last_name: 'Chen', email: 'riley@example.com', phone: '6465550111' },
     ]);
 
     await ingestCall(prisma, ORG_ID, forwardedCall(3831356), 'end', { ctmAccountId: ACCOUNT_ID });
@@ -118,14 +118,14 @@ describe('ingestCall - who answered a forwarded call', () => {
       kind: 'external',
       receiving_number_id: '3831356',
       user_id: SAGIV_ID,
-      name: 'Sagiv Peker',
-      email: 'sagiv@example.com',
+      name: 'Riley Chen',
+      email: 'riley@example.com',
     });
   });
 
   it('keeps kind "external" so a forwarded answer stays distinguishable from a CSR', async () => {
     p.user.findMany.mockResolvedValue([
-      { id: SAGIV_ID, first_name: 'Sagiv', last_name: 'Peker', email: 'sagiv@example.com', phone: '6465550111' },
+      { id: SAGIV_ID, first_name: 'Riley', last_name: 'Chen', email: 'riley@example.com', phone: '6465550111' },
     ]);
 
     await ingestCall(prisma, ORG_ID, forwardedCall(3831356), 'end', { ctmAccountId: ACCOUNT_ID });
@@ -137,7 +137,7 @@ describe('ingestCall - who answered a forwarded call', () => {
 
   it('never stores the answering phone number itself', async () => {
     p.user.findMany.mockResolvedValue([
-      { id: SAGIV_ID, first_name: 'Sagiv', last_name: 'Peker', email: 'sagiv@example.com', phone: '6465550111' },
+      { id: SAGIV_ID, first_name: 'Riley', last_name: 'Chen', email: 'riley@example.com', phone: '6465550111' },
     ]);
 
     await ingestCall(prisma, ORG_ID, forwardedCall(3831356), 'end', { ctmAccountId: ACCOUNT_ID });
@@ -180,7 +180,7 @@ describe('ingestCall - who answered a forwarded call', () => {
   it('degrades to the old shape when the roster was never warmed', async () => {
     clearReceivingNumberCache();
     p.user.findMany.mockResolvedValue([
-      { id: SAGIV_ID, first_name: 'Sagiv', last_name: 'Peker', email: 'sagiv@example.com', phone: '6465550111' },
+      { id: SAGIV_ID, first_name: 'Riley', last_name: 'Chen', email: 'riley@example.com', phone: '6465550111' },
     ]);
 
     await ingestCall(prisma, ORG_ID, forwardedCall(3831356), 'end', { ctmAccountId: ACCOUNT_ID });
@@ -203,7 +203,7 @@ describe('ingestCall - who answered a forwarded call', () => {
 
   it('leaves an agent-answered call alone', async () => {
     p.user.findMany.mockResolvedValue([
-      { id: SAGIV_ID, first_name: 'Sagiv', last_name: 'Peker', email: 'sagiv@example.com', phone: '6465550111' },
+      { id: SAGIV_ID, first_name: 'Riley', last_name: 'Chen', email: 'riley@example.com', phone: '6465550111' },
     ]);
 
     await ingestCall(
@@ -234,7 +234,7 @@ describe('ingestCall - who answered a forwarded call', () => {
 
   it('carries the attribution onto the update path of a late end event', async () => {
     p.user.findMany.mockResolvedValue([
-      { id: SAGIV_ID, first_name: 'Sagiv', last_name: 'Peker', email: 'sagiv@example.com', phone: '6465550111' },
+      { id: SAGIV_ID, first_name: 'Riley', last_name: 'Chen', email: 'riley@example.com', phone: '6465550111' },
     ]);
 
     await ingestCall(prisma, ORG_ID, forwardedCall(3831356), 'end', { ctmAccountId: ACCOUNT_ID });
@@ -247,7 +247,7 @@ describe('ingestCall - who answered a forwarded call', () => {
 
   it('matches a user whose phone is stored in a punctuated format', async () => {
     p.user.findMany.mockResolvedValue([
-      { id: SAGIV_ID, first_name: 'Sagiv', last_name: 'Peker', email: 'sagiv@example.com', phone: '(646) 555-0111' },
+      { id: SAGIV_ID, first_name: 'Riley', last_name: 'Chen', email: 'riley@example.com', phone: '(646) 555-0111' },
     ]);
 
     await ingestCall(prisma, ORG_ID, forwardedCall(3831356), 'end', { ctmAccountId: ACCOUNT_ID });

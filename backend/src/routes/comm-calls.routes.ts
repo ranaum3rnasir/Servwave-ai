@@ -14,6 +14,7 @@ const router = Router();
 // sibling of '/calls/:id' whose segment is deliberately not a uuid, so a
 // router-wide guard would 404 it and break the dialer's ended state.
 const callId = requireUuidParam('id', 'Call not found');
+const customerId = requireUuidParam('id', 'Customer not found');
 
 router.use(authenticate, requireFeature('phone'), attachAbility, attachCustomerScope);
 
@@ -35,15 +36,20 @@ router.get('/calls/outcome', canDo('read', 'Communication'), commCallsController
 router.get('/calls/:id', callId, canDo('read', 'Communication'), commCallsController.getCall);
 // Recording playback: mints a fresh 300s signed URL (private bucket); 404 when
 // the recording is missing or not ingested yet. Every mint is audited.
-router.get('/calls/:id/recording', callId, canDo('read', 'Communication'), commCallsController.getCallRecording);
+// Needs Play recording on top of reading the call (Roles & Permissions S08.11).
+router.get('/calls/:id/recording', callId, canDo('read', 'Communication'), canDo('play_recording', 'Communication'), commCallsController.getCallRecording);
+// The same recording as a link marked as a file download: Download recording, separately from Play recording.
+router.get('/calls/:id/recording/download', callId, canDo('read', 'Communication'), canDo('download_recording', 'Communication'), commCallsController.getCallRecordingDownload);
 // Transcript: stored text, else one lazy CTM fetch persisted on hit; a miss is
 // a quiet { transcript: null }, never an error.
-router.get('/calls/:id/transcript', callId, canDo('read', 'Communication'), commCallsController.getCallTranscript);
+// Needs View transcript on top of reading the call (Roles & Permissions S08.12): the reply carries the transcript, the
+// per-speaker turns and the call summary, which that one switch covers.
+router.get('/calls/:id/transcript', callId, canDo('read', 'Communication'), canDo('view_transcript', 'Communication'), commCallsController.getCallTranscript);
 // Manual attach of a call to a job from the call log (job_id: null clears).
-router.patch('/calls/:id/job', callId, canDo('update', 'Communication'), validate(commCallsController.reassignCallJobSchema), commCallsController.reassignCallJob);
+router.patch('/calls/:id/job', callId, canDo('attach', 'Communication'), validate(commCallsController.reassignCallJobSchema), commCallsController.reassignCallJob);
 // Lead mirror of the job attach (lead_id: null clears) — ingest is otherwise
 // the only writer of lead_id, so missed attributions need this to be fixable.
-router.patch('/calls/:id/lead', callId, canDo('update', 'Communication'), validate(commCallsController.reassignCallLeadSchema), commCallsController.reassignCallLead);
+router.patch('/calls/:id/lead', callId, canDo('attach', 'Communication'), validate(commCallsController.reassignCallLeadSchema), commCallsController.reassignCallLead);
 
 // Dialer search — canonical customers/jobs/identity lookup (#666/#357).
 router.get('/dialer-search', canDo('read', 'Communication'), commCallsController.dialerSearch);
@@ -51,6 +57,6 @@ router.get('/dialer-search', canDo('read', 'Communication'), commCallsController
 // ─── Phone customers (Customer + Contact + ChannelIdentity) ──
 // Seam calls GET /api/communication/contacts for usePhoneCustomers().
 router.get('/contacts', canDo('read', 'Communication'), commCallsController.listPhoneCustomers);
-router.get('/contacts/:id', canDo('read', 'Communication'), commCallsController.getPhoneCustomer);
+router.get('/contacts/:id', canDo('read', 'Communication'), customerId, commCallsController.getPhoneCustomer);
 
 export default router;

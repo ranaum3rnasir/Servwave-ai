@@ -85,7 +85,7 @@ describe('leads Walkthrough column: a closed lead never "Needs Sched."', () => {
     return render(cell({ row: { original: lead } } as unknown as CellContext<Lead, unknown>));
   }
 
-  it.each(['LOST', 'CANCELLED', 'WON'])('a %s lead with no live walkthrough shows "-"', (status) => {
+  it.each(['LOST', 'WON'])('a %s lead with no live walkthrough shows "-"', (status) => {
     const { container } = renderWalkthrough({ status, walkthrough_scheduled_at: null, walkthrough_completed_at: null });
     expect(container).toHaveTextContent(/^-$/);
     expect(screen.queryByText('Needs Sched.')).toBeNull();

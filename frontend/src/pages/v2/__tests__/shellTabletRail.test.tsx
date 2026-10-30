@@ -15,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AbilityProvider } from '@/contexts/AbilityContext';
 import { buildAbility } from '@/lib/ability';
 import { useAuthStore } from '@/stores/auth.store';
+import { seedEveryMenuSwitch } from '@/__tests__/helpers';
 import { MEDIA } from '@/ui-kit/lib/breakpoints';
 
 import V2AppLayout from '../V2AppLayout';
@@ -114,6 +115,7 @@ const railToggle = () => within(inFlowSidebar()!).getByRole('button', { name: 'E
 beforeEach(() => {
   localStorage.clear();
   logout.mockReset();
+  seedEveryMenuSwitch('00000000-0000-0000-0000-000000000001');
   vi.mocked(useAuthStore).mockImplementation((selector: (s: never) => unknown) =>
     selector({
       user: {

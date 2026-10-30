@@ -20,18 +20,20 @@ export const TERMS_ENFORCEMENT_EFFECTIVE_SINCE = new Date('2026-07-09T00:00:00.0
 /**
  * ServWave Payments Terms — versioned INDEPENDENTLY of CURRENT_TERMS_VERSION.
  * The payments-onboarding clickwrap gate (organization-stripe.controller) is
- * version-aware: bumping this forces re-acceptance for the fee term. URLs are
- * placeholders until counsel delivers the documents (spec §15D).
+ * version-aware: bumping this forces re-acceptance for the fee term.
+ *
+ * 2026-10-06 (payments go-live, D9/D12/D13): the terms now say customers pay the
+ * invoice amount, the processor's standard rates are billed to the contractor's
+ * own account, and ServWave charges no payment fee. Every org that accepted the
+ * 2026-07-21 terms (which promised a deducted platform fee) re-accepts.
  */
-export const CURRENT_PAYMENTS_TERMS_VERSION = '2026-07-21';
-export const PAYMENTS_TERMS_URL = 'https://www.servwave.com/payments-terms/';
-export const PAYMENTS_FEE_SCHEDULE_URL = 'https://www.servwave.com/fee-schedule/';
+export const CURRENT_PAYMENTS_TERMS_VERSION = '2026-10-06';
 
 /**
- * Ceiling for a WITHIN-ceiling platform-fee rate change (§3.6, Task 4.3).
- * Organization.platform_fee_bps may be raised up to this value with just a
- * ≥30-day notice (lib/platform-fee-rate-notice.ts) — no re-acceptance. A
- * change ABOVE this ceiling is a different, not-yet-built flow that would
- * need fresh clickwrap re-acceptance, not just a notice.
+ * The payment fee ServWave discloses on a payments-terms acceptance: zero, because
+ * ServWave takes no cut of payments (D9). Organization.platform_fee_bps is retired
+ * and no payment path reads it.
  */
-export const PLATFORM_FEE_CEILING_BPS = 200; // 2%
+export const DISCLOSED_PAYMENTS_FEE_BPS = 0;
+export const PAYMENTS_TERMS_URL = 'https://www.servwave.com/payments-terms/';
+export const PAYMENTS_FEE_SCHEDULE_URL = 'https://www.servwave.com/fee-schedule/';

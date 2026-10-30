@@ -35,8 +35,8 @@ vi.mock('@/lib/api/organization', () => ({
   useOrganization: () => mockOrg(),
 }));
 
-vi.mock('@/components/payments/StripePaymentsBanner', () => ({
-  StripePaymentsBanner: () => null,
+vi.mock('@/components/payments/PaymentsSetupBanner', () => ({
+  PaymentsSetupBanner: () => null,
 }));
 
 // The callsite describe block below mounts the real page; useParams needs a route param since
@@ -126,6 +126,8 @@ const BASE_ESTIMATE = {
   job: null,
   job_id: null,
   invoices: [],
+  // The server's answer for this estimate: every action the page can offer.
+  actions: ['edit', 'send', 'delete', 'cancel', 'record_payment'],
   deposit_type: null,
   deposit_value: null,
 };
@@ -609,7 +611,7 @@ describe("Mark Sent's canSubmit stays gated on depositValid (security round 1, c
 // check, so a role holding `send Estimate` but not `update Estimate` (the reachable shape:
 // unticking Estimates -> Edit removes only the managed `update` grant and leaves `send` standing)
 // saw fully editable deposit inputs, and typing into them wedged Mark as Sent behind a PATCH the
-// backend correctly 403s. The fix threads `ability.can('update', 'Estimate')` into `editable`
+// backend correctly 403s. The fix threads the answer's `edit` for the estimate into `editable`
 // so the inputs render disabled and the draft can never go dirty - Mark as Sent still works.
 describe('Finding 1 (security round 1) - deposit editability follows update Estimate ability', () => {
   const sendOnlyAbility = buildAbility([
@@ -618,7 +620,8 @@ describe('Finding 1 (security round 1) - deposit editability follows update Esti
   ]);
 
   it('a send-only role sees a read-only deposit in Mark Sent, can still mark it sent, and no PATCH fires', async () => {
-    setupMocks(DRAFT_ESTIMATE);
+    // The answer for this estimate lists send and not edit: unticking Estimates -> Edit leaves send standing.
+    setupMocks({ ...DRAFT_ESTIMATE, actions: ['send'] });
     renderWithProviders(<EstimateWorkspacePage />, { ability: sendOnlyAbility });
 
     const user = userEvent.setup();
@@ -650,7 +653,7 @@ describe('#2044 - unchecking every payment method warns but does not block', () 
     renderSend();
     const dialog = within(screen.getByRole('dialog'));
 
-    const methodCheckbox = dialog.getByRole('checkbox', { name: /External Credit Card Processor/i });
+    const methodCheckbox = dialog.getByRole('checkbox', { name: /Card \(outside ServWave\)/i });
     expect(methodCheckbox).toBeChecked();
     await user.click(methodCheckbox);
 
@@ -667,7 +670,7 @@ describe('#2044 - unchecking every payment method warns but does not block', () 
     renderMarkSent();
     const dialog = within(screen.getByRole('dialog'));
 
-    const methodCheckbox = dialog.getByRole('checkbox', { name: /External Credit Card Processor/i });
+    const methodCheckbox = dialog.getByRole('checkbox', { name: /Card \(outside ServWave\)/i });
     expect(methodCheckbox).toBeChecked();
     await user.click(methodCheckbox);
 

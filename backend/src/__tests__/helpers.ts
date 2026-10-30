@@ -3,6 +3,8 @@ import { supabaseAdmin } from '../lib/supabase';
 import { prisma } from '../lib/prisma';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
+import { clearAllSwitchCaches } from '../lib/permissions/switches/cache';
+import { SWITCH_CATALOG } from '../lib/permissions/switches/catalog';
 
 // ─── Org Constants ──────────────────────────────────
 
@@ -133,6 +135,13 @@ export function mockAuthAs(userKey: TestUserKey, orgOverrides: Partial<typeof TE
   // exercises overrides re-mocks userPermissionOverride.findMany itself.
   (prisma.userPermissionOverride.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
 
+  // ...and resolves the person's permission switches (Roles & Permissions M2): no stored values, so
+  // every switch comes from the built-in preset of the role. Same reasoning as the override default.
+  (prisma.permissionUserSwitch.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+  (prisma.permissionRoleSwitch.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+  // A person's resolved switches are cached by person for a minute; a fresh sign-in starts clean.
+  clearAllSwitchCaches();
+
   // Multi-visit S1: booking a visit allocates its number via MAX(visit_seq). Same reasoning as the
   // override default above - a suite whose beforeEach calls vi.resetAllMocks() wipes setup.ts's
   // implementation, and an aggregate resolving to undefined 500s every scheduling route instead of
@@ -140,6 +149,84 @@ export function mockAuthAs(userKey: TestUserKey, orgOverrides: Partial<typeof TE
   (prisma.visit.aggregate as ReturnType<typeof vi.fn>).mockResolvedValue({ _max: { visit_seq: null } });
 
   return { user };
+}
+
+/**
+ * The `where` an Attached person's reach compiles to, written out from the PRD's definition of
+ * Attached (not read back from the code): the OR a list or a per-record probe carries.
+ *   Job:  crew on any visit, Sold By (the Sold By stored on the job), Dispatcher.
+ *   Lead: an assignee, its Owner, its Dispatcher, or crew on one of its walkthrough visits.
+ */
+export function attachedJobWhere(userId: string) {
+  return [
+    { visits: { some: { assignees: { some: { user_id: userId } } } } },
+    { salesperson_id: userId },
+    { dispatcher_id: userId },
+  ];
+}
+export function attachedLeadWhere(userId: string) {
+  return [
+    { lead_assignees: { some: { user_id: userId } } },
+    { commission_owner_id: userId },
+    { dispatcher_id: userId },
+    { visits: { some: { assignees: { some: { user_id: userId } } } } },
+  ];
+}
+
+/**
+ * An Attached person's reach over an estimate and an invoice, written out from the PRD (not read back
+ * from the code). An estimate is attached through its lead, the job it produced, or the job it was
+ * attached to; an invoice through its job, and only an invoice with no job through its estimate.
+ */
+export function attachedEstimateWhere(userId: string) {
+  return [
+    { lead: { OR: attachedLeadWhere(userId) } },
+    { job: { OR: attachedJobWhere(userId) } },
+    { job_link: { OR: attachedJobWhere(userId) } },
+  ];
+}
+export function attachedInvoiceWhere(userId: string) {
+  return [
+    { job: { OR: attachedJobWhere(userId) } },
+    { AND: [{ job_id: null }, { estimate: { OR: attachedEstimateWhere(userId) } }] },
+  ];
+}
+
+/**
+ * What the creator rule reaches, written out from the PRD (not read back from the code): an estimate or invoice
+ * the person made, while they are attached to its lead or job, or for good when it is for a customer alone.
+ */
+const customerOnlyEstimateWhere = { lead_id: null, job_id: null, job: null };
+export function creatorEstimateWhere(userId: string) {
+  return { created_by: userId, OR: [customerOnlyEstimateWhere, ...attachedEstimateWhere(userId)] };
+}
+export function creatorInvoiceWhere(userId: string) {
+  return {
+    created_by_id: userId,
+    OR: [
+      { AND: [{ job_id: null }, { OR: [{ estimate_id: null }, { estimate: customerOnlyEstimateWhere }] }] },
+      ...attachedInvoiceWhere(userId),
+    ],
+  };
+}
+
+/** The kept "Through own leads" reach Sales holds on Estimates and Invoices: the person is an assignee of the lead. */
+export const ownLeadsEstimateWhere = (userId: string) => ({ lead: { lead_assignees: { some: { user_id: userId } } } });
+export const ownLeadsInvoiceWhere = (userId: string) => ({ job: { estimate: ownLeadsEstimateWhere(userId) } });
+
+/**
+ * Give the signed-in person's role these stored switch values (a Data Scope such as
+ * `{ jobs_scope: 'team' }`, or a switch turned off such as `{ view_leads: false }`), on top of the
+ * built-in preset of their role. Call AFTER `mockAuthAs`, which installs "no stored values".
+ *
+ * Leads and jobs reach and the verbs on them come from the switch catalog now, not from the role's
+ * stored grants, so this is how a suite builds a person with a narrower or wider reach.
+ */
+export function mockRoleSwitches(values: Record<string, boolean | string>) {
+  (prisma.permissionRoleSwitch.findMany as ReturnType<typeof vi.fn>).mockResolvedValue(
+    Object.entries(values).map(([switch_key, value]) => ({ switch_key, value })),
+  );
+  clearAllSwitchCaches();
 }
 
 /**
@@ -162,6 +249,13 @@ export function mockRoleGrantsWithout(role: string, ...omit: [action: string, su
   );
   (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue(grants);
   clearPermissionCache();
+  // A grant the switch catalog owns (the Leads and Jobs rows, Assign work to other people, ...) no longer
+  // comes from the role's stored grants, so leaving it out of them changes nothing. Taking it away from
+  // the person means turning off the switch that stands for it.
+  const switchesOff = SWITCH_CATALOG.filter((sw) =>
+    sw.grants.some((g) => omit.some(([a, s]) => g.action === a && g.subject === s)),
+  );
+  if (switchesOff.length) mockRoleSwitches(Object.fromEntries(switchesOff.map((sw) => [sw.key, false])));
 }
 
 /**
@@ -198,7 +292,7 @@ export function matchesScopeWhere(where: Record<string, unknown>, row: Record<st
         );
       }
       // To-one relation: recurse. A missing relation on the fixture is a non-match, never a match.
-      if (Object.keys(obj).every((k) => /^[a-z_]+$/.test(k))) {
+      if (Object.keys(obj).every((k) => /^([a-z_]+|AND|OR|NOT)$/.test(k))) {
         return !!actual && matchesScopeWhere(obj, actual as Record<string, unknown>);
       }
       throw new Error(`matchesScopeWhere: unhandled operator object on "${key}": ${JSON.stringify(obj)}`);
@@ -812,6 +906,18 @@ export function stubTaskRowLocks(present: (id: string) => boolean = () => true) 
 }
 
 /**
+ * Reopen reads the job's status under a row lock (`SELECT ... FOR UPDATE`) inside one transaction (S06.16), so a test of the
+ * route against the mocked client has to answer that lock and run the transaction. The transaction's client is the mocked
+ * client itself, so the test still asserts on `job.update`, `planVisit.updateMany` and the rest as it always did. `row` is
+ * the job as the lock finds it.
+ */
+export function stubReopenTransaction(row: { status: string; job_number?: string; source_plan_id?: string | null }) {
+  const client = prisma as unknown as Record<string, ReturnType<typeof vi.fn>>;
+  client.$transaction!.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => fn(prisma));
+  client.$queryRaw!.mockResolvedValue([{ job_number: JOB_FIXTURE.job_number, source_plan_id: null, ...row }]);
+}
+
+/**
  * Hand-built transaction clients for the lead visit doors need three more members now that every
  * visit write is followed by `syncLeadWalkthroughStatus`: the row lock (`$executeRaw`), the
  * lead's current status (`lead.findFirst`) and the open/finished visit counts (`visit.count`).
@@ -846,4 +952,84 @@ export function withLeadStatusSync<T extends Record<string, any>>(
       ...visit,
     },
   };
+}
+
+/**
+ * Hand-built transaction clients for the card-checkout webhook (payments go-live slice 08). The
+ * reconciler reads three things inside its transaction: the invoice under its lock (since slice 09
+ * the whole invoice: status, balance, bank payments still clearing, customer, job, estimate), any
+ * payment already booked for the session, and, to book one, the invoice's number and estimate.
+ * Before the transaction it reads only which org the invoice belongs to. Pass the transaction you
+ * built and the invoice the test serves from `invoice.findUnique`; it gains whichever members it
+ * lacks. A locked re-read the test serves from `tx.invoice.findUnique` (a status that changed under
+ * the lock) wins over the served invoice. Mutates and returns `tx`, so a test that captured it
+ * still sees every call.
+ */
+export function withCheckoutLedger<T extends Record<string, any>>(tx: T, invoice: Record<string, any> = {}): T {
+  const t = tx as Record<string, any>;
+  t.$executeRaw ??= vi.fn().mockResolvedValue(1);
+  t.stripeEvent ??= { create: vi.fn().mockResolvedValue({}) };
+  t.timelineEvent ??= {};
+  t.timelineEvent.create ??= vi.fn().mockResolvedValue({});
+  // No money from the session written down yet.
+  t.timelineEvent.count ??= vi.fn().mockResolvedValue(0);
+  // Slice 11: every unapplied capture is also a "Payments needing attention" record.
+  t.unappliedCapture ??= { createMany: vi.fn().mockResolvedValue({ count: 1 }), findFirst: vi.fn().mockResolvedValue(null) };
+  // Slice 37b: a booked payment closes any open "charge with no payment" record (none here).
+  t.unappliedCapture.findMany ??= vi.fn().mockResolvedValue([]);
+  t.estimate ??= { update: vi.fn().mockResolvedValue({}) };
+  t.lead ??= { updateMany: vi.fn().mockResolvedValue({ count: 1 }) };
+  t.invoice ??= {};
+  t.invoice.update ??= vi.fn().mockResolvedValue({});
+  const lockedRead = t.invoice.findUnique;
+  const est = invoice.estimate;
+  t.invoice.findFirstOrThrow ??= vi.fn().mockImplementation(async (args: unknown) => ({
+    ...invoice,
+    status: invoice.status,
+    amount_due: invoice.amount_due ?? 0,
+    invoice_number: invoice.invoice_number,
+    // The deposit hold is judged under the lock: the served invoice's kind, figure, estimate and
+    // org deposit defaults.
+    kind: invoice.kind,
+    total_amount: invoice.total_amount,
+    organization: invoice.organization ?? null,
+    payments: [],
+    // Slice 09: booking a payment re-derives the stored totals from the ledger rows.
+    refunds: [],
+    estimate: est
+      ? { ...est, lead_id: est.lead_id ?? null, lead: est.lead ? { ...est.lead, status: est.lead.status ?? 'ESTIMATED' } : null }
+      : null,
+    ...(typeof lockedRead === 'function' ? await lockedRead(args) : {}),
+  }));
+  t.refund ??= {};
+  t.refund.findMany ??= vi.fn().mockResolvedValue([]);
+  t.payment ??= {};
+  t.payment.findFirst ??= vi.fn().mockResolvedValue(null);
+  t.payment.create ??= vi.fn().mockResolvedValue({ id: 'pay_checkout' });
+  return tx;
+}
+
+/** What a mocked lookup last answered (e.g. the invoice the reconciler read before its transaction). */
+export async function servedBy(mock: ReturnType<typeof vi.fn>): Promise<Record<string, any>> {
+  const results = mock.mock.results;
+  return results.length ? ((await results[results.length - 1].value) ?? {}) : {};
+}
+
+/**
+ * Payments go-live slice 29: the manual payment door re-derives the stored net collected from the
+ * ledger rows under its lock (rederiveRefundTotals). A hand-built transaction gains those reads:
+ * the invoice as its locked re-read answers it, with no payments or refunds yet.
+ */
+export function withLedgerReads<T extends Record<string, any>>(tx: T): T {
+  const t = tx as Record<string, any>;
+  t.invoice ??= {};
+  t.invoice.findFirstOrThrow ??= vi.fn().mockImplementation(async (args: unknown) => ({
+    ...(typeof t.invoice.findUniqueOrThrow === 'function' ? await t.invoice.findUniqueOrThrow(args) : {}),
+    payments: [],
+    refunds: [],
+  }));
+  t.invoice.update ??= vi.fn().mockResolvedValue({});
+  t.refund ??= {};
+  t.refund.findMany ??= vi.fn().mockResolvedValue([]);
+  return tx;
 }

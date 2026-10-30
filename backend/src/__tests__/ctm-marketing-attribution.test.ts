@@ -1,7 +1,7 @@
 /**
  * ctm-marketing-attribution.test.ts - persist the FULL CTM attribution block.
  *
- * Alpha Doors runs campaign numbers (Google Ads, Meta, website pools) that
+ * The pilot org runs campaign numbers (Google Ads, Meta, website pools) that
  * forward to the office, so "which campaign did this caller come from" is a
  * reporting requirement. CTM's webhook already carries the whole answer -
  * source, medium, campaign, keyword, referrer, ad network / group / creative
@@ -11,7 +11,7 @@
  * The payload shapes below are taken from REAL rows observed in staging's
  * ctm_events on 2026-08-07, not invented:
  *   +18626262706 -> source 'Google Ads',  medium 'cpc', referrer google.com
- *   +15513219015 -> source '(alphadoorsnewjersey website pool) Source'
+ *   +15513219015 -> source '(example-company website pool) Source'
  *   campaign/keyword are null on every observed row, because CTM fills those
  *   from a web session and a caller dialling off a truck has none. Null-vs-
  *   absent therefore matters, and is asserted.

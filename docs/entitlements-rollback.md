@@ -27,7 +27,7 @@ time and cached in the login payload, so a DB change does not reach a live sessi
 
 - Set `plan = 'SCALE'` on every org created before 2026-07-21.
 - Merged `{"phone": false}` into `feature_overrides` for every such org EXCEPT
-  demo orgs and Alpha Doors (`d40afcec-…`) — preserving the exact Communication
+  demo orgs and the pilot org (`d40afcec-…`) — preserving the exact Communication
   access that the retired `communicationAccess.ts` allowlist granted.
 
 Both statements are scoped by `created_at`, so replaying the migration cannot

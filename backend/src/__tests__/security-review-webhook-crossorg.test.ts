@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
+import { withCheckoutLedger } from './helpers';
 
 // SECURITY (review #6): the Stripe webhook must reject a checkout that names an invoice belonging
 // to a DIFFERENT org than the one resolved for the event. resolveOrgFromEvent can resolve the owner
@@ -69,10 +70,27 @@ describe('POST /api/webhooks/stripe — cross-org invoice rejection (#6)', () =>
       },
     };
 
+    // Slice 08: the event is recorded and the captured money written down in one transaction.
+    const tx: Record<string, any> = {};
+    mockPrisma.$transaction.mockImplementation(async (fn: (t: any) => unknown) => fn(withCheckoutLedger(tx)));
+
     const res = await postWebhook(event);
 
-    // Stripe gets a 200 (event consumed, no retry storm) but NO money side effects run.
+    // Stripe gets a 200 (event consumed, no retry storm) but NO money side effects run on the
+    // victim's invoice: no payment, no invoice write, no lock taken on it.
     expect(res.status).toBe(200);
-    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+    expect(tx.payment.create).not.toHaveBeenCalled();
+    expect(tx.invoice.update).not.toHaveBeenCalled();
+    // No lock on any invoice (the only raw statement is the per-session lock, which names no invoice).
+    const raw = tx.$executeRaw.mock.calls.map(([strings, ...values]: [TemplateStringsArray, ...unknown[]]) => ({ sql: strings.join('?'), values }));
+    expect(raw.filter((r: { sql: string }) => /invoices/i.test(r.sql))).toEqual([]);
+    expect(JSON.stringify(raw)).not.toContain(VICTIM_INVOICE_ID);
+    // The money landed in the attacker org's account, so it is recorded there, on the org itself,
+    // and the victim's invoice is never named.
+    const rows = tx.timelineEvent.create.mock.calls.map((c: any[]) => c[0].data);
+    expect(rows).toEqual([expect.objectContaining({
+      organization_id: 'org_attacker', entity_type: 'ORGANIZATION', entity_id: 'org_attacker', event_type: 'PAYMENT_UNRECORDED',
+    })]);
+    expect(JSON.stringify(rows)).not.toContain(VICTIM_INVOICE_ID);
   });
 });

@@ -5,9 +5,9 @@ import { prisma } from '../lib/prisma';
 import {
   TEST_USERS, mockAuthAs, authHeader,
   CUSTOMER_FIXTURE, ESTIMATE_FIXTURE, INVOICE_FIXTURE, TAG_FIXTURE, JOB_FIXTURE, LEAD_FIXTURE,
+  mockRoleSwitches,
 } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 
 const mockPrisma = prisma as unknown as {
@@ -24,7 +24,6 @@ const mockPrisma = prisma as unknown as {
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache();
   mockPrisma.tag.findFirst.mockResolvedValue({ id: TAG_FIXTURE.id, name: 'Urgent', color: '#EF4444' });
   mockPrisma.tag.findUnique.mockResolvedValue({ id: TAG_FIXTURE.id, name: 'Urgent', color: '#EF4444' });
   mockPrisma.tagAssignment.findUnique.mockResolvedValue(null);
@@ -135,6 +134,7 @@ const SCOPED_JOB_ID = 'ab000000-0000-0000-0000-000000000001';
 describe('POST /api/jobs/:id/tags - row-scope gate', () => {
   it('403s a TECHNICIAN neither assigned to nor the creator of the job', async () => {
     mockAuthAs('technician');
+    mockRoleSwitches({ edit_jobs: true }); // Edit jobs gates a job's tags (S01.11); the Technician preset has it off
     // entityExistsInOrg's tenant-only probe finds the row; canAccessRow's SCOPED probe (its
     // `where` carries the OWN_OR_CREATED_JOB `OR`) finds nothing - the technician has no claim.
     mockPrisma.job.findFirst.mockImplementation((args: { where: Record<string, unknown> }) =>
@@ -149,8 +149,9 @@ describe('POST /api/jobs/:id/tags - row-scope gate', () => {
     expect(mockPrisma.tagAssignment.create).not.toHaveBeenCalled();
   });
 
-  it('allows a TECHNICIAN whose scope matches the job (201)', async () => {
+  it('allows a TECHNICIAN with Edit jobs whose scope matches the job (201)', async () => {
     mockAuthAs('technician');
+    mockRoleSwitches({ edit_jobs: true }); // Edit jobs gates a job's tags (S01.11); the Technician preset has it off
     mockPrisma.job.findFirst.mockResolvedValue({ id: SCOPED_JOB_ID });
 
     const res = await request(app)
@@ -165,6 +166,7 @@ describe('POST /api/jobs/:id/tags - row-scope gate', () => {
 describe('DELETE /api/jobs/:id/tags/:tagId - row-scope gate', () => {
   it('403s a TECHNICIAN neither assigned to nor the creator of the job', async () => {
     mockAuthAs('technician');
+    mockRoleSwitches({ edit_jobs: true }); // Edit jobs gates a job's tags (S01.11); the Technician preset has it off
     mockPrisma.job.findFirst.mockImplementation((args: { where: Record<string, unknown> }) =>
       Promise.resolve(args.where.OR ? null : { id: SCOPED_JOB_ID }));
     mockPrisma.tagAssignment.findUnique.mockResolvedValue({ tag_id: TAG_FIXTURE.id });
@@ -181,9 +183,9 @@ describe('DELETE /api/jobs/:id/tags/:tagId - row-scope gate', () => {
 describe('POST /api/leads/:id/tags - row-scope gate', () => {
   it('403s a SALES rep not assigned to the lead', async () => {
     mockAuthAs('sales');
-    // OWN_LEAD's scoped probe carries `lead_assignees`; the tenant-only existence probe doesn't.
+    // The Attached scoped probe carries an `OR` of the lead's people; the tenant-only existence probe doesn't.
     mockPrisma.lead.findFirst.mockImplementation((args: { where: Record<string, unknown> }) =>
-      Promise.resolve(args.where.lead_assignees ? null : { id: LEAD_FIXTURE.id }));
+      Promise.resolve(args.where.OR ? null : { id: LEAD_FIXTURE.id }));
 
     const res = await request(app)
       .post(`/api/leads/${LEAD_FIXTURE.id}/tags`)
@@ -211,7 +213,7 @@ describe('DELETE /api/leads/:id/tags/:tagId - row-scope gate', () => {
   it('403s a SALES rep not assigned to the lead', async () => {
     mockAuthAs('sales');
     mockPrisma.lead.findFirst.mockImplementation((args: { where: Record<string, unknown> }) =>
-      Promise.resolve(args.where.lead_assignees ? null : { id: LEAD_FIXTURE.id }));
+      Promise.resolve(args.where.OR ? null : { id: LEAD_FIXTURE.id }));
     mockPrisma.tagAssignment.findUnique.mockResolvedValue({ tag_id: TAG_FIXTURE.id });
 
     const res = await request(app)
@@ -227,10 +229,9 @@ describe('POST /api/estimates/:id/tags - row-scope gate', () => {
   it('403s a SALES rep who cannot READ this estimate, even though update Estimate is unconditional', async () => {
     mockAuthAs('sales');
     // SALES's `update Estimate` grant is unconditional (defaultGrants.ts) - the OLD subject-level
-    // canDo guard alone would let this through. Its `read Estimate` grant
-    // (OWN_ESTIMATE_VIA_LEAD_OR_CREATOR) is conditional, and canAccessRow keys off READ, not
-    // update - matching how estimate.controller.ts's own mutation handlers already gate via
-    // canAccessEstimate despite the same unconditional route-level grant.
+    // canDo guard alone would let this through. Its Estimates scope (Through own leads) is narrower,
+    // and canAccessRow keys off the scope, not update - matching how estimate.controller.ts's own
+    // mutation handlers already gate via canAccessEstimate despite the same unconditional route-level grant.
     mockPrisma.estimate.findFirst.mockImplementation((args: { where: Record<string, unknown> }) =>
       Promise.resolve(args.where.OR ? null : { id: ESTIMATE_FIXTURE.id }));
 
@@ -261,19 +262,14 @@ describe('DELETE /api/estimates/:id/tags/:tagId - row-scope gate', () => {
 });
 
 describe('POST /api/invoices/:id/tags - row-scope gate', () => {
-  // No DEFAULT role today holds BOTH a conditional `read Invoice` and `update Invoice` grant
-  // (DISPATCHER/ADMIN, the only roles with `update Invoice`, both read Invoice unconditionally) -
-  // so there is no realistic default-role 403 to exercise here. This proves the MECHANISM is
-  // correctly wired for Invoice too (not skipped), for the day a per-user override or a future
-  // role narrows `read Invoice` to conditional while keeping `update Invoice`.
-  it('403s a DISPATCHER whose read Invoice grant is narrowed to conditional and does not match this invoice', async () => {
+  // A DISPATCHER holds Invoices scope All and `update Invoice`, so no default role is narrowed here. This
+  // proves the MECHANISM is wired for Invoice too (not skipped) once a role's Invoices scope is narrowed to
+  // Attached while it keeps `update Invoice`.
+  it('403s a DISPATCHER whose Invoices scope is narrowed to Attached and does not reach this invoice', async () => {
     mockAuthAs('dispatcher');
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
-      ...DEFAULT_GRANTS.filter((g) => g.role === 'DISPATCHER' && !(g.action === 'read' && g.subject === 'Invoice')),
-      { role: 'DISPATCHER', action: 'read', subject: 'Invoice', conditions: { job: { assignees: { some: { user_id: '{{userId}}' } } } } },
-    ]);
+    mockRoleSwitches({ invoices_scope: 'attached' });
     mockPrisma.invoice.findFirst.mockImplementation((args: { where: Record<string, unknown> }) =>
-      Promise.resolve(args.where.job ? null : { id: INVOICE_FIXTURE.id }));
+      Promise.resolve(args.where.OR ? null : { id: INVOICE_FIXTURE.id }));
 
     const res = await request(app)
       .post(`/api/invoices/${INVOICE_FIXTURE.id}/tags`)

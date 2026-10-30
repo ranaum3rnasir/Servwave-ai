@@ -71,7 +71,6 @@ import {
 import { cn, formatCurrency, formatPhone, extractApiError, downloadBlob } from '@/lib/utils';
 import { customerDisplayName } from '@/lib/customer-name';
 import { formatExactDay } from '@/lib/format-date';
-import { useAuthStore } from '@/stores/auth.store';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import { canSeePricing as canSeePricingAbility, type AppAbility } from '@/lib/ability';
 
@@ -103,7 +102,6 @@ export default function InvoiceDetailPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
-  const user = useAuthStore((s) => s.user);
   const ability = useAppAbility();
   const incomingBreadcrumbs: BreadcrumbItem[] | undefined = location.state?.breadcrumbs;
 
@@ -320,7 +318,7 @@ export default function InvoiceDetailPage() {
 
   // ─── Derived Data ─────────────────────────────
 
-  const actions = getAvailableActions(invoice, user?.role || '', ability);
+  const actions = getAvailableActions(invoice, ability);
   const overdue = isOverdue(invoice, timeZone);
   // Cost/margin visibility for <InternalCostsCard> — shared with the backend's canSeePricing
   // gate (SRVW-140), see lib/ability.ts.
@@ -372,8 +370,8 @@ export default function InvoiceDetailPage() {
   // the backend's voidPayment guard exactly (invoice.controller.ts) rather than an allowlist of
   // method names, so a future new PaymentMethod (like R5b's Zelle/Venmo/Cash App/Other) is
   // voidable here the instant it's voidable server-side, with nothing to remember to add.
-  const isVoidableMethod = (payment: { method: string; stripe_payment_intent_id: string | null }) =>
-    payment.method !== 'CARD' && payment.method !== 'EXTERNAL_CARD' && !payment.stripe_payment_intent_id;
+  const isVoidableMethod = (payment: { method: string; paid_through_processor: boolean }) =>
+    payment.method !== 'CARD' && payment.method !== 'EXTERNAL_CARD' && !payment.paid_through_processor;
   const openVoidPayment = (payment: Payment) => {
     setVoidPaymentTarget(payment);
     setVoidPaymentOpen(true);
@@ -1145,6 +1143,7 @@ export default function InvoiceDetailPage() {
         invoiceId={invoice.id}
         balanceOwed={amountDue}
         credits={invoice.credits}
+        canRefund={ability.can('refund', 'Invoice')}
       />
 
       {voidPaymentTarget && (

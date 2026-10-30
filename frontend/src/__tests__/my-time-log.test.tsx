@@ -18,13 +18,7 @@ function punch(over: Partial<Punch>): Punch {
     ts: 0,
     lat: 0,
     lng: 0,
-    matchedZoneId: null,
-    matchedZoneLabel: null,
-    matchedZoneKind: null,
-    matchedJobNumber: null,
-    distanceM: 0,
-    status: 'in_zone',
-    review: 'none',
+    accuracyM: null,
     ...over,
   };
 }
@@ -47,6 +41,19 @@ describe('MyTimeLog', () => {
     // 90-minute session → 1.5h appears as both the row Hours and the total.
     expect(screen.getAllByText('1.5h').length).toBeGreaterThanOrEqual(1);
     expect(screen.getByText(/total hours worked/i)).toBeInTheDocument();
+  });
+
+  it('shows where each clock-in and clock-out happened', () => {
+    mockUsePunches.mockReturnValue({
+      data: [
+        punch({ id: 'p1', type: 'IN', ts: T, lat: 30.2672, lng: -97.7431 }),
+        punch({ id: 'p2', type: 'OUT', ts: T + 90 * 60000, lat: 40.7128, lng: -74.006 }),
+      ],
+      isLoading: false,
+    } as ReturnType<typeof usePunches>);
+    renderWithProviders(<MyTimeLog />);
+    expect(screen.getByText('30.2672, -97.7431')).toBeInTheDocument();
+    expect(screen.getByText('40.7128, -74.0060')).toBeInTheDocument();
   });
 
   it('marks an open session as On the clock with no hours yet', () => {

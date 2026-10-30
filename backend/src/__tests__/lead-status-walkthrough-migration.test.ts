@@ -25,6 +25,8 @@ describe('lead status walkthrough values migration', () => {
     ]);
   });
 
+  // The Prisma enum no longer lists CANCELLED (S05.18 retired it from the app's list on purpose);
+  // the database type still carries the value until a later migration drops it.
   it('the generated client carries the two values in pipeline order', () => {
     expect(Object.values(LeadStatus)).toEqual([
       'NEW',
@@ -34,7 +36,6 @@ describe('lead status walkthrough values migration', () => {
       'ESTIMATED',
       'WON',
       'LOST',
-      'CANCELLED',
     ]);
   });
 

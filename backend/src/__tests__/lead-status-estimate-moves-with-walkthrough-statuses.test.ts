@@ -154,7 +154,7 @@ describe('sending an estimate (POST /api/estimates/:id/send)', () => {
     expect(statusWrite.where.status.in).toEqual(['NEW', 'CONTACTED', 'WALKTHROUGH_SCHEDULED', 'WALKTHROUGH_COMPLETED']);
   });
 
-  for (const stays of ['ESTIMATED', 'WON', 'LOST', 'CANCELLED']) {
+  for (const stays of ['ESTIMATED', 'WON', 'LOST']) {
     it(`leaves a ${stays} lead where it is and writes no status row`, async () => {
       leadStatus = stays;
       const res = await send();

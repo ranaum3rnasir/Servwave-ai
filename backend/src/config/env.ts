@@ -1,8 +1,12 @@
 import { z } from 'zod';
 import dotenv from 'dotenv';
 import { bridgeAgentIdsSchema, bridgeRingCallerSchema } from './bridgeRingCaller';
+import { applyE2eHarnessMailboxKey } from './e2eHarnessMailboxKey';
 
 dotenv.config();
+// After dotenv, so a key in backend/.env wins: a door backend (E2E_TEST_DOORS=true) with none gets a
+// harness-only one, so its test-company teardown can purge. Never in production.
+applyE2eHarnessMailboxKey(process.env);
 
 // .trim() everywhere: defends against a real-world bug we hit on staging where
 // a paste into the Render/Vercel dashboard added a trailing space to JWT-shaped
@@ -41,6 +45,12 @@ const envSchema = z.object({
   STRIPE_SECRET_KEY: z.string().trim().optional(),
   STRIPE_WEBHOOK_SECRET: z.string().trim().optional(),
   STRIPE_WEBHOOK_SECRET_CONNECT: z.string().trim().optional(),
+  // Payments go-live slice 38 (D19) fallback: true hides Link on CARD checkout sessions only.
+  // Off by default; flip it if the Klarna-inside-Link gate shows a pay-later option.
+  // Set but empty (a hosting dashboard can save one) reads as off.
+  PAYMENTS_HIDE_LINK_ON_CARD: z
+    .preprocess((v) => (typeof v === 'string' && v.trim() === '' ? undefined : v), z.enum(['true', 'false', '1', '0']).default('false'))
+    .transform((v) => v === 'true' || v === '1'),
 
   // CTM (CallTrackingMetrics) phone + SMS — optional until an org connects.
   // Agency Access/Secret keys reach every sub-account; values live ONLY in the
@@ -55,7 +65,7 @@ const envSchema = z.object({
   // Dedicated secret for verifying CTM's X-CTM-Signature on inbound webhooks.
   // Deliberately SEPARATE from CTM_SECRET_KEY (the outbound-API secret): CTM
   // signs sub-account webhooks with a different secret, so reusing the API
-  // secret fail-closes every real webhook (401 storm, Alpha Doors 596375
+  // secret fail-closes every real webhook (401 storm, the pilot org 596375
   // 2026-07-13). Left UNSET → the signature gate is skipped and the query
   // token is the sole auth (the plan's documented Phase-0 posture). Set this
   // only after the P4 probe confirms CTM's real signing secret + formula.
@@ -65,6 +75,10 @@ const envSchema = z.object({
   BACKEND_PUBLIC_URL: z.string().trim().optional(),
   // Phase-0 safety guard: comma-separated E.164 numbers; when set, outbound SMS/calls may ONLY go to these (Phase-0 test guard); unset = unrestricted.
   CTM_OUTBOUND_ALLOWLIST: z.string().trim().optional(),
+  // Comma-separated org ids of the real (non-demo) pilot orgs that see the unfinished phone setup tabs (Call flows, Call
+  // groups, Training, Blocked callers) next to the demo orgs. Unset = the built-in pilot org. Keep it equal to the
+  // browser's VITE_COMMUNICATION_ALLOWED_ORG_IDS when that is set, or a tab is drawn that the server answers 404.
+  COMMUNICATION_ALLOWED_ORG_IDS: z.string().trim().optional(),
   // Bridge click-to-call: which request field rings the CALLER's own profile
   // phone first. 'off' (default) = today's body exactly. Values, the agent map
   // format and why a bad value fails the boot: config/bridgeRingCaller.ts.
@@ -101,6 +115,16 @@ const envSchema = z.object({
   // Verify mail.servwave.com in Resend (DKIM/SPF/DMARC at the subdomain) before
   // pointing an environment at it.
   EMAIL_FROM_BUSINESS: z.string().trim().default('no-reply@mail.servwave.com'),
+  // PRD 10 - the domain this environment issues and receives mailbox addresses on
+  // (`first.last.company@<domain>` and the company's main address). One per environment, so a
+  // production address never resolves in staging: staging.mail.servwave.com on staging,
+  // mail.servwave.com in production. Unset means "the domain EMAIL_FROM_BUSINESS already sends from",
+  // which is what every environment used before the register existed.
+  MAILBOX_DOMAIN: z.string().trim().toLowerCase().optional(),
+  // PRD 10 - the secret key a purged company's addresses are kept under as one-way hashes (HMAC-SHA256).
+  // Kept outside the database on purpose: the hash must not be reversible by whoever holds a dump. A
+  // company purge refuses to run without it rather than keep a readable address. At least 32 characters.
+  MAILBOX_ADDRESS_HASH_KEY: z.string().trim().optional(),
   // Email slice 6 - INBOUND domain. A dedicated subdomain whose MX points at
   // Resend's inbound MTA (inbound-smtp.us-east-1.amazonaws.com), so every
   // address at it is a catch-all we receive. Deliberately NOT the root domain
@@ -123,6 +147,9 @@ const envSchema = z.object({
   // Where "book a call" requests from the AI Agentic Farm catalog land — always
   // ServWave's own sales inbox, regardless of which org's user is booking.
   AI_FARM_SALES_EMAIL: z.string().trim().default('info@servwave.com'),
+  // Where the nightly payment reconcile (payments go-live slice 37) sends its drift alert: always
+  // ServWave's own ops inbox, never an org's.
+  PAYMENTS_OPS_ALERT_EMAIL: z.string().trim().default('info@servwave.com'),
   // Invite tokens — HMAC secret for the stateless user-invite links. REQUIRED in
   // production (>=32 chars, enforced in the superRefine below) so invite links
   // never share a secret with the service-role key; in dev/test it may be omitted

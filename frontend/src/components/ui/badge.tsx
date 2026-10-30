@@ -20,8 +20,8 @@ const badgeVariants = cva(
        * intent -> tone move is scoped to W2/8 in section 2a.11's rename
        * table, md_files/plans/frontend/2026-07-27-ui-component-architecture-program.md:641).
        * Evidence: 4 real call sites hand-roll this exact surface/text/border
-       * triad today - StripePaymentsStatusCard's SUCCESS_TINT/WARNING_TINT/
-       * DANGER_TINT constants (payments/StripePaymentsStatusCard.tsx:37-39),
+       * triad today - PaymentsStatusCard's SUCCESS_TINT/WARNING_TINT/
+       * DANGER_TINT constants (payments/PaymentsStatusCard.tsx:37-39),
        * and the getAdSourceStyle() helper duplicated in
        * CustomerDetailPage.tsx:210/CustomersPage.tsx:93 (success/danger/ai/
        * warning/neutral), measured directly against those call sites.

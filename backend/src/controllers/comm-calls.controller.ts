@@ -6,10 +6,11 @@ import { logger } from '../lib/logger';
 import { supabaseAdmin } from '../lib/supabase';
 import { env } from '../config/env';
 import { tenantWhere } from '../lib/tenant';
+import { COMPLETED_OR_LATER_JOB_STATUSES } from '../lib/job-status-order';
 import { matchByPhone, normalizeNAPhone } from '../lib/comms-identity';
-import { scopeWhereForReq } from '../lib/permissions/enforce';
+import { scopeWhereForReq, canSeeCallInsights, canSeeCompanyFigures } from '../lib/permissions/enforce';
 import { addOrFilter } from '../lib/permissions/whereCompose';
-import { commVisibilityWhere } from '../lib/permissions/anchorVisibility';
+import { callsInSectionWhereForReq, callReadWhereForReq } from '../lib/communication/communicationScope';
 import { phoneSearchClauses, phoneRelationSearchClauses } from '../lib/phone-search';
 import type { Subject } from '../lib/permissions/catalog';
 import { logAudit } from '../lib/audit';
@@ -81,8 +82,33 @@ export function mapAnsweredBy(row: {
   return userId ? { ...out, id: userId } : out;
 }
 
+/**
+ * Whether this person may be told a recording exists: only a holder of Play recording or Download recording.
+ * Without either, the call's "has recording" field is left out of every response, so a screen has nothing to hint at
+ * (Roles & Permissions S08.11). Read from the request's ability, so it is a switch, never a role name.
+ */
+function mayKnowOfRecording(req: Request): boolean {
+  return Boolean(
+    req.ability?.can('play_recording', 'Communication') || req.ability?.can('download_recording', 'Communication'),
+  );
+}
+
+/**
+ * Whether this person may be told what was said on a call: the transcript text and the call summary. View transcript
+ * covers both, so without it neither rides on any call response (Roles & Permissions S08.12). Read from the request's
+ * ability, so it is a switch, never a role name.
+ */
+export function mayReadTranscript(req: Request): boolean {
+  return Boolean(req.ability?.can('view_transcript', 'Communication'));
+}
+
 // CallSession → frontend `CallSession` (phone-calls.ts).
-function mapCallSession(row: any) {
+function mapCallSession(row: any, req: Request) {
+  const withTranscript = mayReadTranscript(req);
+  // Sentiment and the review flag are call insights (S08.13); the call score, who answered and the call details are not.
+  // The revenue tied to a call is a company figure (S01.16's predicate): the key is left out, never sent as zero.
+  const withInsights = canSeeCallInsights(req);
+  const withFigures = canSeeCompanyFigures(req);
   const direction = toApiDirection(row.direction);
   return {
     id: row.id,
@@ -101,15 +127,15 @@ function mapCallSession(row: any) {
     ...(row.job_id != null && { jobId: row.job_id }),
     ...(row.job_label != null && { jobLabel: row.job_label }),
     ...(row.disposition != null && { disposition: row.disposition }),
-    ...(row.sentiment != null && { sentiment: row.sentiment }),
-    ...(row.summary != null && { summary: row.summary }),
-    ...(row.transcript_preview != null && { transcriptPreview: row.transcript_preview }),
-    ...(row.has_recording != null && { hasRecording: row.has_recording }),
+    ...(withInsights && row.sentiment != null && { sentiment: row.sentiment }),
+    ...(withTranscript && row.summary != null && { summary: row.summary }),
+    ...(withTranscript && row.transcript_preview != null && { transcriptPreview: row.transcript_preview }),
+    ...(row.has_recording != null && mayKnowOfRecording(req) && { hasRecording: row.has_recording }),
     ...(row.qa_score != null && { qaScore: row.qa_score }),
-    ...(row.review_flag != null && { reviewFlag: row.review_flag }),
+    ...(withInsights && row.review_flag != null && { reviewFlag: row.review_flag }),
     ...(row.call_flow != null && { callFlow: row.call_flow }),
     ...(row.tags != null && { tags: row.tags }),
-    ...(row.revenue != null && { revenue: Number(row.revenue) }),
+    ...(withFigures && row.revenue != null && { revenue: Number(row.revenue) }),
     ...(row.customer != null && {
       linkedCustomer: {
         id: row.customer.id,
@@ -178,11 +204,11 @@ function mapPhoneCustomer(row: any) {
 
 export async function listCalls(req: Request, res: Response) {
   try {
-    // Anchor-inherited row scope (slice 8a). This was a TENANT-ONLY findMany:
-    // the Communication module had no row scoping at all, so every role that
-    // could reach it saw every call in the org. See lib/permissions/anchorVisibility.
+    // The section list follows Communication scope (M11): "All" lists every call, "Linked to me" the calls on the
+    // person's linked numbers and the calls they placed or answered. A job, lead or customer tie plays no part here;
+    // it only decides whether a single call opens (getCall).
     const rows = await prisma.callSession.findMany({
-      where: { ...tenantWhere(req), ...(await commVisibilityWhere(req)) },
+      where: { ...tenantWhere(req), ...(await callsInSectionWhereForReq(req)) },
       orderBy: { started_at: 'desc' },
       include: {
         customer: { select: { id: true, first_name: true, last_name: true, company_name: true } },
@@ -192,7 +218,7 @@ export async function listCalls(req: Request, res: Response) {
       },
     });
 
-    res.json({ calls: rows.map(mapCallSession) });
+    res.json({ calls: rows.map((row) => mapCallSession(row, req)) });
   } catch (err) {
     logger.error('Failed to list calls:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -238,12 +264,12 @@ export async function getCallOutcome(req: Request, res: Response) {
       return;
     }
 
-    // Same row scoping as listCalls - this returns a call, so it must not be a
-    // side door around the visibility rules that endpoint enforces.
+    // Same read scope as call detail (getCall) - this returns a call, so it must not be a
+    // side door around Communication scope: it answers only for a call the person can read.
     const row = await prisma.callSession.findFirst({
       where: {
         ...tenantWhere(req),
-        ...(await commVisibilityWhere(req)),
+        ...(await callReadWhereForReq(req)),
         // Stored vocabulary is 'in'/'out' (lib/ctm/ingest.ts), not the API's
         // long form - see toApiDirection above.
         direction: 'out',
@@ -253,7 +279,7 @@ export async function getCallOutcome(req: Request, res: Response) {
       orderBy: { started_at: 'desc' },
     });
 
-    res.json({ call: row ? mapCallSession(row) : null });
+    res.json({ call: row ? mapCallSession(row, req) : null });
   } catch (err) {
     logger.error('Failed to look up call outcome:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -263,7 +289,7 @@ export async function getCallOutcome(req: Request, res: Response) {
 export async function getCall(req: Request, res: Response) {
   try {
     const row = await prisma.callSession.findFirst({
-      where: { id: req.params.id as string, ...tenantWhere(req), ...(await commVisibilityWhere(req)) },
+      where: { id: req.params.id as string, ...tenantWhere(req), ...(await callReadWhereForReq(req)) },
       include: {
         customer: { select: { id: true, first_name: true, last_name: true, company_name: true } },
         lead: { select: { id: true, lead_number: true } },
@@ -277,7 +303,7 @@ export async function getCall(req: Request, res: Response) {
       return;
     }
 
-    res.json({ call: mapCallSession(row) });
+    res.json({ call: mapCallSession(row, req) });
   } catch (err) {
     logger.error('Failed to get call:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -285,20 +311,31 @@ export async function getCall(req: Request, res: Response) {
 }
 
 /**
- * GET /calls/:id/recording — mint a fresh 300s signed URL for a stored
- * recording. tenantWhere + anchor-visibility scoping mirrors getCall above; a
- * missing row, a row outside the caller's scope, and a not-(yet)-ingested
- * recording are all indistinguishable to the caller (404, never 500 - the player
- * shows a quiet "Processing…" state on 404).
+ * GET /calls/:id/recording - mint a fresh 300s signed URL for a stored recording. tenantWhere + the call read scope
+ * mirror getCall above; a missing row, a row outside the caller's scope, and a not-(yet)-ingested recording are all
+ * indistinguishable to the caller (404, never 500 - the player shows a quiet "Processing..." state on 404).
  *
- * The visibility filter is NOT optional here: this route mints a signed URL into
- * the PRIVATE recordings bucket. A scoped list beside an unscoped sub-resource
- * is the classic hole.
+ * The route also needs Play recording (comm-calls.routes.ts), and the read scope is NOT optional here: this route
+ * mints a signed URL into the PRIVATE recordings bucket. A scoped list beside an unscoped sub-resource is the classic
+ * hole, and holding the switch does not widen which calls a person may open.
  */
 export async function getCallRecording(req: Request, res: Response) {
+  await mintRecordingLink(req, res, { download: false });
+}
+
+/**
+ * GET /calls/:id/recording/download - the same recording, as a link marked as a file download (the response asks the
+ * browser to save it). Needs Download recording, separately from Play recording. Hiding the button is all the
+ * switch can do about a copy: a person who can play a recording can still capture it while it plays.
+ */
+export async function getCallRecordingDownload(req: Request, res: Response) {
+  await mintRecordingLink(req, res, { download: true });
+}
+
+async function mintRecordingLink(req: Request, res: Response, opts: { download: boolean }) {
   try {
     const row = await prisma.callSession.findFirst({
-      where: { id: req.params.id as string, ...tenantWhere(req), ...(await commVisibilityWhere(req)) },
+      where: { id: req.params.id as string, ...tenantWhere(req), ...(await callReadWhereForReq(req)) },
       select: { id: true, recording_key: true },
     });
 
@@ -307,12 +344,17 @@ export async function getCallRecording(req: Request, res: Response) {
       return;
     }
 
-    const { data, error } = await supabaseAdmin.storage
-      .from(env.CTM_RECORDINGS_BUCKET)
-      .createSignedUrl(row.recording_key, RECORDING_URL_TTL_SECONDS);
+    // The saved file keeps the stored format (wav or mp3); the name never carries the storage path.
+    const extension = row.recording_key.split('.').pop();
+    const bucket = supabaseAdmin.storage.from(env.CTM_RECORDINGS_BUCKET);
+    const { data, error } = opts.download
+      ? await bucket.createSignedUrl(row.recording_key, RECORDING_URL_TTL_SECONDS, {
+          download: `call-recording-${row.id}.${extension}`,
+        })
+      : await bucket.createSignedUrl(row.recording_key, RECORDING_URL_TTL_SECONDS);
 
     if (error || !data?.signedUrl) {
-      // Mint failure is still "not available", never a 500 — the object may
+      // Mint failure is still "not available", never a 500 - the object may
       // simply not exist yet (upload raced) and the player retries on demand.
       logger.warn(`Failed to mint signed recording URL for call ${row.id}`);
       res.status(404).json({ error: 'Recording not available' });
@@ -321,7 +363,7 @@ export async function getCallRecording(req: Request, res: Response) {
 
     void logAudit({
       req,
-      action: 'recording.played',
+      action: opts.download ? 'recording.downloaded' : 'recording.played',
       resourceType: 'CallSession',
       resourceId: row.id,
     });
@@ -345,7 +387,7 @@ export async function getCallTranscript(req: Request, res: Response) {
   try {
     // Same reasoning as /recording above: this returns transcript CONTENT, so it
     // carries the row scope, not just tenancy.
-    const visibility = await commVisibilityWhere(req);
+    const visibility = await callReadWhereForReq(req);
     const row = await prisma.callSession.findFirst({
       where: { id: req.params.id as string, ...tenantWhere(req), ...visibility },
       select: { id: true, ctm_call_id: true, transcript_preview: true, summary: true, transcript_turns: true },
@@ -416,7 +458,8 @@ export async function getCallTranscript(req: Request, res: Response) {
 export const dialerSearchQuerySchema = z.object({ q: z.string().trim().min(2).max(80) });
 
 const DIALER_LIMIT = 5;
-const OPEN_JOB_STATUS = { notIn: [JobStatus.COMPLETED, JobStatus.CANCELLED] };
+// Open = not finished and not cancelled: the completed-or-later set (PRD 6) leaves the list with Completed.
+const OPEN_JOB_STATUS = { notIn: [...COMPLETED_OR_LATER_JOB_STATUSES, JobStatus.CANCELLED] };
 
 function dialerContains(term: string) {
   return { contains: term, mode: 'insensitive' as const };
@@ -1016,12 +1059,19 @@ export async function createCall(req: Request, res: Response) {
     logger.info(
       `Call created${match ? ` linked to ${match.kind} ${match.id}` : ' (unmatched caller)'}`,
     );
-    res.status(201).json({ call: mapCallSession(row) });
+    res.status(201).json({ call: mapCallSession(row, req) });
   } catch (err) {
     logger.error('Failed to create call:', err);
     res.status(500).json({ error: 'Internal server error' });
   }
 }
+
+/**
+ * What a detach answers when the call it just changed is no longer one the person may read (it was reachable only
+ * through the job or lead it was taken off). The change is done; the row is simply no longer theirs to see, so the
+ * answer is a success that says so, not a 404, and the screen takes the row out of view.
+ */
+const CALL_LEFT_THE_PERSONS_SCOPE = { call: null, left: true };
 
 // Manual attach of a call to a job from the call log (spec §7, story 21);
 // job_id: null clears the attribution back to "no job".
@@ -1048,7 +1098,7 @@ export async function reassignCallJob(req: Request, res: Response) {
     // benign while the guard was pure tenancy (the updateMany already 404'd),
     // NOT benign now that the guard is a visibility predicate and the refetch is
     // what renders back to the caller.
-    const visibility = await commVisibilityWhere(req);
+    const visibility = await callReadWhereForReq(req);
     let data: {
       job_id: string | null;
       job_label: string | null;
@@ -1110,16 +1160,19 @@ export async function reassignCallJob(req: Request, res: Response) {
       return;
     }
 
-    // Same filter as the update. This is only sound because the target job above
-    // is resolved under the caller's OWN Job scope: a caller can never move a row
-    // to a job they cannot see, so the row they just wrote is still visible to
-    // them here and the refetch can never come back empty.
+    // Same filter as the update. An attach or a move cannot empty it: the target job above is resolved under the
+    // caller's OWN Job scope, so the row they just wrote is still reachable through it. A detach can: a call that was
+    // readable only through the record it was taken off is no longer theirs to read.
     const [updated] = await prisma.callSession.findMany({
       where: { id: req.params.id as string, ...tenantWhere(req), ...visibility },
       take: 1,
     });
+    if (!updated) {
+      res.json(CALL_LEFT_THE_PERSONS_SCOPE);
+      return;
+    }
 
-    res.json({ call: mapCallSession(updated) });
+    res.json({ call: mapCallSession(updated, req) });
   } catch (err) {
     logger.error('Failed to reassign call job:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -1138,7 +1191,7 @@ export async function reassignCallLead(req: Request, res: Response) {
   try {
     // See reassignCallJob: one filter, applied to the pre-read, the update and
     // the refetch alike.
-    const visibility = await commVisibilityWhere(req);
+    const visibility = await callReadWhereForReq(req);
     let data: {
       lead_id: string | null;
       job_id: string | null;
@@ -1203,12 +1256,17 @@ export async function reassignCallLead(req: Request, res: Response) {
       return;
     }
 
+    // Same filter as the update; see reassignCallJob for when it can come back empty.
     const [updated] = await prisma.callSession.findMany({
       where: { id: req.params.id as string, ...tenantWhere(req), ...visibility },
       take: 1,
     });
+    if (!updated) {
+      res.json(CALL_LEFT_THE_PERSONS_SCOPE);
+      return;
+    }
 
-    res.json({ call: mapCallSession(updated) });
+    res.json({ call: mapCallSession(updated, req) });
   } catch (err) {
     logger.error('Failed to reassign call lead:', err);
     res.status(500).json({ error: 'Internal server error' });

@@ -19,7 +19,7 @@ type Props = {
   open: boolean;
   onClose: () => void;
   approval: StockApproval | null;
-  // Kept for API compatibility with the Emanuel caller (NewApprovalRequestDialog
+  // Kept for API compatibility with the original caller (NewApprovalRequestDialog
   // passes zIndex={80}). The shadcn Dialog/Radix portal handles nested stacking
   // automatically, so this is accepted but not forwarded to the Modal adapter.
   zIndex?: number;
@@ -94,13 +94,13 @@ export function ApprovalEmailDialog({
     if (!approval) return [];
     const out: { label: string; email: string }[] = [];
 
-    // Approval-pool roles: warehouse_lead, plus a generic Inventory Admin alias
+    // Approval pool: the counter staff at the requester's branch, plus a generic Inventory Admin alias
     const approvers = allTechs.filter(
-      (t) => t.role === "warehouse_lead" && t.branch === requester?.branch,
+      (t) => t.inventoryView === "counter" && t.branch === requester?.branch,
     );
     approvers.forEach((a) =>
       out.push({
-        label: `${a.name} (Warehouse Lead · ${a.branch})`,
+        label: `${a.name} (Counter · ${a.branch})`,
         email: emailFor(a.name),
       }),
     );

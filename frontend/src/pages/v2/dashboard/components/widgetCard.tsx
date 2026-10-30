@@ -1,11 +1,14 @@
 import type { ReactNode } from 'react';
 
+import { Badge } from '@/ui-kit/components/ui/badge';
 import { Card, CardAction, CardHeader, CardTitle } from '@/ui-kit/components/ui/card';
 import { Spinner } from '@/ui-kit/components/ui/spinner';
 
 export interface WidgetCardProps {
   title?: string;
   icon?: ReactNode;
+  /** The word the server sends when the figures are not the whole company's ("Yours", ...), shown beside the title. */
+  scopeLabel?: string | null;
   /** Header right slot - a text link, a count chip, a static caption. */
   right?: ReactNode;
   children: ReactNode;
@@ -37,7 +40,7 @@ export interface WidgetCardProps {
  * recorded as the one accessibility difference from the legacy shell; it now
  * renders a real `<h3>` and takes a `level` if a page needs a different one.
  */
-export function WidgetCard({ title, icon, right, children, loading }: WidgetCardProps) {
+export function WidgetCard({ title, icon, scopeLabel, right, children, loading }: WidgetCardProps) {
   return (
     <Card className="h-full overflow-hidden">
       {title && (
@@ -45,6 +48,7 @@ export function WidgetCard({ title, icon, right, children, loading }: WidgetCard
           <CardTitle className="flex min-w-0 items-center gap-2">
             {icon}
             <span className="truncate">{title}</span>
+            {scopeLabel && <Badge variant="softNeutral" size="sm" className="shrink-0">{scopeLabel}</Badge>}
           </CardTitle>
           {right && <CardAction>{right}</CardAction>}
         </CardHeader>

@@ -4,7 +4,6 @@ import app from '../app';
 import { prisma } from '../lib/prisma';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 import { readersWithEntityAccess } from '../lib/tasks/entityAccessCohort';
 import {
   mockAuthAs,
@@ -50,7 +49,7 @@ const mockPrisma = prisma as unknown as {
 
 /**
  * The one job every probe in this suite runs against. `visits[].assignees[]` is TECHNICIAN's own
- * scope (OWN_JOB), `created_by_id` its second arm, and `estimate: null` makes SALES's
+ * scope (Attached: crew), and `estimate: null` makes SALES's
  * estimate-anchored read a non-match - three different fragment shapes over one row.
  */
 const JOB_FIXTURE: Record<string, unknown> = {
@@ -68,7 +67,7 @@ const JOB_FIXTURE: Record<string, unknown> = {
  * bite on. Together they cover all four scope shapes the module has to batch:
  *   JOB       OWN_OR_CREATED_JOB       relation path OR scalar
  *   LEAD      OWN_LEAD / OWN_WALKTHROUGH   two different relation paths
- *   ESTIMATE  OWN_ESTIMATE_VIA_LEAD_OR_CREATOR   a to-one hop OR an `AND` of scalars
+ *   ESTIMATE  the Estimates scope (Attached / Through own leads)   to-one hops to the lead and the job
  *   CUSTOMER  OWN_CUSTOMER (#2041)     three-arm OR: lead_assignees / job visit assignees / created_by_id
  */
 const LEAD_FIXTURE: Record<string, unknown> = {
@@ -80,14 +79,25 @@ const LEAD_FIXTURE: Record<string, unknown> = {
   visits: [{ assignees: [{ user_id: CREW_TECH_ID }] }],
 };
 
-/** Lead-less (customer-anchored), so ONLY the creator arm can grant it. */
+/**
+ * On a lead (and no job yet): its assignee is SALES (Through own leads) and a technician is on the crew of
+ * its walkthrough (Attached). Neither the creator nor anyone else reaches it by having made it.
+ */
 const ESTIMATE_FIXTURE: Record<string, unknown> = {
   id: ESTIMATE_ID,
   organization_id: ALPHA_ORG_ID,
   estimate_number: 'E00042',
-  lead_id: null,
-  lead: null,
-  created_by: CREW_TECH_ID,
+  lead_id: LEAD_ID,
+  lead: {
+    id: LEAD_ID,
+    lead_assignees: [{ user_id: TEST_USERS.sales.id }],
+    commission_owner_id: null,
+    visits: [{ assignees: [{ user_id: CREW_TECH_ID }] }],
+  },
+  job_id: null,
+  job: null,
+  job_link: null,
+  created_by: TEST_USERS.dispatcher.id,
 };
 
 /**
@@ -172,7 +182,6 @@ function wireDelegate(
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache();
 
   mockAuthAs('admin');
 
@@ -303,9 +312,16 @@ describe('batching', () => {
    * for 222 readers. Testing only the entity type that passes is how that shipped.
    *
    * Expected counts are per DISTINCT resolved fragment, not per role:
-   *   JOB       {org} for ADMIN+DISPATCHER · SALES via-estimate · TECHNICIAN's two arms   = 4
-   *   LEAD      {org} · SALES own-lead · TECHNICIAN own-walkthrough                       = 3
-   *   ESTIMATE  {org} · SALES and TECHNICIAN share ONE fragment, two arms                 = 3
+   *   JOB       {org} for ADMIN+DISPATCHER · SALES via-estimate · TECHNICIAN's three Attached
+   *             arms (crew, Sold By, Dispatcher)                                          = 5
+   *   LEAD      {org} · SALES and TECHNICIAN share ONE Attached fragment, four arms
+   *             (assignee, Owner, Dispatcher, walkthrough crew)                           = 5
+   *   ESTIMATE  {org} · SALES's Through own leads fragment (1) · TECHNICIAN's Attached fragment, one
+   *             probe per arm: four through the lead (assignee, Owner, Dispatcher, walkthrough crew), and the
+   *             three job arms twice, for the job it produced and the job it was attached to (11),
+   *             and the creator rule's arms for those two profiles, answered together: one read of who
+   *             made the estimate per profile (2), and a second probe about that person alone only
+   *             when they are in the roster (none here)                                          = 14
    *   CUSTOMER  {org} for ADMIN+DISPATCHER (1) · SALES's OWN_CUSTOMER matches on the FIRST
    *             OR-arm (lead_assignees), so the per-arm loop breaks after one probe (1) ·
    *             TECHNICIAN has no `read Customer` grant at all -> MATCH_NOTHING (`id:{in:[]}}`)
@@ -314,9 +330,9 @@ describe('batching', () => {
    *             technicians' shared profile still costs one (batched) probe            = 3
    */
   const CASES: [string, string, number][] = [
-    ['JOB', JOB_ID, 4],
-    ['LEAD', LEAD_ID, 3],
-    ['ESTIMATE', ESTIMATE_ID, 3],
+    ['JOB', JOB_ID, 5],
+    ['LEAD', LEAD_ID, 5],
+    ['ESTIMATE', ESTIMATE_ID, 14],
     ['CUSTOMER', CUSTOMER_ID, 3],
   ];
 
@@ -335,14 +351,15 @@ describe('batching', () => {
     },
   );
 
-  it('answers the ESTIMATE creator arm from ONE probe, not one per candidate', async () => {
+  it('answers the ESTIMATE attachment arms from a handful of probes, not one per candidate', async () => {
     const out = await readersWithEntityAccess(BIG_ROSTER, { type: 'ESTIMATE', id: ESTIMATE_ID });
 
-    // Lead-less estimate: the via-lead arm grants nobody, the `AND` creator arm grants its author.
+    // On a lead: SALES is its assignee, the technician on its walkthrough crew is attached, and the
+    // 36 other technicians are not. The person who created it is on nothing.
     expect(out.withAccess.has(CREW_TECH_ID)).toBe(true);
-    expect(out.withAccess.has(TEST_USERS.sales.id)).toBe(false);
+    expect(out.withAccess.has(TEST_USERS.sales.id)).toBe(true);
     expect(out.withAccess.has(BIG_ROSTER[10].id)).toBe(false);
-    expect(out.probes).toBeLessThan(BIG_ROSTER.length);
+    expect(out.probes).toBe(14);
     expect(out.fallbacks).toBe(0);
   });
 
@@ -352,7 +369,7 @@ describe('batching', () => {
     const spread = BIG_ROSTER.map((r, i) => ({ ...r, department_id: `dept-${i}` }));
     const out = await readersWithEntityAccess(spread, { type: 'JOB', id: JOB_ID });
 
-    expect(out.probes).toBe(4);
+    expect(out.probes).toBe(5);
   });
 
   it('still answers per candidate inside a shared profile', async () => {
@@ -366,21 +383,20 @@ describe('batching', () => {
     expect(big.withAccess.has(TEST_USERS.sales.id)).toBe(false);
   });
 
-  it('loads per-user permission overrides for the whole roster in ONE query', async () => {
+  it('never reads per-user override rows: a reader\'s access comes from their switches alone', async () => {
     await readersWithEntityAccess(BIG_ROSTER, { type: 'JOB', id: JOB_ID });
 
-    expect(mockPrisma.userPermissionOverride.findMany).toHaveBeenCalledTimes(1);
-    const arg = mockPrisma.userPermissionOverride.findMany.mock.calls[0][0];
-    expect(arg.where.user_id.in).toHaveLength(BIG_ROSTER.length - 1); // ADMIN is skipped
+    expect(mockPrisma.userPermissionOverride.findMany).not.toHaveBeenCalled();
   });
 
   it('opening the picker is ONE request and does not re-query per candidate', async () => {
     const res = await get(`?entity_type=JOB&entity_id=${JOB_ID}`);
 
     expect(res.status).toBe(200);
-    expect(mockPrisma.user.findMany).toHaveBeenCalledTimes(1);
-    // 1 existence probe + the 4 cohort probes above.
-    expect(mockPrisma.job.findFirst).toHaveBeenCalledTimes(5);
+    // The roster once, and the roster's stored people once more for everyone's switches: two reads, not one per candidate.
+    expect(mockPrisma.user.findMany).toHaveBeenCalledTimes(2);
+    // 1 existence probe + the 5 cohort probes above.
+    expect(mockPrisma.job.findFirst).toHaveBeenCalledTimes(6);
   });
 
   it('never answers a reader under another organization\'s tenant', async () => {

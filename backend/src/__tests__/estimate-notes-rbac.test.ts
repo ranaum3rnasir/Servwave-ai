@@ -55,6 +55,7 @@ describe('GET /api/estimates/:id/notes — per-row RBAC (in-tenant cross-user re
   it('SALES requesting notes on an estimate they do NOT own → 403 (notes never queried)', async () => {
     mockAuthAs('sales');
     mockPrisma.estimate.findUnique.mockResolvedValue(NOTES_FIXTURE_OWNED_BY_OTHER);
+    mockPrisma.estimate.findFirst.mockResolvedValue(null); // outside their Estimates scope
 
     const res = await request(app)
       .get(`/api/estimates/${ESTIMATE_FIXTURE.id}/notes`)
@@ -68,6 +69,7 @@ describe('GET /api/estimates/:id/notes — per-row RBAC (in-tenant cross-user re
   it('the OWNING SALES rep gets 200 + notes for their own estimate', async () => {
     mockAuthAs('sales');
     mockPrisma.estimate.findUnique.mockResolvedValue(NOTES_FIXTURE_OWNED_BY_SALES);
+    mockPrisma.estimate.findFirst.mockResolvedValue({ id: ESTIMATE_FIXTURE.id }); // inside their Estimates scope
 
     const res = await request(app)
       .get(`/api/estimates/${ESTIMATE_FIXTURE.id}/notes`)
@@ -81,6 +83,7 @@ describe('GET /api/estimates/:id/notes — per-row RBAC (in-tenant cross-user re
   it('ADMIN gets 200 for notes on an estimate they do not own (unconditional access preserved)', async () => {
     mockAuthAs('admin');
     mockPrisma.estimate.findUnique.mockResolvedValue(NOTES_FIXTURE_OWNED_BY_OTHER);
+    mockPrisma.estimate.findFirst.mockResolvedValue(null); // outside their Estimates scope
 
     const res = await request(app)
       .get(`/api/estimates/${ESTIMATE_FIXTURE.id}/notes`)
@@ -114,6 +117,7 @@ describe('POST /api/estimates/:id/notes — per-row RBAC (in-tenant cross-user w
   it('SALES writing a note on an estimate they do NOT own → 403 (note never created)', async () => {
     mockAuthAs('sales');
     mockPrisma.estimate.findUnique.mockResolvedValue(NOTES_FIXTURE_OWNED_BY_OTHER);
+    mockPrisma.estimate.findFirst.mockResolvedValue(null); // outside their Estimates scope
 
     const res = await request(app)
       .post(`/api/estimates/${ESTIMATE_FIXTURE.id}/notes`)
@@ -128,6 +132,7 @@ describe('POST /api/estimates/:id/notes — per-row RBAC (in-tenant cross-user w
   it('the OWNING SALES rep gets 201 + creates the note on their own estimate', async () => {
     mockAuthAs('sales');
     mockPrisma.estimate.findUnique.mockResolvedValue(NOTES_FIXTURE_OWNED_BY_SALES);
+    mockPrisma.estimate.findFirst.mockResolvedValue({ id: ESTIMATE_FIXTURE.id }); // inside their Estimates scope
 
     const res = await request(app)
       .post(`/api/estimates/${ESTIMATE_FIXTURE.id}/notes`)
@@ -142,6 +147,7 @@ describe('POST /api/estimates/:id/notes — per-row RBAC (in-tenant cross-user w
   it('ADMIN gets 201 writing a note on an estimate they do not own (unconditional access preserved)', async () => {
     mockAuthAs('admin');
     mockPrisma.estimate.findUnique.mockResolvedValue(NOTES_FIXTURE_OWNED_BY_OTHER);
+    mockPrisma.estimate.findFirst.mockResolvedValue(null); // outside their Estimates scope
 
     const res = await request(app)
       .post(`/api/estimates/${ESTIMATE_FIXTURE.id}/notes`)

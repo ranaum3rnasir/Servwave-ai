@@ -79,7 +79,7 @@ function installGetRouter() {
       });
     }
     if (url === '/api/inventory/techs') {
-      return Promise.resolve({ data: { techs: [{ id: 'usr-1', name: 'Mike Alvarez', role: 'field_tech', branch: 'HQ' }] } });
+      return Promise.resolve({ data: { techs: [{ id: 'usr-1', name: 'Mike Alvarez', inventoryView: 'field', branch: 'HQ' }] } });
     }
     return Promise.resolve({ data: {} });
   }) as typeof mockApi.get);

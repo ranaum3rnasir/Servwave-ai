@@ -18,7 +18,7 @@ import { prisma } from '../lib/prisma';
 import * as ctmClient from '../lib/ctm/client';
 import { clearTokenCache } from '../middleware/authenticate';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { mockAuthAs, authHeader, TEST_USERS } from './helpers';
+import { mockAuthAs, mockRoleSwitches, authHeader, TEST_USERS } from './helpers';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const p = prisma as any;
@@ -89,6 +89,36 @@ describe('POST /api/communication/phone-access — per-agent CTM softphone token
     expect(res.status).toBe(200);
     expect(client.requestPhoneAccess).toHaveBeenCalled();
   });
+
+  // Roles & Permissions S08.18: the browser phone is the "Office phone in the browser" switch, checked here, never a
+  // role name. Each base role is tried with the switch off (refused, nothing minted) and on (a token).
+  it.each(['sales', 'dispatcher', 'technician'] as const)(
+    '403s a %s-based person without Office phone in the browser, and never calls out for a token',
+    async (who) => {
+      mockAuthAs(who);
+      mockRoleSwitches({ office_phone_in_browser: false });
+      mockConnectedOrg();
+
+      const res = await request(app).post('/api/communication/phone-access').set(authHeader(who)).send({});
+
+      expect(res.status).toBe(403);
+      expect(client.requestPhoneAccess).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['sales', 'dispatcher', 'technician'] as const)(
+    'gives a %s-based person a token on the switch alone',
+    async (who) => {
+      mockAuthAs(who);
+      mockRoleSwitches({ office_phone_in_browser: true });
+      mockConnectedOrg();
+
+      const res = await request(app).post('/api/communication/phone-access').set(authHeader(who)).send({});
+
+      expect(res.status).toBe(200);
+      expect(client.requestPhoneAccess).toHaveBeenCalled();
+    },
+  );
 
   it('409 PHONE_NOT_CONNECTED when the platform is unconfigured — CTM never called, org never read', async () => {
     mockAuthAs('admin');

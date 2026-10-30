@@ -388,12 +388,12 @@ describe('computeHistory — upcoming buckets', () => {
 describe('applyTaskFilter with MOCK_PEOPLE', () => {
   it('department mgmt filter returns only mgmt-owned tasks', () => {
     const tasks = [
-      makeTask({ id: 'e', assignee_ids: ['u_emanuel'] }),
-      makeTask({ id: 'o', assignee_ids: ['u_oved'] }),
+      makeTask({ id: 'e', assignee_ids: ['u_sam'] }),
+      makeTask({ id: 'o', assignee_ids: ['u_morgan'] }),
     ];
     const filter: TaskFilter = { memberId: 'all', departmentId: 'mgmt' };
     const result = applyTaskFilter(tasks, filter, MOCK_PEOPLE);
-    expect(result.every((t) => t.assignee_ids.includes('u_emanuel'))).toBe(true);
+    expect(result.every((t) => t.assignee_ids.includes('u_sam'))).toBe(true);
   });
 });
 

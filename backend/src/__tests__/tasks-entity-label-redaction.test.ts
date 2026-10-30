@@ -3,7 +3,6 @@ import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 import { mockAuthAs, authHeader, TEST_USERS, ALPHA_ORG_ID } from './helpers';
 
 // ─── Linked-entity label redaction (#01) ──────────────────────────────────────────────────
@@ -72,7 +71,6 @@ function jobsInScope(rows: typeof JOB_ROW[]) {
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache();
 
   mockPrisma.task.findMany.mockResolvedValue([TASK]);
   mockPrisma.task.findFirst.mockResolvedValue(TASK);

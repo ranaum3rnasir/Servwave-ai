@@ -170,7 +170,7 @@ describe('loadExecutionBundle — job people', () => {
     });
   });
 
-  it('falls back to the linked lead owner when job.salesperson_id is null', async () => {
+  it('does not refill an empty job.salesperson_id from the linked lead owner', async () => {
     mockPrisma.job.findFirst.mockResolvedValueOnce(
       jobRow({
         salesperson: null,
@@ -194,15 +194,11 @@ describe('loadExecutionBundle — job people', () => {
       dedupeKey: 'k2',
     });
 
-    expect(result!.bundle.salesperson).toEqual({
-      id: 'o0000000-0000-0000-0000-000000000001',
-      email: 'owen@example.com',
-      first_name: 'Owen',
-      last_name: 'Ortiz',
-    });
+    // A deliberately cleared Sold By is a normal state (S03.9): the audience reaches nobody.
+    expect(result!.bundle.salesperson).toBeNull();
   });
 
-  it('prefers job.salesperson_id over the lead owner when both are present', async () => {
+  it('reads the stored Sold By, not the lead owner, when both are present', async () => {
     mockPrisma.job.findFirst.mockResolvedValueOnce(
       jobRow({
         salesperson: {
@@ -672,7 +668,7 @@ describe('loadExecutionBundle — job, per-visit resolution', () => {
 
   const LENA = {
     id: 't0000000-0000-0000-0000-0000000000a1',
-    email: 'lena@emanuel-demo.local',
+    email: 'lena@demo.local',
     first_name: 'Lena',
     last_name: 'Ortiz',
     phone: '+15550100142',
@@ -680,7 +676,7 @@ describe('loadExecutionBundle — job, per-visit resolution', () => {
   };
   const MARCUS = {
     id: 't0000000-0000-0000-0000-0000000000a2',
-    email: 'marcus@emanuel-demo.local',
+    email: 'marcus@demo.local',
     first_name: 'Marcus',
     last_name: 'Webb',
     phone: '+15550100199',
@@ -862,28 +858,28 @@ describe('loadExecutionBundle - job owner merge fields', () => {
     expect(first).toBe('Dana');
   });
 
-  it('falls back to the lead owner through the estimate when the job carries no salesperson', async () => {
-    const { name, first } = await ownerFields(
+  // S03.9: an empty Sold By stays empty. The merge field used to walk job -> estimate -> lead -> owner
+  // (and job -> lead) when the job carried no salesperson; a Sold By cleared on purpose was refilled
+  // with whoever owns the lead.
+  it('stays empty for a job whose estimate leads to an owned lead', async () => {
+    const { name, first, bundle } = await ownerFields(
       { salesperson: null, estimate: { lead: { commission_owner: OWNER } } },
       'k-owner-estimate',
     );
-    expect(name).toBe('Dana Whitfield');
-    expect(first).toBe('Dana');
+    expect(name).toBe('');
+    expect(first).toBe('');
+    expect(bundle.salesperson).toBeNull();
   });
 
-  // A multi-estimate conversion writes `estimate_id: null` and `lead_id` on the job
-  // (job.controller.ts), so the estimate rung finds nothing for exactly the jobs a cabinet
-  // business converts most. The lead is on the job directly; read it there too.
-  it('falls back to the job’s own lead owner when there is no estimate to walk through', async () => {
+  it('stays empty for a job whose own lead is owned (a multi-estimate job)', async () => {
     const { name, first, bundle } = await ownerFields(
       { salesperson: null, estimate: null, lead: { commission_owner: OWNER } },
       'k-owner-lead',
     );
-    expect(name).toBe('Dana Whitfield');
-    expect(first).toBe('Dana');
-    // The audience resolver reads the SAME person, so a "salesperson" audience on such a job
-    // now reaches somebody rather than nobody.
-    expect(bundle.salesperson).toEqual(OWNER);
+    expect(name).toBe('');
+    expect(first).toBe('');
+    // The audience resolver reads the SAME person, so a "salesperson" audience reaches nobody.
+    expect(bundle.salesperson).toBeNull();
   });
 
   it('resolves exactly empty strings when nobody owns the job, so the step fallback can fire', async () => {

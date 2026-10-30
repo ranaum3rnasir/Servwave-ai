@@ -28,7 +28,7 @@ import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 // ─── Typed mock accessors ──────────────────────────────────
 const mockPrisma = prisma as unknown as {
-  job: { findUnique: ReturnType<typeof vi.fn>; findFirst: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
+  job: { findUnique: ReturnType<typeof vi.fn>; findFirst: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn>; findMany: ReturnType<typeof vi.fn> };
   jobLineItem: {
     findMany: ReturnType<typeof vi.fn>;
     create: ReturnType<typeof vi.fn>;
@@ -45,6 +45,7 @@ const mockPrisma = prisma as unknown as {
     findUnique: ReturnType<typeof vi.fn>;
   };
   organization: { findUnique: ReturnType<typeof vi.fn> };
+  timelineEvent: { create: ReturnType<typeof vi.fn> };
   $transaction: ReturnType<typeof vi.fn>;
 };
 
@@ -103,7 +104,7 @@ function setupTransaction() {
   mockPrisma.$transaction.mockImplementation((arg: unknown) => {
     if (typeof arg === 'function') {
       return (arg as (tx: unknown) => unknown)({
-        job: { findUnique: mockPrisma.job.findUnique, update: mockPrisma.job.update },
+        job: { findUnique: mockPrisma.job.findUnique, update: mockPrisma.job.update, findMany: mockPrisma.job.findMany },
         jobLineItem: {
           create: mockPrisma.jobLineItem.create,
           update: mockPrisma.jobLineItem.update,
@@ -118,6 +119,8 @@ function setupTransaction() {
           findUnique: mockPrisma.stockBalance.findUnique,
         },
         organization: { findUnique: mockPrisma.organization.findUnique },
+        // S06.5: line/scope edits write their entry on the job's history in the same transaction.
+        timelineEvent: { create: mockPrisma.timelineEvent.create },
       });
     }
     return Promise.all(arg as Promise<unknown>[]);

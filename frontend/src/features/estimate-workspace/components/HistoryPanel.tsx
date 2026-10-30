@@ -25,6 +25,7 @@ export const ACTION_LABELS: Record<string, string> = {
   'estimate.declined': 'Declined by customer',
   'estimate.deposit_paid': 'Deposit paid',
   'estimate.deposit_waived': 'Deposit waived',
+  'estimate.deposit_paid_on_closed_estimate': 'Deposit payment received after the estimate was closed',
   // R4 (2026-07-21) — lifecycle verbs (port-plan §3.2/§10.3).
   'estimate.marked_sent': 'Marked sent (delivered outside the app)',
   'estimate.status_corrected': 'Status corrected',

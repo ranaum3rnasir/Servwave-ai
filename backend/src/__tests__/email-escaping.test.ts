@@ -8,6 +8,8 @@ vi.mock('../config/env', () => ({
     NODE_ENV: 'test',
     EMAIL_FROM: 'Alpha <noreply@test.com>',
     RESEND_API_KEY: 're_test_key',
+    // PRD 10 (S10.12): the domain a sender's own address is built on; a document goes out from it.
+    MAILBOX_DOMAIN: 'mail.test.com',
     FRONTEND_URL: 'http://localhost:5173',
   },
 }));
@@ -32,6 +34,9 @@ vi.mock('../lib/pdf', () => ({
 
 import { prisma } from '../lib/prisma';
 
+
+// PRD 10 (S10.12): a document is sent by hand, from the sender's own mailbox (the id the suite-wide mailbox stub answers to).
+const HAND_SENDER = { mailboxId: 'main-mailbox-id', userId: 'user-1' };
 let email: typeof import('../lib/email');
 
 beforeAll(async () => {
@@ -57,29 +62,13 @@ function htmlOf(predicate: (e: Record<string, string>) => boolean): string {
 }
 
 describe('B-06 / F-18: transactional emails HTML-escape user-controlled fields', () => {
-  it('clock override requested escapes technicianName and nearestLabel', async () => {
-    await email.sendClockOverrideRequestedEmail({
-      org: { id: ORG_ID, name: 'Acme', logo_url: null, brand_color: '#0C2D3A' },
-      to: ['approver@example.com'],
-      technicianName: XSS,
-      requestedAt: new Date('2026-07-01T15:00:00Z'),
-      distanceM: 500,
-      nearestLabel: XSS,
-      timezone: 'America/New_York',
-    });
-    const html = htmlOf((e) => e.to === 'approver@example.com');
-    expect(html).toContain(ESCAPED_LINK);
-    expect(html).not.toContain('<a href="https://evil/verify">');
-    expect(html).not.toContain('<img src=x onerror=alert(1)>');
-    expect(html).not.toContain('<script>alert(2)</script>');
-  });
-
   it('deposit received confirmation escapes customerName', async () => {
     await email.sendDepositReceivedConfirmation({
       organizationId: ORG_ID,
       to: 'cust@example.com',
       customerName: XSS,
       estimateNumber: 'E00001',
+      estimateId: 'est-1',
       depositAmount: 100,
       paymentMethod: 'CARD',
       receivedDate: '2026-07-01',
@@ -96,6 +85,7 @@ describe('B-06 / F-18: transactional emails HTML-escape user-controlled fields',
       to: 'cust@example.com',
       customerName: XSS,
       estimateNumber: 'E00001',
+      estimateId: 'est-1',
       refundAmount: 100,
       reason: XSS,
       companyName: 'Co',
@@ -107,6 +97,7 @@ describe('B-06 / F-18: transactional emails HTML-escape user-controlled fields',
 
   it('invoice email escapes customerName (regression: message was escaped but name was not)', async () => {
     await email.sendInvoiceEmail({
+      handSender: HAND_SENDER,
       invoiceId: 'inv-1',
       organizationId: ORG_ID,
       to: 'cust@example.com',
@@ -138,14 +129,16 @@ describe('B-06 / F-18: transactional emails HTML-escape user-controlled fields',
   });
 
   it('wrapHtml drops a non-https logo_url and never emits it as <img src>', async () => {
-    // performer/owner internal walkthrough-completed goes through wrapHtml; use a
-    // sender that takes org branding to exercise the logo path:
-    await email.sendClockOverrideDecisionEmail({
+    // The pickup ticket goes through wrapHtml with the org's branding, so it exercises the logo path:
+    await email.sendStagePickupEmail({
+      handSender: HAND_SENDER,
+      organizationId: ORG_ID,
       org: { id: ORG_ID, name: 'Acme', logo_url: 'javascript:alert(1)', brand_color: '#0C2D3A' },
       to: 'tech@example.com',
-      technicianName: 'Tech',
-      decision: 'approved',
-      decidedByName: 'Boss',
+      jobNumber: 'J00001',
+      customer: 'Cust',
+      site: '1 Test Way',
+      lines: [],
     });
     const html = htmlOf((e) => e.to === 'tech@example.com');
     expect(html).not.toContain('javascript:alert(1)');
@@ -157,6 +150,7 @@ describe('B-06 / F-18: transactional emails HTML-escape user-controlled fields',
     // 2026-07-01T02:00:00Z is still June 30 in Eastern — the email must show the
     // org-zone calendar day, not the server's UTC day.
     await email.sendInvoiceEmail({
+      handSender: HAND_SENDER,
       invoiceId: 'inv-1',
       organizationId: ORG_ID,
       to: 'tz-invoice@example.com',
@@ -178,6 +172,7 @@ describe('B-06 / F-18: transactional emails HTML-escape user-controlled fields',
 
   it('#217: invoice email falls back to DEFAULT_TIMEZONE (Eastern) when no timezone passed', async () => {
     await email.sendInvoiceEmail({
+      handSender: HAND_SENDER,
       invoiceId: 'inv-1',
       organizationId: ORG_ID,
       to: 'tz-default@example.com',
@@ -197,6 +192,7 @@ describe('B-06 / F-18: transactional emails HTML-escape user-controlled fields',
   it('#217: invoice email renders dueDate in a non-Eastern org timezone', async () => {
     // 2026-07-01T05:00:00Z is July 1 in Eastern (01:00) but still June 30 in LA (22:00).
     await email.sendInvoiceEmail({
+      handSender: HAND_SENDER,
       invoiceId: 'inv-1',
       organizationId: ORG_ID,
       to: 'tz-la@example.com',

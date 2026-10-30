@@ -46,7 +46,6 @@ import { logger } from '../logger';
 import { PEOPLE_EVENT, recordTaskActivities, toIdSet, type TaskActivityType } from './activity';
 import { resolveUserNames } from './enrich';
 import { emit } from '../../services/notifications/notificationService';
-import { loadRoleHolders } from '../../services/notifications/roleHolders';
 import { dispatchAutomationEvent } from '../../services/automations/dispatch';
 
 /**
@@ -419,8 +418,6 @@ export async function announceTaskHandovers(
 ): Promise<void> {
   if (!reassigned.length) return;
   try {
-    // Loaded once and handed in - emit() would otherwise re-query it per task.
-    const roleHolders = await loadRoleHolders(orgId).catch(() => undefined);
     // One org-scoped, active-only lookup for every inheriting person, rather than one per
     // task: a user solely assigned to hundreds of tasks escalates to a handful of names.
     const inheritors = await prisma.user.findMany({
@@ -433,7 +430,7 @@ export async function announceTaskHandovers(
         organizationId: orgId,
         actorId,
         object: { type: 'TASK', id: r.task_id, label: r.title },
-        entity: { added_assignee_ids: [r.to], ...(roleHolders ? { roleHolders } : {}) },
+        entity: { added_assignee_ids: [r.to] },
         data: { task_number: r.task_number },
       });
       const inheritor = inheritors.find((u) => u.id === r.to);

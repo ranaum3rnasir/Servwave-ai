@@ -28,8 +28,7 @@ import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import { supabaseAdmin } from '../lib/supabase';
-import { mockAuthAs, authHeader, TEST_USERS, ALPHA_ORG_ID } from './helpers';
-import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
+import { mockAuthAs, mockRoleSwitches, authHeader, TEST_USERS, ALPHA_ORG_ID } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 const mockPrisma = prisma as unknown as {
@@ -39,7 +38,6 @@ const mockPrisma = prisma as unknown as {
     findUnique: ReturnType<typeof vi.fn>;
     update: ReturnType<typeof vi.fn>;
   };
-  rolePermission: { findMany: ReturnType<typeof vi.fn> };
 };
 
 // setup.ts's storage.from is a mockReturnValue of ONE shared object regardless of bucket name.
@@ -65,10 +63,8 @@ function jpegBuf(size = 1024): Buffer {
  */
 function mockEstimateEditorWhoMayCreateCatalogItems() {
   mockAuthAs('sales');
-  mockPrisma.rolePermission.findMany.mockResolvedValue([
-    ...DEFAULT_GRANTS.filter((g) => g.role === 'SALES'),
-    { role: 'SALES', action: 'create', subject: 'PriceBook' },
-  ]);
+  // Adding to the catalog is the Create price book items switch (Roles & Permissions S01.9), off in the Sales preset.
+  mockRoleSwitches({ create_price_book_items: true });
   clearPermissionCache();
 }
 

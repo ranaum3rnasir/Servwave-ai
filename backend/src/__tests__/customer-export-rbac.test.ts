@@ -2,8 +2,9 @@
  * customer-export-rbac.test.ts — behavioral proof for the 018 SALES `export Customer` revocation.
  *
  * GET /api/customers/export is an unpaginated download of the whole customer book. SALES lost the
- * grant (defaultGrants.ts + 20260828140000_drop_sales_customer_export_grant); DISPATCHER and ADMIN
- * kept it.
+ * grant (defaultGrants.ts + 20260828140000_drop_sales_customer_export_grant); ADMIN kept it. Since
+ * Roles & Permissions S01.5 the grant is the Export customers switch, which only the Admin preset
+ * holds, so a Dispatcher holds it only when it is turned on for them.
  *
  * These are REQUESTS, not ability assertions: supertest drives the real route through
  * authenticate -> attachAbility -> canDo('export','Customer') -> exportAll, with the principal
@@ -21,7 +22,7 @@ import app from '../app';
 import { prisma } from '../lib/prisma';
 import { clearTokenCache } from '../middleware/authenticate';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { mockAuthAs, authHeader, ALPHA_ORG_ID, CUSTOMER_FIXTURE } from './helpers';
+import { mockAuthAs, mockRoleSwitches, authHeader, ALPHA_ORG_ID, CUSTOMER_FIXTURE } from './helpers';
 
 const mockPrisma = prisma as unknown as {
   customer: { findMany: ReturnType<typeof vi.fn> };
@@ -74,9 +75,27 @@ describe('GET /api/customers/export — SALES is refused (018)', () => {
   });
 });
 
-describe('GET /api/customers/export — DISPATCHER still succeeds (018 blast radius)', () => {
+describe('GET /api/customers/export — DISPATCHER is refused until Export customers is on (S01.5)', () => {
+  it('403s a DISPATCHER caller on the preset and never reaches the query or the export audit write', async () => {
+    mockAuthAs('dispatcher');
+    mockPrisma.customer.findMany.mockResolvedValue([CUSTOMER_FIXTURE]);
+
+    const res = await request(app)
+      .get('/api/customers/export')
+      .set(authHeader('dispatcher'));
+
+    expect(res.status).toBe(403);
+    expect(mockPrisma.customer.findMany).not.toHaveBeenCalled();
+    expect(mockPrisma.auditLog.create).not.toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ action: 'customer.exported' }) }),
+    );
+  });
+});
+
+describe('GET /api/customers/export — a DISPATCHER given Export customers still succeeds (018 blast radius)', () => {
   it('200s a DISPATCHER caller and returns the rows under the {customers} envelope', async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches({ export_customers: true });
     mockPrisma.customer.findMany.mockResolvedValue([CUSTOMER_FIXTURE]);
 
     const res = await request(app)
@@ -90,6 +109,7 @@ describe('GET /api/customers/export — DISPATCHER still succeeds (018 blast rad
 
   it('keeps the DISPATCHER export unchanged: org scope, filters, 50,000 row cap, no skip', async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches({ export_customers: true });
     mockPrisma.customer.findMany.mockResolvedValue([]);
 
     const res = await request(app)
@@ -109,6 +129,7 @@ describe('GET /api/customers/export — DISPATCHER still succeeds (018 blast rad
 
   it('still writes the customer.exported audit record for DISPATCHER', async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches({ export_customers: true });
     mockPrisma.customer.findMany.mockResolvedValue([CUSTOMER_FIXTURE]);
 
     const res = await request(app)

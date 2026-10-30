@@ -44,6 +44,7 @@ import {
 } from "@/lib/inventory/vendor-spend";
 import { poTotal } from "@/lib/inventory/po-money";
 import { useAppAbility } from "@/contexts/AbilityContext";
+import { canSeePricing } from "@/lib/ability";
 import { PhoneNumberAction } from "@/components/contact/ContactAction";
 import { extractApiError, formatPhone } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -194,11 +195,14 @@ export function VendorDetailDialog({
   // cannot be double-submitted, and edit mode is only left once it resolves.
   const [saving, setSaving] = useState(false);
   const ability = useAppAbility();
-  // POST /api/inventory/vendors is an upsert used for both create and edit
-  // (lib/api/inventory.ts) and is gated `create Vendor` - Edit and Archive
-  // both ride it. Delete is its own DELETE route, gated `delete Vendor`.
-  const canEditVendor = ability.can("create", "Vendor");
+  // POST /api/inventory/vendors is an upsert; with an id it is an update, gated `update Vendor` (Edit vendors) - Edit
+  // and Archive both ride it. Delete is its own DELETE route, gated `delete Vendor`.
+  const canEditVendor = ability.can("update", "Vendor");
   const canDeleteVendor = ability.can("delete", "Vendor");
+  // The account number and the orders' totals are cost details (See financial data): without it there is no account
+  // card, field or subtitle, and the order list has no Total column. The orders themselves need View purchase orders.
+  const showCosts = canSeePricing(ability);
+  const canReadPurchaseOrders = ability.can("read", "PurchaseOrder");
 
   useEffect(() => {
     if (!open) {
@@ -265,7 +269,7 @@ export function VendorDetailDialog({
       title={`Vendor · ${vendor.name}`}
       subtitle={
         vendorCategoryLabel(vendor) +
-        (vendor.accountNumber ? ` · acct ${vendor.accountNumber}` : "")
+        (showCosts && vendor.accountNumber ? ` · acct ${vendor.accountNumber}` : "")
       }
       size="xl"
       lockEscape={isEditing}
@@ -388,12 +392,14 @@ export function VendorDetailDialog({
               {vendor.id}
             </code>
           </div>
-          <div className="flex items-center gap-1 text-xs text-text-secondary">
-            <Calendar className="h-3 w-3" />
-            {spend?.lastOrderedAt
-              ? `Last ordered ${fmtRelativeDate(spend.lastOrderedAt)}`
-              : "No POs yet"}
-          </div>
+          {spend && (
+            <div className="flex items-center gap-1 text-xs text-text-secondary">
+              <Calendar className="h-3 w-3" />
+              {spend.lastOrderedAt
+                ? `Last ordered ${fmtRelativeDate(spend.lastOrderedAt)}`
+                : "No POs yet"}
+            </div>
+          )}
         </div>
 
         {/* Three-column overview */}
@@ -720,6 +726,7 @@ export function VendorDetailDialog({
           </div>
 
           {/* Account card */}
+          {showCosts && (
           <div className="col-span-4 rounded-md border border-border bg-surface-light p-3">
             <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-text-secondary">
               Account
@@ -745,6 +752,7 @@ export function VendorDetailDialog({
               </div>
             )}
           </div>
+          )}
 
           {/* Pickup card */}
           <div className="col-span-4 rounded-md border border-border bg-surface-light p-3">
@@ -883,7 +891,7 @@ export function VendorDetailDialog({
         )}
 
         {/* Recent POs table */}
-        {!isEditing && last5POs.length > 0 && (
+        {!isEditing && canReadPurchaseOrders && last5POs.length > 0 && (
           <div className="rounded-md border border-border bg-surface-light">
             <p className="border-b border-border px-3 py-2 text-[10px] font-semibold uppercase tracking-wide text-text-secondary">
               Recent purchase orders
@@ -895,7 +903,7 @@ export function VendorDetailDialog({
                   <th className="px-3 py-1.5 text-left">Job / Customer</th>
                   <th className="px-3 py-1.5 text-left">Ordered</th>
                   <th className="px-3 py-1.5 text-left">Status</th>
-                  <th className="px-3 py-1.5 text-right">Total</th>
+                  {showCosts && <th className="px-3 py-1.5 text-right">Total</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-border">
@@ -930,9 +938,11 @@ export function VendorDetailDialog({
                         {po.status}
                       </span>
                     </td>
-                    <td className="px-3 py-1.5 text-right font-mono text-text-primary">
-                      {fmtMoney(poTotal(po))}
-                    </td>
+                    {showCosts && (
+                      <td className="px-3 py-1.5 text-right font-mono text-text-primary">
+                        {fmtMoney(poTotal(po))}
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -940,7 +950,7 @@ export function VendorDetailDialog({
           </div>
         )}
 
-        {!isEditing && last5POs.length === 0 && (
+        {!isEditing && canReadPurchaseOrders && last5POs.length === 0 && (
           <EmptyState
             variant="card"
             icon={ShoppingCart}

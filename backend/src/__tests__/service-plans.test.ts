@@ -558,7 +558,7 @@ describe('POST /api/service-plans/:id/schedule-visit - an ineligible or out-of-o
   // minted by an ordinary scheduling call. The same guard the /jobs crew doors run closes it.
   const OTHER_ORG_USER = '00000000-0000-0000-0000-0000000000e1';
   const INACTIVE_USER = '00000000-0000-0000-0000-0000000000e2';
-  const CORRUPT_ROLE_USER = '00000000-0000-0000-0000-0000000000e3';
+  const CANNOT_CREW_USER = '00000000-0000-0000-0000-0000000000e3';
 
   beforeEach(() => {
     mockAuthAs('admin');
@@ -573,7 +573,7 @@ describe('POST /api/service-plans/:id/schedule-visit - an ineligible or out-of-o
       ...Object.values(TEST_USERS),
       { id: OTHER_ORG_USER, role: 'TECHNICIAN', is_active: true, email: 'x@orgb.com', first_name: 'Out', last_name: 'OfOrg', phone: null, organization_id: ORG_B_ID },
       { id: INACTIVE_USER, role: 'TECHNICIAN', is_active: false, email: 'gone@test.com', first_name: 'Left', last_name: 'Company', phone: null, organization_id: ALPHA_ORG_ID },
-      { id: CORRUPT_ROLE_USER, role: 'VIEWER', is_active: true, email: 'v@test.com', first_name: 'View', last_name: 'Only', phone: null, organization_id: ALPHA_ORG_ID },
+      { id: CANNOT_CREW_USER, role: 'DISPATCHER', is_active: true, email: 'v@test.com', first_name: 'View', last_name: 'Only', phone: null, organization_id: ALPHA_ORG_ID },
     ];
     mockPrisma.user.findUnique.mockImplementation(async ({ where }: { where: { id: string; organization_id?: string } }) => {
       const match = directory.find((u) => u.id === where.id);
@@ -601,16 +601,16 @@ describe('POST /api/service-plans/:id/schedule-visit - an ineligible or out-of-o
   it('400s an inactive in-org user, writing nothing', async () => {
     const res = await schedule(INACTIVE_USER);
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe('Cannot assign job to an inactive technician');
+    expect(res.body.error).toBe('This person is inactive.');
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
   });
 
-  it('400s a user whose role is not assignable, writing nothing', async () => {
-    // Every value of the Role enum is assignable today, so this branch is only reachable through a
-    // corrupt/unknown role value - what a future role added to the enum would look like.
-    const res = await schedule(CORRUPT_ROLE_USER);
+  it('400s a user whose Can be on a crew is off (the Dispatcher preset), writing nothing', async () => {
+    // Crew eligibility is the person's own Can be on a crew switch, never their role name: the Dispatcher preset
+    // has it off, so a Dispatcher-role user is refused here while a Technician or Sales user is taken.
+    const res = await schedule(CANNOT_CREW_USER);
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe('This user is not eligible to be assigned as job crew');
+    expect(res.body.error).toBe("This person can't be on a crew.");
     expect(mockPrisma.$transaction).not.toHaveBeenCalled();
   });
 });

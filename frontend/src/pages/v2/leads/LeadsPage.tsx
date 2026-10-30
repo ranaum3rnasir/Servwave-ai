@@ -39,10 +39,14 @@ import { FilterPopover, facetSelectionCount } from '../_shared/filterPopover';
 import { LoadError } from '../_shared/loadError';
 import { buildLeadColumns, type Lead } from './leadsColumns';
 
+/** The Owner filter's "No owner" choice and the Dispatcher filter's "No dispatcher": wire values the server reads. */
+const NO_OWNER = 'NO_OWNER';
+const NO_DISPATCHER = 'NO_DISPATCHER';
+
 interface LeadStats {
   total: number;
   new_this_week: number;
-  unassigned: number;
+  no_owner: number;
   won: number;
   lost: number;
 }
@@ -76,6 +80,8 @@ export default function LeadsPage() {
   const tz = useScheduleTimezone();
   const navigate = useNavigate();
   const ability = useAppAbility();
+  // The Export control on the list: the Export leads switch, for any role.
+  const canExport = ability.can('export', 'Lead');
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
   const [searchInput, setSearchInput] = useState('');
@@ -112,9 +118,12 @@ export default function LeadsPage() {
     [value],
   );
 
-  // `directory`, not `walkthroughPerformer`: the list page's assignee FILTER facet. The
+  // `directory`, not `walkthroughPerformer`: the list page's Owner FILTER facet. The
   // performer WRITE is on the lead's Walkthrough tab and keeps its pool-governed purpose.
   const { data: assigneesData } = useAssignableUsers({ purpose: 'directory', includeReferencedIn: 'leads' });
+  // The Dispatcher filter offers only people who can be a dispatcher (the server answers from each
+  // person's own switch), plus "No dispatcher".
+  const { data: dispatchersData } = useAssignableUsers({ purpose: 'directory', eligibleFor: 'dispatcher' });
 
   const sourceOptions = useMemo<FacetOption[]>(
     () => (org?.source_options ?? []).map((s) => ({ value: s, label: s })),
@@ -126,19 +135,27 @@ export default function LeadsPage() {
   );
   const assignedToOptions = useMemo<FacetOption[]>(
     () => [
-      { value: 'UNASSIGNED', label: 'Unassigned' },
+      { value: NO_OWNER, label: 'No owner' },
       ...(assigneesData ?? []).map((u) => ({ value: u.id, label: `${u.first_name} ${u.last_name}`.trim() })),
     ],
     [assigneesData],
+  );
+  const dispatcherOptions = useMemo<FacetOption[]>(
+    () => [
+      { value: NO_DISPATCHER, label: 'No dispatcher' },
+      ...(dispatchersData ?? []).map((u) => ({ value: u.id, label: `${u.first_name} ${u.last_name}`.trim() })),
+    ],
+    [dispatchersData],
   );
   const resolveOptions = useCallback(
     (sourceId: string): FacetOption[] => {
       if (sourceId === 'org.sourceOptions') return sourceOptions;
       if (sourceId === 'org.jobTypeOptions') return jobTypeOptions;
       if (sourceId === 'assignableUsers') return assignedToOptions;
+      if (sourceId === 'dispatchers') return dispatcherOptions;
       return [];
     },
-    [sourceOptions, jobTypeOptions, assignedToOptions],
+    [sourceOptions, jobTypeOptions, assignedToOptions, dispatcherOptions],
   );
   // No backend field for "max estimates on any one lead" today - 20 is a static
   // ceiling (see the leads registry comment).
@@ -158,6 +175,7 @@ export default function LeadsPage() {
     ad_source: undefined as string | undefined,
     job_type: undefined as string | undefined,
     assigned_to: undefined as string | undefined,
+    dispatcher: undefined as string | undefined,
     walkthrough_status: undefined as string | undefined,
     estimates_min: undefined as string | undefined,
     estimates_max: undefined as string | undefined,
@@ -222,13 +240,14 @@ export default function LeadsPage() {
     (value.ad_source?.kind !== 'multi' || value.ad_source.values.length === 0) &&
     (value.job_type?.kind !== 'multi' || value.job_type.values.length === 0) &&
     (value.walkthrough_status?.kind !== 'multi' || value.walkthrough_status.values.length === 0) &&
+    (value.dispatcher?.kind !== 'multi' || value.dispatcher.values.length === 0) &&
     !search;
 
   const activeKpi: string | null =
     (statusValues.length === 0 && createdValue?.from === weekStart && !createdValue?.to && assignedValues.length === 0 && noManual) ? 'new_this_week' :
     (statusValues.length === 1 && statusValues[0] === 'WON' && assignedValues.length === 0 && !createdValue?.from && !createdValue?.to && noManual) ? 'won' :
     (statusValues.length === 1 && statusValues[0] === 'LOST' && assignedValues.length === 0 && !createdValue?.from && !createdValue?.to && noManual) ? 'lost' :
-    (assignedValues.length === 1 && assignedValues[0] === 'UNASSIGNED' && statusValues.length === 0 && !createdValue?.from && !createdValue?.to && noManual) ? 'unassigned' :
+    (assignedValues.length === 1 && assignedValues[0] === NO_OWNER && statusValues.length === 0 && !createdValue?.from && !createdValue?.to && noManual) ? 'no_owner' :
     (statusValues.length === 0 && assignedValues.length === 0 && !createdValue?.from && !createdValue?.to && noManual) ? 'total' :
     null;
 
@@ -237,8 +256,8 @@ export default function LeadsPage() {
     setPage(1);
     if (preset === 'total') {
       setValue({});
-    } else if (preset === 'unassigned') {
-      setValue({ assigned_to: { kind: 'multi', values: ['UNASSIGNED'] } });
+    } else if (preset === 'no_owner') {
+      setValue({ assigned_to: { kind: 'multi', values: [NO_OWNER] } });
     } else if (preset === 'new_this_week') {
       setValue({ created: { kind: 'dateRange', from: weekStart, to: '' } });
     } else if (preset === 'won') {
@@ -263,8 +282,11 @@ export default function LeadsPage() {
     'Type': l.job_type ?? '',
     'Status': STATUS_REGISTRY.lead[l.status]?.label ?? l.status,
     'Estimates': (l.estimates ?? []).length,
-    'Est. Value': (l.estimates ?? []).reduce((sum, e) => sum + Number(e.total_amount), 0),
-    'Assigned To': l.commission_owner ? `${l.commission_owner.first_name} ${l.commission_owner.last_name}` : 'Unassigned',
+    // Blank, never 0 or NaN, when the server left this lead's estimate money out.
+    'Est. Value': (l.estimates ?? []).every((e) => e.total_amount != null)
+      ? (l.estimates ?? []).reduce((sum, e) => sum + Number(e.total_amount), 0)
+      : '',
+    'Owner': l.commission_owner ? `${l.commission_owner.first_name} ${l.commission_owner.last_name}` : '—',
     'Created': new Date(l.created_at).toLocaleDateString(),
   });
 
@@ -320,20 +342,20 @@ export default function LeadsPage() {
           active={activeKpi === 'total'} onClick={() => handleKpiClick('total')}
         />
         <StatCard
-          label="New This Week" value={stats?.new_this_week ?? 0} loading={isLoading}
-          active={activeKpi === 'new_this_week'} onClick={() => handleKpiClick('new_this_week')}
-        />
-        <StatCard
-          label="Unassigned" value={stats?.unassigned ?? 0} loading={isLoading}
-          active={activeKpi === 'unassigned'} onClick={() => handleKpiClick('unassigned')}
-        />
-        <StatCard
           label="Won" value={stats?.won ?? 0} loading={isLoading}
           active={activeKpi === 'won'} onClick={() => handleKpiClick('won')}
         />
         <StatCard
           label="Lost" value={stats?.lost ?? 0} loading={isLoading}
           active={activeKpi === 'lost'} onClick={() => handleKpiClick('lost')}
+        />
+        <StatCard
+          label="New This Week" value={stats?.new_this_week ?? 0} loading={isLoading}
+          active={activeKpi === 'new_this_week'} onClick={() => handleKpiClick('new_this_week')}
+        />
+        <StatCard
+          label="No owner" value={stats?.no_owner ?? 0} loading={isLoading}
+          active={activeKpi === 'no_owner'} onClick={() => handleKpiClick('no_owner')}
         />
       </StatCardGroup>
 
@@ -401,24 +423,26 @@ export default function LeadsPage() {
                   resolveMax={resolveMax}
                   statusDomain="lead"
                 />
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="outline" size="sm">
-                    <Download />
-                    Export
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuLabel>Export as CSV</DropdownMenuLabel>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onClick={handleExportCurrentPage}>
-                    Current page ({rows.length} rows)
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={handleExportAll}>
-                    All ({pagination?.total ?? '...'})
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+              {canExport && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button variant="outline" size="sm">
+                      <Download />
+                      Export
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuLabel>Export as CSV</DropdownMenuLabel>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onClick={handleExportCurrentPage}>
+                      Current page ({rows.length} rows)
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={handleExportAll}>
+                      All ({pagination?.total ?? '...'})
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
               </>
             }
           />

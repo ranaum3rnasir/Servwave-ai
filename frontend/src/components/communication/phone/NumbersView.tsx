@@ -1,6 +1,6 @@
 // Phone module — Numbers view.
 //
-// Ported from Emanuel's PhonePage monolith (region L6404–7526), rewired to the
+// Ported from the original PhonePage monolith (region L6404–7526), rewired to the
 // real numbers platform in slice 7. Manage owned phone numbers: assign each to
 // a call flow (PATCH /api/communication/numbers/:id) + a local ad-group tag,
 // and provision new numbers via the "Get a number" slide-over (real CTM
@@ -457,12 +457,16 @@ export function NumbersView({
   numbers,
   setNumbers,
   callFlows,
+  flowsHidden = false,
   loading = false,
   onToast,
 }: {
   numbers: OwnedNumber[];
   setNumbers: React.Dispatch<React.SetStateAction<OwnedNumber[]>>;
   callFlows: CallFlow[];
+  /** True when this person is not sent the org's call flows (no Call flows tab): a number's flow can be told apart
+   *  from none, but not named, so the flow cell says "Set" and offers neither the picker nor Remove flow. */
+  flowsHidden?: boolean;
   /** True while the numbers query is in flight — shows a loading row instead
    *  of flashing the "No phone numbers yet" empty state. */
   loading?: boolean;
@@ -470,6 +474,9 @@ export function NumbersView({
 }) {
   const ability = useAppAbility();
   const canManage = ability.can("manage", "Communication");
+  // Changing a number's call flow is an edit of a communication record: the server refuses it without that switch, so
+  // the screen shows the flow by name and offers no picker. Nor does it without the flows to pick from.
+  const canEditRouting = ability.can("update", "Communication") && !flowsHidden;
   const tz = useScheduleTimezone();
 
   const [adGroups, setAdGroups] = useState<AdGroup[]>(AD_GROUP_SEED);
@@ -490,7 +497,7 @@ export function NumbersView({
 
   // Flow choices are the org's REAL call flows (server-validated UUIDs).
   const resolveFlowLabel = (flowId: string): string =>
-    flowNameForId(callFlows, flowId) ?? "Unassigned";
+    flowsHidden ? (flowId ? "Set" : "Unassigned") : flowNameForId(callFlows, flowId) ?? "Unassigned";
   const customFlows = useMemo(() => customFlowOptions(callFlows), [callFlows]);
 
   // Row flow-reassign persists through PATCH /api/communication/numbers/:id.
@@ -522,11 +529,11 @@ export function NumbersView({
         (n.tag ?? "").toLowerCase().includes(q) ||
         n.type.toLowerCase().includes(q) ||
         (n.forwardTo ?? "").toLowerCase().includes(q) ||
-        resolveFlowLabel(n.flowId).toLowerCase().includes(q) ||
+        (!flowsHidden && resolveFlowLabel(n.flowId).toLowerCase().includes(q)) ||
         adGroupLabel(adGroups, n.adGroupId).toLowerCase().includes(q),
     );
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [numbers, adGroups, query, callFlows]);
+  }, [numbers, adGroups, query, callFlows, flowsHidden]);
 
   function createAdGroup(label: string): string {
     const id = `grp_${Date.now()}`;
@@ -709,13 +716,17 @@ export function NumbersView({
                     />
                   </td>
                   <td className="px-4 py-3">
-                    <FlowSelect
-                      value={n.flowId}
-                      onChange={(v) => setFlow(n.id, v)}
-                      flows={customFlows}
-                      ariaLabel={`Assign flow for ${n.number}`}
-                    />
-                    {n.flowId && (
+                    {canEditRouting ? (
+                      <FlowSelect
+                        value={n.flowId}
+                        onChange={(v) => setFlow(n.id, v)}
+                        flows={customFlows}
+                        ariaLabel={`Assign flow for ${n.number}`}
+                      />
+                    ) : (
+                      <span className="text-[13px] text-text-secondary">{resolveFlowLabel(n.flowId)}</span>
+                    )}
+                    {canEditRouting && n.flowId && (
                       <button
                         type="button"
                         onClick={() => setFlow(n.id, "")}
@@ -834,6 +845,7 @@ export function NumbersView({
         onClose={() => setGetOpen(false)}
         onConfirm={addNumber}
         flows={customFlows}
+        flowsHidden={flowsHidden}
         onToast={onToast}
       />
     </div>
@@ -860,12 +872,15 @@ function GetNumberDialog({
   onClose,
   onConfirm,
   flows,
+  flowsHidden,
   onToast,
 }: {
   open: boolean;
   onClose: () => void;
   onConfirm: (n: OwnedNumber) => void;
   flows: { id: string; label: string }[];
+  /** No flows to pick from: the optional flow step and its line in the purchase summary are left out. */
+  flowsHidden: boolean;
   onToast: (m: string) => void;
 }) {
   const [type, setType] = useState<NumberType>("Local");
@@ -1040,18 +1055,20 @@ function GetNumberDialog({
           </div>
 
           {/* Optional flow assignment for the number being provisioned */}
-          <div>
-            <p className="mb-1.5 text-sm font-semibold text-text-secondary">
-              Assign flow{" "}
-              <span className="font-normal text-text-secondary/60">(optional)</span>
-            </p>
-            <FlowSelect
-              value={flowId}
-              onChange={setFlowId}
-              flows={flows}
-              ariaLabel="Assign flow for new number"
-            />
-          </div>
+          {!flowsHidden && (
+            <div>
+              <p className="mb-1.5 text-sm font-semibold text-text-secondary">
+                Assign flow{" "}
+                <span className="font-normal text-text-secondary/60">(optional)</span>
+              </p>
+              <FlowSelect
+                value={flowId}
+                onChange={setFlowId}
+                flows={flows}
+                ariaLabel="Assign flow for new number"
+              />
+            </div>
+          )}
 
           {/* Results */}
           <div>
@@ -1130,12 +1147,14 @@ function GetNumberDialog({
                   {forwardE164 ?? "Enter a number"}
                 </span>
               </div>
-              <div className="flex items-center justify-between">
-                <span className="text-text-secondary">Assigned flow</span>
-                <span className="font-medium text-text-secondary">
-                  {flows.find((f) => f.id === flowId)?.label ?? "None (optional)"}
-                </span>
-              </div>
+              {!flowsHidden && (
+                <div className="flex items-center justify-between">
+                  <span className="text-text-secondary">Assigned flow</span>
+                  <span className="font-medium text-text-secondary">
+                    {flows.find((f) => f.id === flowId)?.label ?? "None (optional)"}
+                  </span>
+                </div>
+              )}
               <div className="mt-1 flex items-center justify-between border-t border-border pt-2">
                 <span className="font-semibold text-text-secondary">Price</span>
                 <span className="text-[13px] font-medium text-text-secondary/60">

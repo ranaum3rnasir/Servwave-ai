@@ -26,9 +26,10 @@ import type { CallPhase } from "@/stores/phoneSheet.store";
 import { useCtmSoftphone, type IncomingCallInfo } from "@/lib/communication/useCtmSoftphone";
 import type { SoftphoneFault } from "@/lib/communication/ctmSoftphone";
 import { BROWSER_INBOUND_ANSWER_ENABLED } from "@/lib/communication/ctmSoftphone";
-import { useMyOutboundNumber } from "@/lib/api/myOutboundNumber";
+import { useMyOutboundNumber, type MyOutboundNumber } from "@/lib/api/myOutboundNumber";
 import { providerNumberIdOf } from "@/lib/api/providerNumberId";
 import { IncomingCallCard } from "@/pages/phone/IncomingCallCard";
+import { CustomerNameText, CustomerPhoneText } from "@/components/contact/ContactText";
 import { useSettingsGuard } from "@/stores/settingsGuard.store";
 import { canAutoFocus } from "@/ui-kit/lib/autoFocus";
 import { isFinalCallStatus } from "@/lib/api/communication-shared";
@@ -180,6 +181,17 @@ type Props = {
   callerIdNumberId?: string;
 };
 
+// The company has no number a call could go out from (the server refuses the same way).
+const NO_COMPANY_NUMBER_COPY = "No company number is set up for calls. Contact your admin.";
+
+/** What the dialer calls the number a call goes out from: its label and the number, or the number. */
+function fromNumberName(n: Exclude<MyOutboundNumber, { none: true }>): string {
+  const number = n.formatted?.trim();
+  const label = n.label?.trim();
+  if (label && number) return `${label} ${number}`;
+  return label || number || "your company number";
+}
+
 /**
  * The one place a device fault becomes words. Every string is ServWave's own —
  * the naming boundary in CLAUDE.md means the telephony vendor is never named in
@@ -258,10 +270,12 @@ export function Softphone({
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
   const dialInputRef = useRef<HTMLInputElement>(null);
 
-  // Office WebRTC softphone (slice 4): non-null for any role in a comm-enabled
-  // org WHEN the softphone flag is on, in the /phone tab, not on a phone
-  // (computer or tablet) — otherwise the callback bridge below runs unchanged
-  // (the device picks the transport, never the role).
+  // Office WebRTC softphone (slice 4): non-null for anyone in a comm-enabled
+  // org who holds the "Office phone in the browser" switch WHEN the softphone
+  // flag is on, in the /phone tab, not on a phone (computer or tablet) —
+  // otherwise the callback bridge below runs unchanged and rings the person's
+  // own phone first (the device picks the transport, the switch picks who may
+  // have the browser phone, never the role).
   // Real CTM lifecycle events drive the SAME in-call UI as the simulation.
   const officeSoftphone = useCtmSoftphone({
     onStart: () => setState("active"),
@@ -308,6 +322,10 @@ export function Softphone({
   // modules away, and a fault is the stronger signal).
   const viaBridgeFallback = !!officeSoftphone && !!softphoneFault;
   const deviceForCall = officeSoftphone && !softphoneFault ? officeSoftphone : null;
+  // The bridge rings the caller's phone first and the server picks the outgoing number, so the dialer
+  // names that number up front. A number picked on the /phone page (callerIdNumberId) is named by
+  // that page's own "Calling from" picker instead.
+  const showBridgeFromNumber = !deviceForCall && !callerIdNumberId;
 
   // Every "can we dial?" gate reads this rather than `softphoneConnecting`: while the device is
   // still booting (no fault yet) Call is honestly blocked rather than silently doing nothing. A
@@ -337,12 +355,11 @@ export function Softphone({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hasOfficeSoftphone]);
 
-  // Task B2 — the caller's resolved outbound number (Task B1), fetched ONLY
-  // on the office-softphone path (the `/phone` tab); the bridge/tel path
-  // resolves its from-number server-side and never needs this. Its
-  // provider_number_id ("TPN…") becomes `fromTpnId` below, so an outbound WebRTC
-  // call presents the user's own number (else org default) as caller ID.
-  const { data: resolvedOutboundNumber } = useMyOutboundNumber(!!officeSoftphone);
+  // Task B2 — the caller's resolved outbound number (Task B1). On the office-softphone path its
+  // provider_number_id ("TPN…") becomes `fromTpnId` below, so an outbound WebRTC call presents the
+  // user's own number (else org default) as caller ID. On the bridge path the server resolves the
+  // outgoing number itself; this same answer is what the dialer NAMES before the call is placed.
+  const { data: resolvedOutboundNumber } = useMyOutboundNumber();
   const resolvedFromTpnId =
     resolvedOutboundNumber && !("none" in resolvedOutboundNumber)
       ? providerNumberIdOf(resolvedOutboundNumber)
@@ -697,7 +714,7 @@ export function Softphone({
             setPlaceError({
               text:
                 code === "NO_PHONE_NUMBER"
-                  ? "No phone number available - buy one in the Numbers tab"
+                  ? NO_COMPANY_NUMBER_COPY
                   : code === "NOT_IN_TEST_ALLOWLIST"
                     ? "This number isn't on the test allowlist (Phase-0 guard)"
                     : "Couldn't place the call - try again",
@@ -844,7 +861,7 @@ export function Softphone({
                 </div>
                 <div className="min-w-0">
                   <p className="truncate text-sm font-semibold text-text-primary">
-                    {match.customer.name}
+                    <CustomerNameText customerId={match.customer.id} name={match.customer.name} />
                   </p>
                   <p className="truncate text-[11px] text-text-secondary">
                     {match.contact.name}
@@ -873,7 +890,7 @@ export function Softphone({
         {state !== "idle" ? (
           <div className="mb-3 text-center">
             <p className="font-mono text-lg font-semibold tracking-wide text-text-primary">
-              {activeNumber ? fmtPhone(activeNumber) : "-"}
+              {activeNumber ? <CustomerPhoneText phone={activeNumber}>{fmtPhone(activeNumber)}</CustomerPhoneText> : "-"}
             </p>
             <p className="text-[11px] text-text-secondary">
               {state === "active" ? (
@@ -927,6 +944,13 @@ export function Softphone({
               autoFocus={canAutoFocus()}
               className="w-full rounded-md border border-border bg-surface-light px-3 py-2 touch:min-h-11 text-center font-mono text-lg tracking-wide focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary-subtle"
             />
+            {showBridgeFromNumber && resolvedOutboundNumber && (
+              <p className="mt-1.5 text-center text-[11px] text-text-secondary">
+                {"none" in resolvedOutboundNumber
+                  ? NO_COMPANY_NUMBER_COPY
+                  : `Calling from ${fromNumberName(resolvedOutboundNumber)}`}
+              </p>
+            )}
           </div>
         )}
 

@@ -483,10 +483,11 @@ describe('a user solely assigned to hundreds of tasks', () => {
         assignee_ids: [DEPARTING], created_by: CREATOR,
       }));
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    mockPrisma.$transaction.mockImplementation(async (fn: (tx: any) => unknown) => {
+    mockPrisma.$transaction.mockImplementation(async (fn: (tx: any) => unknown, options?: unknown) => {
       const before = mockPrisma.task.update.mock.calls.length;
       const out = await fn(prisma);
-      updatesPerTransaction.push(mockPrisma.task.update.mock.calls.length - before);
+      // The sweep's transactions carry a timeout; the deactivation's own write (the flip and the mailbox handover) does not, and updates no task.
+      if (options) updatesPerTransaction.push(mockPrisma.task.update.mock.calls.length - before);
       return out;
     });
   });
@@ -500,9 +501,11 @@ describe('a user solely assigned to hundreds of tasks', () => {
     expect(updatesPerTransaction).toHaveLength(Math.ceil(BULK / CHUNK));
     for (const n of updatesPerTransaction) expect(n).toBeLessThanOrEqual(CHUNK);
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    for (const call of mockPrisma.$transaction.mock.calls as any[]) {
+    for (const call of (mockPrisma.$transaction.mock.calls as any[]).filter((c) => c[1])) {
       expect(call[1]).toMatchObject({ timeout: expect.any(Number) });
     }
+    // Exactly one transaction is the deactivation's own, and every other one is a bounded chunk of the sweep.
+    expect(mockPrisma.$transaction.mock.calls.length).toBe(updatesPerTransaction.length + 1);
   });
 
   it('writes the activity feed in one insert per chunk, not one per event', async () => {

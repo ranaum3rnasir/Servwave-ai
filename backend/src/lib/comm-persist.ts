@@ -35,6 +35,14 @@ export interface TransactionalEmailRecord {
    */
   entityType?: string | null;
   entityId?: string | null;
+  /**
+   * The person who pressed Send, for a document sent by hand (an estimate or an invoice). It is
+   * recorded on the stored email and on the reply token. The hand senders (lib/email.ts) set it from
+   * their `handSender`, so a caller cannot name one person as the sender and another as the mailbox;
+   * an automated send passes nothing and so records nobody: the bell rule for a customer's reply
+   * reads this to tell the two apart.
+   */
+  sentByUserId?: string | null;
 }
 
 /**
@@ -137,6 +145,8 @@ export async function persistTransactionalEmail(
         vendor_id: args.vendorId ?? null,
         job_label: args.jobLabel ?? null,
         thread_id: args.threadId ?? null,
+        // Who pressed Send, only for a document sent by hand; null for every automated notice.
+        sent_by_user_id: args.sentByUserId ?? null,
         // Stated, never left to the column default - the default is how this
         // row came to deny an attachment every recipient received.
         has_attachment: attachments.length > 0,

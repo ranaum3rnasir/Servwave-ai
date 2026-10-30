@@ -19,7 +19,7 @@ import userEvent from '@testing-library/user-event';
 
 import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderWithProviders, seedMySwitches } from '@/__tests__/helpers';
 
 import { PODetailDialog } from '@/components/inventory/PODetailDialog';
 import { AddVendorDialog } from '@/components/inventory/AddVendorDialog';
@@ -213,6 +213,7 @@ describe('#2043 — PODetailDialog "Close PO" status action (R3)', () => {
 describe('#2043 — PODetailDialog staged PO (non-regression)', () => {
   it('a writer on a staged PO still sees the disabled primary action and the Staging pointer', async () => {
     const staged = po({ status: 'ordered', stagedAsJobStageId: 'stage-1' });
+    seedMySwitches({ view_stock: true, show_stock_page: true });
     renderDialog(staged, updateOnlyAbility());
 
     const disabledBtn = screen.getByRole('button', { name: /received via staging/i });

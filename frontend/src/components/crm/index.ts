@@ -14,7 +14,7 @@ export { PickOrCreateCustomer, splitFullName, getDuplicateCustomer, computeMatch
 export type { PickCustomer, CustomerContactFields, CustomerContactField, PickOrCreateCustomerProps } from './PickOrCreateCustomer';
 
 export { CustomerPickerWithCreate, customerLabel, customerRow } from './CustomerPickerWithCreate';
-export type { CustomerLite, CustomerPickerWithCreateProps } from './CustomerPickerWithCreate';
+export type { CustomerLite, CreatedCustomer, CustomerCreateAs, CustomerPickerWithCreateProps } from './CustomerPickerWithCreate';
 
 export { PickOrAccreteLocation, formatLocationLabel, ADD_NEW_LOCATION } from './PickOrAccreteLocation';
 export type {

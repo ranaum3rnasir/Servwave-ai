@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 import { Briefcase, MapPin, User } from 'lucide-react';
 import { cn } from '@/lib/utils';
-import { PhoneNumberAction } from '@/components/contact/ContactAction';
+import { PrimaryContactLines } from '@/components/contact/CustomerContactBlock';
 import { StatusBadge } from '@/components/data/status-badge';
 import type { StatusDomain } from '@/design-system/status-registry';
 import type { PanelEstimate } from '../lib/panelEstimate';
@@ -166,26 +166,17 @@ export function CustomerHeader({ estimate }: { estimate: PanelEstimate }) {
         {line1 && <p>{line1}</p>}
         {line2 && <p>{line2}</p>}
         {cityState && <p>{cityState}</p>}
-        {cust.phone && (
-          <PhoneNumberAction
-            phone={cust.phone}
-            name={name}
-            context={{
-              customerId: estimate.customer_id ?? undefined,
-              customerName: name,
-              leadId: estimate.lead?.id,
-              leadLabel: estimate.lead?.lead_number ?? undefined,
-            }}
-            className="-my-0.5 justify-start py-0.5"
-          >
-            {cust.phone}
-          </PhoneNumberAction>
-        )}
-        {cust.email && (
-          <a href={`mailto:${cust.email}`} className="-my-0.5 block truncate py-0.5 text-primary hover:underline">
-            {cust.email}
-          </a>
-        )}
+        <PrimaryContactLines
+          customer={cust}
+          name={name}
+          context={{
+            customerId: estimate.customer_id ?? undefined,
+            customerName: name,
+            leadId: estimate.lead?.id,
+            leadLabel: estimate.lead?.lead_number ?? undefined,
+          }}
+          lineClassName="-my-0.5 py-0.5"
+        />
       </div>
     </div>
   );

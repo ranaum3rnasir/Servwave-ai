@@ -5,19 +5,18 @@ import ProtectedRoute from '@/components/ProtectedRoute';
 
 import V2AppLayout from '../V2AppLayout';
 
-const V2HomeRoute = lazy(() => import('../dashboard/V2HomeRoute'));
+const DashboardPage = lazy(() => import('../dashboard/DashboardPage'));
 
 /**
  * Module 1 - Dashboard.
  *
- * The GUARD stack mirrors App.tsx exactly. There, `/` sits under
- * `ProtectedRoute allowedRoles={['ADMIN','SALES','DISPATCHER','TECHNICIAN']}`
- * with NO `RequireFeature` - the dashboard is not entitlement-gated - and the
- * element is `HomeRoute`, not `DashboardPage`. That indirection is the guard:
- * `read Dashboard` is admin/dispatcher-only, so a SALES or TECHNICIAN user who
- * rendered the page directly would hit `GET /api/dashboard` and 403 on their
- * own landing screen. `V2HomeRoute` reproduces that resolution over the same
- * `nav-registry` inputs, so the four roles land exactly where they do today.
+ * `/` is every signed-in person's home page and renders the dashboard for all of them, whatever their switches say: the
+ * dashboard has no switch (Roles & Permissions, PRD 2), its endpoints answer everyone, and what it shows is the
+ * person's own layout. There is no "first page you may open" redirect and no fallback page, so a role with every
+ * switch off lands here and never loops. Every hidden page's guard sends its refusals to this route.
+ *
+ * The GUARD stack is the app-wide one only: `ProtectedRoute` (all four roles), with NO `RequireFeature` - the
+ * dashboard is not entitlement-gated.
  *
  * The CHROME is the only substitution: V2AppLayout stands in for AppLayout.
  *
@@ -31,7 +30,7 @@ export function dashboardV2Routes() {
   return (
     <Route element={<ProtectedRoute allowedRoles={['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN']} />}>
       <Route element={<V2AppLayout />}>
-        <Route path="/" element={<V2HomeRoute />} />
+        <Route path="/" element={<DashboardPage />} />
       </Route>
     </Route>
   );

@@ -2,7 +2,10 @@ import { useQuery } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { Boxes, Truck, ArrowUpRight, PackageCheck } from 'lucide-react';
 import api from '@/lib/axios';
-import { cn } from '@/lib/utils';
+import { cn, formatCurrency } from '@/lib/utils';
+import { StagePickup } from '@/components/inventory/StagePickup';
+import { useStageLineDisclosure } from '@/components/inventory/stageLineDisclosure';
+import { switchOn, useMySwitches } from '@/lib/api/mySwitches';
 import { STATUS_REGISTRY, STATUS_INTENT_CLASSES } from '@/design-system/status-registry';
 import { Skeleton } from '@/components/ui/skeleton';
 import { EmptyState } from '@/components/ui/empty-state';
@@ -16,6 +19,7 @@ interface JobStageLine {
   qtyOrdered: number;
   qtyReceived: number;
   vendor?: string;
+  unitCost?: number;
   poNumber?: string;
   expectedDate?: string;
 }
@@ -24,6 +28,12 @@ interface JobStage {
   status: string;
   trade?: string;
   scheduledFor?: string;
+  // The pickup (S07.6): absent until someone takes the parts.
+  takenAt?: string;
+  takenById?: string;
+  takenByName?: string;
+  recordedById?: string;
+  recordedByName?: string;
   items: JobStageLine[];
 }
 
@@ -99,6 +109,12 @@ function statusMeta(s: string) {
  */
 export function JobStagesSection({ jobId }: { jobId: string }) {
   const { data: stages, isLoading, isError } = useJobStages(jobId);
+  // S07.4 - the response already leaves these out for a person without the switch; the section follows the switches too.
+  const { showCost, showVendor } = useStageLineDisclosure();
+  // S07.5 - an attached person without View stock reads the job's stages here, but the Staging tab behind the link is not theirs.
+  // The link follows the Stock page route's own gate (View stock and Show Stock page), so it is never one that bounces to the dashboard.
+  const mine = useMySwitches()?.values;
+  const canOpenInventory = switchOn(mine, 'view_stock') && switchOn(mine, 'show_stock_page');
 
   if (isError) return null;
 
@@ -115,7 +131,7 @@ export function JobStagesSection({ jobId }: { jobId: string }) {
     <SectionCard
       title="Staging & fulfillment"
       icon={<Boxes className="h-4 w-4 text-text-secondary" />}
-      meta={inventoryLink}
+      meta={canOpenInventory ? inventoryLink : undefined}
       bodyClassName={isLoading || !stages?.length ? 'p-5' : 'p-0'}
     >
       {isLoading ? (
@@ -152,6 +168,7 @@ export function JobStagesSection({ jobId }: { jobId: string }) {
                   <span className="ml-auto text-xs tabular-nums text-text-secondary">
                     {received}/{ordered} received
                   </span>
+                  <StagePickup stage={stage} />
                 </div>
                 <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-background-light">
                   <div className="h-full rounded-full bg-sage-500" style={{ width: `${pct}%` }} />
@@ -168,12 +185,18 @@ export function JobStagesSection({ jobId }: { jobId: string }) {
                           {l.itemName}
                           {l.itemSku ? <span className="text-text-secondary/70"> · {l.itemSku}</span> : null}
                         </span>
-                        {(l.vendor || l.poNumber) && (
-                          <span className="hidden truncate text-text-secondary/70 sm:inline">
-                            {l.vendor}
-                            {l.poNumber ? ` · ${l.poNumber}` : ''}
-                          </span>
-                        )}
+                        {(() => {
+                          const detail = [
+                            showVendor ? l.vendor : undefined,
+                            l.poNumber,
+                            showCost && l.unitCost != null ? `${formatCurrency(l.unitCost)} each` : undefined,
+                          ].filter(Boolean);
+                          return detail.length > 0 ? (
+                            <span className="hidden truncate text-text-secondary/70 sm:inline">
+                              {detail.join(' · ')}
+                            </span>
+                          ) : null;
+                        })()}
                         <span className="shrink-0 tabular-nums text-text-secondary">
                           {Number(l.qtyReceived)}/{Number(l.qtyOrdered)}
                         </span>

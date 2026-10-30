@@ -7,6 +7,8 @@ import { Banknote, CheckCircle2, FileText, Hourglass, Percent } from 'lucide-rea
 import { ChartCard, WaveAreaChart } from '@/components/charts';
 import { chartLabelStyle } from '@/components/charts/chartTheme';
 import { token } from '@/design-system';
+import { useAppAbility } from '@/contexts/AbilityContext';
+import { canSeeCompanyFigures } from '@/lib/ability';
 import { formatCurrencyWhole } from '@/lib/utils';
 import { useIsDemoOrg } from '@/lib/useIsDemoOrg';
 import { findReport } from '@/lib/reports/report-catalog';
@@ -15,6 +17,8 @@ import { useRevenueReport } from '@/lib/reports/revenue-data';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/ui-kit/components/ui/select';
+
+import { EmptyState } from '@/ui-kit/components/data/emptyState';
 
 import { ReportShell } from '../components/reportShell';
 import { ReportKpis } from '../components/kpi';
@@ -49,6 +53,7 @@ const pct = (n: number) => `${Math.round(n)}%`;
 export default function RevenueReport() {
   const report = findReport('revenue')!;
   const isDemo = useIsDemoOrg();
+  const showsFigures = canSeeCompanyFigures(useAppAbility());
   const { series, hasBuSplit } = useRevenueReport(isDemo);
   const [bu, setBu] = useState('all');
 
@@ -87,6 +92,19 @@ export default function RevenueReport() {
     { name: 'Uncollected', value: -t.outstanding, tone: token('--warning') },
     { name: 'Collected', value: t.collected, tone: token('--success') },
   ];
+
+  // Every figure on this report is company-wide money, and the server sends a person without See company figures
+  // no series at all: the page says so rather than summing nothing into a row of $0 tiles and empty charts.
+  if (!showsFigures) {
+    return (
+      <ReportShell report={report}>
+        <EmptyState
+          title="Revenue figures are limited"
+          description="This report shows company-wide revenue. Ask an admin for the See company figures permission to view it."
+        />
+      </ReportShell>
+    );
+  }
 
   return (
     <ReportShell

@@ -47,7 +47,7 @@ vi.mock('@/lib/api/inventory', async (importOriginal) => {
   const mutation = () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false });
   return {
     ...actual,
-    useInventoryItems: stable(EMPTY),
+    usePriceBookItems: stable(EMPTY),
     useBrands: stable(EMPTY),
     useItemGroups: stable(EMPTY),
     useCategories: stable(EMPTY),
@@ -213,5 +213,24 @@ describe('PriceBookPage — Track inventory toggle (Inventory P1)', () => {
       name: 'Untracked Widget',
       trackInventory: false,
     });
+  });
+});
+
+// The Catalog tab used to be a prototype card with a person's name on an "Owner" badge and
+// roadmap copy. There is no record owner to read and no catalog view yet, so the tab says so
+// in one neutral line and names nobody.
+describe('PriceBookPage - Catalog tab', () => {
+  it('shows a neutral not-available state with no owner badge or roadmap copy', async () => {
+    renderWithProviders(<PriceBookPage />, {
+      initialEntries: ['/inventory/price-book'],
+      ability: priceBookAdmin(),
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: /Catalog/ }));
+
+    expect(await screen.findByText('Catalog is not available yet')).toBeInTheDocument();
+    expect(screen.queryByText(/Owner:/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Phase A/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/ships in Phase B/)).not.toBeInTheDocument();
   });
 });

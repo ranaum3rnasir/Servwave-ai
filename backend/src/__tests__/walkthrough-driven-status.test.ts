@@ -10,10 +10,10 @@ import type { LeadStatus } from '@prisma/client';
 import { walkthroughDrivenStatus } from '../services/lead-stage.service';
 
 const ALL: LeadStatus[] = [
-  'NEW', 'CONTACTED', 'WALKTHROUGH_SCHEDULED', 'WALKTHROUGH_COMPLETED', 'ESTIMATED', 'WON', 'LOST', 'CANCELLED',
+  'NEW', 'CONTACTED', 'WALKTHROUGH_SCHEDULED', 'WALKTHROUGH_COMPLETED', 'ESTIMATED', 'WON', 'LOST',
 ];
 const EARLY: LeadStatus[] = ['NEW', 'CONTACTED', 'WALKTHROUGH_SCHEDULED', 'WALKTHROUGH_COMPLETED'];
-const NEVER_MOVED: LeadStatus[] = ['ESTIMATED', 'WON', 'LOST', 'CANCELLED'];
+const NEVER_MOVED: LeadStatus[] = ['ESTIMATED', 'WON', 'LOST'];
 
 /** The rule, restated independently of the implementation for the early statuses. */
 function expected(current: LeadStatus, open: number, finished: number): LeadStatus {

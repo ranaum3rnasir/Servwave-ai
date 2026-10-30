@@ -35,12 +35,13 @@ import { prisma } from '../lib/prisma';
 import { calculateTotals } from '../controllers/estimate.controller';
 import { recomputeInvoiceTotals, type LineForTotals, type ScopeForTotals } from '../lib/invoice-totals';
 import { TEST_USERS, ALPHA_ORG_ID, mockAuthAs, authHeader, ESTIMATE_FIXTURE } from './helpers';
-import { setCachedGrants, clearPermissionCache } from '../lib/permissions/permissionCache';
+import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 const mockPrisma = prisma as unknown as {
   lead: { findUnique: ReturnType<typeof vi.fn> };
   estimate: {
     findUnique: ReturnType<typeof vi.fn>;
+    findFirst: ReturnType<typeof vi.fn>;
     update: ReturnType<typeof vi.fn>;
   };
   estimateLineItem: {
@@ -469,17 +470,12 @@ describe('#2053 case 7: price-blind requester still sees the (non-cost) optional
   // opted into "Edit own estimates" (own-scope read/update Estimate) WITHOUT `read Pricing`.
   const OWN_ESTIMATE_VIA_LEAD = { lead: { lead_assignees: { some: { user_id: '{{userId}}' } } } };
   function grantPriceBlindTechnicianEstimateAccess() {
-    setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', [
-      { action: 'read', subject: 'Estimate', conditions: OWN_ESTIMATE_VIA_LEAD },
-      { action: 'update', subject: 'Estimate', conditions: OWN_ESTIMATE_VIA_LEAD },
-      // Deliberately NO `read Pricing` grant.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ] as any);
   }
 
   it('GET /api/estimates/:id keeps is_optional/is_selected while stripping unit_cost/markup_percent', async () => {
     mockAuthAs('technician');
     grantPriceBlindTechnicianEstimateAccess();
+    mockPrisma.estimate.findFirst.mockResolvedValue({ id: ESTIMATE_ID }); // inside their Attached scope
     mockPrisma.estimate.findUnique.mockResolvedValue({
       ...ESTIMATE_FIXTURE,
       lead: { ...ESTIMATE_FIXTURE.lead, lead_assignees: [{ user_id: TEST_USERS.technician.id }] },

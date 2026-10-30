@@ -18,6 +18,8 @@ const mockApi = vi.mocked(api);
 // query never fires and no tag chip ever renders — the picker would look empty
 // for a reason that has nothing to do with what these tests assert.
 const TAG_READER = buildAbility([{ action: 'read', subject: 'Tag' }]);
+// The inline "Create new tag" row needs Create tags on top of the read.
+const TAG_READER_CREATOR = buildAbility([{ action: 'read', subject: 'Tag' }, { action: 'create', subject: 'Tag' }]);
 
 const CUSTOMER_IDS = [
   'c0000000-0000-0000-0000-000000000001',
@@ -49,10 +51,10 @@ beforeEach(() => {
   });
 });
 
-function renderPopover(ids: string[] = CUSTOMER_IDS) {
+function renderPopover(ids: string[] = CUSTOMER_IDS, ability = TAG_READER_CREATOR) {
   return renderWithProviders(
     <BulkTagPopover customerIds={ids} onDone={() => {}} />,
-    { ability: TAG_READER }
+    { ability }
   );
 }
 
@@ -120,6 +122,22 @@ describe('BulkTagPopover cache invalidation', () => {
     );
 
     expect(missingTagCacheKeys(invalidatedKeys(invalidate))).toEqual([]);
+  });
+
+  it('offers no Create row to a person who may read tags but not create them', async () => {
+    renderPopover(CUSTOMER_IDS, TAG_READER);
+
+    openPicker();
+    const search = screen.getByPlaceholderText('Search or create tag...');
+    fireEvent.change(search, { target: { value: 'NewTag' } });
+
+    await waitFor(() => {
+      expect(screen.getByText('No tags found')).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/Create new tag/)).not.toBeInTheDocument();
+
+    fireEvent.keyDown(search, { key: 'Enter' });
+    expect(mockApi.post).not.toHaveBeenCalled();
   });
 
   it('drops every tag-carrying cache when a new tag is created inline', async () => {

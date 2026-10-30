@@ -35,6 +35,10 @@ type Decoy = {
   visitCrew: string[];
   /** crew reached through the dead job-level join table */
   jobCrew: string[];
+  /** the other people a job is attached to (Roles & Permissions S01.2) */
+  soldBy?: string | null;
+  dispatcher?: string | null;
+  leadOwner?: string | null;
 };
 
 /**
@@ -58,6 +62,10 @@ function matchesFragment(row: Decoy, frag: Record<string, any>): boolean {
         return row.organization_id === value;
       case 'created_by_id':
         return row.created_by_id === value;
+      case 'salesperson_id':
+        return (row.soldBy ?? null) === value;
+      case 'dispatcher_id':
+        return (row.dispatcher ?? null) === value;
       case 'assignees':
         return row.jobCrew.includes(value?.some?.user_id);
       case 'visits':
@@ -157,15 +165,15 @@ describe('S8 behaviour 1 - a technician job list follows visit crew, not the job
   it('builds the row scope through the visits relation and carries no top-level assignees key', async () => {
     await request(app).get('/api/jobs').set(authHeader('technician'));
 
-    // TECHNICIAN's `read Job` is the OR shape; the OWN arm is what must have moved.
-    const ownArm = (lastListWhere?.OR as Record<string, any>[]).find((m) => !('created_by_id' in m));
-    expect(ownArm).toEqual({ visits: { some: { assignees: { some: { user_id: TECH_ID } } } } });
-    expect(ownArm).not.toHaveProperty('assignees');
+    // Attached is an OR of the people on the job; the crew arm is the one that reaches visits.
+    const crewArm = (lastListWhere?.OR as Record<string, any>[]).find((m) => 'visits' in m);
+    expect(crewArm).toEqual({ visits: { some: { assignees: { some: { user_id: TECH_ID } } } } });
+    expect(crewArm).not.toHaveProperty('assignees');
     expect(lastListWhere).not.toHaveProperty('assignees');
   });
 });
 
-describe('S8 behaviour 2 - the read-OR-created shape moves with it', () => {
+describe('S8 behaviour 2 - a job opens through its visit crew, and creating it opens nothing', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     clearPermissionCache();
@@ -185,14 +193,11 @@ describe('S8 behaviour 2 - the read-OR-created shape moves with it', () => {
     expect(res.status).toBe(200);
 
     const readWhere = mockPrisma.job.findFirst.mock.calls.map((c: any[]) => c[0]?.where).find((w: any) => w?.OR);
-    expect(readWhere.OR).toEqual([
-      { visits: { some: { assignees: { some: { user_id: TECH_ID } } } } },
-      { created_by_id: TECH_ID },
-    ]);
+    expect(readWhere.OR[0]).toEqual({ visits: { some: { assignees: { some: { user_id: TECH_ID } } } } });
     expect(readWhere.OR.some((m: Record<string, unknown>) => 'assignees' in m)).toBe(false);
   });
 
-  it('opens a job the technician created but is not crewed on', async () => {
+  it('does not open a job the technician created but is not attached to', async () => {
     const table = seedHonouringJobReads();
     table[1].visitCrew = [];
     table[1].jobCrew = [];
@@ -203,6 +208,24 @@ describe('S8 behaviour 2 - the read-OR-created shape moves with it', () => {
     });
 
     const res = await request(app).get('/api/jobs/j-b').set(authHeader('technician'));
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(403);
+  });
+
+  it('opens a job the technician is Sold By or Dispatcher of with no crew row, and not one whose lead they only own', async () => {
+    const table = seedHonouringJobReads();
+    mockPrisma.job.findUnique.mockImplementation(async (args: any) => {
+      const hit = table.find((r) => r.id === args?.where?.id);
+      return hit ? projected(hit) : null;
+    });
+    table[0].visitCrew = [OTHER_ID];
+    for (const attached of [{ soldBy: TECH_ID }, { dispatcher: TECH_ID }] as Partial<Decoy>[]) {
+      Object.assign(table[0], { soldBy: null, dispatcher: null, leadOwner: null }, attached);
+      const res = await request(app).get('/api/jobs/j-a').set(authHeader('technician'));
+      expect(res.status, JSON.stringify(attached)).toBe(200);
+    }
+    // The Owner of the lead the job came from is not on the job: only the job's own Sold By attaches.
+    Object.assign(table[0], { soldBy: null, dispatcher: null, leadOwner: TECH_ID });
+    const res = await request(app).get('/api/jobs/j-a').set(authHeader('technician'));
+    expect(res.status).toBe(403);
   });
 });

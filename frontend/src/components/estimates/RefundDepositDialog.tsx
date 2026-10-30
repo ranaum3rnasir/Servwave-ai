@@ -77,7 +77,7 @@ export function RefundDepositDialog({ open, onOpenChange, estimateId, depositInv
             <p className="text-sm text-text-secondary">Refund amount: <span className="font-semibold text-text-primary">{formatCurrency(depositAmount)}</span></p>
             <p className="text-xs text-text-secondary">
               {hasStripePayment
-                ? 'The refund will be processed automatically via Stripe.'
+                ? 'The refund will be processed automatically.'
                 : 'Please record that the refund has been processed manually.'}
             </p>
           </div>

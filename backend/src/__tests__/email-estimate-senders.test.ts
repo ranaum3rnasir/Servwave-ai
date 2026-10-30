@@ -9,6 +9,8 @@ vi.mock('../config/env', () => ({
     EMAIL_FROM: 'Alpha <noreply@test.com>',
     EMAIL_FROM_BUSINESS: 'no-reply@mail.test.com',
     RESEND_API_KEY: 're_test_key',
+    // PRD 10 (S10.12): the domain a sender's own address is built on; a document goes out from it.
+    MAILBOX_DOMAIN: 'mail.test.com',
     FRONTEND_URL: 'http://localhost:5173',
   },
 }));
@@ -26,6 +28,9 @@ vi.mock('../lib/pdf', () => ({
 import { prisma } from '../lib/prisma';
 import { generateEstimatePdf } from '../lib/pdf';
 
+
+// PRD 10 (S10.12): a document is sent by hand, from the sender's own mailbox (the id the suite-wide mailbox stub answers to).
+const HAND_SENDER = { mailboxId: 'main-mailbox-id', userId: 'user-1' };
 let sendEstimateEmail: typeof import('../lib/email')['sendEstimateEmail'];
 let sendEstimateWithDepositEmail: typeof import('../lib/email')['sendEstimateWithDepositEmail'];
 
@@ -64,8 +69,8 @@ const BASE_PARAMS = {
 describe('sendEstimateEmail — propagates the dispatch result', () => {
   it('returns {status:"sent"} and persists a transactional record on success', async () => {
     resendSend.mockResolvedValue({ data: { id: 're_1' }, error: null });
-    const res = await sendEstimateEmail(BASE_PARAMS);
-    expect(res).toEqual({ status: 'sent', providerMessageId: 're_1', fromAddress: 'no-reply@mail.test.com', fromName: null });
+    const res = await sendEstimateEmail({ ...BASE_PARAMS, handSender: HAND_SENDER });
+    expect(res).toEqual({ status: 'sent', providerMessageId: 're_1', fromAddress: 'jane.smith.acme@mail.test.com', fromName: 'Jane Smith at Acme' });
     expect(prisma.email.create).toHaveBeenCalledTimes(1);
     expect(prisma.email.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ to: 'jane@example.com' }),
@@ -74,14 +79,14 @@ describe('sendEstimateEmail — propagates the dispatch result', () => {
 
   it('returns {status:"failed", error} and does NOT persist a record when Resend rejects', async () => {
     resendSend.mockResolvedValue({ data: null, error: { message: 'domain not verified' } });
-    const res = await sendEstimateEmail(BASE_PARAMS);
+    const res = await sendEstimateEmail({ ...BASE_PARAMS, handSender: HAND_SENDER });
     expect(res).toEqual({ status: 'failed', error: 'domain not verified' });
     expect(prisma.email.create).not.toHaveBeenCalled();
   });
 
   it('returns {status:"skipped", reason:"org_disabled"} and never calls Resend', async () => {
     (prisma.organization.findUnique as Mock).mockResolvedValue({ email_sending_enabled: false });
-    const res = await sendEstimateEmail(BASE_PARAMS);
+    const res = await sendEstimateEmail({ ...BASE_PARAMS, handSender: HAND_SENDER });
     expect(res).toEqual({ status: 'skipped', reason: 'org_disabled' });
     expect(resendSend).not.toHaveBeenCalled();
     expect(prisma.email.create).not.toHaveBeenCalled();
@@ -89,7 +94,7 @@ describe('sendEstimateEmail — propagates the dispatch result', () => {
 
   it('returns {status:"failed", error} and does NOT persist a record when PDF rendering throws', async () => {
     (generateEstimatePdf as Mock).mockRejectedValueOnce(new Error('pdf render boom'));
-    const res = await sendEstimateEmail(BASE_PARAMS);
+    const res = await sendEstimateEmail({ ...BASE_PARAMS, handSender: HAND_SENDER });
     expect(res).toEqual({ status: 'failed', error: 'pdf render boom' });
     expect(prisma.email.create).not.toHaveBeenCalled();
   });
@@ -99,7 +104,7 @@ describe('sendEstimateEmail — propagates the dispatch result', () => {
   // anchor columns, so generateEstimatePdf would throw for a lead-less estimate. Locks the shape.
   it("renderEstimatePdfBuffer's select includes customer/service_location (the R6 anchor)", async () => {
     resendSend.mockResolvedValue({ data: { id: 're_3' }, error: null });
-    await sendEstimateEmail(BASE_PARAMS);
+    await sendEstimateEmail({ ...BASE_PARAMS, handSender: HAND_SENDER });
 
     const sel = (prisma.estimate.findUnique as Mock).mock.calls[0]![0].select;
     expect(sel.customer).toBeTruthy();
@@ -110,8 +115,8 @@ describe('sendEstimateEmail — propagates the dispatch result', () => {
 describe('sendEstimateWithDepositEmail — propagates the dispatch result', () => {
   it('returns {status:"sent"} and persists a transactional record on success', async () => {
     resendSend.mockResolvedValue({ data: { id: 're_2' }, error: null });
-    const res = await sendEstimateWithDepositEmail({ ...BASE_PARAMS, depositAmount: '$50.00', depositPercentage: 50 });
-    expect(res).toEqual({ status: 'sent', providerMessageId: 're_2', fromAddress: 'no-reply@mail.test.com', fromName: null });
+    const res = await sendEstimateWithDepositEmail({ handSender: HAND_SENDER, ...BASE_PARAMS, depositAmount: '$50.00', depositPercentage: 50 });
+    expect(res).toEqual({ status: 'sent', providerMessageId: 're_2', fromAddress: 'jane.smith.acme@mail.test.com', fromName: 'Jane Smith at Acme' });
     expect(prisma.email.create).toHaveBeenCalledTimes(1);
     expect(prisma.email.create).toHaveBeenCalledWith(expect.objectContaining({
       data: expect.objectContaining({ to: 'jane@example.com' }),
@@ -120,14 +125,14 @@ describe('sendEstimateWithDepositEmail — propagates the dispatch result', () =
 
   it('returns {status:"failed", error} and does NOT persist a record when Resend rejects', async () => {
     resendSend.mockResolvedValue({ data: null, error: { message: 'rate limited' } });
-    const res = await sendEstimateWithDepositEmail({ ...BASE_PARAMS, depositAmount: '$50.00', depositPercentage: 50 });
+    const res = await sendEstimateWithDepositEmail({ handSender: HAND_SENDER, ...BASE_PARAMS, depositAmount: '$50.00', depositPercentage: 50 });
     expect(res).toEqual({ status: 'failed', error: 'rate limited' });
     expect(prisma.email.create).not.toHaveBeenCalled();
   });
 
   it('returns {status:"failed", error} and does NOT persist a record when PDF rendering throws', async () => {
     (generateEstimatePdf as Mock).mockRejectedValueOnce(new Error('pdf render boom'));
-    const res = await sendEstimateWithDepositEmail({ ...BASE_PARAMS, depositAmount: '$50.00', depositPercentage: 50 });
+    const res = await sendEstimateWithDepositEmail({ handSender: HAND_SENDER, ...BASE_PARAMS, depositAmount: '$50.00', depositPercentage: 50 });
     expect(res).toEqual({ status: 'failed', error: 'pdf render boom' });
     expect(prisma.email.create).not.toHaveBeenCalled();
   });
@@ -177,7 +182,7 @@ describe("renderEstimatePdfBuffer — brands the PDF with the ESTIMATE's own org
   });
 
   it("sendEstimateEmail renders the PDF with the estimate's org, not an arbitrary one", async () => {
-    const res = await sendEstimateEmail(BASE_PARAMS);
+    const res = await sendEstimateEmail({ ...BASE_PARAMS, handSender: HAND_SENDER });
     expect(res.status).toBe('sent');
 
     // The org ARGUMENT, by identity — not "the send resolved", which is true either way.
@@ -198,7 +203,7 @@ describe("renderEstimatePdfBuffer — brands the PDF with the ESTIMATE's own org
   });
 
   it('sendEstimateWithDepositEmail scopes the same way', async () => {
-    const res = await sendEstimateWithDepositEmail({ ...BASE_PARAMS, depositAmount: '$50.00', depositPercentage: 50 });
+    const res = await sendEstimateWithDepositEmail({ handSender: HAND_SENDER, ...BASE_PARAMS, depositAmount: '$50.00', depositPercentage: 50 });
     expect(res.status).toBe('sent');
 
     const [, orgArg, templateArg] = (generateEstimatePdf as Mock).mock.calls[0]!;
@@ -208,7 +213,7 @@ describe("renderEstimatePdfBuffer — brands the PDF with the ESTIMATE's own org
   });
 
   it("looks the org up BY the estimate's organization_id, and never unscoped", async () => {
-    await sendEstimateEmail(BASE_PARAMS);
+    await sendEstimateEmail({ ...BASE_PARAMS, handSender: HAND_SENDER });
 
     const ids = (prisma.organization.findUnique as Mock).mock.calls.map((c) => c[0].where.id);
     expect(ids).toContain(ESTIMATE_ROW.organization_id);

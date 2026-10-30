@@ -92,19 +92,19 @@ interface CommissionJob {
 }
 
 const TECHS: Tech[] = [
-  { id: 't1', name: 'Adam Elkarrat', role: 'Service Tech', structure: 'Base + Commission', rate: 8 },
+  { id: 't1', name: 'Pat Hollis', role: 'Service Tech', structure: 'Base + Commission', rate: 8 },
   { id: 't2', name: 'Amiran Bekauri', role: 'Install Tech', structure: 'Payroll + Commission', rate: 10 },
-  { id: 't3', name: 'Emanuel Dahan', role: 'Comfort Advisor', structure: 'Commission Only', rate: 12 },
-  { id: 't4', name: 'Priya', role: 'Service Tech', structure: 'Base + Commission', rate: 7 },
+  { id: 't3', name: 'Sam Rivera', role: 'Comfort Advisor', structure: 'Commission Only', rate: 12 },
+  { id: 't4', name: 'Drew', role: 'Service Tech', structure: 'Base + Commission', rate: 7 },
   { id: 't5', name: 'Itay', role: 'Install Tech', structure: 'Payroll + Commission', rate: 9 },
-  { id: 't6', name: 'Liran - Dor', role: 'Install Tech', structure: 'Payroll + Commission', rate: 9 },
+  { id: 't6', name: 'Lee - Dana', role: 'Install Tech', structure: 'Payroll + Commission', rate: 9 },
   { id: 't7', name: 'Nethanel', role: 'Service Tech', structure: 'Base + Commission', rate: 8 },
-  { id: 't8', name: 'Ohad', role: 'Service Tech', structure: 'Base + Commission', rate: 10 },
+  { id: 't8', name: 'Jordan', role: 'Service Tech', structure: 'Base + Commission', rate: 10 },
   { id: 't9', name: 'Omer', role: 'Install Tech', structure: 'Payroll + Commission', rate: 10 },
-  { id: 't10', name: 'Oved Adani', role: 'Comfort Advisor', structure: 'Commission Only', rate: 12 },
-  { id: 'x1', name: 'Efrain & Zhao', role: 'External Company', structure: 'Subcontractor', rate: 60, external: true },
+  { id: 't10', name: 'Morgan Diaz', role: 'Comfort Advisor', structure: 'Commission Only', rate: 12 },
+  { id: 'x1', name: 'Ridge & Cole', role: 'External Company', structure: 'Subcontractor', rate: 60, external: true },
   { id: 'x2', name: 'Ofek Sub', role: 'External Company', structure: 'Subcontractor', rate: 55, external: true },
-  { id: 'x3', name: 'Ofir Sub', role: 'External Company', structure: 'Subcontractor', rate: 50, external: true },
+  { id: 'x3', name: 'Oak Sub', role: 'External Company', structure: 'Subcontractor', rate: 50, external: true },
 ];
 
 const CUSTOMERS = ['R. Whitfield', 'Cedar Park HOA', 'M. Delgado', 'Summit Dental', 'J. Okafor', 'Brightway Cafe', 'L. Hammond', 'Northgate Apts', 'P. Vasquez', 'E. Lindqvist', 'Harbor Freight #214', 'K. Nakamura', 'Willow Creek Inn', 'T. Boudreaux', 'A. Petrova'];

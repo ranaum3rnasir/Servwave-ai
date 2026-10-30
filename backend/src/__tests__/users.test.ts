@@ -3,13 +3,19 @@ import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import { supabaseAdmin } from '../lib/supabase';
-import { TEST_USERS, ALPHA_ORG_ID, mockAuthAs, authHeader, mockRoleGrantsWithout } from './helpers';
+import { TEST_USERS, ALPHA_ORG_ID, mockAuthAs, authHeader, mockRoleGrantsWithout, mockRoleSwitches } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 import { EMAIL_ALREADY_REGISTERED_MSG } from '../lib/user-email-guard';
 
 vi.mock('../lib/email', () => ({
   sendUserInviteEmail: vi.fn().mockResolvedValue(true),
+}));
+
+// A new user's mailbox is issued in the same transaction as the user (PRD 10, S10.3); the register has its own real-database
+// suites, so here it only has to be called, and the transaction is the mocked client itself.
+vi.mock('../lib/mailbox/register', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/mailbox/register')>()),
+  issueUserMailbox: vi.fn().mockResolvedValue({ mailboxId: 'mailbox-1', status: 'active', localPart: 'new.user.acme', created: true }),
 }));
 import { sendUserInviteEmail } from '../lib/email';
 const mockSendInvite = sendUserInviteEmail as ReturnType<typeof vi.fn>;
@@ -26,6 +32,7 @@ const mockPrisma = prisma as unknown as {
   department: {
     findFirst: ReturnType<typeof vi.fn>;
   };
+  $transaction: ReturnType<typeof vi.fn>;
 };
 
 const mockSupabaseAdmin = supabaseAdmin as unknown as {
@@ -40,6 +47,7 @@ const mockSupabaseAdmin = supabaseAdmin as unknown as {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => unknown) => fn(mockPrisma));
 });
 
 // ═══════════════════════════════════════════════════════
@@ -470,11 +478,8 @@ describe('GET /api/users/assignable', () => {
     // `read User` (below), so a principal carrying that grant would answer `org` for task no
     // matter which grant the purpose selected, and this case would pass against a broken mapping.
     mockAuthAs('sales');
-    (prisma.rolePermission.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
-      ...DEFAULT_GRANTS.filter((g) => g.role === 'SALES'),
-      { role: 'SALES', action: 'assign', subject: 'Task' },
-    ]);
-    clearPermissionCache();
+    // `assign Task` is the Assign tasks to others switch (S01.11), off in the Sales preset: turn it on for this person.
+    mockRoleSwitches({ assign_tasks_to_others: true });
     stubRoster();
 
     const crew = await request(app).get(`${ASSIGNABLE}?purpose=jobCrew`).set(authHeader('sales'));
@@ -488,9 +493,11 @@ describe('GET /api/users/assignable', () => {
   });
 
   it('holds `task` org-wide for a holder of `read User` - Tasks is out of this PRD\'s scope', async () => {
-    // NOT an accident, and NOT the resolver being wrong. `assign Task` is in the catalog but in no
+    // NOT an accident, and NOT the resolver being wrong. `assign Task` was in the catalog but in no
     // DEFAULT_GRANTS row - not even DISPATCHER - so scoping this purpose by the pool alone would
-    // narrow the task assignee field to self for everyone but ADMIN. The task WRITE side has
+    // narrow the task assignee field to self for everyone but ADMIN. (S01.11 made it the Assign tasks to
+    // others switch, on for the Admin and Dispatcher presets; a custom role with `read User` and the
+    // switch off is still held open here.) The task WRITE side has
     // always refused a non-holder naming anybody else, so the picker has long offered people the
     // save rejects; narrowing here would only make that mismatch visible, on a module this PRD is
     // not about. Ran's call: leave Tasks alone and decide separately whether DISPATCHER should
@@ -537,7 +544,9 @@ describe('GET /api/users/assignable', () => {
   // role that holds it by default and the hold closes for them too.
   it('closes the `task` hold for a DISPATCHER stripped of `read User`', async () => {
     mockAuthAs('dispatcher');
-    mockRoleGrantsWithout('DISPATCHER', ['read', 'User']);
+    // View users is a switch since S01.12, so a role's stored grant no longer decides it.
+    // The Dispatcher preset also holds Assign tasks to others (S01.11), which opens the task pool by itself; turn it off too.
+    mockRoleSwitches({ view_users: false, assign_tasks_to_others: false });
     stubRoster();
 
     const res = await request(app)
@@ -656,41 +665,24 @@ describe('GET /api/users/assignable', () => {
     ]);
   });
 
-  it('filters by the assignable-role set (all active-user roles, #366) by default', async () => {
+  it('names no role when no slot is asked for: every active user of the company', async () => {
     mockAuthAs('admin');
     stubRoster();
 
     await request(app).get(`${ASSIGNABLE}?purpose=jobCrew`).set(authHeader('admin'));
 
-    expect(findArgs().where.role).toEqual({ in: ['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN'] });
+    // Eligibility for a slot is the person's switch (slot-eligibility-db suite), never a role list.
+    expect(findArgs().where.role).toBeUndefined();
+    expect(findArgs().where).toMatchObject({ organization_id: ALPHA_ORG_ID, is_active: true });
   });
 
-  it('ignores the ad-hoc role query param — the eligibility set is fixed', async () => {
+  it('ignores the ad-hoc role query param', async () => {
     mockAuthAs('admin');
     stubRoster();
 
     await request(app).get(`${ASSIGNABLE}?purpose=jobCrew&role=TECHNICIAN`).set(authHeader('admin'));
 
-    expect(findArgs().where.role).toEqual({ in: ['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN'] });
-  });
-
-  it('uses the owner-eligible set (all active-user roles, #366) when eligible_for=owner', async () => {
-    mockAuthAs('admin');
-    stubRoster();
-
-    await request(app).get(`${ASSIGNABLE}?purpose=jobCrew&eligible_for=owner`).set(authHeader('admin'));
-
-    // Bug #11 + #366: owner-eligibility equals the assignable pool (all four roles).
-    expect(findArgs().where.role).toEqual({ in: ['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN'] });
-  });
-
-  it('uses the narrow ADMIN+DISPATCHER set when eligible_for=dispatcher (#291)', async () => {
-    mockAuthAs('admin');
-    stubRoster();
-
-    await request(app).get(`${ASSIGNABLE}?purpose=jobCrew&eligible_for=dispatcher`).set(authHeader('admin'));
-
-    expect(findArgs().where.role).toEqual({ in: ['ADMIN', 'DISPATCHER'] });
+    expect(findArgs().where.role).toBeUndefined();
   });
 
   it('omits the role filter for eligible_for=task (all active users incl. DISPATCHER)', async () => {
@@ -730,7 +722,6 @@ describe('GET /api/users/assignable', () => {
       organization_id: ALPHA_ORG_ID,
       is_active: true,
       department_id: 'd1',
-      role: { in: ['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN'] },
     });
   });
 
@@ -759,7 +750,7 @@ describe('GET /api/users/assignable', () => {
     // re-exclude every inactive referenced user the union just readmitted.
     expect(where.is_active).toBeUndefined();
     expect(where.OR).toEqual([
-      { is_active: true, role: { in: ['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN'] } },
+      { is_active: true },
       { visit_assignments: { some: { visit: { job_id: { not: null } } } } },
     ]);
     expect(where.organization_id).toBe(ALPHA_ORG_ID);
@@ -776,7 +767,7 @@ describe('GET /api/users/assignable', () => {
     const { where } = findArgs();
     expect(where.is_active).toBeUndefined();
     expect(where.OR).toEqual([
-      { is_active: true, role: { in: ['ADMIN', 'SALES', 'DISPATCHER', 'TECHNICIAN'] } },
+      { is_active: true },
       { lead_crew_memberships: { some: {} } },
       { commission_owned_leads: { some: {} } },
       { visit_assignments: { some: { visit: { lead_id: { not: null } } } } },
@@ -911,6 +902,8 @@ describe('PATCH /api/users/:id (self-role-change guard)', () => {
   it("allows an admin to change ANOTHER user's role", async () => {
     mockAuthAs('admin');
     mockPrisma.user.findFirst.mockResolvedValue({ ...TEST_USERS.sales });
+    // A role change fills the person's switches in one transaction with the update (Roles & Permissions M2).
+    mockPrisma.$transaction.mockImplementation((fn: (tx: unknown) => unknown) => fn(mockPrisma));
     mockPrisma.user.update.mockResolvedValue({
       ...TEST_USERS.sales, role: 'TECHNICIAN', department: null,
       has_login: true, enforce_clock_in_location: false, can_approve_clock_overrides: false,

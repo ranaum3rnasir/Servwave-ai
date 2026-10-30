@@ -12,8 +12,8 @@
 import { useState } from 'react';
 
 import { AddTaskCategoryButton, TaskCategoryManager } from '@/components/tasks/TaskCategoryManager';
-import { TASK_CATEGORIES_DESCRIPTION } from '@/lib/tasks/taskCategoryDefaults';
 
+import { InfoPopover } from '../../_shared/infoPopover';
 import { Section } from './section';
 
 export function TaskCategoriesSettingsCard() {
@@ -21,7 +21,7 @@ export function TaskCategoriesSettingsCard() {
   return (
     <Section
       title="Task categories"
-      description={`${TASK_CATEGORIES_DESCRIPTION} Changes save immediately.`}
+      info={<InfoPopover label="Task categories">Changes save immediately.</InfoPopover>}
       action={<AddTaskCategoryButton onClick={() => setAdding(true)} />}
     >
       <TaskCategoryManager adding={adding} onAddingChange={setAdding} />

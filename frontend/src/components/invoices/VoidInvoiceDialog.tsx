@@ -40,17 +40,24 @@ export function VoidInvoiceDialog({
     },
   });
 
+  // Slice 18: a refusal (an invoice with payments answers 409 with the reason) belongs to that
+  // attempt. Closing the dialog forgets it, and the reason typed.
+  const close = () => {
+    mutation.reset();
+    setReason('');
+    onOpenChange(false);
+  };
+
   return (
     <Modal
       intent="form"
       open={open}
-      onClose={() => onOpenChange(false)}
+      onClose={close}
       title="Void Invoice"
-      subtitle="Please provide a reason for voiding this invoice."
       width="xs"
       footer={
         <>
-          <Button variant="outline" onClick={() => onOpenChange(false)}>
+          <Button variant="outline" onClick={close}>
             Cancel
           </Button>
           <Button

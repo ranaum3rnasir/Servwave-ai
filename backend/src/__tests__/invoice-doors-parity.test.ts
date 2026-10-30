@@ -29,7 +29,6 @@ import {
   PAYMENT_FIXTURE,
 } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 
 const mockPrisma = prisma as unknown as {
   job: {
@@ -116,7 +115,6 @@ function jobLine(overrides: Record<string, any> = {}) {
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache();
   mockAuthAs('admin');
   // Door 1's one-active-invoice guard: nothing live on the job.
   mockPrisma.invoice.findFirst.mockResolvedValue(null);

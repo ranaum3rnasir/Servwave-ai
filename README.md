@@ -14,7 +14,7 @@ Field service management platform for SMB contractors (5-30 technicians) in HVAC
 
 ## Prerequisites
 
-- Node.js 20+
+- Node.js 22+ (see `.nvmrc`)
 - npm 9+
 - Supabase account
 - Stripe account (test mode)
@@ -33,26 +33,30 @@ cd alpha-crm
 npm install
 ```
 
-3. Set up environment variables:
+3. Set up environment variables. Each app loads its own `.env` from its own
+   directory (not the repo root):
 ```bash
-cp .env.example .env
-# Edit .env with your credentials
+cp backend/.env.example backend/.env
+cp frontend/.env.example frontend/.env
+# Edit both with your credentials
 ```
 
-4. Set up the database:
+4. Generate the Prisma client:
 ```bash
 cd backend
 npm run prisma:generate
-npm run prisma:migrate
 ```
+   Do **not** run `npm run prisma:migrate` (`prisma migrate dev`) against a
+   shared Supabase project (e.g. the staging DB) — it builds a shadow database
+   to diff against and can mutate shared data. Check whether migrations are
+   already applied with `npx prisma migrate status` instead; only run
+   `prisma:migrate` against your own local/throwaway database.
 
-5. Start development servers:
+5. Start development servers (two terminals, from the root directory):
 ```bash
-# From root directory
-npm run dev
+npm run dev:backend   # http://localhost:3000
+npm run dev:frontend  # http://localhost:5173
 ```
-
-This starts both frontend (http://localhost:5173) and backend (http://localhost:3001).
 
 ## Project Structure
 
@@ -81,9 +85,9 @@ alpha-crm/
 ## Available Scripts
 
 ### Root
-- `npm run dev` - Start both frontend and backend
-- `npm run build` - Build both packages
-- `npm run test` - Run all tests
+- `npm run dev:backend` / `npm run dev:frontend` - Start each app (run both, in separate terminals)
+- `npm run build:backend` / `npm run build:frontend` - Build each package
+- `npm run lint` - Lint all workspaces
 
 ### Frontend (from /frontend)
 - `npm run dev` - Start Vite dev server

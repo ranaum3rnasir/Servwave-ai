@@ -1,19 +1,27 @@
 import { describe, it, expect, vi, afterAll, beforeEach } from 'vitest';
-import { screen, waitFor, within } from '@testing-library/react';
+import { act, screen, waitFor, within } from '@testing-library/react';
 import { useLocation } from 'react-router-dom';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import { renderWithProviders, LEAD_FIXTURE, NOTES_FIXTURE } from './helpers';
+import { catalogToggle } from './support/backendSwitchCatalog';
 import { buildAbility } from '@/lib/ability';
 import { requestCall } from '@/lib/communication/phoneTabHandoff';
 import LeadDetailPage from '@/pages/v2/leads/LeadDetailPage';
 import { CONVERT_DEPOSIT_BLOCKED_REASON } from '@/features/estimate-workspace/lib/convertToJob';
+import { toast } from '@/ui-kit/components/ui/sonner';
 
 // THE ROUTED LEAD PAGE. `App.tsx` builds its whole route table from `v2Routes()`, so
 // `/leads/:id` mounts `pages/v2/leads/LeadDetailPage` and nothing else. This file used to
 // import the unrouted `pages/LeadDetailPage`, which meant every assertion below ran green
 // against a page no user could open while the one they DO open was free to drift. That page
 // is deleted; these specs now hold the surface that ships.
+
+// The toast is the page's way of telling the person the job was created when they stay on the lead.
+vi.mock('@/ui-kit/components/ui/sonner', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/ui-kit/components/ui/sonner')>()),
+  toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }),
+}));
 
 // Org-level comms access (E2): default FALSE — the pre-existing specs exercise
 // the native tel: baseline; the call-entry matrix flips it per test.
@@ -84,6 +92,17 @@ vi.mock('react-router-dom', async () => {
 });
 
 const mockApi = vi.mocked(api);
+
+// The person's own switches, as the "Me" answer carries them. The page draws a customer phone from these (Roles &
+// Permissions PRD 5): Copy customer phone and Contact customers. Keyed by the catalog's own keys.
+const contactSwitches = vi.hoisted(() => ({ copyPhone: false, contact: false }));
+const meAnswer = () => ({
+  admin_box: false,
+  values: {
+    [catalogToggle('Copy customer phone').key]: contactSwitches.copyPhone,
+    [catalogToggle('Contact customers').key]: contactSwitches.contact,
+  },
+});
 const mockRequestCall = vi.mocked(requestCall);
 
 const openLeadActions = async (user: ReturnType<typeof userEvent.setup>) =>
@@ -93,10 +112,15 @@ beforeEach(() => {
   vi.clearAllMocks();
   capturedLeadEntity = null;
   commAccess.value = false;
+  contactSwitches.copyPhone = false;
+  contactSwitches.contact = false;
+  // The shared reader keeps the last answer per person; a case starts without the previous case's.
+  localStorage.clear();
   window.location.href = '';
 
   // GET /api/leads/:id
   mockApi.get.mockImplementation(async (url: string) => {
+    if (url === '/api/permission-switches/me') return { data: meAnswer() };
     if (url.includes('/notes')) {
       return { data: { notes: NOTES_FIXTURE } };
     }
@@ -195,10 +219,11 @@ describe('v2 LeadDetailPage', () => {
     });
   });
 
-  // ── E2: in-app call entry gating for the customer phone link ─────────────
+  // ── In-app call entry: the phone service and Contact customers, then Copy customer phone ─────────
 
   it('offers Call or Text on the customer number, and Call routes into the /phone tab with lead attribution', async () => {
     commAccess.value = true;
+    contactSwitches.contact = true;
     const user = userEvent.setup();
     renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
 
@@ -216,10 +241,10 @@ describe('v2 LeadDetailPage', () => {
     });
   });
 
-  // Without the phone service, or without the right to place calls, there is no dialer to open and
-  // no choice to make: the contact action renders the device's own call link, which is a real
-  // `<a href="tel:...">` again (the routed page used to assign window.location from a button).
-  it('is a plain device call link without org comms access', async () => {
+  // Without the phone service there is no dialer to open: a person who may copy the number gets the device's own
+  // call link, a real `<a href="tel:...">`.
+  it('is a plain device call link without the phone service when Copy customer phone is on', async () => {
+    contactSwitches.copyPhone = true;
     renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
 
     expect(await screen.findByRole('link', { name: '(555) 123-4567' })).toHaveAttribute(
@@ -229,16 +254,22 @@ describe('v2 LeadDetailPage', () => {
     expect(mockRequestCall).not.toHaveBeenCalled();
   });
 
-  it('is a plain device call link without create:Communication even with comms access', async () => {
+  // With the phone service no native link is left for anyone: without Contact customers the digits are shown to be
+  // dialled by hand, with nothing to tap.
+  it('shows the digits only, with no device link and no dialer, with the phone service but Contact customers off', async () => {
     commAccess.value = true;
-    renderWithProviders(<LeadDetailPage />, {
-      ability: buildAbility([{ action: 'read', subject: 'Communication' }]),
-    });
+    contactSwitches.copyPhone = true;
+    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
 
-    expect(await screen.findByRole('link', { name: '(555) 123-4567' })).toHaveAttribute(
-      'href',
-      'tel:5551234567',
-    );
+    await screen.findByText('(555) 123-4567');
+    await waitFor(() => expect(mockApi.get).toHaveBeenCalledWith('/api/permission-switches/me'));
+    // The answer is applied a tick later; until it is, the page draws the strictest version for the wrong reason.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(screen.queryByRole('link', { name: '(555) 123-4567' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '(555) 123-4567' })).not.toBeInTheDocument();
+    expect(document.querySelector('a[href^="tel:"]')).toBeNull();
     expect(mockRequestCall).not.toHaveBeenCalled();
   });
 
@@ -250,6 +281,8 @@ describe('v2 LeadDetailPage', () => {
     expect(screen.getByText('Edit')).toBeInTheDocument();
     expect(screen.getByText('Assign')).toBeInTheDocument();
     expect(await screen.findByRole('menuitem', { name: 'Mark Lost' })).toBeInTheDocument();
+    // A lead closes one way, as Lost: the Cancel Lead action is retired, even for a holder of every ability (S05.17).
+    expect(screen.queryByRole('menuitem', { name: /cancel lead/i })).toBeNull();
   });
 
   it('shows estimates empty state', async () => {
@@ -263,6 +296,33 @@ describe('v2 LeadDetailPage', () => {
     await waitFor(() => {
       expect(screen.getByText('No estimates yet.')).toBeInTheDocument();
     });
+  });
+
+  it('does not tell a viewer without Create estimates to create one, and still tells one who can', async () => {
+    const user = userEvent.setup();
+    const { unmount } = renderWithProviders(<LeadDetailPage />, {
+      ability: buildAbility([{ action: 'read', subject: 'Lead' }]),
+    });
+    await user.click(await screen.findByText(/Estimates \(\d+\)/));
+    expect(await screen.findByText('No estimates yet.')).toBeInTheDocument();
+    expect(screen.queryByText(/create one/i)).toBeNull();
+    unmount();
+
+    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    await user.click(await screen.findByText(/Estimates \(\d+\)/));
+    expect(await screen.findByText('Create one to get started.')).toBeInTheDocument();
+  });
+
+  it('invites scheduling a walkthrough only to a viewer who may book one', async () => {
+    const { unmount } = renderWithProviders(<LeadDetailPage />, {
+      ability: buildAbility([{ action: 'read', subject: 'Lead' }]),
+    });
+    expect(await screen.findByText('No walkthrough scheduled yet')).toBeInTheDocument();
+    expect(screen.queryByText(/click to schedule/i)).toBeNull();
+    unmount();
+
+    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+    expect(await screen.findByText(/No walkthrough scheduled yet - click to schedule/)).toBeInTheDocument();
   });
 
   // NOTE: the lead-notes tab (a notes list + "Add a note..." textarea) was removed
@@ -405,6 +465,61 @@ describe('v2 LeadDetailPage - Convert to Job (bug #12)', () => {
   });
 });
 
+// S04.21 - the server says whether the person can open the job they just made. A walkthrough-crew member is not
+// carried to the job, so the page stays on the lead and says the job was created, instead of landing on a page
+// the server refuses.
+describe('v2 LeadDetailPage - converting when the new job does not open for the converter (S04.21)', () => {
+  const APPROVED_ESTIMATE = {
+    id: 'es000000-0000-0000-0000-000000000001',
+    estimate_number: 'E00001',
+    status: 'WON',
+    total_amount: '1500.00',
+    created_at: '2026-02-01T00:00:00.000Z',
+  };
+  const NEW_JOB = { id: 'j0000000-0000-0000-0000-000000000001', job_number: 'J-0042' };
+
+  async function convertFromTheDialog(response: object) {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    mockApi.get.mockImplementation(async (url: string) => {
+      if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
+      if (url.includes('/api/leads/')) return { data: { lead: { ...LEAD_FIXTURE, status: 'WON', estimates: [APPROVED_ESTIMATE] } } };
+      if (url.includes('/api/tags')) return { data: { tags: [] } };
+      return { data: {} };
+    });
+    mockApi.post.mockResolvedValue({ data: response });
+    renderWithProviders(
+      <>
+        <LeadDetailPage />
+        <LocationProbe />
+      </>,
+      { ability: adminAbility, initialEntries: ['/leads/e0000000-0000-0000-0000-000000000001'] },
+    );
+    await openLeadActions(user);
+    await user.click(screen.getByRole('menuitem', { name: /Convert to job/i }));
+    const dialog = await screen.findByRole('dialog');
+    await user.click(within(dialog).getByRole('button', { name: /Create job/i }));
+    await waitFor(() => expect(mockApi.post).toHaveBeenCalledTimes(1));
+  }
+
+  it('opens the new job when the server says it opens for the converter', async () => {
+    await convertFromTheDialog({ job: NEW_JOB, job_openable: true });
+
+    await waitFor(() => expect(screen.getByTestId('location-probe').textContent).toContain(`/jobs/${NEW_JOB.id}`));
+  });
+
+  it('stays on the lead, closes the dialog and says the job was created when it does not open for the converter', async () => {
+    await convertFromTheDialog({ job: NEW_JOB, job_openable: false });
+
+    await waitFor(() => expect(toast.success).toHaveBeenCalledTimes(1));
+    const [message, options] = vi.mocked(toast.success).mock.calls[0]!;
+    expect(message).toBe('Job J-0042 was created');
+    expect((options as { description: string }).description).toMatch(/you are not on it/i);
+    expect(screen.getByTestId('location-probe').textContent).toBe('/leads/e0000000-0000-0000-0000-000000000001');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+});
+
 describe('v2 LeadDetailPage - Assign menu item (#576)', () => {
   it('Assign menu item opens the assign popover (menu closes, panel opens)', async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
@@ -434,6 +549,41 @@ describe('v2 LeadDetailPage - JobLeadTasksTab receives entity UUID', () => {
     // useParams returns id: 'e0000000-0000-0000-0000-000000000001'
     expect(capturedLeadEntity!.id).toBe('e0000000-0000-0000-0000-000000000001');
     expect(capturedLeadEntity!.type).toBe('LEAD');
+  });
+});
+
+// PRD 3 (S03.4) - the people block names the lead's Owner and Dispatcher, and never "Assigned To".
+describe('v2 LeadDetailPage - the people block (Owner and Dispatcher)', () => {
+  it('shows the Owner and, with none set, "No dispatcher", with Change on both for a viewer who may assign', async () => {
+    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+
+    const people = await screen.findByTestId('lead-people');
+    expect(within(people).getByText('Test Sales')).toBeInTheDocument();
+    expect(within(people).getByText('No dispatcher')).toBeInTheDocument();
+    expect(within(people).getAllByRole('button', { name: 'Change' })).toHaveLength(2);
+    expect(screen.queryByText(/assigned to/i)).toBeNull();
+    expect(screen.queryByText('Unassigned')).toBeNull();
+  });
+
+  it('names the Dispatcher the lead payload carries', async () => {
+    const withDispatcher = { ...LEAD_FIXTURE, dispatcher: { id: 'd1', first_name: 'Dana', last_name: 'Dispatch' } };
+    mockApi.get.mockImplementation(async (url: string) => {
+      if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
+      if (url.includes('/api/leads/')) return { data: { lead: withDispatcher } };
+      return { data: {} };
+    });
+    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+
+    const people = await screen.findByTestId('lead-people');
+    expect(within(people).getByText('Dana Dispatch')).toBeInTheDocument();
+  });
+
+  it('hides Change and Clear from a viewer without Assign people to leads', async () => {
+    renderWithProviders(<LeadDetailPage />, { ability: buildAbility([{ action: 'read', subject: 'Lead' }]) });
+
+    const people = await screen.findByTestId('lead-people');
+    expect(within(people).getByText('Test Sales')).toBeInTheDocument();
+    expect(within(people).queryByRole('button')).toBeNull();
   });
 });
 
@@ -519,7 +669,7 @@ describe('v2 LeadDetailPage - mark_lost gates on its own capability (#238)', () 
 });
 
 // Phase B (strict technician) — the Walkthrough recording + completion controls
-// (Notes editor, Save Notes, Complete Walkthrough) gate on `perform_walkthrough
+// (Notes editor, Save Notes, Finish walkthrough) gate on `perform_walkthrough
 // Lead`, NOT `update Lead`. A strict TECHNICIAN was re-scoped to hold
 // `perform_walkthrough` (OWN_WALKTHROUGH) but NOT `update Lead`; the backend routes
 // POST /:id/walkthrough + /walkthrough/complete already enforce `perform_walkthrough`.
@@ -527,7 +677,7 @@ describe('v2 LeadDetailPage - mark_lost gates on its own capability (#238)', () 
 // record/complete their own walkthrough from the UI even though the API allowed it.
 describe('v2 LeadDetailPage - walkthrough recording gates on perform_walkthrough not update (Phase B)', () => {
   // Drive WalkthroughTabContent into its SCHEDULED branch so the Notes editor +
-  // Complete Walkthrough button render. A scheduled lead with no completed_at.
+  // Finish walkthrough button render. A scheduled lead with no completed_at.
   function mockScheduledWalkthroughLead() {
     mockApi.get.mockImplementation(async (url: string) => {
       if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
@@ -573,10 +723,10 @@ describe('v2 LeadDetailPage - walkthrough recording gates on perform_walkthrough
     const walkthroughTab = screen.getByRole('tab', { name: /Walkthrough/ });
     await user.click(walkthroughTab);
 
-    // The Complete step is shown (perform_walkthrough), even though the tech lacks
-    // `update Lead`. Named "Complete" since scheduling-notifications slice 09.
+    // The Finish walkthrough step is shown (perform_walkthrough), even though the tech lacks
+    // `update Lead`. Named "Finish walkthrough" (S04.20).
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Complete' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Finish walkthrough' })).toBeInTheDocument();
     });
 
     // The Notes editor is enabled, and typing a note reveals the Save Notes button.
@@ -599,11 +749,11 @@ describe('v2 LeadDetailPage - walkthrough recording gates on perform_walkthrough
     const walkthroughTab = screen.getByRole('tab', { name: /Walkthrough/ });
     await user.click(walkthroughTab);
 
-    // The Notes editor renders read-only and the Complete button is absent.
+    // The Notes editor renders read-only and the Finish walkthrough button is absent.
     await waitFor(() => {
       expect(screen.getByPlaceholderText('Walkthrough notes...')).toBeDisabled();
     });
-    expect(screen.queryByRole('button', { name: 'Complete' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Finish walkthrough' })).toBeNull();
     expect(screen.queryByRole('button', { name: /Save Notes/ })).toBeNull();
   });
 });
@@ -669,7 +819,7 @@ describe('v2 LeadDetailPage - ?tab=walkthrough deep link', () => {
 // pipeline order (both walkthrough statuses between Contacted and Estimate Sent). The org
 // rename/hide overrides are gone, so there is nothing to filter or relabel.
 describe('v2 LeadDetailPage - status menu', () => {
-  it('lists all eight lead statuses in pipeline order under their labels', async () => {
+  it('lists the seven lead statuses in pipeline order under their labels, with no Cancelled', async () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
 
@@ -684,8 +834,46 @@ describe('v2 LeadDetailPage - status menu', () => {
       'Estimate Sent',
       'Won',
       'Lost',
-      'Cancelled',
     ]);
+  });
+});
+
+// A lead closes one way, as Lost (S05.18). Every lead that was Cancelled is Lost now; one that was cancelled from the old
+// status menu never had a reason, and the page says so where the reason goes.
+describe('v2 LeadDetailPage - the Lost reason panel', () => {
+  const serveLost = (fields: Record<string, unknown>) => {
+    mockApi.get.mockImplementation(async (url: string) => {
+      if (url === '/api/permission-switches/me') return { data: meAnswer() };
+      if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
+      if (url.includes('/api/leads/')) return { data: { lead: { ...LEAD_FIXTURE, status: 'LOST', ...fields } } };
+      if (url.includes('/api/tags')) return { data: { tags: [] } };
+      return { data: {} };
+    });
+  };
+
+  it('shows the reason a lead was lost for, with the date', async () => {
+    serveLost({ lost_reason: 'Went with another company', lost_at: '2026-08-12T15:00:00.000Z' });
+    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+
+    expect(await screen.findByText('Went with another company')).toBeInTheDocument();
+    expect(screen.queryByText('No reason recorded')).not.toBeInTheDocument();
+    expect(screen.getByText(/Lost on/)).toBeInTheDocument();
+  });
+
+  it('says "No reason recorded" for a lost lead that has none, keeping its lost date', async () => {
+    serveLost({ lost_reason: null, lost_at: '2026-08-12T15:00:00.000Z' });
+    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+
+    expect(await screen.findByText('No reason recorded')).toBeInTheDocument();
+    expect(screen.getByText(/Lost on/)).toBeInTheDocument();
+  });
+
+  it('shows no reason panel on a lead that is not lost', async () => {
+    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+
+    await screen.findByRole('button', { name: 'Lead status: New' });
+    expect(screen.queryByText('No reason recorded')).not.toBeInTheDocument();
+    expect(screen.queryByText('Lost Reason')).not.toBeInTheDocument();
   });
 });
 
@@ -1043,5 +1231,29 @@ describe('LeadDetailPage - a lead with estimates keeps its location readable', (
 
     const panel = await screen.findByTestId('lead-service-location');
     expect(within(panel).getByText('900 Legacy Ln, Unit 3')).toBeInTheDocument();
+  });
+});
+
+// ─── A lead whose estimate money the server left out draws no amount ───
+// A person who may not see this lead's estimate money (a walkthrough-only crew member) gets estimates with no
+// total_amount. The Estimated Value tile and the list's Total column are left out, never $NaN or $0.
+describe('LeadDetailPage - estimate money the server left out', () => {
+  it('draws no Estimated Value tile and no Total column, and still lists the estimate', async () => {
+    const { total_amount: _omitted, ...withoutMoney } = ESTIMATE_ON_LEAD;
+    mockApi.get.mockImplementation(async (url: string) => {
+      if (url.includes('/notes')) return { data: { notes: NOTES_FIXTURE } };
+      if (url.includes('/api/users')) return { data: { users: [] } };
+      if (url.includes('/api/leads/')) return { data: { lead: { ...LEAD_FIXTURE, estimates: [withoutMoney] } } };
+      if (url.includes('/api/tags')) return { data: { tags: [] } };
+      return { data: {} };
+    });
+    const user = userEvent.setup();
+    renderWithProviders(<LeadDetailPage />, { ability: adminAbility });
+
+    await user.click(await screen.findByText(/Estimates \(1\)/));
+    expect(await screen.findByText('EST-1001')).toBeInTheDocument();
+    expect(screen.queryByText('Estimated Value')).toBeNull();
+    expect(screen.queryByRole('columnheader', { name: 'Total' })).toBeNull();
+    expect(document.body.textContent).not.toMatch(/NaN/);
   });
 });

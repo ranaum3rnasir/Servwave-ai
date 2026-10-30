@@ -156,18 +156,20 @@ export function walkthroughSyncKey(lead: Record<string, unknown>): string {
  * attachment list, on the lead's Attachments tab, and all of it travels.
  */
 export function WalkthroughTabContent({
-  lead, leadId, canPerformWalkthrough, canScheduleWalkthrough, onCancelWalkthrough,
+  lead, leadId, canPerformWalkthrough, canFinishWalkthrough = canPerformWalkthrough, canScheduleWalkthrough, onCancelWalkthrough,
 }: {
   lead: Record<string, unknown>;
   leadId: string;
-  /** `perform_walkthrough Lead` - notes + completing. A strict TECHNICIAN holds this but NOT `update Lead`. */
+  /** Noting the current walkthrough: Perform walkthroughs AND its crew (or Update any visit's status). A strict TECHNICIAN holds Perform walkthroughs but NOT `update Lead`. */
   canPerformWalkthrough: boolean;
+  /** Finishing the scheduled walkthrough: the same rule, asked against the scheduled walkthrough's crew. Defaults to the notes answer. */
+  canFinishWalkthrough?: boolean;
   /** `schedule_walkthrough Lead` - the scheduling form. */
   canScheduleWalkthrough: boolean;
   /**
    * Scheduling-notifications slice 09: opens the page's cancel-walkthrough dialog from the live
    * row's office group. The PAGE owns that dialog and passes this only when the viewer holds
-   * `cancel Lead` - the gate POST /walkthrough/cancel rides - so absent means no Cancel on the
+   * Book walkthroughs - the gate POST /walkthrough/cancel rides - so absent means no Cancel on the
    * row, never a Cancel that 403s.
    */
   onCancelWalkthrough?: () => void;
@@ -290,6 +292,9 @@ export function WalkthroughTabContent({
 
   const isCompleted = Boolean(lead.walkthrough_completed_at);
   const isCancelled = Boolean(lead.walkthrough_cancelled_at);
+  // A live walkthrough with performers and no time yet: the performer arranges the time with the customer, and
+  // putting it on the calendar afterwards is a booking like any other (Book walkthroughs).
+  const isToBeScheduled = lead.walkthrough_to_be_scheduled === true && !isCompleted && !isCancelled;
   const isScheduled = isWalkthroughActive(
     lead.walkthrough_scheduled_at,
     lead.walkthrough_completed_at,
@@ -342,7 +347,7 @@ export function WalkthroughTabContent({
                   )}
                   <p className="font-medium">
                     {w.status === 'COMPLETED' && w.completed_at
-                      ? `Completed ${formatDateTime(w.completed_at, timezone)}`
+                      ? `Finished ${formatDateTime(w.completed_at, timezone)}`
                       : w.status === 'CANCELLED' && w.cancelled_at
                         ? `Cancelled ${formatDateTime(w.cancelled_at, timezone)}`
                         : w.scheduled_at
@@ -505,7 +510,9 @@ export function WalkthroughTabContent({
     <div className="grid grid-cols-1 gap-4 text-sm sm:grid-cols-3">
       <p>
         <span className="text-muted-foreground">Starts: </span>
-        <span className="font-medium">{scheduledAtIso ? formatDateTime(scheduledAtIso, timezone) : '-'}</span>
+        <span className="font-medium">
+          {scheduledAtIso ? formatDateTime(scheduledAtIso, timezone) : isToBeScheduled ? 'To be scheduled' : '-'}
+        </span>
       </p>
       <p>
         <span className="text-muted-foreground">Ends: </span>
@@ -787,7 +794,7 @@ export function WalkthroughTabContent({
           <CheckCircle2 className="text-status-green-emphasis size-5 shrink-0" />
           <div>
             <p className="text-status-green-emphasis text-sm font-semibold">
-              Completed on {formatDateTime(completedAt!, timezone)}
+              Finished on {formatDateTime(completedAt!, timezone)}
             </p>
             {performerLabel && (
               <p className="text-status-green-emphasis mt-0.5 text-xs">by {performerLabel}</p>
@@ -810,20 +817,20 @@ export function WalkthroughTabContent({
   // Slice 09: the live row's controls, laid out as the job's visit row lays out its own. The
   // crew's ONE next step on the left - a walkthrough has a single milestone verb, so there is no
   // Skip to here - and the office's Reschedule / Cancel in a separate, right-aligned group
-  // (story 21). Each control rides its own route's gate: Complete is `perform_walkthrough`,
-  // Reschedule is `schedule_walkthrough` (moving a visit and booking one are the one endpoint),
-  // Cancel is the page's `cancel Lead`, arriving as a callback.
-  const liveRowActions = (canPerformWalkthrough || canScheduleWalkthrough || onCancelWalkthrough) && (
+  // (story 21). Each control rides its own route's gate: Finish walkthrough is the server's per-walkthrough
+  // finish step, Reschedule is Book walkthroughs (moving a visit and booking one are the one
+  // endpoint), Cancel is Book walkthroughs too, arriving as a callback.
+  const liveRowActions = (canFinishWalkthrough || canScheduleWalkthrough || onCancelWalkthrough) && (
     <div className="flex flex-wrap items-start justify-between gap-2">
-      {canPerformWalkthrough && (
+      {canFinishWalkthrough && (
         <div role="group" aria-label="Next step" className="flex flex-col gap-2">
           <Button size="sm" onClick={() => completeMutation.mutate()} disabled={completeMutation.isPending}>
             <CheckCircle2 />
-            {completeMutation.isPending ? 'Completing...' : 'Complete'}
+            {completeMutation.isPending ? 'Finishing...' : 'Finish walkthrough'}
           </Button>
           {completeMutation.error && (
             <p className="text-destructive text-sm">
-              {extractApiError(completeMutation.error, 'Failed to complete walkthrough')}
+              {extractApiError(completeMutation.error, 'Failed to finish walkthrough')}
             </p>
           )}
         </div>
@@ -833,7 +840,7 @@ export function WalkthroughTabContent({
           {canScheduleWalkthrough && (
             <Button variant="ghost" size="sm" onClick={openReschedule}>
               <CalendarClock />
-              Reschedule
+              {isToBeScheduled ? 'Set Time' : 'Reschedule'}
             </Button>
           )}
           {onCancelWalkthrough && (
@@ -844,7 +851,7 @@ export function WalkthroughTabContent({
     </div>
   );
 
-  if (isScheduled) {
+  if (isScheduled || isToBeScheduled) {
     return (
       <div className="flex flex-col gap-6 p-6">
         <div>
@@ -860,7 +867,9 @@ export function WalkthroughTabContent({
                   disabled={scheduleBlocked || scheduleMutation.isPending}
                 >
                   <Calendar />
-                  {scheduleMutation.isPending ? 'Rescheduling...' : 'Save New Time'}
+                  {scheduleMutation.isPending
+                    ? (isToBeScheduled ? 'Saving...' : 'Rescheduling...')
+                    : (isToBeScheduled ? 'Save Time' : 'Save New Time')}
                 </Button>
                 <Button variant="ghost" onClick={cancelReschedule} disabled={scheduleMutation.isPending}>
                   Cancel
@@ -871,6 +880,9 @@ export function WalkthroughTabContent({
           ) : (
             <div className="flex flex-col gap-4">
               {scheduleSummary}
+              {isToBeScheduled && (
+                <p className="text-muted-foreground text-xs">The performer arranges the time with the customer.</p>
+              )}
               {liveRowActions}
             </div>
           )}

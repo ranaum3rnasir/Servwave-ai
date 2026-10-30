@@ -34,11 +34,15 @@ export function matchesWhere(row: Row | null | undefined, where: Record<string, 
         return cond.not === null ? actual !== null && actual !== undefined : actual !== cond.not;
       }
       if ('in' in cond) return (cond.in as unknown[]).includes(actual);
+      if ('notIn' in cond) return !(cond.notIn as unknown[]).includes(actual);
       if ('some' in cond) {
         return (
           Array.isArray(actual) &&
           actual.some((e) => matchesWhere(e as Row, cond.some as Record<string, unknown>))
         );
+      }
+      if ('none' in cond) {
+        return !Array.isArray(actual) || !actual.some((e) => matchesWhere(e as Row, cond.none as Record<string, unknown>));
       }
       // A to-one relation filter: a NULL relation can never satisfy one.
       if (actual === null || actual === undefined) return false;

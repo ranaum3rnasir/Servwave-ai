@@ -7,7 +7,7 @@ import { tenantWhere } from '../lib/tenant';
 import { allocateNumber } from '../lib/numbering';
 import { withNumberCollisionRetry } from '../lib/number-collision-retry';
 import { logAudit } from '../lib/audit';
-import { canAccessRow, scopeWhereForReq, canSeePricing } from '../lib/permissions/enforce';
+import { canAccessRow, canActOnRow, canCreateOnAnchor, scopeWhereForReq, canSeeCosts } from '../lib/permissions/enforce';
 import { applyStockMovement } from './inv-stock.controller';
 import { emitPoPartial } from '../services/notifications/inventoryEmit';
 import { env } from '../config/env';
@@ -99,6 +99,39 @@ async function resolveReceiveLocationId(req: Request): Promise<string | null> {
   return fallback?.id ?? null;
 }
 
+// ─── Line costs a cost-blind person cannot set ──────────────────────────────
+// A person without See financial data is never shown a line cost (mapPOLine), so the form they edit
+// with carries none. Saving that form must not wipe the costs the office set, and a cost they send
+// anyway must not be planted where only the office can read it (S07.19). A new line therefore
+// stores no cost; an edit that replaces the lines gives each submitted line the cost of the stored
+// line it stands for. A line stands for a stored line by its own id (the one the form was seeded
+// with), never by its words, so a rename, a reorder or a new quantity cannot lose a cost; a line
+// with no id is new and has none, and a stored line the person removed takes its cost with it. Only
+// a save that names no stored line at all (a caller that predates line ids) falls back to position.
+type CostedLine = { id?: string; itemSku?: string; itemName?: string; priceBookItemId?: string | null; unitCost?: number | null };
+
+function withoutLineCosts<T extends CostedLine>(lines: T[]): T[] {
+  return lines.map((line) => ({ ...line, unitCost: undefined }));
+}
+
+async function carryStoredLineCosts<T extends CostedLine>(req: Request, purchaseOrderId: string, lines: T[]): Promise<T[]> {
+  const stored = await prisma.purchaseOrderLine.findMany({
+    where: { purchase_order_id: purchaseOrderId, ...tenantWhere(req) },
+    orderBy: { created_at: 'asc' },
+    select: { id: true, unit_cost: true },
+  });
+  const costOf = (row: { unit_cost: unknown } | undefined) => (row?.unit_cost != null ? Number(row.unit_cost) : undefined);
+  const byId = new Map(stored.map((row) => [row.id, row]));
+  if (!lines.some((line) => line.id && byId.has(line.id))) {
+    return lines.map((line, at) => ({ ...line, unitCost: costOf(stored[at]) }));
+  }
+  return lines.map((line) => {
+    const row = line.id ? byId.get(line.id) : undefined;
+    if (row) byId.delete(row.id); // each stored line stands for one submitted line
+    return { ...line, unitCost: costOf(row) };
+  });
+}
+
 // ─── Mappers (snake_case Prisma row → camelCase frontend contract) ──────────
 //
 // The frontend is typed against `lib/api/inventory.ts` (PurchaseOrder / POLine).
@@ -107,13 +140,13 @@ async function resolveReceiveLocationId(req: Request): Promise<string | null> {
 // while the PR 2 lifecycle fields are ALWAYS emitted (null when unset) so a
 // consumer can tell "not ordered yet" from "old server".
 
-// #2042 security round 3 (D): cost fields ride behind `canSeePricing(req)` (`read Pricing`,
+// #2042 security round 3 (D): cost fields ride behind `canSeeCosts(req)` (`read Pricing`,
 // the Roles editor's "See financial data" switch) — the same predicate `stripMappedItemCost`
 // (inv-catalog.controller.ts) applies to the catalog. Both fields are simply OMITTED
 // (`undefined` drops out of the JSON body) for a cost-blind caller, matching this DTO's
 // existing "absent when unset" convention rather than introducing a second null-vs-absent rule.
 function mapPOLine(line: any, req: Request) {
-  const canCost = canSeePricing(req);
+  const canCost = canSeeCosts(req);
   return {
     id: line.id,
     itemSku: line.item_sku,
@@ -237,6 +270,9 @@ function mapRfq(rfq: any) {
 const tradeEnum = z.enum(['locksmith', 'door', 'security', 'hvac', 'plumbing', 'multi']);
 
 const poLineSchema = z.object({
+  // The stored line this form row was seeded from (an edit only; ignored on create). A cost-blind
+  // save uses it to keep that line's cost (carryStoredLineCosts); it never becomes the new line's id.
+  id: z.string().max(64).optional(),
   itemSku: z.string().max(100).default(''), // optional label; identity is priceBookItemId (D2)
   itemName: z.string().min(1).max(300),
   uom: z.string().min(1).max(100),
@@ -639,6 +675,13 @@ export async function createPurchaseOrder(req: Request, res: Response) {
   try {
     const body = req.body;
 
+    // A purchase order is reached through its job (Roles & Permissions S01.9): a new one goes on a job the person
+    // can open, and one with no job needs Jobs scope All. Unconditional callers pass untouched.
+    if (!(await canCreateOnAnchor(req, 'PurchaseOrder', 'create', 'job', prisma.job, body.jobId))) {
+      res.status(403).json({ error: 'Insufficient permissions' });
+      return;
+    }
+
     const fkError = await validateJobAndCustomer(req, body.jobId, body.customerId);
     if (fkError) { res.status(400).json({ error: fkError }); return; }
 
@@ -647,6 +690,7 @@ export async function createPurchaseOrder(req: Request, res: Response) {
 
     // Client-supplied per-line catalog FKs must resolve in-org; misses fall back to SKU resolution.
     const validItemIds = await resolveExplicitItemIds(req, body.lines ?? []);
+    const bodyLines: any[] = canSeeCosts(req) ? (body.lines ?? []) : withoutLineCosts(body.lines ?? []);
 
     const order = await persistPurchaseOrder(req, {
       // When both are present, both persist as given (the string stays the display
@@ -663,7 +707,7 @@ export async function createPurchaseOrder(req: Request, res: Response) {
       expectedDate: body.expectedDate,
       notes: body.notes,
       source: 'manual',
-      lines: (body.lines ?? []).map((line: any) => ({
+      lines: bodyLines.map((line: any) => ({
         itemSku: line.itemSku,
         itemName: line.itemName,
         uom: line.uom,
@@ -792,7 +836,7 @@ export async function createPurchaseOrderFromJob(req: Request, res: Response) {
 export async function listLowStockProposals(req: Request, res: Response) {
   try {
     // #2042 security round 3 (D): same predicate as mapPOLine/stripMappedItemCost.
-    const canCost = canSeePricing(req);
+    const canCost = canSeeCosts(req);
     const { locationId } = req.query;
     if (locationId !== undefined && (typeof locationId !== 'string' || !uuidRegex.test(locationId))) {
       res.status(400).json({ error: 'locationId must be a valid UUID' });
@@ -878,8 +922,20 @@ export async function updatePurchaseOrder(req: Request, res: Response) {
       res.status(404).json({ error: 'Purchase order not found' });
       return;
     }
+    // Same 404 as a missing one for an order outside the person's reach (orders on jobs they can open).
+    if (!(await canActOnRow(req, 'PurchaseOrder', prisma.purchaseOrder, existing.id, 'update'))) {
+      res.status(404).json({ error: 'Purchase order not found' });
+      return;
+    }
 
     const body = req.body;
+
+    // An edit may not move the order out of the person's reach: onto a job they cannot open, or off any job
+    // unless Jobs scope is All.
+    if (body.jobId !== undefined && !(await canCreateOnAnchor(req, 'PurchaseOrder', 'update', 'job', prisma.job, body.jobId))) {
+      res.status(403).json({ error: 'Insufficient permissions' });
+      return;
+    }
 
     // Lines are frozen outside Draft (verdict §3): an ordered PO must not change under its
     // receipts. Judged on the STORED status before any write, so a PATCH that also carries
@@ -959,13 +1015,17 @@ export async function updatePurchaseOrder(req: Request, res: Response) {
     // Lines are replace-all when provided (mirrors the dialog's full-form submit); only
     // reachable in draft (guard above), so no receipt is ever discarded here.
     if (body.lines !== undefined) {
+      // Costs ride only with See financial data; without it the stored ones carry over (see above).
+      const newLines: any[] = canSeeCosts(req)
+        ? body.lines
+        : await carryStoredLineCosts(req, existing.id, withoutLineCosts(body.lines));
       await prisma.purchaseOrderLine.deleteMany({
         where: { purchase_order_id: existing.id, ...tenantWhere(req) },
       });
-      const skuMap = await resolveSkuMap(req, body.lines.map((l: any) => l.itemSku));
-      const validItemIds = await resolveExplicitItemIds(req, body.lines);
+      const skuMap = await resolveSkuMap(req, newLines.map((l: any) => l.itemSku));
+      const validItemIds = await resolveExplicitItemIds(req, newLines);
       data.lines = {
-        create: body.lines.map((line: any) => ({
+        create: newLines.map((line: any) => ({
           item_sku: line.itemSku,
           item_name: line.itemName,
           uom: line.uom,
@@ -1028,7 +1088,10 @@ export async function markPurchaseOrderOrdered(req: Request, res: Response) {
     const existing = await prisma.purchaseOrder.findFirst({
       where: { id: req.params.id as string, ...tenantWhere(req) },
     });
-    if (!existing) { res.status(404).json({ error: 'Purchase order not found' }); return; }
+    if (!existing || !(await canActOnRow(req, 'PurchaseOrder', prisma.purchaseOrder, existing.id, 'update'))) {
+      res.status(404).json({ error: 'Purchase order not found' });
+      return;
+    }
     if (existing.status === 'ordered') {
       res.status(409).json({ error: 'PO_ALREADY_ORDERED', message: 'This PO is already marked as ordered' });
       return;
@@ -1075,7 +1138,10 @@ export async function deletePurchaseOrder(req: Request, res: Response) {
       where: { id: req.params.id as string, ...tenantWhere(req) },
       include: { lines: { select: { qty_received: true } } },
     });
-    if (!existing) { res.status(404).json({ error: 'Purchase order not found' }); return; }
+    if (!existing || !(await canActOnRow(req, 'PurchaseOrder', prisma.purchaseOrder, existing.id, 'delete'))) {
+      res.status(404).json({ error: 'Purchase order not found' });
+      return;
+    }
 
     const anyReceived = (existing.lines ?? []).some((l: any) => Number(l.qty_received) > 0);
     if (RECEIPT_STATUSES.has(existing.status) || anyReceived) {
@@ -1155,7 +1221,10 @@ export async function receivePurchaseOrder(req: Request, res: Response) {
       where: { id: body.poId, ...tenantWhere(req) },
       include: { lines: true },
     });
-    if (!po) { res.status(404).json({ error: 'Purchase order not found' }); return; }
+    if (!po || !(await canActOnRow(req, 'PurchaseOrder', prisma.purchaseOrder, po.id, 'update'))) {
+      res.status(404).json({ error: 'Purchase order not found' });
+      return;
+    }
 
     // 4a (QA-606): per-line over-receive guard — validate ALL lines before any
     // write, so a 400 leaves zero partial application. qtyReceived is an absolute
@@ -1507,7 +1576,7 @@ export async function getJobMaterialCost(req: Request, res: Response) {
 
     // #2042 security round 3 (D): the aggregate IS cost data, same predicate as mapPOLine —
     // omit it for a cost-blind caller; jobId/lineCount are not cost and stay for every reader.
-    res.json({ jobId, materialCost: canSeePricing(req) ? materialCost : undefined, lineCount: allLines.length });
+    res.json({ jobId, materialCost: canSeeCosts(req) ? materialCost : undefined, lineCount: allLines.length });
   } catch (err) {
     logger.error('Failed to compute job material cost:', err);
     res.status(500).json({ error: 'Internal server error' });

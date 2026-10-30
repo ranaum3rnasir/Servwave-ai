@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { supabase, getAccessToken } from '@/lib/supabase';
 import api from '@/lib/axios';
 import { clearQueryCache } from '@/lib/queryClient';
-import { resetAccountScopedStores } from '@/lib/storeReset';
+import { notifySignedIn, resetAccountScopedStores } from '@/lib/storeReset';
 import { clearUserDrafts } from '@/lib/drafts/draftSignOut';
 import { extractApiError } from '@/lib/utils';
 import {
@@ -152,6 +152,7 @@ export const useAuthStore = create<AuthState>((set, get) => {
     setCachedUser(user);
     setCachedAbilityRules(rules);
     set({ user, ability, isAuthenticated: true, isLoading: false });
+    notifySignedIn();
   };
 
   let inFlightCheck: { token: string | null; promise: Promise<void> } | null = null;
@@ -176,6 +177,7 @@ export const useAuthStore = create<AuthState>((set, get) => {
       setCachedUser(data.user);
       setCachedAbilityRules(rules);
       set({ user: data.user, ability, isAuthenticated: true, isLoading: false });
+      notifySignedIn();
     } catch {
       await supabase.auth.signOut();
       setCachedUser(null);
@@ -251,6 +253,7 @@ export const useAuthStore = create<AuthState>((set, get) => {
     setCachedUser(data.user);
     setCachedAbilityRules(rules);
     set({ user: data.user, ability, isAuthenticated: true, isLoading: false });
+    notifySignedIn();
     return data.user as User;
   },
 

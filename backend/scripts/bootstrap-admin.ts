@@ -18,6 +18,7 @@ import { Role } from '@prisma/client';
 import { supabaseAdmin } from '../src/lib/supabase';
 import { prisma } from '../src/lib/prisma';
 import { runUnscoped } from '../src/lib/tenant-context';
+import { issueUserMailbox } from '../src/lib/mailbox/register';
 import { signInviteToken } from '../src/lib/invite-token';
 import { sendUserInviteEmail } from '../src/lib/email';
 import { env } from '../src/config/env';
@@ -74,17 +75,22 @@ async function main() {
     }
 
     try {
-      const user = await prisma.user.create({
-        data: {
-          id: authData.user.id,
-          email,
-          first_name: first,
-          last_name: last,
-          role: Role.ADMIN,
-          organization_id: orgId,
-          has_login: true,
-        },
-        select: { id: true, email: true, first_name: true, organization_id: true },
+      // The admin's mailbox is issued in the same transaction, as for a user made through the app.
+      const user = await prisma.$transaction(async (tx) => {
+        const created = await tx.user.create({
+          data: {
+            id: authData.user.id,
+            email,
+            first_name: first,
+            last_name: last,
+            role: Role.ADMIN,
+            organization_id: orgId,
+            has_login: true,
+          },
+          select: { id: true, email: true, first_name: true, organization_id: true },
+        });
+        await issueUserMailbox(tx, { id: created.id, organization_id: orgId, first_name: first, last_name: last });
+        return created;
       });
 
       // Dispatch the branded set-password invite (mirrors dispatchInvite).

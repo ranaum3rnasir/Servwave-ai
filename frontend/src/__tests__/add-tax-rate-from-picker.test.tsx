@@ -13,6 +13,7 @@ import { renderWithProviders } from './helpers';
 import { EstimateReceiptCard, type EstimateReceiptCardEstimate } from '@/components/estimates/EstimateReceiptCard';
 import * as estimatesApi from '@/lib/api/estimates';
 import * as orgTaxRatesApi from '@/lib/api/org-tax-rates';
+import { buildAbility } from '@/lib/ability';
 
 vi.mock('@/lib/api/estimates', async () => {
   const actual = await vi.importActual<typeof import('@/lib/api/estimates')>('@/lib/api/estimates');
@@ -68,7 +69,11 @@ beforeEach(() => vi.clearAllMocks());
 
 async function openAddDialog() {
   const user = userEvent.setup();
-  renderWithProviders(<EstimateReceiptCard estimate={estimate()} canEditNow />);
+  // The row is Company settings' (the rule the add route enforces); who lacks it is proved in
+  // tax-rates-follow-company-settings.test.tsx.
+  renderWithProviders(<EstimateReceiptCard estimate={estimate()} canEditNow />, {
+    ability: buildAbility([{ action: 'update', subject: 'Organization' }]),
+  });
 
   await user.click(await screen.findByRole('combobox', { name: 'Tax jurisdiction' }));
   await user.click(await screen.findByRole('option', { name: '+ Add tax rate' }));

@@ -12,7 +12,10 @@ import { formatCurrency } from '@/lib/utils';
 import { ChartCard } from '@/components/charts';
 import { chartLabelStyle } from '@/components/charts/chartTheme';
 import { chartPalette, token } from '@/design-system/tokens';
+import { useAppAbility } from '@/contexts/AbilityContext';
+import { canSeeCompanyFigures } from '@/lib/ability';
 import { useIsDemoOrg } from '@/lib/useIsDemoOrg';
+import { useCanExportReports } from '@/lib/reports/useCanExportReports';
 import { findReport } from '@/lib/reports/report-catalog';
 import { useEstimatesReport } from '@/lib/reports/estimates-report-data';
 import { BUCKET_LABEL, bucketStatus, type EstimateRow, type StatusKey } from '@/lib/reports/estimates-report-logic';
@@ -76,6 +79,9 @@ const SERIES = chartPalette;
 export default function EstimatesReport() {
   const report = findReport('estimates')!;
   const isDemo = useIsDemoOrg();
+  const canExport = useCanExportReports();
+  // The by-rep view is built from won revenue, a company-wide sum: without See company figures it keeps each rep's win rate only.
+  const showsRevenue = canSeeCompanyFigures(useAppAbility());
   const [view, setView] = useState<ViewMode>('list');
   const [status, setStatus] = useState<StatusKey>('all');
   // MultiSelectFilter is multi; the last pick is kept as the single scope.
@@ -149,7 +155,7 @@ export default function EstimatesReport() {
           placeholder="Search estimate # or customer..."
           className="min-w-[220px] flex-1"
         />
-        <Button type="button" variant="outline" size="sm" disabled disabledReason="Coming soon">Export</Button>
+        {canExport && <Button type="button" variant="outline" size="sm" disabled disabledReason="Coming soon">Export</Button>}
       </div>
 
       {rep && (
@@ -186,49 +192,53 @@ export default function EstimatesReport() {
         <div className="space-y-4">
           <ReportKpis
             items={[
-              { icon: DollarSign, label: 'Total Revenue', value: formatCurrency(kpis.revenue), tone: 'success', emphasize: true },
+              ...(showsRevenue ? [{ icon: DollarSign, label: 'Total Revenue', value: formatCurrency(kpis.revenue), tone: 'success' as const, emphasize: true }] : []),
               { icon: Percent, label: 'Win Rate', value: `${kpis.winRate}%`, tone: 'primary' },
-              { icon: Hash, label: 'Avg Deal', value: formatCurrency(kpis.avgDeal), tone: 'neutral' },
-              { icon: Trophy, label: 'Top Rep', value: kpis.topRep, tone: 'warning' },
+              ...(showsRevenue ? [
+                { icon: Hash, label: 'Avg Deal', value: formatCurrency(kpis.avgDeal), tone: 'neutral' as const },
+                { icon: Trophy, label: 'Top Rep', value: kpis.topRep, tone: 'warning' as const },
+              ] : []),
             ]}
           />
 
-          <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            <ChartCard title="Revenue by rep" subtitle="Won revenue per rep">
-              <ResponsiveContainer width="100%" height={260}>
-                <BarChart data={breakdown} layout="vertical" margin={{ left: 8, right: 72 }}>
-                  <XAxis type="number" tickFormatter={(v) => formatCurrency(Number(v))} tick={{ fontSize: 11, fill: token('--text-secondary') }} axisLine={false} tickLine={false} />
-                  <YAxis type="category" dataKey="rep" width={96} tick={{ fontSize: 11, fill: token('--text-secondary') }} axisLine={false} tickLine={false} />
-                  <Tooltip cursor={{ fill: 'rgba(0,0,0,0.04)' }} formatter={(v) => formatCurrency(Number(v))} />
-                  <Bar dataKey="revenue" radius={[0, 6, 6, 0]} barSize={20} isAnimationActive={false}>
-                    <LabelList dataKey="revenue" position="right" formatter={(v: number | string) => formatCurrency(Number(v))} style={chartLabelStyle} />
-                    {breakdown.map((r) => (<Cell key={r.rep} fill={REVENUE_COLOR} />))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </ChartCard>
+          {showsRevenue && (
+            <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+              <ChartCard title="Revenue by rep" subtitle="Won revenue per rep">
+                <ResponsiveContainer width="100%" height={260}>
+                  <BarChart data={breakdown} layout="vertical" margin={{ left: 8, right: 72 }}>
+                    <XAxis type="number" tickFormatter={(v) => formatCurrency(Number(v))} tick={{ fontSize: 11, fill: token('--text-secondary') }} axisLine={false} tickLine={false} />
+                    <YAxis type="category" dataKey="rep" width={96} tick={{ fontSize: 11, fill: token('--text-secondary') }} axisLine={false} tickLine={false} />
+                    <Tooltip cursor={{ fill: 'rgba(0,0,0,0.04)' }} formatter={(v) => formatCurrency(Number(v))} />
+                    <Bar dataKey="revenue" radius={[0, 6, 6, 0]} barSize={20} isAnimationActive={false}>
+                      <LabelList dataKey="revenue" position="right" formatter={(v: number | string) => formatCurrency(Number(v))} style={chartLabelStyle} />
+                      {breakdown.map((r) => (<Cell key={r.rep} fill={REVENUE_COLOR} />))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </ChartCard>
 
-            <ChartCard title="Weekly trend" subtitle="Last 8 weeks of revenue per rep">
-              <ResponsiveContainer width="100%" height={260}>
-                <LineChart data={trend} margin={{ left: 4, right: 8, top: 4 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke={token('--border-color')} vertical={false} />
-                  <XAxis dataKey="week" tick={{ fontSize: 11, fill: token('--text-secondary') }} axisLine={false} tickLine={false} />
-                  <YAxis tickFormatter={(v) => formatCurrency(Number(v))} tick={{ fontSize: 11, fill: token('--text-secondary') }} axisLine={false} tickLine={false} width={96} />
-                  <Tooltip formatter={(v) => formatCurrency(Number(v))} />
-                  <Legend wrapperStyle={{ fontSize: 11 }} iconType="plainline" />
-                  {breakdown.map((r, i) => (
-                    <Line key={r.rep} type="monotone" dataKey={r.rep} stroke={SERIES[i % SERIES.length] ?? REVENUE_COLOR} strokeWidth={2} dot={false} isAnimationActive={false} />
-                  ))}
-                </LineChart>
-              </ResponsiveContainer>
-            </ChartCard>
-          </div>
+              <ChartCard title="Weekly trend" subtitle="Last 8 weeks of revenue per rep">
+                <ResponsiveContainer width="100%" height={260}>
+                  <LineChart data={trend} margin={{ left: 4, right: 8, top: 4 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke={token('--border-color')} vertical={false} />
+                    <XAxis dataKey="week" tick={{ fontSize: 11, fill: token('--text-secondary') }} axisLine={false} tickLine={false} />
+                    <YAxis tickFormatter={(v) => formatCurrency(Number(v))} tick={{ fontSize: 11, fill: token('--text-secondary') }} axisLine={false} tickLine={false} width={96} />
+                    <Tooltip formatter={(v) => formatCurrency(Number(v))} />
+                    <Legend wrapperStyle={{ fontSize: 11 }} iconType="plainline" />
+                    {breakdown.map((r, i) => (
+                      <Line key={r.rep} type="monotone" dataKey={r.rep} stroke={SERIES[i % SERIES.length] ?? REVENUE_COLOR} strokeWidth={2} dot={false} isAnimationActive={false} />
+                    ))}
+                  </LineChart>
+                </ResponsiveContainer>
+              </ChartCard>
+            </div>
+          )}
 
           <div className="space-y-2">
             <div>
               <ReportHeading level={2} scale="lg">Rep breakdown</ReportHeading>
               <p className="text-muted-foreground text-xs">
-                Ranked by revenue · click a rep to scope the whole page to them
+                {showsRevenue ? 'Ranked by revenue · ' : ''}Click a rep to scope the whole page to them
               </p>
             </div>
             <ReportTable
@@ -236,7 +246,7 @@ export default function EstimatesReport() {
               getRowKey={(r) => r.rep}
               onRowClick={(r) => setRepSel([r.rep])}
               empty={<EmptyState title="No reps match this filter." />}
-              columns={[
+              columns={showsRevenue ? [
                 { id: 'rank', header: '#', width: 64, min: 50, grow: 0, cell: (r) => <span className="text-muted-foreground tabular-nums">{r.rank}</span>, sortValue: (r) => r.rank },
                 { id: 'rep', header: 'Rep', width: 170, min: 140, cell: (r) => <span className="font-medium">{r.rep}</span>, sortValue: (r) => r.rep },
                 { id: 'revenue', header: 'Revenue', width: 140, min: 120, align: 'right', cell: (r) => <span className="font-semibold tabular-nums">{formatCurrency(r.revenue)}</span>, sortValue: (r) => r.revenue },
@@ -244,6 +254,9 @@ export default function EstimatesReport() {
                 { id: 'avgDeal', header: 'Avg deal', width: 130, min: 110, align: 'right', cell: (r) => <span className="tabular-nums">{formatCurrency(r.avgDeal)}</span>, sortValue: (r) => r.avgDeal },
                 { id: 'open', header: 'Open $', width: 130, min: 110, align: 'right', cell: (r) => <span className="text-muted-foreground tabular-nums">{formatCurrency(r.openDollars)}</span>, sortValue: (r) => r.openDollars },
                 { id: 'trend', header: '8-wk trend', width: 140, min: 120, align: 'right', cell: (r) => <div className="flex justify-end"><Sparkline data={r.weekly} color={REVENUE_COLOR} /></div> },
+              ] : [
+                { id: 'rep', header: 'Rep', width: 170, min: 140, cell: (r) => <span className="font-medium">{r.rep}</span>, sortValue: (r) => r.rep },
+                { id: 'winRate', header: 'Win rate', width: 110, min: 90, align: 'right', cell: (r) => <span className="tabular-nums">{r.winRate}%</span>, sortValue: (r) => r.winRate },
               ]}
             />
           </div>

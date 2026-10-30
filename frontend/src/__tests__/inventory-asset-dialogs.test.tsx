@@ -19,6 +19,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from './helpers';
+import { buildAbility } from '@/lib/ability';
 import { AssetDialog } from '@/components/inventory/assets/AssetDialog';
 import { AssetActionDialog } from '@/components/inventory/assets/AssetActionDialog';
 import type { Asset } from '@/lib/api/inventory';
@@ -169,6 +170,7 @@ describe('AssetDialog — create/edit (P4)', () => {
   it('photo chosen on create uploads AFTER create resolves, with the new id + File', async () => {
     renderWithProviders(
       <AssetDialog open onClose={vi.fn()} editAsset={null} onSaved={vi.fn()} />,
+      { ability: buildAbility([{ action: 'update', subject: 'Inventory' }]) },
     );
 
     fireEvent.change(screen.getByLabelText('Asset name'), {

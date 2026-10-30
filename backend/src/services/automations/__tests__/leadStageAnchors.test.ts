@@ -193,7 +193,7 @@ describe('terminalStaleReason — LEAD_DATE_ANCHORED on a stage clock', () => {
     expect(stale(base, anchor)).toBeNull();
   });
 
-  it.each(['LOST', 'CANCELLED', 'WON'] as const)('goes quiet on a %s lead', (leadStatus) => {
+  it.each(['LOST', 'WON'] as const)('goes quiet on a %s lead', (leadStatus) => {
     for (const anchor of STAGE_ANCHORS) {
       expect(stale({ ...base, leadStatus }, anchor)).not.toBeNull();
     }

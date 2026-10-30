@@ -5,7 +5,7 @@ import { formatDistanceToNow } from 'date-fns';
 import {
   AlertTriangle, ArrowUpRight, CalendarDays, CalendarPlus, CheckCircle2,
   ClipboardList, ClipboardX, Copy, FileText, Mail, MapPin, Pencil, Phone, PlusCircle, Receipt,
-  RotateCcw, StickyNote, Trash2, User, Wrench, XCircle,
+  Lock, RotateCcw, StickyNote, Trash2, User, Wrench, XCircle,
 } from 'lucide-react';
 
 import api from '@/lib/axios';
@@ -30,8 +30,10 @@ const COMPLETION_STAMP: Intl.DateTimeFormatOptions = {
 import { VisitsCard } from './components/visitsCard';
 import { useAuthStore } from '@/stores/auth.store';
 import { useAppAbility } from '@/contexts/AbilityContext';
+import { useRecordPanel } from '@/lib/recordPanel';
+import { switchOn, useMySwitches } from '@/lib/api/mySwitches';
 import { RecordNumberEditor } from '@/components/crm/RecordNumberEditor';
-import { useModuleAccess } from '@/lib/entitlements';
+import { useFeature, useModuleAccess } from '@/lib/entitlements';
 import { canOnJob, canSeePricing as canSeePricingAbility, type AppAbility, type AppAction } from '@/lib/ability';
 import { useTasksStore } from '@/stores/tasksStore';
 import { customerDisplayName } from '@/lib/customer-name';
@@ -46,7 +48,7 @@ import { useJobMaterialCost } from '@/lib/api/inventory';
 import { useJobSubStatuses } from '@/lib/api/jobSubStatuses';
 import { servicePlanKeys } from '@/lib/api/service-plans';
 import { selectInvoiceSentState } from '@/lib/jobs/invoiceSentState';
-import { isPaidOff } from '@/lib/jobs/lifecycle';
+import { isPaidOff, type CloseOutMoneyInput } from '@/lib/jobs/lifecycle';
 
 // App components with no kit equivalent - reused verbatim, one ledger row each.
 import { IconRail } from '@/components/crm/IconRail';
@@ -58,6 +60,8 @@ import { JobCommunicationsTab } from '@/components/communication/JobCommunicatio
 import { AssignJobDialog } from '@/components/jobs/AssignJobDialog';
 import { AttachEstimateDialog } from '@/components/jobs/AttachEstimateDialog';
 import { CancelJobDialog } from '@/components/jobs/CancelJobDialog';
+import { CompleteWithOpenVisitsDialog } from '@/components/jobs/CompleteWithOpenVisitsDialog';
+import { openVisitsConflict, type OpenVisitsJob } from '@/components/jobs/openVisitsConflict';
 import { EditJobLocationDialog } from '@/components/jobs/EditJobLocationDialog';
 import { JobLifecycleBar } from '@/components/jobs/JobLifecycleBar';
 import { JobStagesSection } from '@/components/jobs/JobStagesSection';
@@ -67,8 +71,14 @@ import { ViewWorkOrderDialog } from '@/components/jobs/ViewWorkOrderDialog';
 import { AiInsightsCard } from '@/components/jobs/AiInsightsCard';
 import { AiJobAssistantBar } from '@/components/jobs/AiJobAssistantBar';
 import { LineItemsEditor, JobScopeOfWorkCard } from '@/components/jobs/items/LineItemsEditor';
+import { OfficeReviewBanner } from '@/components/jobs/review/OfficeReviewBanner';
+import { OfficeReviewPanel } from '@/components/jobs/review/OfficeReviewPanel';
+import { SinceReviewPanel } from '@/components/jobs/review/SinceReviewPanel';
+import { ReadyToCloseBanner, type ReadyToCloseAnswer } from '@/components/jobs/review/ReadyToCloseBanner';
+import { useJobReview } from '@/lib/api/jobReview';
 import { ReceiptCard } from '@/components/jobs/items/ReceiptCard';
 import { CustomerContactCard } from '@/components/jobs/overview/CustomerContactCard';
+import type { RecordContactEntry } from '@/lib/api/recordContactEntries';
 import { JobFilesCard } from '@/components/jobs/overview/JobFilesCard';
 import { JobNotesPreview } from '@/components/jobs/overview/JobNotesPreview';
 import { CreateJobInvoiceDialog } from '@/components/invoices/CreateJobInvoiceDialog';
@@ -80,11 +90,19 @@ import { RecordPaymentDialog } from '@/components/invoices/RecordPaymentDialog';
 // `pages/v2/customers/CustomerFormPage.tsx` set by importing `customerSchema`
 // from the legacy page. Ledger row.
 import { AttachmentsTabBody } from '@/components/jobs/AttachmentsTabBody';
+import type { FileChangeAnswer } from '@/lib/attachments/fileChange';
+import { JOB_LOCKED_REASON } from '@/lib/jobLocked';
+import { NoteDeleteButton } from '@/components/notes/NoteDeleteButton';
+import { useDeleteNote } from '@/lib/notes/useDeleteNote';
+import type { NoteDeleteAnswer } from '@/lib/notes/noteChange';
 
 import { EmptyState } from '@/ui-kit/components/data/emptyState';
 import { DetailHeader, DetailDock, type DetailHeaderAction } from '@/components/detail/DetailHeader';
 import { Badge } from '@/ui-kit/components/ui/badge';
-import { PhoneNumberAction } from '@/components/contact/ContactAction';
+import { EmailValue, PhoneValue } from '@/components/contact/CustomerContactBlock';
+import { customerEmailsOf, customerPhonesOf } from '@/components/contact/customerContactLists';
+import { useContactPolicyInput } from '@/components/contact/useContactPolicyInput';
+import { customerNameDisplay } from '@/components/contact/contactDisplayPolicy';
 import { Button } from '@/ui-kit/components/ui/button';
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from '@/ui-kit/components/ui/card';
 import { ConfirmDialog } from '@/ui-kit/components/ui/confirmDialog';
@@ -108,6 +126,11 @@ import { LOList } from '../_shared/loList';
 import { TabPanel, TabStrip } from '../_shared/tabs';
 import { StatusChip } from './components/statusChip';
 import { useRecordVisit } from '../pageBreadcrumbs';
+import NotAuthorizedPage from '@/components/NotAuthorizedPage';
+import { isForbiddenError, retryUnlessRefused } from '../_shared/loadErrorState';
+import { ProcessingBadge } from '@/components/invoices/ProcessingBadge';
+import { processingBadgeText } from '@/lib/payment-display';
+import { paymentCounts } from '@/lib/payment-ledger';
 
 // --- Types (the legacy page's, verbatim) -------------------------------------
 
@@ -133,8 +156,25 @@ interface LeadWalkthrough {
   walkthrough_performers: { user: { id: string; first_name: string; last_name: string } }[];
 }
 
+
+/**
+ * The actions the server lists for this person on this job (Roles & Permissions, PRD 4). A control is drawn only for
+ * an action on the list, so no button shows that the job's routes would refuse.
+ */
+type JobAction =
+  | 'edit' | 'assign' | 'schedule' | 'complete' | 'cancel'
+  // Reopen on a Done or Cancelled job (S06.16): the server lists it only where the move would be let in.
+  | 'reopen'
+  | 'delete' | 'duplicate'
+  | 'create_invoice' | 'create_estimate' | 'renumber' | 'edit_line_items' | 'apply_discount'
+  | 'add_note' | 'upload_attachment' | 'log_communication' | 'office_review'
+  | 'finish_review'
+  | 'mark_done';
+
 interface JobDetail {
   id: string;
+  // Whether the signed-in person is one of the job's people (crew of a visit, Sold By, Dispatcher); set by the server.
+  viewer_attached?: boolean;
   job_number: string;
   status: string;
   sub_status?: { id: string; label: string; parent: string } | null;
@@ -157,10 +197,15 @@ interface JobDetail {
   completed_at: string | null;
   cancelled_at: string | null;
   cancelled_reason: string | null;
+  // S06.15: the reason picked from the company's list, by its label today (a turned-off one still shows). Null for a job
+  // cancelled before the list existed: it shows its written reason alone.
+  cancel_reason?: { code: string; label: string; is_active: boolean } | null;
   created_at: string;
   updated_at: string;
   signature_at: string | null;
   dispatcher?: { id: string; first_name: string; last_name: string; phone?: string | null; email?: string | null; role?: string | null; department?: { name?: string | null } | null } | null;
+  // The Sold By stored on the job (empty when nobody is credited).
+  salesperson?: { id: string; first_name: string; last_name: string; phone?: string | null; email?: string | null; role?: string | null; department?: { name?: string | null } | null } | null;
   customer: {
     id: string;
     first_name: string;
@@ -169,6 +214,8 @@ interface JobDetail {
     email: string | null;
     phone: string;
   };
+  // The job's own phones and emails (added with the pencil), live ones only.
+  contact_entries?: RecordContactEntry[];
   assignees: { user: { id: string; first_name: string; last_name: string; phone?: string | null; email?: string | null; role?: string | null; department?: { name?: string | null } | null } }[];
   service_location: {
     id: string;
@@ -181,24 +228,65 @@ interface JobDetail {
   estimate: {
     id: string;
     estimate_number: string;
-    total_amount: number | string;
+    /** Left out of the job answer for a person who may not see estimate figures. */
+    total_amount?: number | string;
     status: string;
     lead_id: string | null;
     lead: LeadWalkthrough | null;
     deposit: { id: string; amount: number | string; status: string; paid_at: string | null } | null;
     line_items: EstimateLineItem[];
   } | null;
-  invoices: Array<{ id: string; invoice_number: string; status: string; total_amount: number | string; amount_due: number | string; created_at: string }>;
+  /** Only the invoices this person can open; `invoice_count` is how many the job holds in all. */
+  invoices: Array<{ id: string; invoice_number: string; status: string; total_amount: number | string; amount_due: number | string; created_at: string; processing_amount?: number | string }>;
+  invoice_count?: number;
   linked_estimates?: Array<{ id: string; estimate_number: string; total_amount?: number | string; status: string }>;
   tags: Array<{ id: string; name: string; color: string }>;
   source_plan_id: string | null;
   source_plan: { id: string; service_plan_number: string; name: string } | null;
+  /** What this person may do on this job, decided by the server from their switches and where they stand on the job. */
+  actions?: JobAction[];
+  /** The completed-job lock: true when this job is Completed or later, or Cancelled, and the person cannot change locked jobs. */
+  locked?: boolean;
+  /** The lock for this person on the job's customer details; differs from `locked` only in Office review, for the review's holder. */
+  contact_locked?: boolean;
+  /** The actions their switches allow that the lock is withholding: drawn disabled, with the reason, not left out. */
+  locked_actions?: JobAction[];
+  /**
+   * The words beside the disabled Add visit control while the job is locked, for everyone, a person who can change locked
+   * jobs included (a new visit cannot be added until the job is reopened or moved back out of review). Null while open.
+   */
+  new_visit_closed_reason?: string | null;
+  /**
+   * The words beside every control that would set the job's status (Start, Schedule, Reschedule) when the job is closed to them: a Done
+   * or Cancelled job (it leaves only through Reopen), or a job in Office review or Ready to close for a person who cannot complete
+   * jobs. Null otherwise.
+   */
+  status_door_closed_reason?: string | null;
+  /**
+   * True when the job is in Office review or Ready to close and this person may move it back out: Start, Schedule and Reschedule are open
+   * to them although the completed-job lock withholds the rest of the job from them.
+   */
+  backward_move_open?: boolean;
+  /** The Ready to close banner's facts: the amount owed and whether Mark Done is offered, disabled or absent. Null in any other status. */
+  ready_to_close?: ReadyToCloseAnswer | null;
+  /**
+   * The words beside the closed line, scope and discount controls when the job is Done: nobody edits a Done job's lines or prices
+   * until it is reopened, Change locked jobs holders included. Null on any other status.
+   */
+  price_edit_closed_reason?: string | null;
+  /** When the job was marked Done (the bar's Done step). */
+  closed_at?: string | null;
+  /**
+   * What the progress bar needs on a Done job to call a money step skipped: money still owed, and a zero total. Worked out
+   * by the server from the one money rule; null in any other status. The page never sums money for it.
+   */
+  close_out_money?: CloseOutMoneyInput;
   labor_hours?: number | string | null;
   overhead_mode?: 'PERCENTAGE' | 'FIXED' | null;
   overhead_value?: number | string | null;
 }
 
-interface NoteItem {
+interface NoteItem extends NoteDeleteAnswer {
   id: string;
   content: string;
   created_at: string;
@@ -209,16 +297,23 @@ interface NoteItem {
 // --- Helpers (the legacy page's, verbatim) -----------------------------------
 
 /**
- * Ability gates WHO; status gates WHEN. Spec B1 removes the status half - these
+ * The server's per-record answer gates WHO; status gates WHEN. Spec B1 removes the status half - these
  * conditions are carried over exactly as they are so the two specs stay
  * separable.
  *
- * Role strings are deliberately absent: a technician's authority comes from the
- * same CASL rules the API enforces. Use `canOnJob`, never
- * `ability.can(verb, jobInstance)` - the server's own-job condition uses a
- * Prisma `some` operator the Mongo/sift matcher cannot evaluate, so the instance
- * form returns false for every technician.
+ * Role strings are deliberately absent: what a person may do on this job is the list the server sends on the job
+ * (`job.actions`), decided from their switches and where they stand on the job, the same switches the routes
+ * ask. The client never re-derives it. The one that is not on that list yet keeps the helper below: starting the
+ * job. Use `canOnJob`, never
+ * `ability.can(verb, jobInstance)` - the server's own-job condition uses a Prisma `some` operator the Mongo/sift
+ * matcher cannot evaluate, so the instance form returns false for every technician.
  */
+/** How many invoices the job holds, counting the ones this person cannot open: a delete is refused for any of them. */
+/** The panels inside a job that its address can name (`?panel=<name>`). Only the office review for now. */
+const JOB_PANELS = ['review'] as const;
+
+const invoiceCountOf = (job: JobDetail) => job.invoice_count ?? job.invoices.length;
+
 function getAvailableActions(
   job: JobDetail,
   ability: AppAbility,
@@ -229,41 +324,68 @@ function getAvailableActions(
   visits: { assignees?: { user_id: string }[] | null }[],
 ) {
   const on = (verb: AppAction) => canOnJob(ability, verb, { ...job, visits }, userId);
+  const listed = (action: JobAction) => job.actions?.includes(action) ?? false;
+  // An action the person's switches allow and the completed-job lock is withholding: the control shows disabled, with the reason.
+  const withheld = (action: JobAction) => job.locked_actions?.includes(action) ?? false;
 
   return {
-    canAssign: on('assign'),
-    // Multi-visit S2: the Visits tab's own gate. `on(...)`, never ability.can - the subject-level
-    // form is true for EVERY job in the org once a technician holds the per-user "Reschedule own
-    // jobs" capability, so the visit dialog would open on a job whose POST canActOnRow then 403s.
-    canReschedule: on('reschedule'),
-    canUnassign: on('unassign'),
-    canStart: on('start'),
-    // S4 (D7a): the per-visit action row gates EACH button on the ability ITS route asks for. The
-    // four routes do not share one: en-route has its own verb, which the default TECHNICIAN role
-    // does not hold, and complete rides `start Job`. Handing the card a single flag offered every
-    // crewed technician an "En route" button that could only ever 403.
-    visitAbilities: { en_route: on('en_route'), arrive: on('arrive'), start: on('start') },
-    // Self-exclusion, not an ordering rule: re-completing a complete job would
-    // re-stamp completed_at and re-arm the follow-up automation for nothing.
-    canComplete: on('complete') && job.status !== 'COMPLETED',
+    locked: job.locked === true,
+    // Only a person who may schedule visits (the lock withholding it from them counts) sees Add visit at all, so only
+    // they get the reason: the server answers the closed job for everyone who can read it, with the words to show.
+    newVisitClosedReason: listed('schedule') || withheld('schedule') ? job.new_visit_closed_reason ?? undefined : undefined,
+    // S06.17: a Done or Cancelled job leaves only through Reopen. The server says so for everyone, a Change locked jobs
+    // holder included, and these controls (Start, Schedule, Reschedule) are drawn closed with its words.
+    statusDoorClosedReason: job.status_door_closed_reason ?? undefined,
+    lockedAssign: withheld('assign'),
+    // S06.18: a backward move out of review is a close-out move, which the lock does not bind. The server says when this person may
+    // make it, and then Schedule and Reschedule are drawn open although Assign (the crew) stays behind the lock.
+    backwardMoveOpen: job.backward_move_open === true,
+    lockedSchedule: withheld('schedule'),
+    lockedDelete: withheld('delete') && invoiceCountOf(job) === 0,
+    lockedLines: withheld('edit_line_items'),
+    // S06.19: a Done job's lines and prices are closed to everyone, and the server says so with its words; the lock's own words
+    // apply to the other locked statuses.
+    priceEditClosedReason: job.price_edit_closed_reason ?? undefined,
+    // The office review banner and panel: offered while the job is in Office review, to the holder of Office review only.
+    canReview: listed('office_review'),
+    // Finish review sits in the panel's footer: the job's own answer lists it for a holder of Office review while the job is in review.
+    canFinishReview: listed('finish_review'),
+    canAssign: listed('assign'),
+    // Schedule and Reschedule: the assign door, open while the status door is (S06.17/S06.18), or the backward move out of review.
+    canSchedule: (listed('assign') || (withheld('assign') && job.backward_move_open === true)) && !job.status_door_closed_reason,
+    // Multi-visit S2: the Visits tab's own gate (add, reschedule and cancel a visit).
+    canReschedule: listed('schedule'),
+    canStart: on('start') && !job.status_door_closed_reason,
+    // Complete job follows the server's per-record answer alone: the list carries `complete` only for a holder of
+    // Complete jobs on a job that can still be completed (Unscheduled, Scheduled or In Progress), so a job in review,
+    // Done, Cancelled or resting at Completed is never offered it.
+    canComplete: listed('complete'),
     // Self-exclusion, not an ordering rule.
-    canCancel: on('cancel') && job.status !== 'CANCELLED',
+    canCancel: listed('cancel') && job.status !== 'CANCELLED',
     // Integrity: matches the backend delete guard, which blocks on ANY invoice
     // regardless of status.
-    canDelete: on('delete') && job.invoices.length === 0,
-    canReopen: ability.can('reopen', 'Job') && job.status === 'COMPLETED',
-    canDuplicate: ability.can('create', 'Job'),
-    canAddNotes: on('update'),
-    // The money surface follows CREATION, not assignment. Same per-instance
-    // question the backend asks with canActOnRow(..., 'manage_lines'), so the
-    // buttons and the API agree.
-    canManageLines: on('manage_lines'),
-    // SRVW-112 - the same `update Job` gate the API puts on the sub-status door.
-    canSetSubStatus: on('update'),
+    canDelete: listed('delete') && invoiceCountOf(job) === 0,
+    // Reopen follows the server's per-record answer alone: the list carries `reopen` for a holder of Reopen Done jobs on a
+    // job that is closed (Done, Cancelled, or one the old flow left at Completed), and for no other status.
+    canReopen: listed('reopen'),
+    canDuplicate: listed('duplicate'),
+    canAddNotes: listed('add_note'),
+    // The details a person may change: service type, service location, tags, sub-status and the cost model all ride Edit jobs.
+    canEdit: listed('edit'),
+    canRenumber: listed('renumber'),
+    canUploadAttachments: listed('upload_attachment'),
+    canLogCommunication: listed('log_communication'),
+    canCreateEstimate: listed('create_estimate'),
+    // Line and scope editing on the Items tab: Edit job line items alone, on any job the person can open. Creating or
+    // selling the job grants nothing. (The job's discount, Apply discounts, is `apply_discount` on the same list;
+    // the tab has no discount control to draw.)
+    canManageLines: listed('edit_line_items'),
     // Service-plan visit-jobs were paid upfront via the plan's kind=PLAN
     // invoice; invoicing the spawned visit would double-charge, and the backend
     // blocks it too.
-    canCreateInvoice: ability.can('create', 'Invoice') && job.status !== 'CANCELLED' && !job.source_plan_id,
+    canCreateInvoice: listed('create_invoice') && job.status !== 'CANCELLED' && !job.source_plan_id,
+    // The invoice door of the milestone rail, which has its own plan and status conditions.
+    mayCreateInvoice: listed('create_invoice'),
   };
 }
 
@@ -354,6 +476,9 @@ function NotesTabBody({
     },
   });
 
+  // The delete control on each note follows the server's per-note answer (S04.25).
+  const deleteNote = useDeleteNote('JOB', jobId);
+
   const allNotes = [...(notes ?? [])].sort(
     (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
   );
@@ -432,6 +557,12 @@ function NotesTabBody({
                     <span className="text-muted-foreground ms-auto whitespace-nowrap text-[11px]">
                       {formatDistanceToNow(new Date(note.created_at), { addSuffix: true })}
                     </span>
+                    <NoteDeleteButton
+                      note={note}
+                      authorName={`${note.creator.first_name} ${note.creator.last_name}`}
+                      pending={deleteNote.isDeleting}
+                      onDelete={() => deleteNote.requestDelete(note.id)}
+                    />
                   </div>
                   <p className="whitespace-pre-wrap break-words text-[13px] leading-relaxed">
                     {note.content}
@@ -442,6 +573,7 @@ function NotesTabBody({
           </div>
         )}
       </Card>
+      {deleteNote.confirmDialog}
     </div>
   );
 }
@@ -473,6 +605,10 @@ export default function JobDetailPage() {
   const queryClient = useQueryClient();
   const user = useAuthStore((s) => s.user);
   const ability = useAppAbility();
+  // The Service Plan reference links to the Service plans page, which the route opens for View service plans and Show
+  // Service plans page; without both it is a reference only, not a link that bounces to the dashboard.
+  const mySwitches = useMySwitches()?.values;
+  const canOpenServicePlans = switchOn(mySwitches, 'view_service_plans') && switchOn(mySwitches, 'show_service_plans_page');
   // Cost/margin visibility for <InternalCostsCard> - shared with the backend's
   // canSeePricing gate (SRVW-140).
   const canSeePricing = canSeePricingAbility(ability);
@@ -481,11 +617,16 @@ export default function JobDetailPage() {
   // ('inventory'), and CASL alone lets an admin on a sub-Scale plan through, and
   // the fetch then 402s.
   const canReadPO = useModuleAccess('inventory', 'read', 'PurchaseOrder');
-  // Logistics (Logistic Orders + job stages) is entirely inventory-module surface.
-  const canUseInventory = useModuleAccess('inventory', 'read', 'Inventory');
+  // Logistics (Logistic Orders + job stages) is inventory-module surface, so the org must have bought it
+  // (`useModuleAccess` pairs that with the ability). Which part a person sees is decided below, once the job is
+  // loaded: staging for View stock or for anyone attached to the job, orders for View logistic orders.
+  const inventoryBought = useFeature('inventory');
+  const canViewStock = useModuleAccess('inventory', 'read', 'Inventory');
+  const canViewLogisticOrders = useModuleAccess('inventory', 'read', 'LogisticOrder');
 
   // Tab state is CONTROLLED so CustomerContactCard's "View All" can switch to
   // the Communication tab. It is not reflected in the URL, exactly as today.
+  const contactPolicy = useContactPolicyInput();
   const [activeTab, setActiveTab] = useState('overview');
 
   const [assignOpen, setAssignOpen] = useState(false);
@@ -495,6 +636,8 @@ export default function JobDetailPage() {
   const [assignMode, setAssignMode] = useState<'assign' | 'schedule'>('assign');
   const openAssignDialog = (mode: 'assign' | 'schedule') => { setAssignMode(mode); setAssignOpen(true); };
   const [cancelOpen, setCancelOpen] = useState(false);
+  // S04.17: the open visits the server named when it refused a complete; the confirmation is open while set.
+  const [openVisitsJobs, setOpenVisitsJobs] = useState<OpenVisitsJob[] | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [editLocationOpen, setEditLocationOpen] = useState(false);
   const [createInvoiceOpen, setCreateInvoiceOpen] = useState(false);
@@ -510,20 +653,46 @@ export default function JobDetailPage() {
 
   // --- Queries ---------------------------------------------------------------
 
-  const { data: job, isLoading } = useQuery({
+  const { data: job, isLoading, error: jobError } = useQuery({
     queryKey: ['job', id],
     queryFn: async () => {
       const { data } = await api.get(`/api/jobs/${id}`);
       return data.job as JobDetail;
     },
+    retry: retryUnlessRefused,
   });
+  // The job's own answer comes first: the sections below are asked for only once it is in, so a job the person may not open
+  // costs one refused request and not one per section.
+  const jobOpened = Boolean(job);
+
+  // The office review (S06.8): read only when the job's own answer offers it to this person, which the server does while the
+  // job is in Office review and only to a holder of Office review. The panel opens from the banner's Review button.
+  // The panel is kept in the page's address (`?panel=review`), so a notification can open it and the page can be shared.
+  const { panel: addressPanel, setPanel: setAddressPanel } = useRecordPanel(JOB_PANELS);
+  const reviewOffered = job?.status === 'OFFICE_REVIEW' && (job.actions?.includes('office_review') ?? false);
+  // A job in Ready to close offers its holder of Office review the list of changes made since the review was finished
+  // (S06.20): the server says so in the job's Ready to close block, and the list is read only when the panel is open.
+  const sinceOffered = job?.ready_to_close?.review_changes === true;
+  const review = useJobReview(id, reviewOffered || (sinceOffered && addressPanel === 'review'));
+  // The address only names the panel: it opens once the job's own answer offers the review to this person, and never
+  // before, so a viewer without it lands on the job with no panel and no flash of one.
+  const reviewOpen = (reviewOffered || sinceOffered) && addressPanel === 'review';
+  const setReviewOpen = (open: boolean) => setAddressPanel(open ? 'review' : null);
 
   useRecordVisit('jobs', job?.job_number);
+
+  // Roles & Permissions PRD 7: the Logistics tab shows for a person attached to the job, or holding View stock, or
+  // holding View logistic orders. Its staging part is for attached people and View stock, its orders part for View
+  // logistic orders alone (the Show Logistic Orders page switch plays no part). The server says whether the person
+  // is attached, from the job's people as they stand, so taking them off the job removes the staging on next load.
+  const showStagingPart = inventoryBought && (Boolean(job?.viewer_attached) || canViewStock);
+  const showOrdersPart = canViewLogisticOrders;
+  const showLogistics = showStagingPart || showOrdersPart;
 
   // Multi-visit S2: its own query key rather than a field on the job payload - jobDetailSelect is
   // shared by getById and roughly ten action handlers, so one addition there changes every one of
   // those responses at once.
-  const jobVisits = useJobVisits(id);
+  const jobVisits = useJobVisits(jobOpened ? id : undefined);
   const scheduleTz = useScheduleTimezone();
   // S5 (D11): the rail's per-visit controls ride the SAME hook the Visits card uses, so the two
   // renderers cannot drift on which URL a control posts to or what a success invalidates.
@@ -534,13 +703,13 @@ export default function JobDetailPage() {
   const { data: financials } = useQuery({
     queryKey: ['job-financials', id],
     queryFn: () => getJobFinancials(id!),
-    enabled: !!id,
+    enabled: !!id && jobOpened,
   });
 
   const { data: taskSummary } = useQuery({
     queryKey: ['job-task-summary', id],
     queryFn: () => getJobTaskSummary(id!),
-    enabled: !!id,
+    enabled: !!id && jobOpened,
   });
 
   // SERV10X-38: job-owned line items + the running billing preview. Shares its
@@ -548,7 +717,7 @@ export default function JobDetailPage() {
   const { data: jobLineItemsData } = useQuery({
     queryKey: ['job-line-items', id],
     queryFn: () => listJobLines(id!),
-    enabled: !!id,
+    enabled: !!id && jobOpened,
   });
 
   const billableLineCount = jobLineItemsData?.lines?.length ?? 0;
@@ -568,11 +737,11 @@ export default function JobDetailPage() {
   const { data: jobScopesData } = useQuery({
     queryKey: ['job-scopes', id],
     queryFn: () => listJobScopes(id!),
-    enabled: !!id,
+    enabled: !!id && jobOpened,
   });
 
   // D15 - PO material actuals for InternalCostsCard's additive display row.
-  const { data: materialCost } = useJobMaterialCost(id, canSeePricing && canReadPO);
+  const { data: materialCost } = useJobMaterialCost(id, jobOpened && canSeePricing && canReadPO);
 
   // Jurisdiction names for the Items tab's read-only Tax rate row. The row is not
   // editable here - the job's rate follows its estimate (D1) - but it still NAMES
@@ -612,8 +781,8 @@ export default function JobDetailPage() {
     queryFn: () =>
       api
         .get(`/api/attachments/JOB/${id}?include_lead=true`)
-        .then((r) => r.data.attachments as Array<{ id: string; file_name: string; file_url: string; file_type: string; display_name: string; description?: string | null; context?: string | null; source?: string | null }>),
-    enabled: !!id,
+        .then((r) => r.data.attachments as Array<{ id: string; file_name: string; file_url: string; file_type: string; display_name: string; description?: string | null; context?: string | null; source?: string | null } & FileChangeAnswer>),
+    enabled: !!id && jobOpened,
   });
 
   // Notes (with walkthrough) for JobNotesPreview and the Notes tab.
@@ -623,7 +792,7 @@ export default function JobDetailPage() {
       api
         .get(`/api/jobs/${id}/notes?include_lead=true`)
         .then((r) => r.data.notes as NoteItem[]),
-    enabled: !!id,
+    enabled: !!id && jobOpened,
   });
 
   // SRVW-112 - the org's sub-status catalog. Called unconditionally (hook rules);
@@ -671,15 +840,54 @@ export default function JobDetailPage() {
 
   const reopenMutation = useMutation({
     mutationFn: async () => reopenJob(id!),
-    onSuccess: refreshAfterJobVerb,
+    onSuccess: () => {
+      refreshAfterJobVerb();
+      toast('Job reopened');
+    },
+    // The job may have moved since it was read (someone else reopened it): read it again so the menu shows what is true now.
+    onError: refreshAfterJobVerb,
   });
 
   // One-click close-out - no completion-note modal (a note is not required).
+  // The job-level complete never finishes a visit: while any is open the server refuses until the request says to
+  // cancel them, and the refusal names them for the confirmation below.
   const completeMutation = useMutation({
-    mutationFn: async () => api.post(`/api/jobs/${id}/complete`),
-    onSuccess: () => { refreshAfterJobVerb(); },
+    mutationFn: async (cancelOpenVisits?: boolean) => (
+      cancelOpenVisits
+        ? api.post(`/api/jobs/${id}/complete`, { cancel_open_visits: true })
+        : api.post(`/api/jobs/${id}/complete`)
+    ),
+    onSuccess: () => {
+      setOpenVisitsJobs(null);
+      refreshAfterJobVerb();
+      toast('Job completed');
+    },
     onError: (err) => {
+      const openVisits = openVisitsConflict(err);
+      if (openVisits) {
+        setOpenVisitsJobs(openVisits);
+        return;
+      }
+      setOpenVisitsJobs(null);
       toast.error(extractApiError(err, 'Failed to complete job'));
+    },
+  });
+
+  // Mark Done (S06.13): Ready to close to Done. The amount owed is the server's, and the press confirms it when money is
+  // owed; the server checks it against what is owed at that moment and refuses a changed amount with the new one.
+  const [markDoneOpen, setMarkDoneOpen] = useState(false);
+  const markDoneMutation = useMutation({
+    mutationFn: async (confirmedAmount: number | null) => api.post(`/api/jobs/${id}/mark-done`, { confirmed_amount: confirmedAmount }),
+    onSuccess: () => {
+      setMarkDoneOpen(false);
+      refreshAfterJobVerb();
+      toast('Job marked Done');
+    },
+    onError: (err) => {
+      setMarkDoneOpen(false);
+      // A payment may have landed, or someone else closed it: read the job again so the banner shows what is true now.
+      refreshAfterJobVerb();
+      toast.error(extractApiError(err, 'Failed to mark the job Done'));
     },
   });
 
@@ -803,7 +1011,10 @@ export default function JobDetailPage() {
     );
   }
 
-  // One branch for 404, 403 and network failure alike, exactly as today.
+  // The server refused the job: the person may not open it (the page never decides that itself).
+  if (!job && isForbiddenError(jobError)) return <NotAuthorizedPage />;
+
+  // One branch for 404 and network failure alike, exactly as today.
   if (!job) {
     return (
       <Card>
@@ -813,21 +1024,22 @@ export default function JobDetailPage() {
   }
 
   const actions = getAvailableActions(job, ability, user?.id || '', jobVisits.visits);
+  // The words beside the disabled Add item and Add scope controls on the Items tab: the Done words, else the lock's own.
+  const itemsLockedReason = actions.priceEditClosedReason ?? (actions.lockedLines ? JOB_LOCKED_REASON : undefined);
 
   // SRVW-112 - only labels parented to the CURRENT status are offerable; the API
   // 400s a mismatch.
   const subStatusOptions = (subStatuses ?? []).filter((s) => s.parent === job.status);
 
-  // Service-location and service-type edits: managers only. This is the only raw
-  // ROLE check on the page, carried over verbatim.
-  const canEditLocation = user?.role === 'ADMIN' || user?.role === 'DISPATCHER';
-  const canEditServiceType = user?.role === 'ADMIN' || user?.role === 'DISPATCHER';
+  // Service-location and service-type edits follow Edit jobs, like every other detail of the job.
+  const canEditLocation = actions.canEdit;
+  const canEditServiceType = actions.canEdit;
 
   // View Work Order is the backing estimate document - gated so no user 403s.
   const canViewWorkOrder = Boolean(job.estimate) && ability.can('read', 'Estimate');
 
   // Amount-invoiced vs the estimate total (un-billed remaining).
-  const estimateTotal = job.estimate ? Number(job.estimate.total_amount) : 0;
+  const estimateTotal = job.estimate?.total_amount != null ? Number(job.estimate.total_amount) : 0;
   const amountInvoiced = Number(job.amount_invoiced ?? 0);
   const remainingUnbilled = Math.max(estimateTotal - amountInvoiced, 0);
   void remainingUnbilled; // referenced by C6
@@ -841,6 +1053,10 @@ export default function JobDetailPage() {
   const jobTaxSourceEstimate = job.estimate ?? job.linked_estimates?.[0] ?? null;
 
   const customerName = customerDisplayName(job.customer);
+  // The header shows the customer's primary phone and email, through the contact display policy.
+  const customerNameLinks = customerNameDisplay(contactPolicy).link;
+  const headerPhone = customerPhonesOf(job.customer).find((p) => p.is_primary) ?? customerPhonesOf(job.customer)[0];
+  const headerEmail = customerEmailsOf(job.customer).find((e) => e.is_primary) ?? customerEmailsOf(job.customer)[0];
   const loc = job.service_location;
 
   // SRVW-96 - an estimate-anchored job (jobs.estimate_id NULL, Estimate.job_id
@@ -855,14 +1071,16 @@ export default function JobDetailPage() {
   const attachedContractValue = (() => {
     const live = attachedEstimates.filter((e) => !DEAD_ESTIMATE_STATUSES.includes(e.status));
     if (!live.length) return null;
-    return live.reduce((sum, e) => sum + Number(e.total_amount ?? 0), 0);
+    // An attached estimate whose figure the server left out makes the sum unknown: no contract, never a $0 one.
+    if (live.some((e) => e.total_amount == null)) return null;
+    return live.reduce((sum, e) => sum + Number(e.total_amount), 0);
   })();
 
   const financialsTotal =
     financials?.final_invoice != null
       ? Number(financials.final_invoice.total_amount)
       : job.estimate != null
-        ? Number(job.estimate.total_amount)
+        ? (job.estimate.total_amount != null ? Number(job.estimate.total_amount) : null)
         : attachedContractValue;
 
   const serviceAddressLine = loc
@@ -874,22 +1092,41 @@ export default function JobDetailPage() {
   // Money summary - all derived from real financials. Contract = final-invoice
   // total or estimate total; paid = sum of recorded payments; deposit = payments
   // applied to a DEPOSIT-kind invoice.
-  const contractValue = financialsTotal;
-  const jobPayments = financials?.payments ?? [];
+  // The server works these out over EVERY invoice on the job, so a person who can open only some of them still sees the
+  // job's whole contract and balance; an older backend sends none, and the lists below are then all there is.
+  const jobTotals = financials?.totals;
+  const contractValue = jobTotals ? jobTotals.contract_total : financialsTotal;
+  // Payments go-live slice 05: only SUCCEEDED payments are money paid (lib/payment-ledger).
+  const jobPayments = (financials?.payments ?? []).filter(paymentCounts);
   // #948 - exclude the synthetic DEPOSIT-CREDIT mirror payment a deposit's
   // drawdown writes on the STANDARD invoice: same cash, not new money.
-  const totalPaid = jobPayments
-    .filter((p) => p.reference_number !== 'DEPOSIT-CREDIT')
-    .reduce((sum, p) => sum + Number(p.amount), 0);
-  const depositPaid = jobPayments
-    .filter((p) => p.invoice_kind === 'DEPOSIT')
-    .reduce((sum, p) => sum + Number(p.amount), 0);
-  const balanceDue = contractValue != null ? Math.max(contractValue - totalPaid, 0) : null;
+  const totalPaid = jobTotals
+    ? jobTotals.paid
+    : jobPayments
+        .filter((p) => p.reference_number !== 'DEPOSIT-CREDIT')
+        .reduce((sum, p) => sum + Number(p.amount), 0);
+  const depositPaid = jobTotals
+    ? jobTotals.deposit_paid
+    : jobPayments
+        .filter((p) => p.invoice_kind === 'DEPOSIT')
+        .reduce((sum, p) => sum + Number(p.amount), 0);
+  // The server's balance is the figure Mark Done and the review panel use; the page works one out only for an older backend.
+  const balanceDue = jobTotals?.balance_due ?? (contractValue != null ? Math.max(contractValue - totalPaid, 0) : null);
+  // Slice 28 D1: bank money still clearing across the job's live invoices. Shown beside the balance
+  // and never subtracted from it - it has not arrived.
+  const processingTotal = jobTotals
+    ? jobTotals.processing
+    : (financials?.invoices ?? [])
+        .filter((i) => i.status !== 'VOIDED')
+        .reduce((sum, i) => sum + Number(i.processing_amount ?? 0), 0);
   const pctCollected =
     contractValue && contractValue > 0
       ? Math.min(Math.round((totalPaid / contractValue) * 100), 100)
       : 0;
   const isPlanVisit = !!job.source_plan;
+  // The lists below hold only the invoices this person can open: the Payments tab is for someone who can open one or
+  // can make one.
+  const mayOpenAnInvoice = (financials?.invoices ?? []).length > 0;
 
 
 
@@ -921,20 +1158,34 @@ export default function JobDetailPage() {
     </>
   );
 
-  // Mark Complete: the header's primary action from sm up, the bottom dock on a phone.
+  // Complete job: the header's primary action from sm up, the bottom dock on a phone.
   const completeButton = actions.canComplete ? (
     <Button onClick={() => completeMutation.mutate()} disabled={completeMutation.isPending}>
-      <CheckCircle2 /> Mark Complete
+      <CheckCircle2 /> Complete job
     </Button>
   ) : null;
 
   // The header's secondary actions. New Task and Create Invoice show as buttons from sm up and
   // fold into the Actions menu on a phone; the rest are always menu items. canComplete is
-  // deliberately not here: Mark Complete must not conjure an otherwise-empty Actions menu.
+  // deliberately not here: Complete job must not conjure an otherwise-empty Actions menu.
   const headerActions: DetailHeaderAction[] = [
     { key: 'new-task', label: 'New Task', icon: <PlusCircle />, inline: true, group: 'create', onSelect: () => setNewTaskOpen(true) },
     ...(actions.canCreateInvoice
       ? [{ key: 'create-invoice', label: 'Create Invoice', icon: <Receipt />, inline: true, group: 'create', onSelect: () => setCreateInvoiceOpen(true) }]
+      : []),
+    ...(actions.lockedAssign
+      ? [
+          { key: 'assign', label: 'Assign', icon: <User />, group: 'work', disabled: true, disabledReason: JOB_LOCKED_REASON, onSelect: () => undefined },
+          {
+            key: 'schedule',
+            label: job.scheduled_start ? 'Reschedule' : 'Schedule Job',
+            icon: job.scheduled_start ? <CalendarDays /> : <CalendarPlus />,
+            group: 'work',
+            disabled: !actions.canSchedule,
+            disabledReason: actions.statusDoorClosedReason ?? JOB_LOCKED_REASON,
+            onSelect: () => openAssignDialog('schedule'),
+          },
+        ]
       : []),
     ...(actions.canAssign
       ? [
@@ -944,6 +1195,8 @@ export default function JobDetailPage() {
             label: job.scheduled_start ? 'Reschedule' : 'Schedule Job',
             icon: job.scheduled_start ? <CalendarDays /> : <CalendarPlus />,
             group: 'work',
+            disabled: !actions.canSchedule,
+            disabledReason: actions.statusDoorClosedReason,
             onSelect: () => openAssignDialog('schedule'),
           },
         ]
@@ -960,6 +1213,9 @@ export default function JobDetailPage() {
     ...(actions.canCancel
       ? [{ key: 'cancel', label: 'Cancel', icon: <XCircle />, group: 'end', variant: 'destructive' as const, onSelect: () => setCancelOpen(true) }]
       : []),
+    ...(actions.lockedDelete
+      ? [{ key: 'delete', label: 'Delete', icon: <Trash2 />, group: 'end', variant: 'destructive' as const, disabled: true, disabledReason: JOB_LOCKED_REASON, onSelect: () => undefined }]
+      : []),
     ...(actions.canDelete
       ? [{ key: 'delete', label: 'Delete', icon: <Trash2 />, group: 'end', variant: 'destructive' as const, onSelect: () => setDeleteConfirmOpen(true) }]
       : []),
@@ -973,7 +1229,7 @@ export default function JobDetailPage() {
         <Card>
           <div className="flex flex-col gap-4 p-5">
             {/* Identity + action cluster (mobile slice 41: the shared detail header stacks below sm,
-                keeps Mark Complete in the bottom dock on a phone and folds the rest into Actions). */}
+                keeps Complete job in the bottom dock on a phone and folds the rest into Actions). */}
             <DetailHeader
               backTo={preferV2Path('/jobs')}
               backLabel="Back to jobs"
@@ -992,18 +1248,22 @@ export default function JobDetailPage() {
                         entity="job"
                         id={id!}
                         number={job.job_number}
-                        canEdit={ability.can('renumber', 'Job')}
+                        canEdit={actions.canRenumber}
                         onRenamed={() => queryClient.invalidateQueries({ queryKey: ['job', id] })}
                       />
                     </span>
                     <span aria-hidden="true" className="text-subtle-foreground shrink-0">·</span>
-                    <Link
-                      to={preferV2Path(`/customers/${job.customer.id}`)}
-                      title={customerName}
-                      className="min-w-0 truncate hover:underline"
-                    >
-                      {customerName}
-                    </Link>
+                    {customerNameLinks ? (
+                      <Link
+                        to={preferV2Path(`/customers/${job.customer.id}`)}
+                        title={customerName}
+                        className="min-w-0 truncate hover:underline"
+                      >
+                        {customerName}
+                      </Link>
+                    ) : (
+                      <span title={customerName} className="min-w-0 truncate">{customerName}</span>
+                    )}
                   </span>
                   {job.customer.company_name && (
                     <p className="text-muted-foreground mt-0.5 truncate text-[13px]">
@@ -1016,7 +1276,7 @@ export default function JobDetailPage() {
                 <>
                   <StatusChip domain="job" status={job.status} />
                   {/* SRVW-112 - the sub-status sits BESIDE the parent badge. */}
-                  {actions.canSetSubStatus && subStatusOptions.length > 0 ? (
+                  {actions.canEdit && subStatusOptions.length > 0 ? (
                     // A bottom sheet below md, the menu it was from md up (mobile slice 44).
                     <ChoiceMenu
                       title="Sub-status"
@@ -1054,11 +1314,44 @@ export default function JobDetailPage() {
             />
 
             {/* The one mutation on this page whose error is rendered inline
-                rather than toasted - it surfaces the no-issued-invoice 400. */}
+                rather than toasted - it surfaces the server's refusal of a Reopen. */}
             {reopenMutation.error && (
               <p className="text-destructive text-xs">
                 {extractApiError(reopenMutation.error, 'Cannot reopen this job')}
               </p>
+            )}
+
+            {/* The office review (S06.8): offered by the job's own answer to a holder of Office review while the job is in review.
+                Everyone else sees the status chip above and nothing here. */}
+            {actions.canReview && job.status === 'OFFICE_REVIEW' && (
+              <OfficeReviewBanner
+                review={review.data}
+                isLoading={review.isLoading}
+                hasError={review.isError}
+                onReview={() => setReviewOpen(true)}
+              />
+            )}
+
+            {/* Ready to close (S06.13): the job's own answer carries this for a person who closes jobs or reviews them. */}
+            {job.status === 'READY_TO_CLOSE' && job.ready_to_close && (
+              <ReadyToCloseBanner
+                answer={job.ready_to_close}
+                isPending={markDoneMutation.isPending}
+                onMarkDone={() => (job.ready_to_close!.confirm_amount ? setMarkDoneOpen(true) : markDoneMutation.mutate(null))}
+                onShowChanges={() => setReviewOpen(true)}
+              />
+            )}
+
+            {/* The completed-job lock, said once for everything it turns off below (details, people, visits, line items). */}
+            {actions.locked && (
+              <div
+                data-testid="job-locked-notice"
+                role="status"
+                className="border-border bg-muted text-foreground flex items-center gap-2 rounded-md border px-3 py-2 text-[13px] font-medium"
+              >
+                <Lock className="size-4 shrink-0" />
+                <span>{JOB_LOCKED_REASON}</span>
+              </div>
             )}
 
             {/* The ONE task signal on this page, now that the always-on chips
@@ -1121,37 +1414,25 @@ export default function JobDetailPage() {
                     <MapPin /> No service address <Pencil />
                   </Button>
                 )}
-                {job.customer.phone && (
+                {headerPhone && (
                   <p className="text-muted-foreground flex items-center gap-1.5 text-[14px]">
                     <Phone className="text-subtle-foreground size-4 shrink-0" />
-                    {/* The shared contact action: tapping the number offers Call or Text. */}
-                    <PhoneNumberAction
-                      phone={job.customer.phone}
+                    {/* The contact display policy decides what tapping or copying the number does. */}
+                    <PhoneValue
+                      kind="customer_phone"
+                      phone={headerPhone.phone}
+                      extension={headerPhone.extension}
                       name={customerName}
                       context={{ jobId: job.id, jobLabel: job.job_number, customerId: job.customer.id, customerName }}
                     />
                   </p>
                 )}
-                {/* The customer's EMAIL, beside their phone.
-                    It was the one contact detail the page did not carry, which
-                    meant the commonest follow-up on a finished job - send them
-                    something - started by navigating to the customer record to
-                    read an address off it. Same treatment as the phone above,
-                    and for the same reason a link Button rather than a raw
-                    <a href="mailto:">: the raw-tag ratchet is at its floor for
-                    anchors. */}
-                {job.customer.email && (
+                {/* The customer's EMAIL, beside their phone, under the same policy: a mail link and a copy
+                    control only with Copy customer email on. */}
+                {headerEmail && (
                   <p className="text-muted-foreground flex min-w-0 items-center gap-1.5 text-[14px]">
                     <Mail className="text-subtle-foreground size-4 shrink-0" />
-                    <Button
-                      variant="link"
-                      size="sm"
-                      className="h-auto min-w-0 justify-start truncate px-0 font-normal"
-                      title={job.customer.email}
-                      onClick={() => { window.location.href = `mailto:${job.customer.email}`; }}
-                    >
-                      {job.customer.email}
-                    </Button>
+                    <EmailValue email={headerEmail.email} />
                   </p>
                 )}
                 {job.estimate && (
@@ -1162,18 +1443,22 @@ export default function JobDetailPage() {
                     View Estimate ({job.estimate.estimate_number})
                   </Link>
                 )}
-                {job.source_plan && (
+                {job.source_plan && (canOpenServicePlans ? (
                   <Link
                     to={preferV2Path('/service-plans')}
                     className="text-brand block text-[13px] hover:underline"
                   >
                     Service Plan ({job.source_plan.service_plan_number})
                   </Link>
-                )}
+                ) : (
+                  <span className="text-muted-foreground block text-[13px]">
+                    Service Plan ({job.source_plan.service_plan_number})
+                  </span>
+                ))}
                 <div className="pt-1">
                   {/* No kit equivalent: chips plus a create-or-attach popover
                       over /api/tags. Reused as-is (ledger row). */}
-                  <TagInput entityType="JOB" entityId={id!} tags={job.tags ?? []} />
+                  <TagInput entityType="JOB" entityId={id!} tags={job.tags ?? []} readOnly={!actions.canEdit} />
                 </div>
               </div>
 
@@ -1187,7 +1472,7 @@ export default function JobDetailPage() {
                   still matches the two tiles to EACH OTHER, so the pair stays
                   square. */}
               <div className="grid min-w-0 grid-cols-2 items-stretch gap-3 self-start">
-                {actions.canAssign ? (
+                {actions.canSchedule ? (
                   // A kit Button, not a raw <button>: the raw-tag ratchet sits at
                   // its floor and a v2 page may not add one. Only LAYOUT is
                   // overridden here (block flow, auto height, start alignment) -
@@ -1285,6 +1570,11 @@ export default function JobDetailPage() {
                       )}
                     </div>
                     <p className="text-muted-foreground mt-1 text-[11px]">{pctCollected}% collected</p>
+                    {processingTotal > 0 && (
+                      <p className="text-status-amber-emphasis mt-1 text-xs font-medium tabular-nums" data-testid="balance-processing">
+                        {processingBadgeText(processingTotal)}
+                      </p>
+                    )}
                   </>
                 ) : (
                   <>
@@ -1319,6 +1609,7 @@ export default function JobDetailPage() {
             <JobLifecycleBar
               job={job}
               financials={financials}
+              closeOutMoney={job.close_out_money}
               // The org's clock, not the bar's fallback. `tz` is optional and
               // defaults to DEFAULT_SCHEDULE_TIMEZONE, so omitting it does not
               // fail loudly - it silently dates every milestone on New York's
@@ -1328,12 +1619,14 @@ export default function JobDetailPage() {
               tz={scheduleTz}
               visits={jobVisits.visits}
               visitsUnknown={jobVisits.visitsUnknown}
-              visitAbilities={actions.visitAbilities}
               onVisitAction={(visitId, action) => visitLifecycle.mutate({ visitId, action })}
               can={{
-                scheduled: actions.canAssign,
+                scheduled: actions.canSchedule,
                 started: actions.canStart,
                 completed: actions.canComplete,
+                // The Office review step opens the review panel for the person the job lists the review for (the server
+                // lists it only while the job is in Office review, and only for a holder of Office review).
+                office_review: actions.canReview,
                 // Spec A D4: per-user capabilities, never technician role
                 // defaults. Gated per STATE, not by a single OR: States 3/4
                 // create (needing `create Invoice`), State 2 only sends (needing
@@ -1345,19 +1638,18 @@ export default function JobDetailPage() {
                     ? true
                     : invoiceSent.state === 2
                       ? ability.can('send', 'Invoice')
-                      : ability.can('create', 'Invoice') && ability.can('send', 'Invoice')),
-                payment_received:
-                  !jobPaidOff &&
-                  ability.can('record_payment', 'Invoice') &&
-                  // The composite path creates an invoice, so it needs create
-                  // too - but only when there is no invoice to pay.
-                  (financials?.final_invoice != null ||
-                    (!job.source_plan_id && ability.can('create', 'Invoice'))),
+                      : actions.mayCreateInvoice && ability.can('send', 'Invoice')),
+                // The server's answer for this person on this job's invoice (S06.22), never a switch the browser tests: Record
+                // payments and the right to open the invoice (or to create one, when the job has none).
+                payment_received: !jobPaidOff && financials?.payment_received?.offered === true,
               }}
+              paymentReceivedReason={jobPaidOff ? null : financials?.payment_received?.reason}
               busy={startMutation.isPending || completeMutation.isPending || visitLifecycle.isPending}
+              startMovesBack={actions.backwardMoveOpen}
               onNodeClick={(key) => {
                 if (key === 'scheduled') { openAssignDialog('schedule'); return; }
                 if (key === 'completed') { completeMutation.mutate(); return; }
+                if (key === 'office_review') { setReviewOpen(true); return; }
                 if (key === 'invoice_sent') {
                   // State 1 - already sent: open the invoice rather than a dialog.
                   if (invoiceSent.state === 1 && invoiceSent.invoice) {
@@ -1385,7 +1677,7 @@ export default function JobDetailPage() {
               // next one. This is where the rest of them live.
               { value: 'visits', label: 'Visits' },
               { value: 'items', label: 'Items' },
-              ...(canUseInventory ? [{ value: 'logistics', label: 'Logistics' }] : []),
+              ...(showLogistics ? [{ value: 'logistics', label: 'Logistics' }] : []),
               ...(ability.can('read', 'Estimate') ? [{ value: 'estimates', label: 'Estimates' }] : []),
               { value: 'attachments', label: 'Attachments' },
               ...(ability.can('read', 'Communication') ? [{ value: 'communication', label: 'Communication' }] : []),
@@ -1401,14 +1693,14 @@ export default function JobDetailPage() {
                 ),
               },
               { value: 'notes', label: 'Notes' },
-              ...(ability.can('read', 'Invoice') ? [{ value: 'payments', label: 'Payments' }] : []),
+              ...(mayOpenAnInvoice || actions.mayCreateInvoice ? [{ value: 'payments', label: 'Payments' }] : []),
             ]}
           />
 
           {/* --- Visits ----------------------------------------------- */}
           <TabPanel value="visits" activeValue={activeTab}>
             <div className="p-5">
-              <VisitsCard jobId={id!} visits={jobVisits.visits} isLoading={jobVisits.isLoading} visitsUnknown={jobVisits.visitsUnknown} onRetry={() => { void jobVisits.refetch(); }} canSchedule={actions.canReschedule} canAssignCrew={actions.canAssign} visitAbilities={actions.visitAbilities} />
+              <VisitsCard jobId={id!} visits={jobVisits.visits} isLoading={jobVisits.isLoading} visitsUnknown={jobVisits.visitsUnknown} onRetry={() => { void jobVisits.refetch(); }} canSchedule={actions.canReschedule} canAssignCrew={actions.canAssign} lockedReason={actions.lockedSchedule ? JOB_LOCKED_REASON : undefined} newVisitClosedReason={actions.newVisitClosedReason} />
             </div>
           </TabPanel>
 
@@ -1469,10 +1761,11 @@ export default function JobDetailPage() {
                       </div>
                     )}
 
-                    {job.cancelled_reason && (
+                    {(job.cancel_reason || job.cancelled_reason) && (
                       <div className="border-status-red/20 bg-status-red-subtle rounded-md border p-3">
                         <p className="text-status-red-emphasis mb-1 text-xs font-semibold">Cancellation Reason</p>
-                        <p className="whitespace-pre-wrap text-[13px]">{job.cancelled_reason}</p>
+                        {job.cancel_reason && <p className="text-[13px] font-medium">{job.cancel_reason.label}</p>}
+                        {job.cancelled_reason && <p className="whitespace-pre-wrap text-[13px]">{job.cancelled_reason}</p>}
                         {job.cancelled_at && (
                           <p className="text-muted-foreground mt-1 text-xs">
                             Cancelled {formatInstant(job.cancelled_at, scheduleTz, COMPLETION_STAMP)}
@@ -1521,6 +1814,7 @@ export default function JobDetailPage() {
                                 {inv.invoice_number}
                               </Link>
                               <StatusChip domain="invoice" status={inv.status} />
+                              <ProcessingBadge amount={inv.processing_amount} />
                               <span className="font-medium tabular-nums">
                                 {formatCurrency(Number(inv.total_amount))}
                               </span>
@@ -1543,6 +1837,8 @@ export default function JobDetailPage() {
                   jobId={id!}
                   attachments={attachmentsData}
                   onViewAll={() => setActiveTab('attachments')}
+                  canUpload={actions.canUploadAttachments}
+                  lockedReason={JOB_LOCKED_REASON}
                 />
 
                 <JobNotesPreview
@@ -1569,8 +1865,18 @@ export default function JobDetailPage() {
             <div className="flex flex-col gap-5 p-5">
               {/* No JobBillingSummary: it was deleted upstream, and the
                   ReceiptCard below already carries every figure it showed. */}
-              <JobScopeOfWorkCard jobId={id!} canManage={actions.canManageLines} />
-              <LineItemsEditor jobId={id!} canManage={actions.canManageLines} />
+              {actions.priceEditClosedReason && (
+                <div
+                  data-testid="job-done-prices-notice"
+                  role="status"
+                  className="border-border bg-muted text-foreground flex items-center gap-2 rounded-md border px-3 py-2 text-[13px] font-medium"
+                >
+                  <Lock className="size-4 shrink-0" />
+                  <span>{actions.priceEditClosedReason}</span>
+                </div>
+              )}
+              <JobScopeOfWorkCard jobId={id!} canManage={actions.canManageLines} lockedReason={itemsLockedReason} />
+              <LineItemsEditor jobId={id!} canManage={actions.canManageLines} lockedReason={itemsLockedReason} />
               <ReceiptCard
                 variant="job"
                 lineItemsSubtotal={(jobLineItemsData?.lines ?? []).reduce((sum, l) => sum + netOf(l), 0)}
@@ -1601,11 +1907,11 @@ export default function JobDetailPage() {
                   orgLaborRate={org?.labor_rate ?? 0}
                   orgOverheadMode={org?.overhead_mode ?? 'PERCENTAGE'}
                   orgOverheadValue={org?.overhead_value ?? 0}
-                  canEditNow={job.status !== 'CANCELLED'}
+                  canEditNow={job.status !== 'CANCELLED' && actions.canEdit}
                   onCommitLaborHours={(hours) => costMutation.mutate({ labor_hours: hours })}
                   onCommitOverhead={(mode, value) => costMutation.mutate({ overhead_mode: mode, overhead_value: value })}
                   materialsPurchased={
-                    canReadPO && materialCost && materialCost.lineCount > 0
+                    canReadPO && materialCost && materialCost.materialCost != null && materialCost.lineCount > 0
                       ? { amount: materialCost.materialCost, lineCount: materialCost.lineCount }
                       : null
                   }
@@ -1616,11 +1922,11 @@ export default function JobDetailPage() {
 
           {/* --- Logistics: guarded as well as its trigger, because LOList and
               JobStagesSection fetch from the Scale-gated /api/inventory routes
-              and an unentitled mount is a 402. --- */}
-          {canUseInventory && (
+              and an unentitled mount is a 402. Each part is guarded on its own. --- */}
+          {showLogistics && (
             <TabPanel value="logistics" activeValue={activeTab}>
               <div className="flex flex-col gap-5 p-5">
-                {(() => {
+                {showOrdersPart && (() => {
                   const syncedLines = (jobLineItemsData?.lines ?? []).filter(
                     (l) => l.stock_status === 'SYNCED',
                   );
@@ -1636,8 +1942,8 @@ export default function JobDetailPage() {
                     </div>
                   );
                 })()}
-                <LOList jobId={id!} />
-                <JobStagesSection jobId={id!} />
+                {showOrdersPart && <LOList jobId={id!} />}
+                {showStagingPart && <JobStagesSection jobId={id!} />}
               </div>
             </TabPanel>
           )}
@@ -1648,14 +1954,14 @@ export default function JobDetailPage() {
               {/* Workiz parity: a job can ALWAYS take another estimate, so "Add
                   estimate" is ungated; "from items" is the extra, and only has
                   anything to copy once the job HAS items. */}
-              {(ability.can('create', 'Estimate') || ability.can('update', 'Estimate')) && (
+              {(actions.canCreateEstimate || ability.can('update', 'Estimate')) && (
                 <div className="flex flex-wrap justify-end gap-2">
                   {ability.can('update', 'Estimate') && (
                     <Button type="button" variant="outline" size="sm" onClick={() => setAttachEstimateOpen(true)}>
                       <FileText aria-hidden /> Attach estimate
                     </Button>
                   )}
-                  {ability.can('create', 'Estimate') && billableLineCount > 0 && (
+                  {actions.canCreateEstimate && billableLineCount > 0 && (
                     <Button
                       type="button"
                       variant="outline"
@@ -1666,7 +1972,7 @@ export default function JobDetailPage() {
                       <PlusCircle aria-hidden /> Create estimate from items
                     </Button>
                   )}
-                  {ability.can('create', 'Estimate') && (
+                  {actions.canCreateEstimate && (
                     // `/estimates/new?job_id=` mints an empty DRAFT anchored to
                     // this job and lands on the workspace.
                     <Button
@@ -1702,9 +2008,11 @@ export default function JobDetailPage() {
                     </Link>
                     <div className="mt-1.5 flex items-center gap-3">
                       <StatusChip domain="estimate" status={job.estimate.status} />
-                      <span className="text-[13px] font-semibold tabular-nums">
-                        {formatCurrency(Number(job.estimate.total_amount))}
-                      </span>
+                      {job.estimate.total_amount != null && (
+                        <span className="text-[13px] font-semibold tabular-nums">
+                          {formatCurrency(Number(job.estimate.total_amount))}
+                        </span>
+                      )}
                     </div>
                     {job.estimate.deposit && (
                       <div className="mt-4">
@@ -1774,7 +2082,7 @@ export default function JobDetailPage() {
           {/* --- Attachments ------------------------------------------ */}
           <TabPanel value="attachments" activeValue={activeTab}>
             <div className="p-5">
-              <AttachmentsTabBody jobId={id!} attachments={attachmentsData} />
+              <AttachmentsTabBody jobId={id!} attachments={attachmentsData} canUpload={actions.canUploadAttachments} lockedReason={JOB_LOCKED_REASON} />
             </div>
           </TabPanel>
 
@@ -1788,6 +2096,7 @@ export default function JobDetailPage() {
                 customerName={customerName}
                 customerEmail={job.customer.email ?? undefined}
                 customerPhone={job.customer.phone || undefined}
+                canLogPast={actions.canLogCommunication}
               />
             </TabPanel>
           )}
@@ -1811,7 +2120,7 @@ export default function JobDetailPage() {
 
           {/* --- Payments ---------------------------------------------- */}
           <TabPanel value="payments" activeValue={activeTab}>
-            <PaymentsTab financials={financials} jobId={id!} />
+            <PaymentsTab financials={financials} jobId={id!} canRecordPayment={ability.can('record_payment', 'Invoice')} />
           </TabPanel>
         </Card>
 
@@ -1854,6 +2163,22 @@ export default function JobDetailPage() {
           />
         )}
         <CancelJobDialog open={cancelOpen} onOpenChange={setCancelOpen} jobId={id!} />
+        <CompleteWithOpenVisitsDialog
+          open={openVisitsJobs !== null}
+          onOpenChange={(next) => { if (!next) setOpenVisitsJobs(null); }}
+          jobs={openVisitsJobs ?? []}
+          isPending={completeMutation.isPending}
+          onConfirm={() => completeMutation.mutate(true)}
+        />
+        <ConfirmDialog
+          open={markDoneOpen}
+          onOpenChange={setMarkDoneOpen}
+          title="Mark this job Done?"
+          description={`${formatCurrency(job.ready_to_close?.amount_owed ?? 0)} is still owed on ${job.job_number}. Marking it Done closes the job with that balance still open.`}
+          confirmLabel={`Mark Done, ${formatCurrency(job.ready_to_close?.amount_owed ?? 0)} still owed`}
+          isPending={markDoneMutation.isPending}
+          onConfirm={() => markDoneMutation.mutate(job.ready_to_close?.amount_owed ?? 0)}
+        />
         <ConfirmDialog
           open={deleteConfirmOpen}
           onOpenChange={setDeleteConfirmOpen}
@@ -1905,11 +2230,35 @@ export default function JobDetailPage() {
           invoiceId={financials?.final_invoice?.id ?? null}
           invoiceNumber={financials?.final_invoice?.invoice_number ?? ''}
           amountDue={Number(financials?.final_invoice?.amount_due ?? 0)}
+          processingAmount={Number((financials?.invoices ?? []).find((i) => i.id === financials?.final_invoice?.id)?.processing_amount ?? 0)}
           jobId={job.id}
           hasUnspentDeposit={hasUnspentDeposit}
           onSuccess={() => { invalidateJob(); setPaymentReceivedOpen(false); }}
         />
-        {/* Phone only: Mark Complete in the thumb zone. Last child so it sticks to the scroller's bottom. */}
+        {actions.canReview && job.status === 'OFFICE_REVIEW' && (
+          <OfficeReviewPanel
+            jobId={job.id}
+            open={reviewOpen}
+            onOpenChange={setReviewOpen}
+            jobNumber={job.job_number}
+            review={review.data}
+            isLoading={review.isLoading}
+            hasError={review.isError}
+            onRetry={() => { void review.refetch(); }}
+            canFinish={actions.canFinishReview}
+          />
+        )}
+        {sinceOffered && (
+          <SinceReviewPanel
+            open={reviewOpen}
+            onOpenChange={setReviewOpen}
+            jobNumber={job.job_number}
+            review={review.data}
+            hasError={review.isError}
+            onRetry={() => { void review.refetch(); }}
+          />
+        )}
+        {/* Phone only: Complete job in the thumb zone. Last child so it sticks to the scroller's bottom. */}
         <DetailDock>{completeButton}</DetailDock>
       </div>
     </IconRail>

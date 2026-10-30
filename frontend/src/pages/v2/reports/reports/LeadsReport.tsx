@@ -4,6 +4,8 @@ import { CheckCircle2, DollarSign, Percent, Target } from 'lucide-react';
 
 import { formatPhone } from '@/lib/utils';
 import { exportCsvFile } from '@/lib/csv';
+import { useAppAbility } from '@/contexts/AbilityContext';
+import { canSeeCompanyFigures } from '@/lib/ability';
 import { useIsDemoOrg } from '@/lib/useIsDemoOrg';
 import { findReport } from '@/lib/reports/report-catalog';
 import { useLeadsReport } from '@/lib/reports/leads-data';
@@ -58,8 +60,8 @@ const SOURCES = [
   'Office', 'Google', 'Account', 'Returning customer', 'Village',
   'Village - Returned Customer', 'Google Local Service', 'Reserve with Google', 'Return Customer',
 ];
-const TEAM = ['Emanuel Dahan', 'Dispatch', 'Ohad', 'Rami', 'Logistics', 'Nadia', 'Shaked', 'Liran - Dor', 'Ofir Sub'];
-const CREATORS = ['Emanuel Dahan', 'Dispatch', 'Ohad', 'Rami', 'Logistics', 'Nadia', 'Robert Bresnick', 'Efrain & Zhao', 'Onboarding'];
+const TEAM = ['Sam Rivera', 'Dispatch', 'Jordan', 'Reese', 'Logistics', 'Quinn', 'Hayden', 'Lee - Dana', 'Oak Sub'];
+const CREATORS = ['Sam Rivera', 'Dispatch', 'Jordan', 'Reese', 'Logistics', 'Quinn', 'Jamie Park', 'Ridge & Cole', 'Onboarding'];
 const TAGS = [
   'Followup', 'Callback', 'NEED TO COLLECT', 'NOT ANSWERING', 'NEED TO ORDER PART',
   'Waiting for pictures', 'Waiting for the client', 'Need more info', 'Today job',
@@ -220,7 +222,7 @@ const FILTER_COLUMNS: { key: FilterKey; label: string; options: readonly string[
   { key: 'source', label: 'Source', options: SOURCES },
 ];
 
-function Breakdown({ title, rows }: { title: string; rows: { label: string; count: number; value: number }[] }) {
+function Breakdown({ title, rows, showsValue }: { title: string; rows: { label: string; count: number; value: number }[]; showsValue: boolean }) {
   const top = rows.sort((a, b) => b.count - a.count).slice(0, 6);
   const max = Math.max(1, ...top.map((r) => r.count));
   return (
@@ -236,7 +238,7 @@ function Breakdown({ title, rows }: { title: string; rows: { label: string; coun
                 <span className="truncate">{r.label}</span>
                 <span className="text-muted-foreground tabular-nums">
                   {r.count}
-                  {r.value ? ` · ${money0(r.value)}` : ''}
+                  {showsValue && r.value ? ` · ${money0(r.value)}` : ''}
                 </span>
               </div>
               <Progress value={(r.count / max) * 100} className="h-2" aria-label={`${r.label}, ${r.count}`} />
@@ -251,6 +253,8 @@ function Breakdown({ title, rows }: { title: string; rows: { label: string; coun
 export default function LeadsReport() {
   const report = findReport('leads')!;
   const isDemo = useIsDemoOrg();
+  // The sums of this report (the sold-for tile, the value beside each breakdown) are company-wide money; the leads are not.
+  const showsTotals = canSeeCompanyFigures(useAppAbility());
   // demo org -> deterministic sample leads; real org -> GET /api/reports/leads.
   const { leads } = useLeadsReport(isDemo);
   const [filters, setFilters] = useState<Filters>({ ...EMPTY_FILTERS });
@@ -351,7 +355,7 @@ export default function LeadsReport() {
           { icon: Target, label: 'Leads', value: stats.total, tone: 'primary', emphasize: true },
           { icon: CheckCircle2, label: 'Converted', value: stats.converted, tone: 'warning' },
           { icon: Percent, label: 'Conversion Rate', value: `${stats.rate}%`, tone: 'danger', emphasize: true },
-          { icon: DollarSign, label: 'Sold for', value: money0(stats.sold), tone: 'success', emphasize: true },
+          ...(showsTotals ? [{ icon: DollarSign, label: 'Sold for', value: money0(stats.sold), tone: 'success' as const, emphasize: true }] : []),
         ]}
       />
 
@@ -376,8 +380,8 @@ export default function LeadsReport() {
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <Breakdown title="Leads by source" rows={stats.bySource} />
-        <Breakdown title="Leads by status" rows={stats.byStatus} />
+        <Breakdown title="Leads by source" rows={stats.bySource} showsValue={showsTotals} />
+        <Breakdown title="Leads by status" rows={stats.byStatus} showsValue={showsTotals} />
       </div>
 
       <ReportToolbar

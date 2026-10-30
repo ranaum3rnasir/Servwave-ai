@@ -3,8 +3,7 @@ import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import { TEST_USERS, mockAuthAs, authHeader } from './helpers';
-import { clearPermissionCache, setCachedGrants } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
+import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { addOrFilter } from '../lib/permissions/whereCompose';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -72,7 +71,6 @@ describe('GET /api/leads (LIST) — multi-read scope OR survives a search OR (Is
   beforeEach(() => {
     vi.clearAllMocks();
     clearPermissionCache();
-    clearUserOverrideCache();
     mockLead.lead.findMany.mockResolvedValue([]);
     mockLead.lead.count.mockResolvedValue(0);
     if (mockLead.tag?.findMany) mockLead.tag.findMany.mockResolvedValue([]);
@@ -138,7 +136,6 @@ describe('GET /api/invoices (LIST) — multi-read scope OR survives a search OR 
   beforeEach(() => {
     vi.clearAllMocks();
     clearPermissionCache();
-    clearUserOverrideCache();
     mockInv.invoice.findMany.mockResolvedValue([]);
     mockInv.invoice.count.mockResolvedValue(0);
     mockInv.invoice.aggregate.mockResolvedValue({ _sum: {}, _count: 0 });
@@ -149,9 +146,6 @@ describe('GET /api/invoices (LIST) — multi-read scope OR survives a search OR 
   it('SALES (role read OWN_INVOICE_VIA_LEAD) + override create Invoice + ?search=: BOTH scope arms kept', async () => {
     mockAuthAs('sales');
     // SALES default role read Invoice = OWN_INVOICE_VIA_LEAD (job.estimate.lead.lead_assignees).
-    setCachedGrants(TEST_USERS.sales.organization_id, 'SALES', [
-      { action: 'read', subject: 'Invoice', conditions: { job: { estimate: { lead: { lead_assignees: { some: { user_id: '{{userId}}' } } } } } } },
-    ]);
     // Per-user override create Invoice → synthesizes a SECOND distinct read = OWN_INVOICE_VIA_JOB.
     mockInv.userPermissionOverride.findMany.mockResolvedValue([
       { action: 'create', subject: 'Invoice', effect: 'allow' },

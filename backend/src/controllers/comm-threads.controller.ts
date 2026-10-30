@@ -5,10 +5,7 @@ import { logger } from '../lib/logger';
 import { tenantWhere } from '../lib/tenant';
 import { matchByPhone, normalizeNAPhone } from '../lib/comms-identity';
 import { scopeWhereForReq } from '../lib/permissions/enforce';
-import {
-  commVisibilityWhere,
-  commParentVisibilityWhere,
-} from '../lib/permissions/anchorVisibility';
+import { textReadScopeForReq, textsInSectionScopeForReq } from '../lib/communication/communicationScope';
 import { findOrCreateSmsThreadByNumber, smsThreadExistsForNumber } from '../lib/ctm/smsThread';
 import { isCtmConfigured } from '../lib/ctm/client';
 import {
@@ -149,7 +146,7 @@ function isDeliverableThread(thread: { kind?: string | null; user_id?: string | 
 // depth for the automation seam, not something a user send can normally reach.
 const SMS_GATE_409: Partial<Record<CtmSmsFailureReason, string>> = {
   RECIPIENT_OPTED_OUT: 'This recipient has opted out of text messages',
-  SMS_NOT_READY: 'Text messaging is not active yet — A2P registration is pending approval',
+  SMS_NOT_READY: 'Text messaging is not active yet — carrier approval is pending',
   ORG_SMS_DISABLED: 'Text messaging is turned off for this organization',
   NO_SMS_NUMBER: 'No SMS-capable phone number is available for this conversation',
   DUPLICATE_SEND: 'An identical text was just sent to this conversation',
@@ -285,27 +282,16 @@ function mapAutomation(a: any) {
 
 // ─── Thread Handlers ───────────────────────────────────
 
-/**
- * Anchor-inherited visibility for SMS (slice 8a), in the two halves it needs.
- *
- * The anchor lives on the MESSAGE (Message.job_id / Message.lead_id), not on the
- * thread, so one conversation can legitimately hold job-A and job-B messages at
- * once and the predicate is per-message. But Message has NO top-level read path
- * - it is only ever reached as a nested `messages` include - so scoping it means
- * two filters, both in SQL:
- *   - `messages` narrows the nested include, so the payload carries only the
- *     rows the caller may see (a filtered join, NOT response-level hiding);
- *   - `thread` drops any conversation with nothing visible in it, because the
- *     thread's existence and its customer linkage are themselves information.
- * Both collapse to {} for an org-wide requester, leaving those queries untouched.
+/*
+ * Text visibility follows Communication scope (M11, Roles & Permissions S08.5), in the two halves it needs. The nested
+ * messages are filtered in SQL (a filtered join, NOT response-level hiding), and the conversation drops out when it
+ * holds nothing readable, because its existence and its customer link are themselves information. Both collapse to {}
+ * for a person on "All".
+ *   - `textsInSectionScopeForReq`: the inbox list and its unread count. A conversation is listed when it holds one of
+ *     the person's own messages (a linked number, a text they sent, their staff conversation), and returns only those.
+ *   - `textReadScopeForReq`: opening one conversation or message (detail, mark read, reply, reassign). Each message
+ *     returns when it is the person's or reachable through the job, lead, customer or vendor it hangs off.
  */
-async function smsVisibility(req: Request) {
-  const [messages, thread] = await Promise.all([
-    commVisibilityWhere(req),
-    commParentVisibilityWhere(req, 'messages'),
-  ]);
-  return { messages, thread };
-}
 
 /**
  * SMS thread per-caller unread (#2049 - the SMS mirror of email's
@@ -351,7 +337,7 @@ export async function attachCallerUnread<
 
 export async function listThreads(req: Request, res: Response) {
   try {
-    const scope = await smsVisibility(req);
+    const scope = await textsInSectionScopeForReq(req);
     const threads = await prisma.messageThread.findMany({
       where: { ...tenantWhere(req), ...scope.thread },
       orderBy: { updated_at: 'desc' },
@@ -376,7 +362,7 @@ export async function listThreads(req: Request, res: Response) {
 
 export async function getThread(req: Request, res: Response) {
   try {
-    const scope = await smsVisibility(req);
+    const scope = await textReadScopeForReq(req);
     const thread = await prisma.messageThread.findFirst({
       where: { id: req.params.id as string, ...tenantWhere(req), ...scope.thread },
       include: {
@@ -414,7 +400,7 @@ export async function getThread(req: Request, res: Response) {
  * `user_id` from the body, the query or the path (R8).
  */
 async function resolveVisibleThread(req: Request): Promise<{ id: string } | null> {
-  const scope = await smsVisibility(req);
+  const scope = await textReadScopeForReq(req);
   return prisma.messageThread.findFirst({
     where: { id: req.params.id as string, ...tenantWhere(req), ...scope.thread },
     select: { id: true },
@@ -556,7 +542,7 @@ export async function sendMessage(req: Request, res: Response) {
         where: {
           id: req.body.threadId,
           ...tenantWhere(req),
-          ...(await commParentVisibilityWhere(req, 'messages')),
+          ...(await textReadScopeForReq(req)).thread,
         },
       });
       if (!thread) {
@@ -803,6 +789,8 @@ export async function sendMessage(req: Request, res: Response) {
         // set/backfilled up top is not enough now that lead scoping reads
         // per-message. leadId is already same-customer-gated above.
         ...(leadId != null && { lead_id: leadId }),
+        // The person who sent it from the app (S08.1). A simulated inbound write has no sender.
+        ...(isOutboundSend && { sent_by_user_id: req.user!.id }),
         organization_id: orgId,
       },
     });
@@ -916,7 +904,7 @@ export async function reassignMessageJob(req: Request, res: Response) {
     // One filter for the update AND the refetch (the refetch used to be weaker;
     // see reassignCallJob for why that stops being benign once the guard is a
     // visibility predicate).
-    const visibility = await commVisibilityWhere(req);
+    const visibility = (await textReadScopeForReq(req)).messages;
     let data: { job_id: string | null; job_label: string | null };
     if (req.body.job_id != null) {
       // Resolve the message's thread (org-scoped, by membership) to enforce
@@ -973,6 +961,12 @@ export async function reassignMessageJob(req: Request, res: Response) {
       where: { id: req.params.id as string, ...tenantWhere(req), ...visibility },
       take: 1,
     });
+    // A detach can take the message out of the person's reach (it was readable only through the record it was taken
+    // off). The change is done; answer with a success that says the row left, not a 404 or a crash.
+    if (!message) {
+      res.json({ message: null, left: true });
+      return;
+    }
 
     res.json({ message: mapMessage(message) });
   } catch (err) {
@@ -994,7 +988,7 @@ export async function reassignMessageLead(req: Request, res: Response) {
   try {
     // See reassignMessageJob: one filter, applied to the pre-read, the update and
     // the refetch alike.
-    const visibility = await commVisibilityWhere(req);
+    const visibility = (await textReadScopeForReq(req)).messages;
     let data: { lead_id: string | null };
     if (req.body.lead_id != null) {
       const msgThread = await prisma.messageThread.findFirst({
@@ -1043,6 +1037,12 @@ export async function reassignMessageLead(req: Request, res: Response) {
       where: { id: req.params.id as string, ...tenantWhere(req), ...visibility },
       take: 1,
     });
+    // A detach can take the message out of the person's reach (it was readable only through the record it was taken
+    // off). The change is done; answer with a success that says the row left, not a 404 or a crash.
+    if (!message) {
+      res.json({ message: null, left: true });
+      return;
+    }
 
     res.json({ message: mapMessage(message) });
   } catch (err) {

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { JobStatus } from '@prisma/client';
 import { prisma } from '../../../lib/prisma';
 import { runAutomationTick } from '../cron';
-import { tenantConfigValues, getTenantContext } from '../../../lib/tenant-context';
 
 vi.mock('../enrollment', () => ({
   createEnrollment: vi.fn().mockResolvedValue({ id: 'enr-x' }),
@@ -221,7 +221,10 @@ describe('runAutomationTick — scanTimeTriggers', () => {
     ]);
     await runAutomationTick(NOW);
     const q = mockPrisma.job.findMany.mock.calls[0][0];
-    expect(q.where.status).toBe('COMPLETED');
+    // A job completed from now on lands in Office review (it never rests at Completed), so the scan asks for the
+    // whole finished set - read from the job status order, not from the set under test.
+    const order = Object.values(JobStatus);
+    expect(q.where.status).toEqual({ in: order.slice(order.indexOf('COMPLETED')).filter((st) => st !== 'CANCELLED') });
     // completed_at ∈ [now − offset − 48h, now − offset]
     expect(q.where.completed_at.lte.getTime()).toBe(NOW.getTime() - 24 * HOUR);
     expect(q.where.completed_at.gte.getTime()).toBe(NOW.getTime() - 24 * HOUR - 48 * HOUR);
@@ -766,61 +769,5 @@ describe('runAutomationTick — overlap guard (#1916)', () => {
     const enrollmentQueries = mockPrisma.workflowEnrollment.findMany.mock.calls.length;
     await runAutomationTick(new Date(NOW.getTime() + 12 * MINUTE));
     expect(mockPrisma.workflowEnrollment.findMany.mock.calls.length).toBe(enrollmentQueries);
-  });
-});
-
-/**
- * The poller's TENANT SCOPE, and why it is a test rather than a line of wiring in index.ts.
- *
- * Production connects as `app_rls` - a role with NO BYPASSRLS - and every tenant table
- * carries a FORCED `tenant_isolation` policy reading two session vars:
- *
- *   current_setting('app.bypass_rls') = 'on'  OR  organization_id = current_setting('app.current_org_id')
- *
- * `wrapWithTenantGuard` fills those in from the AsyncLocalStorage tenant context. A request
- * has one because `authenticate` opens it; the poller is nobody's request, so with no
- * context `tenantConfigValues()` returns the fail-closed pair and the policy matches NO
- * ROWS. The poller's own queries are org-LESS by design (it sweeps every tenant), so the
- * failure lands on the very first query of every phase: `workflow.findMany` returns [],
- * `scanDateAnchorTriggers` takes its `workflows.length === 0` early return, and the anchor
- * sweep is never reached. Nothing throws and nothing is logged - the tick simply does
- * nothing, every minute, for ever. Measured on production 2026-09-03: the date-anchored
- * scan's own SELECT stood at 219 calls with `rows = 0` on every one, while the identical
- * predicate run by hand as a BYPASSRLS role returned a live PUBLISHED workflow.
- *
- * So the assertion is on the CONTEXT the guard reads, not on a query shape: a mocked prisma
- * answers any where-clause and can never see this. `tenant-guard.test.ts` owns the other
- * half (that this context becomes the right `set_config` call).
- */
-describe('runAutomationTick — tenant scope (the RLS backstop)', () => {
-  it('runs EVERY phase under the cross-org bypass, so RLS cannot blank the sweep', async () => {
-    const seen: Array<{ query: string; config: { orgId: string; bypass: string } }> = [];
-    const recording = (query: string, result: unknown) =>
-      vi.fn(async () => {
-        seen.push({ query, config: tenantConfigValues() });
-        return result;
-      });
-    mockPrisma.workflow.findMany = recording('workflow.findMany', []);
-    mockPrisma.workflowEnrollment.findMany = recording('workflowEnrollment.findMany', []);
-
-    await runAutomationTick(NOW);
-
-    // scanTimeTriggers, scanDateAnchorTriggers, advanceDueEnrollments, recoverWedgedEnrollments
-    expect(seen.map((s) => s.query)).toEqual([
-      'workflow.findMany',
-      'workflow.findMany',
-      'workflowEnrollment.findMany',
-      'workflowEnrollment.findMany',
-    ]);
-    // '' + 'on' is what runUnscoped yields: no org filter, the controlled cross-tenant bypass.
-    // The unfixed poller produced { orgId: '', bypass: '' } here - the fail-closed pair.
-    for (const s of seen) {
-      expect(s.config).toEqual({ orgId: '', bypass: 'on' });
-    }
-  });
-
-  it('does not leak the bypass past the tick', async () => {
-    await runAutomationTick(NOW);
-    expect(getTenantContext()).toBeUndefined();
   });
 });

@@ -15,6 +15,7 @@ import {
   notifyCalendarEntryDeleted,
   buildOldParticipantMap,
 } from '../lib/calendar-entries/notify';
+import { withCalendarEntryRule } from '../lib/calendar-entries/visibility';
 import { LONG_TEXT_MAX, VERY_LONG_TEXT_MAX } from '../lib/text-limits';
 
 // ─── Zod Schemas ───────────────────────────────────────
@@ -156,6 +157,9 @@ function toParticipantData(orgId: string, entryId: string, participants: Partici
  * id — the read path behind the customer detail page's combined Schedule tab. Composed with
  * `tenantWhere(req)` above via a plain object spread, never replacing it, so a same-named
  * customer in another org (a different row, a different id) can never leak through this filter.
+ *
+ * Without "See all calendar entries" the list is narrowed to the entries that name the caller as a user
+ * participant (S04.8, withCalendarEntryRule), the customer tab's included.
  */
 export async function list(req: Request, res: Response) {
   try {
@@ -167,7 +171,7 @@ export async function list(req: Request, res: Response) {
     if (customer_id) where.participants = { some: { kind: 'CUSTOMER', customer_id } };
 
     const entries = await prisma.calendarEntry.findMany({
-      where,
+      where: withCalendarEntryRule(req, where),
       select: CALENDAR_ENTRY_SELECT,
       orderBy: { start: 'asc' },
     });
@@ -273,13 +277,16 @@ export async function create(req: Request, res: Response) {
   }
 }
 
-/** GET /api/calendar-entries/:id — tenant-scoped detail; a cross-org id is a 404, not the row. */
+/**
+ * GET /api/calendar-entries/:id — tenant-scoped detail; a cross-org id is a 404, not the row. So is an entry the
+ * caller does not take part in, unless they hold "See all calendar entries" (S04.8, withCalendarEntryRule).
+ */
 export async function getOne(req: Request, res: Response) {
   try {
     const id = param(req, 'id');
 
     const entry = await prisma.calendarEntry.findFirst({
-      where: { id, ...tenantWhere(req) },
+      where: withCalendarEntryRule(req, { id, ...tenantWhere(req) }),
       select: CALENDAR_ENTRY_SELECT,
     });
     if (!entry) {

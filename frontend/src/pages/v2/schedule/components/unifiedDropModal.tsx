@@ -74,6 +74,11 @@ export interface UnifiedDropModalProps {
    */
   canAssignOthers: boolean;
   /**
+   * Whether this viewer may name anyone on this card at all. A job's crew is Assign people to jobs; without it the
+   * page books the visit with no crew, so the field is locked (and empty). Defaults to true.
+   */
+  canNameCrew?: boolean;
+  /**
    * The signed-in user as a LABEL, from the same `useAssignUserPermission()` call that produced
    * `canAssignOthers` and seeded `draft.crew`.
    *
@@ -121,6 +126,7 @@ export function UnifiedDropModal({
   conflictNote,
   members,
   canAssignOthers,
+  canNameCrew = true,
   actorKnownPeople = [],
   origin = 'drop',
   onChange,
@@ -225,7 +231,7 @@ export function UnifiedDropModal({
                 // "may not name others" means on this control, because the page has already put
                 // the one person they MAY name into `draft.crew`. Taking themselves off would
                 // leave a field they cannot refill.
-                disabled={!canAssignOthers}
+                disabled={!canAssignOthers || !canNameCrew}
                 // The actor, then whatever crew the dropped card already carried - so BOTH a
                 // seeded chip and a pre-filled one stay labelled for a viewer whose roster is
                 // scoped to themselves (or has not arrived yet). The actor goes first because

@@ -1,9 +1,11 @@
-import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query';
+import { useState } from 'react';
+import { useQuery, useMutation, useQueryClient, useInfiniteQuery, keepPreviousData, type QueryClient } from '@tanstack/react-query';
 import { useFeature, useEntitlementsReady } from '@/lib/entitlements';
 import { useIsDemoOrg } from '@/lib/useIsDemoOrg';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import api from '@/lib/axios';
 import { useOrganization } from '@/lib/api/organization';
+import { switchOn, useMySwitches } from '@/lib/api/mySwitches';
 import { isPhoneConnected, isSmsReady } from '@/lib/api/phoneConnected';
 import { fmtPhone, isFinalCallStatus } from '@/lib/api/communication-shared';
 import { toast } from '@/components/ui/use-toast';
@@ -18,7 +20,7 @@ import type {
 // Re-export the shared types so components import them from the seam, never the
 // shared module directly.
 export type {
-  CallSession, CallTranscriptTurn, PhoneCustomer, Contact, ChannelIdentity, PhoneAgent,
+  CallSession, CallTranscriptTurn, PhoneCustomer, Contact, ChannelIdentity, PhoneAgent, ScoredPhoneAgent,
   MessageThread, Message, ThreadKind, TextTemplate, TextAutomation, MergeField,
   TextTrigger, TextAudience, BlockedNumber, BlockReason,
   TrainingScenario, TrainingSession, TranscriptTurn,
@@ -27,7 +29,7 @@ export type {
   OwnedNumber, NumberType, NumberStatus,
   FlowNode, FlowStructure, ForwardTarget, MenuOption,
   CallGroupMember, RingStrategy, GroupDevice,
-  Account, AccountId, Attachment, ComposeOrigin, ComposeState, ReplyDraft, Email,
+  Account, AccountId, Attachment, ComposeOrigin, ComposeState, ReplyDraft, Email, RecordTie,
   MessageStatus, DeliveryNote, DeliveryTone,
   EmailAssignmentView, EmailThread,
 } from '@/lib/api/communication-shared';
@@ -37,7 +39,7 @@ export {
   DISPOSITION_LABELS, CAMPAIGN_LABELS, BLOCK_REASON_LABELS, BLOCK_REASON_TONE,
   MERGE_FIELDS, mergeLabel, SMS_COMPLIANCE, OPT_OUT_FOOTER, SMS_LEGAL_DISCLAIMER,
   TEXT_TRIGGERS, TIMING_OPTIONS,
-  fmtPhone, normalizeNAPhone, matchByNumber, fmtAht, customFlowOptions, flowNameForId,
+  fmtPhone, normalizeNAPhone, matchByNumber, fmtAht, hasScorecard, customFlowOptions, flowNameForId,
   deliveryNote, outboundBubbleClass,
   flowStructureLabel, groupTargetOptions, ringLabel, SCRIPT_ATTENTION_THRESHOLD,
   TRAINING_PASS_THRESHOLD, TRAINING_ROLES, TRAINING_OUTCOME_LABELS,
@@ -58,11 +60,22 @@ export type CustomerJobNav = {
   open: boolean;
 };
 
+/**
+ * Whether to ask for customer records at all. The customer directory and a customer's own record answer only a person
+ * who holds View customers, so a person without it is not asked (the answer would be a refusal and a red line in the
+ * console). Like every screen that draws from the switches, a missing answer (still loading) reads as off, so the
+ * request waits for the answer and goes out only when it says yes.
+ */
+function useMayReadCustomers(): boolean {
+  return switchOn(useMySwitches()?.values, 'view_customers');
+}
+
 /** The open customer's jobs — reads the jobs embedded on GET /api/customers/:id. */
 export function useCustomerJobs(customerId?: string) {
+  const mayReadCustomers = useMayReadCustomers();
   return useQuery<CustomerJobNav[]>({
     queryKey: ['communication', 'customer-jobs', customerId],
-    enabled: Boolean(customerId),
+    enabled: Boolean(customerId) && mayReadCustomers,
     queryFn: () =>
       api.get(`/api/customers/${customerId}`).then((r) => {
         const rows: Array<{
@@ -91,7 +104,7 @@ export type CustomerLeadNav = {
   number: string;
   /** Service request, falling back to the customer name. */
   detail: string;
-  /** Not LOST/CANCELLED — mirrors the job rule (a WON lead still gets calls). */
+  /** Not LOST — mirrors the job rule (a WON lead still gets calls). */
   open: boolean;
 };
 
@@ -103,7 +116,7 @@ type LeadRow = {
   customer?: { first_name?: string | null; last_name?: string | null; company_name?: string | null } | null;
 };
 
-const DEAD_LEAD_STATUSES = ['LOST', 'CANCELLED'];
+const DEAD_LEAD_STATUSES = ['LOST'];
 
 function mapLead(l: LeadRow): CustomerLeadNav {
   const customer =
@@ -148,7 +161,8 @@ export function useJobSearch(term: string, enabled = true) {
     queryKey: ['communication', 'attach-job-search', q],
     enabled: enabled && q.length >= ATTACH_SEARCH_MIN,
     queryFn: () =>
-      api.get('/api/jobs', { params: { search: q, limit: 8 } }).then((r) => {
+      // A call or a text can be about a Done job: the Jobs list's default view leaves Done out, this picker asks for it.
+      api.get('/api/jobs', { params: { search: q, limit: 8, include_done: 'true' } }).then((r) => {
         const rows: Array<{
           id: string;
           job_number: string;
@@ -371,6 +385,67 @@ export function useRecordingUrl(callId: string) {
   });
 }
 
+/** Lazy signed-URL fetch for the download of a call recording (S08.11): a link marked as a file download, from its own
+ *  route that needs Download recording. Same lazy shape as `useRecordingUrl`: nothing fires until the download control
+ *  calls refetch(), and a URL is never served from cache. */
+export function useRecordingDownloadUrl(callId: string) {
+  return useQuery<{ url: string }>({
+    queryKey: ['communication', 'call-recording-download', callId],
+    queryFn: () => api.get(`/api/communication/calls/${callId}/recording/download`).then((r) => r.data),
+    enabled: false,
+    retry: false,
+    gcTime: 0,
+    staleTime: 0,
+  });
+}
+
+/** What opening one email attachment looks like to the person: `idle` (nothing asked yet), `opening`, `failed` (the
+ *  fetch did not work, so the chip offers a retry) or `hidden` (the plan has no Email, so the chip goes away). */
+export type EmailAttachmentOpenState = 'idle' | 'opening' | 'failed' | 'hidden';
+
+/** Opens one stored email attachment. The link is asked for on the click and never before, one fresh link per click (it
+ *  expires and is signed for whoever asked), and it is opened in a new tab. The tab is opened inside the click, before the
+ *  answer arrives, so a pop-up blocker lets it through; if the browser still refuses it, the link is opened plainly once it
+ *  is known. A refusal (403) or a missing file (404) is told to the person through `notify`; the server's own words never
+ *  reach the screen. The page's other error toasts are off for this call: every answer is handled here. */
+export function useOpenEmailAttachment(emailId: string, index: number, notify: (message: string) => void) {
+  const [state, setState] = useState<EmailAttachmentOpenState>('idle');
+  const fetchLink = useMutation({
+    mutationFn: async () => {
+      const { data } = await api.get<{ url?: string }>(`/api/communication/emails/${emailId}/attachments/${index}`, { silentErrors: true });
+      if (!data?.url) throw new Error('No link');
+      return data.url;
+    },
+  });
+
+  function open() {
+    if (state === 'opening') return;
+    setState('opening');
+    const tab = window.open('', '_blank');
+    if (tab) tab.opener = null;
+    fetchLink.mutate(undefined, {
+      onSuccess: (url) => {
+        if (tab) tab.location.href = url;
+        else window.open(url, '_blank', 'noopener,noreferrer');
+        setState('idle');
+      },
+      onError: (err) => {
+        tab?.close();
+        const code = (err as { response?: { status?: number } }).response?.status;
+        if (code === 402) {
+          setState('hidden');
+          return;
+        }
+        if (code === 403) notify("You don't have access to this attachment");
+        else if (code === 404) notify('This attachment is no longer available');
+        setState(code === 403 || code === 404 ? 'idle' : 'failed');
+      },
+    });
+  }
+
+  return { open, state };
+}
+
 /** Lazy transcript + AI-insight hydration. CTM finalizes both after the `end`
  *  webhook - it derives the summary FROM the transcript, so a completed call
  *  can exist before either does. The call drawer fires this on open when the
@@ -554,8 +629,9 @@ export function useUpdateNumberForwarding() {
   });
 }
 
-export function usePhoneCustomers() {  // Emanuel Customer -> PhoneCustomer
-  return useQuery<PhoneCustomer[]>({ queryKey: ['communication', 'customers'], queryFn: () => api.get('/api/communication/contacts').then((r) => r.data.contacts) });
+export function usePhoneCustomers() {  // Original Customer -> PhoneCustomer
+  const mayReadCustomers = useMayReadCustomers();
+  return useQuery<PhoneCustomer[]>({ queryKey: ['communication', 'customers'], enabled: mayReadCustomers, queryFn: () => api.get('/api/communication/contacts').then((r) => r.data.contacts) });
 }
 export function usePhoneAgents() {
   return useQuery<PhoneAgent[]>({ queryKey: ['communication', 'agents'], queryFn: () => api.get('/api/communication/agents').then((r) => r.data.agents) });
@@ -674,8 +750,10 @@ export function useTextTemplates() {
 export function useTextAutomations() {
   return useQuery<TextAutomation[]>({ queryKey: ['communication', 'automations'], queryFn: () => api.get('/api/communication/automations').then((r) => r.data.automations) });
 }
-export function useBlockedNumbers() {
-  return useQuery<BlockedNumber[]>({ queryKey: ['communication', 'blocked'], queryFn: () => api.get('/api/communication/blocked').then((r) => r.data.blocked) });
+// The three phone setup lists below follow their tab's switch on the server (S08.16): a caller passes `enabled` false
+// for a person the server would refuse, so no request is made that is bound to fail.
+export function useBlockedNumbers(enabled = true) {
+  return useQuery<BlockedNumber[]>({ queryKey: ['communication', 'blocked'], enabled, queryFn: () => api.get('/api/communication/blocked').then((r) => r.data.blocked) });
 }
 export function useTrainingScenarios() {
   return useQuery<TrainingScenario[]>({ queryKey: ['communication', 'training-scenarios'], queryFn: () => api.get('/api/communication/training/scenarios').then((r) => r.data.scenarios) });
@@ -683,11 +761,11 @@ export function useTrainingScenarios() {
 export function useTrainingSessions() {
   return useQuery<TrainingSession[]>({ queryKey: ['communication', 'training-sessions'], queryFn: () => api.get('/api/communication/training/sessions').then((r) => r.data.sessions) });
 }
-export function useCallFlows() {
-  return useQuery<CallFlow[]>({ queryKey: ['communication', 'call-flows'], queryFn: () => api.get('/api/communication/call-flows').then((r) => r.data.callFlows) });
+export function useCallFlows(enabled = true) {
+  return useQuery<CallFlow[]>({ queryKey: ['communication', 'call-flows'], enabled, queryFn: () => api.get('/api/communication/call-flows').then((r) => r.data.callFlows) });
 }
-export function useCallGroups() {
-  return useQuery<CallGroup[]>({ queryKey: ['communication', 'call-groups'], queryFn: () => api.get('/api/communication/call-groups').then((r) => r.data.callGroups) });
+export function useCallGroups(enabled = true) {
+  return useQuery<CallGroup[]>({ queryKey: ['communication', 'call-groups'], enabled, queryFn: () => api.get('/api/communication/call-groups').then((r) => r.data.callGroups) });
 }
 export function useWhatsAppChats() {
   const entitlementsReady = useEntitlementsReady();
@@ -767,7 +845,11 @@ export function useMarkWhatsAppChatUnread() {
  *  `'all'` (the default) sends no `assignment` param at all, matching the
  *  pre-8b request shape exactly - existing callers (useUnreadCounts below,
  *  any caller passing nothing) keep seeing the same unfiltered set. */
-export function useEmails(assignment: EmailAssignmentView = 'all') {
+/**
+ * `mailbox` is the mailbox the Email page shows ("mine", "all" or a mailbox id). Left out, the server lists everything the
+ * person's scope covers; `null` means the page does not know yet which mailbox to ask for, so nothing is asked.
+ */
+export function useEmails(assignment: EmailAssignmentView = 'all', mailbox?: string | null) {
   const entitlementsReady = useEntitlementsReady();
   // `email`, not `phone` - email is its own STARTER entitlement.
   const canAccess = useFeature('email');
@@ -775,50 +857,127 @@ export function useEmails(assignment: EmailAssignmentView = 'all') {
   // `GET /emails/attach-source` stay ungated (R2) - this hook is the LIST read only.
   const ability = useAppAbility();
   return useQuery({
-    queryKey: ['communication', 'emails', assignment],
+    queryKey: ['communication', 'emails', assignment, mailbox ?? 'scope'],
     queryFn: () =>
       api
         .get('/api/communication/emails', {
-          params: assignment === 'all' ? undefined : { assignment },
+          params: {
+            ...(assignment === 'all' ? {} : { assignment }),
+            // PRD 10 (S10.7): the mailbox the page shows. Left out, the server lists everything the person's scope covers.
+            ...(mailbox ? { mailbox } : {}),
+          },
         })
         .then((r) => r.data.emails),
+    enabled: entitlementsReady && canAccess && mailbox !== null && ability.can('access_inbox', 'Communication'),
+  });
+}
+
+/** PRD 10 (S10.7) - the Email page's mailbox list: the rail's top, with an unread count on every entry. */
+export type MailboxEntry = { id: string; name: string; unread: number };
+export type MailboxList = {
+  /** The Communication scope value the lists below follow: "linked_to_me" or "all". */
+  scope: 'linked_to_me' | 'all';
+  /** The mailbox the page should show: "mine", "all" or a mailbox id (a mailbox the person may not open reads "mine"). */
+  selected: string;
+  /** What the server calls the picked mailbox, when it is one person's or the main one; empty otherwise. */
+  selected_label: string | null;
+  /** The unread count of the selection, whichever page of people the picked mailbox sits on. */
+  selected_unread: number;
+  /** Everything the person's scope lists, unread: the number on the Email menu. */
+  total_unread: number;
+  mine: { id: string | null; unread: number };
+  /** Mailboxes handed to the person. */
+  held: MailboxEntry[];
+  /** The main mailbox, for a person on All. */
+  main: { id: string; unread: number } | null;
+  /** The Needs review folder's counts (S10.18): the held messages in the selection, and in every mailbox the person can see. */
+  needs_review?: { selected: number; total: number };
+  /** Every person's mailbox, one page of it, for a person on All. */
+  people: { items: (MailboxEntry & { active: boolean })[]; total: number; offset: number; limit: number } | null;
+};
+
+export const MAILBOXES_KEY = ['communication', 'mailboxes'] as const;
+
+/**
+ * GET /api/communication/mailboxes. `selected` is the mailbox the page asks to show; `search` and `offset` page the people
+ * under All. The previous answer stays on screen while the next one loads, so the rail does not flicker on each keystroke.
+ */
+export function useMailboxList(query: { selected: string; search?: string; offset?: number }) {
+  const entitlementsReady = useEntitlementsReady();
+  const canAccess = useFeature('email');
+  const ability = useAppAbility();
+  return useQuery<MailboxList>({
+    queryKey: [...MAILBOXES_KEY, query.selected, query.search ?? '', query.offset ?? 0],
+    queryFn: () =>
+      api
+        .get('/api/communication/mailboxes', {
+          params: {
+            selected: query.selected,
+            ...(query.search ? { search: query.search } : {}),
+            ...(query.offset ? { offset: query.offset } : {}),
+          },
+        })
+        .then((r) => r.data),
+    placeholderData: (previous) => previous,
     enabled: entitlementsReady && canAccess && ability.can('access_inbox', 'Communication'),
   });
 }
-/** The From address this org's sends actually carry.
+
+/** Who a hand-written email from the signed-in person goes out as (PRD 10, S10.11).
  *
- *  The compose surfaces used to show a flat "No mailbox connected" because
- *  nothing ever supplied a `fromAddress` - true when there was no per-org
- *  sending identity to supply, and a lie once every org got one. This is the
- *  seam ComposeWindow's `fromAddress` prop was left open for.
+ *  The compose surfaces used to show a flat "No mailbox connected" because nothing supplied a `fromAddress`, and then the
+ *  company's address. Every email a person writes by hand now goes out from THEIR OWN address under "<their name> at
+ *  <company>", so this is the person's identity, served by the same register lookup the send resolves its From header
+ *  with: never re-derived here, because a compose line that could disagree with what the recipient sees would be a more
+ *  convincing lie than the honest placeholder it replaces. `status` is "address_needed" (with no address or name) for a
+ *  person who has no address of their own yet: they cannot send by hand until an admin sets one.
  *
- *  Served by the same derivation the send path uses, never re-derived here: a
- *  compose header that could disagree with what the recipient sees would be a
- *  more convincing lie than the honest placeholder it replaces. Stays stale-
- *  tolerant (it changes only when an admin edits the sending address or renames
- *  the org), so the default cache behaviour is right and it needs no polling. */
+ *  Stays stale-tolerant (it changes only when an admin changes the person's address or the company's switch), so the
+ *  default cache behaviour is right and it needs no polling. */
 export type SendingIdentity = {
-  address: string;
+  status: 'active' | 'address_needed';
+  /** The person's own primary address in full; null in "address needed". */
+  address: string | null;
+  /** The display name the recipient sees, "<name> at <company>"; null in "address needed". */
   name: string | null;
+  /** The company's "Send emails to customers and staff" switch. An address is no use while it is off. */
   sendingEnabled: boolean;
-  /** The string before the `@` this org actually sends from - its own choice
-   *  when it has set one, else derived from the company name. */
-  localPart: string;
-  /** False while `localPart` is still tracking the company name, so the
-   *  settings field can say so rather than present a derived value as though
-   *  the org had chosen it. */
-  localPartIsCustom: boolean;
-  /** The domain half, identical for every org and never an org choice. Sent
-   *  separately so the settings field renders it as a fixed suffix instead of
-   *  splitting `address` apart client-side. */
-  senderDomain: string;
 };
+/**
+ * What a compose surface takes from the sender's identity, spread onto it: the address and name for its "Sending as" line,
+ * whether the person has no address yet (the line then says so and Send is disabled), and the company's switch. While the
+ * identity is loading nothing is claimed: no address, not "address needed", sending on - a wrong banner is worse than a
+ * late one, and the server enforces all three regardless.
+ */
+export function composeSenderProps(identity: SendingIdentity | undefined) {
+  return {
+    fromAddress: identity?.address ?? undefined,
+    fromName: identity?.name ?? undefined,
+    addressNeeded: identity?.status === 'address_needed',
+    sendingEnabled: identity?.sendingEnabled ?? true,
+  };
+}
 export function useSendingIdentity() {
   const entitlementsReady = useEntitlementsReady();
   const canAccess = useFeature('email');
   return useQuery<SendingIdentity>({
     queryKey: ['communication', 'sending-identity'],
     queryFn: () => api.get('/api/communication/sending-identity').then((r) => r.data),
+    enabled: entitlementsReady && canAccess,
+  });
+}
+/** The signed-in person's own mailbox (PRD 10): "active" with an address, or "address_needed" with none. */
+export type MyMailbox = { status: string; address: string | null };
+/**
+ * The person's own mailbox. Only asked while the company has the Email plan feature (the route answers 402 without it),
+ * and `mailbox` is null for a person who has none.
+ */
+export function useMyMailbox() {
+  const entitlementsReady = useEntitlementsReady();
+  const canAccess = useFeature('email');
+  return useQuery<{ mailbox: MyMailbox | null }>({
+    queryKey: ['communication', 'my-mailbox'],
+    queryFn: () => api.get('/api/communication/my-mailbox').then((r) => r.data),
     enabled: entitlementsReady && canAccess,
   });
 }
@@ -873,7 +1032,8 @@ export function useUnreadCounts(): UnreadCounts {
   return {
     sms: data?.sms ?? NO_UNREAD.sms,
     whatsapp: data?.whatsapp ?? NO_UNREAD.whatsapp,
-    email: data?.email ?? NO_UNREAD.email,
+    // Nothing of a company's email shows while its Email plan feature is off, even from an answer fetched before it went off.
+    email: hasEmail ? data?.email ?? NO_UNREAD.email : NO_UNREAD.email,
   };
 }
 
@@ -907,6 +1067,7 @@ function markEmailThreadOptimistic(qc: ReturnType<typeof useQueryClient>, nextUn
     onSettled: () => {
       qc.invalidateQueries({ queryKey: ['communication', 'emails'] });
       qc.invalidateQueries({ queryKey: UNREAD_COUNTS_KEY });
+      qc.invalidateQueries({ queryKey: MAILBOXES_KEY });
     },
   };
 }
@@ -951,26 +1112,64 @@ export function useAssignEmailThread() {
   });
 }
 
-/** Email slice 6 - the unmatched inbound queue: replies whose reply token
- *  resolved a conversation that we then REFUSED to attach them to, because the
- *  sender did not check out. Its own query key rather than a filter on
- *  ['communication', 'emails', ...]: these carry no thread, so they are an
- *  operator worklist rather than a slice of any inbox view. */
-export function useUnmatchedEmails() {
+/** Why a received message is held in a Needs review list instead of delivered (PRD 10, S10.18). */
+export type ReviewReason = 'failed_authentication' | 'automatic' | 'sender_mismatch' | 'unknown_reply';
+
+/** One message held in a Needs review list: it carries no conversation of its own, and says why it is held. */
+export type ReviewItem = Omit<Email, 'folder'> & {
+  folder: string;
+  reviewReason: ReviewReason;
+  reviewMailboxId?: string;
+  /** `to` is one of our reply addresses (a random token on the reply domain): not something to print, so the screen says what it is. */
+  toReplyAddress?: boolean;
+  /** The conversation this was a reply to, when the person can reach it: the one-click answer to linking it. */
+  linkTo: { threadId: string; subject: string | null } | null;
+};
+
+export type NeedsReviewPage = { emails: ReviewItem[]; total: number; limit: number; offset: number; selected: string };
+
+const NEEDS_REVIEW_PAGE = 50;
+export const NEEDS_REVIEW_KEY = ['communication', 'emails', 'unmatched'] as const;
+
+/** PRD 10 (S10.18) - the Needs review folder of the mailbox the Email page shows: mail the router held instead of delivering
+ *  (a sender check that failed, automatic mail, a reply from an address we did not send to, a reply to an email we can no longer
+ *  match). They are an operator worklist, not a slice of any inbox view, so they have their own query key and their own list,
+ *  read a page at a time. `mailbox` is the page's mailbox ("mine", "all" or an id); null means it is not known yet. */
+export function useNeedsReview(mailbox: string | null) {
   const entitlementsReady = useEntitlementsReady();
   const canAccess = useFeature('email');
-  return useQuery<Email[]>({
-    queryKey: ['communication', 'emails', 'unmatched'],
-    queryFn: () => api.get('/api/communication/emails/unmatched').then((r) => r.data.emails),
-    enabled: entitlementsReady && canAccess,
+  const ability = useAppAbility();
+  return useInfiniteQuery<NeedsReviewPage>({
+    queryKey: [...NEEDS_REVIEW_KEY, mailbox],
+    initialPageParam: 0,
+    queryFn: ({ pageParam }) =>
+      api
+        .get('/api/communication/emails/unmatched', { params: { mailbox, limit: NEEDS_REVIEW_PAGE, offset: pageParam } })
+        .then((r) => r.data),
+    getNextPageParam: (last) => (last.offset + last.emails.length < last.total ? last.offset + last.emails.length : undefined),
+    enabled: entitlementsReady && canAccess && mailbox !== null && ability.can('access_inbox', 'Communication'),
   });
 }
 
-/** Email slice 6 - attach an unmatched inbound message to a conversation.
- *  `threadId` omitted means "the thread this message's own reply token points
- *  at", which is the one-click case the retained token exists to serve.
- *  Invalidates the whole email key: the message leaves the queue and joins an
- *  inbox thread in the same write. */
+/** PRD 10 (S10.19) - ONE held message by id: the Needs review item a bell opens. The server answers it for anyone who can reach
+ *  the conversation a reply from an address we did not send to replied to, whichever mailbox it is filed under, so the item can be
+ *  there although the list of the mailbox the page shows is not. `null` asks for nothing. */
+export function useNeedsReviewItem(id: string | null) {
+  const entitlementsReady = useEntitlementsReady();
+  const canAccess = useFeature('email');
+  const ability = useAppAbility();
+  return useQuery<ReviewItem>({
+    queryKey: ['communication', 'emails', 'unmatched-item', id],
+    queryFn: () => api.get(`/api/communication/emails/unmatched/${id}`).then((r) => r.data.email),
+    enabled: id !== null && entitlementsReady && canAccess && ability.can('access_inbox', 'Communication'),
+    // A message nobody can reach, or one somebody linked meanwhile, answers 404: one answer, not three tries.
+    retry: false,
+  });
+}
+
+/** Email slice 6 - link a held message to a conversation by hand. `threadId` omitted means "the conversation this message was
+ *  a reply to", the one-click case. The message leaves the list and joins the conversation in the same write, so the lists,
+ *  the folder's count and the mailbox's mail all refresh. */
 export function useLinkInboundEmail() {
   const qc = useQueryClient();
   return useMutation({
@@ -978,7 +1177,42 @@ export function useLinkInboundEmail() {
       api
         .patch(`/api/communication/emails/${emailId}/link`, threadId ? { thread_id: threadId } : {})
         .then((r) => r.data as { email: Email }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['communication', 'emails'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['communication', 'emails'] });
+      qc.invalidateQueries({ queryKey: MAILBOXES_KEY });
+    },
+  });
+}
+
+/** One customer a received message could belong to: the picker's row. */
+export type CustomerMatch = { id: string; name: string; number: string };
+export type CustomerMatchPage = { customers: CustomerMatch[]; total: number };
+
+/**
+ * PRD 10, S10.20 - the customers that have the sender's address of a received message that "matches several customers": a page
+ * at a time, narrowed by a search of names and numbers, and only the ones the person can open. Read when the picker opens.
+ */
+export function useCustomerMatches(emailId: string | null, search: string) {
+  return useQuery({
+    queryKey: ['communication', 'email-customer-matches', emailId, search],
+    queryFn: () =>
+      api
+        .get(`/api/communication/emails/${emailId}/customer-candidates`, { params: search ? { search } : {} })
+        .then((r) => r.data as CustomerMatchPage),
+    enabled: emailId !== null,
+    placeholderData: (previous) => previous,
+  });
+}
+
+/** Pick which of the matching customers a received message belongs to. The message, its conversation's replies and the customer's
+ *  Communication tab all refresh. The picker's own list of candidates does not: the message is linked now, so the server would
+ *  refuse that request, and the picker closes as the pick lands. */
+export function usePickEmailCustomer() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ emailId, customerId }: { emailId: string; customerId: string }) =>
+      api.patch(`/api/communication/emails/${emailId}/customer`, { customer_id: customerId }).then((r) => r.data as { email: Email }),
+    onSuccess: () => invalidateConversationLinks(qc, (key) => key[1] !== 'email-customer-matches'),
   });
 }
 
@@ -1226,7 +1460,7 @@ export function smsSendErrorMessage(err: unknown): string {
   const copy: Record<string, string> = {
     RECIPIENT_OPTED_OUT: 'This number has opted out of texts',
     NO_SMS_NUMBER: 'No SMS-capable number - buy one in Numbers',
-    SMS_NOT_READY: 'Texting activates once A2P is approved',
+    SMS_NOT_READY: 'Texting activates once carrier approval comes through',
     DUPLICATE_SEND: 'Duplicate message - just sent',
     NOT_IN_TEST_ALLOWLIST: "This number isn't on the test allowlist",
   };
@@ -1252,6 +1486,26 @@ export function useSendSms() {
   });
 }
 
+/** Every surface that renders a text or an email row, resynced after its job or lead link changes: the SMS center, the
+ *  email page, and the three record roll-ups. The entity keys are PREFIX invalidations - ['job-communications']
+ *  matches all ['job-communications', jobId] queries (same for customers/leads). `refetchIf` leaves out the communication
+ *  queries it refuses, such as a list that stops being valid once the change it follows has been made. */
+function invalidateConversationLinks(qc: QueryClient, refetchIf?: (key: readonly unknown[]) => boolean) {
+  qc.invalidateQueries({ queryKey: ['communication'], predicate: refetchIf ? (query) => refetchIf(query.queryKey) : undefined });
+  qc.invalidateQueries({ queryKey: ['job-communications'] });
+  qc.invalidateQueries({ queryKey: ['customer-communications'] });
+  qc.invalidateQueries({ queryKey: ['lead-communications'] });
+}
+
+/**
+ * What a text or email reassign answers. `left` is true when the change took the row out of the person's reach (it was
+ * readable only through the job or lead it was taken off): the row is then null, the change is done, and the screen
+ * lets it go quietly instead of reporting an error.
+ */
+export interface ConversationLinkResult {
+  left?: boolean;
+}
+
 /** One-click reassign — move an SMS message to another job (or clear with
  *  null → back to the Unrouted tray). Callers commit local thread state and
  *  toast in the mutation's success path (no optimistic commit). */
@@ -1259,19 +1513,23 @@ export function useReassignSmsJob() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ messageId, jobId }: { messageId: string; jobId: string | null }) =>
-      api.patch(`/api/communication/sms/${messageId}/job`, { job_id: jobId }).then((r) => r.data),
-    onSuccess: () => {
-      // Cross-surface sync: the SMS center, every job page's Communication tab
-      // and every customer/lead roll-up show the same attribution. The entity
-      // keys are PREFIX invalidations — ['job-communications'] matches all
-      // ['job-communications', jobId] queries (same for customers/leads).
-      qc.invalidateQueries({ queryKey: ['communication'] });
-      qc.invalidateQueries({ queryKey: ['job-communications'] });
-      qc.invalidateQueries({ queryKey: ['customer-communications'] });
-      qc.invalidateQueries({ queryKey: ['lead-communications'] });
-    },
+      api.patch(`/api/communication/sms/${messageId}/job`, { job_id: jobId }).then((r) => r.data as ConversationLinkResult),
+    // Cross-surface sync: the SMS center, every job page's Communication tab
+    // and every customer/lead roll-up show the same attribution.
+    onSuccess: () => invalidateConversationLinks(qc),
     // Failed reassign: callers never committed locally — refetch the center's
     // server truth anyway so any stale view resyncs.
+    onError: () => qc.invalidateQueries({ queryKey: ['communication'] }),
+  });
+}
+
+/** The lead mirror of useReassignSmsJob - move a text to a lead (or clear with null). */
+export function useReassignSmsLead() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ messageId, leadId }: { messageId: string; leadId: string | null }) =>
+      api.patch(`/api/communication/sms/${messageId}/lead`, { lead_id: leadId }).then((r) => r.data as ConversationLinkResult),
+    onSuccess: () => invalidateConversationLinks(qc),
     onError: () => qc.invalidateQueries({ queryKey: ['communication'] }),
   });
 }
@@ -1283,13 +1541,19 @@ export function useReassignEmailJob() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: ({ emailId, jobId }: { emailId: string; jobId: string | null }) =>
-      api.patch(`/api/communication/emails/${emailId}/job`, { job_id: jobId }).then((r) => r.data),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['communication'] });
-      qc.invalidateQueries({ queryKey: ['job-communications'] });
-      qc.invalidateQueries({ queryKey: ['customer-communications'] });
-      qc.invalidateQueries({ queryKey: ['lead-communications'] });
-    },
+      api.patch(`/api/communication/emails/${emailId}/job`, { job_id: jobId }).then((r) => r.data as ConversationLinkResult),
+    onSuccess: () => invalidateConversationLinks(qc),
+    onError: () => qc.invalidateQueries({ queryKey: ['communication'] }),
+  });
+}
+
+/** The lead mirror of useReassignEmailJob - move an email to a lead (or clear with null). */
+export function useReassignEmailLead() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ emailId, leadId }: { emailId: string; leadId: string | null }) =>
+      api.patch(`/api/communication/emails/${emailId}/lead`, { lead_id: leadId }).then((r) => r.data as ConversationLinkResult),
+    onSuccess: () => invalidateConversationLinks(qc),
     onError: () => qc.invalidateQueries({ queryKey: ['communication'] }),
   });
 }

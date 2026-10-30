@@ -85,7 +85,7 @@ const SECTION_TAB_PATHS: Record<string, readonly string[]> = {
  */
 export function canonicalPath(path: string): string {
   for (const [section, tabs] of Object.entries(SECTION_TAB_PATHS)) {
-    if (tabs.some((tab) => path === tab || path.startsWith(`${tab}/`))) return section;
+    if (tabs.includes(path)) return section;
   }
   return path;
 }

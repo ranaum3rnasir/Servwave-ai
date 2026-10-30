@@ -70,7 +70,7 @@ export interface EntityState {
   // (Walkthrough Scheduled / Walkthrough Completed, moved by syncLeadWalkthroughStatus), but it
   // describes ALL of the lead's visits together, while a reminder is about ONE trip: the lead
   // can be Walkthrough Scheduled because a second trip is booked while this trip was cancelled.
-  // Estimate Sent, Won, Lost and Cancelled leads are never moved by a visit at all, so the
+  // Estimate Sent, Won and Lost leads are never moved by a visit at all, so the
   // lead status cannot say whether a given trip is still pending.
   leadVisitStatus?: string | null;
   // ── Lead stage clocks (spec #1751 D8) ────────────────────────────────────
@@ -762,21 +762,9 @@ async function loadEntityBundle(args: {
             },
           },
           dispatcher: { select: { id: true, email: true, first_name: true, last_name: true, phone: true } },
+          // The job's stored Sold By (S03.9). Read as it is: an empty one stays empty, and is never
+          // refilled from the Owner of the lead the job came from.
           salesperson: { select: { id: true, email: true, first_name: true, last_name: true, phone: true } },
-          // Salesperson fallback path (job.salesperson_id unset): job → estimate → lead → commission_owner.
-          estimate: {
-            select: {
-              lead: {
-                select: { commission_owner: { select: { id: true, email: true, first_name: true, last_name: true, phone: true } } },
-              },
-            },
-          },
-          // The last rung (SRVW-303): a multi-estimate conversion writes `estimate_id: null` and
-          // `lead_id` on the job (job.controller.ts), so the estimate rung above finds nothing
-          // for exactly those jobs. The lead is on the job directly; read its owner there too.
-          lead: {
-            select: { commission_owner: { select: { id: true, email: true, first_name: true, last_name: true, phone: true } } },
-          },
         },
       });
       if (!job) return null;
@@ -855,12 +843,10 @@ async function loadEntityBundle(args: {
       const address =
         loc ? [loc.address_line1, loc.city, loc.state].map((v) => v?.trim()).filter(Boolean).join(', ') : '';
       const techNames = visitCrew.map((u) => [u.first_name, u.last_name].filter(Boolean).join(' ')).join(', ');
-      // ONE resolution for the audience and the signature: job → estimate → lead → job.lead.
-      // `job.salesperson_id` has no writer yet (schema: "writer-less for now"), so in practice
-      // this is the lead owner every time; the direct column stays first so a writer, when one
-      // lands, is honoured without touching this file.
-      const jobOwner =
-        job.salesperson ?? job.estimate?.lead?.commission_owner ?? job.lead?.commission_owner ?? null;
+      // ONE resolution for the audience and the signature: the job's stored Sold By, with no
+      // fallback to the lead's Owner (S03.9). Cleared on purpose means nobody, and a template's
+      // "If empty, fill with" step covers the signature.
+      const jobOwner = job.salesperson ?? null;
       return {
         bundle: {
           ...base,
@@ -910,13 +896,10 @@ async function loadEntityBundle(args: {
             // override in visitMergeFields: an occurrence keyed to one trip replaces both of these.
             'technician.phones': formatPerformerPhones(visitCrew, orgPhone),
             // The same crew on the number the ORGANISATION owns (slice 7), for the template that
-            // declines to publish mobiles. Resolved off `visitCrew` - the SAME list its sibling
-            // above and `technician.names` come off - so the two fields cannot name one set of
-            // people and offer another set's numbers. Per-visit enrollment made that list the
-            // named trip's own crew rather than the job-level union; both phone fields followed
-            // it together, because a reminder that says who is coming on Thursday must offer the
-            // number of somebody who is coming on Thursday. Like its sibling it is still REPLACED
-            // per visit by visitMergeFields for an occurrence keyed to one trip.
+            // declines to publish mobiles. Resolved off the SAME `visitCrew`, so the two fields
+            // cannot name one set of people and offer another set's numbers - and, like its
+            // sibling, it is REPLACED per visit by visitMergeFields for a dispatch occurrence
+            // keyed to one trip.
             'technician.servwave_phones': await resolveServWavePhones(
               args.organizationId, visitCrew.map((u) => u.id), orgPhone,
             ),

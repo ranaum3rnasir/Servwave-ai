@@ -1,7 +1,7 @@
 // Call-flow / call-group / phone-plan configuration seed data for the
 // Communication hub's Phone settings. Lifted out of the prototype's CallFlows,
 // CallGroups, and PhonePage components into a self-contained mock module so the
-// data seam owns it. The roster identities Emanuel's components resolved at
+// data seam owns it. The roster identities the original components resolved at
 // runtime (currentUser / phoneAgents / techs) are inlined here as literal seed
 // values so this module has no cross-module or component dependencies.
 // Prototype seeds; production reads from the telephony provider's config API.

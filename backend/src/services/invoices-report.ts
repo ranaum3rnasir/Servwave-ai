@@ -27,7 +27,7 @@ export interface InvoiceReportInput {
   customerName: string;
   customerEmail: string;
   jobNumber: string;
-  /** Seller's full name from estimate→lead→commission_owner, or null. */
+  /** Seller's full name (see `invoiceSellerFor`), or null when nobody is credited. */
   salesperson: string | null;
   /** First job assignee's full name, or null. */
   technician: string | null;
@@ -79,6 +79,35 @@ export function discountPctFor(discountAmount: number, subtotal: number): number
   return (discountAmount / subtotal) * 100;
 }
 
+/** The name parts of a person credited with a sale. */
+export interface SellerName {
+  first_name: string | null;
+  last_name: string | null;
+}
+
+/** What an invoice carries that says whose sale it is. */
+export interface InvoiceSellerSource {
+  job: { salesperson: SellerName | null } | null;
+  service_plan: { sold_by_user: SellerName | null } | null;
+  estimate: { lead: { commission_owner: SellerName | null } | null } | null;
+}
+
+/**
+ * Whose sale an invoice is (Roles & Permissions, PRD 3).
+ *
+ * - An invoice on a job reads the job's stored Sold By, and only that: a job with no Sold By shows
+ *   nobody, the Owner of its estimate's lead is never a fallback. That also fills a job invoice
+ *   raised on the job with no estimate of its own, and an extra-work invoice on a plan visit job.
+ * - A service plan's own invoice (activation and each renewal; it belongs to no job) reads the
+ *   plan's "Sold by": this is where the plan's sale is credited, once.
+ * - Any other job-less invoice keeps its estimate's lead Owner.
+ */
+export function invoiceSellerFor(src: InvoiceSellerSource): SellerName | null {
+  if (src.job) return src.job.salesperson;
+  if (src.service_plan) return src.service_plan.sold_by_user;
+  return src.estimate?.lead?.commission_owner ?? null;
+}
+
 /** Transform normalized DB rows into the frontend render rows. */
 export function buildInvoicesReport(rows: InvoiceReportInput[], now: Date): InvoiceReportRow[] {
   return rows.map((r) => ({
@@ -93,7 +122,7 @@ export function buildInvoicesReport(rows: InvoiceReportInput[], now: Date): Invo
     due: r.amountDue,
     status: displayStatusFor(r.status, r.amountDue, now, r.dueDate),
     job: r.jobNumber,
-    salesperson: r.salesperson || 'Unassigned',
+    salesperson: r.salesperson || '—',
     technician: r.technician || '—',
     jobType: r.jobType || '—',
   }));

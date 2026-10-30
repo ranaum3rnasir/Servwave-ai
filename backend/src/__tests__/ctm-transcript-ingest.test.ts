@@ -6,12 +6,12 @@
  * (speaker-labelled text) — but ingest never captured it, so the drawer showed
  * "Transcript is still being generated." forever. The `transcription` key is a
  * URL PATH (/api/v1/…/transcription.json), never text. Completed inbound calls
- * answered on an external forwarded phone (Alpha Doors' real routing) carry no
+ * answered on an external forwarded phone (the pilot org's real routing) carry no
  * `agent` object and used to ingest as answered_by kind 'none' → rendered
  * "No answer" for calls that were answered.
  *
  * The insight half of the same card: ingest read `a.notes` into the `summary`
- * column, but `notes` is empty on all 51 stored Alpha Doors payloads while
+ * column, but `notes` is empty on all 51 stored pilot org payloads while
  * CTM's own `summary` string (a real AI call summary) is populated on 6 of 34
  * `end` events - so the Calls "Insights" column could never be anything but
  * "—". CTM derives the summary from the transcript, so it arrives on the same
@@ -62,8 +62,8 @@ beforeEach(() => {
 
 describe('transcriptOf', () => {
   it('reads transcription_text', () => {
-    expect(transcriptOf({ transcription_text: 'Emanuel Dahan: Hello? Ma.' })).toBe(
-      'Emanuel Dahan: Hello? Ma.',
+    expect(transcriptOf({ transcription_text: 'Sam Rivera: Hello? Ma.' })).toBe(
+      'Sam Rivera: Hello? Ma.',
     );
   });
 
@@ -181,8 +181,8 @@ describe('ingestCall — transcript capture', () => {
 describe('summaryOf', () => {
   it("reads CTM's AI call summary", () => {
     expect(
-      summaryOf({ summary: 'Agent Emanuel Dahan called the contact (PRINCETON NJ).' }),
-    ).toBe('Agent Emanuel Dahan called the contact (PRINCETON NJ).');
+      summaryOf({ summary: 'Agent Sam Rivera called the contact (PRINCETON NJ).' }),
+    ).toBe('Agent Sam Rivera called the contact (PRINCETON NJ).');
   });
 
   it('falls back to notes only when there is no summary', () => {
@@ -190,7 +190,7 @@ describe('summaryOf', () => {
     expect(summaryOf({ summary: 'ai summary', notes: 'manual note' })).toBe('ai summary');
   });
 
-  // Every one of the 51 real Alpha Doors payloads carries notes as "" - the
+  // Every one of the 51 real pilot org payloads carries notes as "" - the
   // reason the old `summary: a.notes` read could never populate the column.
   it('treats an empty notes string as absent', () => {
     expect(summaryOf({ notes: '' })).toBeNull();
@@ -277,7 +277,7 @@ describe('ingestCall — answered_by attribution', () => {
     await ingestCall(
       prisma,
       ORG_ID,
-      { ...CALL_END, agent: { id: 'USR1', name: 'Emanuel Dahan', email: 'e@x.com' } },
+      { ...CALL_END, agent: { id: 'USR1', name: 'Sam Rivera', email: 'e@x.com' } },
       'end',
     );
     const args = p.callSession.upsert.mock.calls[0][0];

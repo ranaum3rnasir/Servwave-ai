@@ -323,7 +323,7 @@ test('lead marked LOST — estimate auto-cancelled, deposit voided', async () =>
   expect(est.status).toBe('ARCHIVED');
 });
 
-test('lead cancelled during walkthrough — walkthrough auto-cancelled', async () => {
+test('lead marked lost during walkthrough — walkthrough auto-cancelled', async () => {
   // Create customer, lead, contact
   const { customerId } = await createCustomerWithLocation(api);
   const { res: leadRes, body: leadBody } = await api.createLead({
@@ -345,13 +345,13 @@ test('lead cancelled during walkthrough — walkthrough auto-cancelled', async (
   const scheduledLead = await api.getLead(leadId);
   expect(scheduledLead.status).toBe('WALKTHROUGH_SCHEDULED');
 
-  // Cancel the lead
-  const { res: cancelRes } = await api.cancelLead(leadId, 'Duplicate lead — merged with another');
-  expect(cancelRes.status()).toBe(200);
+  // Mark the lead lost
+  const { res: lostRes } = await api.markLeadLost(leadId, 'Duplicate lead — merged with another');
+  expect(lostRes.status()).toBe(200);
 
-  // Verify lead is CANCELLED
-  const cancelledLead = await api.getLead(leadId);
-  expect(cancelledLead.status).toBe('CANCELLED');
+  // Verify lead is LOST
+  const lostLead = await api.getLead(leadId);
+  expect(lostLead.status).toBe('LOST');
 });
 
 test('job cancelled after starting — cannot create invoice', async () => {

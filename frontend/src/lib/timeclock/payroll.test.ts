@@ -17,12 +17,10 @@ function session(
     userName: 'Tester',
     outTs: s.inTs + s.hours * HOUR,
     minutes: Math.round(s.hours * 60),
-    inStatus: 'in_zone',
-    inReview: 'none',
-    matchedZoneId: 'store',
-    matchedZoneLabel: 'Main office',
-    zoneKind: 'store',
-    jobNumber: null,
+    inLat: 30.1,
+    inLng: -97.2,
+    outLat: 30.1,
+    outLng: -97.2,
     ...s,
   } as Session;
 }
@@ -42,7 +40,6 @@ describe('buildDays — daily OT split', () => {
     expect(d!.regMin).toBe(360);
     expect(d!.ot1Min).toBe(0);
     expect(d!.ot2Min).toBe(0);
-    expect(d!.isJobOt).toBe(false);
   });
 
   it('an 8–12h day produces OT1 only', () => {
@@ -57,17 +54,6 @@ describe('buildDays — daily OT split', () => {
     expect(d!.regMin).toBe(480); // 8h
     expect(d!.ot1Min).toBe(240); // 4h (8–12)
     expect(d!.ot2Min).toBe(120); // 2h (>12)
-  });
-
-  it('isJobOt is true only when OT > 0 on a job-attributed day', () => {
-    const jobShort = buildDays([
-      session({ userId: 'a', inTs: dayAt(0), hours: 7, zoneKind: 'job', jobNumber: 'J1' }),
-    ], TZ);
-    expect(jobShort[0]!.isJobOt).toBe(false); // OT == 0
-    const jobLong = buildDays([
-      session({ userId: 'a', inTs: dayAt(1), hours: 10, zoneKind: 'job', jobNumber: 'J1' }),
-    ], TZ);
-    expect(jobLong[0]!.isJobOt).toBe(true);
   });
 
   it('first IN and last OUT define the day window', () => {
@@ -118,18 +104,6 @@ describe('buildWeeks — weekly-over-40 OT', () => {
     // Neither week alone exceeds 40h → no OT despite 20h total.
     expect(weeks.every((w) => w.otMin === 0)).toBe(true);
   });
-
-  it('marks a week as job OT when an OT week has a job-attributed day', () => {
-    const days = buildDays(
-      Array.from({ length: 6 }, (_, i) =>
-        session({ userId: 'a', inTs: dayAt(i), hours: 9, zoneKind: i === 0 ? 'job' : 'store', jobNumber: i === 0 ? 'J1' : null }),
-      ),
-    TZ,
-    );
-    const [w] = buildWeeks(days, TZ);
-    expect(w!.otMin).toBeGreaterThan(0);
-    expect(w!.isJobOt).toBe(true);
-  });
 });
 
 describe('isoWeekKey — org-timezone bucketing (agrees with the backend)', () => {
@@ -179,16 +153,5 @@ describe('buildPayroll — weekly-40 OT + per-week approval split', () => {
     const rejected = buildPayroll(days, { 'a:2024-W02': 'rejected', 'a:2024-W03': 'rejected' }, TZ);
     expect(rejected[0]!.otApprovedMin).toBe(0);
     expect(rejected[0]!.otPendingMin).toBe(0); // rejected counts toward neither
-  });
-
-  it('job OT minutes sum weekly OT for job-attributed weeks regardless of review state', () => {
-    const days = buildDays(
-      Array.from({ length: 6 }, (_, i) =>
-        session({ userId: 'a', inTs: dayAt(i), hours: 9, zoneKind: i === 0 ? 'job' : 'store', jobNumber: i === 0 ? 'J1' : null }),
-      ),
-    TZ,
-    );
-    const [p] = buildPayroll(days, {}, TZ);
-    expect(p!.jobOtMin).toBe(14 * 60); // the OT week is job-attributed
   });
 });

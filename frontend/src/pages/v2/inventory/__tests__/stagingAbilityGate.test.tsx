@@ -57,6 +57,7 @@ function renderDialog(ability: ReturnType<typeof buildAbility>) {
   );
 }
 
+// View stock on, Edit stock off: the grants of the switches, not a role.
 const readOnlyAbility = () => buildAbility([{ action: 'read', subject: 'Inventory' }]);
 
 beforeEach(() => {

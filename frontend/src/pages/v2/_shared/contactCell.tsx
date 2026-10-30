@@ -1,11 +1,6 @@
-import { useState } from 'react';
-import { Copy } from 'lucide-react';
-
-import { formatPhone } from '@/lib/utils';
 import { isPlaceholderEmail, isPlaceholderPhone } from '@/lib/placeholders';
 import type { DialerEntityContext } from '@/stores/dialer.store';
-import { PhoneNumberAction } from '@/components/contact/ContactAction';
-import { Button } from '@/ui-kit/components/ui/button';
+import { EmailValue, PhoneValue } from '@/components/contact/CustomerContactBlock';
 
 interface ContactCellProps {
   value: string | null | undefined;
@@ -15,12 +10,14 @@ interface ContactCellProps {
 }
 
 /**
- * Table contact cell: a phone number offers Call or Text (the shared contact action, mobile
- * slice 50), an email opens the mail app, and both have a hover copy button.
+ * Table contact cell: a customer's phone or email, drawn through the contact display policy (Roles &
+ * Permissions, PRD 5). The policy, from the person's switches and the company's phone service, decides
+ * everything the value can do: with Copy customer phone (or email) off the value is digits (or an
+ * address) that cannot be selected, copied or tapped through a native link, and has no copy button; on,
+ * it has the hover copy button. A phone offers Call or Text in the app when the company has the phone
+ * service and the person may contact customers; an email is a mail link.
  *
- * The email is a kit Button that sets `window.location.href`, because the design-system raw-tag
- * ratchet sits at its floor for `<a>` and a v2 page may not add one. It stops propagation so the
- * row click does not also fire; the contact action does the same.
+ * A tap on the value or its copy button stops propagation so the row click does not also fire.
  *
  * IT HAS TO BE ABLE TO SHRINK, AND IT HAS TO TRUNCATE ITSELF.
  *
@@ -48,57 +45,19 @@ interface ContactCellProps {
  * in the card.
  */
 export function ContactCell({ value, type, context }: ContactCellProps) {
-  const [copied, setCopied] = useState(false);
-
   if (!value) return null;
   if (type === 'phone' && isPlaceholderPhone(value)) return null;
   if (type === 'email' && isPlaceholderEmail(value)) return null;
 
-  const href = `mailto:${value}`;
-  const ariaLabel = type === 'phone' ? 'Copy phone number' : 'Copy email address';
-  const label = type === 'phone' ? formatPhone(value) : value;
-
   return (
-    <span className="group inline-flex max-w-full min-w-0 items-center gap-1">
+    // The sheet a phone tap opens is portalled, but React still bubbles its clicks to this span, which keeps a
+    // clickable row around the cell from also firing.
+    <span className="group inline-flex max-w-full min-w-0 items-center" onClick={(e) => e.stopPropagation()}>
       {type === 'phone' ? (
-        <PhoneNumberAction phone={value} context={context} className="min-w-0">
-          {/* The clipped value stays readable on hover - see the note above. */}
-          <span className="truncate" title={label}>{label}</span>
-        </PhoneNumberAction>
+        <PhoneValue kind="customer_phone" phone={value} context={context} name={context?.customerName} inCell />
       ) : (
-        <Button
-          variant="link"
-          size="sm"
-          className="h-auto min-w-0 px-0 font-normal"
-          // The clipped value stays readable on hover - a contact column is narrow
-          // by design, so the ellipsis must not be the only copy of the address.
-          // Same title pattern the truncating text columns in these tables use.
-          title={label}
-          onClick={(e) => {
-            e.stopPropagation();
-            window.location.href = href;
-          }}
-        >
-          <span className="truncate">{label}</span>
-        </Button>
+        <EmailValue email={value} inCell />
       )}
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        aria-label={ariaLabel}
-        // Visible on touch; hidden until the cell is hovered only where hover exists (mobile
-        // slice 15). It used to be invisible-but-tappable on phones.
-        className={copied ? 'size-6 shrink-0' : 'size-6 shrink-0 hover-reveal'}
-        onClick={(e) => {
-          e.stopPropagation();
-          navigator.clipboard.writeText(value).then(() => {
-            setCopied(true);
-            setTimeout(() => setCopied(false), 2000);
-          });
-        }}
-      >
-        {copied ? <span className="text-[10px]">Copied!</span> : <Copy />}
-      </Button>
     </span>
   );
 }

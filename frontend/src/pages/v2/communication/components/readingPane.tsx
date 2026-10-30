@@ -1,11 +1,13 @@
 import { useState, type ReactNode } from 'react';
+import { Link } from 'react-router-dom';
 import {
   Archive, ArrowDownToLine, ArrowLeft, BellOff, Bookmark, Calendar, Clock, CornerUpLeft,
   CornerUpRight, ListChecks, MailOpen, MoreVertical, Paperclip, ShieldAlert, Star, Trash2,
 } from 'lucide-react';
 
 import { InlineComposer } from '@/components/communication/inbox/ComposeWindow';
-import { JobBadge } from '@/components/communication/shared/atoms';
+import { JobBadge, RecordTieBadge, UnverifiedSenderMark } from '@/components/communication/shared/atoms';
+import { EmailAttachmentChip } from '@/components/communication/shared/EmailAttachmentChip';
 import { ACCOUNTS, senderLabel } from '@/lib/api/communication';
 import type { Account, Email, ReplyDraft } from '@/lib/api/communication';
 
@@ -21,6 +23,8 @@ import { Separator } from '@/ui-kit/components/ui/separator';
 import { useIsBelow } from '@/ui-kit/hooks/useMediaQuery';
 import { EMAIL_BODY_SCROLL, SCROLL_BOX_FOCUS_CLASS } from '@/ui-kit/lib/intendedScrollers';
 import { cn } from '@/ui-kit/lib/utils';
+
+import { CustomerMatchesNotice } from './customerMatches';
 
 /**
  * Gmail-style conversation reader.
@@ -89,18 +93,23 @@ export interface ReadingPaneProps {
   onTrash: () => void;
   onToast: (m: string) => void;
   onUpdateEmail: (id: string, patch: Partial<Email>) => void;
-  /** Live connected mailbox - threads down to the inline composer. */
+  /** The sender's own identity (PRD 10, S10.11) - threads down to the inline composer's "Sending as" line and its Send. */
   fromAddress?: string;
+  fromName?: string;
+  addressNeeded?: boolean;
+  sendingEnabled?: boolean;
   /** Mounted inside the content overlay's dialog: the subject is then the dialog's title, so the
    *  dialog is named for a screen reader. */
   inDialog?: boolean;
+  /** Holds the attach switch (PRD 10, S10.20): a message that matches several customers offers the picker. */
+  canPickCustomer?: boolean;
 }
 
 const SNOOZE_OPTIONS = ['Later today', 'Tomorrow', 'This weekend', 'Next week'];
 
 export function ReadingPane({
   email, thread, reply, onReplyChange, onSendReply, onDiscardReply, onPopOutReply, onBack,
-  onStar, onArchive, onReply, onForward, onTrash, onToast, onUpdateEmail, fromAddress, inDialog,
+  onStar, onArchive, onReply, onForward, onTrash, onToast, onUpdateEmail, fromAddress, fromName, addressNeeded, sendingEnabled, inDialog, canPickCustomer = false,
 }: ReadingPaneProps) {
   // Below md the bar keeps the four things a thumb reaches for (Back, Archive, Delete, Reply) and
   // moves every other action into More. From md up it is the full bar.
@@ -109,6 +118,10 @@ export function ReadingPane({
   // older ones collapse to a one-line summary you can click to expand.
   const messages = thread.length ? thread : [email];
   const lastId = messages[messages.length - 1]!.id;
+  // Every message of a record conversation carries the same tie; the first that does names it.
+  const recordTie = messages.find((m) => m.recordTie)?.recordTie;
+  // The received message that matches several customers (PRD 10, S10.20), when the conversation holds one.
+  const awaitingCustomer = messages.find((m) => m.matchesSeveralCustomers);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const isExpanded = (m: Email) => m.id === lastId || expanded.has(m.id);
   function toggleMessage(id: string) {
@@ -327,9 +340,16 @@ export function ReadingPane({
           })()}
           <span className="flex shrink-0 items-center gap-1.5">
             <LabelPills labels={email.labels} />
-            {email.jobLabel && <JobBadge job={email.jobLabel} className="flex-none" />}
+            {email.jobLabel && email.jobLabel !== recordTie?.label && <JobBadge job={email.jobLabel} className="flex-none" />}
+            {/* The job or lead this record conversation is about, linked (PRD 10, S10.9). */}
+            {recordTie && (
+              <Link to={recordTie.kind === 'job' ? `/jobs/${recordTie.id}` : `/leads/${recordTie.id}`} className="flex-none">
+                <RecordTieBadge tie={recordTie} />
+              </Link>
+            )}
           </span>
         </div>
+        {awaitingCustomer && <CustomerMatchesNotice emailId={awaitingCustomer.id} canPick={canPickCustomer} onToast={onToast} />}
         {messages.length > 1 && (
           <p className="text-muted-foreground mb-2 mt-1 text-[12px] font-medium">
             {messages.length} messages in this conversation
@@ -339,7 +359,7 @@ export function ReadingPane({
         {/* Conversation chain - oldest -> newest */}
         <div className="mt-2 space-y-2.5">
           {messages.map((m) => {
-            const mAcct = ACCOUNTS.find((a: Account) => a.id === m.account) ?? ACCOUNTS[0]!;
+            const mAcct = ACCOUNTS.find((a: Account) => a.id === m.account);
             const showFull = isExpanded(m);
             const fromYou = m.folder === 'sent' || m.folder === 'drafts';
             return (
@@ -360,11 +380,18 @@ export function ReadingPane({
                           &lt;{m.from.email}&gt;
                         </span>
                       )}
+                      {/* Linked to its customer by this address, the sender unproven (PRD 10, S10.20). */}
+                      <UnverifiedSenderMark show={m.unverifiedSender} className="flex-none" />
                     </span>
                     {showFull ? (
                       <span className="block text-[12px] font-normal">
-                        to {m.to} · via{' '}
-                        <span className="inline-flex items-center gap-1">{mAcct.provider}</span>
+                        to {m.to}
+                        {mAcct && (
+                          <>
+                            {' · via '}
+                            <span className="inline-flex items-center gap-1">{mAcct.provider}</span>
+                          </>
+                        )}
                       </span>
                     ) : (
                       <span className="block truncate text-[12px] font-normal">{m.snippet}</span>
@@ -402,20 +429,11 @@ export function ReadingPane({
                       </div>
                     )}
                     {m.attachments?.length ? (
-                      <div className="mt-4 flex flex-wrap gap-2">
+                      <div className="mt-4 flex flex-wrap gap-2 empty:hidden">
                         {m.attachments.map((a, ai) => (
-                          // Name + size only, not clickable. Rows written by
-                          // the compose and transactional paths do have a stored
-                          // copy (GET .../emails/:id/attachments/:index signs
-                          // it); this chip is simply not wired to that yet.
-                          <span
-                            key={`${a.name}-${ai}`}
-                            className="text-muted-foreground inline-flex items-center gap-2 rounded-lg border px-3 py-2 text-[13px]"
-                          >
-                            <Paperclip className="size-4" />
-                            {a.name}
-                            <span>· {a.size}</span>
-                          </span>
+                          // A stored file opens through the shared chip (the signed-link route, asked on the click);
+                          // one with no stored copy behind it stays a label.
+                          <EmailAttachmentChip key={`${a.name}-${ai}`} emailId={m.id} attachment={a} onToast={onToast} />
                         ))}
                       </div>
                     ) : m.hasAttachment ? (
@@ -453,6 +471,9 @@ export function ReadingPane({
             onPopOut={onPopOutReply}
             onToast={onToast}
             fromAddress={fromAddress}
+            fromName={fromName}
+            addressNeeded={addressNeeded}
+            sendingEnabled={sendingEnabled}
           />
         ) : (
           <div className="mt-6 flex gap-2">

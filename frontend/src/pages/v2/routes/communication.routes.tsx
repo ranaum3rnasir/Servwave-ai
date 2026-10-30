@@ -6,6 +6,7 @@ import ProtectedRoute from '@/components/ProtectedRoute';
 import RequireCommunicationCreate from '@/components/RequireCommunicationCreate';
 import RequireCommunicationSection from '@/components/RequireCommunicationSection';
 import RequireFeature from '@/components/RequireFeature';
+import RequirePageAccess from '@/components/RequirePageAccess';
 
 import V2AppLayout from '../V2AppLayout';
 
@@ -46,6 +47,11 @@ const PhoneTabPage = lazy(() => import('../communication/PhoneTabPage'));
  * softphone device owner the record tabs' Call button hands off to, and taking that
  * away from whoever may compose was never decided here.
  *
+ * Inside the section, each page also follows its own Show switch (Show Phone, Show Text, Show Email): a page opened by
+ * its address with its Show off sends the person to their dashboard, like every list page. The plan check is the outer
+ * of the two, so a company without the feature sees the upgrade page whatever the switches say. Show is display only;
+ * the section gate above and the server's own checks decide access, so this is a convenience and never the security.
+ *
  * `/phone` keeps its own auth-only ProtectedRoute (access is decided purely by the
  * gate below it) and its position outside the app chrome. It is a standalone tab the
  * user keeps open alongside the app - putting it inside V2AppLayout would give it a
@@ -64,10 +70,14 @@ export function communicationV2Routes() {
         <Route element={<RequireCommunicationSection />}>
           <Route element={<V2AppLayout />}>
             <Route element={<RequireFeature feature="phone" />}>
-              <Route path="/communication/phone" element={<PhonePage />} />
-              <Route path="/communication/phone/:tab" element={<PhonePage />} />
-              <Route path="/communication/text" element={<TextPage />} />
-              <Route path="/communication/text/:tab" element={<TextPage />} />
+              <Route element={<RequirePageAccess all={['show_phone']} />}>
+                <Route path="/communication/phone" element={<PhonePage />} />
+                <Route path="/communication/phone/:tab" element={<PhonePage />} />
+              </Route>
+              <Route element={<RequirePageAccess all={['show_text']} />}>
+                <Route path="/communication/text" element={<TextPage />} />
+                <Route path="/communication/text/:tab" element={<TextPage />} />
+              </Route>
               {/* WhatsApp is demo-locked ON TOP OF phone: no WhatsApp Business
                   connection exists in the schema, so for a non-demo org the page
                   is theatre even though the URL resolves. Matches the legacy
@@ -81,7 +91,9 @@ export function communicationV2Routes() {
                 the phone-gated pages above stay shut. Sharing the phone gate was
                 the port's mistake and locked the inbox for those orgs. */}
             <Route element={<RequireFeature feature="email" />}>
-              <Route path="/communication/inbox" element={<InboxPage />} />
+              <Route element={<RequirePageAccess all={['show_email']} />}>
+                <Route path="/communication/inbox" element={<InboxPage />} />
+              </Route>
             </Route>
           </Route>
         </Route>

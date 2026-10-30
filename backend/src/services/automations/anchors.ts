@@ -155,7 +155,7 @@ export function describeAnchoredWait(cfg: AnchoredWaitConfig): string {
  *
  * D8 is explicit that "…and it still has not happened" is NOT expressible in the candidate sweep,
  * which selects purely on the anchor date. It belongs in the execution-time staleness guard,
- * beside the rules that already drop lost and cancelled leads. Putting it in the sweep would
+ * beside the rules that already drop lost leads. Putting it in the sweep would
  * force ONE allow-list onto both directions and get one of them wrong — the same reasoning
  * already recorded on the existing lead anchor in dateAnchorSweep.ts.
  *

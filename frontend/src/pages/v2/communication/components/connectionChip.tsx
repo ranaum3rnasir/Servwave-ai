@@ -53,11 +53,13 @@ export function ConnectionChip({
       role="status"
       // No appearance classes: Badge already ships the weight, the gap and the
       // shrink this needs, and the component-API ratchet counts anything added
-      // here as appearance taken back by the call site.
-      className={className}
+      // here as appearance taken back by the call site. `max-w-full` is width, so
+      // a long label (a whole sender address) can never push past its row.
+      className={cn('max-w-full', className)}
     >
-      <span aria-hidden className={cn('size-1.5 rounded-full', tone.dot)} />
-      {label}
+      <span aria-hidden className={cn('size-1.5 flex-none rounded-full', tone.dot)} />
+      {/* Badge keeps its text on one line; a label with an address in it has to be able to break, or a phone clips it. */}
+      <span className="min-w-0 whitespace-normal break-all text-left leading-snug">{label}</span>
     </Badge>
   );
 }

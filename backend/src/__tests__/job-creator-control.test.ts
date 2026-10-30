@@ -2,9 +2,12 @@
  * PR 3 of the technician-ownership spec
  * (md_files/specs/permissions/2026-08-04-technician-ownership-and-creator-tracking.md).
  *
- * THE RULE: creation confers control. A user who creates a job has full control over it -
- * permanently, even after a dispatcher reassigns the work away from them. The rule only ever ADDS
- * access; higher-tier roles reach the same rows through their own org-wide grants.
+ * THE RULE (superseded for who may OPEN a job by Roles & Permissions S01.2): creation confers control.
+ * A user who creates a job had full control over it - permanently, even after a dispatcher reassigned
+ * the work away from them. S01.2 removed that for jobs: creating one attaches nobody, so access
+ * follows who is on the job now (block 2 below pins the new rule). What stays is the split between
+ * the assignee's work surface and the people surface. S01.8 then moved a job's line items, scopes and money
+ * fields onto the Edit job line items switch alone (no creator exception; on in the Technician preset).
  *
  * This file drives the rule through the ROUTES, not through the ability object, because the ability
  * object was never the thing that was wrong: `canDo(action,'Job')` is subject-level, and the
@@ -29,8 +32,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { TEST_USERS, mockAuthAs, authHeader, ALPHA_ORG_ID, TAG_FIXTURE, mockScopedFindFirst } from './helpers';
-import { setCachedGrants, clearPermissionCache } from '../lib/permissions/permissionCache';
+import { TEST_USERS, mockAuthAs, authHeader, ALPHA_ORG_ID, TAG_FIXTURE, mockScopedFindFirst, mockRoleSwitches } from './helpers';
+import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 
 const mockPrisma = prisma as unknown as Record<string, any>;
@@ -62,7 +65,8 @@ function jobRow(over: Record<string, unknown> = {}) {
     discount_value: null,
     discount_amount: 0,
     customer: { tax_exempt: false, id: 'cust-1', first_name: 'A', last_name: 'B', company_name: null, email: null, phone: null },
-    visits: [{ assignees: [{ user_id: TECH_ID }] }],
+    // A live, upcoming trip: the job-level steps ask who is on the CURRENT visit (S04.5).
+    visits: [{ status: 'SCHEDULED', scheduled_at: new Date(Date.now() + 86_400_000), scheduled_end: null, created_at: new Date(), assignees: [{ user_id: TECH_ID }] }],
     estimate: null,
     job_line_items: [
       { id: LINE_ID, description: 'Labor', quantity: 1, unit_price: 250, unit_cost: 100, markup_percent: 150, line_total: 250, is_taxable: true, sort_order: 0, stock_status: null },
@@ -100,21 +104,13 @@ function useJob(job: Record<string, any>) {
 
 /** The REAL shipped defaults for the role - the grant table is the deliverable of this PR. */
 function useDefaultTechnicianGrants() {
-  setCachedGrants(
-    ALPHA_ORG_ID,
-    'TECHNICIAN',
-    DEFAULT_GRANTS.filter((g) => g.role === 'TECHNICIAN').map(({ action, subject, conditions }) => ({
-      action,
-      subject,
-      conditions: conditions ?? null,
-    })) as never,
-  );
 }
 
 type Route = { name: string; method: string; path: string; body?: Record<string, unknown> };
 
-// Everything the creator controls and the assignee does not. One table, driven identically.
-const CREATOR_ONLY: Route[] = [
+// A job's lines and scopes: the Edit job line items switch alone decides (S01.8), on any job the person can open.
+// The Technician preset holds it on, so an assignee prices the job they are on and a creator who is nobody on it does not.
+const LINE_ITEM_ROUTES: Route[] = [
   { name: 'POST   /:id/line-items',         method: 'post',   path: `/api/jobs/${JOB_ID}/line-items`,               body: { description: 'Labor', quantity: 1, unit_price: 100 } },
   { name: 'PATCH  /:id/line-items/reorder', method: 'patch',  path: `/api/jobs/${JOB_ID}/line-items/reorder`,       body: { order: [LINE_ID] } },
   { name: 'PATCH  /:id/line-items/:lineId', method: 'patch',  path: `/api/jobs/${JOB_ID}/line-items/${LINE_ID}`,    body: { quantity: 2 } },
@@ -123,6 +119,10 @@ const CREATOR_ONLY: Route[] = [
   { name: 'PATCH  /:id/scopes/reorder',     method: 'patch',  path: `/api/jobs/${JOB_ID}/scopes/reorder`,           body: { order: [SCOPE_ID] } },
   { name: 'PATCH  /:id/scopes/:idx',        method: 'patch',  path: `/api/jobs/${JOB_ID}/scopes/0`,                 body: { is_taxable: false } },
   { name: 'DELETE /:id/scopes/:idx',        method: 'delete', path: `/api/jobs/${JOB_ID}/scopes/0` },
+];
+
+// The people on a job and its deletion: Assign people to jobs and Delete jobs, both off in the Technician preset.
+const PEOPLE_AND_DELETE: Route[] = [
   { name: 'POST   /:id/assign',             method: 'post',   path: `/api/jobs/${JOB_ID}/assign`,                   body: { assignee_ids: [TECH_ID] } },
   { name: 'POST   /:id/assignees',          method: 'post',   path: `/api/jobs/${JOB_ID}/assignees`,                body: { assignee_ids: [] } },
   // Slice 02: the per-visit twin of /assignees - the board's lane swap re-crews the DRAGGED trip
@@ -136,14 +136,19 @@ const CREATOR_ONLY: Route[] = [
 // The assignee half: the work surface, which creation does not gate.
 const ASSIGNEE_SURFACE: Route[] = [
   { name: 'GET    /:id/line-items',  method: 'get',    path: `/api/jobs/${JOB_ID}/line-items` },
+  // Adding a note is the Add notes switch (on in every preset), not Edit jobs (S01.11).
   { name: 'POST   /:id/notes',       method: 'post',   path: `/api/jobs/${JOB_ID}/notes`,                  body: { content: 'called the customer' } },
-  { name: 'POST   /:id/tags',        method: 'post',   path: `/api/jobs/${JOB_ID}/tags`,                   body: { tag_id: UNATTACHED_TAG_ID } },
-  { name: 'DELETE /:id/tags/:tagId', method: 'delete', path: `/api/jobs/${JOB_ID}/tags/${TAG_FIXTURE.id}` },
   // POST /:id/complete left this list with multi-visit S4 (D15/D7a): closing the JOB stopped being
   // a technician role default, so a technician on the default grant set 403s here for a reason that
   // has nothing to do with creation. What a technician closes is their own VISIT.
   { name: 'POST   /:id/start',       method: 'post',   path: `/api/jobs/${JOB_ID}/start` },
   { name: 'POST   /:id/arrive',      method: 'post',   path: `/api/jobs/${JOB_ID}/arrive` },
+];
+
+// A job's tags follow Edit jobs (S01.11), which the Technician preset holds off: a person is given it, or refused.
+const EDIT_JOBS_ROUTES: Route[] = [
+  { name: 'POST   /:id/tags',        method: 'post',   path: `/api/jobs/${JOB_ID}/tags`,                   body: { tag_id: UNATTACHED_TAG_ID } },
+  { name: 'DELETE /:id/tags/:tagId', method: 'delete', path: `/api/jobs/${JOB_ID}/tags/${TAG_FIXTURE.id}` },
 ];
 
 function send(route: Route, user: 'admin' | 'dispatcher' | 'technician') {
@@ -219,102 +224,123 @@ describe('a technician assigned to a job somebody else created', () => {
     expect(res.status, `${route.name} -> ${res.status} ${JSON.stringify(res.body)}`).toBeLessThan(400);
   });
 
-  // `read Pricing` is new for TECHNICIAN in this PR. Before it, the line-item list came back with
-  // the money keys stripped and `billing: null` - a materials list. Prices, totals, cost and
-  // margin are all one grant, so one route proves the whole surface.
-  it('sees the money: unit price, unit cost, margin and the billing totals', async () => {
+  // S01.15: See financial data covers costs only, and it is off in the Technician preset. The line-item list
+  // keeps the prices and the billing totals (they follow the job the technician can open) and leaves out
+  // the unit cost and the margin.
+  it('sees the prices and the billing totals, not the cost: See financial data is off in the Technician preset', async () => {
     const res = await request(app).get(`/api/jobs/${JOB_ID}/line-items`).set(authHeader('technician'));
     expect(res.status).toBe(200);
     expect(res.body.lines[0]).toHaveProperty('unit_price');
-    expect(res.body.lines[0]).toHaveProperty('unit_cost');
-    expect(res.body.lines[0]).toHaveProperty('markup_percent');
+    expect(res.body.lines[0]).toHaveProperty('line_total');
+    expect(res.body.lines[0]).not.toHaveProperty('unit_cost');
+    expect(res.body.lines[0]).not.toHaveProperty('markup_percent');
     expect(res.body.billing).not.toBeNull();
   });
 
-  it.each(CREATOR_ONLY)('is refused $name', async (route) => {
+  it('sees the cost and the margin once See financial data is on', async () => {
+    mockRoleSwitches({ see_financial_data: true });
+    const res = await request(app).get(`/api/jobs/${JOB_ID}/line-items`).set(authHeader('technician'));
+    expect(res.status).toBe(200);
+    expect(res.body.lines[0]).toHaveProperty('unit_cost');
+    expect(res.body.lines[0]).toHaveProperty('markup_percent');
+  });
+
+  it.each(PEOPLE_AND_DELETE)('is refused $name', async (route) => {
     const res = await send(route, 'technician');
     expect(res.status, route.name).toBe(403);
   });
 
-  // Every money field on PATCH /:id, not just the tax/discount three. `labor_hours`,
-  // `overhead_mode` and `overhead_value` are the JOB COST MODEL - the margin side of exactly the
-  // surface the spec says follows creation - and until this PR their only guard was canSeePricing,
-  // which happened to be fail-closed for technicians because the role had no `read Pricing`. This
-  // PR grants it, so that accident is gone and they need the same creator gate as the rest.
+  it.each(EDIT_JOBS_ROUTES)('is refused $name while Edit jobs is off (the Technician preset)', async (route) => {
+    const res = await send(route, 'technician');
+    expect(res.status, route.name).toBe(403);
+  });
+
+  it.each(EDIT_JOBS_ROUTES)('may $name once Edit jobs is on', async (route) => {
+    mockRoleSwitches({ edit_jobs: true });
+    const res = await send(route, 'technician');
+    expect(res.status, `${route.name} -> ${res.status} ${JSON.stringify(res.body)}`).toBeLessThan(400);
+  });
+
+  it.each(LINE_ITEM_ROUTES)('may $name: Edit job line items is on in the Technician preset', async (route) => {
+    const res = await send(route, 'technician');
+    expect(res.status, `${route.name} -> ${res.status} ${JSON.stringify(res.body)}`).toBeLessThan(400);
+  });
+
+  // The tax and the discount are PRICES: they follow Edit jobs. `labor_hours`, `overhead_mode` and
+  // `overhead_value` are the JOB COST MODEL - the margin side of the surface - and are a cost, so they also
+  // need See financial data (off in the Technician preset).
   it.each([
     { tax_rate: 0.0875 },
     { discount_type: 'PERCENTAGE' },
     { discount_value: 10 },
+  ])('may change %o on PATCH /:id with Edit jobs on: the job prices follow Edit jobs', async (body) => {
+    mockRoleSwitches({ edit_jobs: true });
+    const res = await request(app).patch(`/api/jobs/${JOB_ID}`).set(authHeader('technician')).send(body);
+    expect(res.status).toBe(200);
+  });
+
+  it.each([
     { labor_hours: 40 },
     { overhead_mode: 'PERCENTAGE' },
     { overhead_value: 99 },
-  ])('is refused %o on PATCH /:id', async (body) => {
+  ])('may change the cost model %o only with Edit jobs and See financial data both on', async (body) => {
+    mockRoleSwitches({ edit_jobs: true });
+    const refused = await request(app).patch(`/api/jobs/${JOB_ID}`).set(authHeader('technician')).send(body);
+    expect(refused.status).toBe(403);
+    mockRoleSwitches({ edit_jobs: true, see_financial_data: true });
     const res = await request(app).patch(`/api/jobs/${JOB_ID}`).set(authHeader('technician')).send(body);
-    expect(res.status).toBe(403);
-    expect(mockPrisma.job.update).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
   });
 
   it.each([
     { scope_notes: 'bring a ladder' },
     { job_type: 'HVAC' },
     { estimated_duration: 90 },
-  ])('may still PATCH the harmless field %o', async (body) => {
+  ])('may PATCH the harmless field %o with Edit jobs on, and not without it', async (body) => {
+    const refused = await request(app).patch(`/api/jobs/${JOB_ID}`).set(authHeader('technician')).send(body);
+    expect(refused.status).toBe(403);
+    mockRoleSwitches({ edit_jobs: true });
     const res = await request(app).patch(`/api/jobs/${JOB_ID}`).set(authHeader('technician')).send(body);
     expect(res.status).toBe(200);
   });
 });
 
-// ══ 2. CREATOR, UNSCHEDULED - the permanence property ════════════════════════════════════════
+// ══ 2. CREATOR, TAKEN OFF - attachment is the only thing that opens a job ════════════════════
+// Roles & Permissions S01.2 (M3): creating a job attaches nobody, so the person who made a job and
+// has since been taken off its crew is attached to nothing. This block held the opposite rule
+// ("creation confers control, permanently") until then; the technician-ownership spec's
+// creator-permanence is gone for jobs, and a creator stays on a job only through the form pre-fill
+// that puts them on it (PRD 3).
 describe('the creator of a job who has since been taken off the crew', () => {
   beforeEach(() => useJob(CREATED_JOB()));
 
-  it('can still read it, though no assignment connects them to it any more', async () => {
+  it('can no longer read it: nothing attaches them to it any more', async () => {
     const res = await request(app).get(`/api/jobs/${JOB_ID}/line-items`).set(authHeader('technician'));
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(403);
   });
 
-  it.each(CREATOR_ONLY)('keeps $name', async (route) => {
+  it.each([...ASSIGNEE_SURFACE, ...EDIT_JOBS_ROUTES, ...LINE_ITEM_ROUTES, ...PEOPLE_AND_DELETE])('cannot reach $name', async (route) => {
+    mockRoleSwitches({ edit_jobs: true });
     const res = await send(route, 'technician');
-    expect(res.status, `${route.name} -> ${res.status} ${JSON.stringify(res.body)}`).toBeLessThan(400);
+    expect([403, 404], `${route.name} -> ${res.status}`).toContain(res.status);
   });
 
   it.each([
     { tax_rate: 0.0875 },
     { discount_type: 'PERCENTAGE' },
-    { discount_value: 10 },
-    { labor_hours: 40 },
-    { overhead_mode: 'PERCENTAGE' },
-    { overhead_value: 99 },
-  ])('keeps %o on PATCH /:id', async (body) => {
+    { scope_notes: 'bring a ladder' },
+  ])('cannot change %o on PATCH /:id', async (body) => {
     const res = await request(app).patch(`/api/jobs/${JOB_ID}`).set(authHeader('technician')).send(body);
-    expect(res.status).toBe(200);
+    expect([403, 404]).toContain(res.status);
+    expect(mockPrisma.job.update).not.toHaveBeenCalled();
   });
 
-  // `update Job` is the ONE grant this PR leaves on OWN_JOB (Part C's table says keep), and notes /
-  // tags / sub-status are what it gates after PR 2's split - so on the grant table alone an
-  // unassigned creator looks locked out of their own job's notes. They are not, and the reason is
-  // worth stating rather than discovering: `addNote`'s per-instance gate is `canAccessRow`, which
-  // derives from the READ grant, and read is the one this PR widened to assigned-OR-created.
-  //
-  // So permanence holds here too, but through a different mechanism than every other row above,
-  // and the grant condition and the enforced condition disagree. Pinned so that "notes follow the
-  // read scope" is a recorded property rather than an accident: anyone who later tightens addNote
-  // to `canActOnRow(req, …, 'update')` will turn this red and be forced to widen `update Job`
-  // alongside it, instead of silently taking notes away from creators.
-  it('can still add a note - notes ride the read scope, not `update Job`\'s condition', async () => {
+  it('cannot add a note', async () => {
     const res = await request(app)
       .post(`/api/jobs/${JOB_ID}/notes`)
       .set(authHeader('technician'))
       .send({ content: 'called the customer' });
-    expect(res.status).toBe(201);
-  });
-
-  // The delete grant is creator-conditioned, but the pre-existing integrity rule outranks it.
-  it('still cannot delete it once it carries an invoice', async () => {
-    useJob({ ...CREATED_JOB(), invoices: [{ id: 'inv-1', status: 'VOIDED' }] });
-    const res = await request(app).delete(`/api/jobs/${JOB_ID}`).set(authHeader('technician'));
-    expect(res.status).toBe(400);
-    expect(mockPrisma.job.delete).not.toHaveBeenCalled();
+    expect([403, 404]).toContain(res.status);
   });
 });
 
@@ -328,9 +354,11 @@ describe("a technician who neither created nor was assigned the job", () => {
   // Closed by tag.controller.ts's ensureRowScopeAccess (canAccessRow, same helper every other
   // per-instance check in this file already goes through), so the tag routes now behave exactly
   // like the rest of ASSIGNEE_SURFACE - no special-case exclusion needed any more.
-  it.each([...ASSIGNEE_SURFACE, ...CREATOR_ONLY])(
+  it.each([...ASSIGNEE_SURFACE, ...EDIT_JOBS_ROUTES, ...LINE_ITEM_ROUTES, ...PEOPLE_AND_DELETE])(
     'cannot reach $name',
     async (route) => {
+      // With Edit jobs on, so a tag route is refused for the job's scope and not for the switch.
+      mockRoleSwitches({ edit_jobs: true });
       const res = await send(route, 'technician');
       expect([403, 404], `${route.name} -> ${res.status}`).toContain(res.status);
     },
@@ -339,10 +367,21 @@ describe("a technician who neither created nor was assigned the job", () => {
 
 // ══ 4. REGRESSION: the org-wide roles are untouched ═════════════════════════════════════════
 describe('DISPATCHER and ADMIN are unaffected by the split', () => {
+  // Delete jobs is on in the Admin preset only; every other route is open to a person on All.
+  const deleteRoute = (r: Route) => r.name === 'DELETE /:id';
+
+  it('dispatcher is refused DELETE /:id: the Dispatcher preset holds Delete jobs off', async () => {
+    mockAuthAs('dispatcher');
+    useJob(FOREIGN_JOB());
+    const res = await send(PEOPLE_AND_DELETE.find(deleteRoute)!, 'dispatcher');
+    expect(res.status).toBe(403);
+    expect(mockPrisma.job.delete).not.toHaveBeenCalled();
+  });
+
   it.each(['admin', 'dispatcher'] as const)('%s keeps every job route on a job they neither made nor were assigned', async (user) => {
     mockAuthAs(user);
     useJob(FOREIGN_JOB());
-    for (const route of [...ASSIGNEE_SURFACE, ...CREATOR_ONLY]) {
+    for (const route of [...ASSIGNEE_SURFACE, ...EDIT_JOBS_ROUTES, ...LINE_ITEM_ROUTES, ...PEOPLE_AND_DELETE].filter((r) => user === 'admin' || !deleteRoute(r))) {
       const res = await send(route, user);
       expect(res.status, `${route.name} for ${user} -> ${res.status} ${JSON.stringify(res.body)}`).toBeLessThan(400);
     }

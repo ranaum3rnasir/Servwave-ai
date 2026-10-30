@@ -245,7 +245,7 @@ describe('pagination (page-based envelope)', () => {
 });
 
 describe('listNumbers pagination', () => {
-  // Alpha Doors holds 20 tracking numbers across 2 pages. listNumbers fetched
+  // The pilot org holds 20 tracking numbers across 2 pages. listNumbers fetched
   // page 1 and stopped, so Sync imported exactly half the account and the
   // Numbers table under-reported what the customer is billed for.
   const numbersPage = (n: number, ids: string[], totalPages: number) =>

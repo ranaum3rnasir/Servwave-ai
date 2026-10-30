@@ -1,4 +1,4 @@
-// Payments Phase 2, Task 2.5 — JIT accept-cards banner (StripePaymentsBanner) mounted near
+// Payments Phase 2, Task 2.5 — JIT accept-cards banner (PaymentsSetupBanner) mounted near
 // the top of SendEstimateDialog's body. This file covers the banner integration only (admin
 // CTA + navigation, non-admin copy, hidden once charges are enabled) — SendEstimateDialog's
 // own send/deposit/payment-method behavior predates this task and isn't re-tested here.
@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from './helpers';
+import { useAuthStore } from '@/stores/auth.store';
 import { SendEstimateDialog } from '@/components/estimates/SendEstimateDialog';
 import { buildAbility } from '@/lib/ability';
 import type { Organization } from '@/lib/api/organization';
@@ -118,4 +119,22 @@ describe('SendEstimateDialog — JIT accept-cards banner (Task 2.5)', () => {
 
     expect(screen.queryByText(/Get paid faster/)).not.toBeInTheDocument();
   });
+
+  it('plan lacks online payments: no banner and no Set up button, for an admin or anyone else', () => {
+    planWithout();
+    hoisted.org = { ...ORG, stripe_charges_enabled: false };
+    const { container } = renderWithProviders(<SendEstimateDialog {...baseProps()} />, { ability: ADMIN_ABILITY });
+
+    expect(container.ownerDocument.body.textContent).not.toMatch(/Get paid faster|ask your admin/);
+    expect(screen.queryByRole('button', { name: 'Set up' })).not.toBeInTheDocument();
+  });
 });
+
+// Slice 34b - an org whose plan lacks online payments is not nudged to set up card payments.
+function planWithout() {
+  vi.mocked(useAuthStore).mockImplementation(((selector: (s: Record<string, unknown>) => unknown) =>
+    selector({
+      user: { id: 'u1', role: 'ADMIN', organization_id: 'o1', org_features: ['payments', 'invoices'] },
+      isAuthenticated: true, isLoading: false, error: null,
+    })) as never);
+}

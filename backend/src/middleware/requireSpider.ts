@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from 'express';
 import { spiderAvailable } from '../services/spider/gate';
+import { isSuperUser } from '../lib/permissions/effectiveRole';
 
 /**
  * The Spider gate on every Spider endpoint (#2619): the `spider` feature AND, while the launch is
@@ -27,7 +28,7 @@ export function requireSpider(req: Request, res: Response, next: NextFunction): 
  * NOT behind this).
  */
 export function requireSpiderAdmin(req: Request, res: Response, next: NextFunction): void {
-  if (req.user?.role === 'ADMIN') {
+  if (req.user && isSuperUser(req.user)) {
     next();
     return;
   }

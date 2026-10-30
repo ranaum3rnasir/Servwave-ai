@@ -322,7 +322,7 @@ test.describe('Stage 11 — Lifecycle / CRUD §10', () => {
   // once the intended behavior (API vs FE filter) is decided + shipped.
   test.fixme('LIF-08: active-by-default lists — leads hide terminal (confirmed); other lists not uniform (humanCheck)', async () => {
     const s = api.suffix;
-    // Seed an ACTIVE lead and a TERMINAL (CANCELLED) lead under a fresh customer.
+    // Seed an ACTIVE lead and a TERMINAL (LOST) lead under a fresh customer.
     // The lead must anchor to a service location (createLead 500s without one), so give the
     // customer a primary location and pass its id.
     const c = await api.createCustomer({
@@ -340,18 +340,18 @@ test.describe('Stage 11 — Lifecycle / CRUD §10', () => {
     const termLead = await api.createLead({ customer_id: c.id, service_request: `l8-term-${s}`, service_location_id: loc.id });
     expect(termLead.res.status(), 'seed terminal lead').toBe(201);
     const termLeadId = termLead.body.lead.id;
-    const cancelled = await api.cancelLead(termLeadId, 'lif-08 terminal'); // → CANCELLED (terminal)
-    expect(cancelled.res.status(), 'cancel terminal lead').toBe(200);
+    const lost = await api.markLeadLost(termLeadId, 'lif-08 terminal'); // → LOST (terminal)
+    expect(lost.res.status(), 'mark terminal lead lost').toBe(200);
 
-    // LEADS list default (no status filter, no search) hides WON/LOST/CANCELLED — CONFIRMED in
+    // LEADS list default (no status filter, no search) hides WON/LOST — CONFIRMED in
     // lead.controller.ts §11 open-pipeline default. Use a high limit to scan our seeded ids.
     const { body: leadsBody } = await api.listLeads({ limit: '200' });
     const leadIds = (leadsBody.leads ?? []).map((l: any) => l.id);
     expect(leadIds).toContain(activeLeadId);    // active present (delta/presence, never abs count)
     expect(leadIds).not.toContain(termLeadId);  // terminal hidden by default
-    // PRESENT with the include filter: an explicit ?status=CANCELLED overrides the open-pipeline
+    // PRESENT with the include filter: an explicit ?status=LOST overrides the open-pipeline
     // default (lead.controller.ts:401/487) and surfaces our seeded terminal lead.
-    const { body: leadsTerm } = await api.listLeads({ status: 'CANCELLED', limit: '200' });
+    const { body: leadsTerm } = await api.listLeads({ status: 'LOST', limit: '200' });
     const leadTermIds = (leadsTerm.leads ?? []).map((l: any) => l.id);
     expect(leadTermIds).toContain(termLeadId);
 

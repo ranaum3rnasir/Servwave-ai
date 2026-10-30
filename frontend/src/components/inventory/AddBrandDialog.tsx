@@ -16,6 +16,8 @@ import { extractApiError } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { useAppAbility } from "@/contexts/AbilityContext";
+import { canSeePricing as canSeePricingAbility } from "@/lib/ability";
 import { canAutoFocus } from "@/ui-kit/lib/autoFocus";
 
 // Upload rules (accepted types, source cap, downscale-before-store) live in
@@ -35,6 +37,11 @@ type Props = {
   onUpdate?: (brand: Brand) => unknown;
   /** Vendor list for the default-vendor dropdown. */
   vendors: Vendor[];
+  /**
+   * False at a mount whose person may not read vendors (S07.18): the Default Vendor field is left out
+   * altogether - never shown blank - and the save carries no default vendor, so the stored one is untouched.
+   */
+  showVendor?: boolean;
 };
 
 /**
@@ -53,8 +60,12 @@ export function AddBrandDialog({
   editBrand,
   onUpdate,
   vendors,
+  showVendor = true,
 }: Props) {
   const isEdit = !!editBrand;
+  // A default markup is a rule over cost, so the field is part of the cost data (S07.17). Hidden, it still holds the
+  // brand's stored value, so saving the brand's other fields leaves the markup as it was.
+  const canSeePricing = canSeePricingAbility(useAppAbility());
   const [form, setForm] = useState<{
     name: string;
     logoUrl: string;            // data: URI (uploaded) or seed value; empty string = no logo
@@ -141,7 +152,7 @@ export function AddBrandDialog({
           website: form.website.trim() || undefined,
           description: form.description.trim() || undefined,
           defaultMarkupPct: parsedMarkup,
-          defaultVendorId: form.defaultVendorId || undefined,
+          ...(showVendor ? { defaultVendorId: form.defaultVendorId || undefined } : {}),
           isActive: form.isActive,
         });
       } else if (onCreate) {
@@ -152,7 +163,7 @@ export function AddBrandDialog({
           website: form.website.trim() || undefined,
           description: form.description.trim() || undefined,
           defaultMarkupPct: parsedMarkup,
-          defaultVendorId: form.defaultVendorId || undefined,
+          ...(showVendor ? { defaultVendorId: form.defaultVendorId || undefined } : {}),
           isActive: form.isActive,
         };
         await onCreate(brand);
@@ -311,23 +322,25 @@ export function AddBrandDialog({
         </FormField>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <FormField
-            label="Default Markup"
-            optional
-            hint="Applied when item / group markup is blank"
-          >
-            <Input
-              kind="quantity"
-              step="0.05"
-              min="0"
-              value={form.defaultMarkupPct}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, defaultMarkupPct: e.target.value }))
-              }
-              placeholder="1.4 = 40% markup"
-              className={inputCls}
-            />
-          </FormField>
+          {canSeePricing && (
+            <FormField
+              label="Default Markup"
+              optional
+              hint="Applied when item / group markup is blank"
+            >
+              <Input
+                kind="quantity"
+                step="0.05"
+                min="0"
+                value={form.defaultMarkupPct}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, defaultMarkupPct: e.target.value }))
+                }
+                placeholder="1.4 = 40% markup"
+                className={inputCls}
+              />
+            </FormField>
+          )}
 
           {/* SelectField's Radix Select ROOT forwards no id to its trigger -
               a known gap (FormField.tsx's header comment). Kept as
@@ -337,24 +350,26 @@ export function AddBrandDialog({
               ratchet if handed straight to SelectTrigger (a components/ui
               export) instead of through SelectField, which the guard does
               not govern. */}
-          <FormField
-            label="Default Vendor"
-            optional
-            hint="Auto-fills on new items in this brand"
-          >
-            <SelectField
-              aria-label="Default vendor"
-              value={form.defaultVendorId || "NONE"}
-              onValueChange={(v) =>
-                setForm((f) => ({ ...f, defaultVendorId: v === "NONE" ? "" : v }))
-              }
-              className={selectCls}
-              options={[
-                { value: "NONE", label: "- none -" },
-                ...vendors.map((v) => ({ value: v.id, label: v.name })),
-              ]}
-            />
-          </FormField>
+          {showVendor && (
+            <FormField
+              label="Default Vendor"
+              optional
+              hint="Auto-fills on new items in this brand"
+            >
+              <SelectField
+                aria-label="Default vendor"
+                value={form.defaultVendorId || "NONE"}
+                onValueChange={(v) =>
+                  setForm((f) => ({ ...f, defaultVendorId: v === "NONE" ? "" : v }))
+                }
+                className={selectCls}
+                options={[
+                  { value: "NONE", label: "- none -" },
+                  ...vendors.map((v) => ({ value: v.id, label: v.name })),
+                ]}
+              />
+            </FormField>
+          )}
         </div>
 
         {/* Checkbox-leads-its-own-label row: FormField always renders its

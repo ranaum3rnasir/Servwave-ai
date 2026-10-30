@@ -49,7 +49,7 @@ import { Workflow } from '@prisma/client';
 import { prisma } from '../../lib/prisma';
 import { logger } from '../../lib/logger';
 import { LIVE_VISIT_STATUSES } from '../../lib/visit-status';
-import { runUnscoped } from '../../lib/tenant-context';
+import { COMPLETED_OR_LATER_JOB_STATUSES } from '../../lib/job-status-order';
 import { createEnrollment, advanceEnrollment } from './enrollment';
 import { anchorWindow, candidatesForAnchor } from './dateAnchorSweep';
 import type { AnchorKey, WaitDirection } from './anchors';
@@ -147,7 +147,9 @@ async function candidatesFor(workflow: Workflow, offsetMs: number, now: Date): P
       const jobs = await prisma.job.findMany({
         where: {
           organization_id: workflow.organization_id,
-          status: 'COMPLETED',
+          // A completed job lands in Office review and never rests at Completed (PRD 6), so the follow-up scan asks
+          // for the whole finished set; the occurrence is completed_at, so a job enrolls once however far it moves on.
+          status: { in: [...COMPLETED_OR_LATER_JOB_STATUSES] },
           completed_at: {
             lte: new Date(now.getTime() - offsetMs),
             gte: new Date(now.getTime() - offsetMs - COMPLETED_GRACE_MS),
@@ -503,30 +505,7 @@ const STALE_TICK_MS = 10 * MINUTE;
 let inFlightTick: { generation: number; startedAt: Date } | null = null;
 let tickGeneration = 0;
 
-/**
- * One poller tick. Never throws; skips if the previous tick is still running.
- *
- * SELF-SCOPING under the DB tenant guard, and that is not a detail of the caller.
- *
- * Production connects as a role with no BYPASSRLS, and every tenant table carries a FORCED
- * `tenant_isolation` policy over two session vars that `wrapWithTenantGuard` fills in from the
- * AsyncLocalStorage tenant context (lib/tenant-context.ts). A request has such a context because
- * `authenticate` opens one. The poller is nobody's request. With NO context the policy fails
- * CLOSED, so every query here - all four phases - matches zero rows: `workflow.findMany` returns
- * [], both scans take their `workflows.length === 0` early return, and no anchor sweep, no
- * advance and no crash recovery ever runs. Nothing throws and nothing is logged; the tick just
- * does nothing, every minute, for ever. Measured on production 2026-09-03: this scan's own
- * `workflow.findMany` sat at 219 calls with `rows = 0` on every one of them, while the very
- * same predicate run by hand as a BYPASSRLS role at the same moment returned a live, enabled,
- * PUBLISHED workflow. Event triggers were unaffected and hid it - `enrollOnEvent` runs inside
- * the request that fired it, and that request has a tenant context.
- *
- * The bypass is opened HERE rather than at the `cron.schedule` call in index.ts (where the
- * invoice and Stripe sweeps open theirs) because this poller is a cross-org sweep BY
- * CONSTRUCTION - there is no correct way to call it scoped to one org - and because index.ts
- * boots a server and so is reachable by no test. Wiring that only one pair of eyes can check is
- * how the poller shipped silent in the first place.
- */
+/** One poller tick. Never throws; skips if the previous tick is still running. */
 export async function runAutomationTick(now: Date = new Date()): Promise<void> {
   if (inFlightTick) {
     const stuckForMs = now.getTime() - inFlightTick.startedAt.getTime();
@@ -542,30 +521,26 @@ export async function runAutomationTick(now: Date = new Date()): Promise<void> {
   const generation = ++tickGeneration;
   inFlightTick = { generation, startedAt: now };
   try {
-    // One bypass for the whole tick: AsyncLocalStorage carries it across every await, so each
-    // phase's queries - and everything enrollment.ts runs underneath them - see it too.
-    await runUnscoped(async () => {
-      try {
-        await scanTimeTriggers(now);
-      } catch (err) {
-        logger.error('[automations] scanTimeTriggers failed', err);
-      }
-      try {
-        await scanDateAnchorTriggers(now);
-      } catch (err) {
-        logger.error('[automations] scanDateAnchorTriggers failed', err);
-      }
-      try {
-        await advanceDueEnrollments(now);
-      } catch (err) {
-        logger.error('[automations] advanceDueEnrollments failed', err);
-      }
-      try {
-        await recoverWedgedEnrollments(now);
-      } catch (err) {
-        logger.error('[automations] recoverWedgedEnrollments failed', err);
-      }
-    });
+    try {
+      await scanTimeTriggers(now);
+    } catch (err) {
+      logger.error('[automations] scanTimeTriggers failed', err);
+    }
+    try {
+      await scanDateAnchorTriggers(now);
+    } catch (err) {
+      logger.error('[automations] scanDateAnchorTriggers failed', err);
+    }
+    try {
+      await advanceDueEnrollments(now);
+    } catch (err) {
+      logger.error('[automations] advanceDueEnrollments failed', err);
+    }
+    try {
+      await recoverWedgedEnrollments(now);
+    } catch (err) {
+      logger.error('[automations] recoverWedgedEnrollments failed', err);
+    }
   } finally {
     // Only the tick that still OWNS the guard may release it - an abandoned tick
     // that settles late would otherwise unlock the poller under its successor.

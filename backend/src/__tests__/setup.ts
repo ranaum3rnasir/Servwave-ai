@@ -28,8 +28,24 @@ vi.mock('../config/env', () => ({
     // so every click-to-call suite keeps sending today's exact body.
     CTM_BRIDGE_RING_CALLER: 'off',
     CTM_BRIDGE_AGENT_IDS: new Map(),
+    // PRD 10 - the key a company purge hashes its mailbox addresses under. Present by default so a purge
+    // run against a stub transaction works; the suite that proves a missing key fails the purge takes it
+    // away itself.
+    MAILBOX_ADDRESS_HASH_KEY: 'test-mailbox-hash-key-0123456789abcdef',
+    // PRD 10 (S10.11) - the domain a person's own address is built on, so a hand-written email has an address to go out from.
+    MAILBOX_DOMAIN: 'mail.test.com',
   },
 }));
+
+// The live-update pings post to the vendor's broadcast door with plain fetch. A suite that does not stub fetch itself
+// must never reach the network through them, so that one address answers as the service does (202) and every other
+// address goes through the real fetch.
+const fetchBeforeSetup = globalThis.fetch;
+globalThis.fetch = ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+  const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+  if (url.startsWith('https://test.supabase.co/realtime/')) return Promise.resolve(new Response(null, { status: 202 }));
+  return fetchBeforeSetup(input, init);
+}) as typeof fetch;
 
 // Mock the Gemini SDK — never hit the network in tests. A class so
 // `new GoogleGenAI()` is constructable (an arrow mockImplementation is not).
@@ -170,6 +186,30 @@ vi.mock('../lib/stripe', () => ({
   createCheckoutSession: vi.fn().mockResolvedValue({ id: 'cs_test_123', url: 'https://checkout.stripe.com/test' }),
   isStripeConfigured: vi.fn().mockReturnValue(true),
   createRefund: vi.fn().mockResolvedValue({}),
+  // Payments go-live slice 29 - cancelling a bank debit that is still processing.
+  cancelPaymentIntent: vi.fn(),
+  // Slice 11 - the refunds already on a payment intent. Defaults to none.
+  listPaymentIntentRefunds: vi.fn().mockResolvedValue([]),
+  // Slice 37b - the same lookup by charge, and one payment intent read from a connected account (null = not held).
+  listChargeRefunds: vi.fn().mockResolvedValue([]),
+  retrieveAccountPaymentIntent: vi.fn().mockResolvedValue(null),
+  // Slice 37 - the nightly reconcile's reads of one connected account. Default: nothing there.
+  listAccountCharges: vi.fn().mockResolvedValue([]),
+  listAccountRefunds: vi.fn().mockResolvedValue([]),
+  listAccountDisputes: vi.fn().mockResolvedValue([]),
+  listAccountCheckoutSessions: vi.fn().mockResolvedValue([]),
+  // Payouts slice P2 - payouts of a connected account, the balance transactions inside one, and why a
+  // payment intent failed. Defaults: nothing there.
+  listAccountPayouts: vi.fn().mockResolvedValue([]),
+  listPayoutBalanceTransactions: vi.fn().mockResolvedValue([]),
+  retrieveAccountPayout: vi.fn().mockResolvedValue(null),
+  retrievePaymentIntentFailureCode: vi.fn().mockResolvedValue(null),
+  // Payments go-live P10 - answering a dispute: one file token per upload, staging and submit resolve, and the
+  // submission count reads zero until a suite says otherwise.
+  uploadDisputeEvidenceFile: vi.fn().mockResolvedValue('file_test_evidence'),
+  stageDisputeEvidence: vi.fn().mockResolvedValue(undefined),
+  submitDisputeEvidence: vi.fn().mockResolvedValue(undefined),
+  retrieveDisputeSubmissionCount: vi.fn().mockResolvedValue(0),
   constructWebhookEvent: vi.fn(),
   // Task 3.2 — applicationFees surface for the dashboard-refund + dispute-lost fee-reversal
   // doors. Defaults to "no fee found" (a no-op) so tests unrelated to fee reversal are
@@ -187,28 +227,16 @@ vi.mock('../lib/stripe', () => ({
       paymentIntents: {
         retrieve: vi.fn().mockResolvedValue({ latest_charge: null }),
       },
+      // Payments go-live slice 09: an unmatched dispute asks whether its charge came from a
+      // ServWave checkout. Defaults to "no", so the dispute is acknowledged and ignored.
+      checkout: {
+        sessions: { list: vi.fn().mockResolvedValue({ data: [], has_more: false }) },
+      },
     },
     stripeAccount: undefined,
   }),
-  // Slice 1/2 (card service fee) — pure functions, real math (not canned stubs): controllers and
-  // the webhook rely on the actual output to decide/assert the fee amounts they pass through.
-  CARD_SERVICE_FEE_BPS: 350,
   // Slice 7 (customer-facing tipping) — chip percentages; nothing persists them (D11).
   CARD_TIP_PRESET_BPS: [1000, 1500, 2000],
-  computeServiceFee: vi.fn((amountCents: number, bps: number) => Math.round((amountCents * bps) / 10000)),
-  estimateStripeFee: vi.fn((grossCents: number) => Math.round(0.029 * grossCents) + 30),
-  deriveServiceFeeApplicationFee: vi.fn((amountCents: number) => {
-    const serviceFeeCents = Math.round((amountCents * 350) / 10000);
-    const grossCents = amountCents + serviceFeeCents;
-    const stripeFeeCents = Math.round(0.029 * grossCents) + 30;
-    return Math.max(0, serviceFeeCents - stripeFeeCents);
-  }),
-  resolveCheckoutFees: vi.fn((amountCents: number) => {
-    const serviceFeeCents = Math.round((amountCents * 350) / 10000);
-    const grossCents = amountCents + serviceFeeCents;
-    const stripeFeeCents = Math.round(0.029 * grossCents) + 30;
-    return { serviceFeeAmount: serviceFeeCents, applicationFeeAmount: Math.max(0, serviceFeeCents - stripeFeeCents) };
-  }),
   // #2031 slice 5 (F2) — killing a checkout the customer already has open. Defaults to a clean
   // sweep that found nothing, so any test that incidentally triggers the guard is unaffected;
   // deposit-checkout-expiry.test.ts asserts against these directly, and
@@ -216,11 +244,14 @@ vi.mock('../lib/stripe', () => ({
   expireOpenCheckoutSessionsForInvoice: vi.fn().mockResolvedValue({ expired: [], failed: 0, ok: true }),
   expireCheckoutSession: vi.fn().mockResolvedValue(true),
   retrieveAccount: vi.fn(),
+  // Slice 06 — the nightly status refresh proves the platform key once before any org.
+  checkPlatformKey: vi.fn().mockResolvedValue(undefined),
   // Task 1.5 — connect/account-session/account-link/status endpoints.
   createConnectedAccount: vi.fn(),
   createAccountSession: vi.fn(),
   createAccountLink: vi.fn(),
-  updateAccountStatementDescriptor: vi.fn(),
+  // Slice 36 — branding pushed to the connected account.
+  updateAccountBranding: vi.fn().mockResolvedValue(undefined),
 }));
 
 // Task 3.3 — post-commit fee reconciliation + nightly sweep. Defaults resolve to no-ops so
@@ -273,6 +304,8 @@ vi.mock('../lib/email', () => ({
   // Defaults to a real-shaped 'sent' result so most controller tests don't
   // need to override it; comm-email-send.test.ts / comm-email-attachments.test.ts
   // re-mock per case for skipped/failed dispatch paths.
+  // Slice 37 - the nightly payment reconcile's ops alert.
+  sendOpsAlertEmail: vi.fn().mockResolvedValue(true),
   sendComposedEmail: vi.fn().mockResolvedValue({
     status: 'sent',
     providerMessageId: 're_test_compose',
@@ -310,6 +343,8 @@ vi.mock('../lib/email', () => ({
   sendDepositReceivedConfirmation: vi.fn().mockResolvedValue(undefined),
   sendRefundNotification: vi.fn().mockResolvedValue(undefined),
   sendInvoiceRefundNotification: vi.fn().mockResolvedValue(undefined),
+  sendBankPaymentProcessingEmail: vi.fn().mockResolvedValue(undefined),
+  sendBankPaymentFailedEmail: vi.fn().mockResolvedValue(undefined),
   sendDepositPaidAlert: vi.fn().mockResolvedValue(undefined),
   sendPaymentMethodSelectedAlert: vi.fn().mockResolvedValue(undefined),
   sendInvoiceEmail: vi.fn().mockResolvedValue({ status: 'sent' }),
@@ -330,13 +365,10 @@ vi.mock('../lib/email', () => ({
   sendCalendarEntryCancelledEmail: vi.fn().mockResolvedValue({ status: 'sent' }),
   sendPaymentReceivedEmail: vi.fn().mockResolvedValue(undefined),
   // Task 1.9 — co-branded action-needed email (billing.payments_action_needed /
-  // billing.payments_paused), sent from handleAccountLifecycle.
+  // billing.payments_paused), sent from lib/payments-notifications.ts (sendAccountNotices).
   sendPaymentsActionNeededEmail: vi.fn().mockResolvedValue(undefined),
-  // Task 4.3 — co-branded within-ceiling rate-change notice (billing.platform_fee_rate_changed),
-  // sent from lib/platform-fee-rate-notice.ts's notifyPlatformFeeRateChange.
-  sendPaymentsRateChangeNotice: vi.fn().mockResolvedValue(undefined),
-  sendClockOverrideRequestedEmail: vi.fn().mockResolvedValue(undefined),
-  sendClockOverrideDecisionEmail: vi.fn().mockResolvedValue(undefined),
+  // Slice 32 - the owner's payment-event email (dispute, failed bank payment, failed refund, money not applied).
+  sendOwnerPaymentNoticeEmail: vi.fn().mockResolvedValue(undefined),
   sendMfaCodeEmail: vi.fn().mockResolvedValue(undefined),
   // Password reset (slice 04): resolves true when the mail provider accepted the message.
   sendPasswordResetEmail: vi.fn().mockResolvedValue(true),
@@ -428,7 +460,8 @@ vi.mock('../lib/prisma', () => ({
       groupBy: vi.fn(),
     },
     job: {
-      findMany: vi.fn(),
+      // A job-history write asks which of the jobs it touches are in Ready to close (S06.20); nearly every test has none.
+      findMany: vi.fn().mockResolvedValue([]),
       findFirst: vi.fn(),
       findUnique: vi.fn(),
       create: vi.fn(),
@@ -477,6 +510,19 @@ vi.mock('../lib/prisma', () => ({
     // default to empty/0 so a suite that never touches the list reads the five built-ins, which
     // is what an un-customised org really answers.
     lostReasonOption: {
+      findMany: vi.fn().mockResolvedValue([]),
+      findFirst: vi.fn(),
+      findUnique: vi.fn(),
+      create: vi.fn(),
+      createMany: vi.fn(),
+      update: vi.fn(),
+      updateMany: vi.fn(),
+      deleteMany: vi.fn(),
+      count: vi.fn().mockResolvedValue(0),
+    },
+    // Roles & Permissions S06.14 - the per-org job cancel-reasons list; findMany/count default to empty so a suite that
+    // never touches the list reads the six built-ins.
+    jobCancelReasonOption: {
       findMany: vi.fn().mockResolvedValue([]),
       findFirst: vi.fn(),
       findUnique: vi.fn(),
@@ -566,7 +612,7 @@ vi.mock('../lib/prisma', () => ({
       deleteMany: vi.fn(),
     },
     user: {
-      findMany: vi.fn(),
+      findMany: vi.fn().mockResolvedValue([]),
       findFirst: vi.fn(),
       findUnique: vi.fn(),
       create: vi.fn(),
@@ -611,7 +657,8 @@ vi.mock('../lib/prisma', () => ({
       deleteMany: vi.fn(),
     },
     estimate: {
-      findMany: vi.fn(),
+      // Roles & Permissions S08.9 - a record's Communication tab reads the estimates whose portal decisions it shows; none by default.
+      findMany: vi.fn().mockResolvedValue([]),
       findFirst: vi.fn(),
       findUnique: vi.fn(),
       create: vi.fn(),
@@ -657,6 +704,28 @@ vi.mock('../lib/prisma', () => ({
       findMany: vi.fn().mockResolvedValue([]),
       count: vi.fn().mockResolvedValue(0),
       aggregate: vi.fn().mockResolvedValue({ _sum: { texts_sent: null } }),
+    },
+    // Roles & Permissions S05.7 - a job's own phones and emails. The job detail reads the live ones; none by default.
+    recordContactEntry: {
+      findMany: vi.fn().mockResolvedValue([]),
+      create: vi.fn(),
+    },
+    // Roles & Permissions S06.1 - the office review round the job-level complete opens: none open, one created.
+    jobReview: {
+      findFirst: vi.fn().mockResolvedValue(null),
+      create: vi.fn().mockResolvedValue({ id: 'review-1' }),
+    },
+    // Roles & Permissions S06.10 - the checks on the review's items: none stored.
+    jobReviewItemCheck: {
+      findMany: vi.fn().mockResolvedValue([]),
+      deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      createMany: vi.fn().mockResolvedValue({ count: 0 }),
+    },
+    // Roles & Permissions S06.11 - the reviewer's decisions on the review's customer items: none stored.
+    jobReviewCustomerDecision: {
+      findMany: vi.fn().mockResolvedValue([]),
+      deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      upsert: vi.fn().mockResolvedValue({ id: 'decision-1' }),
     },
     timelineEvent: {
       create: vi.fn(),
@@ -781,6 +850,33 @@ vi.mock('../lib/prisma', () => ({
       count: vi.fn(),
       aggregate: vi.fn(),
     },
+    // Payments go-live slice 09: the dispute record (written only by the payment event reconciler).
+    dispute: {
+      findMany: vi.fn(),
+      findFirst: vi.fn(),
+      create: vi.fn(),
+      updateMany: vi.fn(),
+      deleteMany: vi.fn(),
+      count: vi.fn(),
+    },
+    // Payments go-live P10: the files attached to a dispute's evidence (written only by the dispute evidence API).
+    disputeEvidenceItem: {
+      findMany: vi.fn().mockResolvedValue([]),
+      findFirst: vi.fn().mockResolvedValue(null),
+      createMany: vi.fn().mockResolvedValue({ count: 0 }),
+      update: vi.fn(),
+      updateMany: vi.fn(),
+      deleteMany: vi.fn().mockResolvedValue({ count: 0 }),
+      count: vi.fn().mockResolvedValue(0),
+    },
+    // Payments go-live slice 11: "Payments needing attention" (written with every unapplied capture).
+    unappliedCapture: {
+      findMany: vi.fn().mockResolvedValue([]),
+      findFirst: vi.fn(),
+      createMany: vi.fn().mockResolvedValue({ count: 1 }),
+      updateMany: vi.fn(),
+      count: vi.fn().mockResolvedValue(0),
+    },
     credit: {
       findMany: vi.fn(),
       findFirst: vi.fn(),
@@ -829,7 +925,8 @@ vi.mock('../lib/prisma', () => ({
       aggregate: vi.fn(),
     },
     payment: {
-      findMany: vi.fn(),
+      // Roles & Permissions S08.10 - a record's Communication tab reads the payments it shows as entries; none by default.
+      findMany: vi.fn().mockResolvedValue([]),
       findFirst: vi.fn(),
       create: vi.fn(),
       update: vi.fn(),
@@ -936,6 +1033,22 @@ vi.mock('../lib/prisma', () => ({
       delete: vi.fn(),
       deleteMany: vi.fn(),
       count: vi.fn(),
+    },
+    // ─── Roles & Permissions switch store (M2) ───
+    // findMany defaults to [] so every request that resolves a person's switches sees "no stored
+    // values" and falls back to the built-in preset of the role. helpers.mockAuthAs re-establishes it.
+    permissionRoleSwitch: {
+      findMany: vi.fn().mockResolvedValue([]),
+      upsert: vi.fn(),
+    },
+    permissionUserSwitch: {
+      findMany: vi.fn().mockResolvedValue([]),
+      createMany: vi.fn(),
+      deleteMany: vi.fn(),
+    },
+    permissionChangeLog: {
+      findMany: vi.fn().mockResolvedValue([]),
+      createMany: vi.fn(),
     },
     // ─── Inventory models (Phase 1 OWNS these — later phases reference, never re-add) ───
     brand: { findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn(), updateMany: vi.fn(), deleteMany: vi.fn() },
@@ -1076,8 +1189,10 @@ vi.mock('../lib/prisma', () => ({
       upsert: vi.fn(),
       deleteMany: vi.fn(),
     },
+    // S08.6 - findMany defaults to [] because the text scope reads the conversations a person has sent in (reply
+    // attribution) on every "Linked to me" read, so a suite that does not care about it needs no stub.
     message: {
-      findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), update: vi.fn(), upsert: vi.fn(), updateMany: vi.fn(), delete: vi.fn(), deleteMany: vi.fn(),
+      findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn(), create: vi.fn(), update: vi.fn(), upsert: vi.fn(), updateMany: vi.fn(), delete: vi.fn(), deleteMany: vi.fn(),
     },
     textTemplate: {
       findMany: vi.fn(), findFirst: vi.fn(), create: vi.fn(), updateMany: vi.fn(), deleteMany: vi.fn(), count: vi.fn(),
@@ -1119,7 +1234,8 @@ vi.mock('../lib/prisma', () => ({
     emailThread: {
       findFirst: vi.fn().mockResolvedValue(null),
       findUnique: vi.fn(),
-      findMany: vi.fn(),
+      // PRD 10 (S10.7): M11 asks which record conversations a person reaches, so every email read lists conversations.
+      findMany: vi.fn().mockResolvedValue([]),
       create: vi.fn().mockImplementation((args: { data: Record<string, unknown> }) =>
         Promise.resolve({
           id: 'default-thread-id',
@@ -1131,6 +1247,23 @@ vi.mock('../lib/prisma', () => ({
       update: vi.fn(),
       updateMany: vi.fn(),
       deleteMany: vi.fn(),
+    },
+    // PRD 10 (S10.4) - every email conversation is placed in a mailbox. findFirst defaults to a mailbox every
+    // company and person has (S10.1), so a send path that opens a conversation finds one without every test
+    // stubbing it. It is shaped as BOTH the company's main mailbox (an id) and a person's own mailbox with an
+    // address (S10.11: a hand-written email goes out from the sender's own address, and a person without one is
+    // refused), so a suite that sends mail needs no setup; the ones about "address needed" stub their own.
+    mailbox: {
+      findFirst: vi.fn().mockResolvedValue({
+        id: 'main-mailbox-id',
+        status: 'active',
+        addresses: [{ local_part: 'jane.smith.acme' }],
+        user: { first_name: 'Jane', last_name: 'Smith' },
+        organization: { name: 'Acme' },
+      }),
+      findMany: vi.fn().mockResolvedValue([]),
+      create: vi.fn(),
+      update: vi.fn(),
     },
     // Email slice 6 - reply tokens (<token>@reply.servwave.com -> thread).
     // findFirst defaults to null so the minting helper's "reuse a live token"
@@ -1396,7 +1529,8 @@ vi.mock('../lib/prisma', () => ({
       count: vi.fn().mockResolvedValue(0),
     },
     $transaction: vi.fn(),
-    $queryRaw: vi.fn(),
+    // PRD 10 (S10.8): every Email request asks, in one raw read, whether the person reads the main mailbox; no rows = no main mailbox.
+    $queryRaw: vi.fn().mockResolvedValue([]),
     $queryRawUnsafe: vi.fn(),
     $executeRaw: vi.fn(),
     $executeRawUnsafe: vi.fn(),

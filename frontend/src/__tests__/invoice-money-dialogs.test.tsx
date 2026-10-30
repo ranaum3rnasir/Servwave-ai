@@ -27,6 +27,35 @@ beforeEach(() => {
 });
 
 describe('RefundInvoiceDialog (partial refund)', () => {
+  it('names no payment processor: refunds are ServWave\'s own (CLAUDE.md vendor-name rule)', () => {
+    renderWithProviders(
+      <RefundInvoiceDialog open onOpenChange={vi.fn()} invoiceId="inv-1" netPaid={100} />
+    );
+
+    const dialog = screen.getByTestId('refund-invoice-dialog');
+    expect(dialog.textContent).not.toMatch(/stripe/i);
+    expect(dialog.textContent).toMatch(/Card refunds go back to the card\. Bank refunds take a few days to arrive\./);
+  });
+
+  it('has no subtitle and no non-taxable checkbox, and never sends the concession field', async () => {
+    const user = userEvent.setup();
+    renderWithProviders(
+      <RefundInvoiceDialog open onOpenChange={vi.fn()} invoiceId="inv-1" netPaid={500} />
+    );
+    const dialog = screen.getByTestId('refund-invoice-dialog');
+    expect(dialog.textContent).not.toMatch(/Issue a partial or full refund/);
+    expect(dialog.textContent).not.toMatch(/Non-taxable concession/);
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('combobox', { name: 'Reason category' }));
+    await user.click(screen.getByRole('option', { name: 'Goodwill' }));
+    await user.type(screen.getByPlaceholderText(/details about this refund/i), 'x');
+    await user.click(screen.getByRole('button', { name: 'Issue Refund' }));
+    await waitFor(() => expect(mockApi.post).toHaveBeenCalled());
+    const body = mockApi.post.mock.calls[0]![1] as Record<string, unknown>;
+    expect(body).not.toHaveProperty('non_taxable_concession');
+  });
+
   it('caps the amount at net-paid and disables submit when exceeded', async () => {
     const user = userEvent.setup();
     renderWithProviders(
@@ -60,7 +89,8 @@ describe('RefundInvoiceDialog (partial refund)', () => {
           amount: 120,
           reason_category: 'CUSTOMER_REQUEST',
           reason: 'Partial give-back',
-        })
+        }),
+        { silentErrors: true },
       );
     });
   });
@@ -70,7 +100,7 @@ describe('CreditInvoiceDialog', () => {
   it('POSTs a credit with amount and reason', async () => {
     const user = userEvent.setup();
     renderWithProviders(
-      <CreditInvoiceDialog open onOpenChange={vi.fn()} invoiceId="inv-9" balanceOwed={200} />
+      <CreditInvoiceDialog canRefund open onOpenChange={vi.fn()} invoiceId="inv-9" balanceOwed={200} />
     );
 
     await user.type(moneyField(), '50');
@@ -80,7 +110,8 @@ describe('CreditInvoiceDialog', () => {
     await waitFor(() => {
       expect(mockApi.post).toHaveBeenCalledWith(
         '/api/invoices/inv-9/credit',
-        expect.objectContaining({ amount: 50, reason: 'Goodwill adjustment' })
+        expect.objectContaining({ amount: 50, reason: 'Goodwill adjustment' }),
+        { silentErrors: true },
       );
     });
   });
@@ -90,13 +121,14 @@ describe('CreditInvoiceDialog', () => {
   it('with refund instead ticked, the preview shows the full amount as cash out and zero credited', async () => {
     const user = userEvent.setup();
     renderWithProviders(
-      <CreditInvoiceDialog open onOpenChange={vi.fn()} invoiceId="inv-9" balanceOwed={600} />
+      <CreditInvoiceDialog canRefund open onOpenChange={vi.fn()} invoiceId="inv-9" balanceOwed={600} />
     );
 
     await user.type(moneyField(), '400');
     await user.click(screen.getByTestId('credit-refund-instead'));
 
-    expect(screen.getByText(/\$400\.00 refunded as cash/)).toBeInTheDocument();
+    // No payment is known to draw from, so the give-back is described as recorded by hand (slice 32b).
+    expect(screen.getByText(/\$400\.00 refund recorded by hand/)).toBeInTheDocument();
     expect(screen.getByText(/nothing credited to the balance/)).toBeInTheDocument();
     expect(screen.queryByText(/refunded as excess/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/excess/i, { selector: 'label' })).not.toBeInTheDocument();
@@ -105,7 +137,7 @@ describe('CreditInvoiceDialog', () => {
   it('names what happens to the outstanding balance in each mode', async () => {
     const user = userEvent.setup();
     renderWithProviders(
-      <CreditInvoiceDialog open onOpenChange={vi.fn()} invoiceId="inv-9" balanceOwed={600} />
+      <CreditInvoiceDialog canRefund open onOpenChange={vi.fn()} invoiceId="inv-9" balanceOwed={600} />
     );
 
     await user.type(moneyField(), '400');
@@ -123,7 +155,7 @@ describe('CreditInvoiceDialog', () => {
   it('the reversal checkbox appears only under refund-instead and clears when refund-instead is unticked', async () => {
     const user = userEvent.setup();
     const { rerender } = renderWithProviders(
-      <CreditInvoiceDialog open onOpenChange={vi.fn()} invoiceId="inv-9" balanceOwed={600} />
+      <CreditInvoiceDialog canRefund open onOpenChange={vi.fn()} invoiceId="inv-9" balanceOwed={600} />
     );
 
     expect(screen.queryByTestId('credit-reopen-balance')).not.toBeInTheDocument();
@@ -143,7 +175,7 @@ describe('CreditInvoiceDialog', () => {
     // With balanceOwed=0 the reversal option never appears, even with refund-instead ticked -
     // this mirrors the backend guard but does not substitute for it.
     rerender(
-      <CreditInvoiceDialog open onOpenChange={vi.fn()} invoiceId="inv-9" balanceOwed={0} />
+      <CreditInvoiceDialog canRefund open onOpenChange={vi.fn()} invoiceId="inv-9" balanceOwed={0} />
     );
     expect(screen.queryByTestId('credit-reopen-balance')).not.toBeInTheDocument();
   });
@@ -151,7 +183,7 @@ describe('CreditInvoiceDialog', () => {
   it('POSTs reopen_balance: true when the reversal checkbox is ticked', async () => {
     const user = userEvent.setup();
     renderWithProviders(
-      <CreditInvoiceDialog open onOpenChange={vi.fn()} invoiceId="inv-9" balanceOwed={600} />
+      <CreditInvoiceDialog canRefund open onOpenChange={vi.fn()} invoiceId="inv-9" balanceOwed={600} />
     );
 
     await user.click(screen.getByTestId('credit-refund-instead'));
@@ -163,7 +195,8 @@ describe('CreditInvoiceDialog', () => {
     await waitFor(() => {
       expect(mockApi.post).toHaveBeenCalledWith(
         '/api/invoices/inv-9/credit',
-        expect.objectContaining({ amount: 400, refund_instead: true, reopen_balance: true })
+        expect.objectContaining({ amount: 400, refund_instead: true, reopen_balance: true }),
+        { silentErrors: true },
       );
     });
   });
@@ -181,14 +214,15 @@ describe('RecordPaymentDialog (overpayment gate)', () => {
     onSuccess: vi.fn(),
   };
 
-  it('shows the balance due, no override toggle, and an enabled submit when amount <= balance', () => {
+  it('shows the balance due, no override toggle, and an enabled submit when amount <= balance', async () => {
     renderWithProviders(<RecordPaymentDialog {...props} />);
 
     expect(screen.getByText('Balance due: $200.00')).toBeInTheDocument();
     // Default amount === amountDue: no overpayment, so no toggle and no warning.
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Record Payment' })).toBeEnabled();
+    // The submit waits for the lists of payment methods to be read, then opens.
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Record Payment' })).toBeEnabled());
   });
 
   it('requires an explicit acknowledgement before submit when amount > balance', async () => {

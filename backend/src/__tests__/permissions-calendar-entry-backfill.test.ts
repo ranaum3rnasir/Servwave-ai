@@ -24,7 +24,6 @@ import app from '../app';
 import { prisma } from '../lib/prisma';
 import { PERMISSION_CATALOG, isCatalogEntry } from '../lib/permissions/catalog';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
-import { MODULES } from '../lib/permissions/roleViewModel';
 import { defineAbilityFor } from '../lib/permissions/defineAbility';
 import { mockAuthAs, authHeader, ALPHA_ORG_ID } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
@@ -100,82 +99,6 @@ describe('backfill migration — every existing org, idempotent', () => {
   });
 });
 
-describe('roleViewModel — Events row on the Roles & Permissions matrix', () => {
-  it('MODULES carries a CalendarEntry entry labelled Events', () => {
-    expect(MODULES).toContainEqual({ subject: 'CalendarEntry', label: 'Events' });
-  });
-});
-
-describe('GET/PUT /api/roles/DISPATCHER/permissions — Events row round-trips', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    clearPermissionCache();
-  });
-
-  it('GET renders the Events row with all four DISPATCHER cells ticked', async () => {
-    mockAuthAs('admin');
-    (prisma.rolePermission.findMany as any).mockResolvedValue(
-      DEFAULT_GRANTS.filter((g) => g.role === 'DISPATCHER' && g.subject === 'CalendarEntry').map((g) => ({
-        action: g.action,
-        subject: g.subject,
-        conditions: null,
-      })),
-    );
-    const res = await request(app).get('/api/roles/DISPATCHER/permissions').set(authHeader('admin'));
-    expect(res.status).toBe(200);
-    expect(res.body.matrix.CalendarEntry).toEqual({ read: true, create: true, update: true, delete: true });
-  });
-
-  it('GET renders SALES Events cells unticked (no default grant)', async () => {
-    mockAuthAs('admin');
-    (prisma.rolePermission.findMany as any).mockResolvedValue([]);
-    const res = await request(app).get('/api/roles/SALES/permissions').set(authHeader('admin'));
-    expect(res.status).toBe(200);
-    expect(res.body.matrix.CalendarEntry).toEqual({ read: false, create: false, update: false, delete: false });
-  });
-
-  it('a Save round-trips the Events row without dropping an unrelated existing grant', async () => {
-    mockAuthAs('admin');
-    // Existing stored state: DISPATCHER already holds `read Customer` (unrelated to this Save).
-    (prisma.rolePermission.findMany as any).mockResolvedValue([
-      { action: 'read', subject: 'Customer', conditions: null },
-    ]);
-    const deleteMany = vi.fn().mockResolvedValue({ count: 0 });
-    const upsert = vi.fn().mockResolvedValue({});
-    (prisma.$transaction as any).mockImplementation((fn: any) => fn({ rolePermission: { deleteMany, upsert } }));
-
-    const res = await request(app)
-      .put('/api/roles/DISPATCHER/permissions')
-      .set(authHeader('admin'))
-      .send({
-        matrix: {
-          Customer: { read: true, create: false, update: false, delete: false },
-          CalendarEntry: { read: true, create: true, update: true, delete: true },
-        },
-        sensitive: { seeFinancials: false, managePayments: false, viewReports: false, editRecordIds: false, assignOthers: false },
-        toggles: {},
-        scope: {},
-        general: { description: '' },
-      });
-
-    expect(res.status).toBe(200);
-    const persisted = upsert.mock.calls.map((c: any) => ({ action: c[0].create.action, subject: c[0].create.subject }));
-    // The unrelated Customer grant is still asked to be upserted (unticked nothing there)...
-    expect(persisted).toContainEqual({ action: 'read', subject: 'Customer' });
-    // ...and all four CalendarEntry grants were written, unconditionally.
-    for (const action of ['read', 'create', 'update', 'delete']) {
-      expect(persisted).toContainEqual({ action, subject: 'CalendarEntry' });
-    }
-    // role.controller.ts writes an absent condition as Prisma.JsonNull (the JSON-column sentinel),
-    // not a bare JS `null` — see putRolePermissions' upsert calls.
-    const calendarUpserts = upsert.mock.calls.filter((c: any) => c[0].create.subject === 'CalendarEntry');
-    expect(calendarUpserts).toHaveLength(4);
-    for (const c of calendarUpserts) {
-      expect(c[0].create.conditions).toEqual(Prisma.JsonNull);
-    }
-  });
-});
-
 describe('defineAbilityFor — real ability build, not a literal', () => {
   it('ADMIN reaches CalendarEntry via manage-all (no explicit row needed)', () => {
     const ability = defineAbilityFor({ id: 'u1', role: 'ADMIN' }, []);
@@ -198,21 +121,5 @@ describe('defineAbilityFor — real ability build, not a literal', () => {
     const ability = defineAbilityFor({ id: 'u3', role: 'SALES' }, []);
     expect(ability.can('read', 'CalendarEntry')).toBe(false);
     expect(ability.can('create', 'CalendarEntry')).toBe(false);
-  });
-
-  it('a SALES user granted the per-user "create CalendarEntry" override gets create AND read, org-wide (unconditional)', () => {
-    const ability = defineAbilityFor(
-      { id: 'u4', role: 'SALES' },
-      [],
-      [{ action: 'create', subject: 'CalendarEntry', effect: 'allow' }],
-    );
-    expect(ability.can('create', 'CalendarEntry')).toBe(true);
-    // impliesRead: the paired read comes along automatically.
-    expect(ability.can('read', 'CalendarEntry')).toBe(true);
-    // CalendarEntry has no ownership chain (ADR 0002 / spec §4: visibility is org-wide) — the
-    // capability carries no ownCondition, so the emitted `can` must be UNCONDITIONAL, not
-    // own-scoped. Assert this on the real rule rather than assuming it (RECON's explicit warning).
-    const createRule = ability.rules.find((r) => r.action === 'create' && r.subject === 'CalendarEntry');
-    expect(createRule?.conditions).toBeUndefined();
   });
 });

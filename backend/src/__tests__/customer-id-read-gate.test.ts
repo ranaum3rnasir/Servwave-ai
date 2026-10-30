@@ -35,12 +35,11 @@ import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import {
-  TEST_USERS, mockAuthAs, authHeader, CUSTOMER_FIXTURE, LOCATION_FIXTURE,
+  TEST_USERS, mockAuthAs, mockRoleSwitches, authHeader, CUSTOMER_FIXTURE, LOCATION_FIXTURE,
   STANDALONE_JOB_FIXTURE, LEAD_FIXTURE,
 } from './helpers';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mockPrisma = prisma as unknown as Record<string, any>;
@@ -48,22 +47,16 @@ const mockPrisma = prisma as unknown as Record<string, any>;
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache();
 });
 
 /**
- * Hand-inject a `read Customer` grant for `role` conditioned on an id that never matches
- * `rowId` — the requester HOLDS the grant (route-level `canDo` guards elsewhere still pass) but
- * is denied per-row on THIS customer. Same mechanism repro-1996.test.ts's mockDeniedCustomerRead
- * uses (see that file's header for why this is achievable today independent of the Roles editor).
+ * Make `role`'s customer reach conditional: with Leads scope and Jobs scope narrowed to Attached, the
+ * person reaches only the customers of leads and jobs they are on (plus ones they created), so the
+ * requester HOLDS View customers (route-level `canDo` guards elsewhere still pass) but is denied
+ * per-row on THIS customer, which carries no lead or job of theirs. Call AFTER `mockAuthAs`.
  */
-function mockConditionedCustomerRead(role: string, rowId: string) {
-  const rows = [
-    ...DEFAULT_GRANTS.filter((g) => !(g.role === role && g.action === 'read' && g.subject === 'Customer')),
-    { role, action: 'read', subject: 'Customer', conditions: { id: 'zz-not-' + rowId } },
-  ];
-  mockPrisma.rolePermission.findMany.mockResolvedValue(rows.filter((g) => g.role === role));
-  clearPermissionCache();
+function mockConditionedCustomerRead(_role: string, _rowId: string) {
+  mockRoleSwitches({ leads_scope: 'attached', jobs_scope: 'attached' });
 }
 
 /**
@@ -284,7 +277,7 @@ describe('#2041 decision 8 — POST /api/leads existing-customer, picker-visible
 });
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════
-// POST /api/estimates — customer-anchor branch (estimate.controller.ts) — TECHNICIAN reachable
+// POST /api/estimates — customer-anchor branch (estimate.controller.ts) — no customer read gate
 // ═════════════════════════════════════════════════════════════════════════════════════════════
 describe('#2041 decision 8 — POST /api/estimates customer-anchor, gate removed outright', () => {
   const body = { customer_id: CUSTOMER_FIXTURE.id, line_items: [{ description: 'Rekey', quantity: 1, unit_price: 100, is_taxable: true }] };
@@ -295,7 +288,7 @@ describe('#2041 decision 8 — POST /api/estimates customer-anchor, gate removed
     service_locations: [{ id: LOCATION_FIXTURE.id, state: 'TX' }],
   });
 
-  it('TECHNICIAN (unconditional create Estimate, no read Customer) → 201, ACCEPTED (no per-row gate on this branch)', async () => {
+  it('TECHNICIAN (no Standalone estimates in its preset) → 403 from that switch, never from a customer read gate', async () => {
     mockAuthAs('technician');
     mockPrisma.customer.findUnique.mockResolvedValue(customerRow(TEST_USERS.technician.organization_id));
     mockPrisma.stateTaxRate.findFirst.mockResolvedValue({ tax_rate: 0.0625 });
@@ -303,8 +296,11 @@ describe('#2041 decision 8 — POST /api/estimates customer-anchor, gate removed
 
     const res = await request(app).post('/api/estimates').set(authHeader('technician')).send(body);
 
-    expect(res.status).toBe(201);
-    expect(mockPrisma.$transaction).toHaveBeenCalled();
+    expect(res.status).toBe(403);
+    expect(res.body.error).toMatch(/without a lead or job/);
+    // The refusal comes before the customer is even looked up: there is no read-customer gate on this branch.
+    expect(mockPrisma.customer.findUnique).not.toHaveBeenCalled();
+    expect(mockPrisma.$transaction).not.toHaveBeenCalled();
   });
 
   it('a reader (SALES, default read Customer) → 201', async () => {

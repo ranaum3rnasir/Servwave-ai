@@ -90,6 +90,13 @@ export interface DataTableProps<TData, TValue> {
   /** Receives the table instance so a parent can render toolbars and bulk bars. */
   children?: (table: TanstackTable<TData>) => React.ReactNode;
   onRowClick?: (row: TData) => void;
+  /**
+   * Opt-in keyboard access for `onRowClick`: every clickable row becomes a tab stop and Enter opens it. Off by
+   * default so no existing list gains tab stops it did not ask for.
+   */
+  rowsFocusable?: boolean;
+  /** A row that answers false is not clickable, focusable or stretched-linked (a row the viewer may not open). */
+  isRowClickable?: (row: TData) => boolean;
   initialPageSize?: number;
   className?: string;
   /**
@@ -109,6 +116,8 @@ export interface DataTableProps<TData, TValue> {
   /** Rows per page. Controlled only alongside `page`. */
   pageSize?: number;
   onPageSizeChange?: (pageSize: number) => void;
+  /** Hide the rows-per-page control, for a list whose page size is fixed. */
+  hidePageSize?: boolean;
   /** Total matching rows on the server - the "of N" in the footer readout. */
   rowCount?: number;
 
@@ -247,9 +256,9 @@ function useTableState<T>(
  *   </DataTable>
  */
 function DataTable<TData, TValue>({
-  columns, data, getRowId, isLoading, isFetching, empty, children, onRowClick,
+  columns, data, getRowId, isLoading, isFetching, empty, children, onRowClick, rowsFocusable = false, isRowClickable,
   initialPageSize = 25, className,
-  page, pageCount, onPageChange, pageSize, onPageSizeChange, rowCount,
+  page, pageCount, onPageChange, pageSize, onPageSizeChange, hidePageSize, rowCount,
   sorting: sortingProp, onSortingChange, manualSorting,
   rowSelection: rowSelectionProp, onRowSelectionChange,
   columnVisibility: columnVisibilityProp, onColumnVisibilityChange, defaultColumnVisibility,
@@ -691,7 +700,7 @@ function DataTable<TData, TValue>({
             {/* One named button covers the card: a screen reader reaches the row as a single
                 control and a tap anywhere on it opens the record. The checkbox, links and the
                 actions menu sit above it (z-10) so they keep their own taps. */}
-            {onRowClick && (
+            {onRowClick && (isRowClickable?.(row.original) ?? true) && (
               <button
                 type="button"
                 data-slot="table-card-open"
@@ -850,16 +859,26 @@ function DataTable<TData, TValue>({
             </TableCell>
           </TableRow>
         ) : (
-          rows.map((row) => (
+          rows.map((row) => {
+            const clickable = Boolean(onRowClick) && (isRowClickable?.(row.original) ?? true);
+            return (
             <TableRow
               key={row.id}
               data-state={row.getIsSelected() ? "selected" : undefined}
-              onClick={onRowClick ? () => onRowClick(row.original) : undefined}
-              className={cn(onRowClick && "cursor-pointer")}
+              onClick={clickable ? () => onRowClick!(row.original) : undefined}
+              tabIndex={clickable && rowsFocusable ? 0 : undefined}
+              onKeyDown={clickable && rowsFocusable
+                ? (event) => {
+                    // Enter on the row itself, not on a link or button inside it.
+                    if (event.key === "Enter" && event.target === event.currentTarget) onRowClick!(row.original);
+                  }
+                : undefined}
+              className={cn(clickable && "cursor-pointer")}
             >
               {row.getVisibleCells().map(renderCell)}
             </TableRow>
-          ))
+            );
+          })
         )}
       </TableBody>
     </Table>
@@ -872,9 +891,9 @@ function DataTable<TData, TValue>({
           means scrolling all the way down just to reach Next. Both read the
           one `table` instance, so paging from either stays in sync with the
           other for free. */}
-      <DataTablePagination table={table} isFetching={isFetching} placement="top" />
+      <DataTablePagination table={table} isFetching={isFetching} placement="top" hidePageSize={hidePageSize} />
       {body}
-      <DataTablePagination table={table} isFetching={isFetching} />
+      <DataTablePagination table={table} isFetching={isFetching} hidePageSize={hidePageSize} />
     </div>
   );
 }

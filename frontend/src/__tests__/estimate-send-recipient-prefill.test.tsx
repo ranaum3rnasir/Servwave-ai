@@ -101,6 +101,8 @@ const BASE_ESTIMATE = {
   job: null,
   job_id: null,
   invoices: [],
+  // The server's answer for this estimate: every action the page can offer.
+  actions: ['edit', 'send', 'delete', 'cancel', 'record_payment'],
 };
 
 /** Customer-anchored: no lead at all, customer hangs directly off the estimate. */

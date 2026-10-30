@@ -209,6 +209,12 @@ function stubDb(
     // (comm-manual-log.test.ts) — except for the visibility filter below, which is a property of
     // THIS aggregator's query and has nowhere else to live.
     manualCommunicationLog: { findMany: filteringFindMany(rows.manuals ?? []) },
+    // The customer's estimate decisions (S08.9) are read only with the per-source visibility form; these specs hand in none.
+    estimate: { findMany: vi.fn().mockResolvedValue([]) },
+    timelineEvent: { findMany: vi.fn().mockResolvedValue([]) },
+    lostReasonOption: { findMany: vi.fn().mockResolvedValue([]) },
+    // The payments received (S08.10) are read only with the per-source visibility form as well.
+    payment: { findMany: vi.fn().mockResolvedValue([]) },
   };
 }
 

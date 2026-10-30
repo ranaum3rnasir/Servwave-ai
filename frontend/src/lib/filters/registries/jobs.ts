@@ -10,7 +10,11 @@ import { TAGS_FACET, type FacetConfig } from '@/lib/filters/types';
 // Multi-visit S4 (D17): EN_ROUTE and ON_SITE retired from JobStatus and live on VisitStatus. The
 // API's jobs facet drops an unknown literal rather than 400ing, so leaving them here would offer a
 // filter option that silently matched nothing.
-export const JOB_STATUSES = ['UNSCHEDULED', 'SCHEDULED', 'IN_PROGRESS', 'COMPLETED', 'CANCELLED'];
+//
+// PRD 6: a completed job goes on through Office review and Ready to close to Done, so a person can filter to each.
+export const JOB_STATUSES = [
+  'UNSCHEDULED', 'SCHEDULED', 'IN_PROGRESS', 'COMPLETED', 'OFFICE_REVIEW', 'READY_TO_CLOSE', 'DONE', 'CANCELLED',
+];
 
 /**
  * Completed/Cancelled tiles show MONTHLY counts (by scheduled_start this
@@ -19,6 +23,10 @@ export const JOB_STATUSES = ['UNSCHEDULED', 'SCHEDULED', 'IN_PROGRESS', 'COMPLET
  * `JOB_STATUSES` - the KPI-tile logic that reads this lives in the page, but
  * the set itself is registry-adjacent status metadata. This is a reporting
  * subset of `JOB_STATUSES`, NOT a label map.
+ *
+ * The routed Jobs page (v2) opens its Completed tile through the named
+ * `completed_this_month` facet below instead: that tile counts every finished
+ * status, so a status list would not show the rows it counts.
  */
 export const MONTHLY_JOB_STATUSES = ['COMPLETED', 'CANCELLED'];
 
@@ -136,6 +144,40 @@ export const jobsRegistry: FacetConfig[] = [
     optionSource: 'jobSubStatuses',
   },
   {
+    key: 'completed_this_month',
+    kind: 'multi',
+    param: 'completed_this_month',
+    label: 'Completed this month',
+    // Lucide's CircleCheck, the circle converted to a two-arc path like the other icons here.
+    icon: 'M2 12a10 10 0 1 0 20 0a10 10 0 1 0 -20 0 M9 12l2 2 4-4',
+    // The Completed tile's click-through: the finished jobs (Completed, Office review, Ready to close and Done) with a
+    // trip this month, a filter the server knows by name so the tile's count and these rows are one query. A
+    // single-option checkbox, the same 1-option `multi` boolean pattern as `needs_invoice` below.
+    options: [{ value: 'true', label: 'Completed this month' }],
+  },
+  {
+    key: 'in_office_review',
+    kind: 'multi',
+    param: 'in_office_review',
+    label: 'Office review queue',
+    // A clipboard with a tick, hand-converted to absolute path commands like the other icons here.
+    icon: 'M9 2H15V6H9Z M7 4H5A1 1 0 0 0 4 5V21A1 1 0 0 0 5 22H19A1 1 0 0 0 20 21V5A1 1 0 0 0 19 4H17 M9 14L11 16L15 12',
+    // The Office review tile's click-through: the jobs in Office review the person can open, a filter the server knows by
+    // name so the tile's count and these rows are one query. Single-option checkbox, like `needs_invoice` below. The
+    // server answers it only for a holder of Office review, and `jobsRegistryFor` leaves it out for everyone else.
+    options: [{ value: 'true', label: 'Office review queue' }],
+  },
+  {
+    key: 'ready_to_close',
+    kind: 'multi',
+    param: 'ready_to_close',
+    label: 'Ready to close queue',
+    // A padlock.
+    icon: 'M5 11H19V21H5Z M8 11V7A4 4 0 0 1 16 7V11',
+    // The Ready to close tile's click-through, for a holder of Close jobs (see `in_office_review` above).
+    options: [{ value: 'true', label: 'Ready to close queue' }],
+  },
+  {
     key: 'needs_invoice',
     kind: 'multi',
     param: 'needs_invoice',
@@ -154,3 +196,40 @@ export const jobsRegistry: FacetConfig[] = [
   },
   TAGS_FACET,
 ];
+
+/** What a person's switches decide about the registry: which of the facets that belong to a switch they are offered. */
+export interface JobsRegistryAccess {
+  /** View invoices: the Needs Invoice facet. */
+  invoices: boolean;
+  /** Office review: the Office review queue facet. */
+  officeReview: boolean;
+  /** Close jobs: the Ready to close queue facet. */
+  readyToClose: boolean;
+}
+
+const FACET_SWITCH: Record<string, keyof JobsRegistryAccess> = {
+  needs_invoice: 'invoices',
+  in_office_review: 'officeReview',
+  ready_to_close: 'readyToClose',
+};
+
+const registriesByAccess = new Map<string, FacetConfig[]>();
+
+/**
+ * The registry for one person: a facet that belongs to a switch (Needs Invoice, the two queues) is in it only when the
+ * person holds that switch, so the Filter does not offer it and a deep link carrying it is never decoded, let alone sent
+ * to the server. One array per combination of access, built once, so a page re-rendering keeps the same reference (the
+ * filter state is keyed on it).
+ */
+export function jobsRegistryFor(access: JobsRegistryAccess): FacetConfig[] {
+  const mask = `${+access.invoices}${+access.officeReview}${+access.readyToClose}`;
+  let registry = registriesByAccess.get(mask);
+  if (!registry) {
+    registry = jobsRegistry.filter((facet) => {
+      const gate = FACET_SWITCH[facet.key];
+      return !gate || access[gate];
+    });
+    registriesByAccess.set(mask, registry);
+  }
+  return registry;
+}

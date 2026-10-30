@@ -17,9 +17,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { mockAuthAs, authHeader, ALPHA_ORG_ID, TEST_USERS, matchesScopeWhere, mockRoleGrantsWithout, PURCHASE_ORDER_FIXTURE } from './helpers';
+import { mockAuthAs, mockRoleSwitches, authHeader, ALPHA_ORG_ID, TEST_USERS, matchesScopeWhere, mockRoleGrantsWithout, PURCHASE_ORDER_FIXTURE } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 import { clearTokenCache } from '../middleware/authenticate';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -133,7 +132,6 @@ function installLoFindFirst(ownedByRep: boolean, status: string = 'PROCESSED') {
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache();
   clearTokenCache();
   setupTransaction();
 
@@ -347,7 +345,8 @@ function installLoFindFirstFaithful(ownedByRep: boolean, status: string, over: R
   });
 }
 
-const APPROVE_OVERRIDE = [{ action: 'approve', subject: 'LogisticOrder', effect: 'allow' }];
+// Approval is the Approve logistic orders switch (Roles & Permissions S01.9), off in the Sales preset and the Dispatcher's.
+const APPROVER = { approve_logistic_orders: true };
 
 /**
  * FINDING A (MEDIUM) — `approveLogisticOrder` answered the FULL `mapLoDetail` of a row the caller
@@ -357,35 +356,26 @@ const APPROVE_OVERRIDE = [{ action: 'approve', subject: 'LogisticOrder', effect:
  * is narrowed, to the caller's own read scope, with a slim acknowledgement when that misses.
  */
 describe('#2042 security round 2 (A) — the approve 200 body is built through the caller read scope', () => {
-  it('SALES approver, ANOTHER rep\'s job: 200 slim ack, no customer / job / line data, flip persisted', async () => {
+  it('SALES approver, ANOTHER rep\'s job: 404 (outside the reach, S01.9), nothing approved', async () => {
     mockAuthAs('sales');
-    mockPrisma.userPermissionOverride.findMany.mockResolvedValue(APPROVE_OVERRIDE);
+    mockRoleSwitches(APPROVER);
     installLoFindFirstFaithful(false, 'PENDING_APPROVAL');
 
     const res = await request(app).post(`/api/logistic-orders/${LO_ID}/approve`).set(authHeader('sales'));
 
-    expect(res.status).toBe(200);
-    expect(res.body).toEqual({ id: LO_ID, number: 'LO-J00099-1', status: 'APPROVED' });
-    for (const leaked of ['lines', 'anchors', 'notes', 'createdBy', 'lineCount']) {
-      expect(Object.keys(res.body)).not.toContain(leaked);
-    }
-    // The payload, not just the key names: no customer name, no customer number, no SKU, no
-    // item name, no notes. NOT the job number: an anchored LO number IS `LO-<job number>-<seq>`,
-    // and that number is the label the approver's own `lo.submitted` notification carried
-    // (`object: { type, id, label: lo.number }`), so echoing it back tells them nothing new.
+    // Approval acts only on an order the person can reach, so an order on another rep's job is "not found" and
+    // neither the write nor any of the order's data (customer, SKUs, notes) is reached.
+    expect(res.status).toBe(404);
+    expect(mockPrisma.logisticOrder.updateMany).not.toHaveBeenCalled();
     const body = JSON.stringify(res.body);
     for (const secret of ['Reyes', 'C00042', 'GARAGE-OPENER', 'Garage Opener', 'rebuild']) {
       expect(body).not.toContain(secret);
     }
-    // The approval itself still landed — this is a body narrowing, NOT a new refusal.
-    const claim = mockPrisma.logisticOrder.updateMany.mock.calls[0][0];
-    expect(claim.data.status).toBe('APPROVED');
-    expect(claim.data.approved_by).toBe(SALES_ID);
   });
 
   it('SALES approver, their OWN job: full detail body, unchanged', async () => {
     mockAuthAs('sales');
-    mockPrisma.userPermissionOverride.findMany.mockResolvedValue(APPROVE_OVERRIDE);
+    mockRoleSwitches(APPROVER);
     installLoFindFirstFaithful(true, 'PENDING_APPROVAL');
 
     const res = await request(app).post(`/api/logistic-orders/${LO_ID}/approve`).set(authHeader('sales'));
@@ -397,9 +387,9 @@ describe('#2042 security round 2 (A) — the approve 200 body is built through t
     expect(res.body.anchors.customerNumber).toBe('C00042');
   });
 
-  it('DISPATCHER approver, the SAME foreign-job LO: full detail body, unchanged (org-wide read)', async () => {
+  it('DISPATCHER approver (Jobs and Leads scope All), the SAME foreign-job LO: full detail body (reaches every order)', async () => {
     mockAuthAs('dispatcher');
-    mockPrisma.userPermissionOverride.findMany.mockResolvedValue(APPROVE_OVERRIDE);
+    mockRoleSwitches(APPROVER);
     installLoFindFirstFaithful(false, 'PENDING_APPROVAL');
 
     const res = await request(app).post(`/api/logistic-orders/${LO_ID}/approve`).set(authHeader('dispatcher'));
@@ -484,9 +474,9 @@ describe('#2042 security round 2 (C) — an APPROVED LO\'s lines are frozen to a
     expect(mockPrisma.logisticOrderLine.createMany).toHaveBeenCalled();
   });
 
-  it('SALES holding the approve capability, own job, APPROVED: 200 — the gate is the GRANT, not the role', async () => {
+  it('SALES holding Approve logistic orders, own job, APPROVED: 200 — the gate is the SWITCH, not the role', async () => {
     mockAuthAs('sales');
-    mockPrisma.userPermissionOverride.findMany.mockResolvedValue(APPROVE_OVERRIDE);
+    mockRoleSwitches(APPROVER);
     installLoFindFirst(true, 'APPROVED');
 
     const res = await request(app)

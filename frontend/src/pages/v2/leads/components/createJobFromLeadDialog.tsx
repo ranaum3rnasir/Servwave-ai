@@ -22,7 +22,8 @@ export interface CreateJobEstimate {
   id: string;
   estimate_number: string;
   status: string;
-  total_amount: string;
+  /** Left out of the lead answer for a person who may not see this lead's estimate money; draw no amount then. */
+  total_amount?: string;
   created_at: string;
   /** PROVENANCE - a Job already created FROM this estimate. */
   job?: { id: string; job_number: string; status: string } | null;
@@ -174,7 +175,7 @@ function CreateJobDialogBody({
                               {attachedJob.job_number} →
                             </Button>
                           ) : (
-                            <span className="text-sm tabular-nums">{formatCurrency(est.total_amount)}</span>
+                            est.total_amount != null && <span className="text-sm tabular-nums">{formatCurrency(est.total_amount)}</span>
                           )}
                         </div>
                       </div>

@@ -75,7 +75,10 @@ export default function TasksHubPage() {
   const [activeTab, setActiveTab] = useState<TabKey>('my-day');
   const [newTaskOpen, setNewTaskOpen] = useState(false);
   const [categoriesOpen, setCategoriesOpen] = useState(false);
-  const canManageCategories = useAppAbility().can('create', 'TaskCategory');
+  const ability = useAppAbility();
+  const canManageCategories = ability.can('create', 'TaskCategory');
+  // The New Task button: the Create tasks switch (the list itself already needed View and Show to open).
+  const canCreateTask = ability.can('create', 'Task');
   const [searchParams, setSearchParams] = useSearchParams();
   const role = useAuthStore((s) => s.user?.role);
   const isManager = role === 'ADMIN' || role === 'DISPATCHER';
@@ -100,15 +103,16 @@ export default function TasksHubPage() {
 
   // Quick-create handshake: `?action=new-task` (the sidebar "Create New" entry)
   // opens the blank dialog once and strips the param with replace:true, so Back
-  // does not re-open it.
+  // does not re-open it. A person without the Create tasks switch gets the page and
+  // no dialog (the param is still stripped), the same rule as the New Task button.
   useEffect(() => {
     if (searchParams.get('action') === 'new-task') {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- a one-shot URL handshake, not derived state: the param is consumed and stripped in the same pass so the dialog opens exactly once, and the user must then be able to close it even though `?action=new-task` was the entry URL
-      setNewTaskOpen(true);
+      if (canCreateTask) setNewTaskOpen(true);
       searchParams.delete('action');
       setSearchParams(searchParams, { replace: true });
     }
-  }, [searchParams, setSearchParams]);
+  }, [searchParams, setSearchParams, canCreateTask]);
 
   // Notification deep-link handshake: `?task=<uuid>`, the path the five task.*
   // notification verbs deep-link to (see `notificationDeepLink`'s TASK case for
@@ -171,10 +175,12 @@ export default function TasksHubPage() {
                 Categories
               </Button>
             )}
-            <Button onClick={() => setNewTaskOpen(true)}>
-              <Plus />
-              New Task
-            </Button>
+            {canCreateTask && (
+              <Button onClick={() => setNewTaskOpen(true)}>
+                <Plus />
+                New Task
+              </Button>
+            )}
           </>
         }
       />

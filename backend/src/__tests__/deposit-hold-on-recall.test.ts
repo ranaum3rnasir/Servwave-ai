@@ -20,7 +20,7 @@ import app from '../app';
 import { prisma } from '../lib/prisma';
 import { sendDepositPaymentConfirmation } from '../lib/email';
 import { isStripeConfigured, createCheckoutSession, getStripeForOrg, expireOpenCheckoutSessionsForInvoice } from '../lib/stripe';
-import { mockAuthAs, authHeader, ESTIMATE_FIXTURE, ESTIMATE_SENT_FIXTURE, TEST_USERS, ALPHA_ORG_ID } from './helpers';
+import { mockAuthAs, authHeader, ESTIMATE_FIXTURE, ESTIMATE_SENT_FIXTURE, TEST_USERS, ALPHA_ORG_ID, withCheckoutLedger, servedBy } from './helpers';
 
 const mockPrisma = prisma as unknown as Record<string, any>;
 const mockDepositReceipt = sendDepositPaymentConfirmation as unknown as ReturnType<typeof vi.fn>;
@@ -107,12 +107,14 @@ function recordingTransaction() {
   const tx = {
     stripeEvent: { create: vi.fn().mockResolvedValue({}) },
     payment: { create: vi.fn().mockResolvedValue({ id: 'pay-1' }) },
-    invoice: { update: vi.fn().mockResolvedValue({}) },
+    $executeRaw: vi.fn().mockResolvedValue(1), // #891: the checkout locks the invoice row
+    invoice: { findUnique: vi.fn().mockResolvedValue({ status: 'SENT' }), update: vi.fn().mockResolvedValue({}) },
     estimate: { update: vi.fn().mockResolvedValue({}) },
     lead: { updateMany: vi.fn().mockResolvedValue({ count: 1 }), update: vi.fn().mockResolvedValue({}) },
     timelineEvent: { create: vi.fn().mockResolvedValue({}) },
   };
-  mockPrisma.$transaction.mockImplementation((fn: (t: unknown) => Promise<unknown>) => fn(tx));
+  mockPrisma.$transaction.mockImplementation(async (fn: (t: unknown) => Promise<unknown>) =>
+    fn(withCheckoutLedger(tx, await servedBy(mockPrisma.invoice.findUnique))));
   return tx;
 }
 
@@ -120,6 +122,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockPrisma.stripeEvent.findUnique.mockResolvedValue(null);
   mockPrisma.stripeEvent.create.mockResolvedValue({});
+  // Slice 08: the webhook reads the session's charge back from the processor (none here).
+  mockGetStripeForOrg.mockReturnValue({
+    stripe: { paymentIntents: { retrieve: vi.fn().mockResolvedValue({ latest_charge: null }) } },
+    stripeAccount: undefined,
+  });
   mockPrisma.timelineEvent.create.mockResolvedValue({});
   mockPrisma.auditLog.create.mockResolvedValue({});
   mockPrisma.payment.count.mockResolvedValue(0);
@@ -193,6 +200,8 @@ describe('the public deposit link while the estimate is recalled to draft', () =
         deposit_default_percentage: 50,
         deposit_default_fixed_amount: 0,
       },
+      // No bank payment in flight (payments go-live slice 12's payable-now read).
+      payments: [],
       ...over,
     };
   }
@@ -218,7 +227,7 @@ describe('the public deposit link while the estimate is recalled to draft', () =
 
     expect(res.status).toBe(400);
     expect(res.body).toEqual({
-      error: 'This deposit request is on hold while the estimate is being updated. Please contact us if you would like to pay it now.',
+      error: 'This deposit is on hold while the estimate is being updated. Please contact us if you would like to pay it now.',
       // Its own code: the page has to be able to tell "withdrawn for changes" from "the amount
       // moved", because they are different things to be told.
       code: 'DEPOSIT_ON_HOLD',
@@ -280,6 +289,7 @@ describe('the public deposit page payload while the estimate is recalled to draf
       customer: { first_name: 'Pat', last_name: 'Q', company_name: null },
       line_items: [],
       job: null,
+      payments: [],
     };
   }
 
@@ -601,11 +611,12 @@ describe('sending a recalled estimate again', () => {
 describe('the record left behind when a recalled deposit is charged anyway', () => {
   it('names the recall, not a change of amount', async () => {
     mockPrisma.invoice.findUnique.mockResolvedValue(depositInvoice('DRAFT'));
-    recordingTransaction();
+    const tx = recordingTransaction();
 
     await postWebhook(checkoutSession());
 
-    const rows = mockPrisma.timelineEvent.create.mock.calls.map((c: any[]) => c[0].data);
+    // Slice 08: written inside the transaction that records the event.
+    const rows = tx.timelineEvent.create.mock.calls.map((c: any[]) => c[0].data);
     const row = rows.find((d: any) => d.event_type === 'PAYMENT_UNRECORDED');
     expect(row).toBeDefined();
     expect(row.entity_id).toBe(DEPOSIT_INVOICE_ID);

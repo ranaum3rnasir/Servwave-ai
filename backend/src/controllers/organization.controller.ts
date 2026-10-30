@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import { z } from 'zod';
 import crypto from 'crypto';
 import multer from 'multer';
-import { Prisma, PaymentMethod } from '@prisma/client';
+import { Prisma, PaymentMethod, DepositPolicy } from '@prisma/client';
 import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { supabaseAdmin } from '../lib/supabase';
@@ -14,29 +14,23 @@ import {
   acceptedPaymentMethodsSchema,
   resolveAcceptedPaymentMethods,
 } from '../lib/payment-methods';
-import { canSeePricing } from '../lib/permissions/enforce';
-import { effectiveSenderLocalPart, senderDomainOf } from '../lib/email';
+import { canSeeCosts } from '../lib/permissions/enforce';
+import { orgSendingIdentity, senderDomainOf } from '../lib/email';
+import { changeCompanyPart } from '../lib/mailbox/register';
+import { isReservedLocalPart } from '../lib/mailbox/address-core';
+import { runUnscoped } from '../lib/tenant-context';
 import { loadSharp } from '../lib/load-sharp';
+import { syncOrgBranding } from '../lib/stripe-branding';
 import { LONG_TEXT_MAX, VERY_LONG_TEXT_MAX } from '../lib/text-limits';
 
 /** Matches lib/email.ts's own cap, so a value that validates here can never be
  *  silently truncated when the address is built. */
 const MAX_SENDER_LOCAL_PART = 40;
 
-/** Local parts an org may not claim on the shared sending domain.
- *
- *  `postmaster` and `abuse` are owed to the internet rather than to any one
- *  tenant (RFC 2142), `bounce`/`bounces` is where return-path traffic belongs,
- *  and `no-reply`/`noreply` is the fallback lib/email.ts uses when a name slugs
- *  to nothing - one org claiming it would collide with every unnamed org. */
-const RESERVED_SENDER_LOCAL_PARTS = new Set([
-  'postmaster',
-  'abuse',
-  'bounce',
-  'bounces',
-  'no-reply',
-  'noreply',
-]);
+const TAKEN_MESSAGE = 'This email address is already in use. Choose a different one.';
+const RESERVED_MESSAGE = 'This address is reserved.';
+const TOO_LONG_MESSAGE = "That is too long for some people's addresses. Choose a shorter one.";
+const INVALID_MESSAGE = 'Use letters and numbers only, with no spaces, dots or @';
 
 const LOGO_MAX_W = 267; // 200pt * 1.33
 const LOGO_MAX_H = 107; // 80pt * 1.33
@@ -96,7 +90,7 @@ export const SCHEDULE_EVENT_COLOR_TOKENS = [
 // `findUnique`/`update` with no `select` shipped the WHOLE row, including anything ever added to
 // this model, to every authenticated user. The real danger is forward-looking: Phase 2 (M2) adds
 // `labor_rate`/`overhead_mode`/`overhead_value` — internal cost/margin config that must stay behind
-// `read Invoice` (§2.1) — as plain columns on this same model. An explicit select means a NEW
+// See financial data (§2.1) — as plain columns on this same model. An explicit select means a NEW
 // column never appears in a response until a developer deliberately adds it here and consciously
 // decides who should see it, instead of it leaking by omission the moment the migration lands.
 
@@ -196,6 +190,14 @@ export const organizationScalarSelect = {
   deposit_default_percentage: true,
   deposit_default_fixed_amount: true,
   lock_on_send: true,
+  // Payments go-live slice 19: the org payment defaults. Whether the account can take bank
+  // payments is ACH's presence in accepted_payment_methods (selected above).
+  card_offered_by_default: true,
+  bank_offered_by_default: true,
+  tips_enabled: true,
+  tip_presets: true,
+  deposit_policy: true,
+  bank_transfer_instructions: true,
 } as const;
 
 export const organizationCostSelect = {
@@ -313,6 +315,25 @@ export const patchOrgSchema = z.object({
   deposit_default_fixed_amount: z.number().min(0).max(99999999).optional(),
   // --- Estimate workspace redesign (§A3a) — org-wide lock-on-send policy, default OFF ---
   lock_on_send: z.boolean().optional(),
+  // --- Payments go-live slice 19 (PRD Module 6): org payment defaults ---
+  // Story 24: whether Card / Bank is offered by default. Their own fields, because CARD and ACH
+  // inside accepted_payment_methods are server-owned capability facts (resolveAcceptedPaymentMethods).
+  card_offered_by_default: z.boolean().optional(),
+  bank_offered_by_default: z.boolean().optional(),
+  tips_enabled: z.boolean().optional(),
+  // Whole percentages of the pre-tax amount being paid: exactly three, each 1-50.
+  tip_presets: z
+    .array(z.number().int('Tip presets must be whole percentages').min(1, 'Tip presets must be between 1% and 50%').max(50, 'Tip presets must be between 1% and 50%'))
+    .length(3, 'Set exactly three tip presets')
+    .optional(),
+  deposit_policy: z.nativeEnum(DepositPolicy).optional(),
+  // Blank clears the instructions.
+  bank_transfer_instructions: z
+    .string()
+    .max(LONG_TEXT_MAX)
+    .transform((v) => (v.trim() === '' ? null : v))
+    .nullable()
+    .optional(),
   // --- R3 (2026-07-21) cost model org defaults (D2/D8) ---
   labor_rate: z.number().min(0).max(99999999).optional(),
   overhead_mode: z.enum(['PERCENTAGE', 'FIXED']).optional(),
@@ -333,10 +354,14 @@ export const patchOrgSchema = z.object({
  * seeing the phone as set up. Remove the key in a later cleanup, once no
  * frontend reads it.
  */
-function presentOrganization<T extends { ctm_account_id: string | null; ctm_sms_ready: boolean }>(org: T) {
+function presentOrganization<T extends { ctm_account_id: string | null; ctm_sms_ready: boolean; stripe_account_id: string | null }>(org: T) {
   const phoneConnected = Boolean(org.ctm_account_id);
+  // The payout account's processor id is never sent, and neither is a key named for it: only `stripe_connected`.
+  const { stripe_account_id: payoutAccountId, ...orgWithoutPayoutId } = org;
+  const payoutConnected = Boolean(payoutAccountId);
   return {
-    ...org,
+    ...orgWithoutPayoutId,
+    stripe_connected: payoutConnected,
     ctm_account_id: phoneConnected ? true : null,
     phone_connected: phoneConnected,
     // The texting-approval flag under ServWave's own name. The spread above
@@ -352,10 +377,10 @@ function presentOrganization<T extends { ctm_account_id: string | null; ctm_sms_
 export const getOrganization = async (req: Request, res: Response) => {
   try {
     // R3 — cost defaults (labor_rate/overhead_*) are merged in ONLY for a requester who can see
-    // pricing (read Invoice). Every other role gets exactly organizationScalarSelect, unchanged.
+    // costs (See financial data). Every other role gets exactly organizationScalarSelect, unchanged.
     const org = await prisma.organization.findUnique({
       where: { id: req.user!.organization_id },
-      select: canSeePricing(req) ? { ...organizationScalarSelect, ...organizationCostSelect } : organizationScalarSelect,
+      select: canSeeCosts(req) ? { ...organizationScalarSelect, ...organizationCostSelect } : organizationScalarSelect,
     });
     if (!org) {
       res.status(404).json({ error: 'Organization not configured' });
@@ -411,6 +436,8 @@ export const uploadLogo = async (req: Request, res: Response) => {
       data: { logo_url: pub.publicUrl },
     });
     void logAudit({ req, action: 'organization.logo_uploaded', resourceType: 'Organization', resourceId: req.user!.organization_id });
+    // Slice 36: the checkout shows the new logo; the bytes just stored are what is sent.
+    void syncOrgBranding(org.id, { logo: { data: buffer, mime } });
     res.json({ logo_url: updated.logo_url });
   } catch (err) {
     logger.error('uploadLogo error:', err);
@@ -487,6 +514,7 @@ export const updateOrganization = async (req: Request, res: Response) => {
         where: { id: orgId },
         select: {
           stripe_charges_enabled: true,
+          accepted_payment_methods: true,
         },
       });
       if (!current) throw new HttpError(404, 'Organization not configured');
@@ -499,15 +527,19 @@ export const updateOrganization = async (req: Request, res: Response) => {
       // next-number is greater than every number already issued, so identifiers can
       // never duplicate.
 
-      // §4.5 — CARD is server-owned, not a client-settable member of this array: it is
-      // derived from stripe_charges_enabled (see resolveAcceptedPaymentMethods for why this
-      // resolves rather than validates). The row is already locked FOR UPDATE above, so the
-      // charges flag read here cannot race the account.updated webhook. Zod already validated
-      // the array shape + enum values.
+      // §4.5 — CARD and ACH are server-owned, not client-settable members of this array. Only the
+      // account-status sync learns from the processor whether the account can take cards or bank
+      // payments, and it records that as CARD and ACH in this list. A save keeps them under the
+      // sync's own rule (withAccountCapabilities: charges enabled AND the capability the sync
+      // recorded), so it never puts back one the sync removed (see resolveAcceptedPaymentMethods
+      // for why this resolves rather than validates). The row is already locked FOR UPDATE above,
+      // so the charges flag read here cannot race the account.updated webhook. Zod already
+      // validated the array shape + enum values.
       if (body.accepted_payment_methods !== undefined) {
         body.accepted_payment_methods = resolveAcceptedPaymentMethods(
           body.accepted_payment_methods as PaymentMethod[],
           current.stripe_charges_enabled,
+          current.accepted_payment_methods,
         );
       }
 
@@ -577,13 +609,15 @@ export const updateOrganization = async (req: Request, res: Response) => {
       return tx.organization.update({
         where: { id: orgId },
         data: body,
-        // R3 — same canSeePricing-conditional select as getOrganization. In practice this route is
+        // R3 — same canSeeCosts-conditional select as getOrganization. In practice this route is
         // ADMIN-only (canDo('update', 'Organization')) and ADMIN always sees pricing, but the
         // explicit condition keeps the two handlers from being able to drift apart.
-        select: canSeePricing(req) ? { ...organizationScalarSelect, ...organizationCostSelect } : organizationScalarSelect,
+        select: canSeeCosts(req) ? { ...organizationScalarSelect, ...organizationCostSelect } : organizationScalarSelect,
       });
     });
 
+    // Slice 36: a changed colour reaches the payout account's branding (no-op without an account).
+    if ('brand_color' in body) void syncOrgBranding(orgId);
     await writeSettingsAudit(req, 'organization.updated', { fields: Object.keys(body) });
     void logAudit({ req, action: 'organization.updated', resourceType: 'Organization', resourceId: req.user!.organization_id, metadata: { fields: Object.keys(body) } });
     res.json(presentOrganization(updated));
@@ -633,14 +667,12 @@ export const previewPdf = async (req: Request, res: Response) => {
 // ─── Email sender address ────────────────────────────────
 
 /**
- * The org's chosen local part for its business From address - the string
- * BEFORE the `@`, and nothing else. The domain half is always the shared
- * env.EMAIL_FROM_BUSINESS one, identical for every org, and is deliberately
- * not accepted here: sending is in-house, so an org never picks a domain.
+ * The org's company part: the string BEFORE the `@` in its main address, and nothing else. The domain
+ * half is the environment's mailbox domain, identical for every org, and is deliberately not accepted
+ * here: sending is in-house, so an org never picks a domain.
  *
- * Empty clears the override and returns the org to the name-derived default
- * (see effectiveSenderLocalPart in lib/email.ts), which is why the column is
- * nullable rather than backfilled.
+ * Empty goes back to the part the company name gives (or its next free variant). Changing the part is
+ * the mailbox address register's job (lib/mailbox/register.ts): the old address keeps delivering.
  */
 export const emailSenderSchema = z
   .object({
@@ -654,59 +686,86 @@ export const emailSenderSchema = z
         // dots, plus signs and quoted strings, all of which are mangled or
         // sub-address-interpreted by enough receivers to be a support burden
         // on an address a company prints on invoices.
-        message: 'Use letters and numbers only, with no spaces, dots or @',
+        message: INVALID_MESSAGE,
       })
-      .refine((v) => !RESERVED_SENDER_LOCAL_PARTS.has(v), {
-        message: 'That address is reserved',
+      .refine((v) => !isReservedLocalPart(v), {
+        message: RESERVED_MESSAGE,
       }),
+    // True asks only whether the part would be accepted: every check runs, nothing is written. The Sender Address page
+    // asks before it warns that everyone's address will change.
+    dry_run: z.boolean().optional(),
   })
   .strict();
 
+/**
+ * GET /api/organization/email-sender - what the Sender Address page shows: the company's main address, the company part
+ * in it and the domain after the @. Read through the resolver every automated send takes its From from, so the page and
+ * the mail can never disagree. Company settings alone opens it: the page must work for a person who cannot read the
+ * Email page (the sending-identity read the compose box uses is part of that section).
+ */
+export const getEmailSender = async (req: Request, res: Response) => {
+  try {
+    const identity = await orgSendingIdentity(req.user!.organization_id);
+    res.json({
+      address: identity.address,
+      local_part: identity.localPart,
+      local_part_is_custom: identity.localPartIsCustom,
+      sender_domain: identity.senderDomain,
+    });
+  } catch (err) {
+    logger.error('Failed to read organization email sender:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
+};
+
 export const updateEmailSender = async (req: Request, res: Response) => {
   const orgId = req.user!.organization_id;
-  // '' means "clear it"; null in the column is what makes the derived default
-  // apply again, so the two have to map onto each other here.
+  // '' means "go back to the part the company name gives"; the register reads null as that.
   const localPart: string | null = req.body.local_part === '' ? null : req.body.local_part;
+  const dryRun = req.body.dry_run === true;
 
   try {
-    if (localPart) {
-      // Pre-check purely so the admin gets a useful message instead of a raw
-      // constraint error. It is NOT the guarantee - two orgs can clear this
-      // check concurrently - so the unique index still has to be handled below.
-      const taken = await prisma.organization.findFirst({
-        where: { email_sender_local_part: localPart, id: { not: orgId } },
-        select: { id: true },
-      });
-      if (taken) {
-        res.status(409).json({
-          error: 'Another organization already sends from that address',
-          code: 'LOCAL_PART_TAKEN',
+    // The mailbox address register decides whether the part is free (against every company's part,
+    // chosen or derived, every address ever issued and the reserved list) and moves the main address:
+    // the new one becomes primary, the old one keeps delivering and is never issued to anyone else. It
+    // spans every company, hence the unscoped run.
+    const change = await runUnscoped(() => changeCompanyPart(prisma, orgId, localPart, { dryRun }));
+
+    if (!change.ok) {
+      if (change.reason === 'taken') {
+        // Never says whose it is.
+        res.status(409).json({ error: TAKEN_MESSAGE, code: 'LOCAL_PART_TAKEN' });
+      } else {
+        res.status(400).json({
+          error:
+            change.reason === 'reserved' ? RESERVED_MESSAGE : change.reason === 'too_long' ? TOO_LONG_MESSAGE : INVALID_MESSAGE,
         });
-        return;
       }
+      return;
     }
 
-    const org = await prisma.organization.update({
-      where: { id: orgId },
-      data: { email_sender_local_part: localPart },
-      select: { id: true, name: true, email_sender_local_part: true },
-    });
-
-    await writeSettingsAudit(req, 'organization.email_sender', { local_part: localPart });
+    if (change.changed && !dryRun) {
+      await writeSettingsAudit(req, 'organization.email_sender', { local_part: change.part });
+      // Nobody's address changes silently: who changed the company part, from what to what, for how many people.
+      void logAudit({
+        req,
+        action: 'organization.company_part_changed',
+        resourceType: 'Organization',
+        resourceId: orgId,
+        metadata: { from: change.previousPart, to: change.part, people_moved: change.usersMoved },
+      });
+    }
 
     res.json({
-      local_part: effectiveSenderLocalPart(org.name, org.email_sender_local_part),
-      local_part_is_custom: Boolean(org.email_sender_local_part),
+      local_part: change.part,
+      local_part_is_custom: !change.derivedFromName,
       sender_domain: senderDomainOf(),
     });
   } catch (err) {
-    // The index is the real guarantee; whoever loses the race lands here and
-    // must get the same clean 409 the pre-check gives, not a 500.
+    // The unique indexes are the real guarantee; a writer that lost the race outside the register's lock
+    // lands here and must get the same clean 409, not a 500.
     if ((err as { code?: string }).code === 'P2002') {
-      res.status(409).json({
-        error: 'Another organization already sends from that address',
-        code: 'LOCAL_PART_TAKEN',
-      });
+      res.status(409).json({ error: TAKEN_MESSAGE, code: 'LOCAL_PART_TAKEN' });
       return;
     }
     logger.error('Failed to update organization email sender:', err);

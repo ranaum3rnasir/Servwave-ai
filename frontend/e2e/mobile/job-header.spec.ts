@@ -2,11 +2,11 @@
  * Mobile slice 41: the job page header on the six device projects.
  *
  * Below sm (640 px) the header stacks: a Back control beside the title, the status row, and every
- * secondary action inside one Actions menu. Mark Complete lives in a bottom dock that stays inside
+ * secondary action inside one Actions menu. Complete job lives in a bottom dock that stays inside
  * the viewport (open question with Ran: dock only on phones, header only from sm up). From sm up
  * it is the old inline cluster: no Back control, no dock.
  *
- * Read-only: Mark Complete is measured, never pressed.
+ * Read-only: Complete job is measured, never pressed.
  */
 import { expect } from '@playwright/test';
 import fs from 'fs';
@@ -19,7 +19,7 @@ const selected = new Set(selectStates().map((s) => s.id));
 const fixtures = (): GateFixtures => JSON.parse(fs.readFileSync(FIXTURES_FILE, 'utf8'));
 const SM = 640;
 
-test('job header: Back, Actions and Mark Complete are in reach and 44 px on a phone; unchanged from sm up', async ({ page, session }, testInfo) => {
+test('job header: Back, Actions and Complete job are in reach and 44 px on a phone; unchanged from sm up', async ({ page, session }, testInfo) => {
   test.skip(!selected.has('job-detail'), 'MOBILE_GATE_ROUTES does not select job-detail');
   const vp = page.viewportSize()!;
   const phone = vp.width < SM;
@@ -30,9 +30,9 @@ test('job header: Back, Actions and Mark Complete are in reach and 44 px on a ph
 
     const header = page.getByTestId('detail-header');
     await expect(header).toBeVisible();
-    const complete = page.getByRole('button', { name: /Mark Complete/ });
+    const complete = page.getByRole('button', { name: /Complete job/ });
     const actions = header.getByRole('button', { name: 'Actions' });
-    await expect(complete, 'exactly one Mark Complete on the page').toHaveCount(1);
+    await expect(complete, 'exactly one Complete job on the page').toHaveCount(1);
 
     const inViewport = async (loc: typeof complete, label: string) => {
       const box = await loc.boundingBox();
@@ -57,9 +57,9 @@ test('job header: Back, Actions and Mark Complete are in reach and 44 px on a ph
 
       const dock = page.getByTestId('detail-dock');
       await expect(dock).toBeVisible();
-      await expect(dock.getByRole('button', { name: /Mark Complete/ })).toBeVisible();
-      const box = await inViewport(complete, 'Mark Complete');
-      expect(box.height, 'Mark Complete is at least 44 px tall').toBeGreaterThanOrEqual(43.5);
+      await expect(dock.getByRole('button', { name: /Complete job/ })).toBeVisible();
+      const box = await inViewport(complete, 'Complete job');
+      expect(box.height, 'Complete job is at least 44 px tall').toBeGreaterThanOrEqual(43.5);
       const dockBox = (await dock.boundingBox())!;
       expect(dockBox.y + dockBox.height, 'the dock sits at the bottom of the screen').toBeGreaterThan(vp.height - 80);
 
@@ -80,7 +80,7 @@ test('job header: Back, Actions and Mark Complete are in reach and 44 px on a ph
     } else {
       await expect(page.getByRole('button', { name: 'Back to jobs' })).toHaveCount(0);
       await expect(page.getByTestId('detail-dock')).toHaveCount(0);
-      await inViewport(complete, 'Mark Complete');
+      await inViewport(complete, 'Complete job');
       await inViewport(actions, 'Actions');
       await expect(header.getByRole('button', { name: /New Task/ })).toBeVisible();
       // Nothing in the header sticks out sideways (the iPad project is 768 px).

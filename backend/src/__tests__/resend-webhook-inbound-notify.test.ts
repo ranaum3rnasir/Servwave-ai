@@ -2,14 +2,16 @@
 // nobody, so the only way to discover a customer had written back was to open
 // the Inbox and refresh - the app's one channel with no live signal at all.
 //
-// This wires inbound email into the notification service that calls, texts and
-// every other verb already use: a `communication.email_inbound` emit, plus a
-// second `emails.changed` broadcast to the same people so the open Inbox list
-// refreshes without a full notification refetch.
+// This wires inbound email into the customer-reply alert (services/notifications/emailReplyAlerts.ts,
+// PRD 10 S10.10), which finds the people through M6's chain and writes the bell, plus a second
+// `emails.changed` broadcast to the same people so the open Inbox list refreshes without a full
+// notification refetch. WHO is rung is decided there, by the real-database suite
+// permission-email-reply-bells-db.test.ts; this suite is about the webhook's wiring: what it hands
+// the alert, when, and that nothing in it chooses a recipient (no role, no user list).
 //
 // TWO ORDERING PROPERTIES, both correctness rather than taste:
 //
-//  1. The emit runs AFTER the transaction commits. Notifying about a row that a
+//  1. The alert runs AFTER the transaction commits. Notifying about a row that a
 //     later rollback erases would leave a bell entry pointing at nothing - the
 //     same reason the domain-verified email in this controller is deliberately
 //     deferred past its own transaction.
@@ -45,8 +47,8 @@ vi.mock('resend', () => ({
   },
 }));
 
-vi.mock('../services/notifications/notificationService', () => ({
-  emit: vi.fn().mockResolvedValue(['assignee-1']),
+vi.mock('../services/notifications/emailReplyAlerts', () => ({
+  alertEmailReply: vi.fn().mockResolvedValue(['assignee-1']),
 }));
 vi.mock('../services/notifications/realtimePublish', () => ({
   publishNotificationsChanged: vi.fn().mockResolvedValue(undefined),
@@ -55,11 +57,14 @@ vi.mock('../services/notifications/realtimePublish', () => ({
 
 import webhookRoutes from '../routes/webhook.routes';
 import { prisma } from '../lib/prisma';
-import { emit } from '../services/notifications/notificationService';
+import { alertEmailReply } from '../services/notifications/emailReplyAlerts';
 import { publishEmailsChanged } from '../services/notifications/realtimePublish';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 const p = prisma as any;
+
+// The router looks the event's reply tokens up in one read, before the message body is fetched.
+const tokenResolvesTo = (row: unknown) => p.replyToken.findMany.mockResolvedValue(row ? [row] : []);
 
 const app = express();
 app.use('/api/webhooks', webhookRoutes);
@@ -143,7 +148,7 @@ function tokenRow(overrides: Record<string, unknown> = {}) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  (emit as any).mockResolvedValue([ASSIGNEE]);
+  (alertEmailReply as any).mockResolvedValue([ASSIGNEE]);
   resendVerify.mockImplementation((...args: any[]) => {
     const payload = args[0]?.payload ?? args[0];
     return typeof payload === 'string' ? JSON.parse(payload) : payload;
@@ -151,57 +156,49 @@ beforeEach(() => {
   receivingGet.mockResolvedValue(receivedEmail());
   p.resendEvent.findUnique.mockResolvedValue(null);
   p.resendEvent.create.mockResolvedValue({});
-  p.replyToken.findUnique.mockResolvedValue(tokenRow());
+  tokenResolvesTo(tokenRow());
   p.email.create.mockResolvedValue({ id: 'inbound-row-1' });
   p.email.findUnique.mockResolvedValue(null);
   p.emailThread.create.mockResolvedValue({ id: 'new-thread-1' });
   p.emailThread.findUnique.mockResolvedValue({ id: THREAD, assigned_to_user_id: ASSIGNEE });
   p.customer.findUnique.mockResolvedValue({ id: CUSTOMER, first_name: 'Angel', last_name: 'Reyes', company_name: null });
+  // The company has the Email plan feature (every plan includes it; only an override removes it).
+  p.organization.findUnique.mockResolvedValue({ plan: 'STARTER', trial_ends_at: null, feature_overrides: {} });
   p.$transaction.mockImplementation(async (arg: any) =>
     typeof arg === 'function' ? arg(p) : Promise.all(arg));
 });
 
 describe('email.received - notifying', () => {
-  it('emits communication.email_inbound for the stored reply', async () => {
+  it('hands the stored reply to the customer-reply alert, once, with no actor and no recipients of its own', async () => {
     const res = await post(receivedEvent());
 
     expect(res.status).toBe(200);
-    expect(emit).toHaveBeenCalledTimes(1);
-    const args = (emit as any).mock.calls[0][0];
-    expect(args).toMatchObject({
-      verb: 'communication.email_inbound',
+    expect(alertEmailReply).toHaveBeenCalledTimes(1);
+    expect(alertEmailReply).toHaveBeenCalledWith({
       organizationId: ORG,
-      // A customer is not a user of ours, so there is no actor to drop.
-      actorId: null,
+      threadId: THREAD,
+      // The id the alert dedupes on, so a webhook replay cannot double-notify.
+      providerMessageId: RECEIVED_ID,
+      senderLabel: 'Angel <angel@example.com>',
+      subject: 'Re: Quote',
     });
   });
 
-  it('passes the thread assignee so the reply reaches whoever owns it', async () => {
+  it('names no recipient: the webhook reads no user and no thread owner, the alert finds the people', async () => {
     await post(receivedEvent());
 
-    const args = (emit as any).mock.calls[0][0];
-    expect(args.entity).toMatchObject({ thread_assignee_id: ASSIGNEE });
+    expect(p.user.findMany).not.toHaveBeenCalled();
+    const args = (alertEmailReply as any).mock.calls[0][0];
+    expect(Object.keys(args).sort()).toEqual(['organizationId', 'providerMessageId', 'senderLabel', 'subject', 'threadId']);
   });
 
-  it('anchors the notification on the thread, which is what the inbox opens', async () => {
+  it('anchors the alert on the conversation the reply landed in, which is what the inbox opens', async () => {
+    // A reply whose token lost its conversation lands in a fresh one: the alert is about that one.
+    tokenResolvesTo(tokenRow({ thread_id: null, entity_type: 'estimate', entity_id: '55555555-5555-5555-5555-555555555555' }));
+
     await post(receivedEvent());
 
-    const args = (emit as any).mock.calls[0][0];
-    expect(args.object).toMatchObject({ type: 'EMAIL_THREAD', id: THREAD });
-  });
-
-  it('carries the subject and sender through for the bell copy', async () => {
-    await post(receivedEvent());
-
-    const args = (emit as any).mock.calls[0][0];
-    expect(args.data).toMatchObject({ subject: 'Re: Quote' });
-  });
-
-  it('dedupes on the provider message id, so a webhook replay cannot double-notify', async () => {
-    await post(receivedEvent());
-
-    const args = (emit as any).mock.calls[0][0];
-    expect(args.dedupKey).toContain(RECEIVED_ID);
+    expect((alertEmailReply as any).mock.calls[0][0]).toMatchObject({ threadId: 'new-thread-1' });
   });
 
   it('pushes emails.changed to the same people, so an open Inbox refreshes', async () => {
@@ -214,7 +211,7 @@ describe('email.received - notifying', () => {
   it('does not push emails.changed when nobody was notified', async () => {
     // No recipients means no open client to refresh, and an empty publish is a
     // pointless round trip per inbound message.
-    (emit as any).mockResolvedValue([]);
+    (alertEmailReply as any).mockResolvedValue([]);
 
     await post(receivedEvent());
 
@@ -222,17 +219,51 @@ describe('email.received - notifying', () => {
   });
 });
 
-describe('email.received - notifying never costs us the message', () => {
-  it('still 200s when the emit throws', async () => {
-    // emit() swallows its own errors, but this guards the wiring around it.
-    // A non-2xx here makes Resend retry, the retry is deduped by the claim that
-    // already committed, and the customer's reply is gone.
-    (emit as any).mockRejectedValue(new Error('notification service down'));
+describe('email.received - while the company\'s Email plan feature is off', () => {
+  it('stores the reply and rings nobody: no alert, no live-update push', async () => {
+    p.organization.findUnique.mockResolvedValue({ plan: 'STARTER', trial_ends_at: null, feature_overrides: { email: false } });
 
     const res = await post(receivedEvent());
 
     expect(res.status).toBe(200);
     expect(p.email.create).toHaveBeenCalledTimes(1);
+    expect(alertEmailReply).not.toHaveBeenCalled();
+    expect(publishEmailsChanged).not.toHaveBeenCalled();
+  });
+
+  it('asks the plan of the company the reply belongs to, on the transaction\'s own client', async () => {
+    await post(receivedEvent());
+
+    expect(p.organization.findUnique).toHaveBeenCalledWith(expect.objectContaining({ where: { id: ORG } }));
+  });
+});
+
+describe('email.received - notifying never costs us the message', () => {
+  it('still 200s when the alert throws', async () => {
+    // The alert swallows its own errors, but this guards the wiring around it.
+    // A non-2xx here makes Resend retry, the retry is deduped by the claim that
+    // already committed, and the customer's reply is gone.
+    (alertEmailReply as any).mockRejectedValue(new Error('notification service down'));
+
+    const res = await post(receivedEvent());
+
+    expect(res.status).toBe(200);
+    expect(p.email.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('acknowledges the delivery before the alert is worked out, so its reads never delay the 200', async () => {
+    // The alert reads people, switches and the conversation on the hosted one-connection pool;
+    // Resend waits for the 200, so the acknowledgement goes first and the alert follows it.
+    let releaseEmit: (ids: string[]) => void = () => {};
+    (alertEmailReply as any).mockImplementation(() => new Promise<string[]>((resolve) => { releaseEmit = resolve; }));
+
+    const res = await post(receivedEvent());
+
+    expect(res.status).toBe(200);
+    expect(alertEmailReply).toHaveBeenCalledTimes(1);
+    expect(publishEmailsChanged).not.toHaveBeenCalled();
+    releaseEmit([ASSIGNEE]);
+    await vi.waitFor(() => expect(publishEmailsChanged).toHaveBeenCalledTimes(1));
   });
 
   it('still 200s when the emails.changed broadcast throws', async () => {
@@ -243,8 +274,8 @@ describe('email.received - notifying never costs us the message', () => {
     expect(res.status).toBe(200);
   });
 
-  it('notifies only after the row is committed, never from inside the transaction', async () => {
-    // A rollback after the emit would leave a bell entry pointing at a message
+  it('alerts only after the row is committed, never from inside the transaction', async () => {
+    // A rollback after the alert would leave a bell entry pointing at a message
     // that does not exist.
     let committed = false;
     p.$transaction.mockImplementation(async (arg: any) => {
@@ -252,7 +283,7 @@ describe('email.received - notifying never costs us the message', () => {
       committed = true;
       return out;
     });
-    (emit as any).mockImplementation(async () => {
+    (alertEmailReply as any).mockImplementation(async () => {
       expect(committed).toBe(true);
       return [ASSIGNEE];
     });
@@ -260,17 +291,17 @@ describe('email.received - notifying never costs us the message', () => {
     const res = await post(receivedEvent());
 
     expect(res.status).toBe(200);
-    expect(emit).toHaveBeenCalledTimes(1);
+    expect(alertEmailReply).toHaveBeenCalledTimes(1);
   });
 
   it('does not notify for a message that could not be attributed to an org', async () => {
     // No token match - nothing was stored, so there is nothing to announce.
-    p.replyToken.findUnique.mockResolvedValue(null);
+    tokenResolvesTo(null);
 
     const res = await post(receivedEvent());
 
     expect(res.status).toBe(200);
-    expect(emit).not.toHaveBeenCalled();
+    expect(alertEmailReply).not.toHaveBeenCalled();
     expect(publishEmailsChanged).not.toHaveBeenCalled();
   });
 });

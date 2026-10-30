@@ -3,6 +3,7 @@ import { screen, waitFor, fireEvent } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import { renderWithProviders, TAGS_FIXTURE } from './helpers';
+import { buildAbility } from '@/lib/ability';
 import { TagInput } from '@/components/leads/TagInput';
 
 const hoisted = vi.hoisted(() => ({ toast: vi.fn() }));
@@ -12,6 +13,9 @@ vi.mock('@/components/ui/use-toast', async (importOriginal) => {
 });
 
 const mockApi = vi.mocked(api);
+
+// The "Create new tag" row is drawn only for a person holding Create tags (create Tag); the server refuses the rest.
+const TAG_CREATOR = buildAbility([{ action: 'create', subject: 'Tag' }]);
 
 /** An axios-shaped rejection carrying the API's structured error code. */
 function apiError(status: number, body: { error: string; code?: string }) {
@@ -155,7 +159,8 @@ describe('TagInput', () => {
 
   it('shows Create option for non-matching text', async () => {
     renderWithProviders(
-      <TagInput leadId="lead-1" tags={[]} />
+      <TagInput leadId="lead-1" tags={[]} />,
+      { ability: TAG_CREATOR }
     );
 
     openPicker();
@@ -168,9 +173,29 @@ describe('TagInput', () => {
     });
   });
 
-  it('posts name + color when the create row is clicked', async () => {
+  it('offers no Create row to a person without Create tags, in the row or on Enter', async () => {
     renderWithProviders(
       <TagInput leadId="lead-1" tags={[]} />
+    );
+
+    openPicker();
+    const search = screen.getByPlaceholderText('Search tags...');
+    fireEvent.change(search, { target: { value: 'NewTag' } });
+
+    await waitFor(() => {
+      expect(screen.getByText('No tags found')).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/Create new tag/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Use color/ })).not.toBeInTheDocument();
+
+    fireEvent.keyDown(search, { key: 'Enter' });
+    expect(mockApi.post).not.toHaveBeenCalled();
+  });
+
+  it('posts name + color when the create row is clicked', async () => {
+    renderWithProviders(
+      <TagInput leadId="lead-1" tags={[]} />,
+      { ability: TAG_CREATOR }
     );
 
     openPicker();
@@ -197,7 +222,8 @@ describe('TagInput', () => {
 
   it('posts the chosen swatch color, not the default', async () => {
     renderWithProviders(
-      <TagInput leadId="lead-1" tags={[]} />
+      <TagInput leadId="lead-1" tags={[]} />,
+      { ability: TAG_CREATOR }
     );
 
     openPicker();

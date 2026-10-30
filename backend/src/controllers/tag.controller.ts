@@ -233,6 +233,11 @@ async function resolveTagId(
       where: { organization_id_name: { organization_id: orgId, name: body.name } },
     });
     if (!tag) {
+      // Minting a new tag name is the Create tags switch, whichever record route carried it (the lead creator
+      // path opens the tag routes without it).
+      if (!req.ability?.can('create', 'Tag')) {
+        return { ok: false, status: 403, error: 'Insufficient permissions' };
+      }
       tag = await prisma.tag.create({
         data: {
           name: body.name,

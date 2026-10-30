@@ -12,8 +12,11 @@ const router = Router();
 router.use(authenticate, requireFeature('inventory'), attachAbility);
 
 // ─── Movements ──────────────────────────────────────────
-router.get('/movements', canDo('read', 'Inventory'), invStockController.listMovements);
-router.get('/movements/:id', canDo('read', 'Inventory'), invStockController.getMovement);
+// Reading the history needs See inventory activity on top of View stock, for every caller: the Activity tab, its count,
+// an item's movement history and the log's logistic-order filter. Writing a movement (parts used, orders processed, POs
+// received) goes through applyStockMovement and never through these routes.
+router.get('/movements', canDo('read', 'Inventory'), canDo('see_inventory_activity', 'Inventory'), invStockController.listMovements);
+router.get('/movements/:id', canDo('read', 'Inventory'), canDo('see_inventory_activity', 'Inventory'), invStockController.getMovement);
 
 // ─── Low stock (P5 §1.1): server-computed per-(item, location) shortfall ──────
 router.get('/low-stock', canDo('read', 'Inventory'), invStockController.listLowStock);

@@ -20,7 +20,7 @@ import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import { TEST_USERS, mockAuthAs, authHeader, ALPHA_ORG_ID, ESTIMATE_FIXTURE } from './helpers';
-import { setCachedGrants, clearPermissionCache } from '../lib/permissions/permissionCache';
+import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 // ─── Typed mock accessors ──────────────────────────────────
 const mockPrisma = prisma as unknown as {
@@ -70,11 +70,6 @@ const OWN_ESTIMATE_VIA_LEAD = { lead: { lead_assignees: { some: { user_id: '{{us
 // from Phase B (an admin grants "Edit own estimates" per-user; that grant does NOT imply read
 // Invoice).
 function grantTechEstimateWithoutInvoiceRead() {
-  setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', [
-    { action: 'read', subject: 'Estimate', conditions: OWN_ESTIMATE_VIA_LEAD },
-    { action: 'update', subject: 'Estimate', conditions: OWN_ESTIMATE_VIA_LEAD },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  ] as any);
 }
 
 // A line item WITH real (non-null) cost data — used for the response-STRIP tests. Stripping an
@@ -164,6 +159,7 @@ describe('GET /api/estimates/:id — pricing leak', () => {
     mockPrisma.estimate.findUnique.mockResolvedValue(
       estimateFixture({ ownerId: TEST_USERS.technician.id, lineItems: [lineWithCost()], scopes: [scopeWithCost()] }),
     );
+    mockPrisma.estimate.findFirst.mockResolvedValue({ id: ESTIMATE_ID }); // inside their Attached scope
 
     const res = await request(app).get(`/api/estimates/${ESTIMATE_ID}`).set(authHeader('technician'));
 
@@ -337,11 +333,11 @@ describe('GET /api/estimates/:id/scopes — pricing leak', () => {
     expect(res.body.scopes[0].flat_price).toBe(300);
   });
 
-  it('DISPATCHER (read Invoice) sees internal_cost on the list response', async () => {
-    mockAuthAs('dispatcher');
+  it('ADMIN (sees costs) sees internal_cost on the list response', async () => {
+    mockAuthAs('admin');
     mockPrisma.estimate.findUnique.mockResolvedValue(estimateGuardRow({ scopes: [scopeWithCost()] }));
 
-    const res = await request(app).get(`/api/estimates/${ESTIMATE_ID}/scopes`).set(authHeader('dispatcher'));
+    const res = await request(app).get(`/api/estimates/${ESTIMATE_ID}/scopes`).set(authHeader('admin'));
 
     expect(res.status).toBe(200);
     expect(res.body.scopes[0].internal_cost).toBe(150);

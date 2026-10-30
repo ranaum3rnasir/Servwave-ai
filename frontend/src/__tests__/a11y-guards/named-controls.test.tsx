@@ -1,6 +1,6 @@
 /**
  * Mobile slice 25 (rubric A11Y-03): the controls the audit found unnamed now have a name a screen
- * reader announces. The Roles matrix said "switch" 40 times with no hint of which module or verb,
+ * reader announces. The Roles page's switches said "switch" with no hint of which module or verb,
  * and a tag chip's remove button said only "button".
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -10,24 +10,9 @@ import { renderWithProviders } from '../helpers';
 import RolesPage from '@/pages/v2/settings/RolesPage';
 import { TagInput } from '@/components/leads/TagInput';
 import { useSettingsGuard } from '@/stores/settingsGuard.store';
+import { FIXTURE_CATALOG, FIXTURE_SWITCHES, catalogSwitch, presetSet } from '../support/permissionCatalogFixture';
 
 const mockApi = vi.mocked(api);
-
-const SUBJECTS = ['Customer', 'Lead', 'Estimate', 'Job', 'Invoice', 'CalendarEntry'];
-const vm = (role: string) => ({
-  role,
-  editable: true,
-  matrix: Object.fromEntries(
-    SUBJECTS.map((s) => [s, { read: false, create: false, update: false, delete: false }]),
-  ),
-  sensitive: { seeFinancials: false, managePayments: false, viewReports: false },
-  toggles: {
-    dashboard: false, accountSettings: false, notifications: false, modifyDoneJobs: false, cancelJobs: false,
-    enRouteJobs: false, arriveJobs: false, startJobs: false, completeJobs: false, rescheduleJobs: false,
-  },
-  scope: Object.fromEntries(SUBJECTS.map((s) => [s, 'All'])),
-  general: { description: `${role} role` },
-});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -38,31 +23,32 @@ beforeEach(() => {
         data: [{ role: 'TECHNICIAN', label: 'Technician', fullAccess: false, editable: true, userCount: 2, type: 'system' }],
       });
     }
-    const m = url.match(/\/api\/roles\/(\w+)\/permissions/);
-    if (m) return Promise.resolve({ data: vm(m[1]!) });
+    if (url === '/api/permission-switches/catalog') return Promise.resolve({ data: FIXTURE_CATALOG });
+    if (/^\/api\/roles\/\w+\/permissions$/.test(url)) {
+      return Promise.resolve({
+        data: { role: 'TECHNICIAN', label: 'Technician', type: 'system', editable: true, base_role: 'TECHNICIAN', made_from_role_key: null, made_from_blank: false, values: presetSet('TECHNICIAN'), all_views_off: false },
+      });
+    }
     if (url === '/api/tags') return Promise.resolve({ data: { tags: [] } });
     return Promise.resolve({ data: [] });
   });
 });
 
-describe('Roles switches are named (v2 RolesPage, the routed one)', () => {
-  it('names each matrix switch by its verb and module', async () => {
+describe('Roles controls are named (v2 RolesPage, the routed one)', () => {
+  it('names every switch of the catalog by its label', async () => {
     renderWithProviders(<RolesPage />);
-    expect(await screen.findByRole('switch', { name: 'View Customers' })).toBeInTheDocument();
-    expect(screen.getByRole('switch', { name: 'Delete Invoices' })).toBeInTheDocument();
+    await screen.findByRole('switch', { name: catalogSwitch('view_customers').label });
+    for (const s of FIXTURE_SWITCHES.filter((x) => x.kind === 'toggle')) {
+      expect(screen.getByRole('switch', { name: s.label })).toBeInTheDocument();
+    }
   });
 
-  it('leaves no switch on the page without a name', async () => {
+  it('leaves no switch, option or help icon on the page without a name', async () => {
     renderWithProviders(<RolesPage />);
-    await screen.findByText('Mark on the way');
-    const switches = screen.getAllByRole('switch');
-    expect(switches.length).toBeGreaterThan(10);
-    const unnamed = switches.filter((s) => {
-      const labelledBy = s.getAttribute('aria-labelledby');
-      const byId = labelledBy ? document.getElementById(labelledBy)?.textContent?.trim() : '';
-      return !(s.getAttribute('aria-label')?.trim() || byId);
-    });
-    expect(unnamed).toHaveLength(0);
+    await screen.findByRole('switch', { name: catalogSwitch('view_customers').label });
+    const controls = [...screen.getAllByRole('switch'), ...screen.getAllByRole('radio'), ...screen.getAllByRole('checkbox'), ...screen.getAllByRole('radiogroup')];
+    expect(controls.length).toBeGreaterThan(10);
+    for (const control of [...controls, ...screen.getAllByRole('button')]) expect(control).toHaveAccessibleName();
   });
 });
 

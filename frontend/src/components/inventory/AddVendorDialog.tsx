@@ -11,6 +11,8 @@ import { Input } from "@/components/ui/input";
 import { PhoneInput } from "@/ui-kit/components/form/phoneInput";
 import { Textarea } from "@/components/ui/textarea";
 import { canAutoFocus } from "@/ui-kit/lib/autoFocus";
+import { useAppAbility } from "@/contexts/AbilityContext";
+import { canSeePricing } from "@/lib/ability";
 
 type Props = {
   open: boolean;
@@ -23,6 +25,7 @@ export function AddVendorDialog({
   onClose,
   onCreate,
 }: Props) {
+  const showAccountNumber = canSeePricing(useAppAbility());
   const [form, setForm] = useState({
     name: "",
     // The company category row (null = Uncategorized) and its name, always
@@ -201,14 +204,17 @@ export function AddVendorDialog({
           />
         </Field>
 
-        <FormField label="Account Number">
-          <Input
-            value={form.accountNumber}
-            onChange={(e) => set("accountNumber", e.target.value)}
-            placeholder="Your account # with this vendor"
-            className={inputCls}
-          />
-        </FormField>
+        {/* The account number is a cost detail (See financial data): no field without it. */}
+        {showAccountNumber && (
+          <FormField label="Account Number">
+            <Input
+              value={form.accountNumber}
+              onChange={(e) => set("accountNumber", e.target.value)}
+              placeholder="Your account # with this vendor"
+              className={inputCls}
+            />
+          </FormField>
+        )}
 
         <FormField label="Contact Person">
           <Input

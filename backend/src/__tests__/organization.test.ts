@@ -264,7 +264,7 @@ describe('PATCH /api/organization — accepted_payment_methods (§4.5)', () => {
   // PATCHes the whole array from the org snapshot it loaded. A snapshot fetched before
   // charges went live has no CARD in it, so an unrelated edit (here: turning Venmo on) used
   // to read as "disable Credit Card" and 400 a save the user never asked for. CARD is
-  // server-owned — it is re-derived from stripe_charges_enabled and survives regardless.
+  // server-owned: a save keeps the CARD the account sync stored (charges enabled), whatever the payload says.
   it('re-adds CARD when a stale client payload omits it (charges enabled)', async () => {
     (prisma.organization.findUnique as any).mockResolvedValue(STRIPE_ORG);
 
@@ -275,6 +275,20 @@ describe('PATCH /api/organization — accepted_payment_methods (§4.5)', () => {
 
     expect(res.status).toBe(200);
     expect(res.body.accepted_payment_methods).toEqual(['CHECK', 'BANK_TRANSFER', 'VENMO', 'CARD']);
+  });
+
+  // Payments go-live slice 16 (slice 10 review): the account sync removed CARD because the card
+  // capability lapsed while charges stayed on. An unrelated save must not put it back.
+  it('does not put back a CARD the account sync removed (charges still enabled)', async () => {
+    (prisma.organization.findUnique as any).mockResolvedValue({ ...STRIPE_ORG, accepted_payment_methods: ['CHECK', 'BANK_TRANSFER'] });
+
+    const res = await request(app)
+      .patch('/api/organization')
+      .set(authHeader('admin'))
+      .send({ accepted_payment_methods: ['CHECK', 'BANK_TRANSFER', 'VENMO'] });
+
+    expect(res.status).toBe(200);
+    expect(res.body.accepted_payment_methods).toEqual(['CHECK', 'BANK_TRANSFER', 'VENMO']);
   });
 
   it('keeps CARD exactly once when the client also sent it (charges enabled)', async () => {

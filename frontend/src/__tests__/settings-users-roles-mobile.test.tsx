@@ -8,28 +8,22 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import { renderWithProviders } from './helpers';
 import { buildAbility } from '@/lib/ability';
 import RolesPage from '@/pages/v2/settings/RolesPage';
 import UsersTeamsPage from '@/pages/v2/settings/UsersTeamsPage';
 import { useSettingsGuard } from '@/stores/settingsGuard.store';
+import type { BuiltInRoleKey } from '@/lib/api/permissionSwitches';
+import { FIXTURE_CATALOG, catalogSwitch, presetSet } from './support/permissionCatalogFixture';
 
 const mockApi = vi.mocked(api);
 const ADMIN = buildAbility([{ action: 'manage', subject: 'all' }]);
 
-const SUBJECTS = ['Customer', 'Lead', 'Estimate', 'Job', 'Invoice', 'CalendarEntry'];
 const vm = (role: string) => ({
-  role,
-  editable: true,
-  matrix: Object.fromEntries(SUBJECTS.map((s) => [s, { read: false, create: false, update: false, delete: false }])),
-  sensitive: { seeFinancials: false, managePayments: false, viewReports: false },
-  toggles: {
-    dashboard: false, accountSettings: false, notifications: false, modifyDoneJobs: false, cancelJobs: false,
-    enRouteJobs: false, arriveJobs: false, startJobs: false, completeJobs: false, rescheduleJobs: false,
-  },
-  scope: Object.fromEntries(SUBJECTS.map((s) => [s, 'All'])),
-  general: { description: `${role} role` },
+  role, label: role, type: 'system', editable: true, base_role: role, made_from_role_key: null, made_from_blank: false,
+  values: presetSet(role as BuiltInRoleKey), all_views_off: false,
 });
 const ROLES = [
   { role: 'ADMIN', label: 'Admin', fullAccess: true, editable: false, userCount: 1, type: 'system' },
@@ -69,6 +63,7 @@ beforeEach(() => {
   useSettingsGuard.setState({ isDirty: false, pendingLeave: null });
   mockApi.get.mockImplementation((url: string) => {
     if (url === '/api/roles') return Promise.resolve({ data: ROLES });
+    if (url === '/api/permission-switches/catalog') return Promise.resolve({ data: FIXTURE_CATALOG });
     const m = url.match(/\/api\/roles\/(\w+)\/permissions/);
     if (m) return Promise.resolve({ data: vm(m[1]) });
     if (url === '/api/users') return Promise.resolve({ data: { users: USERS } });
@@ -82,28 +77,36 @@ afterEach(() => {
 
 describe('Roles & Permissions: one column below xl', () => {
   it('stacks the roles list above the detail below xl and keeps them side by side from xl', async () => {
-    renderWithProviders(<RolesPage />, { ability: ADMIN });
+    windowWidth(900);
+    const { container } = renderWithProviders(<RolesPage />, { ability: ADMIN });
     await screen.findByRole('heading', { name: 'Admin' });
 
+    // Below xl the roles are one picker, not a row of buttons; the two panes are one column.
+    const picker = screen.getByRole('combobox', { name: 'Role' });
+    expect(screen.queryByRole('group', { name: 'Roles' })).toBeNull();
+    expect(picker.closest('.flex-col')).toHaveClass('flex-col', 'xl:flex-row');
+    expect(container.querySelector('[data-roles-scroll]')).toBeNull();
+  });
+
+  it('keeps the side column from xl, with each role a button in it', async () => {
+    windowWidth(1400);
+    renderWithProviders(<RolesPage />, { ability: ADMIN });
+    await screen.findByRole('heading', { name: 'Admin' });
     const list = screen.getByRole('group', { name: 'Roles' });
-    const container = list.parentElement!;
-    // Below xl the two panes are one column; the fixed 224 px list is an xl-only width.
-    expect(container).toHaveClass('flex-col', 'xl:flex-row');
-    expect(list).not.toHaveClass('w-56');
-    expect(list).toHaveClass('xl:w-56');
-    // Each role is still a button in the list.
     expect(within(list).getByRole('button', { name: /Technician/ })).toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Role' })).toBeNull();
   });
 
   it('lets the role header and every switch row wrap instead of pushing past the edge', async () => {
     renderWithProviders(<RolesPage />, { ability: ADMIN });
     await screen.findByRole('heading', { name: 'Admin' });
-    const heading = screen.getByRole('heading', { name: 'Admin' });
-    expect(heading.closest('.flex')).toHaveClass('flex-wrap');
+    await userEvent.click(screen.getByRole('button', { name: /Technician/ }));
 
-    const row = screen.getByText('See financial data').parentElement!;
-    expect(row).toHaveClass('gap-3');
-    expect(screen.getByText('See financial data')).toHaveClass('min-w-0');
+    const switchEl = await screen.findByRole('switch', { name: catalogSwitch('see_financial_data').label });
+    const row = switchEl.parentElement!;
+    // Label over control on a phone; side by side, wrapping, from md.
+    expect(row).toHaveClass('flex-col', 'md:flex-row', 'md:flex-wrap', 'md:gap-x-3');
+    expect(screen.getByText(catalogSwitch('see_financial_data').label)).toHaveClass('min-w-0');
   });
 });
 
@@ -123,7 +126,8 @@ describe('Users & Teams: cards below md', () => {
     expect(within(tess).getByText('No login')).toBeInTheDocument();
     expect(within(tess).getByRole('combobox', { name: 'Role for Tess Tech' })).toBeInTheDocument();
     expect(within(tess).getByRole('combobox', { name: 'Team for Tess Tech' })).toBeInTheDocument();
-    expect(within(tess).getByRole('switch', { name: 'Enforce clock-in location' })).toBeInTheDocument();
+    // No clock-in location controls: the checks are gone from the product.
+    expect(within(tess).queryByRole('switch')).toBeNull();
     expect(within(tess).getByText('Active')).toBeInTheDocument();
     for (const name of ['Edit', 'Permissions', 'Send invite', 'Deactivate']) {
       expect(within(tess).getByRole('button', { name })).toBeInTheDocument();

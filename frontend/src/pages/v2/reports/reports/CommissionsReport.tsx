@@ -8,6 +8,7 @@ import {
 import { formatCurrency, formatCurrencyWhole, formatPhone } from '@/lib/utils';
 import { exportCsvFile } from '@/lib/csv';
 import { findReport } from '@/lib/reports/report-catalog';
+import { useCanExportReports } from '@/lib/reports/useCanExportReports';
 import { hashStr, mulberry32 } from '@/lib/reports/random';
 
 import { EmptyState } from '@/ui-kit/components/data/emptyState';
@@ -67,7 +68,7 @@ const fmtDateTime = (d: Date) =>
   `${d.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' })} ${d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
 
 type CommState = 'Projected' | 'Earned' | 'Paid';
-type JobStatus = 'Scheduled' | 'In Progress' | 'Completed' | 'Closed';
+type JobStatus = 'Scheduled' | 'In Progress' | 'Completed';
 type PaymentType = 'cash' | 'credit' | 'billing' | 'check';
 
 interface Tech {
@@ -105,26 +106,26 @@ interface CommissionJob {
 }
 
 const TECHS: Tech[] = [
-  { id: 't1', name: 'Adam Elkarrat', role: 'Service Tech', structure: 'Base + Commission', rate: 8 },
+  { id: 't1', name: 'Pat Hollis', role: 'Service Tech', structure: 'Base + Commission', rate: 8 },
   { id: 't2', name: 'Amiran Bekauri', role: 'Install Tech', structure: 'Payroll + Commission', rate: 10 },
-  { id: 't3', name: 'Emanuel Dahan', role: 'Comfort Advisor', structure: 'Commission Only', rate: 12 },
-  { id: 't4', name: 'Priya', role: 'Service Tech', structure: 'Base + Commission', rate: 7 },
+  { id: 't3', name: 'Sam Rivera', role: 'Comfort Advisor', structure: 'Commission Only', rate: 12 },
+  { id: 't4', name: 'Drew', role: 'Service Tech', structure: 'Base + Commission', rate: 7 },
   { id: 't5', name: 'Itay', role: 'Install Tech', structure: 'Payroll + Commission', rate: 9 },
-  { id: 't6', name: 'Liran - Dor', role: 'Install Tech', structure: 'Payroll + Commission', rate: 9 },
+  { id: 't6', name: 'Lee - Dana', role: 'Install Tech', structure: 'Payroll + Commission', rate: 9 },
   { id: 't7', name: 'Nethanel', role: 'Service Tech', structure: 'Base + Commission', rate: 8 },
-  { id: 't8', name: 'Ohad', role: 'Service Tech', structure: 'Base + Commission', rate: 10 },
+  { id: 't8', name: 'Jordan', role: 'Service Tech', structure: 'Base + Commission', rate: 10 },
   { id: 't9', name: 'Omer', role: 'Install Tech', structure: 'Payroll + Commission', rate: 10 },
-  { id: 't10', name: 'Oved Adani', role: 'Comfort Advisor', structure: 'Commission Only', rate: 12 },
-  { id: 'x1', name: 'Efrain & Zhao', role: 'External Company', structure: 'Subcontractor', rate: 60, external: true },
+  { id: 't10', name: 'Morgan Diaz', role: 'Comfort Advisor', structure: 'Commission Only', rate: 12 },
+  { id: 'x1', name: 'Ridge & Cole', role: 'External Company', structure: 'Subcontractor', rate: 60, external: true },
   { id: 'x2', name: 'Ofek Sub', role: 'External Company', structure: 'Subcontractor', rate: 55, external: true },
-  { id: 'x3', name: 'Ofir Sub', role: 'External Company', structure: 'Subcontractor', rate: 50, external: true },
+  { id: 'x3', name: 'Oak Sub', role: 'External Company', structure: 'Subcontractor', rate: 50, external: true },
 ];
 
 const CUSTOMERS = ['R. Whitfield', 'Cedar Park HOA', 'M. Delgado', 'Summit Dental', 'J. Okafor', 'Brightway Cafe', 'L. Hammond', 'Northgate Apts', 'P. Vasquez', 'E. Lindqvist', 'Harbor Freight #214', 'K. Nakamura', 'Willow Creek Inn', 'T. Boudreaux', 'A. Petrova'];
 const STREETS = ['Prince St', 'Teaneck Rd', 'Monmouth St', 'Maple Ave', 'Oak St', 'Broadway', 'Bergen Blvd', 'Main St', 'Park Ave', 'Hudson St'];
 const ZIPS = ['10012', '07660', '07302', '10001', '07024', '11201'];
 const JOB_TYPES = ['Intercom System', 'Commercial Door Repair', 'Residential Door Repair', 'AC Replacement', 'Furnace Repair', 'Water Heater', 'Diagnostic', 'Panel Upgrade'];
-const JOB_STATUSES: JobStatus[] = ['Scheduled', 'In Progress', 'Completed', 'Closed'];
+const JOB_STATUSES: JobStatus[] = ['Scheduled', 'In Progress', 'Completed'];
 const PAYMENT_TYPES: PaymentType[] = ['cash', 'credit', 'billing', 'check'];
 
 const netProfitOf = (j: CommissionJob) => Math.max(0, j.jobTotal - j.parts - j.labor - j.salesTax - j.paymentFees);
@@ -154,7 +155,7 @@ function buildJobs(): CommissionJob[] {
     const isCallback = rng() > 0.92;
     const r = rng();
     const state: CommState = isCallback ? 'Projected' : r > 0.62 ? 'Paid' : r > 0.32 ? 'Earned' : 'Projected';
-    const jobStatus: JobStatus = state === 'Paid' ? 'Closed' : pick(JOB_STATUSES);
+    const jobStatus: JobStatus = state === 'Paid' ? 'Completed' : pick(JOB_STATUSES);
     const createdDaysAgo = 1 + Math.floor(rng() * 40);
     const createdDate = new Date(now.getTime() - createdDaysAgo * 86400000 - Math.floor(rng() * 8) * 3600000);
     const scheduledDate = new Date(createdDate.getTime() + Math.floor(rng() * 5) * 86400000);
@@ -196,12 +197,11 @@ const JOBS = buildJobs();
 
 // Synthetic report-only taxonomy (Title Case) - not the backend JobStatus enum,
 // so this stays a local map rather than routing through the status registry's
-// `job` domain. Its four intents are the kit's soft badge variants.
+// `job` domain. Its three intents are the kit's soft badge variants.
 const JOB_STATUS_VARIANT: Record<JobStatus, NonNullable<BadgeProps['variant']>> = {
   Scheduled: 'softAmber',
   'In Progress': 'softAmber',
   Completed: 'softGreen',
-  Closed: 'softNeutral',
 };
 
 function ReportStatusBadge({ status }: { status: JobStatus }) {
@@ -380,7 +380,7 @@ function ActionBtn({ icon: Icon, label, onClick }: { icon: typeof Download; labe
 function downloadCsv(filename: string, rows: CommissionJob[]) {
   exportCsvFile(
     filename,
-    ['Job ID', 'Invoice', 'Tech', 'Created', 'Closed', 'Job Type', 'Address', 'Phone', 'Total', 'Billing', 'Check', 'Tech Share', 'Tip', 'Company Parts', 'Net Profit', 'Tech Profit', 'Settlement'],
+    ['Job ID', 'Invoice', 'Tech', 'Created', 'Completed', 'Job Type', 'Address', 'Phone', 'Total', 'Billing', 'Check', 'Tech Share', 'Tip', 'Company Parts', 'Net Profit', 'Tech Profit', 'Settlement'],
     rows.map((j) => [
       `J${j.jobNumber}`, j.invoiceNumber, j.tech.name, fmtDateTime(j.createdDate), fmtDateTime(j.doneDate),
       j.jobType, j.address, j.phone, j.jobTotal,
@@ -394,11 +394,11 @@ function downloadCsv(filename: string, rows: CommissionJob[]) {
 
 const REPORT_TYPES = ['Standard Report', 'Tech Report', 'External Company'] as const;
 type ReportType = (typeof REPORT_TYPES)[number];
-type ByTime = 'Created' | 'Scheduled' | 'Closed';
+type ByTime = 'Created' | 'Scheduled' | 'Completed';
 type Settlement = 'All' | 'Settled' | 'Unsettled';
 
 const COLUMN_LABELS: { id: string; label: string }[] = [
-  { id: 'job', label: 'Job Id' }, { id: 'tech', label: 'Tech' }, { id: 'created', label: 'Created' }, { id: 'closed', label: 'Closed' },
+  { id: 'job', label: 'Job Id' }, { id: 'tech', label: 'Tech' }, { id: 'created', label: 'Created' }, { id: 'closed', label: 'Completed' },
   { id: 'jobType', label: 'Job Type' }, { id: 'address', label: 'Address' }, { id: 'phone', label: 'Phone' }, { id: 'total', label: 'Total' },
   { id: 'billing', label: 'Billing' }, { id: 'check', label: 'Check' }, { id: 'share', label: 'Tech Share' }, { id: 'tip', label: 'Tip Amount' },
   { id: 'parts', label: 'Company Parts' }, { id: 'net', label: 'Net Profit' }, { id: 'profit', label: 'Tech Profit' }, { id: 'settlement', label: 'Settlement' },
@@ -406,11 +406,12 @@ const COLUMN_LABELS: { id: string; label: string }[] = [
 
 export default function CommissionsReport() {
   const report = findReport('commissions')!;
+  const canExport = useCanExportReports();
   const [reportType, setReportType] = useState<ReportType>('Tech Report');
   const [techId, setTechId] = useState<string>('all');
   const [jobType, setJobType] = useState<string>('all');
   const [settlement, setSettlement] = useState<Settlement>('All');
-  const [byTime, setByTime] = useState<ByTime>('Closed');
+  const [byTime, setByTime] = useState<ByTime>('Completed');
   const [range, setRange] = useState<Range>(() => presetRange('All time'));
   const [query, setQuery] = useState('');
   const [showN, setShowN] = useState<number>(50);
@@ -444,8 +445,12 @@ export default function CommissionsReport() {
 
   const actions = (
     <div className="flex flex-wrap items-center gap-2">
-      <ActionBtn icon={Download} label="Export" onClick={() => downloadCsv(`commissions-${reportType.toLowerCase().replace(/ /g, '-')}.csv`, matched)} />
-      <ActionBtn icon={Mail} label="Export By Mail" onClick={() => flash('Report queued - emailed to admin@servwave (mock).')} />
+      {canExport && (
+        <>
+          <ActionBtn icon={Download} label="Export" onClick={() => downloadCsv(`commissions-${reportType.toLowerCase().replace(/ /g, '-')}.csv`, matched)} />
+          <ActionBtn icon={Mail} label="Export By Mail" onClick={() => flash('Report queued - emailed to admin@servwave (mock).')} />
+        </>
+      )}
       <FieldsMenu all={COLUMN_LABELS} hidden={hidden} onToggle={(id) => setHidden((h) => { const n = new Set(h); if (n.has(id)) n.delete(id); else n.add(id); return n; })} />
       <ActionBtn icon={Send} label="Send Bulk" onClick={() => flash(`Statements sent to ${roster.length} technicians (mock).`)} />
       <ActionBtn icon={Printer} label="Print" onClick={() => window.print()} />
@@ -483,7 +488,7 @@ export default function CommissionsReport() {
         <div className="text-muted-foreground flex items-center gap-1 text-xs">
           <span className="mr-1">By Time:</span>
           <div role="radiogroup" aria-label="By time" className="flex items-center gap-1">
-            {(['Created', 'Scheduled', 'Closed'] as ByTime[]).map((t) => (
+            {(['Created', 'Scheduled', 'Completed'] as ByTime[]).map((t) => (
               <Button
                 key={t}
                 type="button"
@@ -541,7 +546,7 @@ function TechReportView({ rows, all, hidden, settlement, tipsOnly, onSettlement,
     { id: 'job', header: 'Job Id', width: 96, grow: 0, sortValue: (j) => j.jobNumber, cell: (j) => <span className="text-brand font-medium tabular-nums">{j.jobNumber}</span>, footer: <span>Totals: {all.length}</span> },
     { id: 'tech', header: 'Tech', width: 120, grow: 1, sortValue: (j) => j.tech.name, cell: (j) => j.tech.name },
     { id: 'created', header: 'Created', width: 150, sortValue: (j) => j.createdDate.getTime(), cell: (j) => <span className="text-muted-foreground tabular-nums">{fmtDateTime(j.createdDate)}</span> },
-    { id: 'closed', header: 'Closed', width: 150, sortValue: (j) => j.doneDate.getTime(), cell: (j) => <span className="text-muted-foreground tabular-nums">{fmtDateTime(j.doneDate)}</span> },
+    { id: 'closed', header: 'Completed', width: 150, sortValue: (j) => j.doneDate.getTime(), cell: (j) => <span className="text-muted-foreground tabular-nums">{fmtDateTime(j.doneDate)}</span> },
     { id: 'jobType', header: 'Job Type', width: 150, grow: 1, sortValue: (j) => j.jobType, cell: (j) => j.jobType },
     { id: 'address', header: 'Address', width: 200, grow: 1, sortValue: (j) => j.address, cell: (j) => <span className="text-muted-foreground">{j.address}</span> },
     { id: 'phone', header: 'Phone', width: 140, grow: 0, sortValue: (j) => j.phone, cell: (j) => <span className="text-muted-foreground tabular-nums">{formatPhone(j.phone)}</span> },
@@ -689,7 +694,7 @@ function StandardView({ rows, all, byTime, hidden, external, tipsOnly, onTips, t
     { id: 'phone', header: 'Phone', width: 140, grow: 0, sortValue: (j) => j.phone, cell: (j) => <span className="text-muted-foreground tabular-nums">{formatPhone(j.phone)}</span> },
     { id: 'created', header: 'Created', width: 120, sortValue: (j) => j.createdDate.getTime(), cell: (j) => <span className={cn('tabular-nums', dim(byTime === 'Created'))}>{fmtDate(j.createdDate)}</span> },
     { id: 'scheduled', header: 'Scheduled', width: 120, sortValue: (j) => j.scheduledDate.getTime(), cell: (j) => <span className={cn('tabular-nums', dim(byTime === 'Scheduled'))}>{fmtDate(j.scheduledDate)}</span> },
-    { id: 'done', header: 'Closed', width: 120, sortValue: (j) => j.doneDate.getTime(), cell: (j) => <span className={cn('tabular-nums', dim(byTime === 'Closed'))}>{fmtDate(j.doneDate)}</span> },
+    { id: 'done', header: 'Completed', width: 120, sortValue: (j) => j.doneDate.getTime(), cell: (j) => <span className={cn('tabular-nums', dim(byTime === 'Completed'))}>{fmtDate(j.doneDate)}</span> },
     {
       id: 'status', header: 'Status', width: 116, grow: 0, sortValue: (j) => j.jobStatus,
       cell: (j) => (j.isCallback

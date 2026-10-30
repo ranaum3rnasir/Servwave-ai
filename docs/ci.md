@@ -206,10 +206,6 @@ shard passed. On self-hosted runs the shard job is skipped and nothing changes.
 The backend and frontend test steps set `TZ: America/New_York`, the self-hosted runners' zone, because
 hosted runners are UTC and some snapshots print local dates.
 
-`promotion-drift.yml` (PRs to `main`, report only, never blocks) does not run that check;
-it follows `CI_RUNNERS` alone: `hosted` sends it to `ubuntu-latest`, anything else keeps
-it on the Mac.
-
 Limits:
 - Only new runs pick runners. A run already queued on an offline label stays
   queued: cancel it and re-run, or push.

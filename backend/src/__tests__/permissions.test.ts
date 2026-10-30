@@ -4,7 +4,6 @@ import { PERMISSION_CATALOG, isCatalogEntry } from '../lib/permissions/catalog';
 import { substituteConditions } from '../lib/permissions/substituteConditions';
 import { defineAbilityFor } from '../lib/permissions/defineAbility';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
-import { isAssignable, isOwnerEligible } from '../lib/permissions/assignableRoles';
 
 describe('Permission catalog', () => {
   it('has no duplicate (action, subject) pairs', () => {
@@ -201,30 +200,5 @@ describe('DEFAULT_GRANTS', () => {
         expect(grants, `${role} should not have ${action} Customer`).toHaveLength(0);
       }
     }
-  });
-});
-
-// Bug #11 — owner-eligibility must equal the assignable pool so any user the
-// AssignLeadDialog offers can actually be assigned as a lead owner.
-// #366 — the pool is now ALL active-user roles (DISPATCHER included).
-describe('assignableRoles owner-eligibility', () => {
-  it('isOwnerEligible(TECHNICIAN) === true (mirrors the assignable pool)', () => {
-    expect(isOwnerEligible('TECHNICIAN')).toBe(true);
-  });
-
-  it('owner-eligibility mirrors isAssignable for every role', () => {
-    for (const role of ['ADMIN', 'SALES', 'TECHNICIAN', 'DISPATCHER']) {
-      expect(isOwnerEligible(role)).toBe(isAssignable(role));
-    }
-  });
-
-  it('DISPATCHER is assignable and owner-eligible (#366: all active-user roles)', () => {
-    expect(isAssignable('DISPATCHER')).toBe(true);
-    expect(isOwnerEligible('DISPATCHER')).toBe(true);
-  });
-
-  it('rejects corrupt/unknown role values', () => {
-    expect(isAssignable('SUPERUSER')).toBe(false);
-    expect(isOwnerEligible('SUPERUSER')).toBe(false);
   });
 });

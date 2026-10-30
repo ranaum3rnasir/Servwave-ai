@@ -38,16 +38,16 @@ import { chartPalette, token } from '@/design-system';
 import { formatCurrencyWhole } from '@/lib/utils';
 import { hashStr, mulberry32 } from '@/lib/reports/random';
 
-// ── Domain vocab (Alpha Security US) ─────────────────────────────────────────
+// ── Domain vocab (an example doors-and-security company) ─────────────────────────────────────────
 const STATUSES = ['Submitted', 'In progress', 'Done', 'Canceled'] as const;
 type Status = (typeof STATUSES)[number];
 // weighted draw so most jobs are Done/Submitted
 const STATUS_WEIGHTED: Status[] = ['Done', 'Done', 'Done', 'Submitted', 'Submitted', 'In progress', 'Canceled'];
 
-const SOURCES = ['Account', 'Returning customer', 'Google', 'LVD', 'LVD return customer', 'Referral', 'Village - Returned Customer', 'Website -Submission'];
+const SOURCES = ['Account', 'Returning customer', 'Google', 'Partner referral', 'Partner return customer', 'Referral', 'Village - Returned Customer', 'Website -Submission'];
 const JOB_TYPES = ['Alarm System', 'Burglar Alarm', 'Access Control', 'Buzzer System', 'Business Lockout', 'Bullet Proof', 'AV + NETWORK', 'Gate', 'Garage', 'CALL BACK', 'Troubleshoot', 'Commercial', 'Residential'];
-const TECHS = ['Adam Elkarrat', 'Emanuel Dahan', 'Nadia', 'Ohad', 'Rami', 'Robert Bresnick', 'Sagiv Peker', 'Oved Adani'];
-const DISPATCHERS = ['Dispatch', 'Emanuel Dahan', 'Nadia', 'Ohad', 'Rami', 'Shani Adani'];
+const TECHS = ['Pat Hollis', 'Sam Rivera', 'Quinn', 'Jordan', 'Reese', 'Jamie Park', 'Riley Chen', 'Morgan Diaz'];
+const DISPATCHERS = ['Dispatch', 'Sam Rivera', 'Quinn', 'Jordan', 'Reese', 'Avery Stone'];
 const AREAS = ['Brooklyn', 'Queens', 'Bronx', 'Manhattan', 'Jersey City', 'Newark', 'Boston'];
 
 // Calm categorical palette (cycled) — replaces the prior rainbow set.
@@ -55,7 +55,7 @@ const PALETTE = chartPalette;
 
 const pick = <T,>(rng: () => number, arr: readonly T[]): T => arr[Math.floor(rng() * arr.length)]!;
 
-const FIRST = ['Aiden', 'Jenny', 'Diogo', 'Brett', 'Jasmine', 'Marcus', 'Sofia', 'Devon', 'Priya', 'Tyler', 'Aisha', 'Omar', 'Tina', 'Leo', 'Dana', 'Robin', 'Casey', 'Alex', 'Sam', 'Jordan'];
+const FIRST = ['Aiden', 'Jenny', 'Diogo', 'Brett', 'Jasmine', 'Marcus', 'Sofia', 'Devon', 'Drew', 'Tyler', 'Aisha', 'Omar', 'Tina', 'Leo', 'Dana', 'Robin', 'Casey', 'Alex', 'Sam', 'Jordan'];
 const LAST = ['Mills', 'Park', 'Silva', 'Owens', 'Lee', 'Bell', 'Reyes', 'Clark', 'Nair', 'Brooks', 'Khan', 'Said', 'Marsh', 'Cole', 'Shah', 'Ng', 'Ortiz', 'Diaz', 'Pope', 'Klein'];
 const makeClientName = (id: number) => `${FIRST[id % FIRST.length]} ${LAST[(id * 7) % LAST.length]}`;
 

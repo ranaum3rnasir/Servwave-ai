@@ -1,9 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { stripFinancialsForRequester } from '../controllers/job.controller';
-
-// Minimal request doubles — canSeePricing reads req.ability.can('read','Invoice') only.
-const pricedReq = { ability: { can: () => true } } as never;
-const blindReq = { ability: { can: () => false } } as never;
+import { limitFinancialsToInvoices } from '../controllers/job.controller';
 
 const payload = {
   final_invoice: {
@@ -27,41 +23,46 @@ const payload = {
     amount: 500, method: 'CARD', paid_at: new Date('2026-01-03'),
     voided_at: null, reference_number: 'ch_1',
   }],
+  total_invoiced: 1400,
+  total_paid: 500,
 };
 
-describe('stripFinancialsForRequester', () => {
-  it('is a no-op for a requester who can read Invoice', () => {
-    expect(stripFinancialsForRequester(payload, pricedReq)).toEqual(payload);
+/** A second invoice on the same job, with its own payment, that the person looking may not open. */
+const other = {
+  invoice: { ...payload.invoices[0]!, id: 'inv-2', invoice_number: 'I00002', total_amount: 500, amount_due: 500 },
+  payment: { ...payload.payments[0]!, id: 'p-2', invoice_id: 'inv-2', invoice_number: 'I00002', amount: 0 },
+};
+const both = { ...payload, invoices: [...payload.invoices, other.invoice], payments: [...payload.payments, other.payment] };
+
+
+describe('limitFinancialsToInvoices', () => {
+  it('keeps every invoice and payment for a person who can open them all', () => {
+    expect(limitFinancialsToInvoices(both, new Set(['inv-1', 'inv-2']))).toEqual(both);
   });
 
-  it('removes every money field for a price-blind requester', () => {
-    const out = stripFinancialsForRequester(payload, blindReq) as Record<string, any>;
-    expect(out.final_invoice).not.toHaveProperty('total_amount');
-    expect(out.final_invoice).not.toHaveProperty('amount_due');
-    const inv = out.invoices[0];
-    for (const k of ['total_amount', 'amount_due', 'tip', 'tax_rate', 'tax_amount', 'discount_amount', 'subtotal']) {
-      expect(inv).not.toHaveProperty(k);
-    }
-    const line = inv.line_items[0];
-    for (const k of ['unit_price', 'line_total', 'discount_type', 'discount_value', 'discount_amount']) {
-      expect(line).not.toHaveProperty(k);
-    }
+  it('lists only the invoices the person can open, and only the payments on them', () => {
+    const out = limitFinancialsToInvoices(both, new Set(['inv-1'])) as Record<string, any>;
+    expect(out.invoices.map((i: { id: string }) => i.id)).toEqual(['inv-1']);
+    expect(out.payments.map((p: { id: string }) => p.id)).toEqual(['p-1']);
+  });
+
+  it('leaves the job\'s own figures and the lifecycle-bar fields alone, whichever invoices the person can open', () => {
+    const out = limitFinancialsToInvoices(both, new Set()) as Record<string, any>;
+    expect(out.invoices).toEqual([]);
     expect(out.payments).toEqual([]);
+    expect(out.final_invoice).toEqual(both.final_invoice);
+    expect(out.total_invoiced).toBe(1400);
+    expect(out.total_paid).toBe(500);
   });
 
-  it('preserves the lifecycle-bar fields Spec B2 depends on', () => {
-    const out = stripFinancialsForRequester(payload, blindReq) as Record<string, any>;
-    expect(out.final_invoice.sent_at).toEqual(new Date('2026-01-02'));
-    expect(out.final_invoice.paid_at).toBeNull();
-    expect(out.final_invoice.status).toBe('SENT');
-    expect(out.invoices[0].sent_at).toEqual(new Date('2026-01-02'));
-    // Materials identity survives — a technician still sees WHAT is on the job.
-    expect(out.invoices[0].line_items[0].description).toBe('Compressor');
-    expect(out.invoices[0].line_items[0].quantity).toBe(1);
+  it('keeps the prices of an invoice the person can open', () => {
+    const out = limitFinancialsToInvoices(both, new Set(['inv-1'])) as Record<string, any>;
+    expect(out.invoices[0].total_amount).toBe(900);
+    expect(out.invoices[0].line_items[0].unit_price).toBe(832);
   });
 
-  it('tolerates a job with no final invoice', () => {
+  it('tolerates a job with no invoices', () => {
     const empty = { final_invoice: null, invoices: [], payments: [] };
-    expect(stripFinancialsForRequester(empty, blindReq)).toEqual(empty);
+    expect(limitFinancialsToInvoices(empty, new Set())).toEqual(empty);
   });
 });

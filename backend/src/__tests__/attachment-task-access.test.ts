@@ -2,10 +2,10 @@
  * Files on a task (visits-and-task-categories slice 12) - who may touch a TASK attachment.
  *
  * A task's files are exactly as private as the task. Access is the task visibility rule
- * (`canAccessTask`): admin always; an assignee or a watcher always; anybody else only through
- * the task's linked record, and an unlinked task is closed to them. That rule replaces the
- * per-role switch for TASK, and it is evaluated BEFORE the admin/dispatcher shortcut, which
- * would otherwise hand every dispatcher every task's files.
+ * (`canAccessTask`): See all tasks always (the Admin box holds it); an assignee or a watcher always;
+ * anybody else only through the task's linked record, and an unlinked task is closed to them. That
+ * rule replaces the per-role switch for TASK, so a task's files are never opened by an existence
+ * check alone.
  *
  * Prior art: attachment-visit-crew-access.test.ts. The task fake HONOURS the tenant filter the
  * controller sends, so a TASK lookup that forgot `tenantWhere` would read another org's task
@@ -17,7 +17,6 @@ import app from '../app';
 import { prisma } from '../lib/prisma';
 import { supabaseAdmin } from '../lib/supabase';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 import { signUploadTicket } from '../lib/attachment-direct-upload';
 import { MAX_ENTITY_SIZE, MAX_FILE_SIZE, MAX_VIDEO_FILE_SIZE } from '../controllers/attachment.controller';
 import { sizeLimitLabel } from '../middleware/multerErrors';
@@ -57,7 +56,6 @@ function as(user: TestUserKey) {
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache();
   mockPrisma.attachment.findMany.mockResolvedValue([]);
   mockPrisma.attachment.aggregate.mockResolvedValue({ _sum: { file_size: 0 } });
   mockPrisma.timelineEvent.create.mockResolvedValue({ id: 'ev-1' });
@@ -147,10 +145,16 @@ describe('the access matrix - assignee, watcher and admin in; a stranger out', (
     });
   });
 
-  it('refuses a DISPATCHER on an unlinked task they are not on - the role shortcut does not apply to TASK', async () => {
+  it('refuses a SALES user on an unlinked task they are not on - without See all tasks the role shortcut does not apply to TASK', async () => {
+    givenTask(UNLINKED);
+    const res = await request(app).get(`/api/attachments/task/${TASK_ID}`).set(as('sales'));
+    expect(res.status).toBe(403);
+  });
+
+  it('lets a DISPATCHER in to an unlinked task they are not on, because the Dispatcher preset holds See all tasks', async () => {
     givenTask(UNLINKED);
     const res = await request(app).get(`/api/attachments/task/${TASK_ID}`).set(as('dispatcher'));
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(200);
   });
 
   it('lets a DISPATCHER in through a linked record they can open', async () => {
@@ -363,7 +367,7 @@ describe('a task file belongs to the task alone', () => {
     // One in-memory attachments table, answered by the `where` each list actually sends.
     const table: any[] = [];
     mockPrisma.attachment.create.mockImplementation(async (args: any) => {
-      const row = { id: ATT_ID, ...args.data, created_at: new Date(), uploader: null };
+      const row = { id: ATT_ID, ...args.data, created_at: new Date(), uploader: { id: args.data.uploaded_by, first_name: 'Test', last_name: 'Tech' } };
       table.push(row);
       return row;
     });

@@ -80,7 +80,7 @@
     // `.max()` and still parses every element. Unauthenticated routes reach it, and before the
     // guard below a single request inside the body cap could tie up the event loop and exhaust a
     // small instance's memory (measured 2026-10-27). There is no 3.x fix (3.25.76 is the last 3.x
-    // release); the only fix is zod 4.6.6+, a semver-major migration across 73 non-test backend
+    // release); the only fix is zod 4.6.6+, a semver-major migration across 86 non-test backend
     // files that import zod, whose stricter `.uuid()`/`.email()` and changed error shape need
     // their own tested change, not a dependency bump (#2889). Interim mitigation, now in place:
     // `validate()` refuses a body whose arrays, total size or nesting exceed fixed ceilings

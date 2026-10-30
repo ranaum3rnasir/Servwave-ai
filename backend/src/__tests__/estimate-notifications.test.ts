@@ -28,6 +28,8 @@ import {
   ESTIMATE_FIXTURE,
   ESTIMATE_SENT_FIXTURE,
   ALPHA_ORG_ID,
+  withCheckoutLedger,
+  servedBy,
 } from './helpers';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
@@ -38,9 +40,22 @@ vi.mock('../services/notifications/notificationService', () => ({
   emit: vi.fn().mockResolvedValue(undefined),
 }));
 
+// The estimate alerts go through M6's two-lane chain (S06.26): the staff and public routes QUEUE them for after their response and
+// the payment reconciler sends its own directly, so a route test sees what was asked for (verb, estimate, actor, key); who is
+// told is permission-lead-estimate-alerts-db.test.ts, against a real database.
+vi.mock('../services/notifications/leadEstimateAlerts', () => ({
+  queueEstimateAlert: vi.fn(),
+  alertEstimate: vi.fn().mockResolvedValue(undefined),
+}));
+
 // Import AFTER mock is registered so we get the spy reference.
 import { emit } from '../services/notifications/notificationService';
+import { queueEstimateAlert, alertEstimate } from '../services/notifications/leadEstimateAlerts';
 const mockEmit = emit as ReturnType<typeof vi.fn>;
+const mockQueued = queueEstimateAlert as ReturnType<typeof vi.fn>;
+const mockDirect = alertEstimate as ReturnType<typeof vi.fn>;
+/** Every estimate alert asked for: queued by a route, or sent directly by the payment reconciler. */
+const alertCalls = () => [...mockQueued.mock.calls, ...mockDirect.mock.calls];
 
 // ─── Prisma typed surface ─────────────────────────────────────────────────────
 
@@ -179,7 +194,8 @@ beforeEach(() => {
       estimate: { update: vi.fn().mockResolvedValue({}), findUnique: vi.fn().mockResolvedValue(null) },
       lead: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
       timelineEvent: { create: vi.fn().mockResolvedValue({}) },
-      invoice: { update: vi.fn().mockResolvedValue({}), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+      $executeRaw: vi.fn().mockResolvedValue(1), // #891: the checkout locks the invoice row (slice 15: and the deposit void)
+      invoice: { findUnique: vi.fn().mockResolvedValue({ status: 'SENT' }), update: vi.fn().mockResolvedValue({}), findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
       payment: { create: vi.fn().mockResolvedValue({}) },
       stripeEvent: { create: vi.fn().mockResolvedValue({}) },
       estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
@@ -193,7 +209,8 @@ beforeEach(() => {
 // Notification emits MUST fire post-commit, never inside a $transaction. Passing a
 // tx client to emit() silently drops the notification in prod (filterByAccess reads
 // on the global prisma connection while the caller's txn holds the row). Fail loudly
-// if any emit in any test carries a tx.
+// if any emit in any test carries a tx. (The estimate alerts are asked for by id after the
+// commit and carry no client at all; they are checked above.)
 afterEach(() => {
   for (const call of mockEmit.mock.calls) {
     expect(
@@ -219,6 +236,7 @@ describe('approvePublic (no-deposit) — estimate.approved with dedupKey (path A
         lead: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: record-payment locks the deposit invoice
       }),
     );
     // fire-and-forget email path
@@ -230,17 +248,17 @@ describe('approvePublic (no-deposit) — estimate.approved with dedupKey (path A
 
     expect(res.status).toBe(200);
 
-    const call = mockEmit.mock.calls.find((c: any[]) => c[0].verb === 'estimate.approved');
+    const call = alertCalls().find((c: any[]) => c[0].verb === 'estimate.approved');
     expect(call).toBeDefined();
     const args = call![0];
     expect(args.organizationId).toBe(ALPHA_ORG_ID);
     expect(args.actorId).toBeNull(); // public path → no actor
-    expect(args.object.type).toBe('ESTIMATE');
-    expect(args.object.id).toBe(ESTIMATE_ID);
-    expect(args.object.label).toBe(ESTIMATE_NUM);
-    expect(args.entity.commission_owner_id).toBe(COMMISSION_OWNER_ID);
+    expect(args.estimateId).toBe(ESTIMATE_ID);
     expect(args.dedupKey).toBe(EXPECTED_DEDUP_KEY);
     expect(args.data).toMatchObject({ lead_id: LEAD_ID });
+    // A request: the alert is queued for after the response, never sent on the request.
+    expect(mockQueued.mock.calls.map((c: any[]) => c[0].verb)).toContain('estimate.approved');
+    expect(mockDirect).not.toHaveBeenCalled();
   });
 
   // #2090 slice 3d - the approval notification names what the customer bought and what they
@@ -256,6 +274,7 @@ describe('approvePublic (no-deposit) — estimate.approved with dedupKey (path A
         lead: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: record-payment locks the deposit invoice
       }),
     );
     // The option-summary read, then the fire-and-forget email read.
@@ -274,7 +293,7 @@ describe('approvePublic (no-deposit) — estimate.approved with dedupKey (path A
       .send({ signature_data: 'data:image/png;base64,abc123' });
 
     expect(res.status).toBe(200);
-    const call = mockEmit.mock.calls.find((c: any[]) => c[0].verb === 'estimate.approved');
+    const call = alertCalls().find((c: any[]) => c[0].verb === 'estimate.approved');
     expect(call![0].data).toMatchObject({
       options_chosen: 'Smart keypad',
       options_declined: 'Permit filing',
@@ -308,6 +327,7 @@ describe('recordEstimatePayment — estimate.approved + estimate.deposit_paid (p
         lead: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: record-payment locks the deposit invoice
       }),
     );
 
@@ -319,25 +339,20 @@ describe('recordEstimatePayment — estimate.approved + estimate.deposit_paid (p
     expect(res.status).toBe(200);
 
     // estimate.approved must carry the same dedupKey as path A
-    const approvedCall = mockEmit.mock.calls.find((c: any[]) => c[0].verb === 'estimate.approved');
+    const approvedCall = alertCalls().find((c: any[]) => c[0].verb === 'estimate.approved');
     expect(approvedCall).toBeDefined();
     const approvedArgs = approvedCall![0];
     expect(approvedArgs.actorId).toBe(TEST_USERS.admin.id); // staff path → actor present
-    expect(approvedArgs.object.type).toBe('ESTIMATE');
-    expect(approvedArgs.object.id).toBe(ESTIMATE_ID);
-    expect(approvedArgs.object.label).toBe(ESTIMATE_NUM);
-    expect(approvedArgs.entity.commission_owner_id).toBe(COMMISSION_OWNER_ID);
+    expect(approvedArgs.estimateId).toBe(ESTIMATE_ID);
     expect(approvedArgs.dedupKey).toBe(EXPECTED_DEDUP_KEY); // SAME key as path A
     expect(approvedArgs.data).toMatchObject({ lead_id: LEAD_ID });
 
     // estimate.deposit_paid must also be emitted with its own dedupKey
-    const depositCall = mockEmit.mock.calls.find((c: any[]) => c[0].verb === 'estimate.deposit_paid');
+    const depositCall = alertCalls().find((c: any[]) => c[0].verb === 'estimate.deposit_paid');
     expect(depositCall).toBeDefined();
     const depositArgs = depositCall![0];
     expect(depositArgs.actorId).toBe(TEST_USERS.admin.id);
-    expect(depositArgs.object.type).toBe('ESTIMATE');
-    expect(depositArgs.object.id).toBe(ESTIMATE_ID);
-    expect(depositArgs.entity.commission_owner_id).toBe(COMMISSION_OWNER_ID);
+    expect(depositArgs.estimateId).toBe(ESTIMATE_ID);
     expect(depositArgs.dedupKey).toBe(EXPECTED_DEPOSIT_DEDUP_KEY);
     expect(depositArgs.data).toMatchObject({ lead_id: LEAD_ID });
   });
@@ -381,14 +396,15 @@ describe('Stripe webhook checkout.session.completed (kind=DEPOSIT) — path C', 
     mockPrisma.organization.findFirst.mockResolvedValue(ORG_STRIPE);
 
     mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
-      fn({
+      fn(withCheckoutLedger({
         stripeEvent: { create: vi.fn().mockResolvedValue({}) },
         payment: { create: vi.fn().mockResolvedValue({ id: 'pay-1' }) },
-        invoice: { update: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(1), // #891: the checkout locks the invoice row
+        invoice: { findUnique: vi.fn().mockResolvedValue({ status: 'SENT' }), update: vi.fn().mockResolvedValue({}) },
         estimate: { update: vi.fn().mockResolvedValue({}) },
         lead: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
-      }),
+      }, await servedBy(mockPrisma.invoice.findUnique))),
     );
   });
 
@@ -397,16 +413,16 @@ describe('Stripe webhook checkout.session.completed (kind=DEPOSIT) — path C', 
 
     expect(res.status).toBe(200);
 
-    const call = mockEmit.mock.calls.find((c: any[]) => c[0].verb === 'estimate.approved');
+    const call = alertCalls().find((c: any[]) => c[0].verb === 'estimate.approved');
     expect(call).toBeDefined();
     const args = call![0];
     expect(args.actorId).toBeNull(); // webhook → no actor
-    expect(args.object.type).toBe('ESTIMATE');
-    expect(args.object.id).toBe(ESTIMATE_ID);
-    expect(args.object.label).toBe(ESTIMATE_NUM);
-    expect(args.entity.commission_owner_id).toBe(COMMISSION_OWNER_ID);
+    expect(args.estimateId).toBe(ESTIMATE_ID);
     expect(args.dedupKey).toBe(EXPECTED_DEDUP_KEY); // SAME key as paths A + B
     expect(args.data).toMatchObject({ lead_id: LEAD_ID });
+    // The processor's webhook has no signed-in person and no response to wait for: the reconciler sends it directly.
+    expect(mockDirect.mock.calls.map((c: any[]) => c[0].verb)).toContain('estimate.approved');
+    expect(mockQueued).not.toHaveBeenCalled();
   });
 
   it('also emits estimate.deposit_paid (actorId:null) with its own dedupKey', async () => {
@@ -414,13 +430,11 @@ describe('Stripe webhook checkout.session.completed (kind=DEPOSIT) — path C', 
 
     expect(res.status).toBe(200);
 
-    const call = mockEmit.mock.calls.find((c: any[]) => c[0].verb === 'estimate.deposit_paid');
+    const call = alertCalls().find((c: any[]) => c[0].verb === 'estimate.deposit_paid');
     expect(call).toBeDefined();
     const args = call![0];
     expect(args.actorId).toBeNull();
-    expect(args.object.type).toBe('ESTIMATE');
-    expect(args.object.id).toBe(ESTIMATE_ID);
-    expect(args.entity.commission_owner_id).toBe(COMMISSION_OWNER_ID);
+    expect(args.estimateId).toBe(ESTIMATE_ID);
     expect(args.dedupKey).toBe(EXPECTED_DEPOSIT_DEDUP_KEY);
     expect(args.data).toMatchObject({ lead_id: LEAD_ID });
   });
@@ -451,7 +465,9 @@ describe('declinePublic — estimate.declined', () => {
         estimate: {
           update: vi.fn().mockResolvedValue({ id: ESTIMATE_ID, estimate_number: ESTIMATE_NUM, status: 'DECLINED' }),
         },
-        invoice: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        // Slice 15: the deposit void locks the deposits, then reads the unpaid ones (none here).
+        $executeRaw: vi.fn().mockResolvedValue(0),
+        invoice: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
       }),
     );
@@ -465,15 +481,12 @@ describe('declinePublic — estimate.declined', () => {
 
     expect(res.status).toBe(200);
 
-    const call = mockEmit.mock.calls.find((c: any[]) => c[0].verb === 'estimate.declined');
+    const call = alertCalls().find((c: any[]) => c[0].verb === 'estimate.declined');
     expect(call).toBeDefined();
     const args = call![0];
     expect(args.organizationId).toBe(ALPHA_ORG_ID);
     expect(args.actorId).toBeNull(); // public path
-    expect(args.object.type).toBe('ESTIMATE');
-    expect(args.object.id).toBe(ESTIMATE_ID);
-    expect(args.object.label).toBe(ESTIMATE_NUM);
-    expect(args.entity.commission_owner_id).toBe(COMMISSION_OWNER_ID);
+    expect(args.estimateId).toBe(ESTIMATE_ID);
     expect(args.data?.lost_reason).toBe('PRICE');
     // no dedupKey for declined
     expect(args.dedupKey).toBeUndefined();
@@ -512,12 +525,15 @@ describe('setStatus (unordered) — emits the business verb per target', () => {
           findUnique: vi.fn().mockResolvedValue(null),
         },
         lead: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
-        invoice: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        // Slice 15: the deposit void locks the deposits, then reads the unpaid ones (none here).
+        $executeRaw: vi.fn().mockResolvedValue(0),
+        invoice: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimateReservation: { findFirst: vi.fn().mockResolvedValue({ id: 'res-1' }), create: vi.fn() },
       }),
     );
-    mockEmit.mockClear();
+    mockQueued.mockClear();
+    mockDirect.mockClear();
 
     const res = await request(app)
       .patch(`/api/estimates/${ESTIMATE_ID}/status`)
@@ -525,7 +541,7 @@ describe('setStatus (unordered) — emits the business verb per target', () => {
       .send({ status: target, ...extra });
 
     expect(res.status).toBe(200);
-    expect(mockEmit.mock.calls.find((c: unknown[]) => (c[0] as { verb: string }).verb === verb)).toBeDefined();
+    expect(alertCalls().find((c: unknown[]) => (c[0] as { verb: string }).verb === verb)).toBeDefined();
   });
 });
 
@@ -558,7 +574,9 @@ describe('cancel — estimate.cancelled', () => {
           }),
         },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
-        invoice: { updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
+        // Slice 15: the deposit void locks the deposits, then reads the unpaid ones (none here).
+        $executeRaw: vi.fn().mockResolvedValue(0),
+        invoice: { findMany: vi.fn().mockResolvedValue([]), updateMany: vi.fn().mockResolvedValue({ count: 0 }) },
       }),
     );
 
@@ -569,15 +587,12 @@ describe('cancel — estimate.cancelled', () => {
 
     expect(res.status).toBe(200);
 
-    const call = mockEmit.mock.calls.find((c: any[]) => c[0].verb === 'estimate.cancelled');
+    const call = alertCalls().find((c: any[]) => c[0].verb === 'estimate.cancelled');
     expect(call).toBeDefined();
     const args = call![0];
     expect(args.organizationId).toBe(ALPHA_ORG_ID);
     expect(args.actorId).toBe(TEST_USERS.admin.id);
-    expect(args.object.type).toBe('ESTIMATE');
-    expect(args.object.id).toBe(ESTIMATE_ID);
-    expect(args.object.label).toBe(ESTIMATE_NUM);
-    expect(args.entity.commission_owner_id).toBe(COMMISSION_OWNER_ID);
+    expect(args.estimateId).toBe(ESTIMATE_ID);
   });
 });
 
@@ -607,7 +622,11 @@ describe('waiveDeposit — estimate.deposit_waived', () => {
 
     mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
       fn({
-        invoice: { update: vi.fn().mockResolvedValue({}) },
+        // Slice 15: the deposit void reads the unpaid deposit under its lock, then voids it.
+        invoice: {
+          findMany: vi.fn().mockResolvedValue([{ id: 'dep-inv-1', invoice_number: 'D-1', status: 'SENT' }]),
+          updateMany: vi.fn().mockResolvedValue({ count: 1 }),
+        },
         timelineEvent: { create: vi.fn().mockResolvedValue({}) },
         estimate: {
           update: vi.fn().mockResolvedValue({}),
@@ -620,6 +639,7 @@ describe('waiveDeposit — estimate.deposit_waived', () => {
         },
         lead: { updateMany: vi.fn().mockResolvedValue({ count: 1 }) },
         estimateReservation: { findFirst: vi.fn().mockResolvedValue(null), create: vi.fn().mockResolvedValue({}) },
+        $executeRaw: vi.fn().mockResolvedValue(0), // slice 18: record-payment locks the deposit invoice
       }),
     );
 
@@ -630,14 +650,11 @@ describe('waiveDeposit — estimate.deposit_waived', () => {
 
     expect(res.status).toBe(200);
 
-    const call = mockEmit.mock.calls.find((c: any[]) => c[0].verb === 'estimate.deposit_waived');
+    const call = alertCalls().find((c: any[]) => c[0].verb === 'estimate.deposit_waived');
     expect(call).toBeDefined();
     const args = call![0];
     expect(args.organizationId).toBe(ALPHA_ORG_ID);
     expect(args.actorId).toBe(TEST_USERS.admin.id);
-    expect(args.object.type).toBe('ESTIMATE');
-    expect(args.object.id).toBe(ESTIMATE_ID);
-    expect(args.object.label).toBe(ESTIMATE_NUM);
-    expect(args.entity.commission_owner_id).toBe(COMMISSION_OWNER_ID);
+    expect(args.estimateId).toBe(ESTIMATE_ID);
   });
 });

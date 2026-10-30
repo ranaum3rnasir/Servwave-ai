@@ -103,6 +103,8 @@ interface GatePass {
   ok: true;
   accountId: string;
   fromTpnId: string;
+  /** The company number row the text goes out from (phone_numbers.id). */
+  fromNumberId: string;
 }
 type GateOutcome = GatePass | { ok: false; reason: CtmSmsFailureReason };
 
@@ -170,7 +172,12 @@ async function runGates(db: Db, params: CtmSmsPrecheckParams): Promise<GateOutco
     return { ok: false, reason: 'DUPLICATE_SEND' };
   }
 
-  return { ok: true, accountId: org.ctm_account_id, fromTpnId: resolved.ctm_number_id };
+  return {
+    ok: true,
+    accountId: org.ctm_account_id,
+    fromTpnId: resolved.ctm_number_id,
+    fromNumberId: resolved.phone_number_id,
+  };
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
@@ -202,7 +209,12 @@ export async function precheckCtmSms(
  * Runs in a transaction when `db` is the root client (the delete + retry must
  * land together); inside an existing transaction it inherits that atomicity.
  */
-async function reconcileWebhookSidRace(db: Db, messageId: string, sid: string): Promise<void> {
+async function reconcileWebhookSidRace(
+  db: Db,
+  messageId: string,
+  sid: string,
+  companyNumber: { phone_number_id?: string },
+): Promise<void> {
   const run = async (tx: Db) => {
     const conflicting = await tx.message.findFirst({
       where: { ctm_sms_id: sid },
@@ -212,7 +224,7 @@ async function reconcileWebhookSidRace(db: Db, messageId: string, sid: string): 
       // Already reconciled (or the conflict vanished) — just finish our update.
       await tx.message.update({
         where: { id: messageId },
-        data: { status: 'sent', status_reason: null, ctm_sms_id: sid },
+        data: { status: 'sent', status_reason: null, ctm_sms_id: sid, ...companyNumber },
       });
       return;
     }
@@ -222,14 +234,14 @@ async function reconcileWebhookSidRace(db: Db, messageId: string, sid: string): 
       logger.warn('[ctm] sid conflict with a non-outbound row — kept both, sid stays on the webhook row');
       await tx.message.update({
         where: { id: messageId },
-        data: { status: 'sent', status_reason: null },
+        data: { status: 'sent', status_reason: null, ...companyNumber },
       });
       return;
     }
     await tx.message.delete({ where: { id: conflicting.id } });
     await tx.message.update({
       where: { id: messageId },
-      data: { status: 'sent', status_reason: null, ctm_sms_id: sid },
+      data: { status: 'sent', status_reason: null, ctm_sms_id: sid, ...companyNumber },
     });
   };
 
@@ -297,10 +309,12 @@ export async function sendCtmSms(db: Db, params: CtmSmsSendParams): Promise<CtmS
     const rawSid = response?.id ?? response?.message_id;
     const sid = rawSid != null && String(rawSid).length > 0 ? String(rawSid) : null;
 
+    // The company number the text went out from is stored with the send that confirmed it (S08.1).
+    const companyNumber = gate.fromNumberId ? { phone_number_id: gate.fromNumberId } : {};
     try {
       await db.message.update({
         where: { id: params.messageId },
-        data: { status: 'sent', status_reason: null, ...(sid ? { ctm_sms_id: sid } : {}) },
+        data: { status: 'sent', status_reason: null, ...(sid ? { ctm_sms_id: sid } : {}), ...companyNumber },
       });
     } catch (err) {
       // P2002 on ctm_sms_id = the inbound webhook beat us and already
@@ -308,7 +322,7 @@ export async function sendCtmSms(db: Db, params: CtmSmsSendParams): Promise<CtmS
       // user's row failed. Keep the user's row (it carries the real messageId /
       // job links), drop the webhook's duplicate, and retry the update.
       if (sid && (err as { code?: string }).code === 'P2002') {
-        await reconcileWebhookSidRace(db, params.messageId, sid);
+        await reconcileWebhookSidRace(db, params.messageId, sid, companyNumber);
       } else {
         throw err;
       }

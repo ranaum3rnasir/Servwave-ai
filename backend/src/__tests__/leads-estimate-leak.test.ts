@@ -60,6 +60,13 @@ beforeEach(() => {
   (prisma.tagAssignment.findMany as any).mockResolvedValue([]);
   // attachAbility loads grants for non-ADMIN; default empty (mockAuthAs sets role grants).
   (prisma.rolePermission.findMany as any).mockResolvedValue([]);
+  // The detail payload reads the deposit's clearing bank payments (slice 28b): none here.
+  (prisma.invoice.findMany as any).mockResolvedValue([]);
+  // The detail response lists the walkthrough steps this person may take (S04.19): the lead has no visits here.
+  (prisma.visit.findMany as any).mockResolvedValue([]);
+  (prisma.visit.findFirst as any).mockResolvedValue(null);
+  // The lead detail reads the lead's own phones and emails (S05.13): none here.
+  (prisma.recordContactEntry.findMany as any).mockResolvedValue([]);
 });
 
 describe('GET /api/leads/:id — estimate monetary leak (#233 / F-012)', () => {

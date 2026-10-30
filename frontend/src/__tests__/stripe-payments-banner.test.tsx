@@ -9,7 +9,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { renderWithProviders } from './helpers';
-import { StripePaymentsBanner } from '@/components/payments/StripePaymentsBanner';
+import { useAuthStore } from '@/stores/auth.store';
+import { PaymentsSetupBanner } from '@/components/payments/PaymentsSetupBanner';
 import { buildAbility } from '@/lib/ability';
 import type { Organization } from '@/lib/api/organization';
 
@@ -45,10 +46,10 @@ beforeEach(() => {
   localStorage.clear();
 });
 
-describe('StripePaymentsBanner (§6.8 JIT banner + non-admin copy)', () => {
+describe('PaymentsSetupBanner (§6.8 JIT banner + non-admin copy)', () => {
   it('renders nothing while organization data has not loaded yet', () => {
     hoisted.org = undefined as unknown as Organization;
-    renderWithProviders(<StripePaymentsBanner onSetup={vi.fn()} />, { ability: ADMIN_ABILITY });
+    renderWithProviders(<PaymentsSetupBanner onSetup={vi.fn()} />, { ability: ADMIN_ABILITY });
 
     expect(screen.queryByText(/Get paid faster/)).not.toBeInTheDocument();
     expect(screen.queryByText(/ask your admin/)).not.toBeInTheDocument();
@@ -56,20 +57,20 @@ describe('StripePaymentsBanner (§6.8 JIT banner + non-admin copy)', () => {
 
   it('renders nothing once card payments are already enabled — admin', () => {
     hoisted.org = { ...ORG, stripe_charges_enabled: true };
-    renderWithProviders(<StripePaymentsBanner onSetup={vi.fn()} />, { ability: ADMIN_ABILITY });
+    renderWithProviders(<PaymentsSetupBanner onSetup={vi.fn()} />, { ability: ADMIN_ABILITY });
 
     expect(screen.queryByText(/Get paid faster/)).not.toBeInTheDocument();
   });
 
   it('renders nothing once card payments are already enabled — non-admin', () => {
     hoisted.org = { ...ORG, stripe_charges_enabled: true };
-    renderWithProviders(<StripePaymentsBanner onSetup={vi.fn()} />);
+    renderWithProviders(<PaymentsSetupBanner onSetup={vi.fn()} />);
 
     expect(screen.queryByText(/ask your admin/)).not.toBeInTheDocument();
   });
 
   it('admin: shows the "Get paid faster" CTA banner with Set up + Dismiss, and no non-admin copy', () => {
-    renderWithProviders(<StripePaymentsBanner onSetup={vi.fn()} />, { ability: ADMIN_ABILITY });
+    renderWithProviders(<PaymentsSetupBanner onSetup={vi.fn()} />, { ability: ADMIN_ABILITY });
 
     expect(screen.getByText('Get paid faster - accept card payments.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Set up' })).toBeInTheDocument();
@@ -80,7 +81,7 @@ describe('StripePaymentsBanner (§6.8 JIT banner + non-admin copy)', () => {
   it('admin: clicking Set up calls onSetup', async () => {
     const onSetup = vi.fn();
     const user = userEvent.setup();
-    renderWithProviders(<StripePaymentsBanner onSetup={onSetup} />, { ability: ADMIN_ABILITY });
+    renderWithProviders(<PaymentsSetupBanner onSetup={onSetup} />, { ability: ADMIN_ABILITY });
 
     await user.click(screen.getByRole('button', { name: 'Set up' }));
     expect(onSetup).toHaveBeenCalledTimes(1);
@@ -89,7 +90,7 @@ describe('StripePaymentsBanner (§6.8 JIT banner + non-admin copy)', () => {
   it('admin: clicking Dismiss hides the banner immediately and persists across remounts', async () => {
     const user = userEvent.setup();
     const { unmount } = renderWithProviders(
-      <StripePaymentsBanner onSetup={vi.fn()} />,
+      <PaymentsSetupBanner onSetup={vi.fn()} />,
       { ability: ADMIN_ABILITY }
     );
 
@@ -98,12 +99,12 @@ describe('StripePaymentsBanner (§6.8 JIT banner + non-admin copy)', () => {
     expect(localStorage.getItem(DISMISS_KEY)).toBe('1');
 
     unmount();
-    renderWithProviders(<StripePaymentsBanner onSetup={vi.fn()} />, { ability: ADMIN_ABILITY });
+    renderWithProviders(<PaymentsSetupBanner onSetup={vi.fn()} />, { ability: ADMIN_ABILITY });
     expect(screen.queryByText(/Get paid faster/)).not.toBeInTheDocument();
   });
 
   it('non-admin: shows informational copy only — no Set up CTA, no dismiss control', () => {
-    renderWithProviders(<StripePaymentsBanner onSetup={vi.fn()} />);
+    renderWithProviders(<PaymentsSetupBanner onSetup={vi.fn()} />);
 
     expect(screen.getByText('Card payments aren’t set up - ask your admin.')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Set up' })).not.toBeInTheDocument();
@@ -113,16 +114,34 @@ describe('StripePaymentsBanner (§6.8 JIT banner + non-admin copy)', () => {
 
   it('a prior admin dismissal also silences the non-admin informational copy (dismissed check runs first)', () => {
     localStorage.setItem(DISMISS_KEY, '1');
-    renderWithProviders(<StripePaymentsBanner onSetup={vi.fn()} />);
+    renderWithProviders(<PaymentsSetupBanner onSetup={vi.fn()} />);
 
     expect(screen.queryByText(/ask your admin/)).not.toBeInTheDocument();
   });
 
   it('never renders a card, bank, or SSN input', () => {
     const { container } = renderWithProviders(
-      <StripePaymentsBanner onSetup={vi.fn()} />,
+      <PaymentsSetupBanner onSetup={vi.fn()} />,
       { ability: ADMIN_ABILITY }
     );
     expect(container.querySelectorAll('input')).toHaveLength(0);
   });
+
+  it('plan lacks online payments: no banner and no Set up button, for an admin or anyone else', () => {
+    planWithout();
+    hoisted.org = { ...ORG, stripe_charges_enabled: false };
+    const { container } = renderWithProviders(<PaymentsSetupBanner onSetup={vi.fn()} />, { ability: ADMIN_ABILITY });
+
+    expect(container.ownerDocument.body.textContent).not.toMatch(/Get paid faster|ask your admin/);
+    expect(screen.queryByRole('button', { name: 'Set up' })).not.toBeInTheDocument();
+  });
 });
+
+// Slice 34b - an org whose plan lacks online payments is not nudged to set up card payments.
+function planWithout() {
+  vi.mocked(useAuthStore).mockImplementation(((selector: (s: Record<string, unknown>) => unknown) =>
+    selector({
+      user: { id: 'u1', role: 'ADMIN', organization_id: 'o1', org_features: ['payments', 'invoices'] },
+      isAuthenticated: true, isLoading: false, error: null,
+    })) as never);
+}

@@ -25,6 +25,8 @@ export interface Lead {
   service_state?: string | null;
   walkthrough_scheduled_at?: string | null;
   walkthrough_completed_at?: string | null;
+  /** The live walkthrough has performers and no time yet (the server projects it). */
+  walkthrough_to_be_scheduled?: boolean;
   contacted_at?: string | null;
   service_location_id?: string | null;
   created_at: string;
@@ -35,7 +37,7 @@ export interface Lead {
   };
   commission_owner?: { id: string; first_name: string; last_name: string } | null;
   lead_assignees?: { user: { id: string; first_name: string; last_name: string } }[];
-  estimates?: { id: string; total_amount: number }[];
+  estimates?: { id: string; total_amount?: number }[];
 }
 
 /**
@@ -52,6 +54,8 @@ export interface Lead {
 export function getWalkthroughDisplay(lead: Lead, tz: string): { text: string; className: string } {
   if (lead.walkthrough_completed_at) return { text: '✓ Done', className: 'text-status-green-emphasis font-medium' };
   if (lead.walkthrough_scheduled_at) return { text: formatDate(lead.walkthrough_scheduled_at, tz), className: 'text-brand' };
+  // Performers are on it and are arranging the time with the customer: it is in hand, so it is not work to book.
+  if (lead.walkthrough_to_be_scheduled) return { text: 'To be scheduled', className: 'text-brand' };
   // A closed lead needs no scheduling (slice 05): since the list stopped reporting a cancelled
   // trip as the walkthrough date, a lead marked lost arrives here with none, and must not read
   // as work to book.
@@ -117,9 +121,9 @@ export function buildLeadColumns(
     // ceiling: sorting here is SERVER-side, the column id goes out as `sortBy`,
     // and the backend maps exactly `lead_number`, `status` and `created`
     // (`LEAD_SORT_FIELDS` in backend/src/lib/sortFields.ts). Anything else 400s
-    // before a query runs, so declaring Phone or Assignee sortable would trade a
+    // before a query runs, so declaring Phone or Owner sortable would trade a
     // dead header for a broken one. Widening it is a backend change - a map
-    // entry per column, plus relation ordering for Customer and Assignee - not
+    // entry per column, plus relation ordering for Customer and Owner - not
     // a column-set change, and switching this list to client sorting would
     // reorder one page of many.
     {
@@ -163,6 +167,42 @@ export function buildLeadColumns(
           </div>
         );
       },
+    },
+    {
+      id: 'location',
+      accessorKey: 'service_city',
+      header: 'Location',
+      size: 140,
+      meta: { label: 'Location' },
+      cell: ({ row }) => {
+        const { service_city, service_state, customer } = row.original;
+        const city = service_city || customer.service_locations?.[0]?.city;
+        const state = service_state || customer.service_locations?.[0]?.state;
+        if (!city && !state) return <span className="text-muted-foreground">{'-'}</span>;
+        return <span className="text-muted-foreground text-sm">{[city, state].filter(Boolean).join(', ')}</span>;
+      },
+    },
+    {
+      id: 'status',
+      accessorKey: 'status',
+      header: sortable('status', 'Status'),
+      // Sized for the longest chip, 'Walkthrough Completed' (about 139 px, nowrap) plus the cell's
+      // 32 px of padding. At 110 it painted over the Service Request column.
+      size: 176,
+      meta: { label: 'Status', fixed: true },
+      cell: ({ row }) => <StatusChip domain="lead" status={row.original.status} />,
+    },
+    {
+      id: 'service_request',
+      accessorKey: 'service_request',
+      header: 'Service Request',
+      size: 200,
+      meta: { label: 'Service Request' },
+      cell: ({ row }) => (
+        <span className="text-muted-foreground block truncate" title={row.original.service_request}>
+          {row.original.service_request}
+        </span>
+      ),
     },
     {
       id: 'phone',
@@ -210,32 +250,6 @@ export function buildLeadColumns(
           : <span className="text-muted-foreground">{'-'}</span>,
     },
     {
-      id: 'service_request',
-      accessorKey: 'service_request',
-      header: 'Service Request',
-      size: 200,
-      meta: { label: 'Service Request' },
-      cell: ({ row }) => (
-        <span className="text-muted-foreground block truncate" title={row.original.service_request}>
-          {row.original.service_request}
-        </span>
-      ),
-    },
-    {
-      id: 'location',
-      accessorKey: 'service_city',
-      header: 'Location',
-      size: 140,
-      meta: { label: 'Location' },
-      cell: ({ row }) => {
-        const { service_city, service_state, customer } = row.original;
-        const city = service_city || customer.service_locations?.[0]?.city;
-        const state = service_state || customer.service_locations?.[0]?.state;
-        if (!city && !state) return <span className="text-muted-foreground">{'-'}</span>;
-        return <span className="text-muted-foreground text-sm">{[city, state].filter(Boolean).join(', ')}</span>;
-      },
-    },
-    {
       id: 'type',
       accessorKey: 'job_type',
       header: 'Type',
@@ -257,16 +271,6 @@ export function buildLeadColumns(
           : <span className="text-muted-foreground">{'-'}</span>,
     },
     {
-      id: 'status',
-      accessorKey: 'status',
-      header: sortable('status', 'Status'),
-      // Sized for the longest chip, 'Walkthrough Completed' (about 139 px, nowrap) plus the cell's
-      // 32 px of padding. At 110 it painted over the Service Request column.
-      size: 176,
-      meta: { label: 'Status', fixed: true },
-      cell: ({ row }) => <StatusChip domain="lead" status={row.original.status} />,
-    },
-    {
       id: 'estimates',
       accessorKey: 'estimates',
       header: 'Est.',
@@ -284,13 +288,13 @@ export function buildLeadColumns(
     {
       id: 'assignee',
       accessorKey: 'commission_owner',
-      header: 'Assignee',
+      header: 'Owner',
       size: 120,
-      meta: { label: 'Assignee', fixed: true },
+      meta: { label: 'Owner', fixed: true },
       cell: ({ row }) =>
         row.original.commission_owner
           ? <span>{row.original.commission_owner.first_name} {row.original.commission_owner.last_name}</span>
-          : <span className="text-muted-foreground">Unassigned</span>,
+          : <span className="text-muted-foreground">—</span>,
     },
     {
       id: 'walkthrough',

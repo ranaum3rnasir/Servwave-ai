@@ -68,8 +68,6 @@ describe('ACTION_HANDLERS map', () => {
   it('all expected action_types are registered', () => {
     const expected = [
       'SCHEDULE_JOB',
-      'APPROVE_OT',
-      'DENY_OT',
       'APPROVE_STOCK',
       'DENY_STOCK',
       'SEND_REMINDER',
@@ -80,18 +78,9 @@ describe('ACTION_HANDLERS map', () => {
     }
   });
 
-  it('APPROVE_OT calls POST /api/timeclock/punches/:id/override/approve', async () => {
-    vi.mocked(api.post).mockResolvedValueOnce({ data: {} });
-    const item = makeItem({ action_type: 'APPROVE_OT', data: { punch_id: 'punch-abc' } });
-    await ACTION_HANDLERS.APPROVE_OT!(item, mockNavigate);
-    expect(api.post).toHaveBeenCalledWith('/api/timeclock/punches/punch-abc/override/approve');
-  });
-
-  it('DENY_OT calls POST /api/timeclock/punches/:id/override/reject', async () => {
-    vi.mocked(api.post).mockResolvedValueOnce({ data: {} });
-    const item = makeItem({ action_type: 'DENY_OT', data: { punch_id: 'punch-abc' } });
-    await ACTION_HANDLERS.DENY_OT!(item, mockNavigate);
-    expect(api.post).toHaveBeenCalledWith('/api/timeclock/punches/punch-abc/override/reject');
+  it('registers no handler for the overtime override actions: the override request no longer exists', () => {
+    expect(ACTION_HANDLERS.APPROVE_OT).toBeUndefined();
+    expect(ACTION_HANDLERS.DENY_OT).toBeUndefined();
   });
 
   it('APPROVE_STOCK calls decide with decision=approved', async () => {
@@ -191,7 +180,7 @@ describe('ACTION_HANDLERS map', () => {
 
   it('a failing handler throws (caller must not stamp acted)', async () => {
     vi.mocked(api.post).mockRejectedValueOnce(new Error('network error'));
-    const item = makeItem({ action_type: 'APPROVE_OT', data: { punch_id: 'punch-x' } });
-    await expect(ACTION_HANDLERS.APPROVE_OT!(item, mockNavigate)).rejects.toThrow('network error');
+    const item = makeItem({ action_type: 'APPROVE_STOCK', data: { approval_id: 'appr-x' } });
+    await expect(ACTION_HANDLERS.APPROVE_STOCK!(item, mockNavigate)).rejects.toThrow('network error');
   });
 });

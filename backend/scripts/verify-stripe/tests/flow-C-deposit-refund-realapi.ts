@@ -1,7 +1,8 @@
 import Stripe from 'stripe';
 import { env } from '../../../src/config/env';
 import { STRIPE_API_VERSION } from '../../../src/lib/stripe';
-import { Fixtures } from '../fixtures';
+import type { SuiteContext } from '../context';
+import { refundsRecordedOnceByRefundId } from '../refund-events';
 
 function assert(cond: any, msg: string): void {
   if (!cond) throw new Error(`Assertion failed: ${msg}`);
@@ -11,7 +12,7 @@ function assert(cond: any, msg: string): void {
 // Creates a test PaymentIntent via Stripe sandbox, confirms it, then refunds it —
 // verifying that STRIPE_SECRET_KEY is valid and the refund API works end-to-end.
 // The HTTP refund endpoint (/api/deposits/:id/refund) is tested manually in Phase 8.
-export async function run(_f: Fixtures, opts: { verbose: boolean }): Promise<number> {
+export async function run(_ctx: SuiteContext, opts: { verbose: boolean }): Promise<number> {
   let count = 0;
 
   if (!env.STRIPE_SECRET_KEY) {
@@ -44,6 +45,10 @@ export async function run(_f: Fixtures, opts: { verbose: boolean }): Promise<num
   count++;
   assert(refund.payment_intent === pi.id, 'refund references the correct payment intent');
   count++;
+
+  // Payments go-live slice 07: a deposit refunded in full, its real events posted to the webhook
+  // (one twice) -> exactly one Refund row for the refund id.
+  count += await refundsRecordedOnceByRefundId({ stripe, kind: 'DEPOSIT', chargeCents: 50000, refundsCents: [50000], verbose: opts.verbose });
 
   return count;
 }

@@ -81,7 +81,7 @@ beforeEach(() => {
   p.callSession.upsert.mockResolvedValue({ id: 'cs-1' });
   p.user.findFirst.mockResolvedValue(null);
   p.user.findMany.mockResolvedValue([
-    { id: SAGIV_ID, first_name: 'Sagiv', last_name: 'Peker', email: 'sagiv@example.com', phone: '6465550111' },
+    { id: SAGIV_ID, first_name: 'Riley', last_name: 'Chen', email: 'riley@example.com', phone: '6465550111' },
   ]);
   p.customer.findFirst.mockResolvedValue(null);
   p.lead.findFirst.mockResolvedValue(null);
@@ -95,7 +95,7 @@ beforeEach(() => {
 
   client.isCtmConfigured.mockReturnValue(true);
   client.listReceivingNumbers.mockResolvedValue([
-    { id: 'RPN-A', filter_id: 3831356, name: 'Sagiv Peker', number: '+16465550111' },
+    { id: 'RPN-A', filter_id: 3831356, name: 'Riley Chen', number: '+16465550111' },
   ]);
 });
 
@@ -133,7 +133,7 @@ describe('CTM webhook - forwarded-answer attribution', () => {
   it('does not fetch the roster for a call that already names its agent', async () => {
     await post('end', {
       ...FORWARDED_END,
-      agent: { id: 9, name: 'Emanuel', email: 'emanuel@example.com' },
+      agent: { id: 9, name: 'Sam', email: 'sam@example.com' },
     });
 
     // An in-app CSR answer needs no resolution, and warming for it would spend

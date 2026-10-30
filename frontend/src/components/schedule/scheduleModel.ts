@@ -11,7 +11,10 @@
 
 import { isSameDay } from 'date-fns';
 import type { WallClock } from '@/lib/schedule-tz';
+import type { AppAbility } from '@/lib/ability';
 import { isLiveVisit } from '@/lib/visits';
+import { cardCanMissCrew } from '@/lib/missingCrew';
+import { REOPEN_FIRST_MESSAGE, isClosedJobStatus } from '@/lib/jobs/closeOut';
 
 // Slice 03 (calendar-entries spec §3): 'calendar-entry' is the internal EventType member for
 // the user-facing "Event" (ADR 0002 - sits on the board, joins nothing). Widening this union is
@@ -313,18 +316,63 @@ export function isOnBoardFor(
   return e.crew.includes(memberId) || (e.participantUserIds ?? []).includes(memberId);
 }
 
-// ─── D9 — role-gated board capabilities (TG13) ───────────────────────────────
-// DATA scoping is server-side (PR A scopeWhereFor); this only gates UI CONTROLS.
-// ADMIN/DISPATCHER: member view + full edit. SALES: no member view, normal edits
-// on their (server-scoped) data. TECHNICIAN — and any unknown/missing role, which
-// fails SAFE — gets no member view and a READ-ONLY board.
+// ─── Board capabilities, by switch (Roles & Permissions S04.11) ──────────────────────────────────────────
+// DATA scoping is server-side; this only gates UI CONTROLS, and each control follows the switch that
+// lets the server accept what it does. No role name is read: a custom role gets the board its switches
+// describe. A person holding none of the four moving switches gets a read-only board.
+//   Lanes for other people ......... Assign work to other people
+//   Drag a job to a new time ....... Schedule visits
+//   Drag a job between lanes ....... Assign people to jobs AND Assign work to other people
+//   Drag a walkthrough ............. Book walkthroughs (between lanes: with Assign work to other people)
+//   Drag a calendar entry .......... Edit events
+//   Plan mode ...................... Schedule visits AND Assign work to other people
+//   Unscheduled jobs bucket ........ Schedule visits
+//   Unscheduled walkthroughs bucket  Book walkthroughs
+//   Job-level complete on a card ... Complete jobs
 
-export interface BoardCapabilities { memberView: boolean; readOnly: boolean }
+export interface BoardCapabilities {
+  /** Lanes for other people (the Member view). Without it the board is the person's own lane. */
+  memberView: boolean;
+  /** None of the four moving switches: nothing on the board can be dragged, created or edited. */
+  readOnly: boolean;
+  /** Move a visit to a new time. */
+  moveJobs: boolean;
+  /** Put people on or take them off a visit's crew. */
+  assignJobCrew: boolean;
+  /** Drag a visit from one lane to another. */
+  reassignJobs: boolean;
+  moveWalkthroughs: boolean;
+  /** Drag a walkthrough from one lane to another. */
+  reassignWalkthroughs: boolean;
+  moveEntries: boolean;
+  planMode: boolean;
+  unscheduledJobsBucket: boolean;
+  unscheduledWalkthroughsBucket: boolean;
+  /** The job-level complete on a visit card. */
+  completeJob: boolean;
+}
 
-export function boardCapabilitiesFor(role: string | undefined): BoardCapabilities {
-  if (role === 'ADMIN' || role === 'DISPATCHER') return { memberView: true, readOnly: false };
-  if (role === 'SALES') return { memberView: false, readOnly: false };
-  return { memberView: false, readOnly: true };
+export function boardCapabilitiesFor(ability: AppAbility): BoardCapabilities {
+  const assignOthers = ability.can('assign', 'User');
+  const moveJobs = ability.can('reschedule', 'Job');
+  const assignJobCrew = ability.can('assign', 'Job');
+  const moveWalkthroughs = ability.can('schedule_walkthrough', 'Lead');
+  const moveEntries = ability.can('update', 'CalendarEntry');
+  const reassignJobs = assignJobCrew && assignOthers;
+  return {
+    memberView: assignOthers,
+    readOnly: !(moveJobs || reassignJobs || moveWalkthroughs || moveEntries),
+    moveJobs,
+    assignJobCrew,
+    reassignJobs,
+    moveWalkthroughs,
+    reassignWalkthroughs: moveWalkthroughs && assignOthers,
+    moveEntries,
+    planMode: moveJobs && assignOthers,
+    unscheduledJobsBucket: moveJobs,
+    unscheduledWalkthroughsBucket: moveWalkthroughs,
+    completeJob: ability.can('complete', 'Job'),
+  };
 }
 
 // ─── Shared status reads (M2) ────────────────────────────────────────────────
@@ -334,7 +382,8 @@ export function boardCapabilitiesFor(role: string | undefined): BoardCapabilitie
 
 // Job statuses only - a walkthrough's "is this over" reading is not a status value at all
 // (see isCompletedEvent below).
-export const COMPLETED_STATUSES = new Set(['COMPLETED', 'CANCELLED']);
+// PRD 6: a job in Office review, Ready to close or Done is over as far as the board is concerned, like Completed.
+export const COMPLETED_STATUSES = new Set(['COMPLETED', 'OFFICE_REVIEW', 'READY_TO_CLOSE', 'DONE', 'CANCELLED']);
 
 /**
  * Statuses that render as "work is happening right now".
@@ -380,8 +429,10 @@ export const boardEventStatus = (e: Pick<BoardEvent, 'type' | 'raw' | 'visitStat
 /**
  * The drag/resize gate for the calendar and member boards (Spec B1, B-2). Dragging or
  * resizing a scheduled event goes through `/assign`, which un-completes and un-cancels
- * a job via milestoneClears — money, not status, is what should freeze it. Walkthroughs
- * are a Lead, out of scope — they keep the completed-walkthrough block.
+ * a job via milestoneClears — money, not status, is what should freeze it. The one status
+ * rule is PRD 6's: a Done or Cancelled job leaves only through Reopen, so its cards are not
+ * drag sources and a drop of one says why (the server refuses the move with the same words).
+ * Walkthroughs are a Lead, out of scope — they keep the completed-walkthrough block.
  *
  * `e.raw` reads `?.` throughout: react-big-calendar's outside-drag preview stub
  * (`dragFromOutsideItem`) is an untyped `{id,title,start,end}` with no `raw`/`type`, and
@@ -402,6 +453,7 @@ export function rescheduleGate(e: Pick<SchedulableEvent, 'type' | 'raw'>): Resch
       ? { ok: false, reason: 'This walkthrough already happened.' }
       : { ok: true };
   }
+  if (isClosedJobStatus(e.raw?.status as string | undefined)) return { ok: false, reason: REOPEN_FIRST_MESSAGE };
   const invoices = (e.raw?.invoices as Array<{ sent_at: string | null }> | undefined) ?? [];
   return invoices.some((i) => i.sent_at)
     ? { ok: false, reason: 'This job has already been invoiced.' }
@@ -480,7 +532,9 @@ export function eventDangerState(e: BoardEvent, conflictIds: Set<string>): Event
   // otherwise paint red as state 4 "needs assignment" on EVERY entry. Checked before deriveState
   // for exactly that reason - it is not a job/walkthrough missing a crew, it never had one to miss.
   if (e.type === 'calendar-entry') return null;
-  if (deriveState(e) === 4) return 'needs-crew';
+  // A card can only miss its crew while its visit is booked on an open job or lead: the same status test the "No crew"
+  // filter and the Missing crew tile apply (lib/missingCrew), so a finished visit on a Done job reads as nothing to staff.
+  if (deriveState(e) === 4 && cardCanMissCrew(e)) return 'needs-crew';
   if (conflictIds.has(e.boardId)) return 'double-booked';
   return null;
 }
@@ -667,9 +721,11 @@ export function draftFromDrop(
  *   through `bucketEvents.find(...)`. A bucket card is a job from `GET /api/jobs?status=UNSCHEDULED`
  *   - and `deriveJobStatus` only answers UNSCHEDULED when no visit is live and none is started or
  *   COMPLETED - or a lead from `GET /api/leads?walkthrough_status=needs_scheduling`, whose facet
- *   is literally `visits: { none: { status: { in: LIVE_VISIT_STATUSES } } }`. "Has a live visit"
- *   is therefore not a fact to be threaded in from the draft: it is FALSE by construction, and
- *   the two query parameters above are where that is enforced.
+ *   is literally `visits: { none: { status: { in: LIVE_VISIT_STATUSES }, scheduled_at: { not: null } } }`.
+ *   "Has a live visit with a time" is therefore not a fact to be threaded in from the draft: it is
+ *   FALSE by construction, and the two query parameters above are where that is enforced. (A lead
+ *   whose "To be scheduled" walkthrough has people on it and no time is in the bucket too, with its
+ *   crew kept; booking it gives that same visit its first time.)
  *
  * Concretely, the case that used to dead-end: job J sits in the bucket crewed `[TECH]` off a
  * cancelled trip. A rep drags it onto a standard time lane, `draftFromDrop` copies `crew:

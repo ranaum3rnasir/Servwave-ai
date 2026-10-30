@@ -26,10 +26,14 @@ const mockApi = vi.mocked(api);
 const ADMIN = buildAbility([{ action: 'manage', subject: 'all' }]);
 // The SALES / TECHNICIAN shape: defaultGrants.ts grants `read ServicePlan` to DISPATCHER only
 // (ADMIN passes via manage-all), so neither role can read a service plan even on a paid SCALE org.
+// It holds Schedule visits and Book walkthroughs (the switches behind the two unscheduled buckets, S04.11), so the
+// only bucket missing is the one this test is about.
 const NO_READ_SERVICE_PLAN = buildAbility([
   { action: 'read', subject: 'Job' },
   { action: 'read', subject: 'Lead' },
   { action: 'read', subject: 'Department' },
+  { action: 'reschedule', subject: 'Job' },
+  { action: 'schedule_walkthrough', subject: 'Lead' },
 ]);
 
 const STARTER_FEATURES = ['customers', 'jobs', 'estimates', 'invoices', 'payments', 'scheduling'];
@@ -103,6 +107,11 @@ describe('SchedulePage - lead-derived surfaces are hidden, never falsely explain
     expect(screen.queryByText('Service Plans')).not.toBeInTheDocument();
     expect(screen.queryByText(/soon/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/Recurring visits land here/)).not.toBeInTheDocument();
+
+    // Roles & Permissions S07.21: without View service plans the bucket is absent, not an error - the page never
+    // asks for it (the server would refuse), and the rest of the schedule has loaded.
+    const bucketCalls = mockApi.get.mock.calls.filter(([url]) => url === '/api/service-plans/scheduler-bucket');
+    expect(bucketCalls).toEqual([]);
   });
 
   // Sensitivity control for both tests above.
@@ -113,6 +122,7 @@ describe('SchedulePage - lead-derived surfaces are hidden, never falsely explain
     expect(await screen.findByText('Jobs')).toBeInTheDocument();
     expect(screen.getByText('Walkthroughs')).toBeInTheDocument();
     expect(screen.getByText('Service Plans')).toBeInTheDocument();
+    expect(mockApi.get.mock.calls.some(([url]) => url === '/api/service-plans/scheduler-bucket')).toBe(true);
 
     const leadCalls = mockApi.get.mock.calls.filter(([url]) => String(url).includes('/api/leads'));
     expect(leadCalls.length).toBeGreaterThan(0);

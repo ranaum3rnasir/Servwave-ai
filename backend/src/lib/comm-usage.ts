@@ -26,7 +26,7 @@ export const COMM_INCLUDED_MINUTES = 100;
  * Texts included in every plan, per calendar month.
  *
  * 500, not 1,000. Measured against CTM on 2026-08-13, the busiest real org
- * (Alpha Doors) sent 22 SMS segments in 30 days, so 500 is already ~20x live
+ * (the pilot org) sent 22 SMS segments in 30 days, so 500 is already ~20x live
  * usage. That 22 is suppressed though: SMS steps are still feature-locked in
  * the workflow builder, and once reminders and confirmations turn on, a
  * contractor running 20 jobs a day lands in the low hundreds per month. 500

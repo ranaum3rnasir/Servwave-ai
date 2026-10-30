@@ -14,6 +14,8 @@ import { render, screen } from '@testing-library/react';
 
 import { STATUS_REGISTRY } from '@/design-system/status-registry';
 import { LEAD_STATUSES, isTerminalLeadStatus, leadsRegistry } from '@/lib/filters/registries/leads';
+import { decodeFilters } from '@/lib/filters/urlCodec';
+import { LEAD_STATUS_MEANING } from '@/pages/v2/leads/leadStatusMeaning';
 import { StatusChip, statusVariantFor } from '@/pages/v2/_shared/statusChip';
 import { contrastRatio } from '@/design-system/contrast';
 import { statusLabel } from '@/components/layout/search-shared';
@@ -29,8 +31,8 @@ describe('registry labels', () => {
 });
 
 describe('status list order (filters and the status menu)', () => {
-  it('is New, Contacted, Walkthrough Scheduled, Walkthrough Completed, Estimate Sent, Won, Lost, Cancelled', () => {
-    expect(LEAD_STATUSES).toEqual(['NEW', 'CONTACTED', WS, WC, 'ESTIMATED', 'WON', 'LOST', 'CANCELLED']);
+  it('is New, Contacted, Walkthrough Scheduled, Walkthrough Completed, Estimate Sent, Won, Lost', () => {
+    expect(LEAD_STATUSES).toEqual(['NEW', 'CONTACTED', WS, WC, 'ESTIMATED', 'WON', 'LOST']);
     expect(LEAD_STATUSES.map((s) => STATUS_REGISTRY.lead[s]!.label)).toEqual([
       'New',
       'Contacted',
@@ -39,7 +41,6 @@ describe('status list order (filters and the status menu)', () => {
       'Estimate Sent',
       'Won',
       'Lost',
-      'Cancelled',
     ]);
   });
 
@@ -52,7 +53,7 @@ describe('status list order (filters and the status menu)', () => {
     expect(options.find((o) => o.value === WC)?.label).toBe('Walkthrough Completed');
   });
 
-  it('keeps both open: only Won, Lost and Cancelled are closed', () => {
+  it('keeps both open: only Won and Lost are closed', () => {
     expect(isTerminalLeadStatus(WS)).toBe(false);
     expect(isTerminalLeadStatus(WC)).toBe(false);
   });
@@ -118,5 +119,41 @@ describe('contrast of the new chip tones, light and dark', () => {
     const tw = readFileSync(join(__dirname, '../../tailwind.config.js'), 'utf8');
     expect(tw).toContain("teal: 'rgb(var(--status-teal) / <alpha-value>)'");
     expect(tw).toContain("indigo: 'rgb(var(--status-indigo) / <alpha-value>)'");
+  });
+});
+
+/**
+ * Cancelled is retired for leads (S05.18): a lead closes one way, as Lost, and "Cancelled" is a job and visit word only.
+ * Every lead that was Cancelled is Lost now, so nothing on the lead side offers, paints, explains or filters on it.
+ */
+describe('Cancelled is retired for leads', () => {
+  it('has no lead status, no chip entry and no meaning', () => {
+    expect(Object.keys(STATUS_REGISTRY.lead)).not.toContain('CANCELLED');
+    expect(Object.keys(LEAD_STATUS_MEANING)).not.toContain('CANCELLED');
+    expect(Object.values(LEAD_STATUS_MEANING).join(' ')).not.toMatch(/cancel/i);
+  });
+
+  it('counts Won and Lost as the closed statuses, and Cancelled as nothing', () => {
+    expect(isTerminalLeadStatus('WON')).toBe(true);
+    expect(isTerminalLeadStatus('LOST')).toBe(true);
+    expect(isTerminalLeadStatus('CANCELLED')).toBe(false);
+  });
+
+  it('the leads-list Status filter offers no Cancelled', () => {
+    const facet = leadsRegistry.find((f) => f.key === 'status') as { options: { value: string; label: string }[] };
+    expect(facet.options.map((o) => o.label)).not.toContain('Cancelled');
+    expect(facet.options.map((o) => o.value)).not.toContain('CANCELLED');
+  });
+
+  it('reads a saved link that filters on Cancelled as a filter on Lost', () => {
+    const state = decodeFilters(new URLSearchParams('status=CANCELLED'), leadsRegistry);
+    expect(state.status).toEqual({ kind: 'multi', values: ['LOST'] });
+  });
+
+  it('says Lost once when a saved link asks for Lost and Cancelled, and keeps the other statuses', () => {
+    const both = decodeFilters(new URLSearchParams('status=LOST,CANCELLED'), leadsRegistry);
+    expect(both.status).toEqual({ kind: 'multi', values: ['LOST'] });
+    const mixed = decodeFilters(new URLSearchParams('status=NEW,CANCELLED'), leadsRegistry);
+    expect(mixed.status).toEqual({ kind: 'multi', values: ['NEW', 'LOST'] });
   });
 });

@@ -1,14 +1,16 @@
 // Slice E3 — CommRowJobControl: the entity-tab attach / move / detach menu
 // around a comm row's job pill. Contract under test:
-//   • Gate = org comms access AND update:Communication AND channel call|sms|email
+//   • Gate = org comms access AND attach:Communication (the Attach conversations to jobs and leads
+//     switch, not Edit communication records) AND channel call|sms|email
 //     — any miss renders the static (nav/plain) pill. A missing customer is NOT
 //     a miss any more: those rows get the picker in search mode.
 //   • Attach: an unattributed row's menu lists the customer's OPEN jobs and
 //     leads; picking PATCHes the channel's reassign endpoint.
-//   • Leads are call-only — SMS/email have no lead endpoint, so no Leads group.
+//   • Jobs and leads are targets for calls, texts and emails alike (S08.19), each with its own lead endpoint.
 //   • Move: an attributed row's menu lists the OTHER open jobs (never the
 //     currently attached one); picking PATCHes the new job_id.
-//   • Detach: "No job or lead" PATCHes { job_id: null }.
+//   • Detach: "No job or lead" PATCHes { job_id: null } (and { lead_id: null } for a row that also sits on a lead).
+//   • A detach that takes the row out of the person's reach is a quiet success, never an error toast.
 //   • Success invalidates the hub + every entity timeline (job/customer/lead).
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor } from '@testing-library/react';
@@ -16,8 +18,10 @@ import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import { renderWithProviders } from './helpers';
 import { buildAbility } from '@/lib/ability';
+import { toast } from '@/components/ui/use-toast';
 import { CommRowJobControl } from '@/components/communication/shared/CommRowJobControl';
 import type { CommItem } from '@/lib/api/jobCommunications';
+import { MY_SWITCHES_URL, VIEWS_CUSTOMERS_ANSWER } from './support/viewsCustomers';
 
 const mockApi = vi.mocked(api);
 
@@ -27,6 +31,8 @@ vi.mock('@/lib/entitlements', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/entitlements')>()),
   useFeature: () => commAccess.value,
 }));
+
+vi.mock('@/components/ui/use-toast', () => ({ toast: vi.fn() }));
 
 // Radix dropdown-menu internals touch scrollIntoView, which jsdom lacks.
 window.HTMLElement.prototype.scrollIntoView = vi.fn();
@@ -135,9 +141,14 @@ const MANUAL_ENTRY: CommItem = {
 
 const managerAbility = buildAbility([
   { action: 'read', subject: 'Communication' },
-  { action: 'update', subject: 'Communication' },
+  { action: 'attach', subject: 'Communication' },
 ]);
 const readOnlyAbility = buildAbility([{ action: 'read', subject: 'Communication' }]);
+// Edit communication records without Attach conversations to jobs and leads: the server refuses the attach.
+const editOnlyAbility = buildAbility([
+  { action: 'read', subject: 'Communication' },
+  { action: 'update', subject: 'Communication' },
+]);
 
 function renderControl(
   item: CommItem,
@@ -149,10 +160,15 @@ function renderControl(
   );
 }
 
+/** The person's own switches are read on the way; nothing else may be asked for. */
+const fetchesOtherThanMySwitches = () => mockApi.get.mock.calls.filter(([url]) => url !== MY_SWITCHES_URL);
+
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
   commAccess.value = true;
   mockApi.get.mockImplementation(async (url: string, config?: { params?: Record<string, unknown> }) => {
+    if (url === MY_SWITCHES_URL) return VIEWS_CUSTOMERS_ANSWER;
     if (url === `/api/customers/${CUSTOMER_ID}`)
       return { data: { customer: { jobs: CUSTOMER_JOBS_FIXTURE } } };
     // Serves both shapes: customer_id (the default list) and search (org-wide).
@@ -187,15 +203,23 @@ describe('CommRowJobControl — gating matrix', () => {
     expect(screen.queryByTitle(/click to move or detach/)).not.toBeInTheDocument();
     // Navigable static pill (chips align across tabs).
     expect(screen.getByText('J00042').closest('a')).toHaveAttribute('href', `/jobs/${OPEN_JOB_A}`);
-    expect(mockApi.get).not.toHaveBeenCalled();
+    expect(fetchesOtherThanMySwitches()).toEqual([]);
   });
 
-  it('without update:Communication → static pill, no jobs fetch', () => {
+  it('without attach:Communication → static pill, no jobs fetch', () => {
     renderControl(ATTRIBUTED_SMS, { ability: readOnlyAbility });
 
     expect(screen.getByText('J00042')).toBeInTheDocument();
     expect(screen.queryByTitle(/click to move or detach/)).not.toBeInTheDocument();
-    expect(mockApi.get).not.toHaveBeenCalled();
+    expect(fetchesOtherThanMySwitches()).toEqual([]);
+  });
+
+  it('with only update:Communication (Edit communication records) → static pill, no jobs fetch', () => {
+    renderControl(ATTRIBUTED_SMS, { ability: editOnlyAbility });
+
+    expect(screen.getByText('J00042')).toBeInTheDocument();
+    expect(screen.queryByTitle(/click to move or detach/)).not.toBeInTheDocument();
+    expect(fetchesOtherThanMySwitches()).toEqual([]);
   });
 
   // Email gained its own per-row reassign seam (PATCH /emails/:id/job), so it
@@ -213,7 +237,7 @@ describe('CommRowJobControl — gating matrix', () => {
 
     expect(screen.getByText('J00042')).toBeInTheDocument();
     expect(screen.queryByTitle(/click to move or detach/)).not.toBeInTheDocument();
-    expect(mockApi.get).not.toHaveBeenCalled();
+    expect(fetchesOtherThanMySwitches()).toEqual([]);
   });
 
   // Manual Communication Log (slice 5): NOT re-attributable through this menu. The spec is
@@ -221,7 +245,7 @@ describe('CommRowJobControl — gating matrix', () => {
   // not extended to manual entries — moving one between a lead and a job is done by editing it.
   //
   // The row below is otherwise a perfect match for the gate: channel `call`, comms access on,
-  // update:Communication held. Only `manuallyLogged` keeps it out.
+  // attach:Communication held. Only `manuallyLogged` keeps it out.
   it('a manually logged entry gets no menu, though its channel is call and the gate is otherwise open', () => {
     renderControl(MANUAL_ENTRY);
 
@@ -231,7 +255,7 @@ describe('CommRowJobControl — gating matrix', () => {
     // Static, navigable pill — the same treatment a whatsapp row gets.
     expect(screen.getByText('J00042').closest('a')).toHaveAttribute('href', `/jobs/${OPEN_JOB_A}`);
     // ...and no target list is fetched for a menu that will never open.
-    expect(mockApi.get).not.toHaveBeenCalled();
+    expect(fetchesOtherThanMySwitches()).toEqual([]);
   });
 
   it('an UNATTACHED manually logged entry gets no picker either', () => {
@@ -239,7 +263,7 @@ describe('CommRowJobControl — gating matrix', () => {
     renderControl(unattached);
 
     expect(screen.queryByTitle(/click to attach/)).not.toBeInTheDocument();
-    expect(mockApi.get).not.toHaveBeenCalled();
+    expect(fetchesOtherThanMySwitches()).toEqual([]);
   });
 
   // Reversal of the original slice-E3 rule. A missing customer used to render a
@@ -253,7 +277,7 @@ describe('CommRowJobControl — gating matrix', () => {
     expect(await screen.findByTitle('Attached to J00042 - click to move or detach')).toBeInTheDocument();
     // Nothing to list without a customer, and below the search floor nothing is
     // fetched either — no customer list call, no unbounded org-wide list call.
-    expect(mockApi.get).not.toHaveBeenCalled();
+    expect(fetchesOtherThanMySwitches()).toEqual([]);
   });
 });
 
@@ -388,14 +412,26 @@ describe('CommRowJobControl — leads and unknown callers', () => {
     );
   });
 
-  it('sms rows get no Leads group (no lead endpoint to commit to)', async () => {
+  it.each([
+    ['sms', 'sms', 'messageId'],
+    ['email', 'emails', 'emailId'],
+  ] as const)('attach: a %s row lists OPEN leads and PATCHes its own lead endpoint with { lead_id }', async (channel, segment) => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
-    renderControl({ ...UNATTRIBUTED_CALL, channel: 'sms' });
+    const row = { ...UNATTRIBUTED_CALL, channel };
+    renderControl(row);
 
     await user.click(await screen.findByTitle('Not attached - click to attach to a job or lead'));
 
     expect(await screen.findByRole('menuitem', { name: /J00042/ })).toBeInTheDocument();
-    expect(screen.queryByRole('menuitem', { name: /L00055/ })).not.toBeInTheDocument();
+    expect(await screen.findByRole('menuitem', { name: /L00055/ })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: /L00056/ })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('menuitem', { name: /L00055/ }));
+
+    await waitFor(() =>
+      expect(mockApi.patch).toHaveBeenCalledWith(`/api/communication/${segment}/${row.id}/lead`, { lead_id: OPEN_LEAD })
+    );
+    expect(mockApi.patch).not.toHaveBeenCalledWith(expect.stringMatching(/\/job$/), expect.anything());
   });
 
   it('unknown caller: typing searches org-wide and the pick still PATCHes the job endpoint', async () => {
@@ -407,7 +443,8 @@ describe('CommRowJobControl — leads and unknown callers', () => {
 
     await waitFor(() =>
       expect(mockApi.get).toHaveBeenCalledWith('/api/jobs', {
-        params: { search: 'J00043', limit: 8 },
+        // Done jobs are reachable here: the Jobs list's default view leaves them out, this search asks for them.
+        params: { search: 'J00043', limit: 8, include_done: 'true' },
       })
     );
 
@@ -448,5 +485,73 @@ describe('CommRowJobControl — leads and unknown callers', () => {
         { job_id: ORG_JOB }
       )
     );
+  });
+});
+
+describe('CommRowJobControl — detaching a text or an email that also sits on a lead', () => {
+  it.each([
+    ['sms', 'sms'],
+    ['email', 'emails'],
+  ] as const)('a %s row on a job and a lead clears both ends, the lead first', async (channel, segment) => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const row = { ...ATTRIBUTED_SMS, channel, leadId: OPEN_LEAD, leadLabel: 'L00055' };
+    renderControl(row);
+
+    await user.click(await screen.findByTitle('Attached to J00042 - click to move or detach'));
+    await user.click(await screen.findByRole('menuitem', { name: 'No job or lead' }));
+
+    await waitFor(() => expect(mockApi.patch).toHaveBeenCalledTimes(2));
+    expect(mockApi.patch.mock.calls[0]).toEqual([`/api/communication/${segment}/${row.id}/lead`, { lead_id: null }]);
+    expect(mockApi.patch.mock.calls[1]).toEqual([`/api/communication/${segment}/${row.id}/job`, { job_id: null }]);
+    await waitFor(() => expect(toast).toHaveBeenLastCalledWith({ title: 'Link removed' }));
+  });
+
+  it('a row that sits on a lead only clears just the lead', async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const { jobId: _j, jobLabel: _l, ...noJob } = ATTRIBUTED_EMAIL;
+    const row = { ...noJob, leadId: OPEN_LEAD, leadLabel: 'L00055' };
+    renderControl(row);
+
+    await user.click(await screen.findByTitle('Not attached - click to attach to a job or lead'));
+    await user.click(await screen.findByRole('menuitem', { name: 'No job or lead' }));
+
+    await waitFor(() => expect(mockApi.patch).toHaveBeenCalledTimes(1));
+    expect(mockApi.patch).toHaveBeenCalledWith(`/api/communication/emails/${row.id}/lead`, { lead_id: null });
+  });
+});
+
+describe('CommRowJobControl — a detach that takes the row out of the person\'s reach', () => {
+  it.each([
+    ['call', 'calls'],
+    ['sms', 'sms'],
+    ['email', 'emails'],
+  ] as const)('a %s is a quiet success: one plain note, no error toast', async (channel, segment) => {
+    mockApi.patch.mockResolvedValue({ data: { [channel === 'sms' ? 'message' : channel]: null, left: true } });
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const row = { ...ATTRIBUTED_SMS, channel };
+    renderControl(row);
+
+    await user.click(await screen.findByTitle('Attached to J00042 - click to move or detach'));
+    await user.click(await screen.findByRole('menuitem', { name: 'No job or lead' }));
+
+    await waitFor(() => expect(mockApi.patch).toHaveBeenCalledWith(`/api/communication/${segment}/${row.id}/job`, { job_id: null }));
+    await waitFor(() => expect(toast).toHaveBeenCalledTimes(1));
+    const shown = vi.mocked(toast).mock.calls[0]![0] as { title: string; variant?: string };
+    expect(shown.variant).toBeUndefined();
+    expect(shown.title).toMatch(/no longer in your list/i);
+  });
+
+  it('stops after the lead step when that step already took the row out of reach', async () => {
+    mockApi.patch.mockResolvedValue({ data: { email: null, left: true } });
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const row = { ...ATTRIBUTED_EMAIL, leadId: OPEN_LEAD, leadLabel: 'L00055' };
+    renderControl(row);
+
+    await user.click(await screen.findByTitle('Attached to J00042 - click to move or detach'));
+    await user.click(await screen.findByRole('menuitem', { name: 'No job or lead' }));
+
+    await waitFor(() => expect(toast).toHaveBeenCalledTimes(1));
+    expect(mockApi.patch).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(toast).mock.calls[0]![0]).not.toHaveProperty('variant');
   });
 });

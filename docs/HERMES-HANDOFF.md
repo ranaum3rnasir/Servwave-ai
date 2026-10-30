@@ -9,7 +9,7 @@ Hermes (always-on Mac) takes over the nightly fix-cron + vault-sync + vault-audi
 | `/log-issue` (interactive) | Windows laptop | On demand | User reports a bug → creates a GitHub issue with labels |
 | **fix-cron** | **Hermes** | 1:00 AM ET daily | Picks up to 5 `auto-fix-eligible` GitHub issues, opens one PR each against `staging` |
 | **vault-sync** | **Hermes** | 2:30 AM ET daily | For each PR merged in the last 24h, writes `Learnings/<slug>.md` + appends to `log.md` in the vault repo, pushes |
-| **vault-audit** | **Hermes** | 2:45 AM ET daily | Reads vault clone + GitHub issues/PRs, emails findings to ran@alphasecurityus.com via Resend MCP |
+| **vault-audit** | **Hermes** | 2:45 AM ET daily | Reads vault clone + GitHub issues/PRs, emails findings to <owner-email> via Resend MCP |
 | Obsidian Git plugin | Windows laptop | Continuous (Obsidian open) | Auto-pulls Hermes's vault writes; auto-pushes user's edits |
 
 ## Architecture
@@ -43,8 +43,8 @@ Hermes (always-on Mac) takes over the nightly fix-cron + vault-sync + vault-audi
 | Suggested vault clone path on Hermes | `~/vaults/ALPHA_CRM_VAULT` |
 | Tracking issue (fix-cron state) | `#39` in `ranro1/ALPHA_CRM` |
 | Timezone | America/New_York (Hermes will need to translate to UTC if cron uses UTC) |
-| Email recipient | `ran@alphasecurityus.com` |
-| Email sender (Resend) | `vault@alphasecurityus.com` |
+| Email recipient | `<owner-email>` |
+| Email sender (Resend) | `<verified-sender-email>` |
 
 ## One-time setup checklist (Hermes)
 

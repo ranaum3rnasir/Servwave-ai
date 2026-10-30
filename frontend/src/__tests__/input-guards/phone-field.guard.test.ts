@@ -27,7 +27,6 @@ const EXEMPT: Record<string, string> = {
   'pages/CustomerFormPage.tsx': NOT_ROUTED,
   'pages/settings/CompanyProfilePage.tsx': NOT_ROUTED,
   'pages/settings/LocationsPage.tsx': NOT_ROUTED,
-  'pages/settings/UsersTeamsPage.tsx': NOT_ROUTED,
 };
 
 const tokens = (src: string) => findRawPhoneFields(src).map((o) => o.token);

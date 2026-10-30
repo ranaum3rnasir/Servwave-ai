@@ -44,7 +44,7 @@ beforeEach(() => {
 
 describe('POST /api/communication/blocked', () => {
   it('stores the number in canonical E.164 form', async () => {
-    mockAuthAs('admin');
+    mockAuthAs('admin', { is_demo: true });
     const res = await request(app)
       .post('/api/communication/blocked')
       .set(authHeader('admin'))
@@ -60,7 +60,7 @@ describe('POST /api/communication/blocked', () => {
   it.each(['+13475550188', '347-555-0188', '3475550188'])(
     '409s a duplicate submitted as %s',
     async (spelling) => {
-      mockAuthAs('admin');
+      mockAuthAs('admin', { is_demo: true });
       // The stored row is in the legacy display form the two live staging rows use.
       p.blockedNumber.findMany.mockResolvedValue([{ id: ROW.id, number: '(347) 555-0188' }]);
 
@@ -76,7 +76,7 @@ describe('POST /api/communication/blocked', () => {
   );
 
   it('scopes the duplicate lookup to the caller organization', async () => {
-    mockAuthAs('admin');
+    mockAuthAs('admin', { is_demo: true });
     await request(app)
       .post('/api/communication/blocked')
       .set(authHeader('admin'))
@@ -90,7 +90,7 @@ describe('POST /api/communication/blocked', () => {
   });
 
   it('400s anything that is not a 10 or 11 digit North-American number', async () => {
-    mockAuthAs('admin');
+    mockAuthAs('admin', { is_demo: true });
 
     const garbage = await request(app)
       .post('/api/communication/blocked')
@@ -113,7 +113,7 @@ describe('POST /api/communication/blocked', () => {
 
 describe('POST /api/communication/blocked/unblock', () => {
   it('deletes with an org-scoped filter', async () => {
-    mockAuthAs('admin');
+    mockAuthAs('admin', { is_demo: true });
     const res = await request(app)
       .post('/api/communication/blocked/unblock')
       .set(authHeader('admin'))
@@ -129,7 +129,7 @@ describe('POST /api/communication/blocked/unblock', () => {
   });
 
   it('404s an id that belongs to another organization', async () => {
-    mockAuthAs('orgB_admin');
+    mockAuthAs('orgB_admin', { is_demo: true });
     p.blockedNumber.deleteMany.mockResolvedValue({ count: 0 });
 
     const res = await request(app)

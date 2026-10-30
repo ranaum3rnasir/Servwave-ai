@@ -110,6 +110,38 @@ describe('AssignJobDialog - scheduling a job that has no schedule yet', () => {
     expect(payload.scheduled_end).toBe('2026-09-01T15:00:00.000Z');
   });
 
+  // S06.17: a Done or Cancelled job answers 409 too ("Reopen this job first"), but it lists no conflicts. It is a refusal,
+  // not a double-booking, so the dialog shows it as written and offers no way to schedule anyway.
+  const bookSlot = async (user: ReturnType<typeof userEvent.setup>) => {
+    const [startDate, startTime, endDate, endTime] = timeFields();
+    await user.type(startDate!, '09/01/2026');
+    await user.tab();
+    await user.type(startTime!, '9:00 AM');
+    await user.tab();
+    await user.type(endDate!, '09/01/2026');
+    await user.tab();
+    await user.type(endTime!, '11:00 AM');
+    await user.tab();
+    await user.click(screen.getByRole('button', { name: /^Schedule$/ }));
+  };
+
+  it('shows a 409 that lists conflicts with a way to schedule anyway', async () => {
+    post.mockRejectedValueOnce({ isAxiosError: true, response: { status: 409, data: { error: 'Schedule conflict detected', conflicts: [{ user_id: 'tech-1' }] } } });
+    const user = userEvent.setup();
+    renderDialog();
+    await bookSlot(user);
+    expect(await screen.findByRole('button', { name: 'Schedule Anyway' })).toBeInTheDocument();
+  });
+
+  it('shows the Reopen refusal as written and offers no way to schedule anyway', async () => {
+    post.mockRejectedValueOnce({ isAxiosError: true, response: { status: 409, data: { error: 'Reopen this job first', code: 'JOB_CLOSE_OUT_REFUSED' } } });
+    const user = userEvent.setup();
+    renderDialog();
+    await bookSlot(user);
+    expect(await screen.findByText('Reopen this job first')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Schedule Anyway' })).not.toBeInTheDocument();
+  });
+
   it('still posts the seeded schedule unchanged when rescheduling', async () => {
     const user = userEvent.setup();
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });

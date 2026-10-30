@@ -23,10 +23,22 @@ import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import { renderWithProviders } from './helpers';
+import { buildAbility } from '@/lib/ability';
 import { SmsInboxView } from '@/components/communication/phone/SmsInboxView';
 import type { MessageThread, PhoneCustomer } from '@/lib/api/communication';
+import { MY_SWITCHES_URL, VIEWS_CUSTOMERS_ANSWER } from './support/viewsCustomers';
 
 const mockApi = vi.mocked(api);
+
+// Attach conversations to jobs and leads: without it the inbox shows where a text is filed and offers no way to change it.
+const attacher = buildAbility([
+  { action: 'read', subject: 'Communication' },
+  { action: 'attach', subject: 'Communication' },
+]);
+const editorOnly = buildAbility([
+  { action: 'read', subject: 'Communication' },
+  { action: 'update', subject: 'Communication' },
+]);
 
 // Radix dropdown-menu internals touch scrollIntoView, which jsdom lacks.
 window.HTMLElement.prototype.scrollIntoView = vi.fn();
@@ -150,6 +162,7 @@ function Harness({ initial, onToast = () => {} }: { initial: MessageThread[]; on
 beforeEach(() => {
   vi.clearAllMocks();
   mockApi.get.mockImplementation(async (url: string) => {
+    if (url === MY_SWITCHES_URL) return VIEWS_CUSTOMERS_ANSWER;
     if (url === '/api/communication/contacts') return { data: { contacts: CONTACTS_FIXTURE } };
     if (url === '/api/communication/agents') return { data: { agents: [] } };
     if (url === '/api/communication/threads') return { data: { threads: [] } };
@@ -164,6 +177,7 @@ describe('SmsInboxView — Variant A job pills', () => {
   it('renders the job pill and the muted "no job" pill under customer-thread bubbles', async () => {
     renderWithProviders(
       <SmsInboxView threads={[freshThread(CUSTOMER_THREAD)]} setThreads={vi.fn()} onToast={vi.fn()} />,
+      { ability: attacher },
     );
 
     // Tagged outbound message → ocean job pill with the human job number.
@@ -175,6 +189,7 @@ describe('SmsInboxView — Variant A job pills', () => {
   it('shows the Unrouted tray with the count of inbound no-job messages', async () => {
     renderWithProviders(
       <SmsInboxView threads={[freshThread(CUSTOMER_THREAD)]} setThreads={vi.fn()} onToast={vi.fn()} />,
+      { ability: attacher },
     );
 
     // The context panel renders once the customer directory resolves.
@@ -243,6 +258,7 @@ describe('SmsInboxView — one-click reassign', () => {
     const onToast = vi.fn();
     const { queryClient } = renderWithProviders(
       <Harness initial={[freshThread(CUSTOMER_THREAD)]} onToast={onToast} />,
+      { ability: attacher },
     );
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
 
@@ -278,7 +294,7 @@ describe('SmsInboxView — one-click reassign', () => {
     const user = userEvent.setup({ pointerEventsCheck: 0 });
     const onToast = vi.fn();
     mockApi.patch.mockRejectedValue(new Error('500'));
-    renderWithProviders(<Harness initial={[freshThread(CUSTOMER_THREAD)]} onToast={onToast} />);
+    renderWithProviders(<Harness initial={[freshThread(CUSTOMER_THREAD)]} onToast={onToast} />, { ability: attacher });
 
     const noJobPill = await screen.findByTitle('No job - click to assign');
     await user.click(noJobPill);
@@ -292,5 +308,46 @@ describe('SmsInboxView — one-click reassign', () => {
     expect(screen.getByText('no job')).toBeInTheDocument();
     expect(screen.queryByTitle('Tagged to J00042 - click to reassign')).not.toBeInTheDocument();
     expect(onToast).not.toHaveBeenCalledWith('Tagged to J00042');
+  });
+});
+
+describe('SmsInboxView — Attach conversations to jobs and leads', () => {
+  it.each([
+    ['no switches at all', buildAbility([{ action: 'read', subject: 'Communication' }])],
+    ['Edit communication records alone', editorOnly],
+  ])('with %s: the pills stay, but no pill opens a menu and the Unrouted tray is gone', async (_label, ability) => {
+    renderWithProviders(
+      <SmsInboxView threads={[freshThread(CUSTOMER_THREAD)]} setThreads={vi.fn()} onToast={vi.fn()} />,
+      { ability },
+    );
+
+    // Where the texts are filed is still shown.
+    expect((await screen.findAllByText('J00041')).length).toBeGreaterThan(0);
+    expect(screen.getByText('no job')).toBeInTheDocument();
+    await screen.findByText('Jobs · navigation');
+    // Nothing to click to change it, and no tray whose only purpose is to assign.
+    expect(screen.queryByTitle('No job - click to assign')).not.toBeInTheDocument();
+    expect(screen.queryByTitle(/click to reassign/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Unrouted')).not.toBeInTheDocument();
+    expect(screen.queryByText('Assign')).not.toBeInTheDocument();
+  });
+
+  it('drops a text from the open conversation, with a plain note and no error, when removing its job takes it out of reach', async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    const onToast = vi.fn();
+    mockApi.patch.mockResolvedValue({ data: { message: null, left: true } });
+    renderWithProviders(<Harness initial={[freshThread(CUSTOMER_THREAD)]} onToast={onToast} />, { ability: attacher });
+
+    // The outbound text is tagged; take its job off.
+    await user.click((await screen.findAllByTitle('Tagged to J00041 - click to reassign'))[0]!);
+    await user.click(await screen.findByRole('menuitem', { name: 'No job' }));
+
+    await waitFor(() => expect(mockApi.patch).toHaveBeenCalledWith('/api/communication/sms/mt1/job', { job_id: null }));
+    await waitFor(() => expect(screen.queryByText('Confirmed: Thu 8:00 AM, vault corridor re-key.')).not.toBeInTheDocument());
+    // The other text in the conversation is still there, and the person is told, not shown an error.
+    expect(screen.getAllByText('Also, the lobby door is sticking again.').length).toBeGreaterThan(0);
+    expect(onToast).toHaveBeenCalledTimes(1);
+    expect(onToast).toHaveBeenCalledWith(expect.stringMatching(/no longer in your list/i));
+    expect(onToast).not.toHaveBeenCalledWith(expect.stringMatching(/couldn.t|try again/i));
   });
 });

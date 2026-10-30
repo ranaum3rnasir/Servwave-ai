@@ -31,7 +31,7 @@ function renderAt(path: string, navKey?: string) {
  * out rather than read back off the registry so the test pins the actual id;
  * deriving it would pass against an empty allowlist.
  */
-const ALPHA_DOORS_ORG_ID = 'd40afcec-0ddf-471f-b99d-8e5f23cbdadf';
+const PILOT_ORG_ID = 'd40afcec-0ddf-471f-b99d-8e5f23cbdadf';
 
 describe('DemoOnlyRoute', () => {
   it('renders the demo-only page for a demo org', () => {
@@ -55,7 +55,7 @@ describe('DemoOnlyRoute', () => {
   });
 
   it('admits a real org that the destination allowlists', () => {
-    mockAuthUser({ id: 'u1', role: 'ADMIN', organization_id: ALPHA_DOORS_ORG_ID });
+    mockAuthUser({ id: 'u1', role: 'ADMIN', organization_id: PILOT_ORG_ID });
     renderAt('/marketing', 'marketing');
     expect(screen.getByText('MARKETING PAGE')).toBeInTheDocument();
   });
@@ -68,7 +68,7 @@ describe('DemoOnlyRoute', () => {
   });
 
   it('ignores the allowlist when no navKey is supplied', () => {
-    mockAuthUser({ id: 'u1', role: 'ADMIN', organization_id: ALPHA_DOORS_ORG_ID });
+    mockAuthUser({ id: 'u1', role: 'ADMIN', organization_id: PILOT_ORG_ID });
     renderAt('/marketing'); // no navKey → no destination → no allowlist
     expect(screen.queryByText('MARKETING PAGE')).toBeNull();
     expect(screen.getByText('DASHBOARD')).toBeInTheDocument();
@@ -78,6 +78,6 @@ describe('DemoOnlyRoute', () => {
     // Guards the sidebar lock and this route guard together: both read the same
     // registry entry, so an id dropped here silently re-locks the screen.
     expect(getDestination('marketing')?.demoOnly).toBe(true);
-    expect(getDestination('marketing')?.demoOnlyUnlockOrgIds).toContain(ALPHA_DOORS_ORG_ID);
+    expect(getDestination('marketing')?.demoOnlyUnlockOrgIds).toContain(PILOT_ORG_ID);
   });
 });

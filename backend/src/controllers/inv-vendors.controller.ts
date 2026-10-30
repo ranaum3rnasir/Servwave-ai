@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma';
 import { logger } from '../lib/logger';
 import { tenantWhere } from '../lib/tenant';
 import { logAudit } from '../lib/audit';
+import { canSeeCosts } from '../lib/permissions/enforce';
 import { normalizePhone } from '../lib/customer-duplicate';
 import { validationFailure } from '../middleware/validate';
 import { LONG_TEXT_MAX } from '../lib/text-limits';
@@ -103,7 +104,7 @@ function mapContact(c: any) {
   return out;
 }
 
-function toVendorDto(row: any) {
+function toVendorDto(row: any, req: Request) {
   // payment_terms / lead_time_days / transmit_method(s) are never emitted:
   // the row may still carry legacy values until the columns are dropped.
   // `category` is the linked row's name (the legacy string is kept in step on
@@ -124,7 +125,8 @@ function toVendorDto(row: any) {
   if (Array.isArray(row.contacts) && row.contacts.length > 0) {
     dto.additionalContacts = row.contacts.map(mapContact);
   }
-  if (row.account_number != null) dto.accountNumber = row.account_number;
+  // The account number is a company cost detail: it needs See financial data (S01.15).
+  if (row.account_number != null && canSeeCosts(req)) dto.accountNumber = row.account_number;
   if (row.website != null) dto.website = row.website;
   if (row.pickup_address != null) dto.pickupAddress = row.pickup_address;
   if (row.notes != null) dto.notes = row.notes;
@@ -209,7 +211,7 @@ export async function listVendors(req: Request, res: Response) {
       include: vendorInclude,
     });
 
-    res.json({ vendors: vendors.map(toVendorDto) });
+    res.json({ vendors: vendors.map((v: unknown) => toVendorDto(v, req)) });
   } catch (err) {
     logger.error('Failed to list vendors:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -228,7 +230,7 @@ export async function getVendor(req: Request, res: Response) {
       return;
     }
 
-    res.json({ vendor: toVendorDto(vendor) });
+    res.json({ vendor: toVendorDto(vendor, req) });
   } catch (err) {
     logger.error('Failed to get vendor:', err);
     res.status(500).json({ error: 'Internal server error' });
@@ -240,6 +242,9 @@ export async function getVendor(req: Request, res: Response) {
 export async function upsertVendor(req: Request, res: Response) {
   try {
     const orgId = req.user!.organization_id;
+    // A person who cannot see the account number cannot set it either, or the response strip would
+    // only hide the number they just planted; an edit leaves the stored one as it is.
+    if (!canSeeCosts(req)) delete req.body.accountNumber;
     const contacts = Array.isArray(req.body.additionalContacts)
       ? req.body.additionalContacts
       : undefined;
@@ -302,7 +307,7 @@ export async function upsertVendor(req: Request, res: Response) {
         metadata: { fields: Object.keys(req.body) },
       });
 
-      res.json({ vendor: toVendorDto(vendor) });
+      res.json({ vendor: toVendorDto(vendor, req) });
       return;
     }
 
@@ -359,7 +364,7 @@ export async function upsertVendor(req: Request, res: Response) {
       metadata: { name: vendor.name },
     });
 
-    res.status(201).json({ vendor: toVendorDto(vendor) });
+    res.status(201).json({ vendor: toVendorDto(vendor, req) });
   } catch (err) {
     logger.error('Failed to upsert vendor:', err);
     res.status(500).json({ error: 'Internal server error' });

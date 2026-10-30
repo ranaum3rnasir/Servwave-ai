@@ -9,18 +9,21 @@ import {
   normalizeSuppressionAddress,
   TRANSACTIONAL_SUPPRESSION_CATEGORY,
 } from '../lib/email-suppression';
-import { fetchReceivedEmail, persistInboundEmail } from '../lib/inbound-email';
-import { emit } from '../services/notifications/notificationService';
+import { fetchReceivedEmail, persistInboundEmail, type InboundMessage } from '../lib/inbound-email';
+import { eventRecipients, planInboundMail, type InboundRoute } from '../lib/mailbox/inbound-router';
+import { orgEmailFeatureOn } from '../lib/communication/emailFeature';
+import { bringOverReceivedAttachments } from '../lib/inbound-attachments';
+import { alertEmailReply } from '../services/notifications/emailReplyAlerts';
 import { publishEmailsChanged } from '../services/notifications/realtimePublish';
 
 /**
- * Tell the office a customer wrote back (post-commit; see the call site).
+ * Tell the people a customer wrote back to (post-commit; see the call site).
  *
  * TWO signals, deliberately distinct, on the same private per-user channel:
  *
- *   1. `emit` writes the bell entry and pushes `notifications.changed`. It
- *      resolves recipients itself and returns them, so the thread's owner is
- *      decided in ONE place (resolveRecipients) rather than re-derived here.
+ *   1. The bell entry and its `notifications.changed` push. `alertEmailReply` works out who it is for (the record's people through
+ *      M6's chain, never a role: services/notifications/emailReplyAlerts.ts) and returns them, so the recipients are decided in ONE
+ *      place rather than re-derived here.
  *   2. `publishEmailsChanged` nudges the open Inbox to refetch its message
  *      list. Separate from `notifications.changed` so the Inbox does not
  *      refetch every message on every unrelated notification.
@@ -29,7 +32,7 @@ import { publishEmailsChanged } from '../services/notifications/realtimePublish'
  * and the refetch goes back through the API where `commVisibilityWhere` still
  * applies, so this can never leak a message the recipient could not read.
  *
- * Dedup-keyed on the provider message id: Resend retries webhooks for hours,
+ * Dedup-keyed on the provider message id (inside the alert): Resend retries webhooks for hours,
  * and a redelivery that slips past the event ledger must not ring the bell
  * twice for one reply.
  */
@@ -39,23 +42,9 @@ async function announceInboundEmail(inbound: {
   providerMessageId: string;
   senderLabel: string;
   subject: string;
+  heldEmailId?: string;
 }): Promise<void> {
-  const thread = await prisma.emailThread.findUnique({
-    where: { id: inbound.threadId },
-    select: { assigned_to_user_id: true },
-  });
-
-  const notified = await emit({
-    verb: 'communication.email_inbound',
-    organizationId: inbound.organizationId,
-    // A customer is not a user of ours, so there is no actor to drop - and an
-    // actor here would wrongly suppress the notification for whoever it matched.
-    actorId: null,
-    object: { type: 'EMAIL_THREAD', id: inbound.threadId, label: inbound.senderLabel },
-    entity: { thread_assignee_id: thread?.assigned_to_user_id ?? undefined },
-    data: { subject: inbound.subject },
-    dedupKey: `email_inbound:${inbound.providerMessageId}`,
-  });
+  const notified = await alertEmailReply(inbound);
 
   // Nothing to refresh if nobody was notified, and an empty publish is a
   // pointless round trip on every inbound message.
@@ -272,8 +261,15 @@ export async function processResendEvent(
   }
 
   try {
-    // ─── email.received (email slice 6) — fetch BEFORE the idempotency claim,
-    //     and outside the transaction. Both placements are load-bearing:
+    // ─── email.received (email slice 6; the router, PRD 10 S10.14) — decide, then fetch, BEFORE the idempotency claim,
+    //     and outside the transaction.
+    //
+    //     DECIDE FIRST, from the event's own recipients, so mail nobody here is expecting (a reserved address, one never
+    //     issued, another environment's mailbox domain, a token that no longer resolves) is dropped without fetching its
+    //     body and without storing anything about it. Only the indexed lookups of the router run here, on the global
+    //     client and outside the transaction.
+    //
+    //     The fetch placement is load-bearing too:
     //
     //     - BEFORE THE CLAIM, because the claim is what makes Resend's retry a
     //       no-op. Claiming first and then failing the fetch would dedupe the
@@ -286,29 +282,49 @@ export async function processResendEvent(
     //     The fetch is required rather than opportunistic: the webhook payload
     //     is metadata only, so the body and the Authentication-Results header
     //     that backs the sender check exist only on the far side of this call.
-    const inboundMessage = event.type === 'email.received'
-      ? await fetchReceivedEmail((event.data as { email_id: string }).email_id)
-      : null;
+    let route: InboundRoute | null = null;
+    let inboundMessage: InboundMessage | null = null;
+    if (event.type === 'email.received') {
+      const named = eventRecipients(event.data);
+      route = named ? await planInboundMail(prisma, named) : null;
+      if (route?.state !== 'dropped') {
+        inboundMessage = await fetchReceivedEmail((event.data as { email_id: string }).email_id);
+        // An event that named no recipients is judged on the message's own.
+        route ??= await planInboundMail(prisma, [...inboundMessage.receivedFor, ...inboundMessage.to]);
+      }
+    }
+    // A dropped message keeps NOTHING in the ledger but its event id, its type and the time: no sender, recipient or subject.
+    const droppedMail = route?.state === 'dropped';
 
     // Set inside the email.received branch below, read only after the
     // transaction commits — same deferral as justVerifiedDomain, and for the
     // same reason: announcing a message that a rollback then erases would leave
     // a notification pointing at nothing. Captured in a closure variable rather
     // than returned because the transaction's return channel already carries
-    // the domain-verification result.
-    let inboundToAnnounce: {
+    // the domain-verification result. One entry per stored copy that rings.
+    const inboundToAnnounce: Array<{
       organizationId: string;
       threadId: string;
       providerMessageId: string;
       senderLabel: string;
       subject: string;
-    } | null = null;
+      /** A reply from an address we didn't send to: the held message the bell opens (S10.19). */
+      heldEmailId?: string;
+    }> = [];
+
+    // The stored copies whose message names attachments, to bring over once the transaction has committed and the provider has its
+    // answer (lib/inbound-attachments.ts): never inside the transaction, never for dropped mail.
+    const withAttachments: string[] = [];
 
     await prisma.$transaction(async (tx): Promise<null> => {
       // FIRST — atomic idempotency claim; P2002 = concurrent duplicate.
       try {
         await tx.resendEvent.create({
-          data: { resend_event_id: dedupeKey, event_type: event.type, payload: event as unknown as object },
+          data: {
+            resend_event_id: dedupeKey,
+            event_type: event.type,
+            ...(droppedMail ? {} : { payload: event as unknown as object }),
+          },
         });
       } catch (err) {
         if ((err as { code?: string }).code === 'P2002') throw new DuplicateResendEventError();
@@ -322,32 +338,56 @@ export async function processResendEvent(
       // namespace, and falling through would look up a sent row that cannot
       // exist and log a spurious unknown-id warning. ───
       if (event.type === 'email.received') {
-        const stored = await persistInboundEmail(tx, inboundMessage!);
-        if (!stored) {
-          // Unattributable: no token, or one that no longer resolves. Every row
-          // we could write is tenant-scoped, so there is nowhere org-less to put
-          // this and picking an org would be a cross-tenant write. Recorded
-          // above and acknowledged - a redelivery will not make the token
-          // resolve, so a 500 would only buy a retry loop over junk addressed to
-          // the catch-all domain.
-          logger.warn(`[resend-webhook] email.received ${inboundMessage!.providerId} could not be attributed to an org — recorded, dropped`);
-        } else if (stored.resolution.inbound_match !== 'MATCHED') {
-          logger.info(`[resend-webhook] email.received ${inboundMessage!.providerId} stored as ${stored.resolution.inbound_match} (dmarc=${stored.resolution.inbound_auth})`);
+        if (!route || route.state === 'dropped' || !inboundMessage) {
+          // Not addressed to anyone here. Every row we could write is tenant-scoped, so there is nowhere org-less to put
+          // this, and a redelivery will not make an address exist, so a 500 would only buy a retry loop over junk. Recorded
+          // above (event id, type and time) and acknowledged; the line names the event and nothing of the message.
+          logger.info(`[resend-webhook] email.received event ${dedupeKey} dropped`);
+          return null;
+        }
+        const placements = await persistInboundEmail(tx, inboundMessage, route);
+        if ((inboundMessage.attachments?.length ?? 0) > 0) withAttachments.push(...placements.map((placed) => placed.id));
+        for (const placed of placements) {
+          if (placed.state !== 'delivered') {
+            logger.info(`[resend-webhook] email.received ${placed.providerMessageId} stored for review (dmarc=${placed.auth})`);
+          }
         }
 
-        // MATCHED only, and deliberately. An UNMATCHED message has no thread to
-        // own it, and the unmatched queue collects whatever is addressed to the
-        // catch-all reply domain — notifying on it would hand every spammer a
-        // way to ring the office bell. It still lands in Needs review, which is
-        // the surface built for exactly that triage.
-        if (stored && stored.thread_id && stored.resolution.inbound_match === 'MATCHED') {
-          inboundToAnnounce = {
-            organizationId: stored.resolution.organization_id,
-            threadId: stored.thread_id,
-            providerMessageId: inboundMessage!.providerId,
-            senderLabel: inboundMessage!.from,
-            subject: inboundMessage!.subject,
-          };
+        // Delivered copies, and one held kind (below), deliberately. A held message has no conversation to own it, and the
+        // Needs review list collects whatever is addressed to the catch-all reply domain — notifying on it would hand every
+        // spammer a way to ring the office bell. It lands in Needs review, which is the surface built for exactly
+        // that triage. Mail to a mailbox address whose sender failed authentication rings nobody either: a forged sender
+        // does not get to ring a bell (S10.18 moves it to the Needs review list).
+        //
+        // While ServWave has the Email plan feature off for the company the mail is kept exactly as above but rings nobody:
+        // no bell, no live-update ping and no alert chain at all (PRD 10, S10.6 for a token reply, S10.16 for mail to a user or main address; both
+        // arrive here as a placement, so one check serves them). Nothing is remembered about it: when the
+        // feature returns the stored mail simply shows, and no sweep rings for it, so the old mail never alerts anyone.
+        // Asked on the transaction's client, after the mail is stored, once for the company, and only when something would ring.
+        //
+        // A token reply from an address we did not send to is held too, but it is the one held kind that rings (S10.19): the same people
+        // a customer's reply in its reply address's conversation would, told to check and link it. A held message that failed sender
+        // authentication, is automatic mail or replied to an address that no longer resolves is a different reason and rings nobody.
+        const ringing = placements.flatMap((placed): Array<{ placed: typeof placed; threadId: string; held: boolean }> => {
+          if (placed.state === 'delivered' && placed.threadId && placed.auth !== 'FAIL') return [{ placed, threadId: placed.threadId, held: false }];
+          if (placed.review?.reason === 'sender_mismatch' && placed.review.threadId) return [{ placed, threadId: placed.review.threadId, held: true }];
+          return [];
+        });
+        if (ringing.length > 0) {
+          if (await orgEmailFeatureOn(tx, ringing[0]!.placed.organizationId)) {
+            for (const { placed, threadId, held } of ringing) {
+              inboundToAnnounce.push({
+                organizationId: placed.organizationId,
+                threadId,
+                providerMessageId: placed.providerMessageId,
+                senderLabel: inboundMessage.from,
+                subject: inboundMessage.subject,
+                ...(held ? { heldEmailId: placed.id } : {}),
+              });
+            }
+          } else {
+            logger.info(`[resend-webhook] email.received ${inboundMessage.providerId} kept without an alert (the Email plan feature is off)`);
+          }
         }
         return null;
       }
@@ -419,17 +459,24 @@ export async function processResendEvent(
       return null;
     });
 
-    if (inboundToAnnounce) {
-      // Wholly best-effort. emit() already swallows its own failures, but this
-      // guard covers the wiring around it too: a throw here would 500 the
-      // webhook, Resend would retry, and the retry would be deduped by the
-      // idempotency claim that already committed — costing the customer's
-      // message to save a bell entry. Wrong trade, so it is caught and logged.
-      await announceInboundEmail(inboundToAnnounce).catch((err) =>
-        logger.error(`[resend-webhook] failed to announce inbound email on thread ${inboundToAnnounce!.threadId}:`, err));
+    // Acknowledge first: the alert filter runs a dozen reads (people, plan, switches, the thread)
+    // on the hosted one-connection pool, and Resend waits on this 200.
+    res.json({ received: true });
+
+    // Wholly best-effort. emit() already swallows its own failures, but this
+    // guard covers the wiring around it too: the alert runs after the 200, so
+    // a throw here must not reach the catch below and answer a second time.
+    // Resend would retry, and the retry would be deduped by the idempotency
+    // claim that already committed - costing the customer's message to save
+    // a bell entry. Wrong trade, so it is caught and logged.
+    for (const inbound of inboundToAnnounce) {
+      await announceInboundEmail(inbound).catch((err) =>
+        logger.error(`[resend-webhook] failed to announce inbound email on thread ${inbound.threadId}:`, err));
     }
 
-    res.json({ received: true });
+    // Then the files: the message is stored and showing, and each file joins it as it arrives. Never throws; a file that cannot be
+    // brought over now is retried by the sweep (lib/inbound-attachments.ts).
+    if (withAttachments.length > 0) await bringOverReceivedAttachments(withAttachments);
   } catch (err) {
     if (err instanceof DuplicateResendEventError) {
       res.json({ received: true, duplicate: true });

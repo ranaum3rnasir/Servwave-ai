@@ -17,7 +17,10 @@ export type StagedItem = {
   qtyOrdered: number;
   qtyReceived: number;
   // qtyBackordered = qtyOrdered - qtyReceived (derived but kept for clarity)
-  vendor: string;
+  // Roles & Permissions S07.3: the server leaves `vendor` out without View vendors and `unitCost` out without See
+  // financial data, so neither is always there. Render each only when the person's switch allows it.
+  vendor?: string;
+  unitCost?: number;
   poNumber: string;
   expectedDate?: string; // for backordered items
   serialized: boolean;
@@ -84,6 +87,12 @@ export type JobStage = {
   notes?: string;
   createdAt: string;
   updatedAt?: string;
+  // The pickup (Roles & Permissions S07.6): who took the parts, who recorded it, and when. Absent until taken.
+  takenById?: string;
+  takenByName?: string;
+  recordedById?: string;
+  recordedByName?: string;
+  takenAt?: string;
   auditLog?: StageAuditEntry[];
 };
 
@@ -131,7 +140,7 @@ export const jobStages: JobStage[] = [
       {
         id: "aud_001c",
         at: "2026-05-24T11:08:00Z",
-        actorName: "Emanuel Dahan",
+        actorName: "Sam Rivera",
         field: "notes",
         oldValue: "Cross-trade install for Rolex vault upgrade.",
         newValue:

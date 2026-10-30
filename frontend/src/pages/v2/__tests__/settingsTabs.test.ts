@@ -3,7 +3,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { allRoutes } from './routeTable';
+import { allRoutes, stripComments } from './routeTable';
 
 /**
  * Every settings tab is BOTH routed and reachable by clicking.
@@ -48,10 +48,22 @@ function navSlugs(): string[] {
 }
 
 /**
- * Retired tabs: the old URL is kept only as a redirect to the settings home, so it is routed
- * (and claimed) without a nav row, on purpose.
+ * Retired tabs: the old URL is kept only as a redirect (to the settings home, or to the Payments page for
+ * `servwave-payments`, whose area moved there in payments go-live P8), so it is routed (and claimed) without a nav
+ * row, on purpose.
  */
-const RETIRED_SLUGS = ['lead-statuses'];
+const RETIRED_SLUGS = ['lead-statuses', 'servwave-payments'];
+
+/**
+ * Child pages: a settings route that is not a tab of its own but is opened from a tab's page.
+ * They get no nav row, and instead of being exempted they are PROVED reachable: the parent
+ * slug must be a routed tab with a nav row, and the routed source file named here must really
+ * navigate to the child's path. A parent page that stops linking to its child fails the test.
+ */
+const CHILD_PAGES: { path: string; parent: string; linkedFrom: string }[] = [
+  // A person's Permissions page, opened from the Permissions action on a Users & Teams row.
+  { path: 'users/:userId/permissions', parent: 'users', linkedFrom: join('settings', 'UsersTeamsPage.tsx') },
+];
 
 /** Every `/settings/<child>` route, by its final segment. */
 function routedSlugs(): string[] {
@@ -78,13 +90,43 @@ describe('settings tabs', () => {
 
   it('gives every routed tab a nav row', () => {
     const inNav = new Set(navSlugs());
-    const unreachable = routedSlugs().filter((slug) => !inNav.has(slug) && !RETIRED_SLUGS.includes(slug));
+    const unreachable = routedSlugs().filter(
+      (slug) => !inNav.has(slug)
+        && !RETIRED_SLUGS.includes(slug)
+        && !CHILD_PAGES.some((child) => child.path === slug),
+    );
 
     expect(
       unreachable,
       'settings pages with a route but no nav row - nothing else in the app links to them, '
       + 'so they are reachable only by typing the URL',
     ).toEqual([]);
+  });
+
+  /**
+   * A child page is exempt from the nav row only because something real opens it. The link is
+   * read from the parent page's source with comments removed, so a docstring that still
+   * mentions the path cannot keep a deleted navigation alive.
+   */
+  it.each(CHILD_PAGES)('reaches the child page $path from its parent tab $parent', (child) => {
+    expect(routedSlugs(), `/settings/${child.path} must be routed`).toContain(child.path);
+    expect(routedSlugs(), `parent tab ${child.parent} must be routed`).toContain(child.parent);
+    expect(navSlugs(), `parent tab ${child.parent} must have a nav row`).toContain(child.parent);
+
+    const file = join(V2_DIR, child.linkedFrom);
+    expect(existsSync(file), `${child.linkedFrom} must exist`).toBe(true);
+    const src = stripComments(readFileSync(file, 'utf8'));
+
+    // `:userId` in the route is a template placeholder in the link: `/settings/users/${u.id}/...`.
+    const target = child.path
+      .split('/')
+      .map((seg) => (seg.startsWith(':') ? '\\$\\{[^}]+\\}' : seg))
+      .join('/');
+    const navigation = new RegExp(`(navigate\\(|\\bto=\\{?)\\s*[\`'"]/settings/${target}[\`'"]`);
+    expect(
+      src,
+      `${child.linkedFrom} must navigate to /settings/${child.path} - otherwise the page is reachable only by typing the URL`,
+    ).toMatch(navigation);
   });
 
   /**

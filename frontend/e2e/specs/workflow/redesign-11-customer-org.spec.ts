@@ -416,7 +416,7 @@ test.describe('Stage 1 — Customer & Organization', () => {
     expect(gone.res.status()).toBe(404);
   });
 
-  test('CUST-18: force-purge with payment — no money gate; wrong confirm 400; correct confirm purges + surfaces warning', async () => {
+  test('CUST-18: force-purge with a recent payment — wrong confirm 400; correct confirm refused 409 PURGE_BLOCKED_FINANCIAL_RECORDS, customer kept', async () => {
     const s = api.suffix;
     const c = await api.createCustomer({
       first_name: `Pd-${s}`, last_name: 'Paid', email: `pd-${s}@e2e-qa.invalid`, phone: uniquePhone(),
@@ -437,19 +437,17 @@ test.describe('Stage 1 — Customer & Organization', () => {
     await api.seedPaymentIntent(invoice.id, `pi_cust18_${s}`);
 
     const full = await api.getCustomer(c.id);
-    // The ONLY 4xx blockers are a wrong confirm string and existing members — NOT a money gate.
+    // A wrong confirm string is rejected first.
     const wrong = await api.purgeCustomer(c.id, { confirm: 'NOPE' });
     expect(wrong.res.status()).toBe(400);
 
-    const ok = await api.purgeCustomer(c.id, { confirm: full.customer_number });
-    expect(ok.res.status()).toBe(200);
-    expect(ok.body.purged).toBe(true);
-    // Money surfaced (not blocked): warning + payment_total present, Stripe PI → has_stripe_charge.
-    expect(ok.body.warning).toBeTruthy();
-    expect(Number(ok.body.payment_total)).toBeGreaterThan(0);
-    expect(ok.body.has_stripe_charge).toBe(true);
-    const gone = await api.raw('get', `/api/customers/${c.id}`);
-    expect(gone.res.status()).toBe(404);
+    // A sent invoice and a card payment inside the retention windows must be kept: the purge is refused.
+    const blocked = await api.purgeCustomer(c.id, { confirm: full.customer_number });
+    expect(blocked.res.status()).toBe(409);
+    expect(blocked.body.code).toBe('PURGE_BLOCKED_FINANCIAL_RECORDS');
+    // Nothing was deleted.
+    const still = await api.raw('get', `/api/customers/${c.id}`);
+    expect(still.res.status()).toBe(200);
   });
 
   test('CUST-19: purge a billing-group parent blocked while members exist', async () => {

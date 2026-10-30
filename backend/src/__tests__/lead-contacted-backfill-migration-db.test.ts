@@ -23,10 +23,10 @@
 import { describe, it, expect, afterAll } from 'vitest';
 import { randomUUID } from 'crypto';
 import { spawnSync } from 'child_process';
-import { cpSync, mkdtempSync, readdirSync, rmSync, copyFileSync } from 'fs';
-import { tmpdir } from 'os';
+import { rmSync } from 'fs';
 import { dirname, join } from 'path';
 import { PrismaClient, type LeadStatus } from '@prisma/client';
+import { deployMigrations } from './migration-deploy-support';
 
 const url = process.env.TEST_DATABASE_URL;
 const suite = url ? describe : describe.skip;
@@ -39,7 +39,7 @@ const PRISMA_CLI = join(dirname(require.resolve('prisma/package.json')), 'build'
 const hasPsql = spawnSync('psql', ['--version']).status === 0;
 
 const STATUSES: LeadStatus[] = [
-  'NEW', 'CONTACTED', 'WALKTHROUGH_SCHEDULED', 'WALKTHROUGH_COMPLETED', 'ESTIMATED', 'WON', 'LOST', 'CANCELLED',
+  'NEW', 'CONTACTED', 'WALKTHROUGH_SCHEDULED', 'WALKTHROUGH_COMPLETED', 'ESTIMATED', 'WON', 'LOST',
 ];
 
 function assertLocal(raw: string): URL {
@@ -84,20 +84,8 @@ suite('lead Contacted backfill migration (real database)', () => {
     });
   }
 
-  /** The Prisma deploy command with either every migration or only those before MIGRATION. */
-  function deploy(dbUrl: string, which: 'all' | 'before'): string {
-    const dir = mkdtempSync(join(tmpdir(), 'sw2618-s2-mig-'));
-    tempDirs.push(dir);
-    copyFileSync(join(PRISMA_DIR, 'schema.prisma'), join(dir, 'schema.prisma'));
-    const source = join(PRISMA_DIR, 'migrations');
-    for (const entry of readdirSync(source)) {
-      if (which === 'before' && entry !== 'migration_lock.toml' && entry >= MIGRATION) continue;
-      cpSync(join(source, entry), join(dir, 'migrations', entry), { recursive: true });
-    }
-    const run = cli(dbUrl, ['migrate', 'deploy', '--schema', join(dir, 'schema.prisma')], dir);
-    if (run.status !== 0) throw new Error(`deploy failed:\n${run.stdout}\n${run.stderr}`);
-    return dir;
-  }
+  /** The Prisma deploy command over only the migrations before this one, or through this one and no later (see migration-deploy-support). */
+  const deploy = (dbUrl: string, which: 'before' | 'through') => deployMigrations(dbUrl, MIGRATION, which, tempDirs);
 
   /** The migration file run a second time, the way the shared staging database may see it. */
   function runFileAgain(dbUrl: string, dir: string) {
@@ -116,6 +104,8 @@ suite('lead Contacted backfill migration (real database)', () => {
         id: org, name: `s2618-${tag}`, email: `s2618-${tag}@example.test`, address_line1: '1 Test Way', city: 'Testville',
         state: 'MA', postal_code: '02108', estimate_terms: '', estimate_notes: '', estimate_payment_terms: '',
       },
+      // Narrow: this database sits at an older migration, so the live client must not read back columns added since.
+      select: { id: true },
     });
     const seller = randomUUID();
     await db.user.create({
@@ -236,7 +226,7 @@ suite('lead Contacted backfill migration (real database)', () => {
     const { org, leads } = await seed(client);
     const historyBefore = await client.timelineEvent.findMany({ orderBy: { id: 'asc' } });
 
-    const dir = deploy(dbUrl, 'all');
+    const dir = deploy(dbUrl, 'through');
 
     expect(await statusesOf(client, leads)).toEqual(expected(leads));
 
@@ -284,7 +274,7 @@ suite('lead Contacted backfill migration (real database)', () => {
     const first = await seed(client);
     const second = await seed(client);
 
-    deploy(dbUrl, 'all');
+    deploy(dbUrl, 'through');
 
     for (const { org, leads } of [first, second]) {
       expect(await statusesOf(client, leads)).toEqual(expected(leads));
@@ -315,7 +305,7 @@ suite('lead Contacted backfill migration (real database)', () => {
     await client.$executeRawUnsafe(
       'CREATE TRIGGER sw2618_left_new_meanwhile BEFORE UPDATE ON leads FOR EACH ROW EXECUTE FUNCTION sw2618_left_new_meanwhile()');
 
-    deploy(dbUrl, 'all');
+    deploy(dbUrl, 'through');
 
     expect(await statusesOf(client, leads)).toEqual({ ...expected(leads), NEW_contacted: 'NEW' });
     expect(await client.timelineEvent.count({ where: { entity_id: left.id } })).toBe(0);

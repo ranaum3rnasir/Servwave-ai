@@ -15,7 +15,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
-import { renderWithProviders } from '@/__tests__/helpers';
+import { renderWithProviders, purchasingAbility } from '@/__tests__/helpers';
 
 const hoisted = vi.hoisted(() => {
   function vendor(n: number, name: string, category: string) {
@@ -100,7 +100,7 @@ beforeEach(() => {
 });
 
 async function renderAnalytics() {
-  renderWithProviders(<VendorsPage />, { initialEntries: ['/inventory/vendors'] });
+  renderWithProviders(<VendorsPage />, { initialEntries: ['/inventory/vendors'], ability: purchasingAbility() });
   await userEvent.click(await screen.findByRole('tab', { name: /Spend Analytics/ }));
   expect(await screen.findByText('Acme Supply')).toBeInTheDocument();
 }

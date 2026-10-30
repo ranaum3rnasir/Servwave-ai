@@ -3,6 +3,8 @@ import type { ReactNode } from 'react';
 
 import { formatPhone } from '@/lib/utils';
 import { exportCsvFile } from '@/lib/csv';
+import { useAppAbility } from '@/contexts/AbilityContext';
+import { canSeeCompanyFigures, canSeePricing } from '@/lib/ability';
 import { useIsDemoOrg } from '@/lib/useIsDemoOrg';
 import { findReport } from '@/lib/reports/report-catalog';
 import { useJobsReport } from '@/lib/reports/jobs-data';
@@ -13,6 +15,7 @@ import { StatCard } from '@/ui-kit/components/data/statCard';
 import { Badge, type BadgeProps } from '@/ui-kit/components/ui/badge';
 import { Card } from '@/ui-kit/components/ui/card';
 import { Progress } from '@/ui-kit/components/ui/progress';
+import { cn } from '@/ui-kit/lib/utils';
 
 import { ReportShell } from '../components/reportShell';
 import { ReportHeading } from '../components/heading';
@@ -55,7 +58,7 @@ const STATUSES = [
   'On the way',
   'On site',
   'Pending',
-  'Done',
+  'Completed',
   'done pending',
   'Canceled',
 ] as const;
@@ -74,11 +77,11 @@ const SOURCES = [
 const ORIGINS = ['Lead', 'New'];
 
 const TECHS = [
-  'Emanuel Dahan', 'Ohad', 'Rami', 'Priya', 'Shaked', 'Liran-Dor', 'Ofir Sub',
-  'Adam Elkar', 'Robert Bresnick',
+  'Sam Rivera', 'Jordan', 'Reese', 'Drew', 'Hayden', 'Lee-Dana', 'Oak Sub',
+  'Pat Hollis', 'Jamie Park',
 ];
 
-const CREATORS = ['Emanuel Dahan', 'Dispatch', 'Ohad', 'Rami', 'Logistics', 'Priya', 'Robert Bresnick'];
+const CREATORS = ['Sam Rivera', 'Dispatch', 'Jordan', 'Reese', 'Logistics', 'Drew', 'Jamie Park'];
 
 const TAGS = [
   'Followup', 'Callback', 'NEED TO COLLECT', 'NOT ANSWERING', 'NEED TO ORDER',
@@ -93,7 +96,7 @@ const fmtDateShort = (d: Date) => d.toLocaleDateString('en-US', { month: 'short'
 // Synthetic report-only taxonomy (Workiz labels) - not the backend JobStatus
 // enum, so this stays a local map. It carried the status registry's intents; on
 // the kit those are the soft Badge variants, and 'done pending' keeps its own
-// so it stays distinguishable from plain 'Done'.
+// so it stays distinguishable from plain 'Completed'.
 const STATUS_VARIANT: Record<Status, NonNullable<BadgeProps['variant']>> = {
   Submitted: 'softBlue',
   'In progress': 'softAmber',
@@ -101,7 +104,7 @@ const STATUS_VARIANT: Record<Status, NonNullable<BadgeProps['variant']>> = {
   'On the way': 'softAmber',
   'On site': 'softAmber',
   Pending: 'softNeutral',
-  Done: 'softGreen',
+  Completed: 'softGreen',
   'done pending': 'softPurple',
   Canceled: 'softRed',
 };
@@ -183,6 +186,10 @@ const COLUMNS: ColumnSpec[] = [
   { key: 'tip', label: 'Tip', width: 100, min: 90, align: 'right', render: (j) => <span className="text-muted-foreground tabular-nums">{j.tip ? money0(j.tip) : '-'}</span>, csv: (j) => String(j.tip), sort: (j) => j.tip },
 ];
 
+// The margin and cost columns. The server leaves these keys off a row for a person without See financial data, so the
+// page offers no column for them (a column would draw "$NaN").
+const COST_COLUMN_KEYS = ['itemCost', 'laborCost', 'cardExpenses', 'techExpenses', 'profit'];
+
 const DEFAULT_VISIBLE = ['jobNumber', 'jobName', 'client', 'tags', 'type', 'createdAt', 'phone', 'email', 'status', 'tech', 'createdBy', 'address'];
 const FIELDS_KEY = 'jobsReport.visibleFields.v1';
 
@@ -250,7 +257,7 @@ const FILTER_COLUMNS: { key: FilterKey; label: string; options: readonly string[
   { key: 'source', label: 'Source', options: SOURCES },
 ];
 
-function Breakdown({ title, rows }: { title: string; rows: { label: string; count: number; revenue: number }[] }) {
+function Breakdown({ title, rows, showsRevenue }: { title: string; rows: { label: string; count: number; revenue: number }[]; showsRevenue: boolean }) {
   const top = rows.sort((a, b) => b.count - a.count).slice(0, 6);
   const max = Math.max(1, ...top.map((r) => r.count));
   return (
@@ -265,7 +272,7 @@ function Breakdown({ title, rows }: { title: string; rows: { label: string; coun
               <div className="mb-1 flex items-center justify-between text-xs">
                 <span className="truncate">{r.label}</span>
                 <span className="text-muted-foreground tabular-nums">
-                  {r.count} · {money0(r.revenue)}
+                  {showsRevenue ? `${r.count} · ${money0(r.revenue)}` : r.count}
                 </span>
               </div>
               <Progress value={(r.count / max) * 100} className="h-2" aria-label={`${r.label}, ${r.count}`} />
@@ -278,7 +285,7 @@ function Breakdown({ title, rows }: { title: string; rows: { label: string; coun
 }
 
 /** Which KPI card is driving the list filter (null = Total Jobs / show all). */
-type CardFilter = 'done' | 'inProgress' | 'open' | 'billed' | 'collected';
+type CardFilter = 'completed' | 'inProgress' | 'open' | 'billed' | 'collected';
 
 export default function JobsReport() {
   const report = findReport('jobs')!;
@@ -286,6 +293,10 @@ export default function JobsReport() {
   // live, DB-backed rows. Same `Job[]` shape either way -> aliased to JOBS so
   // the filters / breakdowns / columns / export below are unchanged.
   const isDemo = useIsDemoOrg();
+  // The sums of this report (billed and collected tiles, revenue beside each breakdown) are company-wide money; the jobs are not.
+  const ability = useAppAbility();
+  const showsTotals = canSeeCompanyFigures(ability);
+  const showsCosts = canSeePricing(ability);
   const { jobs: JOBS } = useJobsReport(isDemo);
   const [filters, setFilters] = useState<Filters>({ ...EMPTY_FILTERS });
   const [search, setSearch] = useState('');
@@ -338,8 +349,8 @@ export default function JobsReport() {
     if (!cardFilter) return filtered;
     return filtered.filter((j) => {
       switch (cardFilter) {
-        case 'done':
-          return j.status === 'Done';
+        case 'completed':
+          return j.status === 'Completed';
         case 'inProgress':
           return j.status === 'In progress' || j.status === 'In progress - Scheduled'
             || j.status === 'On the way' || j.status === 'On site';
@@ -363,7 +374,7 @@ export default function JobsReport() {
     const byStatus = (s: Status) => filtered.filter((j) => j.status === s).length;
     return {
       total: filtered.length,
-      done: byStatus('Done'),
+      completed: byStatus('Completed'),
       inProgress: byStatus('In progress') + byStatus('In progress - Scheduled') + byStatus('On the way') + byStatus('On site'),
       open: byStatus('Submitted') + byStatus('Pending') + byStatus('done pending'),
       canceled: byStatus('Canceled'),
@@ -388,7 +399,11 @@ export default function JobsReport() {
     return { byType: group((j) => j.type), bySource: group((j) => j.source) };
   }, [scoped]);
 
-  const cols = COLUMNS.filter((c) => c.alwaysOn || visible.includes(c.key));
+  const offered = useMemo(
+    () => (showsCosts ? COLUMNS : COLUMNS.filter((c) => !COST_COLUMN_KEYS.includes(c.key))),
+    [showsCosts],
+  );
+  const cols = offered.filter((c) => c.alwaysOn || visible.includes(c.key));
   const pageRows = scoped.slice(page * pageSize, page * pageSize + pageSize);
   const totalPages = Math.max(1, Math.ceil(scoped.length / pageSize));
 
@@ -408,11 +423,13 @@ export default function JobsReport() {
 
   const kpis = [
     { key: 'total', label: 'Total Jobs', value: stats.total, active: false, onClick: () => setCardFilter(null) },
-    { key: 'done', label: 'Done', value: stats.done, active: cardFilter === 'done', onClick: () => setCardFilter((c) => (c === 'done' ? null : 'done')) },
+    { key: 'completed', label: 'Completed', value: stats.completed, active: cardFilter === 'completed', onClick: () => setCardFilter((c) => (c === 'completed' ? null : 'completed')) },
     { key: 'inProgress', label: 'In Progress', value: stats.inProgress, active: cardFilter === 'inProgress', onClick: () => setCardFilter((c) => (c === 'inProgress' ? null : 'inProgress')) },
     { key: 'open', label: 'Open', value: stats.open, active: cardFilter === 'open', onClick: () => setCardFilter((c) => (c === 'open' ? null : 'open')) },
-    { key: 'billed', label: 'Billed', value: money0(stats.billed), active: cardFilter === 'billed', onClick: () => setCardFilter((c) => (c === 'billed' ? null : 'billed')) },
-    { key: 'collected', label: 'Collected', value: money0(stats.paid), active: cardFilter === 'collected', onClick: () => setCardFilter((c) => (c === 'collected' ? null : 'collected')) },
+    ...(showsTotals ? [
+      { key: 'billed', label: 'Billed', value: money0(stats.billed), active: cardFilter === 'billed', onClick: () => setCardFilter((c) => (c === 'billed' ? null : 'billed')) },
+      { key: 'collected', label: 'Collected', value: money0(stats.paid), active: cardFilter === 'collected', onClick: () => setCardFilter((c) => (c === 'collected' ? null : 'collected')) },
+    ] : []),
   ];
   // The legacy tiles carried Briefcase / CheckCircle2 / Loader2 / Clock /
   // DollarSign / Wallet icons. StatCard has no icon slot by design - see
@@ -441,7 +458,7 @@ export default function JobsReport() {
       </div>
 
       {/* Stats strip - one row, recalculates with filters */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+      <div className={cn('grid grid-cols-2 gap-3', showsTotals ? 'sm:grid-cols-3 lg:grid-cols-6' : 'sm:grid-cols-4')}>
         {kpis.map((it) => (
           <StatCard
             key={it.key}
@@ -454,8 +471,8 @@ export default function JobsReport() {
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-        <Breakdown title="Jobs by type" rows={breakdown.byType} />
-        <Breakdown title="Jobs by source" rows={breakdown.bySource} />
+        <Breakdown title="Jobs by type" rows={breakdown.byType} showsRevenue={showsTotals} />
+        <Breakdown title="Jobs by source" rows={breakdown.bySource} showsRevenue={showsTotals} />
       </div>
 
       <ReportToolbar
@@ -502,7 +519,7 @@ export default function JobsReport() {
           : 'Live data from GET /api/reports/jobs - money is summed across each job’s linked invoices.'}
       </p>
 
-      {fieldsOpen && <FieldsPicker columns={COLUMNS} visible={visible} onSave={saveFields} onClose={() => setFieldsOpen(false)} />}
+      {fieldsOpen && <FieldsPicker columns={offered} visible={visible} onSave={saveFields} onClose={() => setFieldsOpen(false)} />}
     </ReportShell>
   );
 }

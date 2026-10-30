@@ -8,6 +8,7 @@ import { AbilityProvider } from '@/contexts/AbilityContext';
 import { CURRENT_LAYOUT_VERSION } from '@/components/layout/nav-registry';
 import { buildAbility } from '@/lib/ability';
 import { useAuthStore } from '@/stores/auth.store';
+import { seedEveryMenuSwitch } from '@/__tests__/helpers';
 
 import V2AppLayout from '../V2AppLayout';
 
@@ -92,6 +93,7 @@ function renderedRows(): string[] {
 describe('v2 shell - the sidebar is not editable here', () => {
   beforeEach(() => {
     localStorage.clear();
+    seedEveryMenuSwitch(USER_ID);
     mockAuthUser(REAL_ORG_ADMIN);
   });
 

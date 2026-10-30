@@ -318,17 +318,6 @@ test.describe('1.4 Walkthrough Scheduling', () => {
     expect(res.status()).toBe(400);
   });
 
-  test('L-15c: Schedule walkthrough on CANCELLED lead → 400', async () => {
-    const { lead } = await createNewLead(api);
-    await api.cancelLead(lead.id, 'Already cancelled');
-    const salesId = await createSalesUser(api);
-    const { res } = await api.scheduleWalkthrough(lead.id, {
-      walkthrough_scheduled_at: api.futureDate(24),
-      walkthrough_assigned_to: salesId,
-    });
-    expect(res.status()).toBe(400);
-  });
-
   test('L-15d: Schedule walkthrough with non-existent performer → 400', async () => {
     const { leadId } = await createContactedLead(api);
     const { res } = await api.scheduleWalkthrough(leadId, {
@@ -565,91 +554,10 @@ test.describe('1.9 Lead Termination — Mark Lost', () => {
     const { res } = await api.markLeadLost(lead.id, 'Already lost');
     expect(res.status()).toBe(400);
   });
-
-  test('L-34: Mark CANCELLED lead as lost → 400 (terminal)', async () => {
-    const { lead } = await createNewLead(api);
-    await api.cancelLead(lead.id, 'Cancelled');
-    const { res } = await api.markLeadLost(lead.id, 'Should fail');
-    expect(res.status()).toBe(400);
-  });
 });
 
-// ──────────────────────────────────────────────────────────
-// 1.10 Lead Termination — Cancel
-// ──────────────────────────────────────────────────────────
-
-test.describe('1.10 Lead Termination — Cancel', () => {
-  test('L-35: Cancel NEW lead → CANCELLED', async () => {
-    const { lead } = await createNewLead(api);
-    const { res, body } = await api.cancelLead(lead.id, 'Test cancellation');
-    expect(res.ok()).toBe(true);
-    expect(body.lead.status).toBe('CANCELLED');
-    expect(body.lead.cancelled_reason).toBe('Test cancellation');
-    expect(body.lead.cancelled_at).toBeTruthy();
-  });
-
-  test('L-36: Cancel CONTACTED lead → CANCELLED', async () => {
-    const { leadId } = await createContactedLead(api);
-    const { res, body } = await api.cancelLead(leadId, 'No longer interested');
-    expect(res.ok()).toBe(true);
-    expect(body.lead.status).toBe('CANCELLED');
-  });
-
-  test('L-37: Cancel WALKTHROUGH_SCHEDULED lead → CANCELLED, walkthrough auto-cancelled', async () => {
-    const { leadId } = await createContactedLead(api);
-    const salesId = await createSalesUser(api);
-    await api.scheduleWalkthrough(leadId, {
-      walkthrough_scheduled_at: api.futureDate(24),
-      walkthrough_assigned_to: salesId,
-    });
-    const { res, body } = await api.cancelLead(leadId, 'Customer cancelled');
-    expect(res.ok()).toBe(true);
-    expect(body.lead.status).toBe('CANCELLED');
-    expect(body.lead.walkthrough_scheduled_at).toBeNull();
-    expect(body.lead.walkthrough_cancelled_at).toBeTruthy();
-  });
-
-  test('L-38: Cancel WALKTHROUGH_COMPLETED lead → CANCELLED', async () => {
-    const { leadId } = await leadToWalkthroughCompleted(api);
-    const { res, body } = await api.cancelLead(leadId, 'Customer request');
-    expect(res.ok()).toBe(true);
-    expect(body.lead.status).toBe('CANCELLED');
-  });
-
-  test('L-39: Cancel ESTIMATED lead → CANCELLED', async () => {
-    const { leadId } = await leadToWalkthroughCompleted(api);
-    const estimate = await createDraftEstimate(api, leadId);
-    await api.sendEstimate(estimate.id, { deposit_required: false });
-    const { res, body } = await api.cancelLead(leadId, 'Budget cut');
-    expect(res.ok()).toBe(true);
-    expect(body.lead.status).toBe('CANCELLED');
-  });
-
-  test('L-40a: Cancel WON lead → 400 (terminal)', async () => {
-    const ctx = await leadToSentEstimate(api);
-    await api.approveEstimatePublic(ctx.estimateId, ctx.publicToken, {
-      signature_data: api.testSignature,
-    });
-    const lead = await api.getLead(ctx.leadId);
-    expect(lead.status).toBe('WON');
-    const { res } = await api.cancelLead(ctx.leadId, 'Should fail');
-    expect(res.status()).toBe(400);
-  });
-
-  test('L-40b: Cancel LOST lead → 400 (terminal)', async () => {
-    const { lead } = await createNewLead(api);
-    await api.markLeadLost(lead.id, 'Lost');
-    const { res } = await api.cancelLead(lead.id, 'Should fail');
-    expect(res.status()).toBe(400);
-  });
-
-  test('L-40c: Cancel CANCELLED lead → 400 (terminal)', async () => {
-    const { lead } = await createNewLead(api);
-    await api.cancelLead(lead.id, 'Cancelled');
-    const { res } = await api.cancelLead(lead.id, 'Should fail');
-    expect(res.status()).toBe(400);
-  });
-});
+// 1.10 (Lead Termination — Cancel) is gone: a lead closes one way, as Lost (see 1.9). The cancel action answers 404 and
+// no lead is Cancelled any more (Roles & Permissions S05.17, S05.18).
 
 // ──────────────────────────────────────────────────────────
 // 1.11 Lead Notes

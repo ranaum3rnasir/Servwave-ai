@@ -63,7 +63,7 @@ export function LowStockActionDialog({
       : `Low stock · ${item.sku}`;
   const subtitle =
     kind === "backorder"
-      ? `Vendor ${item.vendor} owes us product - chase the order or restock from another source.`
+      ? `${item.vendor ? `Vendor ${item.vendor}` : "The vendor"} owes us product - chase the order or restock from another source.`
       : `One or more locations dropped below their reorder threshold.`;
 
   return (
@@ -124,7 +124,7 @@ export function LowStockActionDialog({
               {item.name}
             </p>
             <p className="mt-0.5 text-[11px] text-text-secondary">
-              {item.category} · {item.uom} · vendor {item.vendor}
+              {item.category} · {item.uom}{item.vendor ? ` · vendor ${item.vendor}` : ""}
             </p>
             <p className="mt-1 text-[11px] text-text-secondary">
               <span className="font-medium">{totalOnHand}</span> on hand across{" "}

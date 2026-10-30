@@ -40,7 +40,7 @@ import {
 } from './scan';
 
 /** The number of allow-listed unprefixed form grids. It only ever goes DOWN. */
-const ALLOW_LIST_CEILING = 89;
+const ALLOW_LIST_CEILING = 87;
 
 const FORM = (body: string) => `<form><Input id="a" />${body}</form>`;
 const tokens = (src: string, file = 'x.tsx') => findUnprefixedFormGrids(src, file).map((o) => o.token);

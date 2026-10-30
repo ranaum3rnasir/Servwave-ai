@@ -158,7 +158,7 @@ function onHandOf(item: Item, activeLocation: Location | null | undefined): numb
 export function buildItemColumns({
   locations, activeLocation, finishNameById, actions, selectable = false,
   canUpdatePriceBook = false, canUpdateInventory = false, canCreatePurchaseOrder = false,
-  canDeletePriceBook = false,
+  canDeletePriceBook = false, canSeeCosts = false,
 }: {
   locations: Location[];
   activeLocation: Location | null | undefined;
@@ -177,6 +177,9 @@ export function buildItemColumns({
   canUpdateInventory?: boolean;
   canCreatePurchaseOrder?: boolean;
   canDeletePriceBook?: boolean;
+  /** S07.15 - the Unit Cost column is drawn only for a person with See financial data. Without it the server sends
+   *  no cost at all, and a column of dashes would still say there is one. */
+  canSeeCosts?: boolean;
 }): ColumnDef<Item, unknown>[] {
   // Pinned so it JOINS the leading sticky run rather than ending it: SKU and
   // Item are both pinned, and pinning honours the leading run only.
@@ -398,5 +401,6 @@ export function buildItemColumns({
     },
   ];
 
-  return selectable ? [selectColumn, ...columns] : columns;
+  const shown = canSeeCosts ? columns : columns.filter((c) => c.id !== 'unitCost');
+  return selectable ? [selectColumn, ...shown] : shown;
 }

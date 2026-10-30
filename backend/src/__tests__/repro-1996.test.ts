@@ -46,8 +46,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { TEST_USERS, mockAuthAs, authHeader, CUSTOMER_FIXTURE, LOCATION_FIXTURE } from './helpers';
-import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
+import { TEST_USERS, mockAuthAs, mockRoleSwitches, authHeader, CUSTOMER_FIXTURE, LOCATION_FIXTURE } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { allocateNumber } from '../lib/numbering';
 
@@ -106,18 +105,13 @@ function expectFullMatch(existing: Record<string, unknown>) {
 }
 
 /**
- * Grant `role` a `read Customer` conditioned on an `id` that is NOT `EXISTING_ID` — the
- * requester holds the grant (unrelated route-level `canDo('read','Customer')` guards, if any,
- * still pass) but is denied per-row on the matched customer. See file header for why this is
- * achievable today independent of the Roles editor / `ScopeResource`.
+ * Turn View customers off for the signed-in person, so they reach no customer and are denied on the
+ * matched one. Call AFTER `mockAuthAs`. (Customer reach comes from the switch catalog since S01.5;
+ * the create routes under test do not need View customers.)
  */
-function mockDeniedCustomerRead(role: string) {
-  const rows = [
-    ...DEFAULT_GRANTS.filter((g) => !(g.role === role && g.action === 'read' && g.subject === 'Customer')),
-    { role, action: 'read', subject: 'Customer', conditions: { id: 'zz-not-' + EXISTING_ID } },
-  ];
-  mockPrisma.rolePermission.findMany.mockResolvedValue(rows.filter((g) => g.role === role));
-  clearPermissionCache();
+function mockDeniedCustomerRead(_role: string) {
+  // With View customers off the person reaches no customer, so THIS row is denied.
+  mockRoleSwitches({ view_customers: false });
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════

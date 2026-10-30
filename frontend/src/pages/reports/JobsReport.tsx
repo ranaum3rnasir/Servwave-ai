@@ -54,7 +54,7 @@ const fmtDateShort = (d: Date) => d.toLocaleDateString('en-US', { month: 'short'
 
 // Synthetic report-only taxonomy (Workiz labels) - not the backend JobStatus enum, so
 // this stays a local map, but the colours come from the status registry's intent classes.
-// 'done pending' takes the brand intent so it stays distinguishable from plain 'Done'.
+// 'done pending' takes the brand intent so it stays distinguishable from plain 'Completed'.
 const STATUS_STYLE: Record<Status, string> = {
   Submitted: STATUS_INTENT_CLASSES.info,
   'In progress': STATUS_INTENT_CLASSES.warning,
@@ -62,7 +62,7 @@ const STATUS_STYLE: Record<Status, string> = {
   'On the way': STATUS_INTENT_CLASSES.warning,
   'On site': STATUS_INTENT_CLASSES.warning,
   Pending: STATUS_INTENT_CLASSES.neutral,
-  Done: STATUS_INTENT_CLASSES.success,
+  Completed: STATUS_INTENT_CLASSES.success,
   'done pending': STATUS_INTENT_CLASSES.brand,
   Canceled: STATUS_INTENT_CLASSES.danger,
 };
@@ -465,7 +465,7 @@ export default function JobsReport() {
     return filtered.filter((j) => {
       switch (cardFilter) {
         case 'done':
-          return j.status === 'Done';
+          return j.status === 'Completed';
         case 'inProgress':
           return j.status === 'In progress' || j.status === 'In progress - Scheduled'
             || j.status === 'On the way' || j.status === 'On site';
@@ -488,7 +488,7 @@ export default function JobsReport() {
     const byStatus = (s: Status) => filtered.filter((j) => j.status === s).length;
     return {
       total: filtered.length,
-      done: byStatus('Done'),
+      done: byStatus('Completed'),
       inProgress: byStatus('In progress') + byStatus('In progress - Scheduled') + byStatus('On the way') + byStatus('On site'),
       open: byStatus('Submitted') + byStatus('Pending') + byStatus('done pending'),
       canceled: byStatus('Canceled'),
@@ -558,7 +558,7 @@ export default function JobsReport() {
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
         {[
           { icon: Briefcase, label: 'Total Jobs', value: stats.total, tone: 'primary' as const, emphasize: true, active: false, onClick: () => setCardFilter(null) },
-          { icon: CheckCircle2, label: 'Done', value: stats.done, tone: 'success' as const, active: cardFilter === 'done', onClick: () => setCardFilter((c) => (c === 'done' ? null : 'done')) },
+          { icon: CheckCircle2, label: 'Completed', value: stats.done, tone: 'success' as const, active: cardFilter === 'done', onClick: () => setCardFilter((c) => (c === 'done' ? null : 'done')) },
           { icon: Loader2, label: 'In Progress', value: stats.inProgress, tone: 'warning' as const, active: cardFilter === 'inProgress', onClick: () => setCardFilter((c) => (c === 'inProgress' ? null : 'inProgress')) },
           { icon: Clock, label: 'Open', value: stats.open, tone: 'neutral' as const, sub: `${stats.canceled} canceled`, active: cardFilter === 'open', onClick: () => setCardFilter((c) => (c === 'open' ? null : 'open')) },
           { icon: DollarSign, label: 'Billed', value: money0(stats.billed), tone: 'neutral' as const, emphasize: true, active: cardFilter === 'billed', onClick: () => setCardFilter((c) => (c === 'billed' ? null : 'billed')) },

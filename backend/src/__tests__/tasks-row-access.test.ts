@@ -3,7 +3,6 @@ import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
-import { clearUserOverrideCache } from '../lib/permissions/userOverrideCache';
 import { mockAuthAs, authHeader, TEST_USERS, ALPHA_ORG_ID, stubTaskRowLocks } from './helpers';
 
 // ─── Per-row (own-or-linked) access on /api/tasks* (#245, last open criterion) ────────────
@@ -84,7 +83,6 @@ const CUSTOMER_TASK = { ...LINKED_TASK, linked_entity_type: 'CUSTOMER', linked_e
 beforeEach(() => {
   vi.clearAllMocks();
   clearPermissionCache();
-  clearUserOverrideCache();
 
   mockPrisma.task.findMany.mockResolvedValue([]);
   mockPrisma.task.findFirst.mockResolvedValue(LINKED_TASK);

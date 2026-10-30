@@ -83,6 +83,8 @@ function baseInvoice(overrides: Record<string, unknown> = {}) {
     credits: [],
     payments: [],
     tags: [],
+    // The server's answer for this invoice: every action the page can offer.
+    actions: ['edit', 'send', 'delete', 'copy_payment_link', 'record_payment'],
     ...overrides,
   };
 }
@@ -137,7 +139,7 @@ describe('InvoiceDetailPage — Copy Link control when public_token is redacted'
     expect(mockApi.post).not.toHaveBeenCalledWith(expect.stringContaining('/payment-link'), undefined);
   });
 
-  it('still offers "Create Payment Link" (mints one) when public_token is null (genuinely never sent) — unchanged pre-existing behavior', async () => {
+  it('still offers "Copy payment link" (mints one) when public_token is null (genuinely never sent) — unchanged pre-existing behavior', async () => {
     const invoice = baseInvoice({ status: 'DRAFT', sent_at: null, public_token: null });
     setupMocks(invoice);
     mockApi.post.mockResolvedValue({ data: { invoice, url: 'https://app.example.test/p/invoices/x?token=fresh' } });
@@ -151,7 +153,7 @@ describe('InvoiceDetailPage — Copy Link control when public_token is redacted'
     renderWithProviders(<InvoiceDetailPage />, { ability: adminAbility });
 
     await user.click(await screen.findByRole('button', { name: 'More actions' }));
-    const item = await screen.findByRole('menuitem', { name: /create payment link/i });
+    const item = await screen.findByRole('menuitem', { name: /copy payment link/i });
     await user.click(item);
 
     expect(mockApi.post).toHaveBeenCalledWith(expect.stringContaining('/payment-link'));

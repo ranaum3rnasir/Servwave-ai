@@ -16,6 +16,7 @@ import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import { renderWithProviders } from './helpers';
+import { everyNewEstimateEntry } from './support/newEstimateEntries';
 import { NewEstimateDialog as V2NewEstimateDialog } from '@/pages/v2/estimates/components/newEstimateDialog';
 import { NewEstimateDialog as LegacyNewEstimateDialog } from '@/components/estimates/NewEstimateDialog';
 
@@ -44,8 +45,13 @@ vi.mock('react-router-dom', async () => {
   return { ...actual, useNavigate: () => mockNavigate };
 });
 
+// The person can take every way out of the dialog (S02.26 gates each on a switch; its own test file covers the gates).
+let person: ReturnType<typeof everyNewEstimateEntry>;
+
 function setupMocks(leads: unknown[]) {
+  person = everyNewEstimateEntry();
   vi.mocked(api.get).mockImplementation(async (url: string) => {
+    if (url === '/api/permission-switches/me') return { data: person.meAnswer };
     // #2041 slice 1 moved BOTH dialogs off `/api/customers` onto the org-wide create-form picker
     // (Ran's carve-out: a rep must be able to start an estimate on a customer they have never
     // worked with). The dialog behaviour this file is about is unchanged — only the endpoint is.
@@ -58,6 +64,7 @@ function setupMocks(leads: unknown[]) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  localStorage.clear();
 });
 
 const DIALOGS = [
@@ -69,6 +76,7 @@ const DIALOGS = [
 async function openPreSelected(Dialog: typeof V2NewEstimateDialog) {
   renderWithProviders(
     <Dialog open onOpenChange={() => {}} preSelectedCustomerId={CUSTOMER_ID} />,
+    { ability: person.ability },
   );
   await screen.findByText('Jane Doe');
 }
@@ -76,7 +84,7 @@ async function openPreSelected(Dialog: typeof V2NewEstimateDialog) {
 /** Reach the same customer's panel by SEARCHING for them. */
 async function openBySearch(Dialog: typeof V2NewEstimateDialog) {
   const user = userEvent.setup();
-  renderWithProviders(<Dialog open onOpenChange={() => {}} />);
+  renderWithProviders(<Dialog open onOpenChange={() => {}} />, { ability: person.ability });
   // The two dialogs use different search primitives: the kit's SearchInput reports
   // role="searchbox", the legacy one a plain textbox.
   const box = screen.queryByRole('searchbox') ?? screen.getByRole('textbox');

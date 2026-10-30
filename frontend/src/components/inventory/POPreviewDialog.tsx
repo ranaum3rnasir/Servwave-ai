@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
+import { useAppAbility } from "@/contexts/AbilityContext";
+import { canSeePricing } from "@/lib/ability";
 import { Building2, Download, FileText, Printer, RotateCcw } from "lucide-react";
 import { Modal } from "@/components/ui/modal";
 import { extractApiError, formatCurrency, formatPhone } from "@/lib/utils";
@@ -71,8 +73,12 @@ export function POPreviewDialog({
   void zIndex;
 
   // ─── Seam data ───
-  const { data: purchaseOrders = [] } = usePurchaseOrders();
-  const { data: allVendors = [] } = useVendors();
+  // Read only by a person who may read them: the server refuses both lists to others, and this dialog is mounted (closed) on pages they open.
+  const ability = useAppAbility();
+  // The cost columns and the totals are costs (See financial data): without it the document has none of them.
+  const showCosts = canSeePricing(ability);
+  const { data: purchaseOrders = [] } = usePurchaseOrders(ability.can('read', 'PurchaseOrder'));
+  const { data: allVendors = [] } = useVendors(ability.can('read', 'Vendor'));
   const { data: org } = useOrganization();
   const tz = useScheduleTimezone();
   const updatePO = useUpdatePO();
@@ -451,8 +457,8 @@ export function POPreviewDialog({
                 <th className="px-2.5 py-1.5 text-left font-semibold">Description</th>
                 <th className="px-2.5 py-1.5 text-right font-semibold">Qty</th>
                 <th className="px-2.5 py-1.5 text-center font-semibold">UoM</th>
-                <th className="px-2.5 py-1.5 text-right font-semibold">Unit Cost</th>
-                <th className="px-2.5 py-1.5 text-right font-semibold">Line Total</th>
+                {showCosts && <th className="px-2.5 py-1.5 text-right font-semibold">Unit Cost</th>}
+                {showCosts && <th className="px-2.5 py-1.5 text-right font-semibold">Line Total</th>}
                 <th className="px-2.5 py-1.5 text-right font-semibold">Recv'd</th>
               </tr>
             </thead>
@@ -470,12 +476,16 @@ export function POPreviewDialog({
                   <td className="px-2.5 py-1.5 text-center font-mono text-[11px] text-text-secondary">
                     {l.uom}
                   </td>
-                  <td className="px-2.5 py-1.5 text-right font-mono text-text-primary">
-                    {l.unit != null ? fmtMoney(l.unit) : "-"}
-                  </td>
-                  <td className="px-2.5 py-1.5 text-right font-mono font-semibold text-text-primary">
-                    {fmtMoney(l.ext)}
-                  </td>
+                  {showCosts && (
+                    <td className="px-2.5 py-1.5 text-right font-mono text-text-primary">
+                      {l.unit != null ? fmtMoney(l.unit) : "-"}
+                    </td>
+                  )}
+                  {showCosts && (
+                    <td className="px-2.5 py-1.5 text-right font-mono font-semibold text-text-primary">
+                      {fmtMoney(l.ext)}
+                    </td>
+                  )}
                   <td className="px-2.5 py-1.5 text-right font-mono text-[11px] text-text-secondary">
                     {l.qtyReceived} / {l.qtyOrdered}
                   </td>
@@ -486,18 +496,20 @@ export function POPreviewDialog({
         </div>
 
         {/* Totals */}
-        <div className="mt-3 flex justify-end">
-          <div className="w-72 space-y-1 text-[12px]">
-            <div className="flex justify-between text-text-secondary">
-              <span>Subtotal</span>
-              <span className="font-mono">{fmtMoney(subtotal)}</span>
-            </div>
-            <div className="flex justify-between border-t border-border pt-1 text-sm font-semibold text-text-primary">
-              <span>Total</span>
-              <span className="font-mono">{fmtMoney(total)}</span>
+        {showCosts && (
+          <div className="mt-3 flex justify-end">
+            <div className="w-72 space-y-1 text-[12px]">
+              <div className="flex justify-between text-text-secondary">
+                <span>Subtotal</span>
+                <span className="font-mono">{fmtMoney(subtotal)}</span>
+              </div>
+              <div className="flex justify-between border-t border-border pt-1 text-sm font-semibold text-text-primary">
+                <span>Total</span>
+                <span className="font-mono">{fmtMoney(total)}</span>
+              </div>
             </div>
           </div>
-        </div>
+        )}
 
         {/* Notes to the vendor — printed only when there is something to say */}
         {notes && (

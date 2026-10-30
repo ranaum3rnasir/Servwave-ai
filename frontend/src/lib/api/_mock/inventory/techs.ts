@@ -1,33 +1,38 @@
-// Field technicians + driver/dispatcher roster. In production these come
-// from app_user filtered by `field_technician` role (PRD §11.7 RBAC).
+// The staff roster the inventory screens pick people from. In production it comes from the server, which puts
+// each person in the Field roster or at the Counter by their Inventory view switch (Roles & Permissions S07.23);
+// a screen never reads a role name.
 
 export type Tech = {
   id: string;
   name: string;
   /** Real inbox from the user directory (server-resolved) — used by the pickup-ticket composer. */
   email?: string;
-  role: "field_tech" | "warehouse_lead" | "counter" | "subcontractor";
+  /** The person's Inventory view switch, as the server answers it: Field is the field roster, Counter is the rest. */
+  inventoryView: "field" | "counter";
   branch: string;
   vehicle?: string;
   primaryTrade?: "locksmith" | "door" | "security" | "hvac" | "plumbing";
   certs?: string[];
 };
 
-/** Human-readable label for each tech role. Lifted from the prototype's
+/** Human-readable label for each inventory view. Lifted from the prototype's
  *  PhonePage (module-local const) so the data seam owns it; consumed by the
  *  Communication directory/conference pickers and the Call Masking view. */
-export const TECH_ROLE_LABEL: Record<Tech["role"], string> = {
-  field_tech: "Field technician",
-  warehouse_lead: "Warehouse lead",
+export const INVENTORY_VIEW_LABEL: Record<Tech["inventoryView"], string> = {
+  field: "Field technician",
   counter: "Counter",
-  subcontractor: "Subcontractor",
 };
+
+/** The field roster: the people whose Inventory view is Field (van owners, stage pickers). */
+export function inFieldRoster(tech: Tech): boolean {
+  return tech.inventoryView === "field";
+}
 
 export const techs: Tech[] = [
   {
     id: "tech_mike",
     name: "Mike Alvarez",
-    role: "field_tech",
+    inventoryView: "field",
     branch: "Brooklyn HQ",
     vehicle: "Ford Transit · BX-4421",
     primaryTrade: "locksmith",
@@ -36,7 +41,7 @@ export const techs: Tech[] = [
   {
     id: "tech_jose",
     name: "Jose Ramirez",
-    role: "field_tech",
+    inventoryView: "field",
     branch: "Brooklyn HQ",
     vehicle: "Ford Transit · BX-5108",
     primaryTrade: "hvac",
@@ -45,7 +50,7 @@ export const techs: Tech[] = [
   {
     id: "tech_carlos",
     name: "Carlos Tran",
-    role: "field_tech",
+    inventoryView: "field",
     branch: "Queens Branch",
     vehicle: "Mercedes Sprinter · QN-9920",
     primaryTrade: "security",
@@ -54,14 +59,14 @@ export const techs: Tech[] = [
   {
     id: "tech_stephanie",
     name: "Stephanie Diaz",
-    role: "counter",
+    inventoryView: "counter",
     branch: "Brooklyn HQ",
     certs: [],
   },
   {
     id: "tech_dre",
     name: "Dre Patel",
-    role: "field_tech",
+    inventoryView: "field",
     branch: "Brooklyn HQ",
     vehicle: "Ford Transit · BX-7733",
     primaryTrade: "plumbing",
@@ -70,14 +75,14 @@ export const techs: Tech[] = [
   {
     id: "tech_kim",
     name: "Kim Nguyen",
-    role: "warehouse_lead",
+    inventoryView: "counter",
     branch: "Brooklyn HQ",
     certs: [],
   },
   {
     id: "tech_alex",
     name: "Alex Romero",
-    role: "subcontractor",
+    inventoryView: "field",
     branch: "Brooklyn HQ",
     vehicle: "Personal (1099)",
     primaryTrade: "door",

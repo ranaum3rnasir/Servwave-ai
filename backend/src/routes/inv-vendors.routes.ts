@@ -1,4 +1,4 @@
-import { Request, Response, Router } from 'express';
+import { NextFunction, Request, Response, Router } from 'express';
 import { authenticate } from '../middleware/authenticate';
 import { attachAbility } from '../middleware/attachAbility';
 import { requireFeature } from '../middleware/requireFeature';
@@ -20,10 +20,12 @@ const gone = (_req: Request, res: Response) =>
 
 // ─── Vendors ────────────────────────────────────────────
 // Subject split (inventory P0, D11): vendors gate on `Vendor`, not the coarse `Inventory`.
-// Pre-existing quirk kept as-is: the upsert updates under the *create* gate — P2's contract
-// normalization splits the verbs.
+// POST /vendors is one upsert: a body with an `id` is an update (Edit vendors), one without is a create (Create
+// vendors). The two switches are separate, so each path checks its own (S07.19).
+const canUpsertVendor = (req: Request, res: Response, next: NextFunction) =>
+  canDo(req.body?.id ? 'update' : 'create', 'Vendor')(req, res, next);
 router.get('/vendors', canDo('read', 'Vendor'), vendorsController.listVendors);
-router.post('/vendors', canDo('create', 'Vendor'), validate(vendorsController.upsertVendorSchema), vendorsController.upsertVendor);
+router.post('/vendors', canUpsertVendor, validate(vendorsController.upsertVendorSchema), vendorsController.upsertVendor);
 router.post('/vendors/delete', canDo('delete', 'Vendor'), gone); // → DELETE /vendors/:id
 router.get('/vendors/:id', canDo('read', 'Vendor'), vendorsController.getVendor);
 router.delete('/vendors/:id', canDo('delete', 'Vendor'), vendorsController.deleteVendor);

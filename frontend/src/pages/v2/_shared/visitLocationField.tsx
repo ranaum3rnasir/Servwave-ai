@@ -2,6 +2,7 @@ import { useState } from 'react';
 
 import { AddressAutocomplete } from '@/components/crm/address-autocomplete';
 import { ServiceLocationMap } from '@/components/crm/service-location-map';
+import { useAppAbility } from '@/contexts/AbilityContext';
 import { isBookableLocation, useLocations } from '@/lib/api/locations';
 import { Input } from '@/ui-kit/components/ui/input';
 import { Label } from '@/ui-kit/components/ui/label';
@@ -172,7 +173,11 @@ export function VisitLocationField({
   // that answered anything but an array - an error envelope, a paginated `{ items }`, a stub - used
   // to take `.map` with it and blank the WHOLE PAGE, not just the picker. A picker that renders
   // its two other options is a far better failure than a lead nobody can open.
-  const { data: locations } = useLocations();
+  //
+  // The list is read only by a person who holds View locations: the server refuses it to anyone else (a Technician
+  // books a visit all the same), so the control does not ask and shows its two other options.
+  const canReadLocations = useAppAbility().can('read', 'Location');
+  const { data: locations } = useLocations(canReadLocations);
   const allLocations = Array.isArray(locations) ? locations : [];
 
   const selected =

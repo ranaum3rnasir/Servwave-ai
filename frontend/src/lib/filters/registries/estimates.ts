@@ -203,3 +203,10 @@ export const estimatesRegistry: FacetConfig[] = [
   },
   TAGS_FACET,
 ];
+
+/**
+ * The same facets without "Created By", for a person whose Estimates scope is narrowed: the creators roster behind that
+ * facet is the whole organisation's, which the server answers only to a person who reads every estimate, and a
+ * narrowed reader's own estimates are never filtered by creator. A module-level const for the same stability reason.
+ */
+export const estimatesRegistryWithoutCreator: FacetConfig[] = estimatesRegistry.filter((facet) => facet.key !== 'created_by');

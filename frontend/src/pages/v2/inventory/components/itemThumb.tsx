@@ -10,7 +10,7 @@ import type { Item } from '@/lib/api/inventory';
  * with `role="img"` and an accessible name either way - so it replaces both
  * halves. `rounded-md` squares it off: a product photo is not a face.
  */
-export function ItemThumb({ item, size = 'default' }: { item: Item; size?: 'default' | 'lg' }) {
+export function ItemThumb({ item, size = 'default' }: { item: Pick<Item, 'name' | 'photoUrl'>; size?: 'default' | 'lg' }) {
   return (
     <Avatar
       name={item.name}

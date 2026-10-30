@@ -41,7 +41,7 @@ describe('PlanUsage - Reach sales', () => {
 
     await user.click(screen.getByRole('button', { name: /plan usage/i }));
     expect(await screen.findByText(/Sales: info@servwave\.com/)).toBeInTheDocument();
-    expect(screen.queryByText(/alphasecurityus\.com/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Sales: (?!info@servwave\.com)/)).not.toBeInTheDocument();
   });
 
   it('asks for a subject and a question, and nothing else', async () => {

@@ -27,7 +27,7 @@ import { rawBodyString, timingSafeEqualStr } from '../lib/webhooks/shared';
  *     present AND CTM_WEBHOOK_SIGNING_SECRET is configured — a DEDICATED secret,
  *     NOT the CTM_SECRET_KEY API secret. CTM signs sub-account webhooks with a
  *     different secret than the API key, so reusing the API secret here rejects
- *     every real webhook (401 storm, Alpha Doors 596375, 2026-07-13). Unset by
+ *     every real webhook (401 storm, the pilot org 596375, 2026-07-13). Unset by
  *     default → gate skipped, token (gate 1) is the sole auth (Phase-0 posture).
  *  3. Basic auth (defense-in-depth): we provision hooks with
  *     username 'servwave' / password = webhook token; verified when present.
@@ -194,6 +194,11 @@ export async function processCtmEvent(
       await warmReceivingNumbers(owningOrg.ctm_account_id);
     }
 
+    // The bell alerts the ingest raises wait here for the commit: their access filter reads the call or the conversation
+    // the transaction creates, which no other connection can see until then.
+    const alerts: Array<() => void> = [];
+    const afterCommit = (raise: () => void) => { alerts.push(raise); };
+
     // The transaction returns the call-ingest result (null on SMS/status paths)
     // so the post-response recording fetch can be scheduled outside of it.
     const callResult = await prisma.$transaction(async (tx) => {
@@ -211,6 +216,7 @@ export async function processCtmEvent(
         const normalized = position === 'start_outbound' ? 'starts' : position;
         return ingestCall(tx, owningOrg.id, payload as Record<string, any>, normalized, {
           ctmAccountId: owningOrg.ctm_account_id ?? undefined,
+          afterCommit,
         });
       }
       // A text-shaped `status_change` IS an outbound-text event and must run the
@@ -222,7 +228,7 @@ export async function processCtmEvent(
       // reconcile the sid onto a sid-less local one, which matters because 42 of
       // 58 message rows hold no sid for ingestSmsStatus to key on.
       if (SMS_POSITIONS.has(position) || isOutboundTextActivity(activity)) {
-        await ingestSms(tx, owningOrg.id, payload as Record<string, any>);
+        await ingestSms(tx, owningOrg.id, payload as Record<string, any>, { afterCommit });
       } else {
         // status_change carries no transcript data for calls (SMS delivery
         // status only — message_body/sms_error_code) — it is never a signal
@@ -235,6 +241,9 @@ export async function processCtmEvent(
     });
 
     res.json({ received: true });
+
+    // The bell alerts, AFTER the commit and the 200: they never delay CTM's webhook response. emit never throws.
+    for (const raise of alerts) raise();
 
     // Recording fetch AFTER the 200 — never delays CTM's webhook response.
     // ingestRecording never throws (terminal failures warn + leave the key

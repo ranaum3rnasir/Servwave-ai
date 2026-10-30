@@ -11,16 +11,11 @@
  * same class of leak (email/phone only, no billing_* — Invoice/Customer projects no billing
  * fields there) on both `customer` and `job.customer`.
  *
- * Mechanism for "the requester cannot read this customer row" — mirrors
- * `customer-duplicate-redaction.test.ts` / `repro-1996.test.ts`'s `mockDeniedCustomerRead`: a
- * conditioned `read Customer` grant is built from REAL `DEFAULT_GRANTS` (SALES's default is
- * unconditional `read Customer`, defaultGrants.ts:96) with that one row swapped for a version
- * conditioned on an `id` that is NOT the estimate's customer — the requester holds the grant
- * (so an unrelated route-level `canDo('read','Customer')` guard, if any, still passes) but is
- * denied per-row on THIS customer, exactly the shape `can()` (enforce.ts:44) already evaluates
- * for Lead/Job/Estimate today. Acceptance criterion 5 ("ability built from real grants with a
- * conditioned Customer read, not only mockAuthAs") is satisfied by this helper, not by a bare
- * CASL rule literal.
+ * Mechanism for "the requester cannot read this customer row": View customers is turned off through
+ * the switch catalog (which owns Customer reach since Roles & Permissions S01.5), so the requester
+ * reaches no customer and is denied on THIS one. Since S01.5 a customer with a lead or a job the
+ * requester can open comes with that record and is not redacted; the cases that pin the redaction
+ * itself use a customer with no lead or job the requester can open.
  *
  * Every case is on SALES's `OWN_ESTIMATE_VIA_LEAD_OR_CREATOR` read (F-004): case 1 exercises the
  * lead-less/creator branch (direct `customer` anchor), case 2 the own-via-lead branch (nested
@@ -35,8 +30,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { TEST_USERS, mockAuthAs, authHeader } from './helpers';
-import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
+import { TEST_USERS, mockAuthAs, mockRoleSwitches, authHeader } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -48,21 +42,14 @@ beforeEach(() => {
 });
 
 /**
- * Re-mock `role`'s grants as DEFAULT_GRANTS with its `read Customer` row swapped for one
- * conditioned on an `id` that is NOT `deniedCustomerId` — the requester holds `read Customer`
- * (unconditional route guards still pass) but is denied per-row on THIS customer. Call AFTER
- * `mockAuthAs`, which installs the unmodified defaults. Mirrors
- * customer-duplicate-redaction.test.ts's `mockDeniedCustomerRead` / repro-1996.test.ts's helper
- * of the same name (own local copy — this file's contract does not depend on importing from
- * either #1996 suite).
+ * Turn View customers off for the signed-in person, so they reach no customer and are denied on THIS
+ * one. Call AFTER `mockAuthAs`. Mirrors customer-duplicate-redaction.test.ts's `mockDeniedCustomerRead`
+ * / repro-1996.test.ts's helper of the same name (own local copy — this file's contract does not
+ * depend on importing from either #1996 suite).
  */
-function mockDeniedCustomerRead(role: string, deniedCustomerId: string) {
-  const rows = [
-    ...DEFAULT_GRANTS.filter((g) => !(g.role === role && g.action === 'read' && g.subject === 'Customer')),
-    { role, action: 'read', subject: 'Customer', conditions: { id: 'zz-not-' + deniedCustomerId } },
-  ];
-  mockPrisma.rolePermission.findMany.mockResolvedValue(rows.filter((g) => g.role === role));
-  clearPermissionCache();
+function mockDeniedCustomerRead(_role: string, _deniedCustomerId: string) {
+  // View customers off: the person reaches no customer, so THIS one is denied.
+  mockRoleSwitches({ view_customers: false });
 }
 
 // ─── Fixtures ──────────────────────────────────────────────────────────────────────────────
@@ -176,8 +163,9 @@ function leadAnchorEstimate(overrides: Record<string, unknown> = {}) {
 // ═════════════════════════════════════════════════════════════════════════════════════════════
 describe('#1997 (1) GET /api/estimates/:id — direct customer anchor', () => {
   it('RED — a requester whose Customer read scope excludes this customer still gets the full contact block today; desired: absent', async () => {
-    mockAuthAs('sales'); // OWN_ESTIMATE_VIA_LEAD_OR_CREATOR — creator branch (lead_id: null)
+    mockAuthAs('sales'); // the estimate is inside their Estimates scope (the scoped probe finds it)
     mockDeniedCustomerRead('SALES', CUSTOMER_ID);
+    mockPrisma.estimate.findFirst.mockResolvedValue({ id: ESTIMATE_ID_DIRECT });
     mockPrisma.estimate.findUnique.mockResolvedValue(directAnchorEstimate());
 
     const res = await request(app).get(`/api/estimates/${ESTIMATE_ID_DIRECT}`).set(authHeader('sales'));
@@ -205,12 +193,28 @@ describe('#1997 (2) GET /api/estimates/:id — lead.customer anchor', () => {
   it('RED — a requester whose Customer read scope excludes lead.customer still gets the full contact block today; desired: absent', async () => {
     mockAuthAs('sales'); // owns the lead via lead_assignees, not the creator
     mockDeniedCustomerRead('SALES', LEAD_CUSTOMER_ID);
+    mockPrisma.estimate.findFirst.mockResolvedValue({ id: ESTIMATE_ID_LEAD });
     mockPrisma.estimate.findUnique.mockResolvedValue(leadAnchorEstimate());
 
     const res = await request(app).get(`/api/estimates/${ESTIMATE_ID_LEAD}`).set(authHeader('sales'));
 
     expect(res.status).toBe(200);
     expectContactAbsent(res.body.estimate.lead.customer, LEAD_CUSTOMER_ID);
+  });
+
+
+  it('a requester with Customers View off keeps the contact block of a customer with a lead they are on (S01.5: it comes with that record)', async () => {
+    mockAuthAs('sales'); // owns the lead via lead_assignees, not the creator
+    mockDeniedCustomerRead('SALES', LEAD_CUSTOMER_ID);
+    mockPrisma.estimate.findFirst.mockResolvedValue({ id: ESTIMATE_ID_LEAD });
+    const estimate = leadAnchorEstimate();
+    estimate.lead.customer = { ...estimate.lead.customer, leads: [{ lead_assignees: [{ user_id: TEST_USERS.sales.id }] }] } as typeof estimate.lead.customer;
+    mockPrisma.estimate.findUnique.mockResolvedValue(estimate);
+
+    const res = await request(app).get(`/api/estimates/${ESTIMATE_ID_LEAD}`).set(authHeader('sales'));
+
+    expect(res.status).toBe(200);
+    expectContactPresent(res.body.estimate.lead.customer);
   });
 
   it('green control: ADMIN (unconditional read Customer) gets the full block on lead.customer too', async () => {
@@ -232,6 +236,7 @@ describe('#1997 (3) POST /api/estimates/:id/duplicate — response carries the s
   it('RED — a requester whose Customer read scope excludes this customer still gets the full contact block on the duplicate response today; desired: absent', async () => {
     mockAuthAs('sales');
     mockDeniedCustomerRead('SALES', CUSTOMER_ID);
+    mockPrisma.estimate.findFirst.mockResolvedValue({ id: ESTIMATE_ID_SOURCE });
     // The lighter read `duplicate()` performs on the SOURCE estimate before cloning it —
     // lead-less/creator branch, mirrors estimates.test.ts's duplicate() fixture shape.
     mockPrisma.estimate.findUnique.mockResolvedValue({

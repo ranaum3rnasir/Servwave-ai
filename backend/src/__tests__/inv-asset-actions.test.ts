@@ -13,6 +13,7 @@ import app from '../app';
 import { prisma } from '../lib/prisma';
 import {
   mockAuthAs,
+  mockRoleSwitches,
   authHeader,
   TEST_USERS,
   ALPHA_ORG_ID,
@@ -325,8 +326,10 @@ describe('verb role gates', () => {
     expect(mockPrisma.assetEvent.create).not.toHaveBeenCalled();
   });
 
-  it('dispatcher (update Inventory) → assign 200', async () => {
+  it('dispatcher holding Edit stock (update Inventory) → assign 200', async () => {
     mockAuthAs('dispatcher');
+    // The Dispatcher preset does not hold Edit stock (Roles & Permissions S01.9); the case gives it the switch.
+    mockRoleSwitches({ edit_stock: true });
 
     const res = await request(app).post(`/api/inventory/assets/${ASSET_FIXTURE.id}/assign`).set(authHeader('dispatcher'))
       .send({ user_id: TECH.id });

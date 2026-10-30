@@ -1,5 +1,5 @@
-// Mobile slice 50: the contact action. Tapping a number offers Call or Text; explicit Call and Text
-// buttons skip that choice; an org without the phone service gets plain device links; and (slice
+// Mobile slice 50: the contact action, now only for numbers that are not a customer's (a vendor's). Tapping a number
+// offers Call or Text; an org without the phone service gets a plain device link; and (slice
 // 63) Call on every site goes to the ServWave dialer on every device: the hand-off, not the
 // component, decides between the phone tab and the same-tab sheet.
 //
@@ -29,7 +29,7 @@ vi.mock('../contactHrefs', async (importOriginal) => ({
 
 import { requestCall } from '@/lib/communication/phoneTabHandoff';
 import { openDeviceLink } from '../contactHrefs';
-import { ContactCallButton, ContactTextButton, PhoneNumberAction } from '../ContactAction';
+import { PhoneNumberAction } from '../ContactAction';
 
 const mockRequestCall = vi.mocked(requestCall);
 const mockOpenDeviceLink = vi.mocked(openDeviceLink);
@@ -154,33 +154,6 @@ describe('on a phone', () => {
     expect(mockRequestCall).toHaveBeenCalledWith(PHONE, CONTEXT);
     expect(mockOpenDeviceLink).not.toHaveBeenCalled();
   });
-
-  it('an explicit Call button opens the dialer too (every site, none keeps a phone-only behaviour)', async () => {
-    state.onPhone = true;
-    const user = userEvent.setup();
-    renderWithProviders(<ContactCallButton phone={PHONE} name="Dana Reyes" context={CONTEXT} />, { ability: dialer });
-
-    await user.click(screen.getByRole('button', { name: 'Call Dana Reyes' }));
-
-    expect(mockRequestCall).toHaveBeenCalledWith(PHONE, CONTEXT);
-    expect(mockOpenDeviceLink).not.toHaveBeenCalled();
-  });
-
-  it('a bare Call tile opens the dialer too', async () => {
-    state.onPhone = true;
-    const user = userEvent.setup();
-    renderWithProviders(
-      <ContactCallButton kind="bare" phone={PHONE} context={CONTEXT}>
-        Call
-      </ContactCallButton>,
-      { ability: dialer },
-    );
-
-    await user.click(screen.getByRole('button', { name: 'Call' }));
-
-    expect(mockRequestCall).toHaveBeenCalledWith(PHONE, CONTEXT);
-    expect(mockOpenDeviceLink).not.toHaveBeenCalled();
-  });
 });
 
 describe('an org without the ServWave phone service', () => {
@@ -202,79 +175,5 @@ describe('an org without the ServWave phone service', () => {
 
     expect(screen.getByRole('link', { name: '(555) 123-4567' })).toHaveAttribute('href', 'tel:5551234567');
     expect(screen.queryByRole('button')).toBeNull();
-  });
-});
-
-describe('explicit Call and Text buttons', () => {
-  it('Call skips the choice and opens the dialer; Text opens the conversation', async () => {
-    const user = userEvent.setup();
-    renderWithProviders(
-      <>
-        <ContactCallButton phone={PHONE} name="Dana Reyes" context={CONTEXT} />
-        <ContactTextButton phone={PHONE} name="Dana Reyes" context={CONTEXT} />
-        <Where />
-      </>,
-      { ability: dialer },
-    );
-
-    await user.click(screen.getByRole('button', { name: 'Call Dana Reyes' }));
-    expect(mockRequestCall).toHaveBeenCalledWith(PHONE, CONTEXT);
-    expect(screen.queryByRole('menuitem')).toBeNull();
-
-    await user.click(screen.getByRole('link', { name: 'Text Dana Reyes' }));
-    expect(screen.getByTestId('where')).toHaveTextContent('/communication/text?customerId=cust-1');
-  });
-
-  it('without the phone service they are device links: tel: and sms:', () => {
-    state.phoneService = false;
-    renderWithProviders(
-      <>
-        <ContactCallButton phone={PHONE} name="Dana Reyes" />
-        <ContactTextButton phone={PHONE} name="Dana Reyes" />
-      </>,
-      { ability: dialer },
-    );
-
-    expect(screen.getByRole('link', { name: 'Call Dana Reyes' })).toHaveAttribute('href', 'tel:5551234567');
-    expect(screen.getByRole('link', { name: 'Text Dana Reyes' })).toHaveAttribute('href', 'sms:5551234567');
-  });
-
-  it('Text stays in the app for a user who may not place calls but whose org has the phone service', () => {
-    renderWithProviders(<ContactTextButton phone={PHONE} name="Dana Reyes" context={CONTEXT} />, {
-      ability: noDialer,
-    });
-
-    expect(screen.getByRole('link', { name: 'Text Dana Reyes' })).toHaveAttribute(
-      'href',
-      '/communication/text?customerId=cust-1',
-    );
-  });
-
-  it('are at least 44 px on touch', () => {
-    renderWithProviders(
-      <>
-        <ContactCallButton phone={PHONE} name="Dana Reyes" context={CONTEXT} />
-        <ContactTextButton phone={PHONE} name="Dana Reyes" context={CONTEXT} />
-      </>,
-      { ability: dialer },
-    );
-
-    // The icon buttons are the kit's: size-8.5 with a mouse, size-11 (44 px) on a coarse pointer.
-    expect(screen.getByRole('button', { name: 'Call Dana Reyes' })).toHaveClass('touch:size-11');
-    expect(screen.getByRole('link', { name: 'Text Dana Reyes' })).toHaveClass('touch:size-11');
-  });
-
-  it('a click on them never reaches a clickable row around them', async () => {
-    const user = userEvent.setup();
-    const onRow = vi.fn();
-    renderWithProviders(
-      <div onClick={onRow}>
-        <ContactCallButton phone={PHONE} name="Dana Reyes" context={CONTEXT} />
-      </div>,
-      { ability: dialer },
-    );
-
-    await user.click(screen.getByRole('button', { name: 'Call Dana Reyes' }));
-    expect(onRow).not.toHaveBeenCalled();
   });
 });

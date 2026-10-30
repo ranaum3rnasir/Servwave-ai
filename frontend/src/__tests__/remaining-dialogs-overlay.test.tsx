@@ -337,6 +337,7 @@ describe('a list inside a dialog', () => {
     { file: 'pages/reports/LeadsReport.tsx', has: 'max-h-[420px]', why: 'the same report filter panel, in the old report page' },
     { file: 'pages/reports/SalesReport.tsx', has: 'max-h-[420px]', why: 'the same report filter panel, in the old report page' },
     { file: 'components/communication/inbox/ComposeWindow.tsx', has: 'max-h-64', why: 'the template list inside the Insert template popover, not the compose dialog' },
+    { file: 'pages/v2/communication/components/mailboxList.tsx', has: 'aria-label="Mailboxes"', why: 'the Email page rail\'s own list of mailboxes, in the page rail (a column, or the menu overlay below lg); the person picker dialog that shares this file goes through DialogList' },
     { file: 'components/communication/inbox/ComposeWindow.tsx', has: 'w-[540px]', why: 'the docked compose card (md and up); below md the window is a full-screen form dialog with one body scroller (slice 46)' },
   ];
 

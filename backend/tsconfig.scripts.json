@@ -36,16 +36,8 @@
     // checking types, so an excluded test file is one that nothing checks at all.
     //
     // ── Pre-existing type debt. Shrink this list; never grow it. ──
-    // Whole subtree rather than the individual failing files: an excluded file is still
-    // pulled in when an INCLUDED file imports it, and this one has a clean-looking entry point
-    // importing a failing helper (verify-stripe.ts -> verify-stripe/fixtures.ts), so naming
-    // the leaves alone does nothing. Every script outside this directory is covered by default,
-    // which is the property that matters.
-    "scripts/verify-stripe/**",
-    // The entry point too: it imports verify-stripe/fixtures.ts, and an excluded file is
-    // still checked when an included file imports it, so excluding only the helpers is a
-    // no-op. Removing this line is the LAST step of paying that subtree's debt, not the first.
-    "scripts/verify-stripe.ts",
+    // (scripts/verify-stripe/** and scripts/verify-stripe.ts left this list in payments go-live
+    // slice 39, which rewrote the suite's fixtures; they are checked like any other script now.)
     "scripts/verify-assigned-user-staging.ts"
   ]
 }

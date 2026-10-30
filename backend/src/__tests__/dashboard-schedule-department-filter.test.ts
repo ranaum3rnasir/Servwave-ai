@@ -119,7 +119,7 @@ describe("GET /api/dashboard - Today's Schedule department filter", () => {
       .set(authHeader('admin'));
 
     expect(res.status).toBe(200);
-    const lanes = res.body.schedule_today as { user_id: string | null; jobs: { job_number: string }[] }[];
+    const lanes = res.body.data.schedule_today as { user_id: string | null; jobs: { job_number: string }[] }[];
     expect(lanes.flatMap((l) => l.jobs.map((j) => j.job_number))).toEqual(['J-PLUMBING']);
   });
 
@@ -129,7 +129,7 @@ describe("GET /api/dashboard - Today's Schedule department filter", () => {
     const res = await request(app).get('/api/dashboard').set(authHeader('admin'));
 
     expect(res.status).toBe(200);
-    const lanes = res.body.schedule_today as { user_id: string | null; jobs: { job_number: string }[] }[];
+    const lanes = res.body.data.schedule_today as { user_id: string | null; jobs: { job_number: string }[] }[];
     expect(lanes.flatMap((l) => l.jobs.map((j) => j.job_number)).sort()).toEqual(['J-HVAC', 'J-PLUMBING']);
   });
 });

@@ -81,7 +81,7 @@ describe('GET /api/communication/contacts/:id — same phones[] shape', () => {
   it('includes phones: true and returns the de-duped phones[]', async () => {
     mockAuthAs('dispatcher');
     p.customer.findFirst.mockResolvedValue({
-      id: 'cust-3',
+      id: '00000000-0000-4000-8000-0000000000c3',
       first_name: 'Sam',
       last_name: 'Rivera',
       company_name: null,
@@ -96,7 +96,7 @@ describe('GET /api/communication/contacts/:id — same phones[] shape', () => {
     });
 
     const res = await request(app)
-      .get('/api/communication/contacts/cust-3')
+      .get('/api/communication/contacts/00000000-0000-4000-8000-0000000000c3')
       .set(authHeader('dispatcher'));
 
     expect(res.status).toBe(200);

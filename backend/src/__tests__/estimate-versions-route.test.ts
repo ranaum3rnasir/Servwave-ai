@@ -16,7 +16,7 @@ import { mockAuthAs, authHeader, TEST_USERS, ESTIMATE_FIXTURE } from './helpers'
 import { buildVersionSnapshotDocument } from '../lib/estimate-version-snapshot';
 
 const mockPrisma = prisma as unknown as {
-  estimate: { findUnique: ReturnType<typeof vi.fn> };
+  estimate: { findUnique: ReturnType<typeof vi.fn>; findFirst: ReturnType<typeof vi.fn> };
   estimateVersionSnapshot: {
     findMany: ReturnType<typeof vi.fn>;
     findFirst: ReturnType<typeof vi.fn>;
@@ -26,7 +26,7 @@ const mockPrisma = prisma as unknown as {
 const ESTIMATE_ID = ESTIMATE_FIXTURE.id;
 
 const ORG = {
-  name: 'Alpha Doors', address_line1: '1', address_line2: null,
+  name: 'Example Doors', address_line1: '1', address_line2: null,
   city: 'Hoboken', state: 'NJ', postal_code: '07030', email: 'a@b.c', phone: null,
   website: null, logo_url: null, brand_color: '#E11D2E',
   estimate_terms: 'T', estimate_notes: 'N', estimate_payment_terms: 'P',
@@ -255,6 +255,7 @@ describe('GET /api/estimates/:id/versions/:version', () => {
 
   it('resolves for a colleague in the same organization, so the route is shareable', async () => {
     mockAuthAs('sales');
+    mockPrisma.estimate.findFirst.mockResolvedValue({ id: ESTIMATE_ID }); // inside their Estimates scope
 
     await request(app)
       .get(`/api/estimates/${ESTIMATE_ID}/versions/1`)

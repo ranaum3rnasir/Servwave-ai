@@ -223,7 +223,7 @@
     "src/design-system/__tests__/layering-guard.test.ts"
   ],
   "to-do": [
-    "src/components/payments/StripePaymentsStatusCard.tsx",
+    "src/components/payments/PaymentsStatusCard.tsx",
     "src/components/tasks/TaskCard.tsx"
   ],
   "to-location": [

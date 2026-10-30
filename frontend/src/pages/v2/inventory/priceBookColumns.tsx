@@ -2,7 +2,7 @@ import type { ColumnDef } from '@tanstack/react-table';
 import { Eye, EyeOff } from 'lucide-react';
 
 import { ItemIdentifiers } from '@/components/inventory/ItemIdentifiers';
-import type { Brand, Item } from '@/lib/api/inventory';
+import type { Brand, CatalogItem } from '@/lib/api/inventory';
 import { catalogItemSellPrice } from '@/lib/catalog/itemPresentation';
 import { formatCurrency } from '@/lib/utils';
 import { Badge } from '@/ui-kit/components/ui/badge';
@@ -49,21 +49,24 @@ import { ItemThumb } from './components/itemThumb';
  * carrying `aria-pressed`, which the legacy pill expressed only through colour.
  */
 export function buildPriceBookColumns({
-  brands, finishNameById, onToggleVisibility, selectable = false,
+  brands, finishNameById, onToggleVisibility, canToggleVisibility = true, selectable = false,
 }: {
   brands: Brand[];
   /** Finish is a foreign key, so the caller resolves id -> name once rather
    *  than firing a query per rendered row. */
   finishNameById: Map<string, string>;
   onToggleVisibility: (itemId: string) => void;
+  /** The toggle is an edit, so it follows the Edit price book box; without it the
+   *  cell is the same badge as plain text. */
+  canToggleVisibility?: boolean;
   selectable?: boolean;
-}): ColumnDef<Item, unknown>[] {
-  const selectColumn = buildSelectColumn<Item>({
+}): ColumnDef<CatalogItem, unknown>[] {
+  const selectColumn = buildSelectColumn<CatalogItem>({
     allLabel: 'Select all price book items on this page',
     rowLabel: (item) => `Select ${item.sku}`,
   });
 
-  const columns: ColumnDef<Item, unknown>[] = [
+  const columns: ColumnDef<CatalogItem, unknown>[] = [
     {
       id: 'photo',
       header: '',
@@ -169,6 +172,14 @@ export function buildPriceBookColumns({
         const it = row.original;
         const visibility = it.visibility ?? 'catalog';
         const isCatalog = visibility === 'catalog';
+        if (!canToggleVisibility) {
+          return (
+            <Badge variant={isCatalog ? 'softBlue' : 'softNeutral'} size="pill">
+              {isCatalog ? <Eye /> : <EyeOff />}
+              {isCatalog ? 'Catalog' : 'Internal'}
+            </Badge>
+          );
+        }
         return (
           <Button
             variant="ghost"

@@ -1,5 +1,10 @@
 import type { Grant } from './defineAbility';
 
+// LEGACY (S01.19). These are the rows the old Roles editor seeded into role_permissions. That table is no longer read
+// to decide access (a person's switches and the fixed reads are the only source), so this list is kept for rollback, for
+// the preset migration to translate custom roles (S01.22) and for the drift checker until it is rewritten against the
+// catalog presets. It never decides what anyone may do.
+
 type RoleGrant = Grant & { role: 'SALES' | 'DISPATCHER' | 'TECHNICIAN' };
 
 // #925: the pre-recipients-split shape (`{ recipient_id }`) named a column that lives on

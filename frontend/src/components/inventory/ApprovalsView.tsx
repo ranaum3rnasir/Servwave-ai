@@ -187,8 +187,7 @@ export function ApprovalsView({ onToast, locations, pendingIntent }: Props) {
               {canApprove ? (
                 <span className="inline-flex items-center gap-1 font-medium text-success">
                   <ShieldCheck className="h-3 w-3" />
-                  You can approve or reject as {reviewerName}
-                  {user?.role ? ` (${user.role})` : ""}.
+                  You can approve or reject as {reviewerName}.
                 </span>
               ) : (
                 <span className="text-warning">

@@ -11,11 +11,15 @@ router.use(authenticate, requireFeature('phone'), attachAbility);
 
 // Mint a short-lived per-agent CTM softphone token. The embedded WebRTC device
 // authenticates with this; the agency Access/Secret keys never reach the browser.
-// Floor = `create` Communication, matching POST /calls (comm-calls.routes.ts): a
-// softphone ORIGINATES calls, so operating one requires the same authority as
-// placing a call through the API. The gate is the `create Communication` grant,
-// not a role: the shared baseline (defaultGrants.ts) gives it to every role, so
-// a user loses the device token only if that grant is withheld from them.
-router.post('/phone-access', canDo('create', 'Communication'), commPhoneAccessController.createPhoneAccessToken);
+// Two checks: `create Communication` (Contact customers), because a softphone ORIGINATES calls and so needs the same
+// authority as placing a call through the API (comm-calls.routes.ts), and `use_browser_phone` (the "Office phone in the
+// browser" switch). Both are switches, never a role name: a person without the second keeps the field path, where the
+// phone service rings their own phone first.
+router.post(
+  '/phone-access',
+  canDo('create', 'Communication'),
+  canDo('use_browser_phone', 'Communication'),
+  commPhoneAccessController.createPhoneAccessToken,
+);
 
 export default router;

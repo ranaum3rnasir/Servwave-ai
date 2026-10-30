@@ -1,0 +1,115 @@
+// A fixture for tests that render a page as a person with the built-in Technician's preset values: the switches that are
+// ON (every other switch is off, and a switch the answer does not hold reads as off), the choice and list values, and the
+// rules those values compile into (a rule that is narrowed to some records is listed whole, which is all the screens ask:
+// `can(action, subject)` without a record). Read from the catalog's TECHNICIAN presets and `compileSwitchGrants` when the
+// fixture was written; it names no role at run time, so a page under test sees a custom role with these values.
+import { buildAbility, type AbilityRule } from '@/lib/ability';
+import { seedMySwitches } from '../helpers';
+
+export const TECHNICIAN_PRESET_VALUES: Record<string, boolean | string> = {
+  access_communication: true,
+  access_schedule: true,
+  add_notes: true,
+  approve_estimates: true,
+  attach_conversations: true,
+  can_be_on_crew: true,
+  can_own_leads: true,
+  contact_customers: true,
+  copy_customer_email: true,
+  create_estimates: true,
+  create_jobs: true,
+  create_leads: true,
+  create_tasks: true,
+  decline_estimates: true,
+  edit_job_and_lead_contact_details: true,
+  edit_job_line_items: true,
+  edit_tasks: true,
+  log_past_communications: true,
+  mark_arrived: true,
+  mark_on_my_way: true,
+  perform_walkthroughs: true,
+  pick_up_staged_items: true,
+  record_payments: true,
+  send_payment_links: true,
+  show_email: true,
+  show_estimates_page: true,
+  show_jobs_page: true,
+  show_leads_page: true,
+  show_phone: true,
+  show_price_book_page: true,
+  show_stock_page: true,
+  show_tasks_page: true,
+  show_text: true,
+  start_and_finish_visits: true,
+  upload_attachments: true,
+  view_attachments: true,
+  view_communication: true,
+  view_departments: true,
+  view_estimates: true,
+  view_events: true,
+  view_jobs: true,
+  view_leads: true,
+  view_logistic_orders: true,
+  view_price_book: true,
+  view_stock: true,
+  view_tasks: true,
+  view_users: true,
+  allowed_payment_methods: 'all_accepted',
+  communication_scope: 'linked_to_me',
+  estimates_scope: 'attached',
+  inventory_view: 'field',
+  invoices_scope: 'attached',
+  jobs_scope: 'attached',
+  leads_scope: 'attached',
+};
+
+export const TECHNICIAN_PRESET_RULES: AbilityRule[] = [
+  { action: 'access', subject: 'Schedule' },
+  { action: 'access_inbox', subject: 'Communication' },
+  { action: 'add_note', subject: 'Job' },
+  { action: 'add_note', subject: 'Lead' },
+  { action: 'approve', subject: 'Estimate' },
+  { action: 'arrive', subject: 'Job' },
+  { action: 'attach', subject: 'Communication' },
+  { action: 'create', subject: 'Attachment' },
+  { action: 'create', subject: 'Communication' },
+  { action: 'create', subject: 'Estimate' },
+  { action: 'create', subject: 'Job' },
+  { action: 'create', subject: 'Lead' },
+  { action: 'create', subject: 'Task' },
+  { action: 'decline', subject: 'Estimate' },
+  { action: 'duplicate', subject: 'Estimate' },
+  { action: 'edit_contact_details', subject: 'Job' },
+  { action: 'edit_contact_details', subject: 'Lead' },
+  { action: 'en_route', subject: 'Job' },
+  { action: 'log_past', subject: 'Communication' },
+  { action: 'manage_lines', subject: 'Job' },
+  { action: 'perform_walkthrough', subject: 'Lead' },
+  { action: 'pick_up_staged', subject: 'Inventory' },
+  { action: 'read', subject: 'Attachment' },
+  { action: 'read', subject: 'CalendarEntry' },
+  { action: 'read', subject: 'Communication' },
+  { action: 'read', subject: 'Department' },
+  { action: 'read', subject: 'Estimate' },
+  { action: 'read', subject: 'Inventory' },
+  { action: 'read', subject: 'Job' },
+  { action: 'read', subject: 'Lead' },
+  { action: 'read', subject: 'LogisticOrder' },
+  { action: 'read', subject: 'PriceBook' },
+  { action: 'read', subject: 'Task' },
+  { action: 'read', subject: 'User' },
+  { action: 'record_payment', subject: 'Estimate' },
+  { action: 'record_payment', subject: 'Invoice' },
+  { action: 'send_payment_link', subject: 'Invoice' },
+  { action: 'start', subject: 'Job' },
+  { action: 'update', subject: 'Task' },
+];
+
+/** What the server's `GET /api/permission-switches/me` answers for this person. */
+export const technicianSwitchesAnswer = () => ({ admin_box: false, values: TECHNICIAN_PRESET_VALUES });
+
+/** The Technician-preset person's ability, for `renderWithProviders(..., { ability })`. */
+export const technicianAbility = () => buildAbility(TECHNICIAN_PRESET_RULES);
+
+/** Seeds the last-known switches answer, for a page that reads it before the request lands. */
+export const seedTechnicianSwitches = () => seedMySwitches(TECHNICIAN_PRESET_VALUES as Record<string, boolean>);

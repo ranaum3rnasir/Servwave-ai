@@ -8,7 +8,7 @@
  *    EXISTING ones) must agree, or new and existing orgs diverge — the classic permission bug that
  *    never reproduces on the developer's own org.
  *
- * 2. The CORRECTION half. Read-only pre-flight on 2026-09-01 found Alpha Doors & Security holding
+ * 2. The CORRECTION half. Read-only pre-flight on 2026-09-01 found the pilot org holding
  *    SALES `create`/`update`/`delete` on Job, all UNCONDITIONAL, none of them in defaultGrants.ts —
  *    one Roles-editor save on 2026-08-12. A plain ON CONFLICT DO NOTHING would have let that
  *    `update` row win the conflict and survive, so the migration would report success while leaving
@@ -167,7 +167,7 @@ describe('backfill migration — every existing org AND every custom role, idemp
 });
 
 /**
- * DRIFT GUARD. Ran's call, 2026-09-01, after the Alpha Doors over-grant was found by accident
+ * DRIFT GUARD. Ran's call, 2026-09-01, after the pilot org over-grant was found by accident
  * during an unrelated pre-flight. Any Job verb SALES ends up holding must be declared in
  * DEFAULT_GRANTS and must be row-scoped; a hand-edit in the Roles editor that adds an
  * unconditional one is a red test rather than a discovery six months later.
@@ -181,7 +181,7 @@ describe('drift guard — SALES may hold no unscoped Job grant', () => {
     const sql = readFileSync(join(__dirname, '../../prisma/migrations', NAME, 'migration.sql'), 'utf8');
     const revoked = new Set((sql.match(/IN \((?:'[a-z]+',? ?)+\)/) ?? [''])[0].match(/'([a-z]+)'/g)?.map((s) => s.replace(/'/g, '')) ?? []);
     const granted = new Set(DEFAULT_GRANTS.filter((g) => g.role === 'SALES' && g.subject === 'Job').map((g) => g.action));
-    // Anything Alpha Doors was found holding must be either granted by the defaults or revoked here.
+    // Anything the pilot org was found holding must be either granted by the defaults or revoked here.
     for (const found of ['create', 'update', 'delete']) {
       expect(granted.has(found) || revoked.has(found), `${found} Job is neither granted nor revoked`).toBe(true);
     }

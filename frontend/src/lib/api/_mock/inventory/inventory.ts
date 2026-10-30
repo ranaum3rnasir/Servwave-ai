@@ -203,7 +203,7 @@ export const branches: Branch[] = [
     code: "BHQ",
     address: "215 Moore St, Brooklyn NY 11206",
     phone: "(718) 555-0101",
-    managerName: "Emanuel Dahan",
+    managerName: "Sam Rivera",
     timezone: "America/New_York",
   },
   {

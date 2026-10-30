@@ -10,7 +10,7 @@ import {
 
 import api from '@/lib/axios';
 import { useOrganization } from '@/lib/api/organization';
-import { useAuthStore } from '@/stores/auth.store';
+import { useAppAbility } from '@/contexts/AbilityContext';
 import { extractApiError } from '@/lib/utils';
 import { PhoneInput, phoneFieldValue } from '@/ui-kit/components/form/phoneInput';
 import { customerDisplayName } from '@/lib/customer-name';
@@ -185,8 +185,8 @@ export default function CustomerFormPage() {
   const isEdit = Boolean(id);
   useRecordVisit('clients', isEdit ? 'Edit Customer' : 'New Customer');
   const returnTo = (location.state as { returnTo?: string } | null)?.returnTo;
-  const authUser = useAuthStore((s) => s.user);
-  const isAdmin = authUser?.role === 'ADMIN';
+  // Backdating the created date is the "Change customer created date" switch, not the admin role.
+  const canBackdate = useAppAbility().can('change_created_date', 'Customer');
 
   const { data: customer, isLoading } = useQuery({
     queryKey: ['customer-form', id],
@@ -431,7 +431,7 @@ export default function CustomerFormPage() {
     });
   };
 
-  const buildPayload = (data: CustomerFormData, adminOverride?: boolean) => {
+  const buildPayload = (data: CustomerFormData, canBackdateCreated?: boolean) => {
     const {
       address_line1, address_line2, city, state, zip, extra_emails, phones,
       // UI-only fields - resolved/renamed before sending to the backend.
@@ -497,7 +497,7 @@ export default function CustomerFormPage() {
           extension: p.extension || undefined,
           is_primary: p.is_primary ?? false,
         })),
-      ...(adminOverride && created_at ? { created_at } : {}),
+      ...(canBackdateCreated && created_at ? { created_at } : {}),
     };
 
     return { payload, hasLocation, address_line1, address_line2, city, state, zip };
@@ -506,7 +506,7 @@ export default function CustomerFormPage() {
   /** Create or edit -> the customer id. `override` bypasses the duplicate guard. */
   const save = async (data: CustomerFormData, override = false): Promise<string> => {
     const { payload, hasLocation, address_line1, address_line2, city, state, zip } =
-      buildPayload(data, isAdmin);
+      buildPayload(data, canBackdate);
 
     if (isEdit && id) {
       const { data: res } = await api.patch(`/api/customers/${id}`, payload);
@@ -859,7 +859,7 @@ export default function CustomerFormPage() {
                 />
               </Field>
 
-              {isEdit && isAdmin && (
+              {isEdit && canBackdate && (
                 <Field label="Customer Since" htmlFor="created_at">
                   {/* watch/setValue rather than register(): the picker is a
                       controlled value/onChange pair, not a native input RHF can

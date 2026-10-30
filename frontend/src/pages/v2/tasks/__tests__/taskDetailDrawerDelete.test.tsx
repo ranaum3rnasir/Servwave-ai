@@ -35,7 +35,7 @@ const TASK = {
   status: 'TODO' as const,
   priority: 'HIGH' as const,
   assignee_ids: ['u1'],
-  assignees: [{ id: 'u1', name: 'Oved Adani' }],
+  assignees: [{ id: 'u1', name: 'Morgan Diaz' }],
   watcher_ids: [],
   watchers: [],
   due_at: null,

@@ -98,7 +98,7 @@ type Item = { id: string; type: string; severity: string; title: string; meta: s
 async function notTold(): Promise<Item[]> {
   const res = await request(app).get('/api/dashboard').set(authHeader('admin'));
   expect(res.status).toBe(200);
-  return (res.body.needs_attention as Item[]).filter((a) => a.type === 'customer_not_told');
+  return (res.body.data.needs_attention as Item[]).filter((a) => a.type === 'customer_not_told');
 }
 
 // Frozen mid-day clock, same reasoning as the repoint suite: every fixture is relative to now,

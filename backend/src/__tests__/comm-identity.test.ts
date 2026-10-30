@@ -3,7 +3,7 @@ import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import {
-  ALPHA_ORG_ID, mockAuthAs, authHeader, CUSTOMER_FIXTURE, LEAD_FIXTURE, TEST_USERS,
+  ALPHA_ORG_ID, mockAuthAs, mockRoleSwitches, authHeader, CUSTOMER_FIXTURE, LEAD_FIXTURE, TEST_USERS,
 } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { clearTokenCache } from '../middleware/authenticate';
@@ -187,6 +187,7 @@ describe('POST /api/communication/threads', () => {
   // round 1 (comm-section-gate.test.ts).
   it('403s for SALES — creating a new thread now requires access_inbox (#2046)', async () => {
     mockAuthAs('sales');
+    mockRoleSwitches({ access_communication: false });
     const res = await request(app).post('/api/communication/threads').set(authHeader('sales')).send(base);
     expect(res.status).toBe(403);
     expect(mockPrisma.messageThread.create).not.toHaveBeenCalled();
@@ -232,6 +233,7 @@ describe('POST /api/communication/whatsapp-chats', () => {
   // new chat, is section-only and now requires access_inbox.
   it('403s for SALES — WhatsApp is section-only, requires access_inbox (#2046)', async () => {
     mockAuthAs('sales', { is_demo: true });
+    mockRoleSwitches({ access_communication: false });
     const res = await request(app).post('/api/communication/whatsapp-chats').set(authHeader('sales')).send(base);
     expect(res.status).toBe(403);
     expect(mockPrisma.whatsAppChat.create).not.toHaveBeenCalled();
@@ -387,6 +389,7 @@ describe('POST /api/communication/whatsapp', () => {
   // an existing chat, is section-only and now requires access_inbox.
   it('403s for SALES — WhatsApp is section-only, requires access_inbox (#2046)', async () => {
     mockAuthAs('sales', { is_demo: true });
+    mockRoleSwitches({ access_communication: false });
     const res = await request(app).post('/api/communication/whatsapp').set(authHeader('sales'))
       .send({ chat_id: 'b2c3d4e5-0000-0000-0000-000000000001', text: 'hi' });
     expect(res.status).toBe(403);

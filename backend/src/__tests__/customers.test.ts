@@ -7,6 +7,7 @@ import {
   TEST_USERS,
   ALPHA_ORG_ID,
   mockAuthAs,
+  mockRoleSwitches,
   authHeader,
   CUSTOMER_FIXTURE,
   LOCATION_FIXTURE,
@@ -1000,6 +1001,41 @@ describe('GET /api/customers/:id', () => {
     expect(res.status).toBe(200);
   });
 
+  // Payments go-live slice 28 conductor ruling D1: the customer page's invoice list badges the
+  // bank money still clearing on an invoice.
+  it('sends processing_amount per customer invoice, summed from its live PROCESSING payments', async () => {
+    mockAuthAs('admin');
+    (prisma.customer.findUnique as ReturnType<typeof vi.fn>).mockResolvedValue(CUSTOMER_FIXTURE);
+    mockPrisma.note.findMany.mockResolvedValue([]);
+    (prisma.invoice.findMany as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: 'inv-1', invoice_number: 'I00001', status: 'SENT', kind: 'STANDARD',
+          total_amount: 300, amount_due: 225.25, due_date: null, created_at: new Date(), job: null,
+          payments: [
+            { id: 'p1', amount: 74.75, state: 'SUCCEEDED', voided_at: null },
+            { id: 'p2', amount: 100, state: 'PROCESSING', voided_at: null },
+            { id: 'p3', amount: 25.5, state: 'PROCESSING', voided_at: null },
+            { id: 'p4', amount: 9, state: 'PROCESSING', voided_at: new Date() },
+            { id: 'p5', amount: 7, state: 'FAILED', voided_at: null },
+          ],
+        },
+        {
+          id: 'inv-2', invoice_number: 'I00002', status: 'SENT', kind: 'STANDARD',
+          total_amount: 500, amount_due: 500, due_date: null, created_at: new Date(), job: null, payments: [],
+        },
+      ]);
+    mockSummaryQueries();
+
+    const res = await request(app).get(`/api/customers/${CUSTOMER_FIXTURE.id}`).set(authHeader('admin'));
+
+    expect(res.status).toBe(200);
+    const byId = Object.fromEntries(res.body.customer.invoices.map((i: { id: string }) => [i.id, i]));
+    expect(byId['inv-1'].processing_amount).toBe(125.5);
+    expect(byId['inv-2'].processing_amount).toBe(0);
+  });
+
   it('includes standalone invoices in customer.invoices with flattened job_number', async () => {
     mockAuthAs('admin');
     (prisma.customer.findUnique as ReturnType<typeof vi.fn>).mockResolvedValue(CUSTOMER_FIXTURE);
@@ -1666,9 +1702,15 @@ describe('GET /api/customers/export', () => {
     expect(res.body.pagination).toBeUndefined();
   });
 
-  it('is accessible by DISPATCHER role', async () => {
+  it('is accessible by a DISPATCHER given Export customers, and refused on the preset', async () => {
     mockAuthAs('dispatcher');
     mockPrisma.customer.findMany.mockResolvedValue([]);
+    const onPreset = await request(app)
+      .get('/api/customers/export')
+      .set(authHeader('dispatcher'));
+    expect(onPreset.status).toBe(403);
+
+    mockRoleSwitches({ export_customers: true });
 
     const res = await request(app)
       .get('/api/customers/export')
@@ -2503,8 +2545,15 @@ describe('Customer lifecycle: archive / unarchive', () => {
     expect(args.data.archived_at).toBeNull();
   });
 
-  it('archive allowed for DISPATCHER, forbidden for TECHNICIAN', async () => {
+  it('archive allowed for a DISPATCHER given Archive customers, forbidden on the preset and for TECHNICIAN', async () => {
     mockAuthAs('dispatcher');
+    mockPrisma.customer.findUnique.mockResolvedValue(CUSTOMER_FIXTURE);
+    const onPreset = await request(app)
+      .post(`/api/customers/${CUSTOMER_FIXTURE.id}/archive`)
+      .set(authHeader('dispatcher'));
+    expect(onPreset.status).toBe(403);
+
+    mockRoleSwitches({ archive_customers: true });
     mockPrisma.customer.findUnique.mockResolvedValue(CUSTOMER_FIXTURE);
     mockPrisma.customer.update.mockResolvedValue({ ...CUSTOMER_FIXTURE, is_active: false });
     const ok = await request(app)
@@ -2615,6 +2664,11 @@ describe('POST /api/customers/:id/purge', () => {
     mockPrisma.customer.count.mockResolvedValue(0); // no members
     mockPrisma.$transaction.mockImplementation((fn: (tx: unknown) => Promise<unknown>) => fn(prisma));
     mockPrisma.timelineEvent.create.mockResolvedValue({});
+    // F1 guard: the purge policy reads refunds, credits and open disputes, and the purge writes its audit row.
+    (prisma.refund.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (prisma.credit.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (prisma.dispute.count as ReturnType<typeof vi.fn>).mockResolvedValue(0);
+    (prisma.auditLog.create as ReturnType<typeof vi.fn>).mockResolvedValue({});
   }
 
   it('requires admin (sales/dispatcher/technician → 403)', async () => {
@@ -2667,13 +2721,16 @@ describe('POST /api/customers/:id/purge', () => {
   it('warns-but-allows admin when Payment present, with Stripe-charge flag', async () => {
     mockAuthAs('admin');
     setupPurge();
+    // A payment older than every F1 window (a recent one is refused, see purge-route-db.test.ts).
     mockPrisma.payment.findMany.mockResolvedValue([
-      { amount: 300, stripe_payment_intent_id: 'pi_xyz' },
+      { amount: 300, method: 'CARD', paid_at: new Date('2012-01-01'), voided_at: null, stripe_payment_intent_id: 'pi_xyz' },
     ]);
     (prisma.lead.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
     (prisma.estimate.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
     (prisma.job.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
-    (prisma.invoice.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (prisma.invoice.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { id: 'inv-old', invoice_number: 'INV-OLD', status: 'PAID', created_at: new Date('2012-01-01'), sent_at: null, paid_at: new Date('2012-01-01') },
+    ]);
     (prisma.messageThread.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
     (prisma.whatsAppChat.findMany as ReturnType<typeof vi.fn>).mockResolvedValue([]);
     mockPrisma.customer.delete.mockResolvedValue(CUSTOMER_FIXTURE);

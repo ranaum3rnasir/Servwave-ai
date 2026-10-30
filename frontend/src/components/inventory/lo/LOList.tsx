@@ -27,6 +27,7 @@ import { EmptyState } from '@/components/ui/empty-state';
 import { Heading } from '@/components/ui/heading';
 import { LODetailSheet } from './LODetailSheet';
 import { formatLoDate, primaryAnchor } from './loStatus';
+import { canStartNewOrder } from './loActions';
 
 export interface LOListProps {
   /** Scope the list (and pre-anchor new orders) to a job. */
@@ -51,7 +52,7 @@ const CHIPS: { value: ChipValue; label: string }[] = [
 
 export function LOList({ jobId, invoiceId, servicePlanId }: LOListProps) {
   const ability = useAppAbility();
-  const canCreate = ability.can('create', 'LogisticOrder');
+  const canCreate = canStartNewOrder(ability);
 
   const anchorFilter = useMemo<LoListFilters>(
     () => ({

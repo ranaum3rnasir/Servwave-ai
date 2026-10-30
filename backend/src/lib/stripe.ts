@@ -1,15 +1,20 @@
+import { componentsFor, type SessionSurface } from './account-session-surfaces';
 import Stripe from 'stripe';
 import { createHash } from 'crypto';
 import { env } from '../config/env';
 import { logger } from './logger';
+import type { CheckoutMethod, PricedCheckout } from './checkout-pricing';
 
 export const STRIPE_API_VERSION = '2025-02-24.acacia';
+// The one call that may use a newer version: the card session when Link is hidden (the wallet
+// option does not exist at the platform version). Webhook endpoints stay on STRIPE_API_VERSION.
+export const LINK_HIDING_API_VERSION = '2025-04-30.basil';
 
 let _stripe: Stripe | null = null;
 
 function _platformStripe(): Stripe {
   if (!env.STRIPE_SECRET_KEY) {
-    throw new Error('Stripe is not configured. Set STRIPE_SECRET_KEY in environment.');
+    throw new Error('Online payments are not configured on this server.');
   }
   if (!_stripe) {
     _stripe = new Stripe(env.STRIPE_SECRET_KEY, { apiVersion: STRIPE_API_VERSION });
@@ -70,13 +75,13 @@ export async function createConnectedAccount(input: ConnectedAccountPrefill): Pr
     country: 'US',
     email: emptyToUndefined(input.email),
     controller: {
-      // MUST be 'full' (Standard-equivalent), NOT 'express': Stripe rejects
-      // express + losses.payments:'stripe' ("when dashboard=express, your platform must be
-      // liable for negative balances/chargebacks"). ServWave's posture is contractor-liable
-      // (contractor bears chargebacks, ServWave holds no funds/reserves) → the account must
-      // be full/Standard. Embedded onboarding still works with full; contractors operate
-      // in-app day-to-day. See md_files/plans/payments/2026-07-22-connect-account-dashboard-decision.md
-      stripe_dashboard: { type: 'full' },
+      // D13 (payments go-live, 2026-10-05): Stripe's "fully embedded" model. No Stripe dashboard
+      // or login for the contractor ('none'); the contractor still pays Stripe's fees, Stripe
+      // carries negative-balance losses and collects requirements. NOT 'express' (Stripe rejects
+      // express + losses.payments:'stripe'). The controller is fixed at creation and this is the
+      // only path that creates an account, so every account ServWave makes gets exactly this.
+      // See md_files/plans/payments/2026-10-05-payments-go-live/01-research-and-decisions.md §9.2.
+      stripe_dashboard: { type: 'none' },
       fees: { payer: 'account' },
       losses: { payments: 'stripe' },
       requirement_collection: 'stripe',
@@ -85,9 +90,12 @@ export async function createConnectedAccount(input: ConnectedAccountPrefill): Pr
     // it can complete every other requirement and still never charge a card or receive a
     // payout, and the embedded onboarding component has no capability-driven flow to show
     // (the "Add information" button renders but never advances past the landing card).
+    // ACH bank debit is requested up front (PRD Module 1) so bank payments can turn on by
+    // themselves once the capability goes active; nothing re-requests it later.
     capabilities: {
       card_payments: { requested: true },
       transfers: { requested: true },
+      us_bank_account_ach_payments: { requested: true },
     },
     // business_type OMITTED when the caller can't confidently map org.business_type — Stripe then
     // collects it (safer than hardcoding 'company' onto a sole proprietor).
@@ -119,28 +127,30 @@ export async function createConnectedAccount(input: ConnectedAccountPrefill): Pr
   const paramsHash = createHash('sha256').update(JSON.stringify(params)).digest('hex').slice(0, 16);
   return stripe.accounts.create(params, { idempotencyKey: `acct-create:${input.orgId}:${paramsHash}` });
 }
-// NOTE — logo can't be prefilled by URL: settings.branding.logo wants a Stripe File id, so an org
-// logo needs a files.create({ purpose: 'business_logo' }) upload first. Defer to a follow-up
-// (contractor's own logo upload on Stripe's surface is acceptable at launch; color is the cheap win).
+// The logo cannot be prefilled by URL: settings.branding.logo wants a file id, so updateAccountBranding
+// uploads the bytes first. The hosted checkout reads name, colour and logo from the account's settings
+// (never per session: that needs a newer API version).
 
-export async function createAccountSession(accountId: string): Promise<string> {
+export async function createAccountSession(accountId: string, surface: SessionSurface = 'owner'): Promise<string> {
   const stripe = _platformStripe();
   const session = await stripe.accountSessions.create({
     account: accountId,
-    components: {
-      account_onboarding: { enabled: true },
-    },
+    components: componentsFor(surface) as Stripe.AccountSessionCreateParams.Components,
   });
   return session.client_secret;
 }
 
-// NOTE: this is a forward reference for Task 1.3 ("Stripe lib — account
-// create/session/retrieve/dual-secret verify"), added here because Task 1.1's
-// backfillStripeFlags() hard-depends on it to compile. Task 1.3 owns the rest
-// of that surface (createConnectedAccount/createAccountSession/etc.) — this
-// export should already match its spec, so that task just adds what's missing.
+// Live account lookup. Its errors are classified (fail closed) by lib/account-status.ts and
+// by the account.updated webhook handler; this wrapper does not swallow them.
 export async function retrieveAccount(accountId: string): Promise<Stripe.Account> {
   return _platformStripe().accounts.retrieve(accountId);
+}
+
+// Cheap authenticated read of the platform's own account. The nightly status refresh calls it
+// once before any org, so a bad or under-permissioned platform key aborts the run instead of
+// being read as an answer about every connected account. Throws the processor's error.
+export async function checkPlatformKey(): Promise<void> {
+  await _platformStripe().accounts.retrieveCurrent();
 }
 
 export async function createAccountLink(accountId: string, refreshUrl: string, returnUrl: string): Promise<string> {
@@ -150,157 +160,139 @@ export async function createAccountLink(accountId: string, refreshUrl: string, r
   return link.url;
 }
 
-export async function updateAccountStatementDescriptor(accountId: string, descriptor: string): Promise<void> {
-  await _platformStripe().accounts.update(accountId, { settings: { payments: { statement_descriptor: descriptor } } });
-}
-
-// --- Card service fee ---------------------------------------------------------------------
-// Plan: md_files/plans/payments/2026-08-03-card-service-fee-workiz-parity.md
-//
-// The customer, not the contractor, funds the card-fee stack. On a card payment we add a 3.5%
-// service fee to what the customer is charged, and ServWave's application fee becomes whatever
-// is left of that fee after Stripe takes its cut, so the org receives its face amount. This
-// REPLACED the old flat platform_fee_bps cut on card payments rather than stacking on top of
-// it (D2), and it is the only card-fee path there is: card payments always carry a card fee,
-// so no org opts out of it and there is no per-org switch to consult.
-//
-// All three functions are pure: the money math has to be unit-testable without a Stripe call,
-// and callers need to compute the figures before deciding whether to pass them through at all.
-
-// D4: a platform constant. Deliberately NOT a column, NOT an AppSetting, and NOT exposed in any
-// settings form - orgs do not choose this rate. Rate rationale is in the plan's economics
-// section: no rate inside the 3% network cap can fund both Stripe and our platform fee.
-export const CARD_SERVICE_FEE_BPS = 350;
-
-// Stripe's standard US card rate. Used only to SIZE our application fee at checkout-creation
-// time, because application_fee_amount must be fixed before Stripe knows what card is coming.
-const STRIPE_PERCENT_RATE = 0.029;
-const STRIPE_FIXED_FEE_CENTS = 30;
-
-/** The service fee the customer pays on top, in cents. Basis is what is being paid now. */
-export function computeServiceFee(amountCents: number, bps: number): number {
-  return Math.round(amountCents * bps / 10000);
+export interface AccountBranding {
+  primaryColor?: string;
+  logo?: { data: Buffer; mime: string };
 }
 
 /**
- * What Stripe is expected to take from the GROSS charge (base + service fee), in cents.
- * An estimate, not a measurement: international, Amex and converted cards all cost more, and
- * when actual exceeds this the org nets slightly under face value (D2, accepted).
+ * Payments go-live slice 36: push the contractor's colour and logo to the connected account's
+ * branding settings, which is where the hosted checkout (and the processor's emails) read them.
+ * Only what is passed is sent, and only under settings.branding (the platform may not write
+ * business_profile on a processor-controlled account). The logo is uploaded as a business logo first.
  */
-export function estimateStripeFee(grossCents: number): number {
-  return Math.round(STRIPE_PERCENT_RATE * grossCents) + STRIPE_FIXED_FEE_CENTS;
-}
-
-/**
- * ServWave's application_fee_amount on a card payment carrying a service fee: the service fee
- * less what Stripe is expected to take, clamped at zero.
- *
- * The clamp is load-bearing. Below a base of about $60.18 Stripe's fixed 30c outruns the 3.5%
- * and the raw figure goes negative - Stripe rejects a negative application fee, and we must
- * never bill the org for the shortfall, so ServWave simply earns nothing on small tickets.
- *
- * Takes the base amount only. The customer's pay-time tip is never part of this basis (D7).
- */
-export function deriveServiceFeeApplicationFee(amountCents: number): number {
-  const serviceFeeCents = computeServiceFee(amountCents, CARD_SERVICE_FEE_BPS);
-  const grossCents = amountCents + serviceFeeCents;
-  return Math.max(0, serviceFeeCents - estimateStripeFee(grossCents));
-}
-
-/**
- * Resolves both fee fields for a card checkout in one place, so the two call sites (invoice
- * payment + estimate deposit) cannot drift.
- *
- * Takes the amount and nothing else, deliberately: paying by card always carries the card fee,
- * so there is no org, plan or setting that can turn it off. Keep it that way - an org parameter
- * here is how an opt-out gets reintroduced by accident.
- */
-export function resolveCheckoutFees(
-  amountCents: number,
-): { serviceFeeAmount: number; applicationFeeAmount: number } {
-  return {
-    serviceFeeAmount: computeServiceFee(amountCents, CARD_SERVICE_FEE_BPS),
-    applicationFeeAmount: deriveServiceFeeApplicationFee(amountCents),
+export async function updateAccountBranding(accountId: string, branding: AccountBranding): Promise<void> {
+  const stripe = _platformStripe();
+  let logoFileId: string | undefined;
+  if (branding.logo) {
+    const ext = branding.logo.mime === 'image/png' ? 'png' : 'jpg';
+    const file = await stripe.files.create({
+      purpose: 'business_logo',
+      file: { data: branding.logo.data, name: `logo.${ext}`, type: 'application/octet-stream' },
+    });
+    logoFileId = file.id;
+  }
+  const brandingSettings = {
+    ...(branding.primaryColor ? { primary_color: branding.primaryColor } : {}),
+    ...(logoFileId ? { logo: logoFileId } : {}),
   };
+  const params: Stripe.AccountUpdateParams = {
+    ...(Object.keys(brandingSettings).length ? { settings: { branding: brandingSettings } } : {}),
+  };
+  if (Object.keys(params).length === 0) return;
+  await stripe.accounts.update(accountId, params);
 }
 
 // D11 — percentages exist ONLY to render chips client-side; nothing persists them. Platform
 // constants in v1 (no column, no settings form) - org-configurable presets are a follow-up.
 export const CARD_TIP_PRESET_BPS = [1000, 1500, 2000];
 
+/**
+ * The payment-method part of a hosted checkout. A session carries exactly one method, never both
+ * (payments go-live PRD Module 3, D19):
+ * - card: card only. The hosted page then also offers Apple Pay, Google Pay and Link on a
+ *   supported browser.
+ * - bank: ACH debit only, verified instantly through the customer's bank login, with
+ *   micro-deposits as the fallback (`automatic`). Only the `payment_method` permission is asked
+ *   for: the account and routing number the debit needs, never balances or transactions.
+ */
+function sessionMethodParams(method: CheckoutMethod): Pick<
+  Stripe.Checkout.SessionCreateParams,
+  'payment_method_types' | 'payment_method_options'
+> {
+  if (method === 'bank') {
+    return {
+      payment_method_types: ['us_bank_account'],
+      payment_method_options: {
+        us_bank_account: {
+          verification_method: 'automatic',
+          financial_connections: { permissions: ['payment_method'] },
+        },
+      },
+    };
+  }
+  return { payment_method_types: ['card'] };
+}
+
+/** The document a checkout pays. `kind` is what the reconciler books it as. */
+export interface CheckoutDocument {
+  organizationId: string;
+  invoiceId: string;
+  kind: 'invoice' | 'deposit';
+  /** A deposit taken at approval also names its estimate. */
+  estimateId?: string;
+}
+
+/**
+ * Opens a hosted checkout for an already-priced payment, by card or by bank (one per session).
+ *
+ * What the customer is charged is decided by the checkout pricing module (checkout-pricing.ts),
+ * never here: each priced line becomes one line item, in order. No application fee is ever sent
+ * (payments go-live D9 - ServWave takes no cut of payments at launch).
+ */
 export async function createCheckoutSession(
   options: {
-    depositAmount: number;
-    description: string;
+    pricing: PricedCheckout;
+    method: CheckoutMethod;
+    document: CheckoutDocument;
     successUrl: string;
     cancelUrl: string;
-    metadata: Record<string, string>;
-    applicationFeeAmount?: number;
-    serviceFeeAmount?: number;
-    tipAmount?: number;
   },
   ctx: { stripe: Stripe; stripeAccount?: string },
 ): Promise<Stripe.Checkout.Session> {
-  const totalCents = Math.round(options.depositAmount * 100);
-  const hasServiceFee = !!options.serviceFeeAmount && options.serviceFeeAmount > 0;
-  const hasTip = !!options.tipAmount && options.tipAmount > 0;
-
-  const lineItems: Stripe.Checkout.SessionCreateParams.LineItem[] = [{
+  const { pricing, document } = options;
+  const lineItems: Stripe.Checkout.SessionCreateParams.LineItem[] = pricing.lineItems.map((line) => ({
     price_data: {
       currency: 'usd',
-      unit_amount: totalCents,
-      product_data: { name: options.description },
+      unit_amount: line.amountCents,
+      product_data: { name: line.name },
     },
     quantity: 1,
-  }];
-  // Slice 2 — itemised, not folded into a larger total, so the customer sees the fee on the
-  // Stripe-hosted page itself (D1: the invoice document is untouched, this is checkout-only).
-  if (hasServiceFee) {
-    lineItems.push({
-      price_data: {
-        currency: 'usd',
-        unit_amount: options.serviceFeeAmount!,
-        product_data: { name: 'Service fee' },
-      },
-      quantity: 1,
-    });
-  }
-  // Slice 7 — the tip is a third, independent line item. It rides on the payment, not the
-  // invoice (D10), and is never part of the service-fee basis (D7 amendment).
-  if (hasTip) {
-    lineItems.push({
-      price_data: {
-        currency: 'usd',
-        unit_amount: options.tipAmount!,
-        product_data: { name: 'Tip' },
-      },
-      quantity: 1,
-    });
-  }
+  }));
+
+  const hideLink = options.method === 'card' && env.PAYMENTS_HIDE_LINK_ON_CARD === true;
+  const requestOptions: Stripe.RequestOptions = {
+    ...(ctx.stripeAccount ? { stripeAccount: ctx.stripeAccount } : {}),
+    ...(hideLink ? { apiVersion: LINK_HIDING_API_VERSION as Stripe.LatestApiVersion } : {}),
+  };
 
   const session = await ctx.stripe.checkout.sessions.create(
     {
-      // IMPORTANT: 'card' only. If we add Link/ACH/SEPA/Klarna, those complete asynchronously
-      // and we MUST add payment_intent.succeeded webhook handling. See spec §1 out-of-scope.
-      payment_method_types: ['card'],
+      ...(hideLink ? { wallet_options: { link: { display: 'never' } } } : {}),
+      // A bank session completes UNPAID and settles days later (async_payment_succeeded /
+      // _failed); the payment lifecycle for that is payments go-live slice 13.
+      ...sessionMethodParams(options.method),
       line_items: lineItems,
       mode: 'payment',
       success_url: options.successUrl,
       cancel_url: options.cancelUrl,
-      // D8 — serviceFeeCents/tipCents ride along for the webhook's amount cross-check; neither
-      // is ever the webhook's source of truth on its own.
+      // What the session was built against (payments go-live PRD Module 3): the org, the
+      // document and its kind, the payable-now amount and the tip. The reconciler checks all of it
+      // against what was charged. tipCents rides along for the amount cross-check; it is never the
+      // webhook's source of truth on its own, and is absent when there is no tip.
       metadata: {
-        ...options.metadata,
-        ...(hasServiceFee ? { serviceFeeCents: String(options.serviceFeeAmount) } : {}),
-        ...(hasTip ? { tipCents: String(options.tipAmount) } : {}),
+        organizationId: document.organizationId,
+        invoiceId: document.invoiceId,
+        ...(document.estimateId ? { estimateId: document.estimateId } : {}),
+        kind: document.kind,
+        payableNowCents: String(pricing.payableNowCents),
+        // Slice 26: a partial payment names the document amount chosen, so the reconciler books
+        // exactly that and leaves the rest owing. Absent = the payable-now amount in full.
+        ...(pricing.amountCents !== pricing.payableNowCents ? { amountCents: String(pricing.amountCents) } : {}),
+        ...(pricing.tipCents > 0 ? { tipCents: String(pricing.tipCents) } : {}),
       },
-      // Platform fee — DIRECT charges only, positive integer only. An application fee on a
-      // platform-account session (no stripeAccount) makes Stripe 400 EVERY checkout.
-      ...(ctx.stripeAccount && options.applicationFeeAmount && options.applicationFeeAmount > 0
-        ? { payment_intent_data: { application_fee_amount: options.applicationFeeAmount } }
-        : {}),
     },
-    ctx.stripeAccount ? { stripeAccount: ctx.stripeAccount } : undefined,
+    Object.keys(requestOptions).length > 0 ? requestOptions : undefined,
   );
 
   return session;
@@ -367,6 +359,7 @@ export async function expireCheckoutSession(
 export async function expireOpenCheckoutSessionsForInvoice(
   invoiceId: string,
   ctx: { stripe: Stripe; stripeAccount?: string },
+  options?: { exceptSessionId?: string; createdBefore?: number },
 ): Promise<CheckoutExpiryResult> {
   const result: CheckoutExpiryResult = { expired: [], failed: 0, ok: true };
   const requestOptions = ctx.stripeAccount ? { stripeAccount: ctx.stripeAccount } : undefined;
@@ -381,6 +374,11 @@ export async function expireOpenCheckoutSessionsForInvoice(
       const sessions = listed?.data ?? [];
       for (const session of sessions) {
         if (session?.metadata?.invoiceId !== invoiceId) continue;
+        // Minting a new session closes the OLDER ones; the one just minted is the live link.
+        if (options?.exceptSessionId && session.id === options.exceptSessionId) continue;
+        // Only strictly OLDER sessions go: one minted at the same moment or later belongs to a
+        // concurrent mint, and each of two simultaneous mints must not expire the other.
+        if (options?.createdBefore !== undefined && typeof session.created === 'number' && session.created >= options.createdBefore) continue;
         if (await expireCheckoutSession(session.id, ctx)) {
           result.expired.push(session.id);
         } else {
@@ -407,7 +405,7 @@ export async function createRefund(
   paymentIntentId: string,
   ctx: { stripe: Stripe; stripeAccount?: string },
   amountInCents?: number,
-  options?: { metadata?: Record<string, string>; reverseApplicationFee?: boolean },
+  options?: { metadata?: Record<string, string>; reverseApplicationFee?: boolean; idempotencyKey?: string },
 ): Promise<Stripe.Refund> {
   const params: Stripe.RefundCreateParams = { payment_intent: paymentIntentId };
   if (amountInCents) params.amount = amountInCents;
@@ -416,16 +414,229 @@ export async function createRefund(
   // Payment (an application fee only ever exists there); Stripe prorates automatically on
   // a partial refund. Callers decide via the Payment's stripe_account_id — this just wires it.
   if (options?.reverseApplicationFee) params.refund_application_fee = true;
-  return ctx.stripe.refunds.create(
-    params,
-    ctx.stripeAccount ? { stripeAccount: ctx.stripeAccount } : undefined,
+  // Slice 11: a caller that may be retried (a double click) names the refund, so the processor
+  // sends it once.
+  const requestOptions: Stripe.RequestOptions = {
+    ...(ctx.stripeAccount ? { stripeAccount: ctx.stripeAccount } : {}),
+    ...(options?.idempotencyKey ? { idempotencyKey: options.idempotencyKey } : {}),
+  };
+  return ctx.stripe.refunds.create(params, Object.keys(requestOptions).length ? requestOptions : undefined);
+}
+
+/**
+ * Payments go-live slice 29: cancel a bank debit that is still processing, in the account it was
+ * made in. The sandbox confirmed a processing bank payment intent can be cancelled (D17); the
+ * processor refuses once the debit can no longer be stopped.
+ */
+export async function cancelPaymentIntent(
+  paymentIntentId: string,
+  ctx: { stripe: Stripe; stripeAccount?: string },
+): Promise<Stripe.PaymentIntent> {
+  return ctx.stripe.paymentIntents.cancel(paymentIntentId, {}, ctx.stripeAccount ? { stripeAccount: ctx.stripeAccount } : undefined);
+}
+
+/**
+ * Slice 11: every refund on a payment intent, out of the account it was made in. The list asks this
+ * before it sends a refund, so a refund an earlier attempt created (its answer was an error, or never
+ * arrived) is found instead of sent a second time. Throws rather than answer with a partial list.
+ */
+const REFUND_LIST_PAGE_LIMIT = 10;
+async function listRefundsWhere(
+  filter: { payment_intent: string } | { charge: string },
+  ctx: { stripe: Stripe; stripeAccount?: string },
+): Promise<Stripe.Refund[]> {
+  const refunds: Stripe.Refund[] = [];
+  let startingAfter: string | undefined;
+  for (let page = 0; page < REFUND_LIST_PAGE_LIMIT; page++) {
+    const listed = await ctx.stripe.refunds.list(
+      { ...filter, limit: 100, ...(startingAfter ? { starting_after: startingAfter } : {}) },
+      ctx.stripeAccount ? { stripeAccount: ctx.stripeAccount } : undefined,
+    );
+    refunds.push(...listed.data);
+    if (!listed.has_more || listed.data.length === 0) return refunds;
+    startingAfter = listed.data[listed.data.length - 1].id;
+  }
+  throw new Error(`Refund list for ${Object.values(filter)[0]} hit the ${REFUND_LIST_PAGE_LIMIT}-page bound`);
+}
+
+export function listPaymentIntentRefunds(
+  paymentIntentId: string,
+  ctx: { stripe: Stripe; stripeAccount?: string },
+): Promise<Stripe.Refund[]> {
+  return listRefundsWhere({ payment_intent: paymentIntentId }, ctx);
+}
+
+/** Slice 37b: the same lookup by charge, for a payment that kept a charge id but no payment intent id. */
+export function listChargeRefunds(
+  chargeId: string,
+  ctx: { stripe: Stripe; stripeAccount?: string },
+): Promise<Stripe.Refund[]> {
+  return listRefundsWhere({ charge: chargeId }, ctx);
+}
+
+/**
+ * Slice 37b: one payment intent as the connected account holds it, or null when it holds none. The
+ * nightly reconcile asks this before calling a bank payment "a charge the processor does not hold":
+ * a debit waiting on the customer has an intent and no charge yet.
+ */
+export async function retrieveAccountPaymentIntent(
+  accountId: string,
+  paymentIntentId: string,
+): Promise<{ id: string; status: string; latest_charge: string | null } | null> {
+  try {
+    const pi = await _platformStripe().paymentIntents.retrieve(paymentIntentId, {}, { stripeAccount: accountId });
+    const latest = pi.latest_charge;
+    return { id: pi.id, status: pi.status, latest_charge: typeof latest === 'string' ? latest : latest?.id ?? null };
+  } catch (err) {
+    if ((err as { code?: string }).code === 'resource_missing') return null;
+    throw err;
+  }
+}
+
+// ---- Nightly reconcile reads (payments go-live slice 37) ---------------------------------------
+//
+// The reconcile lists what ONE org's connected account holds, created since a moment. Each call is
+// pinned to that account with the `stripeAccount` header, so a list can never read another
+// account's charges. Bounded: a page cap turns a runaway list into an error, which the reconcile
+// records as a failed run for that org instead of comparing against a partial list.
+const RECONCILE_LIST_PAGE_LIMIT = 50;
+
+async function listAllSince<T extends { id: string }>(
+  fetchPage: (startingAfter: string | undefined) => Promise<Stripe.ApiList<T>>,
+  what: string,
+): Promise<T[]> {
+  const all: T[] = [];
+  let startingAfter: string | undefined;
+  for (let page = 0; page < RECONCILE_LIST_PAGE_LIMIT; page++) {
+    const listed = await fetchPage(startingAfter);
+    all.push(...listed.data);
+    if (!listed.has_more || listed.data.length === 0) return all;
+    startingAfter = listed.data[listed.data.length - 1].id;
+  }
+  throw new Error(`${what} list hit the ${RECONCILE_LIST_PAGE_LIMIT}-page bound`);
+}
+
+/** Charges on a connected account created at or after `sinceUnix` (seconds). */
+export async function listAccountCharges(accountId: string, sinceUnix: number): Promise<Stripe.Charge[]> {
+  const stripe = _platformStripe();
+  return listAllSince((after) => stripe.charges.list(
+    { created: { gte: sinceUnix }, limit: 100, ...(after ? { starting_after: after } : {}) },
+    { stripeAccount: accountId },
+  ), 'Charge');
+}
+
+/** Refunds on a connected account created at or after `sinceUnix` (seconds). */
+export async function listAccountRefunds(accountId: string, sinceUnix: number): Promise<Stripe.Refund[]> {
+  const stripe = _platformStripe();
+  return listAllSince((after) => stripe.refunds.list(
+    { created: { gte: sinceUnix }, limit: 100, ...(after ? { starting_after: after } : {}) },
+    { stripeAccount: accountId },
+  ), 'Refund');
+}
+
+/** Disputes on a connected account created at or after `sinceUnix` (seconds). */
+export async function listAccountDisputes(accountId: string, sinceUnix: number): Promise<Stripe.Dispute[]> {
+  const stripe = _platformStripe();
+  return listAllSince((after) => stripe.disputes.list(
+    { created: { gte: sinceUnix }, limit: 100, ...(after ? { starting_after: after } : {}) },
+    { stripeAccount: accountId },
+  ), 'Dispute');
+}
+
+/** Checkout sessions on a connected account created at or after `sinceUnix` (seconds). */
+export async function listAccountCheckoutSessions(accountId: string, sinceUnix: number): Promise<Stripe.Checkout.Session[]> {
+  const stripe = _platformStripe();
+  return listAllSince((after) => stripe.checkout.sessions.list(
+    { created: { gte: sinceUnix }, limit: 100, ...(after ? { starting_after: after } : {}) },
+    { stripeAccount: accountId },
+  ), 'Checkout session');
+}
+
+/**
+ * Payouts slice P2: payouts of a connected account created at or after `sinceUnix` (seconds), each with
+ * its destination bank account expanded (for the bank label). Pinned to the account.
+ */
+export async function listAccountPayouts(accountId: string, sinceUnix: number): Promise<Stripe.Payout[]> {
+  const stripe = _platformStripe();
+  return listAllSince((after) => stripe.payouts.list(
+    { created: { gte: sinceUnix }, limit: 100, expand: ['data.destination'], ...(after ? { starting_after: after } : {}) },
+    { stripeAccount: accountId },
+  ), 'Payout');
+}
+
+/** Payouts slice P2: one payout as the processor holds it now, destination expanded. Pinned to the account. */
+export async function retrieveAccountPayout(accountId: string, payoutId: string): Promise<Stripe.Payout> {
+  const stripe = _platformStripe();
+  return stripe.payouts.retrieve(payoutId, { expand: ['destination'] }, { stripeAccount: accountId });
+}
+
+/** Payouts slice P2: the balance transactions paid out in one payout of a connected account. Pinned to the account. */
+export async function listPayoutBalanceTransactions(accountId: string, payoutId: string): Promise<Stripe.BalanceTransaction[]> {
+  const stripe = _platformStripe();
+  return listAllSince((after) => stripe.balanceTransactions.list(
+    { payout: payoutId, limit: 100, ...(after ? { starting_after: after } : {}) },
+    { stripeAccount: accountId },
+  ), 'Payout balance transaction');
+}
+
+/**
+ * Payouts slice P2: why a payment intent last failed, as the processor's code only (never its message).
+ * Null when it holds no error or the intent is not there. Throws on a lookup failure; the caller decides
+ * that a lookup failure must never block the state change it is annotating.
+ */
+export async function retrievePaymentIntentFailureCode(accountId: string | null, paymentIntentId: string): Promise<string | null> {
+  try {
+    const pi = await _platformStripe().paymentIntents.retrieve(paymentIntentId, {}, accountId ? { stripeAccount: accountId } : undefined);
+    const err = pi.last_payment_error;
+    return err?.code ?? err?.decline_code ?? null;
+  } catch (err) {
+    if ((err as { code?: string }).code === 'resource_missing') return null;
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Payments go-live P10: answering a dispute. Every call is pinned to the account the payment lives on (null = the
+// platform account, a legacy payment); the evidence rules are enforced by the caller before any of this runs.
+// ---------------------------------------------------------------------------------------------------------------------
+
+const onAccount = (accountId: string | null) => (accountId ? { stripeAccount: accountId } : undefined);
+
+/** Send one evidence file to the processor. Returns its file token, which one later request may use once. */
+export async function uploadDisputeEvidenceFile(
+  accountId: string | null,
+  file: { data: Buffer; name: string; mime: string },
+): Promise<string> {
+  const made = await _platformStripe().files.create(
+    { purpose: 'dispute_evidence', file: { data: file.data, name: file.name, type: file.mime } },
+    onAccount(accountId),
   );
+  return made.id;
+}
+
+/**
+ * Stage the evidence on the dispute without sending it (visible there, not yet to the bank). `evidence` maps an
+ * evidence field to a file token or text; an empty string clears the field.
+ */
+export async function stageDisputeEvidence(accountId: string | null, disputeId: string, evidence: Record<string, string>): Promise<void> {
+  await _platformStripe().disputes.update(disputeId, { evidence, submit: false }, onAccount(accountId));
+}
+
+/** Send the staged evidence to the bank. Final: the processor takes nothing more after this. */
+export async function submitDisputeEvidence(accountId: string | null, disputeId: string): Promise<void> {
+  await _platformStripe().disputes.update(disputeId, { submit: true }, onAccount(accountId));
+}
+
+/** How many times evidence has been submitted on this dispute, as the processor counts it. */
+export async function retrieveDisputeSubmissionCount(accountId: string | null, disputeId: string): Promise<number> {
+  const d = await _platformStripe().disputes.retrieve(disputeId, {}, onAccount(accountId));
+  return d.evidence_details?.submission_count ?? 0;
 }
 
 export function constructWebhookEvent(payload: Buffer, signature: string): Stripe.Event {
   const stripe = _platformStripe();
   const secrets = [env.STRIPE_WEBHOOK_SECRET, env.STRIPE_WEBHOOK_SECRET_CONNECT].filter(Boolean) as string[];
-  if (secrets.length === 0) throw new Error('No Stripe webhook secret configured');
+  if (secrets.length === 0) throw new Error('No webhook secret configured');
   let lastErr: unknown;
   for (const secret of secrets) {
     try {

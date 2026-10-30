@@ -16,8 +16,8 @@ import { screen, within, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import api from '@/lib/axios';
-import { buildAbility } from '@/lib/ability';
 import { renderWithProviders } from '@/__tests__/helpers';
+import { abilityWithSwitches } from '@/__tests__/support/backendSwitchCatalog';
 import { useInventoryAlertStore } from '@/stores/inventory-alert.store';
 
 import InventoryPage from '@/pages/v2/inventory/InventoryPage';
@@ -92,41 +92,23 @@ beforeEach(() => {
   useInventoryAlertStore.setState({ pending: null, nonce: 0 });
 });
 
-const readOnlyAbility = () =>
-  buildAbility([
-    { action: 'read', subject: 'Inventory' },
-    { action: 'read', subject: 'PriceBook' },
-    { action: 'read', subject: 'PurchaseOrder' },
-    { action: 'read', subject: 'Vendor' },
-  ]);
+// The abilities are compiled from the backend switch catalog: the grants of the stock, price book, purchase order and
+// vendor switches a person holds (S07.14), never a hand-written grant list.
+const READ_SWITCHES = ['View stock', 'View price book', 'View purchase orders', 'View vendors'];
+
+const readOnlyAbility = () => abilityWithSwitches(...READ_SWITCHES);
 
 const fullWriteAbility = () =>
-  buildAbility([
-    { action: 'read', subject: 'Inventory' },
-    { action: 'create', subject: 'Inventory' },
-    { action: 'update', subject: 'Inventory' },
-    { action: 'delete', subject: 'Inventory' },
-    { action: 'read', subject: 'PriceBook' },
-    { action: 'create', subject: 'PriceBook' },
-    { action: 'update', subject: 'PriceBook' },
-    { action: 'delete', subject: 'PriceBook' },
-    { action: 'read', subject: 'PurchaseOrder' },
-    { action: 'create', subject: 'PurchaseOrder' },
-    { action: 'read', subject: 'Vendor' },
-  ]);
+  abilityWithSwitches(
+    ...READ_SWITCHES,
+    'Create stock', 'Edit stock', 'Delete stock',
+    'Create price book items', 'Edit price book items', 'Delete price book items',
+    'Create purchase orders',
+  );
 
-// AC10 - the DISPATCHER-shaped ability: create/update/delete Inventory,
-// deliberately WITHOUT `manage Inventory` (defaultGrants.ts:272-275).
+// AC10 - the DISPATCHER-shaped ability: Create, Edit and Delete stock on, and no price book or purchase order write.
 const dispatcherShapedAbility = () =>
-  buildAbility([
-    { action: 'read', subject: 'Inventory' },
-    { action: 'create', subject: 'Inventory' },
-    { action: 'update', subject: 'Inventory' },
-    { action: 'delete', subject: 'Inventory' },
-    { action: 'read', subject: 'PriceBook' },
-    { action: 'read', subject: 'PurchaseOrder' },
-    { action: 'read', subject: 'Vendor' },
-  ]);
+  abilityWithSwitches(...READ_SWITCHES, 'Create stock', 'Edit stock', 'Delete stock');
 
 function renderStock(ability: ReturnType<typeof readOnlyAbility>) {
   return renderWithProviders(<InventoryPage />, { ability, initialEntries: ['/inventory'] });
@@ -189,6 +171,39 @@ describe('#2043 — LocationSelector (Stock toolbar Showing row)', () => {
     // its own edit/delete pair, so at least one of each must be present.
     expect(screen.getAllByRole('button', { name: 'Edit location' }).length).toBeGreaterThan(0);
     expect(screen.getAllByRole('button', { name: 'Delete location' }).length).toBeGreaterThan(0);
+  });
+
+  it('names no role as the rule for the row actions: the footer line and the hover titles are bare', async () => {
+    renderStock(dispatcherShapedAbility());
+    await screen.findByText('qa-2043-item');
+    await openLocations();
+
+    const edit = screen.getAllByRole('button', { name: 'Edit location' })[0]!;
+    const remove = screen.getAllByRole('button', { name: 'Delete location' })[0]!;
+    expect(edit).toHaveAttribute('title', 'Edit location');
+    expect(remove).toHaveAttribute('title', 'Delete location');
+    const popover = edit.closest('[role="dialog"], [data-radix-popper-content-wrapper]') as HTMLElement;
+    expect(popover).not.toBeNull();
+    expect(popover.textContent).not.toMatch(/admin/i);
+    expect(popover.textContent).not.toMatch(/from its row/i);
+  });
+
+  it('draws no footer strip for a person who can edit and delete locations but not add one', async () => {
+    renderStock(abilityWithSwitches(...READ_SWITCHES, 'Edit stock', 'Delete stock'));
+    await screen.findByText('qa-2043-item');
+    await openLocations();
+
+    // The rows are there (the dropdown is open and editable) and the footer, which only ever holds the Add button, is not.
+    expect(screen.getAllByRole('button', { name: 'Edit location' }).length).toBeGreaterThan(0);
+    expect(screen.queryByTestId('location-selector-footer')).not.toBeInTheDocument();
+  });
+
+  it('draws the footer strip, holding the Add button, for a person who can add locations', async () => {
+    renderStock(fullWriteAbility());
+    await screen.findByText('qa-2043-item');
+    await openLocations();
+
+    expect(within(screen.getByTestId('location-selector-footer')).getByRole('button', { name: 'Add Location / Van' })).toBeInTheDocument();
   });
 
   it('hides the per-row edit/delete affordances for a read-only ability', async () => {

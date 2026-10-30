@@ -9,13 +9,22 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 vi.unmock('../config/env');
 
 const executeRaw = vi.fn().mockResolvedValue(3);
-vi.mock('../lib/prisma', () => ({
-  prisma: {
+vi.mock('../lib/prisma', () => {
+  const prisma = {
     organization: { create: vi.fn().mockResolvedValue({}), delete: vi.fn() },
     rolePermission: { createMany: vi.fn().mockResolvedValue({ count: 0 }) },
     user: { create: vi.fn().mockResolvedValue({}) },
     $executeRawUnsafe: (...args: unknown[]) => executeRaw(...args),
-  },
+    // The admin and their mailbox are written in one transaction.
+    $transaction: (fn: (tx: unknown) => unknown) => fn(prisma),
+  };
+  return { prisma };
+});
+// The company is created through the mailbox address register (its own suites cover that); here it only
+// has to be called, so the register's transaction is not run against the mocked client.
+vi.mock('../lib/mailbox/register', () => ({
+  createCompanyWithMainMailbox: vi.fn().mockResolvedValue({}),
+  issueUserMailbox: vi.fn().mockResolvedValue({ status: 'active' }),
 }));
 vi.mock('../lib/supabase', () => ({
   supabaseAdmin: {

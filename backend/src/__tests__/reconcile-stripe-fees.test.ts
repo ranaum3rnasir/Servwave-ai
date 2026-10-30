@@ -205,7 +205,7 @@ describe('captureStripeFees', () => {
 });
 
 describe('sweepUncapturedFees', () => {
-  it('queries Payments with a PI + account but no captured balance_transaction, oldest-first, capped at 500', async () => {
+  it('queries SUCCEEDED, unvoided Payments with a PI + account but no captured balance_transaction, oldest-first, capped at 500', async () => {
     mockPrisma.payment.findMany.mockResolvedValueOnce([]);
 
     const result = await sweepUncapturedFees();
@@ -215,6 +215,10 @@ describe('sweepUncapturedFees', () => {
         stripe_payment_intent_id: { not: null },
         stripe_account_id: { not: null },
         stripe_balance_transaction_id: null,
+        // Slice 37: a failed bank debit never became a charge, and a voided payment is no longer
+        // money; neither can ever gain a balance transaction, so they would be picked every night.
+        state: 'SUCCEEDED',
+        voided_at: null,
       },
       select: { id: true, stripe_payment_intent_id: true, stripe_account_id: true },
       orderBy: { paid_at: 'asc' },

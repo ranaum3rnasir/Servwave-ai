@@ -5,6 +5,8 @@ import { customerDisplayName } from '@/lib/customer-name';
 import { eventCrewPeople, fullName } from '@/components/schedule/eventPeople';
 import { EVENT_TYPE_META, isAllDayEvent, type BoardEvent } from '@/components/schedule/scheduleModel';
 
+import { cardCanMissCrew } from '@/lib/missingCrew';
+
 import { MenuSurface } from './menuSurface';
 
 const EN = '–';
@@ -137,8 +139,10 @@ export function EventPeekCard({
             <span className="truncate">{people}</span>
           ) : isEntry ? (
             <span className="truncate">No participants</span>
-          ) : (
+          ) : cardCanMissCrew(event) ? (
             <span className="text-status-red-emphasis font-semibold">Needs crew</span>
+          ) : (
+            <span className="truncate">No crew</span>
           )}
         </div>
         {address && (

@@ -69,7 +69,7 @@ describe('GET /api/dashboard — schedule widget walkthroughs', () => {
     expect(prisma.visit.findMany).toHaveBeenCalled();
     // The walkthrough lane is the visit query scoped to LEAD visits (`lead_id` in its where).
     // Located by that predicate, not by call position: the endpoint also asks the visit table
-    // for unstaffed job visits (needs attention), and Promise.all issues that one first.
+    // for the crewless visits (Missing crew), and Promise.all issues that one first.
     const call = (prisma.visit.findMany as Mock).mock.calls
       .map((c: any[]) => c[0])
       .find((args: any) => args?.where?.lead_id !== undefined);
@@ -100,7 +100,7 @@ describe('GET /api/dashboard — schedule widget walkthroughs', () => {
     const res = await request(app).get('/api/dashboard').set(authHeader('orgB_admin'));
 
     expect(res.status).toBe(200);
-    const lanes = res.body.schedule_today ?? [];
+    const lanes = res.body.data.schedule_today ?? [];
     const walkthroughEntry = lanes
       .flatMap((lane: any) => lane.jobs ?? [])
       .find((item: any) => item.entity === 'walkthrough');
@@ -145,7 +145,7 @@ describe('GET /api/dashboard - job visits are not walkthroughs (multi-visit S2)'
     const res = await request(app).get('/api/dashboard').set(authHeader('orgB_admin'));
 
     expect(res.status).toBe(200);
-    const walkthroughEntries = (res.body.schedule_today ?? [])
+    const walkthroughEntries = (res.body.data.schedule_today ?? [])
       .flatMap((lane: any) => lane.jobs ?? [])
       .filter((item: any) => item.entity === 'walkthrough');
     expect(walkthroughEntries.map((w: any) => w.id)).toEqual(['lead-1']);

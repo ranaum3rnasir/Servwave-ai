@@ -57,6 +57,9 @@ const starterLock = (dest: NavDestination) => starterFeatureLock(dest) || !!dest
 
 const nothingLocked = () => false;
 
+/** The switches of a person who holds every one: the sidebar's gated entries all pass, so these suites test the rest. */
+const everySwitchOn = new Proxy({}, { get: () => true }) as Record<string, unknown>;
+
 /** Every row the sidebar can put on screen: parents and their children. */
 function rowsFor(sections: ReturnType<typeof buildNavSections>) {
   return sections.flatMap((s) => s.items.flatMap((item) => [item, ...(item.children ?? [])]));
@@ -68,6 +71,7 @@ function build(overrides: Partial<Parameters<typeof buildNavSections>[0]> = {}) 
     sections: NAV_SECTIONS,
     getDestination,
     can: canAll,
+    values: everySwitchOn,
     isLocked: nothingLocked,
     isFeatureLocked: nothingLocked,
     ...overrides,
@@ -191,17 +195,19 @@ describe('an unlocked nav group nests children that carry its gating', () => {
       sections: [{ section: 'Only', keys: ['group'] }],
       getDestination: (key) => (key === 'group' ? parent : undefined),
       can: canAll,
+      values: undefined,
       isLocked: nothingLocked,
     }));
 
     expect(rows.find((r) => r.key === 'child')?.dest.comingSoon).toBe(true);
   });
 
-  it('still drops a child the user has no ability for', () => {
-    // Nesting a row must not nest its permission with it. Deny Communication
-    // and the group's four children go, while Inventory's stay.
+  it('still drops a child the person has no switch for', () => {
+    // Nesting a row must not nest its permission with it. Turn off the three Communication Shows and the group's
+    // children go with the group, while Inventory's stay.
+    const off = new Set(['show_phone', 'show_text', 'show_email']);
     const rows = rowsFor(build({
-      can: (_action, subject) => subject !== 'Communication',
+      values: new Proxy({}, { get: (_target, key) => !off.has(String(key)) }) as Record<string, unknown>,
     }));
 
     expect(rows.filter((r) => r.key.startsWith('comm-'))).toEqual([]);
@@ -272,6 +278,7 @@ describe('an unlocked nav group nests children that carry its gating', () => {
       sections: [{ section: 'Only', keys: ['group'] }],
       getDestination: (key) => (key === 'group' ? parent : undefined),
       can: (_action, subject) => subject !== 'Report',
+      values: undefined,
       isLocked: nothingLocked,
     }).flatMap((s) => s.items);
 

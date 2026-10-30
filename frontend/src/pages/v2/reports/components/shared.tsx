@@ -10,6 +10,7 @@ import {
 } from '@/ui-kit/components/ui/dropdownMenu';
 import { SelectField } from '@/ui-kit/components/form/selectField';
 import { cn } from '@/ui-kit/lib/utils';
+import { useCanExportReports } from '@/lib/reports/useCanExportReports';
 
 /**
  * The report building blocks, on the kit.
@@ -250,7 +251,11 @@ type ReportToolbarCompactProps = {
 export type ReportToolbarProps = ReportToolbarDefaultProps | ReportToolbarCompactProps;
 
 export function ReportToolbar(props: ReportToolbarProps) {
+  // The download button shows only with Export reports; the rest of the toolbar is unchanged.
+  const canExport = useCanExportReports();
+
   if (props.variant === 'compact') {
+    if (!canExport) return null;
     return (
       <Button onClick={props.onExport} variant="outline" size="sm" className={props.className}>
         <Download />
@@ -284,10 +289,12 @@ export function ReportToolbar(props: ReportToolbarProps) {
         className="w-[84px]"
         options={pageSizeOptions.map((n) => ({ value: String(n), label: String(n) }))}
       />
-      <Button onClick={onExport} variant="outline">
-        <Download />
-        {exportLabel}
-      </Button>
+      {canExport && (
+        <Button onClick={onExport} variant="outline">
+          <Download />
+          {exportLabel}
+        </Button>
+      )}
       {onFields && (
         <Button onClick={onFields} variant="outline">
           <SlidersHorizontal />

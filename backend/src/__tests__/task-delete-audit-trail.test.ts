@@ -291,7 +291,7 @@ describe('GET /api/dashboard - activity feed with an orphaned task event', () =>
     const res = await request(app).get('/api/dashboard').set(authHeader('admin'));
 
     expect(res.status).toBe(200);
-    const [orphan, live] = res.body.activity;
+    const [orphan, live] = res.body.data.recent_activity;
     expect(orphan.entity_deleted).toBe(true);
     expect(orphan.entity_label).toBe('T00001 · Inspect compressor');
     expect(orphan.entity_label).not.toBe('');
@@ -315,8 +315,8 @@ describe('GET /api/dashboard - activity feed with an orphaned task event', () =>
     const res = await request(app).get('/api/dashboard').set(authHeader('admin'));
 
     expect(res.status).toBe(200);
-    expect(res.body.activity[0].entity_deleted).toBe(false);
-    expect(res.body.activity[0].entity_label).toBeNull();
+    expect(res.body.data.recent_activity[0].entity_deleted).toBe(false);
+    expect(res.body.data.recent_activity[0].entity_label).toBeNull();
   });
 });
 

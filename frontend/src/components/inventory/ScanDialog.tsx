@@ -253,12 +253,14 @@ export function ScanDialog({
                 </span>
                 {match.category}
               </div>
-              <div>
-                <span className="block text-[10px] uppercase text-text-secondary">
-                  Vendor
-                </span>
-                {match.vendor}
-              </div>
+              {match.vendor && (
+                <div>
+                  <span className="block text-[10px] uppercase text-text-secondary">
+                    Vendor
+                  </span>
+                  {match.vendor}
+                </div>
+              )}
               <div>
                 <span className="block text-[10px] uppercase text-text-secondary">
                   Unit Cost
@@ -302,7 +304,7 @@ export function ScanDialog({
                     <ActionButton
                       icon={PackagePlus}
                       label="Add stock (Restock)"
-                      description="Logistics / admin · receives inventory directly"
+                      description="Receives inventory directly"
                       tint="emerald"
                       onClick={() => onRestock(match)}
                     />

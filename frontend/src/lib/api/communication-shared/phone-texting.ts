@@ -128,7 +128,7 @@ export const SMS_COMPLIANCE: ComplianceNote[] = [
     body: "Federal law requires prior express consent before sending marketing texts. Keep a record of when and how each customer opted in (e.g., a checkbox on your booking form). Service/transactional texts about an active job need less, but consent is still best practice.",
   },
   {
-    title: "Register your number (A2P 10DLC)",
+    title: "Register your number with the carriers",
     body: "Business texting from a 10-digit number must be registered with The Campaign Registry. Since 2025, carriers block unregistered traffic. Your brand + campaign show as \"Verified\" once approved.",
   },
   {

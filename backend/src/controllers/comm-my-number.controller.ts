@@ -25,7 +25,7 @@ export async function getMyOutboundNumber(req: Request, res: Response) {
 
     const row = await prisma.phoneNumber.findUnique({
       where: { id: resolved.phone_number_id },
-      select: { formatted: true, e164: true },
+      select: { formatted: true, e164: true, label: true },
     });
 
     res.json({
@@ -36,6 +36,8 @@ export async function getMyOutboundNumber(req: Request, res: Response) {
       ctm_number_id: resolved.ctm_number_id,
       phone_number_id: resolved.phone_number_id,
       formatted: row?.formatted ?? row?.e164 ?? null,
+      // What the dialer calls this number ("Calling from <label>"); null when none was set.
+      label: row?.label?.trim() || null,
     });
   } catch (err) {
     logger.error('Failed to resolve outbound number:', err);

@@ -117,6 +117,17 @@ function orgPhoneDisplay(org: PublicOrganization | null | undefined): string {
   return `${formatPhone(org.phone)}${org.phone_ext ? ` ext. ${org.phone_ext}` : ''}`;
 }
 
+/**
+ * Slice 27 - the deposit's own state, from the same predicates the deposit link renders from:
+ * PAYABLE / PROCESSING / PAID / VOIDED / CHANGED (held) / CLOSED, plus the hold reason when held.
+ */
+interface DepositState {
+  pay_state: string;
+  hold_reason: string | null;
+  payable_now: number;
+  processing_amount: number;
+}
+
 interface PublicEstimate {
   id: string;
   estimate_number: string;
@@ -169,9 +180,10 @@ interface PublicEstimate {
 
 const METHOD_LABELS: Record<string, string> = {
   CARD: 'Credit/Debit Card',
+  ACH: 'Bank Account',
   EXTERNAL_CARD: 'Credit/Debit Card', // collapsed to one customer-facing label
   CHECK: 'Check',
-  BANK_TRANSFER: 'Bank Transfer (ACH)',
+  BANK_TRANSFER: 'Bank transfer',
   CASH: 'Cash',
   ZELLE: 'Zelle',
   VENMO: 'Venmo',
@@ -181,6 +193,7 @@ const METHOD_LABELS: Record<string, string> = {
 
 const METHOD_ICONS: Record<string, typeof CreditCard> = {
   CARD: CreditCard,
+  ACH: Landmark,
   EXTERNAL_CARD: CreditCard,
   CHECK: Banknote,
   BANK_TRANSFER: Landmark,
@@ -219,6 +232,20 @@ function collapseCardMethods(methods: string[]): string[] {
   return out;
 }
 
+/**
+ * Why a held deposit cannot be paid, in the words the deposit link uses (slice 15's reason codes).
+ * Anything else that stops a deposit is the general line.
+ */
+function depositHoldMessage(holdReason: string | null): string {
+  if (holdReason === 'ESTIMATE_IN_DRAFT') {
+    return 'This deposit is on hold while the estimate is being updated. Please contact us if you would like to pay it now.';
+  }
+  if (holdReason === 'SUPERSEDED') {
+    return 'This deposit request is out of date because the estimate has changed. Please contact us for the current amount.';
+  }
+  return 'This deposit cannot be paid online right now. Please contact us to arrange payment.';
+}
+
 /** The backend error string an axios-shaped rejection carries, if any. */
 function backendError(err: unknown): string {
   const shaped = err as { response?: { data?: { error?: string } } };
@@ -230,7 +257,7 @@ function backendError(err: unknown): string {
  * `approve` is the Approve/Decline card, `payment` the payment-method card, `deposit` the
  * unsigned-deposit card, `pending` the deposit-pending banner, `selection` the add-on rows.
  */
-type ActionSlot = 'approve' | 'payment' | 'deposit' | 'pending' | 'selection';
+type ActionSlot = 'approve' | 'payment' | 'deposit' | 'pending' | 'selection' | 'depositdue';
 
 /* --- Component --- */
 
@@ -239,6 +266,20 @@ const TERMS_CLAMP_CHARS = 600;
 function termsAreLong(terms: string): boolean {
   return terms.length > TERMS_CLAMP_CHARS;
 }
+
+/**
+ * Payments go-live slice 16/25 - approve-door refusals whose message was written for the homeowner:
+ * the plan gate's neutral 403 and the deposit refusals (already paid, cancelled, closed, out of date,
+ * on hold). Shown as they are, instead of "something went wrong, try again".
+ */
+const HOMEOWNER_MESSAGE_CODES = new Set<unknown>([
+  'ONLINE_PAYMENT_UNAVAILABLE',
+  'DEPOSIT_ALREADY_PAID',
+  'DEPOSIT_VOIDED',
+  'DEPOSIT_CLOSED',
+  'DEPOSIT_SUPERSEDED',
+  'DEPOSIT_ON_HOLD',
+]);
 
 /**
  * /v2/p/estimates/:id - the CRM-kit rebuild of `pages/PublicEstimatePage.tsx`.
@@ -290,6 +331,9 @@ export default function PublicEstimatePage() {
   // Deposit / payment state
   const [paymentInstructions, setPaymentInstructions] = useState<Record<string, string>>({});
   const [isExpired, setIsExpired] = useState(false);
+  // Slice 27 - the deposit's pay state and the resolved deposit policy (both server-owned).
+  const [depositState, setDepositState] = useState<DepositState | null>(null);
+  const [depositPolicy, setDepositPolicy] = useState<string>('REQUIRED_BEFORE_APPROVAL');
   const [selectedMethod, setSelectedMethod] = useState<string | null>(null);
   const [confirmDecline, setConfirmDecline] = useState(false);
   // True from the first time the dialog is opened. It then stays mounted, so closing it plays
@@ -314,8 +358,6 @@ export default function PublicEstimatePage() {
   const declineReasonOptions = usePublicLostReasons(id, token, confirmDecline);
   const [declineNote, setDeclineNote] = useState('');
   const [paymentBanner, setPaymentBanner] = useState<{ type: 'success' | 'warning'; message: string } | null>(null);
-  // Card service fee - display-only preview computed server-side, off the deposit total.
-  const [serviceFeePreview, setServiceFeePreview] = useState(0);
   // #2090 - the add-on whose tick is in flight, so its own box (and every other) is inert until
   // the server has answered. Null when nothing is pending.
   const [selectionPending, setSelectionPending] = useState<string | null>(null);
@@ -334,7 +376,8 @@ export default function PublicEstimatePage() {
       setEstimate({ ...data.estimate, organization: data.organization ?? null });
       setPaymentInstructions(data.payment_instructions || {});
       setIsExpired(data.expired || false);
-      setServiceFeePreview(Number(data.service_fee_preview) || 0);
+      setDepositState(data.deposit ?? null);
+      setDepositPolicy(data.payment_options?.deposit_policy ?? 'REQUIRED_BEFORE_APPROVAL');
     } catch {
       setError('This estimate is no longer available.');
     }
@@ -355,8 +398,20 @@ export default function PublicEstimatePage() {
   useEffect(() => {
     if (!paymentParam) return;
     if (paymentParam === 'success') {
+      // Slice 27: a return from the deposit's own checkout (an approved estimate paying its open
+      // deposit) is not an approval, and a bank payment is started, not received. The sign-then-pay
+      // checkout returns without deposit=1 but carries the method, so a bank return reads the same.
+      const fromDeposit = searchParams.get('deposit') === '1';
+      const isBank = searchParams.get('method') === 'bank';
       // eslint-disable-next-line react-hooks/set-state-in-effect -- reads the Stripe return param out of the URL once, then clears it; the URL IS the external system here
-      setPaymentBanner({ type: 'success', message: 'Payment received! Your estimate has been approved.' });
+      setPaymentBanner({
+        type: 'success',
+        message: isBank
+          ? 'Your bank payment has started. We will confirm once it clears.'
+          : fromDeposit
+            ? 'Deposit received. Thank you!'
+            : 'Payment received! Your estimate has been approved.',
+      });
       fetchEstimate();
     } else if (paymentParam === 'cancelled') {
       setPaymentBanner({ type: 'warning', message: 'Payment was not completed. You can try again below.' });
@@ -398,7 +453,13 @@ export default function PublicEstimatePage() {
   // this asks whether the customer's own choice is still theirs to make.
   const selectionsLocked = areSelectionsLocked(estimate);
 
-  const needsPayment = depositRequired && sigDrawn;
+  // Slice 27 - "pay later" approves on the signature alone; the deposit stays open beside it.
+  const payLater = depositRequired && depositPolicy === 'PAY_LATER';
+  const depositGatesApproval = depositRequired && !payLater;
+  const depositHeld = depositState?.hold_reason != null;
+  const depositPayable = depositState?.pay_state === 'PAYABLE';
+  const onlineDepositMethods = collapseCardMethods(availableMethods).filter((m) => m === 'CARD' || m === 'ACH');
+  const needsPayment = depositGatesApproval && sigDrawn;
   const approveDisabled =
     !sigDrawn || (!!estimate?.organization?.estimate_terms && !termsAgreed) || actionLoading;
 
@@ -445,6 +506,13 @@ export default function PublicEstimatePage() {
       );
       if (!res.ok) {
         const data = await res.json();
+        // Payments go-live slice 16/25 - a refusal written for the homeowner (the plan gate's
+        // neutral 403, and the deposit refusals from depositCheckoutRefusal) is shown as it is;
+        // matched on the code, never on the wording.
+        if (HOMEOWNER_MESSAGE_CODES.has(data.code) && typeof data.error === 'string') {
+          failAt(at, data.error);
+          return;
+        }
         throw new Error(data.error || 'Action failed');
       }
       const data = await res.json();
@@ -458,6 +526,9 @@ export default function PublicEstimatePage() {
 
       setEstimate((prev) => ({ ...data.estimate, organization: prev?.organization ?? null }));
       setSelectedMethod(null);
+      // Slice 27 - the approval answer carries the estimate only; the deposit's state (open beside
+      // a pay-later approval, or waiting on a manual payment) comes from the page read.
+      void fetchEstimate();
     } catch (err) {
       // Map the card-unavailable 400 to friendly homeowner copy instead of the
       // raw backend string; the generic fallback also stops any other raw
@@ -470,6 +541,46 @@ export default function PublicEstimatePage() {
           ? `${orgName} isn't accepting card payments right now - choose another payment method or contact us.`
           : 'Something went wrong starting your payment. Please try again or contact us.',
       );
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  /**
+   * Slice 27 - pay the open deposit of an approved estimate (pay later, or after a bank debit
+   * failed) through the deposit's own checkout. The estimate's approval is already done; this opens
+   * only the payment. `expected_amount` makes the door refuse, not charge, if the figure moved.
+   */
+  const handlePayDeposit = async (method: 'card' | 'bank') => {
+    if (!depositInvoice?.public_token) return;
+    setActionError(null);
+    setActionLoading(true);
+    try {
+      const res = await fetch(
+        `${import.meta.env.VITE_API_URL || ''}/api/invoices/${depositInvoice.id}/public/checkout?token=${encodeURIComponent(depositInvoice.public_token)}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ method, expected_amount: depositState?.payable_now, return_to: 'estimate' }),
+        },
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        if (HOMEOWNER_MESSAGE_CODES.has(data.code) && typeof data.error === 'string') {
+          failAt('depositdue', data.error);
+          void fetchEstimate();
+          return;
+        }
+        throw new Error(data.error || 'Action failed');
+      }
+      if (data.checkout_url) {
+        // eslint-disable-next-line react-hooks/immutability -- deliberate full-page handoff to the hosted checkout; leaving the SPA is the intent
+        window.location.href = data.checkout_url;
+        return;
+      }
+      void fetchEstimate();
+    } catch {
+      failAt('depositdue', 'Something went wrong starting your payment. Please try again or contact us.');
     } finally {
       setActionLoading(false);
     }
@@ -611,11 +722,11 @@ export default function PublicEstimatePage() {
   };
 
   const handlePaymentMethodSelect = (method: string) => {
-    // CARD takes the immediate-Stripe path; EXTERNAL_CARD behaves like
+    // CARD and ACH take the immediate hosted-checkout path; EXTERNAL_CARD behaves like
     // CHECK/BANK_TRANSFER (click expands to inline "call our office" block and
     // the customer confirms approval explicitly).
-    if (method === 'CARD') {
-      handleApprove('CARD', 'payment');
+    if (method === 'CARD' || method === 'ACH') {
+      handleApprove(method, 'payment');
     } else {
       setSelectedMethod(method);
     }
@@ -673,20 +784,19 @@ export default function PublicEstimatePage() {
           {/* #2044 - a deposit-required estimate with zero configured methods still reaches this
               card (needsPayment is independent of availableMethods.length); say so instead of
               rendering an empty list above a lone Decline button. */}
-          {collapseCardMethods(availableMethods).length === 0 && (
+          {depositHeld && (
+            <p className="text-sm text-subtle-foreground">{depositHoldMessage(depositState?.hold_reason ?? null)}</p>
+          )}
+          {!depositHeld && collapseCardMethods(availableMethods).length === 0 && (
             <p className="text-sm text-subtle-foreground">
               Online payment is not available for this estimate. Please contact us
               {org?.phone ? ` at ${orgPhoneDisplay(org)}` : ''} to arrange your deposit and
               complete your approval.
             </p>
           )}
-          {collapseCardMethods(availableMethods).map((method) => {
+          {!depositHeld && collapseCardMethods(availableMethods).map((method) => {
             const Icon = METHOD_ICONS[method] || Wallet;
             const isCard = method === 'CARD' || method === 'EXTERNAL_CARD';
-            // CARD redirects to Stripe immediately (no reveal step on this
-            // page), so the fee preview surfaces here, before the customer
-            // commits. Display only.
-            const showFee = method === 'CARD' && serviceFeePreview > 0;
             return (
               <Button
                 key={method}
@@ -699,15 +809,15 @@ export default function PublicEstimatePage() {
               >
                 <span className="flex min-w-0 items-center gap-2">
                   <Icon />
-                  Pay {isCard ? 'with' : 'by'} {formatMethodLabel(method)}
+                  <span className="min-w-0">
+                    Pay {isCard ? 'with' : 'by'} {formatMethodLabel(method)}
+                    {method === 'ACH' && (
+                      <span className="text-subtle-foreground block text-xs font-normal">Takes a few business days to clear</span>
+                    )}
+                  </span>
                 </span>
                 <span className="shrink-0 text-right">
                   <span className="block font-semibold">{formatCurrency(depositAmount)}</span>
-                  {showFee && (
-                    <span className="text-subtle-foreground block text-xs">
-                      +{formatCurrency(serviceFeePreview)} service fee
-                    </span>
-                  )}
                 </span>
               </Button>
             );
@@ -727,6 +837,59 @@ export default function PublicEstimatePage() {
       )}
     </PublicCard>
   );
+
+  const renderDepositDue = () => {
+    if (!isApproved || !depositRequired || !depositState) return null;
+    const { pay_state: payState, processing_amount: processing } = depositState;
+    if (payState === 'PROCESSING') {
+      return (
+        <PublicNotice tone="info" icon={<Clock />}>
+          <p className="font-medium">Your bank payment of {formatCurrency(processing)} is processing.</p>
+          <p className="text-xs">Bank payments take a few business days to clear. We will confirm once it arrives.</p>
+        </PublicNotice>
+      );
+    }
+    if (depositHeld || payState === 'CHANGED') {
+      return (
+        <PublicNotice tone="warning" icon={<AlertTriangle />}>
+          <p>{depositHoldMessage(depositState.hold_reason)}</p>
+        </PublicNotice>
+      );
+    }
+    if (!depositPayable) return null;
+    return (
+      <PublicCard>
+        <PublicCardTitle>Deposit due - {formatCurrency(depositState.payable_now)}</PublicCardTitle>
+        {/* Under pay later this is the plan; under "required" a won estimate with an open deposit can
+            only be one whose bank debit failed, and the customer is told so. */}
+        <p className="text-subtle-foreground mt-1 text-sm">
+          {payLater
+            ? 'Your estimate is approved. Pay the deposit when you are ready.'
+            : 'Your last deposit payment did not go through. The deposit is still due, and you can pay it again below.'}
+        </p>
+        <div className="mt-3 flex flex-col gap-3">
+          {onlineDepositMethods.includes('CARD') && (
+            <Button variant="outline" className="h-auto w-full justify-between whitespace-normal py-3 text-left" disabled={actionLoading} onClick={() => handlePayDeposit('card')}>
+              <span className="flex min-w-0 items-center gap-2"><CreditCard /> Pay deposit by card</span>
+              <span className="shrink-0 font-semibold">{formatCurrency(depositState.payable_now)}</span>
+            </Button>
+          )}
+          {onlineDepositMethods.includes('ACH') && (
+            <Button variant="outline" className="h-auto w-full justify-between whitespace-normal py-3 text-left" disabled={actionLoading} onClick={() => handlePayDeposit('bank')}>
+              <span className="flex min-w-0 items-center gap-2"><Landmark /> Pay deposit by bank</span>
+              <span className="shrink-0 font-semibold">{formatCurrency(depositState.payable_now)}</span>
+            </Button>
+          )}
+          {onlineDepositMethods.length === 0 && (
+            <p className="text-sm">
+              To pay your deposit, please contact us{org?.phone ? ` at ${orgPhoneDisplay(org)}` : ''}.
+            </p>
+          )}
+        </div>
+        {errorAt('depositdue')}
+      </PublicCard>
+    );
+  };
 
   const renderStatusBanner = () => {
     // Payment return banners take priority
@@ -804,9 +967,6 @@ export default function PublicEstimatePage() {
               <p>You approved this estimate on {new Date(estimate.signature_at).toLocaleString()}.</p>
             )}
             <p>Deposit amount: {formatCurrency(depositAmount)}</p>
-            {serviceFeePreview > 0 && (
-              <p>Paying by card adds a {formatCurrency(serviceFeePreview)} service fee.</p>
-            )}
           </div>
           <p className="mt-2 text-xs">Once we receive your deposit, we&apos;ll schedule your job.</p>
           {/* Card lane: the customer may have closed the checkout tab before
@@ -814,7 +974,8 @@ export default function PublicEstimatePage() {
               longer SENT, so the sign-and-pay form is gone. Re-running approve
               on a PENDING estimate re-opens checkout and leaves the stored
               signature untouched. */}
-          {availableMethods.includes('CARD') && (
+          {depositHeld && <p className="mt-2 text-xs">{depositHoldMessage(depositState?.hold_reason ?? null)}</p>}
+          {!depositHeld && availableMethods.includes('CARD') && (
             <Button
               className="mt-3"
               size="sm"
@@ -822,6 +983,17 @@ export default function PublicEstimatePage() {
               onClick={() => handleApprove('CARD', 'pending')}
             >
               {actionLoading ? 'Opening checkout…' : 'Complete deposit payment'}
+            </Button>
+          )}
+          {!depositHeld && availableMethods.includes('ACH') && (
+            <Button
+              className="mt-3 ml-2"
+              size="sm"
+              variant="outline"
+              disabled={actionLoading}
+              onClick={() => handleApprove('ACH', 'pending')}
+            >
+              Pay the deposit by bank
             </Button>
           )}
           {actionError?.at === 'pending' && <div className="mt-3">{errorAt('pending')}</div>}
@@ -833,7 +1005,11 @@ export default function PublicEstimatePage() {
     if (!isActionable) {
       return (
         <PublicNotice tone="warning">
-          <p>This estimate is currently not available for action.</p>
+          {depositHeld ? (
+            <p>{depositHoldMessage(depositState?.hold_reason ?? null)}</p>
+          ) : (
+            <p>This estimate is currently not available for action.</p>
+          )}
         </PublicNotice>
       );
     }
@@ -917,11 +1093,23 @@ export default function PublicEstimatePage() {
                 <span> ({estimate.send_config.deposit_percentage}% of total)</span>
               )}
             </p>
+            {depositHeld && isActionable && (!sigDrawn || payLater) && (
+              <p className="mt-1 text-xs">{depositHoldMessage(depositState?.hold_reason ?? null)}</p>
+            )}
+            {payLater && isActionable && !depositHeld && (
+              <p className="mt-1 text-xs">
+                The deposit is due after you approve. You can pay it from this page once you have approved.
+              </p>
+            )}
           </PublicNotice>
         )}
 
         {/* Status banner */}
         {renderStatusBanner()}
+
+        {/* Slice 27 - an approved estimate's open deposit (pay later, or a bank debit that failed),
+            its bank payment clearing, or a deposit held for a reason. */}
+        {renderDepositDue()}
 
         {/* Post-approval signature display */}
         {estimate.signature_data && (isApproved || isPending) && (
@@ -1038,7 +1226,7 @@ export default function PublicEstimatePage() {
         {isActionable && needsPayment && renderPaymentMethodButtons()}
 
         {/* Deposit required but not yet signed */}
-        {isActionable && depositRequired && !sigDrawn && (
+        {isActionable && depositGatesApproval && !sigDrawn && (
           <PublicCard>
             <p className="text-subtle-foreground text-center text-xs">
               Please sign above to proceed to payment

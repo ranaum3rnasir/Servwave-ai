@@ -8,7 +8,8 @@ import { hashStr, mulberry32, rangeRnd } from './random';
 //  • demo org  → the deterministic sample invoices (so sales can show the full
 //    layout without a backend), anchored to INVOICES_MOCK_NOW.
 //  • real org  → GET /api/reports/invoices (org-scoped invoices with derived
-//    salesperson = estimate→lead→commission_owner and technician = first job
+//    salesperson = the job's Sold By (a service plan's invoice takes the plan's;
+//    a job-less invoice from an estimate keeps the lead owner; empty is a dash) and technician = first job
 //    assignee), against the live clock.
 // ───────────────────────────────────────────────────────────────────────────
 

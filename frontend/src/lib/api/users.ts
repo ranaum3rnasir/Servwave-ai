@@ -2,6 +2,8 @@ import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tansta
 import api from '@/lib/axios';
 import { toast } from '@/components/ui/use-toast';
 import { extractApiError } from '@/lib/utils';
+import { allPersonSwitchesKey } from '@/lib/api/permissionSwitches';
+import { MAILBOXES_KEY } from '@/lib/api/communication';
 
 export type UserRole = 'ADMIN' | 'SALES' | 'DISPATCHER' | 'TECHNICIAN';
 
@@ -15,6 +17,22 @@ export interface UserRow {
   // `custom_role_id` is the custom_roles.id FK; `custom_role` is the row's key/label for display.
   custom_role_id?: string | null;
   custom_role?: { key: string; label: string } | null;
+  /** The name of the role the person holds, and how many of their switches differ from it (the role column). */
+  role_label?: string;
+  change_count?: number;
+  /** The server's answer on the people list: in the Admin box (full access, no switches to set). A role copied from
+   *  Admin is not in it, whatever its base role. */
+  admin_box?: boolean;
+  /** The person's own mailbox on the Users page's Email column (PRD 10): the primary address in full, with none while
+   *  the person is in "address needed". `address_suffix` is what follows the name part (`.company@domain`), for the
+   *  set and change dialogs. Null for a person with no live mailbox; also null while the company lacks the Email plan
+   *  feature. */
+  mailbox?: { status: string; address: string | null; address_suffix: string | null } | null;
+  /** Where a deactivated person's mailbox went (PRD 10, S10.22): handed to a person, or merged into the main mailbox. Null for an
+   *  active person, for a leaver with no mailbox, and while the company lacks the Email plan feature. */
+  mailbox_handover?: { to: 'main' } | { to: 'person'; user_id: string; name: string } | null;
+  /** The person's own switches turn Access Communication or Show Email off: they cannot read their mailbox. */
+  email_page_closed?: boolean;
   is_active: boolean;
   has_login: boolean;
   phone: string | null;
@@ -141,12 +159,21 @@ function rosterOf(payload: unknown): AssignableUser[] {
   return Array.isArray(wrapped) ? (wrapped as AssignableUser[]) : [];
 }
 
+/**
+ * The slot a people picker fills. The server answers each from the person's own switch (Can own leads /
+ * be Sold By, Can be a dispatcher, Can be on a crew), never from a role name, and lists only active people.
+ */
+export type PickerSlot = 'owner' | 'dispatcher' | 'crew';
+
+/** What `eligible_for` accepts: a slot, or `task` (the task owner and watcher pool, which is not a slot). */
+export type EligibleFor = PickerSlot | 'task';
+
 export interface AssignableUsersOpts {
   /** Required: it selects the grant the server scopes by, so there is no safe default. */
   purpose: AssigneePurpose;
   enabled?: boolean;
   departmentId?: string;
-  eligibleFor?: 'owner' | 'task' | 'dispatcher';
+  eligibleFor?: EligibleFor;
   /** Union in users referenced by existing job/lead assignments even if no longer
    * eligible for NEW assignments — keeps completeness filters from dropping people
    * who are genuinely assigned (e.g. a non-technician on a job). */
@@ -251,7 +278,11 @@ export function useUpdateUser() {
   return useMutation({
     mutationFn: ({ id, payload }: { id: string; payload: UpdateUserPayload }) =>
       api.patch(`/api/users/${id}`, payload).then((r) => r.data.user as UserRow),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['users'] }),
+    onSuccess: () => {
+      // A role change fills the person's switches and moves who they are based on.
+      void qc.invalidateQueries({ queryKey: allPersonSwitchesKey });
+      return qc.invalidateQueries({ queryKey: ['users'] });
+    },
     onError: (err) =>
       toast({
         title: 'Update failed',
@@ -261,10 +292,52 @@ export function useUpdateUser() {
   });
 }
 
+/**
+ * Set or change the name part of a person's mailbox address (the part before the company and the domain). The server
+ * builds the address, refuses a taken, malformed or reserved name part in plain words, and leaves the old address
+ * delivering. The caller shows a refusal itself, under its field, so there is no toast here.
+ */
+export function useSetMailboxAddress() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, namePart }: { id: string; namePart: string }) =>
+      api.put(`/api/users/${id}/mailbox-address`, { name_part: namePart }).then((r) => r.data.mailbox as { status: string; address: string }),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['communication', 'my-mailbox'] });
+      return qc.invalidateQueries({ queryKey: ['users'] });
+    },
+  });
+}
+
+/**
+ * Hand a deactivated person's mailbox to another person or to the main mailbox, later. `handoverTo` is "main" or an active
+ * person's id. The conversations and the addresses go with it; the previous holder loses it on their next request.
+ */
+export function useMoveMailbox() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, handoverTo }: { id: string; handoverTo: string }) =>
+      api.put(`/api/users/${id}/mailbox-handover`, { handover_to: handoverTo }).then((r) => r.data),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: MAILBOXES_KEY });
+      return qc.invalidateQueries({ queryKey: ['users'] });
+    },
+    onError: (err) =>
+      toast({
+        title: 'Move failed',
+        description: extractApiError(err, 'Could not move the mailbox'),
+        variant: 'destructive',
+      }),
+  });
+}
+
 export function useDeactivateUser() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (id: string) => api.delete(`/api/users/${id}`).then((r) => r.data),
+    // `handoverTo` is who gets the person's email: "main" or an active person's id. Left out, the server uses the main mailbox.
+    mutationFn: ({ id, handoverTo }: { id: string; handoverTo?: string }) =>
+      (handoverTo === undefined ? api.delete(`/api/users/${id}`) : api.delete(`/api/users/${id}`, { data: { handover_to: handoverTo } }))
+        .then((r) => r.data),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['users'] }),
     onError: (err) =>
       toast({
@@ -389,59 +462,6 @@ export function useDeleteAvatar(userId?: string) {
       toast({
         title: 'Remove failed',
         description: extractApiError(err, 'Could not remove photo'),
-        variant: 'destructive',
-      }),
-  });
-}
-
-// ─── Per-user permission overrides (RBAC Phase 2) ───
-
-export type OverrideState = 'inherit' | 'allow' | 'deny';
-
-export interface UserCapability {
-  action: string;
-  subject: string;
-  label: string;
-  description: string;
-  roleDefault: 'allowed' | 'not-in-role';
-  override: OverrideState;
-  effective: boolean;
-}
-
-export interface UserPermissions {
-  user_id: string;
-  editable: boolean;
-  capabilities: UserCapability[];
-}
-
-export interface PermissionOverrideInput {
-  action: string;
-  subject: string;
-  effect: 'allow' | 'deny';
-}
-
-export function useUserPermissions(id: string | null) {
-  return useQuery<UserPermissions>({
-    queryKey: ['user-permissions', id],
-    queryFn: () => api.get(`/api/users/${id}/permissions`).then((r) => r.data),
-    enabled: !!id,
-  });
-}
-
-export function useUpdateUserPermissions() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, overrides }: { id: string; overrides: PermissionOverrideInput[] }) =>
-      api.put(`/api/users/${id}/permissions`, { overrides }).then((r) => r.data),
-    onSuccess: (_data, vars) => {
-      qc.invalidateQueries({ queryKey: ['user-permissions', vars.id] });
-      qc.invalidateQueries({ queryKey: ['users'] });
-      toast({ title: 'Permissions updated' });
-    },
-    onError: (err) =>
-      toast({
-        title: 'Update failed',
-        description: extractApiError(err, 'Could not update permissions'),
         variant: 'destructive',
       }),
   });

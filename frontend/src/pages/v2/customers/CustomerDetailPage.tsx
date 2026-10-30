@@ -8,7 +8,6 @@ import {
 } from 'lucide-react';
 
 import api from '@/lib/axios';
-import { useAuthStore } from '@/stores/auth.store';
 import { useAppAbility } from '@/contexts/AbilityContext';
 import { RecordNumberEditor } from '@/components/crm/RecordNumberEditor';
 import { purgeCustomer } from '@/lib/api/customers';
@@ -16,9 +15,9 @@ import { customerDisplayName } from '@/lib/customer-name';
 import { extractApiError, formatCurrency, formatPhone } from '@/lib/utils';
 import { useFeature, useModuleAccess } from '@/lib/entitlements';
 import { useScheduleTimezone } from '@/lib/schedule-tz';
-import { PhoneNumberAction } from '@/components/contact/ContactAction';
+import { EmailValue, PhoneValue } from '@/components/contact/CustomerContactBlock';
 import {
-  useSendEmail, useSendingIdentity, PRIMARY_ACCOUNT, type ComposeState,
+  useSendEmail, useSendingIdentity, composeSenderProps, PRIMARY_ACCOUNT, type ComposeState,
 } from '@/lib/api/communication';
 import { TagInput } from '@/components/leads/TagInput';
 import { DetailHeader } from '@/components/detail/DetailHeader';
@@ -26,7 +25,8 @@ import { ComposeWindow } from '@/components/communication/inbox/ComposeWindow';
 import { CustomerCommunicationsTab } from '@/components/communication/CustomerCommunicationsTab';
 import { JobLeadTasksTab } from '@/components/tasks/JobLeadTasksTab';
 import { LoadError } from '../_shared/loadError';
-import { isNotFoundError } from '../_shared/loadErrorState';
+import NotAuthorizedPage from '@/components/NotAuthorizedPage';
+import { isForbiddenError, isNotFoundError } from '../_shared/loadErrorState';
 import { PlanBuilderDialog } from '../_shared/planBuilderDialog';
 
 import { Avatar } from '@/ui-kit/components/ui/avatar';
@@ -90,18 +90,6 @@ const YES = (
 const NO = <span className="text-muted-foreground text-xs">No</span>;
 
 /**
- * The native `mailto:` fallback, without a raw `<a>`. (Phone numbers go through the shared contact
- * action; nothing here builds a telephone URL.)
- *
- * The design-system raw-tag ratchet sits at its floor for `a`, so a v2 page may
- * not add one; a kit Button that sets `window.location.href` reaches the same
- * destination. Same precedent as the leads module's ContactCell.
- */
-function openHref(href: string) {
-  window.location.href = href;
-}
-
-/**
  * /v2/customers/:id - the customer detail page on the CRM UI kit.
  *
  * Every query, mutation, cache key, ability gate and entitlement check is the
@@ -122,7 +110,6 @@ export default function CustomerDetailPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const user = useAuthStore((s) => s.user);
   const ability = useAppAbility();
   const canAccessComms = useFeature('phone');
   const hasLeads = useFeature('leads');
@@ -262,13 +249,20 @@ export default function CustomerDetailPage() {
     onSuccess: () => { queryClient.invalidateQueries({ queryKey: ['customer', id] }); },
   });
 
-  const canEdit = user?.role === 'ADMIN' || user?.role === 'DISPATCHER' || user?.role === 'SALES';
-  // Service-location delete stays role-gated.
-  const canDeleteLocation = user?.role === 'ADMIN' || user?.role === 'DISPATCHER';
+  // Edit follows Edit customers and service-location delete follows Delete customers. No role name decides either;
+  // the server asks the same two grants on every write. (Archive and restore would follow Archive customers; this
+  // page draws no such control.)
+  const canEdit = ability.can('update', 'Customer');
+  const canDeleteLocation = ability.can('delete', 'Customer');
+  // Create New offers each document its own Create switch allows; it does not depend on Edit customers.
+  const canCreateEstimate = ability.can('create', 'Estimate');
+  const canCreateJob = ability.can('create', 'Job');
+  const canCreateInvoice = ability.can('create_standalone', 'Invoice');
+  const canCreateNew = canCreateLead || canCreateEstimate || canCreateJob || canCreateInvoice || canCreateServicePlan;
   const canReadComms = ability.can('read', 'Communication');
   // The in-app email composer renders only for comms-enabled orgs with create Communication;
-  // everyone else falls back to mailto:, which can never 403. (The dialer is the shared contact
-  // action's call.)
+  // everyone else gets the contact display policy's mail link (which can never 403), or plain text
+  // when Copy customer email is off. (The dialer is the policy's call too.)
   const canUseComms = canAccessComms && ability.can('create', 'Communication');
   const canForcePurge = ability.can('force_purge', 'Customer');
 
@@ -329,6 +323,9 @@ export default function CustomerDetailPage() {
       </div>
     );
   }
+
+  // The server refused the customer: the person may not open it (the page never decides that itself).
+  if (!data && isForbiddenError(error)) return <NotAuthorizedPage />;
 
   // A failed request is an error with a Retry (mobile slice 68): only a real 404 (a customer that
   // does not exist, or that the viewer's scope excludes) is "not found". A dropped connection says
@@ -411,9 +408,6 @@ export default function CustomerDetailPage() {
   // told it to say so. See `navHistory.store`.
   const navTo = (url: string) => navigate(preferV2Path(url));
 
-  const phoneLabel = (value: string, ext?: string | null) =>
-    `${formatPhone(value)}${ext ? ` ext. ${ext}` : ''}`;
-
   return (
     <div className="flex flex-col gap-4">
 
@@ -475,7 +469,7 @@ export default function CustomerDetailPage() {
           }
           // Exactly two controls: Create New + the three-dot menu.
           primary={
-            canEdit ? (
+            canCreateNew ? (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button size="sm">
@@ -490,15 +484,21 @@ export default function CustomerDetailPage() {
                       <Target /> Lead
                     </DropdownMenuItem>
                   )}
-                  <DropdownMenuItem onClick={() => navTo((`/estimates/new?customer_id=${id}`))}>
-                    <ClipboardList /> Estimate
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => navTo((`/jobs/new?customer_id=${id}`))}>
-                    <Briefcase /> Job
-                  </DropdownMenuItem>
-                  <DropdownMenuItem onClick={() => navTo((`/invoices/new?customer_id=${id}`))}>
-                    <Receipt /> Invoice
-                  </DropdownMenuItem>
+                  {canCreateEstimate && (
+                    <DropdownMenuItem onClick={() => navTo((`/estimates/new?customer_id=${id}`))}>
+                      <ClipboardList /> Estimate
+                    </DropdownMenuItem>
+                  )}
+                  {canCreateJob && (
+                    <DropdownMenuItem onClick={() => navTo((`/jobs/new?customer_id=${id}`))}>
+                      <Briefcase /> Job
+                    </DropdownMenuItem>
+                  )}
+                  {canCreateInvoice && (
+                    <DropdownMenuItem onClick={() => navTo((`/invoices/new?customer_id=${id}`))}>
+                      <Receipt /> Invoice
+                    </DropdownMenuItem>
+                  )}
                   {canCreateServicePlan && (
                     <DropdownMenuItem onClick={() => setPlanBuilderOpen(true)}>
                       <CreditCard /> Service Plan
@@ -564,13 +564,13 @@ export default function CustomerDetailPage() {
                   <Phone className="text-muted-foreground mt-0.5 size-4 shrink-0" />
                   <div className="text-sm">
                     {customer.phone ? (
-                      <PhoneNumberAction
+                      <PhoneValue
+                        kind="customer_phone"
                         phone={customer.phone}
+                        extension={customer.phone_ext}
                         name={displayName}
                         context={{ customerId: customer.id, customerName: displayName }}
-                      >
-                        {phoneLabel(customer.phone, customer.phone_ext)}
-                      </PhoneNumberAction>
+                      />
                     ) : (
                       <span>{formatPhone(customer.phone)}</span>
                     )}
@@ -582,13 +582,13 @@ export default function CustomerDetailPage() {
                   <div className="flex items-start gap-3">
                     <Phone className="text-muted-foreground mt-0.5 size-4 shrink-0" />
                     <div className="text-sm">
-                      <PhoneNumberAction
+                      <PhoneValue
+                        kind="customer_phone"
                         phone={customer.secondary_phone}
+                        extension={customer.secondary_phone_ext}
                         name={displayName}
                         context={{ customerId: customer.id, customerName: displayName }}
-                      >
-                        {phoneLabel(customer.secondary_phone, customer.secondary_phone_ext)}
-                      </PhoneNumberAction>
+                      />
                       <p className="text-muted-foreground text-xs">Secondary</p>
                     </div>
                   </div>
@@ -598,46 +598,26 @@ export default function CustomerDetailPage() {
                   <div className="flex items-start gap-3">
                     <Mail className="text-muted-foreground mt-0.5 size-4 shrink-0" />
                     <div className="flex min-w-0 flex-col gap-1">
-                      {canUseComms ? (
-                        <Button
-                          variant="link"
-                          size="sm"
-                          className="h-auto justify-start px-0 font-normal break-all"
-                          onClick={() => setCompose({ mode: 'new', account: PRIMARY_ACCOUNT.id, to: customer.email, subject: '', body: '' })}
-                        >
-                          {customer.email}
-                        </Button>
-                      ) : (
-                        <Button
-                          variant="link"
-                          size="sm"
-                          className="h-auto justify-start px-0 font-normal break-all"
-                          onClick={() => openHref(`mailto:${customer.email}`)}
-                        >
-                          {customer.email}
-                        </Button>
-                      )}
+                      <EmailValue
+                        email={customer.email}
+                        wrap
+                        onCompose={
+                          canUseComms
+                            ? () => setCompose({ mode: 'new', account: PRIMARY_ACCOUNT.id, to: customer.email, subject: '', body: '' })
+                            : undefined
+                        }
+                      />
                       {customer.extra_emails?.map((e: { id: string; email: string; label?: string | null }) => (
                         <div key={e.id} className="flex items-center gap-1.5">
-                          {canUseComms ? (
-                            <Button
-                              variant="link"
-                              size="sm"
-                              className="h-auto justify-start px-0 font-normal break-all"
-                              onClick={() => setCompose({ mode: 'new', account: PRIMARY_ACCOUNT.id, to: e.email, subject: '', body: '' })}
-                            >
-                              {e.email}
-                            </Button>
-                          ) : (
-                            <Button
-                              variant="link"
-                              size="sm"
-                              className="h-auto justify-start px-0 font-normal break-all"
-                              onClick={() => openHref(`mailto:${e.email}`)}
-                            >
-                              {e.email}
-                            </Button>
-                          )}
+                          <EmailValue
+                            email={e.email}
+                            wrap
+                            onCompose={
+                              canUseComms
+                                ? () => setCompose({ mode: 'new', account: PRIMARY_ACCOUNT.id, to: e.email, subject: '', body: '' })
+                                : undefined
+                            }
+                          />
                           {e.label && <Badge variant="softNeutral" size="sm">{e.label}</Badge>}
                         </div>
                       ))}
@@ -715,27 +695,31 @@ export default function CustomerDetailPage() {
                           )}
                         </div>
                       </div>
-                      {canEdit && (
+                      {(canEdit || canDeleteLocation) && (
                         <div className="flex shrink-0 gap-1">
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            disabled={loc.is_primary || setPrimaryLocationMutation.isPending}
-                            aria-label={loc.is_primary ? 'Primary location' : 'Set as primary location'}
-                            title={loc.is_primary ? undefined : 'Set as primary'}
-                            disabledReason={loc.is_primary ? 'This is the primary location' : undefined}
-                            onClick={() => setPrimaryLocationMutation.mutate(loc.id)}
-                          >
-                            <Star />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon-sm"
-                            aria-label="Edit location"
-                            onClick={() => { setEditingLocation(loc); setLocationDialogOpen(true); }}
-                          >
-                            <Pencil />
-                          </Button>
+                          {canEdit && (
+                            <>
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                disabled={loc.is_primary || setPrimaryLocationMutation.isPending}
+                                aria-label={loc.is_primary ? 'Primary location' : 'Set as primary location'}
+                                title={loc.is_primary ? undefined : 'Set as primary'}
+                                disabledReason={loc.is_primary ? 'This is the primary location' : undefined}
+                                onClick={() => setPrimaryLocationMutation.mutate(loc.id)}
+                              >
+                                <Star />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon-sm"
+                                aria-label="Edit location"
+                                onClick={() => { setEditingLocation(loc); setLocationDialogOpen(true); }}
+                              >
+                                <Pencil />
+                              </Button>
+                            </>
+                          )}
                           {canDeleteLocation && (
                             // No confirmation: one click deletes. That is the
                             // legacy behaviour and adding a confirm here would be
@@ -887,8 +871,7 @@ export default function CustomerDetailPage() {
           onClose={() => setCompose(null)}
           onDiscard={() => setCompose(null)}
           onToast={(m) => toast(m)}
-          fromAddress={sendingIdentity?.address}
-          sendingEnabled={sendingIdentity?.sendingEnabled ?? true}
+          {...composeSenderProps(sendingIdentity)}
         />
       )}
 

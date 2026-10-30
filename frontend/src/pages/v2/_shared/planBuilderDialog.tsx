@@ -45,6 +45,14 @@ interface PlanBuilderDialogProps {
   presetCustomerLabel?: string;
 }
 
+/** The location value that selects one of the customer's existing service locations. */
+function locationValue(l: ServiceLocationOption): PickOrAccreteLocationValue {
+  return {
+    locationId: l.id,
+    address: { address_line1: l.address_line1, address_line2: l.address_line2 || '', city: l.city, state: l.state, zip: l.zip },
+  };
+}
+
 /**
  * The red asterisk marking a field the submit gate requires. Everything in this
  * dialog is required except Sold by and Default materials.
@@ -128,10 +136,7 @@ function PlanBuilderDialog({
     const l = locations[0];
     if (locations.length === 1 && l && !locValue.locationId) {
       // eslint-disable-next-line react-hooks/set-state-in-effect -- deliberate auto-select on fetched data, already guarded to run at most once
-      setLocValue({
-        locationId: l.id,
-        address: { address_line1: l.address_line1, address_line2: l.address_line2 || '', city: l.city, state: l.state, zip: l.zip },
-      });
+      setLocValue(locationValue(l));
     }
   }, [locations, locValue.locationId]);
 
@@ -222,7 +227,21 @@ function PlanBuilderDialog({
                 <CustomerPickerWithCreate
                   value={customerId}
                   valueLabel={customerLabel}
-                  onChange={(id, label) => { setCustomerId(id); setCustomerLabel(label); setLocValue(emptyLoc()); }}
+                  // The quick create follows Create service plans, not Create customers (S02.28).
+                  createAs="service-plan"
+                  onChange={(id, label, created) => {
+                    setCustomerId(id); setCustomerLabel(label);
+                    // A customer made right here: the address typed into the quick create is the plan's
+                    // Service location. Seed the location list from the create's own answer, because a
+                    // person without View customers cannot read the new customer back to learn it.
+                    const made = created?.service_locations?.[0];
+                    if (created && made) {
+                      qc.setQueryData(['customer', id, 'plan-locations'], { service_locations: created.service_locations });
+                      setLocValue(locationValue(made));
+                    } else {
+                      setLocValue(emptyLoc());
+                    }
+                  }}
                 />
               )}
             </div>

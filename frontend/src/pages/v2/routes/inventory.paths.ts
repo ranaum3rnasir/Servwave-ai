@@ -23,8 +23,10 @@ export const INVENTORY_V2_PATHS = [
   '/inventory/low-stock',
   '/inventory/activity',
   '/inventory/logistic-orders',
+  '/inventory/logistic-orders/:orderId',
   '/inventory/approvals',
   '/inventory/price-book',
   '/inventory/purchase-orders',
+  '/inventory/purchase-orders/:poId',
   '/inventory/vendors',
 ] as const;

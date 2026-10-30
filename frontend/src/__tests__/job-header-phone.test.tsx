@@ -4,7 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { render } from '@testing-library/react';
 import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
+import { renderWithProviders, ALL_JOB_ACTIONS } from './helpers';
 import JobDetailPage from '@/pages/v2/jobs/JobDetailPage';
 import { DetailHeader, DetailDock } from '@/components/detail/DetailHeader';
 import { MEDIA } from '@/ui-kit/lib/breakpoints';
@@ -84,6 +84,7 @@ const JOB = {
   linked_estimates: [],
   tags: [],
   source_plan_id: null,
+  actions: ALL_JOB_ACTIONS,
   source_plan: null,
 };
 
@@ -100,15 +101,15 @@ afterEach(() => {
 });
 
 describe('job page header at phone width', () => {
-  it('has a back control, Mark Complete in the bottom dock only, and the rest inside Actions', async () => {
+  it('has a back control, Complete job in the bottom dock only, and the rest inside Actions', async () => {
     setPhone(true);
     const user = userEvent.setup();
     renderWithProviders(<JobDetailPage />, { ability: adminAbility });
 
     const dock = await screen.findByTestId('detail-dock');
-    // Mark Complete is reachable in the dock, and is the page's only Mark Complete.
-    expect(within(dock).getByRole('button', { name: /Mark Complete/ })).toBeInTheDocument();
-    expect(screen.getAllByRole('button', { name: /Mark Complete/ })).toHaveLength(1);
+    // Complete job is reachable in the dock, and is the page's only Complete job.
+    expect(within(dock).getByRole('button', { name: /Complete job/ })).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /Complete job/ })).toHaveLength(1);
 
     // Back control goes to the jobs list when there is no in-app history.
     await user.click(screen.getByRole('button', { name: 'Back to jobs' }));
@@ -120,11 +121,11 @@ describe('job page header at phone width', () => {
     expect(await screen.findByRole('menuitem', { name: /New Task/ })).toBeInTheDocument();
   });
 
-  it('keeps the desktop layout from sm up: Mark Complete and New Task inline, no back control, no dock', async () => {
+  it('keeps the desktop layout from sm up: Complete job and New Task inline, no back control, no dock', async () => {
     setPhone(false);
     renderWithProviders(<JobDetailPage />, { ability: adminAbility });
 
-    expect(await screen.findByRole('button', { name: /Mark Complete/ })).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: /Complete job/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /New Task/ })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Back to jobs' })).not.toBeInTheDocument();
     expect(screen.queryByTestId('detail-dock')).not.toBeInTheDocument();

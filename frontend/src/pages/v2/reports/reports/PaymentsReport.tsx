@@ -12,9 +12,10 @@ import {
 import { ChartCard } from '@/components/charts';
 import { fitCategoryAxis, fittedCategoryTick, useNarrowChart } from '@/components/charts/narrowChart';
 import { chartPalette, token } from '@/design-system';
+import { useAppAbility } from '@/contexts/AbilityContext';
+import { canSeeCompanyFigures } from '@/lib/ability';
 import { formatCurrency } from '@/lib/utils';
 import { exportCsvFile } from '@/lib/csv';
-import { useIsDemoOrg } from '@/lib/useIsDemoOrg';
 import { findReport } from '@/lib/reports/report-catalog';
 import {
   PAYMENT_CATEGORIES, PAYMENT_METHODS, PAYMENT_STATUSES, TECHNICIANS, usePaymentsReport,
@@ -103,6 +104,9 @@ const STATUS_VARIANT: Record<PaymentStatus, NonNullable<BadgeProps['variant']>> 
   Succeeded: 'softGreen',
   Pending: 'softAmber',
   Failed: 'softRed',
+  Voided: 'softNeutral',
+  'Charged back': 'softRed',
+  'Partly refunded': 'softNeutral',
   Refunded: 'softNeutral',
 };
 
@@ -169,8 +173,9 @@ export default function PaymentsReport() {
   const catAxis = fitCategoryAxis(useNarrowChart(), { labelWidth: 72, valueRoom: 96 });
   // Demo orgs keep the seeded mock; real orgs read live DB payments, tips
   // included. The aggregation logic below is identical for both.
-  const isDemo = useIsDemoOrg();
-  const { rows: ALL } = usePaymentsReport(isDemo);
+  // The sums of this report (total tiles, charts, footers) are company-wide money; the payment rows are not.
+  const showsTotals = canSeeCompanyFigures(useAppAbility());
+  const { rows: ALL, now: NOW } = usePaymentsReport();
 
   const [search, setSearch] = useState('');
   const [methods, setMethods] = useState<string[]>([]);
@@ -189,7 +194,8 @@ export default function PaymentsReport() {
   // eslint-disable-next-line react-hooks/set-state-in-effect -- deliberate: reset to the first page whenever the filters or page size change
   useEffect(() => setPage(0), [search, methods, techs, categories, statuses, preset, customFrom, customTo, pageSize]);
 
-  const range = useMemo(() => resolveRange(preset, customFrom, customTo), [preset, customFrom, customTo]);
+  // Relative presets and the weekly windows resolve against today, not the fixed demo anchor (BASE_MS).
+  const range = useMemo(() => resolveRange(preset, customFrom, customTo, NOW.getTime()), [preset, customFrom, customTo, NOW]);
   const filters = useMemo(
     () => ({ search, methods, technicians: techs, categories, statuses, range }),
     [search, methods, techs, categories, statuses, range],
@@ -210,8 +216,8 @@ export default function PaymentsReport() {
 
   const kpis = useMemo(() => computeKpis(baseRows), [baseRows]);
   const priorKpis = useMemo(() => (priorRows ? computeKpis(priorRows) : null), [priorRows]);
-  const breakdown = useMemo(() => categoryBreakdown(ALL, baseRows, priorRows), [ALL, baseRows, priorRows]);
-  const trend = useMemo(() => weeklyTrend(ALL, 8), [ALL]);
+  const breakdown = useMemo(() => categoryBreakdown(ALL, baseRows, priorRows, NOW.getTime()), [ALL, baseRows, priorRows, NOW]);
+  const trend = useMemo(() => weeklyTrend(ALL, 8, NOW.getTime()), [ALL, NOW]);
   const totals = useMemo(() => filteredTotals(tableRows), [tableRows]);
 
   // Payment processing fees (Gross/Stripe/ServWave/Net), backend-aggregated over
@@ -227,6 +233,8 @@ export default function PaymentsReport() {
   // isLoading drives the tile's own skeleton rather than a bare "$0.00" flash
   // that would misleadingly read as "this org has no processing fees".
   const { data: feesData, isLoading: feesLoading } = usePaymentFeesReport(feeRange);
+  // A person without See company figures gets the window and the counts but no dollar sum: those two tiles are then not drawn.
+  const showsFeeSums = feesData?.serviceFees !== undefined || feesLoading;
   const serviceFeeCount = feesData?.serviceFeeCount ?? 0;
   const tipCount = feesData?.tipCount ?? 0;
 
@@ -276,7 +284,7 @@ export default function PaymentsReport() {
       cell: (r) => (r.isDepositCredit
         ? <span className="text-muted-foreground tabular-nums" title="Deposit already collected, applied here as credit - not counted again">{money(r.amount)} <span className="text-xs">credit</span></span>
         : <span className="font-medium tabular-nums">{money(r.amount)}</span>),
-      footer: <span className="tabular-nums">{money(totals.amount)}</span>,
+      footer: showsTotals ? <span className="tabular-nums">{money(totals.amount)}</span> : undefined,
     },
     { id: 'date', header: 'Date', width: 130, min: 115, sortValue: (r) => r.date, cell: (r) => <span className="text-muted-foreground whitespace-nowrap">{fmtDate(r.date)}</span> },
     { id: 'status', header: 'Status', width: 110, min: 100, sortValue: (r) => r.status, cell: (r) => <Badge variant={STATUS_VARIANT[r.status]} size="pill">{r.status}</Badge> },
@@ -305,139 +313,143 @@ export default function PaymentsReport() {
       id: 'tip', header: 'Tip', width: 90, min: 75, align: 'right',
       sortValue: (r) => r.tip,
       cell: (r) => <span className="text-muted-foreground tabular-nums">{r.tip ? money(r.tip) : '-'}</span>,
-      footer: <span className="tabular-nums">{money(totals.tips)}</span>,
+      footer: showsTotals ? <span className="tabular-nums">{money(totals.tips)}</span> : undefined,
     },
     { id: 'card', header: 'Card', width: 110, min: 90, sortValue: (r) => r.card, cell: (r) => <span className="text-muted-foreground tabular-nums">{r.card || '-'}</span> },
-    { id: 'technician', header: 'Technician', width: 140, min: 120, sortValue: (r) => r.technician, cell: (r) => <span>{r.technician}</span> },
+    { id: 'technician', header: 'Technician', width: 140, min: 120, sortValue: (r) => r.technician, cell: (r) => <span>{r.technician || '-'}</span> },
     { id: 'txn', header: 'Transaction', width: 120, min: 100, sortValue: (r) => r.txnKind, cell: (r) => <span className="text-muted-foreground">{r.txnKind}</span> },
-    { id: 'collected', header: 'Collected by', width: 140, min: 120, sortValue: (r) => r.technician, cell: (r) => <span className="text-brand">{r.technician}</span> },
+    { id: 'collected', header: 'Collected by', width: 140, min: 120, sortValue: (r) => r.technician, cell: (r) => <span className="text-brand">{r.technician || '-'}</span> },
   ];
 
   return (
     <ReportShell
       report={report}
       subtitle={
-        isDemo
-          ? 'Sample data - every payment received, by category and method.'
-          : 'Every payment received, by category and method.'
+        'Every payment received, by category and method.'
       }
       actions={<ReportToolbar variant="compact" onExport={exportCsv} />}
     >
-      <ReportKpis
-        items={[
-          { icon: DollarSign, label: 'Total Revenue', value: money(kpis.revenue), tone: 'primary', emphasize: true },
-          { icon: Banknote, label: 'Total Collected', value: money(kpis.collected), tone: 'success', emphasize: true },
-          catCard('Invoice'),
-          catCard('Deposit'),
-          catCard('Account'),
-          catCard('Recurring'),
-        ]}
-      />
+      {showsTotals && (
+        <ReportKpis
+          items={[
+            { icon: DollarSign, label: 'Total Revenue', value: money(kpis.revenue), tone: 'primary', emphasize: true },
+            { icon: Banknote, label: 'Total Collected', value: money(kpis.collected), tone: 'success', emphasize: true },
+            catCard('Invoice'),
+            catCard('Deposit'),
+            catCard('Account'),
+            catCard('Recurring'),
+          ]}
+        />
+      )}
 
       {/* Two-pane: dashboard (left) + transaction list (right). The right track
           uses minmax(0,...) so the wide table scrolls INSIDE its card instead of
           stretching the whole page off-screen. */}
-      <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(340px,2fr)_minmax(0,3fr)]">
-        <div className="min-w-0 space-y-4">
-          <ChartCard title="Revenue by category" subtitle="Collected this period · bar color = trend vs last period">
-            <ResponsiveContainer width="100%" height={Math.max(160, breakdown.length * 46)}>
-              <BarChart data={breakdown} layout="vertical" margin={{ left: 8, right: catAxis.valueRoom, top: 4, bottom: 4 }}>
-                <CartesianGrid horizontal={false} stroke={token('--border-color')} />
-                <XAxis type="number" tickFormatter={money} tick={{ fontSize: 11, fill: token('--text-secondary') }} />
-                <YAxis type="category" dataKey="category" width={catAxis.labelWidth} tick={fittedCategoryTick({ axisWidth: catAxis.labelWidth, fontSize: 12, fill: token('--text-primary') })} />
-                <Tooltip formatter={(v: number) => money(v)} cursor={{ fill: token('--border-soft'), opacity: 0.5 }} />
-                <Bar
-                  dataKey="revenue" radius={[0, 6, 6, 0]} barSize={20} isAnimationActive={false}
-                  label={{ position: 'right', formatter: (v: number) => money(v), fontSize: 11, fill: token('--text-secondary') }}
-                >
-                  {breakdown.map((b) => (
-                    <Cell key={b.category} fill={b.delta != null && b.delta < 0 ? token('--danger') : token('--success')} />
+      <div className={showsTotals ? 'grid grid-cols-1 gap-4 xl:grid-cols-[minmax(340px,2fr)_minmax(0,3fr)]' : 'grid grid-cols-1 gap-4'}>
+        {showsTotals && (
+          <div className="min-w-0 space-y-4">
+            <ChartCard title="Revenue by category" subtitle="Collected this period · bar color = trend vs last period">
+              <ResponsiveContainer width="100%" height={Math.max(160, breakdown.length * 46)}>
+                <BarChart data={breakdown} layout="vertical" margin={{ left: 8, right: catAxis.valueRoom, top: 4, bottom: 4 }}>
+                  <CartesianGrid horizontal={false} stroke={token('--border-color')} />
+                  <XAxis type="number" tickFormatter={money} tick={{ fontSize: 11, fill: token('--text-secondary') }} />
+                  <YAxis type="category" dataKey="category" width={catAxis.labelWidth} tick={fittedCategoryTick({ axisWidth: catAxis.labelWidth, fontSize: 12, fill: token('--text-primary') })} />
+                  <Tooltip formatter={(v: number) => money(v)} cursor={{ fill: token('--border-soft'), opacity: 0.5 }} />
+                  <Bar
+                    dataKey="revenue" radius={[0, 6, 6, 0]} barSize={20} isAnimationActive={false}
+                    label={{ position: 'right', formatter: (v: number) => money(v), fontSize: 11, fill: token('--text-secondary') }}
+                  >
+                    {breakdown.map((b) => (
+                      <Cell key={b.category} fill={b.delta != null && b.delta < 0 ? token('--danger') : token('--success')} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </ChartCard>
+
+            <ChartCard title="Weekly trend" subtitle="Last 8 weeks of collected revenue per category">
+              <ResponsiveContainer width="100%" height={240}>
+                <LineChart data={trend} margin={{ left: 4, right: 12, top: 4, bottom: 0 }}>
+                  <CartesianGrid stroke={token('--border-color')} strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="week" tick={{ fontSize: 11, fill: token('--text-secondary') }} />
+                  <YAxis tickFormatter={money} tick={{ fontSize: 11, fill: token('--text-secondary') }} width={84} />
+                  <Tooltip formatter={(v: number) => money(v)} />
+                  <Legend wrapperStyle={{ fontSize: 12 }} />
+                  {PAYMENT_CATEGORIES.map((c) => (
+                    <Line key={c} type="monotone" dataKey={c} stroke={CAT_COLOR[c]} strokeWidth={2} dot={false} isAnimationActive={false} />
                   ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </ChartCard>
+                </LineChart>
+              </ResponsiveContainer>
+            </ChartCard>
 
-          <ChartCard title="Weekly trend" subtitle="Last 8 weeks of collected revenue per category">
-            <ResponsiveContainer width="100%" height={240}>
-              <LineChart data={trend} margin={{ left: 4, right: 12, top: 4, bottom: 0 }}>
-                <CartesianGrid stroke={token('--border-color')} strokeDasharray="3 3" vertical={false} />
-                <XAxis dataKey="week" tick={{ fontSize: 11, fill: token('--text-secondary') }} />
-                <YAxis tickFormatter={money} tick={{ fontSize: 11, fill: token('--text-secondary') }} width={84} />
-                <Tooltip formatter={(v: number) => money(v)} />
-                <Legend wrapperStyle={{ fontSize: 12 }} />
-                {PAYMENT_CATEGORIES.map((c) => (
-                  <Line key={c} type="monotone" dataKey={c} stroke={CAT_COLOR[c]} strokeWidth={2} dot={false} isAnimationActive={false} />
-                ))}
-              </LineChart>
-            </ResponsiveContainer>
-          </ChartCard>
+            {/* Two tiles, one card - what the customer paid ON TOP of the invoice
+                face value, never entering invoice totals (D1/D10). This block used
+                to break the payment down into Gross / Stripe fee / ServWave
+                platform fee / Net; it no longer does - what the processor and the
+                platform each take is ours to reconcile, not the org's to read.
+                The fee is card-only by construction; a tip is not, so only the fee
+                tile says "card". */}
+            {/* The counts ride in the subtitle rather than under each tile: the
+                kit's StatCard deliberately ships no sub-line slot. */}
+            {showsFeeSums && (
+              <ChartCard
+                title="Collected on top of the invoice"
+                subtitle={
+                  `${serviceFeeCount} card payment${serviceFeeCount === 1 ? '' : 's'} charged the 3.5% fee`
+                  + ` · ${tipCount} payment${tipCount === 1 ? '' : 's'} tipped`
+                }
+              >
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <StatCard
+                    label="Card service fee"
+                    value={money(feesData?.serviceFees ?? 0)}
+                    loading={feesLoading}
+                  />
+                  <StatCard
+                    label="Customer tips"
+                    value={money(feesData?.tips ?? 0)}
+                    loading={feesLoading}
+                  />
+                </div>
+              </ChartCard>
+            )}
 
-          {/* Two tiles, one card - what the customer paid ON TOP of the invoice
-              face value, never entering invoice totals (D1/D10). This block used
-              to break the payment down into Gross / Stripe fee / ServWave
-              platform fee / Net; it no longer does - what the processor and the
-              platform each take is ours to reconcile, not the org's to read.
-              The fee is card-only by construction; a tip is not, so only the fee
-              tile says "card". */}
-          {/* The counts ride in the subtitle rather than under each tile: the
-              kit's StatCard deliberately ships no sub-line slot. */}
-          <ChartCard
-            title="Collected on top of the invoice"
-            subtitle={
-              `${serviceFeeCount} card payment${serviceFeeCount === 1 ? '' : 's'} charged the 3.5% fee`
-              + ` · ${tipCount} payment${tipCount === 1 ? '' : 's'} tipped`
-            }
-          >
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <StatCard
-                label="Card service fee"
-                value={money(feesData?.serviceFees ?? 0)}
-                loading={feesLoading}
-              />
-              <StatCard
-                label="Customer tips"
-                value={money(feesData?.tips ?? 0)}
-                loading={feesLoading}
-              />
-            </div>
-          </ChartCard>
-
-          <Card>
-            <ReportHeading level={2} scale="lg" className="mb-3">Category breakdown</ReportHeading>
-            <Table scrollBox="report-table">
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Category</TableHead>
-                  <TableHead className="text-right">Revenue</TableHead>
-                  <TableHead className="text-right">% total</TableHead>
-                  <TableHead className="text-right">Delta</TableHead>
-                  <TableHead className="text-right">8-wk</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {breakdown.map((b) => (
-                  <TableRow key={b.category}>
-                    <Td>
-                      <span className="inline-flex items-center gap-2">
-                        <span className="size-2.5 rounded-sm" style={{ background: CAT_COLOR[b.category] }} />
-                        {b.category}
-                      </span>
-                    </Td>
-                    <Td className="text-right font-medium tabular-nums">{money(b.revenue)}</Td>
-                    <Td className="text-muted-foreground text-right tabular-nums">{b.pct.toFixed(0)}%</Td>
-                    <Td className="text-right"><Delta value={b.delta} /></Td>
-                    <Td>
-                      <div className="flex justify-end">
-                        <Sparkline data={b.trend.length ? b.trend : [0, 0]} color={CAT_COLOR[b.category]} />
-                      </div>
-                    </Td>
+            <Card>
+              <ReportHeading level={2} scale="lg" className="mb-3">Category breakdown</ReportHeading>
+              <Table scrollBox="report-table">
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Category</TableHead>
+                    <TableHead className="text-right">Revenue</TableHead>
+                    <TableHead className="text-right">% total</TableHead>
+                    <TableHead className="text-right">Delta</TableHead>
+                    <TableHead className="text-right">8-wk</TableHead>
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </Card>
-        </div>
+                </TableHeader>
+                <TableBody>
+                  {breakdown.map((b) => (
+                    <TableRow key={b.category}>
+                      <Td>
+                        <span className="inline-flex items-center gap-2">
+                          <span className="size-2.5 rounded-sm" style={{ background: CAT_COLOR[b.category] }} />
+                          {b.category}
+                        </span>
+                      </Td>
+                      <Td className="text-right font-medium tabular-nums">{money(b.revenue)}</Td>
+                      <Td className="text-muted-foreground text-right tabular-nums">{b.pct.toFixed(0)}%</Td>
+                      <Td className="text-right"><Delta value={b.delta} /></Td>
+                      <Td>
+                        <div className="flex justify-end">
+                          <Sparkline data={b.trend.length ? b.trend : [0, 0]} color={CAT_COLOR[b.category]} />
+                        </div>
+                      </Td>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </Card>
+          </div>
+        )}
 
         <div className="min-w-0 space-y-3">
           {/* Date filter sits top-left where it is always visible; totals right. */}
@@ -456,10 +468,12 @@ export default function PaymentsReport() {
               onCustomFrom={setCustomFrom}
               onCustomTo={setCustomTo}
             />
-            <div className="ml-auto flex items-center gap-3">
-              <StatCard label="Total amount" value={money(totals.amount)} />
-              <StatCard label="Total tips" value={money(totals.tips)} />
-            </div>
+            {showsTotals && (
+              <div className="ml-auto flex items-center gap-3">
+                <StatCard label="Total amount" value={money(totals.amount)} />
+                <StatCard label="Total tips" value={money(totals.tips)} />
+              </div>
+            )}
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -527,9 +541,9 @@ export default function PaymentsReport() {
       </div>
 
       <p className="text-muted-foreground text-xs">
-        {isDemo && 'Sample data shown so the layout is reviewable without a backend. '}
-        The left dashboard, KPI cards and totals all follow the date range + filters; the
-        weekly-trend chart is a fixed 8-week context window.
+        {showsTotals
+          ? 'The left dashboard, KPI cards and totals all follow the date range + filters; the weekly-trend chart is a fixed 8-week context window.'
+          : 'The list follows the date range and filters.'}
       </p>
     </ReportShell>
   );

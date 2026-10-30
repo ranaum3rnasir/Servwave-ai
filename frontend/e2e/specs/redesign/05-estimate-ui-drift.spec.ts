@@ -30,7 +30,7 @@ import {
  *    ACTIVE_STATUSES (the non-terminal set NEW/CONTACTED/WALKTHROUGH_SCHEDULED/
  *    WALKTHROUGH_COMPLETED/ESTIMATED), mirroring LeadsPage.tsx. This drops the old phantom
  *    'ESTIMATING' (not a LeadStatus) and surfaces the previously-hidden WALKTHROUGH_COMPLETED
- *    lead. Estimate-create rejects only terminal statuses (WON/LOST/CANCELLED) and is NOT
+ *    lead. Estimate-create rejects only terminal statuses (WON/LOST) and is NOT
  *    gated on the walkthrough (Bug #39 — that gate lives on SEND), so every offered lead
  *    passes the server create gate. The leads query itself
  *    (GET /api/leads?customer_id=…&limit=10) applies NO status filter, so this client-side

@@ -3,6 +3,7 @@ import { Download, FlaskConical } from 'lucide-react';
 
 import { toCSV, downloadCSV } from '@/lib/csv';
 import { findReport } from '@/lib/reports/report-catalog';
+import { useCanExportReports } from '@/lib/reports/useCanExportReports';
 import { useCommunicationTrackingReport } from '@/lib/reports/communication-tracking-data';
 
 import { Button } from '@/ui-kit/components/ui/button';
@@ -37,6 +38,7 @@ export default function CommunicationTrackingReport() {
   const [tab, setTab] = useState<Tab>('Cadence');
   const [isDemo, setIsDemo] = useState(true);
   const { data } = useCommunicationTrackingReport(isDemo);
+  const canExport = useCanExportReports();
 
   function exportCsv() {
     if (!data) return;
@@ -65,10 +67,12 @@ export default function CommunicationTrackingReport() {
             <FlaskConical />
             {isDemo ? 'Sample data' : 'Live'}
           </Button>
-          <Button type="button" variant="outline" size="sm" onClick={exportCsv}>
-            <Download />
-            Export
-          </Button>
+          {canExport && (
+            <Button type="button" variant="outline" size="sm" onClick={exportCsv}>
+              <Download />
+              Export
+            </Button>
+          )}
         </>
       }
     >

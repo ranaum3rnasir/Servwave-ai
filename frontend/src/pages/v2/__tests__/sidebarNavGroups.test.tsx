@@ -8,10 +8,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AbilityProvider } from '@/contexts/AbilityContext';
 import { buildAbility, type AppAbility } from '@/lib/ability';
 import { useAuthStore } from '@/stores/auth.store';
-import {
-  communicationSectionAbility,
-  readOnlyCommunicationAbility,
-} from '@/__tests__/helpers';
+import { seedEveryMenuSwitch } from '@/__tests__/helpers';
 
 import V2AppLayout from '../V2AppLayout';
 
@@ -83,6 +80,7 @@ const inventoryToggle = () => screen.getByRole('button', { name: 'Inventory' });
 describe('v2 sidebar - expandable groups', () => {
   beforeEach(() => {
     localStorage.clear();
+    seedEveryMenuSwitch(USER_ID);
     // Inventory entitled, so the group is unlocked and has children at all.
     mockAuthUser({ ...ORG_ADMIN, org_features: ['inventory'] });
   });
@@ -151,30 +149,34 @@ describe('v2 sidebar - expandable groups', () => {
   });
 });
 
-// #2046 - the Communication group and its four children are keyed on `access_inbox`, not `read`,
-// on subject `Communication` (nav-registry.ts). `communicationSectionAbility()` /
-// `readOnlyCommunicationAbility()` (helpers.tsx) are the two shapes the grant migration and the
-// reproducer pin: `read`+`create` alone is SALES's shape today, `read`+`create`+`access_inbox` is
-// what DISPATCHER/TECHNICIAN/ADMIN hold after the fix.
+// #2046, then Roles & Permissions S02.20 - the Communication group and its children follow the person's switches:
+// Access Communication plus at least one Show. The compiled rules (`read Communication` alone is the old Sales shape)
+// no longer decide the menu.
 describe('v2 sidebar - #2046 Communication group visibility', () => {
+  const seedSwitches = (values: Record<string, boolean>) =>
+    localStorage.setItem(`servwave_my_switches:${USER_ID}`, JSON.stringify({ values }));
+
   beforeEach(() => {
     localStorage.clear();
     // Both comms entitlements on, so entitlement alone is never why the group is missing here -
-    // only the ability decides it.
+    // only the person's switches decide it.
     mockAuthUser({ ...ORG_ADMIN, org_features: ['phone', 'email'] });
   });
 
-  it('hides the Communication group and its children for a read-only-Communication ability', () => {
-    renderShell('/', readOnlyCommunicationAbility());
+  it('hides the Communication group and its children without Access Communication', () => {
+    seedSwitches({ access_communication: false, show_phone: true, show_text: true, show_email: true, access_schedule: true });
+    renderShell();
 
+    expect(screen.getByText('Schedule')).toBeInTheDocument();
     expect(screen.queryByText('Communication')).toBeNull();
     expect(screen.queryByText('Phone')).toBeNull();
     expect(screen.queryByText('Text')).toBeNull();
   });
 
-  it('shows the Communication group + children for an ability holding the section gate', async () => {
+  it('shows the Communication group + children for a person holding Access Communication and the Shows', async () => {
     const user = userEvent.setup();
-    renderShell('/', communicationSectionAbility());
+    seedSwitches({ access_communication: true, show_phone: true, show_text: true });
+    renderShell();
 
     const toggle = screen.getByRole('button', { name: 'Communication' });
     expect(toggle).toBeInTheDocument();
@@ -182,5 +184,6 @@ describe('v2 sidebar - #2046 Communication group visibility', () => {
     await user.click(toggle);
     expect(screen.getByText('Phone')).toBeInTheDocument();
     expect(screen.getByText('Text')).toBeInTheDocument();
+    expect(screen.queryByText('Email')).toBeNull();
   });
 });

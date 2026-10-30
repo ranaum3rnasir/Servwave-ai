@@ -1,6 +1,6 @@
 // Phone module — Texting view.
 //
-// Ported from Emanuel's PhonePage monolith (region L8413–9312). The Texting
+// Ported from the original PhonePage monolith (region L8413–9312). The Texting
 // tab: messaging compliance (Caller ID), messaging settings (forwarding + job
 // closing), editable text templates with merge-field chips and custom-template
 // creation, texting automations (triggered sends), and a plain-English
@@ -15,9 +15,12 @@
 //     maps + merge fields (MERGE_FIELDS, mergeLabel, TEXT_TRIGGERS,
 //     TIMING_OPTIONS, SMS_COMPLIANCE, OPT_OUT_FOOTER, SMS_LEGAL_DISCLAIMER) are
 //     plain values from the seam.
-//   • CASL gates write affordances (New template / New automation / Save) behind
-//     manage Communication; the view requires read (coarse subject), mirroring
-//     NumbersView. The `onToast` prop is preserved (the shell wires it).
+//   • CASL gates the write affordances by switch (Roles & Permissions S08.20): template writes
+//     (New template, the body editor, Reset to default, Delete) need Edit communication records
+//     (`update Communication`); the Automations sub-tab needs View automations (`read Automation`),
+//     and New automation, Edit / the on-off toggle and Delete need Create, Edit and Delete
+//     automations. The view requires read (coarse subject), mirroring NumbersView. The `onToast`
+//     prop is preserved (the shell wires it).
 //   • The monolith's portaled `CleanSelect` helper is now the shared kernel
 //     copy (`@/components/communication/phone/shared`) — deduped with the
 //     near-identical copy that lived in CallMaskingView.tsx, tone="info" to
@@ -64,6 +67,7 @@ import { useAppAbility } from "@/contexts/AbilityContext";
 import { useAuthStore } from "@/stores/auth.store";
 import { Card } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
+import { InfoPopover } from "@/pages/v2/_shared/infoPopover";
 import { EmptyState } from "@/components/ui/empty-state";
 import { Modal } from "@/components/ui/modal";
 import { CleanSelect } from "@/components/communication/phone/shared";
@@ -120,11 +124,14 @@ function MergeChip({ token, onClick }: { token: string; onClick: () => void }) {
 
 function TemplateCard({
   tpl,
+  canEdit,
   onChange,
   onReset,
   onDelete,
 }: {
   tpl: TextTemplate;
+  /** Edit communication records: without it the card only reads. */
+  canEdit: boolean;
   onChange: (id: string, patch: Partial<TextTemplate>) => void;
   onReset: (id: string) => void;
   onDelete?: (id: string) => void;
@@ -160,7 +167,7 @@ function TemplateCard({
             </span>
           )}
         </div>
-        {tpl.kind === "preset" ? (
+        {!canEdit ? null : tpl.kind === "preset" ? (
           <button
             type="button"
             onClick={() => onReset(tpl.id)}
@@ -184,6 +191,7 @@ function TemplateCard({
       <textarea
         ref={taRef}
         value={tpl.body}
+        readOnly={!canEdit}
         onChange={(e) => onChange(tpl.id, { body: e.target.value })}
         rows={tpl.body.split("\n").length + 1}
         className="w-full rounded-md border border-border bg-surface-light p-3 text-[13px] mobile:!text-base leading-relaxed text-text-secondary focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
@@ -196,17 +204,20 @@ function TemplateCard({
         </p>
       )}
 
-      <div className="mt-2.5 flex flex-wrap gap-1.5">
-        {tpl.fields.map((token) => (
-          <MergeChip key={token} token={token} onClick={() => insert(token)} />
-        ))}
-      </div>
+      {canEdit && (
+        <div className="mt-2.5 flex flex-wrap gap-1.5">
+          {tpl.fields.map((token) => (
+            <MergeChip key={token} token={token} onClick={() => insert(token)} />
+          ))}
+        </div>
+      )}
 
       {tpl.notifyToggle && (
         <label className="mt-3 flex cursor-pointer items-center gap-2 text-[13px] text-text-secondary">
           <input
             type="checkbox"
             checked={!!tpl.notifyOn}
+            disabled={!canEdit}
             onChange={(e) => onChange(tpl.id, { notifyOn: e.target.checked })}
             className="h-4 w-4 rounded border-border text-primary focus:ring-primary"
           />
@@ -563,7 +574,11 @@ function TextSubTab({
 
 export function TextingView({ onToast }: { onToast: (m: string) => void }) {
   const ability = useAppAbility();
-  const canManage = ability.can("manage", "Communication");
+  const canEditTemplates = ability.can("update", "Communication");
+  const canViewAutomations = ability.can("read", "Automation");
+  const canCreateAutomations = ability.can("create", "Automation");
+  const canEditAutomations = ability.can("update", "Automation");
+  const canDeleteAutomations = ability.can("delete", "Automation");
   // Identity is available for the shell; reserved for future per-user settings.
   useAuthStore((s) => s.user);
 
@@ -683,10 +698,6 @@ export function TextingView({ onToast }: { onToast: (m: string) => void }) {
       {/* Intro */}
       <div className="max-w-2xl">
         <h2 className="text-lg font-semibold text-text-primary">Texting</h2>
-        <p className="mt-1 text-sm text-text-secondary">
-          Two-way SMS from your business number - compliance, templates, and
-          automated messages that go out the moment something happens on a job.
-        </p>
       </div>
 
       {/* Sub-tabs */}
@@ -697,7 +708,9 @@ export function TextingView({ onToast }: { onToast: (m: string) => void }) {
         data-mobile-scroll-x="tab-strip"
       >
         <TextSubTab active={tab === "templates"} onClick={() => setTab("templates")} label="Templates & settings" icon={MessageSquare} count={templates.length} />
-        <TextSubTab active={tab === "automations"} onClick={() => setTab("automations")} label="Automations" icon={Zap} count={automations.length} />
+        {canViewAutomations && (
+          <TextSubTab active={tab === "automations"} onClick={() => setTab("automations")} label="Automations" icon={Zap} count={automations.length} />
+        )}
         <TextSubTab active={tab === "compliance"} onClick={() => setTab("compliance")} label="Compliance & legal" icon={ShieldCheck} />
       </div>
 
@@ -803,7 +816,7 @@ export function TextingView({ onToast }: { onToast: (m: string) => void }) {
                 <h3 className="text-base font-bold text-text-primary">Text templates</h3>
                 <p className="text-[13px] text-text-secondary">Set up text templates that are sent to you and your customers.</p>
               </div>
-              {canManage && (
+              {canEditTemplates && (
                 <button
                   type="button"
                   onClick={() => setNewTplOpen(true)}
@@ -818,6 +831,7 @@ export function TextingView({ onToast }: { onToast: (m: string) => void }) {
                 <TemplateCard
                   key={tpl.id}
                   tpl={tpl}
+                  canEdit={canEditTemplates}
                   onChange={updateTemplate}
                   onReset={resetTemplate}
                   onDelete={deleteTemplate}
@@ -828,7 +842,7 @@ export function TextingView({ onToast }: { onToast: (m: string) => void }) {
         </div>
       )}
 
-      {tab === "automations" && (
+      {tab === "automations" && canViewAutomations && (
         <div className="space-y-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <p className="max-w-2xl text-[13px] text-text-secondary">
@@ -836,7 +850,7 @@ export function TextingView({ onToast }: { onToast: (m: string) => void }) {
               trigger and a template, or write a brand-new message. Automations
               respect the opt-out and quiet-hours rules on the Compliance tab.
             </p>
-            {canManage && (
+            {canCreateAutomations && (
               <button
                 type="button"
                 onClick={() => setAutoModal({ open: true, editing: null })}
@@ -863,7 +877,7 @@ export function TextingView({ onToast }: { onToast: (m: string) => void }) {
                     key={a.id}
                     className="flex flex-wrap items-center gap-3 rounded-card border border-border bg-surface-light p-3.5"
                   >
-                    <Switch checked={a.enabled} onCheckedChange={() => toggleAutomation(a.id)} aria-label={`Toggle ${a.name}`} />
+                    <Switch checked={a.enabled} onCheckedChange={() => toggleAutomation(a.id)} disabled={!canEditAutomations} aria-label={`Toggle ${a.name}`} />
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
                         <p className="text-sm font-semibold text-text-primary">{a.name}</p>
@@ -883,21 +897,25 @@ export function TextingView({ onToast }: { onToast: (m: string) => void }) {
                       </p>
                     </div>
                     <div className="flex items-center gap-1">
-                      <button
-                        type="button"
-                        onClick={() => setAutoModal({ open: true, editing: a })}
-                        className="rounded-md border border-border bg-surface-light px-2.5 py-1.5 text-[12px] font-semibold text-text-secondary hover:bg-background-light"
-                      >
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => deleteAutomation(a.id)}
-                        className="rounded-md p-1.5 text-text-secondary hover:text-danger"
-                        aria-label="Delete automation"
-                      >
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+                      {canEditAutomations && (
+                        <button
+                          type="button"
+                          onClick={() => setAutoModal({ open: true, editing: a })}
+                          className="rounded-md border border-border bg-surface-light px-2.5 py-1.5 text-[12px] font-semibold text-text-secondary hover:bg-background-light"
+                        >
+                          Edit
+                        </button>
+                      )}
+                      {canDeleteAutomations && (
+                        <button
+                          type="button"
+                          onClick={() => deleteAutomation(a.id)}
+                          className="rounded-md p-1.5 text-text-secondary hover:text-danger"
+                          aria-label="Delete automation"
+                        >
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      )}
                     </div>
                   </div>
                 );
@@ -909,11 +927,11 @@ export function TextingView({ onToast }: { onToast: (m: string) => void }) {
 
       {tab === "compliance" && (
         <div className="max-w-3xl space-y-5">
-          {/* A2P status */}
+          {/* Carrier registration status */}
           <div className="flex items-start gap-3 rounded-card border border-success/20 bg-success/10 p-4">
             <ShieldCheck className="mt-0.5 h-5 w-5 flex-shrink-0 text-success" />
             <div>
-              <p className="text-sm font-semibold text-success">A2P 10DLC - Verified</p>
+              <p className="text-sm font-semibold text-success">Carrier registration - Verified</p>
               <p className="mt-0.5 text-[13px] text-success">
                 Your brand and campaign are registered with The Campaign Registry, so carriers won’t block your business texts. Keep your use-case and opt-in details current.
               </p>
@@ -924,8 +942,10 @@ export function TextingView({ onToast }: { onToast: (m: string) => void }) {
           <section className="rounded-card border border-border bg-surface-light p-4">
             <label className="flex cursor-pointer items-center justify-between gap-3">
               <span>
-                <span className="text-sm font-semibold text-text-primary">Auto opt-out footer</span>
-                <span className="block text-[13px] text-text-secondary">Appended to marketing texts so recipients can always opt out.</span>
+                <span className="flex items-center gap-1.5 text-sm font-semibold text-text-primary">
+                  Auto opt-out footer
+                  <InfoPopover label="auto opt-out footer">Appended to marketing texts so recipients can always opt out.</InfoPopover>
+                </span>
               </span>
               <Switch checked={optOutOn} onCheckedChange={setOptOutOn} aria-label="Opt-out footer" />
             </label>
@@ -942,8 +962,10 @@ export function TextingView({ onToast }: { onToast: (m: string) => void }) {
           <section className="rounded-card border border-border bg-surface-light p-4">
             <label className="flex cursor-pointer items-center justify-between gap-3">
               <span>
-                <span className="text-sm font-semibold text-text-primary">Respect quiet hours (8 AM–9 PM local)</span>
-                <span className="block text-[13px] text-text-secondary">Holds non-urgent texts until they’re allowed in the recipient’s time zone.</span>
+                <span className="flex items-center gap-1.5 text-sm font-semibold text-text-primary">
+                  Respect quiet hours (8 AM–9 PM local)
+                  <InfoPopover label="quiet hours">Holds non-urgent texts until they’re allowed in the recipient’s time zone.</InfoPopover>
+                </span>
               </span>
               <Switch checked={quietHoursOn} onCheckedChange={setQuietHoursOn} aria-label="Quiet hours" />
             </label>

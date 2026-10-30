@@ -1,7 +1,8 @@
 import Stripe from 'stripe';
 import { env } from '../../../src/config/env';
 import { STRIPE_API_VERSION } from '../../../src/lib/stripe';
-import { Fixtures } from '../fixtures';
+import type { SuiteContext } from '../context';
+import { refundsRecordedOnceByRefundId } from '../refund-events';
 
 function assert(cond: any, msg: string): void {
   if (!cond) throw new Error(`Assertion failed: ${msg}`);
@@ -12,7 +13,7 @@ function assert(cond: any, msg: string): void {
 // verifying that STRIPE_SECRET_KEY is valid and the refund API works end-to-end.
 // Also verifies rejection of multi-payment scenario at the Stripe level.
 // The HTTP refund endpoint (/api/invoices/:id/refund) is tested manually in Phase 8.
-export async function run(_f: Fixtures, opts: { verbose: boolean }): Promise<number> {
+export async function run(_ctx: SuiteContext, opts: { verbose: boolean }): Promise<number> {
   let count = 0;
 
   if (!env.STRIPE_SECRET_KEY) {
@@ -56,6 +57,10 @@ export async function run(_f: Fixtures, opts: { verbose: boolean }): Promise<num
   const partial = await stripe.refunds.create({ payment_intent: pi2.id, amount: 10000 });
   assert(partial.amount === 10000, `partial refund amount should be 10000 (got ${partial.amount})`);
   count++;
+
+  // Payments go-live slice 07: two partial refunds on one invoice charge, their real events
+  // posted to the webhook (one twice) -> exactly one Refund row per refund id, $150 refunded.
+  count += await refundsRecordedOnceByRefundId({ stripe, kind: 'STANDARD', chargeCents: 54375, refundsCents: [10000, 5000], verbose: opts.verbose });
 
   return count;
 }

@@ -136,9 +136,15 @@ test('Email compose: Send stays above the keyboard', async ({ page, session }, t
     const window_ = (await page.locator('[data-slot="compose-footer"]').locator('xpath=..').boundingBox())!;
     expect(window_.y, 'the compose window top is on screen').toBeGreaterThanOrEqual(-0.5);
     expect(window_.y + window_.height, 'the compose window ends at the keyboard').toBeLessThanOrEqual(height - kb + 0.5);
+    // Send is disabled while the throwaway org's outgoing email is off, and a disabled control has no pointer
+    // events, so the browser would answer with whatever sits BEHIND it. The question here is what is PAINTED over
+    // it, so the hit test runs with pointer events switched back on for that one element, and puts them back.
     const topmost = await send.evaluate((el) => {
+      const own = (el as HTMLElement).style.pointerEvents;
+      (el as HTMLElement).style.pointerEvents = 'auto';
       const r = el.getBoundingClientRect();
       const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2);
+      (el as HTMLElement).style.pointerEvents = own;
       return !!hit && (hit === el || el.contains(hit));
     });
     expect(topmost, 'nothing is painted over Send').toBe(true);

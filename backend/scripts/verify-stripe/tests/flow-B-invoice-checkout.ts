@@ -1,62 +1,18 @@
-import { Fixtures } from '../fixtures';
-import { postWebhook } from '../sign';
-import { prisma } from '../../../src/lib/prisma';
+import Stripe from 'stripe';
+import { env } from '../../../src/config/env';
+import { STRIPE_API_VERSION } from '../../../src/lib/stripe';
+import type { SuiteContext } from '../context';
+import { completedCheckoutBooksTheCharge } from '../checkout-events';
 
-function assert(cond: any, msg: string): void {
-  if (!cond) throw new Error(`Assertion failed: ${msg}`);
-}
-
-export async function run(f: Fixtures, opts: { verbose: boolean }): Promise<number> {
-  let count = 0;
-
-  const event = {
-    id: `evt_verify_inv_${Date.now()}`,
-    type: 'checkout.session.completed',
-    data: {
-      object: {
-        id: 'cs_verify_inv_1',
-        payment_intent: f.invoicePiId,
-        amount_total: Math.round(543.75 * 100),
-        metadata: { invoiceId: f.invoiceId },
-      },
-    },
-  };
-
-  const res = await postWebhook(event);
-  assert(res.status === 200, `checkout.session.completed returns 200 (got ${res.status})`);
-  count++;
-  assert(!res.body.duplicate, 'first delivery is not a duplicate');
-  count++;
-
-  const invoice = await prisma.invoice.findUnique({ where: { id: f.invoiceId } });
-  assert(invoice?.status === 'PAID', `invoice status should be PAID (got ${invoice?.status})`);
-  count++;
-  assert(invoice?.paid_at !== null, 'invoice paid_at is set');
-  count++;
-  assert(Number(invoice?.amount_due) === 0, 'invoice amount_due is 0');
-  count++;
-
-  const payment = await prisma.payment.findFirst({ where: { invoice_id: f.invoiceId } });
-  assert(payment !== null, 'Payment record created');
-  count++;
-  assert(payment?.method === 'CARD', `payment method should be CARD (got ${payment?.method})`);
-  count++;
-  assert(payment?.stripe_payment_intent_id === f.invoicePiId, 'payment stripe_payment_intent_id is set');
-  count++;
-
-  const timeline = await prisma.timelineEvent.findFirst({
-    where: { entity_type: 'INVOICE', entity_id: f.invoiceId, event_type: 'INVOICE_PAID' },
-  });
-  assert(timeline !== null, 'INVOICE_PAID timeline event created');
-  count++;
-
-  // Non-payable status — invoice is now PAID, replay should not double-process
-  const replay = await postWebhook(event);
-  assert(replay.status === 200, `replay returns 200 (got ${replay.status})`);
-  count++;
-  assert(replay.body.duplicate === true, 'replay returns duplicate:true');
-  count++;
-
-  if (opts.verbose) console.log(`  invoice ${f.invoiceId} → PAID, PI=${f.invoicePiId}`);
-  return count;
+// Flow B: an invoice paid by card on the hosted checkout. Payments go-live slice 08: a real sandbox
+// charge, its completed-checkout event posted signed (then replayed); one SUCCEEDED payment paid at
+// the charge's time with its charge id, session id, brand and last four, and the invoice PAID.
+// Builds its own fixtures.
+export async function run(_ctx: SuiteContext, opts: { verbose: boolean }): Promise<number> {
+  if (!env.STRIPE_SECRET_KEY) {
+    console.log('  [SKIP] STRIPE_SECRET_KEY not set');
+    return 0;
+  }
+  const stripe = new Stripe(env.STRIPE_SECRET_KEY, { apiVersion: STRIPE_API_VERSION as Stripe.LatestApiVersion });
+  return completedCheckoutBooksTheCharge({ stripe, kind: 'STANDARD', amountCents: 54375, verbose: opts.verbose });
 }

@@ -126,16 +126,15 @@ beforeEach(() => {
   // fill-if-empty endpoint exists for.
   mockAuthAs('sales');
   mockPrisma.estimate.findUnique.mockResolvedValue(guardRow());
-  // loadGuardedEstimate's canAccessRow derives its per-instance scope from the `read Estimate`
-  // grant (OWN_ESTIMATE_VIA_LEAD_OR_CREATOR — CONDITIONAL for SALES, unlike the unconditional
-  // `update Estimate` route-level canDo), and runs a SEPARATE prisma.estimate.findFirst to
-  // evaluate it. A leadless estimate created by this SALES user matches the "OR created_by me"
-  // branch.
+  // loadGuardedEstimate's canAccessRow derives its per-instance scope from the person's Estimates scope
+  // (Through own leads for SALES - CONDITIONAL, unlike the unconditional `update Estimate` route-level
+  // canDo), and runs a SEPARATE prisma.estimate.findFirst to evaluate it. An estimate on a lead this
+  // SALES user is an assignee of is inside it.
   mockScopedFindFirst(mockPrisma.estimate.findFirst, {
     id: ESTIMATE_ID,
     organization_id: ALPHA_ORG_ID,
-    lead_id: null,
-    created_by: TEST_USERS.sales.id,
+    lead_id: 'lead-own',
+    lead: { lead_assignees: [{ user_id: TEST_USERS.sales.id }] },
   });
 });
 

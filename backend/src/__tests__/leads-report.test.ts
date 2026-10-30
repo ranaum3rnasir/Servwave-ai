@@ -22,7 +22,7 @@ function lead(over: Partial<LeadInput> = {}): LeadInput {
     status: 'NEW',
     source: 'Google',
     jobType: 'Alarm System',
-    assigned: 'Emanuel Dahan',
+    assigned: 'Sam Rivera',
     createdBy: 'Dispatch',
     tags: [],
     createdAt: new Date('2026-06-01T12:00:00.000Z'),
@@ -39,9 +39,8 @@ describe('displayStatusFor', () => {
   it('maps ESTIMATED → Converted', () => {
     expect(displayStatusFor('ESTIMATED')).toBe('Converted');
   });
-  it('maps LOST and CANCELLED → Lost', () => {
+  it('maps LOST → Lost', () => {
     expect(displayStatusFor('LOST')).toBe('Lost');
-    expect(displayStatusFor('CANCELLED')).toBe('Lost');
   });
   it('maps pipeline statuses → Open', () => {
     for (const s of ['NEW', 'CONTACTED', 'WALKTHROUGH_SCHEDULED', 'WALKTHROUGH_COMPLETED']) {

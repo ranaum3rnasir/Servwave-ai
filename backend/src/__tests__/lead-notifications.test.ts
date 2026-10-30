@@ -9,6 +9,9 @@
  *   3. lead.unassigned_created — create(), lead created with no commission_owner_id
  *   4. lead.walkthrough_scheduled — scheduleWalkthrough(), after performer set + status update
  *
+ * Verbs 3 and 4 go through M6's two-lane chain (S06.26): the route only QUEUES the alert for after its response, so this file
+ * checks what the route asks for (verb, lead, actor, performers); who is told is permission-lead-estimate-alerts-db.test.ts.
+ *
  * Strategy: vi.mock captures emit calls. Each test hits the real Express route
  * via supertest. Prisma is fully mocked (vi.mock in setup.ts).
  */
@@ -36,9 +39,19 @@ vi.mock('../services/notifications/notificationService', () => ({
   emit: vi.fn().mockResolvedValue(undefined),
 }));
 
+// The lead alerts that go through the chain: the route queues them, so the queue call is what a route test sees.
+vi.mock('../services/notifications/leadEstimateAlerts', () => ({
+  queueLeadAlert: vi.fn(),
+  alertLead: vi.fn().mockResolvedValue(undefined),
+}));
+
 // Import AFTER mock is registered so we get the spy reference.
 import { emit } from '../services/notifications/notificationService';
+import { queueLeadAlert } from '../services/notifications/leadEstimateAlerts';
 const mockEmit = emit as ReturnType<typeof vi.fn>;
+const mockLeadAlert = queueLeadAlert as ReturnType<typeof vi.fn>;
+/** The queued lead alerts of one verb, as the routes asked for them. */
+const leadAlertsOf = (verb: string) => mockLeadAlert.mock.calls.map((c: any[]) => c[0]).filter((a: any) => a.verb === verb);
 
 // ─── Prisma typed surface ─────────────────────────────────────────────────────
 
@@ -235,7 +248,7 @@ describe('POST /api/leads — lead.unassigned_created', () => {
     service_request: 'AC not cooling',
   };
 
-  it('emits lead.unassigned_created when lead is created without an owner', async () => {
+  it('queues lead.unassigned_created when lead is created without an owner', async () => {
     mockAuthAs('admin');
     mockPrisma.customer.findUnique.mockResolvedValue(CUSTOMER_FIXTURE);
     const createdLead = { ...UNOWNED_LEAD_FIXTURE };
@@ -251,15 +264,72 @@ describe('POST /api/leads — lead.unassigned_created', () => {
 
     expect(res.status).toBe(201);
 
-    const unassignedCall = mockEmit.mock.calls.find(
-      (c: any[]) => c[0].verb === 'lead.unassigned_created',
-    );
-    expect(unassignedCall).toBeDefined();
-    const args = unassignedCall![0];
-    expect(args.object.type).toBe('LEAD');
-    expect(args.object.id).toBe(UNOWNED_LEAD_FIXTURE.id);
-    expect(args.organizationId).toBe(ALPHA_ORG_ID);
-    expect(args.actorId).toBe(TEST_USERS.admin.id);
+    const queued = leadAlertsOf('lead.unassigned_created');
+    expect(queued).toHaveLength(1);
+    expect(queued[0]).toEqual({
+      verb: 'lead.unassigned_created', organizationId: ALPHA_ORG_ID, actorId: TEST_USERS.admin.id, leadId: UNOWNED_LEAD_FIXTURE.id,
+    });
+    // The route sends nothing itself: no role list is asked, no alert is written inside the request.
+    expect(mockEmit.mock.calls.filter((c: any[]) => c[0].verb === 'lead.unassigned_created')).toHaveLength(0);
+  });
+
+  it('still queues it when the new lead has a Dispatcher and walkthrough performers but no owner', async () => {
+    mockAuthAs('admin');
+    mockPrisma.customer.findUnique.mockResolvedValue(CUSTOMER_FIXTURE);
+    const createdLead = {
+      ...UNOWNED_LEAD_FIXTURE,
+      dispatcher_id: TECH_ID,
+      dispatcher: { id: TECH_ID, first_name: 'Dee', last_name: 'Spatch', email: 'dee@example.test' },
+      lead_assignees: [{ user_id: TECH_ID, user: { id: TECH_ID, first_name: 'Tec', last_name: 'Hnician' } }],
+    };
+    wireCreateTx(createdLead);
+    mockPrisma.lead.findUnique.mockResolvedValue(createdLead);
+    (prisma.tagAssignment as any) && ((prisma.tagAssignment.findMany as any).mockResolvedValue([]));
+    (prisma.tag as any) && ((prisma.tag.findMany as any).mockResolvedValue([]));
+
+    const res = await request(app)
+      .post('/api/leads')
+      .set(authHeader('admin'))
+      .send(BASE_BODY);
+
+    expect(res.status).toBe(201);
+    const calls = leadAlertsOf('lead.unassigned_created');
+    expect(calls).toHaveLength(1);
+    expect(calls[0].leadId).toBe(UNOWNED_LEAD_FIXTURE.id);
+  });
+
+  it('queues it for a lead created together with a new customer when it has no owner, and not when it has one', async () => {
+    mockAuthAs('admin');
+    mockPrisma.customer.findFirst.mockResolvedValue(null);
+    (prisma.tagAssignment as any) && ((prisma.tagAssignment.findMany as any).mockResolvedValue([]));
+    (prisma.tag as any) && ((prisma.tag.findMany as any).mockResolvedValue([]));
+    const wireNewCustomerTx = (created: any) =>
+      mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) =>
+        fn({
+          customer: { create: vi.fn().mockResolvedValue({ id: CUSTOMER_FIXTURE.id, service_locations: [] }) },
+          lead: { create: vi.fn().mockResolvedValue(created) },
+          timelineEvent: { create: vi.fn().mockResolvedValue({}) },
+          visit: { aggregate: mockPrisma.visit.aggregate, create: vi.fn().mockResolvedValue({ id: 'wt-fixture-id' }) },
+        }),
+      );
+    const body = {
+      new_customer: { first_name: 'New', last_name: 'Person', phone: '6095550142' },
+      service_request: 'AC not cooling',
+    };
+
+    wireNewCustomerTx(UNOWNED_LEAD_FIXTURE);
+    mockPrisma.lead.findUnique.mockResolvedValue(UNOWNED_LEAD_FIXTURE);
+    let res = await request(app).post('/api/leads').set(authHeader('admin')).send(body);
+    expect(res.status).toBe(201);
+    expect(leadAlertsOf('lead.unassigned_created')).toHaveLength(1);
+
+    mockLeadAlert.mockClear();
+    const owned = { ...LEAD_FIXTURE, commission_owner_id: SALES_ID };
+    wireNewCustomerTx(owned);
+    mockPrisma.lead.findUnique.mockResolvedValue(owned);
+    res = await request(app).post('/api/leads').set(authHeader('admin')).send({ ...body, assigned_to: SALES_ID });
+    expect(res.status).toBe(201);
+    expect(leadAlertsOf('lead.unassigned_created')).toHaveLength(0);
   });
 
   it('does NOT emit lead.unassigned_created when lead is created WITH an owner', async () => {
@@ -278,10 +348,7 @@ describe('POST /api/leads — lead.unassigned_created', () => {
 
     expect(res.status).toBe(201);
 
-    const unassignedCall = mockEmit.mock.calls.find(
-      (c: any[]) => c[0].verb === 'lead.unassigned_created',
-    );
-    expect(unassignedCall).toBeUndefined();
+    expect(leadAlertsOf('lead.unassigned_created')).toHaveLength(0);
   });
 });
 
@@ -311,7 +378,7 @@ describe('POST /api/leads/:id/walkthrough/schedule — lead.walkthrough_schedule
     organization: { timezone: null },
   };
 
-  it('emits lead.walkthrough_scheduled with performer_ids and commission_owner_id', async () => {
+  it('queues lead.walkthrough_scheduled with the people booked on it', async () => {
     mockAuthAs('admin');
     mockPrisma.lead.findUnique.mockResolvedValue({
       ...LEAD_FIXTURE,
@@ -330,17 +397,10 @@ describe('POST /api/leads/:id/walkthrough/schedule — lead.walkthrough_schedule
 
     expect(res.status).toBe(200);
 
-    const walkthroughCall = mockEmit.mock.calls.find(
-      (c: any[]) => c[0].verb === 'lead.walkthrough_scheduled',
-    );
-    expect(walkthroughCall).toBeDefined();
-    const args = walkthroughCall![0];
-    expect(args.object.type).toBe('LEAD');
-    expect(args.object.id).toBe(LEAD_FIXTURE.id);
-    expect(args.object.label).toBe(LEAD_FIXTURE.lead_number);
-    expect(args.organizationId).toBe(ALPHA_ORG_ID);
-    expect(args.actorId).toBe(TEST_USERS.admin.id);
-    expect(args.entity.performer_ids).toEqual(PERFORMER_IDS);
-    expect(args.entity.commission_owner_id).toBe(SALES_ID);
+    const queued = leadAlertsOf('lead.walkthrough_scheduled');
+    expect(queued).toEqual([{
+      verb: 'lead.walkthrough_scheduled', organizationId: ALPHA_ORG_ID, actorId: TEST_USERS.admin.id, leadId: LEAD_FIXTURE.id, performerIds: PERFORMER_IDS,
+    }]);
+    expect(mockEmit.mock.calls.filter((c: any[]) => c[0].verb === 'lead.walkthrough_scheduled')).toHaveLength(0);
   });
 });

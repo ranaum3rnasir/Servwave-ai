@@ -146,7 +146,7 @@ describe('POST /api/inventory/job-stages/notify (B2)', () => {
 
 // ─── POST /api/inventory/job-stages/email — pickup ticket real send ──────────
 describe('POST /api/inventory/job-stages/email (pickup ticket)', () => {
-  const BRAND = { id: ALPHA_ORG_ID, name: 'Alpha Security', logo_url: null, brand_color: '#0C2D3A' };
+  const BRAND = { id: ALPHA_ORG_ID, name: 'Example Security', logo_url: null, brand_color: '#0C2D3A' };
 
   it('sends the pickup ticket to the given recipients + records a StageAuditEntry', async () => {
     mockAuthAs('admin');

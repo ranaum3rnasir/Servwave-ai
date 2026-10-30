@@ -18,7 +18,7 @@
 // Decision of record: SRVW-132 (Ran, 2026-07-31) - keep it, test organization
 // only. Do not build it against CTM and do not delete it.
 //
-// Faithful cut from Emanuel's PhonePage monolith (L7527-8157): the
+// Faithful cut from the original PhonePage monolith (L7527-8157): the
 // consent/disclaimer constants, the CleanSelect picker, MaskStep, AiGuardrail,
 // and CallMaskingView. (The cut also carried SECTION_META, a dead duplicate of
 // PhonePage's own copy - removed under SRVW-132.) Proxy-number setup so a
@@ -29,7 +29,7 @@
 // Faithful cut: prop signatures and behavior preserved verbatim. Changes are:
 //   1. Import-shape — React-18 (no React-19 APIs).
 //   2. Data from the seams — `MASKING_NUMBER` / `BUSINESS_NUMBER` come from the
-//      `@/lib/api/communication` seam; the tech roster + `TECH_ROLE_LABEL` come
+//      `@/lib/api/communication` seam; the tech roster + `INVENTORY_VIEW_LABEL` come
 //      from the `@/lib/api/inventory` seam (`useTechs()` hook, not a module-load
 //      import). `Switch` is the shared ui/ toggle primitive.
 //   3. Token-swap — indigo/slate -> ALPHA design tokens (primary / text-primary /
@@ -53,9 +53,10 @@ import {
   Users,
 } from "lucide-react";
 import { BUSINESS_NUMBER, MASKING_NUMBER } from "@/lib/api/communication";
-import { useTechs, TECH_ROLE_LABEL } from "@/lib/api/inventory";
+import { useTechs, INVENTORY_VIEW_LABEL } from "@/lib/api/inventory";
 import { Card } from "@/components/ui/card";
 import { Switch } from "@/components/ui/switch";
+import { InfoPopover } from "@/pages/v2/_shared/infoPopover";
 import { CleanSelect } from "@/components/communication/phone/shared";
 
 /* ─────────────────── Call masking ─────────────────── */
@@ -159,8 +160,8 @@ function AiGuardrail({
               <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide text-primary">
                 AI
               </span>
+              <InfoPopover label={title}>{desc}</InfoPopover>
             </p>
-            <p className="mt-0.5 text-[12px] leading-snug text-text-secondary">{desc}</p>
           </div>
         </div>
         <Switch checked={on} onCheckedChange={onToggle} aria-label={title} />
@@ -236,11 +237,7 @@ export function CallMaskingView({ onToast }: { onToast: (m: string) => void }) {
   return (
     <div className="mx-auto max-w-3xl space-y-4 p-6">
       {/* Intro + primary action */}
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <p className="max-w-xl text-sm text-text-secondary">
-          Protect tech and customer privacy with proxy numbers, so personal
-          numbers are never exposed when calling about a job.
-        </p>
+      <div className="flex flex-wrap items-start justify-end gap-3">
         <button
           type="button"
           onClick={() => onToast("✓ Masking settings saved")}
@@ -265,12 +262,12 @@ export function CallMaskingView({ onToast }: { onToast: (m: string) => void }) {
               <Users className="h-4 w-4" />
             </span>
             <div>
-              <p className="text-sm font-semibold text-text-primary">
+              <p className="flex items-center gap-1.5 text-sm font-semibold text-text-primary">
                 Auto-mask everyone in the company
-              </p>
-              <p className="mt-0.5 text-[12px] leading-snug text-text-secondary">
-                Every new user added to the system automatically joins call
-                masking. Turn this off to add people one by one instead.
+                <InfoPopover label="auto-mask">
+                  Every new user added to the system automatically joins call masking. Turn this off to add people
+                  one by one instead.
+                </InfoPopover>
               </p>
             </div>
           </div>
@@ -288,9 +285,6 @@ export function CallMaskingView({ onToast }: { onToast: (m: string) => void }) {
             aria-label="Auto-mask everyone in the company"
           />
         </div>
-        <p className="text-[13px] text-text-secondary">
-          These techs get a “masked” number when assigned to a job.
-        </p>
         <div className="mt-2 flex items-center gap-3 text-[13px]">
           <button
             type="button"
@@ -347,7 +341,7 @@ export function CallMaskingView({ onToast }: { onToast: (m: string) => void }) {
                     {t.name}
                   </span>
                   <span className="block truncate text-[11px] text-text-secondary">
-                    {TECH_ROLE_LABEL[t.role]} · {t.branch}
+                    {INVENTORY_VIEW_LABEL[t.inventoryView]} · {t.branch}
                   </span>
                 </span>
               </label>
@@ -536,10 +530,6 @@ export function CallMaskingView({ onToast }: { onToast: (m: string) => void }) {
         open={open.ai}
         onToggle={() => toggleSec("ai")}
       >
-        <p className="text-[13px] text-text-secondary">
-          ServWave’s AI watches masked tech↔client calls to protect your customer
-          relationships and surface what matters - without you listening to every call.
-        </p>
         <div className="mt-3 space-y-2.5">
           <AiGuardrail
             icon={Shield}
@@ -561,7 +551,7 @@ export function CallMaskingView({ onToast }: { onToast: (m: string) => void }) {
                 “…just Venmo me directly next time and we’ll skip the platform fee…”
               </p>
               <p className="mt-1 text-[11px] text-text-secondary">
-                Ohad → client · J-1862 · detected 2:14 PM
+                Jordan → client · J-1862 · detected 2:14 PM
               </p>
             </div>
           </AiGuardrail>

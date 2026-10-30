@@ -10,7 +10,7 @@ export interface ParseContext {
 export interface ParsedTask {
   title: string;
   /**
-   * The single person the NL parser recognised in the sentence ("remind Oved
+   * The single person the NL parser recognised in the sentence ("remind Morgan
    * to..."), NOT a Task field - the create dialogs seed their assignee
    * multi-select from it. Left single-valued deliberately: the parser matches
    * one first name and multi-assignee parsing is out of scope for this change.

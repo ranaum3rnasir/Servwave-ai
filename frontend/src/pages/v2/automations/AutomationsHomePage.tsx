@@ -11,6 +11,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 
+import { EmptyState } from '@/ui-kit/components/data/emptyState';
 import { StatCard, StatCardGroup } from '@/ui-kit/components/data/statCard';
 import { PageHeader } from '@/ui-kit/components/layout/pageHeader';
 import { Button } from '@/ui-kit/components/ui/button';
@@ -35,6 +36,7 @@ import {
   type AutomationTemplate,
   type WorkflowCatalog,
 } from '@/lib/api/workflows';
+import { useAppAbility } from '@/contexts/AbilityContext';
 import { describeWorkflow, templateToWorkflowBody } from '@/lib/workflows/describeWorkflow';
 
 import { v2Path } from '../uiV2';
@@ -55,6 +57,13 @@ import { CATEGORY_META, CATEGORY_ORDER, FlowTrail, WorkflowStatusChip } from './
  *
  * Every query, mutation and derived counter below is the legacy page's,
  * imported or copied verbatim. Only the components changed.
+ *
+ * Roles & Permissions S07.21: the controls follow the module's switches. New
+ * automation, Start from scratch, a recipe's Use this and Duplicate follow Create
+ * automations (a recipe or a copy is a new automation); the on/off switch follows
+ * Edit automations; Delete follows Delete automations. The recipes gallery is only
+ * a way to create, so it goes with Create automations. The server decides the same
+ * requests on the same switches.
  */
 
 const fmt = (n: number) => new Intl.NumberFormat('en-US').format(n);
@@ -62,6 +71,10 @@ const fmt = (n: number) => new Intl.NumberFormat('en-US').format(n);
 export default function AutomationsHomePage() {
   useRecordVisit('automations');
   const navigate = useNavigate();
+  const ability = useAppAbility();
+  const canCreate = ability.can('create', 'Automation');
+  const canEdit = ability.can('update', 'Automation');
+  const canDelete = ability.can('delete', 'Automation');
   const {
     data: workflows,
     isLoading: workflowsLoading,
@@ -113,12 +126,18 @@ export default function AutomationsHomePage() {
     <div className="space-y-6">
       <PageHeader
         title="Automations"
-        description={`Put reminders, follow-ups and team alerts on autopilot ${EM_DASH} start from a recipe below.`}
+        description={
+          canCreate
+            ? `Put reminders, follow-ups and team alerts on autopilot ${EM_DASH} start from a recipe below.`
+            : `Reminders, follow-ups and team alerts that run on autopilot.`
+        }
         actions={
-          <Button onClick={() => navigate(v2Path('/automations/new'))}>
-            <Plus aria-hidden />
-            New automation
-          </Button>
+          canCreate ? (
+            <Button onClick={() => navigate(v2Path('/automations/new'))}>
+              <Plus aria-hidden />
+              New automation
+            </Button>
+          ) : undefined
         }
       />
 
@@ -156,8 +175,9 @@ export default function AutomationsHomePage() {
                   workflow={workflow}
                   catalog={catalog}
                   onOpen={() => navigate(v2Path(`/automations/${workflow.id}`))}
-                  onDuplicate={() => duplicate(workflow)}
-                  onDeleteRequest={() => setDeleteTarget(workflow)}
+                  onDuplicate={canCreate ? () => duplicate(workflow) : undefined}
+                  onToggle={canEdit}
+                  onDeleteRequest={canDelete ? () => setDeleteTarget(workflow) : undefined}
                 />
               ))}
             </div>
@@ -166,64 +186,69 @@ export default function AutomationsHomePage() {
       )}
 
       {/* Templates gallery, the front door */}
-      <div className="space-y-8">
-        {!hasWorkflows && !workflowsLoading && !workflowsError && (
-          <div className="flex items-center justify-between">
-            <p className="text-sm font-semibold">Start from a recipe</p>
-            <Button variant="outline" size="sm" onClick={() => navigate(v2Path('/automations/new'))}>
-              Start from scratch
-            </Button>
-          </div>
-        )}
+      {!canCreate && !hasWorkflows && !workflowsLoading && !workflowsError && (
+        <EmptyState title="No automations yet." />
+      )}
+      {canCreate && (
+        <div className="space-y-8">
+          {!hasWorkflows && !workflowsLoading && !workflowsError && (
+            <div className="flex items-center justify-between">
+              <p className="text-sm font-semibold">Start from a recipe</p>
+              <Button variant="outline" size="sm" onClick={() => navigate(v2Path('/automations/new'))}>
+                Start from scratch
+              </Button>
+            </div>
+          )}
 
-        {catalogError ? (
-          <ErrorBanner message="Could not load the templates gallery." onRetry={refetchCatalog} />
-        ) : catalogLoading ? (
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-            <Skeleton className="h-[180px] w-full" />
-            <Skeleton className="h-[180px] w-full" />
-            <Skeleton className="h-[180px] w-full" />
-          </div>
-        ) : (
-          CATEGORY_ORDER.map((category) => {
-            // Texting templates are hidden until this org can actually text: a
-            // locked step must not be able to enter a workflow via any door.
-            const smsAvailable = Boolean(catalog?.capabilities?.sms_available);
-            const group = (catalog?.templates ?? []).filter(
-              (t) => t.category === category && !(!smsAvailable && t.action_type === 'SEND_SMS'),
-            );
-            // A category that ends up empty renders nothing at all, not an
-            // empty section header.
-            if (group.length === 0) return null;
-            const meta = CATEGORY_META[category];
-            const Icon = meta.icon;
-            return (
-              <section key={category}>
-                <div className="mb-3 flex items-center gap-2.5">
-                  <div className={`flex size-8 items-center justify-center rounded-md ${meta.tile}`}>
-                    <Icon className="size-4" aria-hidden />
+          {catalogError ? (
+            <ErrorBanner message="Could not load the templates gallery." onRetry={refetchCatalog} />
+          ) : catalogLoading ? (
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+              <Skeleton className="h-[180px] w-full" />
+              <Skeleton className="h-[180px] w-full" />
+              <Skeleton className="h-[180px] w-full" />
+            </div>
+          ) : (
+            CATEGORY_ORDER.map((category) => {
+              // Texting templates are hidden until this org can actually text: a
+              // locked step must not be able to enter a workflow via any door.
+              const smsAvailable = Boolean(catalog?.capabilities?.sms_available);
+              const group = (catalog?.templates ?? []).filter(
+                (t) => t.category === category && !(!smsAvailable && t.action_type === 'SEND_SMS'),
+              );
+              // A category that ends up empty renders nothing at all, not an
+              // empty section header.
+              if (group.length === 0) return null;
+              const meta = CATEGORY_META[category];
+              const Icon = meta.icon;
+              return (
+                <section key={category}>
+                  <div className="mb-3 flex items-center gap-2.5">
+                    <div className={`flex size-8 items-center justify-center rounded-md ${meta.tile}`}>
+                      <Icon className="size-4" aria-hidden />
+                    </div>
+                    <div>
+                      <p className="text-sm font-semibold">{meta.title}</p>
+                      <p className="text-muted-foreground text-xs">{meta.blurb}</p>
+                    </div>
                   </div>
-                  <div>
-                    <p className="text-sm font-semibold">{meta.title}</p>
-                    <p className="text-muted-foreground text-xs">{meta.blurb}</p>
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+                    {group.map((template) => (
+                      <TemplateCard
+                        key={template.key}
+                        template={template}
+                        catalog={catalog}
+                        onUse={() => applyTemplate(template)}
+                        busy={createWorkflow.isPending}
+                      />
+                    ))}
                   </div>
-                </div>
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
-                  {group.map((template) => (
-                    <TemplateCard
-                      key={template.key}
-                      template={template}
-                      catalog={catalog}
-                      onUse={() => applyTemplate(template)}
-                      busy={createWorkflow.isPending}
-                    />
-                  ))}
-                </div>
-              </section>
-            );
-          })
-        )}
-      </div>
+                </section>
+              );
+            })
+          )}
+        </div>
+      )}
 
       {/* Delete confirmation. No typed confirmation, no second step. */}
       <Dialog open={Boolean(deleteTarget)} onOpenChange={(open) => !open && setDeleteTarget(null)}>
@@ -280,13 +305,18 @@ function WorkflowRow({
   catalog,
   onOpen,
   onDuplicate,
+  onToggle,
   onDeleteRequest,
 }: {
   workflow: ApiWorkflow;
   catalog: WorkflowCatalog | undefined;
   onOpen: () => void;
-  onDuplicate: () => void;
-  onDeleteRequest: () => void;
+  /** Absent without Create automations: a copy is a new automation. */
+  onDuplicate?: () => void;
+  /** True with Edit automations: the on/off switch is offered. */
+  onToggle: boolean;
+  /** Absent without Delete automations. */
+  onDeleteRequest?: () => void;
 }) {
   const toggle = useToggleWorkflow();
   const isDraft = workflow.status !== 'PUBLISHED';
@@ -336,7 +366,7 @@ function WorkflowRow({
 
       <div className="flex shrink-0 items-center gap-2 max-sm:justify-end">
         <WorkflowStatusChip status={workflow.status} is_enabled={workflow.is_enabled} />
-        {isDraft ? (
+        {!onToggle ? null : isDraft ? (
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
@@ -356,26 +386,30 @@ function WorkflowRow({
             (Pressable above), so a third way to reach the same place was a
             menu click spent on a redundant action. Duplicate and delete are
             the two real actions, so they get direct icon buttons instead. */}
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-11"
-          title={`Duplicate ${displayName}`}
-          aria-label={`Duplicate ${displayName}`}
-          onClick={onDuplicate}
-        >
-          <Copy aria-hidden />
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="text-destructive hover:text-destructive size-11"
-          title={`Delete ${displayName}`}
-          aria-label={`Delete ${displayName}`}
-          onClick={onDeleteRequest}
-        >
-          <Trash2 aria-hidden />
-        </Button>
+        {onDuplicate && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-11"
+            title={`Duplicate ${displayName}`}
+            aria-label={`Duplicate ${displayName}`}
+            onClick={onDuplicate}
+          >
+            <Copy aria-hidden />
+          </Button>
+        )}
+        {onDeleteRequest && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="text-destructive hover:text-destructive size-11"
+            title={`Delete ${displayName}`}
+            aria-label={`Delete ${displayName}`}
+            onClick={onDeleteRequest}
+          >
+            <Trash2 aria-hidden />
+          </Button>
+        )}
       </div>
     </div>
   );

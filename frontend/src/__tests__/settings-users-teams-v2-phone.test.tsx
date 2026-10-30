@@ -3,9 +3,8 @@
  *
  * This file imports `@/pages/v2/settings/UsersTeamsPage`, which is what
  * `pages/v2/routes/settings.routes.tsx` mounts at /settings/users. The older
- * suite `users-teams-page.test.tsx` imports `@/pages/settings/UsersTeamsPage`,
- * a dead v1 fork nothing routes - a gate written there is green against a page
- * no admin ever opens.
+ * v1 fork of that page, which nothing routed, is gone; a gate written against a
+ * page no admin opens would be green for nothing.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen, fireEvent, waitFor } from '@testing-library/react';
@@ -194,12 +193,13 @@ describe('v2 Users & Teams - the roster still reads as a phone book', () => {
 const NO_PHONE = { ...USER, id: 'u3', first_name: 'Nora', last_name: 'Nonumber', phone: null, phone_ext: null };
 const INACTIVE_NO_PHONE = { ...USER, id: 'u4', first_name: 'Ira', last_name: 'Inactive', is_active: false, phone: null, phone_ext: null };
 
-/** The Phone column is the third cell; scoping to it keeps the assertions off
+/** The Phone column, found by its header (columns are added to this table); scoping to it keeps the assertions off
  *  the Team cell, which prints its own bare dash for an unteamed user. */
 async function phoneCell(name: string) {
   const row = (await screen.findByText(name)).closest('tr');
   if (!row) throw new Error(`no row for ${name}`);
-  return row.querySelectorAll('td')[2];
+  const at = screen.getAllByRole('columnheader').findIndex((h) => h.textContent === 'Phone');
+  return row.querySelectorAll('td')[at];
 }
 
 describe('v2 Users & Teams - a person with no number is stated, not dashed', () => {
@@ -292,7 +292,8 @@ describe('v2 Users & Teams - the chase list costs the server nothing', () => {
     await screen.findByText('Tess Tech');
 
     const urlsBefore = mockApi.get.mock.calls.map(([url]) => url);
-    expect(new Set(urlsBefore)).toEqual(new Set(['/api/users', '/api/departments']));
+    // The page reads the people, the teams and the roles (the role column and picker); toggling adds nothing to that.
+    expect(new Set(urlsBefore)).toEqual(new Set(['/api/users', '/api/departments', '/api/roles']));
 
     await user.click(missingPhoneToggle());
     await user.click(statusPill('active'));

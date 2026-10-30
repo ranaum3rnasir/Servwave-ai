@@ -51,6 +51,7 @@ import {
   authHeader,
   mockScopedFindFirst,
   mockRoleGrantsWithout,
+  mockRoleSwitches,
   type TestUserKey,
   withLeadStatusSync,
 } from './helpers';
@@ -335,6 +336,9 @@ describe.each(DOORS)('$name — the assignee pool', (door) => {
   it('still lets that revoked DISPATCHER name themselves', async () => {
     signIn('dispatcher');
     mockRoleGrantsWithout('DISPATCHER', ['assign', 'User']);
+    // The Dispatcher preset is not crew-eligible: the person names themselves, so the case is the pool rule,
+    // not slot eligibility, and the switch is turned on (keeping Assign work to other people off).
+    mockRoleSwitches({ assign_work_to_others: false, can_be_on_crew: true });
 
     const res = await door.send('dispatcher', [TEST_USERS.dispatcher.id]);
 
@@ -352,7 +356,7 @@ describe.each(DOORS)('$name — the assignee pool', (door) => {
     const res = await door.send('dispatcher', [UNKNOWN_ID]);
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe('Performer not found or inactive');
+    expect(res.body.error).toBe('Performer not found');
   });
 
   it('keeps "inactive performer" at 400 for a grant holder', async () => {
@@ -361,7 +365,7 @@ describe.each(DOORS)('$name — the assignee pool', (door) => {
     const res = await door.send('dispatcher', [INACTIVE_ID]);
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toBe('Performer not found or inactive');
+    expect(res.body.error).toBe('This person is inactive.');
   });
 
   it('answers a self-only requester 403 for an id that does not exist, never 400', async () => {
@@ -484,7 +488,7 @@ describe('validatePerformers — restating an unchanged roster', () => {
     const user = TEST_USERS[userKey];
     return {
       user: { ...user },
-      ability: defineAbilityFor({ id: user.id, role: user.role }, grants, []),
+      ability: defineAbilityFor({ id: user.id, role: user.role }, grants),
     } as unknown as Request;
   }
 
@@ -554,15 +558,26 @@ describe('validatePerformers — restating an unchanged roster', () => {
     expect(result).toEqual({ ok: false, status: 403, error: SELF_ONLY });
   });
 
-  it('still runs per-member eligibility on an unchanged restatement', async () => {
-    // The unchanged-set escape is an escape from the POOL rule only. A roster carrying an id
-    // that no longer resolves is still a 400 — otherwise "unchanged" would become a way to
-    // re-persist a deactivated person.
+  it('accepts a deactivated member who is already on the roster, and refuses one newly named', async () => {
+    // The unchanged-set escape covers the pool rule AND slot eligibility: a member already on the visit is
+    // restated, not placed, so someone deactivated since is not a reason to refuse the save. Naming the
+    // same deactivated person on a roster that did not hold them is a placement, and is refused.
     const req = reqAs('sales', SALES_GRANTS);
 
-    const result = await validatePerformers(req, [INACTIVE_ID], [INACTIVE_ID]);
+    const restated = await validatePerformers(req, [INACTIVE_ID], [INACTIVE_ID]);
+    expect(restated.ok).toBe(true);
 
-    expect(result).toEqual({ ok: false, status: 400, error: 'Performer not found or inactive' });
+    const holder = reqAs('dispatcher', DEFAULT_GRANTS.filter((g) => g.role === 'DISPATCHER') as unknown as Grant[]);
+    const placed = await validatePerformers(holder, [INACTIVE_ID], []);
+    expect(placed).toEqual({ ok: false, status: 400, error: 'This person is inactive.' });
+  });
+
+  it('still refuses an id that names nobody on an unchanged restatement', async () => {
+    const req = reqAs('sales', SALES_GRANTS);
+
+    const result = await validatePerformers(req, [UNKNOWN_ID], [UNKNOWN_ID]);
+
+    expect(result).toEqual({ ok: false, status: 400, error: 'Performer not found' });
   });
 
   it('lets a GRANT HOLDER through with no current set supplied', async () => {

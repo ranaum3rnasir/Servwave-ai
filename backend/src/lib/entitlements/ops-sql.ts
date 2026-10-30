@@ -11,6 +11,7 @@ import type { PlanTier } from './catalog';
 import { isKnownFeature, isGrantableFeature, catalogEntry } from './catalog';
 import { DEFAULT_GRANTS } from '../permissions/defaultGrants';
 import { starterTaskCategoriesSql } from '../tasks/categories';
+import { issueMainMailboxSql } from '../mailbox/provision-sql';
 
 /** SQL string literal: null → NULL, otherwise single-quoted with `'` doubled. */
 export function lit(v: string | null): string {
@@ -97,7 +98,8 @@ const DEFAULT_FEATURE_OVERRIDES = '{"phone": false}';
 /**
  * One idempotent SQL batch to fully provision a new tenant:
  *   org row (real address, plan, trial, phone OFF) + all DEFAULT_GRANTS
- *   (conditions preserved) + 9 app_settings rows + non-CARD accepted_payment_methods.
+ *   (conditions preserved) + 9 app_settings rows + non-CARD accepted_payment_methods + the frozen
+ *   company part and main mailbox.
  * Every statement is ON CONFLICT DO NOTHING so a re-run is a no-op. Never writes
  * placeholder address data.
  *
@@ -175,7 +177,11 @@ export function buildCreateOrgSql(input: {
     `UPDATE "organizations" SET "accepted_payment_methods" = '${DEFAULT_ACCEPTED_PAYMENTS}'::jsonb ` +
     `WHERE "id" = ${lit(orgId)} AND "accepted_payment_methods" = '[]'::jsonb;`;
 
-  return [orgInsert, grantInsert, settingsInsert, taxRatesInsert, taskCategoriesInsert, paymentsUpdate].join('\n\n');
+  // The company part frozen and the main mailbox issued, by the register's own rules (PRD 10, S10.1).
+  // Idempotent: a company that already has a main mailbox is left alone.
+  const mainMailbox = issueMainMailboxSql(lit(orgId));
+
+  return [orgInsert, grantInsert, settingsInsert, taxRatesInsert, taskCategoriesInsert, paymentsUpdate, mainMailbox].join('\n\n');
 }
 
 // --- Audit report (read-only) --------------------------------------------------

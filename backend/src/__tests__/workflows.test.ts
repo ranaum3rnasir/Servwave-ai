@@ -1,8 +1,8 @@
 /**
  * workflows.test.ts — /api/workflows REST API (multi-step Workflow Builder).
  *
- * Mirrors automations.test.ts: RBAC (admin/dispatcher allowed, sales/technician
- * 403), tenant scoping (pinned via mock.calls), the two validation tiers (draft
+ * Mirrors automations.test.ts: RBAC (the Automations switches decide, never the role: the Admin preset has them,
+ * the others do not, and a role given them is let in), tenant scoping (pinned via mock.calls), the two validation tiers (draft
  * tier lets incomplete steps through, publish tier gates on validateWorkflow
  * Definition), plus dry-run and the legacy+new activity union. Prisma fully
  * mocked via setup.ts; requests hit the real Express app.
@@ -13,7 +13,7 @@ import request from 'supertest';
 import { DEFAULT_MERGE_FIELD_FALLBACKS } from '../services/automations/mergeFieldFallbacks';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { TEST_USERS, mockAuthAs, authHeader, ALPHA_ORG_ID } from './helpers';
+import { TEST_USERS, mockAuthAs, mockRoleSwitches, authHeader, ALPHA_ORG_ID } from './helpers';
 
 vi.mock('../services/notifications/notificationService', () => ({
   emit: vi.fn().mockResolvedValue(undefined),
@@ -86,10 +86,17 @@ describe('GET /api/workflows + RBAC', () => {
     expect(q.include).toMatchObject({ steps: { orderBy: { position: 'asc' } } });
   });
 
-  it('200s DISPATCHER', async () => {
+  it('200s a DISPATCHER that holds View automations', async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches({ view_automations: true });
     mockPrisma.workflow.findMany.mockResolvedValueOnce([]);
     expect((await request(app).get('/api/workflows').set(authHeader('dispatcher'))).status).toBe(200);
+  });
+
+  it('403s a DISPATCHER on the preset (View automations is off), on GET / and POST /', async () => {
+    mockAuthAs('dispatcher');
+    expect((await request(app).get('/api/workflows').set(authHeader('dispatcher'))).status).toBe(403);
+    expect((await request(app).post('/api/workflows').set(authHeader('dispatcher')).send({ name: 'x', trigger_type: 'JOB_SCHEDULED' })).status).toBe(403);
   });
 
   it('403s SALES and TECHNICIAN on GET / and POST /', async () => {
@@ -145,8 +152,9 @@ describe('POST /api/workflows', () => {
     expect(mockAudit).toHaveBeenCalledWith(expect.objectContaining({ action: 'automation.workflow_created' }));
   });
 
-  it('201s for DISPATCHER', async () => {
+  it('201s for a DISPATCHER that holds View and Create automations', async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches({ view_automations: true, create_automations: true });
     wireTransaction();
     mockPrisma.workflow.create.mockResolvedValueOnce({ ...BASE_WORKFLOW });
     mockPrisma.workflow.findFirst.mockResolvedValueOnce({ ...BASE_WORKFLOW, steps: [] });
@@ -648,8 +656,9 @@ describe('POST /api/workflows/:id/toggle', () => {
     expect(mockPrisma.workflow.update).not.toHaveBeenCalled();
   });
 
-  it('flips is_enabled on a PUBLISHED workflow', async () => {
+  it('flips is_enabled on a PUBLISHED workflow, for a DISPATCHER that holds Edit automations', async () => {
     mockAuthAs('dispatcher');
+    mockRoleSwitches({ view_automations: true, edit_automations: true });
     mockPrisma.workflow.findFirst.mockResolvedValueOnce({ ...BASE_WORKFLOW, status: 'PUBLISHED', published_version_id: 'v1' });
     mockPrisma.workflow.update.mockResolvedValueOnce({ ...BASE_WORKFLOW, status: 'PUBLISHED', published_version_id: 'v1', is_enabled: false, steps: [] });
     mockPrisma.workflowVersion.findFirst.mockResolvedValueOnce({ version: 1, published_at: new Date(), definition: { trigger_type: 'JOB_SCHEDULED', trigger_config: null, send_window: 'ANYTIME', steps: [] } });

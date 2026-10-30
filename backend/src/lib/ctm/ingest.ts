@@ -3,12 +3,14 @@ import type { PrismaClient } from '@prisma/client';
 import { matchByPhone, normalizeNAPhone } from '../comms-identity';
 import { findBlockedNumber } from '../communication/blockedNumbers';
 import { findOrCreateSmsThreadByNumber } from './smsThread';
+import { resolveCompanyNumberId } from './companyNumber';
 import { lookupReceivingNumber } from './receivingNumbers';
 import { resolveInboundSmsJob } from '../sms-reply-router';
 import { emit } from '../../services/notifications/notificationService';
 import { logger } from '../logger';
 import { recordLeadOutboundContact, type LeadContactDb } from '../../services/lead-contact.service';
 import { INBOUND_CLAIM_WINDOW_MS } from '../call-tracking/process';
+import { textAlertPreview } from '../communication/textPreview';
 
 /**
  * Pure-ish ingestion of CTM webhook activities into the Communication module.
@@ -54,6 +56,23 @@ export interface IngestOptions {
    * the contact is logged as failed and not recorded.
    */
   plainClient?: boolean;
+  /**
+   * The live webhook's door for its bell alerts. Ingest runs inside the webhook's transaction, and the alert's access filter
+   * reads the call or the text conversation that transaction creates (S08.21): raised from inside it, the alert would ask
+   * other connections about a row they cannot see yet and find nobody to tell. So the webhook passes this, is handed each
+   * alert as a function to run, and runs them once the transaction has committed and the webhook has answered. Omitted
+   * (the backfill, which uses the plain client and suppresses alerts anyway, and direct calls in tests), the alert is raised
+   * where it is written, as before. The function returns the alert's own promise (emit never rejects) so a caller that wants to
+   * know the alert is written can wait for it; the webhook does not.
+   */
+  afterCommit?: (raise: () => Promise<unknown>) => void;
+}
+
+/** Raise a bell alert now, or, for the live webhook, hand it over to run after its transaction commits. Never throws. */
+function raiseAlert(opts: IngestOptions, args: Parameters<typeof emit>[0]): void {
+  const raise = () => emit(args);
+  if (opts.afterCommit) opts.afterCommit(raise);
+  else void raise();
 }
 
 /** Where the lead-contact writer runs: the caller's transaction, unless told it holds none. */
@@ -126,7 +145,7 @@ export function transcriptOf(a: Record<string, any>): string | null {
   return text.length > TRANSCRIPT_MAX_CHARS ? text.slice(0, TRANSCRIPT_MAX_CHARS) : text;
 }
 
-// Marketing attribution: which campaign produced this call. Alpha Doors runs
+// Marketing attribution: which campaign produced this call. The pilot org runs
 // campaign numbers that FORWARD to the office, so the only durable link between
 // a conversation and the ad that paid for it is what CTM hands us here. Ingest
 // used to keep `source` alone (as tracking_source) and drop the rest.
@@ -238,7 +257,7 @@ export function transcriptTurnsOf(a: Record<string, any> | null | undefined): Tr
 //     summary. The other eight (demo / sales / project_kick_off / …) are
 //     B2B-SaaS template prose that reads as noise on a field-service call
 //     ("No product or feature was demonstrated"), so they stay unread.
-//  3. `notes` - the manual agent-typed note, empty on every stored Alpha Doors
+//  3. `notes` - the manual agent-typed note, empty on every stored pilot org
 //     payload, which is why reading it alone left the Insights column stuck on
 //     its empty-state dash forever.
 const SUMMARY_MAX_CHARS = 4_000;
@@ -431,7 +450,7 @@ export async function resolveAssignedAnswerer(
 
 // Voicemail disposition (Phase C, Task C4 — resolves plan open item #3).
 // RESEARCHED (Supabase MCP, 2026-07-16): the live ctm_events table holds 15
-// stored `end` events for Alpha Doors (596375) and NOT ONE is a voicemail —
+// stored `end` events for the pilot org (596375) and NOT ONE is a voicemail —
 // every row is either agent-answered or forwarded to an external phone, and
 // `dial_status`/`call_status` are never literally "voicemail" in any of them
 // (there's also no dedicated `voicemail` key in the payload at all). So this
@@ -519,6 +538,8 @@ export async function ingestCall(
   const customerSide = direction === 'in' ? caller : toNumber;
 
   const match = customerSide ? await matchByPhone(db, orgId, customerSide) : null;
+  // The company number the call went through (S08.1), as a link to the org's own number.
+  const companyNumberId = await resolveCompanyNumberId(db, orgId, tracking);
 
   // Resolve the placing agent up front (softphone: the answering agent leg IS
   // the ServWave user who placed the call). Attribution follows the PLACER, so
@@ -705,6 +726,7 @@ export async function ingestCall(
     status,
     from_number: fromNumber || 'unknown',
     to_number: toNumber || 'unknown',
+    phone_number_id: companyNumberId,
     // The vendor's marketing source wins over the phone system's own tracking-
     // source label; that label is the fallback when the vendor said nothing.
     tracking_source: tracked?.tracking_source ?? (a.source ? String(a.source) : null),
@@ -736,6 +758,9 @@ export async function ingestCall(
   // must never downgrade a completed call back to ringing or blank out fields).
   // Populated values are never overwritten with empties.
   const updateData: Record<string, unknown> = {};
+  // Whatever the position: the line a call went through never changes, and a number added to the
+  // organization after the call started still gets linked by the settled `end`.
+  if (companyNumberId) updateData.phone_number_id = companyNumberId;
   if (position !== 'starts') {
     updateData.status = status;
     if (durationSec !== null) updateData.duration_sec = durationSec;
@@ -823,7 +848,7 @@ export async function ingestCall(
   // A blocked caller raises no bell - the row above is still written and tagged.
   // The ring itself cannot be stopped (lib/communication/blockedNumbers.ts).
   if (!opts.suppressNotifications && !blockedCaller && position !== 'starts' && direction === 'in' && (status === 'missed' || status === 'voicemail')) {
-    void emit({
+    raiseAlert(opts, {
       verb: 'communication.call_missed',
       organizationId: orgId,
       actorId: null,
@@ -837,8 +862,12 @@ export async function ingestCall(
   return { callSessionId: row.id, sid, status, direction, hasRecording: !!recUrl };
 }
 
+function smsWords(a: Record<string, any>): string {
+  return String(a.message_body ?? a.msg ?? a.body ?? a.text ?? '');
+}
+
 function smsBody(a: Record<string, any>): string {
-  const base = String(a.message_body ?? a.msg ?? a.body ?? a.text ?? '');
+  const base = smsWords(a);
   const media = Array.isArray(a.message_media) ? a.message_media : [];
   const urls = media
     .map((m: any) => (typeof m === 'string' ? m : m && typeof m === 'object' ? m.url : null))
@@ -909,6 +938,10 @@ export async function ingestSms(
   const caller = callerNumber(a);
   const counterpart = direction === 'in' ? caller : String(a.called_number ?? a.to ?? caller);
   const body = smsBody(a);
+  // The company number the text went through (S08.1): the number the customer texted, or the
+  // number the text was sent from.
+  const companyNumberId = await resolveCompanyNumberId(db, orgId, a.tracking_number);
+  const companyNumberData = companyNumberId ? { phone_number_id: companyNumberId } : {};
 
   // Thread find-or-create — the shared SMS thread-identity rule (smsThread.ts,
   // extracted for slice H7 so compose-to-number keys threads identically):
@@ -985,7 +1018,7 @@ export async function ingestSms(
     // Delivery/failure updates only — never clobber the stored body.
     messageRow = await db.message.update({
       where: { id: existing.id },
-      data: { status },
+      data: { status, ...companyNumberData },
       select: { id: true, thread_id: true },
     });
   } else {
@@ -1009,7 +1042,7 @@ export async function ingestSms(
       if (shell) {
         messageRow = await db.message.update({
           where: { id: shell.id },
-          data: { ctm_sms_id: sid, status },
+          data: { ctm_sms_id: sid, status, ...companyNumberData },
           select: { id: true, thread_id: true },
         });
         return { messageId: messageRow.id, threadId: messageRow.thread_id, direction };
@@ -1032,6 +1065,7 @@ export async function ingestSms(
         // Message.lead_id, so without this an inbound reply would never
         // surface on the lead's Communication tab.
         lead_id: match?.leadId ?? null,
+        phone_number_id: companyNumberId,
         organization_id: orgId,
       },
       select: { id: true, thread_id: true },
@@ -1069,13 +1103,16 @@ export async function ingestSms(
 
   // A blocked sender raises no bell - the message row above is still stored.
   if (direction === 'in' && !existing && !opts.suppressNotifications && !blockedCaller) {
-    void emit({
+    raiseAlert(opts, {
       verb: 'communication.sms_inbound',
       organizationId: orgId,
       actorId: null,
       object: { type: 'MESSAGE_THREAD', id: thread.id, label: match?.label ?? counterpart },
-      entity: {},
-      data: { customer_name: match?.label ?? null, preview: body.slice(0, 80) },
+      // The alert's people are found from this text (its record, its company number, who it answers): S08.23.
+      entity: { message_id: messageRow.id },
+      // The first 80 characters of what the customer WROTE (a picture's link is no preview). The alert row stores it, and the
+      // alert goes only to people who may read this conversation, so the preview reaches no one else.
+      data: { customer_name: match?.label ?? null, preview: textAlertPreview(smsWords(a)) },
       dedupKey: `ctm:${sid}:inbound`,
     });
   }

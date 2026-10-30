@@ -12,9 +12,9 @@ router.use(authenticate, attachAbility);
 // SRVW-112 - gating mirrors org-tax-rate.routes.ts: the WRITES reuse the existing
 // `update Organization` grant (this is an org-settings catalog, the same population that already
 // edits job_type_options on the Payments & Lists page) rather than minting a new CASL Subject.
-// The READ is the coarser `read Job` instead, because every job viewer needs these labels to
-// render a job, not just the settings population.
-router.get('/', canDo('read', 'Job'), jobSubStatusController.list);
+// The READ is reference data: every form and every job page needs these labels, so every signed-in
+// person reads the list with no switch.
+router.get('/', jobSubStatusController.list);
 router.post('/', canDo('update', 'Organization'), validate(jobSubStatusController.createJobSubStatusSchema), jobSubStatusController.create);
 // Literal path segment BEFORE any ":id" route. Safe today either way (the only /:id routes are
 // PATCH and DELETE, and Express matches on method as well as path), but the ordering is the house

@@ -7,7 +7,7 @@ user_invocable: true
 # Vault Audit Setup
 
 ## Purpose
-Create (or renew) the nightly vault audit cron job. The job runs at 2:27 AM ET, spawns 5 parallel audit agents + 1 report compiler, and sends a detailed email report to ran@alphasecurityus.com.
+Create (or renew) the nightly vault audit cron job. The job runs at 2:27 AM ET, spawns 5 parallel audit agents + 1 report compiler, and sends a detailed email report to <owner-email>.
 
 ## Prerequisites
 - Claude Code session must be **running** for the cron to fire (it only fires while the REPL is idle)
@@ -39,8 +39,8 @@ Output:
 **Schedule:** Every night at 2:27 AM ET
 **Created:** [CREATION_DATE]
 **Expires:** [CREATION_DATE + 7 days]
-**Email to:** ran@alphasecurityus.com
-**Email from:** vault@alphasecurityus.com
+**Email to:** <owner-email>
+**Email from:** <verified-sender-email>
 
 Prerequisite: Keep this Claude Code session running.
 Renewal: Run /vault-audit-setup again before [expiry date].
@@ -60,7 +60,7 @@ YOUR JOB: Spawn 5 parallel audit agents, collect their findings, then spawn a re
 
 VAULT ACCESS: Use mcp__obsidian__* MCP tools (read_note, search_notes, list_directory, get_frontmatter, get_vault_stats).
 CODEBASE: __REPO_ROOT__
-EMAIL: mcp__resend__send-email (to: ran@alphasecurityus.com, from: vault@alphasecurityus.com)
+EMAIL: mcp__resend__send-email (to: <owner-email>, from: <verified-sender-email>)
 
 VAULT STRUCTURE:
 - index.md (MOC), log.md (session log)
@@ -443,8 +443,8 @@ YOUR JOB:
    Use clean, readable HTML. Tables for structured data. Bullet points for findings. Each finding should include the file path and a specific recommended action.
 7. Build a PLAIN TEXT version with the same content (no HTML tags).
 8. Send the email using mcp__resend__send-email:
-   - to: ["ran@alphasecurityus.com"]
-   - from: "vault@alphasecurityus.com"
+   - to: ["<owner-email>"]
+   - from: "<verified-sender-email>"
    - subject: "ALPHA CRM Vault Audit — [today's date]" (if zero total findings, append " ✅")
    - html: [the HTML email]
    - text: [the plain text version]

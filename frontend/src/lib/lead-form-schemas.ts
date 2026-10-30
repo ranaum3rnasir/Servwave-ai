@@ -64,6 +64,7 @@ const createSchema = z.object({
   job_type: z.string().optional(),
   ad_source: z.string().optional(),
   assigned_to: z.string().optional(),
+  dispatcher_id: z.string().optional(),
   scheduled_date: z.string().optional(),
   scheduled_time: z.string().optional(),
   scheduled_end_date: z.string().optional(),
@@ -86,7 +87,7 @@ const createSchema = z.object({
   refineAddress(d, ctx);
 });
 
-const editSchema = z.object({
+const editFields = z.object({
   service_request: z.string().min(1, 'Service request is required').max(LONG_TEXT_MAX),
   notes: z.string().max(LONG_TEXT_MAX).optional(),
   job_type: z.string().optional(),
@@ -102,9 +103,13 @@ const editSchema = z.object({
   service_city: z.string().optional(),
   service_state: z.string().optional(),
   service_zip: z.string().optional(),
-}).superRefine(refineAddress);
+});
+const editSchema = editFields.superRefine(refineAddress);
 
 export const createLeadFormSchema = createSchema;
 export const editLeadFormSchema = editSchema;
+// The same form for a person who may not change the lead's address: it is neither shown nor sent, so a stored
+// address must never fail validation on a field they cannot see.
+export const editLeadDetailsFormSchema = editFields;
 export type CreateLeadFormData = z.infer<typeof createSchema>;
 export type EditLeadFormData = z.infer<typeof editSchema>;

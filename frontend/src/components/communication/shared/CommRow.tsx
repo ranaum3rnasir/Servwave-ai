@@ -14,10 +14,10 @@
  * formatter via props.
  */
 import { Link } from 'react-router-dom';
-import { cn } from '@/lib/utils';
+import { cn, formatCurrency } from '@/lib/utils';
 import { formatInstant } from '@/lib/schedule-tz';
 import type { CommItem } from '@/lib/api/jobCommunications';
-import { ChannelIcon, LeadBadge, LoggedChip, StateChip } from './atoms';
+import { ChannelIcon, LeadBadge, LoggedChip, StateChip, UnverifiedSenderMark } from './atoms';
 import { CommRowJobControl } from './CommRowJobControl';
 import { EmailDeliveryPill } from './EmailDeliveryPill';
 
@@ -82,6 +82,13 @@ export function CommRow({
       : `Logged by ${item.loggedByName}`
     : null;
 
+  // The customer's own action on their link (an estimate decision): an entry, not a conversation, so it says whose action
+  // it was rather than which way a message went, and carries what they said in full.
+  const isCustomerEntry = item.channel === 'portal';
+  // A payment received on one of the record's invoices (S08.10): the amount and whether it was paid online or recorded by
+  // the office, as the server worded it. Nothing in the row can be pressed, like the estimate decisions.
+  const isPayment = item.entry === 'payment_received';
+
   const leadChip = item.leadLabel ? (
     item.leadId && item.leadId !== currentLeadId ? (
       <Link
@@ -120,7 +127,7 @@ export function CommRow({
       <div className="mt-0.5">
         {/* Manual Communication Log — the hand-entered overlay states the same fact the "Logged"
             chip below states in words, on the element the eye lands on first. */}
-        <ChannelIcon channel={item.channel} handEntered={item.manuallyLogged} />
+        <ChannelIcon channel={item.channel} handEntered={item.manuallyLogged} payment={isPayment} />
       </div>
       <div className="min-w-0 flex-1">
         {/* Mobile slice 84 - below lg the line WRAPS, so the chip, the delivery pill and the time
@@ -152,6 +159,8 @@ export function CommRow({
               className="max-w-full shrink-0"
             />
           )}
+          {/* A received email linked to this customer by its sender's address, the sender unproven (PRD 10, S10.20). */}
+          {item.channel === 'email' && <UnverifiedSenderMark show={item.unverifiedSender} />}
           <span
             className="ml-auto max-w-full shrink-0 text-xs text-text-soft"
             title={formatInstant(item.at, tz, FULL_TIMESTAMP)}
@@ -159,11 +168,29 @@ export function CommRow({
             {formatTimestamp(item.at)}
           </span>
         </div>
-        <p className="mt-0.5 truncate text-sm text-text-secondary">{item.preview}</p>
+        {/* A call's preview line is its summary, which the server leaves empty without View transcript (S08.12). */}
+        {isPayment ? (
+          <p className="mt-0.5 text-sm text-text-secondary">
+            {item.amount != null && <span className="font-medium">{formatCurrency(item.amount)}</span>}
+            {item.amount != null && item.preview && ' · '}
+            {item.preview && <span>{item.preview}</span>}
+          </p>
+        ) : isCustomerEntry ? (
+          // The customer's reason and their own words, in full: an entry is read, never opened for more.
+          (item.reason || item.reasonNote) && (
+            <p className="mt-0.5 text-sm text-text-secondary">
+              {item.reason && <span className="font-medium">{item.reason}</span>}
+              {item.reason && item.reasonNote && ' · '}
+              {item.reasonNote && <span>&ldquo;{item.reasonNote}&rdquo;</span>}
+            </p>
+          )
+        ) : (
+          item.preview && <p className="mt-0.5 truncate text-sm text-text-secondary">{item.preview}</p>
+        )}
         <div className="mt-1 flex items-center gap-2 text-xs text-text-soft">
           <span className="truncate">
             <span className="text-text-secondary/70">
-              {item.direction === 'in' ? 'Inbound' : 'Outbound'}
+              {isPayment ? 'Payment' : isCustomerEntry ? 'Customer' : item.direction === 'in' ? 'Inbound' : 'Outbound'}
             </span>{' '}
             · {item.who}
           </span>

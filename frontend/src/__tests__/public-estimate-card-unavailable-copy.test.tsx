@@ -35,14 +35,16 @@ vi.mock('react-router-dom', async () => {
 
 // Reports "signature drawn" on mount (fires the real onEnd prop) so the deposit+CARD
 // payment step renders immediately, mirroring a homeowner who has already signed.
+function SignatureCanvasStub(props: { onEnd?: () => void }) {
+  useEffect(() => {
+    props.onEnd?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  return null;
+}
+
 vi.mock('react-signature-canvas', () => ({
-  default: (props: { onEnd?: () => void }) => {
-    useEffect(() => {
-      props.onEnd?.();
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
-    return null;
-  },
+  default: SignatureCanvasStub,
 }));
 
 const CARD_DEPOSIT_ESTIMATE_RESPONSE = {
@@ -107,5 +109,66 @@ describe('PublicEstimatePage — CARD-unavailable deposit-checkout copy (Task 2.
 
     // The raw backend string must never reach the homeowner.
     expect(screen.queryByText('Card payment is not available')).not.toBeInTheDocument();
+  });
+  // Payments go-live slice 16, carried by slice 25: a refusal that carries its own homeowner
+  // message (the plan gate's neutral 403) shows that message, not "something went wrong".
+  it('shows the door\'s own homeowner message when online payment is unavailable', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((_url: string, init?: RequestInit) => {
+        if (init?.method === 'POST') {
+          return Promise.resolve({
+            ok: false,
+            json: async () => ({ code: 'ONLINE_PAYMENT_UNAVAILABLE', error: "Paying online isn't available for this estimate." }),
+          });
+        }
+        return Promise.resolve({ ok: true, json: async () => CARD_DEPOSIT_ESTIMATE_RESPONSE });
+      }),
+    );
+
+    renderWithProviders(<PublicEstimatePage />);
+
+    await userEvent.click(await screen.findByRole('button', { name: /pay with credit\/debit card/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Paying online isn't available for this estimate.")).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/Something went wrong starting your payment/)).not.toBeInTheDocument();
+  });
+
+  // Fix round 2 - the approve door's deposit refusals (depositCheckoutRefusal) are written for the
+  // homeowner too. A homeowner approving against a deposit that is already paid, cancelled, closed,
+  // out of date or on hold is told why, never "please try again".
+  it.each([
+    ['DEPOSIT_ALREADY_PAID', 'This deposit has already been paid.'],
+    ['DEPOSIT_VOIDED', 'This deposit request has been cancelled. Please contact us if you have any questions.'],
+    ['DEPOSIT_CLOSED', 'This deposit cannot be paid online right now. Please contact us to arrange payment.'],
+    [
+      'DEPOSIT_SUPERSEDED',
+      'This deposit request is out of date because the estimate has changed. Please contact us for the current amount.',
+    ],
+    [
+      'DEPOSIT_ON_HOLD',
+      'This deposit request is on hold while the estimate is being updated. Please contact us if you would like to pay it now.',
+    ],
+  ])('shows the door\'s own homeowner message for a %s refusal', async (code, message) => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockImplementation((_url: string, init?: RequestInit) => {
+        if (init?.method === 'POST') {
+          return Promise.resolve({ ok: false, json: async () => ({ code, error: message }) });
+        }
+        return Promise.resolve({ ok: true, json: async () => CARD_DEPOSIT_ESTIMATE_RESPONSE });
+      }),
+    );
+
+    renderWithProviders(<PublicEstimatePage />);
+
+    await userEvent.click(await screen.findByRole('button', { name: /pay with credit\/debit card/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(message)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/Something went wrong starting your payment/)).not.toBeInTheDocument();
   });
 });

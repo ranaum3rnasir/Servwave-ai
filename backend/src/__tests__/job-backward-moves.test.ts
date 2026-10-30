@@ -82,29 +82,21 @@ describe('backward moves clear later timestamps', () => {
     expect(data).not.toHaveProperty('scheduled_end');
   });
 
-  it('un-cancels a cancelled job moved to any milestone', async () => {
+  it('does not un-cancel a cancelled job: job-level Arrived is refused and clears nothing (PRD 6, S06.1)', async () => {
+    // Reopen is the only way out of Cancelled. Arrived used to revive the job by clearing the cancel stamps and
+    // re-deriving the status; that path is gone, and the refusal comes before any write.
     mockAuthAs('admin');
     mockPrisma.job.findUnique.mockResolvedValue({
       ...completedJob, status: 'CANCELLED', cancelled_at: new Date(), cancelled_reason: 'Customer away',
     });
-    // D19: cancelling the job called its trips off, and un-cancelling does not revive them - so
-    // the revived job holds no live visit.
-    mockPrisma.visit.findMany.mockResolvedValue([
-      { id: 'v-1', status: 'CANCELLED', started_at: null, scheduled_at: new Date('2026-03-05T09:00:00Z'), scheduled_end: new Date('2026-03-05T11:00:00Z'), created_at: new Date('2026-03-01T00:00:00Z') },
-    ]);
 
-    await request(app).post(`/api/jobs/${JOB_FIXTURE.id}/arrive`).set(authHeader('admin'));
+    const res = await request(app).post(`/api/jobs/${JOB_FIXTURE.id}/arrive`).set(authHeader('admin'));
 
-    const data = mockPrisma.job.update.mock.calls[0]![0].data;
-    expect(data.cancelled_at).toBeNull();
-    expect(data.cancelled_reason).toBeNull();
-    // The half that makes this an un-cancel rather than an erasure. Clearing the two cancellation
-    // columns while leaving `status` at CANCELLED gives a job that still reads Cancelled on the
-    // board and in every status query, with the reason it was cancelled deleted - and nothing
-    // re-derives it, because the derivation refuses to overwrite a human-set CANCELLED and this
-    // handler never calls it.
-    expect(data.status).not.toBe('CANCELLED');
-    expect(data.status).toBe('UNSCHEDULED');
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe('Reopen this job first');
+    expect(mockPrisma.job.update).not.toHaveBeenCalled();
+    expect(mockPrisma.visit.update).not.toHaveBeenCalled();
+    expect(mockPrisma.timelineEvent.create).not.toHaveBeenCalled();
   });
 
   it('rewinds the visit it stamps, so the correction is not resurrected by the next visit write', async () => {
@@ -187,11 +179,13 @@ describe('backward moves clear later timestamps', () => {
     expect(timelineCallOrder).toBeLessThan(updateCallOrder);
   });
 
-  it('preserves the signature and completion notes when re-completing with an empty body', async () => {
+  it('preserves a stored signature and completion notes when completing with an empty body', async () => {
     mockAuthAs('admin');
     mockPrisma.job.findUnique.mockResolvedValue({
-      ...completedJob, signature_data: 'data:image/png;base64,AAA', completion_notes: 'Replaced compressor',
+      ...completedJob, status: 'IN_PROGRESS', completed_at: null, signature_data: 'data:image/png;base64,AAA', completion_notes: 'Replaced compressor',
     });
+    // No visit is open (an earlier case in this file leaves a live one behind), so the complete needs no choice.
+    mockPrisma.visit.findMany.mockResolvedValue([]);
 
     await request(app).post(`/api/jobs/${JOB_FIXTURE.id}/complete`).set(authHeader('admin')).send({});
 

@@ -35,7 +35,10 @@ export function decodeFilters(params: URLSearchParams, registry: FacetConfig[]):
   for (const facet of registry) {
     if (facet.kind === 'multi') {
       const raw = params.get(facet.param);
-      if (raw) state[facet.key] = { kind: 'multi', values: raw.split(',').filter(Boolean) };
+      if (raw) {
+        const values = raw.split(',').filter(Boolean).map((v) => facet.retiredValues?.[v] ?? v);
+        state[facet.key] = { kind: 'multi', values: [...new Set(values)] };
+      }
     } else if (facet.kind === 'range') {
       const min = params.get(`${facet.param}_min`);
       const max = params.get(`${facet.param}_max`);

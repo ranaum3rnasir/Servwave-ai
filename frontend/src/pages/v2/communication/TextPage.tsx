@@ -40,7 +40,9 @@ const TAB_KEYS: readonly TextTab[] = ['inbox', 'settings'];
  * (see `components/routedTabs.tsx`).
  */
 export default function TextPage() {
-  useRecordVisit('comm-text');
+  // 'comm-text' is a child of the Communication group, so the registry cannot name it: say the label here, as the
+  // Phone page does, or the trail shows the key itself.
+  useRecordVisit('comm-text', 'Text');
   const ability = useAppAbility();
   const canRead = ability.can('read', 'Communication');
 

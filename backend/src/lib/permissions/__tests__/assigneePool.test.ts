@@ -6,13 +6,13 @@ import {
   isAssigneeSetPermitted,
   type AssigneePool,
 } from '../assigneePool';
-import { defineAbilityFor, type Grant, type PermissionOverride } from '../defineAbility';
+import { defineAbilityFor, type Grant } from '../defineAbility';
 
 // Scoped assignee pool, slice 2 — the resolver's unit suite.
 //
 // Every case drives the REAL `defineAbilityFor`. A hand-written ability literal would pass
 // against a resolver that read a role name, which is exactly the defect these tests exist to
-// catch: the whole claim of this module is that custom roles and per-user overrides fall out
+// catch: the whole claim of this module is that custom roles fall out
 // of asking the ability, and only the real builder can demonstrate that.
 
 const ASSIGN_USER: Grant = { action: 'assign', subject: 'User' };
@@ -24,9 +24,8 @@ const READ_LEAD: Grant = { action: 'read', subject: 'Lead' };
 function abilityFor(
   user: { id: string; role: string; custom_role_id?: string | null },
   grants: Grant[] = [],
-  overrides: PermissionOverride[] = [],
 ) {
-  return defineAbilityFor(user, grants, overrides);
+  return defineAbilityFor(user, grants);
 }
 
 describe('resolveAssigneePool — the grant, not the role', () => {
@@ -64,23 +63,6 @@ describe('resolveAssigneePool — the grant, not the role', () => {
       [READ_LEAD, ASSIGN_USER],
     );
     expect(resolveAssigneePool(ability, 'mgr-1', 'walkthroughPerformer')).toEqual({ scope: 'org' });
-  });
-
-  it('a per-user ALLOW override resolves to org, with no role grant behind it', () => {
-    const ability = abilityFor({ id: 'sales-9', role: 'SALES' }, [READ_LEAD], [
-      { action: 'assign', subject: 'User', effect: 'allow' },
-    ]);
-    expect(resolveAssigneePool(ability, 'sales-9', 'jobCrew')).toEqual({ scope: 'org' });
-  });
-
-  it('a per-user DENY override resolves to self-only even though the role grants it', () => {
-    const ability = abilityFor({ id: 'disp-2', role: 'DISPATCHER' }, [ASSIGN_USER], [
-      { action: 'assign', subject: 'User', effect: 'deny' },
-    ]);
-    expect(resolveAssigneePool(ability, 'disp-2', 'jobCrew')).toEqual({
-      scope: 'self',
-      userId: 'disp-2',
-    });
   });
 
   it('fail-closed: no ability attached resolves to self-only', () => {

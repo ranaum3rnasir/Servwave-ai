@@ -110,6 +110,8 @@ const BASE_ESTIMATE = {
   job: null,
   job_id: null,
   invoices: [],
+  // The server's answer for this estimate: every action the page can offer.
+  actions: ['edit', 'send', 'delete', 'cancel', 'record_payment'],
 };
 
 function renderAt(status: string, overrides: Record<string, unknown> = {}) {
@@ -169,7 +171,7 @@ describe('EstimateWorkspacePage - every offered status row hits the free setter'
     await openPill(user);
 
     await user.click(screen.getByRole('menuitem', { name: /won/i }));
-    await user.click(await screen.findByRole('button', { name: /record as approved/i }));
+    await user.click(await screen.findByRole('button', { name: 'Approve' }));
 
     expect(statusCall()?.[1]).toEqual({ status: ESTIMATE_STATUS.WON });
   });

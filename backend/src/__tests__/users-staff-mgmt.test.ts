@@ -12,6 +12,13 @@ vi.mock('../lib/email', () => ({
   sendUserInviteEmail: vi.fn().mockResolvedValue(true),
 }));
 
+// A new user's mailbox is issued in the same transaction as the user (PRD 10, S10.3); the register has its own real-database
+// suites, so here it only has to be called, and the transaction is the mocked client itself.
+vi.mock('../lib/mailbox/register', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/mailbox/register')>()),
+  issueUserMailbox: vi.fn().mockResolvedValue({ mailboxId: 'mailbox-1', status: 'active', localPart: 'new.user.acme', created: true }),
+}));
+
 const mockPrisma = prisma as unknown as {
   user: {
     findUnique: ReturnType<typeof vi.fn>;
@@ -21,6 +28,7 @@ const mockPrisma = prisma as unknown as {
     create: ReturnType<typeof vi.fn>;
     count: ReturnType<typeof vi.fn>;
   };
+  $transaction: ReturnType<typeof vi.fn>;
 };
 
 const mockSupabaseAdmin = supabaseAdmin as unknown as {
@@ -37,6 +45,7 @@ const mockSupabaseAdmin = supabaseAdmin as unknown as {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockPrisma.$transaction.mockImplementation(async (fn: (tx: unknown) => unknown) => fn(mockPrisma));
 });
 
 // After mockAuthAs(...), resolve both the admin (auth middleware's resolveAppUser

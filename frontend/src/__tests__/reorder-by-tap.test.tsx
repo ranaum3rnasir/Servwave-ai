@@ -13,7 +13,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import api from '@/lib/axios';
-import { renderWithProviders } from './helpers';
+import { renderWithProviders, serveDashboard } from './helpers';
 import { buildAbility } from '@/lib/ability';
 import { moveInList } from '@/lib/moveInList';
 import DeclineReasonsPage from '@/pages/v2/settings/DeclineReasonsPage';
@@ -21,6 +21,7 @@ import JobSubStatusesPage from '@/pages/v2/settings/JobSubStatusesPage';
 import PaymentsListsPage from '@/pages/v2/settings/PaymentsListsPage';
 import DashboardPage from '@/pages/v2/dashboard/DashboardPage';
 import CatalogDrawer from '@/components/dashboard/CatalogDrawer';
+import { dashboardSeed } from '@/lib/api/_mock/dashboard';
 
 // The dashboard seam reads VITE_DASHBOARD_USE_MOCK once, when its module loads. A developer's
 // untracked frontend/.env.local sets it to 'true' (offline scaffolding), which swaps the API for
@@ -157,7 +158,7 @@ describe('Job sub-statuses: Move up / Move down', () => {
 describe('Payments & Lists (Job Types): Move up / Move down', () => {
   const ORG = {
     id: 'o1',
-    stripe_account_id: null,
+    stripe_connected: false,
     accepted_payment_methods: ['CASH'],
     source_options: ['Google'],
     job_type_options: ['Install', 'Repair', 'Service'],
@@ -200,18 +201,21 @@ describe('Payments & Lists (Job Types): Move up / Move down', () => {
 });
 
 describe('Dashboard widgets in edit mode', () => {
+  let server: ReturnType<typeof serveDashboard>;
   beforeEach(() => {
-    mockApi.get.mockResolvedValue({ data: {} });
+    // An administrator's answer: every tile is theirs. Recurring has no plans to show, so it says so (it keeps its cell).
+    // The layout is the server's: the factory one to start with, and a save is remembered.
+    server = serveDashboard({ ...dashboardSeed, data: { ...dashboardSeed.data, 'kpi.recurring': null } });
   });
 
   /**
-   * Opens the page and waits for its data to settle: a widget may veto its own cell once the data
-   * arrives (Recurring has no plans to show), so the set of cells is only stable after that.
+   * Opens the page and waits for its data to settle: a tile with nothing to show swaps its figure for a plain
+   * line once the data arrives (Recurring has no plans to show), so the cells are only stable after that.
    */
   async function settled() {
     renderWithProviders(<DashboardPage />, { ability: ADMIN });
     // 10 s, not waitFor's 1 s: the dashboard's first data pass is slow on a loaded machine.
-    await waitFor(() => expect(screen.queryByText('Recurring (Plans)')).not.toBeInTheDocument(), { timeout: 10_000 });
+    await waitFor(() => expect(screen.getByText('No active plans')).toBeInTheDocument(), { timeout: 10_000 });
   }
   // Two default widgets share a title, so a widget is addressed by its place on the page.
   const hides = () => screen.getAllByRole('button', { name: /^Hide / });
@@ -219,10 +223,10 @@ describe('Dashboard widgets in edit mode', () => {
   const downs = () => screen.getAllByRole('button', { name: /^Move .* down$/ });
   /** The widgets' names, top to bottom. */
   const titles = () => hides().map((b) => b.getAttribute('aria-label')!.replace(/^Hide /, ''));
-  // The saved layout, under the key the hook writes (the auth store is mocked with this user).
+  // The layout the page last saved to the server (null until it has saved one).
   const savedVisibleIds = () => {
-    const raw = localStorage.getItem('alpha:dashboard-layout:v1:00000000-0000-0000-0000-000000000001');
-    return raw ? (JSON.parse(raw) as Array<{ id: string; visible: boolean }>).filter((i) => i.visible).map((i) => i.id) : null;
+    const last = server.saves[server.saves.length - 1];
+    return last ? last.filter((i) => i.visible).map((i) => i.id) : null;
   };
 
   it('has a Move up / Move down pair for every visible widget in edit mode only', async () => {
@@ -242,14 +246,15 @@ describe('Dashboard widgets in edit mode', () => {
 
     fireEvent.click(downs()[0]!);
     expect(titles().slice(0, 2)).toEqual([second, first]);
+    // The save is sent to the server as the edit is made, with no button to press.
+    await waitFor(() => expect(savedVisibleIds(), 'the new order is persisted').not.toBeNull());
     const ids = savedVisibleIds();
-    expect(ids, 'the new order is persisted').not.toBeNull();
-    // The saved list also holds a widget that vetoes its own cell, so compare the order, not the count.
+    // The saved list also holds tiles that are not drawn on this page, so compare the order, not the count.
     expect(ids!.indexOf('kpi.collected_today')).toBeLessThan(ids!.indexOf('kpi.revenue_mtd'));
 
     fireEvent.click(ups()[1]!);
     expect(titles()).toEqual(before);
-    expect(savedVisibleIds()).not.toEqual(ids);
+    await waitFor(() => expect(savedVisibleIds()).not.toEqual(ids));
   });
 
   it('the first widget cannot go up and the last cannot go down', async () => {
@@ -307,7 +312,7 @@ describe('Dashboard widgets in edit mode', () => {
     expect(titles()[0]).toBe(firstName);
     const idsBefore = savedVisibleIds();
     fireEvent.click(downs()[0]!);
-    expect(savedVisibleIds()).not.toEqual(idsBefore);
+    await waitFor(() => expect(savedVisibleIds()).not.toEqual(idsBefore));
     expect(titles()[0]).not.toBe(firstName);
   });
 
@@ -324,12 +329,12 @@ describe('Dashboard widgets in edit mode', () => {
 describe('CatalogDrawer presentation', () => {
   it('below md it is a dialog (a sheet); from md up it is a plain rail', () => {
     windowWidth(393);
-    const phone = renderWithProviders(<CatalogDrawer open layout={[]} onAdd={vi.fn()} onClose={vi.fn()} />);
+    const phone = renderWithProviders(<CatalogDrawer open layout={[]} tiles={[{ id: 'kpi.jobs_today', category: 'jobs', mode: 'company', label: null }]} categories={[{ id: 'jobs', label: 'Jobs' }]} onAdd={vi.fn()} onClose={vi.fn()} />);
     expect(screen.getByRole('dialog')).toBeInTheDocument();
     phone.unmount();
 
     windowWidth(1280);
-    renderWithProviders(<CatalogDrawer open layout={[]} onAdd={vi.fn()} onClose={vi.fn()} />);
+    renderWithProviders(<CatalogDrawer open layout={[]} tiles={[{ id: 'kpi.jobs_today', category: 'jobs', mode: 'company', label: null }]} categories={[{ id: 'jobs', label: 'Jobs' }]} onAdd={vi.fn()} onClose={vi.fn()} />);
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 });

@@ -12,15 +12,14 @@
  * repeated here.
  *
  * Mirrors `repro-1997.test.ts` / `customer-duplicate-redaction.test.ts`'s `mockDeniedCustomerRead`
- * — a conditioned `read Customer` grant built from real `DEFAULT_GRANTS`, never a bare CASL
- * literal — own local copy per that file's own convention.
+ * — View customers turned off through the switch catalog (which owns Customer reach since S01.5),
+ * never a bare CASL literal — own local copy per that file's own convention.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
-import { TEST_USERS, mockAuthAs, authHeader, ESTIMATE_FIXTURE, CUSTOMER_FIXTURE, LEAD_FIXTURE } from './helpers';
-import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
+import { TEST_USERS, mockAuthAs, mockRoleSwitches, authHeader, ESTIMATE_FIXTURE, CUSTOMER_FIXTURE, LEAD_FIXTURE } from './helpers';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -32,13 +31,9 @@ beforeEach(() => {
 });
 
 /** See repro-1997.test.ts for the full rationale — own local copy, not a shared import. */
-function mockDeniedCustomerRead(role: string, deniedCustomerId: string) {
-  const rows = [
-    ...DEFAULT_GRANTS.filter((g) => !(g.role === role && g.action === 'read' && g.subject === 'Customer')),
-    { role, action: 'read', subject: 'Customer', conditions: { id: 'zz-not-' + deniedCustomerId } },
-  ];
-  mockPrisma.rolePermission.findMany.mockResolvedValue(rows.filter((g) => g.role === role));
-  clearPermissionCache();
+function mockDeniedCustomerRead(_role: string, _deniedCustomerId: string) {
+  // View customers off: the person reaches no customer, so THIS one is denied.
+  mockRoleSwitches({ view_customers: false });
 }
 
 const CONTACT_KEYS = [
@@ -119,6 +114,25 @@ describe('POST /api/estimates/:id/line-items — customer redaction (#1997)', ()
 
     expect(res.status).toBe(201);
     expectContactAbsent(res.body.estimate.lead.customer);
+  });
+
+  it('a SALES requester with Customers View off keeps the contact of a customer with a lead they are on (S01.5: it comes with that record)', async () => {
+    mockAuthAs('sales'); // owns via lead_assignees, matching ESTIMATE_FIXTURE.lead
+    mockDeniedCustomerRead('SALES', CUSTOMER_FIXTURE.id);
+    mockPrisma.estimate.findUnique.mockResolvedValue(guardRow());
+    mockPrisma.estimate.findFirst.mockResolvedValue({ id: ESTIMATE_FIXTURE.id });
+    mockPrisma.estimate.update.mockResolvedValue({
+      ...ESTIMATE_FIXTURE, id: ESTIMATE_FIXTURE.id, line_items: [], scopes: null,
+      lead: { ...ESTIMATE_FIXTURE.lead, customer: { ...ESTIMATE_FIXTURE.lead.customer, leads: [{ lead_assignees: [{ user_id: TEST_USERS.sales.id }] }] } },
+    });
+
+    const res = await request(app)
+      .post(`/api/estimates/${ESTIMATE_FIXTURE.id}/line-items`)
+      .set(authHeader('sales'))
+      .send({ description: 'Extra part', quantity: 1, unit_price: 50 });
+
+    expect(res.status).toBe(201);
+    expectContactPresent(res.body.estimate.lead.customer);
   });
 
   it('green control: ADMIN (unconditional read Customer) still gets the full block', async () => {
@@ -289,6 +303,8 @@ describe('POST /api/estimates/:id/copy-to-invoice — customer redaction (#1997)
 
   function copyToInvoiceTx(createdInvoice: Record<string, unknown>) {
     return {
+      // Slice 18: the deposit-credit draw locks the estimate's deposit invoices first.
+      $executeRaw: async () => 0,
       estimate: {
         findUnique: async () => ({ job: null, job_id: null, job_link: null }),
       },
@@ -543,6 +559,19 @@ describe('GET /api/invoices/:id — job.customer anchor (#1997)', () => {
     expect(res.body.invoice.job.job_number).toBe('J00042'); // sibling job field survives
   });
 
+  it('a DISPATCHER with Customers View off keeps the contact on job.customer when the customer has a job they can open (S01.5: it comes with the job)', async () => {
+    mockAuthAs('dispatcher');
+    mockDeniedCustomerRead('DISPATCHER', CUSTOMER_FIXTURE.id);
+    const invoice = jobAnchoredInvoice();
+    invoice.job.customer = { ...invoice.job.customer, jobs: [{ visits: [] }] } as typeof invoice.job.customer;
+    mockPrisma.invoice.findUnique.mockResolvedValue(invoice);
+
+    const res = await request(app).get(`/api/invoices/${INVOICE_ID}`).set(authHeader('dispatcher'));
+
+    expect(res.status).toBe(200);
+    expectContactPresent(res.body.invoice.job.customer);
+  });
+
   it('green control: DISPATCHER with unconditional read Customer still gets the full block on job.customer', async () => {
     mockAuthAs('dispatcher');
     mockPrisma.invoice.findUnique.mockResolvedValue(jobAnchoredInvoice());
@@ -698,6 +727,8 @@ describe('GET /api/estimates/:id/public — projection carries no customer conta
       name: 'Acme Org', logo_url: null, brand_color: '#0C2D3A',
       email: 'org@acme.com', phone: null, website: null, estimate_terms: '',
     });
+    // Slice 27 - the public read also looks up the deposit invoice; an earlier test's stub must not answer it.
+    mockPrisma.invoice.findFirst.mockResolvedValue(null);
   });
 
   it('never selects email/phone/service_locations on either customer anchor', async () => {

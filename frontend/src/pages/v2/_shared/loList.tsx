@@ -43,6 +43,7 @@ import {
 import { useAppAbility } from '@/contexts/AbilityContext';
 import { LODetailSheet } from '@/components/inventory/lo/LODetailSheet';
 import { formatLoDate, primaryAnchor } from '@/components/inventory/lo/loStatus';
+import { canStartNewOrder } from '@/components/inventory/lo/loActions';
 
 import { DataTable } from '@/ui-kit/components/data/dataTable/dataTable';
 import { EmptyState } from '@/ui-kit/components/data/emptyState';
@@ -159,7 +160,7 @@ function buildLOColumns(showAnchor: boolean): ColumnDef<LogisticOrderListRow, un
 export function LOList({ jobId, invoiceId, servicePlanId }: LOListProps) {
   useRecordVisit('inventory', 'Logistic Orders');
   const ability = useAppAbility();
-  const canCreate = ability.can('create', 'LogisticOrder');
+  const canCreate = canStartNewOrder(ability);
 
   const anchorFilter = useMemo<LoListFilters>(
     () => ({
@@ -222,7 +223,9 @@ export function LOList({ jobId, invoiceId, servicePlanId }: LOListProps) {
           <EmptyState
             title={
               filter === 'all'
-                ? 'No logistic orders yet - create one to pull tracked parts for this work.'
+                ? canCreate
+                  ? 'No logistic orders yet - create one to pull tracked parts for this work.'
+                  : 'No logistic orders yet.'
                 : `No ${filter === 'PENDING_APPROVAL' ? 'pending' : filter.toLowerCase()} logistic orders.`
             }
           />

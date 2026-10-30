@@ -24,6 +24,7 @@ import {
   useUpsertLocation,
   type Branch,
   type Brand,
+  type CatalogItem,
   type Category,
   type Finish,
   type Item,
@@ -67,7 +68,7 @@ type Props = {
   onAddCategory: (category: Category) => unknown;
   /** Price Book Phase A — brand entities for dropdown. */
   brands?: Brand[];
-  editItem?: Item | null;
+  editItem?: CatalogItem | null;
   prefilledCode?: string;       // SKU / UPC / MPN captured from a scan
   /** Optional Modal z-index — bumped when AddItemDialog is opened from inside
    *  another dialog (e.g. NewPODialog) so the layering stacks cleanly. */
@@ -75,6 +76,12 @@ type Props = {
   /** SRVW-91: hide the starting-stock + reserve-levels panel at a mount whose
    *  onSave never persists the item (NewPODialog), so the panel is not theatre. */
   showStartingStock?: boolean;
+  /**
+   * False at a mount whose person may not read vendors (S07.16): the vendor field is left out
+   * altogether, and a brand's default vendor is not copied onto the item behind their back.
+   * Defaults to true - today's behaviour at the stock page and the purchase-order dialog.
+   */
+  showVendor?: boolean;
   /**
    * #2009 - a requester without the ability to write this item still opens
    * the dialog (Ran's Decision: cost/sell price/profitability stay visible),
@@ -104,7 +111,8 @@ export type NewItem = {
   trade: string;
   kind: string;
   uom: string;
-  unitCost: number;
+  /** Absent when the person cannot see costs: the form had none to send, and the save must not zero it. */
+  unitCost?: number;
   sellPrice: number;
   serialized: boolean;
   hazmat: boolean;
@@ -167,13 +175,29 @@ export function AddItemDialog({
   prefilledCode,
   zIndex,
   showStartingStock = true,
+  showVendor = true,
   readOnly = false,
 }: Props) {
   // zIndex is accepted for prop-API parity with the prototype; the shadcn
   // Dialog adapter manages stacking itself, so it is intentionally not wired.
   void zIndex;
-  const { data: locations = [] } = useLocations();
-  const { data: branches = [] } = useBranches();
+  // Cost/margin visibility (SRVW-140) - the shared gate, not a local re-check.
+  const ability = useAppAbility();
+  const canSeePricing = canSeePricingAbility(ability);
+  // The "+ Add" and "Manage" entries on category, brand and finish write the price book (POST and DELETE), so they
+  // follow Create and Delete price book items, never Edit.
+  const canCreateCatalog = ability.can('create', 'PriceBook');
+  const canDeleteCatalog = ability.can('delete', 'PriceBook');
+  // Locations and branches are stock data: a person who may not read stock never asks for them.
+  const canViewStock = ability.can('read', 'Inventory');
+  // The starting stock is written after the item is saved, through the count and reserve-level calls, which are Edit
+  // stock calls; a location added from its picker is a Create stock call, and a vendor added from its picker a Create
+  // vendors call. Each is offered only to a person who may make it.
+  const canEditStock = ability.can('update', 'Inventory');
+  const canCreateLocation = ability.can('create', 'Inventory');
+  const canCreateVendor = ability.can('create', 'Vendor');
+  const { data: locations = [] } = useLocations(canViewStock);
+  const { data: branches = [] } = useBranches(canViewStock);
   const { data: finishes = [] } = useFinishes();
   const upsertFinish = useUpsertFinish();
   const upsertBrand = useUpsertBrand();
@@ -186,9 +210,6 @@ export function AddItemDialog({
   const deleteBrand = useDeleteBrand();
   const deleteCategory = useDeleteCategory();
   const { data: org } = useOrganization();
-  // Cost/margin visibility (SRVW-140) - the shared gate, not a local re-check.
-  const ability = useAppAbility();
-  const canSeePricing = canSeePricingAbility(ability);
   const profitabilityNoteId = useId();
   // NO local mirror of rows created from inside this dialog. An earlier version
   // kept one so a new row would appear before the refetch landed - and that is
@@ -415,7 +436,7 @@ export function AddItemDialog({
     setForm((f) => {
       const brand = brands.find((b) => b.id === nextBrandId);
       const nextVendorId =
-        brand?.defaultVendorId && !f.vendorId ? brand.defaultVendorId : f.vendorId;
+        showVendor && brand?.defaultVendorId && !f.vendorId ? brand.defaultVendorId : f.vendorId;
       return {
         ...f,
         brandId: nextBrandId,
@@ -514,7 +535,9 @@ export function AddItemDialog({
           trade: form.trade,
           kind: form.kind,
           uom: form.uom,
-          unitCost: parseFloat(form.unitCost || "0"),
+          // Without See financial data the form never held the cost (the server leaves it out of the read), so
+          // sending 0 would overwrite the real one: leave the key out and the price book keeps what it has.
+          unitCost: canSeePricing ? parseFloat(form.unitCost || "0") : undefined,
           sellPrice: parseFloat(form.sellPrice || "0"),
           serialized: form.serialized,
           hazmat: form.hazmat,
@@ -561,14 +584,10 @@ export function AddItemDialog({
   // forgot the zero-price guard and printed a non-number where a percentage
   // belonged.
   const profitability = calculateProfitability(form.unitCost, form.sellPrice);
-  // Only ONE of the notes is an invitation into the cost field, and a viewer
-  // without "See financial data" must not be invited: the save path would send
-  // a cost they are not allowed to read. Same gate the sibling line-item
-  // editors use (lib/ability.ts, SRVW-140).
-  const profitabilityNote =
-    profitability.state === "uncosted" && !canSeePricing
-      ? null
-      : PROFITABILITY_NOTE[profitability.state];
+  // The pair and its note are drawn only for a viewer with "See financial data"
+  // (lib/ability.ts, SRVW-140; S07.17), so the note may invite them into the
+  // cost field.
+  const profitabilityNote = PROFITABILITY_NOTE[profitability.state];
   const profitabilityTone =
     // A 100% margin derived from a zero cost is not a healthy margin, so it
     // does not get the healthy colour - the caption beside it says why.
@@ -907,8 +926,8 @@ export function AddItemDialog({
                     noneLabel="Select category…"
                     value={form.category}
                     onChange={handleCategoryChange}
-                    onAddNew={() => setShowAddCategory(true)}
-                    onManage={() => setManaging("category")}
+                    onAddNew={canCreateCatalog ? () => setShowAddCategory(true) : undefined}
+                    onManage={canDeleteCatalog ? () => setManaging("category") : undefined}
                     managePlural="categories"
                     options={categories.map((c) => ({ value: c.name, label: c.name }))}
                     disabled={readOnly}
@@ -964,8 +983,8 @@ export function AddItemDialog({
                     noneLabel="- none -"
                     value={form.brandId}
                     onChange={handleBrandChange}
-                    onAddNew={() => setShowAddBrand(true)}
-                    onManage={() => setManaging("brand")}
+                    onAddNew={canCreateCatalog ? () => setShowAddBrand(true) : undefined}
+                    onManage={canDeleteCatalog ? () => setManaging("brand") : undefined}
                     options={brands
                       .filter((b) => b.isActive !== false)
                       .map((b) => ({ value: b.id, label: b.name }))}
@@ -982,8 +1001,8 @@ export function AddItemDialog({
                     noneLabel="- none -"
                     value={form.finishId}
                     onChange={(v) => set("finishId", v)}
-                    onAddNew={() => setShowAddFinish(true)}
-                    onManage={() => setManaging("finish")}
+                    onAddNew={canCreateCatalog ? () => setShowAddFinish(true) : undefined}
+                    onManage={canDeleteCatalog ? () => setManaging("finish") : undefined}
                     options={finishes
                       .filter((f) => f.isActive !== false)
                       .map((f) => ({ value: f.id, label: f.name }))}
@@ -991,25 +1010,27 @@ export function AddItemDialog({
                   />
                 </FormField>
               </div>
-              <div className="col-span-12 sm:col-span-4">
-                <FormField label="Vendor / Source">
-                  {/* No onManage - vendors have no delete endpoint, so the
-                      entry would open a dialog that could only refuse. */}
-                  <CatalogSelect
-                    label="Vendor / Source"
-                    noun="vendor"
-                    noneLabel="Select vendor…"
-                    value={form.vendorId}
-                    onChange={handleVendorChange}
-                    onAddNew={() => setShowAddVendor(true)}
-                    options={vendors.map((v) => ({
-                      value: v.id,
-                      label: `${v.name}${v.category ? ` · ${v.category}` : ""}`,
-                    }))}
-                    disabled={readOnly}
-                  />
-                </FormField>
-              </div>
+              {showVendor && (
+                <div className="col-span-12 sm:col-span-4">
+                  <FormField label="Vendor / Source">
+                    {/* No onManage - vendors have no delete endpoint, so the
+                        entry would open a dialog that could only refuse. */}
+                    <CatalogSelect
+                      label="Vendor / Source"
+                      noun="vendor"
+                      noneLabel="Select vendor…"
+                      value={form.vendorId}
+                      onChange={handleVendorChange}
+                      onAddNew={canCreateVendor ? () => setShowAddVendor(true) : undefined}
+                      options={vendors.map((v) => ({
+                        value: v.id,
+                        label: `${v.name}${v.category ? ` · ${v.category}` : ""}`,
+                      }))}
+                      disabled={readOnly}
+                    />
+                  </FormField>
+                </div>
+              )}
             </div>
 
             {/* ── Pricing ──────────────────────────────────────────────────
@@ -1017,14 +1038,16 @@ export function AddItemDialog({
                 than stretched across half the dialog. */}
             <SectionRule label="Pricing" />
             <div className="flex flex-wrap items-end gap-x-5 gap-y-3">
-              <FormField label="Unit Cost">
-                <MoneyInput
-                  value={form.unitCost}
-                  onChange={(v) => set("unitCost", v)}
-                  ariaLabel="Unit cost"
-                  disabled={readOnly}
-                />
-              </FormField>
+              {canSeePricing && (
+                <FormField label="Unit Cost">
+                  <MoneyInput
+                    value={form.unitCost}
+                    onChange={(v) => set("unitCost", v)}
+                    ariaLabel="Unit cost"
+                    disabled={readOnly}
+                  />
+                </FormField>
+              )}
               <FormField label="Sell Price">
                 <MoneyInput
                   value={form.sellPrice}
@@ -1046,7 +1069,7 @@ export function AddItemDialog({
                   The qualifier is VISIBLE copy, not just a title: this group
                   carries an aria-label, so a title attribute would never be
                   announced and would reach mouse users only. */}
-              {profitability.state !== "invalid-price" && (
+              {canSeePricing && profitability.state !== "invalid-price" && (
                 <div
                   role="group"
                   aria-label="Profitability"
@@ -1089,8 +1112,10 @@ export function AddItemDialog({
             {/* ── Starting stock ───────────────────────────────────────────
                 Hidden in edit mode (stock changes go through
                 movements/transfers), and at any mount whose onSave never
-                persists the item (showStartingStock={false}, SRVW-91). */}
-            {isEdit || !showStartingStock ? null : (
+                persists the item (showStartingStock={false}, SRVW-91), and for a
+                person without Edit stock (the count and reserve-level calls
+                that record it are Edit stock calls). */}
+            {isEdit || !showStartingStock || !canEditStock ? null : (
               <>
                 <SectionRule label="Starting Stock" />
                 <div className="grid grid-cols-12 gap-3">
@@ -1101,7 +1126,7 @@ export function AddItemDialog({
                         noun="location"
                         value={startingLocId}
                         onChange={(v) => set("startingLocId", v)}
-                        onAddNew={() => setShowAddLocation(true)}
+                        onAddNew={canCreateLocation ? () => setShowAddLocation(true) : undefined}
                         options={locations.map((l) => ({ value: l.id, label: l.name }))}
                       />
                     </FormField>
@@ -1217,6 +1242,7 @@ export function AddItemDialog({
         onClose={() => setShowAddBrand(false)}
         onCreate={handleBrandCreated}
         vendors={vendors}
+        showVendor={showVendor}
       />
       <AddFinishDialog
         open={showAddFinish}
@@ -1224,16 +1250,18 @@ export function AddItemDialog({
         onCreate={handleFinishCreated}
         existingNames={finishes.map((f) => f.name)}
       />
-      <AddLocationDialog
-        open={showAddLocation}
-        onClose={() => setShowAddLocation(false)}
-        // #2043/R6 - AddLocationDialog's onCreate now returns void|Promise<void>
-        // (it is awaited so a rejection keeps the dialog open); this inline
-        // creator's own Location-carrying return stays internal to it.
-        onCreate={async (l) => { await handleLocationCreated(l); }}
-        branches={branches}
-        onAddBranch={async (b: Branch) => adoptServerId(b, await upsertBranch.mutateAsync(b))}
-      />
+      {canViewStock && (
+        <AddLocationDialog
+          open={showAddLocation}
+          onClose={() => setShowAddLocation(false)}
+          // #2043/R6 - AddLocationDialog's onCreate now returns void|Promise<void>
+          // (it is awaited so a rejection keeps the dialog open); this inline
+          // creator's own Location-carrying return stays internal to it.
+          onCreate={async (l) => { await handleLocationCreated(l); }}
+          branches={branches}
+          onAddBranch={async (b: Branch) => adoptServerId(b, await upsertBranch.mutateAsync(b))}
+        />
+      )}
 
       {/* One manage dialog, told which catalog it is showing. Four separate
           mounts would be four copies of the same list-with-delete. */}

@@ -1,47 +1,38 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import {
-  getCachedGrants,
-  setCachedGrants,
-  clearPermissionCache,
-} from '../lib/permissions/permissionCache';
-import type { Grant } from '../lib/permissions/defineAbility';
+import { clearPermissionCache } from '../lib/permissions/permissionCache';
+import { getCachedSwitches, setCachedSwitches, clearAllSwitchCaches } from '../lib/permissions/switches/cache';
 
-// Entity-redesign Phase 5 — permission-cache invalidation primitive.
-//
-// There is no runtime role_permissions WRITE endpoint in this branch (grant CRUD /
-// org-permission-settings UI is future Phase-7 work), so clearPermissionCache() has no
-// in-process caller today; the DB backfill migration is invalidated by a worker restart.
-// These tests pin the invalidation PRIMITIVE itself so the forward-looking Org-Permissions
-// UI write handler can call clearPermissionCache(orgId) and trust the cache is evicted.
+// Permission-cache invalidation. The cache is the per-person cache of resolved switch values (role-permission rows
+// are no longer read, so nothing else is cached). clearPermissionCache is the entry point that drops it.
 
 const ORG_A = 'org-aaaa-0000-0000-0000-000000000001';
 const ORG_B = 'org-bbbb-0000-0000-0000-000000000002';
-
-const STALE_GRANT: Grant = { action: 'reactivate_deposit', subject: 'Estimate' };
+const VALUES = { view_jobs: true };
 
 describe('permission cache invalidation', () => {
   beforeEach(() => {
-    clearPermissionCache(); // start from a clean cache each test
+    clearAllSwitchCaches();
   });
 
-  it('clearPermissionCache() evicts seeded grants so a re-read sees the post-fold set', () => {
-    setCachedGrants(ORG_A, 'DISPATCHER', [STALE_GRANT]);
-    expect(getCachedGrants(ORG_A, 'DISPATCHER')).not.toBeNull();
-
-    clearPermissionCache();
-
-    // Cache is empty → the next attachAbility read falls through to rolePermission.findMany,
-    // which (post-fold) no longer returns reactivate_deposit and DOES return the new grants.
-    expect(getCachedGrants(ORG_A, 'DISPATCHER')).toBeNull();
-  });
-
-  it('clearPermissionCache(orgId) scopes eviction to a single org', () => {
-    setCachedGrants(ORG_A, 'DISPATCHER', [STALE_GRANT]);
-    setCachedGrants(ORG_B, 'DISPATCHER', [STALE_GRANT]);
+  it('clearPermissionCache(orgId) evicts every person of that org and leaves other orgs alone', () => {
+    setCachedSwitches('user-a1', ORG_A, VALUES);
+    setCachedSwitches('user-a2', ORG_A, VALUES);
+    setCachedSwitches('user-b1', ORG_B, VALUES);
 
     clearPermissionCache(ORG_A);
 
-    expect(getCachedGrants(ORG_A, 'DISPATCHER')).toBeNull();
-    expect(getCachedGrants(ORG_B, 'DISPATCHER')).not.toBeNull();
+    expect(getCachedSwitches('user-a1')).toBeNull();
+    expect(getCachedSwitches('user-a2')).toBeNull();
+    expect(getCachedSwitches('user-b1')).toEqual(VALUES);
+  });
+
+  it('clearPermissionCache() with no argument evicts everything', () => {
+    setCachedSwitches('user-a1', ORG_A, VALUES);
+    setCachedSwitches('user-b1', ORG_B, VALUES);
+
+    clearPermissionCache();
+
+    expect(getCachedSwitches('user-a1')).toBeNull();
+    expect(getCachedSwitches('user-b1')).toBeNull();
   });
 });

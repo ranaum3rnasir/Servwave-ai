@@ -1,6 +1,6 @@
 // D7 — the PO detail Activity tab renders the REAL server timeline (audit-log
 // lifecycle + outbound send history), replacing the old ActivityTabStub that
-// fabricated actor names ("Emanuel Dahan" / "Counter staff") and timestamps off
+// fabricated actor names ("Sam Rivera" / "Counter staff") and timestamps off
 // PO status and carried a "Synthesized from PO status" disclaimer.
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { screen } from '@testing-library/react';
@@ -74,7 +74,7 @@ describe('PODetailDialog — Activity tab (D7, real data)', () => {
     expect(screen.getByText(/counter@acme\.test/)).toBeInTheDocument();
 
     // The synthesized stub is gone: no fabricated actor, no disclaimer banner.
-    expect(screen.queryByText(/Emanuel Dahan/)).toBeNull();
+    expect(screen.queryByText(/Sam Rivera/)).toBeNull();
     expect(screen.queryByText(/Synthesized from PO status/)).toBeNull();
     expect(screen.queryByText(/purchase_order_status_history/)).toBeNull();
   });
@@ -86,6 +86,6 @@ describe('PODetailDialog — Activity tab (D7, real data)', () => {
     await userEvent.click(screen.getByRole('button', { name: /activity/i }));
 
     expect(screen.getByText(/No activity recorded yet/i)).toBeInTheDocument();
-    expect(screen.queryByText(/Emanuel Dahan/)).toBeNull();
+    expect(screen.queryByText(/Sam Rivera/)).toBeNull();
   });
 });

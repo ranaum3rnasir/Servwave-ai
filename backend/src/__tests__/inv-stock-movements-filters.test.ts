@@ -8,15 +8,15 @@
  * canSeePricing-gated unitCost (strip-by-omission, mirroring
  * job-lines-pricing-leak.test.ts / stripMappedItemCost).
  *
- * Harness: supertest against app, prisma fully mocked (setup.ts), grants via
- * setCachedGrants for the leak test.
+ * Harness: supertest against app, prisma fully mocked (setup.ts), requesters via
+ * the permission presets for the leak test.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import { mockAuthAs, authHeader, ALPHA_ORG_ID, TEST_USERS, PRICE_BOOK_ITEM_FIXTURE, INVENTORY_LOCATION_FIXTURE } from './helpers';
-import { setCachedGrants, clearPermissionCache } from '../lib/permissions/permissionCache';
+import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 const mockPrisma = prisma as unknown as {
   stockMovement: {
@@ -198,16 +198,13 @@ describe('GET /api/inventory/movements — {data,meta} + filters', () => {
   });
 
   it('OMITS the unitCost key entirely for read-Inventory-without-read-Invoice (strip-by-omission)', async () => {
-    mockAuthAs('technician');
-    // read Inventory grant WITHOUT read Invoice — can list movements, must not see cost.
-    setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', [
-      { action: 'read', subject: 'Inventory' },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ] as any);
+    mockAuthAs('dispatcher');
+    // Read Inventory WITHOUT See financial data — can list movements, must not see cost. The requester is on the
+    // Dispatcher preset: it holds See inventory activity (the movement routes need it) and not See financial data.
     mockPrisma.stockMovement.findMany.mockResolvedValue([movementRow()]);
     mockPrisma.stockMovement.count.mockResolvedValue(1);
 
-    const res = await request(app).get('/api/inventory/movements').set(authHeader('technician'));
+    const res = await request(app).get('/api/inventory/movements').set(authHeader('dispatcher'));
     expect(res.status).toBe(200);
     expect('unitCost' in res.body.data[0]).toBe(false);
     // Non-cost enrichment still present
@@ -227,14 +224,10 @@ describe('GET /api/inventory/movements/:id — same enrichment + cost gate, {mov
   });
 
   it('strips unitCost for a non-pricing requester', async () => {
-    mockAuthAs('technician');
-    setCachedGrants(ALPHA_ORG_ID, 'TECHNICIAN', [
-      { action: 'read', subject: 'Inventory' },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    ] as any);
+    mockAuthAs('dispatcher');
     mockPrisma.stockMovement.findFirst.mockResolvedValue(movementRow());
 
-    const res = await request(app).get(`/api/inventory/movements/${MOVEMENT_ID}`).set(authHeader('technician'));
+    const res = await request(app).get(`/api/inventory/movements/${MOVEMENT_ID}`).set(authHeader('dispatcher'));
     expect(res.status).toBe(200);
     expect('unitCost' in res.body.movement).toBe(false);
   });

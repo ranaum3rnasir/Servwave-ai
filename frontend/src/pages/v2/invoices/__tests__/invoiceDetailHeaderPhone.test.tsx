@@ -5,6 +5,7 @@ import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import { renderWithProviders } from '@/__tests__/helpers';
 import { MEDIA } from '@/ui-kit/lib/breakpoints';
+import { catalogToggle } from '@/__tests__/support/backendSwitchCatalog';
 
 import InvoiceDetailPage from '../InvoiceDetailPage';
 
@@ -87,6 +88,8 @@ function invoice(status: string) {
     refunds: [],
     credits: [],
     tags: [],
+    // The server's answer for this invoice: every action the header can offer.
+    actions: ['edit', 'send', 'delete', 'copy_payment_link', 'record_payment'],
     job: null,
     estimate: null,
     customer: {
@@ -102,6 +105,15 @@ function invoice(status: string) {
 
 function mount(status: string) {
   mockApi.get.mockImplementation(async (url: string) => {
+    // The customer's name links to their page, and their email is a mail link, for a person holding these two switches.
+    if (url === '/api/permission-switches/me') {
+      return {
+        data: {
+          admin_box: false,
+          values: { [catalogToggle('View customers').key]: true, [catalogToggle('Copy customer email').key]: true },
+        },
+      };
+    }
     if (url.startsWith('/api/invoices/')) return { data: { invoice: invoice(status) } };
     return { data: {} };
   });
@@ -158,7 +170,7 @@ describe('invoice detail header on a phone (mobile slice 55)', () => {
   it('lets a long email wrap instead of pushing the page sideways', async () => {
     setPhone(true);
     mount('DRAFT');
-    const email = await screen.findByRole('button', {
+    const email = await screen.findByRole('link', {
       name: 'an.extremely.long.billing.address.for.testing@example-company-name.test',
     });
     expect(email.className).toContain('break-all');
