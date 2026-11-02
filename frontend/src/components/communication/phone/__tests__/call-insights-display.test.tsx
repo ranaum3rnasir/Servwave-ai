@@ -63,7 +63,8 @@ import { abilityWithSwitches } from "@/__tests__/support/backendSwitchCatalog";
 
 // The insight is the call summary, which is behind View transcript (Roles & Permissions S08.12); these cases are about
 // how it renders, so the person holds the switch here (call-transcript-switch.test.tsx covers the person who does not).
-const mayReadTranscripts = abilityWithSwitches("View transcript");
+// View transcript needs View communication.
+const mayReadTranscripts = abilityWithSwitches("View communication", "View transcript");
 
 const BASE_CALL: CallSession = {
   id: "cd000000-0000-0000-0000-000000000003",

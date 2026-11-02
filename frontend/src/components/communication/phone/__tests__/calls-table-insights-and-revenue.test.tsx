@@ -55,7 +55,8 @@ function headers(ability: AppAbility): (string | undefined)[] {
 
 describe("the shared call table follows See call insights and See company figures", () => {
   it("shows both columns to a person holding both switches", () => {
-    const columns = headers(abilityWithSwitches("See call insights", "See company figures"));
+    // See call insights needs View communication; See company figures needs See prices.
+    const columns = headers(abilityWithSwitches("See call insights", "See company figures", "View communication", "See prices"));
     expect(columns).toContain("Insights");
     expect(columns).toContain("Revenue");
     expect(screen.getByText("$41,200.00")).toBeInTheDocument();
@@ -70,7 +71,8 @@ describe("the shared call table follows See call insights and See company figure
   });
 
   it("treats the two switches independently", () => {
-    const insightsOnly = headers(abilityWithSwitches("See call insights"));
+    // See call insights needs View communication.
+    const insightsOnly = headers(abilityWithSwitches("See call insights", "View communication"));
     expect(insightsOnly).toContain("Insights");
     expect(insightsOnly).not.toContain("Revenue");
   });

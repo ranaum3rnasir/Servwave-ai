@@ -85,8 +85,8 @@ const topBar = () => document.querySelector('[data-slot="topbar"]') as HTMLEleme
 
 beforeEach(() => {
   localStorage.clear();
-  // Text messages and Inbox follow Show Text and Show Email (Roles & Permissions S08.17).
-  seedMySwitches({ show_text: true, show_email: true });
+  // Text messages and Inbox follow Show Text and Show Email (Roles & Permissions S08.17); both need Access Communication.
+  seedMySwitches({ access_communication: true, show_text: true, show_email: true });
   openPhoneTab.mockReset();
   vi.mocked(useAuthStore).mockImplementation((selector: (s: never) => unknown) =>
     selector({

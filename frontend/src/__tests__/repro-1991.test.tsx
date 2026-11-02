@@ -91,6 +91,9 @@ const pricingAbility = () =>
   buildAbility([
     { action: 'manage_lines', subject: 'Job' },
     { action: 'read', subject: 'Pricing' },
+    // Edit job line items needs View jobs; See costs needs See prices.
+    { action: 'read', subject: 'Job' },
+    { action: 'read', subject: 'Prices' },
   ]);
 
 let postSpy: ReturnType<typeof vi.spyOn>;

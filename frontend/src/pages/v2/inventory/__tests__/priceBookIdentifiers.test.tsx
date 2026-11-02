@@ -134,6 +134,8 @@ const writeAbility = () =>
   buildAbility([
     { action: 'create', subject: 'PriceBook' },
     { action: 'update', subject: 'PriceBook' },
+    // Create and Edit price book items need View price book.
+    { action: 'read', subject: 'PriceBook' },
   ]);
 
 async function renderPriceBook() {

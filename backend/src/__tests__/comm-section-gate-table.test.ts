@@ -19,6 +19,7 @@ import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import { mockAuthAs, mockRoleSwitches, authHeader, LEAD_FIXTURE, JOB_FIXTURE, CUSTOMER_FIXTURE, TEST_USERS } from './helpers';
+import { withDependantsOff } from './support/switchDependants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { clearTokenCache } from '../middleware/authenticate';
 import { SWITCH_CATALOG } from '../lib/permissions/switches/catalog';
@@ -109,7 +110,8 @@ const OUTSIDE_THE_SECTION: Record<string, string> = {
  */
 function everythingOnExceptSection(accessCommunication: boolean): Record<string, boolean> {
   const values = Object.fromEntries(SWITCH_CATALOG.filter((s) => s.kind === 'toggle').map((s) => [s.key, true]));
-  return { ...values, access_communication: accessCommunication };
+  // Every switch that needs Access Communication goes off with it, as no person can hold them without it.
+  return accessCommunication ? values : { ...values, ...withDependantsOff(['access_communication']) };
 }
 
 const routes = communicationRoutes();
@@ -192,7 +194,7 @@ describe('every section list and phone tab endpoint, with Access Communication o
 describe('the record tabs never need Access Communication', () => {
   it('answer for a person with it off: the lead, job and customer tabs', async () => {
     mockAuthAs('sales');
-    mockRoleSwitches({ access_communication: false });
+    mockRoleSwitches(withDependantsOff(['access_communication']));
     mockPrisma.callSession.findMany.mockResolvedValue([]);
     mockPrisma.message.findMany.mockResolvedValue([]);
     mockPrisma.email.findMany.mockResolvedValue([]);

@@ -86,7 +86,14 @@ vi.mock('@/components/inventory/GeneratePODialog', () => ({
   },
 }));
 
-const poAbility = () => buildAbility([{ action: 'create', subject: 'PurchaseOrder' }, { action: 'read', subject: 'Vendor' }]);
+// Create purchase orders needs View purchase orders and Edit purchase orders.
+const poAbility = () =>
+  buildAbility([
+    { action: 'create', subject: 'PurchaseOrder' },
+    { action: 'read', subject: 'PurchaseOrder' },
+    { action: 'update', subject: 'PurchaseOrder' },
+    { action: 'read', subject: 'Vendor' },
+  ]);
 
 function serve(totalPages = 1) {
   hoisted.useLowStock.mockReturnValue({

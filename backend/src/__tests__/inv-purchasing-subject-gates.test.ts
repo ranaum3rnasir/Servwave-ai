@@ -3,6 +3,7 @@ import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import { mockAuthAs, mockRoleSwitches, authHeader, JOB_FIXTURE, PURCHASE_ORDER_FIXTURE } from './helpers';
+import { withDependantsOff } from './support/switchDependants';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
@@ -38,9 +39,9 @@ const NONE = {
 };
 
 /** A person holding exactly these purchasing switches (and the reads on jobs they need to reach an order). */
-function personWith(values: Partial<Record<keyof typeof NONE, boolean>>) {
+function personWith(values: Partial<Record<keyof typeof NONE, boolean>>, options: { impossibleOnPurpose?: string } = {}) {
   mockAuthAs('dispatcher');
-  mockRoleSwitches({ ...NONE, ...values });
+  mockRoleSwitches({ ...NONE, ...values }, options);
   return authHeader('dispatcher');
 }
 
@@ -74,7 +75,7 @@ describe('View purchase orders opens the purchase-order reads, and nothing else 
   it.each(reads)('refuses %s to a person without it, whatever else they hold', async (_name, path) => {
     const res = await request(app).get(path).set(personWith({
       view_vendors: true, create_purchase_orders: true, edit_purchase_orders: true, delete_purchase_orders: true,
-    }));
+    }, { impossibleOnPurpose: 'PENDING RAN: proves Create/Edit/Delete purchase orders never stand in for View purchase orders, a set the catalog refuses' }));
     expect(res.status).toBe(403);
   });
 });
@@ -175,7 +176,7 @@ describe('stored role-permission rows decide nothing', () => {
   // still says "read PurchaseOrder" opens nothing for a person whose switch is off.
   it('a stale read row does not open the purchase orders to a person with View purchase orders off', async () => {
     mockAuthAs('sales');
-    mockRoleSwitches({ view_purchase_orders: false });
+    mockRoleSwitches(withDependantsOff(['view_purchase_orders']));
     mockPrisma.purchaseOrder.findMany.mockResolvedValue([]);
     const res = await request(app).get('/api/inventory/purchase-orders').set(authHeader('sales'));
     expect(res.status).toBe(403);

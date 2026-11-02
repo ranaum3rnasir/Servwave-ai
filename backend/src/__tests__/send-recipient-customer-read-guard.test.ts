@@ -21,6 +21,7 @@ import { prisma } from '../lib/prisma';
 import { sendEstimateEmail } from '../lib/email';
 import { sendInvoiceEmail } from '../lib/email';
 import { TEST_USERS, mockAuthAs, mockRoleSwitches, authHeader, ALPHA_ORG_ID } from './helpers';
+import { withDependantsOff } from './support/switchDependants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -33,7 +34,7 @@ const NEUTRAL_ERROR = "You can send this to the customer's saved address only.";
 /** See repro-1997.test.ts for the full rationale — own local copy, not a shared import. */
 function mockDeniedCustomerRead(_role: string, _deniedCustomerId: string) {
   // View customers off: the person reaches no customer, so THIS one is denied.
-  mockRoleSwitches({ view_customers: false });
+  mockRoleSwitches(withDependantsOff(['view_customers']));
 }
 
 beforeEach(() => {

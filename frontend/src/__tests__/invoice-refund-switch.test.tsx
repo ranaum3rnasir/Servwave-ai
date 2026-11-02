@@ -113,7 +113,11 @@ describe('InvoiceDetailPage - the Refund action follows the Refund payments swit
     setupMocks(baseInvoice());
 
     renderWithProviders(<InvoiceDetailPage />, {
-      ability: buildAbility([{ action: 'read', subject: 'Invoice' }, { action: 'refund', subject: 'Invoice' }]),
+      // Refund payments needs View invoices and View payments and payouts.
+      ability: buildAbility([
+        { action: 'read', subject: 'Invoice' }, { action: 'refund', subject: 'Invoice' },
+        { action: 'view_payments', subject: 'Organization' },
+      ]),
     });
 
     expect((await screen.findAllByRole('button', { name: 'Refund' })).length).toBeGreaterThan(0);
@@ -127,6 +131,8 @@ describe('InvoiceDetailPage - the Refund action follows the Refund payments swit
       ability: buildAbility([
         { action: 'read', subject: 'Invoice' }, { action: 'record_payment', subject: 'Invoice' },
         { action: 'credit', subject: 'Invoice' }, { action: 'void', subject: 'Invoice' }, { action: 'send_payment_link', subject: 'Invoice' },
+        // Record payments needs See prices.
+        { action: 'read', subject: 'Prices' },
       ]),
     });
 

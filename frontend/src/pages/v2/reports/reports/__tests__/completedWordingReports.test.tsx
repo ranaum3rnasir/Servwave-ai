@@ -34,6 +34,8 @@ const jobRow = (n: number, status: string) => ({
 
 const ABILITY = buildAbility([
   { action: 'read', subject: 'Report' }, { action: 'read', subject: 'Pricing' }, { action: 'read', subject: 'CompanyFigures' },
+  // See costs and See company figures need See prices.
+  { action: 'read', subject: 'Prices' },
 ]);
 
 beforeEach(() => {

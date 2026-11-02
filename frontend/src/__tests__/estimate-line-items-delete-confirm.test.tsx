@@ -54,7 +54,13 @@ const LINE: EstimateLineItem = {
   price_book_item_id: null,
 };
 
-const adminAbility = () => buildAbility([{ action: 'update', subject: 'Estimate' }]);
+// Edit estimates needs View estimates and See prices.
+const adminAbility = () =>
+  buildAbility([
+    { action: 'read', subject: 'Estimate' },
+    { action: 'read', subject: 'Prices' },
+    { action: 'update', subject: 'Estimate' },
+  ]);
 
 beforeEach(() => {
   vi.clearAllMocks();

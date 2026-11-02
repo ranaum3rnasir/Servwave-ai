@@ -38,6 +38,8 @@ const NON_ADMIN = buildAbility([
   { action: 'create', subject: 'Task' },
   { action: 'update', subject: 'Task' },
   { action: 'create', subject: 'Tag' },
+  // Create and Edit tasks need View tasks.
+  { action: 'read', subject: 'Task' },
 ]);
 
 const ORG = {

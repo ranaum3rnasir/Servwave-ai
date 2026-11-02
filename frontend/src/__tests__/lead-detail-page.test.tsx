@@ -597,6 +597,13 @@ describe('v2 LeadDetailPage - action buttons gate on ability not role (#238)', (
     { action: 'read', subject: 'Lead' },
     { action: 'update', subject: 'Lead' },
     { action: 'mark_lost', subject: 'Lead' },
+    // Create estimates needs View estimates, Edit estimates and See prices.
+    { action: 'read', subject: 'Estimate' },
+    { action: 'update', subject: 'Estimate' },
+    { action: 'send', subject: 'Estimate' },
+    { action: 'cancel', subject: 'Estimate' },
+    { action: 'revise', subject: 'Estimate' },
+    { action: 'read', subject: 'Prices' },
     { action: 'create', subject: 'Estimate' },
   ]);
 

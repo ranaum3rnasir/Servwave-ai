@@ -10,6 +10,7 @@ import { screen } from '@testing-library/react';
 
 import { renderWithProviders } from '@/__tests__/helpers';
 import { buildAbility, type AbilityRule } from '@/lib/ability';
+import { impossibleOnPurpose } from '@/__tests__/support/backendSwitchCatalog';
 import type { JobStage, Location } from '@/lib/api/inventory';
 
 import { StagingView } from '../components/stagingView';
@@ -43,6 +44,8 @@ const LOCATIONS: Location[] = [
 const VIEW_STOCK: AbilityRule = { action: 'read', subject: 'Inventory' };
 const CREATE_STOCK: AbilityRule = { action: 'create', subject: 'Inventory' };
 const EDIT_STOCK: AbilityRule = { action: 'update', subject: 'Inventory' };
+// See costs needs See prices.
+const SEE_PRICES: AbilityRule = { action: 'read', subject: 'Prices' };
 const SEE_FINANCIAL_DATA: AbilityRule = { action: 'read', subject: 'Pricing' };
 const VIEW_VENDORS: AbilityRule = { action: 'read', subject: 'Vendor' };
 
@@ -69,10 +72,12 @@ function stage(over: Partial<JobStage> = {}): JobStage {
   };
 }
 
-function renderTab(rules: AbilityRule[]) {
+/** `impossibleOnPurpose` names why a case holds a set the catalog refuses; the harness then lets it through. */
+function renderTab(rules: AbilityRule[], impossibleOnPurposeReason?: string) {
+  const ability = buildAbility(rules);
   return renderWithProviders(<StagingView locations={LOCATIONS} onToast={vi.fn()} />, {
     initialEntries: ['/inventory/staging'],
-    ability: buildAbility(rules),
+    ability: impossibleOnPurposeReason === undefined ? ability : impossibleOnPurpose(ability, impossibleOnPurposeReason),
   });
 }
 
@@ -103,7 +108,10 @@ describe('Staging tab - write controls follow Create stock and Edit stock', () =
   });
 
   it('Create stock alone offers New Pickup and no Receive +1', () => {
-    renderTab([VIEW_STOCK, CREATE_STOCK]);
+    renderTab(
+      [VIEW_STOCK, CREATE_STOCK],
+      'PENDING RAN: Create stock without Edit stock, which the catalog refuses; the case proves Create alone offers no Receive +1.',
+    );
 
     expect(screen.getByRole('button', { name: 'New Pickup' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Receive +1' })).toBeNull();
@@ -144,7 +152,7 @@ describe('Staging tab - line unit cost follows See costs', () => {
   });
 
   it('shows the unit cost with See costs', () => {
-    renderTab([VIEW_STOCK, SEE_FINANCIAL_DATA]);
+    renderTab([VIEW_STOCK, SEE_PRICES, SEE_FINANCIAL_DATA]);
 
     expect(screen.getByText(/\$12\.50/)).toBeInTheDocument();
   });
@@ -153,7 +161,7 @@ describe('Staging tab - line unit cost follows See costs', () => {
     const noCost = stage();
     delete noCost.items[0]!.unitCost;
     h.stages = [noCost];
-    renderTab([VIEW_STOCK, SEE_FINANCIAL_DATA]);
+    renderTab([VIEW_STOCK, SEE_PRICES, SEE_FINANCIAL_DATA]);
 
     expect(screen.queryByText(/unit cost/i)).toBeNull();
     expect(screen.queryByText(/\$0\.00/)).toBeNull();

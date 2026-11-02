@@ -2,7 +2,9 @@
 // ON (every other switch is off, and a switch the answer does not hold reads as off), the choice and list values, and the
 // rules those values compile into (a rule that is narrowed to some records is listed whole, which is all the screens ask:
 // `can(action, subject)` without a record). Read from the catalog's TECHNICIAN presets and `compileSwitchGrants` when the
-// fixture was written; it names no role at run time, so a page under test sees a custom role with these values.
+// fixture was written (last regenerated 2026-11-01, after the Roles & Permissions alignment changed the preset); it names
+// no role at run time, so a page under test sees a custom role with these values. The harness refuses a set the catalog
+// refuses, so a preset change that this copy misses shows up as a failing test rather than a silent drift.
 import { buildAbility, type AbilityRule } from '@/lib/ability';
 import { seedMySwitches } from '../helpers';
 
@@ -21,16 +23,18 @@ export const TECHNICIAN_PRESET_VALUES: Record<string, boolean | string> = {
   create_leads: true,
   create_tasks: true,
   decline_estimates: true,
+  edit_estimates: true,
   edit_job_and_lead_contact_details: true,
   edit_job_line_items: true,
+  edit_jobs: true,
+  edit_leads: true,
   edit_tasks: true,
   log_past_communications: true,
   mark_arrived: true,
   mark_on_my_way: true,
   perform_walkthroughs: true,
   pick_up_staged_items: true,
-  record_payments: true,
-  send_payment_links: true,
+  see_prices: true,
   show_email: true,
   show_phone: true,
   show_text: true,
@@ -47,10 +51,14 @@ export const TECHNICIAN_PRESET_VALUES: Record<string, boolean | string> = {
   view_tasks: true,
   view_users: true,
   allowed_payment_methods: 'all_accepted',
+  assets_scope: 'attached',
   communication_scope: 'attached',
+  events_scope: 'attached',
   inventory_view: 'field',
   jobs_scope: 'attached',
   leads_scope: 'attached',
+  tasks_scope: 'attached',
+  timesheets_scope: 'attached',
 };
 
 export const TECHNICIAN_PRESET_RULES: AbilityRule[] = [
@@ -61,7 +69,7 @@ export const TECHNICIAN_PRESET_RULES: AbilityRule[] = [
   { action: 'approve', subject: 'Estimate' },
   { action: 'arrive', subject: 'Job' },
   { action: 'attach', subject: 'Communication' },
-  { action: 'create', subject: 'Attachment' },
+  { action: 'cancel', subject: 'Estimate' },
   { action: 'create', subject: 'Communication' },
   { action: 'create', subject: 'Estimate' },
   { action: 'create', subject: 'Job' },
@@ -76,7 +84,6 @@ export const TECHNICIAN_PRESET_RULES: AbilityRule[] = [
   { action: 'manage_lines', subject: 'Job' },
   { action: 'perform_walkthrough', subject: 'Lead' },
   { action: 'pick_up_staged', subject: 'Inventory' },
-  { action: 'read', subject: 'Attachment' },
   { action: 'read', subject: 'CalendarEntry' },
   { action: 'read', subject: 'Communication' },
   { action: 'read', subject: 'Department' },
@@ -86,12 +93,16 @@ export const TECHNICIAN_PRESET_RULES: AbilityRule[] = [
   { action: 'read', subject: 'Lead' },
   { action: 'read', subject: 'LogisticOrder' },
   { action: 'read', subject: 'PriceBook' },
+  { action: 'read', subject: 'Prices' },
   { action: 'read', subject: 'Task' },
   { action: 'read', subject: 'User' },
-  { action: 'record_payment', subject: 'Estimate' },
-  { action: 'record_payment', subject: 'Invoice' },
-  { action: 'send_payment_link', subject: 'Invoice' },
+  { action: 'revise', subject: 'Estimate' },
+  { action: 'send', subject: 'Estimate' },
+  { action: 'show_email', subject: 'Communication' },
   { action: 'start', subject: 'Job' },
+  { action: 'update', subject: 'Estimate' },
+  { action: 'update', subject: 'Job' },
+  { action: 'update', subject: 'Lead' },
   { action: 'update', subject: 'Task' },
 ];
 

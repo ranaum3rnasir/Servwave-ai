@@ -92,6 +92,8 @@ vi.mock('@/lib/api/inventory', async (importOriginal) => {
 const ability = () =>
   buildAbility([
     { action: 'read', subject: 'PriceBook' },
+    // See costs needs See prices.
+    { action: 'read', subject: 'Prices' },
     { action: 'read', subject: 'Pricing' },
   ]);
 

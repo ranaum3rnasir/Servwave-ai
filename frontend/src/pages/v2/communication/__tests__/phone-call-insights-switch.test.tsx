@@ -95,7 +95,8 @@ function renderPhone(ability: AppAbility, agents: unknown[]) {
 const SECTION = ['Access Communication', 'View communication'];
 const without = abilityWithSwitches(...SECTION);
 const withInsights = abilityWithSwitches(...SECTION, 'See call insights');
-const withInsightsAndFigures = abilityWithSwitches(...SECTION, 'See call insights', 'See company figures');
+// See company figures needs See prices.
+const withInsightsAndFigures = abilityWithSwitches(...SECTION, 'See call insights', 'See prices', 'See company figures');
 
 /** The tile with exactly this label, whole. */
 function tile(label: string): HTMLElement {

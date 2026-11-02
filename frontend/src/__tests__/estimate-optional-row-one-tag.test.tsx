@@ -442,6 +442,14 @@ const ESTIMATE_WITH_SCOPE_ATTRIBUTION = {
   scopes: [{ ...OPTIONAL_SCOPE, id: 'scope-attributed', is_selected: true }],
 };
 
+// Edit estimates needs View estimates and See prices.
+const editEstimatesAbility = () =>
+  buildAbility([
+    { action: 'update', subject: 'Estimate' },
+    { action: 'read', subject: 'Estimate' },
+    { action: 'read', subject: 'Prices' },
+  ]);
+
 describe('the editor never names who last changed a selection', () => {
   it('a line whose selection the customer changed shows no "Added by ..." sentence', async () => {
     const { container } = renderWithProviders(
@@ -451,7 +459,7 @@ describe('the editor never names who last changed a selection', () => {
         canSeePricing={false}
         canSaveToPriceBook={false}
       />,
-      { ability: buildAbility([{ action: 'update', subject: 'Estimate' }]) },
+      { ability: editEstimatesAbility() },
     );
 
     expect(await screen.findByText('Extended warranty')).toBeInTheDocument();
@@ -462,7 +470,7 @@ describe('the editor never names who last changed a selection', () => {
   it('a scope block whose selection the salesperson changed shows no "Added by ..." sentence', async () => {
     const { container } = renderWithProviders(
       <EstimateScopeOfWorkCard estimate={ESTIMATE_WITH_SCOPE_ATTRIBUTION} canManage canSeePricing />,
-      { ability: buildAbility([{ action: 'update', subject: 'Estimate' }]) },
+      { ability: editEstimatesAbility() },
     );
 
     expect(await screen.findByDisplayValue('Demo and haul-away')).toBeInTheDocument();

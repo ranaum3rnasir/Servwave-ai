@@ -256,7 +256,9 @@ describe("Dialer real search (slice 2.2)", () => {
     ["Create jobs without View jobs", ["Create jobs"]],
     ["View jobs without Create jobs", ["View jobs"]],
   ])("offers nothing for %s", async (_name, held) => {
-    await typeUnknownNumber(personHolding(held));
+    // Create without its View is a set the catalog refuses (Create needs View), kept on purpose: it proves the screen asks for both.
+    const onPurpose = held[0]!.startsWith("Create") ? { impossibleOnPurpose: "PENDING RAN: Create without its View can no longer be held; keep or drop this row" } : {};
+    await typeUnknownNumber(personHolding(held, [], onPurpose));
 
     expect(createButtons()).toEqual({ customer: null, lead: null, job: null });
   });

@@ -110,7 +110,8 @@ describe('the job tab and the call drawer it opens follow View transcript', () =
 
   it('asks for the transcript of a call with none stored when the person holds the switch', async () => {
     stubNetwork(callRow(''), CALL);
-    await openTheCall(abilityWithSwitches('View transcript'));
+    // View transcript needs View communication.
+    await openTheCall(abilityWithSwitches('View communication', 'View transcript'));
 
     expect(askedForTranscript()).toBe(true);
   });

@@ -28,7 +28,10 @@ vi.mock('react-router-dom', async () => {
 const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 // Mirrors SALES-shaped grants: can touch the invoice but cannot `read Invoice` — canSeePricing
 // (and the backend's identical gate) is false.
+// Edit invoices and Edit invoice line items need View invoices; Edit invoices also needs See prices.
 const noPricingAbility = buildAbility([
+  { action: 'read', subject: 'Invoice' },
+  { action: 'read', subject: 'Prices' },
   { action: 'update', subject: 'Invoice' },
   { action: 'manage_lines', subject: 'Invoice' },
 ]);

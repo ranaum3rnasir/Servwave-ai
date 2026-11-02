@@ -29,6 +29,7 @@ vi.mock('../lib/pdf', () => ({ generateStatementPdf }));
 vi.mock('../lib/pdf/index.js', () => ({ generateStatementPdf }));
 
 import { switchFixture, type Person } from './permission-switches-fixture';
+import { withDependantsOff } from './support/switchDependants';
 import { THROUGH_OWN_LEADS, findSwitch, type SwitchValue } from '../lib/permissions/switches/catalog';
 
 const suite = realClient ? describe : describe.skip;
@@ -268,7 +269,8 @@ suite('H3: statements and the customer page follow invoice reach (real database)
     it('lists no invoice, on the customer or on its jobs, and adds up nothing, for a person who reaches no invoices', async () => {
       // Company-wide reach over jobs and leads, but View invoices off: the jobs are listed, their invoices are not.
       const noInvoices = await personOn(w.org, 'DISPATCHER', {
-        view_customers: true, view_jobs: true, view_invoices: false, see_prices: true, leads_scope: 'all', jobs_scope: 'all',
+        // View invoices off takes the invoice switches that need it (Create, Edit, line items, record IDs) off with it.
+        view_customers: true, view_jobs: true, ...withDependantsOff(['view_invoices']), see_prices: true, leads_scope: 'all', jobs_scope: 'all',
       });
       const res = await (await noInvoices.api()).get(`/api/customers/${w.customer}`);
       expect(res.status).toBe(200);

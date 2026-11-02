@@ -3,6 +3,7 @@ import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import { TEST_USERS, mockAuthAs, authHeader, JOB_FIXTURE, mockRoleSwitches } from './helpers';
+import { withDependantsOff } from './support/switchDependants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 // Phase B (§E), reworked by Roles & Permissions S01.15 - what the job detail withholds.
@@ -104,7 +105,7 @@ describe('GET /api/jobs/:id — the embedded money follows the record, the cost 
 
   it('a technician who cannot read estimates gets descriptions/quantities but not the estimate money', async () => {
     mockAuthAs('technician');
-    mockRoleSwitches({ view_estimates: false });
+    mockRoleSwitches(withDependantsOff(['view_estimates']));
 
     const res = await request(app).get(`/api/jobs/${JOB_ID}`).set(authHeader('technician'));
 

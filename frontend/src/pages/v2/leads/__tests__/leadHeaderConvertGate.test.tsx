@@ -85,6 +85,13 @@ const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 const noJobAbility = buildAbility([
   { action: 'read', subject: 'Lead' },
   { action: 'update', subject: 'Lead' },
+  // Create estimates needs View estimates, Edit estimates (every rule it compiles to) and See prices.
+  { action: 'read', subject: 'Estimate' },
+  { action: 'update', subject: 'Estimate' },
+  { action: 'send', subject: 'Estimate' },
+  { action: 'cancel', subject: 'Estimate' },
+  { action: 'revise', subject: 'Estimate' },
+  { action: 'read', subject: 'Prices' },
   { action: 'create', subject: 'Estimate' },
 ]);
 

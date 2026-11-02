@@ -14,6 +14,7 @@ import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import { renderWithProviders, seesPrices } from './helpers';
 import { buildAbility } from '@/lib/ability';
+import { impossibleOnPurpose } from '@/__tests__/support/backendSwitchCatalog';
 import { EstimateScopeOfWorkCard } from '@/components/estimates/EstimateLineItemsEditor';
 import type { Scope } from '@/lib/api/jobs';
 
@@ -35,7 +36,10 @@ beforeEach(() => {
 
 describe('the estimate scope of work offers presets only to a person who sees prices', () => {
   it('without See prices: no "Use preset", no "Save as preset", and the preset list is never fetched', async () => {
-    const noPrices = buildAbility([{ action: 'update', subject: 'Estimate' }]);
+    const noPrices = impossibleOnPurpose(
+      buildAbility([{ action: 'update', subject: 'Estimate' }]),
+      'PENDING RAN: Edit estimates now needs See prices, so this guard against an editor without prices tests a person no role can hold',
+    );
     renderWithProviders(<EstimateScopeOfWorkCard estimate={estimate} canManage canSeePricing={false} />, { ability: noPrices });
     expect(screen.getAllByTestId('scope-block')).toHaveLength(1);
     expect(screen.queryByRole('button', { name: /use preset/i })).not.toBeInTheDocument();

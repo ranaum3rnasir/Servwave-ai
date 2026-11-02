@@ -37,8 +37,15 @@ const DISPATCHERS = [
 ];
 
 const mockApi = vi.mocked(api);
-const canCreate = buildAbility([{ action: 'create', subject: 'Lead' }]);
+// Create leads needs View leads and Edit leads; Assign people to leads needs View leads.
+const canCreate = buildAbility([
+  { action: 'read', subject: 'Lead' },
+  { action: 'update', subject: 'Lead' },
+  { action: 'create', subject: 'Lead' },
+]);
 const canCreateAndAssign = buildAbility([
+  { action: 'read', subject: 'Lead' },
+  { action: 'update', subject: 'Lead' },
   { action: 'create', subject: 'Lead' },
   { action: 'assign', subject: 'Lead' },
   { action: 'read', subject: 'User' },

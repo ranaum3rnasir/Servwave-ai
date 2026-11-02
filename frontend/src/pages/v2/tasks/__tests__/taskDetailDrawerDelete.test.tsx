@@ -90,7 +90,8 @@ beforeEach(() => {
 });
 
 describe('v2 TaskDetailDrawer delete control', () => {
-  const deleteGrant = () => buildAbility([{ action: 'delete', subject: 'Task' }]);
+  // Delete tasks needs View tasks.
+  const deleteGrant = () => buildAbility([{ action: 'delete', subject: 'Task' }, { action: 'read', subject: 'Task' }]);
 
   it('is HIDDEN for a user with neither the grant nor the ownership exception', () => {
     // Default fixture is created by / assigned to 'u1', who is not ME, and no

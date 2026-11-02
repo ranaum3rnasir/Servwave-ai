@@ -37,6 +37,8 @@ const REFUNDER = buildAbility([
   { action: 'read', subject: 'Invoice' },
   { action: 'refund', subject: 'Invoice' },
   { action: 'read', subject: 'Organization' },
+  // Refund payments needs View payments and payouts.
+  { action: 'view_payments', subject: 'Organization' },
 ]);
 const NEITHER = buildAbility([
   { action: 'read', subject: 'Invoice' },

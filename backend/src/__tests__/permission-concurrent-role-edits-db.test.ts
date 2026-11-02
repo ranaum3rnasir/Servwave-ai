@@ -18,9 +18,17 @@ import type { PrismaClient } from '@prisma/client';
 import type request from 'supertest';
 
 const { realClient } = vi.hoisted(() => {
+  // This one client is both the test's and the app's (the mock below). A case needs several connections at the same time:
+  // the holder's open transaction, the first save's transaction waiting on it, the second save (its sign-in reads and its own
+  // transaction) and the pg_stat_activity probes. Prisma sizes its default pool from the machine's CPU count, which is 3 on a
+  // small CI machine: the saves then wait for a connection instead of for the lock, and the case times out. The suite states
+  // the pool it needs, so it runs the same on any machine.
+  const POOL = 10;
   const clientAt = (url: string) => {
     const { PrismaClient } = require('@prisma/client') as typeof import('@prisma/client');
-    return new PrismaClient({ datasources: { db: { url } } });
+    const pooled = new URL(url);
+    pooled.searchParams.set('connection_limit', String(POOL));
+    return new PrismaClient({ datasources: { db: { url: pooled.toString() } } });
   };
   const dbUrl = process.env.TEST_DATABASE_URL;
   return { realClient: dbUrl ? clientAt(dbUrl) : undefined };

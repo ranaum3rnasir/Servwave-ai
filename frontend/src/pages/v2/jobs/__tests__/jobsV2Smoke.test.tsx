@@ -190,7 +190,12 @@ describe('v2 JobDetailPage', () => {
 
 describe('v2 JobFormPage', () => {
   it('renders the create form when `create Job` is granted', async () => {
-    const ability = buildAbility([{ action: 'create', subject: 'Job' }]);
+    // Create jobs needs View jobs and Edit jobs.
+    const ability = buildAbility([
+      { action: 'create', subject: 'Job' },
+      { action: 'read', subject: 'Job' },
+      { action: 'update', subject: 'Job' },
+    ]);
     mockApi.get.mockResolvedValue({ data: {} });
 
     renderWithProviders(<JobFormPage />, { ability, initialEntries: ['/jobs/new'] });

@@ -156,7 +156,12 @@ describe('SRVW-221 - Job (LineItemsEditor): price-book picker adhoc-create round
     const total = lines.reduce((s, l) => s + Number(l.line_total), 0);
     return { total, invoiced: 0, remaining: total };
   }
-  const adminAbility = () => buildAbility([{ action: 'manage_lines', subject: 'Job' }]);
+  // Edit job line items needs View jobs.
+  const adminAbility = () =>
+    buildAbility([
+      { action: 'manage_lines', subject: 'Job' },
+      { action: 'read', subject: 'Job' },
+    ]);
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -356,6 +361,9 @@ describe('SRVW-221 - Invoice (InvoiceLineItemsEditor): shares the same LineItems
     buildAbility([
       { action: 'update', subject: 'Invoice' },
       { action: 'manage_lines', subject: 'Invoice' },
+      // Edit invoices needs View invoices and See prices.
+      { action: 'read', subject: 'Invoice' },
+      { action: 'read', subject: 'Prices' },
     ]);
 
   beforeEach(() => {

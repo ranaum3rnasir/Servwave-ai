@@ -76,6 +76,8 @@ async function openItemsTab(rules: AbilityRule[], materialCost?: Record<string, 
 
 const READ_POS: AbilityRule = { action: 'read', subject: 'PurchaseOrder' };
 const CREATE_POS: AbilityRule = { action: 'create', subject: 'PurchaseOrder' };
+// Create purchase orders needs View purchase orders and Edit purchase orders.
+const EDIT_POS: AbilityRule = { action: 'update', subject: 'PurchaseOrder' };
 const READ_VENDORS: AbilityRule = { action: 'read', subject: 'Vendor' };
 const SEE_COSTS: AbilityRule = { action: 'read', subject: 'Pricing' };
 
@@ -86,7 +88,7 @@ beforeEach(() => {
 
 describe('the job page Items tab - Create PO', () => {
   it('shows with Create purchase orders and View vendors', async () => {
-    await openItemsTab([CREATE_POS, READ_VENDORS]);
+    await openItemsTab([READ_POS, EDIT_POS, CREATE_POS, READ_VENDORS]);
     expect(screen.getByRole('button', { name: /create po/i })).toBeInTheDocument();
   });
 
@@ -96,7 +98,7 @@ describe('the job page Items tab - Create PO', () => {
   });
 
   it('is absent with Create purchase orders but no View vendors: a new order needs a vendor to pick', async () => {
-    await openItemsTab([CREATE_POS, READ_POS, SEE_COSTS]);
+    await openItemsTab([EDIT_POS, CREATE_POS, READ_POS, SEE_COSTS]);
     expect(screen.queryByRole('button', { name: /create po/i })).not.toBeInTheDocument();
   });
 });

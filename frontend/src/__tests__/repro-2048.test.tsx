@@ -116,6 +116,13 @@ describe('#2048 (a) - lead header primary "Convert to job" button', () => {
       { action: 'read', subject: 'Lead' },
       { action: 'update', subject: 'Lead' },
       { action: 'create', subject: 'Estimate' },
+      // Create estimates needs View estimates, Edit estimates and See prices.
+      { action: 'read', subject: 'Estimate' },
+      { action: 'update', subject: 'Estimate' },
+      { action: 'send', subject: 'Estimate' },
+      { action: 'cancel', subject: 'Estimate' },
+      { action: 'revise', subject: 'Estimate' },
+      { action: 'read', subject: 'Prices' },
     ]);
     renderWithProviders(<LeadDetailPage />, { ability: noConvertAbility });
     await screen.findByRole('heading', { name: /L00001\b/ });

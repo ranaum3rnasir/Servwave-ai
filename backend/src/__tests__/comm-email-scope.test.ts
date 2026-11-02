@@ -6,6 +6,7 @@ import { prisma } from '../lib/prisma';
 import { clearTokenCache } from '../middleware/authenticate';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { mockAuthAs, mockRoleSwitches, authHeader, ALPHA_ORG_ID, TEST_USERS } from './helpers';
+import { withDependantsOff } from './support/switchDependants';
 import { matchesWhere, type Row } from './whereMatcher';
 
 /**
@@ -177,7 +178,7 @@ describe('GET /communication/emails/:id', () => {
   it('opens a customer-only email for a person who can open that customer, and not for one with View customers off', async () => {
     mockRoleSwitches({ communication_scope: 'attached', view_customers: true, customers_scope: 'all' });
     expect(await opens(CUSTOMER_ONLY)).toBe(true);
-    mockRoleSwitches({ communication_scope: 'attached', view_customers: false });
+    mockRoleSwitches({ communication_scope: 'attached', ...withDependantsOff(['view_customers']) });
     expect(await opens(CUSTOMER_ONLY)).toBe(false);
   });
 
@@ -279,7 +280,7 @@ describe('sending a new email', () => {
   });
 
   it('is refused without Contact customers', async () => {
-    signInNarrow({ contact_customers: false });
+    signInNarrow(withDependantsOff(['contact_customers']));
     const res = await request(app)
       .post('/api/communication/emails')
       .set(authHeader('dispatcher'))

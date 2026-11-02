@@ -47,13 +47,23 @@ interface Address {
   dialog: string;
   create: AbilityRule;
   view: AbilityRule;
+  /** The other switches the Create switch requires on (catalog `requires`), as the rules they compile to. */
+  needs: AbilityRule[];
 }
+
+// Create estimates needs Edit estimates (every rule it compiles to) and See prices.
+const EDIT_ESTIMATES_AND_SEE_PRICES: AbilityRule[] = [
+  ...['update', 'send', 'cancel', 'revise'].map((action) => ({ action, subject: 'Estimate' }) as AbilityRule),
+  { action: 'read', subject: 'Prices' },
+];
 
 const ADDRESSES: Address[] = [
   { name: 'tasks', Page: TasksHubPage, url: '/tasks?action=new-task', dialog: 'Create task dialog',
-    create: { action: 'create', subject: 'Task' }, view: { action: 'read', subject: 'Task' } },
+    create: { action: 'create', subject: 'Task' }, view: { action: 'read', subject: 'Task' },
+    needs: [{ action: 'update', subject: 'Task' }] },
   { name: 'estimates', Page: EstimatesPage, url: '/estimates?action=new-estimate', dialog: 'New estimate dialog',
-    create: { action: 'create', subject: 'Estimate' }, view: { action: 'read', subject: 'Estimate' } },
+    create: { action: 'create', subject: 'Estimate' }, view: { action: 'read', subject: 'Estimate' },
+    needs: EDIT_ESTIMATES_AND_SEE_PRICES },
 ];
 
 class ResizeObserverStub {
@@ -71,9 +81,9 @@ beforeEach(() => {
   answerEmptyLists();
 });
 
-describe.each(ADDRESSES)('the $name quick-create address (S02.25)', ({ Page, url, dialog, create, view }) => {
+describe.each(ADDRESSES)('the $name quick-create address (S02.25)', ({ Page, url, dialog, create, view, needs }) => {
   it('opens the create dialog for a person with the Create switch on', async () => {
-    renderWithProviders(<Page />, { initialEntries: [url], ability: buildAbility([view, create]) });
+    renderWithProviders(<Page />, { initialEntries: [url], ability: buildAbility([view, ...needs, create]) });
 
     expect(await screen.findByRole('dialog', { name: dialog })).toBeInTheDocument();
   });
@@ -96,7 +106,10 @@ describe('the return path after creating a customer (S02.26)', () => {
   const create: AbilityRule = { action: 'create', subject: 'Estimate' };
 
   it('reopens the new-estimate dialog for a person with the Create switch on', async () => {
-    renderWithProviders(<EstimatesPage />, { initialEntries: [returnUrl], ability: buildAbility([view, create]) });
+    renderWithProviders(<EstimatesPage />, {
+      initialEntries: [returnUrl],
+      ability: buildAbility([view, ...EDIT_ESTIMATES_AND_SEE_PRICES, create]),
+    });
 
     expect(await screen.findByRole('dialog', { name: 'New estimate dialog' })).toBeInTheDocument();
   });

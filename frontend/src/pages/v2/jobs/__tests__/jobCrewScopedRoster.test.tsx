@@ -98,7 +98,8 @@ const repAbility = buildAbility(OWNS_THE_JOB);
  * This is the ability that pins the purpose: an assertion that only checks "locked while
  * holding nothing" passes against any purpose at all.
  */
-const repWithTaskGrant = buildAbility([...OWNS_THE_JOB, { action: 'assign', subject: 'Task' }]);
+// Assign tasks to others needs View tasks.
+const repWithTaskGrant = buildAbility([...OWNS_THE_JOB, { action: 'assign', subject: 'Task' }, { action: 'read', subject: 'Task' }]);
 /** A dispatcher: holds the grant these pickers actually read. */
 const dispatcherAbility = buildAbility([...OWNS_THE_JOB, { action: 'assign', subject: 'User' }]);
 

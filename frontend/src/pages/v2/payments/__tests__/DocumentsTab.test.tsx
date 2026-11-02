@@ -36,6 +36,9 @@ vi.mock('@stripe/react-connect-js', () => ({
 const ADMIN = buildAbility([
   { action: 'view_payments', subject: 'Organization' },
   { action: 'update', subject: 'Invoice' },
+  // Edit invoices needs View invoices and See prices.
+  { action: 'read', subject: 'Invoice' },
+  { action: 'read', subject: 'Prices' },
 ]);
 const READ_ONLY = buildAbility([{ action: 'view_payments', subject: 'Organization' }]);
 

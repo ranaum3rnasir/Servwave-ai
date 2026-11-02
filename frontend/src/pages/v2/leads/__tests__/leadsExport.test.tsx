@@ -92,7 +92,11 @@ const LEAD_ROW = {
 };
 
 // The Export control follows the Export leads switch (S02.30), so every case here holds it.
-const exportLeads = buildAbility([{ action: 'export', subject: 'Lead' }]);
+// Export leads needs View leads.
+const exportLeads = buildAbility([
+  { action: 'export', subject: 'Lead' },
+  { action: 'read', subject: 'Lead' },
+]);
 
 const mockApi = vi.mocked(api);
 

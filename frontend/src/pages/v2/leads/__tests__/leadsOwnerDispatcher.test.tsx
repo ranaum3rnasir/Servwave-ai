@@ -124,7 +124,10 @@ describe('Leads list - the Owner column and filter', () => {
 
   it('exports the column as Owner, with a dash when there is none', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<LeadsPage />, { ability: buildAbility([{ action: 'export', subject: 'Lead' }]) });
+    // Export leads needs View leads.
+    renderWithProviders(<LeadsPage />, {
+      ability: buildAbility([{ action: 'read', subject: 'Lead' }, { action: 'export', subject: 'Lead' }]),
+    });
     await screen.findByText('AC not cooling');
 
     await user.click(screen.getByRole('button', { name: /^export$/i }));

@@ -3,7 +3,8 @@ import { supabaseAdmin } from '../lib/supabase';
 import { prisma } from '../lib/prisma';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { clearAllSwitchCaches } from '../lib/permissions/switches/cache';
-import { SWITCH_CATALOG } from '../lib/permissions/switches/catalog';
+import { SWITCH_CATALOG, presetSwitchSet, type BuiltInRole, type SwitchValue } from '../lib/permissions/switches/catalog';
+import { assertPossibleSwitchSet, withDependantsOff } from './support/switchDependants';
 
 // ─── Org Constants ──────────────────────────────────
 
@@ -105,8 +106,15 @@ export const TEST_ORG = {
  * test - the way to run a case against a lower plan, a feature_overrides map, or
  * a demo org (`{ is_demo: true }`) without hand-rolling a user.findUnique mock.
  */
+/**
+ * The built-in role of the person `mockAuthAs` last signed in: `mockRoleSwitches` lays its values over that role's preset
+ * to check the whole set. Null before any sign-in.
+ */
+let signedInRole: BuiltInRole | null = null;
+
 export function mockAuthAs(userKey: TestUserKey, orgOverrides: Partial<typeof TEST_ORG> = {}) {
   const user = TEST_USERS[userKey];
+  signedInRole = user.role;
   const org = { ...TEST_ORG, ...orgOverrides };
 
   // supabaseAdmin.auth.getUser resolves successfully for any Bearer token
@@ -222,8 +230,17 @@ export const salesInvoiceArms = (userId: string) => [
  *
  * Leads and jobs reach and the verbs on them come from the switch catalog now, not from the role's
  * stored grants, so this is how a suite builds a person with a narrower or wider reach.
+ *
+ * The set (the role's preset with these values laid over it) must be one a person can hold: a switch on while a switch
+ * it requires is off throws, naming both. Turn the dependants off too (`withDependantsOff`), or, for a test whose
+ * subject is that impossible set, pass `{ impossibleOnPurpose: reason }`.
  */
-export function mockRoleSwitches(values: Record<string, boolean | string>) {
+export function mockRoleSwitches(
+  values: Record<string, boolean | string>,
+  options: { impossibleOnPurpose?: string } = {},
+) {
+  const whole: Record<string, SwitchValue> = signedInRole ? { ...presetSwitchSet(signedInRole), ...values } : values;
+  assertPossibleSwitchSet(whole, `mockRoleSwitches (${signedInRole ?? 'no mockAuthAs yet'})`, options);
   (prisma.permissionRoleSwitch.findMany as ReturnType<typeof vi.fn>).mockResolvedValue(
     Object.entries(values).map(([switch_key, value]) => ({ switch_key, value })),
   );
@@ -252,7 +269,9 @@ export function mockRoleGrantsWithout(role: string, ...omit: [action: string, su
   const switchesOff = SWITCH_CATALOG.filter((sw) =>
     sw.grants.some((g) => omit.some(([a, s]) => g.action === a && g.subject === s)),
   );
-  if (switchesOff.length) mockRoleSwitches(Object.fromEntries(switchesOff.map((sw) => [sw.key, false])));
+  // A switch turned off takes every switch that needs it with it, as the Roles screen does, so the person stays one the
+  // product can hold (taking `read Prices` away turns See costs off too).
+  if (switchesOff.length) mockRoleSwitches(withDependantsOff(switchesOff.map((sw) => sw.key)));
 }
 
 /**

@@ -3,6 +3,7 @@ import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import { TEST_USERS, mockAuthAs, authHeader, JOB_FIXTURE, mockRoleGrantsWithout, mockRoleSwitches } from './helpers';
+import { withDependantsOff } from './support/switchDependants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -262,7 +263,7 @@ describe('POST /api/jobs/:id/cancel — money fields gated behind pricing visibi
     mockAuthAs('dispatcher');
     // The person holds Cancel jobs and View jobs but has View invoices off (a valid narrowing). The
     // cancel route guard (canDo('cancel','Job')) still passes; the money fields must be gated.
-    mockRoleSwitches({ cancel_jobs: true, view_invoices: false });
+    mockRoleSwitches({ cancel_jobs: true, ...withDependantsOff(['view_invoices']) });
     mockPrisma.job.findUnique.mockResolvedValue(CANCELLABLE_WITH_COLLECTED);
     wireCancelTx({ ...JOB_FIXTURE, status: 'CANCELLED' });
 

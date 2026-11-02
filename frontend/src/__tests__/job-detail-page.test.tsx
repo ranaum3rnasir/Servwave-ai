@@ -366,7 +366,8 @@ describe('JobDetailPage — Items tab: Scope of Work + Internal Costs (Batch 3)'
 
   it('hides InternalCostsCard entirely when the ability cannot read Invoice', async () => {
     mockJobWithItems();
-    const restrictedAbility = buildAbility([{ action: 'manage_lines', subject: 'Job' }]);
+    // Edit job line items needs View jobs.
+    const restrictedAbility = buildAbility([{ action: 'manage_lines', subject: 'Job' }, { action: 'read', subject: 'Job' }]);
     renderWithProviders(<JobDetailPage />, { ability: restrictedAbility });
 
     const user = userEvent.setup();

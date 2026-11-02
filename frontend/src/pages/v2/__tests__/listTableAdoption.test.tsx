@@ -168,7 +168,8 @@ const LISTS = [
     path: '/customers',
     endpoint: '/api/customers',
     data: CUSTOMERS_FIXTURE,
-    ability: () => buildAbility([{ action: 'update', subject: 'Customer' }]),
+    // Edit customers needs View customers.
+    ability: () => buildAbility([{ action: 'update', subject: 'Customer' }, { action: 'read', subject: 'Customer' }]),
     rowText: 'C00001',
     sortHeader: 'Customer #',
     sortBy: 'customer_number',
@@ -184,7 +185,13 @@ const LISTS = [
     path: '/estimates',
     endpoint: '/api/estimates',
     data: ESTIMATES_FIXTURE,
-    ability: () => buildAbility([{ action: 'update', subject: 'Estimate' }]),
+    // Edit estimates needs View estimates and See prices.
+    ability: () =>
+      buildAbility([
+        { action: 'update', subject: 'Estimate' },
+        { action: 'read', subject: 'Estimate' },
+        { action: 'read', subject: 'Prices' },
+      ]),
     rowText: 'E00001',
     sortHeader: 'Estimate #',
     sortBy: 'estimate_number',
@@ -199,7 +206,13 @@ const LISTS = [
     endpoint: '/api/invoices',
     data: INVOICES_FIXTURE,
     // Total and Amount Due are prices, so the list draws them only for a person who holds See prices (P11).
-    ability: () => buildAbility([{ action: 'send', subject: 'Invoice' }, { action: 'read', subject: 'Prices' }]),
+    // Edit invoices (send) also needs View invoices.
+    ability: () =>
+      buildAbility([
+        { action: 'send', subject: 'Invoice' },
+        { action: 'read', subject: 'Prices' },
+        { action: 'read', subject: 'Invoice' },
+      ]),
     rowText: 'I00001',
     sortHeader: 'Invoice #',
     sortBy: 'invoice_number',
@@ -214,7 +227,13 @@ const LISTS = [
     endpoint: '/api/jobs',
     data: JOBS_FIXTURE,
     // Bulk Assign is the Jobs list's one action here: it needs both assign switches.
-    ability: () => buildAbility([{ action: 'assign', subject: 'Job' }, { action: 'assign', subject: 'User' }]),
+    // Both assign switches need View jobs.
+    ability: () =>
+      buildAbility([
+        { action: 'assign', subject: 'Job' },
+        { action: 'assign', subject: 'User' },
+        { action: 'read', subject: 'Job' },
+      ]),
     rowText: 'J00001',
     sortHeader: 'Job #',
     sortBy: 'job_number',

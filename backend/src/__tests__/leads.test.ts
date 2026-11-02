@@ -16,6 +16,7 @@ import {
   mockRoleSwitches,
   attachedLeadWhere,
 } from './helpers';
+import { withDependantsOff } from './support/switchDependants';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { allocateNumber } from '../lib/numbering';
@@ -323,7 +324,7 @@ describe('GET /api/leads', () => {
   // whole org. The old hardcoded block was fail-OPEN for any non-SALES role.
   it('fail-closed: a non-ADMIN role with View leads off lists nothing (MATCH_NOTHING), not a 403', async () => {
     mockAuthAs('technician');
-    mockRoleSwitches({ view_leads: false, create_leads: false, perform_walkthroughs: false });
+    mockRoleSwitches(withDependantsOff(['view_leads', 'create_leads', 'perform_walkthroughs']));
     mockPrisma.lead.findMany.mockResolvedValue([]);
     mockPrisma.lead.count.mockResolvedValue(0);
 

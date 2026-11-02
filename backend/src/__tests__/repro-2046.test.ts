@@ -33,6 +33,7 @@ import {
   mockAuthAs, mockRoleSwitches, authHeader,
   LEAD_FIXTURE, JOB_FIXTURE,
 } from './helpers';
+import { withDependantsOff } from './support/switchDependants';
 // Roles & Permissions S01.10: Access Communication is on in every preset, Sales included, so the cases below that
 // need a caller without the section gate turn the switch off (a custom role with it off) instead of leaning on SALES.
 
@@ -80,21 +81,21 @@ beforeEach(() => {
 describe('#2046 SALES on org-wide Communication-section endpoints — must 403, today 200', () => {
   it('GET /api/communication/threads (SMS/team inbox list) — comm-threads.routes.ts:14', async () => {
     mockAuthAs('sales');
-    mockRoleSwitches({ access_communication: false });
+    mockRoleSwitches(withDependantsOff(['access_communication']));
     const res = await request(app).get('/api/communication/threads').set(authHeader('sales'));
     expect(res.status).toBe(403);
   });
 
   it('GET /api/communication/calls (call log list) — comm-calls.routes.ts:20', async () => {
     mockAuthAs('sales');
-    mockRoleSwitches({ access_communication: false });
+    mockRoleSwitches(withDependantsOff(['access_communication']));
     const res = await request(app).get('/api/communication/calls').set(authHeader('sales'));
     expect(res.status).toBe(403);
   });
 
   it('GET /api/communication/emails (email inbox list) — comm-email.routes.ts:63', async () => {
     mockAuthAs('sales');
-    mockRoleSwitches({ access_communication: false });
+    mockRoleSwitches(withDependantsOff(['access_communication']));
     const res = await request(app).get('/api/communication/emails').set(authHeader('sales'));
     expect(res.status).toBe(403);
   });
@@ -103,42 +104,42 @@ describe('#2046 SALES on org-wide Communication-section endpoints — must 403, 
     // WhatsApp routes 404 via requireDemoOrg for a real org (comm-whatsapp.routes.ts) — run
     // against the demo org so the request actually reaches canDo, matching comm-visibility.test.ts.
     mockAuthAs('sales', { is_demo: true });
-    mockRoleSwitches({ access_communication: false });
+    mockRoleSwitches(withDependantsOff(['access_communication']));
     const res = await request(app).get('/api/communication/whatsapp').set(authHeader('sales'));
     expect(res.status).toBe(403);
   });
 
   it('GET /api/communication/unread-counts (section badge) — comm-shared.routes.ts:33', async () => {
     mockAuthAs('sales');
-    mockRoleSwitches({ access_communication: false });
+    mockRoleSwitches(withDependantsOff(['access_communication']));
     const res = await request(app).get('/api/communication/unread-counts').set(authHeader('sales'));
     expect(res.status).toBe(403);
   });
 
   it('GET /api/communication/team-members (org directory, messaging shape) — comm-shared.routes.ts:34', async () => {
     mockAuthAs('sales');
-    mockRoleSwitches({ access_communication: false });
+    mockRoleSwitches(withDependantsOff(['access_communication']));
     const res = await request(app).get('/api/communication/team-members').set(authHeader('sales'));
     expect(res.status).toBe(403);
   });
 
   it('GET /api/communication/call-flows (config, section-only) — comm-config.routes.ts:14', async () => {
     mockAuthAs('sales');
-    mockRoleSwitches({ access_communication: false });
+    mockRoleSwitches(withDependantsOff(['access_communication']));
     const res = await request(app).get('/api/communication/call-flows').set(authHeader('sales'));
     expect(res.status).toBe(403);
   });
 
   it('GET /api/communication/agents (phone agents, section-only) — comm-agents.routes.ts:14', async () => {
     mockAuthAs('sales');
-    mockRoleSwitches({ access_communication: false });
+    mockRoleSwitches(withDependantsOff(['access_communication']));
     const res = await request(app).get('/api/communication/agents').set(authHeader('sales'));
     expect(res.status).toBe(403);
   });
 
   it('GET /api/communication/numbers (numbers platform, section-only) — comm-numbers.routes.ts:32', async () => {
     mockAuthAs('sales');
-    mockRoleSwitches({ access_communication: false });
+    mockRoleSwitches(withDependantsOff(['access_communication']));
     const res = await request(app).get('/api/communication/numbers').set(authHeader('sales'));
     expect(res.status).toBe(403);
   });

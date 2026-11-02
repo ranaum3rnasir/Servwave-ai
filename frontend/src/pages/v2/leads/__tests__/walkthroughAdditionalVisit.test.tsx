@@ -61,6 +61,8 @@ const grantHolderAbility = buildAbility([
   { action: 'read', subject: 'Lead' },
   { action: 'schedule_walkthrough', subject: 'Lead' },
   { action: 'assign', subject: 'User' },
+  // Assign work to other people needs View jobs.
+  { action: 'read', subject: 'Job' },
 ]);
 
 function signedInAs(id: string) {

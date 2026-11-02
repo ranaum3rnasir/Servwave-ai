@@ -52,6 +52,8 @@ const EVERYTHING_ON = {
   [catalogToggle('Copy customer email').key]: true,
   [catalogToggle('Contact customers').key]: true,
   [catalogToggle('View customers').key]: true,
+  // Contact customers needs View communication.
+  [catalogToggle('View communication').key]: true,
 };
 
 function renderCell(ui: React.ReactElement) {

@@ -41,7 +41,12 @@ vi.mock('@/lib/api/users', () => ({
 }));
 
 /** The grant that means "you may name people other than yourself" for a crew/performer picker. */
-const MAY_ASSIGN_USERS = () => buildAbility([{ action: 'assign', subject: 'User' }]);
+// Assign work to other people needs View jobs.
+const MAY_ASSIGN_USERS = () =>
+  buildAbility([
+    { action: 'assign', subject: 'User' },
+    { action: 'read', subject: 'Job' },
+  ]);
 /**
  * A DISPATCHER's shape for the two cases below: `read User` and `assign User`, and NO
  * `assign Task` - which no seeded role holds. This is the principal the endpoint answers
@@ -51,6 +56,8 @@ const A_DISPATCHER = () =>
   buildAbility([
     { action: 'read', subject: 'User' },
     { action: 'assign', subject: 'User' },
+    // Assign work to other people needs View jobs.
+    { action: 'read', subject: 'Job' },
   ]);
 
 beforeEach(() => {

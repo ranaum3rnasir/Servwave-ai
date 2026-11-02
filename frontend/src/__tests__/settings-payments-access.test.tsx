@@ -26,7 +26,12 @@ vi.mock('@stripe/react-connect-js', () => ({
 }));
 
 const NOTHING = buildAbility([{ action: 'read', subject: 'Invoice' }]);
-const REFUND_ONLY = buildAbility([{ action: 'refund', subject: 'Invoice' }, { action: 'read', subject: 'Invoice' }]);
+// Refund payments needs View invoices and View payments and payouts.
+const REFUND_ONLY = buildAbility([
+  { action: 'refund', subject: 'Invoice' },
+  { action: 'read', subject: 'Invoice' },
+  { action: 'view_payments', subject: 'Organization' },
+]);
 const COMPANY_ADMIN = buildAbility([
   { action: 'update', subject: 'Organization' },
   { action: 'read', subject: 'Organization' },

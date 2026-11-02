@@ -72,7 +72,12 @@ const officeGrants = [
   { action: 'read', subject: 'Prices' },
 ] as const;
 const withoutRefund = buildAbility([...officeGrants]);
-const withRefund = buildAbility([...officeGrants, { action: 'refund', subject: 'Invoice' }]);
+// Refund payments needs View payments and payouts.
+const withRefund = buildAbility([
+  ...officeGrants,
+  { action: 'refund', subject: 'Invoice' },
+  { action: 'view_payments', subject: 'Organization' },
+]);
 
 function payment(over: Record<string, unknown>) {
   return {

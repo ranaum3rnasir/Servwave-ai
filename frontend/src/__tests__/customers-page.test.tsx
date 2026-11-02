@@ -318,7 +318,11 @@ describe('CustomersPage — generalized filter registry (Task 17)', () => {
 describe('CustomersPage — Export control ability gate', () => {
   it('renders the Export control for an ability that permits customer export', async () => {
     renderWithProviders(<CustomersPage />, {
-      ability: buildAbility([{ action: 'export', subject: 'Customer' }]),
+      // Export customers needs View customers.
+      ability: buildAbility([
+        { action: 'export', subject: 'Customer' },
+        { action: 'read', subject: 'Customer' },
+      ]),
     });
 
     await waitFor(() => {

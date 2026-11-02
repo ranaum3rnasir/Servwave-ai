@@ -96,10 +96,13 @@ function invoice(overrides: Partial<InvoiceEditorInvoice> = {}): InvoiceEditorIn
   };
 }
 
+// Edit invoices needs View invoices and See prices; Edit invoice line items needs View invoices.
 const adminAbility = () =>
   buildAbility([
     { action: 'update', subject: 'Invoice' },
     { action: 'manage_lines', subject: 'Invoice' },
+    { action: 'read', subject: 'Invoice' },
+    { action: 'read', subject: 'Prices' },
   ]);
 // Cost/margin are gated on the SAME frontend ability check as the backend's canSeePricing gate.
 // SRVW-140 - that check is now ability.can('read', 'Pricing'), the grant the Roles UI
@@ -109,6 +112,9 @@ const pricingAbility = () =>
     { action: 'update', subject: 'Invoice' },
     { action: 'manage_lines', subject: 'Invoice' },
     { action: 'read', subject: 'Pricing' },
+    // See costs needs See prices; the two Edit switches need View invoices.
+    { action: 'read', subject: 'Invoice' },
+    { action: 'read', subject: 'Prices' },
   ]);
 
 beforeEach(() => {
@@ -898,10 +904,13 @@ describe('InvoiceScopeOfWorkCard', () => {
 
   // Both `manage_lines` AND `update` Invoice — the backend's B6 (add/delete) + B7 (update) split
   // on /scopes routes, matching the single canEdit flag ScopeOfWorkCard exposes.
+  // Edit invoices needs View invoices and See prices; Edit invoice line items needs View invoices.
   const fullEditAbility = () =>
     buildAbility([
       { action: 'manage_lines', subject: 'Invoice' },
       { action: 'update', subject: 'Invoice' },
+      { action: 'read', subject: 'Invoice' },
+      { action: 'read', subject: 'Prices' },
     ]);
   const pricingAbility = () =>
     buildAbility([
@@ -909,14 +918,25 @@ describe('InvoiceScopeOfWorkCard', () => {
       { action: 'update', subject: 'Invoice' },
       // SRVW-140 - the cost/margin gate is `read Pricing`, not `read Invoice`.
       { action: 'read', subject: 'Pricing' },
+      // See costs needs See prices; the two Edit switches need View invoices.
+      { action: 'read', subject: 'Invoice' },
+      { action: 'read', subject: 'Prices' },
     ]);
   // Mirrors SALES' default grant (defaultGrants.ts): manage_lines Invoice via OWN_INVOICE_VIA_LEAD,
   // but NOT update.
-  const manageLinesOnlyAbility = () => buildAbility([{ action: 'manage_lines', subject: 'Invoice' }]);
+  // Edit invoice line items needs View invoices.
+  const manageLinesOnlyAbility = () =>
+    buildAbility([{ action: 'manage_lines', subject: 'Invoice' }, { action: 'read', subject: 'Invoice' }]);
   // Inverse combination — reachable in the ability model (e.g. a custom per-user grant override)
   // even though no default role produces `update` Invoice without `manage_lines` Invoice today
   // (defaultGrants.ts: DISPATCHER/ADMIN hold both; SALES holds neither on `update`).
-  const updateOnlyAbility = () => buildAbility([{ action: 'update', subject: 'Invoice' }]);
+  // Edit invoices needs View invoices and See prices.
+  const updateOnlyAbility = () =>
+    buildAbility([
+      { action: 'update', subject: 'Invoice' },
+      { action: 'read', subject: 'Invoice' },
+      { action: 'read', subject: 'Prices' },
+    ]);
 
   beforeEach(() => {
     vi.mocked(invoicesApi.addInvoiceScope).mockResolvedValue({});

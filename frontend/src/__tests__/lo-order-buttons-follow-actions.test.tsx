@@ -165,7 +165,8 @@ describe.each(SCREENS)('%s - each order button is present only when the order li
 describe.each(SCREENS)('%s - the New logistic order button follows Create logistic orders', (_screen, open) => {
   it('shows with Create logistic orders', async () => {
     serve(detail('DRAFT', []));
-    await open([READ_ORDERS, READ_JOBS, { action: 'create', subject: 'LogisticOrder' }]);
+    // Create logistic orders needs Edit logistic orders.
+    await open([READ_ORDERS, READ_JOBS, { action: 'update', subject: 'LogisticOrder' }, { action: 'create', subject: 'LogisticOrder' }]);
     expect(screen.getByRole('button', { name: /New logistic order/ })).toBeInTheDocument();
   });
 

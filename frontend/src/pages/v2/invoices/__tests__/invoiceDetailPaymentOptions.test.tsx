@@ -104,6 +104,8 @@ describe('invoice page: Payment options', () => {
     mount({ payment_methods_override: ['ACH'], allow_partial_payment: true }, [
       { action: 'read', subject: 'Invoice' },
       { action: 'update', subject: 'Invoice' },
+      // Edit invoices needs See prices.
+      { action: 'read', subject: 'Prices' },
     ]);
     const card = await screen.findByTestId('invoice-payment-options');
     expect(await within(card).findByText('Org default: Card and bank')).toBeInTheDocument();

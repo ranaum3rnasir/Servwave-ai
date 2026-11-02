@@ -37,6 +37,7 @@ one job back to bare `self-hosted` without un-pinning the rest.
 |---|---|---|
 | `Pick runners` (not required) | GitHub-hosted | Chooses self-hosted or GitHub-hosted for the four jobs below (see Runner fallback) |
 | `Secret scan (gitleaks)` | macOS | Leaked credentials across the PR commit range |
+| `Workflow lint (actionlint)` (not required) | macOS | Every workflow file parses; shellcheck on their `run:` scripts |
 | `Backend (build + tests)` | Linux | Prisma generate, `tsc` (build + scripts + **the suites' own types**), the backend suite incl. static guards |
 | `Frontend (lint + type-check + tests + build)` | macOS | `tsc --noEmit`, vitest, vite build, ESLint on changed files |
 | `Database (migrations + RLS)` | macOS | Migrations apply + no drift, RLS isolation, seed, role-permission drift |

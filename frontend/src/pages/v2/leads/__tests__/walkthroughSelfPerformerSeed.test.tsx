@@ -61,6 +61,8 @@ const selfOnlyAbility = buildAbility([
 const grantHolderAbility = buildAbility([
   { action: 'read', subject: 'Lead' },
   { action: 'schedule_walkthrough', subject: 'Lead' },
+  // Assign work to other people needs View jobs.
+  { action: 'read', subject: 'Job' },
   { action: 'assign', subject: 'User' },
 ]);
 

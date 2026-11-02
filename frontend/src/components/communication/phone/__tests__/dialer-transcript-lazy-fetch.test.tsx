@@ -50,7 +50,8 @@ import { abilityWithSwitches } from "@/__tests__/support/backendSwitchCatalog";
 
 // The transcript is behind View transcript (Roles & Permissions S08.12); these cases are about the lazy fetch, so the
 // person holds the switch here (dialer-transcript-switch.test.tsx covers the person who does not).
-const mayReadTranscripts = abilityWithSwitches("View transcript");
+// View transcript needs View communication.
+const mayReadTranscripts = abilityWithSwitches("View communication", "View transcript");
 
 const CALL_NO_STORED_TRANSCRIPT: CallSession = {
   id: "cc000000-0000-0000-0000-000000000001",

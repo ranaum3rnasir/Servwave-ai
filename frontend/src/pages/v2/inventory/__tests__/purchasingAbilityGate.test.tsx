@@ -20,6 +20,7 @@ import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
 import { renderWithProviders, seedMySwitches } from '@/__tests__/helpers';
+import { impossibleOnPurpose } from '@/__tests__/support/backendSwitchCatalog';
 
 import { PODetailDialog } from '@/components/inventory/PODetailDialog';
 import { AddVendorDialog } from '@/components/inventory/AddVendorDialog';
@@ -261,12 +262,18 @@ describe('#2043 — VendorCategoryPicker (R13)', () => {
     return screen.findByRole('group', { name: /manage categories/i });
   }
 
-  const createVendorOnly = () => buildAbility([{ action: 'create', subject: 'Vendor' }]);
+  const createVendorOnly = () =>
+    impossibleOnPurpose(
+      buildAbility([{ action: 'create', subject: 'Vendor' }]),
+      'PENDING RAN: Create vendors now needs View and Edit vendors, so a person with Create vendors alone cannot exist',
+    );
   const allVendorCategoryVerbs = () =>
     buildAbility([
       { action: 'create', subject: 'Vendor' },
       { action: 'update', subject: 'Vendor' },
       { action: 'delete', subject: 'Vendor' },
+      // Create, Edit and Delete vendors need View vendors.
+      { action: 'read', subject: 'Vendor' },
     ]);
   const readOnlyVendorAbility = () => buildAbility([{ action: 'read', subject: 'Vendor' }]);
 

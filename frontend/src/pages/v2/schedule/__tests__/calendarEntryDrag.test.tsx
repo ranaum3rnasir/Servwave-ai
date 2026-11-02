@@ -68,6 +68,8 @@ const ADMIN = buildAbility([{ action: 'manage', subject: 'all' }]);
 // not Edit events, so the page is not read-only and only the entry's own gate can stop the drop.
 const NO_CALENDAR_ENTRY_GRANT = buildAbility([
   { action: 'read', subject: 'all' },
+  // Create jobs needs Edit jobs.
+  { action: 'update', subject: 'Job' },
   { action: 'create', subject: 'Job' },
   { action: 'assign', subject: 'User' },
   { action: 'reschedule', subject: 'Job' },

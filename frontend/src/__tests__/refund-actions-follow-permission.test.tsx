@@ -71,9 +71,16 @@ const officeGrants = [
   { action: 'send', subject: 'Estimate' },
   { action: 'record_payment', subject: 'Estimate' },
   { action: 'read', subject: 'Pricing' },
+  // Edit invoices, Edit estimates, Record payments and See costs all need See prices.
+  { action: 'read', subject: 'Prices' },
 ] as const;
 const withoutRefund = buildAbility([...officeGrants]);
-const withRefund = buildAbility([...officeGrants, { action: 'refund', subject: 'Invoice' }]);
+// Refund payments needs View payments and payouts.
+const withRefund = buildAbility([
+  ...officeGrants,
+  { action: 'refund', subject: 'Invoice' },
+  { action: 'view_payments', subject: 'Organization' },
+]);
 
 function cashPayment(invoiceId: string, amount: string) {
   return {

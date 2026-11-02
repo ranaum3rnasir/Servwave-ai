@@ -59,7 +59,8 @@ const CUSTOMERS_FIXTURE = {
 const CUSTOMER_STATS = { total: 10, newThisMonth: 2, activeLeads: 3, activeJobs: 4 };
 
 /** The ability a user who MAY export customers carries (backend catalog pair). */
-const exportAbility = () => buildAbility([{ action: 'export', subject: 'Customer' }]);
+// Export customers needs View customers.
+const exportAbility = () => buildAbility([{ action: 'read', subject: 'Customer' }, { action: 'export', subject: 'Customer' }]);
 /**
  * A user with real access to the list — read + update Customer — but no export
  * grant. Deliberately NOT an empty ability: an empty one would also hide the

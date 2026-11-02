@@ -90,10 +90,11 @@ vi.mock('@/lib/api/organization', () => ({
 
 // A person who may add to and delete from the price book, record starting stock, and add locations and vendors: the
 // "+ Add" and "Manage" entries and the Starting Stock band follow those switches (S07.14).
+// Create price book items needs Edit price book items; Create vendors needs View vendors and Edit vendors.
 const catalogWriter = () =>
   abilityWithSwitches(
-    'View price book', 'Create price book items', 'Delete price book items',
-    'View stock', 'Create stock', 'Edit stock', 'Create vendors',
+    'View price book', 'Create price book items', 'Edit price book items', 'Delete price book items',
+    'View stock', 'Create stock', 'Edit stock', 'View vendors', 'Create vendors', 'Edit vendors',
   );
 
 function renderDialog(overrides: Record<string, unknown> = {}) {

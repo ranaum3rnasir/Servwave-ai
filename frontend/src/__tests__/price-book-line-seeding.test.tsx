@@ -141,7 +141,8 @@ describe('Job (LineItemsEditor) — a line seeded from the catalog', () => {
     price_book_item_id: null,
   };
   const billing: JobBilling = { total: 300, invoiced: 0, remaining: 300 };
-  const adminAbility = () => buildAbility([{ action: 'manage_lines', subject: 'Job' }]);
+  // Edit job line items needs View jobs.
+  const adminAbility = () => buildAbility([{ action: 'manage_lines', subject: 'Job' }, { action: 'read', subject: 'Job' }]);
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -243,7 +244,8 @@ describe('Job (LineItemsEditor) — a line seeded from the catalog', () => {
 describe('AddLineDialog — the single-line path reads the same item the picker does', () => {
   const JOB_ID = 'j0000000-0000-0000-0000-000000000002';
   const billing: JobBilling = { total: 0, invoiced: 0, remaining: 0 };
-  const adminAbility = () => buildAbility([{ action: 'manage_lines', subject: 'Job' }]);
+  // Edit job line items needs View jobs.
+  const adminAbility = () => buildAbility([{ action: 'manage_lines', subject: 'Job' }, { action: 'read', subject: 'Job' }]);
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -311,10 +313,13 @@ describe('Invoice (InvoiceLineItemsEditor) — a line seeded from the catalog', 
     total_amount: 0,
     line_items: [],
   };
+  // Edit invoices needs View invoices and See prices; Edit invoice line items needs View invoices.
   const adminAbility = () =>
     buildAbility([
       { action: 'update', subject: 'Invoice' },
       { action: 'manage_lines', subject: 'Invoice' },
+      { action: 'read', subject: 'Invoice' },
+      { action: 'read', subject: 'Prices' },
     ]);
 
   beforeEach(() => {

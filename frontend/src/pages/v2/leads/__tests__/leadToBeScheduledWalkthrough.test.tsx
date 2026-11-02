@@ -31,7 +31,13 @@ const mockApi = vi.mocked(api);
 
 const PERFORMER = { id: 'u-perf', first_name: 'Pat', last_name: 'Performer' };
 const READ = { action: 'read', subject: 'Lead' } as const;
-const withBooking = buildAbility([READ, { action: 'schedule_walkthrough', subject: 'Lead' }, { action: 'assign', subject: 'User' }]);
+// Assign work to other people needs View jobs.
+const withBooking = buildAbility([
+  READ,
+  { action: 'schedule_walkthrough', subject: 'Lead' },
+  { action: 'assign', subject: 'User' },
+  { action: 'read', subject: 'Job' },
+]);
 const withoutBooking = buildAbility([READ, { action: 'perform_walkthrough', subject: 'Lead' }]);
 
 /** What the server projects for a lead whose live walkthrough has performers and no time. */

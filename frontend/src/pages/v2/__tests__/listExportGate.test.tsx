@@ -140,13 +140,22 @@ describe('list Export follows the module Export switch', () => {
 
   it.each(LISTS)('$name list hides Export without it, even for an Admin', async (list) => {
     signInAs('ADMIN');
-    await renderList(list, [{ action: 'read', subject: list.subject }, { action: 'update', subject: list.subject }]);
+    // Edit estimates and Edit invoices need See prices.
+    await renderList(list, [
+      { action: 'read', subject: list.subject },
+      { action: 'update', subject: list.subject },
+      { action: 'read', subject: 'Prices' },
+    ]);
     expect(exportTrigger()).not.toBeInTheDocument();
   });
 
   it.each(LISTS)('$name list ignores the other four modules Export abilities', async (list) => {
     signInAs('ADMIN');
-    const others = LISTS.filter((l) => l.subject !== list.subject).map((l) => ({ action: 'export' as const, subject: l.subject }));
+    // Each module's Export needs its View, so the person also reads the other four modules.
+    const others = LISTS.filter((l) => l.subject !== list.subject).flatMap((l) => [
+      { action: 'read' as const, subject: l.subject },
+      { action: 'export' as const, subject: l.subject },
+    ]);
     await renderList(list, [{ action: 'read', subject: list.subject }, ...others]);
     expect(exportTrigger()).not.toBeInTheDocument();
   });

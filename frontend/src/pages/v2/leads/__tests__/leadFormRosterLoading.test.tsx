@@ -35,6 +35,9 @@ const canBookAndAssign = buildAbility([
   { action: 'assign', subject: 'Lead' },
   { action: 'schedule_walkthrough', subject: 'Lead' },
   { action: 'read', subject: 'User' },
+  // Create leads needs View leads and Edit leads; the assign and booking switches need View leads.
+  { action: 'read', subject: 'Lead' },
+  { action: 'update', subject: 'Lead' },
 ]);
 
 type Answer = 'pending' | 'fail' | 'ok' | 'empty';

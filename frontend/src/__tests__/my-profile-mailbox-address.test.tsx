@@ -38,8 +38,8 @@ const NEEDED_SENTENCE = "You don't have an email address yet. An admin needs to 
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
-  // The address is read only by a person whose Show Email is on (M7, ticket 36).
-  seedMySwitches({ show_email: true }, 'u1');
+  // The address is read only by a person whose Show Email is on (M7, ticket 36). Show Email needs Access Communication.
+  seedMySwitches({ show_email: true, access_communication: true }, 'u1');
   emailFeature = true;
   mailbox = null;
   vi.mocked(useUpdateMe).mockReturnValue({ mutateAsync: vi.fn() } as unknown as ReturnType<typeof useUpdateMe>);

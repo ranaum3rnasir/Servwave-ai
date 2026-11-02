@@ -20,6 +20,7 @@ import { resetNumberSyncThrottle, AUTO_SYNC_WINDOW_MS } from '../../lib/ctm/numb
 import { clearTokenCache } from '../../middleware/authenticate';
 import { clearPermissionCache } from '../../lib/permissions/permissionCache';
 import { mockAuthAs, mockRoleSwitches, authHeader, ALPHA_ORG_ID } from '../../__tests__/helpers';
+import { withDependantsOff } from '../../__tests__/support/switchDependants';
 import { installPhoneNumberStore } from '../../lib/ctm/__tests__/phoneNumberStore';
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
@@ -107,7 +108,7 @@ describe('who may call it', () => {
   });
 
   it('gives a user without Access Communication, who cannot read the list, the same refusal as the list endpoint, and never syncs', async () => {
-    const off = { access_communication: false };
+    const off = withDependantsOff(['access_communication']);
     const listed = await list('sales', off);
     const synced = await syncIfStale('sales', off);
 

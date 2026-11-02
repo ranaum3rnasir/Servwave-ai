@@ -177,6 +177,8 @@ const inventoryAbility = () =>
     // helper's PriceBookPage edit case needs the PriceBook rules explicitly.
     { action: 'create', subject: 'PriceBook' },
     { action: 'update', subject: 'PriceBook' },
+    // Create and Edit price book items need View price book.
+    { action: 'read', subject: 'PriceBook' },
   ]);
 
 const renderStock = () =>

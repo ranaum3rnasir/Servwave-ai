@@ -93,6 +93,7 @@ beforeEach(() => {
 });
 
 const READ = ['View stock', 'View price book'];
+// Create price book items (used below) needs Edit price book items, so each such person holds both.
 
 function renderStock(path: string, ...extra: string[]) {
   return renderWithProviders(<InventoryPage />, { ability: abilityWithSwitches(...READ, ...extra), initialEntries: [path] });
@@ -131,7 +132,7 @@ describe('a person without View vendors', () => {
   });
 
   it('has no Vendor field in the item form', async () => {
-    renderStock('/inventory', 'Create price book items');
+    renderStock('/inventory', 'Edit price book items', 'Create price book items');
     await screen.findByText('Brass Hinge');
 
     await userEvent.click(screen.getByRole('button', { name: /^add item$/i }));
@@ -169,7 +170,7 @@ describe('a person without View vendors', () => {
   });
 
   it('has no Vendor column in the CSV import: not in the expected columns, not in the template', async () => {
-    renderStock('/inventory', 'Create price book items');
+    renderStock('/inventory', 'Edit price book items', 'Create price book items');
     await screen.findByText('Brass Hinge');
 
     await userEvent.click(screen.getByRole('button', { name: /^Import CSV$/ }));
@@ -195,7 +196,7 @@ describe('a person with View vendors', () => {
   });
 
   it('has the Vendor field in the item form', async () => {
-    renderStock('/inventory', 'View vendors', 'Create price book items');
+    renderStock('/inventory', 'View vendors', 'Edit price book items', 'Create price book items');
     await screen.findByText('Brass Hinge');
 
     await userEvent.click(screen.getByRole('button', { name: /^add item$/i }));
@@ -223,7 +224,7 @@ describe('a person with View vendors', () => {
   });
 
   it('has the Vendor column in the CSV import and its template', async () => {
-    renderStock('/inventory', 'View vendors', 'Create price book items');
+    renderStock('/inventory', 'View vendors', 'Edit price book items', 'Create price book items');
     await screen.findByText('Brass Hinge');
 
     await userEvent.click(screen.getByRole('button', { name: /^Import CSV$/ }));

@@ -6,6 +6,7 @@ import { env } from '../config/env';
 import { clearTokenCache } from '../middleware/authenticate';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { mockAuthAs, mockRoleSwitches, authHeader, ALPHA_ORG_ID } from './helpers';
+import { withDependantsOff } from './support/switchDependants';
 import { SWITCH_CATALOG } from '../lib/permissions/switches/catalog';
 
 /**
@@ -132,7 +133,7 @@ describe.each(ENDPOINTS)('$name', ({ tab, also, call }) => {
   it('keeps needing the grant it needed before, with the tab on', async () => {
     const needed = Object.keys(also);
     if (needed.length === 0) return;
-    const off = Object.fromEntries(needed.map((k) => [k, false]));
+    const off = withDependantsOff(needed);
     const res = await call(as('dispatcher', { [tab]: true, ...off }));
     expect(res.status).toBe(403);
   });

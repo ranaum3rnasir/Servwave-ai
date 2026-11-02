@@ -38,7 +38,12 @@ beforeEach(() => {
 
 describe('a person with Create leads / Create jobs and without Create customers', () => {
   it('adds a new customer inside the lead form', async () => {
-    const ability = buildAbility([{ action: 'create', subject: 'Lead' }, { action: 'read', subject: 'Lead' }]);
+    // Create leads needs View leads and Edit leads.
+    const ability = buildAbility([
+      { action: 'create', subject: 'Lead' },
+      { action: 'read', subject: 'Lead' },
+      { action: 'update', subject: 'Lead' },
+    ]);
     expect(ability.can('create', 'Customer')).toBe(false);
 
     renderWithProviders(<LeadFormPage />, { ability, initialEntries: [NEW_LEAD_ROUTE] });
@@ -54,7 +59,12 @@ describe('a person with Create leads / Create jobs and without Create customers'
   });
 
   it('adds a new customer inside the job form', async () => {
-    const ability = buildAbility([{ action: 'create', subject: 'Job' }, { action: 'read', subject: 'Job' }]);
+    // Create jobs needs View jobs and Edit jobs.
+    const ability = buildAbility([
+      { action: 'create', subject: 'Job' },
+      { action: 'read', subject: 'Job' },
+      { action: 'update', subject: 'Job' },
+    ]);
     expect(ability.can('create', 'Customer')).toBe(false);
 
     renderWithProviders(<JobFormPage />, { ability, initialEntries: [NEW_JOB_ROUTE] });

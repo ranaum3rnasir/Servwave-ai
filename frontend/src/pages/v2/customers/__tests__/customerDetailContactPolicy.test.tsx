@@ -100,6 +100,8 @@ function meValues(s: Switches): Record<string, boolean> {
     [catalogToggle('Copy customer phone').key]: s.copyPhone,
     [catalogToggle('Copy customer email').key]: s.copyEmail,
     [catalogToggle('Contact customers').key]: s.contact,
+    // Contact customers needs View communication.
+    [catalogToggle('View communication').key]: s.contact,
     [catalogToggle('View customers').key]: true,
   };
 }
@@ -108,7 +110,7 @@ function meValues(s: Switches): Record<string, boolean> {
 const abilityFor = (s: Switches) =>
   buildAbility([
     { action: 'read', subject: 'Customer' },
-    ...(s.contact ? [{ action: 'create', subject: 'Communication' } as const] : []),
+    ...(s.contact ? [{ action: 'read', subject: 'Communication' } as const, { action: 'create', subject: 'Communication' } as const] : []),
   ]);
 
 async function openPage(s: Switches, opts: { phoneService?: boolean } = {}) {

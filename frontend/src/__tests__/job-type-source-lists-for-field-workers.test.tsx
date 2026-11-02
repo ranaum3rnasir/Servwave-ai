@@ -26,16 +26,22 @@ const SOURCES = ['Referral', 'Website'];
 const NEW_LEAD_ROUTE = ['', 'leads', 'new'].join('/');
 
 // The Technician preset: Create jobs and Create leads on, Company settings off.
+// Create jobs needs View and Edit jobs; Create leads needs View and Edit leads.
 const technician = buildAbility([
   { action: 'create', subject: 'Job' },
   { action: 'read', subject: 'Job' },
+  { action: 'update', subject: 'Job' },
   { action: 'create', subject: 'Lead' },
   { action: 'read', subject: 'Lead' },
+  { action: 'update', subject: 'Lead' },
 ]);
 const withCompanySettings = buildAbility([
   { action: 'create', subject: 'Job' },
+  { action: 'read', subject: 'Job' },
+  { action: 'update', subject: 'Job' },
   { action: 'create', subject: 'Lead' },
   { action: 'read', subject: 'Lead' },
+  { action: 'update', subject: 'Lead' },
   { action: 'update', subject: 'Organization' },
 ]);
 

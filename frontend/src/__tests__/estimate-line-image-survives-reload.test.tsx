@@ -78,7 +78,13 @@ function apiShapedLine(priceBookItem: Record<string, unknown>): EstimateLineItem
   } as unknown as EstimateLineItem;
 }
 
-const adminAbility = () => buildAbility([{ action: 'update', subject: 'Estimate' }]);
+// Edit estimates needs View estimates and See prices.
+const adminAbility = () =>
+  buildAbility([
+    { action: 'update', subject: 'Estimate' },
+    { action: 'read', subject: 'Estimate' },
+    { action: 'read', subject: 'Prices' },
+  ]);
 
 function renderEditor(line: EstimateLineItem) {
   return renderWithProviders(

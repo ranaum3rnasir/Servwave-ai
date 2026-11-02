@@ -33,6 +33,12 @@ const formUser: AppAbility = buildAbility([
   { action: 'read', subject: 'Organization' },
   { action: 'read', subject: 'Estimate' },
   { action: 'create', subject: 'Estimate' },
+  // Create estimates needs Edit estimates and See prices.
+  { action: 'update', subject: 'Estimate' },
+  { action: 'send', subject: 'Estimate' },
+  { action: 'cancel', subject: 'Estimate' },
+  { action: 'revise', subject: 'Estimate' },
+  { action: 'read', subject: 'Prices' },
 ]);
 
 /** The same, with Company settings on (the compiled rule is update Organization). */
@@ -41,6 +47,12 @@ const settingsHolder: AppAbility = buildAbility([
   { action: 'update', subject: 'Organization' },
   { action: 'read', subject: 'Estimate' },
   { action: 'create', subject: 'Estimate' },
+  // Create estimates needs Edit estimates and See prices.
+  { action: 'update', subject: 'Estimate' },
+  { action: 'send', subject: 'Estimate' },
+  { action: 'cancel', subject: 'Estimate' },
+  { action: 'revise', subject: 'Estimate' },
+  { action: 'read', subject: 'Prices' },
 ]);
 
 function serve() {

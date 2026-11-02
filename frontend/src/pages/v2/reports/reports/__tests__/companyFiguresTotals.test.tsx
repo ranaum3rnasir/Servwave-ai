@@ -29,7 +29,12 @@ import EstimatesReport from '../EstimatesReport';
 import JobsReport from '../JobsReport';
 import LeadsReport from '../LeadsReport';
 
-const WITH = buildAbility([{ action: 'read', subject: 'Report' }, { action: 'read', subject: 'CompanyFigures' }]);
+// See company figures needs See prices.
+const WITH = buildAbility([
+  { action: 'read', subject: 'Report' },
+  { action: 'read', subject: 'Prices' },
+  { action: 'read', subject: 'CompanyFigures' },
+]);
 const WITHOUT = buildAbility([{ action: 'read', subject: 'Report' }]);
 
 /** How many elements carry exactly this text. */

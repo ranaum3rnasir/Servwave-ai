@@ -81,7 +81,12 @@ describe('a v2 KPI tile carries the title and the number only', () => {
   it('jobs', async () => {
     mockGets('/api/jobs', JOBS_FIXTURE);
     renderWithProviders(<JobsPage />, {
-      ability: buildAbility([{ action: 'assign', subject: 'Job' }, { action: 'read', subject: 'Invoice' }]),
+      // Assign people to jobs needs View jobs.
+      ability: buildAbility([
+        { action: 'assign', subject: 'Job' },
+        { action: 'read', subject: 'Invoice' },
+        { action: 'read', subject: 'Job' },
+      ]),
       initialEntries: ['/jobs'],
     });
 

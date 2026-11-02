@@ -45,6 +45,8 @@ function seed(s: Switches) {
     [catalogToggle('Copy customer phone').key]: s.copyPhone,
     [catalogToggle('Contact customers').key]: s.contact,
     [catalogToggle('View customers').key]: s.view === true,
+    // Contact customers needs View communication.
+    [catalogToggle('View communication').key]: true,
   };
   seedMySwitches(values);
   vi.mocked(api.get).mockImplementation(async (url: string) =>

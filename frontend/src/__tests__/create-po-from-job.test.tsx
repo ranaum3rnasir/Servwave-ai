@@ -139,13 +139,20 @@ function billingFor(lines: JobLineItem[]): JobBilling {
   return { total, invoiced: 0, remaining: total };
 }
 
+// Edit job line items needs View jobs; Create purchase orders needs View and Edit purchase orders.
+const possibleWith = [
+  { action: 'read', subject: 'Job' },
+  { action: 'read', subject: 'PurchaseOrder' },
+  { action: 'update', subject: 'PurchaseOrder' },
+] as const;
 const poAbility = () =>
   buildAbility([
     { action: 'manage_lines', subject: 'Job' },
     { action: 'create', subject: 'PurchaseOrder' },
     { action: 'read', subject: 'Vendor' }, // a new order needs a vendor to pick
+    ...possibleWith,
   ]);
-const noPoAbility = () => buildAbility([{ action: 'manage_lines', subject: 'Job' }]);
+const noPoAbility = () => buildAbility([{ action: 'manage_lines', subject: 'Job' }, { action: 'read', subject: 'Job' }]);
 
 let getSpy: ReturnType<typeof vi.spyOn>;
 let postSpy: ReturnType<typeof vi.spyOn>;
@@ -271,7 +278,11 @@ describe('Job Items tab — Create PO from job (P2 §2)', () => {
   it('hides the button from a person with Create purchase orders but not View vendors (a new order needs a vendor to pick)', async () => {
     seedLines([MATERIAL_LINE]);
     renderWithProviders(<LineItemsEditor jobId={JOB_ID} canManage />, {
-      ability: buildAbility([{ action: 'manage_lines', subject: 'Job' }, { action: 'create', subject: 'PurchaseOrder' }]),
+      ability: buildAbility([
+        { action: 'manage_lines', subject: 'Job' },
+        { action: 'create', subject: 'PurchaseOrder' },
+        ...possibleWith,
+      ]),
     });
 
     await screen.findByText(/HES 1006/);

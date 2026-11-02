@@ -170,7 +170,8 @@ describe('AssetDialog — create/edit (P4)', () => {
   it('photo chosen on create uploads AFTER create resolves, with the new id + File', async () => {
     renderWithProviders(
       <AssetDialog open onClose={vi.fn()} editAsset={null} onSaved={vi.fn()} />,
-      { ability: buildAbility([{ action: 'update', subject: 'Inventory' }]) },
+      // Edit stock needs View stock.
+      { ability: buildAbility([{ action: 'read', subject: 'Inventory' }, { action: 'update', subject: 'Inventory' }]) },
     );
 
     fireEvent.change(screen.getByLabelText('Asset name'), {

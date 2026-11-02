@@ -21,6 +21,7 @@ import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import { mockAuthAs, mockRoleGrantsWithout, mockRoleSwitches, authHeader, JOB_FIXTURE } from './helpers';
+import { withDependantsOff } from './support/switchDependants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 vi.mock('../services/automations/dispatch', () => ({
@@ -461,7 +462,7 @@ describe('POST /api/jobs/:id/cancel - invoices with payments (#891)', () => {
     // (ADMIN reaches every invoice through manage-all, so it can't be narrowed this way). See costs
     // covers costs only and has no part in it.
     mockAuthAs('dispatcher');
-    mockRoleSwitches({ cancel_jobs: true, view_invoices: false });
+    mockRoleSwitches({ cancel_jobs: true, ...withDependantsOff(['view_invoices']) });
     mockPrisma.job.findUnique.mockResolvedValue(
       jobWith([invoice({ payments: [paid(3000)] })]),
     );
@@ -637,7 +638,7 @@ describe('GET /api/jobs/cancel-preview - what a bulk cancel keeps (#891)', () =>
 
   it('names the invoices but withholds the amounts from a caller who cannot read invoices', async () => {
     mockAuthAs('dispatcher');
-    mockRoleSwitches({ cancel_jobs: true, view_invoices: false });
+    mockRoleSwitches({ cancel_jobs: true, ...withDependantsOff(['view_invoices']) });
     findMany.mockResolvedValue([
       { ...jobWith([invoice({ id: 'inv-paid', invoice_number: 'I00411', status: 'PAID', amount_due: 0, payments: [paid(8400)] })]), id: JOB_A, job_number: 'J-1001' },
     ]);

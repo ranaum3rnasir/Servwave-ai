@@ -64,7 +64,13 @@ vi.mock('@/components/inventory/GeneratePODialog', () => ({
   },
 }));
 
-const poAbility = () => buildAbility([{ action: 'create', subject: 'PurchaseOrder' }]);
+// Create purchase orders needs View purchase orders and Edit purchase orders.
+const poAbility = () =>
+  buildAbility([
+    { action: 'read', subject: 'PurchaseOrder' },
+    { action: 'update', subject: 'PurchaseOrder' },
+    { action: 'create', subject: 'PurchaseOrder' },
+  ]);
 
 beforeEach(() => {
   vi.clearAllMocks();

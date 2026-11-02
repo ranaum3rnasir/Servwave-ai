@@ -32,6 +32,7 @@ import {
   salesEstimateArms,
   mockRoleSwitches,
 } from './helpers';
+import { withDependantsOff } from './support/switchDependants';
 
 // ─── Typed mocks ──────────────────────────────────────
 
@@ -844,7 +845,7 @@ describe('POST /api/estimates', () => {
 
   it('a person with Create estimates off cannot create estimates', async () => {
     mockAuthAs('dispatcher');
-    mockRoleSwitches({ create_estimates: false });
+    mockRoleSwitches(withDependantsOff(['create_estimates']));
 
     const res = await request(app)
       .post('/api/estimates')
@@ -2967,7 +2968,7 @@ describe('#106 estimate enforcement', () => {
 
   it('list reaches no estimate for a role with View estimates off, not even one the person made, and never answers 403', async () => {
     mockAuthAs('dispatcher');
-    mockRoleSwitches({ view_estimates: false });
+    mockRoleSwitches(withDependantsOff(['view_estimates']));
     mockPrisma.estimate.findMany.mockResolvedValue([]);
     mockPrisma.estimate.count.mockResolvedValue(0);
     mockPrisma.estimate.groupBy.mockResolvedValue([]);
@@ -5950,7 +5951,7 @@ describe('POST /api/estimates/:id/mark-sent', () => {
   it('DISPATCHER cannot mark-sent (no send grant)', async () => {
     mockAuthAs('dispatcher');
     // The Dispatcher preset holds Edit estimates now (AL-04, and Edit carries Send), so this is a dispatcher it was turned off for.
-    mockRoleSwitches({ edit_estimates: false, create_estimates: false });
+    mockRoleSwitches(withDependantsOff(['edit_estimates', 'create_estimates']));
     // Not the creator of this estimate either, so the creator rule opens nothing.
     mockPrisma.estimate.findFirst.mockResolvedValue(null);
 
@@ -6113,7 +6114,7 @@ describe('PATCH /api/estimates/:id/status', () => {
   it('DISPATCHER cannot set estimate status (no update grant)', async () => {
     mockAuthAs('dispatcher');
     // The Dispatcher preset holds Edit estimates now (AL-04), so this is a dispatcher it was turned off for.
-    mockRoleSwitches({ edit_estimates: false, create_estimates: false });
+    mockRoleSwitches(withDependantsOff(['edit_estimates', 'create_estimates']));
     // Not the creator of this estimate either, so the creator rule opens nothing.
     mockPrisma.estimate.findFirst.mockResolvedValue(null);
 

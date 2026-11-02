@@ -19,8 +19,17 @@ const HINT = 'Choose an existing customer. Adding a new one needs permission to 
 const noop = () => {};
 const props = { fields: FIELDS, onFieldChange: noop, selectedCustomer: null, onSelectCustomer: noop };
 
-const CAN_CREATE = buildAbility([{ action: 'create', subject: 'Customer' }]);
-const CANNOT_CREATE = buildAbility([{ action: 'create', subject: 'Lead' }]);
+// Create customers needs View customers and Edit customers; Create leads needs View leads and Edit leads.
+const CAN_CREATE = buildAbility([
+  { action: 'read', subject: 'Customer' },
+  { action: 'update', subject: 'Customer' },
+  { action: 'create', subject: 'Customer' },
+]);
+const CANNOT_CREATE = buildAbility([
+  { action: 'read', subject: 'Lead' },
+  { action: 'update', subject: 'Lead' },
+  { action: 'create', subject: 'Lead' },
+]);
 
 describe.each([
   ['the lead and invoice customer fields', (extra: object) => <PickCustomerFields {...props} {...extra} />],

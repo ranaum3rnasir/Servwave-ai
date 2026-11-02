@@ -98,9 +98,12 @@ const SHOW_TEXT = catalogToggle('Show Text').key;
 const SHOW_EMAIL = catalogToggle('Show Email').key;
 const SHOW_PHONE = catalogToggle('Show Phone').key;
 
+// The Show switches need Access Communication.
+const ACCESS_COMMUNICATION = catalogToggle('Access Communication').key;
+
 /** Every Communication Show switch on, then the given overrides. */
 function shown(overrides: Record<string, boolean> = {}): Record<string, boolean> {
-  return { [SHOW_PHONE]: true, [SHOW_TEXT]: true, [SHOW_EMAIL]: true, ...overrides };
+  return { [ACCESS_COMMUNICATION]: true, [SHOW_PHONE]: true, [SHOW_TEXT]: true, [SHOW_EMAIL]: true, ...overrides };
 }
 
 describe('V2AppLayout - S08.17 comms shortcuts follow Show Text and Show Email', () => {

@@ -147,7 +147,8 @@ function routeApi(body: AccessBody | Error = DEFAULT_BODY) {
 const accessCalls = () =>
   vi.mocked(api).get.mock.calls.filter((c) => c[0] === '/api/tasks/entity-access');
 
-const ASSIGN_ONLY = { ability: buildAbility([{ action: 'assign', subject: 'Task' }]) };
+// Assign tasks to others needs View tasks.
+const ASSIGN_ONLY = { ability: buildAbility([{ action: 'read', subject: 'Task' }, { action: 'assign', subject: 'Task' }]) };
 /** The three stock non-admin roles: `update Task`, deliberately NO `assign Task`. */
 const UPDATE_NO_ASSIGN = {
   ability: buildAbility([

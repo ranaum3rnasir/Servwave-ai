@@ -6,6 +6,7 @@ import { prisma } from '../lib/prisma';
 import { clearTokenCache } from '../middleware/authenticate';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { mockAuthAs, mockRoleSwitches, authHeader, ALPHA_ORG_ID, TEST_USERS } from './helpers';
+import { withDependantsOff } from './support/switchDependants';
 // Roles & Permissions S01.10: Access Communication is on in every preset, Sales included, so the cases below that
 // need a caller without the section gate turn the switch off (a custom role with it off) instead of leaning on SALES.
 
@@ -185,7 +186,7 @@ describe('a TECHNICIAN sees their own job comms and NOT another job comms', () =
 describe('a SALES rep — org-wide list endpoints now 403 (#2046)', () => {
   it('GET /communication/calls', async () => {
     mockAuthAs('sales');
-    mockRoleSwitches({ access_communication: false });
+    mockRoleSwitches(withDependantsOff(['access_communication']));
     const res = await request(app).get('/api/communication/calls').set(authHeader('sales'));
     expect(res.status).toBe(403);
     expect(mockPrisma.callSession.findMany).not.toHaveBeenCalled();
@@ -193,7 +194,7 @@ describe('a SALES rep — org-wide list endpoints now 403 (#2046)', () => {
 
   it('GET /communication/emails', async () => {
     mockAuthAs('sales');
-    mockRoleSwitches({ access_communication: false });
+    mockRoleSwitches(withDependantsOff(['access_communication']));
     const res = await request(app).get('/api/communication/emails').set(authHeader('sales'));
     expect(res.status).toBe(403);
     expect(mockPrisma.email.findMany).not.toHaveBeenCalled();
@@ -229,7 +230,7 @@ describe('unanchored / customer-only / vendor-only rows stay visible ORG-WIDE', 
   // branch, unchanged code).
   it('sales GET /communication/emails — 403, no query reaches prisma (#2046)', async () => {
     mockAuthAs('sales');
-    mockRoleSwitches({ access_communication: false });
+    mockRoleSwitches(withDependantsOff(['access_communication']));
     const res = await request(app).get('/api/communication/emails').set(authHeader('sales'));
     expect(res.status).toBe(403);
     expect(mockPrisma.email.findMany).not.toHaveBeenCalled();
@@ -283,7 +284,7 @@ describe('anchor precedence: a row carrying BOTH job_id and customer_id is gover
   // immediately above (same anchorInheritedWhere precedence, unchanged code).
   it('sales GET /communication/calls — 403, no query reaches prisma (#2046)', async () => {
     mockAuthAs('sales');
-    mockRoleSwitches({ access_communication: false });
+    mockRoleSwitches(withDependantsOff(['access_communication']));
     const res = await request(app).get('/api/communication/calls').set(authHeader('sales'));
     expect(res.status).toBe(403);
     expect(mockPrisma.callSession.findMany).not.toHaveBeenCalled();

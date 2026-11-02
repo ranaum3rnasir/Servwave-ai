@@ -62,6 +62,8 @@ beforeEach(() => {
 /** What every person here may read: the stock page opens, and nothing on it can be written. */
 const READ = ['View stock', 'View price book', 'View purchase orders', 'View vendors'];
 
+// A Create switch is passed with the Edit switch it needs (Create price book items needs Edit price book items, Create
+// purchase orders needs Edit purchase orders, Create vendors needs Edit vendors).
 function renderStock(...writes: string[]) {
   return renderWithProviders(<InventoryPage />, {
     ability: abilityWithSwitches(...READ, ...writes),
@@ -157,7 +159,7 @@ describe('Items tab and item detail - each write control follows its own switch'
   });
 
   it('Create price book items gives add item and import', async () => {
-    renderStock('Create price book items');
+    renderStock('Create price book items', 'Edit price book items');
     await screen.findByText('Brass Hinge');
 
     expect(screen.getByRole('button', { name: /^Import CSV$/ })).toBeInTheDocument();
@@ -173,7 +175,7 @@ describe('Items tab and item detail - each write control follows its own switch'
   });
 
   it('Create purchase orders gives Generate PO, and only that', async () => {
-    renderStock('Create purchase orders');
+    renderStock('Create purchase orders', 'Edit purchase orders');
     await screen.findByText('Brass Hinge');
 
     expect(await screen.findByRole('button', { name: /^Generate PO/ })).toBeInTheDocument();
@@ -200,7 +202,7 @@ describe('Dialogs opened from the Items tab - their own write controls follow th
   }
 
   it('the new item form has no starting-stock section without Edit stock (its quantity write is an Edit stock call)', async () => {
-    renderStock('Create price book items');
+    renderStock('Create price book items', 'Edit price book items');
     const dialog = await openAddItem();
 
     expect(dialog.getByLabelText(/Item Name/)).toBeInTheDocument();
@@ -208,35 +210,35 @@ describe('Dialogs opened from the Items tab - their own write controls follow th
   });
 
   it('the new item form has the starting-stock section with Edit stock', async () => {
-    renderStock('Create price book items', 'Edit stock');
+    renderStock('Create price book items', 'Edit price book items', 'Edit stock');
     const dialog = await openAddItem();
 
     expect(dialog.getByText('Starting Stock')).toBeInTheDocument();
   });
 
   it('the starting-stock location picker offers no new location without Create stock, and offers one with it', async () => {
-    const { unmount } = renderStock('Create price book items', 'Edit stock');
+    const { unmount } = renderStock('Create price book items', 'Edit price book items', 'Edit stock');
     let dialog = await openAddItem();
     await userEvent.click(dialog.getByRole('combobox', { name: 'Starting stock location' }));
     await screen.findByRole('option', { name: 'Main Warehouse' });
     expect(screen.queryByRole('option', { name: /Add new location/ })).not.toBeInTheDocument();
     unmount();
 
-    renderStock('Create price book items', 'Edit stock', 'Create stock');
+    renderStock('Create price book items', 'Edit price book items', 'Edit stock', 'Create stock');
     dialog = await openAddItem();
     await userEvent.click(dialog.getByRole('combobox', { name: 'Starting stock location' }));
     expect(await screen.findByRole('option', { name: /Add new location/ })).toBeInTheDocument();
   });
 
   it('the vendor picker offers no new vendor without Create vendors, and offers one with it', async () => {
-    const { unmount } = renderStock('Create price book items');
+    const { unmount } = renderStock('Create price book items', 'Edit price book items');
     let dialog = await openAddItem();
     await userEvent.click(dialog.getByRole('combobox', { name: 'Vendor / Source' }));
     await screen.findByRole('option', { name: /Select vendor/ });
     expect(screen.queryByRole('option', { name: /Add new vendor/ })).not.toBeInTheDocument();
     unmount();
 
-    renderStock('Create price book items', 'Create vendors');
+    renderStock('Create price book items', 'Edit price book items', 'Create vendors', 'Edit vendors');
     dialog = await openAddItem();
     await userEvent.click(dialog.getByRole('combobox', { name: 'Vendor / Source' }));
     expect(await screen.findByRole('option', { name: /Add new vendor/ })).toBeInTheDocument();

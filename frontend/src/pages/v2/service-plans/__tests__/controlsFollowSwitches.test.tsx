@@ -15,6 +15,7 @@ import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import { buildAbility, type AbilityRule } from '@/lib/ability';
 import { renderWithProviders } from '@/__tests__/helpers';
+import { impossibleOnPurpose } from '@/__tests__/support/backendSwitchCatalog';
 import { useAuthStore } from '@/stores/auth.store';
 import type { ServicePlan } from '@/lib/api/service-plans';
 
@@ -80,7 +81,8 @@ function signedInWithRoleName(role: string) {
   ) as typeof useAuthStore);
 }
 
-async function openSheet(rules: AbilityRule[], served: ServicePlan, role: string) {
+/** `impossibleOnPurpose` names why a case holds a set the catalog refuses; the harness then lets it through. */
+async function openSheet(rules: AbilityRule[], served: ServicePlan, role: string, impossibleOnPurposeReason?: string) {
   signedInWithRoleName(role);
   mockApi.get.mockImplementation(async (url: string) => {
     if (url === '/api/service-plans') return { data: { servicePlans: [served] } };
@@ -88,7 +90,11 @@ async function openSheet(rules: AbilityRule[], served: ServicePlan, role: string
     return { data: {} };
   });
   const user = userEvent.setup();
-  renderWithProviders(<ServicePlansPage />, { initialEntries: ['/service-plans'], ability: buildAbility(rules) });
+  const ability = buildAbility(rules);
+  renderWithProviders(<ServicePlansPage />, {
+    initialEntries: ['/service-plans'],
+    ability: impossibleOnPurposeReason === undefined ? ability : impossibleOnPurpose(ability, impossibleOnPurposeReason),
+  });
   await user.click(await screen.findByText(served.service_plan_number));
   return within(await screen.findByRole('dialog'));
 }
@@ -101,7 +107,8 @@ describe('the page header', () => {
   it.each(['ADMIN', 'TECHNICIAN'])('offers New Plan to a %s who holds Create service plans', async (role) => {
     signedInWithRoleName(role);
     mockApi.get.mockResolvedValue({ data: { servicePlans: [] } });
-    renderWithProviders(<ServicePlansPage />, { ability: buildAbility([VIEW, CREATE]) });
+    // Create service plans needs Edit service plans.
+    renderWithProviders(<ServicePlansPage />, { ability: buildAbility([VIEW, EDIT, CREATE]) });
     expect(await screen.findByRole('button', { name: 'New Plan' })).toBeInTheDocument();
   });
 
@@ -150,7 +157,10 @@ describe('an active plan', () => {
   });
 
   it('offers none of them with Create and Delete service plans but not Edit', async () => {
-    const sheet = await openSheet([VIEW, CREATE, DELETE], ACTIVE, 'DISPATCHER');
+    const sheet = await openSheet(
+      [VIEW, CREATE, DELETE], ACTIVE, 'DISPATCHER',
+      'PENDING RAN: Create service plans without Edit service plans, which the catalog refuses; the case proves Create and Delete draw none of the Edit controls.',
+    );
     expect(await sheet.findByText('Quarterly pest control')).toBeInTheDocument();
     for (const name of ['Renew', 'Cancel plan', 'Schedule visit', 'Edit']) {
       expect(sheet.queryByRole('button', { name })).toBeNull();

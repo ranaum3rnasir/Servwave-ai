@@ -148,14 +148,16 @@ describe("the call drawer follows View transcript", () => {
   });
 
   it("works from the switch alone: a custom role with View transcript on and every other call switch off still reads it", () => {
-    renderDrawer(abilityWithSwitches("View transcript"), SPOKEN_CALL);
+    // View transcript needs View communication.
+    renderDrawer(abilityWithSwitches("View communication", "View transcript"), SPOKEN_CALL);
 
     expect(screen.getByText(SUMMARY)).toBeInTheDocument();
     expect(screen.getByText(spokenText(TRANSCRIPT))).toBeInTheDocument();
   });
 
   it("keeps the review flag, which is not part of what was said but a call insight (S08.13), when View transcript is off", () => {
-    renderDrawer(abilityWithSwitches("See call insights"), { ...SILENT_CALL, reviewFlag: "Needs a manager's look" } as CallSession);
+    // See call insights needs View communication.
+    renderDrawer(abilityWithSwitches("View communication", "See call insights"), { ...SILENT_CALL, reviewFlag: "Needs a manager's look" } as CallSession);
 
     expect(screen.getByText("Needs a manager's look")).toBeInTheDocument();
     expect(screen.queryByText("Transcript")).not.toBeInTheDocument();

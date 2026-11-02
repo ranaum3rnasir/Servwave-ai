@@ -487,7 +487,8 @@ describe('v2 EventEditor', () => {
 
   it('with the phone service, Call opens the dialer attributed to the visit and the customer', async () => {
     phoneService.value = true;
-    holdSwitches(['Contact customers']);
+    // Contact customers needs View communication.
+    holdSwitches(['View communication', 'Contact customers']);
     const { onClose } = renderEditor();
     fireEvent.click(await screen.findByLabelText('Call Acme Corp'));
     expect(vi.mocked(requestCall)).toHaveBeenCalledWith('555-0199', {
@@ -501,7 +502,8 @@ describe('v2 EventEditor', () => {
 
   it('a walkthrough call is attributed to its lead', async () => {
     phoneService.value = true;
-    holdSwitches(['Contact customers']);
+    // Contact customers needs View communication.
+    holdSwitches(['View communication', 'Contact customers']);
     renderEditor({ event: { ...walkthrough, raw: { ...walkthrough.raw, customer: { phone: '555-0177' } } } });
     fireEvent.click(await screen.findByLabelText('Call Acme Corp'));
     expect(vi.mocked(requestCall)).toHaveBeenCalledWith('555-0177', {

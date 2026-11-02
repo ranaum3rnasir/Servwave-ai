@@ -18,6 +18,7 @@ import {
   mockAuthAs, mockRoleSwitches, authHeader,
   ALPHA_ORG_ID, LEAD_FIXTURE, JOB_FIXTURE, CUSTOMER_FIXTURE, TEST_USERS,
 } from './helpers';
+import { withDependantsOff } from './support/switchDependants';
 // Roles & Permissions S01.10: Access Communication is on in every preset, Sales included, so the cases below that
 // need a caller without the section gate turn the switch off (a custom role with it off) instead of leaning on SALES.
 
@@ -101,7 +102,7 @@ describe('#2046 the section gate — 403 without access_inbox, 200 with it (one 
   for (const route of GATED_ROUTES) {
     it(`${route.file}: 403 for SALES (holds read+create Communication, not access_inbox)`, async () => {
       mockAuthAs('sales', route.demoOrgOnly ? { is_demo: true } : {});
-      mockRoleSwitches({ access_communication: false });
+      mockRoleSwitches(withDependantsOff(['access_communication']));
       const res = await request(app)[route.method](route.path).set(authHeader('sales'));
       expect(res.status).toBe(403);
       expect(res.body).toEqual({ error: 'Insufficient permissions' });
@@ -257,7 +258,7 @@ const EXISTING_SMS_THREAD_ID = 'a1b2c3d4-0000-0000-0000-000000000002';
 describe('#2046 R1 — originating a new unanchored conversation by number requires access_inbox', () => {
   it('SALES (create Communication, no access_inbox) toNumber to a NEW number — 403, nothing created or sent', async () => {
     mockAuthAs('sales');
-    mockRoleSwitches({ access_communication: false });
+    mockRoleSwitches(withDependantsOff(['access_communication']));
     mockSalesWithCreateCommunication();
     mockPrisma.customer.findFirst.mockResolvedValue(null);
     mockPrisma.vendor.findFirst.mockResolvedValue(null);

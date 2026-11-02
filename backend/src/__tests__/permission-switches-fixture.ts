@@ -16,6 +16,7 @@ import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { clearSwitchCacheForOrg, clearSwitchCacheForUser } from '../lib/permissions/switches/cache';
 import type { SwitchValue } from '../lib/permissions/switches/catalog';
 import { validateSwitchSet } from '../lib/permissions/switches/validate';
+import { assertPossibleSwitchSet } from './support/switchDependants';
 import { setFirstOwner } from '../lib/users/first-owner';
 
 export type Person = { id: string; email: string };
@@ -141,14 +142,26 @@ export function switchFixture(db: PrismaClient, loadApp: () => Promise<Parameter
    * 200 switches pays for every person it builds. The set still has to pass the catalog's validator, and is refused the same
    * way when it does not, so a fixture never holds a combination the product refuses. Pass every switch the case is
    * about (a switch with no stored row falls back to the preset of the role's base); a suite that tests the writer itself
-   * calls setRoleSwitchValues.
+   * calls setRoleSwitchValues. The role's whole set after the write (its preset and stored values with these laid over
+   * them) must be one a person can hold too; `impossibleOnPurpose` (with its reason) lets a test store one on purpose.
    */
-  async function setRoleSwitches(org: string, key: string, values: Record<string, SwitchValue>) {
+  async function setRoleSwitches(
+    org: string,
+    key: string,
+    values: Record<string, SwitchValue>,
+    options: { impossibleOnPurpose?: string } = {},
+  ) {
     const violations = validateSwitchSet(values);
-    if (violations.length) {
+    if (violations.length && options.impossibleOnPurpose === undefined) {
       const { InvalidSwitchSetError } = await import('../lib/permissions/switches/store.js');
       throw new InvalidSwitchSetError(violations);
     }
+    // The values alone can pass while the role's whole set does not: a root turned off here with a dependant left on by
+    // the preset or an earlier call. Check what the role will hold, read the way the product reads it.
+    const role = await db.customRole.findFirst({ where: { organization_id: org, key }, select: { base_role: true } });
+    const { resolveRoleSwitchValues } = await import('../lib/permissions/switches/store.js');
+    const held = await resolveRoleSwitchValues(org, key, role?.base_role ?? key);
+    assertPossibleSwitchSet({ ...held, ...values }, `setRoleSwitches (${key})`, options);
     // Replace the stored rows of these switches (what an upsert each does), so a case can change a role it built before.
     const switchKeys = Object.keys(values);
     await db.permissionRoleSwitch.deleteMany({ where: { organization_id: org, role_key: key, switch_key: { in: switchKeys } } });

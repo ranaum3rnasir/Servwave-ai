@@ -19,6 +19,8 @@ const mockApi = vi.mocked(api);
 const VIEW_STOCK: AbilityRule = { action: 'read', subject: 'Inventory' };
 const EDIT_STOCK: AbilityRule = { action: 'update', subject: 'Inventory' };
 const SEE_FINANCIAL_DATA: AbilityRule = { action: 'read', subject: 'Pricing' };
+// See costs needs See prices.
+const SEE_PRICES: AbilityRule = { action: 'read', subject: 'Prices' };
 const VIEW_VENDORS: AbilityRule = { action: 'read', subject: 'Vendor' };
 
 function makeStage(over: Partial<JobStage> = {}): JobStage {
@@ -104,7 +106,7 @@ describe('stage detail dialog - line vendor and unit cost', () => {
   });
 
   it('shows the vendor with View vendors and the unit cost with See costs', async () => {
-    renderDetail([VIEW_STOCK, VIEW_VENDORS, SEE_FINANCIAL_DATA]);
+    renderDetail([VIEW_STOCK, VIEW_VENDORS, SEE_PRICES, SEE_FINANCIAL_DATA]);
 
     expect(await screen.findByText(/Northwind Supply/)).toBeInTheDocument();
     expect(screen.getByText(/\$12\.50/)).toBeInTheDocument();
@@ -113,7 +115,7 @@ describe('stage detail dialog - line vendor and unit cost', () => {
   it('draws no unit cost for a line the response sent without one, even with See costs', async () => {
     const noCost = makeStage();
     delete noCost.items[0]!.unitCost;
-    renderDetail([VIEW_STOCK, SEE_FINANCIAL_DATA], noCost);
+    renderDetail([VIEW_STOCK, SEE_PRICES, SEE_FINANCIAL_DATA], noCost);
 
     await screen.findByText('Line items (1)');
     expect(screen.queryByText(/unit cost/i)).toBeNull();
@@ -133,7 +135,7 @@ describe('pickup ticket preview - vendor column and cost figures', () => {
   });
 
   it('shows the vendor with View vendors and the cost figures with See costs', async () => {
-    renderPreview([VIEW_STOCK, VIEW_VENDORS, SEE_FINANCIAL_DATA]);
+    renderPreview([VIEW_STOCK, VIEW_VENDORS, SEE_PRICES, SEE_FINANCIAL_DATA]);
 
     expect(await screen.findByText(/Northwind Supply/)).toBeInTheDocument();
     expect(screen.getByText('Unit cost')).toBeInTheDocument();
@@ -146,7 +148,7 @@ describe('pickup ticket preview - vendor column and cost figures', () => {
   it('never prints a zero cost for a line with no cost: no total when no line has one', async () => {
     const noCost = makeStage();
     delete noCost.items[0]!.unitCost;
-    renderPreview([VIEW_STOCK, SEE_FINANCIAL_DATA], noCost);
+    renderPreview([VIEW_STOCK, SEE_PRICES, SEE_FINANCIAL_DATA], noCost);
 
     await screen.findByText('Dome Camera');
     expect(screen.queryByText(/Est\. value at cost/)).toBeNull();
@@ -166,7 +168,7 @@ describe("job page staging section - the response's lines, read only", () => {
 
   it('shows the vendor with View vendors and the unit cost with See costs', async () => {
     renderWithProviders(<JobStagesSection jobId="job-1" />, {
-      ability: buildAbility([VIEW_STOCK, VIEW_VENDORS, SEE_FINANCIAL_DATA]),
+      ability: buildAbility([VIEW_STOCK, VIEW_VENDORS, SEE_PRICES, SEE_FINANCIAL_DATA]),
     });
 
     expect(await screen.findByText(/Northwind Supply/)).toBeInTheDocument();

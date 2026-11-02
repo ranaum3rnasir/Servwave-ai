@@ -111,6 +111,8 @@ describe('S07.16 - the Price Book page with View price book alone', () => {
 
   describe('the item form', () => {
     const CREATE: AbilityRule = { action: 'create', subject: 'PriceBook' };
+    // Create price book items needs Edit price book items.
+    const EDIT: AbilityRule = { action: 'update', subject: 'PriceBook' };
 
     async function openAddItem(ability: ReturnType<typeof held>) {
       renderWithProviders(<PriceBookPage />, { initialEntries: ['/inventory/price-book'], ability });
@@ -120,7 +122,7 @@ describe('S07.16 - the Price Book page with View price book alone', () => {
     }
 
     it('has no vendor field and no reserve levels without View vendors and Edit stock', async () => {
-      await openAddItem(held(VIEW_PRICE_BOOK, CREATE));
+      await openAddItem(held(VIEW_PRICE_BOOK, CREATE, EDIT));
       expect(screen.queryByText('Vendor / Source')).not.toBeInTheDocument();
       expect(screen.queryByText('Starting Stock')).not.toBeInTheDocument();
       // Opening the form is no licence to ask for stock or vendor lists the person would be refused.
@@ -130,7 +132,7 @@ describe('S07.16 - the Price Book page with View price book alone', () => {
 
     it('shows the vendor field with View vendors and the reserve levels with Edit stock', async () => {
       await openAddItem(held(
-        VIEW_PRICE_BOOK, CREATE,
+        VIEW_PRICE_BOOK, CREATE, EDIT,
         { action: 'read', subject: 'Vendor' },
         { action: 'read', subject: 'Inventory' }, { action: 'update', subject: 'Inventory' },
       ));

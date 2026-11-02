@@ -42,6 +42,8 @@ const createAbility = () =>
   buildAbility([
     { action: 'create', subject: 'Customer' },
     { action: 'read', subject: 'Customer' },
+    // Create customers needs Edit customers.
+    { action: 'update', subject: 'Customer' },
   ]);
 /** A role with real read access but no create grant — e.g. a locked-down custom role. */
 const noCreateAbility = () => buildAbility([{ action: 'read', subject: 'Customer' }]);

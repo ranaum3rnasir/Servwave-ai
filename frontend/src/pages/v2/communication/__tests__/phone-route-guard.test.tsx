@@ -59,7 +59,11 @@ function renderPhoneRoute(options: { ability: AppAbility }) {
 describe('/phone route guard (Task A3)', () => {
   it('redirects to "/" when the org lacks Communication access, even with the CASL grant', () => {
     vi.mocked(useFeature).mockReturnValue(false);
-    const ability = buildAbility([{ action: 'create', subject: 'Communication' }]);
+    // Contact customers needs View communication.
+    const ability = buildAbility([
+      { action: 'create', subject: 'Communication' },
+      { action: 'read', subject: 'Communication' },
+    ]);
 
     renderPhoneRoute({ ability });
 
@@ -78,7 +82,11 @@ describe('/phone route guard (Task A3)', () => {
 
   it('renders the /phone shell for a permitted user (org access + CASL grant)', () => {
     vi.mocked(useFeature).mockReturnValue(true);
-    const ability = buildAbility([{ action: 'create', subject: 'Communication' }]);
+    // Contact customers needs View communication.
+    const ability = buildAbility([
+      { action: 'create', subject: 'Communication' },
+      { action: 'read', subject: 'Communication' },
+    ]);
 
     renderPhoneRoute({ ability });
 

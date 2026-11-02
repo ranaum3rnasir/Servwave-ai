@@ -78,7 +78,10 @@ beforeEach(() => {
 });
 
 const READ_ONLY: AbilityRule[] = [{ action: 'read', subject: 'Vendor' }];
-const FINANCIAL: AbilityRule[] = [{ action: 'read', subject: 'Pricing' }];
+// See costs needs See prices.
+const FINANCIAL: AbilityRule[] = [{ action: 'read', subject: 'Prices' }, { action: 'read', subject: 'Pricing' }];
+// Create vendors needs Edit vendors.
+const CREATE_VENDORS: AbilityRule[] = [{ action: 'update', subject: 'Vendor' }, { action: 'create', subject: 'Vendor' }];
 const READ_POS: AbilityRule[] = [{ action: 'read', subject: 'PurchaseOrder' }];
 
 function renderVendors(...rules: AbilityRule[][]) {
@@ -112,14 +115,14 @@ describe('the account number follows See costs', () => {
   });
 
   it('is in the detail dialog and the Add Vendor form with it, and in neither without it', async () => {
-    const withIt = renderVendors(FINANCIAL, [{ action: 'create', subject: 'Vendor' }]);
+    const withIt = renderVendors(FINANCIAL, CREATE_VENDORS);
     await userEvent.click((await screen.findByText('Acme Supply')).closest('button')!);
     const dialog = await screen.findByRole('dialog');
     expect(within(dialog).getByText('Account')).toBeInTheDocument();
     expect(within(dialog).getByText(/acct ACCT-4471/)).toBeInTheDocument();
     withIt.unmount();
 
-    renderVendors([{ action: 'create', subject: 'Vendor' }]);
+    renderVendors(CREATE_VENDORS);
     await userEvent.click((await screen.findByText('Acme Supply')).closest('button')!);
     const without = await screen.findByRole('dialog');
     expect(within(without).queryByText('Account')).not.toBeInTheDocument();
@@ -128,12 +131,12 @@ describe('the account number follows See costs', () => {
   });
 
   it('has an Account Number field on the Add Vendor form only with See costs', async () => {
-    const withIt = renderVendors(FINANCIAL, [{ action: 'create', subject: 'Vendor' }]);
+    const withIt = renderVendors(FINANCIAL, CREATE_VENDORS);
     await userEvent.click(await screen.findByRole('button', { name: /add vendor/i }));
     expect(await screen.findByPlaceholderText('Your account # with this vendor')).toBeInTheDocument();
     withIt.unmount();
 
-    renderVendors([{ action: 'create', subject: 'Vendor' }]);
+    renderVendors(CREATE_VENDORS);
     await userEvent.click(await screen.findByRole('button', { name: /add vendor/i }));
     await screen.findByRole('dialog');
     expect(screen.queryByPlaceholderText('Your account # with this vendor')).not.toBeInTheDocument();
@@ -208,7 +211,7 @@ describe('Export vendors gates the spend file', () => {
 
 describe('Create, Edit and Delete vendors draw one set of controls each', () => {
   it('shows Add Vendor and Add category only with Create vendors', async () => {
-    const withIt = renderVendors([{ action: 'create', subject: 'Vendor' }]);
+    const withIt = renderVendors(CREATE_VENDORS);
     expect(await screen.findByRole('button', { name: /add vendor/i })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /add category/i })).toBeInTheDocument();
     withIt.unmount();

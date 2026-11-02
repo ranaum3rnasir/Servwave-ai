@@ -112,9 +112,11 @@ beforeEach(() => {
 });
 
 const READ: AbilityRule[] = [{ action: 'read', subject: 'PurchaseOrder' }];
-const FINANCIAL: AbilityRule[] = [{ action: 'read', subject: 'Pricing' }];
+// See costs needs See prices.
+const FINANCIAL: AbilityRule[] = [{ action: 'read', subject: 'Pricing' }, { action: 'read', subject: 'Prices' }];
 const EXPORT: AbilityRule[] = [{ action: 'export', subject: 'PurchaseOrder' }];
-const CREATE: AbilityRule[] = [{ action: 'create', subject: 'PurchaseOrder' }];
+// Create purchase orders needs Edit purchase orders.
+const CREATE: AbilityRule[] = [{ action: 'create', subject: 'PurchaseOrder' }, { action: 'update', subject: 'PurchaseOrder' }];
 const VENDORS: AbilityRule[] = [{ action: 'read', subject: 'Vendor' }];
 
 const abilityOf = (...rules: AbilityRule[][]) => buildAbility([...READ, ...rules.flat()]);

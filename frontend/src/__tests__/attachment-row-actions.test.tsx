@@ -50,6 +50,13 @@ const fullAttachmentAbility = () =>
     { action: 'update', subject: 'Invoice' },
     { action: 'update', subject: 'Customer' },
     { action: 'update', subject: 'Task' },
+    // Each record's Edit needs its View; Edit invoices also needs See prices.
+    { action: 'read', subject: 'Job' },
+    { action: 'read', subject: 'Lead' },
+    { action: 'read', subject: 'Invoice' },
+    { action: 'read', subject: 'Customer' },
+    { action: 'read', subject: 'Task' },
+    { action: 'read', subject: 'Prices' },
   ]);
 
 const noUpdateAttachmentAbility = () =>

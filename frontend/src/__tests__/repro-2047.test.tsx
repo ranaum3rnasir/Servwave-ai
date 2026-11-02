@@ -64,6 +64,13 @@ const TAB_ATTACHMENT = {
 const fullAttachmentAbility = () =>
   buildAbility([
     // Uploads are the record's own data (P10): the record's Edit renames and removes its files.
+    // Each Edit needs its View; Edit invoices also needs See prices.
+    { action: 'read', subject: 'Job' },
+    { action: 'read', subject: 'Lead' },
+    { action: 'read', subject: 'Invoice' },
+    { action: 'read', subject: 'Customer' },
+    { action: 'read', subject: 'Task' },
+    { action: 'read', subject: 'Prices' },
     { action: 'update', subject: 'Job' },
     { action: 'update', subject: 'Lead' },
     { action: 'update', subject: 'Invoice' },

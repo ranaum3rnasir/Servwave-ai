@@ -23,6 +23,7 @@ import api from '@/lib/axios';
 import { renderWithProviders, seedMySwitches } from './helpers';
 import { LODetailSheet } from '@/components/inventory/lo/LODetailSheet';
 import { buildAbility } from '@/lib/ability';
+import { impossibleOnPurpose } from '@/__tests__/support/backendSwitchCatalog';
 import type { LogisticOrderDetail } from '@/lib/api/logisticOrders';
 
 const h = vi.hoisted(() => ({
@@ -134,8 +135,10 @@ function makeDetail(over: Partial<LogisticOrderDetail> = {}): LogisticOrderDetai
   };
 }
 
+// Every logistic-order switch needs View logistic orders; Create logistic orders also needs Edit logistic orders.
 const grantHolder = () =>
   buildAbility([
+    { action: 'read', subject: 'LogisticOrder' },
     { action: 'approve', subject: 'LogisticOrder' },
     { action: 'process', subject: 'LogisticOrder' },
     { action: 'update', subject: 'LogisticOrder' },
@@ -143,29 +146,35 @@ const grantHolder = () =>
   ]);
 const submitter = () =>
   buildAbility([
+    { action: 'read', subject: 'LogisticOrder' },
     { action: 'submit', subject: 'LogisticOrder' },
     { action: 'create', subject: 'LogisticOrder' },
     { action: 'update', subject: 'LogisticOrder' },
   ]);
 const approver = () =>
   buildAbility([
+    { action: 'read', subject: 'LogisticOrder' },
     { action: 'approve', subject: 'LogisticOrder' },
     { action: 'update', subject: 'LogisticOrder' },
   ]);
 const processor = () =>
   buildAbility([
+    { action: 'read', subject: 'LogisticOrder' },
     { action: 'process', subject: 'LogisticOrder' },
     { action: 'update', subject: 'LogisticOrder' },
   ]);
-const updater = () => buildAbility([{ action: 'update', subject: 'LogisticOrder' }]);
+const updater = () => buildAbility([{ action: 'update', subject: 'LogisticOrder' }, { action: 'read', subject: 'LogisticOrder' }]);
 // SALES default grants (backend defaultGrants.ts): read + create + submit on LogisticOrder, but NO
 // update — they raise a material request and submit it, they do not edit an order after it exists.
 const salesActor = () =>
-  buildAbility([
-    { action: 'read', subject: 'LogisticOrder' },
-    { action: 'create', subject: 'LogisticOrder' },
-    { action: 'submit', subject: 'LogisticOrder' },
-  ]);
+  impossibleOnPurpose(
+    buildAbility([
+      { action: 'read', subject: 'LogisticOrder' },
+      { action: 'create', subject: 'LogisticOrder' },
+      { action: 'submit', subject: 'LogisticOrder' },
+    ]),
+    'PENDING RAN: the SALES cases are about create+submit WITHOUT update, which the catalog no longer allows (Create logistic orders needs Edit logistic orders).',
+  );
 
 function renderSheet(
   detail: LogisticOrderDetail | null,
@@ -380,6 +389,9 @@ describe('LODetailSheet — stock activity link', () => {
   // (Roles & Permissions S07.12: see_inventory_activity on Inventory), never the order's own abilities.
   const activityReader = () =>
     buildAbility([
+      { action: 'read', subject: 'LogisticOrder' },
+      // See inventory activity needs View stock.
+      { action: 'read', subject: 'Inventory' },
       { action: 'update', subject: 'LogisticOrder' },
       { action: 'see_inventory_activity', subject: 'Inventory' },
     ]);
@@ -427,6 +439,7 @@ describe('LODetailSheet — stock activity link', () => {
 describe('LODetailSheet — cancel takes an optional reason', () => {
   it('confirms a cancellation with an empty reason (asymmetry vs required adjustment reason)', async () => {
     const ability = buildAbility([
+      { action: 'read', subject: 'LogisticOrder' },
       { action: 'cancel', subject: 'LogisticOrder' },
       { action: 'update', subject: 'LogisticOrder' },
     ]);
@@ -493,6 +506,7 @@ describe('LODetailSheet - FormField adoption (phase 11b)', () => {
 
   it('wires the cancel Reason label to its textarea and keeps the label text one node', async () => {
     const ability = buildAbility([
+      { action: 'read', subject: 'LogisticOrder' },
       { action: 'cancel', subject: 'LogisticOrder' },
       { action: 'update', subject: 'LogisticOrder' },
     ]);

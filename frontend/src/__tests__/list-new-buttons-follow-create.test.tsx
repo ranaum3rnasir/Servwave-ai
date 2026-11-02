@@ -57,21 +57,37 @@ interface ListPage {
   create: AbilityRule;
   /** What the person can already do on the list with Create off: they can see it. */
   view: AbilityRule;
+  /** The other switches the Create switch requires on (catalog `requires`), as the rules they compile to. */
+  needs: AbilityRule[];
 }
+
+// The Edit switches a Create switch requires, as the rules each compiles to.
+const EDIT_ESTIMATES: AbilityRule[] = ['update', 'send', 'cancel', 'revise'].map((action) => ({ action, subject: 'Estimate' }) as AbilityRule);
+const SEE_PRICES: AbilityRule = { action: 'read', subject: 'Prices' };
 
 const LISTS: ListPage[] = [
   { name: 'Leads', Page: LeadsPage, path: '/leads', button: 'New Lead',
-    create: { action: 'create', subject: 'Lead' }, view: { action: 'read', subject: 'Lead' } },
+    create: { action: 'create', subject: 'Lead' }, view: { action: 'read', subject: 'Lead' },
+    needs: [{ action: 'update', subject: 'Lead' }] },
   { name: 'Customers', Page: CustomersPage, path: '/customers', button: 'Add Customer',
-    create: { action: 'create', subject: 'Customer' }, view: { action: 'read', subject: 'Customer' } },
+    create: { action: 'create', subject: 'Customer' }, view: { action: 'read', subject: 'Customer' },
+    needs: [{ action: 'update', subject: 'Customer' }] },
   { name: 'Jobs', Page: JobsPage, path: '/jobs', button: 'New Job',
-    create: { action: 'create', subject: 'Job' }, view: { action: 'read', subject: 'Job' } },
+    create: { action: 'create', subject: 'Job' }, view: { action: 'read', subject: 'Job' },
+    needs: [{ action: 'update', subject: 'Job' }] },
   { name: 'Estimates', Page: EstimatesPage, path: '/estimates', button: 'New Estimate',
-    create: { action: 'create', subject: 'Estimate' }, view: { action: 'read', subject: 'Estimate' } },
+    create: { action: 'create', subject: 'Estimate' }, view: { action: 'read', subject: 'Estimate' },
+    needs: [...EDIT_ESTIMATES, SEE_PRICES] },
   { name: 'Tasks', Page: TasksHubPage, path: '/tasks', button: 'New Task',
-    create: { action: 'create', subject: 'Task' }, view: { action: 'read', subject: 'Task' } },
+    create: { action: 'create', subject: 'Task' }, view: { action: 'read', subject: 'Task' },
+    needs: [{ action: 'update', subject: 'Task' }] },
   { name: 'Invoices', Page: InvoicesPage, path: '/invoices', button: 'New Invoice',
-    create: { action: 'create_standalone', subject: 'Invoice' }, view: { action: 'read', subject: 'Invoice' } },
+    create: { action: 'create_standalone', subject: 'Invoice' }, view: { action: 'read', subject: 'Invoice' },
+    // Standalone invoices needs Create invoices, which needs Edit invoices and See prices.
+    needs: [
+      { action: 'create', subject: 'Invoice' }, { action: 'update', subject: 'Invoice' }, { action: 'send', subject: 'Invoice' },
+      SEE_PRICES,
+    ] },
 ];
 
 class ResizeObserverStub {
@@ -89,9 +105,9 @@ beforeEach(() => {
   answerEmptyLists();
 });
 
-describe.each(LISTS)('the $name list page (S02.24)', ({ Page, path, button, create, view }) => {
+describe.each(LISTS)('the $name list page (S02.24)', ({ Page, path, button, create, view, needs }) => {
   it('shows its New button to a person with the Create switch on', async () => {
-    renderWithProviders(<Page />, { initialEntries: [path], ability: buildAbility([view, create]) });
+    renderWithProviders(<Page />, { initialEntries: [path], ability: buildAbility([view, ...needs, create]) });
 
     expect(await screen.findByRole('button', { name: button })).toBeInTheDocument();
   });
@@ -111,6 +127,10 @@ describe('the invoices list creates the standalone invoice', () => {
       initialEntries: ['/invoices'],
       ability: buildAbility([
         { action: 'read', subject: 'Invoice' },
+        // Create invoices needs Edit invoices and See prices.
+        { action: 'update', subject: 'Invoice' },
+        { action: 'send', subject: 'Invoice' },
+        SEE_PRICES,
         { action: 'create', subject: 'Invoice' },
       ]),
     });

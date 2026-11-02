@@ -17,7 +17,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import api from '@/lib/axios';
 import { buildAbility, type AbilityRule } from '@/lib/ability';
 import { renderWithProviders } from '@/__tests__/helpers';
-import { catalogToggle, type PresetRole } from '@/__tests__/support/backendSwitchCatalog';
+import { catalogToggle, impossibleOnPurpose, labelsWithRequirements, type PresetRole } from '@/__tests__/support/backendSwitchCatalog';
 
 import { NewMenu } from '../components/newMenu';
 
@@ -39,16 +39,34 @@ const ITEMS = [
 
 type Item = (typeof ITEMS)[number];
 
+/**
+ * The other switches a Create switch needs on (the catalog's `requires`, followed down the chain), leaving out the View
+ * switches this table sets itself: a person with the Create switch on holds these too.
+ */
+const createAlsoNeeds = (create: string) =>
+  labelsWithRequirements(create).filter((label) => label !== create && !ITEMS.some((entry) => entry.show === label));
+
+/** A person with a Create switch on and its View switch off, which the catalog no longer allows. */
+const CREATE_WITHOUT_VIEW =
+  'PENDING RAN: this case is about a Create switch on with its View switch off, which the catalog no longer allows (each Create switch needs its View switch).';
+
 /** The rules and the "me" answer of a person whose Create and View switches are exactly `on` (everything else off). */
-function personWith(on: ReadonlySet<string>) {
+function personWith(on: ReadonlySet<string>, impossibleReason?: string) {
   const values: Record<string, boolean> = {};
   const rules: AbilityRule[] = [];
   for (const entry of ITEMS) {
     if (entry.create) values[catalogToggle(entry.create).key] = on.has(entry.create);
     values[catalogToggle(entry.show).key] = on.has(entry.show);
-    if (entry.create && on.has(entry.create)) rules.push(entry.rule as AbilityRule);
+    if (entry.create && on.has(entry.create)) {
+      rules.push(entry.rule as AbilityRule);
+      for (const label of createAlsoNeeds(entry.create)) {
+        values[catalogToggle(label).key] = true;
+        rules.push(...(catalogToggle(label).grants as AbilityRule[]));
+      }
+    }
+    if (on.has(entry.show)) rules.push(...(catalogToggle(entry.show).grants as AbilityRule[]));
   }
-  return { values, rules };
+  return { values, rules, impossibleReason };
 }
 
 /** A person holding what a built-in role's preset holds for every Create and Show switch above, as a custom role. */
@@ -67,7 +85,10 @@ function renderMenu(person: ReturnType<typeof personWith>) {
     if (url === '/api/permission-switches/me') return { data: { admin_box: false, values: person.values, rules: [] } };
     return { data: {} };
   });
-  return renderWithProviders(<NewMenu />, { ability: buildAbility(person.rules) });
+  const ability = buildAbility(person.rules);
+  return renderWithProviders(<NewMenu />, {
+    ability: person.impossibleReason ? impossibleOnPurpose(ability, person.impossibleReason) : ability,
+  });
 }
 
 /**
@@ -102,7 +123,7 @@ describe('the dashboard "New" menu follows Create + View (S02.25)', () => {
       const on = new Set<string>(everythingFor(witness));
       if (createOn) on.add(entry.create!);
       if (showOn) on.add(entry.show);
-      renderMenu(personWith(on));
+      renderMenu(personWith(on, createOn && !showOn ? CREATE_WITHOUT_VIEW : undefined));
 
       const items = await openedItems(witness);
 
@@ -123,7 +144,7 @@ describe('the dashboard "New" menu follows Create + View (S02.25)', () => {
     });
 
     it('is missing with View invoices off, even with Standalone invoices on', async () => {
-      renderMenu(personWith(new Set([...everythingFor(witness), 'Standalone invoices'])));
+      renderMenu(personWith(new Set([...everythingFor(witness), 'Standalone invoices']), CREATE_WITHOUT_VIEW));
 
       const items = await openedItems(witness);
 
@@ -143,7 +164,7 @@ describe('the dashboard "New" menu follows Create + View (S02.25)', () => {
   it('draws nothing until the answer arrives: Create on alone is not enough for the first paint', async () => {
     const person = personWith(new Set(ITEMS.flatMap((entry) => (entry.create ? [entry.create] : []))));
     mockApi.get.mockImplementation(() => new Promise(() => {}));
-    renderWithProviders(<NewMenu />, { ability: buildAbility(person.rules) });
+    renderWithProviders(<NewMenu />, { ability: impossibleOnPurpose(buildAbility(person.rules), CREATE_WITHOUT_VIEW) });
     expect(screen.queryByRole('button', { name: 'New' })).not.toBeInTheDocument();
   });
 

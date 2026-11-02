@@ -17,6 +17,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import api from '@/lib/axios';
+import { buildAbility, type AbilityRule } from '@/lib/ability';
 import { AbilityProvider } from '@/contexts/AbilityContext';
 import { NewEstimateDialog as LegacyNewEstimateDialog } from '@/components/estimates/NewEstimateDialog';
 import { NewMenu } from '@/pages/v2/dashboard/components/newMenu';
@@ -27,7 +28,7 @@ import { AppShell } from '@/ui-kit/components/layout/appShell';
 
 import { renderWithProviders, seedMySwitches } from './helpers';
 import {
-  abilityWithSwitches, catalogToggle, presetSwitchLabels, type PresetRole,
+  abilityWithSwitches, catalogToggle, impossibleOnPurpose, presetSwitchLabels, type PresetRole,
 } from './support/backendSwitchCatalog';
 
 const mockApi = vi.mocked(api);
@@ -41,14 +42,24 @@ const ADD_NEW_CLIENT = { name: /add new client/i };
 const CREATE_LEAD = { name: /create new lead/i };
 const NO_LEAD = { name: /create estimate without a lead/i };
 
-/** A person holding exactly these switches (by the label a person sees): their compiled rules and their own answer. */
-function personWith(labels: string[]) {
+// The switches each entry's switch requires on (the catalog's `requires`), by the label a person sees.
+const CREATE_LEADS_NEEDS = ['View leads', 'Edit leads'];
+const CREATE_CUSTOMERS_NEEDS = ['Edit customers'];
+const STANDALONE_ESTIMATES_NEEDS = ['Create estimates', 'View estimates', 'Edit estimates', 'See prices'];
+
+/**
+ * A person holding exactly these switches (by the label a person sees): their compiled rules and their own answer.
+ * `impossibleOnPurpose` names why a case needs a set the catalog refuses; the harness then lets it through.
+ */
+function personWith(labels: string[], impossibleOnPurposeReason?: string) {
   const values = Object.fromEntries(labels.map((label) => [catalogToggle(label).key, true]));
-  return { ability: abilityWithSwitches(...labels), values };
+  if (impossibleOnPurposeReason === undefined) return { ability: abilityWithSwitches(...labels), values };
+  const rules = labels.flatMap((label) => catalogToggle(label).grants.map((g) => ({ action: g.action, subject: g.subject }) as AbilityRule));
+  return { ability: impossibleOnPurpose(buildAbility(rules), impossibleOnPurposeReason), values };
 }
 
-function serve(values: Record<string, boolean>) {
-  seedMySwitches(values);
+function serve(values: Record<string, boolean>, impossibleOnPurposeReason?: string) {
+  seedMySwitches(values, undefined, impossibleOnPurposeReason === undefined ? {} : { impossibleOnPurpose: impossibleOnPurposeReason });
   mockApi.get.mockImplementation(async (url: string) => {
     if (url === '/api/permission-switches/me') return { data: { admin_box: false, values, rules: [] } };
     if (url === `/api/customers/picker/${CUSTOMER_ID}`) return { data: { customer: CUSTOMER } };
@@ -80,9 +91,9 @@ const DIALOGS: Array<[string, ComponentType<{ open: boolean; onOpenChange: (open
 ];
 
 describe.each(DIALOGS)('%s', (_name, Dialog) => {
-  async function openFor(labels: string[]) {
-    const person = personWith(labels);
-    serve(person.values);
+  async function openFor(labels: string[], impossibleOnPurposeReason?: string) {
+    const person = personWith(labels, impossibleOnPurposeReason);
+    serve(person.values, impossibleOnPurposeReason);
     renderWithProviders(<Dialog open onOpenChange={() => {}} preSelectedCustomerId={CUSTOMER_ID} />, { ability: person.ability });
     await screen.findByText('Jane Doe');
     await screen.findByText('No active leads');
@@ -90,11 +101,20 @@ describe.each(DIALOGS)('%s', (_name, Dialog) => {
 
   describe('Add new client', () => {
     it.each([
-      ['Create customers and View customers both on', ['Create customers', 'View customers'], true],
-      ['Create customers off', ['View customers'], false],
-      ['View customers off', ['Create customers'], false],
-    ])('%s: shown is %s', async (_case, labels, shown) => {
-      await openFor([...labels as string[], 'Create leads']);
+      ['Create customers and View customers both on', ['Create customers', 'View customers', ...CREATE_CUSTOMERS_NEEDS], true, undefined],
+      ['Create customers off', ['View customers'], false, undefined],
+      [
+        'View customers off', ['Create customers'], false,
+        'PENDING RAN: the case is Create customers held without View customers, which the catalog refuses; it proves the dialog still hides Add new client.',
+      ],
+    ])('%s: shown is %s', async (_case, labels, shown, impossibleOnPurposeReason) => {
+      // The impossible case keeps its old grants whole; the others carry what Create leads requires.
+      await openFor(
+        impossibleOnPurposeReason === undefined
+          ? [...labels as string[], 'Create leads', ...CREATE_LEADS_NEEDS]
+          : [...labels as string[], 'Create leads'],
+        impossibleOnPurposeReason,
+      );
 
       expect(screen.queryByRole('button', ADD_NEW_CLIENT) !== null).toBe(shown);
     });
@@ -102,13 +122,13 @@ describe.each(DIALOGS)('%s', (_name, Dialog) => {
 
   describe('Create new lead', () => {
     it('shows with Create leads on', async () => {
-      await openFor(['Create leads']);
+      await openFor(['Create leads', ...CREATE_LEADS_NEEDS]);
 
       expect(screen.getByRole('button', CREATE_LEAD)).toBeInTheDocument();
     });
 
     it('is hidden with Create leads off', async () => {
-      await openFor(['Standalone estimates']);
+      await openFor(['Standalone estimates', ...STANDALONE_ESTIMATES_NEEDS]);
 
       expect(screen.queryByRole('button', CREATE_LEAD)).not.toBeInTheDocument();
     });
@@ -116,13 +136,13 @@ describe.each(DIALOGS)('%s', (_name, Dialog) => {
 
   describe('Create estimate without a lead', () => {
     it('shows with Standalone estimates on', async () => {
-      await openFor(['Standalone estimates']);
+      await openFor(['Standalone estimates', ...STANDALONE_ESTIMATES_NEEDS]);
 
       expect(screen.getByRole('button', NO_LEAD)).toBeInTheDocument();
     });
 
     it('is hidden with Standalone estimates off', async () => {
-      await openFor(['Create leads']);
+      await openFor(['Create leads', ...CREATE_LEADS_NEEDS]);
 
       expect(screen.queryByRole('button', NO_LEAD)).not.toBeInTheDocument();
     });

@@ -100,7 +100,8 @@ describe("the Dialer's recent activity follows View transcript", () => {
   });
 
   it("asks for it, on expanding a row, with the switch", () => {
-    renderPanel(["View transcript"]);
+    // View transcript needs View communication.
+    renderPanel(["View transcript", "View communication"]);
     fireEvent.click(screen.getByRole("button", { name: /view transcript/i }));
 
     expect(useCallTranscript).toHaveBeenCalledWith(CALL.id, true);

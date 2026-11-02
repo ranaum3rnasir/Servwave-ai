@@ -76,6 +76,8 @@ class ResizeObserverStub {
 global.ResizeObserver = ResizeObserverStub as unknown as typeof ResizeObserver;
 
 const VIEW_PRICE_BOOK: AbilityRule = { action: 'read', subject: 'PriceBook' };
+// Create price book items needs Edit price book items.
+const EDIT_PRICE_BOOK: AbilityRule = { action: 'update', subject: 'PriceBook' };
 const CREATE_PRICE_BOOK: AbilityRule = { action: 'create', subject: 'PriceBook' };
 const EXPORT_PRICE_BOOK: AbilityRule = { action: 'export', subject: 'PriceBook' };
 const VIEW_VENDORS: AbilityRule = { action: 'read', subject: 'Vendor' };
@@ -96,7 +98,7 @@ async function openBrandEditor(rules: AbilityRule[]) {
 describe('the brand form', () => {
   it('has no Default Vendor field without View vendors, and a saved brand carries no default vendor', async () => {
     h.state.withVendors = false;
-    const dialog = await openBrandEditor([VIEW_PRICE_BOOK, CREATE_PRICE_BOOK]);
+    const dialog = await openBrandEditor([VIEW_PRICE_BOOK, EDIT_PRICE_BOOK, CREATE_PRICE_BOOK]);
 
     expect(dialog.queryByText('Default Vendor')).not.toBeInTheDocument();
     expect(dialog.queryByRole('combobox', { name: 'Default vendor' })).not.toBeInTheDocument();
@@ -109,7 +111,7 @@ describe('the brand form', () => {
 
   it('has the Default Vendor field with View vendors, holding the stored vendor, and a saved brand keeps it', async () => {
     h.state.withVendors = true;
-    const dialog = await openBrandEditor([VIEW_PRICE_BOOK, CREATE_PRICE_BOOK, VIEW_VENDORS]);
+    const dialog = await openBrandEditor([VIEW_PRICE_BOOK, EDIT_PRICE_BOOK, CREATE_PRICE_BOOK, VIEW_VENDORS]);
 
     expect(dialog.getByText('Default Vendor')).toBeInTheDocument();
     expect(await dialog.findByRole('combobox', { name: 'Default vendor' })).toHaveTextContent('Acme Supply');

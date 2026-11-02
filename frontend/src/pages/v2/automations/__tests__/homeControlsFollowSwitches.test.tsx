@@ -14,6 +14,7 @@ import api from '@/lib/axios';
 import { buildAbility, type AbilityRule } from '@/lib/ability';
 import type { WorkflowCatalog } from '@/lib/api/workflows';
 import { renderWithProviders } from '@/__tests__/helpers';
+import { impossibleOnPurpose } from '@/__tests__/support/backendSwitchCatalog';
 import { useAuthStore } from '@/stores/auth.store';
 
 import AutomationsHomePage from '../AutomationsHomePage';
@@ -80,14 +81,15 @@ function signedInWithRoleName(role: string) {
   ) as typeof useAuthStore);
 }
 
-async function openPage(rules: AbilityRule[], role: string, workflows: unknown[] = [WORKFLOW]) {
+async function openPage(rules: AbilityRule[], role: string, workflows: unknown[] = [WORKFLOW], impossibleReason?: string) {
   signedInWithRoleName(role);
   mockApi.get.mockImplementation(async (url: string) => {
     if (url === '/api/workflows') return { data: workflows };
     if (url === '/api/workflows/catalog') return { data: CATALOG };
     return { data: {} };
   });
-  renderWithProviders(<AutomationsHomePage />, { initialEntries: ['/automations'], ability: buildAbility(rules) });
+  const ability = impossibleReason ? impossibleOnPurpose(buildAbility(rules), impossibleReason) : buildAbility(rules);
+  renderWithProviders(<AutomationsHomePage />, { initialEntries: ['/automations'], ability });
   await screen.findByRole('heading', { name: 'Automations' });
   if (workflows.length > 0) await screen.findByText('Post-job review request');
   else await screen.findByText(/no automations yet|start from a recipe/i);
@@ -102,7 +104,8 @@ beforeEach(() => {
 
 describe('Create automations', () => {
   it.each(['TECHNICIAN', 'ADMIN'])('offers New automation, Duplicate and the recipes to a %s who holds it', async (role) => {
-    await openPage([VIEW, CREATE], role);
+    // Create automations needs Edit automations.
+    await openPage([VIEW, CREATE, EDIT], role);
 
     expect(button('New automation')).toBeInTheDocument();
     expect(button(`Duplicate ${NAME}`)).toBeInTheDocument();
@@ -110,7 +113,7 @@ describe('Create automations', () => {
   });
 
   it('offers Start from scratch when there are no automations yet', async () => {
-    await openPage([VIEW, CREATE], 'SALES', []);
+    await openPage([VIEW, CREATE, EDIT], 'SALES', []);
     expect(button('Start from scratch')).toBeInTheDocument();
   });
 
@@ -131,7 +134,12 @@ describe('Edit automations', () => {
   });
 
   it('offers no switch without it, and the status chip still says whether the automation is on', async () => {
-    await openPage([VIEW, CREATE, DELETE], 'ADMIN');
+    await openPage(
+      [VIEW, CREATE, DELETE],
+      'ADMIN',
+      undefined,
+      'PENDING RAN: Create automations now needs Edit automations, so a person with Create and no Edit cannot exist',
+    );
     expect(screen.queryByRole('switch')).toBeNull();
     expect(screen.getAllByText('Live').length).toBeGreaterThan(0);
   });

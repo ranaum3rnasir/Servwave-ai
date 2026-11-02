@@ -32,7 +32,8 @@ vi.mock('@/lib/axios', () => ({
   default: { get: vi.fn().mockResolvedValue({ data: { users: [] } }), post: vi.fn() },
 }));
 
-const dialer = buildAbility([{ action: 'create', subject: 'Communication' }]);
+// Contact customers needs View communication.
+const dialer = buildAbility([{ action: 'create', subject: 'Communication' }, { action: 'read', subject: 'Communication' }]);
 
 function Where() {
   const loc = useLocation();
@@ -96,7 +97,7 @@ describe('a job team card', () => {
   // The card follows the contact display policy (Roles & Permissions S05.3): its rules are in
   // crew-card-contact-policy.test.tsx. This is the proof that the explicit buttons still skip the choice.
   it('has explicit Call and Text buttons that skip the choice', async () => {
-    const values = { [catalogToggle('Contact customers').key]: true };
+    const values = { [catalogToggle('Contact customers').key]: true, [catalogToggle('View communication').key]: true };
     seedMySwitches(values);
     vi.mocked(api.get).mockImplementation(async (url: string) =>
       url === '/api/permission-switches/me' ? { data: { admin_box: false, values } } : { data: { users: [] } },

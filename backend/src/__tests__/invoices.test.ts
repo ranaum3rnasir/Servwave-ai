@@ -37,6 +37,7 @@ import {
   salesInvoiceArms,
   withLedgerReads,
 } from './helpers';
+import { withDependantsOff } from './support/switchDependants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { DEFAULT_GRANTS } from '../lib/permissions/defaultGrants';
 import { ALPHA_ORG_ID } from './helpers';
@@ -3242,7 +3243,7 @@ describe('POST /api/invoices/:id/payment-link', () => {
      * the switch catalog, never a bare CASL literal. */
     function mockDeniedCustomerRead(_role: string, _deniedCustomerId: string) {
       // View customers off: the person reaches no customer, so THIS one is denied.
-      mockRoleSwitches({ view_customers: false });
+      mockRoleSwitches(withDependantsOff(['view_customers']));
     }
 
     it('already-issued branch: 403, no url, no public_token, no write', async () => {

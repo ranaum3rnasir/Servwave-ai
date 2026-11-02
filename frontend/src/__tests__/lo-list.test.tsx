@@ -83,7 +83,13 @@ const FIXTURE: LogisticOrderListRow[] = [
   row({ id: 'lo4', number: 'LO00002', status: 'PROCESSED', lineCount: 3, processedAt: ISO }),
 ];
 
-const createAbility = () => buildAbility([{ action: 'create', subject: 'LogisticOrder' }]);
+// Create logistic orders needs View and Edit logistic orders.
+const createAbility = () =>
+  buildAbility([
+    { action: 'create', subject: 'LogisticOrder' },
+    { action: 'read', subject: 'LogisticOrder' },
+    { action: 'update', subject: 'LogisticOrder' },
+  ]);
 
 function renderList(props: React.ComponentProps<typeof LOList> = {}, ability = createAbility()) {
   h.rows = FIXTURE;

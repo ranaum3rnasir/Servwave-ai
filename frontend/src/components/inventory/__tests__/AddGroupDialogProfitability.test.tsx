@@ -15,6 +15,7 @@ import { screen, within } from '@testing-library/react';
 import { renderWithProviders } from '@/__tests__/helpers';
 import { AddGroupDialog } from '../AddGroupDialog';
 import { buildAbility } from '@/lib/ability';
+import { impossibleOnPurpose } from '@/__tests__/support/backendSwitchCatalog';
 import type { Item, ItemGroup, ItemGroupLine } from '@/lib/api/inventory';
 
 const COSTED_ITEM_ID = 'itm_costed';
@@ -109,7 +110,10 @@ describe('AddGroupDialog — per-line margin and markup', () => {
   it('shows a See-costs holder without See prices no margin, markup or sell-price hint, and keeps their cost column', () => {
     const { container } = (() => {
       renderDialog([{ id: 'ln_4', itemId: COSTED_ITEM_ID, name: 'Costed Lock', quantity: 1 }], {
-        ability: buildAbility([{ action: 'read', subject: 'Pricing' }]),
+        ability: impossibleOnPurpose(
+          buildAbility([{ action: 'read', subject: 'Pricing' }]),
+          'PENDING RAN: this case is about a See costs holder without See prices, which the catalog no longer allows (See costs needs See prices).',
+        ),
       });
       return { container: document.body };
     })();

@@ -110,7 +110,16 @@ describe('W1 labels', () => {
 
 describe('W1 no redundant subtitles', () => {
   it('shows no description line under the three named headers', async () => {
-    await renderPage(ORG, { ability: buildAbility([{ action: 'refund', subject: 'Invoice' }, { action: 'update', subject: 'Organization' }, { action: 'manage_payout_account', subject: 'Organization' }]) });
+    // Refund payments needs View invoices and View payments and payouts.
+    await renderPage(ORG, {
+      ability: buildAbility([
+        { action: 'refund', subject: 'Invoice' },
+        { action: 'read', subject: 'Invoice' },
+        { action: 'view_payments', subject: 'Organization' },
+        { action: 'update', subject: 'Organization' },
+        { action: 'manage_payout_account', subject: 'Organization' },
+      ]),
+    });
     // The attention list left Settings in P8 (its "no description line" check moves to the Payments page card).
     expect(screen.queryByRole('heading', { name: 'Payments needing attention' })).not.toBeInTheDocument();
 

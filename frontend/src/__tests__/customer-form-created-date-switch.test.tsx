@@ -42,8 +42,13 @@ const CUSTOMER = {
   created_at: '2026-01-01T00:00:00.000Z',
 };
 
-const holder = buildAbility([{ action: 'change_created_date', subject: 'Customer' }]);
-const nonHolder = buildAbility([{ action: 'update', subject: 'Customer' }]);
+// Change customer created date needs Edit customers, which needs View customers.
+const holder = buildAbility([
+  { action: 'change_created_date', subject: 'Customer' },
+  { action: 'update', subject: 'Customer' },
+  { action: 'read', subject: 'Customer' },
+]);
+const nonHolder = buildAbility([{ action: 'update', subject: 'Customer' }, { action: 'read', subject: 'Customer' }]);
 
 function signInAs(role: 'ADMIN' | 'SALES') {
   vi.mocked(useAuthStore).mockImplementation(((selector: (s: Record<string, unknown>) => unknown) =>

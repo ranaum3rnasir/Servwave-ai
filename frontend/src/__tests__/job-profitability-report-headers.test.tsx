@@ -19,7 +19,8 @@ import { buildAbility } from '@/lib/ability';
 import JobProfitabilityReport from '@/pages/v2/reports/reports/JobProfitabilityReport';
 
 /** The download button shows only with Export reports (S07.20), and these tests click it. */
-const CAN_EXPORT = buildAbility([{ action: 'export', subject: 'Report' }]);
+// Export reports needs Access Reports.
+const CAN_EXPORT = buildAbility([{ action: 'export', subject: 'Report' }, { action: 'read', subject: 'Report' }]);
 
 const hoisted = vi.hoisted(() => ({ exportCsvFile: vi.fn() }));
 

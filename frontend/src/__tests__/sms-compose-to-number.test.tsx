@@ -361,7 +361,9 @@ describe('Unknown-number thread affordance', () => {
     ['Create jobs without View jobs', ['Create jobs']],
     ['View jobs without Create jobs', ['View jobs']],
   ])('offers nothing for %s', async (_name, held) => {
-    renderUnknownThreadAs(personHolding(held, COMMUNICATION_RULES));
+    // Create without its View is a set the catalog refuses (Create needs View), kept on purpose: it proves the screen asks for both.
+    const onPurpose = held[0]!.startsWith('Create') ? { impossibleOnPurpose: 'PENDING RAN: Create without its View can no longer be held; keep or drop this row' } : {};
+    renderUnknownThreadAs(personHolding(held, COMMUNICATION_RULES, onPurpose));
 
     expect(await screen.findByText('Unknown number')).toBeInTheDocument();
     // The person's answer has to be in before an absent button means anything: a held pair always draws its own.

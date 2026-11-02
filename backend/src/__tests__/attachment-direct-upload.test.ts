@@ -30,6 +30,7 @@ import {
   ALPHA_ORG_ID,
   ORG_B_ID,
 } from './helpers';
+import { withDependantsOff } from './support/switchDependants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 import { signUploadTicket } from '../lib/attachment-direct-upload';
 import { MAX_VIDEO_FILE_SIZE, MAX_ENTITY_SIZE } from '../controllers/attachment.controller';
@@ -215,7 +216,7 @@ describe('POST .../direct-upload — minting a scoped upload URL', () => {
 
   it('refuses a caller without Edit on the record', async () => {
     mockAuthAs('dispatcher');
-    mockRoleSwitches({ edit_jobs: false, create_jobs: false });
+    mockRoleSwitches(withDependantsOff(['edit_jobs', 'create_jobs']));
 
     const res = await mintVideo({}, 'dispatcher');
 
@@ -553,7 +554,7 @@ describe('POST .../direct-upload/complete — verifying the landed object', () =
     mockAuthAs('dispatcher');
     const minted = await mintVideo({}, 'dispatcher');
     expect(minted.status).toBe(201);
-    mockRoleSwitches({ edit_jobs: false, create_jobs: false });
+    mockRoleSwitches(withDependantsOff(['edit_jobs', 'create_jobs']));
     stubHeadBytes(mp4Head());
 
     const res = await complete({

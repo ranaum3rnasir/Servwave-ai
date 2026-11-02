@@ -47,6 +47,8 @@ function meValues(s: Switches): Record<string, boolean> {
     [catalogToggle('Copy customer email').key]: s.copyEmail,
     [catalogToggle('Contact customers').key]: s.contact,
     [catalogToggle('View customers').key]: true,
+    // Contact customers needs View communication.
+    [catalogToggle('View communication').key]: true,
   };
 }
 

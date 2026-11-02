@@ -110,7 +110,12 @@ describe('v2 Tasks hub', () => {
     // Only a person with the Create tasks switch gets the dialog (S02.25); the rule list is that switch compiled.
     renderWithProviders(<TasksHubPage />, {
       initialEntries: ['/tasks?action=new-task'],
-      ability: buildAbility([{ action: 'create', subject: 'Task' }]),
+      // Create tasks needs View and Edit tasks.
+      ability: buildAbility([
+        { action: 'create', subject: 'Task' },
+        { action: 'read', subject: 'Task' },
+        { action: 'update', subject: 'Task' },
+      ]),
     });
 
     await waitFor(() => {

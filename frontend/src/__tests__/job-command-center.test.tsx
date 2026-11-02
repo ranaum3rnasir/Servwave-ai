@@ -457,9 +457,11 @@ describe('JobDetailPage - Items tab cost/margin gate (read Pricing)', () => {
   });
 
   it('shows the Internal costs card once read Pricing is granted', async () => {
+    // See costs needs See prices.
     const ability = buildAbility([
       { action: 'manage', subject: 'Job' },
       { action: 'read', subject: 'Invoice' },
+      { action: 'read', subject: 'Prices' },
       { action: 'read', subject: 'Pricing' },
     ]);
     mockJobAndFinancials();

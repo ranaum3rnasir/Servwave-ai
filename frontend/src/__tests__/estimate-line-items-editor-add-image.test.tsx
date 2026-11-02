@@ -89,7 +89,13 @@ const API_SHAPED_LINKED_NO_IMAGE_LINE = {
   price_book_item: { image_url: null },
 } as unknown as EstimateLineItem;
 
-const adminAbility = () => buildAbility([{ action: 'update', subject: 'Estimate' }]);
+// Edit estimates needs View estimates and See prices.
+const adminAbility = () =>
+  buildAbility([
+    { action: 'update', subject: 'Estimate' },
+    { action: 'read', subject: 'Estimate' },
+    { action: 'read', subject: 'Prices' },
+  ]);
 
 beforeEach(() => {
   vi.clearAllMocks();

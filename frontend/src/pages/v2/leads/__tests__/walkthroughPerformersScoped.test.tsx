@@ -93,6 +93,8 @@ describe('walkthrough Performers field for a rep who may not name others', () =>
       { action: 'read', subject: 'Lead' },
       { action: 'schedule_walkthrough', subject: 'Lead' },
       { action: 'assign', subject: 'Task' },
+      // Assign tasks to others needs View tasks.
+      { action: 'read', subject: 'Task' },
     ]));
 
     expect(screen.getByText('You cannot add others')).toBeInTheDocument();

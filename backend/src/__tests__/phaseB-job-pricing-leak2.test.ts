@@ -3,6 +3,7 @@ import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import { TEST_USERS, mockAuthAs, authHeader, JOB_FIXTURE, mockRoleSwitches } from './helpers';
+import { withDependantsOff } from './support/switchDependants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 // Phase B (§E) — QA-B2 leak follow-up.
@@ -85,7 +86,7 @@ describe('GET /api/jobs/:id — Phase B invoices[] strip (Leak 2)', () => {
 
   it('strict technician gets only the invoice they can open in invoices[], with its prices, and the whole count beside it', async () => {
     mockAuthAs('technician');
-    mockRoleSwitches({ view_estimates: false });
+    mockRoleSwitches(withDependantsOff(['view_estimates']));
     // The invoice query that decides which of the job's invoices the person opens: they made inv1, not inv2.
     mockPrisma.invoice.findMany.mockResolvedValue([{ id: 'inv1' }]);
 
@@ -101,7 +102,7 @@ describe('GET /api/jobs/:id — Phase B invoices[] strip (Leak 2)', () => {
 
   it('strict technician who can open none gets an empty invoices[]', async () => {
     mockAuthAs('technician');
-    mockRoleSwitches({ view_estimates: false });
+    mockRoleSwitches(withDependantsOff(['view_estimates']));
 
     const res = await request(app).get(`/api/jobs/${JOB_ID}`).set(authHeader('technician'));
 
@@ -148,7 +149,7 @@ describe('GET /api/jobs/:id - linked_estimates on getById (SRVW-96)', () => {
 
   it('leaves out a linked estimate the requester cannot open (View estimates off)', async () => {
     mockAuthAs('technician');
-    mockRoleSwitches({ view_estimates: false });
+    mockRoleSwitches(withDependantsOff(['view_estimates']));
     // The reach query finds none of the job's estimates inside this person's estimate scope.
     mockPrisma.estimate.findMany.mockResolvedValueOnce([]);
 
@@ -161,7 +162,7 @@ describe('GET /api/jobs/:id - linked_estimates on getById (SRVW-96)', () => {
 
   it('strips total_amount from a linked estimate the requester can open but may not price (View estimates off)', async () => {
     mockAuthAs('technician');
-    mockRoleSwitches({ view_estimates: false });
+    mockRoleSwitches(withDependantsOff(['view_estimates']));
     // An estimate they made themselves while attached stays reachable (the creator rule), without its figure.
     mockPrisma.estimate.findMany.mockResolvedValueOnce([{ id: 'est-link' }]);
 

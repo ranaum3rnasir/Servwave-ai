@@ -14,6 +14,7 @@ import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
 import { renderWithProviders } from '@/__tests__/helpers';
+import { impossibleOnPurpose } from '@/__tests__/support/backendSwitchCatalog';
 import { useInventoryAlertStore } from '@/stores/inventory-alert.store';
 
 import InventoryPage from '@/pages/v2/inventory/InventoryPage';
@@ -287,7 +288,10 @@ describe('Items "Add Item" split button - permissions (the category routes enfor
   });
 
   it('hides "Manage categories" with create but neither update nor delete PriceBook', async () => {
-    renderItems(priceBookAbility('create'));
+    renderItems(impossibleOnPurpose(
+      priceBookAbility('create'),
+      'PENDING RAN: Create price book items without Edit price book items, which the catalog refuses; the case proves create alone does not offer Manage categories.',
+    ));
     await screen.findByText('s17-item');
 
     const menu = await openAddMenu();
@@ -299,7 +303,14 @@ describe('Items "Add Item" split button - permissions (the category routes enfor
   it.each([['update' as const], ['delete' as const]])(
     'offers "Manage categories" with create and %s PriceBook',
     async (extra) => {
-      renderItems(priceBookAbility('create', extra));
+      // Create price book items needs Edit (update); the create + delete case holds create without it on purpose.
+      const ability = priceBookAbility('create', extra);
+      renderItems(extra === 'delete'
+        ? impossibleOnPurpose(
+          ability,
+          'PENDING RAN: Create price book items without Edit price book items, which the catalog refuses; adding Edit would make the case pass without delete.',
+        )
+        : ability);
       await screen.findByText('s17-item');
 
       const menu = await openAddMenu();

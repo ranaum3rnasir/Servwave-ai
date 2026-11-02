@@ -8,6 +8,7 @@ import { AbilityProvider } from '@/contexts/AbilityContext';
 import { TooltipProvider as KitTooltipProvider } from '@/ui-kit/components/ui/tooltip';
 import { buildAbility, type AppAbility } from '@/lib/ability';
 import { NAV_REGISTRY, type NavGate } from '@/components/layout/nav-registry';
+import { assertPossibleAbility, assertPossibleSwitchSet } from '@/__tests__/support/backendSwitchCatalog';
 
 // ─── Test Query Client ────────────────────────────────────
 function createTestQueryClient() {
@@ -34,6 +35,9 @@ interface WrapperOptions {
    * so ability-gated UI (e.g. force-purge, lead delete) can be exercised. When
    * omitted, useAppAbility() resolves to emptyAbility (all .can() === false),
    * matching the default deny-everything posture.
+   *
+   * The ability must be one a person can hold: a switch's grant without the grants of a switch it requires (See costs
+   * without See prices) throws. Mark a deliberately impossible one with `impossibleOnPurpose(ability, reason)`.
    */
   ability?: AppAbility;
 }
@@ -43,6 +47,7 @@ export function renderWithProviders(
   options?: RenderOptions & WrapperOptions
 ) {
   const { initialEntries = ['/'], ability, ...renderOptions } = options ?? {};
+  if (ability) assertPossibleAbility(ability, 'renderWithProviders');
   const queryClient = createTestQueryClient();
 
   function Wrapper({ children }: { children: React.ReactNode }) {
@@ -86,13 +91,22 @@ export function seedEveryMenuSwitch(userId: string): void {
     seed(dest.gate);
     for (const child of dest.children ?? []) seed(child.gate);
   }
+  assertPossibleSwitchSet(values, 'seedEveryMenuSwitch');
   localStorage.setItem(`servwave_my_switches:${userId}`, JSON.stringify({ values }));
 }
 
 // Roles & Permissions S07.13 - a page that draws a tab from a Show switch (display only, so not a rule) reads it from the
 // person's own switches. A suite that mounts such a page with its data hooks stubbed seeds the last-known answer here,
 // as `seedEveryMenuSwitch` does for the menu. The default test user's id is the one the shared auth mock hands out.
-export function seedMySwitches(values: Record<string, boolean | string>, userId = '00000000-0000-0000-0000-000000000001'): void {
+// The set must be one a person can hold (a switch on means every switch it requires is on too); pass
+// `{ impossibleOnPurpose: reason }` for a test whose subject is a set the catalog refuses.
+export function seedMySwitches(
+  values: Record<string, boolean | string>,
+  userId = '00000000-0000-0000-0000-000000000001',
+  options: { impossibleOnPurpose?: string } = {},
+): void {
+  if (options.impossibleOnPurpose === undefined) assertPossibleSwitchSet(values, 'seedMySwitches');
+  else if (!options.impossibleOnPurpose.trim()) throw new Error('seedMySwitches: impossibleOnPurpose needs a reason.');
   localStorage.setItem(`servwave_my_switches:${userId}`, JSON.stringify({ values }));
 }
 
@@ -146,6 +160,8 @@ export function purchasingAbility(): AppAbility {
     { action: 'export', subject: 'Vendor' },
     { action: 'read', subject: 'Inventory' },
     { action: 'read', subject: 'Pricing' },
+    // See costs needs See prices (the catalog's Requires).
+    { action: 'read', subject: 'Prices' },
   ]);
 }
 

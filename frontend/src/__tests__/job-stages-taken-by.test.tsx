@@ -13,6 +13,8 @@ import { JobStagesSection } from '@/components/jobs/JobStagesSection';
 
 const mockApi = vi.mocked(api);
 
+// Edit stock needs View stock.
+const VIEW_STOCK: AbilityRule = { action: 'read', subject: 'Inventory' };
 const EDIT_STOCK: AbilityRule = { action: 'update', subject: 'Inventory' };
 const PICK_UP_STAGED: AbilityRule = { action: 'pick_up_staged', subject: 'Inventory' };
 const RECORD_FOR_OTHER: AbilityRule = { action: 'record_pickup_for_other', subject: 'Inventory' };
@@ -58,7 +60,7 @@ describe('job page staging section - "Taken by..."', () => {
     expect(screen.queryByRole('button', { name: 'Taken by me' })).toBeNull();
     unmount();
 
-    renderSection([EDIT_STOCK, PICK_UP_STAGED]);
+    renderSection([VIEW_STOCK, EDIT_STOCK, PICK_UP_STAGED]);
     await screen.findByText('Dome Camera');
     expect(screen.queryByRole('button', { name: 'Taken by...' })).toBeNull();
   });

@@ -60,7 +60,12 @@ import EstimateConversionReport from '../EstimateConversionReport';
 import PaymentsReport from '../PaymentsReport';
 
 // The payments page offers its fee tiles only to a person who can see company figures at all; the server then decides the sums.
-const ABILITY = buildAbility([{ action: 'read', subject: 'Report' }, { action: 'read', subject: 'CompanyFigures' }]);
+// See company figures needs See prices.
+const ABILITY = buildAbility([
+  { action: 'read', subject: 'Report' },
+  { action: 'read', subject: 'CompanyFigures' },
+  { action: 'read', subject: 'Prices' },
+]);
 
 describe('Estimate conversion report (routed page) without See company figures', () => {
   beforeEach(() => {

@@ -54,7 +54,15 @@ function serveAll(extra: Parameters<typeof makeDetail>[1] = {}, open = [makeItem
   }) as never);
 }
 
-const render = (entry: string, ability = buildAbility([{ action: 'update', subject: 'Invoice' }])) =>
+// Edit invoices needs View invoices and See prices.
+const render = (
+  entry: string,
+  ability = buildAbility([
+    { action: 'read', subject: 'Invoice' },
+    { action: 'read', subject: 'Prices' },
+    { action: 'update', subject: 'Invoice' },
+  ]),
+) =>
   renderWithProviders(<><TabHarness /><BrowserBack /></>, { initialEntries: [entry], ability });
 const dialogNamed = (name: string | RegExp) => screen.findByRole('dialog', { name });
 

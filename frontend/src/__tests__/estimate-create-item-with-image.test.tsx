@@ -67,7 +67,13 @@ const STORED_URL =
   'https://test.supabase.co/storage/v1/object/public/org-assets/org/price-book-items/itm/1-deadbolt.png';
 
 /** An operator who may edit this estimate. The catalog grant is the `canSaveToPriceBook` prop. */
-const estimateEditor = () => buildAbility([{ action: 'update', subject: 'Estimate' }]);
+// Edit estimates needs View estimates and See prices.
+const estimateEditor = () =>
+  buildAbility([
+    { action: 'read', subject: 'Estimate' },
+    { action: 'read', subject: 'Prices' },
+    { action: 'update', subject: 'Estimate' },
+  ]);
 
 const png = () =>
   new File([new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])], 'deadbolt.png', {

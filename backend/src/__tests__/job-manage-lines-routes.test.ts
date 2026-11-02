@@ -24,6 +24,7 @@ import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import { TEST_USERS, mockAuthAs, authHeader, ALPHA_ORG_ID, JOB_FIXTURE, TAG_FIXTURE, mockScopedFindFirst, mockRoleSwitches } from './helpers';
+import { withDependantsOff } from './support/switchDependants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 const mockPrisma = prisma as unknown as Record<string, any>;
@@ -126,7 +127,7 @@ describe('a principal with `update Job` but NOT `manage_lines Job`', () => {
 describe('a principal with `manage_lines Job` but NOT `update Job`', () => {
   beforeEach(() => {
     mockAuthAs('technician');
-    mockRoleSwitches({ edit_jobs: false, edit_job_line_items: true });
+    mockRoleSwitches({ ...withDependantsOff(['edit_jobs']), edit_job_line_items: true });
   });
 
   it.each(MOVED_TO_MANAGE_LINES)('passes the guard on $name', async (route) => {

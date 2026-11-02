@@ -14,6 +14,8 @@ import { JobStagesSection } from '@/components/jobs/JobStagesSection';
 const mockApi = vi.mocked(api);
 
 const EDIT_STOCK: AbilityRule = { action: 'update', subject: 'Inventory' };
+// Edit stock needs View stock.
+const VIEW_STOCK: AbilityRule = { action: 'read', subject: 'Inventory' };
 const PICK_UP_STAGED: AbilityRule = { action: 'pick_up_staged', subject: 'Inventory' };
 
 function makeStage(over: Partial<JobStage> = {}): JobStage {
@@ -49,7 +51,7 @@ describe('job page staging section - "Taken by me"', () => {
     expect(await screen.findByRole('button', { name: 'Taken by me' })).toBeInTheDocument();
     unmount();
 
-    renderSection([EDIT_STOCK]);
+    renderSection([EDIT_STOCK, VIEW_STOCK]);
     await screen.findByText('Dome Camera');
     expect(screen.queryByRole('button', { name: /^Taken by/ })).toBeNull();
   });

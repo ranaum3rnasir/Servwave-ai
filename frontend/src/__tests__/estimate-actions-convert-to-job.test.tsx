@@ -45,6 +45,8 @@ const adminAbility = buildAbility([{ action: 'manage', subject: 'all' }]);
 const noJobAbility = buildAbility([
   { action: 'read', subject: 'Estimate' },
   { action: 'update', subject: 'Estimate' },
+  // Edit estimates needs See prices.
+  { action: 'read', subject: 'Prices' },
 ]);
 
 /** WON, no deposit invoice outstanding, no job link either way. */

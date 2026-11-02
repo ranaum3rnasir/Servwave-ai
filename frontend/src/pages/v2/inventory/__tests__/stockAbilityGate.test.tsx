@@ -103,7 +103,8 @@ const fullWriteAbility = () =>
     ...READ_SWITCHES,
     'Create stock', 'Edit stock', 'Delete stock',
     'Create price book items', 'Edit price book items', 'Delete price book items',
-    'Create purchase orders',
+    // Create purchase orders needs Edit purchase orders.
+    'Create purchase orders', 'Edit purchase orders',
   );
 
 // AC10 - the DISPATCHER-shaped ability: Create, Edit and Delete stock on, and no price book or purchase order write.

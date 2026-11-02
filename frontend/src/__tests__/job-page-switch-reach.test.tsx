@@ -82,7 +82,13 @@ describe('the job page Items tab reads', () => {
   });
 
   it('asks for no vendor list for a person who may order parts but not read vendors', async () => {
-    await renderJob([SEE_PRICES, { action: 'create', subject: 'PurchaseOrder' }], {});
+    // Create purchase orders needs View purchase orders and Edit purchase orders.
+    await renderJob([
+      SEE_PRICES,
+      { action: 'read', subject: 'PurchaseOrder' },
+      { action: 'update', subject: 'PurchaseOrder' },
+      { action: 'create', subject: 'PurchaseOrder' },
+    ], {});
     await userEvent.click(await screen.findByRole('tab', { name: /Items/ }));
     await screen.findByText('No line items yet.');
     expect(asked('/api/inventory/vendors')).toBe(false);

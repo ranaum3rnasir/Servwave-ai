@@ -25,6 +25,7 @@ import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import { TEST_USERS, mockAuthAs, mockRoleSwitches, authHeader } from './helpers';
+import { withDependantsOff } from './support/switchDependants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -38,7 +39,7 @@ beforeEach(() => {
 /** See repro-1997.test.ts for the full rationale — own local copy, not a shared import. */
 function mockDeniedCustomerRead(_role: string, _deniedCustomerId: string) {
   // View customers off: the person reaches no customer, so THIS one is denied.
-  mockRoleSwitches({ view_customers: false });
+  mockRoleSwitches(withDependantsOff(['view_customers']));
 }
 
 const CUSTOMER_ID = 'c1997pt0-0000-0000-0000-000000000001';

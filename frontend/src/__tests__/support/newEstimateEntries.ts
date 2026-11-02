@@ -1,7 +1,7 @@
 import type { AppAbility } from '@/lib/ability';
 
 import { seedMySwitches } from '../helpers';
-import { abilityWithSwitches, catalogToggle } from './backendSwitchCatalog';
+import { abilityWithSwitches, catalogToggle, labelsWithRequirements } from './backendSwitchCatalog';
 
 /** The switches behind the new-estimate dialog's three ways out (Roles & Permissions S02.26), by the label a person sees. */
 export const NEW_ESTIMATE_ENTRY_SWITCHES = ['Create customers', 'View customers', 'Create leads', 'Standalone estimates'];
@@ -12,7 +12,10 @@ export const NEW_ESTIMATE_ENTRY_SWITCHES = ['Create customers', 'View customers'
  * must give; the answer is also cached on the device so the first paint already has it.
  */
 export function everyNewEstimateEntry(): { ability: AppAbility; meAnswer: { admin_box: boolean; values: Record<string, boolean>; rules: never[] } } {
-  const values = Object.fromEntries(NEW_ESTIMATE_ENTRY_SWITCHES.map((label) => [catalogToggle(label).key, true]));
+  // With the switches those ways out need (Edit customers, View and Edit leads, Create estimates and what it needs), so the
+  // person is one the catalog allows.
+  const labels = labelsWithRequirements(...NEW_ESTIMATE_ENTRY_SWITCHES);
+  const values = Object.fromEntries(labels.map((label) => [catalogToggle(label).key, true]));
   seedMySwitches(values);
-  return { ability: abilityWithSwitches(...NEW_ESTIMATE_ENTRY_SWITCHES), meAnswer: { admin_box: false, values, rules: [] } };
+  return { ability: abilityWithSwitches(...labels), meAnswer: { admin_box: false, values, rules: [] } };
 }

@@ -50,6 +50,8 @@ const dispatcherAbility = buildAbility([
   { action: 'read', subject: 'Lead' },
   { action: 'schedule_walkthrough', subject: 'Lead' },
   { action: 'assign', subject: 'User' },
+  // Assign work to other people needs View jobs.
+  { action: 'read', subject: 'Job' },
 ]);
 
 /** A live walkthrough, so the tab offers "Book Another Visit" - the lead's Book Visit form. */

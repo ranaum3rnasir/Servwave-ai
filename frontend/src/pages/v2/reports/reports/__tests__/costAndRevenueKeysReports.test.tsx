@@ -40,7 +40,12 @@ const person = (key: string, withRevenue: boolean) => ({
   actions: 7, activeMinutes: 30, firstActionAt: '8:05a', lastActionAt: '9:05a', breakdown: [{ label: 'lead.created', count: 7 }],
 });
 
-const COSTS_ON = buildAbility([{ action: 'read', subject: 'Report' }, { action: 'read', subject: 'Pricing' }]);
+// See costs needs See prices.
+const COSTS_ON = buildAbility([
+  { action: 'read', subject: 'Report' },
+  { action: 'read', subject: 'Pricing' },
+  { action: 'read', subject: 'Prices' },
+]);
 const COSTS_OFF = buildAbility([{ action: 'read', subject: 'Report' }]);
 
 function serve(path: string, body: unknown) {

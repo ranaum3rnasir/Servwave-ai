@@ -260,7 +260,8 @@ describe('TaskDetailDrawer FE-6 rich mutations', () => {
 
   it('enables the assignee field and calls setAssignees for a caller WITH `assign` on Task', async () => {
     renderWithProviders(<TaskDetailDrawer />, {
-      ability: buildAbility([{ action: 'assign', subject: 'Task' }]),
+      // Assign tasks to others needs View tasks.
+      ability: buildAbility([{ action: 'read', subject: 'Task' }, { action: 'assign', subject: 'Task' }]),
     });
     const widget = screen.getByTestId('task-assignees');
     expect(widget).not.toBeDisabled();
@@ -292,7 +293,8 @@ describe('TaskDetailDrawer FE-6 rich mutations', () => {
 // `role === 'ADMIN'`, which is invisible to the custom roles now in production.
 
 describe('TaskDetailDrawer delete control', () => {
-  const deleteGrant = () => buildAbility([{ action: 'delete', subject: 'Task' }]);
+  // Delete tasks needs View tasks.
+  const deleteGrant = () => buildAbility([{ action: 'read', subject: 'Task' }, { action: 'delete', subject: 'Task' }]);
 
   it('is HIDDEN for a user with neither the grant nor the ownership exception', () => {
     // Default fixture: created_by 'u1', assignee_ids ['u1'] - neither is ME.

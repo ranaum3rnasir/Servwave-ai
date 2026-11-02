@@ -35,6 +35,8 @@ const mockApi = vi.mocked(api);
 const canCreateAndAssign = buildAbility([
   { action: 'create', subject: 'Job' },
   { action: 'read', subject: 'Job' },
+  // Create jobs needs Edit jobs.
+  { action: 'update', subject: 'Job' },
   { action: 'assign', subject: 'Job' },
   { action: 'read', subject: 'User' },
 ]);

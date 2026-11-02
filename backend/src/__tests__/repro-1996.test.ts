@@ -111,7 +111,10 @@ function expectFullMatch(existing: Record<string, unknown>) {
  */
 function mockDeniedCustomerRead(_role: string) {
   // With View customers off the person reaches no customer, so THIS row is denied.
-  mockRoleSwitches({ view_customers: false });
+  mockRoleSwitches({ view_customers: false }, {
+    impossibleOnPurpose: 'PENDING RAN: creates a customer (Create customers on) while denied read on the matched one; '
+      + 'Create customers needs View customers, and no switch alone denies this one row',
+  });
 }
 
 // ═════════════════════════════════════════════════════════════════════════════════════════════

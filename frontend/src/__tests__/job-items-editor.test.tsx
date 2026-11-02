@@ -88,7 +88,12 @@ function billingFor(lines: JobLineItem[]): JobBilling {
   return { total, invoiced: 0, remaining: total };
 }
 
-const adminAbility = () => buildAbility([{ action: 'manage_lines', subject: 'Job' }]);
+// Edit job line items needs View jobs.
+const adminAbility = () =>
+  buildAbility([
+    { action: 'manage_lines', subject: 'Job' },
+    { action: 'read', subject: 'Job' },
+  ]);
 // Cost/margin are gated on the SAME frontend ability check as the backend's canSeePricing gate.
 // SRVW-140 - that check is now ability.can('read', 'Pricing'), the grant the Roles UI
 // "See costs" switch writes, NOT 'Invoice' (which is about invoice RECORDS).
@@ -96,6 +101,9 @@ const pricingAbility = () =>
   buildAbility([
     { action: 'manage_lines', subject: 'Job' },
     { action: 'read', subject: 'Pricing' },
+    // Edit job line items needs View jobs; See costs needs See prices.
+    { action: 'read', subject: 'Job' },
+    { action: 'read', subject: 'Prices' },
   ]);
 
 let getSpy: ReturnType<typeof vi.spyOn>;
@@ -811,7 +819,12 @@ describe('AddLineDialog — browse price book (#588)', () => {
     },
   ];
 
-  const adminAbility = () => buildAbility([{ action: 'manage_lines', subject: 'Job' }]);
+  // Edit job line items needs View jobs.
+  const adminAbility = () =>
+    buildAbility([
+      { action: 'manage_lines', subject: 'Job' },
+      { action: 'read', subject: 'Job' },
+    ]);
 
   it('AC#1/AC#2: Browse lists the catalog without typing and adds the pick through the job-lines API', async () => {
     vi.mocked(invoicesApi.listPriceBookItems).mockResolvedValue(PB_ITEMS);

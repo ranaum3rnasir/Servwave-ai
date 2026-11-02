@@ -183,7 +183,20 @@ describe('Archive and restore follow Archive customers', () => {
 describe('Create New does not depend on Edit customers', () => {
   it('still offers the documents a person may create when Edit customers is off', async () => {
     const user = await openPage(
-      [READ, { action: 'create', subject: 'Estimate' }, { action: 'create', subject: 'Job' }],
+      [
+        READ,
+        { action: 'create', subject: 'Estimate' },
+        { action: 'create', subject: 'Job' },
+        // Create estimates needs View estimates, Edit estimates and See prices; Create jobs needs View jobs and Edit jobs.
+        { action: 'read', subject: 'Estimate' },
+        { action: 'update', subject: 'Estimate' },
+        { action: 'send', subject: 'Estimate' },
+        { action: 'cancel', subject: 'Estimate' },
+        { action: 'revise', subject: 'Estimate' },
+        { action: 'read', subject: 'Prices' },
+        { action: 'read', subject: 'Job' },
+        { action: 'update', subject: 'Job' },
+      ],
       'DISPATCHER',
     );
 

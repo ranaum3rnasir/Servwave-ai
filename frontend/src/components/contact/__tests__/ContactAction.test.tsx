@@ -36,7 +36,8 @@ const mockOpenDeviceLink = vi.mocked(openDeviceLink);
 
 const PHONE = '5551234567';
 const CONTEXT = { customerId: 'cust-1', customerName: 'Dana Reyes' };
-const dialer = buildAbility([{ action: 'create', subject: 'Communication' }]);
+// Contact customers needs View communication.
+const dialer = buildAbility([{ action: 'read', subject: 'Communication' }, { action: 'create', subject: 'Communication' }]);
 const noDialer = buildAbility([{ action: 'read', subject: 'Communication' }]);
 
 function mockWidth(belowMd: boolean) {

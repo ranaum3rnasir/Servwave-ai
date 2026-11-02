@@ -44,10 +44,16 @@ const DISPATCHERS = [
 const NEW_JOB = { id: 'e0000000-0000-0000-0000-0000000000cc', job_number: 'J-100' };
 
 const mockApi = vi.mocked(api);
-const canCreate = buildAbility([{ action: 'create', subject: 'Job' }, { action: 'read', subject: 'Job' }]);
+// Create jobs needs View jobs and Edit jobs.
+const canCreate = buildAbility([
+  { action: 'create', subject: 'Job' },
+  { action: 'read', subject: 'Job' },
+  { action: 'update', subject: 'Job' },
+]);
 const canCreateAndAssign = buildAbility([
   { action: 'create', subject: 'Job' },
   { action: 'read', subject: 'Job' },
+  { action: 'update', subject: 'Job' },
   { action: 'assign', subject: 'Job' },
   { action: 'read', subject: 'User' },
 ]);

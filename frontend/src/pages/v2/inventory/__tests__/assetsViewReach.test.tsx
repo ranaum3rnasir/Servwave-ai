@@ -10,6 +10,7 @@ import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 
 import { renderWithProviders, seedMySwitches } from '@/__tests__/helpers';
+import { impossibleOnPurpose } from '@/__tests__/support/backendSwitchCatalog';
 import { buildAbility, type AbilityRule } from '@/lib/ability';
 import InventoryPage from '@/pages/v2/inventory/InventoryPage';
 
@@ -79,13 +80,16 @@ vi.mock('@/lib/api/users', async (importOriginal) => {
 
 const held = (...rules: AbilityRule[]) => buildAbility([{ action: 'read', subject: 'Inventory' }, ...rules]);
 
-function renderAssets(rules: AbilityRule[], scope: 'attached' | 'team' | 'all' = 'attached') {
+function renderAssets(rules: AbilityRule[], scope: 'attached' | 'team' | 'all' = 'attached', impossibleReason?: string) {
   seedMySwitches({ assets_scope: scope });
   return renderWithProviders(<InventoryPage />, {
     initialEntries: ['/inventory/assets'],
-    ability: held(...rules),
+    ability: impossibleReason ? impossibleOnPurpose(held(...rules), impossibleReason) : held(...rules),
   });
 }
+
+const CREATE_WITHOUT_EDIT =
+  'PENDING RAN: Create stock now needs Edit stock, so a person with Create stock and no Edit stock cannot exist';
 
 describe('Assets tab - Assets scope', () => {
   beforeEach(() => {
@@ -126,7 +130,7 @@ describe('Assets tab - the write controls follow Create, Edit and Delete stock',
   });
 
   it('offers Add asset with Create stock only, and nothing on the row', async () => {
-    renderAssets([{ action: 'create', subject: 'Inventory' }]);
+    renderAssets([{ action: 'create', subject: 'Inventory' }], undefined, CREATE_WITHOUT_EDIT);
     await screen.findByText('Hammer Drill');
     expect(screen.getByRole('button', { name: /New Asset/ })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /More actions for Hammer Drill/ })).not.toBeInTheDocument();
@@ -169,7 +173,7 @@ describe('Assets tab - the write controls follow Create, Edit and Delete stock',
   });
 
   it('hides the photo chooser in the Add asset dialog with Create stock only (the photo upload needs Edit stock)', async () => {
-    renderAssets([{ action: 'create', subject: 'Inventory' }]);
+    renderAssets([{ action: 'create', subject: 'Inventory' }], undefined, CREATE_WITHOUT_EDIT);
     await screen.findByText('Hammer Drill');
     await userEvent.click(screen.getByRole('button', { name: /New Asset/ }));
     await screen.findByLabelText('Asset notes');

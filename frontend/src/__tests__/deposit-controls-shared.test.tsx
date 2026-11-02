@@ -614,9 +614,11 @@ describe("Mark Sent's canSubmit stays gated on depositValid (security round 1, c
 // backend correctly 403s. The fix threads the answer's `edit` for the estimate into `editable`
 // so the inputs render disabled and the draft can never go dirty - Mark as Sent still works.
 describe('Finding 1 (security round 1) - deposit editability follows update Estimate ability', () => {
+  // Edit estimates (which grants send) needs See prices.
   const sendOnlyAbility = buildAbility([
     { action: 'read', subject: 'Estimate' },
     { action: 'send', subject: 'Estimate' },
+    { action: 'read', subject: 'Prices' },
   ]);
 
   it('a send-only role sees a read-only deposit in Mark Sent, can still mark it sent, and no PATCH fires', async () => {

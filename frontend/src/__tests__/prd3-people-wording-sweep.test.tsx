@@ -172,7 +172,10 @@ describe('the Leads list', () => {
 
   it('exports an Owner column and no Assigned To column', async () => {
     const user = userEvent.setup();
-    renderWithProviders(<LeadsPage />, { ability: buildAbility([{ action: 'export', subject: 'Lead' }]) });
+    // Export leads needs View leads.
+    renderWithProviders(<LeadsPage />, {
+      ability: buildAbility([{ action: 'read', subject: 'Lead' }, { action: 'export', subject: 'Lead' }]),
+    });
     await screen.findByText('AC not cooling');
 
     await user.click(screen.getByRole('button', { name: /^export$/i }));
@@ -193,7 +196,15 @@ describe('the new-lead form', () => {
       if (url === '/api/users/assignable') return { data: [] };
       return { data: {} };
     });
-    renderWithProviders(<LeadFormPage />, { ability: buildAbility([{ action: 'create', subject: 'Lead' }]), initialEntries: ['/leads/create'] });
+    // Create leads needs View leads and Edit leads.
+    renderWithProviders(<LeadFormPage />, {
+      ability: buildAbility([
+        { action: 'read', subject: 'Lead' },
+        { action: 'update', subject: 'Lead' },
+        { action: 'create', subject: 'Lead' },
+      ]),
+      initialEntries: ['/leads/create'],
+    });
 
     expect(await screen.findByText('No owner')).toBeInTheDocument();
     expect(screen.getByText('No dispatcher')).toBeInTheDocument();
@@ -207,7 +218,14 @@ describe('the new-lead form', () => {
       return { data: {} };
     });
     renderWithProviders(<LeadFormPage />, {
-      ability: buildAbility([{ action: 'create', subject: 'Lead' }, { action: 'assign', subject: 'Lead' }, { action: 'read', subject: 'User' }]),
+      // Create leads needs View leads and Edit leads; Assign people to leads needs View leads.
+      ability: buildAbility([
+        { action: 'read', subject: 'Lead' },
+        { action: 'update', subject: 'Lead' },
+        { action: 'create', subject: 'Lead' },
+        { action: 'assign', subject: 'Lead' },
+        { action: 'read', subject: 'User' },
+      ]),
       initialEntries: ['/leads/create'],
     });
 
@@ -225,7 +243,8 @@ describe('the new-job form', () => {
       return { data: {} };
     });
     renderWithProviders(<JobFormPage />, {
-      ability: buildAbility([{ action: 'create', subject: 'Job' }, { action: 'read', subject: 'Job' }]),
+      // Create jobs needs View jobs and Edit jobs.
+      ability: buildAbility([{ action: 'create', subject: 'Job' }, { action: 'read', subject: 'Job' }, { action: 'update', subject: 'Job' }]),
       initialEntries: ['/jobs/new'],
     });
 

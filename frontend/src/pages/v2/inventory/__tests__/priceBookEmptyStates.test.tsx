@@ -41,7 +41,12 @@ function openEmptyGroups(rules: Parameters<typeof buildAbility>[0]) {
 
 describe('the Price Book Groups tab with no bundles', () => {
   it('invites creating the first bundle to a person who can create one', () => {
-    openEmptyGroups([{ action: 'read', subject: 'PriceBook' }, { action: 'create', subject: 'PriceBook' }]);
+    // Create price book items needs Edit price book items.
+    openEmptyGroups([
+      { action: 'read', subject: 'PriceBook' },
+      { action: 'create', subject: 'PriceBook' },
+      { action: 'update', subject: 'PriceBook' },
+    ]);
 
     expect(screen.getByText('No bundles yet')).toBeInTheDocument();
     expect(screen.getByText(/Create your first preset bundle/)).toBeInTheDocument();

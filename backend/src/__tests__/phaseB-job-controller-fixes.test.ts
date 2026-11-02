@@ -3,6 +3,7 @@ import request from 'supertest';
 import app from '../app';
 import { prisma } from '../lib/prisma';
 import { TEST_USERS, mockAuthAs, authHeader, JOB_FIXTURE, mockRoleSwitches } from './helpers';
+import { withDependantsOff } from './support/switchDependants';
 import { clearPermissionCache } from '../lib/permissions/permissionCache';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -148,7 +149,7 @@ describe('POST /api/jobs/:id/start — Phase B pricing strip on advance response
 
   it('technician who may start visits but WITHOUT View estimates / View invoices gets the estimate money stripped and no invoice listed', async () => {
     mockAuthAs('technician');
-    mockRoleSwitches({ view_estimates: false, view_invoices: false });  // View invoices is already off in the preset
+    mockRoleSwitches(withDependantsOff(['view_estimates', 'view_invoices']));  // View invoices is already off in the preset
     // The Technician preset holds Start and finish visits and View jobs — but NOT View estimates / View invoices
     // (turned off above). So the strip must fire on the action response.
     mockPrisma.job.findUnique.mockResolvedValue(START_PRECHECK_OWNED_BY_TECH);

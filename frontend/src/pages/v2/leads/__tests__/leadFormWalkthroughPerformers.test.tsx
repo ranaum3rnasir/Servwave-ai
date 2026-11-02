@@ -37,10 +37,17 @@ const CREW = [
 
 const mockApi = vi.mocked(api);
 // Create leads alone, and with Book walkthroughs (the grant behind that switch).
-const canCreate = buildAbility([{ action: 'create', subject: 'Lead' }]);
+// Create leads needs View and Edit leads; Book walkthroughs needs View leads.
+const canCreate = buildAbility([
+  { action: 'create', subject: 'Lead' },
+  { action: 'read', subject: 'Lead' },
+  { action: 'update', subject: 'Lead' },
+]);
 const canBook = buildAbility([
   { action: 'create', subject: 'Lead' },
   { action: 'schedule_walkthrough', subject: 'Lead' },
+  { action: 'read', subject: 'Lead' },
+  { action: 'update', subject: 'Lead' },
 ]);
 
 /** The creator rule's answer and whether the signed-in person can be on a crew, as the server serves them. */

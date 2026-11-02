@@ -21,7 +21,12 @@ vi.mock('@/ui-kit/components/ui/sonner', async (importOriginal) => ({
 const mockUpload = vi.mocked(uploadAttachment);
 const mockToast = vi.mocked(toast);
 
-const ABILITY = buildAbility([{ action: 'update', subject: 'Invoice' }]);
+// Edit invoices needs View invoices and See prices.
+const ABILITY = buildAbility([
+  { action: 'update', subject: 'Invoice' },
+  { action: 'read', subject: 'Invoice' },
+  { action: 'read', subject: 'Prices' },
+]);
 
 const INVOICES: DocumentTarget[] = [
   { id: 'inv-1', main: 'INV-1302 · Marcus Delgado', sub: null, amount: 642.5, due_date: '2026-10-20T12:00:00.000Z' },

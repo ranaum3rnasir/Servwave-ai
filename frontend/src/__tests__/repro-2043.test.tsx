@@ -33,6 +33,7 @@ import userEvent from '@testing-library/user-event';
 import api from '@/lib/axios';
 import { buildAbility } from '@/lib/ability';
 import { renderWithProviders } from './helpers';
+import { impossibleOnPurpose } from '@/__tests__/support/backendSwitchCatalog';
 
 import InventoryPage from '@/pages/v2/inventory/InventoryPage';
 import PurchaseOrdersPage from '@/pages/v2/inventory/PurchaseOrdersPage';
@@ -470,6 +471,8 @@ describe('#2043 — VendorsPage (wrong subject)', () => {
     const createVendorOnly = buildAbility([
       { action: 'read', subject: 'Vendor' },
       { action: 'create', subject: 'Vendor' },
+      // Create vendors needs Edit vendors.
+      { action: 'update', subject: 'Vendor' },
     ]);
     renderVendors(createVendorOnly);
     await screen.findByText('qa-2043-vendor');
@@ -521,10 +524,13 @@ describe('#2043 — VendorDetailDialog (wrong subject)', () => {
   });
 
   it('hides Edit and Archive for an ability with create Vendor but not update Vendor (Create vendors does not open an edit)', async () => {
-    await openVendorDetail(buildAbility([
-      { action: 'read', subject: 'Vendor' },
-      { action: 'create', subject: 'Vendor' },
-    ]));
+    await openVendorDetail(impossibleOnPurpose(
+      buildAbility([
+        { action: 'read', subject: 'Vendor' },
+        { action: 'create', subject: 'Vendor' },
+      ]),
+      'PENDING RAN: Create vendors now needs Edit vendors, so a person with Create vendors and no Edit vendors cannot exist',
+    ));
 
     expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Archive/i })).not.toBeInTheDocument();

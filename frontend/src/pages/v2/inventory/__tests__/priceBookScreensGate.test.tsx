@@ -97,6 +97,7 @@ const CREATE: AbilityRule = { action: 'create', subject: 'PriceBook' };
 const EDIT: AbilityRule = { action: 'update', subject: 'PriceBook' };
 const DELETE: AbilityRule = { action: 'delete', subject: 'PriceBook' };
 const EXPORT: AbilityRule = { action: 'export', subject: 'PriceBook' };
+/** "See costs". It requires See prices (the catalog's Requires), so every person given it below holds PRICES too. */
 const FINANCIAL: AbilityRule = { action: 'read', subject: 'Pricing' };
 /** "See prices": what the customer is charged. Without it a bundle shows no price line at all (priceBookBundlesWithoutPrices.test.tsx). */
 const PRICES: AbilityRule = { action: 'read', subject: 'Prices' };
@@ -141,7 +142,7 @@ describe('S07.17 - the Price Book controls follow the Price Book boxes', () => {
   });
 
   it('gives each box its own controls: Create the adds, Edit the category pencil, Delete the trash cans', async () => {
-    const { unmount } = renderPage(VIEW, CREATE);
+    const { unmount } = renderPage(VIEW, CREATE, EDIT);
     await screen.findByText('Costed hinge');
     expect(screen.getByRole('button', { name: /add item/i })).toBeInTheDocument();
     await openTab(/brands/i, 'Acme Locks');
@@ -204,7 +205,7 @@ describe('S07.17 - cost, markup and margin show only with See costs', () => {
   });
 
   it('shows the bundle card its margin and markup with it', async () => {
-    renderPage(VIEW, FINANCIAL);
+    renderPage(VIEW, FINANCIAL, PRICES);
     await screen.findByText('Costed hinge');
     await openTab(/groups/i, 'Rekey Bundle');
 
@@ -221,7 +222,7 @@ describe('S07.17 - cost, markup and margin show only with See costs', () => {
     expect(screen.queryByText(/default markup/i)).not.toBeInTheDocument();
     unmount();
 
-    renderPage(VIEW, FINANCIAL);
+    renderPage(VIEW, FINANCIAL, PRICES);
     await screen.findByText('Costed hinge');
     await openTab(/brands/i, 'Acme Locks');
     expect(screen.getByText(/default markup/i)).toBeInTheDocument();
@@ -240,7 +241,7 @@ describe('S07.17 - cost, markup and margin show only with See costs', () => {
   });
 
   it('opens an item with its unit cost, margin and markup with it', async () => {
-    renderPage(VIEW, FINANCIAL);
+    renderPage(VIEW, FINANCIAL, PRICES);
     fireEvent.click((await screen.findByText('Costed hinge')).closest('tr')!);
     const dialog = await screen.findByRole('dialog');
 
@@ -261,7 +262,7 @@ describe('S07.17 - cost, markup and margin show only with See costs', () => {
   });
 
   it('saves the unit cost as typed when the person can see costs', async () => {
-    renderPage(VIEW, EDIT, FINANCIAL);
+    renderPage(VIEW, EDIT, FINANCIAL, PRICES);
     fireEvent.click((await screen.findByText('Costed hinge')).closest('tr')!);
     fireEvent.click(await screen.findByRole('button', { name: 'Save Changes' }));
 
@@ -271,7 +272,7 @@ describe('S07.17 - cost, markup and margin show only with See costs', () => {
 
   describe('the bundle editor', () => {
     async function openBundle(...rules: AbilityRule[]) {
-      renderPage(VIEW, CREATE, ...rules);
+      renderPage(VIEW, CREATE, EDIT, ...rules);
       await screen.findByText('Costed hinge');
       await openTab(/groups/i, 'Rekey Bundle');
       fireEvent.click(screen.getByRole('button', { name: /edit rekey bundle/i }));
@@ -308,7 +309,7 @@ describe('S07.17 - cost, markup and margin show only with See costs', () => {
 
   describe('the brand editor', () => {
     async function openBrand(...rules: AbilityRule[]) {
-      renderPage(VIEW, CREATE, ...rules);
+      renderPage(VIEW, CREATE, EDIT, ...rules);
       await screen.findByText('Costed hinge');
       await openTab(/brands/i, 'Acme Locks');
       fireEvent.click(screen.getByRole('button', { name: /edit acme locks/i }));
@@ -325,13 +326,13 @@ describe('S07.17 - cost, markup and margin show only with See costs', () => {
     });
 
     it('has the Default Markup field with See costs', async () => {
-      const dialog = await openBrand(FINANCIAL);
+      const dialog = await openBrand(FINANCIAL, PRICES);
       expect(within(dialog).getByText('Default Markup')).toBeInTheDocument();
     });
   });
 
   it('puts no cost, margin or markup column in the download, with or without See costs', async () => {
-    for (const rules of [[VIEW, EXPORT], [VIEW, EXPORT, FINANCIAL]]) {
+    for (const rules of [[VIEW, EXPORT], [VIEW, EXPORT, FINANCIAL, PRICES]]) {
       h.downloadCSV.mockClear();
       const { unmount } = renderPage(...rules);
       await screen.findByText('Costed hinge');
@@ -347,7 +348,7 @@ describe('S07.17 - cost, markup and margin show only with See costs', () => {
 
 describe('S07.17 - the download follows Export price book', () => {
   it('shows no Export button without it', async () => {
-    renderPage(VIEW, CREATE, EDIT, DELETE, FINANCIAL);
+    renderPage(VIEW, CREATE, EDIT, DELETE, FINANCIAL, PRICES);
     await screen.findByText('Costed hinge');
     expect(screen.queryByRole('button', { name: /^export$/i })).not.toBeInTheDocument();
   });

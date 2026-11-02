@@ -350,7 +350,12 @@ describe('the estimate editor keeps the checkbox live until the customer signs',
     };
   }
 
-  const ability = buildAbility([{ action: 'update', subject: 'Estimate' }]);
+  // Edit estimates needs View estimates and See prices.
+  const ability = buildAbility([
+    { action: 'update', subject: 'Estimate' },
+    { action: 'read', subject: 'Estimate' },
+    { action: 'read', subject: 'Prices' },
+  ]);
 
   function mountEditor(status: string) {
     return renderWithProviders(

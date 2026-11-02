@@ -134,7 +134,7 @@ describe('the call log\'s Export button', () => {
   });
 
   it('puts no vendor name in the file name or the column headers', async () => {
-    renderPhone(abilityWithSwitches(...SECTION, 'Export call log', 'See call insights', 'See company figures'), [FULL_CALL()]);
+    renderPhone(abilityWithSwitches(...SECTION, 'Export call log', 'See call insights', 'See prices', 'See company figures'), [FULL_CALL()]);
     await waitFor(() => expect(screen.getByText(AGENT_NAME)).toBeInTheDocument());
 
     fireEvent.click(exportButton()!);
@@ -194,7 +194,7 @@ describe('what the exported file carries', () => {
   });
 
   it('adds the revenue column with See company figures, and no insight columns without See call insights', async () => {
-    renderPhone(abilityWithSwitches(...SECTION, 'Export call log', 'See company figures'), [FULL_CALL()]);
+    renderPhone(abilityWithSwitches(...SECTION, 'Export call log', 'See prices', 'See company figures'), [FULL_CALL()]);
     await waitFor(() => expect(screen.getByText(AGENT_NAME)).toBeInTheDocument());
 
     fireEvent.click(exportButton()!);
@@ -206,7 +206,7 @@ describe('what the exported file carries', () => {
   });
 
   it('leaves the revenue column out when no call in the file carries a revenue figure, rather than a column of blanks', async () => {
-    renderPhone(abilityWithSwitches(...SECTION, 'Export call log', 'See company figures'), [SECOND_CALL()]);
+    renderPhone(abilityWithSwitches(...SECTION, 'Export call log', 'See prices', 'See company figures'), [SECOND_CALL()]);
     await waitFor(() => expect(screen.getByText('(555) 222-0002')).toBeInTheDocument());
 
     fireEvent.click(exportButton()!);

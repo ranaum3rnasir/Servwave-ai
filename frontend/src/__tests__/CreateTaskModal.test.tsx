@@ -221,7 +221,8 @@ describe('CreateTaskModal — real assignee/watcher pickers (FE-3)', () => {
 
     renderWithProviders(
       <CreateTaskModal open={true} onOpenChange={onOpenChange} />,
-      { ability: buildAbility([{ action: 'assign', subject: 'Task' }]) },
+      // Assign tasks to others needs View tasks.
+      { ability: buildAbility([{ action: 'assign', subject: 'Task' }, { action: 'read', subject: 'Task' }]) },
     );
 
     // Fill in the title (required)
@@ -284,7 +285,8 @@ describe('CreateTaskModal — real assignee/watcher pickers (FE-3)', () => {
     const user = userEvent.setup();
     renderWithProviders(
       <CreateTaskModal open={true} onOpenChange={vi.fn()} />,
-      { ability: buildAbility([{ action: 'assign', subject: 'Task' }]) },
+      // Assign tasks to others needs View tasks.
+      { ability: buildAbility([{ action: 'assign', subject: 'Task' }, { action: 'read', subject: 'Task' }]) },
     );
 
     // A holder starts blank - no forced self-assignment, no explanatory note.
