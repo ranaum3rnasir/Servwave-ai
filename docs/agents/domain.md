@@ -1,38 +1,32 @@
 # Domain Docs
 
-How the engineering skills should consume this repo's domain documentation.
+How the engineering skills consume this repo's domain documentation.
 
 ## Before exploring, read these
 
-- **`CLAUDE.md`** at the repo root — primary domain reference (modules, tech stack, workflows, design system, API patterns, auth, vault routing).
-- **The Obsidian vault** at `C:\Users\ranro\Documents\ALPHA_CRM\Vault\ALPHA_CRM_VAULT` (accessed via `mcp__obsidian__*` MCP tools). Module hub pages: `Modules/Auth.md`, `Modules/Customers.md`, etc. Architectural decisions: `Decisions/*.md`. Past lessons: `Learnings/*.md`. Hand-curated context that `CLAUDE.md` does not duplicate.
-- **`memory/codebase.md`** — full directory tree with per-file descriptions (single source of truth for the file layout).
+1. **`CONTEXT.md`** at the repo root: the glossary. Use its terms; never the words it lists under _Avoid_.
+2. **`docs/adr/`**: read only the ADRs whose title touches the area you are working in. Never read them all.
+3. **`CLAUDE.md`**: the project rules (vendor names, accounting reads, Servy, test runner).
+4. **For bugs:** the Obsidian vault at `/Users/ranroffe/ALPHA_CRM/Vault/ALPHA_CRM_VAULT`
+   (`mcp__obsidian__search_notes`, or `grep -ril`), `Learnings/` first, then `Decisions/`, `Architecture/`,
+   `Modules/<Module>.md`, as `CLAUDE.md` requires.
 
-There is no `CONTEXT.md` or `docs/adr/` in this repo. `CLAUDE.md` + the Obsidian vault fill those roles. Treat them as the equivalents.
+## Layout
 
-## File structure
+Single context: one `CONTEXT.md` and one `docs/adr/` at the root. No `CONTEXT-MAP.md`.
 
-Single-context repo. One `CLAUDE.md` at the root drives every skill's domain understanding.
+## Keep them small (guardrails)
 
-```
-/
-├── CLAUDE.md                 ← primary domain reference
-├── docs/agents/              ← agent skills configuration (this folder)
-├── memory/codebase.md        ← directory tree
-├── md_files/plans/           ← implementation plans
-├── md_files/specs/           ← broader specs
-├── backend/
-└── frontend/
-```
+- **Glossary entries: one to three sentences.** What the term IS, plus an _Avoid_ line. No file paths,
+  code, or implementation detail. Those belong in a spec, an ADR or the vault.
+- **ADRs: a short paragraph** (context, decision, why). Add "Considered options" or "Consequences" only when
+  a future reader would otherwise re-suggest a rejected option.
+- **Size trigger:** when `CONTEXT.md` passes ~300 lines, split it into one `CONTEXT.md` per area
+  (e.g. money, permissions, scheduling, communication) with a root `CONTEXT-MAP.md` pointing to them.
+  Raise the split with Ran first.
 
-The Obsidian vault sits outside the repo but is part of the same knowledge system — see `CLAUDE.md`'s "Obsidian Knowledge Base" section for routing rules ("when to consult the vault").
+## Flag conflicts
 
-## Use the codebase's vocabulary
+If your output contradicts an ADR or a vault Decision note, say so explicitly rather than overriding it:
 
-When naming a domain concept (issue title, refactor proposal, hypothesis, test name), use the term as it appears in `CLAUDE.md` or the vault module note for that area. Examples: "estimate" not "quote"; "walkthrough" not "site visit"; "deposit" not "down payment". When in doubt, search the vault.
-
-## Flag vault contradictions
-
-If your output contradicts an existing Decisions note or Learnings note in the vault, surface it explicitly rather than silently overriding:
-
-> _Contradicts [[Per-Org-Numbering-Strategy]] — but worth reopening because…_
+> _Contradicts ADR-0004 (a refund never reopens amount due), but worth reopening because…_

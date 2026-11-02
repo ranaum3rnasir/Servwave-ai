@@ -23,7 +23,11 @@ Every issue carries exactly one priority label + one module label. May optionall
 - `priority:medium` — feature works incorrectly; visible to customers
 - `priority:low` — UI/UX or cosmetic
 
-**Module** (exactly one, required): `module:auth`, `module:customers`, `module:leads`, `module:estimates`, `module:deposits`, `module:jobs`, `module:scheduler`, `module:invoices`, `module:payments`, `module:price-book`, `module:attachments`, `module:search`, `module:settings`, `module:walkthrough`, `module:dashboard`, `module:reports`, `module:technician-mobile`, `module:departments`, `module:email`, `module:general`
+**Module** (exactly one, required): `module:auth`, `module:customers`, `module:leads`, `module:estimates`, `module:deposits`, `module:jobs`, `module:scheduler`, `module:invoices`, `module:payments`, `module:price-book`, `module:attachments`, `module:search`, `module:settings`, `module:walkthrough`, `module:dashboard`, `module:reports`, `module:email`, `module:communication`, `module:inventory`, `module:permissions`, `module:tasks`, `module:automations`, `module:ai-center`, `module:general`
+
+- Vault module notes without their own label: Events -> `module:scheduler`, Purchasing -> `module:inventory`, Organization and Departments -> `module:settings`, Tags -> `module:general`.
+- Mobile work has no module of its own. The native app mirrors the web app, so a mobile issue takes the module of the screen it is about.
+- `module:general` is only for issues about the whole app or no single area: a crash report with no clear screen, whole-app work (e.g. mobile compatibility), repo-wide security or tooling. If one area owns the issue, use that area's label.
 
 **Category** (one of, optional): `bug`, `enhancement`, `documentation`, `question`
 
@@ -80,6 +84,10 @@ that, `main` is an ancestor of `staging`, the gate flips, and the rest of this s
   verified no-op, which is the cheap way to confirm it.
 - Keep `staging` close to `main`. Divergence is what broke the old process, and an unpromoted fix is
   what causes divergence.
+
+## GitHub vs Linear
+
+Feature **ideas** live in Linear (`SRVW-…`, filed by `/log-idea`). These skills never publish there. GitHub issues hold the work tied to code: bugs, specs and their slices. A spec built from a Linear idea links its `SRVW-…` id.
 
 ## When a skill says "publish to the issue tracker"
 Create a GitHub issue.

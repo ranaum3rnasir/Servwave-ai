@@ -93,3 +93,22 @@ symptom, error text, module and service involved. Look first in `Learnings/` (kn
 signals), then `Decisions/`, `Architecture/` and `Modules/<Module>.md`. Many "new" bugs repeat a recorded
 lesson, and a recorded Decision can make the reported behaviour intended. Cite any note that shaped the
 diagnosis; a note is a lead to verify against the code, not proof.
+
+## Heavy test runs
+
+Before running test suites, typechecks, builds or verifier runs, read the vault note
+`Workflows/Remote-Test-Runner/Remote-Test-Runner.md` and follow it.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub issues on `ranro1/ALPHA_CRM`, via the `gh` CLI; every issue gets one priority and one module label. Feature ideas stay in Linear. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five canonical labels are used as-is (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` (glossary) and `docs/adr/` at the repo root, kept short. See `docs/agents/domain.md`.
